@@ -10,9 +10,6 @@ use std::process::ExitCode;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::mpsc;
-use std::sync::mpsc::Receiver;
-use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
@@ -31,7 +28,6 @@ use crossterm::terminal::disable_raw_mode;
 use crossterm::terminal::enable_raw_mode;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use tui_pane::FRAME_POLL_MILLIS;
 use tui_pane::SLOW_FRAME_MS;
 use tui_pane::TrackedItemKey;
 
@@ -47,6 +43,11 @@ use super::panes::PendingExampleRun;
 use super::panes::RunTargetKind;
 use super::render;
 use super::settings;
+use crate::channel;
+use crate::channel::Receiver;
+use crate::channel::Select;
+use crate::channel::Sender;
+use crate::channel::TryRecvError;
 use crate::ci;
 use crate::config;
 use crate::http::HttpClient;
@@ -90,7 +91,6 @@ struct FrameMetrics {
     fit_elapsed:         Duration,
     detail_elapsed:      Duration,
     draw_elapsed:        Duration,
-    idle_elapsed:        Duration,
     input_count:         usize,
 }
 
@@ -252,7 +252,7 @@ fn restart_self() {
 }
 
 fn spawn_input_thread() -> Receiver<Event> {
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = channel::unbounded();
     thread::spawn(move || {
         while let Ok(event) = crossterm::event::read() {
             if tx.send(event).is_err() {
@@ -263,6 +263,33 @@ fn spawn_input_thread() -> Receiver<Event> {
     rx
 }
 
+/// Outcome of draining the input channel for one frame.
+struct InputDrain {
+    count:        usize,
+    elapsed:      Duration,
+    /// The input thread dropped its sender (a crossterm read error ended
+    /// `spawn_input_thread`). A TUI that can no longer read input is
+    /// dead, so the loop exits. The event-driven design relies on
+    /// detecting this: `Select` reports a *disconnected* crossbeam
+    /// receiver as permanently ready, so without this guard the loop
+    /// would busy-spin at 100% CPU on the dead input channel (PD8).
+    disconnected: bool,
+}
+
+/// Event-driven render loop.
+///
+/// Each iteration drains every ready source, renders one frame, then
+/// blocks in [`wait_for_event`] until something happens — input, a
+/// background message, a new CPU sample, or the animation heartbeat. The
+/// full drain runs on *every* wake regardless of which channel fired, so
+/// the mtime-polled config/keymap/theme reload in [`poll_background_frame`]
+/// and the 1s running-targets poll stay alive while idle (PD1).
+///
+/// Loop contracts (PD9): quit/restart are set only from input dispatch,
+/// which is a `Select` source — so a request always wakes the loop. The
+/// first frame is drawn before the first block, then scan/CPU wakes
+/// update it; if a future background handler sets quit, it must also be a
+/// `Select` source or it will not wake the loop.
 fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
@@ -272,7 +299,11 @@ fn event_loop(
     loop {
         let frame_started = Instant::now();
 
-        let (input_count, input_elapsed) = process_input_frame(app, input_rx);
+        let input = process_input_frame(app, input_rx);
+        if input.disconnected {
+            tracing::error!("input channel disconnected; exiting event loop");
+            return Ok(());
+        }
         if app.framework.quit_requested() || app.framework.restart_requested() {
             return Ok(());
         }
@@ -300,13 +331,12 @@ fn event_loop(
         }
 
         spawn_pending_background_tasks(app);
-        let idle_elapsed = idle_if_no_input(input_count);
         log_slow_frame(
             app,
             &bg_stats,
             &FrameMetrics {
                 frame_elapsed: frame_started.elapsed(),
-                input_elapsed,
+                input_elapsed: input.elapsed,
                 bg_elapsed,
                 cpu_elapsed,
                 run_targets_elapsed,
@@ -315,29 +345,74 @@ fn event_loop(
                 fit_elapsed,
                 detail_elapsed,
                 draw_elapsed,
-                idle_elapsed,
-                input_count,
+                input_count: input.count,
             },
         );
+
+        // Block until the next event or animation tick. `frame_ms` above
+        // measures real work only — the wait is deliberately excluded.
+        wait_for_event(app, input_rx);
     }
     Ok(())
 }
 
-fn process_input_frame(app: &mut App, input_rx: &Receiver<Event>) -> (usize, Duration) {
+/// Block until one of the render-loop's channels is ready, or until the
+/// animation heartbeat elapses. [`Select::ready_timeout`] signals
+/// readiness *without consuming* — the per-source drain in [`event_loop`]
+/// does the receiving and runs in full on every wake.
+///
+/// The `Select` is rebuilt every call because `swap_background_channel`
+/// (rescan) replaces the background receiver wholesale. The CPU-sample
+/// receiver is registered only while the monitor is sampling: a failed
+/// worker spawn leaves the sample sender dropped, and a disconnected
+/// crossbeam receiver is reported permanently ready, which would
+/// busy-spin the loop (PD8). The four App-held background senders never
+/// disconnect (App keeps a clone of each), so only input and CPU samples
+/// are at risk; input disconnect is handled in [`process_input_frame`].
+fn wait_for_event(app: &App, input_rx: &Receiver<Event>) {
+    let timeout = app.animation_timeout();
+    let mut select = Select::new();
+    select.recv(input_rx);
+    select.recv(app.background.background_receiver());
+    select.recv(app.background.ci_fetch_rx());
+    select.recv(app.background.clean_rx());
+    select.recv(app.background.example_rx());
+    if app.panes.cpu.is_sampling() {
+        select.recv(app.panes.cpu.sample_rx());
+    }
+    // The fired index is ignored: the loop body drains every source.
+    let _ = select.ready_timeout(timeout);
+}
+
+fn process_input_frame(app: &mut App, input_rx: &Receiver<Event>) -> InputDrain {
     let started = Instant::now();
-    let mut input_count = 0usize;
-    while let Ok(event) = input_rx.try_recv() {
-        input_count += 1;
-        tracing::info!(event = %tui_pane::event_label(&event), "input_event_received");
-        input::handle_event(app, &event);
-        if app.framework.quit_requested() || app.framework.restart_requested() {
-            break;
+    let mut count = 0usize;
+    let mut disconnected = false;
+    loop {
+        match input_rx.try_recv() {
+            Ok(event) => {
+                count += 1;
+                tracing::info!(event = %tui_pane::event_label(&event), "input_event_received");
+                input::handle_event(app, &event);
+                if app.framework.quit_requested() || app.framework.restart_requested() {
+                    break;
+                }
+            },
+            Err(TryRecvError::Empty) => break,
+            Err(TryRecvError::Disconnected) => {
+                disconnected = true;
+                break;
+            },
         }
     }
-    if input_count == 0 {
+    if count == 0 {
         flush_deferred_selection(app);
     }
-    (input_count, started.elapsed())
+    InputDrain {
+        count,
+        elapsed: started.elapsed(),
+        disconnected,
+    }
 }
 
 fn flush_deferred_selection(app: &mut App) {
@@ -414,14 +489,6 @@ fn spawn_pending_background_tasks(app: &mut App) {
     }
 }
 
-fn idle_if_no_input(input_count: usize) -> Duration {
-    let started = Instant::now();
-    if input_count == 0 {
-        thread::sleep(Duration::from_millis(FRAME_POLL_MILLIS));
-    }
-    started.elapsed()
-}
-
 fn log_slow_frame(app: &App, bg_stats: &PollBackgroundStats, metrics: &FrameMetrics) {
     if metrics.frame_elapsed.as_millis() < SLOW_FRAME_MS {
         return;
@@ -437,7 +504,6 @@ fn log_slow_frame(app: &App, bg_stats: &PollBackgroundStats, metrics: &FrameMetr
         fit_ms = tui_pane::perf_log_ms(metrics.fit_elapsed.as_millis()),
         detail_ms = tui_pane::perf_log_ms(metrics.detail_elapsed.as_millis()),
         draw_ms = tui_pane::perf_log_ms(metrics.draw_elapsed.as_millis()),
-        idle_ms = tui_pane::perf_log_ms(metrics.idle_elapsed.as_millis()),
         input_count = metrics.input_count,
         bg_msgs = bg_stats.bg_msgs,
         disk_usage_msgs = bg_stats.disk_usage_msgs,

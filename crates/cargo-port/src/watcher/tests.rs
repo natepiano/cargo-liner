@@ -7,9 +7,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use crossbeam_channel::RecvTimeoutError;
 use lint::RegisterProjectRequest;
-use mpsc::Receiver;
-use mpsc::RecvTimeoutError;
+use mpsc::Receiver as StdReceiver;
 use notify::Config;
 use notify::Event;
 use notify::RecursiveMode;
@@ -27,6 +27,8 @@ use super::probe;
 use super::refresh;
 use super::roots::WatchRootRegistrationFailureReason;
 use super::*;
+use crate::channel;
+use crate::channel::Receiver;
 use crate::lint;
 use crate::project::GitStatus;
 use crate::project::GitStatus::Clean;
@@ -37,7 +39,7 @@ use crate::scan;
 use crate::test_support;
 
 fn test_metadata_dispatch(client: &HttpClient) -> MetadataDispatchContext {
-    let (tx, _rx) = mpsc::channel();
+    let (tx, _rx) = channel::unbounded();
     MetadataDispatchContext {
         handle: client.handle.clone(),
         tx,
@@ -497,7 +499,7 @@ fn out_of_tree_cargo_config_refresh_fans_out_to_descendant_projects() {
         discovered:      &discovered,
     };
 
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = channel::unbounded();
     let dispatch = MetadataDispatchContext {
         handle: test_support::test_runtime().handle().clone(),
         tx,
@@ -558,7 +560,7 @@ fn is_target_event_for_honors_resolved_out_of_tree_target() {
 
 #[test]
 fn initial_registration_complete_transitions_watcher_out_of_initializing() {
-    let (watch_tx, watch_rx) = mpsc::channel();
+    let (watch_tx, watch_rx) = channel::unbounded();
     let mut state = WatcherLoopState::new();
     let mut watcher = NoopWatcher;
 
@@ -574,7 +576,7 @@ fn initial_registration_complete_transitions_watcher_out_of_initializing() {
 
 #[test]
 fn registration_batch_completes_without_metadata_watch_calls() {
-    let (watch_tx, watch_rx) = mpsc::channel();
+    let (watch_tx, watch_rx) = channel::unbounded();
     let project_dir = tempfile::tempdir().expect("tempdir");
     init_git_repo(project_dir.path());
 
@@ -589,7 +591,7 @@ fn registration_batch_completes_without_metadata_watch_calls() {
         .send(WatcherMsg::InitialRegistrationComplete)
         .expect("send registration complete");
 
-    let (result_tx, result_rx) = mpsc::channel();
+    let (result_tx, result_rx) = channel::unbounded();
     let watch_thread = std::thread::spawn(move || {
         let mut state = WatcherLoopState::new();
         let mut watcher = NoopWatcher;
@@ -657,9 +659,9 @@ fn spawn_watcher_thread_keeps_watcher_guard_alive_until_shutdown() {
         flag:  std::sync::Arc::clone(&dropped),
         inner: NoopWatcher,
     };
-    let (watch_tx, watch_rx) = mpsc::channel();
+    let (watch_tx, watch_rx) = channel::unbounded();
     let (notify_tx, notify_rx) = mpsc::channel();
-    let (background_tx, _) = mpsc::channel();
+    let (background_tx, _) = channel::unbounded();
     let client =
         HttpClient::new(test_support::test_runtime().handle().clone()).expect("http client");
 
@@ -694,7 +696,7 @@ fn spawn_watcher_thread_keeps_watcher_guard_alive_until_shutdown() {
     );
 }
 
-fn wait_for_completion<T>(rx: &Receiver<T>) {
+fn wait_for_completion<T>(rx: &StdReceiver<T>) {
     rx.recv_timeout(Duration::from_secs(1))
         .unwrap_or_else(|_| panic!("timed out waiting for background completion"));
 }
@@ -983,7 +985,7 @@ fn assert_repo_git_fast_path(event_rel_path: &str, context: &str) {
         project_parents: &project_parents,
         discovered:      &discovered,
     };
-    let (background_tx, background_rx) = mpsc::channel();
+    let (background_tx, background_rx) = channel::unbounded();
     let mut pending_disk = HashMap::new();
     let mut pending_git = HashMap::new();
     let mut pending_new = HashMap::new();
@@ -1105,7 +1107,7 @@ fn known_project_event_goes_to_pending_disk() {
         project_parents: &project_parents,
         discovered:      &discovered,
     };
-    let (background_tx, _) = mpsc::channel();
+    let (background_tx, _) = channel::unbounded();
     let mut pending_disk = HashMap::new();
     let mut pending_git = HashMap::new();
     let mut pending_new = HashMap::new();
@@ -1136,7 +1138,7 @@ fn tracked_file_edit_and_revert_refresh_git_status() {
     let project_parents = HashSet::from([AbsolutePath::from(tmp.path())]);
     let discovered = HashSet::new();
     let ctx = tracked_file_event_context(&watch_roots, &projects, &project_parents, &discovered);
-    let (background_tx, background_rx) = mpsc::channel();
+    let (background_tx, background_rx) = channel::unbounded();
     let (git_done_tx, git_done_rx) = mpsc::channel();
     let git_limit = Arc::new(tokio::sync::Semaphore::new(1));
 
@@ -1255,7 +1257,7 @@ edition = "2024"
         project_parents: &project_parents,
         discovered:      &discovered,
     };
-    let (background_tx, background_rx) = mpsc::channel();
+    let (background_tx, background_rx) = channel::unbounded();
     let mut pending_disk = HashMap::new();
     let mut pending_git = HashMap::new();
     let mut pending_new = HashMap::new();
@@ -1359,7 +1361,7 @@ fn git_internal_noise_is_ignored() {
         project_parents: &project_parents,
         discovered:      &discovered,
     };
-    let (background_tx, _) = mpsc::channel();
+    let (background_tx, _) = channel::unbounded();
     let mut pending_disk = HashMap::new();
     let mut pending_git = HashMap::new();
     let mut pending_new = HashMap::new();
@@ -1403,7 +1405,7 @@ fn worktree_index_event_enqueues_git_refresh() {
         project_parents: &project_parents,
         discovered:      &discovered,
     };
-    let (background_tx, _) = mpsc::channel();
+    let (background_tx, _) = channel::unbounded();
     let mut pending_disk = HashMap::new();
     let mut pending_git = HashMap::new();
     let mut pending_new = HashMap::new();
@@ -1443,7 +1445,7 @@ fn worktree_logs_head_event_enqueues_git_refresh() {
         project_parents: &project_parents,
         discovered:      &discovered,
     };
-    let (background_tx, _) = mpsc::channel();
+    let (background_tx, _) = channel::unbounded();
     let mut pending_disk = HashMap::new();
     let mut pending_git = HashMap::new();
     let mut pending_new = HashMap::new();
@@ -1478,7 +1480,7 @@ fn worktree_noise_under_real_git_dir_is_ignored() {
         project_parents: &project_parents,
         discovered:      &discovered,
     };
-    let (background_tx, _) = mpsc::channel();
+    let (background_tx, _) = channel::unbounded();
     let mut pending_disk = HashMap::new();
     let mut pending_git = HashMap::new();
     let mut pending_new = HashMap::new();
@@ -1518,7 +1520,7 @@ fn worktree_common_branch_ref_event_enqueues_full_git_refresh() {
         project_parents: &project_parents,
         discovered:      &discovered,
     };
-    let (background_tx, _) = mpsc::channel();
+    let (background_tx, _) = channel::unbounded();
     let mut pending_disk = HashMap::new();
     let mut pending_git = HashMap::new();
     let mut pending_new = HashMap::new();
@@ -1589,7 +1591,7 @@ fn shared_common_git_dir_event_refreshes_all_projects() {
         project_parents: &project_parents,
         discovered:      &discovered,
     };
-    let (background_tx, _) = mpsc::channel();
+    let (background_tx, _) = channel::unbounded();
     let mut pending_disk = HashMap::new();
     let mut pending_git = HashMap::new();
     let mut pending_new = HashMap::new();
@@ -1643,7 +1645,7 @@ fn buffered_worktree_git_dir_event_replays_after_registration_complete() {
         project_parents: &project_parents,
         discovered:      &discovered,
     };
-    let (background_tx, _) = mpsc::channel();
+    let (background_tx, _) = channel::unbounded();
     let dispatch = WatcherDispatchContext {
         event:             ctx,
         background_tx:     &background_tx,
@@ -1690,7 +1692,7 @@ fn buffered_worktree_common_git_event_replays_after_registration_complete() {
         project_parents: &project_parents,
         discovered:      &discovered,
     };
-    let (background_tx, _) = mpsc::channel();
+    let (background_tx, _) = channel::unbounded();
     let dispatch = WatcherDispatchContext {
         event:             ctx,
         background_tx:     &background_tx,
@@ -1748,7 +1750,7 @@ fn cache_lint_event_is_ignored_by_project_watcher() {
         project_parents: &project_parents,
         discovered:      &discovered,
     };
-    let (background_tx, background_rx) = mpsc::channel();
+    let (background_tx, background_rx) = channel::unbounded();
     let mut pending_disk = HashMap::new();
     let mut pending_git = HashMap::new();
     let mut pending_new = HashMap::new();
@@ -1797,7 +1799,7 @@ fn cache_lint_child_event_is_ignored_by_project_watcher() {
         project_parents: &project_parents,
         discovered:      &discovered,
     };
-    let (background_tx, background_rx) = mpsc::channel();
+    let (background_tx, background_rx) = channel::unbounded();
     let mut pending_disk = HashMap::new();
     let mut pending_git = HashMap::new();
     let mut pending_new = HashMap::new();
@@ -1839,7 +1841,7 @@ fn watcher_event_schedules_lint_run_through_main_runtime() {
         command: "echo lint ok".to_string(),
     }];
 
-    let (background_tx, background_rx) = mpsc::channel();
+    let (background_tx, background_rx) = channel::unbounded();
     let runtime = lint::spawn(&cfg, background_tx.clone())
         .handle
         .expect("runtime handle");
@@ -1936,7 +1938,7 @@ fn unknown_sibling_event_goes_to_pending_new() {
     let mut pending_git = HashMap::new();
     let mut pending_new = HashMap::new();
 
-    let (background_tx, _) = mpsc::channel();
+    let (background_tx, _) = channel::unbounded();
     let event_path = new_project.join("src/main.rs");
     events::handle_event(
         &event_path,
@@ -1972,7 +1974,7 @@ fn replayed_event_for_already_registered_project_uses_known_project_path() {
         project_parents: &project_parents,
         discovered:      &discovered,
     };
-    let (background_tx, _) = mpsc::channel();
+    let (background_tx, _) = channel::unbounded();
     let dispatch = WatcherDispatchContext {
         event:             ctx,
         background_tx:     &background_tx,
@@ -2020,7 +2022,7 @@ fn already_discovered_directory_not_re_enqueued() {
     let mut pending_git = HashMap::new();
     let mut pending_new = HashMap::new();
 
-    let (background_tx, _) = mpsc::channel();
+    let (background_tx, _) = channel::unbounded();
     events::handle_event(
         &project_dir.join("Cargo.toml"),
         &ctx,
@@ -2058,7 +2060,7 @@ fn new_project_enqueued_during_early_scan() {
         project_parents: &project_parents,
         discovered:      &discovered,
     };
-    let (background_tx, _) = mpsc::channel();
+    let (background_tx, _) = channel::unbounded();
     let mut pending_disk = HashMap::new();
     let mut pending_git = HashMap::new();
     let mut pending_new = HashMap::new();
@@ -2232,7 +2234,7 @@ fn disk_update_only_sends_disk_usage_for_tracked_project() {
     std::fs::create_dir_all(&project_dir).expect("create dir");
     init_git_repo(&project_dir);
 
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = channel::unbounded();
     let mut projects = HashMap::new();
     projects.insert(
         AbsolutePath::from(project_dir.clone()),
@@ -2298,7 +2300,7 @@ fn disk_update_skips_git_info_for_untracked_project() {
     let project_dir = tmp.path().join("no_git");
     std::fs::create_dir_all(&project_dir).expect("create dir");
 
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = channel::unbounded();
     let mut projects = HashMap::new();
     projects.insert(
         AbsolutePath::from(project_dir.clone()),
@@ -2368,7 +2370,7 @@ fn probe_new_package_worktree_emits_discovered_item() {
     init_cargo_git_repo(&primary_dir, "app", false);
     add_git_worktree(&primary_dir, &linked_dir, "test/app");
 
-    let (background_tx, background_rx) = mpsc::channel();
+    let (background_tx, background_rx) = channel::unbounded();
     let past = Instant::now()
         .checked_sub(Duration::from_secs(1))
         .expect("1s subtraction should not underflow");
@@ -2411,7 +2413,7 @@ fn probe_new_workspace_worktree_emits_discovered_item() {
     init_cargo_git_repo(&primary_dir, "obsidian_knife", true);
     add_git_worktree(&primary_dir, &linked_dir, "test/obsidian");
 
-    let (background_tx, background_rx) = mpsc::channel();
+    let (background_tx, background_rx) = channel::unbounded();
     let past = Instant::now()
         .checked_sub(Duration::from_secs(1))
         .expect("1s subtraction should not underflow");
@@ -2466,7 +2468,7 @@ fn project_refresh_normalizes_workspace_members() {
     std::fs::write(member_dir.join("src").join("lib.rs"), "pub fn demo() {}\n")
         .expect("write member lib");
 
-    let (background_tx, background_rx) = mpsc::channel();
+    let (background_tx, background_rx) = channel::unbounded();
     probe::spawn_project_refresh_after(
         background_tx,
         AbsolutePath::from(project_dir),
@@ -2509,7 +2511,7 @@ fn project_refresh_emits_disk_usage_for_workspace_members() {
     std::fs::write(member_dir.join("src").join("lib.rs"), "pub fn demo() {}\n")
         .expect("write member lib");
 
-    let (background_tx, background_rx) = mpsc::channel();
+    let (background_tx, background_rx) = channel::unbounded();
     probe::spawn_project_refresh_after(
         background_tx,
         AbsolutePath::from(project_dir),
@@ -2565,7 +2567,7 @@ fn removed_package_worktree_emits_zero_disk_usage() {
         project_parents: &project_parents,
         discovered:      &discovered,
     };
-    let (background_tx, background_rx) = mpsc::channel();
+    let (background_tx, background_rx) = channel::unbounded();
     let mut pending_disk = HashMap::new();
     let mut pending_git = HashMap::new();
     let mut pending_new = HashMap::new();
@@ -2645,7 +2647,7 @@ fn removed_workspace_worktree_emits_zero_disk_usage() {
         project_parents: &project_parents,
         discovered:      &discovered,
     };
-    let (background_tx, background_rx) = mpsc::channel();
+    let (background_tx, background_rx) = channel::unbounded();
     let mut pending_disk = HashMap::new();
     let mut pending_git = HashMap::new();
     let mut pending_new = HashMap::new();
@@ -2726,7 +2728,7 @@ fn symlinked_event_path_canonicalizes_to_real_project() {
         project_parents: &project_parents,
         discovered:      &discovered,
     };
-    let (background_tx, _) = mpsc::channel();
+    let (background_tx, _) = channel::unbounded();
     let mut pending_disk = HashMap::new();
     let mut pending_git = HashMap::new();
     let mut pending_new = HashMap::new();

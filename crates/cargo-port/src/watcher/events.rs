@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::mpsc::Receiver;
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::Receiver as StdReceiver;
 use std::time::Instant;
 
 use notify::Event;
@@ -13,6 +12,7 @@ use super::WatchState;
 use super::WatcherLoopState;
 use super::probe;
 use super::refresh;
+use crate::channel::Sender;
 use crate::constants::NEW_PROJECT_DEBOUNCE;
 use crate::lint;
 use crate::lint::RuntimeHandle;
@@ -100,7 +100,7 @@ pub(super) fn process_notify_events(
     }
 }
 
-pub(super) fn drain_notify_events(notify_rx: &Receiver<notify::Result<Event>>) -> Vec<Event> {
+pub(super) fn drain_notify_events(notify_rx: &StdReceiver<notify::Result<Event>>) -> Vec<Event> {
     let mut events = Vec::new();
     while let Ok(result) = notify_rx.try_recv() {
         match result {
@@ -138,8 +138,8 @@ pub(super) fn replay_buffered_events(
 }
 
 pub(super) fn drain_completed_refreshes(
-    disk_done_rx: &Receiver<String>,
-    git_done_rx: &Receiver<AbsolutePath>,
+    disk_done_rx: &StdReceiver<String>,
+    git_done_rx: &StdReceiver<AbsolutePath>,
     pending_disk: &mut HashMap<String, WatchState>,
     pending_git: &mut HashMap<AbsolutePath, WatchState>,
 ) {

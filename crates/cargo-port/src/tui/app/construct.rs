@@ -3,7 +3,7 @@
 //! Three phases, enforced at the type level:
 //!
 //! 1. [`AppBuilder<Inputs>`] — caller's raw arguments only. No I/O run yet.
-//! 2. [`AppBuilder<Channeled>`] — internal mpsc channel pairs created.
+//! 2. [`AppBuilder<Channeled>`] — internal channel pairs created.
 //! 3. [`AppBuilder<Started>`] — startup I/O complete: lint runtime spawned, watcher thread spawned,
 //!    project tree built, config loaded.
 //!
@@ -16,9 +16,6 @@
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::mpsc;
-use std::sync::mpsc::Receiver;
-use std::sync::mpsc::Sender;
 use std::time::Instant;
 
 use anyhow::Context;
@@ -33,6 +30,9 @@ use tui_pane::ToastSettings;
 use super::App;
 use super::async_tasks::Startup;
 use super::types::ScanState;
+use crate::channel;
+use crate::channel::Receiver;
+use crate::channel::Sender;
 use crate::config;
 use crate::config::CargoPortConfig;
 use crate::http::HttpClient;
@@ -83,16 +83,16 @@ pub(super) struct Inputs {
     toast_settings:  ToastSettings,
 }
 
-/// `Inputs` plus the three internal mpsc channel pairs (example, CI
+/// `Inputs` plus the three internal channel pairs (example, CI
 /// fetch, clean) routed through `Background`.
 pub(super) struct Channeled {
     inputs:      Inputs,
     example_tx:  Sender<ExampleMsg>,
-    example_rx:  mpsc::Receiver<ExampleMsg>,
+    example_rx:  Receiver<ExampleMsg>,
     ci_fetch_tx: Sender<CiFetchMsg>,
-    ci_fetch_rx: mpsc::Receiver<CiFetchMsg>,
+    ci_fetch_rx: Receiver<CiFetchMsg>,
     clean_tx:    Sender<CleanMsg>,
-    clean_rx:    mpsc::Receiver<CleanMsg>,
+    clean_rx:    Receiver<CleanMsg>,
 }
 
 /// `Channeled` plus the startup I/O products.
@@ -137,9 +137,9 @@ impl AppBuilder<Inputs> {
     }
 
     pub(super) fn open_channels(self) -> AppBuilder<Channeled> {
-        let (example_tx, example_rx) = mpsc::channel();
-        let (ci_fetch_tx, ci_fetch_rx) = mpsc::channel();
-        let (clean_tx, clean_rx) = mpsc::channel();
+        let (example_tx, example_rx) = channel::unbounded();
+        let (ci_fetch_tx, ci_fetch_rx) = channel::unbounded();
+        let (clean_tx, clean_rx) = channel::unbounded();
         AppBuilder {
             state: Channeled {
                 inputs: self.state,

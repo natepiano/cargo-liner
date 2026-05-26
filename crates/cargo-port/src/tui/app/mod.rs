@@ -93,6 +93,8 @@ use super::state::Inflight;
 use super::state::Keymap;
 use super::state::Scan;
 use super::state::SyncTracker;
+use crate::channel::Receiver;
+use crate::channel::Sender;
 use crate::ci::OwnerRepo;
 use crate::constants::SCAN_METADATA_CONCURRENCY;
 use crate::constants::TARGET_DIR;
@@ -125,9 +127,6 @@ use crate::scan::BackgroundMsg;
     reason = "tests should panic on unexpected values"
 )]
 mod tests;
-
-use std::sync::mpsc::Receiver;
-use std::sync::mpsc::Sender;
 
 use anyhow::Error;
 use async_tasks::Startup;
@@ -459,6 +458,39 @@ impl App {
         if self.base_focus() == PaneId::Toasts && self.framework.toasts.active_now().is_empty() {
             self.set_focus_to_pane(PaneId::ProjectList);
         }
+    }
+
+    /// Wake interval for the event loop — always bounded, never
+    /// block-forever. Returns the animation cadence (~80 ms) while any
+    /// on-screen animation is live, otherwise a ~1 s idle heartbeat
+    /// floor. The floor keeps the mtime-polled config/keymap/theme
+    /// reload (`maybe_reload_*_from_disk`) and the 1 s running-targets
+    /// poll alive when idle, since the loop drains them on every wake
+    /// (PD1) and no filesystem watcher covers those files.
+    ///
+    /// [`is_animating`](Self::is_animating) must mirror the render-time
+    /// spinner/shimmer/toast checks; a new animated element added at
+    /// render time without a matching predicate here will not advance
+    /// while the screen is otherwise idle.
+    pub(super) fn animation_timeout(&self) -> Duration {
+        const IDLE_HEARTBEAT: Duration = Duration::from_secs(1);
+        const ANIMATION_TICK: Duration = Duration::from_millis(80);
+        if self.is_animating() {
+            ANIMATION_TICK
+        } else {
+            IDLE_HEARTBEAT
+        }
+    }
+
+    /// Whether any on-screen animation is currently live: scan discovery
+    /// shimmers, the in-flight lint / clean / example-run spinners, or an
+    /// active toast. Composed from per-subsystem predicates so each owns
+    /// the definition of "animating" for its own state.
+    fn is_animating(&self) -> bool {
+        self.scan.needs_animation()
+            || self.lint.needs_animation()
+            || self.inflight.needs_animation()
+            || !self.framework.toasts.active_now().is_empty()
     }
 
     pub(super) fn show_timed_toast(&mut self, title: impl Into<String>, body: impl Into<String>) {

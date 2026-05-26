@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::mpsc::Sender;
 use std::time::Duration;
 use std::time::Instant;
 
+use crate::channel::Sender;
 use crate::config::NonRustInclusion;
 use crate::constants::CARGO_TOML;
 use crate::constants::GIT_DIR;

@@ -5,9 +5,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::mpsc;
-use std::sync::mpsc::Receiver;
-use std::sync::mpsc::Sender;
 use std::thread;
 
 use cargo_metadata::Error;
@@ -21,6 +18,9 @@ use super::discovery;
 use super::disk_usage;
 use super::language_stats;
 use super::tree;
+use crate::channel;
+use crate::channel::Receiver;
+use crate::channel::Sender;
 use crate::config::NonRustInclusion;
 use crate::constants::CARGO_METADATA_TIMEOUT;
 use crate::constants::CARGO_TOML;
@@ -95,7 +95,7 @@ pub(crate) fn spawn_streaming_scan(
     client: HttpClient,
     metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
 ) -> (Sender<BackgroundMsg>, Receiver<BackgroundMsg>) {
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = channel::unbounded();
     let inline_dirs = inline_dirs.to_vec();
 
     let scan_tx = tx.clone();

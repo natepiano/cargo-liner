@@ -12,14 +12,13 @@
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::process::Command;
-use std::sync::mpsc;
-use std::sync::mpsc::Receiver;
-use std::sync::mpsc::RecvTimeoutError;
-use std::sync::mpsc::Sender;
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use crossbeam_channel::Receiver;
+use crossbeam_channel::RecvTimeoutError;
+use crossbeam_channel::Sender;
 use ratatui::style::Color;
 use sysinfo::CpuRefreshKind;
 use sysinfo::RefreshKind;
@@ -201,8 +200,8 @@ impl CpuMonitor {
         let mut poller = CpuPoller::new();
         let core_count = poller.core_count();
         let interval = Duration::from_millis(poll_interval_ms.max(1));
-        let (sample_sender, samples) = mpsc::channel();
-        let (stop_sender, stop_receiver) = mpsc::channel();
+        let (sample_sender, samples) = crossbeam_channel::unbounded();
+        let (stop_sender, stop_receiver) = crossbeam_channel::unbounded();
         let handle = thread::Builder::new()
             .name("cpu-monitor".to_string())
             .spawn(move || cpu_poll_loop(&mut poller, &sample_sender, &stop_receiver, interval))
@@ -218,6 +217,25 @@ impl CpuMonitor {
     /// Number of CPU cores, captured when the worker was spawned.
     #[must_use]
     pub const fn core_count(&self) -> usize { self.core_count }
+
+    /// Whether the worker thread spawned successfully and is producing
+    /// samples. When `false` (the `thread::Builder::spawn` failed and
+    /// the sample `Sender` was dropped with the unrun closure), the
+    /// [`receiver`](Self::receiver) is permanently disconnected — the
+    /// event loop must not register it in a `Select`, or the loop would
+    /// busy-spin on a perpetually-ready dead channel.
+    #[must_use]
+    pub const fn is_sampling(&self) -> bool { self.handle.is_some() }
+
+    /// The sample channel receiver, for registering in a render-loop
+    /// `crossbeam_channel::Select` so a new sample wakes the loop.
+    ///
+    /// Register only — draining is exclusive to [`latest`](Self::latest),
+    /// which the render thread calls each frame. Registering does not
+    /// consume; the `Select` merely signals readiness. Gate registration
+    /// on [`is_sampling`](Self::is_sampling).
+    #[must_use]
+    pub const fn receiver(&self) -> &Receiver<CpuUsage> { &self.samples }
 
     /// Zero-filled [`CpuUsage`] sized to the current core count.
     #[must_use]
@@ -757,5 +775,19 @@ mod tests {
         let input =
             r#""PerformanceStatistics" = {"Renderer Utilization %"=10,"Device Utilization %"=42}"#;
         assert_eq!(parse_gpu_percent(input), Some(42));
+    }
+
+    #[test]
+    fn spawned_monitor_reports_sampling_with_a_connected_receiver() {
+        // The event loop gates `Select` registration on `is_sampling()`.
+        // A spawned worker holds the sample sender for the monitor's life,
+        // so the receiver is connected (try_recv is Empty, not
+        // Disconnected) and registering it will not busy-spin.
+        let monitor = CpuMonitor::new(1000);
+        assert!(monitor.is_sampling());
+        assert!(matches!(
+            monitor.receiver().try_recv(),
+            Err(crossbeam_channel::TryRecvError::Empty)
+        ));
     }
 }

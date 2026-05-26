@@ -138,6 +138,11 @@ impl Lint {
 
     pub const fn running_mut(&mut self) -> &mut RunningTracker<AbsolutePath> { &mut self.running }
 
+    /// Whether any lint run is in flight, so the render loop should keep
+    /// ticking to advance the lint spinner (project-list column, detail
+    /// pane, and the "N lints running" toast).
+    pub fn needs_animation(&self) -> bool { !self.running().is_empty() }
+
     // ── cache usage ─────────────────────────────────────────────
 
     pub const fn set_cache_usage(&mut self, usage: CacheUsage) { self.cache_usage = usage; }

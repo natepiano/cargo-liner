@@ -21,9 +21,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc;
-use std::sync::mpsc::Receiver;
-use std::sync::mpsc::Sender;
-use std::sync::mpsc::TryRecvError;
+use std::sync::mpsc::Receiver as StdReceiver;
 use std::thread;
 use std::time::Instant;
 
@@ -53,6 +51,10 @@ use super::project;
 use super::project::ProjectFields;
 use super::scan::BackgroundMsg;
 use super::scan::MetadataDispatchContext;
+use crate::channel;
+use crate::channel::Receiver;
+use crate::channel::Sender;
+use crate::channel::TryRecvError;
 use crate::constants::SCAN_METADATA_CONCURRENCY;
 use crate::project::AbsolutePath;
 use crate::project::WorkspaceMetadataStore;
@@ -95,7 +97,7 @@ pub(crate) fn spawn_watcher(
     lint_runtime: Option<RuntimeHandle>,
     metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
 ) -> Sender<WatcherMsg> {
-    let (watch_tx, watch_rx) = mpsc::channel();
+    let (watch_tx, watch_rx) = channel::unbounded();
     let (notify_tx, notify_rx) = mpsc::channel();
     let handler = move |res| {
         let _ = notify_tx.send(res);
@@ -154,7 +156,7 @@ struct WatcherLoopContext {
 fn spawn_watcher_thread<W: Watcher + Send + 'static>(
     ctx: WatcherLoopContext,
     watch_rx: Receiver<WatcherMsg>,
-    notify_rx: Receiver<notify::Result<Event>>,
+    notify_rx: StdReceiver<notify::Result<Event>>,
     watcher_guard: W,
 ) {
     thread::spawn(move || {
@@ -237,7 +239,7 @@ impl WatcherLoopState {
 fn watcher_loop<W: Watcher + Send + 'static>(
     ctx: &WatcherLoopContext,
     watch_rx: &Receiver<WatcherMsg>,
-    notify_rx: &Receiver<notify::Result<Event>>,
+    notify_rx: &StdReceiver<notify::Result<Event>>,
     mut watcher: W,
 ) {
     let WatcherLoopContext {

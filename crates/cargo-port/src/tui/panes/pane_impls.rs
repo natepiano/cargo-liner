@@ -31,6 +31,7 @@ use super::package;
 use super::package::RenderStyles;
 use super::project_list;
 use super::targets;
+use crate::channel::Receiver;
 use crate::config::CpuConfig;
 use crate::project::AbsolutePath;
 use crate::tui::pane::DismissTarget;
@@ -157,6 +158,18 @@ impl CpuPane {
             self.content = Some(usage);
         }
     }
+
+    /// The monitor's sample-channel receiver, for registering in the
+    /// render-loop `Select` so a new CPU sample wakes the loop. Register
+    /// only — `tick` remains the sole drain. Gate registration on
+    /// [`is_sampling`](Self::is_sampling).
+    pub const fn sample_rx(&self) -> &Receiver<CpuUsage> { self.monitor.receiver() }
+
+    /// Whether the monitor's worker spawned and is producing samples.
+    /// `false` means [`sample_rx`](Self::sample_rx) is disconnected and
+    /// must not be registered in a `Select` (it would report permanently
+    /// ready and busy-spin the loop).
+    pub const fn is_sampling(&self) -> bool { self.monitor.is_sampling() }
 
     pub fn reset(&mut self, cfg: &CpuConfig) {
         self.monitor = CpuMonitor::new(cfg.poll_ms);

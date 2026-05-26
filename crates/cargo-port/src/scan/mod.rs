@@ -1,7 +1,7 @@
 use std::path::Path;
-use std::sync::mpsc::Sender;
 
 use crate::cache_paths;
+use crate::channel::Sender;
 use crate::http::ServiceKind;
 use crate::http::ServiceSignal;
 use crate::project::AbsolutePath;

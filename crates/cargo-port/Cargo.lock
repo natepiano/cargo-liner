@@ -505,6 +505,7 @@ dependencies = [
  "cargo_metadata",
  "chrono",
  "confique",
+ "crossbeam-channel",
  "crossterm",
  "dirs",
  "indexmap",
@@ -4107,6 +4108,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 name = "tui_pane"
 version = "0.0.4-dev"
 dependencies = [
+ "crossbeam-channel",
  "crossterm",
  "dark-light",
  "dirs",

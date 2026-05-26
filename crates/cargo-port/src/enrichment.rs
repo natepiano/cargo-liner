@@ -16,8 +16,7 @@
 //! handler consults `ProjectList::is_submodule_path` to suppress the cascade for
 //! submodule paths, since CI/metadata is shown on the parent project.
 
-use std::sync::mpsc::Sender;
-
+use crate::channel::Sender;
 use crate::project::AbsolutePath;
 use crate::project::ProjectFields;
 use crate::scan;

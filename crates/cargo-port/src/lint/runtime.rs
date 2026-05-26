@@ -12,9 +12,9 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::Receiver as StdReceiver;
 use std::sync::mpsc::RecvTimeoutError;
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::Sender as StdSender;
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -34,6 +34,7 @@ use super::types::LintRun;
 use super::types::LintRunStatus;
 use super::types::LintStatus;
 use crate::cache_paths;
+use crate::channel::Sender;
 use crate::config::CargoPortConfig;
 use crate::config::DiscoveryLint;
 use crate::config::LintCommandConfig;
@@ -71,7 +72,7 @@ pub fn project_is_eligible(
 
 #[derive(Clone)]
 pub struct RuntimeHandle {
-    tx: Sender<SupervisorMsg>,
+    tx: StdSender<SupervisorMsg>,
 }
 
 impl RuntimeHandle {
@@ -122,7 +123,7 @@ pub struct RunCommandsConfig<'a> {
 
 struct ProjectWorker {
     stop:       Arc<AtomicBool>,
-    trigger_tx: Sender<LintTriggerEvent>,
+    trigger_tx: StdSender<LintTriggerEvent>,
     child:      ChildSlot,
     handle:     JoinHandle<()>,
 }
@@ -151,7 +152,7 @@ pub fn spawn(config: &CargoPortConfig, background_tx: Sender<BackgroundMsg>) -> 
     reason = "supervisor owns its queue and worker map for the lifetime of the runtime"
 )]
 fn supervisor_loop(
-    rx: Receiver<SupervisorMsg>,
+    rx: StdReceiver<SupervisorMsg>,
     cache_root: AbsolutePath,
     lint: LintConfig,
     cache_size_bytes: Option<u64>,
@@ -848,7 +849,7 @@ fn sanitize_name(name: &str) -> String {
 )]
 #[allow(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests {
-    use mpsc::RecvTimeoutError;
+    use crossbeam_channel::RecvTimeoutError;
     use notify::Event;
     use notify::event::DataChange;
     use notify::event::EventKind;
@@ -856,6 +857,7 @@ mod tests {
     use notify::event::RemoveKind;
 
     use super::*;
+    use crate::channel;
     use crate::config::CargoPortConfig;
     use crate::lint::trigger::LintEventKind::CreateOrModify;
     use crate::lint::trigger::LintTriggerKind::RustSource;
@@ -994,7 +996,7 @@ mod tests {
             command: "echo lint ok".to_string(),
         }];
 
-        let (tx, _rx) = mpsc::channel();
+        let (tx, _rx) = channel::unbounded();
         run_commands_for_project(
             project_dir.path(),
             "~/rust/demo",
@@ -1103,7 +1105,7 @@ mod tests {
             command: "echo lint ok".to_string(),
         }];
 
-        let (background_tx, background_rx) = mpsc::channel();
+        let (background_tx, background_rx) = channel::unbounded();
         let spawn = spawn(&cfg, background_tx);
         let runtime = spawn.handle.expect("runtime handle");
         let request = request("~/rust/demo", project_dir.path(), true);
@@ -1150,7 +1152,7 @@ mod tests {
             command: "echo lint ok".to_string(),
         }];
 
-        let (tx, _rx) = mpsc::channel();
+        let (tx, _rx) = channel::unbounded();
         run_commands_for_project(
             project_dir.path(),
             "~/rust/demo",
@@ -1177,7 +1179,7 @@ mod tests {
         let mut workers = HashMap::new();
         let (worker, exited) = dummy_worker();
         workers.insert(path, worker);
-        let (background_tx, background_rx) = mpsc::channel();
+        let (background_tx, background_rx) = channel::unbounded();
         let config = WorkerConfig {
             cache_root:       "/tmp/cache".into(),
             commands:         Vec::new(),
@@ -1211,7 +1213,7 @@ mod tests {
         let desired = HashMap::from([(AbsolutePath::from(project_dir.path()), request)]);
 
         let mut workers = HashMap::new();
-        let (background_tx, _) = mpsc::channel();
+        let (background_tx, _) = channel::unbounded();
         let config = WorkerConfig {
             cache_root:       "/tmp/cache".into(),
             commands:         Vec::new(),

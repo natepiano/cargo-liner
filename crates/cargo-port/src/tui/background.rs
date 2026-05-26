@@ -1,6 +1,6 @@
 //! The `Background` subsystem.
 //!
-//! Owns the four mpsc channel pairs plus the watcher sender:
+//! Owns the four channel pairs plus the watcher sender:
 //! - `background_tx` / `background_rx` (replaced wholesale on every rescan — see
 //!   [`Background::swap_background_channel`])
 //! - `ci_fetch_tx` / `ci_fetch_rx`
@@ -14,15 +14,12 @@
 //!
 //! [`Inflight`]: super::state::Inflight
 
-#[cfg(test)]
-use std::sync::mpsc;
-use std::sync::mpsc::Receiver;
-use std::sync::mpsc::SendError;
-use std::sync::mpsc::Sender;
-
 use super::terminal::CiFetchMsg;
 use super::terminal::CleanMsg;
 use super::terminal::ExampleMsg;
+use crate::channel::Receiver;
+use crate::channel::SendError;
+use crate::channel::Sender;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
@@ -148,6 +145,7 @@ impl Background {
 )]
 mod tests {
     use super::*;
+    use crate::channel;
 
     fn make_msg() -> BackgroundMsg {
         BackgroundMsg::RepoFetchQueued {
@@ -156,12 +154,12 @@ mod tests {
     }
 
     fn fresh() -> Background {
-        let (watch_tx, _watch_rx) = mpsc::channel();
+        let (watch_tx, _watch_rx) = channel::unbounded();
         Background::new(BackgroundChannels {
-            background: mpsc::channel(),
-            ci_fetch: mpsc::channel(),
-            clean: mpsc::channel(),
-            example: mpsc::channel(),
+            background: channel::unbounded(),
+            ci_fetch: channel::unbounded(),
+            clean: channel::unbounded(),
+            example: channel::unbounded(),
             watch_tx,
         })
     }
@@ -185,7 +183,7 @@ mod tests {
         let mut background = fresh();
         let original_sender = background.background_sender();
 
-        let (new_tx, new_rx) = mpsc::channel();
+        let (new_tx, new_rx) = channel::unbounded();
         background.swap_background_channel(new_tx, new_rx);
 
         // Sender cloned before the swap can still send (it's tied to
@@ -211,12 +209,12 @@ mod tests {
 
     #[test]
     fn send_watcher_delivers_to_watcher_channel() {
-        let (watch_tx, watch_rx) = mpsc::channel();
+        let (watch_tx, watch_rx) = channel::unbounded();
         let background = Background::new(BackgroundChannels {
-            background: mpsc::channel(),
-            ci_fetch: mpsc::channel(),
-            clean: mpsc::channel(),
-            example: mpsc::channel(),
+            background: channel::unbounded(),
+            ci_fetch: channel::unbounded(),
+            clean: channel::unbounded(),
+            example: channel::unbounded(),
             watch_tx,
         });
 
@@ -230,7 +228,7 @@ mod tests {
     #[test]
     fn replace_watcher_sender_redirects_send_watcher() {
         let mut background = fresh();
-        let (new_watch_tx, new_watch_rx) = mpsc::channel();
+        let (new_watch_tx, new_watch_rx) = channel::unbounded();
         background.replace_watcher_sender(new_watch_tx);
         background
             .send_watcher(WatcherMsg::InitialRegistrationComplete)

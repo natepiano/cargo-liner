@@ -3,7 +3,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::mpsc;
 use std::time::Instant;
 
 use tui_pane::SettingsFileSpec;
@@ -14,6 +13,7 @@ use super::app::RetrySpawnMode;
 use super::keymap;
 use super::settings;
 use super::settings::StartupSettings;
+use crate::channel;
 use crate::config;
 use crate::config::CargoPortConfig;
 use crate::constants::APP_NAME;
@@ -46,7 +46,7 @@ pub(super) fn make_app_with_config(projects: &[RootItem], config: &CargoPortConf
     // test the same keymap regardless of the host machine.
     let keymap_path = test_keymap_path();
     let _keymap_guard = keymap::override_keymap_path_for_test_if_absent(keymap_path);
-    let (background_tx, background_rx) = mpsc::channel();
+    let (background_tx, background_rx) = channel::unbounded();
     let metadata_store = Arc::new(Mutex::new(WorkspaceMetadataStore::new()));
     let settings_spec = SettingsFileSpec::new(APP_NAME, CONFIG_FILE).with_path(&config_path);
     let mut loaded_settings =

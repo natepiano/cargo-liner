@@ -53,6 +53,12 @@ impl Inflight {
 
     pub const fn clean_mut(&mut self) -> &mut RunningTracker<AbsolutePath> { &mut self.clean }
 
+    /// Whether a cargo clean or an example/bin/bench run is in flight, so
+    /// the render loop should keep ticking to advance their spinners.
+    pub fn needs_animation(&self) -> bool {
+        !self.clean().is_empty() || self.example_running().is_some()
+    }
+
     // ── pending queues ──────────────────────────────────────────────
 
     pub const fn pending_cleans_mut(&mut self) -> &mut VecDeque<PendingClean> {

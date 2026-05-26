@@ -18,6 +18,7 @@ clipboard = ["crossterm/osc52"]
 default   = ["clipboard"]
 
 [dependencies]
+crossbeam-channel  = "0.5"
 crossterm          = "0.29.0"
 dark-light         = "2"
 dirs               = "6.0.0"

@@ -62,6 +62,12 @@ impl Scan {
 
     pub const fn is_complete(&self) -> bool { self.state.phase.is_complete() }
 
+    /// Whether scan-driven animation should keep the render loop
+    /// ticking: the scan is still streaming, or discovery shimmers are
+    /// still fading. Mirrors the render-time scan spinner and the
+    /// discovery-shimmer fade in `tui::columns`.
+    pub fn needs_animation(&self) -> bool { !self.is_complete() || self.has_active_shimmers() }
+
     // ── dirty tracker ───────────────────────────────────────────────
 
     pub const fn terminal_is_dirty(&self) -> bool { self.dirty.terminal.is_dirty() }
@@ -90,6 +96,12 @@ impl Scan {
         self.discovery_shimmers
             .retain(|_, shimmer| shimmer.is_active_at(now));
     }
+
+    /// Whether any discovery shimmer is still present. Shimmers are
+    /// pruned each frame by [`prune_shimmers`](Self::prune_shimmers), so
+    /// a non-empty map means at least one is still fading and the loop
+    /// should keep ticking.
+    pub fn has_active_shimmers(&self) -> bool { !self.discovery_shimmers.is_empty() }
 
     // ── pending git first-commit cache ──────────────────────────────
 

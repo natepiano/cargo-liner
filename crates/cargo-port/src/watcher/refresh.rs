@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::Sender as StdSender;
 use std::time::Instant;
 
 use tokio::runtime::Handle;
@@ -10,6 +10,7 @@ use tokio::sync::Semaphore;
 use super::ProjectEntry;
 use super::WatchState;
 use super::events::EventContext;
+use crate::channel::Sender;
 use crate::constants::CARGO_TOML;
 use crate::constants::DEBOUNCE_DURATION;
 use crate::constants::GIT_DIR;
@@ -312,7 +313,7 @@ pub(super) fn emit_root_git_info_refresh(
 pub(super) fn fire_git_updates(
     handle: &Handle,
     git_limit: &Arc<Semaphore>,
-    git_done_tx: &Sender<AbsolutePath>,
+    git_done_tx: &StdSender<AbsolutePath>,
     background_tx: &Sender<BackgroundMsg>,
     projects: &HashMap<AbsolutePath, ProjectEntry>,
     pending_git: &mut HashMap<AbsolutePath, WatchState>,
@@ -370,7 +371,7 @@ pub(super) fn fire_git_updates(
 pub(super) fn spawn_git_refresh(
     handle: &Handle,
     git_limit: &Arc<Semaphore>,
-    git_done_tx: Sender<AbsolutePath>,
+    git_done_tx: StdSender<AbsolutePath>,
     background_tx: Sender<BackgroundMsg>,
     refresh_key: AbsolutePath,
     primary_path: AbsolutePath,
@@ -441,7 +442,7 @@ pub(super) fn spawn_git_refresh(
 pub(super) fn fire_disk_updates(
     handle: &Handle,
     disk_limit: &Arc<Semaphore>,
-    disk_done_tx: &Sender<String>,
+    disk_done_tx: &StdSender<String>,
     background_tx: &Sender<BackgroundMsg>,
     projects: &HashMap<AbsolutePath, ProjectEntry>,
     pending_disk: &mut HashMap<String, WatchState>,
@@ -477,7 +478,7 @@ pub(super) fn fire_disk_updates(
 pub(super) fn spawn_disk_update(
     handle: &Handle,
     disk_limit: &Arc<Semaphore>,
-    disk_done_tx: Sender<String>,
+    disk_done_tx: StdSender<String>,
     background_tx: Sender<BackgroundMsg>,
     project_label: String,
     abs_path: AbsolutePath,

@@ -3,7 +3,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::mpsc::Sender;
 
 use walkdir::WalkDir;
 
@@ -11,6 +10,7 @@ use super::BackgroundMsg;
 use super::emit_git_info;
 use super::emit_service_signal;
 use super::tree;
+use crate::channel::Sender;
 use crate::ci::CiRun;
 use crate::ci::OwnerRepo;
 use crate::config::NonRustInclusion;

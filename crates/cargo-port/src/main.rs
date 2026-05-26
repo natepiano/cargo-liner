@@ -3,6 +3,7 @@
 use std::process::ExitCode;
 
 mod cache_paths;
+mod channel;
 mod ci;
 mod config;
 mod constants;

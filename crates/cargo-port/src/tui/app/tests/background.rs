@@ -1,9 +1,8 @@
-use std::sync::mpsc;
-
 use scan::CachedRepoData;
 use scan::RepoMetaInfo;
 
 use super::*;
+use crate::channel;
 use crate::project::AbsolutePath;
 use crate::watcher::WatcherMsg;
 
@@ -35,7 +34,7 @@ fn scan_result_registers_linked_worktrees_with_watcher() {
         Some("~/rust/bevy_window_manager"),
     );
     let mut app = make_app(&[]);
-    let (watch_tx, watch_rx) = mpsc::channel();
+    let (watch_tx, watch_rx) = channel::unbounded();
     app.background.replace_watcher_sender(watch_tx);
 
     apply_bg_msg(
@@ -79,7 +78,7 @@ fn scan_result_registers_linked_worktrees_with_watcher() {
 #[test]
 fn empty_scan_result_finishes_watcher_registration_batch() {
     let mut app = make_app(&[]);
-    let (watch_tx, watch_rx) = mpsc::channel();
+    let (watch_tx, watch_rx) = channel::unbounded();
     app.background.replace_watcher_sender(watch_tx);
 
     apply_bg_msg(
