@@ -1,13 +1,16 @@
 use std::collections::HashSet;
 use std::path::Path;
 use std::thread;
+use std::time::Duration;
 use std::time::Instant;
 
 use tui_pane::TrackedItem;
 
 use crate::ci;
 use crate::ci::OwnerRepo;
+use crate::http::HttpClient;
 use crate::http::PullRequestFetch;
+use crate::http::ServiceSignal;
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
 use crate::project::GitStatus;
@@ -16,6 +19,7 @@ use crate::project::ProjectPrData;
 use crate::project::ProjectPrInfo;
 use crate::project::ProjectPrUnavailable;
 use crate::project::PullRequestInfo;
+use crate::project::PullRequestState;
 use crate::project::PullRequestUnavailableReason;
 use crate::project::RepoInfo;
 use crate::project::RootItem;
@@ -23,10 +27,13 @@ use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::CachedRepoData;
 use crate::scan::CiFetchResult;
+use crate::scan::RepoCache;
 use crate::tui::app::App;
 use crate::tui::constants::STARTUP_PHASE_GITHUB;
 use crate::tui::integration;
 use crate::tui::state;
+
+const PR_CHECK_POLL_SECS: u64 = 10;
 
 impl App {
     pub(super) fn spawn_repo_fetch_for_git_info(&mut self, path: &Path, repo_url: &str) {
@@ -378,18 +385,77 @@ impl App {
 
     pub(super) fn handle_pull_requests(&mut self, repo: &OwnerRepo, data: &ProjectPrData) {
         let prior = self.project_list.pr_info_for_repo(repo).cloned();
-        let selected_matches = self
-            .project_list
+        let selected_matches = self.selected_repo_matches(repo);
+        self.maybe_toast_deleted_pull_requests(repo, prior.as_ref(), data);
+        self.project_list.replace_pr_data_for_repo(repo, data);
+        self.sync_pull_request_check_polls(repo, data);
+        if selected_matches {
+            self.scan.bump_generation();
+        }
+    }
+
+    pub(super) fn handle_pull_request_check_poll_stopped(&mut self, repo: &OwnerRepo, number: u32) {
+        let removed = self.net.github.remove_pr_check_poll(repo, number);
+        if removed && self.selected_repo_matches(repo) {
+            self.scan.bump_generation();
+        }
+    }
+
+    fn selected_repo_matches(&self, repo: &OwnerRepo) -> bool {
+        self.project_list
             .selected_project_path()
             .and_then(|path| self.project_list.fetch_url_for(path))
             .and_then(|url| ci::parse_owner_repo(&url))
             .as_ref()
-            == Some(repo);
-        self.maybe_toast_deleted_pull_requests(repo, prior.as_ref(), data);
-        self.project_list.replace_pr_data_for_repo(repo, data);
-        if selected_matches {
-            self.scan.bump_generation();
+            == Some(repo)
+    }
+
+    fn sync_pull_request_check_polls(&mut self, repo: &OwnerRepo, data: &ProjectPrData) {
+        let ProjectPrData::Loaded(info) = data else {
+            return;
+        };
+        let checking: HashSet<u32> = info
+            .open
+            .iter()
+            .filter(|pull_request| pull_request.state == PullRequestState::ChecksFailing)
+            .map(|pull_request| pull_request.number)
+            .collect();
+        self.net
+            .github
+            .retain_pr_check_polls_for_repo(repo, &checking);
+        for number in checking {
+            self.start_pull_request_check_poll(repo, number);
         }
+    }
+
+    fn start_pull_request_check_poll(&mut self, repo: &OwnerRepo, number: u32) {
+        if !self.net.github.insert_pr_check_poll(repo.clone(), number) {
+            return;
+        }
+        let tx = self.background.background_sender();
+        let client = self.net.http_client();
+        let repo_cache = self.net.github.fetch_cache.clone();
+        let repo = repo.clone();
+        thread::spawn(move || {
+            loop {
+                thread::sleep(Duration::from_secs(PR_CHECK_POLL_SECS));
+                let (data, signal) =
+                    fetch_pull_requests_for_check_poll(&client, &repo_cache, &repo);
+                scan::emit_service_signal(&tx, signal);
+                let Some(data) = data else {
+                    continue;
+                };
+                let still_checking = pull_request_still_checking(&data, number);
+                let _ = tx.send(BackgroundMsg::PullRequests {
+                    repo: repo.clone(),
+                    data,
+                });
+                if !still_checking {
+                    break;
+                }
+            }
+            let _ = tx.send(BackgroundMsg::PullRequestCheckPollStopped { repo, number });
+        });
     }
 
     fn maybe_toast_deleted_pull_requests(
@@ -549,4 +615,34 @@ fn deleted_pull_requests(
         .filter(|pull_request| !current_numbers.contains(&pull_request.number))
         .cloned()
         .collect()
+}
+
+fn fetch_pull_requests_for_check_poll(
+    client: &HttpClient,
+    repo_cache: &RepoCache,
+    repo: &OwnerRepo,
+) -> (Option<ProjectPrData>, Option<ServiceSignal>) {
+    let (pr_fetch, signal) = client.fetch_open_pull_requests(repo.clone());
+    let data = match pr_fetch {
+        Some(PullRequestFetch::Loaded(info)) => ProjectPrData::Loaded(info),
+        Some(PullRequestFetch::Unavailable(_)) | None => return (None, signal),
+    };
+    store_polled_pull_request_data(repo_cache, repo, &data);
+    (Some(data), signal)
+}
+
+fn store_polled_pull_request_data(repo_cache: &RepoCache, repo: &OwnerRepo, data: &ProjectPrData) {
+    let Some(mut cached) = scan::load_cached_repo_data(repo_cache, repo) else {
+        return;
+    };
+    cached.pr_data = data.clone();
+    scan::store_cached_repo_data(repo_cache, repo, cached);
+}
+
+fn pull_request_still_checking(data: &ProjectPrData, number: u32) -> bool {
+    data.info().is_some_and(|info| {
+        info.open.iter().any(|pull_request| {
+            pull_request.number == number && pull_request.state == PullRequestState::ChecksFailing
+        })
+    })
 }

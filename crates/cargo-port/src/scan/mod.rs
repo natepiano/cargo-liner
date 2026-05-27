@@ -130,6 +130,8 @@ pub(crate) enum BackgroundMsg {
         repo: OwnerRepo,
         data: ProjectPrData,
     },
+    /// A background poll for one PR's `checks` state has stopped.
+    PullRequestCheckPollStopped { repo: OwnerRepo, number: u32 },
     /// Complete project tree from the streaming scan, plus disk entry
     /// paths for background disk usage computation.
     ScanResult {
@@ -274,6 +276,7 @@ impl BackgroundMsg {
             | Self::RepoFetchQueued { .. }
             | Self::RepoFetchComplete { .. }
             | Self::PullRequests { .. }
+            | Self::PullRequestCheckPollStopped { .. }
             | Self::CratesIoFetchQueued { .. }
             | Self::CratesIoFetchComplete { .. }
             // Live lint statuses resolve the lint-owning project before
