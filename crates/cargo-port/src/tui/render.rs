@@ -54,18 +54,6 @@ use crate::constants::TARGET_DIR;
 use crate::project;
 use crate::project::AbsolutePath;
 
-pub(super) const CI_COLUMN_LABEL_MAX: usize = 8;
-
-pub(super) fn truncate_ci_label(name: &str) -> String {
-    let count = name.chars().count();
-    if count <= CI_COLUMN_LABEL_MAX {
-        return name.to_string();
-    }
-    let mut out: String = name.chars().take(CI_COLUMN_LABEL_MAX - 1).collect();
-    out.push('…');
-    out
-}
-
 pub(super) fn format_bytes(bytes: u64) -> String {
     #[allow(
         clippy::cast_precision_loss,
