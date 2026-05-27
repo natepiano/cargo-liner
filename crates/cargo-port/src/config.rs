@@ -1163,27 +1163,6 @@ mod tests {
     }
 
     #[test]
-    fn template_mentions_main_branch_settings() {
-        let template =
-            confique::toml::template::<CargoPortConfig>(confique::toml::FormatOptions::default());
-
-        assert!(template.contains("main_branch"));
-        assert!(template.contains("other_primary_branches"));
-        assert!(template.contains("[\"primary\"]"));
-    }
-
-    #[test]
-    fn template_mentions_terminal_command_examples() {
-        let template =
-            confique::toml::template::<CargoPortConfig>(confique::toml::FormatOptions::default());
-
-        assert!(template.contains("terminal_command"));
-        assert!(template.contains("Leave blank to disable terminal opening"));
-        assert!(template.contains("open -a Terminal ."));
-        assert!(template.contains("iTerm2"));
-    }
-
-    #[test]
     fn default_config_template_matches_golden_file() {
         let template =
             confique::toml::template::<CargoPortConfig>(confique::toml::FormatOptions::default());

@@ -253,63 +253,48 @@ mod tests {
 
     fn pkg(path: &str) -> RustProject {
         RustProject::Package(Package {
-            path: AbsolutePath::from(std::path::Path::new(path)),
+            path: AbsolutePath::from(Path::new(path)),
             ..Package::default()
         })
     }
 
     fn ws(path: &str) -> RustProject {
         RustProject::Workspace(Workspace {
-            path: AbsolutePath::from(std::path::Path::new(path)),
+            path: AbsolutePath::from(Path::new(path)),
             ..Workspace::default()
         })
     }
 
-    /// The host-absolute form of a fixture path, matching how `pkg`/`ws` store
-    /// it. Identity on Unix; drive-rooted on Windows.
     fn p(path: &str) -> PathBuf { crate::project::normalize_test_path(Path::new(path)) }
 
     #[test]
-    fn iter_paths_packages_yields_primary_then_linked_in_order() {
-        let group = WorktreeGroup::new(
-            pkg("/abs/main"),
-            vec![pkg("/abs/feat-a"), pkg("/abs/feat-b")],
-        );
-        let paths: Vec<&Path> = group.iter_paths().map(AbsolutePath::as_path).collect();
-        assert_eq!(
-            paths,
-            vec![
-                p("/abs/main").as_path(),
-                p("/abs/feat-a").as_path(),
-                p("/abs/feat-b").as_path(),
-            ],
-        );
-    }
-
-    #[test]
-    fn iter_paths_workspaces_yields_primary_then_linked_in_order() {
-        let group = WorktreeGroup::new(ws("/abs/ws-main"), vec![ws("/abs/ws-feat")]);
-        let paths: Vec<&Path> = group.iter_paths().map(AbsolutePath::as_path).collect();
-        assert_eq!(
-            paths,
-            vec![p("/abs/ws-main").as_path(), p("/abs/ws-feat").as_path()],
-        );
-    }
-
-    #[test]
-    fn iter_paths_with_no_linked_yields_just_primary() {
-        let group = WorktreeGroup::new(pkg("/abs/solo"), Vec::new());
-        let paths: Vec<&Path> = group.iter_paths().map(AbsolutePath::as_path).collect();
-        assert_eq!(paths, vec![p("/abs/solo").as_path()]);
-    }
-
-    #[test]
-    fn iter_paths_mixed_kinds_yields_all_entries() {
-        let group = WorktreeGroup::new(pkg("/abs/main"), vec![ws("/abs/api-fix")]);
-        let paths: Vec<&Path> = group.iter_paths().map(AbsolutePath::as_path).collect();
-        assert_eq!(
-            paths,
-            vec![p("/abs/main").as_path(), p("/abs/api-fix").as_path()],
-        );
+    fn iter_paths_yields_entries_in_canonical_order() {
+        for (group, expected) in [
+            (
+                WorktreeGroup::new(
+                    pkg("/abs/main"),
+                    vec![pkg("/abs/feat-a"), pkg("/abs/feat-b")],
+                ),
+                vec![p("/abs/main"), p("/abs/feat-a"), p("/abs/feat-b")],
+            ),
+            (
+                WorktreeGroup::new(ws("/abs/ws-main"), vec![ws("/abs/ws-feat")]),
+                vec![p("/abs/ws-main"), p("/abs/ws-feat")],
+            ),
+            (
+                WorktreeGroup::new(pkg("/abs/solo"), Vec::new()),
+                vec![p("/abs/solo")],
+            ),
+            (
+                WorktreeGroup::new(pkg("/abs/main"), vec![ws("/abs/api-fix")]),
+                vec![p("/abs/main"), p("/abs/api-fix")],
+            ),
+        ] {
+            let paths: Vec<PathBuf> = group
+                .iter_paths()
+                .map(|path| path.as_path().to_path_buf())
+                .collect();
+            assert_eq!(paths, expected);
+        }
     }
 }

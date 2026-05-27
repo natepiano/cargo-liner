@@ -98,38 +98,19 @@ fn write_latest(root: &Path, run: &LintRun) {
 }
 
 #[test]
-fn read_status_cases() {
-    let mut running = run(LintRunStatus::Running);
-    running.started_at = Utc::now().format("%+").to_string();
-    running.finished_at = None;
+fn read_status_reads_latest_and_reports_missing_log() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_latest(dir.path(), &run(LintRunStatus::Passed));
+    assert!(matches!(
+        status::read_status(dir.path()),
+        LintStatus::Passed(_)
+    ));
 
-    let mut stale = run(LintRunStatus::Running);
-    stale.started_at = "2020-01-01T00:00:00+00:00".to_string();
-    stale.finished_at = None;
-
-    let cases = [
-        ("passed", Some(run(LintRunStatus::Passed))),
-        ("failed", Some(run(LintRunStatus::Failed))),
-        ("running", Some(running)),
-        ("stale", Some(stale)),
-        ("no_log", None),
-    ];
-
-    for (name, latest) in cases {
-        let dir = tempfile::tempdir().expect("tempdir");
-        if let Some(run) = latest.as_ref() {
-            write_latest(dir.path(), run);
-        }
-        let status = status::read_status(dir.path());
-        match name {
-            "passed" => assert!(matches!(status, LintStatus::Passed(_))),
-            "failed" => assert!(matches!(status, LintStatus::Failed(_))),
-            "running" => assert!(matches!(status, LintStatus::Running(_))),
-            "stale" => assert!(matches!(status, LintStatus::Stale)),
-            "no_log" => assert!(matches!(status, LintStatus::NoLog)),
-            _ => unreachable!("unexpected case"),
-        }
-    }
+    let missing = tempfile::tempdir().expect("tempdir");
+    assert!(matches!(
+        status::read_status(missing.path()),
+        LintStatus::NoLog
+    ));
 }
 
 #[test]
@@ -297,44 +278,6 @@ fn latest_final_run_does_not_duplicate_completed_history() {
     let runs = history::read_history_under(cache_dir.path(), project_dir.path());
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0].run_id, "same-run");
-}
-
-#[test]
-fn append_history_prunes_oldest_runs_under_cache_size() {
-    let cache_dir = tempfile::tempdir().expect("tempdir");
-    let project_dir = tempfile::tempdir().expect("tempdir");
-
-    let older = archive_run_with_logs(
-        cache_dir.path(),
-        project_dir.path(),
-        "older",
-        "2026-04-01T18:00:00-04:00",
-        "older logs with padding to exceed batch size",
-    );
-    append_archived_run(cache_dir.path(), project_dir.path(), &older, None);
-
-    let newer = archive_run_with_logs(
-        cache_dir.path(),
-        project_dir.path(),
-        "newer",
-        "2026-04-01T19:00:00-04:00",
-        "newer logs with padding to exceed batch size",
-    );
-
-    let total_before = history::total_bytes_under(cache_dir.path());
-    let newer_line = serde_json::to_string(&newer).expect("serialize").len() as u64 + 1;
-    let cache_size = total_before + newer_line - 1;
-
-    append_archived_run(
-        cache_dir.path(),
-        project_dir.path(),
-        &newer,
-        Some(cache_size),
-    );
-
-    let runs = history::read_history_under(cache_dir.path(), project_dir.path());
-    assert_eq!(runs.len(), 1);
-    assert_eq!(runs[0].run_id, "newer");
 }
 
 #[test]

@@ -23,12 +23,6 @@ mod tests;
 
 #[cfg(test)]
 pub(super) use actions::handle_ci_runs_key;
-#[cfg(test)]
-pub(super) use ci::CI_COMPACT_DURATION_WIDTH;
-#[cfg(test)]
-pub(super) use ci::ci_table_shows_durations;
-#[cfg(test)]
-pub(super) use ci::ci_total_width;
 pub(super) use ci::render_ci_pane_body;
 #[cfg(test)]
 pub(super) use constants::PREFIX_ROOT_COLLAPSED;

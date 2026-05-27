@@ -113,7 +113,7 @@ pub(crate) fn classify_cargo_metadata_basename(path: &Path) -> Option<CargoMetad
 }
 
 #[cfg(test)]
-pub fn classify_event(project_root: &Path, event: &Event) -> Option<LintTriggerEvent> {
+fn classify_event(project_root: &Path, event: &Event) -> Option<LintTriggerEvent> {
     event
         .paths
         .iter()

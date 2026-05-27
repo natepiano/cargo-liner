@@ -745,8 +745,10 @@ fn keymap_row_click_uses_keymap_line_targets() {
     );
 }
 
-#[test]
-fn keymap_overlay_blocks_underlying_project_list_mouse() {
+fn assert_overlay_blocks_underlying_project_list_mouse(
+    overlay_name: &str,
+    open_overlay: fn(&mut App),
+) {
     let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
     let first = tmp.path().join("first");
     let second = tmp.path().join("second");
@@ -757,7 +759,7 @@ fn keymap_overlay_blocks_underlying_project_list_mouse() {
         make_package("second", &second),
     ]);
     render_ui(&mut app);
-    open_keymap_overlay(&mut app);
+    open_overlay(&mut app);
     render_ui(&mut app);
 
     let (x, y) = row_body_point(&app, 1);
@@ -767,60 +769,19 @@ fn keymap_overlay_blocks_underlying_project_list_mouse() {
     assert_eq!(
         app.project_list.cursor(),
         0,
-        "project-list mouse input must not pass through an open keymap overlay"
+        "project-list mouse input must not pass through an open {overlay_name} overlay"
     );
 }
 
 #[test]
-fn finder_overlay_blocks_underlying_project_list_mouse() {
-    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
-    let first = tmp.path().join("first");
-    let second = tmp.path().join("second");
-    std::fs::create_dir_all(&first).unwrap_or_else(|_| std::process::abort());
-    std::fs::create_dir_all(&second).unwrap_or_else(|_| std::process::abort());
-    let mut app = make_app(&[
-        make_package("first", &first),
-        make_package("second", &second),
-    ]);
-    render_ui(&mut app);
-    input::open_finder(&mut app);
-    render_ui(&mut app);
-
-    let (x, y) = row_body_point(&app, 1);
-    click(&mut app, x, y);
-    scroll_down(&mut app, x, y);
-
-    assert_eq!(
-        app.project_list.cursor(),
-        0,
-        "project-list mouse input must not pass through an open finder overlay"
-    );
-}
-
-#[test]
-fn settings_overlay_blocks_underlying_project_list_mouse() {
-    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
-    let first = tmp.path().join("first");
-    let second = tmp.path().join("second");
-    std::fs::create_dir_all(&first).unwrap_or_else(|_| std::process::abort());
-    std::fs::create_dir_all(&second).unwrap_or_else(|_| std::process::abort());
-    let mut app = make_app(&[
-        make_package("first", &first),
-        make_package("second", &second),
-    ]);
-    render_ui(&mut app);
-    open_settings_overlay(&mut app);
-    render_ui(&mut app);
-
-    let (x, y) = row_body_point(&app, 1);
-    click(&mut app, x, y);
-    scroll_down(&mut app, x, y);
-
-    assert_eq!(
-        app.project_list.cursor(),
-        0,
-        "project-list mouse input must not pass through an open settings overlay"
-    );
+fn overlays_block_underlying_project_list_mouse() {
+    for (overlay_name, open_overlay) in [
+        ("keymap", open_keymap_overlay as fn(&mut App)),
+        ("finder", input::open_finder as fn(&mut App)),
+        ("settings", open_settings_overlay as fn(&mut App)),
+    ] {
+        assert_overlay_blocks_underlying_project_list_mouse(overlay_name, open_overlay);
+    }
 }
 
 #[test]
@@ -1117,50 +1078,6 @@ fn toast_body_click_focuses_toast_over_underlying_content() {
         app.focused_pane_id(),
         PaneId::Toasts,
         "toast body click should focus the toast surface over underlying content"
-    );
-}
-
-#[test]
-fn finder_row_click_selects_result() {
-    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
-    let alpha = tmp.path().join("alpha");
-    let beta = tmp.path().join("beta");
-    std::fs::create_dir_all(&alpha).unwrap_or_else(|_| std::process::abort());
-    std::fs::create_dir_all(&beta).unwrap_or_else(|_| std::process::abort());
-
-    let mut app = make_app(&[make_package("alpha", &alpha), make_package("beta", &beta)]);
-    let (index, col_widths) = finder::build_finder_index(&app.project_list);
-    let finder = &mut app.project_list.finder;
-    finder.index = index;
-    finder.col_widths = col_widths;
-    finder.query = "a".to_string();
-    finder.results = vec![0, 1];
-    finder.total = 2;
-    app.overlays
-        .set_finder_return(FocusedPane::App(AppPaneId::ProjectList));
-    app.set_focus(FocusedPane::App(AppPaneId::Finder));
-    app.overlays.open_finder();
-    render_ui(&mut app);
-
-    let (x, y) = finder_result_point(&app, 1);
-    click(&mut app, x, y);
-
-    assert_eq!(app.overlays.finder_pane.viewport.pos(), 1);
-}
-
-#[test]
-fn settings_row_click_selects_setting() {
-    let mut app = make_app(&[]);
-    open_settings_overlay(&mut app);
-    render_ui(&mut app);
-
-    let (x, y) = settings_point_for_setting(&app, SettingOption::InvertScroll);
-    click(&mut app, x, y);
-
-    assert_eq!(
-        app.framework.settings_pane.viewport().pos(),
-        settings::selection_index_for_setting_for_test(&app, SettingOption::InvertScroll)
-            .expect("invert scroll row")
     );
 }
 

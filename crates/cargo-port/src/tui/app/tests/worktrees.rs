@@ -442,32 +442,23 @@ fn handle_project_discovered_registers_new_root_with_lint_runtime() {
 
 #[test]
 fn handle_project_discovered_creates_worktree_group_from_single_primary() {
-    expect_synthetic_discovery_creates_group(WorktreeProjectKind::Package);
+    for kind in [WorktreeProjectKind::Package, WorktreeProjectKind::Workspace] {
+        expect_synthetic_discovery_creates_group(kind);
+    }
 }
 
 #[test]
 fn handle_project_discovered_slots_new_worktree_into_existing_group() {
-    expect_synthetic_discovery_appends_existing_group(WorktreeProjectKind::Package);
+    for kind in [WorktreeProjectKind::Package, WorktreeProjectKind::Workspace] {
+        expect_synthetic_discovery_appends_existing_group(kind);
+    }
 }
 
 #[test]
-fn handle_project_discovered_creates_workspace_worktree_group_from_single_primary() {
-    expect_synthetic_discovery_creates_group(WorktreeProjectKind::Workspace);
-}
-
-#[test]
-fn handle_project_discovered_slots_new_workspace_worktree_into_existing_group() {
-    expect_synthetic_discovery_appends_existing_group(WorktreeProjectKind::Workspace);
-}
-
-#[test]
-fn background_discovery_from_real_package_worktree_creates_group() {
-    expect_real_discovery_creates_group(WorktreeProjectKind::Package);
-}
-
-#[test]
-fn background_discovery_from_real_workspace_worktree_creates_group() {
-    expect_real_discovery_creates_group(WorktreeProjectKind::Workspace);
+fn background_discovery_from_real_worktree_creates_group() {
+    for kind in [WorktreeProjectKind::Package, WorktreeProjectKind::Workspace] {
+        expect_real_discovery_creates_group(kind);
+    }
 }
 
 #[test]
@@ -483,9 +474,9 @@ fn discovered_workspace_worktree_with_members_expands_as_worktree_then_workspace
     add_git_worktree(&primary_dir, &linked_dir, "test/brp");
     let linked_item =
         scan::discover_project_item(&linked_dir).unwrap_or_else(|| std::process::abort());
-    apply_bg_msg(
-        &mut app,
-        BackgroundMsg::ProjectDiscovered { item: linked_item },
+    assert!(
+        app.handle_bg_msg(BackgroundMsg::ProjectDiscovered { item: linked_item }),
+        "discovery should request a derived-state rebuild"
     );
 
     let RootItem::Worktrees(group) = &app.project_list[0].item else {
@@ -617,59 +608,6 @@ fn expanded_workspace_root_discovery_immediately_renders_primary_workspace_and_l
 }
 
 #[test]
-fn project_discovery_updates_cached_rows_for_expanded_workspace_immediately() {
-    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
-    let primary_dir = tmp.path().join("bevy_brp");
-    let linked_dir = tmp.path().join("bevy_brp_test");
-    init_workspace_git_project_with_member(&primary_dir, "bevy_brp", "extras");
-
-    let mut primary_item = item_from_project_dir(&primary_dir);
-    let RootItem::Rust(RustProject::Workspace(primary_ws)) = &mut primary_item else {
-        panic!("expected primary workspace root item");
-    };
-    *primary_ws.groups_mut() = vec![inline_group(vec![make_member(
-        Some("extras"),
-        &primary_dir.join("extras").to_string_lossy(),
-    )])];
-
-    let mut app = make_app(&[]);
-    apply_items(&mut app, &[primary_item]);
-    app.project_list.expanded.insert(ExpandKey::Node(0));
-    app.ensure_visible_rows_cached();
-
-    add_git_worktree(&primary_dir, &linked_dir, "test/brp");
-    let linked_item =
-        scan::discover_project_item(&linked_dir).unwrap_or_else(|| std::process::abort());
-
-    assert!(
-        app.handle_bg_msg(BackgroundMsg::ProjectDiscovered { item: linked_item }),
-        "discovery should request a derived-state rebuild"
-    );
-
-    assert_eq!(
-        app.visible_rows(),
-        &[
-            VisibleRow::Root { node_index: 0 },
-            VisibleRow::WorktreeEntry {
-                node_index:     0,
-                worktree_index: 0,
-            },
-            VisibleRow::WorktreeMember {
-                node_index:     0,
-                worktree_index: 0,
-                group_index:    0,
-                member_index:   0,
-            },
-            VisibleRow::WorktreeEntry {
-                node_index:     0,
-                worktree_index: 1,
-            },
-        ],
-        "cached visible rows should switch to worktree rows immediately after discovery"
-    );
-}
-
-#[test]
 fn stale_workspace_regroup_immediately_renders_primary_workspace_and_linked_row() {
     let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
     let primary_dir = tmp.path().join("bevy_brp");
@@ -755,84 +693,63 @@ fn stale_workspace_regroup_immediately_renders_primary_workspace_and_linked_row(
 }
 
 #[test]
-fn background_discovery_from_real_package_worktree_appends_existing_group() {
-    expect_real_discovery_appends_existing_group(WorktreeProjectKind::Package);
+fn background_discovery_from_real_worktree_appends_existing_group() {
+    for kind in [WorktreeProjectKind::Package, WorktreeProjectKind::Workspace] {
+        expect_real_discovery_appends_existing_group(kind);
+    }
 }
 
 #[test]
-fn background_discovery_from_real_workspace_worktree_appends_existing_group() {
-    expect_real_discovery_appends_existing_group(WorktreeProjectKind::Workspace);
+fn refreshed_worktree_metadata_regroups_stale_top_level_discovery() {
+    for kind in [WorktreeProjectKind::Workspace, WorktreeProjectKind::Package] {
+        expect_refresh_regroups_stale_top_level_discovery(kind);
+    }
 }
 
 #[test]
-fn refreshed_workspace_worktree_metadata_regroups_stale_top_level_discovery() {
-    expect_refresh_regroups_stale_top_level_discovery(WorktreeProjectKind::Workspace);
+fn refreshed_worktree_metadata_appends_into_existing_group() {
+    for kind in [WorktreeProjectKind::Workspace, WorktreeProjectKind::Package] {
+        expect_refresh_appends_stale_discovery_into_existing_group(kind);
+    }
 }
 
 #[test]
-fn refreshed_package_worktree_metadata_regroups_stale_top_level_discovery() {
-    expect_refresh_regroups_stale_top_level_discovery(WorktreeProjectKind::Package);
+fn stale_discovery_refresh_then_delete_dismisses_to_root() {
+    for kind in [WorktreeProjectKind::Workspace, WorktreeProjectKind::Package] {
+        assert_stale_discovery_refresh_then_delete_dismisses_to_root(kind);
+    }
 }
 
-#[test]
-fn refreshed_workspace_worktree_metadata_appends_into_existing_group() {
-    expect_refresh_appends_stale_discovery_into_existing_group(WorktreeProjectKind::Workspace);
-}
-
-#[test]
-fn refreshed_package_worktree_metadata_appends_into_existing_group() {
-    expect_refresh_appends_stale_discovery_into_existing_group(WorktreeProjectKind::Package);
-}
-
-#[test]
-fn stale_discovery_refresh_then_delete_dismiss_workspace_returns_to_root() {
+fn assert_stale_discovery_refresh_then_delete_dismisses_to_root(kind: WorktreeProjectKind) {
     let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
-    let primary_dir = tmp.path().join("obsidian_knife");
-    let linked_dir = tmp.path().join("obsidian_knife_test");
-    init_git_project(&primary_dir, "obsidian_knife", true);
+    let primary_dir = tmp.path().join(kind.primary_name());
+    let linked_dir = tmp.path().join(kind.linked_name());
+    kind.init_primary_repo(&primary_dir);
 
     let primary_item = item_from_project_dir(&primary_dir);
     let mut app = make_app(&[primary_item]);
 
-    add_git_worktree(&primary_dir, &linked_dir, "test/obsidian");
+    add_git_worktree(
+        &primary_dir,
+        &linked_dir,
+        &format!("test/{}", kind.branch_prefix()),
+    );
 
-    let stale_discovery = RootItem::Rust(RustProject::Workspace(make_workspace_raw(
-        Some("obsidian_knife"),
-        &linked_dir.to_string_lossy(),
-        Vec::new(),
-        None,
-    )));
-    apply_bg_msg(
-        &mut app,
-        BackgroundMsg::ProjectDiscovered {
-            item: stale_discovery,
+    let stale_discovery = match kind {
+        WorktreeProjectKind::Package => RootItem::Rust(RustProject::Package(make_package_raw(
+            Some(kind.primary_name()),
+            &linked_dir.to_string_lossy(),
+            None,
+        ))),
+        WorktreeProjectKind::Workspace => {
+            RootItem::Rust(RustProject::Workspace(make_workspace_raw(
+                Some(kind.primary_name()),
+                &linked_dir.to_string_lossy(),
+                Vec::new(),
+                None,
+            )))
         },
-    );
-    let refreshed = item_from_project_dir(&linked_dir);
-    apply_bg_msg(
-        &mut app,
-        BackgroundMsg::ProjectRefreshed { item: refreshed },
-    );
-    assert_deleted_linked_worktree_dismisses_to_root(&mut app, &linked_dir);
-}
-
-#[test]
-fn stale_discovery_refresh_then_delete_dismiss_package_returns_to_root() {
-    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
-    let primary_dir = tmp.path().join("app");
-    let linked_dir = tmp.path().join("app_test");
-    init_git_project(&primary_dir, "app", false);
-
-    let primary_item = item_from_project_dir(&primary_dir);
-    let mut app = make_app(&[primary_item]);
-
-    add_git_worktree(&primary_dir, &linked_dir, "test/app");
-
-    let stale_discovery = RootItem::Rust(RustProject::Package(make_package_raw(
-        Some("app"),
-        &linked_dir.to_string_lossy(),
-        None,
-    )));
+    };
     apply_bg_msg(
         &mut app,
         BackgroundMsg::ProjectDiscovered {

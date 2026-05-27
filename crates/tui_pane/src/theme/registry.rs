@@ -264,12 +264,25 @@ mod tests {
     #[test]
     fn register_replaces_existing_variant_with_same_id() {
         let mut registry = ThemeRegistry::new_with_builtins();
-        let outcome = registry.register(dummy_variant(BUILTIN_DARK_NAME, Appearance::Dark));
+        let replacement = ThemeVariant {
+            id:         ThemeId::new(BUILTIN_DARK_NAME),
+            appearance: Appearance::Dark,
+            theme:      builtins::default_light(),
+        };
+        let outcome = registry.register(replacement);
         assert_eq!(
             outcome,
             RegisterOutcome::Overrode(ThemeId::new(BUILTIN_DARK_NAME))
         );
         assert_eq!(registry.len(), 4, "override must replace in place");
+        assert_eq!(
+            registry
+                .find(&ThemeId::new(BUILTIN_DARK_NAME))
+                .expect("replacement findable")
+                .theme,
+            builtins::default_light(),
+            "override took effect"
+        );
         assert_eq!(
             registry.status().overridden,
             vec![ThemeId::new(BUILTIN_DARK_NAME)]

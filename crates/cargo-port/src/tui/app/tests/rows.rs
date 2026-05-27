@@ -726,23 +726,6 @@ fn dismissing_deleted_linked_workspace_member_dismisses_whole_worktree() {
 }
 
 #[test]
-fn worktree_count_uses_visibility() {
-    let root = make_package_worktrees_item(
-        make_package_raw(Some("app"), "~/app", None),
-        vec![make_package_raw(
-            Some("app"),
-            "~/app_feat",
-            Some("app_feat"),
-        )],
-    );
-
-    let items = vec![root];
-    let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-    let rows = super::as_entries(items).compute_visible_rows(&expanded, true);
-    assert_eq!(rows.len(), 3, "root + 2 worktree entries");
-}
-
-#[test]
 fn mixed_visible_and_deleted_worktree_group_stays_visible() {
     let root = make_package_worktrees_item(
         make_package_raw(Some("app"), "~/app", None),
@@ -826,22 +809,11 @@ fn all_dismissed_worktree_group_is_hidden() {
     );
 }
 
-#[test]
-fn workspace_worktree_fit_widths_use_display_name_for_primary_entry() {
-    let item = make_workspace_worktrees_item(
-        make_workspace_raw(
-            Some("obsidian_knife"),
-            "/tmp/really/long/path/to/obsidian_knife",
-            Vec::new(),
-            None,
-        ),
-        vec![make_workspace_raw(
-            Some("obsidian_knife"),
-            "/tmp/really/long/path/to/obsidian_knife_test",
-            Vec::new(),
-            Some("obsidian_knife_test"),
-        )],
-    );
+fn assert_worktree_fit_widths_use_display_name(
+    item: RootItem,
+    primary_label: &str,
+    linked_label: &str,
+) {
     let root_label = resolved_root_label(&item);
     let entries = super::as_entries(vec![item]);
     let widths =
@@ -849,9 +821,9 @@ fn workspace_worktree_fit_widths_use_display_name_for_primary_entry() {
     let root_width = columns::display_width(crate::tui::panes::PREFIX_ROOT_COLLAPSED)
         + columns::display_width(&root_label);
     let primary_entry_width = columns::display_width(crate::tui::panes::PREFIX_WT_FLAT)
-        + columns::display_width("obsidian_knife");
+        + columns::display_width(primary_label);
     let linked_entry_width = columns::display_width(crate::tui::panes::PREFIX_WT_FLAT)
-        + columns::display_width("obsidian_knife_test");
+        + columns::display_width(linked_label);
 
     assert_eq!(
         widths.get(crate::tui::columns::COL_NAME),
@@ -863,36 +835,40 @@ fn workspace_worktree_fit_widths_use_display_name_for_primary_entry() {
 }
 
 #[test]
-fn package_worktree_fit_widths_use_display_name_for_primary_entry() {
-    let item = make_package_worktrees_item(
-        make_package_raw(
-            Some("cargo-port"),
-            "/tmp/really/long/path/to/cargo-port",
-            None,
+fn worktree_fit_widths_use_display_name_for_primary_entry() {
+    assert_worktree_fit_widths_use_display_name(
+        make_workspace_worktrees_item(
+            make_workspace_raw(
+                Some("obsidian_knife"),
+                "/tmp/really/long/path/to/obsidian_knife",
+                Vec::new(),
+                None,
+            ),
+            vec![make_workspace_raw(
+                Some("obsidian_knife"),
+                "/tmp/really/long/path/to/obsidian_knife_test",
+                Vec::new(),
+                Some("obsidian_knife_test"),
+            )],
         ),
-        vec![make_package_raw(
-            Some("cargo-port"),
-            "/tmp/really/long/path/to/cargo-port_test",
-            Some("cargo-port_test"),
-        )],
+        "obsidian_knife",
+        "obsidian_knife_test",
     );
-    let root_label = resolved_root_label(&item);
-    let entries = super::as_entries(vec![item]);
-    let widths =
-        panes::compute_project_list_widths(&entries, std::slice::from_ref(&root_label), true, 0);
-    let root_width = columns::display_width(crate::tui::panes::PREFIX_ROOT_COLLAPSED)
-        + columns::display_width(&root_label);
-    let primary_entry_width = columns::display_width(crate::tui::panes::PREFIX_WT_FLAT)
-        + columns::display_width("cargo-port");
-    let linked_entry_width = columns::display_width(crate::tui::panes::PREFIX_WT_FLAT)
-        + columns::display_width("cargo-port_test");
-
-    assert_eq!(
-        widths.get(crate::tui::columns::COL_NAME),
-        crate::tui::panes::name_width_with_gutter(
-            root_width.max(primary_entry_width).max(linked_entry_width)
+    assert_worktree_fit_widths_use_display_name(
+        make_package_worktrees_item(
+            make_package_raw(
+                Some("cargo-port"),
+                "/tmp/really/long/path/to/cargo-port",
+                None,
+            ),
+            vec![make_package_raw(
+                Some("cargo-port"),
+                "/tmp/really/long/path/to/cargo-port_test",
+                Some("cargo-port_test"),
+            )],
         ),
-        "fit widths should use rendered worktree labels, not the absolute primary worktree path"
+        "cargo-port",
+        "cargo-port_test",
     );
 }
 

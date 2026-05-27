@@ -166,7 +166,7 @@ fn build_ci_header_row(cols: &[CiDisplayColumn], widths: &[Constraint]) -> Row<'
     Row::new(header_cells).bottom_margin(0)
 }
 
-pub const CI_COMPACT_DURATION_WIDTH: usize = 2;
+const CI_COMPACT_DURATION_WIDTH: usize = 2;
 const CI_COMMIT_MIN_WIDTH: usize = 7;
 const CI_BRANCH_MIN_WIDTH: usize = 6;
 const CI_COMMIT_LONG_MIN_WIDTH: usize = 22;
@@ -482,7 +482,7 @@ fn ci_description_widths(
     )
 }
 
-pub fn ci_total_width(ci_runs: &[CiRun], show_durations: bool) -> usize {
+fn ci_total_width(ci_runs: &[CiRun], show_durations: bool) -> usize {
     if show_durations {
         ci_total_min_width(ci_runs)
     } else {
@@ -564,15 +564,6 @@ fn ci_non_description_width(
     };
     let total = total_duration_width + glyph_width;
     base + job_columns + total + column_count.saturating_sub(1)
-}
-
-#[cfg(test)]
-pub fn ci_table_shows_durations(ci_runs: &[CiRun], cols: &[String], inner_width: u16) -> bool {
-    let display_cols: Vec<CiDisplayColumn> = cols
-        .iter()
-        .map(|col| CiDisplayColumn::Job(col.clone()))
-        .collect();
-    ci_display_table_shows_durations(ci_runs, &display_cols, inner_width)
 }
 
 fn ci_display_table_shows_durations(
@@ -813,6 +804,25 @@ mod tests {
             &expected,
             u16::try_from(width).unwrap_or_else(|_| std::process::abort()),
         ));
+    }
+
+    #[test]
+    fn ci_table_duration_visibility_tracks_fixed_column_width() {
+        let runs = vec![ci_run_with_jobs(vec![
+            ci_job("fmt", 17, CiStatus::Passed),
+            ci_job("clippy", 21, CiStatus::Passed),
+        ])];
+        let cols = vec![
+            CiDisplayColumn::Job("fmt".to_string()),
+            CiDisplayColumn::Job("clippy".to_string()),
+        ];
+
+        assert!(!ci_display_table_shows_durations(&runs, &cols, 20));
+        assert!(ci_display_table_shows_durations(&runs, &cols[..1], 80));
+        assert_eq!(
+            super::ci_total_width(&runs, false),
+            super::CI_COMPACT_DURATION_WIDTH
+        );
     }
 
     #[test]

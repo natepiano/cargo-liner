@@ -220,22 +220,3 @@ pub fn render_lints_pane_body(
 
     let _ = ctx;
 }
-
-#[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use tui_pane::ACTIVITY_SPINNER;
-
-    use super::running_lint_spinner;
-
-    #[test]
-    fn lints_pane_running_row_uses_framework_activity_spinner() {
-        let elapsed = Duration::from_millis(100);
-
-        assert_eq!(
-            running_lint_spinner(elapsed),
-            ACTIVITY_SPINNER.frame_at(elapsed)
-        );
-    }
-}

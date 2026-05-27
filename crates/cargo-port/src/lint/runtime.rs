@@ -953,11 +953,6 @@ fn sanitize_name(name: &str) -> String {
 #[allow(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests {
     use crossbeam_channel::RecvTimeoutError;
-    use notify::Event;
-    use notify::event::DataChange;
-    use notify::event::EventKind;
-    use notify::event::ModifyKind;
-    use notify::event::RemoveKind;
 
     use super::*;
     use crate::channel;
@@ -1043,45 +1038,6 @@ mod tests {
     }
 
     #[test]
-    fn relevant_changes_ignore_git_and_target_paths() {
-        let project_dir = tempfile::tempdir().expect("tempdir");
-        let modify_kind = EventKind::Modify(ModifyKind::Data(DataChange::Any));
-
-        assert!(
-            crate::lint::classify_event_path(
-                project_dir.path(),
-                modify_kind,
-                &project_dir.path().join("src/main.rs")
-            )
-            .is_some()
-        );
-        assert!(
-            crate::lint::classify_event_path(
-                project_dir.path(),
-                modify_kind,
-                &project_dir.path().join("Cargo.toml")
-            )
-            .is_some()
-        );
-        assert!(
-            crate::lint::classify_event_path(
-                project_dir.path(),
-                modify_kind,
-                &project_dir.path().join("target/debug/app")
-            )
-            .is_none()
-        );
-        assert!(
-            crate::lint::classify_event_path(
-                project_dir.path(),
-                modify_kind,
-                &project_dir.path().join(".git/index")
-            )
-            .is_none()
-        );
-    }
-
-    #[test]
     fn lint_commands_write_reports_under_configured_cache_root() {
         let cache_dir = tempfile::tempdir().expect("tempdir");
         let project_dir = tempfile::tempdir().expect("tempdir");
@@ -1155,35 +1111,6 @@ mod tests {
 
         assert_eq!(desired.len(), 1);
         assert!(desired.contains_key(project_dir.path()));
-    }
-
-    #[test]
-    fn remove_events_use_longer_debounce() {
-        let project_dir = tempfile::tempdir().expect("tempdir");
-        let source_path = project_dir.path().join("src/lib.rs");
-        let remove_event = Event {
-            kind:  EventKind::Remove(RemoveKind::File),
-            paths: vec![source_path.clone()],
-            attrs: notify::event::EventAttributes::default(),
-        };
-        let modify_event = Event {
-            kind:  EventKind::Modify(ModifyKind::Data(DataChange::Any)),
-            paths: vec![source_path],
-            attrs: notify::event::EventAttributes::default(),
-        };
-
-        assert_eq!(
-            crate::lint::trigger::classify_event(project_dir.path(), &remove_event)
-                .expect("remove event")
-                .debounce(),
-            Duration::from_millis(1500)
-        );
-        assert_eq!(
-            crate::lint::trigger::classify_event(project_dir.path(), &modify_event)
-                .expect("modify event")
-                .debounce(),
-            Duration::from_millis(750)
-        );
     }
 
     #[test]

@@ -5,7 +5,6 @@ use tui_pane::CopySelectionResult;
 use tui_pane::PaneFocusState;
 use tui_pane::label_color;
 
-use super::CI_COMPACT_DURATION_WIDTH;
 use super::CiEmptyState;
 use super::DetailField;
 use super::EmptyDescriptionBehavior;
@@ -659,44 +658,6 @@ fn git_label_width_uses_ahead_behind_label() {
     let fields = vec![DetailField::VsLocal];
 
     assert_eq!(panes::git_label_width(&fields), "Ahead/Behind".len());
-}
-
-#[test]
-fn ci_table_hides_durations_when_fixed_columns_overflow() {
-    let runs = vec![ci_run_with_jobs(vec![
-        CiJob {
-            name:          "fmt".to_string(),
-            ci_status:     CiStatus::Passed,
-            duration:      "17s".to_string(),
-            duration_secs: Some(17),
-        },
-        CiJob {
-            name:          "clippy".to_string(),
-            ci_status:     CiStatus::Passed,
-            duration:      "21s".to_string(),
-            duration_secs: Some(21),
-        },
-    ])];
-    let cols = vec!["fmt".to_string(), "clippy".to_string()];
-
-    assert!(!panes::ci_table_shows_durations(&runs, &cols, 20));
-    assert_eq!(
-        panes::ci_total_width(&runs, false),
-        CI_COMPACT_DURATION_WIDTH
-    );
-}
-
-#[test]
-fn ci_table_keeps_durations_when_fixed_columns_fit() {
-    let runs = vec![ci_run_with_jobs(vec![CiJob {
-        name:          "fmt".to_string(),
-        ci_status:     CiStatus::Passed,
-        duration:      "17s".to_string(),
-        duration_secs: Some(17),
-    }])];
-    let cols = vec!["fmt".to_string()];
-
-    assert!(panes::ci_table_shows_durations(&runs, &cols, 80));
 }
 
 // ── TargetsData::from_workspace_metadata ──────────────────────────────

@@ -39,13 +39,4 @@ mod tests {
             &[BarRegion::Nav, BarRegion::PaneAction, BarRegion::Global]
         );
     }
-
-    #[test]
-    fn copy_eq_hash_round_trip() {
-        let r = BarRegion::Nav;
-        let copied = r;
-        assert_eq!(r, copied);
-        assert_eq!(BarRegion::Global, BarRegion::Global);
-        assert_ne!(BarRegion::Nav, BarRegion::PaneAction);
-    }
 }

@@ -360,6 +360,11 @@ mod tests {
             std::process::id(),
             "save"
         ));
+        std::fs::write(
+            &path,
+            "[tui]\nstatus_flash_secs = 4.0\ntask_linger_secs = 3.0\n",
+        )
+        .expect("write legacy settings");
         let registry = SettingsRegistry::new().add_bool_in(
             SettingsSection::App("tui"),
             "enabled",

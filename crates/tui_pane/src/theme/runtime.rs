@@ -125,48 +125,38 @@ mod tests {
     }
 
     #[test]
-    fn diagnostics_id_round_trip_set_take() {
+    fn toast_ids_round_trip_set_take() {
         let mut runtime = ThemeRuntime::new(None);
         runtime.set_diagnostics_id(Some(ToastId(42)));
+        runtime.set_miss_toast_id(Some(ToastId(7)));
+
         assert_eq!(runtime.take_diagnostics_id(), Some(ToastId(42)));
         assert!(runtime.take_diagnostics_id().is_none());
-    }
-
-    #[test]
-    fn miss_toast_id_round_trip_set_take() {
-        let mut runtime = ThemeRuntime::new(None);
-        runtime.set_miss_toast_id(Some(ToastId(7)));
         assert_eq!(runtime.take_miss_toast_id(), Some(ToastId(7)));
         assert!(runtime.take_miss_toast_id().is_none());
     }
 
     #[test]
-    fn os_appearance_round_trip_set_get() {
+    fn appearance_and_background_round_trip_set_get() {
         let mut runtime = ThemeRuntime::new(None);
         assert!(runtime.os_appearance().is_none());
-        runtime.set_os_appearance(Some(Appearance::Light));
-        assert_eq!(runtime.os_appearance(), Some(Appearance::Light));
-        runtime.set_os_appearance(None);
-        assert!(runtime.os_appearance().is_none());
-    }
-
-    #[test]
-    fn terminal_appearance_round_trip_set_get() {
-        let mut runtime = ThemeRuntime::new(None);
         assert!(runtime.terminal_appearance().is_none());
-        runtime.set_terminal_appearance(Some(Appearance::Dark));
-        assert_eq!(runtime.terminal_appearance(), Some(Appearance::Dark));
-        runtime.set_terminal_appearance(None);
-        assert!(runtime.terminal_appearance().is_none());
-    }
-
-    #[test]
-    fn frame_background_round_trip_set_get() {
-        let mut runtime = ThemeRuntime::new(None);
         assert!(runtime.frame_background().is_none());
+
+        runtime.set_os_appearance(Some(Appearance::Light));
+        runtime.set_terminal_appearance(Some(Appearance::Dark));
         runtime.set_frame_background(Some(Color::Black));
+
+        assert_eq!(runtime.os_appearance(), Some(Appearance::Light));
+        assert_eq!(runtime.terminal_appearance(), Some(Appearance::Dark));
         assert_eq!(runtime.frame_background(), Some(Color::Black));
+
+        runtime.set_os_appearance(None);
+        runtime.set_terminal_appearance(None);
         runtime.set_frame_background(None);
+
+        assert!(runtime.os_appearance().is_none());
+        assert!(runtime.terminal_appearance().is_none());
         assert!(runtime.frame_background().is_none());
     }
 }

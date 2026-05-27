@@ -15,27 +15,3 @@ pub enum Visibility {
     /// Slot is dropped from the bar this frame.
     Hidden,
 }
-
-#[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "tests should panic on unexpected values"
-)]
-mod tests {
-    use super::Visibility;
-
-    #[test]
-    fn variants_distinct() {
-        assert_eq!(Visibility::Visible, Visibility::Visible);
-        assert_ne!(Visibility::Visible, Visibility::Hidden);
-    }
-
-    #[test]
-    fn copy_round_trip() {
-        let v = Visibility::Visible;
-        let copied = v;
-        assert_eq!(v, copied);
-    }
-}

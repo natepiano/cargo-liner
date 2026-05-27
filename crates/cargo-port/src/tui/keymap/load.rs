@@ -729,6 +729,35 @@ fn keymap_value_string(value: &Value) -> String {
 mod tests {
     use super::*;
 
+    const APP_SIDE_ARRAY_TOML: &str = r#"
+[project_list]
+collapse_all = "-"
+collapse_row = ["shift-left", "h"]
+expand_all   = "+"
+expand_row   = ["shift-right", "l"]
+
+[package]
+activate = "enter"
+
+[git]
+activate = "enter"
+
+[targets]
+activate      = "enter"
+release_build = "r"
+
+[ci_runs]
+activate    = "enter"
+clear_cache = "d"
+fetch_more  = "f"
+show_all    = "a"
+show_branch = "b"
+
+[lints]
+activate      = "enter"
+clear_history = "d"
+"#;
+
     #[test]
     fn default_toml_loads_without_errors() {
         let toml_str = ResolvedKeymap::default_toml();
@@ -1077,35 +1106,7 @@ clear_cache = "d"
 
     #[test]
     fn app_side_loader_accepts_array_bindings_without_marking_actions_missing() {
-        let toml = r#"
-[project_list]
-collapse_all = "-"
-collapse_row = ["shift-left", "h"]
-expand_all   = "+"
-expand_row   = ["shift-right", "l"]
-
-[package]
-activate = "enter"
-
-[git]
-activate = "enter"
-
-[targets]
-activate      = "enter"
-release_build = "r"
-
-[ci_runs]
-activate    = "enter"
-clear_cache = "d"
-fetch_more  = "f"
-show_all    = "a"
-show_branch = "b"
-
-[lints]
-activate      = "enter"
-clear_history = "d"
-"#;
-        let result = load_keymap_from_str(toml, NavigationKeys::ArrowsOnly);
+        let result = load_keymap_from_str(APP_SIDE_ARRAY_TOML, NavigationKeys::ArrowsOnly);
 
         assert!(
             result.missing_actions.is_empty(),
@@ -1131,35 +1132,7 @@ clear_history = "d"
 
     #[test]
     fn vim_reserved_secondary_array_binding_does_not_error_when_primary_is_valid() {
-        let toml = r#"
-[project_list]
-collapse_all = "-"
-collapse_row = ["shift-left", "h"]
-expand_all   = "+"
-expand_row   = ["shift-right", "l"]
-
-[package]
-activate = "enter"
-
-[git]
-activate = "enter"
-
-[targets]
-activate      = "enter"
-release_build = "r"
-
-[ci_runs]
-activate    = "enter"
-clear_cache = "d"
-fetch_more  = "f"
-show_all    = "a"
-show_branch = "b"
-
-[lints]
-activate      = "enter"
-clear_history = "d"
-"#;
-        let result = load_keymap_from_str(toml, NavigationKeys::ArrowsAndVim);
+        let result = load_keymap_from_str(APP_SIDE_ARRAY_TOML, NavigationKeys::ArrowsAndVim);
 
         assert!(result.errors.is_empty());
         assert_eq!(

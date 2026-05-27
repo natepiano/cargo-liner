@@ -54,32 +54,11 @@ impl<A: Copy> BarSlot<A> {
 )]
 mod tests {
     use super::BarSlot;
-    use super::ShortcutState;
 
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
     enum DummyAction {
         Up,
         Down,
-    }
-
-    #[test]
-    fn single_construction() {
-        let slot = BarSlot::Single(DummyAction::Up);
-        assert_eq!(slot, BarSlot::Single(DummyAction::Up));
-    }
-
-    #[test]
-    fn paired_construction() {
-        let slot = BarSlot::Paired(DummyAction::Up, DummyAction::Down, "/");
-        assert_eq!(
-            slot,
-            BarSlot::Paired(DummyAction::Up, DummyAction::Down, "/")
-        );
-    }
-
-    #[test]
-    fn shortcut_state_distinct() {
-        assert_ne!(ShortcutState::Enabled, ShortcutState::Disabled);
     }
 
     #[test]

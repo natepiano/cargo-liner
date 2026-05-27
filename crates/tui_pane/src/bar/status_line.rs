@@ -5,8 +5,6 @@
 //! keys, applies enabled / disabled styling, fills the line, and lays
 //! out nav, pane-action, and global regions.
 
-use std::fmt::Write as _;
-
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
@@ -25,6 +23,7 @@ use crate::Keymap;
 use crate::ShortcutState;
 use crate::Visibility;
 use crate::keymap::RenderedSlot;
+use crate::util;
 
 /// Which keymap scope a status-line global slot reads from.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -138,7 +137,7 @@ pub fn render<Ctx, G>(
     }
     left_spans.push(Span::styled(" Uptime: ", palette.status_label_style));
     left_spans.push(Span::styled(
-        format!("{} ", format_progressive(status.uptime_secs)),
+        format!("{} ", util::format_progressive(status.uptime_secs)),
         palette.status_value_style,
     ));
     left_spans.extend(bar.nav);
@@ -269,51 +268,5 @@ fn render_sections(
             Paragraph::new(Line::from(right_spans)).style(palette.status_line_style),
             right_area,
         );
-    }
-}
-
-fn format_progressive(secs: u64) -> String {
-    const WEEK: u64 = 7 * 24 * 3600;
-    const DAY: u64 = 24 * 3600;
-    const HOUR: u64 = 3600;
-    const MINUTE: u64 = 60;
-
-    let parts: [(u64, &str); 5] = [
-        (secs / WEEK, "w"),
-        ((secs % WEEK) / DAY, "d"),
-        ((secs % DAY) / HOUR, "h"),
-        ((secs % HOUR) / MINUTE, "m"),
-        (secs % MINUTE, "s"),
-    ];
-
-    let first = parts.iter().position(|&(value, _)| value > 0);
-    let last = parts.iter().rposition(|&(value, _)| value > 0);
-    let Some((first, last)) = first.zip(last) else {
-        return "0s".to_string();
-    };
-
-    let mut out = String::new();
-    for (value, unit) in &parts[first..=last] {
-        if !out.is_empty() {
-            out.push(' ');
-        }
-        let _ = write!(out, "{value}{unit}");
-    }
-    out
-}
-
-#[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "tests should panic on unexpected values"
-)]
-mod tests {
-    use super::format_progressive;
-
-    #[test]
-    fn uptime_format_progresses_units() {
-        assert_eq!(format_progressive(0), "0s");
-        assert_eq!(format_progressive(61), "1m 1s");
-        assert_eq!(format_progressive(3605), "1h 0m 5s");
     }
 }

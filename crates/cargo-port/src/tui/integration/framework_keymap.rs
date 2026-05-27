@@ -836,7 +836,7 @@ pub fn owner_repo_key(repo: &OwnerRepo) -> TrackedItemKey { TrackedItemKey::new(
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
-    use tui_pane::Action;
+    use crossterm::event::KeyCode;
 
     use super::*;
 
@@ -857,7 +857,18 @@ mod tests {
 
     #[test]
     fn nav_action_count_includes_paging_actions() {
-        assert_eq!(NavigationAction::ALL.len(), 10);
+        let defaults = AppNavigation::defaults().into_scope_map();
+
+        assert_eq!(
+            defaults.action_for(&tui_pane::KeyBind::from(KeyCode::PageUp)),
+            Some(NavigationAction::PageUp),
+        );
+        assert_eq!(
+            defaults.action_for(&tui_pane::KeyBind::from(KeyCode::PageDown)),
+            Some(NavigationAction::PageDown),
+        );
+        assert!(NavigationAction::ALL.contains(&NavigationAction::HalfPageUp));
+        assert!(NavigationAction::ALL.contains(&NavigationAction::HalfPageDown));
     }
 
     #[test]
@@ -870,18 +881,6 @@ mod tests {
         ] {
             assert_eq!(app_id.to_legacy(), legacy);
         }
-    }
-
-    #[test]
-    fn package_action_inherent_facade_matches_action_trait() {
-        assert_eq!(
-            <PackageAction as Action>::ALL.len(),
-            <PackageAction as Action>::ALL.len(),
-        );
-        assert_eq!(
-            <PackageAction as Action>::toml_key(PackageAction::Activate),
-            PackageAction::Activate.toml_key(),
-        );
     }
 
     #[test]

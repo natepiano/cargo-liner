@@ -362,17 +362,6 @@ fn config_path_round_trips() {
 }
 
 #[test]
-fn registered_scope_dispatches_keys_through_keymap() {
-    let keymap = fresh_builder_singletons()
-        .register::<FooPane>(FooPane)
-        .build()
-        .expect("build must succeed");
-    let mut app = fresh_app();
-    let outcome = keymap.dispatch_app_pane(TestPaneId::Foo, &KeyCode::Enter.into(), &mut app);
-    assert_eq!(outcome, KeyOutcome::Consumed);
-}
-
-#[test]
 fn navigation_missing_when_panes_registered_without_nav() {
     let err = Keymap::<TestApp>::builder()
         .register_globals::<AppGlobals>()
@@ -919,54 +908,47 @@ fn app_global_key_errors_without_registered_app_globals_peer() {
 }
 
 #[test]
-fn overlay_toml_rebinds_start_edit() {
-    let dir = std::env::temp_dir();
-    let path = dir.join(format!(
-        "tui_pane_test_overlay_start_edit_{}.toml",
-        std::process::id()
-    ));
-    std::fs::write(&path, "[overlay]\nstart_edit = \"F2\"\n").expect("write toml");
-    let keymap = Keymap::<TestApp>::builder()
-        .load_toml(path.clone())
-        .expect("load_toml must succeed")
-        .register_overlay()
-        .expect("overlay must register")
-        .build()
-        .expect("build must succeed");
-    let _ = std::fs::remove_file(&path);
+fn overlay_toml_rebinds_actions() {
+    for (name, toml, key, action, replaced_default) in [
+        (
+            "start_edit",
+            "[overlay]\nstart_edit = \"F2\"\n",
+            KeyBind::from(KeyCode::F(2)),
+            OverlayAction::StartEdit,
+            Some(KeyBind::from(KeyCode::Enter)),
+        ),
+        (
+            "cancel",
+            "[overlay]\ncancel = \"F3\"\n",
+            KeyBind::from(KeyCode::F(3)),
+            OverlayAction::Cancel,
+            None,
+        ),
+    ] {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "tui_pane_test_overlay_{name}_{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(&path, toml).expect("write toml");
+        let keymap = Keymap::<TestApp>::builder()
+            .load_toml(path.clone())
+            .expect("load_toml must succeed")
+            .register_overlay()
+            .expect("overlay must register")
+            .build()
+            .expect("build must succeed");
+        let _ = std::fs::remove_file(&path);
 
-    assert_eq!(
-        keymap.overlay().action_for(&KeyBind::from(KeyCode::F(2))),
-        Some(OverlayAction::StartEdit),
-    );
-    assert_eq!(
-        keymap.overlay().action_for(&KeyBind::from(KeyCode::Enter)),
-        None,
-        "TOML replaces the action's default binding",
-    );
-}
-
-#[test]
-fn overlay_toml_rebinds_cancel() {
-    let dir = std::env::temp_dir();
-    let path = dir.join(format!(
-        "tui_pane_test_overlay_cancel_{}.toml",
-        std::process::id()
-    ));
-    std::fs::write(&path, "[overlay]\ncancel = \"F3\"\n").expect("write toml");
-    let keymap = Keymap::<TestApp>::builder()
-        .load_toml(path.clone())
-        .expect("load_toml must succeed")
-        .register_overlay()
-        .expect("overlay must register")
-        .build()
-        .expect("build must succeed");
-    let _ = std::fs::remove_file(&path);
-
-    assert_eq!(
-        keymap.overlay().action_for(&KeyBind::from(KeyCode::F(3))),
-        Some(OverlayAction::Cancel),
-    );
+        assert_eq!(keymap.overlay().action_for(&key), Some(action), "{name}");
+        if let Some(default_key) = replaced_default {
+            assert_eq!(
+                keymap.overlay().action_for(&default_key),
+                None,
+                "TOML replaces the action's default binding",
+            );
+        }
+    }
 }
 
 #[test]
@@ -1109,47 +1091,27 @@ fn never_and_false_predicate_panes_are_skipped() {
 }
 
 #[test]
-fn stale_focus_next_uses_first_live_tab_stop() {
-    let mut framework = Framework::<TestApp>::new(FocusedPane::App(TestPaneId::Hidden));
-    let keymap = fresh_builder_singletons()
-        .register::<FooPane>(FooPane)
-        .register::<BarPane>(BarPane)
-        .build_into(&mut framework)
-        .expect("build_into must succeed");
-    let mut app = TestApp {
-        framework,
-        quits: 0,
-        restarts: 0,
-        dismisses: 0,
-    };
+fn stale_focus_uses_first_or_last_live_tab_stop() {
+    for (action, expected) in [
+        (GlobalAction::NextPane, FocusedPane::App(TestPaneId::Foo)),
+        (GlobalAction::PrevPane, FocusedPane::App(TestPaneId::Bar)),
+    ] {
+        let mut framework = Framework::<TestApp>::new(FocusedPane::App(TestPaneId::Hidden));
+        let keymap = fresh_builder_singletons()
+            .register::<FooPane>(FooPane)
+            .register::<BarPane>(BarPane)
+            .build_into(&mut framework)
+            .expect("build_into must succeed");
+        let mut app = TestApp {
+            framework,
+            quits: 0,
+            restarts: 0,
+            dismisses: 0,
+        };
 
-    keymap.dispatch_framework_global(GlobalAction::NextPane, &mut app);
-    assert_eq!(
-        app.framework().focused(),
-        &FocusedPane::App(TestPaneId::Foo),
-    );
-}
-
-#[test]
-fn stale_focus_prev_uses_last_live_tab_stop() {
-    let mut framework = Framework::<TestApp>::new(FocusedPane::App(TestPaneId::Hidden));
-    let keymap = fresh_builder_singletons()
-        .register::<FooPane>(FooPane)
-        .register::<BarPane>(BarPane)
-        .build_into(&mut framework)
-        .expect("build_into must succeed");
-    let mut app = TestApp {
-        framework,
-        quits: 0,
-        restarts: 0,
-        dismisses: 0,
-    };
-
-    keymap.dispatch_framework_global(GlobalAction::PrevPane, &mut app);
-    assert_eq!(
-        app.framework().focused(),
-        &FocusedPane::App(TestPaneId::Bar),
-    );
+        keymap.dispatch_framework_global(action, &mut app);
+        assert_eq!(app.framework().focused(), &expected);
+    }
 }
 
 #[test]

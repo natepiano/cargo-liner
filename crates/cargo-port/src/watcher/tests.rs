@@ -1820,8 +1820,11 @@ fn cache_lint_child_event_is_ignored_by_project_watcher() {
     assert!(pending_new.is_empty());
 }
 
-#[test]
-fn watcher_event_schedules_lint_run_through_main_runtime() {
+fn assert_source_event_schedules_lint_run(
+    event_kind: EventKind,
+    timeout: Duration,
+    assertion: &str,
+) {
     let project_dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(
         project_dir.path().join("Cargo.toml"),
@@ -1870,7 +1873,7 @@ fn watcher_event_schedules_lint_run_through_main_runtime() {
     let mut pending_git = HashMap::new();
     let mut pending_new = HashMap::new();
     let event = Event {
-        kind:  EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+        kind:  event_kind,
         paths: vec![source_path.clone()],
         attrs: notify::event::EventAttributes::default(),
     };
@@ -1887,7 +1890,7 @@ fn watcher_event_schedules_lint_run_through_main_runtime() {
         &mut pending_new,
     );
 
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + timeout;
     let mut saw_passed = false;
     while Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -1906,103 +1909,28 @@ fn watcher_event_schedules_lint_run_through_main_runtime() {
         }
     }
 
-    assert!(saw_passed, "expected watcher event to schedule a lint run");
+    assert!(saw_passed, "{assertion}");
     assert_pending_disk(&pending_disk, "~/rust/demo");
     assert!(pending_git.is_empty());
     assert!(pending_new.is_empty());
 }
 
 #[test]
-fn ambiguous_source_event_schedules_lint_run_through_main_runtime() {
-    let project_dir = tempfile::tempdir().expect("tempdir");
-    std::fs::write(
-        project_dir.path().join("Cargo.toml"),
-        "[package]\nname='demo'\nversion='0.1.0'\n",
-    )
-    .expect("write manifest");
-    std::fs::create_dir_all(project_dir.path().join("src")).expect("create src");
-    let source_path = project_dir.path().join("src/lib.rs");
-    std::fs::write(&source_path, "pub fn demo() {}\n").expect("write source");
-
-    let cache_dir = tempfile::tempdir().expect("tempdir");
-    let mut cfg = crate::config::CargoPortConfig::default();
-    cfg.cache.root = cache_dir.path().to_string_lossy().to_string();
-    cfg.lint.enabled = true;
-    cfg.lint.include = vec!["~/rust/demo".to_string()];
-    cfg.lint.commands = vec![crate::config::LintCommandConfig {
-        name:    "echo".to_string(),
-        command: "echo lint ok".to_string(),
-    }];
-
-    let (background_tx, background_rx) = channel::unbounded();
-    let runtime = lint::spawn(&cfg, background_tx.clone())
-        .handle
-        .expect("runtime handle");
-    let request = RegisterProjectRequest {
-        project_label: "~/rust/demo".to_string(),
-        abs_path:      AbsolutePath::from(project_dir.path()),
-        is_rust:       true,
-    };
-    runtime.sync_projects(vec![request.clone()]);
-    runtime.register_project(request);
-
-    let mut projects = HashMap::new();
-    let (key, entry) = make_project_entry("~/rust/demo", project_dir.path());
-    projects.insert(key, entry);
-    let watch_roots = vec![AbsolutePath::from(project_dir.path())];
-    let project_parents = HashSet::new();
-    let discovered = HashSet::new();
-    let ctx = EventContext {
-        watch_roots:     &watch_roots,
-        projects:        &projects,
-        project_parents: &project_parents,
-        discovered:      &discovered,
-    };
-    let mut pending_disk = HashMap::new();
-    let mut pending_git = HashMap::new();
-    let mut pending_new = HashMap::new();
-    let event = Event {
-        kind:  EventKind::Any,
-        paths: vec![source_path.clone()],
-        attrs: notify::event::EventAttributes::default(),
-    };
-
-    events::handle_notify_event(
-        &source_path,
-        Some(&event),
-        &ctx,
-        &background_tx,
-        Some(&runtime),
-        None,
-        &mut pending_disk,
-        &mut pending_git,
-        &mut pending_new,
-    );
-
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let mut saw_passed = false;
-    while Instant::now() < deadline {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        match background_rx.recv_timeout(remaining) {
-            Ok(BackgroundMsg::LintStatus { path, status })
-                if path.as_path() == project_dir.path()
-                    && matches!(status, lint::LintStatus::Passed(_)) =>
-            {
-                saw_passed = true;
-                break;
-            },
-            Ok(_) => {},
-            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => break,
-        }
+fn source_events_schedule_lint_run_through_main_runtime() {
+    for (event_kind, timeout, assertion) in [
+        (
+            EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+            Duration::from_secs(5),
+            "expected watcher event to schedule a lint run",
+        ),
+        (
+            EventKind::Any,
+            Duration::from_secs(2),
+            "ambiguous source file event should still schedule a lint run",
+        ),
+    ] {
+        assert_source_event_schedules_lint_run(event_kind, timeout, assertion);
     }
-
-    assert!(
-        saw_passed,
-        "ambiguous source file event should still schedule a lint run"
-    );
-    assert_pending_disk(&pending_disk, "~/rust/demo");
-    assert!(pending_git.is_empty());
-    assert!(pending_new.is_empty());
 }
 
 #[test]
@@ -2321,32 +2249,53 @@ fn add_git_worktree(primary_dir: &Path, worktree_dir: &Path, branch: &str) {
     assert!(status.success(), "git worktree add should succeed");
 }
 
-#[test]
-fn disk_update_only_sends_disk_usage_for_tracked_project() {
+#[derive(Clone, Copy)]
+enum GitMetadataFixture {
+    Tracked,
+    Untracked,
+}
+
+impl GitMetadataFixture {
+    const fn is_tracked(self) -> bool { matches!(self, Self::Tracked) }
+}
+
+fn assert_disk_update_sends_only_disk_usage(
+    project_name: &str,
+    git_metadata: GitMetadataFixture,
+    git_assertion: &str,
+) {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let project_dir = tmp.path().join("my_project");
+    let project_dir = tmp.path().join(project_name);
     std::fs::create_dir_all(&project_dir).expect("create dir");
-    init_git_repo(&project_dir);
+    if git_metadata.is_tracked() {
+        init_git_repo(&project_dir);
+    }
 
     let (tx, rx) = channel::unbounded();
+    let label = format!("~/{project_name}");
     let mut projects = HashMap::new();
     projects.insert(
         AbsolutePath::from(project_dir.clone()),
         ProjectEntry {
-            project_label:  "~/my_project".to_string(),
+            project_label:  label.clone(),
             abs_path:       AbsolutePath::from(project_dir.clone()),
-            repo_root:      Some(AbsolutePath::from(project_dir.clone())),
-            git_dir:        Some(AbsolutePath::from(project_dir.join(".git"))),
-            common_git_dir: Some(AbsolutePath::from(project_dir.join(".git"))),
+            repo_root:      git_metadata
+                .is_tracked()
+                .then(|| AbsolutePath::from(project_dir.clone())),
+            git_dir:        git_metadata
+                .is_tracked()
+                .then(|| AbsolutePath::from(project_dir.join(".git"))),
+            common_git_dir: git_metadata
+                .is_tracked()
+                .then(|| AbsolutePath::from(project_dir.join(".git"))),
         },
     );
 
-    // Deadline already expired → fires immediately.
     let past = Instant::now()
         .checked_sub(std::time::Duration::from_secs(1))
         .expect("1s subtraction should not underflow");
     let mut pending = HashMap::from([(
-        "~/my_project".to_string(),
+        label.clone(),
         WatchState::Pending {
             debounce_deadline: past,
             max_deadline:      past,
@@ -2381,70 +2330,22 @@ fn disk_update_only_sends_disk_usage_for_tracked_project() {
         }
     }
     assert!(got_disk, "expected DiskUsage message");
-    assert!(!got_git, "disk updates should no longer emit GitInfo");
-    assert!(matches!(
-        pending.get("~/my_project"),
-        Some(WatchState::Running)
-    ));
+    assert!(!got_git, "{git_assertion}");
+    assert!(matches!(pending.get(&label), Some(WatchState::Running)));
 }
 
 #[test]
-fn disk_update_skips_git_info_for_untracked_project() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let project_dir = tmp.path().join("no_git");
-    std::fs::create_dir_all(&project_dir).expect("create dir");
-
-    let (tx, rx) = channel::unbounded();
-    let mut projects = HashMap::new();
-    projects.insert(
-        AbsolutePath::from(project_dir.clone()),
-        ProjectEntry {
-            project_label:  "~/no_git".to_string(),
-            abs_path:       AbsolutePath::from(project_dir.clone()),
-            repo_root:      None,
-            git_dir:        None,
-            common_git_dir: None,
-        },
+fn disk_update_sends_only_disk_usage_for_tracked_and_untracked_projects() {
+    assert_disk_update_sends_only_disk_usage(
+        "my_project",
+        GitMetadataFixture::Tracked,
+        "disk updates should no longer emit GitInfo",
     );
-
-    let past = Instant::now()
-        .checked_sub(std::time::Duration::from_secs(1))
-        .expect("1s subtraction should not underflow");
-    let mut pending = HashMap::from([(
-        "~/no_git".to_string(),
-        WatchState::Pending {
-            debounce_deadline: past,
-            max_deadline:      past,
-        },
-    )]);
-
-    let disk_limit = Arc::new(tokio::sync::Semaphore::new(1));
-    let (disk_done_tx, disk_done_rx) = mpsc::channel();
-    fire_disk_updates(
-        test_support::test_runtime().handle(),
-        &disk_limit,
-        &disk_done_tx,
-        &tx,
-        &projects,
-        &mut pending,
+    assert_disk_update_sends_only_disk_usage(
+        "no_git",
+        GitMetadataFixture::Untracked,
+        "should not send GitInfo for untracked project",
     );
-    wait_for_completion(&disk_done_rx);
-
-    let mut got_disk = false;
-    let mut got_git = false;
-    while let Ok(msg) = rx.try_recv() {
-        match msg {
-            BackgroundMsg::DiskUsage { path, .. } if *path == *project_dir => {
-                got_disk = true;
-            },
-            BackgroundMsg::CheckoutInfo { .. } | BackgroundMsg::RepoInfo { .. } => {
-                got_git = true;
-            },
-            _ => {},
-        }
-    }
-    assert!(got_disk, "expected DiskUsage message");
-    assert!(!got_git, "should not send GitInfo for untracked project");
 }
 
 #[test]
@@ -2633,19 +2534,43 @@ fn project_refresh_emits_disk_usage_for_workspace_members() {
     );
 }
 
-#[test]
-fn removed_package_worktree_emits_zero_disk_usage() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let primary_dir = tmp.path().join("app");
-    let linked_dir = tmp.path().join("app_test");
-    init_cargo_git_repo(&primary_dir, "app", false);
-    add_git_worktree(&primary_dir, &linked_dir, "test/app");
+#[derive(Clone, Copy)]
+enum RemovedWorktreeFixture {
+    Package,
+    Workspace,
+}
 
+impl RemovedWorktreeFixture {
+    const fn primary_name(self) -> &'static str {
+        match self {
+            Self::Package => "app",
+            Self::Workspace => "obsidian_knife",
+        }
+    }
+
+    const fn linked_name(self) -> &'static str {
+        match self {
+            Self::Package => "app_test",
+            Self::Workspace => "obsidian_knife_test",
+        }
+    }
+
+    const fn is_workspace(self) -> bool { matches!(self, Self::Workspace) }
+}
+
+fn assert_removed_worktree_emits_zero_disk_usage(fixture: RemovedWorktreeFixture) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let primary_dir = tmp.path().join(fixture.primary_name());
+    let linked_dir = tmp.path().join(fixture.linked_name());
+    init_cargo_git_repo(&primary_dir, fixture.primary_name(), fixture.is_workspace());
+    add_git_worktree(&primary_dir, &linked_dir, "test/worktree");
+
+    let label = format!("~/{}", fixture.linked_name());
     let mut projects = HashMap::new();
     projects.insert(
         AbsolutePath::from(linked_dir.clone()),
         ProjectEntry {
-            project_label:  "~/app_test".to_string(),
+            project_label:  label.clone(),
             abs_path:       AbsolutePath::from(linked_dir.clone()),
             repo_root:      None,
             git_dir:        None,
@@ -2680,7 +2605,7 @@ fn removed_package_worktree_emits_zero_disk_usage() {
         .checked_sub(Duration::from_secs(1))
         .expect("1s subtraction should not underflow");
     pending_disk.insert(
-        "~/app_test".to_string(),
+        label,
         WatchState::Pending {
             debounce_deadline: past,
             max_deadline:      past,
@@ -2709,88 +2634,14 @@ fn removed_package_worktree_emits_zero_disk_usage() {
     }
     assert!(
         got_zero,
-        "expected zero-byte disk usage for removed package worktree"
+        "expected zero-byte disk usage for removed worktree"
     );
 }
 
 #[test]
-fn removed_workspace_worktree_emits_zero_disk_usage() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let primary_dir = tmp.path().join("obsidian_knife");
-    let linked_dir = tmp.path().join("obsidian_knife_test");
-    init_cargo_git_repo(&primary_dir, "obsidian_knife", true);
-    add_git_worktree(&primary_dir, &linked_dir, "test/obsidian");
-
-    let mut projects = HashMap::new();
-    projects.insert(
-        AbsolutePath::from(linked_dir.clone()),
-        ProjectEntry {
-            project_label:  "~/obsidian_knife_test".to_string(),
-            abs_path:       AbsolutePath::from(linked_dir.clone()),
-            repo_root:      None,
-            git_dir:        None,
-            common_git_dir: None,
-        },
-    );
-    let watch_roots = vec![AbsolutePath::from(tmp.path())];
-    let project_parents = HashSet::from([AbsolutePath::from(tmp.path())]);
-    let discovered = HashSet::new();
-    let ctx = EventContext {
-        watch_roots:     &watch_roots,
-        projects:        &projects,
-        project_parents: &project_parents,
-        discovered:      &discovered,
-    };
-    let (background_tx, background_rx) = channel::unbounded();
-    let mut pending_disk = HashMap::new();
-    let mut pending_git = HashMap::new();
-    let mut pending_new = HashMap::new();
-
-    std::fs::remove_dir_all(&linked_dir).expect("remove linked worktree");
-    events::handle_event(
-        &linked_dir.join("Cargo.toml"),
-        &ctx,
-        &background_tx,
-        &mut pending_disk,
-        &mut pending_git,
-        &mut pending_new,
-    );
-
-    let past = Instant::now()
-        .checked_sub(Duration::from_secs(1))
-        .expect("1s subtraction should not underflow");
-    pending_disk.insert(
-        "~/obsidian_knife_test".to_string(),
-        WatchState::Pending {
-            debounce_deadline: past,
-            max_deadline:      past,
-        },
-    );
-    let disk_limit = Arc::new(tokio::sync::Semaphore::new(1));
-    let (disk_done_tx, disk_done_rx) = mpsc::channel();
-    fire_disk_updates(
-        test_support::test_runtime().handle(),
-        &disk_limit,
-        &disk_done_tx,
-        &background_tx,
-        &projects,
-        &mut pending_disk,
-    );
-    wait_for_completion(&disk_done_rx);
-
-    let mut got_zero = false;
-    while let Ok(msg) = background_rx.try_recv() {
-        if let BackgroundMsg::DiskUsage { path, bytes } = msg
-            && path.as_path() == linked_dir
-            && bytes == 0
-        {
-            got_zero = true;
-        }
-    }
-    assert!(
-        got_zero,
-        "expected zero-byte disk usage for removed workspace worktree"
-    );
+fn removed_worktree_emits_zero_disk_usage() {
+    assert_removed_worktree_emits_zero_disk_usage(RemovedWorktreeFixture::Package);
+    assert_removed_worktree_emits_zero_disk_usage(RemovedWorktreeFixture::Workspace);
 }
 
 /// When notify delivers an event via a symlinked path, the candidate

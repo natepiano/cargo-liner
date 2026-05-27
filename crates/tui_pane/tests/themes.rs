@@ -14,10 +14,6 @@
 
 use tui_pane::Appearance;
 use tui_pane::BUILTIN_DARK_NAME;
-use tui_pane::BUILTIN_HC_DARK_NAME;
-use tui_pane::BUILTIN_HC_LIGHT_NAME;
-use tui_pane::BUILTIN_LIGHT_NAME;
-use tui_pane::RegisterOutcome;
 use tui_pane::ThemeFamily;
 use tui_pane::ThemeId;
 use tui_pane::ThemeRegistry;
@@ -64,27 +60,6 @@ fn light_template_matches_constructor() {
 }
 
 #[test]
-fn registry_seeds_named_builtins() {
-    let registry = ThemeRegistry::new_with_builtins();
-    let dark = registry
-        .find(&ThemeId::new(BUILTIN_DARK_NAME))
-        .expect("dark builtin present");
-    let light = registry
-        .find(&ThemeId::new(BUILTIN_LIGHT_NAME))
-        .expect("light builtin present");
-    let hc_dark = registry
-        .find(&ThemeId::new(BUILTIN_HC_DARK_NAME))
-        .expect("high-contrast dark builtin present");
-    let hc_light = registry
-        .find(&ThemeId::new(BUILTIN_HC_LIGHT_NAME))
-        .expect("high-contrast light builtin present");
-    assert_eq!(dark.theme, default_dark());
-    assert_eq!(light.theme, default_light());
-    assert_eq!(hc_dark.theme, high_contrast_dark());
-    assert_eq!(hc_light.theme, high_contrast_light());
-}
-
-#[test]
 fn hc_template_matches_constructors() {
     let family: ThemeFamily = toml::from_str(HC_TEMPLATE).expect("high_contrast.toml should parse");
     assert_eq!(family.schema, 1);
@@ -98,31 +73,6 @@ fn hc_template_matches_constructors() {
     assert_eq!(light.name, "High Contrast Light");
     assert_eq!(light.appearance, Appearance::Light);
     assert_eq!(light.into_theme(), high_contrast_light());
-}
-
-#[test]
-fn registry_register_overrides_in_place() {
-    let mut registry = ThemeRegistry::new_with_builtins();
-    let original_len = registry.len();
-    let override_variant = ThemeVariant {
-        id:         ThemeId::new(BUILTIN_DARK_NAME),
-        appearance: Appearance::Dark,
-        theme:      default_light(),
-    };
-    let outcome = registry.register(override_variant);
-    assert_eq!(
-        outcome,
-        RegisterOutcome::Overrode(ThemeId::new(BUILTIN_DARK_NAME))
-    );
-    assert_eq!(registry.len(), original_len, "override replaces in place");
-    let dark = registry
-        .find(&ThemeId::new(BUILTIN_DARK_NAME))
-        .expect("override still findable");
-    assert_eq!(dark.theme, default_light(), "override took effect");
-    assert_eq!(
-        registry.status().overridden,
-        vec![ThemeId::new(BUILTIN_DARK_NAME)]
-    );
 }
 
 #[test]

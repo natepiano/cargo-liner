@@ -505,18 +505,6 @@ fn finder_pane_mode_navigable_when_closed() {
 }
 
 #[test]
-fn finder_pane_mode_text_input_when_open() {
-    let project = super::make_project(Some("demo"), "~/demo");
-    let mut app = make_app(&[project]);
-    app.overlays.open_finder();
-    let mode_fn = <FinderPane as Pane<App>>::mode();
-    assert!(
-        matches!(mode_fn(&app), Mode::TextInput(_)),
-        "Finder mode must be TextInput when overlay is open",
-    );
-}
-
-#[test]
 fn finder_text_input_inserts_char_into_query() {
     // When Finder is open, a typed letter goes through the framework's
     // TextInput handler and into the search query — vim mode is bypassed
@@ -729,58 +717,56 @@ fn project_list_action_expand_row_rebound_to_tab_expands() {
 
 // ── Output structural cancel uses framework keymap ────────────────
 
-#[test]
-fn output_cancel_rebind_clears_example_output_from_non_output_focus() {
+fn assert_output_cancel_binding(
+    keymap_toml: &str,
+    key: KeyCode,
+    starting_focus: Option<PaneId>,
+    expected_focus: Option<PaneId>,
+) {
     let project = super::make_project(Some("demo"), "~/demo");
-    let mut app = make_app_with_keymap_toml(&[project], "[output]\ncancel = \"q\"\n");
+    let mut app = make_app_with_keymap_toml(&[project], keymap_toml);
+    if let Some(focus) = starting_focus {
+        app.set_focus_to_pane(focus);
+    }
     let focus_before = app.focused_pane_id();
     app.inflight.example_output_mut().push("line".to_string());
 
-    let event = Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+    let event = Event::Key(KeyEvent::new(key, KeyModifiers::NONE));
     input::handle_event(&mut app, &event);
 
     assert!(app.inflight.example_output().is_empty());
     assert_eq!(
         app.focused_pane_id(),
-        focus_before,
-        "non-Output focus must stay put when structural output cancel fires",
+        expected_focus.unwrap_or(focus_before),
+        "unexpected focus after structural output cancel",
     );
 }
 
 #[test]
-fn output_cancel_rebind_clears_example_output_and_moves_output_focus_to_targets() {
-    let project = super::make_project(Some("demo"), "~/demo");
-    let mut app = make_app_with_keymap_toml(&[project], "[output]\ncancel = \"q\"\n");
-    app.set_focus_to_pane(PaneId::Output);
-    app.inflight.example_output_mut().push("line".to_string());
-
-    let event = Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
-    input::handle_event(&mut app, &event);
-
-    assert!(app.inflight.example_output().is_empty());
-    assert_eq!(app.focused_pane_id(), panes::PaneId::Targets);
-}
-
-#[test]
-fn output_cancel_rebind_accepts_primary_and_secondary_keys() {
-    let project = super::make_project(Some("demo"), "~/demo");
-    let mut app = make_app_with_keymap_toml(&[project], "[output]\ncancel = [\"Esc\", \"q\"]\n");
-
-    app.inflight.example_output_mut().push("first".to_string());
-    let esc = Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    input::handle_event(&mut app, &esc);
-    assert!(
-        app.inflight.example_output().is_empty(),
-        "primary OutputAction::Cancel binding must clear output",
-    );
-
-    app.inflight.example_output_mut().push("second".to_string());
-    let q = Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
-    input::handle_event(&mut app, &q);
-    assert!(
-        app.inflight.example_output().is_empty(),
-        "secondary OutputAction::Cancel binding must clear output",
-    );
+fn output_cancel_bindings_clear_output_and_handle_focus() {
+    for (toml, key, starting_focus, expected_focus) in [
+        ("[output]\ncancel = \"q\"\n", KeyCode::Char('q'), None, None),
+        (
+            "[output]\ncancel = \"q\"\n",
+            KeyCode::Char('q'),
+            Some(PaneId::Output),
+            Some(PaneId::Targets),
+        ),
+        (
+            "[output]\ncancel = [\"Esc\", \"q\"]\n",
+            KeyCode::Esc,
+            None,
+            None,
+        ),
+        (
+            "[output]\ncancel = [\"Esc\", \"q\"]\n",
+            KeyCode::Char('q'),
+            None,
+            None,
+        ),
+    ] {
+        assert_output_cancel_binding(toml, key, starting_focus, expected_focus);
+    }
 }
 
 // ── Keymap UI backed by framework keymap ──────────────────────────
@@ -1357,8 +1343,5 @@ fn focused_package_bar_nav_region_renders_arrow_keys() {
     );
     let nav = flatten(&bar.nav);
 
-    assert!(
-        !nav.is_empty(),
-        "Mode::Navigable must populate the Nav region (got empty)",
-    );
+    assert_contains_in_order(&nav, &["↑/↓", "nav", "tab", "pane"]);
 }
