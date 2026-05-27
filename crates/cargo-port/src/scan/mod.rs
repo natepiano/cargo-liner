@@ -241,7 +241,6 @@ impl BackgroundMsg {
             | Self::CratesIoVersion { path, .. }      // package.crates_version
             | Self::RepoMeta { path, .. }              // git.stars / git.description
             | Self::Submodules { path, .. }            // submodules detail
-            | Self::LintStatus { path, .. }            // lints
             | Self::LintStartupStatus { path, .. } => Some(path.as_path()),
 
             // Discovery/refresh of an item is detail-relevant for that
@@ -270,6 +269,10 @@ impl BackgroundMsg {
             | Self::RepoFetchComplete { .. }
             | Self::CratesIoFetchQueued { .. }
             | Self::CratesIoFetchComplete { .. }
+            // Live lint statuses resolve the lint-owning project before
+            // invalidating detail panes; doing it in the handler keeps
+            // owner remaps and toast state tied to the same model update.
+            | Self::LintStatus { .. }
             // Cache pruning and cache usage refreshes are internal to
             // the lint subsystem.
             | Self::LintCachePruned { .. }

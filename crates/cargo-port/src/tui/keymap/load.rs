@@ -12,6 +12,7 @@ use crossterm::event::KeyModifiers;
 use toml::Table;
 use toml::Value;
 use tui_pane::Action;
+use tui_pane::KeySequence;
 
 use super::KeyBind;
 use super::ScopeMap;
@@ -40,6 +41,7 @@ const LEGACY_CLEAN_SCOPES: [&str; 6] = ["project_list", "package", "git", "targe
 pub struct KeymapLoadResult {
     pub(crate) keymap:          ResolvedKeymap,
     pub(crate) errors:          Vec<KeymapError>,
+    pub(crate) warnings:        Vec<String>,
     pub(crate) missing_actions: Vec<String>,
 }
 
@@ -161,6 +163,7 @@ pub(crate) fn load_keymap(vim_mode: NavigationKeys) -> KeymapLoadResult {
         return KeymapLoadResult {
             keymap:          ResolvedKeymap::defaults(),
             errors:          Vec::new(),
+            warnings:        Vec::new(),
             missing_actions: Vec::new(),
         };
     };
@@ -173,6 +176,7 @@ pub(crate) fn load_keymap(vim_mode: NavigationKeys) -> KeymapLoadResult {
         return KeymapLoadResult {
             keymap:          ResolvedKeymap::defaults(),
             errors:          Vec::new(),
+            warnings:        Vec::new(),
             missing_actions: Vec::new(),
         };
     }
@@ -188,6 +192,7 @@ pub(crate) fn load_keymap(vim_mode: NavigationKeys) -> KeymapLoadResult {
                     key:    String::new(),
                     reason: KeymapErrorReason::Parse(format!("read error: {e}")),
                 }],
+                warnings:        Vec::new(),
                 missing_actions: Vec::new(),
             };
         },
@@ -204,6 +209,7 @@ pub(crate) fn load_keymap(vim_mode: NavigationKeys) -> KeymapLoadResult {
                     key:    String::new(),
                     reason: KeymapErrorReason::Parse(format!("TOML parse error: {e}")),
                 }],
+                warnings:        Vec::new(),
                 missing_actions: Vec::new(),
             };
         },
@@ -236,6 +242,7 @@ pub(crate) fn load_keymap_from_str(toml_str: &str, vim_mode: NavigationKeys) -> 
                     key:    String::new(),
                     reason: KeymapErrorReason::Parse(format!("TOML parse error: {e}")),
                 }],
+                warnings:        Vec::new(),
                 missing_actions: Vec::new(),
             };
         },
@@ -455,11 +462,13 @@ fn resolve_from_table(table: &Table, vim_mode: NavigationKeys) -> KeymapLoadResu
     let defaults = ResolvedKeymap::defaults();
     let mut keymap = ResolvedKeymap::default();
     let mut errors = Vec::new();
+    let mut warnings = Vec::new();
     let mut missing_actions = Vec::new();
 
     let mut ctx = ScopeResolveContext {
         table,
         errors: &mut errors,
+        warnings: &mut warnings,
         missing_actions: &mut missing_actions,
         vim_mode,
     };
@@ -468,6 +477,7 @@ fn resolve_from_table(table: &Table, vim_mode: NavigationKeys) -> KeymapLoadResu
     KeymapLoadResult {
         keymap,
         errors,
+        warnings,
         missing_actions,
     }
 }
@@ -536,6 +546,7 @@ fn resolve_pane_scopes(
 struct ScopeResolveContext<'a> {
     table:           &'a Table,
     errors:          &'a mut Vec<KeymapError>,
+    warnings:        &'a mut Vec<String>,
     missing_actions: &'a mut Vec<String>,
     vim_mode:        NavigationKeys,
 }
@@ -568,58 +579,143 @@ fn resolve_scope<A: Copy + Eq + std::hash::Hash>(
     // Resolve each action.
     for &action in all_actions {
         let toml_key = to_toml_key(action);
-        let raw_value = scope_table
-            .and_then(|st| st.get(toml_key))
-            .and_then(toml::Value::as_str);
+        let raw_value = scope_table.and_then(|st| st.get(toml_key));
+        let bind_result = parse_action_binds(raw_value);
 
-        let bind_result = raw_value.map(|s| {
-            KeyBind::parse(s)
-                .map(|kb| kb.canonicalize_code(super::canonical_code))
-                .map_err(|e| e.to_string())
-        });
-
-        let (bind, error) = match bind_result {
-            Some(Ok(bind)) => {
-                // Validate the parsed binding.
-                if is_vim_reserved(&bind, ctx.vim_mode) {
-                    (None, Some(KeymapErrorReason::ReservedForVimMode))
-                } else if let Some(&existing) = target.by_key.get(&bind) {
-                    (
-                        None,
-                        Some(KeymapErrorReason::ConflictWithinScope(
-                            to_toml_key(existing).to_string(),
-                        )),
+        let inserted = if let Some(parsed) = bind_result {
+            let mut inserted = false;
+            let mut action_errors = parsed
+                .errors
+                .into_iter()
+                .map(|e| {
+                    keymap_error(
+                        scope_name,
+                        toml_key,
+                        raw_value.map(keymap_value_string),
+                        KeymapErrorReason::Parse(e),
                     )
+                })
+                .collect::<Vec<_>>();
+            for bind in parsed.binds {
+                if is_vim_reserved(&bind, ctx.vim_mode) {
+                    action_errors.push(keymap_error(
+                        scope_name,
+                        toml_key,
+                        Some(bind.display()),
+                        KeymapErrorReason::ReservedForVimMode,
+                    ));
+                } else if let Some(&existing) = target.by_key.get(&bind) {
+                    action_errors.push(keymap_error(
+                        scope_name,
+                        toml_key,
+                        Some(bind.display()),
+                        KeymapErrorReason::ConflictWithinScope(to_toml_key(existing).to_string()),
+                    ));
                 } else {
-                    (Some(bind), None)
+                    target.insert(bind, action);
+                    inserted = true;
                 }
-            },
-            Some(Err(e)) => (None, Some(KeymapErrorReason::Parse(e))),
-            None => {
-                // Key missing from TOML — record and use default.
-                ctx.missing_actions.push(format!("{scope_name}.{toml_key}"));
-                (None, None)
-            },
+            }
+            if inserted {
+                ctx.warnings
+                    .extend(action_errors.iter().map(ignored_secondary_binding_warning));
+            } else {
+                ctx.errors.extend(action_errors);
+            }
+            inserted
+        } else {
+            // Key missing from TOML — record and use default.
+            ctx.missing_actions.push(format!("{scope_name}.{toml_key}"));
+            false
         };
 
-        if let Some(reason) = error {
-            ctx.errors.push(KeymapError {
-                scope: scope_name.to_string(),
-                action: toml_key.to_string(),
-                key: raw_value.unwrap_or("").to_string(),
-                reason,
-            });
-        }
-
-        if let Some(bind) = bind {
-            target.insert(bind, action);
-        } else {
+        if !inserted {
             // Fall back to default binding.
             if let Some(default_bind) = defaults.key_for(action) {
                 target.insert(*default_bind, action);
             }
         }
     }
+}
+
+struct ParsedActionBinds {
+    binds:  Vec<KeyBind>,
+    errors: Vec<String>,
+}
+
+fn parse_action_binds(value: Option<&Value>) -> Option<ParsedActionBinds> {
+    let value = value?;
+    match value {
+        Value::String(s) => Some(parsed_action_bind(s)),
+        Value::Array(items) => {
+            let mut binds = Vec::with_capacity(items.len());
+            let mut errors = Vec::new();
+            for item in items {
+                let Some(s) = item.as_str() else {
+                    errors.push("array entries must be strings".to_string());
+                    continue;
+                };
+                let parsed = parsed_action_bind(s);
+                binds.extend(parsed.binds);
+                errors.extend(parsed.errors);
+            }
+            Some(ParsedActionBinds { binds, errors })
+        },
+        _ => Some(ParsedActionBinds {
+            binds:  Vec::new(),
+            errors: vec!["expected string or array of strings".to_string()],
+        }),
+    }
+}
+
+fn parsed_action_bind(value: &str) -> ParsedActionBinds {
+    match parse_action_bind(value) {
+        Ok(bind) => ParsedActionBinds {
+            binds:  bind.into_iter().collect(),
+            errors: Vec::new(),
+        },
+        Err(err) => ParsedActionBinds {
+            binds:  Vec::new(),
+            errors: vec![err],
+        },
+    }
+}
+
+fn parse_action_bind(value: &str) -> Result<Option<KeyBind>, String> {
+    if value.is_empty() {
+        return Ok(None);
+    }
+    KeySequence::parse(value)
+        .map(|sequence| {
+            sequence
+                .single_key()
+                .map(|kb| kb.canonicalize_code(super::canonical_code))
+        })
+        .map_err(|e| e.to_string())
+}
+
+fn keymap_error(
+    scope: &str,
+    action: &str,
+    key: Option<String>,
+    reason: KeymapErrorReason,
+) -> KeymapError {
+    KeymapError {
+        scope: scope.to_string(),
+        action: action.to_string(),
+        key: key.unwrap_or_default(),
+        reason,
+    }
+}
+
+fn ignored_secondary_binding_warning(err: &KeymapError) -> String {
+    let guidance = match err.reason {
+        KeymapErrorReason::ReservedForVimMode => {
+            "Remove it from keymap.toml or disable vim navigation."
+        },
+        _ => "Remove or fix it in keymap.toml.",
+    };
+    format!("Ignored secondary binding {err}. {guidance}")
 }
 
 fn keymap_value_string(value: &Value) -> String {
@@ -976,6 +1072,117 @@ clear_cache = "d"
             result.missing_actions.is_empty(),
             "default toml should have no missing actions: {:?}",
             result.missing_actions
+        );
+    }
+
+    #[test]
+    fn app_side_loader_accepts_array_bindings_without_marking_actions_missing() {
+        let toml = r#"
+[project_list]
+collapse_all = "-"
+collapse_row = ["shift-left", "h"]
+expand_all   = "+"
+expand_row   = ["shift-right", "l"]
+
+[package]
+activate = "enter"
+
+[git]
+activate = "enter"
+
+[targets]
+activate      = "enter"
+release_build = "r"
+
+[ci_runs]
+activate    = "enter"
+clear_cache = "d"
+fetch_more  = "f"
+show_all    = "a"
+show_branch = "b"
+
+[lints]
+activate      = "enter"
+clear_history = "d"
+"#;
+        let result = load_keymap_from_str(toml, NavigationKeys::ArrowsOnly);
+
+        assert!(
+            result.missing_actions.is_empty(),
+            "array-valued bindings are present, not missing: {:?}",
+            result.missing_actions
+        );
+        assert!(result.errors.is_empty());
+        assert_eq!(
+            result
+                .keymap
+                .project_list
+                .action_for(&KeyBind::from(KeyCode::Char('h'))),
+            Some(ProjectListAction::CollapseRow)
+        );
+        assert_eq!(
+            result
+                .keymap
+                .project_list
+                .action_for(&KeyBind::from_parts(KeyCode::Left, KeyModifiers::SHIFT,)),
+            Some(ProjectListAction::CollapseRow)
+        );
+    }
+
+    #[test]
+    fn vim_reserved_secondary_array_binding_does_not_error_when_primary_is_valid() {
+        let toml = r#"
+[project_list]
+collapse_all = "-"
+collapse_row = ["shift-left", "h"]
+expand_all   = "+"
+expand_row   = ["shift-right", "l"]
+
+[package]
+activate = "enter"
+
+[git]
+activate = "enter"
+
+[targets]
+activate      = "enter"
+release_build = "r"
+
+[ci_runs]
+activate    = "enter"
+clear_cache = "d"
+fetch_more  = "f"
+show_all    = "a"
+show_branch = "b"
+
+[lints]
+activate      = "enter"
+clear_history = "d"
+"#;
+        let result = load_keymap_from_str(toml, NavigationKeys::ArrowsAndVim);
+
+        assert!(result.errors.is_empty());
+        assert_eq!(
+            result.warnings,
+            vec![
+                "Ignored secondary binding project_list.expand_row: \"l\" — reserved for vim navigation. Remove it from keymap.toml or disable vim navigation.",
+                "Ignored secondary binding project_list.collapse_row: \"h\" — reserved for vim navigation. Remove it from keymap.toml or disable vim navigation.",
+            ],
+        );
+        assert!(result.missing_actions.is_empty());
+        assert_eq!(
+            result
+                .keymap
+                .project_list
+                .action_for(&KeyBind::from_parts(KeyCode::Right, KeyModifiers::SHIFT,)),
+            Some(ProjectListAction::ExpandRow)
+        );
+        assert_eq!(
+            result
+                .keymap
+                .project_list
+                .action_for(&KeyBind::from(KeyCode::Char('l'))),
+            None
         );
     }
 

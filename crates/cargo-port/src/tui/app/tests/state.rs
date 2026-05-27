@@ -595,28 +595,107 @@ fn startup_git_seen_marks_owner_git_directory_for_member_updates() {
 
 #[test]
 fn lint_toast_reuses_existing_on_restart() {
-    let project = make_project(Some("a"), "~/a");
-    let mut app = make_app(std::slice::from_ref(&project));
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let project_dir = temp_dir.path().join("a");
+    std::fs::create_dir_all(&project_dir).expect("project dir");
+    std::fs::write(
+        project_dir.join("Cargo.toml"),
+        "[package]\nname = \"a\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("cargo toml");
+    let project = item_from_project_dir(&project_dir);
+    let project_path = project.path().clone();
+    let mut app = make_app(&[project]);
+    app.config.current_mut().lint.enabled = true;
+    app.config.current_mut().lint.include = vec![project_path.to_string_lossy().to_string()];
     app.scan.state.phase = ScanPhase::Complete;
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
-        path:   project.path().to_path_buf().into(),
+        path:   project_path.clone(),
         status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
     });
     let first_toast = app.lint.running().toast;
     assert!(first_toast.is_some());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
-        path:   project.path().to_path_buf().into(),
+        path:   project_path.clone(),
         status: LintStatus::Passed(parse_ts("2026-03-30T14:23:18-05:00")),
     });
     assert_eq!(app.lint.running().toast, first_toast);
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
-        path:   project.path().to_path_buf().into(),
+        path:   project_path,
         status: LintStatus::Running(parse_ts("2026-03-30T14:24:18-05:00")),
     });
     assert_eq!(app.lint.running().toast, first_toast);
+}
+
+#[test]
+fn lint_toast_prunes_entries_that_are_not_running_in_project_state() {
+    let project = make_project(Some("a"), "~/a");
+    let mut app = make_app(std::slice::from_ref(&project));
+    app.lint
+        .running_mut()
+        .insert(test_path("~/a"), Instant::now());
+
+    app.handle_bg_msg(BackgroundMsg::LintStatus {
+        path:   test_path("~/a"),
+        status: LintStatus::NoLog,
+    });
+
+    assert!(app.lint.running().running.is_empty());
+    assert!(lint_toast_running_items(&app).is_empty());
+}
+
+#[test]
+fn live_lint_status_updates_project_model_and_detail_cache() {
+    let project = make_project(Some("a"), "~/a");
+    let project_path = project.path().clone();
+    let mut app = make_app(&[project]);
+    app.config.current_mut().lint.enabled = true;
+    app.scan.state.phase = ScanPhase::Complete;
+    app.project_list.set_cursor(0);
+    app.sync_selected_project();
+    app.ensure_detail_cached();
+
+    assert!(matches!(
+        &app.panes.package.content().unwrap().lint_display,
+        panes::LintDisplay::NoRuns
+    ));
+    let generation_before = app.scan.generation();
+
+    app.handle_bg_msg(BackgroundMsg::LintStatus {
+        path:   project_path.clone(),
+        status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
+    });
+
+    assert!(
+        app.scan.generation() > generation_before,
+        "live lint status must invalidate cached detail panes"
+    );
+    assert!(matches!(
+        crate::tui::state::Lint::status_for_root(&app.project_list[0].item),
+        LintStatus::Running(_)
+    ));
+    assert!(
+        app.lint
+            .running()
+            .running
+            .contains_key(project_path.as_path())
+    );
+
+    app.ensure_detail_cached();
+    let display = app.panes.package.content().unwrap().lint_display.clone();
+    assert!(
+        matches!(
+            display,
+            panes::LintDisplay::Runs {
+                count:  0,
+                status: LintStatus::Running(_),
+            }
+        ),
+        "{display:?}"
+    );
 }
 
 #[test]
@@ -1728,6 +1807,23 @@ fn metadata_toast_items(app: &App) -> Vec<String> {
             toast
                 .tracked_items()
                 .iter()
+                .map(|item| item.label.clone())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn lint_toast_running_items(app: &App) -> Vec<String> {
+    app.framework
+        .toasts
+        .active_now()
+        .iter()
+        .find(|toast| toast.title() == "Lints")
+        .map(|toast| {
+            toast
+                .tracked_items()
+                .iter()
+                .filter(|item| item.linger_progress.is_none())
                 .map(|item| item.label.clone())
                 .collect::<Vec<_>>()
         })

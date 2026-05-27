@@ -1,4 +1,7 @@
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::Mutex;
 
 use chrono::DateTime;
 use chrono::Utc;
@@ -13,6 +16,7 @@ use super::status;
 use super::types::LintCommand;
 use super::types::LintCommandStatus;
 use super::*;
+use crate::channel;
 
 fn run(status: LintRunStatus) -> LintRun {
     LintRun {
@@ -241,9 +245,13 @@ fn run_finalize_guard_clears_only_unfinished_running() {
         &run(LintRunStatus::Running),
     )
     .expect("write running");
+    let status_cache = Arc::new(Mutex::new(HashMap::new()));
+    let (background_tx, _background_rx) = channel::unbounded();
     drop(RunFinalizeGuard {
-        cache_root:   cache_dir.path(),
-        project_root: project_dir.path(),
+        cache_root:    cache_dir.path(),
+        project_root:  project_dir.path(),
+        status_cache:  &status_cache,
+        background_tx: &background_tx,
     });
     assert!(
         !latest_path_under(cache_dir.path(), project_dir.path()).exists(),
@@ -257,8 +265,10 @@ fn run_finalize_guard_clears_only_unfinished_running() {
     )
     .expect("write passed");
     drop(RunFinalizeGuard {
-        cache_root:   cache_dir.path(),
-        project_root: project_dir.path(),
+        cache_root:    cache_dir.path(),
+        project_root:  project_dir.path(),
+        status_cache:  &status_cache,
+        background_tx: &background_tx,
     });
     assert!(
         latest_path_under(cache_dir.path(), project_dir.path()).exists(),

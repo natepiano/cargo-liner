@@ -251,6 +251,14 @@ impl RootItem {
         }
     }
 
+    pub(crate) fn lint_owner_path(&self, path: &Path) -> Option<&AbsolutePath> {
+        match self {
+            Self::Rust(p) => p.lint_owner_path(path),
+            Self::NonRust(_) => None,
+            Self::Worktrees(g) => g.iter_entries().find_map(|p| p.lint_owner_path(path)),
+        }
+    }
+
     /// Lint runs owned by the parent of a vendored crate at `path`.
     ///
     /// Vendored crates do not own lint state (see `VendoredPackage`), but the

@@ -53,71 +53,78 @@ impl App {
         self.maybe_log_startup_phase_completions();
     }
     pub(super) fn handle_lint_status_msg(&mut self, path: &Path, status: LintStatus) {
-        let abs = AbsolutePath::from(path);
+        let Some(owner_path) = self.project_list.lint_owner_path(path) else {
+            tracing::warn!(
+                path = %path.display(),
+                status = ?status.kind(),
+                "lint_status_dropped_no_owner"
+            );
+            self.sync_running_lint_toast();
+            return;
+        };
+        let owner_abs = owner_path;
+        let status_kind = status.kind();
         let status_started = matches!(status, LintStatus::Running(_));
         let status_is_terminal = matches!(
             status,
             LintStatus::Passed(_) | LintStatus::Failed(_) | LintStatus::Stale | LintStatus::NoLog
         );
-        if !self.project_list.is_rust_at_path(path) {
-            if let Some(lr) = self.project_list.lint_at_path_mut(path) {
-                lr.clear_runs();
-            }
-            return;
-        }
-        let mut is_rust = false;
-        self.project_list.for_each_leaf_path(|p, rust| {
-            if p == path {
-                is_rust = rust;
-            }
-        });
         let eligible = lint::project_is_eligible(
             &self.config.current().lint,
-            &path.to_string_lossy(),
-            path,
-            is_rust,
+            &owner_abs.as_path().to_string_lossy(),
+            owner_abs.as_path(),
+            true,
         );
-        if eligible {
-            if let Some(lr) = self.project_list.lint_at_path_mut(path) {
+        let applied_to_model = self
+            .project_list
+            .lint_at_path_mut(owner_abs.as_path())
+            .is_some_and(|lr| {
                 lr.set_status(status);
-            }
-            if status_is_terminal {
-                self.reload_lint_history(path);
-            }
-        } else {
-            if let Some(lr) = self.project_list.lint_at_path_mut(path) {
-                lr.clear_runs();
-            }
-            self.lint.running_mut().remove(path);
-        }
-        if status_started {
-            self.lint.running_mut().insert(abs, Instant::now());
-        }
+                true
+            });
         if status_is_terminal {
-            self.lint.running_mut().remove(path);
+            self.reload_lint_history(owner_abs.as_path());
+        }
+        if applied_to_model {
+            self.scan.bump_generation();
+        } else {
+            tracing::warn!(
+                path = %path.display(),
+                owner = %owner_abs,
+                status = ?status_kind,
+                eligible,
+                "lint_status_owner_missing_model_slot"
+            );
         }
         self.sync_running_lint_toast();
+        tracing::info!(
+            path = %path.display(),
+            owner = %owner_abs,
+            status = ?status_kind,
+            eligible,
+            applied_to_model,
+            running_lints = self.lint.running().running.len(),
+            generation = self.scan.generation(),
+            "lint_status_applied"
+        );
         if !self.scan.is_complete() {
             return;
         }
         if status_started {
-            let abs_path = AbsolutePath::from(path);
             let expected = self.startup.lint_phase.ensure_expected();
-            if expected.insert(abs_path) {
+            if expected.insert(owner_abs.clone()) {
                 self.startup.lint_phase.complete_at = None;
             }
         }
-        if status_is_terminal {
-            let abs_path = AbsolutePath::from(path);
-            if self
+        if status_is_terminal
+            && self
                 .startup
                 .lint_phase
                 .expected
                 .as_ref()
-                .is_some_and(|expected| expected.contains(path))
-            {
-                self.startup.lint_phase.seen.insert(abs_path);
-            }
+                .is_some_and(|expected| expected.contains(owner_abs.as_path()))
+        {
+            self.startup.lint_phase.seen.insert(owner_abs);
         }
         self.maybe_log_startup_phase_completions();
     }

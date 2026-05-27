@@ -48,6 +48,7 @@ mod async_tasks;
 mod ci;
 mod construct;
 mod dismiss;
+mod lint_registration;
 mod navigation;
 mod phase_state;
 mod running_targets;

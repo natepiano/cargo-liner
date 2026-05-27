@@ -1,8 +1,8 @@
 //! The `Keymap` subsystem.
 //!
 //! Owns App's keymap-file state: `current_keymap`, `keymap_path`,
-//! `keymap_last_seen`, and `keymap_diagnostics_id` (the toast id
-//! used to dismiss diagnostics from a previous parse failure).
+//! `keymap_last_seen`, keymap diagnostics/warning toast ids, and
+//! the current parsed keymap.
 //! Composes [`tui_pane::WatchedFile<T>`] for the
 //! load-watch-reload contract.
 
@@ -19,6 +19,7 @@ use crate::tui::keymap::ResolvedKeymap;
 pub struct Keymap {
     file:           WatchedFile<ResolvedKeymap>,
     diagnostics_id: Option<ToastId>,
+    warnings_id:    Option<ToastId>,
 }
 
 impl Keymap {
@@ -26,6 +27,7 @@ impl Keymap {
         Self {
             file:           WatchedFile::new(path, current),
             diagnostics_id: None,
+            warnings_id:    None,
         }
     }
 
@@ -58,6 +60,10 @@ impl Keymap {
     pub const fn set_diagnostics_id(&mut self, id: Option<ToastId>) { self.diagnostics_id = id; }
 
     pub const fn take_diagnostics_id(&mut self) -> Option<ToastId> { self.diagnostics_id.take() }
+
+    pub const fn set_warnings_id(&mut self, id: Option<ToastId>) { self.warnings_id = id; }
+
+    pub const fn take_warnings_id(&mut self) -> Option<ToastId> { self.warnings_id.take() }
 }
 
 #[cfg(test)]
@@ -73,6 +79,7 @@ mod tests {
     fn new_seeds_diagnostics_id_to_none() {
         let mut keymap = Keymap::new(None, ResolvedKeymap::defaults());
         assert!(keymap.take_diagnostics_id().is_none());
+        assert!(keymap.take_warnings_id().is_none());
         assert!(keymap.path().is_none());
     }
 
@@ -89,6 +96,18 @@ mod tests {
     }
 
     #[test]
+    fn warnings_id_round_trip_set_take() {
+        let mut keymap = Keymap::new(None, ResolvedKeymap::defaults());
+        keymap.set_warnings_id(Some(ToastId(42)));
+        let taken = keymap.take_warnings_id();
+        assert_eq!(taken, Some(ToastId(42)));
+        assert!(
+            keymap.take_warnings_id().is_none(),
+            "take must clear the slot"
+        );
+    }
+
+    #[test]
     fn replace_current_swaps_in_new_keymap() {
         let mut keymap = Keymap::new(None, ResolvedKeymap::defaults());
         let next = ResolvedKeymap::defaults();
@@ -97,6 +116,7 @@ mod tests {
         // contract is just that replace_current mutates in place
         // without touching the stamp or diagnostics_id.
         assert!(keymap.take_diagnostics_id().is_none());
+        assert!(keymap.take_warnings_id().is_none());
         assert!(keymap.path().is_none());
     }
 }

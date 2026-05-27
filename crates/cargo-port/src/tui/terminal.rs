@@ -240,13 +240,14 @@ pub fn run() -> ExitCode {
         restart_self();
     }
 
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
+    let status = match result {
+        Ok(()) => 0,
         Err(e) => {
             report_fatal(&format!("{e}"));
-            ExitCode::FAILURE
+            1
         },
-    }
+    };
+    std::process::exit(status);
 }
 
 /// Replace the current process with a fresh instance of the same binary.

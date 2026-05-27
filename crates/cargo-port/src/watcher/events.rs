@@ -220,6 +220,14 @@ pub(super) fn handle_notify_event(
             && let Some(lint_trigger) =
                 lint::classify_event_path(&entry.abs_path, event.kind, event_path)
         {
+            tracing::debug!(
+                project_root = %entry.abs_path.display(),
+                event_path = %event_path.display(),
+                trigger = ?lint_trigger.trigger,
+                event_kind = ?lint_trigger.event_kind,
+                removal = lint_trigger.removal,
+                "watcher_lint_trigger"
+            );
             lint_runtime.lint_trigger(lint_trigger);
         }
         if let Some(dispatch) = metadata_dispatch

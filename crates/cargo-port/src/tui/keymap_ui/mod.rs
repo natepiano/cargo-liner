@@ -309,7 +309,8 @@ fn binds_for_scope_action(app: &App, scope: &str, action_key: &str) -> Vec<KeySe
         return app_global_binds_for_action(app, action_key);
     }
     if scope == "navigation" {
-        return navigation_binds_for_action(app, action_key);
+        let binds = navigation_binds_for_action(app, action_key);
+        return without_generated_vim_extras(app, scope, action_key, binds);
     }
     if scope == "overlay" {
         if let Some(action) = tui_pane::OverlayAction::from_toml_key(action_key) {
@@ -324,10 +325,62 @@ fn binds_for_scope_action(app: &App, scope: &str, action_key: &str) -> Vec<KeySe
         if let Some(name) = keymap_scope_name(app, *id)
             && name == scope
         {
-            return keymap.keys_for_toml_key(*id, action_key);
+            let binds = keymap.keys_for_toml_key(*id, action_key);
+            return without_generated_vim_extras(app, scope, action_key, binds);
         }
     }
     Vec::new()
+}
+
+fn without_generated_vim_extras(
+    app: &App,
+    scope: &str,
+    action_key: &str,
+    binds: Vec<KeySequence>,
+) -> Vec<KeySequence> {
+    if !app.config.navigation_keys().uses_vim() {
+        return binds;
+    }
+    binds
+        .into_iter()
+        .filter(|bind| !is_generated_vim_extra(scope, action_key, bind))
+        .collect()
+}
+
+fn is_generated_vim_extra(scope: &str, action_key: &str, bind: &KeySequence) -> bool {
+    if scope == "navigation" {
+        return is_navigation_generated_vim_extra(action_key, bind);
+    }
+    if scope != "project_list" {
+        return false;
+    }
+    let Some(key) = bind.single_key() else {
+        return false;
+    };
+    key.mods == KeyModifiers::NONE
+        && matches!(
+            (action_key, key.code),
+            ("expand_row", KeyCode::Char('l')) | ("collapse_row", KeyCode::Char('h'))
+        )
+}
+
+fn is_navigation_generated_vim_extra(action_key: &str, bind: &KeySequence) -> bool {
+    let Some(key) = bind.single_key() else {
+        return action_key == "home"
+            && bind.keys() == [FrameworkKeyBind::from('g'), FrameworkKeyBind::from('g')];
+    };
+    matches!(
+        (action_key, key.code, key.mods),
+        ("left", KeyCode::Char('h'), KeyModifiers::NONE)
+            | ("down", KeyCode::Char('j'), KeyModifiers::NONE)
+            | ("up", KeyCode::Char('k'), KeyModifiers::NONE)
+            | ("right", KeyCode::Char('l'), KeyModifiers::NONE)
+            | ("end", KeyCode::Char('G'), KeyModifiers::NONE)
+            | ("half_page_up", KeyCode::Char('u'), KeyModifiers::CONTROL)
+            | ("half_page_down", KeyCode::Char('d'), KeyModifiers::CONTROL)
+            | ("page_up", KeyCode::Char('b'), KeyModifiers::CONTROL)
+            | ("page_down", KeyCode::Char('f'), KeyModifiers::CONTROL)
+    )
 }
 
 const fn keymap_scope_name(_app: &App, app_pane_id: AppPaneId) -> Option<&'static str> {

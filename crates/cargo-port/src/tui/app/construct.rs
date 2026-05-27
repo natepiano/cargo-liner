@@ -302,6 +302,11 @@ impl App {
         self.force_settings_if_unconfigured();
         self.prune_inactive_project_state();
         self.register_existing_projects();
+        let lint_registered = self.register_lint_for_root_items();
+        tracing::info!(
+            count = lint_registered,
+            "startup_lint_runtime_registered_initial_projects"
+        );
         if !self.project_list.is_empty() {
             self.finish_watcher_registration_batch();
         }

@@ -4,6 +4,7 @@ use std::time::Instant;
 use ratatui::style::Color;
 use tui_pane::Appearance;
 use tui_pane::ToastStyle::Error;
+use tui_pane::ToastStyle::Warning;
 
 use crate::config;
 use crate::config::CargoPortConfig;
@@ -57,17 +58,23 @@ impl App {
         // are `UnknownAction`s already covered by the framework
         // warnings; keep any other legacy diagnostics in case the two
         // loaders disagree.
-        let mut diagnostics: Vec<String> = result
+        let diagnostics: Vec<String> = result
             .errors
             .iter()
             .filter(|err| !matches!(err.reason, KeymapErrorReason::UnknownAction))
             .map(ToString::to_string)
             .collect();
-        diagnostics.extend(self.framework_keymap.unknown_warnings().iter().cloned());
+        let mut warnings = result.warnings;
+        warnings.extend(self.framework_keymap.unknown_warnings().iter().cloned());
         if diagnostics.is_empty() {
             self.dismiss_keymap_diagnostics();
         } else {
             self.show_keymap_diagnostics(&diagnostics);
+        }
+        if warnings.is_empty() {
+            self.dismiss_keymap_warnings();
+        } else {
+            self.show_keymap_warnings(&warnings);
         }
         if !result.missing_actions.is_empty() {
             keymap_ui::save_current_keymap_to_disk(self);
@@ -97,6 +104,7 @@ impl App {
                     reason: Parse(format!("read error: {e}")),
                 }
                 .to_string()]);
+                self.dismiss_keymap_warnings();
                 return;
             },
         };
@@ -114,6 +122,11 @@ impl App {
         } else {
             let messages: Vec<String> = result.errors.iter().map(ToString::to_string).collect();
             self.show_keymap_diagnostics(&messages);
+        }
+        if result.warnings.is_empty() {
+            self.dismiss_keymap_warnings();
+        } else {
+            self.show_keymap_warnings(&result.warnings);
         }
 
         if !result.missing_actions.is_empty() {
@@ -149,6 +162,29 @@ impl App {
     }
     pub(super) fn dismiss_keymap_diagnostics(&mut self) {
         if let Some(id) = self.keymap.take_diagnostics_id() {
+            self.framework.toasts.dismiss(id);
+        }
+    }
+    pub(super) fn show_keymap_warnings(&mut self, messages: &[String]) {
+        self.dismiss_keymap_warnings();
+
+        let body = messages.join("\n");
+        let action_path = self
+            .keymap
+            .path()
+            .map(|p| AbsolutePath::from(p.to_path_buf()));
+
+        let id = self.framework.toasts.push_persistent(
+            "Keymap warnings",
+            body,
+            Warning,
+            action_path.map(CargoPortToastAction::from),
+            1,
+        );
+        self.keymap.set_warnings_id(Some(id));
+    }
+    pub(super) fn dismiss_keymap_warnings(&mut self) {
+        if let Some(id) = self.keymap.take_warnings_id() {
             self.framework.toasts.dismiss(id);
         }
     }

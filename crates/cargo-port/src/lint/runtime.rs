@@ -185,7 +185,15 @@ fn supervisor_loop(
             },
             Ok(SupervisorMsg::RegisterProject { project }) => {
                 let abs_path = project.abs_path.clone();
-                if should_watch_project(&lint, &project) {
+                let accepted = should_watch_project(&lint, &project);
+                tracing::info!(
+                    path = %abs_path.display(),
+                    label = %project.project_label,
+                    is_rust = project.is_rust,
+                    accepted,
+                    "lint_supervisor_register_project"
+                );
+                if accepted {
                     workers.entry(abs_path.clone()).or_insert_with(|| {
                         spawn_project_worker(
                             project.project_label.clone(),
@@ -211,7 +219,23 @@ fn supervisor_loop(
             },
             Ok(SupervisorMsg::LintTriggered { event }) => {
                 if let Some(worker) = workers.get(&event.project_root) {
+                    tracing::debug!(
+                        project_root = %event.project_root.display(),
+                        trigger = ?event.trigger,
+                        event_kind = ?event.event_kind,
+                        removal = event.removal,
+                        "lint_supervisor_trigger_dispatch"
+                    );
                     let _ = worker.trigger_tx.send(event);
+                } else {
+                    tracing::warn!(
+                        project_root = %event.project_root.display(),
+                        trigger = ?event.trigger,
+                        event_kind = ?event.event_kind,
+                        removal = event.removal,
+                        workers = workers.len(),
+                        "lint_supervisor_trigger_dropped_no_worker"
+                    );
                 }
             },
             Err(_) => {
@@ -376,6 +400,13 @@ fn spawn_project_worker(
             });
 
             if let Ok(trigger) = trigger_rx.try_recv() {
+                tracing::debug!(
+                    path = %project_root.display(),
+                    trigger = ?trigger.trigger,
+                    event_kind = ?trigger.event_kind,
+                    removal = trigger.removal,
+                    "lint_worker_trigger_received"
+                );
                 next_run_at = Some(next_run_at.map_or_else(
                     || Instant::now() + trigger.debounce(),
                     |current| current.max(Instant::now() + trigger.debounce()),
@@ -384,6 +415,13 @@ fn spawn_project_worker(
 
             match trigger_rx.recv_timeout(timeout) {
                 Ok(trigger) => {
+                    tracing::debug!(
+                        path = %project_root.display(),
+                        trigger = ?trigger.trigger,
+                        event_kind = ?trigger.event_kind,
+                        removal = trigger.removal,
+                        "lint_worker_trigger_received"
+                    );
                     next_run_at = Some(next_run_at.map_or_else(
                         || Instant::now() + trigger.debounce(),
                         |current| current.max(Instant::now() + trigger.debounce()),
@@ -493,13 +531,27 @@ struct CommandExecution {
 /// terminal write strands the marker, and external readers (the `/clippy`
 /// cache check) wait on a run that will never finish.
 pub(super) struct RunFinalizeGuard<'a> {
-    pub(super) cache_root:   &'a Path,
-    pub(super) project_root: &'a Path,
+    pub(super) cache_root:    &'a Path,
+    pub(super) project_root:  &'a Path,
+    pub(super) status_cache:  &'a Arc<Mutex<HashMap<String, LintStatus>>>,
+    pub(super) background_tx: &'a Sender<BackgroundMsg>,
 }
 
 impl Drop for RunFinalizeGuard<'_> {
     fn drop(&mut self) {
-        let _ = read_write::clear_latest_if_running_under(self.cache_root, self.project_root);
+        let Ok(cleared) =
+            read_write::clear_latest_if_running_under(self.cache_root, self.project_root)
+        else {
+            return;
+        };
+        if cleared {
+            publish_status(
+                self.status_cache,
+                self.project_root,
+                read_status_from_disk(self.cache_root, self.project_root),
+                self.background_tx,
+            );
+        }
     }
 }
 
@@ -559,6 +611,8 @@ fn run_commands_for_project(
     let _finalize = RunFinalizeGuard {
         cache_root,
         project_root,
+        status_cache,
+        background_tx,
     };
     tracing::info!(
         path = project_label,
@@ -1220,6 +1274,43 @@ mod tests {
         let history_path = paths::history_path_under(cache_dir.path(), project_dir.path());
         assert!(!latest_path.exists());
         assert!(!history_path.exists());
+    }
+
+    #[test]
+    fn finalize_guard_publishes_terminal_status_for_stranded_running_marker() {
+        let cache_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            project_dir.path().join("Cargo.toml"),
+            "[package]\nname='demo'\nversion='0.1.0'\n",
+        )
+        .expect("write manifest");
+        let run = build_pending_run(&[], Local::now().to_rfc3339());
+        read_write::write_latest_under(cache_dir.path(), project_dir.path(), &run)
+            .expect("write running latest");
+        let status_cache = Arc::new(Mutex::new(HashMap::new()));
+        let (background_tx, background_rx) = channel::unbounded();
+
+        {
+            let _guard = RunFinalizeGuard {
+                cache_root:    cache_dir.path(),
+                project_root:  project_dir.path(),
+                status_cache:  &status_cache,
+                background_tx: &background_tx,
+            };
+        }
+
+        assert!(matches!(
+            background_rx.try_recv(),
+            Ok(BackgroundMsg::LintStatus {
+                status: LintStatus::NoLog,
+                ..
+            })
+        ));
+        assert!(matches!(
+            read_status_from_disk(cache_dir.path(), project_dir.path()),
+            LintStatus::NoLog
+        ));
     }
 
     #[test]

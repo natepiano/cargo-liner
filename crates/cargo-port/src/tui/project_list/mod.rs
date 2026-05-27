@@ -333,6 +333,47 @@ impl ProjectList {
             .find_map(|entry| entry.item.lint_at_path_mut(target))
     }
 
+    pub(super) fn lint_owner_path(&self, target: &Path) -> Option<AbsolutePath> {
+        self.roots
+            .values()
+            .find_map(|entry| entry.item.lint_owner_path(target))
+            .cloned()
+    }
+
+    pub(super) fn running_lint_paths(&self) -> Vec<AbsolutePath> {
+        let mut paths = Vec::new();
+        for entry in self.roots.values() {
+            match &entry.item {
+                RootItem::Rust(project) => {
+                    if project.visibility() == Visibility::Visible
+                        && matches!(
+                            project.lint_at_path(project.path()).map(LintRuns::status),
+                            Some(crate::lint::LintStatus::Running(_))
+                        )
+                    {
+                        paths.push(project.path().clone());
+                    }
+                },
+                RootItem::Worktrees(group) => {
+                    paths.extend(group.iter_entries().filter_map(|project| {
+                        if project.visibility() == Visibility::Visible
+                            && matches!(
+                                project.lint_at_path(project.path()).map(LintRuns::status),
+                                Some(crate::lint::LintStatus::Running(_))
+                            )
+                        {
+                            Some(project.path().clone())
+                        } else {
+                            None
+                        }
+                    }));
+                },
+                RootItem::NonRust(_) => {},
+            }
+        }
+        paths
+    }
+
     /// Top-level entry whose hierarchy contains `target`. One-shot
     /// replacement for the per-field per-path lookups used elsewhere.
     pub(super) fn entry_containing(&self, target: &Path) -> Option<&ProjectEntry> {

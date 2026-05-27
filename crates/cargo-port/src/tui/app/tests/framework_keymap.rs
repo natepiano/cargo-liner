@@ -802,6 +802,50 @@ fn framework_keymap_template_matches_golden_file() {
 }
 
 #[test]
+fn keymap_template_omits_generated_vim_bindings() {
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut cfg = CargoPortConfig::default();
+    cfg.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
+    let app = make_app_with_config_and_keymap_toml(&[project], &cfg, "");
+
+    let generated = keymap_ui::current_keymap_toml(&app);
+
+    assert!(generated.contains("down           = \"down\""));
+    assert!(generated.contains("left           = \"left\""));
+    assert!(generated.contains("collapse_row = \"left\""));
+    assert!(generated.contains("expand_row   = \"right\""));
+    assert!(!generated.contains("[\"down\", \"j\"]"));
+    assert!(!generated.contains("[\"left\", \"h\"]"));
+    assert!(!generated.contains("[\"shift-left\", \"h\"]"));
+    assert!(!generated.contains("[\"shift-right\", \"l\"]"));
+}
+
+#[test]
+fn startup_warns_for_ignored_reserved_vim_keymap_bindings() {
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut cfg = CargoPortConfig::default();
+    cfg.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
+    let app = make_app_with_config_and_keymap_toml(
+        &[project],
+        &cfg,
+        "[project_list]\ncollapse_row = [\"shift-left\", \"h\"]\nexpand_row = [\"shift-right\", \"l\"]\n",
+    );
+
+    let warnings = app
+        .framework
+        .toasts
+        .active_now()
+        .into_iter()
+        .filter(|toast| toast.title() == "Keymap warnings")
+        .collect::<Vec<_>>();
+
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].body().contains("project_list.expand_row"));
+    assert!(warnings[0].body().contains("project_list.collapse_row"));
+    assert!(!warnings[0].body().contains("using defaults"));
+}
+
+#[test]
 fn keymap_ui_save_preserves_framework_owned_scopes() {
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let toml_path = temp_dir.path().join("keymap.toml");
