@@ -15,6 +15,8 @@
 use super::constants::PREFIX_GROUP_COLLAPSED;
 use super::constants::PREFIX_MEMBER_INLINE;
 use super::constants::PREFIX_MEMBER_NAMED;
+use super::constants::PREFIX_MEMBER_VENDORED_INLINE;
+use super::constants::PREFIX_MEMBER_VENDORED_NAMED;
 use super::constants::PREFIX_ROOT_COLLAPSED;
 use super::constants::PREFIX_SUBMODULE;
 use super::constants::PREFIX_VENDORED;
@@ -23,6 +25,8 @@ use super::constants::PREFIX_WT_FLAT;
 use super::constants::PREFIX_WT_GROUP_COLLAPSED;
 use super::constants::PREFIX_WT_MEMBER_INLINE;
 use super::constants::PREFIX_WT_MEMBER_NAMED;
+use super::constants::PREFIX_WT_MEMBER_VENDORED_INLINE;
+use super::constants::PREFIX_WT_MEMBER_VENDORED_NAMED;
 use super::constants::PREFIX_WT_VENDORED;
 use crate::constants::IN_SYNC;
 use crate::constants::NO_REMOTE_SYNC;
@@ -127,16 +131,26 @@ fn observe_new_member_group_fit_widths(
 ) {
     let dw = columns::display_width;
     for group in groups {
-        let (inline_prefix, named_prefix, group_prefix) = if is_worktree {
+        let (
+            inline_prefix,
+            named_prefix,
+            member_vendored_inline_prefix,
+            member_vendored_named_prefix,
+            group_prefix,
+        ) = if is_worktree {
             (
                 PREFIX_WT_MEMBER_INLINE,
                 PREFIX_WT_MEMBER_NAMED,
+                PREFIX_WT_MEMBER_VENDORED_INLINE,
+                PREFIX_WT_MEMBER_VENDORED_NAMED,
                 PREFIX_WT_GROUP_COLLAPSED,
             )
         } else {
             (
                 PREFIX_MEMBER_INLINE,
                 PREFIX_MEMBER_NAMED,
+                PREFIX_MEMBER_VENDORED_INLINE,
+                PREFIX_MEMBER_VENDORED_NAMED,
                 PREFIX_GROUP_COLLAPSED,
             )
         };
@@ -148,6 +162,12 @@ fn observe_new_member_group_fit_widths(
             };
             observe_name_width(widths, dw(prefix) + dw(member.package_name().as_str()));
             widths.observe(COL_DISK, dw(&formatted_disk(member.disk_usage_bytes())));
+            let vendored_prefix = if group.is_named() {
+                member_vendored_named_prefix
+            } else {
+                member_vendored_inline_prefix
+            };
+            observe_typed_vendored_fit_widths(widths, member.vendored(), vendored_prefix);
         }
         if group.is_named() {
             let label = format!("{} ({})", group.group_name(), group.members().len());

@@ -29,6 +29,8 @@ use super::constants::PREFIX_GROUP_COLLAPSED;
 use super::constants::PREFIX_GROUP_EXPANDED;
 use super::constants::PREFIX_MEMBER_INLINE;
 use super::constants::PREFIX_MEMBER_NAMED;
+use super::constants::PREFIX_MEMBER_VENDORED_INLINE;
+use super::constants::PREFIX_MEMBER_VENDORED_NAMED;
 use super::constants::PREFIX_ROOT_COLLAPSED;
 use super::constants::PREFIX_ROOT_EXPANDED;
 use super::constants::PREFIX_ROOT_LEAF;
@@ -41,6 +43,8 @@ use super::constants::PREFIX_WT_GROUP_COLLAPSED;
 use super::constants::PREFIX_WT_GROUP_EXPANDED;
 use super::constants::PREFIX_WT_MEMBER_INLINE;
 use super::constants::PREFIX_WT_MEMBER_NAMED;
+use super::constants::PREFIX_WT_MEMBER_VENDORED_INLINE;
+use super::constants::PREFIX_WT_MEMBER_VENDORED_NAMED;
 use super::constants::PREFIX_WT_VENDORED;
 use super::lang;
 use super::pane_impls::ProjectListPane;
@@ -820,6 +824,42 @@ fn render_member_item(
     )
 }
 
+fn render_member_vendored_item(
+    ctx: &PaneRenderCtx<'_>,
+    node_index: usize,
+    group_index: usize,
+    member_index: usize,
+    vendored_index: usize,
+    child_sorted: &HashMap<usize, Vec<u64>>,
+    widths: &ProjectListWidths,
+) -> ListItem<'static> {
+    let item = &ctx.project_list[node_index];
+    let empty = Vec::new();
+    let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
+    let (vendored, is_named) = match &item.item {
+        RootItem::Rust(RustProject::Workspace(ws)) => {
+            let group = &ws.groups()[group_index];
+            let member = &group.members()[member_index];
+            (member.vendored().get(vendored_index), group.is_named())
+        },
+        RootItem::Worktrees(wtg) if !wtg.renders_as_group() => {
+            let Some(ws) = wtg.single_live_workspace() else {
+                return render_missing_vendored(PREFIX_MEMBER_VENDORED_INLINE, widths);
+            };
+            let group = &ws.groups()[group_index];
+            let member = &group.members()[member_index];
+            (member.vendored().get(vendored_index), group.is_named())
+        },
+        _ => (None, false),
+    };
+    let prefix = if is_named {
+        PREFIX_MEMBER_VENDORED_NAMED
+    } else {
+        PREFIX_MEMBER_VENDORED_INLINE
+    };
+    render_vendored_child(ctx, item.path(), vendored, prefix, sorted, widths)
+}
+
 fn render_vendored_item(
     ctx: &PaneRenderCtx<'_>,
     node_index: usize,
@@ -864,6 +904,35 @@ fn render_vendored_item(
                 widths,
             )
         },
+    )
+}
+
+fn render_missing_vendored(prefix: &'static str, widths: &ProjectListWidths) -> ListItem<'static> {
+    let row = columns::build_group_header_cells(prefix, "");
+    ListItem::new(columns::row_to_line(&row, widths))
+}
+
+fn render_vendored_child(
+    ctx: &PaneRenderCtx<'_>,
+    inherited_deleted_path: &Path,
+    vendored: Option<&VendoredPackage>,
+    prefix: &'static str,
+    sorted: &[u64],
+    widths: &ProjectListWidths,
+) -> ListItem<'static> {
+    let Some(vendored) = vendored else {
+        return render_missing_vendored(prefix, widths);
+    };
+    let name = format!("{} (v)", vendored.package_name());
+    let inherited_deleted = ctx.project_list.is_deleted(inherited_deleted_path);
+    render_child_item(
+        ctx,
+        vendored,
+        &name,
+        sorted,
+        prefix,
+        inherited_deleted,
+        widths,
     )
 }
 
@@ -985,6 +1054,62 @@ fn render_wt_vendored_item(
     )
 }
 
+fn render_wt_member_vendored_item(
+    ctx: &PaneRenderCtx<'_>,
+    row: WorktreeMemberVendoredRow,
+    child_sorted: &HashMap<usize, Vec<u64>>,
+    widths: &ProjectListWidths,
+) -> ListItem<'static> {
+    let WorktreeMemberVendoredRow {
+        node,
+        worktree,
+        group: group_index,
+        member: member_index,
+        vendored,
+    } = row;
+    let item = &ctx.project_list[node];
+    let empty = Vec::new();
+    let sorted = child_sorted.get(&node).unwrap_or(&empty);
+    let (vendored, is_named, inherited_deleted_path) = match &item.item {
+        RootItem::Worktrees(wtg) => {
+            let entry = wtg.entry(worktree).unwrap_or(&wtg.primary);
+            let RustProject::Workspace(ws) = entry else {
+                return render_missing_vendored(PREFIX_WT_MEMBER_VENDORED_INLINE, widths);
+            };
+            let member_group = &ws.groups()[group_index];
+            let member = &member_group.members()[member_index];
+            (
+                member.vendored().get(vendored),
+                member_group.is_named(),
+                entry.path(),
+            )
+        },
+        _ => (None, false, item.path()),
+    };
+    let prefix = if is_named {
+        PREFIX_WT_MEMBER_VENDORED_NAMED
+    } else {
+        PREFIX_WT_MEMBER_VENDORED_INLINE
+    };
+    render_vendored_child(
+        ctx,
+        inherited_deleted_path,
+        vendored,
+        prefix,
+        sorted,
+        widths,
+    )
+}
+
+#[derive(Clone, Copy)]
+struct WorktreeMemberVendoredRow {
+    node:     usize,
+    worktree: usize,
+    group:    usize,
+    member:   usize,
+    vendored: usize,
+}
+
 pub fn render_tree_items(
     ctx: &PaneRenderCtx<'_>,
     pane: &ProjectListPane,
@@ -1026,28 +1151,7 @@ fn render_tree_item(
         VisibleRow::GroupHeader {
             node_index,
             group_index,
-        } => {
-            let item = &ctx.project_list[*node_index];
-            let (group_name, member_count) = match &item.item {
-                RootItem::Rust(RustProject::Workspace(ws)) => {
-                    let group = &ws.groups()[*group_index];
-                    (group.group_name().to_string(), group.members().len())
-                },
-                _ => (String::new(), 0),
-            };
-            let prefix = if ctx
-                .project_list
-                .expanded
-                .contains(&ExpandKey::Group(*node_index, *group_index))
-            {
-                PREFIX_GROUP_EXPANDED
-            } else {
-                PREFIX_GROUP_COLLAPSED
-            };
-            let label = format!("{group_name} ({member_count})");
-            let row = columns::build_group_header_cells(prefix, &label);
-            ListItem::new(columns::row_to_line(&row, widths))
-        },
+        } => render_group_header(ctx, *node_index, *group_index, widths),
         VisibleRow::Member {
             node_index,
             group_index,
@@ -1057,6 +1161,20 @@ fn render_tree_item(
             *node_index,
             *group_index,
             *member_index,
+            child_sorted,
+            widths,
+        ),
+        VisibleRow::MemberVendored {
+            node_index,
+            group_index,
+            member_index,
+            vendored_index,
+        } => render_member_vendored_item(
+            ctx,
+            *node_index,
+            *group_index,
+            *member_index,
+            *vendored_index,
             child_sorted,
             widths,
         ),
@@ -1087,6 +1205,24 @@ fn render_tree_item(
             child_sorted,
             widths,
         ),
+        VisibleRow::WorktreeMemberVendored {
+            node_index,
+            worktree_index,
+            group_index,
+            member_index,
+            vendored_index,
+        } => render_wt_member_vendored_item(
+            ctx,
+            WorktreeMemberVendoredRow {
+                node:     *node_index,
+                worktree: *worktree_index,
+                group:    *group_index,
+                member:   *member_index,
+                vendored: *vendored_index,
+            },
+            child_sorted,
+            widths,
+        ),
         VisibleRow::WorktreeVendored {
             node_index,
             worktree_index,
@@ -1104,6 +1240,34 @@ fn render_tree_item(
             submodule_index,
         } => render_submodule_item(ctx, *node_index, *submodule_index, child_sorted, widths),
     }
+}
+
+fn render_group_header(
+    ctx: &PaneRenderCtx<'_>,
+    node_index: usize,
+    group_index: usize,
+    widths: &ProjectListWidths,
+) -> ListItem<'static> {
+    let item = &ctx.project_list[node_index];
+    let (group_name, member_count) = match &item.item {
+        RootItem::Rust(RustProject::Workspace(ws)) => {
+            let group = &ws.groups()[group_index];
+            (group.group_name().to_string(), group.members().len())
+        },
+        _ => (String::new(), 0),
+    };
+    let prefix = if ctx
+        .project_list
+        .expanded
+        .contains(&ExpandKey::Group(node_index, group_index))
+    {
+        PREFIX_GROUP_EXPANDED
+    } else {
+        PREFIX_GROUP_COLLAPSED
+    };
+    let label = format!("{group_name} ({member_count})");
+    let row = columns::build_group_header_cells(prefix, &label);
+    ListItem::new(columns::row_to_line(&row, widths))
 }
 // ── Disk-cache ───────────────────────────────────────────────────────
 //

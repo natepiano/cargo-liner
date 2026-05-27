@@ -25,6 +25,17 @@ impl App {
                 let pkg = item.resolve_member(group_index, member_index)?;
                 Some(tui::panes::build_pane_data_for_member(self, pkg))
             },
+            VisibleRow::MemberVendored {
+                node_index,
+                group_index,
+                member_index,
+                vendored_index,
+            } => self.build_member_vendored_detail(
+                node_index,
+                group_index,
+                member_index,
+                vendored_index,
+            ),
             VisibleRow::Vendored {
                 node_index,
                 vendored_index,
@@ -55,26 +66,30 @@ impl App {
                 worktree_index,
                 group_index,
                 member_index,
-            } => {
-                let item = self.project_list.get(node_index)?;
-                let RootItem::Worktrees(wtg) = &**item else {
-                    return None;
-                };
-                let pkg = wtg.member_ref(worktree_index, group_index, member_index)?;
-                Some(tui::panes::build_pane_data_for_member(self, pkg))
-            },
+            } => self.build_worktree_member_detail(
+                node_index,
+                worktree_index,
+                group_index,
+                member_index,
+            ),
+            VisibleRow::WorktreeMemberVendored {
+                node_index,
+                worktree_index,
+                group_index,
+                member_index,
+                vendored_index,
+            } => self.build_worktree_member_vendored_detail(
+                node_index,
+                worktree_index,
+                group_index,
+                member_index,
+                vendored_index,
+            ),
             VisibleRow::WorktreeVendored {
                 node_index,
                 worktree_index,
                 vendored_index,
-            } => {
-                let item = self.project_list.get(node_index)?;
-                let RootItem::Worktrees(wtg) = &**item else {
-                    return None;
-                };
-                let vendored = wtg.vendored_ref(worktree_index, vendored_index)?;
-                Some(tui::panes::build_pane_data_for_vendored(self, vendored))
-            },
+            } => self.build_worktree_vendored_detail(node_index, worktree_index, vendored_index),
             VisibleRow::Submodule {
                 node_index,
                 submodule_index,
@@ -84,6 +99,18 @@ impl App {
                 Some(tui::panes::build_pane_data_for_submodule(self, submodule))
             },
         }
+    }
+
+    fn build_member_vendored_detail(
+        &self,
+        node_index: usize,
+        group_index: usize,
+        member_index: usize,
+        vendored_index: usize,
+    ) -> Option<DetailPaneData> {
+        let item = self.project_list.get(node_index)?;
+        let vendored = item.resolve_member_vendored(group_index, member_index, vendored_index)?;
+        Some(tui::panes::build_pane_data_for_vendored(self, vendored))
     }
 
     /// Build pane data for a worktree entry (a linked workspace or package).
@@ -108,5 +135,51 @@ impl App {
             },
             _ => None,
         }
+    }
+
+    fn build_worktree_member_detail(
+        &self,
+        node_index: usize,
+        worktree_index: usize,
+        group_index: usize,
+        member_index: usize,
+    ) -> Option<DetailPaneData> {
+        let item = self.project_list.get(node_index)?;
+        let RootItem::Worktrees(wtg) = &**item else {
+            return None;
+        };
+        let pkg = wtg.member_ref(worktree_index, group_index, member_index)?;
+        Some(tui::panes::build_pane_data_for_member(self, pkg))
+    }
+
+    fn build_worktree_member_vendored_detail(
+        &self,
+        node_index: usize,
+        worktree_index: usize,
+        group_index: usize,
+        member_index: usize,
+        vendored_index: usize,
+    ) -> Option<DetailPaneData> {
+        let item = self.project_list.get(node_index)?;
+        let RootItem::Worktrees(wtg) = &**item else {
+            return None;
+        };
+        let vendored =
+            wtg.member_vendored_ref(worktree_index, group_index, member_index, vendored_index)?;
+        Some(tui::panes::build_pane_data_for_vendored(self, vendored))
+    }
+
+    fn build_worktree_vendored_detail(
+        &self,
+        node_index: usize,
+        worktree_index: usize,
+        vendored_index: usize,
+    ) -> Option<DetailPaneData> {
+        let item = self.project_list.get(node_index)?;
+        let RootItem::Worktrees(wtg) = &**item else {
+            return None;
+        };
+        let vendored = wtg.vendored_ref(worktree_index, vendored_index)?;
+        Some(tui::panes::build_pane_data_for_vendored(self, vendored))
     }
 }

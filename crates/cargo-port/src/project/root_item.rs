@@ -376,6 +376,17 @@ impl RootItem {
         }
     }
 
+    pub(crate) fn resolve_member_vendored(
+        &self,
+        group_index: usize,
+        member_index: usize,
+        vendored_index: usize,
+    ) -> Option<&VendoredPackage> {
+        self.resolve_member(group_index, member_index)?
+            .vendored()
+            .get(vendored_index)
+    }
+
     /// Resolve a vendored package from this item (workspace, package,
     /// or single-live worktree workspace/package).
     pub(crate) fn resolve_vendored(&self, vendored_index: usize) -> Option<&VendoredPackage> {

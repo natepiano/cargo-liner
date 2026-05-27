@@ -148,6 +148,18 @@ impl WorktreeGroup {
             .get(vendored_index)
     }
 
+    pub fn member_vendored_ref(
+        &self,
+        worktree_index: usize,
+        group_index: usize,
+        member_index: usize,
+        vendored_index: usize,
+    ) -> Option<&VendoredPackage> {
+        self.member_ref(worktree_index, group_index, member_index)?
+            .vendored()
+            .get(vendored_index)
+    }
+
     /// Display path for a single worktree entry (0 = primary).
     pub fn worktree_display_path(&self, wi: usize) -> Option<DisplayPath> {
         self.entry(wi).map(ProjectFields::display_path)

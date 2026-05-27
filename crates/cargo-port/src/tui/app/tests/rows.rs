@@ -1001,3 +1001,33 @@ fn visible_rows_include_vendored_children() {
         }
     ));
 }
+
+#[test]
+fn visible_rows_include_member_vendored_children() {
+    let ws = Workspace {
+        path: test_path("~/ws"),
+        groups: vec![inline_group(vec![make_package_with_vendored(
+            Some("member"),
+            "~/ws/member",
+            vec![super::make_vendored(Some("vendored"), "~/ws/vendor/helper")],
+        )])],
+        ..Workspace::default()
+    };
+    let root = RootItem::Rust(RustProject::Workspace(ws));
+
+    let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
+    let rows = super::as_entries(vec![root]).compute_visible_rows(&expanded, true);
+
+    assert_eq!(rows.len(), 3, "got: {rows:?}");
+    assert!(matches!(rows[0], VisibleRow::Root { .. }));
+    assert!(matches!(rows[1], VisibleRow::Member { .. }));
+    assert!(matches!(
+        rows[2],
+        VisibleRow::MemberVendored {
+            node_index:     0,
+            group_index:    0,
+            member_index:   0,
+            vendored_index: 0,
+        }
+    ));
+}

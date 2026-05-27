@@ -1083,6 +1083,16 @@ impl ProjectList {
                 .get(node_index)?
                 .item
                 .member_path_ref(group_index, member_index),
+            VisibleRow::MemberVendored {
+                node_index,
+                group_index,
+                member_index,
+                vendored_index,
+            } => self
+                .get(node_index)?
+                .item
+                .resolve_member_vendored(group_index, member_index, vendored_index)
+                .map(|vendored| vendored.path().as_path()),
             VisibleRow::Vendored {
                 node_index,
                 vendored_index,
@@ -1108,6 +1118,18 @@ impl ProjectList {
                 RootItem::Worktrees(wtg) => {
                     wtg.worktree_member_path_ref(worktree_index, group_index, member_index)
                 },
+                _ => None,
+            },
+            VisibleRow::WorktreeMemberVendored {
+                node_index,
+                worktree_index,
+                group_index,
+                member_index,
+                vendored_index,
+            } => match &self.get(node_index)?.item {
+                RootItem::Worktrees(wtg) => wtg
+                    .member_vendored_ref(worktree_index, group_index, member_index, vendored_index)
+                    .map(|vendored| vendored.path().as_path()),
                 _ => None,
             },
             VisibleRow::WorktreeVendored {
@@ -1146,6 +1168,16 @@ impl ProjectList {
                 .item
                 .resolve_member(group_index, member_index)
                 .map(ProjectFields::display_path),
+            VisibleRow::MemberVendored {
+                node_index,
+                group_index,
+                member_index,
+                vendored_index,
+            } => self
+                .get(node_index)?
+                .item
+                .resolve_member_vendored(group_index, member_index, vendored_index)
+                .map(ProjectFields::display_path),
             VisibleRow::Vendored {
                 node_index,
                 vendored_index,
@@ -1175,6 +1207,18 @@ impl ProjectList {
                 RootItem::Worktrees(wtg) => {
                     wtg.worktree_member_display_path(worktree_index, group_index, member_index)
                 },
+                _ => None,
+            },
+            VisibleRow::WorktreeMemberVendored {
+                node_index,
+                worktree_index,
+                group_index,
+                member_index,
+                vendored_index,
+            } => match &self.get(node_index)?.item {
+                RootItem::Worktrees(wtg) => wtg
+                    .member_vendored_ref(worktree_index, group_index, member_index, vendored_index)
+                    .map(ProjectFields::display_path),
                 _ => None,
             },
             VisibleRow::WorktreeVendored {
@@ -1215,6 +1259,16 @@ impl ProjectList {
                 .item
                 .resolve_member(group_index, member_index)
                 .map(|p| p.path().clone()),
+            VisibleRow::MemberVendored {
+                node_index,
+                group_index,
+                member_index,
+                vendored_index,
+            } => self
+                .get(node_index)?
+                .item
+                .resolve_member_vendored(group_index, member_index, vendored_index)
+                .map(|p| p.path().clone()),
             VisibleRow::Vendored {
                 node_index,
                 vendored_index,
@@ -1244,6 +1298,18 @@ impl ProjectList {
                 RootItem::Worktrees(wtg) => {
                     wtg.worktree_member_abs_path(worktree_index, group_index, member_index)
                 },
+                _ => None,
+            },
+            VisibleRow::WorktreeMemberVendored {
+                node_index,
+                worktree_index,
+                group_index,
+                member_index,
+                vendored_index,
+            } => match &self.get(node_index)?.item {
+                RootItem::Worktrees(wtg) => wtg
+                    .member_vendored_ref(worktree_index, group_index, member_index, vendored_index)
+                    .map(|p| p.path().clone()),
                 _ => None,
             },
             VisibleRow::WorktreeVendored {
@@ -1303,9 +1369,11 @@ impl ProjectList {
                 group_index,
             )),
             VisibleRow::Member { .. }
+            | VisibleRow::MemberVendored { .. }
             | VisibleRow::Vendored { .. }
             | VisibleRow::Submodule { .. }
             | VisibleRow::WorktreeMember { .. }
+            | VisibleRow::WorktreeMemberVendored { .. }
             | VisibleRow::WorktreeVendored { .. } => None,
         }
     }
@@ -1318,6 +1386,7 @@ impl ProjectList {
                 self.get(node_index).map(|item| item.path().clone())
             },
             VisibleRow::Member { node_index, .. }
+            | VisibleRow::MemberVendored { node_index, .. }
             | VisibleRow::Vendored { node_index, .. }
             | VisibleRow::Submodule { node_index, .. } => {
                 self.get(node_index).map(|item| item.path().clone())
@@ -1332,6 +1401,11 @@ impl ProjectList {
                 ..
             }
             | VisibleRow::WorktreeMember {
+                node_index,
+                worktree_index,
+                ..
+            }
+            | VisibleRow::WorktreeMemberVendored {
                 node_index,
                 worktree_index,
                 ..
@@ -1570,6 +1644,11 @@ impl ProjectList {
                 node_index: ni,
                 group_index: gi,
                 ..
+            }
+            | VisibleRow::MemberVendored {
+                node_index: ni,
+                group_index: gi,
+                ..
             } => {
                 if self.is_inline_group(ni, gi) {
                     self.collapse_to_root(ni, include_non_rust);
@@ -1606,6 +1685,12 @@ impl ProjectList {
                 }
             },
             VisibleRow::WorktreeMember {
+                node_index: ni,
+                worktree_index: wi,
+                group_index: gi,
+                ..
+            }
+            | VisibleRow::WorktreeMemberVendored {
                 node_index: ni,
                 worktree_index: wi,
                 group_index: gi,

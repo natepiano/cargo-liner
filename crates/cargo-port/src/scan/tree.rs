@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Component;
 use std::path::Path;
+use std::path::PathBuf;
 
 use toml::Table;
 use toml::Value;
@@ -360,7 +361,7 @@ fn extract_vendored_new(items: &mut Vec<RootItem>) {
         .map(|(i, item)| (i, item.path().clone()))
         .collect();
 
-    let mut vendored_map: Vec<(usize, usize)> = Vec::new();
+    let mut vendored_map: Vec<(usize, VendoredDestination)> = Vec::new();
 
     for (vi, vitem) in items.iter().enumerate() {
         let has_structure = match vitem {
@@ -373,14 +374,14 @@ fn extract_vendored_new(items: &mut Vec<RootItem>) {
         if has_structure {
             continue;
         }
-        for &(ni, ref parent_path) in &parent_paths {
-            if ni == vi {
-                continue;
-            }
-            if vitem.path().starts_with(parent_path) && vitem.path() != parent_path {
-                vendored_map.push((vi, ni));
-                break;
-            }
+
+        if let Some(destination) = dependency_vendored_destination(items, vi) {
+            vendored_map.push((vi, destination));
+            continue;
+        }
+
+        if let Some(destination) = contained_vendored_destination(vitem, vi, &parent_paths) {
+            vendored_map.push((vi, destination));
         }
     }
 
@@ -393,8 +394,8 @@ fn extract_vendored_new(items: &mut Vec<RootItem>) {
     remove_indices.dedup();
 
     // Convert vendored items to `VendoredPackage`
-    let mut vendored_projects: Vec<(usize, VendoredPackage)> = Vec::new();
-    for &(vi, ni) in &vendored_map {
+    let mut vendored_projects: Vec<(VendoredDestination, VendoredPackage)> = Vec::new();
+    for &(vi, destination) in &vendored_map {
         let vendored = match &items[vi] {
             RootItem::Rust(RustProject::Package(p)) => VendoredPackage {
                 path:             p.path.clone(),
@@ -419,36 +420,273 @@ fn extract_vendored_new(items: &mut Vec<RootItem>) {
             },
             _ => continue,
         };
-        vendored_projects.push((ni, vendored));
+        vendored_projects.push((destination, vendored));
     }
 
     for &idx in remove_indices.iter().rev() {
         items.remove(idx);
     }
 
-    for (ni, vendored) in vendored_projects {
-        let adjusted_ni = remove_indices.iter().filter(|&&r| r < ni).count();
-        let target_ni = ni - adjusted_ni;
-        if let Some(item) = items.get_mut(target_ni) {
-            match item {
-                RootItem::Rust(RustProject::Workspace(ws)) => ws.vendored_mut().push(vendored),
-                RootItem::Rust(RustProject::Package(p)) => p.vendored_mut().push(vendored),
-                _ => {},
+    for (destination, vendored) in vendored_projects {
+        push_vendored_item(items, destination.adjusted(&remove_indices), vendored);
+    }
+
+    for item in items {
+        sort_vendored_lists(item);
+    }
+}
+
+#[derive(Clone, Copy)]
+enum VendoredDestination {
+    Root {
+        node_index: usize,
+    },
+    WorkspaceMember {
+        node_index:   usize,
+        group_index:  usize,
+        member_index: usize,
+    },
+}
+
+impl VendoredDestination {
+    fn adjusted(self, remove_indices: &[usize]) -> Self {
+        let adjust = |node_index| {
+            node_index
+                - remove_indices
+                    .iter()
+                    .filter(|&&removed_index| removed_index < node_index)
+                    .count()
+        };
+        match self {
+            Self::Root { node_index } => Self::Root {
+                node_index: adjust(node_index),
+            },
+            Self::WorkspaceMember {
+                node_index,
+                group_index,
+                member_index,
+            } => Self::WorkspaceMember {
+                node_index: adjust(node_index),
+                group_index,
+                member_index,
+            },
+        }
+    }
+}
+
+fn dependency_vendored_destination(
+    items: &[RootItem],
+    vendored_index: usize,
+) -> Option<VendoredDestination> {
+    let vendored_path = items[vendored_index].path();
+    let mut consumers = Vec::new();
+
+    for (node_index, item) in items.iter().enumerate() {
+        let RootItem::Rust(RustProject::Workspace(ws)) = item else {
+            continue;
+        };
+        if !vendored_path.starts_with(ws.path().as_path()) {
+            continue;
+        }
+
+        let workspace_dependencies = workspace_path_dependencies(ws.path().as_path());
+        for (group_index, group) in ws.groups().iter().enumerate() {
+            for (member_index, member) in group.members().iter().enumerate() {
+                let dependencies =
+                    package_path_dependencies(member.path().as_path(), &workspace_dependencies);
+                if dependencies.contains(vendored_path) {
+                    consumers.push(VendoredDestination::WorkspaceMember {
+                        node_index,
+                        group_index,
+                        member_index,
+                    });
+                }
             }
         }
     }
 
-    // Sort vendored lists
-    for item in items {
-        match item {
-            RootItem::Rust(RustProject::Workspace(ws)) => {
-                ws.vendored_mut().sort_by(|a, b| a.path().cmp(b.path()));
-            },
-            RootItem::Rust(RustProject::Package(pkg)) => {
-                pkg.vendored_mut().sort_by(|a, b| a.path().cmp(b.path()));
-            },
-            _ => {},
+    match consumers.as_slice() {
+        [destination] => Some(*destination),
+        _ => None,
+    }
+}
+
+fn contained_vendored_destination(
+    vitem: &RootItem,
+    vendored_index: usize,
+    parent_paths: &[(usize, AbsolutePath)],
+) -> Option<VendoredDestination> {
+    parent_paths
+        .iter()
+        .find_map(|&(node_index, ref parent_path)| {
+            if node_index != vendored_index
+                && vitem.path().starts_with(parent_path)
+                && vitem.path() != parent_path
+            {
+                Some(VendoredDestination::Root { node_index })
+            } else {
+                None
+            }
+        })
+}
+
+fn workspace_path_dependencies(workspace_path: &Path) -> HashMap<String, AbsolutePath> {
+    let Some(table) = manifest_table(&workspace_path.join(CARGO_TOML)) else {
+        return HashMap::new();
+    };
+    let Some(dependencies) = table
+        .get("workspace")
+        .and_then(Value::as_table)
+        .and_then(|workspace| workspace.get("dependencies"))
+        .and_then(Value::as_table)
+    else {
+        return HashMap::new();
+    };
+
+    dependencies
+        .iter()
+        .filter_map(|(name, value)| {
+            dependency_path(value, workspace_path, name, &HashMap::new())
+                .map(|path| (name.clone(), path))
+        })
+        .collect()
+}
+
+fn package_path_dependencies(
+    package_path: &Path,
+    workspace_dependencies: &HashMap<String, AbsolutePath>,
+) -> HashSet<AbsolutePath> {
+    let Some(table) = manifest_table(&package_path.join(CARGO_TOML)) else {
+        return HashSet::new();
+    };
+    let mut paths = HashSet::new();
+    collect_dependency_paths(&table, package_path, workspace_dependencies, &mut paths);
+    if let Some(targets) = table.get("target").and_then(Value::as_table) {
+        for target in targets.values().filter_map(Value::as_table) {
+            collect_dependency_paths(target, package_path, workspace_dependencies, &mut paths);
         }
+    }
+    paths
+}
+
+fn manifest_table(manifest_path: &Path) -> Option<Table> {
+    let contents = std::fs::read_to_string(manifest_path).ok()?;
+    contents.parse().ok()
+}
+
+fn collect_dependency_paths(
+    table: &Table,
+    package_path: &Path,
+    workspace_dependencies: &HashMap<String, AbsolutePath>,
+    paths: &mut HashSet<AbsolutePath>,
+) {
+    for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        let Some(dependencies) = table.get(section).and_then(Value::as_table) else {
+            continue;
+        };
+        for (name, value) in dependencies {
+            if let Some(path) = dependency_path(value, package_path, name, workspace_dependencies) {
+                paths.insert(path);
+            }
+        }
+    }
+}
+
+fn dependency_path(
+    value: &Value,
+    base_path: &Path,
+    name: &str,
+    workspace_dependencies: &HashMap<String, AbsolutePath>,
+) -> Option<AbsolutePath> {
+    let table = value.as_table()?;
+    if let Some(path) = table.get("path").and_then(Value::as_str) {
+        return Some(resolve_dependency_path(path, base_path));
+    }
+    if table.get("workspace").and_then(Value::as_bool) == Some(true) {
+        return workspace_dependencies.get(name).cloned();
+    }
+    None
+}
+
+fn resolve_dependency_path(path: &str, base_path: &Path) -> AbsolutePath {
+    let raw_path = Path::new(path);
+    let resolved = if raw_path.is_absolute() {
+        raw_path.to_path_buf()
+    } else {
+        base_path.join(raw_path)
+    };
+    AbsolutePath::from(normalize_path_components(&resolved))
+}
+
+fn normalize_path_components(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {},
+            Component::ParentDir => {
+                normalized.pop();
+            },
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            },
+        }
+    }
+    normalized
+}
+
+fn push_vendored_item(
+    items: &mut [RootItem],
+    destination: VendoredDestination,
+    vendored: VendoredPackage,
+) {
+    let Some(item) = items.get_mut(match destination {
+        VendoredDestination::Root { node_index }
+        | VendoredDestination::WorkspaceMember { node_index, .. } => node_index,
+    }) else {
+        return;
+    };
+
+    match (item, destination) {
+        (RootItem::Rust(RustProject::Workspace(ws)), VendoredDestination::Root { .. }) => {
+            ws.vendored_mut().push(vendored);
+        },
+        (
+            RootItem::Rust(RustProject::Workspace(ws)),
+            VendoredDestination::WorkspaceMember {
+                group_index,
+                member_index,
+                ..
+            },
+        ) => {
+            if let Some(member) = ws
+                .groups_mut()
+                .get_mut(group_index)
+                .and_then(|group| group.members_mut().get_mut(member_index))
+            {
+                member.vendored_mut().push(vendored);
+            }
+        },
+        (RootItem::Rust(RustProject::Package(pkg)), VendoredDestination::Root { .. }) => {
+            pkg.vendored_mut().push(vendored);
+        },
+        _ => {},
+    }
+}
+
+fn sort_vendored_lists(item: &mut RootItem) {
+    match item {
+        RootItem::Rust(RustProject::Workspace(ws)) => {
+            ws.vendored_mut().sort_by(|a, b| a.path().cmp(b.path()));
+            for group in ws.groups_mut() {
+                for member in group.members_mut() {
+                    member.vendored_mut().sort_by(|a, b| a.path().cmp(b.path()));
+                }
+            }
+        },
+        RootItem::Rust(RustProject::Package(pkg)) => {
+            pkg.vendored_mut().sort_by(|a, b| a.path().cmp(b.path()));
+        },
+        _ => {},
     }
 }
 
@@ -641,6 +879,86 @@ mod tests {
         );
         assert_eq!(ws.vendored().len(), 1);
         assert_eq!(ws.vendored()[0].path(), vendored_dir.as_path());
+    }
+
+    #[test]
+    fn build_tree_assigns_workspace_path_dependency_to_member() {
+        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let workspace_dir = tmp.path().join("bevy_hana");
+        let member_dir = workspace_dir.join("crates").join("bevy_diegetic");
+        let sibling_dir = workspace_dir.join("crates").join("bevy_lagrange");
+        let vendored_dir = workspace_dir.join("vendor").join("clay-layout");
+
+        std::fs::create_dir_all(&member_dir).unwrap_or_else(|_| std::process::abort());
+        std::fs::create_dir_all(&sibling_dir).unwrap_or_else(|_| std::process::abort());
+        std::fs::create_dir_all(&vendored_dir).unwrap_or_else(|_| std::process::abort());
+        std::fs::write(
+            workspace_dir.join("Cargo.toml"),
+            "[workspace]\n\
+             members = [\"crates/*\"]\n\
+             exclude = [\"vendor/clay-layout\"]\n\
+             \n\
+             [workspace.dependencies]\n\
+             clay-layout = { path = \"vendor/clay-layout\" }\n",
+        )
+        .unwrap_or_else(|_| std::process::abort());
+        std::fs::write(
+            member_dir.join("Cargo.toml"),
+            "[package]\n\
+             name = \"bevy_diegetic\"\n\
+             version = \"0.1.0\"\n\
+             \n\
+             [dev-dependencies]\n\
+             clay-layout = { workspace = true }\n",
+        )
+        .unwrap_or_else(|_| std::process::abort());
+        std::fs::write(
+            sibling_dir.join("Cargo.toml"),
+            "[package]\nname = \"bevy_lagrange\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap_or_else(|_| std::process::abort());
+
+        let workspace = make_workspace(
+            Some("bevy_hana"),
+            &workspace_dir.to_string_lossy(),
+            false,
+            None,
+        );
+        let member = make_package(
+            Some("bevy_diegetic"),
+            &member_dir.to_string_lossy(),
+            false,
+            None,
+        );
+        let sibling = make_package(
+            Some("bevy_lagrange"),
+            &sibling_dir.to_string_lossy(),
+            false,
+            None,
+        );
+        let vendored = make_package(
+            Some("clay-layout"),
+            &vendored_dir.to_string_lossy(),
+            false,
+            None,
+        );
+
+        let items = build_tree(
+            &[workspace, member, sibling, vendored],
+            &["crates".to_string()],
+        );
+
+        let RootItem::Rust(RustProject::Workspace(ws)) = &items[0] else {
+            std::process::abort()
+        };
+        assert!(ws.vendored().is_empty());
+        let member = ws.groups()[0]
+            .members()
+            .iter()
+            .find(|member| member.path() == member_dir.as_path())
+            .unwrap_or_else(|| std::process::abort());
+        assert_eq!(member.vendored().len(), 1);
+        assert_eq!(member.vendored()[0].path(), vendored_dir.as_path());
     }
 
     #[test]

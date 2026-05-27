@@ -415,9 +415,11 @@ impl App {
             Some(
                 VisibleRow::GroupHeader { .. }
                 | VisibleRow::Member { .. }
+                | VisibleRow::MemberVendored { .. }
                 | VisibleRow::Vendored { .. }
                 | VisibleRow::Submodule { .. }
                 | VisibleRow::WorktreeMember { .. }
+                | VisibleRow::WorktreeMemberVendored { .. }
                 | VisibleRow::WorktreeVendored { .. },
             )
             | None => false,

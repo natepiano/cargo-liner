@@ -44,6 +44,13 @@ pub enum VisibleRow {
         group_index:  usize,
         member_index: usize,
     },
+    /// A vendored crate nested under a workspace member.
+    MemberVendored {
+        node_index:     usize,
+        group_index:    usize,
+        member_index:   usize,
+        vendored_index: usize,
+    },
     /// A vendored crate nested directly under the root project.
     Vendored {
         node_index:     usize,
@@ -66,6 +73,14 @@ pub enum VisibleRow {
         worktree_index: usize,
         group_index:    usize,
         member_index:   usize,
+    },
+    /// A vendored crate nested under a member inside an expanded worktree entry.
+    WorktreeMemberVendored {
+        node_index:     usize,
+        worktree_index: usize,
+        group_index:    usize,
+        member_index:   usize,
+        vendored_index: usize,
     },
     /// A vendored crate nested under a worktree entry.
     WorktreeVendored {
@@ -139,12 +154,13 @@ fn emit_groups(
     for (gi, group) in groups.iter().enumerate() {
         match group {
             MemberGroup::Inline { members } => {
-                for (mi, _) in members.iter().enumerate() {
+                for (mi, member) in members.iter().enumerate() {
                     rows.push(VisibleRow::Member {
                         node_index:   ni,
                         group_index:  gi,
                         member_index: mi,
                     });
+                    emit_member_vendored_rows(rows, ni, gi, mi, member.vendored());
                 }
             },
             MemberGroup::Named { members, .. } => {
@@ -153,16 +169,34 @@ fn emit_groups(
                     group_index: gi,
                 });
                 if expanded.contains(&ExpandKey::Group(ni, gi)) {
-                    for (mi, _) in members.iter().enumerate() {
+                    for (mi, member) in members.iter().enumerate() {
                         rows.push(VisibleRow::Member {
                             node_index:   ni,
                             group_index:  gi,
                             member_index: mi,
                         });
+                        emit_member_vendored_rows(rows, ni, gi, mi, member.vendored());
                     }
                 }
             },
         }
+    }
+}
+
+fn emit_member_vendored_rows(
+    rows: &mut Vec<VisibleRow>,
+    ni: usize,
+    gi: usize,
+    mi: usize,
+    vendored: &[VendoredPackage],
+) {
+    for (vi, _) in vendored.iter().enumerate() {
+        rows.push(VisibleRow::MemberVendored {
+            node_index:     ni,
+            group_index:    gi,
+            member_index:   mi,
+            vendored_index: vi,
+        });
     }
 }
 
@@ -218,13 +252,14 @@ fn emit_worktree_children(
     for (gi, group) in groups.iter().enumerate() {
         match group {
             MemberGroup::Inline { members } => {
-                for (mi, _) in members.iter().enumerate() {
+                for (mi, member) in members.iter().enumerate() {
                     rows.push(VisibleRow::WorktreeMember {
                         node_index:     ni,
                         worktree_index: wi,
                         group_index:    gi,
                         member_index:   mi,
                     });
+                    emit_worktree_member_vendored_rows(rows, ni, wi, gi, mi, member.vendored());
                 }
             },
             MemberGroup::Named { members, .. } => {
@@ -234,13 +269,14 @@ fn emit_worktree_children(
                     group_index:    gi,
                 });
                 if expanded.contains(&ExpandKey::WorktreeGroup(ni, wi, gi)) {
-                    for (mi, _) in members.iter().enumerate() {
+                    for (mi, member) in members.iter().enumerate() {
                         rows.push(VisibleRow::WorktreeMember {
                             node_index:     ni,
                             worktree_index: wi,
                             group_index:    gi,
                             member_index:   mi,
                         });
+                        emit_worktree_member_vendored_rows(rows, ni, wi, gi, mi, member.vendored());
                     }
                 }
             },
@@ -251,6 +287,25 @@ fn emit_worktree_children(
         rows.push(VisibleRow::WorktreeVendored {
             node_index:     ni,
             worktree_index: wi,
+            vendored_index: vi,
+        });
+    }
+}
+
+fn emit_worktree_member_vendored_rows(
+    rows: &mut Vec<VisibleRow>,
+    ni: usize,
+    wi: usize,
+    gi: usize,
+    mi: usize,
+    vendored: &[VendoredPackage],
+) {
+    for (vi, _) in vendored.iter().enumerate() {
+        rows.push(VisibleRow::WorktreeMemberVendored {
+            node_index:     ni,
+            worktree_index: wi,
+            group_index:    gi,
+            member_index:   mi,
             vendored_index: vi,
         });
     }
@@ -290,6 +345,7 @@ impl VisibleRow {
         match self {
             Self::GroupHeader { node_index, .. }
             | Self::Member { node_index, .. }
+            | Self::MemberVendored { node_index, .. }
             | Self::Vendored { node_index, .. }
             | Self::Submodule { node_index, .. } => Self::Root { node_index },
             Self::Root { .. } | Self::WorktreeEntry { .. } => self,
@@ -299,6 +355,11 @@ impl VisibleRow {
                 ..
             }
             | Self::WorktreeMember {
+                node_index,
+                worktree_index,
+                ..
+            }
+            | Self::WorktreeMemberVendored {
                 node_index,
                 worktree_index,
                 ..
