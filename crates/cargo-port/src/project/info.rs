@@ -76,7 +76,7 @@ impl ProjectCiData {
 pub(crate) enum ProjectPrData {
     #[default]
     Unfetched,
-    Loading,
+    Loading(Option<ProjectPrInfo>),
     Loaded(ProjectPrInfo),
     Unavailable(ProjectPrUnavailable),
 }
@@ -85,8 +85,9 @@ impl ProjectPrData {
     pub(crate) const fn info(&self) -> Option<&ProjectPrInfo> {
         match self {
             Self::Loaded(info) => Some(info),
+            Self::Loading(stale) => stale.as_ref(),
             Self::Unavailable(unavailable) => unavailable.stale.as_ref(),
-            Self::Unfetched | Self::Loading => None,
+            Self::Unfetched => None,
         }
     }
 

@@ -47,15 +47,19 @@ fn test_pull_request_info(number: u32, title: &str) -> PullRequestInfo {
     }
 }
 
-fn test_pr_data(open: Vec<PullRequestInfo>) -> ProjectPrData {
-    ProjectPrData::Loaded(ProjectPrInfo {
+fn test_pr_info(open: Vec<PullRequestInfo>) -> ProjectPrInfo {
+    ProjectPrInfo {
         open,
         default_branch: "main".to_string(),
         fetched_at: "2026-05-27T20:51:11Z".to_string(),
         completeness: PullRequestCompleteness::Complete,
         viewer_login: "natepiano".to_string(),
         owner_repo: crate::ci::OwnerRepo::new("natepiano", "cargo-port"),
-    })
+    }
+}
+
+fn test_pr_data(open: Vec<PullRequestInfo>) -> ProjectPrData {
+    ProjectPrData::Loaded(test_pr_info(open))
 }
 
 #[test]
@@ -138,10 +142,7 @@ fn pull_request_disappearance_pushes_deleted_toast() {
         &mut app,
         BackgroundMsg::PullRequests {
             repo: repo.clone(),
-            data: test_pr_data(vec![test_pull_request_info(
-                1,
-                "feat: show open pull requests",
-            )]),
+            data: test_pr_data(vec![test_pull_request_info(1, "test: exercise PR toast")]),
         },
     );
     assert!(
@@ -151,6 +152,24 @@ fn pull_request_disappearance_pushes_deleted_toast() {
             .iter()
             .all(|toast| toast.title() != "Pull request deleted"),
         "initial PR load should not announce deletion"
+    );
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::PullRequests {
+            repo: repo.clone(),
+            data: ProjectPrData::Loading(Some(test_pr_info(vec![test_pull_request_info(
+                1,
+                "test: exercise PR toast",
+            )]))),
+        },
+    );
+    assert!(
+        app.framework
+            .toasts
+            .active_now()
+            .iter()
+            .all(|toast| toast.title() != "Pull request deleted"),
+        "loading refresh should preserve the old PR without announcing deletion"
     );
 
     apply_bg_msg(
@@ -169,7 +188,7 @@ fn pull_request_disappearance_pushes_deleted_toast() {
         .find(|toast| toast.title() == "Pull request deleted")
         .expect("deleted PR toast should be visible");
     assert!(toast.body().contains("natepiano/cargo-port"));
-    assert!(toast.body().contains("#1 feat: show open pull requests"));
+    assert!(toast.body().contains("#1 test: exercise PR toast"));
 }
 
 #[test]
