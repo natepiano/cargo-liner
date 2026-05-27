@@ -1558,7 +1558,7 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
 fn build_pull_request_section(data: &ProjectPrData) -> PullRequestSection {
     match data {
         ProjectPrData::Unfetched => PullRequestSection::default(),
-        ProjectPrData::Loading => PullRequestSection {
+        ProjectPrData::Loading(_) => PullRequestSection {
             state: PullRequestSectionState::Loading,
             ..PullRequestSection::default()
         },

@@ -83,11 +83,11 @@ impl App {
                 let _ = tx.send(BackgroundMsg::RepoFetchQueued {
                     repo: owner_repo.clone(),
                 });
+                let stale = data.pr_data.info().cloned();
                 let _ = tx.send(BackgroundMsg::PullRequests {
                     repo: owner_repo.clone(),
-                    data: ProjectPrData::Loading,
+                    data: ProjectPrData::Loading(stale.clone()),
                 });
-                let stale = data.pr_data.info().cloned();
                 let (pr_fetch, signal) = client.fetch_open_pull_requests(owner_repo.clone());
                 scan::emit_service_signal(&tx, signal);
                 data.pr_data = match pr_fetch {
