@@ -13,7 +13,9 @@ use crate::project::CheckoutInfo;
 use crate::project::GitStatus;
 use crate::project::LocalGitState;
 use crate::project::ProjectPrData;
+use crate::project::ProjectPrInfo;
 use crate::project::ProjectPrUnavailable;
+use crate::project::PullRequestInfo;
 use crate::project::PullRequestUnavailableReason;
 use crate::project::RepoInfo;
 use crate::project::RootItem;
@@ -375,6 +377,7 @@ impl App {
     }
 
     pub(super) fn handle_pull_requests(&mut self, repo: &OwnerRepo, data: &ProjectPrData) {
+        let prior = self.project_list.pr_info_for_repo(repo).cloned();
         let selected_matches = self
             .project_list
             .selected_project_path()
@@ -382,10 +385,37 @@ impl App {
             .and_then(|url| ci::parse_owner_repo(&url))
             .as_ref()
             == Some(repo);
+        self.maybe_toast_deleted_pull_requests(repo, prior.as_ref(), data);
         self.project_list.replace_pr_data_for_repo(repo, data);
         if selected_matches {
             self.scan.bump_generation();
         }
+    }
+
+    fn maybe_toast_deleted_pull_requests(
+        &mut self,
+        repo: &OwnerRepo,
+        prior: Option<&ProjectPrInfo>,
+        data: &ProjectPrData,
+    ) {
+        let deleted = deleted_pull_requests(prior, data);
+        if deleted.is_empty() {
+            return;
+        }
+        let title = if deleted.len() == 1 {
+            "Pull request deleted".to_string()
+        } else {
+            format!("{} pull requests deleted", deleted.len())
+        };
+        let body = format!(
+            "{repo}: {}",
+            deleted
+                .iter()
+                .map(|pull_request| format!("#{} {}", pull_request.number, pull_request.title))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        self.framework.toasts.push_status(title, body);
     }
 
     /// Flip the sync-toast eligibility flag for every project that
@@ -493,4 +523,30 @@ impl App {
             .find(|entry| entry.item.at_path(path).is_some())
             .and_then(|entry| entry.item.git_directory())
     }
+}
+
+fn deleted_pull_requests(
+    prior: Option<&ProjectPrInfo>,
+    data: &ProjectPrData,
+) -> Vec<PullRequestInfo> {
+    let Some(previous) = prior else {
+        return Vec::new();
+    };
+    let ProjectPrData::Loaded(current) = data else {
+        return Vec::new();
+    };
+    if previous.viewer_login != current.viewer_login {
+        return Vec::new();
+    }
+    let current_numbers: HashSet<u32> = current
+        .open
+        .iter()
+        .map(|pull_request| pull_request.number)
+        .collect();
+    previous
+        .open
+        .iter()
+        .filter(|pull_request| !current_numbers.contains(&pull_request.number))
+        .cloned()
+        .collect()
 }

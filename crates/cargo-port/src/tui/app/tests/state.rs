@@ -17,7 +17,12 @@ use crate::project::FileStamp;
 use crate::project::HeadState;
 use crate::project::ManifestFingerprint;
 use crate::project::PackageRecord;
+use crate::project::ProjectPrData;
+use crate::project::ProjectPrInfo;
 use crate::project::PublishPolicy;
+use crate::project::PullRequestCompleteness;
+use crate::project::PullRequestInfo;
+use crate::project::PullRequestState;
 use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::project::WorkspaceMetadata;
@@ -28,6 +33,30 @@ use crate::tui::app::Startup;
 use crate::tui::app::target_index::CleanSelection;
 use crate::tui::panes;
 use crate::tui::terminal::CleanMsg;
+
+fn test_pull_request_info(number: u32, title: &str) -> PullRequestInfo {
+    PullRequestInfo {
+        number,
+        title: title.to_string(),
+        url: format!("https://github.com/natepiano/cargo-port/pull/{number}"),
+        state: PullRequestState::Ready,
+        head: "feat/open-prs".to_string(),
+        head_owner: Some("natepiano".to_string()),
+        head_repo: Some("cargo-port".to_string()),
+        base: "main".to_string(),
+    }
+}
+
+fn test_pr_data(open: Vec<PullRequestInfo>) -> ProjectPrData {
+    ProjectPrData::Loaded(ProjectPrInfo {
+        open,
+        default_branch: "main".to_string(),
+        fetched_at: "2026-05-27T20:51:11Z".to_string(),
+        completeness: PullRequestCompleteness::Complete,
+        viewer_login: "natepiano".to_string(),
+        owner_repo: crate::ci::OwnerRepo::new("natepiano", "cargo-port"),
+    })
+}
 
 #[test]
 fn lint_runtime_waits_for_scan_completion() {
@@ -91,6 +120,56 @@ fn workspace_members_show_parent_owner_ci_without_storing_member_state() {
             .ci_data_for(test_path("~/ws/core").as_path()),
         Some(crate::project::ProjectCiData::Loaded(_))
     ));
+}
+
+#[test]
+fn pull_request_disappearance_pushes_deleted_toast() {
+    let project = make_project(Some("cargo-port"), "~/cargo-port");
+    let path = test_path("~/cargo-port");
+    let mut app = make_app(&[project]);
+    apply_git_info(
+        &mut app,
+        path.as_path(),
+        make_git_info(Some("https://github.com/natepiano/cargo-port")),
+    );
+    let repo = crate::ci::OwnerRepo::new("natepiano", "cargo-port");
+
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::PullRequests {
+            repo: repo.clone(),
+            data: test_pr_data(vec![test_pull_request_info(
+                1,
+                "feat: show open pull requests",
+            )]),
+        },
+    );
+    assert!(
+        app.framework
+            .toasts
+            .active_now()
+            .iter()
+            .all(|toast| toast.title() != "Pull request deleted"),
+        "initial PR load should not announce deletion"
+    );
+
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::PullRequests {
+            repo,
+            data: test_pr_data(Vec::new()),
+        },
+    );
+
+    let toast = app
+        .framework
+        .toasts
+        .active_now()
+        .into_iter()
+        .find(|toast| toast.title() == "Pull request deleted")
+        .expect("deleted PR toast should be visible");
+    assert!(toast.body().contains("natepiano/cargo-port"));
+    assert!(toast.body().contains("#1 feat: show open pull requests"));
 }
 
 #[test]
