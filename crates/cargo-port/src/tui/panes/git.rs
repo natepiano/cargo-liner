@@ -366,7 +366,7 @@ fn pull_request_col_widths(rows: &[PullRequestRow], area_width: u16) -> PullRequ
         .max(PULL_REQUEST_NUMBER_HEADER.width());
     let status = rows
         .iter()
-        .map(|row| row.state_label.width())
+        .map(|row| pull_request_state_text(row).width())
         .max()
         .unwrap_or(0)
         .max(PULL_REQUEST_STATUS_HEADER.width());
@@ -426,10 +426,11 @@ fn pull_request_row_line(
     widths: &PullRequestColWidths,
     selection: PaneSelectionState,
 ) -> Line<'static> {
+    let state = pull_request_state_text(row);
     let text = format!(
         " {:<number$}  {:<status$}  {:<branch$}  {}",
         fit_text(&format!("#{}", row.number), widths.number),
-        fit_text(row.state_label, widths.status),
+        fit_text(&state, widths.status),
         fit_text(&row.branch, widths.branch),
         fit_text(&row.title, widths.title),
         number = widths.number,
@@ -438,6 +439,14 @@ fn pull_request_row_line(
     );
     let style = selection.patch(Style::default().fg(inactive_title_color()));
     Line::from(Span::styled(text, style))
+}
+
+fn pull_request_state_text(row: &PullRequestRow) -> String {
+    if row.is_polling {
+        format!("{}...", row.state_label)
+    } else {
+        row.state_label.to_string()
+    }
 }
 
 fn fit_text(text: &str, max_width: usize) -> String {
@@ -1199,6 +1208,7 @@ mod tests {
             title:       "feat: show open pull requests".to_string(),
             url:         String::new(),
             state_label: "ready",
+            is_polling:  false,
             branch:      "natepiano:feat/open-prs".to_string(),
             base:        "main".to_string(),
         };
@@ -1219,6 +1229,7 @@ mod tests {
             title:       "feat: show open pull requests".to_string(),
             url:         String::new(),
             state_label: "ready",
+            is_polling:  false,
             branch:      "natepiano:feat/open-prs".to_string(),
             base:        "main".to_string(),
         };
@@ -1229,6 +1240,24 @@ mod tests {
 
         assert!(text.starts_with(" #1  ready"));
         assert!(text.contains("..."));
+    }
+
+    #[test]
+    fn pull_request_row_marks_polling_checks() {
+        let row = PullRequestRow {
+            number:      1,
+            title:       "feat: show open pull requests".to_string(),
+            url:         String::new(),
+            state_label: "checks",
+            is_polling:  true,
+            branch:      "natepiano:feat/open-prs".to_string(),
+            base:        "main".to_string(),
+        };
+        let widths = pull_request_col_widths(std::slice::from_ref(&row), 80);
+
+        let line = pull_request_row_line(&row, &widths, PaneSelectionState::Unselected);
+
+        assert!(line_text(&line).contains("checks..."));
     }
 
     #[test]

@@ -353,6 +353,7 @@ fn git_copy_pull_request_uses_url_and_routes_before_remotes() {
             title:       "Show vendored workspace member packages".to_string(),
             url:         "https://github.com/natepiano/cargo-port/pull/128".to_string(),
             state_label: "draft",
+            is_polling:  false,
             branch:      "feature/member-vendored".to_string(),
             base:        "main".to_string(),
         }],

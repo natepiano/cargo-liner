@@ -172,6 +172,7 @@ pub struct Github {
     pub availability:     ServiceAvailability,
     pub fetch_cache:      RepoCache,
     repo_fetch_in_flight: HashSet<OwnerRepo>,
+    pr_check_polls:       HashSet<(OwnerRepo, u32)>,
     /// Live cache-missed repo fetches plus the single sticky
     /// "Retrieving GitHub repo details" toast slot.
     running:              RunningTracker<OwnerRepo>,
@@ -183,6 +184,7 @@ impl Github {
             availability:         ServiceAvailability::new(),
             fetch_cache:          scan::new_repo_cache(),
             repo_fetch_in_flight: HashSet::new(),
+            pr_check_polls:       HashSet::new(),
             running:              RunningTracker::new(),
         }
     }
@@ -193,6 +195,32 @@ impl Github {
 
     pub fn contains_in_flight(&self, repo: &OwnerRepo) -> bool {
         self.repo_fetch_in_flight.contains(repo)
+    }
+
+    pub fn insert_pr_check_poll(&mut self, repo: OwnerRepo, number: u32) -> bool {
+        self.pr_check_polls.insert((repo, number))
+    }
+
+    pub fn remove_pr_check_poll(&mut self, repo: &OwnerRepo, number: u32) -> bool {
+        self.pr_check_polls.remove(&(repo.clone(), number))
+    }
+
+    pub fn pr_check_poll_numbers(&self, repo: &OwnerRepo) -> HashSet<u32> {
+        self.pr_check_polls
+            .iter()
+            .filter_map(|(poll_repo, number)| (poll_repo == repo).then_some(*number))
+            .collect()
+    }
+
+    pub fn retain_pr_check_polls_for_repo(
+        &mut self,
+        repo: &OwnerRepo,
+        active_numbers: &HashSet<u32>,
+    ) -> bool {
+        let before = self.pr_check_polls.len();
+        self.pr_check_polls
+            .retain(|(poll_repo, number)| poll_repo != repo || active_numbers.contains(number));
+        before != self.pr_check_polls.len()
     }
 
     pub const fn running(&self) -> &RunningTracker<OwnerRepo> { &self.running }
@@ -206,6 +234,7 @@ impl Github {
     fn clear_for_tree_change(&mut self) {
         self.fetch_cache = scan::new_repo_cache();
         self.repo_fetch_in_flight.clear();
+        self.pr_check_polls.clear();
         self.running.clear();
     }
 }

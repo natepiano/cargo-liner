@@ -1,6 +1,7 @@
 mod formatting;
 
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::path::Component;
 use std::path::Path;
 
@@ -922,6 +923,7 @@ pub struct PullRequestRow {
     pub title:       String,
     pub url:         String,
     pub state_label: &'static str,
+    pub is_polling:  bool,
     pub branch:      String,
     pub base:        String,
 }
@@ -1533,8 +1535,14 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
         .map(format_timestamp);
     let default_host = app.config.current().tui.default_remote_host_url.clone();
     let remotes = repo_info.map_or_else(Vec::new, |repo| build_remote_rows(repo, &default_host));
+    let pr_check_polls = app
+        .project_list
+        .fetch_url_for(abs_path)
+        .and_then(|url| ci::parse_owner_repo(&url))
+        .map(|repo| app.net.github.pr_check_poll_numbers(&repo))
+        .unwrap_or_default();
     let pull_requests = git_repo
-        .map(|repo| build_pull_request_section(&repo.pr_data))
+        .map(|repo| build_pull_request_section(&repo.pr_data, &pr_check_polls))
         .unwrap_or_default();
     let rate_limit = app.net.rate_limit();
     GitDetailFields {
@@ -1555,14 +1563,19 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
     }
 }
 
-fn build_pull_request_section(data: &ProjectPrData) -> PullRequestSection {
+fn build_pull_request_section(
+    data: &ProjectPrData,
+    pr_check_polls: &HashSet<u32>,
+) -> PullRequestSection {
     match data {
         ProjectPrData::Unfetched => PullRequestSection::default(),
         ProjectPrData::Loading(_) => PullRequestSection {
             state: PullRequestSectionState::Loading,
             ..PullRequestSection::default()
         },
-        ProjectPrData::Loaded(info) => section_from_pr_info(info, PullRequestSectionState::Loaded),
+        ProjectPrData::Loaded(info) => {
+            section_from_pr_info(info, PullRequestSectionState::Loaded, pr_check_polls)
+        },
         ProjectPrData::Unavailable(unavailable) => unavailable.stale.as_ref().map_or_else(
             || PullRequestSection {
                 state: PullRequestSectionState::Unavailable,
@@ -1571,7 +1584,8 @@ fn build_pull_request_section(data: &ProjectPrData) -> PullRequestSection {
                 ..PullRequestSection::default()
             },
             |info| {
-                let mut section = section_from_pr_info(info, PullRequestSectionState::Stale);
+                let mut section =
+                    section_from_pr_info(info, PullRequestSectionState::Stale, pr_check_polls);
                 section.unavailable_reason = Some(unavailable.reason);
                 section
             },
@@ -1582,11 +1596,18 @@ fn build_pull_request_section(data: &ProjectPrData) -> PullRequestSection {
 fn section_from_pr_info(
     info: &ProjectPrInfo,
     state: PullRequestSectionState,
+    pr_check_polls: &HashSet<u32>,
 ) -> PullRequestSection {
     let rows = info
         .open
         .iter()
-        .map(|pull_request| pull_request_row(pull_request, &info.default_branch))
+        .map(|pull_request| {
+            pull_request_row(
+                pull_request,
+                &info.default_branch,
+                pr_check_polls.contains(&pull_request.number),
+            )
+        })
         .collect();
     PullRequestSection {
         state: if info.open.is_empty() {
@@ -1601,14 +1622,19 @@ fn section_from_pr_info(
     }
 }
 
-fn pull_request_row(info: &PullRequestInfo, default_branch: &str) -> PullRequestRow {
+fn pull_request_row(
+    info: &PullRequestInfo,
+    default_branch: &str,
+    is_polling: bool,
+) -> PullRequestRow {
     PullRequestRow {
-        number:      info.number,
-        title:       info.title.clone(),
-        url:         info.url.clone(),
+        number: info.number,
+        title: info.title.clone(),
+        url: info.url.clone(),
         state_label: info.state.label(),
-        branch:      info.branch_label(default_branch),
-        base:        info.base.clone(),
+        is_polling,
+        branch: info.branch_label(default_branch),
+        base: info.base.clone(),
     }
 }
 

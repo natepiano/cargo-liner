@@ -186,6 +186,7 @@ pub(super) const fn record_background_msg_kind(
         },
         BackgroundMsg::CiRuns { .. }
         | BackgroundMsg::PullRequests { .. }
+        | BackgroundMsg::PullRequestCheckPollStopped { .. }
         | BackgroundMsg::RepoFetchQueued { .. }
         | BackgroundMsg::RepoFetchComplete { .. }
         | BackgroundMsg::CratesIoVersion { .. }
