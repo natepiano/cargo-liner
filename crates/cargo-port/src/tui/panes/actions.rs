@@ -663,8 +663,7 @@ fn open_lint_run_output(app: &App) {
         return;
     }
 
-    let _ = input::open_paths_in_editor(
-        app.config.editor(),
-        std::iter::once(abs_path).chain(log_paths.iter().map(AbsolutePath::as_path)),
-    );
+    for path in log_paths {
+        let _ = input::open_paths_in_editor(app.config.editor(), [path.as_path()]);
+    }
 }

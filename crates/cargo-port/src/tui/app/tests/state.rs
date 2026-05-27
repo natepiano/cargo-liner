@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::Ordering;
-use std::time::Instant;
 
 use cargo_metadata::PackageId;
 use cargo_metadata::TargetKind;
@@ -439,7 +438,7 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
         .as_ref()
         .expect("lint expected");
     assert!(expected.is_empty());
-    assert!(app.lint.running().toast.is_none());
+    assert!(app.lint.running_toast_id().is_none());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   project_a.path().to_path_buf().into(),
@@ -460,8 +459,8 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
             .seen
             .contains(project_a.path().as_path())
     );
-    assert!(app.lint.running().running.contains_key(project_a.path()));
-    assert!(app.lint.running().toast.is_some());
+    assert!(app.lint.running_toast_contains_path(project_a.path()));
+    assert!(app.lint.running_toast_id().is_some());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   project_a.path().to_path_buf().into(),
@@ -469,7 +468,7 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
     });
 
     assert!(app.startup.lint_phase.complete_at.is_some());
-    assert!(app.lint.running().is_empty());
+    assert!(app.lint.running_toast_is_empty());
     app.prune_toasts();
 }
 
@@ -614,36 +613,41 @@ fn lint_toast_reuses_existing_on_restart() {
         path:   project_path.clone(),
         status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
     });
-    let first_toast = app.lint.running().toast;
+    let first_toast = app.lint.running_toast_id();
     assert!(first_toast.is_some());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   project_path.clone(),
         status: LintStatus::Passed(parse_ts("2026-03-30T14:23:18-05:00")),
     });
-    assert_eq!(app.lint.running().toast, first_toast);
+    assert_eq!(app.lint.running_toast_id(), first_toast);
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   project_path,
         status: LintStatus::Running(parse_ts("2026-03-30T14:24:18-05:00")),
     });
-    assert_eq!(app.lint.running().toast, first_toast);
+    assert_eq!(app.lint.running_toast_id(), first_toast);
 }
 
 #[test]
 fn lint_toast_prunes_entries_that_are_not_running_in_project_state() {
     let project = make_project(Some("a"), "~/a");
     let mut app = make_app(std::slice::from_ref(&project));
-    app.lint
-        .running_mut()
-        .insert(test_path("~/a"), Instant::now());
+    app.handle_bg_msg(BackgroundMsg::LintStatus {
+        path:   test_path("~/a"),
+        status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
+    });
+    assert!(
+        app.lint
+            .running_toast_contains_path(test_path("~/a").as_path())
+    );
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   test_path("~/a"),
         status: LintStatus::NoLog,
     });
 
-    assert!(app.lint.running().running.is_empty());
+    assert!(app.lint.running_toast_is_empty());
     assert!(lint_toast_running_items(&app).is_empty());
 }
 
@@ -677,12 +681,7 @@ fn live_lint_status_updates_project_model_and_detail_cache() {
         crate::tui::state::Lint::status_for_root(&app.project_list[0].item),
         LintStatus::Running(_)
     ));
-    assert!(
-        app.lint
-            .running()
-            .running
-            .contains_key(project_path.as_path())
-    );
+    assert!(app.lint.running_toast_contains_path(project_path.as_path()));
 
     app.ensure_detail_cached();
     let display = app.panes.package.content().unwrap().lint_display.clone();
@@ -2547,14 +2546,16 @@ fn cargo_metadata_arrival_stamps_cargo_fields_onto_package() {
 #[test]
 fn apply_lint_config_change_fans_out_to_inflight_scan_and_selection() {
     let project = make_project(Some("demo"), "~/demo");
+    let project_path = project.path().clone();
     let mut app = make_app(&[project]);
 
-    // Inflight: pre-seed a stale running-lint path so we can prove
-    // the orchestrator clears it.
-    app.lint
-        .running_mut()
-        .insert(test_path("~/demo"), Instant::now());
-    assert!(!app.lint.running().is_empty());
+    // Projection: seed a real project-model running lint so we can prove the
+    // orchestrator clears project lint state and reconciles the toast from it.
+    app.handle_bg_msg(BackgroundMsg::LintStatus {
+        path:   project_path,
+        status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
+    });
+    assert!(!app.lint.running_toast_is_empty());
 
     // App-shell scan state: capture the pre-call generation.
     let gen_before = app.scan.generation();
@@ -2571,11 +2572,11 @@ fn apply_lint_config_change_fans_out_to_inflight_scan_and_selection() {
     let cfg = app.config.current().clone();
     app.apply_lint_config_change(&cfg);
 
-    // Inflight: running-lint paths cleared, lint runtime present
+    // Projection: running-lint paths cleared, lint runtime present
     // (re-spawned).
     assert!(
-        app.lint.running().is_empty(),
-        "apply_lint_config_change must clear in-flight lint paths"
+        app.lint.running_toast_is_empty(),
+        "apply_lint_config_change must clear running lint projection"
     );
     // Scan: data_generation bumped exactly once.
     assert_eq!(

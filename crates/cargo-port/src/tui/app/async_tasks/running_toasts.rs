@@ -8,7 +8,6 @@ use tui_pane::format_toast_items;
 use tui_pane::toast_body_width;
 
 use crate::project;
-use crate::project::AbsolutePath;
 use crate::tui::app::App;
 use crate::tui::integration;
 
@@ -22,22 +21,9 @@ impl App {
         self.inflight.clean_mut().toast = next;
     }
     pub(super) fn sync_running_lint_toast(&mut self) {
-        let running_paths = self.project_list.running_lint_paths();
-        let running_set: HashSet<AbsolutePath> = running_paths.iter().cloned().collect();
-        self.lint
-            .running_mut()
-            .running
-            .retain(|path, _| running_set.contains(path));
-        let now = std::time::Instant::now();
-        for path in running_paths {
-            self.lint.running_mut().running.entry(path).or_insert(now);
-        }
-        let (toast_slot, items) = self.lint.running().items_for_toast(
-            |p| project::home_relative_path(p.as_path()),
-            integration::path_key,
-        );
+        let (toast_slot, items) = self.lint.toast_items_from_project_model(&self.project_list);
         let next = self.sync_running_toast(toast_slot, "Lints", &items);
-        self.lint.running_mut().toast = next;
+        self.lint.set_running_toast(next);
     }
     /// Keep a single "Retrieving GitHub repo details" toast in sync
     /// with the live in-flight repo fetches.

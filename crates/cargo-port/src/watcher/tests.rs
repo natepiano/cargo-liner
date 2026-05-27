@@ -1913,6 +1913,99 @@ fn watcher_event_schedules_lint_run_through_main_runtime() {
 }
 
 #[test]
+fn ambiguous_source_event_schedules_lint_run_through_main_runtime() {
+    let project_dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        project_dir.path().join("Cargo.toml"),
+        "[package]\nname='demo'\nversion='0.1.0'\n",
+    )
+    .expect("write manifest");
+    std::fs::create_dir_all(project_dir.path().join("src")).expect("create src");
+    let source_path = project_dir.path().join("src/lib.rs");
+    std::fs::write(&source_path, "pub fn demo() {}\n").expect("write source");
+
+    let cache_dir = tempfile::tempdir().expect("tempdir");
+    let mut cfg = crate::config::CargoPortConfig::default();
+    cfg.cache.root = cache_dir.path().to_string_lossy().to_string();
+    cfg.lint.enabled = true;
+    cfg.lint.include = vec!["~/rust/demo".to_string()];
+    cfg.lint.commands = vec![crate::config::LintCommandConfig {
+        name:    "echo".to_string(),
+        command: "echo lint ok".to_string(),
+    }];
+
+    let (background_tx, background_rx) = channel::unbounded();
+    let runtime = lint::spawn(&cfg, background_tx.clone())
+        .handle
+        .expect("runtime handle");
+    let request = RegisterProjectRequest {
+        project_label: "~/rust/demo".to_string(),
+        abs_path:      AbsolutePath::from(project_dir.path()),
+        is_rust:       true,
+    };
+    runtime.sync_projects(vec![request.clone()]);
+    runtime.register_project(request);
+
+    let mut projects = HashMap::new();
+    let (key, entry) = make_project_entry("~/rust/demo", project_dir.path());
+    projects.insert(key, entry);
+    let watch_roots = vec![AbsolutePath::from(project_dir.path())];
+    let project_parents = HashSet::new();
+    let discovered = HashSet::new();
+    let ctx = EventContext {
+        watch_roots:     &watch_roots,
+        projects:        &projects,
+        project_parents: &project_parents,
+        discovered:      &discovered,
+    };
+    let mut pending_disk = HashMap::new();
+    let mut pending_git = HashMap::new();
+    let mut pending_new = HashMap::new();
+    let event = Event {
+        kind:  EventKind::Any,
+        paths: vec![source_path.clone()],
+        attrs: notify::event::EventAttributes::default(),
+    };
+
+    events::handle_notify_event(
+        &source_path,
+        Some(&event),
+        &ctx,
+        &background_tx,
+        Some(&runtime),
+        None,
+        &mut pending_disk,
+        &mut pending_git,
+        &mut pending_new,
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut saw_passed = false;
+    while Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match background_rx.recv_timeout(remaining) {
+            Ok(BackgroundMsg::LintStatus { path, status })
+                if path.as_path() == project_dir.path()
+                    && matches!(status, lint::LintStatus::Passed(_)) =>
+            {
+                saw_passed = true;
+                break;
+            },
+            Ok(_) => {},
+            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    assert!(
+        saw_passed,
+        "ambiguous source file event should still schedule a lint run"
+    );
+    assert_pending_disk(&pending_disk, "~/rust/demo");
+    assert!(pending_git.is_empty());
+    assert!(pending_new.is_empty());
+}
+
+#[test]
 fn unknown_sibling_event_goes_to_pending_new() {
     let tmp = tempfile::tempdir().expect("failed to create tempdir");
     let base = tmp.path().canonicalize().expect("canonicalize tmpdir");

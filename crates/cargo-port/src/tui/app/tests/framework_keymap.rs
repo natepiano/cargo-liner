@@ -898,6 +898,33 @@ fn external_keymap_reload_updates_framework_owned_scope() {
 }
 
 #[test]
+fn external_keymap_reload_missing_actions_does_not_rewrite_file() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let toml_path = temp_dir.path().join("keymap.toml");
+    let keymap_path_guard = keymap::override_keymap_path_for_test(toml_path.clone());
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+
+    keymap_ui::save_current_keymap_to_disk(&mut app);
+    let edited = "[output]\n# cancel = \"Esc\"\n";
+    fs::write(&toml_path, edited).expect("rewrite keymap toml");
+
+    app.maybe_reload_keymap_from_disk();
+
+    let saved = fs::read_to_string(&toml_path).expect("read keymap toml");
+    assert_eq!(saved, edited);
+    assert!(
+        app.framework
+            .toasts
+            .active_now()
+            .iter()
+            .any(|toast| toast.title() == "Keymap warnings"),
+        "missing entries should warn without rewriting the user's in-progress edit"
+    );
+    drop(keymap_path_guard);
+}
+
+#[test]
 fn legacy_project_list_removed_actions_migrate_before_framework_load() {
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let toml_path = temp_dir.path().join("keymap.toml");

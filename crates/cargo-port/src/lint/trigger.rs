@@ -149,14 +149,17 @@ pub(crate) fn classify_event_path(
     let removal = matches!(event_kind, EventKind::Remove(_));
     let event_kind = if removal {
         LintEventKind::Remove
-    } else if matches!(event_kind, EventKind::Create(_) | EventKind::Modify(_)) {
+    } else if matches!(
+        event_kind,
+        EventKind::Any | EventKind::Create(_) | EventKind::Modify(_)
+    ) {
         LintEventKind::CreateOrModify
     } else {
-        // Access events (file opens/reads/closes) and other non-content
-        // events are not a reason to re-lint. The Linux inotify backend can
-        // surface these; ignore them so a bare read never triggers a run.
-        // The watcher already masks them out via `EventKindMask::CORE`; this
-        // keeps the classifier correct regardless of the watcher's config.
+        // Access events (file opens/reads/closes) are not a reason to re-lint.
+        // The Linux inotify backend can surface these; ignore them so a bare
+        // read never triggers a run. The watcher already masks them out via
+        // `EventKindMask::CORE`; this keeps the classifier correct regardless
+        // of the watcher's config.
         return None;
     };
 

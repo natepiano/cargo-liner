@@ -103,7 +103,7 @@ impl App {
             status = ?status_kind,
             eligible,
             applied_to_model,
-            running_lints = self.lint.running().running.len(),
+            running_lints = self.lint.running_toast_path_count(),
             generation = self.scan.generation(),
             "lint_status_applied"
         );

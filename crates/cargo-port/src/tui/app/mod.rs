@@ -489,7 +489,7 @@ impl App {
     /// the definition of "animating" for its own state.
     fn is_animating(&self) -> bool {
         self.scan.needs_animation()
-            || self.lint.needs_animation()
+            || self.project_list.has_running_lints()
             || self.inflight.needs_animation()
             || !self.framework.toasts.active_now().is_empty()
     }

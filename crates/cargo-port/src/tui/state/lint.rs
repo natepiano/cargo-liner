@@ -14,8 +14,10 @@
 //! variants directly, so `PackageData.lint_display` carries
 //! `LintDisplay` rather than a pre-rendered string.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::time::Duration;
+use std::time::Instant;
 
 use ratatui::Frame;
 use ratatui::layout::Position;
@@ -24,6 +26,8 @@ use tui_pane::Hittable;
 use tui_pane::RenderFocus;
 use tui_pane::Renderable;
 use tui_pane::RunningTracker;
+use tui_pane::ToastTaskId;
+use tui_pane::TrackedItem;
 use tui_pane::Viewport;
 
 use super::Config;
@@ -31,6 +35,7 @@ use crate::constants::LINT_NO_LOG;
 use crate::lint::CacheUsage;
 use crate::lint::LintStatus;
 use crate::lint::RuntimeHandle;
+use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
 use crate::project::Visibility;
@@ -76,10 +81,10 @@ pub struct Lint {
     /// config (`lint.enabled`, `lint.parallel`, `lint.cache_root`)
     /// changes. `None` when lint is disabled.
     runtime:         Option<RuntimeHandle>,
-    /// Paths with a lint run currently in flight, keyed by the
-    /// time the run was launched, paired with the single sticky
-    /// "N lints running" toast slot. Synced each tick by
-    /// `App::sync_running_lint_toast`.
+    /// Presentation-only state for the single sticky "N lints running" toast.
+    /// The running paths are reconciled from `ProjectList` by
+    /// `Self::toast_items_from_project_model`; this tracker must not become a
+    /// second source of truth for lint status.
     running:         RunningTracker<AbsolutePath>,
     /// Bytes used by the on-disk lint-log cache (`~/.cache/cargo-port/lints/`).
     /// Refreshed by `App::refresh_lint_cache_usage_from_disk`,
@@ -132,16 +137,43 @@ impl Lint {
     /// path when lint settings change.
     pub fn set_runtime(&mut self, handle: Option<RuntimeHandle>) { self.runtime = handle; }
 
-    // ── running tracker ─────────────────────────────────────────
+    // ── running toast projection ────────────────────────────────
 
-    pub const fn running(&self) -> &RunningTracker<AbsolutePath> { &self.running }
+    pub fn toast_items_from_project_model(
+        &mut self,
+        projects: &ProjectList,
+    ) -> (Option<ToastTaskId>, Vec<TrackedItem>) {
+        let running_paths = projects.running_lint_paths();
+        let running_set: HashSet<AbsolutePath> = running_paths.iter().cloned().collect();
+        self.running
+            .running
+            .retain(|path, _| running_set.contains(path));
+        let now = Instant::now();
+        for path in running_paths {
+            self.running.running.entry(path).or_insert(now);
+        }
+        self.running.items_for_toast(
+            |p| project::home_relative_path(p.as_path()),
+            integration::path_key,
+        )
+    }
 
-    pub const fn running_mut(&mut self) -> &mut RunningTracker<AbsolutePath> { &mut self.running }
+    pub const fn set_running_toast(&mut self, toast: Option<ToastTaskId>) {
+        self.running.toast = toast;
+    }
 
-    /// Whether any lint run is in flight, so the render loop should keep
-    /// ticking to advance the lint spinner (project-list column, detail
-    /// pane, and the "N lints running" toast).
-    pub fn needs_animation(&self) -> bool { !self.running().is_empty() }
+    #[cfg(test)]
+    pub fn running_toast_is_empty(&self) -> bool { self.running.is_empty() }
+
+    #[cfg(test)]
+    pub const fn running_toast_id(&self) -> Option<ToastTaskId> { self.running.toast }
+
+    pub fn running_toast_path_count(&self) -> usize { self.running.running.len() }
+
+    #[cfg(test)]
+    pub fn running_toast_contains_path(&self, path: &Path) -> bool {
+        self.running.running.contains_key(path)
+    }
 
     // ── cache usage ─────────────────────────────────────────────
 
@@ -270,25 +302,23 @@ impl Hittable<HoverTarget> for Lint {
 
 #[cfg(test)]
 mod tests {
-    use tui_pane::ToastTaskId;
-
     use super::*;
 
     #[test]
     fn new_starts_with_no_runtime_and_empty_inflight() {
         let lint = Lint::new(None);
         assert!(lint.runtime().is_none());
-        assert!(lint.running().is_empty());
-        assert!(lint.running().toast.is_none());
+        assert!(lint.running_toast_is_empty());
+        assert!(lint.running_toast_id().is_none());
     }
 
     #[test]
     fn running_toast_round_trip() {
         let mut lint = Lint::new(None);
-        lint.running_mut().toast = Some(ToastTaskId(7));
-        assert_eq!(lint.running().toast, Some(tui_pane::ToastTaskId(7)));
-        lint.running_mut().toast = None;
-        assert!(lint.running().toast.is_none());
+        lint.set_running_toast(Some(ToastTaskId(7)));
+        assert_eq!(lint.running_toast_id(), Some(tui_pane::ToastTaskId(7)));
+        lint.set_running_toast(None);
+        assert!(lint.running_toast_id().is_none());
     }
 
     #[test]

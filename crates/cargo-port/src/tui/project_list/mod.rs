@@ -64,6 +64,14 @@ pub(super) use visible_rows::LegacyRootExpansion;
 pub(super) use visible_rows::VisibleRow;
 use visible_rows::worst_git_status;
 
+fn project_lint_is_running(project: &RustProject) -> bool {
+    project.visibility() == Visibility::Visible
+        && matches!(
+            project.lint_at_path(project.path()).map(LintRuns::status),
+            Some(crate::lint::LintStatus::Running(_))
+        )
+}
+
 /// Owning wrapper around the project hierarchy plus all project-list
 /// navigation state (cursor, expansion set, finder, sort/width caches).
 ///
@@ -340,28 +348,26 @@ impl ProjectList {
             .cloned()
     }
 
+    pub(super) fn has_running_lints(&self) -> bool {
+        self.roots.values().any(|entry| match &entry.item {
+            RootItem::Rust(project) => project_lint_is_running(project),
+            RootItem::Worktrees(group) => group.iter_entries().any(project_lint_is_running),
+            RootItem::NonRust(_) => false,
+        })
+    }
+
     pub(super) fn running_lint_paths(&self) -> Vec<AbsolutePath> {
         let mut paths = Vec::new();
         for entry in self.roots.values() {
             match &entry.item {
                 RootItem::Rust(project) => {
-                    if project.visibility() == Visibility::Visible
-                        && matches!(
-                            project.lint_at_path(project.path()).map(LintRuns::status),
-                            Some(crate::lint::LintStatus::Running(_))
-                        )
-                    {
+                    if project_lint_is_running(project) {
                         paths.push(project.path().clone());
                     }
                 },
                 RootItem::Worktrees(group) => {
                     paths.extend(group.iter_entries().filter_map(|project| {
-                        if project.visibility() == Visibility::Visible
-                            && matches!(
-                                project.lint_at_path(project.path()).map(LintRuns::status),
-                                Some(crate::lint::LintStatus::Running(_))
-                            )
-                        {
+                        if project_lint_is_running(project) {
                             Some(project.path().clone())
                         } else {
                             None

@@ -123,21 +123,17 @@ impl App {
             let messages: Vec<String> = result.errors.iter().map(ToString::to_string).collect();
             self.show_keymap_diagnostics(&messages);
         }
-        if result.warnings.is_empty() {
+        let mut warnings = result.warnings;
+        if !result.missing_actions.is_empty() {
+            warnings.push(format!(
+                "Missing keymap entries are using defaults until added:\n{}",
+                result.missing_actions.join(", ")
+            ));
+        }
+        if warnings.is_empty() {
             self.dismiss_keymap_warnings();
         } else {
-            self.show_keymap_warnings(&result.warnings);
-        }
-
-        if !result.missing_actions.is_empty() {
-            keymap_ui::save_current_keymap_to_disk(self);
-            self.show_timed_toast(
-                "Keymap updated",
-                format!(
-                    "Defaults written for missing entries:\n{}",
-                    result.missing_actions.join(", ")
-                ),
-            );
+            self.show_keymap_warnings(&warnings);
         }
     }
 
@@ -394,8 +390,8 @@ impl App {
     /// orchestration — not a method on any single subsystem because
     /// lint config changes fan out across three areas:
     ///
-    /// - **Inflight**: respawns the lint runtime, clears in-flight lint paths, refreshes the lint
-    ///   toast, syncs the running project list against the new runtime.
+    /// - **Runtime**: respawns the lint runtime and syncs registered projects.
+    /// - **Toast**: reconciles the running-lint toast from cleared project lint state.
     /// - **Scan**: clears in-memory lint state on `projects`, refreshes lint runs from disk, bumps
     ///   `data_generation` so detail panes redraw.
     /// - **Selection**: recomputes `cached_fit_widths` because the project pane's column schema
@@ -410,16 +406,15 @@ impl App {
     /// `src/tui/app/mod.rs` for the cross-subsystem orchestrator
     /// pattern.
     pub fn apply_lint_config_change(&mut self, cfg: &CargoPortConfig) {
-        // Inflight: respawn the lint runtime + clear in-flight tracking.
+        // Runtime: respawn the lint runtime.
         let lint_spawn = lint::spawn(cfg, self.background.background_sender());
         self.lint.set_runtime(lint_spawn.handle);
-        self.lint.running_mut().clear();
-        self.sync_running_lint_toast();
         self.sync_lint_runtime_projects();
 
         // Scan state on App: clear lint state, refresh from
         // disk, bump generation.
         self.clear_all_lint_state();
+        self.sync_running_lint_toast();
         self.refresh_lint_runs_from_disk();
         self.scan.bump_generation();
 
