@@ -54,6 +54,7 @@ use super::constants::GITHUB_GRAPHQL_URL;
 use super::constants::SERVICE_RETRY_SECS;
 use super::project::ProjectPrInfo;
 use super::project::PullRequestCompleteness;
+use super::project::PullRequestGoneReason;
 use super::project::PullRequestInfo;
 use super::project::PullRequestState;
 use super::project::PullRequestUnavailableReason;
@@ -214,6 +215,31 @@ struct GqlRepositoryOwner {
     login: String,
 }
 
+#[derive(Deserialize)]
+struct GqlPullRequestStatusResponse {
+    data:   Option<GqlPullRequestStatusData>,
+    errors: Option<Vec<Value>>,
+}
+
+#[derive(Deserialize)]
+struct GqlPullRequestStatusData {
+    repository: Option<GqlPullRequestStatusRepository>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlPullRequestStatusRepository {
+    pull_request: Option<GqlPullRequestStatusNode>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlPullRequestStatusNode {
+    merged:        bool,
+    closed:        bool,
+    base_ref_name: String,
+}
+
 const fn unavailable_reason_from_signal(
     signal: Option<ServiceSignal>,
 ) -> PullRequestUnavailableReason {
@@ -269,6 +295,15 @@ fn pull_requests_query(
          {{ pageInfo {{ hasNextPage endCursor }} nodes {{ ... on PullRequest {{ number title url \
          isDraft reviewDecision mergeStateStatus headRefName baseRefName \
          headRepository {{ name owner {{ login }} }} }} }} }} }}"
+    )
+}
+
+fn pull_request_status_query(owner: &str, repo: &str, number: u32) -> String {
+    let owner = graphql_string(owner);
+    let repo = graphql_string(repo);
+    format!(
+        "{{ repository(owner: {owner}, name: {repo}) {{ pullRequest(number: {number}) \
+         {{ merged closed baseRefName }} }} }}"
     )
 }
 
@@ -748,6 +783,47 @@ impl HttpClient {
         (Some(PullRequestFetch::Loaded(info)), signal)
     }
 
+    pub(crate) async fn fetch_pull_request_gone_reason_async(
+        &self,
+        owner_repo: OwnerRepo,
+        number: u32,
+    ) -> HttpOutcome<PullRequestGoneReason> {
+        if !self.has_github_token() {
+            return (Some(PullRequestGoneReason::Unknown), None);
+        }
+        let query = pull_request_status_query(owner_repo.owner(), owner_repo.repo(), number);
+        let (body, signal) = self.github_graphql_async(&query).await;
+        let Some(body) = body else {
+            return (Some(PullRequestGoneReason::Unknown), signal);
+        };
+        let Ok(response) = serde_json::from_slice::<GqlPullRequestStatusResponse>(&body) else {
+            return (Some(PullRequestGoneReason::Unknown), signal);
+        };
+        if response
+            .errors
+            .as_ref()
+            .is_some_and(|errors| !errors.is_empty())
+        {
+            return (Some(PullRequestGoneReason::Unknown), signal);
+        }
+        let Some(repository) = response.data.and_then(|data| data.repository) else {
+            return (Some(PullRequestGoneReason::Missing), signal);
+        };
+        let Some(pull_request) = repository.pull_request else {
+            return (Some(PullRequestGoneReason::Missing), signal);
+        };
+        let reason = if pull_request.merged {
+            PullRequestGoneReason::Merged {
+                base: pull_request.base_ref_name,
+            }
+        } else if pull_request.closed {
+            PullRequestGoneReason::Closed
+        } else {
+            PullRequestGoneReason::Unknown
+        };
+        (Some(reason), signal)
+    }
+
     async fn fetch_pull_request_pages(
         &self,
         owner_repo: &OwnerRepo,
@@ -1005,6 +1081,15 @@ impl HttpClient {
     ) -> HttpOutcome<PullRequestFetch> {
         self.handle
             .block_on(self.fetch_open_pull_requests_async(owner_repo))
+    }
+
+    pub(crate) fn fetch_pull_request_gone_reason(
+        &self,
+        owner_repo: OwnerRepo,
+        number: u32,
+    ) -> HttpOutcome<PullRequestGoneReason> {
+        self.handle
+            .block_on(self.fetch_pull_request_gone_reason_async(owner_repo, number))
     }
 
     pub(crate) fn probe_service(&self, service: ServiceKind) -> bool {

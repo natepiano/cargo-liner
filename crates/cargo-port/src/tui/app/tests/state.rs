@@ -21,6 +21,7 @@ use crate::project::ProjectPrData;
 use crate::project::ProjectPrInfo;
 use crate::project::PublishPolicy;
 use crate::project::PullRequestCompleteness;
+use crate::project::PullRequestGoneReason;
 use crate::project::PullRequestInfo;
 use crate::project::PullRequestState;
 use crate::project::RootItem;
@@ -150,7 +151,7 @@ fn pull_request_disappearance_pushes_deleted_toast() {
             .toasts
             .active_now()
             .iter()
-            .all(|toast| toast.title() != "Pull request deleted"),
+            .all(|toast| !toast.title().starts_with("Pull request")),
         "initial PR load should not announce deletion"
     );
     apply_bg_msg(
@@ -168,15 +169,26 @@ fn pull_request_disappearance_pushes_deleted_toast() {
             .toasts
             .active_now()
             .iter()
-            .all(|toast| toast.title() != "Pull request deleted"),
+            .all(|toast| !toast.title().starts_with("Pull request")),
         "loading refresh should preserve the old PR without announcing deletion"
     );
 
     apply_bg_msg(
         &mut app,
         BackgroundMsg::PullRequests {
-            repo,
+            repo: repo.clone(),
             data: test_pr_data(Vec::new()),
+        },
+    );
+
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::PullRequestDisappeared {
+            repo,
+            pull_request: test_pull_request_info(1, "test: exercise PR toast"),
+            reason: PullRequestGoneReason::Merged {
+                base: "main".to_string(),
+            },
         },
     );
 
@@ -185,10 +197,36 @@ fn pull_request_disappearance_pushes_deleted_toast() {
         .toasts
         .active_now()
         .into_iter()
-        .find(|toast| toast.title() == "Pull request deleted")
-        .expect("deleted PR toast should be visible");
+        .find(|toast| toast.title() == "Pull request merged")
+        .expect("merged PR toast should be visible");
     assert!(toast.body().contains("natepiano/cargo-port"));
     assert!(toast.body().contains("#1 test: exercise PR toast"));
+    assert!(toast.body().contains("merged into main"));
+}
+
+#[test]
+fn open_pull_request_count_does_not_change_project_list_label() {
+    let project = make_project(Some("cargo-port"), "~/cargo-port");
+    let path = test_path("~/cargo-port");
+    let mut app = make_app(&[project]);
+    apply_git_info(
+        &mut app,
+        path.as_path(),
+        make_git_info(Some("https://github.com/natepiano/cargo-port")),
+    );
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::PullRequests {
+            repo: crate::ci::OwnerRepo::new("natepiano", "cargo-port"),
+            data: test_pr_data(vec![test_pull_request_info(5, "feat: poll PR check state")]),
+        },
+    );
+
+    let labels = app
+        .project_list
+        .resolved_root_labels(app.config.include_non_rust().includes_non_rust());
+
+    assert_eq!(labels, vec!["cargo-port"]);
 }
 
 #[test]

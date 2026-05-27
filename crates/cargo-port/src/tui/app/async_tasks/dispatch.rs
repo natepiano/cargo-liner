@@ -134,6 +134,13 @@ impl App {
             BackgroundMsg::PullRequestCheckPollStopped { repo, number } => {
                 self.handle_pull_request_check_poll_stopped(&repo, number);
             },
+            BackgroundMsg::PullRequestDisappeared {
+                repo,
+                pull_request,
+                reason,
+            } => {
+                self.handle_pull_request_disappeared(&repo, &pull_request, &reason);
+            },
             BackgroundMsg::CratesIoFetchQueued { name } => {
                 self.handle_crates_io_fetch_queued(name);
             },

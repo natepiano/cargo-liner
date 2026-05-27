@@ -193,6 +193,14 @@ impl PullRequestUnavailableReason {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PullRequestGoneReason {
+    Merged { base: String },
+    Closed,
+    Missing,
+    Unknown,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PullRequestCompleteness {
     Complete,
