@@ -13,8 +13,7 @@
 // Git pane constants
 
 pub(super) const FIT_TEXT_ELLIPSIS: &str = "...";
-pub(super) const PULL_REQUEST_TITLE_RESERVED_WIDTH: usize = 7;
-pub(super) const PULL_REQUEST_WIDE_MIN_WIDTH: usize = 56;
+pub(super) const PULL_REQUEST_MIN_TITLE_WIDTH: usize = 8;
 
 // Row prefix strings — single source of truth for width calc and render.
 

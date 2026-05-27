@@ -35,8 +35,7 @@ use super::RemoteRow;
 use super::SyncedDescriptionHeight;
 use super::WorktreeInfo;
 use super::constants::FIT_TEXT_ELLIPSIS;
-use super::constants::PULL_REQUEST_TITLE_RESERVED_WIDTH;
-use super::constants::PULL_REQUEST_WIDE_MIN_WIDTH;
+use super::constants::PULL_REQUEST_MIN_TITLE_WIDTH;
 use super::github_stars_is_unreachable_placeholder;
 use super::package;
 use super::package::RenderStyles;
@@ -294,6 +293,8 @@ fn append_pull_requests_section(
         return;
     }
 
+    let col_widths = pull_request_col_widths(&section.rows, area_width);
+    render_pull_request_header(accum.lines, &col_widths);
     let active = matches!(ctx.focus, PaneFocusState::Active);
     for (i, row) in section.rows.iter().enumerate() {
         let row_index = ctx.row_offset + flat_len + i;
@@ -302,9 +303,12 @@ fn append_pull_requests_section(
             *accum.focused_output_line = start_y;
         }
         let selection = tui_pane::selection_state(ctx.pane, row_index, ctx.focus);
-        render_pull_request_row(accum.lines, row, selection, area_width);
-        let height = accum.lines.len().saturating_sub(start_y).max(1);
-        accum.row_spans.push(GitVisualRowSpan { start_y, height });
+        accum
+            .lines
+            .push(pull_request_row_line(row, &col_widths, selection));
+        accum
+            .row_spans
+            .push(GitVisualRowSpan { start_y, height: 1 });
     }
     if matches!(
         section.completeness,
@@ -341,45 +345,99 @@ fn pull_request_status_text(section: &PullRequestSection) -> String {
     }
 }
 
-fn render_pull_request_row(
-    lines: &mut Vec<Line<'static>>,
-    row: &PullRequestRow,
-    selection: PaneSelectionState,
-    area_width: u16,
-) {
-    let width = usize::from(area_width).max(1);
-    let style = selection.patch(Style::default().fg(inactive_title_color()));
-    if width >= PULL_REQUEST_WIDE_MIN_WIDTH {
-        let head = format!("#{}  {:<8}  {}", row.number, row.state_label, row.branch);
-        lines.push(Line::from(Span::styled(
-            fit_text(&head, width.saturating_sub(1)),
-            style,
-        )));
-        lines.push(Line::from(Span::styled(
-            format!(
-                "      {}",
-                fit_text(
-                    &row.title,
-                    width.saturating_sub(PULL_REQUEST_TITLE_RESERVED_WIDTH),
-                ),
-            ),
-            style,
-        )));
+struct PullRequestColWidths {
+    number: usize,
+    status: usize,
+    branch: usize,
+    title:  usize,
+}
+
+const PULL_REQUEST_NUMBER_HEADER: &str = "#";
+const PULL_REQUEST_STATUS_HEADER: &str = "Status";
+const PULL_REQUEST_BRANCH_HEADER: &str = "Branch";
+const PULL_REQUEST_TITLE_HEADER: &str = "Title";
+
+fn pull_request_col_widths(rows: &[PullRequestRow], area_width: u16) -> PullRequestColWidths {
+    let number = rows
+        .iter()
+        .map(|row| format!("#{}", row.number).width())
+        .max()
+        .unwrap_or(0)
+        .max(PULL_REQUEST_NUMBER_HEADER.width());
+    let status = rows
+        .iter()
+        .map(|row| row.state_label.width())
+        .max()
+        .unwrap_or(0)
+        .max(PULL_REQUEST_STATUS_HEADER.width());
+    let branch_preferred = rows
+        .iter()
+        .map(|row| row.branch.width())
+        .max()
+        .unwrap_or(0)
+        .max(PULL_REQUEST_BRANCH_HEADER.width());
+    let title_preferred = rows
+        .iter()
+        .map(|row| row.title.width())
+        .max()
+        .unwrap_or(0)
+        .max(PULL_REQUEST_TITLE_HEADER.width());
+    let fixed_width = 1 + number + 2 + status + 2 + 2;
+    let branch_title_width = usize::from(area_width).saturating_sub(fixed_width);
+    let branch = if branch_title_width >= branch_preferred + title_preferred {
+        branch_preferred
+    } else if branch_title_width > PULL_REQUEST_MIN_TITLE_WIDTH {
+        branch_preferred.min(branch_title_width - PULL_REQUEST_MIN_TITLE_WIDTH)
     } else {
-        let head = format!("#{} {}", row.number, row.state_label);
-        lines.push(Line::from(Span::styled(
-            fit_text(&head, width.saturating_sub(1)),
-            style,
-        )));
-        lines.push(Line::from(Span::styled(
-            fit_text(&row.branch, width.saturating_sub(1)),
-            style,
-        )));
-        lines.push(Line::from(Span::styled(
-            fit_text(&row.title, width.saturating_sub(1)),
-            style,
-        )));
+        branch_preferred.min(branch_title_width)
+    };
+    let title = if branch_title_width >= branch_preferred + title_preferred {
+        title_preferred
+    } else {
+        branch_title_width.saturating_sub(branch)
+    };
+    PullRequestColWidths {
+        number,
+        status,
+        branch,
+        title,
     }
+}
+
+fn render_pull_request_header(lines: &mut Vec<Line<'static>>, widths: &PullRequestColWidths) {
+    let style = Style::default()
+        .fg(column_header_color())
+        .add_modifier(Modifier::BOLD);
+    let text = format!(
+        " {:<number$}  {:<status$}  {:<branch$}  {}",
+        fit_text(PULL_REQUEST_NUMBER_HEADER, widths.number),
+        fit_text(PULL_REQUEST_STATUS_HEADER, widths.status),
+        fit_text(PULL_REQUEST_BRANCH_HEADER, widths.branch),
+        fit_text(PULL_REQUEST_TITLE_HEADER, widths.title),
+        number = widths.number,
+        status = widths.status,
+        branch = widths.branch,
+    );
+    lines.push(Line::from(Span::styled(text, style)));
+}
+
+fn pull_request_row_line(
+    row: &PullRequestRow,
+    widths: &PullRequestColWidths,
+    selection: PaneSelectionState,
+) -> Line<'static> {
+    let text = format!(
+        " {:<number$}  {:<status$}  {:<branch$}  {}",
+        fit_text(&format!("#{}", row.number), widths.number),
+        fit_text(row.state_label, widths.status),
+        fit_text(&row.branch, widths.branch),
+        fit_text(&row.title, widths.title),
+        number = widths.number,
+        status = widths.status,
+        branch = widths.branch,
+    );
+    let style = selection.patch(Style::default().fg(inactive_title_color()));
+    Line::from(Span::styled(text, style))
 }
 
 fn fit_text(text: &str, max_width: usize) -> String {
@@ -1068,7 +1126,7 @@ fn pull_request_block_height(section: &PullRequestSection) -> usize {
     let row_height = if section.rows.is_empty() {
         1
     } else {
-        section.rows.len().saturating_mul(3)
+        1 + section.rows.len()
     };
     let truncated = usize::from(matches!(
         section.completeness,
@@ -1132,6 +1190,45 @@ mod tests {
         render_remote_header(&mut lines, &widths);
 
         assert!(line_text(&lines[0]).ends_with("  Sync"));
+    }
+
+    #[test]
+    fn pull_request_header_labels_title_column() {
+        let row = PullRequestRow {
+            number:      1,
+            title:       "feat: show open pull requests".to_string(),
+            url:         String::new(),
+            state_label: "ready",
+            branch:      "natepiano:feat/open-prs".to_string(),
+            base:        "main".to_string(),
+        };
+        let widths = pull_request_col_widths(&[row], 80);
+        let mut lines = Vec::new();
+
+        render_pull_request_header(&mut lines, &widths);
+
+        assert!(line_text(&lines[0]).contains("Status"));
+        assert!(line_text(&lines[0]).contains("Branch"));
+        assert!(line_text(&lines[0]).contains("Title"));
+    }
+
+    #[test]
+    fn pull_request_row_is_single_truncated_line() {
+        let row = PullRequestRow {
+            number:      1,
+            title:       "feat: show open pull requests".to_string(),
+            url:         String::new(),
+            state_label: "ready",
+            branch:      "natepiano:feat/open-prs".to_string(),
+            base:        "main".to_string(),
+        };
+        let widths = pull_request_col_widths(std::slice::from_ref(&row), 46);
+
+        let line = pull_request_row_line(&row, &widths, PaneSelectionState::Unselected);
+        let text = line_text(&line);
+
+        assert!(text.starts_with(" #1  ready"));
+        assert!(text.contains("..."));
     }
 
     #[test]

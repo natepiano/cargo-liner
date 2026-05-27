@@ -38,10 +38,9 @@ Wide Git pane:
 │ Status      clean                                           │
 │                                                              │
 ├─ Pull Requests (2) ─────────────────────────────────────────┤
-│ #128  draft       feature/member-vendored                   │
-│       Show vendored workspace member packages               │
-│ #124  changes     refactor/ci-cache                         │
-│       Keep failed CI runs fresh after reruns                 │
+│ #     Status   Branch                   Title                │
+│ #128  draft    feature/member-vendored  Show vendored wor... │
+│ #124  changes  refactor/ci-cache        Keep failed CI ru... │
 │                                                              │
 ├─ Remotes (2) ────────────────────────────────────────────────┤
 │ origin   natepiano/cargo-port        main       ☑           │
@@ -56,21 +55,16 @@ Narrow Git pane:
 │ Status clean                        │
 │                                     │
 ├─ Pull Requests (2) ─────────────────┤
-│ #128 draft                          │
-│ feature/member-vendored             │
-│ Show vendored workspace member...   │
-│                                     │
-│ #124 changes                        │
-│ refactor/ci-cache                   │
-│ Keep failed CI runs fresh after...  │
+│ #     Status   Branch     Title     │
+│ #128  draft    featur...  Show v... │
+│ #124  changes  refact...  Keep f... │
 └─────────────────────────────────────┘
 ```
 
 Show `head -> base` only when the base branch is not the repo default branch:
 
 ```text
-│ #131  review      fix/0.5-release -> release/0.5            │
-│       Fix release packaging metadata                         │
+│ #131  review  fix/0.5-release -> release/0.5  Fix release...│
 ```
 
 ## Stored Model
@@ -380,22 +374,13 @@ Update Git-pane row routing:
   layer, not just in the Enter handler.
 - Keep Remotes and Worktrees behavior unchanged.
 
-Multi-line PR rows:
+Single-line PR rows:
 
-- A PR is one logical selectable row that may render as two or three visual
-  lines.
-- Cursor movement advances by PR, not by visual line.
-- Hit testing maps any visual line in the PR block back to the same logical PR
-  row.
-- Scroll anchoring uses the first visual line of the PR block and accounts for
-  the block height.
-- Copy and Enter behave the same from the number line, branch line, or title
-  line.
-- The shared layout helper emits `logical_row`, `start_y`, and `height` spans.
-  Rendering, hit testing, cursor scrolling, copy, Enter, and finder jumps all
-  consume those spans.
-- Add render and interaction tests for clicking the title line and for finder
-  navigation to the second PR in narrow layout.
+- PR rows render as `#`, `Status`, `Branch`, and `Title` columns.
+- The header row mirrors the Remotes and Worktrees table treatment.
+- Cursor movement advances by PR row.
+- Hit testing maps the rendered PR row back to the same logical PR row.
+- Long branch or title text is truncated to keep the table on one row.
 
 ## Finder
 
