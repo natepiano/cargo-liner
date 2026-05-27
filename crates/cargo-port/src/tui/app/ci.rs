@@ -9,6 +9,7 @@ use crate::ci::CiRun;
 use crate::project::AbsolutePath;
 use crate::project::ProjectCiData;
 use crate::project::ProjectCiInfo;
+use crate::project::ProjectPrData;
 use crate::scan;
 use crate::scan::CachedRepoData;
 use crate::scan::CiFetchResult;
@@ -132,8 +133,9 @@ impl App {
 
         self.ci.viewport.set_pos(merged.len());
         if let Some(repo) = self.project_list.owner_repo_for_path_inner(&abs) {
-            let meta = scan::load_cached_repo_data(&self.net.github.fetch_cache, &repo)
-                .and_then(|cached| cached.meta);
+            let cached = scan::load_cached_repo_data(&self.net.github.fetch_cache, &repo);
+            let meta = cached.as_ref().and_then(|cached| cached.meta.clone());
+            let pr_data = cached.map_or(ProjectPrData::Unfetched, |cached| cached.pr_data);
             scan::store_cached_repo_data(
                 &self.net.github.fetch_cache,
                 &repo,
@@ -141,6 +143,7 @@ impl App {
                     runs: merged.clone(),
                     meta,
                     github_total,
+                    pr_data,
                 },
             );
         }

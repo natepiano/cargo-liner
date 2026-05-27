@@ -12,6 +12,9 @@ use super::GitData;
 use super::LintsData;
 use super::PackageData;
 use super::PublishStatus;
+use super::PullRequestRow;
+use super::PullRequestSection;
+use super::PullRequestSectionState;
 use super::RemoteRow;
 use super::RunTargetKind;
 use super::TargetEntry;
@@ -83,6 +86,7 @@ fn git_data() -> GitData {
         rate_limit_core:    None,
         rate_limit_graphql: None,
         github_status:      AvailabilityStatus::Reachable,
+        pull_requests:      PullRequestSection::default(),
         remotes:            Vec::new(),
         worktrees:          Vec::new(),
     }
@@ -337,6 +341,51 @@ fn git_copy_remote_uses_full_url_and_worktree_uses_path() {
             CopyLabel::Path,
         )),
     );
+}
+
+#[test]
+fn git_copy_pull_request_uses_url_and_routes_before_remotes() {
+    let mut data = git_data();
+    data.pull_requests = PullRequestSection {
+        state: PullRequestSectionState::Loaded,
+        rows: vec![PullRequestRow {
+            number:      128,
+            title:       "Show vendored workspace member packages".to_string(),
+            url:         "https://github.com/natepiano/cargo-port/pull/128".to_string(),
+            state_label: "draft",
+            branch:      "feature/member-vendored".to_string(),
+            base:        "main".to_string(),
+        }],
+        ..PullRequestSection::default()
+    };
+    data.remotes.push(RemoteRow {
+        name:            "origin".to_string(),
+        icon:            "",
+        display_url:     "github.com/natepiano/cargo-port".to_string(),
+        tracked_ref:     "main".to_string(),
+        status:          "ok".to_string(),
+        full_url:        Some("https://github.com/natepiano/cargo-port".to_string()),
+        push_annotation: None,
+    });
+
+    let pr_pos = model::git_fields_from_data(&data).len();
+    let remote_pos = pr_pos + data.pull_requests.rows.len();
+
+    assert!(matches!(
+        model::git_row_at(&data, pr_pos),
+        Some(model::GitRow::PullRequest(row)) if row.number == 128
+    ));
+    assert_eq!(
+        model::copy_payload_for_git(&data, pr_pos),
+        CopySelectionResult::Payload(CopyPayload::new(
+            "https://github.com/natepiano/cargo-port/pull/128",
+            CopyLabel::Url,
+        )),
+    );
+    assert!(matches!(
+        model::git_row_at(&data, remote_pos),
+        Some(model::GitRow::Remote(_))
+    ));
 }
 
 #[test]

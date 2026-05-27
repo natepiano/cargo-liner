@@ -71,6 +71,9 @@ pub(super) use pane_data::PendingCiFetch;
 pub(super) use pane_data::PendingExampleRun;
 #[cfg(test)]
 pub(super) use pane_data::PublishStatus;
+pub(super) use pane_data::PullRequestRow;
+pub(super) use pane_data::PullRequestSection;
+pub(super) use pane_data::PullRequestSectionState;
 pub(super) use pane_data::RemoteRow;
 pub(super) use pane_data::RunTargetKind;
 pub(super) use pane_data::TargetEntry;

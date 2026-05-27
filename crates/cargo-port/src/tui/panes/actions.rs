@@ -455,6 +455,10 @@ fn handle_detail_enter(app: &mut App) {
         }
     } else if let Some(git) = app.panes.git.content() {
         let pos = app.panes.git.viewport.pos();
+        if let Some(GitRow::PullRequest(pull_request)) = super::git_row_at(git, pos) {
+            open_url(&pull_request.url);
+            return;
+        }
         if let Some(GitRow::Remote(remote)) = super::git_row_at(git, pos)
             && let Some(url) = remote.full_url.as_deref()
         {

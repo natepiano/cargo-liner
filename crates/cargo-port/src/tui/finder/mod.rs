@@ -88,6 +88,7 @@ mod tests {
             parent_label:  "clay-layout".to_string(),
             branch:        String::new(),
             dir:           "~/rust/bevy_diegetic/clay-layout".to_string(),
+            pr_target:     None,
         };
 
         let (results, total) = search_finder(&[item], "android", 50);
@@ -112,6 +113,7 @@ mod tests {
             parent_label:  "clay-layout".to_string(),
             branch:        String::new(),
             dir:           "~/rust/bevy_diegetic/clay-layout".to_string(),
+            pr_target:     None,
         };
 
         let (results, total) = search_finder(&[item], "diegetic", 50);
@@ -136,6 +138,7 @@ mod tests {
             parent_label:  "build-easefunction-graphs".to_string(),
             branch:        "fix/position-before-size-v0.19".to_string(),
             dir:           "~/rust/bevy/tools/build-easefunction-graphs".to_string(),
+            pr_target:     None,
         };
 
         let (results, total) = search_finder(&[item], "tools graphs", 50);
@@ -160,6 +163,7 @@ mod tests {
             parent_label:  "bevy".to_string(),
             branch:        "main".to_string(),
             dir:           "~/rust/bevy".to_string(),
+            pr_target:     None,
         };
         let index = [item];
         let (with_slash, total_slash) = search_finder(&index, "rust/", 50);

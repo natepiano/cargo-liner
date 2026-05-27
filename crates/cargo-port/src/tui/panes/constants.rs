@@ -10,6 +10,12 @@
 //! math in `panes::widths` is the only consumer outside the
 //! renderer in `panes::project_list`.
 
+// Git pane constants
+
+pub(super) const FIT_TEXT_ELLIPSIS: &str = "...";
+pub(super) const PULL_REQUEST_TITLE_RESERVED_WIDTH: usize = 7;
+pub(super) const PULL_REQUEST_WIDE_MIN_WIDTH: usize = 56;
+
 // Row prefix strings — single source of truth for width calc and render.
 
 pub(super) const PREFIX_ROOT_EXPANDED: &str = "▼";

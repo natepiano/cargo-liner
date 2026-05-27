@@ -424,22 +424,17 @@ impl CopySelection<App> for GitPane {
 }
 
 /// `Activate` on the Git pane is enabled only when the cursor is on a
-/// row whose dispatch has a real effect. Today the legacy path only
-/// opens a URL when the cursor sits on a `GitRow::Remote` whose
-/// `full_url` is `Some` (see
-/// `src/tui/panes/actions.rs::handle_detail_enter`); every other row
-/// — flat fields, worktrees, and remotes without a URL — is a no-op.
+/// row whose dispatch opens a URL: pull requests or remotes with a
+/// known full URL.
 fn git_activate_state(ctx: &App) -> ShortcutState {
     let Some(git) = ctx.panes.git.content() else {
         return ShortcutState::Disabled;
     };
     let pos = ctx.panes.git.viewport.pos();
-    if let Some(GitRow::Remote(remote)) = panes::git_row_at(git, pos)
-        && remote.full_url.is_some()
-    {
-        ShortcutState::Enabled
-    } else {
-        ShortcutState::Disabled
+    match panes::git_row_at(git, pos) {
+        Some(GitRow::PullRequest(_)) => ShortcutState::Enabled,
+        Some(GitRow::Remote(remote)) if remote.full_url.is_some() => ShortcutState::Enabled,
+        _ => ShortcutState::Disabled,
     }
 }
 

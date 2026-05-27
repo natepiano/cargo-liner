@@ -1,6 +1,7 @@
 use super::git::LocalGitState;
 use super::git::Submodule;
 use crate::ci::CiRun;
+use crate::ci::OwnerRepo;
 
 // Per-repo metadata (`github_info`, `ci_data`, ...) lives on
 // `ProjectEntry::git_repo`, not here. Submodules in particular get neither
@@ -68,6 +69,133 @@ impl ProjectCiData {
             Self::Loaded(info) => info.github_total,
         }
     }
+}
+
+/// Persisted pull-request metadata for a single GitHub repository.
+#[derive(Clone, Default)]
+pub(crate) enum ProjectPrData {
+    #[default]
+    Unfetched,
+    Loading,
+    Loaded(ProjectPrInfo),
+    Unavailable(ProjectPrUnavailable),
+}
+
+impl ProjectPrData {
+    pub(crate) const fn info(&self) -> Option<&ProjectPrInfo> {
+        match self {
+            Self::Loaded(info) => Some(info),
+            Self::Unavailable(unavailable) => unavailable.stale.as_ref(),
+            Self::Unfetched | Self::Loading => None,
+        }
+    }
+
+    pub(crate) const fn needs_fetch(&self) -> bool {
+        matches!(self, Self::Unfetched | Self::Unavailable(_))
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct ProjectPrInfo {
+    pub open:           Vec<PullRequestInfo>,
+    pub default_branch: String,
+    pub fetched_at:     String,
+    pub completeness:   PullRequestCompleteness,
+    pub viewer_login:   String,
+    pub owner_repo:     OwnerRepo,
+}
+
+#[derive(Clone)]
+pub(crate) struct ProjectPrUnavailable {
+    pub reason:     PullRequestUnavailableReason,
+    pub stale:      Option<ProjectPrInfo>,
+    pub fetched_at: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PullRequestInfo {
+    pub number:     u32,
+    pub title:      String,
+    pub url:        String,
+    pub state:      PullRequestState,
+    pub head:       String,
+    pub head_owner: Option<String>,
+    pub head_repo:  Option<String>,
+    pub base:       String,
+}
+
+impl PullRequestInfo {
+    pub(crate) fn branch_label(&self, base_default: &str) -> String {
+        let head = self.head_owner.as_ref().map_or_else(
+            || self.head.clone(),
+            |owner| format!("{owner}:{}", self.head),
+        );
+        if self.base == base_default {
+            head
+        } else {
+            format!("{head} -> {}", self.base)
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PullRequestState {
+    Draft,
+    ChangesRequested,
+    ChecksFailing,
+    Blocked,
+    Behind,
+    ReviewRequired,
+    Approved,
+    Ready,
+    Unknown,
+}
+
+impl PullRequestState {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Draft => "draft",
+            Self::ChangesRequested => "changes",
+            Self::ChecksFailing => "checks",
+            Self::Blocked => "blocked",
+            Self::Behind => "behind",
+            Self::ReviewRequired => "review",
+            Self::Approved => "approved",
+            Self::Ready => "ready",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PullRequestUnavailableReason {
+    Unauthenticated,
+    RateLimited,
+    Network,
+    Forbidden,
+    RepositoryMissing,
+    GraphQlError,
+    IncompletePagination,
+}
+
+impl PullRequestUnavailableReason {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Unauthenticated => "unauthenticated",
+            Self::RateLimited => "rate limited",
+            Self::Network => "network unavailable",
+            Self::Forbidden => "forbidden",
+            Self::RepositoryMissing => "repository missing",
+            Self::GraphQlError => "github query failed",
+            Self::IncompletePagination => "incomplete results",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PullRequestCompleteness {
+    Complete,
+    Truncated { shown: usize },
 }
 
 /// A single language entry in the language statistics breakdown.

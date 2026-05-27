@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::fmt::Write as _;
 use std::ops::Index;
 use std::path::Path;
 
@@ -39,6 +40,7 @@ use crate::project::ProjectCiInfo;
 use crate::project::ProjectEntry;
 use crate::project::ProjectFields;
 use crate::project::ProjectInfo;
+use crate::project::ProjectPrData;
 use crate::project::RepoInfo;
 use crate::project::RootItem;
 use crate::project::RustInfo;
@@ -203,6 +205,15 @@ impl ProjectList {
         for (label, entry) in labels.iter_mut().zip(self.roots.values()) {
             if let Some(suffix) = entry.item.worktree_badge_suffix() {
                 label.push_str(&suffix);
+            }
+            if let Some(count) = entry
+                .git_repo
+                .as_ref()
+                .and_then(|repo| repo.pr_data.info())
+                .map(|info| info.open.len())
+                .filter(|count| *count > 0)
+            {
+                let _ = write!(label, " PR{count}");
             }
         }
 
@@ -401,6 +412,27 @@ impl ProjectList {
     pub(super) fn replace_ci_data_for_path(&mut self, path: &Path, ci_data: ProjectCiData) {
         if let Some(repo) = self.git_repo_for_mut(path) {
             repo.ci_data = ci_data;
+        }
+    }
+
+    pub(super) fn replace_pr_data_for_repo(
+        &mut self,
+        owner_repo: &OwnerRepo,
+        data: &ProjectPrData,
+    ) {
+        let targets: Vec<AbsolutePath> = self
+            .roots
+            .values()
+            .filter_map(|entry| {
+                let url = self.fetch_url_for(entry.item.path())?;
+                (ci::parse_owner_repo(&url).as_ref() == Some(owner_repo))
+                    .then(|| entry.item.path().clone())
+            })
+            .collect();
+        for path in targets {
+            if let Some(repo) = self.git_repo_for_mut(path.as_path()) {
+                repo.pr_data = data.clone();
+            }
         }
     }
 

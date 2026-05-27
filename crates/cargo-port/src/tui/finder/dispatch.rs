@@ -33,6 +33,7 @@ use super::index::FINDER_COLUMN_COUNT;
 use super::index::FINDER_HEADERS;
 use super::index::FinderItem;
 use super::index::FinderKind;
+use crate::ci;
 use crate::tui::app::App;
 use crate::tui::constants::FINDER_POPUP_HEIGHT;
 use crate::tui::constants::MAX_FINDER_RESULTS;
@@ -42,6 +43,7 @@ use crate::tui::overlays::FinderPane;
 use crate::tui::overlays::PopupFrame;
 use crate::tui::pane::PaneRenderCtx;
 use crate::tui::panes;
+use crate::tui::panes::GitRow;
 use crate::tui::panes::RunTargetKind;
 
 /// "bench diegetic" and "diegetic bench" produce the same results.
@@ -204,6 +206,9 @@ fn confirm_finder(app: &mut App) {
         FinderKind::Binary | FinderKind::Example | FinderKind::Bench => {
             navigate_to_target(app, &item);
         },
+        FinderKind::PullRequest => {
+            navigate_to_pull_request(app, &item);
+        },
     }
 }
 
@@ -226,7 +231,7 @@ fn navigate_to_target(app: &mut App, item: &FinderItem) {
                 FinderKind::Binary => RunTargetKind::Binary,
                 FinderKind::Example => RunTargetKind::Example,
                 FinderKind::Bench => RunTargetKind::Bench,
-                FinderKind::Project => return,
+                FinderKind::Project | FinderKind::PullRequest => return,
             };
             let target_name = item.target_name.as_deref().unwrap_or("");
             for (i, entry) in entries.iter().enumerate() {
@@ -238,6 +243,45 @@ fn navigate_to_target(app: &mut App, item: &FinderItem) {
                 }
             }
         }
+    }
+}
+
+fn navigate_to_pull_request(app: &mut App, item: &FinderItem) {
+    let Some(target) = item.pr_target.as_ref() else {
+        return;
+    };
+    app.sync_selected_project();
+    if let Some(data) = app
+        .project_list
+        .selected_project_path()
+        .and_then(|path| app.project_list.entry_containing(path))
+        .map(|entry| panes::build_pane_data(app, &entry.item))
+    {
+        app.panes.package.set_content(data.package);
+        app.panes.git.set_content(data.git);
+        app.panes.targets.set_content(data.targets);
+    }
+    let selected_owner_repo = app
+        .project_list
+        .selected_project_path()
+        .and_then(|path| app.project_list.fetch_url_for(path))
+        .and_then(|url| ci::parse_owner_repo(&url));
+    if selected_owner_repo.as_ref() != Some(&target.owner_repo) {
+        return;
+    }
+    app.set_focus(FocusedPane::App(AppPaneId::Git));
+    let Some(git) = app.panes.git.content() else {
+        return;
+    };
+    let mut index = 0;
+    while let Some(row) = panes::git_row_at(git, index) {
+        if let GitRow::PullRequest(pull_request) = row
+            && pull_request.number == target.number
+        {
+            app.panes.git.viewport.set_pos(index);
+            return;
+        }
+        index += 1;
     }
 }
 
@@ -424,7 +468,7 @@ fn render_finder_results(
 ) {
     if ctx.project_list.finder.results.is_empty() {
         let msg = if ctx.project_list.finder.query.is_empty() {
-            "Type to search projects, examples, benches..."
+            "Type to search projects, PRs, examples, benches..."
         } else {
             "No matches"
         };

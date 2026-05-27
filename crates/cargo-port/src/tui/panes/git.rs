@@ -21,15 +21,22 @@ use tui_pane::success_color;
 use tui_pane::text_default;
 use tui_pane::title_color;
 use tui_pane::warning_color;
+use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
 use super::DescriptionBlock;
 use super::DetailField;
 use super::EmptyDescriptionBehavior;
 use super::GitData;
+use super::PullRequestRow;
+use super::PullRequestSection;
+use super::PullRequestSectionState;
 use super::RemoteRow;
 use super::SyncedDescriptionHeight;
 use super::WorktreeInfo;
+use super::constants::FIT_TEXT_ELLIPSIS;
+use super::constants::PULL_REQUEST_TITLE_RESERVED_WIDTH;
+use super::constants::PULL_REQUEST_WIDE_MIN_WIDTH;
 use super::github_stars_is_unreachable_placeholder;
 use super::package;
 use super::package::RenderStyles;
@@ -40,6 +47,7 @@ use crate::constants::NO_REMOTE_SYNC;
 use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
 use crate::project::HeadState;
+use crate::project::PullRequestCompleteness;
 use crate::tui::app::AvailabilityStatus;
 use crate::tui::pane::PaneRenderCtx;
 use crate::tui::panes;
@@ -58,6 +66,7 @@ struct GitRenderCtx<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Section {
     Flat(usize),
+    PullRequest(usize),
     Remote(usize),
     Worktree(usize),
 }
@@ -65,15 +74,20 @@ enum Section {
 const fn section_for_pos(
     pos: usize,
     flat_len: usize,
+    pull_requests_len: usize,
     remotes_len: usize,
     worktrees_len: usize,
 ) -> Option<Section> {
     if pos < flat_len {
         Some(Section::Flat(pos))
-    } else if pos < flat_len + remotes_len {
-        Some(Section::Remote(pos - flat_len))
-    } else if pos < flat_len + remotes_len + worktrees_len {
-        Some(Section::Worktree(pos - flat_len - remotes_len))
+    } else if pos < flat_len + pull_requests_len {
+        Some(Section::PullRequest(pos - flat_len))
+    } else if pos < flat_len + pull_requests_len + remotes_len {
+        Some(Section::Remote(pos - flat_len - pull_requests_len))
+    } else if pos < flat_len + pull_requests_len + remotes_len + worktrees_len {
+        Some(Section::Worktree(
+            pos - flat_len - pull_requests_len - remotes_len,
+        ))
     } else {
         None
     }
@@ -100,11 +114,13 @@ struct SectionRule {
 /// hitboxes at the correct screen rows after rendering.
 struct GitRenderLayout {
     scroll_offset: usize,
-    /// Inner-y (paragraph-relative) of the first rendered line for each
-    /// selectable row (flat fields first, then remote rows, then worktree
-    /// rows). `GitPane` adds `row_offset` when mapping these lower rows
-    /// back to logical positions.
-    row_line_ys:   Vec<usize>,
+    row_spans:     Vec<GitVisualRowSpan>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct GitVisualRowSpan {
+    pub start_y: usize,
+    pub height:  usize,
 }
 
 /// Mutable accumulators threaded through the per-section builders.
@@ -112,7 +128,7 @@ struct SectionAccum<'a> {
     lines:               &'a mut Vec<Line<'static>>,
     focused_output_line: &'a mut usize,
     section_rules:       &'a mut Vec<SectionRule>,
-    row_line_ys:         &'a mut Vec<usize>,
+    row_spans:           &'a mut Vec<GitVisualRowSpan>,
 }
 
 fn render_git_column_inner(
@@ -122,13 +138,13 @@ fn render_git_column_inner(
     inner_area: Rect,
 ) -> GitRenderLayout {
     let flat_len = ctx.fields.len();
+    let pull_requests_len = ctx.data.pull_requests.rows.len();
     let remotes_len = ctx.data.remotes.len();
     let worktrees_len = ctx.data.worktrees.len();
     let current_section = if matches!(ctx.focus, PaneFocusState::Active) {
-        ctx.pane
-            .pos()
-            .checked_sub(ctx.row_offset)
-            .and_then(|pos| section_for_pos(pos, flat_len, remotes_len, worktrees_len))
+        ctx.pane.pos().checked_sub(ctx.row_offset).and_then(|pos| {
+            section_for_pos(pos, flat_len, pull_requests_len, remotes_len, worktrees_len)
+        })
     } else {
         None
     };
@@ -136,13 +152,14 @@ fn render_git_column_inner(
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut focused_output_line: usize = 0;
     let mut section_rules: Vec<SectionRule> = Vec::new();
-    let mut row_line_ys: Vec<usize> = Vec::with_capacity(flat_len + remotes_len + worktrees_len);
+    let mut row_spans: Vec<GitVisualRowSpan> =
+        Vec::with_capacity(flat_len + pull_requests_len + remotes_len + worktrees_len);
 
     let mut accum = SectionAccum {
         lines:               &mut lines,
         focused_output_line: &mut focused_output_line,
         section_rules:       &mut section_rules,
-        row_line_ys:         &mut row_line_ys,
+        row_spans:           &mut row_spans,
     };
 
     render_flat_fields(
@@ -158,8 +175,22 @@ fn render_git_column_inner(
             row_offset:  ctx.row_offset,
         },
     );
-    append_remotes_section(&mut accum, ctx, flat_len, current_section);
-    append_worktrees_section(&mut accum, ctx, flat_len, remotes_len, current_section);
+    append_pull_requests_section(&mut accum, ctx, flat_len, current_section, inner_area.width);
+    append_remotes_section(
+        &mut accum,
+        ctx,
+        flat_len,
+        pull_requests_len,
+        current_section,
+    );
+    append_worktrees_section(
+        &mut accum,
+        ctx,
+        flat_len,
+        pull_requests_len,
+        remotes_len,
+        current_section,
+    );
 
     let scroll_y =
         package::detail_column_scroll_offset(ctx.focus, focused_output_line, inner_area.height);
@@ -175,7 +206,7 @@ fn render_git_column_inner(
     );
     GitRenderLayout {
         scroll_offset: usize::from(scroll_y),
-        row_line_ys,
+        row_spans,
     }
 }
 
@@ -183,6 +214,7 @@ fn append_remotes_section(
     accum: &mut SectionAccum<'_>,
     ctx: &GitRenderCtx<'_>,
     flat_len: usize,
+    pull_requests_len: usize,
     current_section: Option<Section>,
 ) {
     if ctx.data.remotes.is_empty() {
@@ -206,8 +238,11 @@ fn append_remotes_section(
     render_remote_header(accum.lines, &col_widths);
     let active = matches!(ctx.focus, PaneFocusState::Active);
     for (i, remote) in ctx.data.remotes.iter().enumerate() {
-        let row_index = ctx.row_offset + flat_len + i;
-        accum.row_line_ys.push(accum.lines.len());
+        let row_index = ctx.row_offset + flat_len + pull_requests_len + i;
+        accum.row_spans.push(GitVisualRowSpan {
+            start_y: accum.lines.len(),
+            height:  1,
+        });
         if active && row_index == ctx.pane.pos() {
             *accum.focused_output_line = accum.lines.len();
         }
@@ -218,10 +253,159 @@ fn append_remotes_section(
     }
 }
 
+fn append_pull_requests_section(
+    accum: &mut SectionAccum<'_>,
+    ctx: &GitRenderCtx<'_>,
+    flat_len: usize,
+    current_section: Option<Section>,
+    area_width: u16,
+) {
+    let section = &ctx.data.pull_requests;
+    if section.rows.is_empty()
+        && matches!(section.state, PullRequestSectionState::HiddenConfirmedEmpty)
+    {
+        return;
+    }
+    let focused = matches!(current_section, Some(Section::PullRequest(_)));
+    let cursor = match current_section {
+        Some(Section::PullRequest(i)) => Some(i),
+        _ => None,
+    };
+    let mut title = section_title_text("Pull Requests", section.rows.len(), cursor);
+    if matches!(
+        section.completeness,
+        Some(PullRequestCompleteness::Truncated { .. })
+    ) {
+        title.push_str(" +");
+    }
+    accum.lines.push(Line::from(Span::raw(String::new())));
+    accum.section_rules.push(SectionRule {
+        inner_y: accum.lines.len(),
+        title,
+        focused,
+    });
+    accum.lines.push(Line::from(Span::raw(String::new())));
+
+    if section.rows.is_empty() {
+        accum.lines.push(Line::from(Span::styled(
+            format!(" {}", pull_request_status_text(section)),
+            Style::default().fg(inactive_title_color()),
+        )));
+        return;
+    }
+
+    let active = matches!(ctx.focus, PaneFocusState::Active);
+    for (i, row) in section.rows.iter().enumerate() {
+        let row_index = ctx.row_offset + flat_len + i;
+        let start_y = accum.lines.len();
+        if active && row_index == ctx.pane.pos() {
+            *accum.focused_output_line = start_y;
+        }
+        let selection = tui_pane::selection_state(ctx.pane, row_index, ctx.focus);
+        render_pull_request_row(accum.lines, row, selection, area_width);
+        let height = accum.lines.len().saturating_sub(start_y).max(1);
+        accum.row_spans.push(GitVisualRowSpan { start_y, height });
+    }
+    if matches!(
+        section.completeness,
+        Some(PullRequestCompleteness::Truncated { .. })
+    ) {
+        accum.lines.push(Line::from(Span::styled(
+            " more pull requests not shown".to_string(),
+            Style::default().fg(warning_color()),
+        )));
+    }
+}
+
+fn pull_request_status_text(section: &PullRequestSection) -> String {
+    match section.state {
+        PullRequestSectionState::Loading => "loading pull requests".to_string(),
+        PullRequestSectionState::Unavailable => section.unavailable_reason.map_or_else(
+            || "pull requests unavailable".to_string(),
+            |reason| format!("pull requests unavailable: {}", reason.label()),
+        ),
+        PullRequestSectionState::Stale => section.unavailable_reason.map_or_else(
+            || "stale pull requests".to_string(),
+            |reason| {
+                let fetched = section
+                    .fetched_at
+                    .as_deref()
+                    .map(|ts| format!("; fetched {ts}"))
+                    .unwrap_or_default();
+                format!("stale pull requests: {}{fetched}", reason.label())
+            },
+        ),
+        PullRequestSectionState::Loaded | PullRequestSectionState::HiddenConfirmedEmpty => {
+            String::new()
+        },
+    }
+}
+
+fn render_pull_request_row(
+    lines: &mut Vec<Line<'static>>,
+    row: &PullRequestRow,
+    selection: PaneSelectionState,
+    area_width: u16,
+) {
+    let width = usize::from(area_width).max(1);
+    let style = selection.patch(Style::default().fg(inactive_title_color()));
+    if width >= PULL_REQUEST_WIDE_MIN_WIDTH {
+        let head = format!("#{}  {:<8}  {}", row.number, row.state_label, row.branch);
+        lines.push(Line::from(Span::styled(
+            fit_text(&head, width.saturating_sub(1)),
+            style,
+        )));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "      {}",
+                fit_text(
+                    &row.title,
+                    width.saturating_sub(PULL_REQUEST_TITLE_RESERVED_WIDTH),
+                ),
+            ),
+            style,
+        )));
+    } else {
+        let head = format!("#{} {}", row.number, row.state_label);
+        lines.push(Line::from(Span::styled(
+            fit_text(&head, width.saturating_sub(1)),
+            style,
+        )));
+        lines.push(Line::from(Span::styled(
+            fit_text(&row.branch, width.saturating_sub(1)),
+            style,
+        )));
+        lines.push(Line::from(Span::styled(
+            fit_text(&row.title, width.saturating_sub(1)),
+            style,
+        )));
+    }
+}
+
+fn fit_text(text: &str, max_width: usize) -> String {
+    if text.width() <= max_width {
+        return text.to_string();
+    }
+    if max_width <= FIT_TEXT_ELLIPSIS.len() {
+        return ".".repeat(max_width);
+    }
+    let mut out = String::new();
+    let target = max_width - FIT_TEXT_ELLIPSIS.len();
+    for ch in text.chars() {
+        if out.width() + ch.width().unwrap_or(0) > target {
+            break;
+        }
+        out.push(ch);
+    }
+    out.push_str(FIT_TEXT_ELLIPSIS);
+    out
+}
+
 fn append_worktrees_section(
     accum: &mut SectionAccum<'_>,
     ctx: &GitRenderCtx<'_>,
     flat_len: usize,
+    pull_requests_len: usize,
     remotes_len: usize,
     current_section: Option<Section>,
 ) {
@@ -245,8 +429,11 @@ fn append_worktrees_section(
     render_worktree_header(accum.lines, &col_widths);
     let active = matches!(ctx.focus, PaneFocusState::Active);
     for (i, wt) in ctx.data.worktrees.iter().enumerate() {
-        let row_index = ctx.row_offset + flat_len + remotes_len + i;
-        accum.row_line_ys.push(accum.lines.len());
+        let row_index = ctx.row_offset + flat_len + pull_requests_len + remotes_len + i;
+        accum.row_spans.push(GitVisualRowSpan {
+            start_y: accum.lines.len(),
+            height:  1,
+        });
         if active && row_index == ctx.pane.pos() {
             *accum.focused_output_line = accum.lines.len();
         }
@@ -379,7 +566,10 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
     } = *args;
     for (i, field) in fields.iter().enumerate() {
         let row_index = row_offset + i;
-        accum.row_line_ys.push(accum.lines.len());
+        accum.row_spans.push(GitVisualRowSpan {
+            start_y: accum.lines.len(),
+            height:  1,
+        });
         if matches!(focus, PaneFocusState::Active) && row_index == pane.pos() {
             *accum.focused_output_line = accum.lines.len();
         }
@@ -677,8 +867,11 @@ pub(super) fn render_git_pane_body(
 
     let flat_fields = panes::git_fields_from_data(&git_data);
     let description_rows = usize::from(panes::git_has_description_row(&git_data));
-    let total_rows =
-        description_rows + flat_fields.len() + git_data.remotes.len() + git_data.worktrees.len();
+    let total_rows = description_rows
+        + flat_fields.len()
+        + git_data.pull_requests.rows.len()
+        + git_data.remotes.len()
+        + git_data.worktrees.len();
     if total_rows == 0 && git_data.description.as_deref().is_none_or(str::is_empty) {
         pane.viewport.clear_surface();
         pane.clear_row_layout();
@@ -737,7 +930,7 @@ pub(super) fn render_git_pane_body(
         about_layout.description_rect,
         about_layout.content_area,
         description_rows,
-        layout.row_line_ys,
+        layout.row_spans,
     );
     render_overflow_affordance(
         frame,
@@ -784,7 +977,8 @@ fn render_git_about_section(frame: &mut Frame, ctx: &GitAboutCtx<'_>) -> GitAbou
     } else {
         3 + ctx.data.worktrees.len()
     };
-    let lower_content_height = ctx.flat_fields.len() + remotes_block + worktrees_block;
+    let pr_block = pull_request_block_height(&ctx.data.pull_requests);
+    let lower_content_height = ctx.flat_fields.len() + pr_block + remotes_block + worktrees_block;
     let reserved_lower_height = u16::from(lower_content_height > 0);
     let reserved_separator_height =
         u16::from(git_inner.height > reserved_lower_height.saturating_add(1));
@@ -865,6 +1059,24 @@ fn render_git_about_section(frame: &mut Frame, ctx: &GitAboutCtx<'_>) -> GitAbou
     }
 }
 
+fn pull_request_block_height(section: &PullRequestSection) -> usize {
+    if section.rows.is_empty()
+        && matches!(section.state, PullRequestSectionState::HiddenConfirmedEmpty)
+    {
+        return 0;
+    }
+    let row_height = if section.rows.is_empty() {
+        1
+    } else {
+        section.rows.len().saturating_mul(3)
+    };
+    let truncated = usize::from(matches!(
+        section.completeness,
+        Some(PullRequestCompleteness::Truncated { .. })
+    ));
+    2 + row_height + truncated
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -878,25 +1090,33 @@ mod tests {
 
     #[test]
     fn section_for_pos_maps_flat_indices() {
-        assert_eq!(section_for_pos(0, 3, 2, 1), Some(Section::Flat(0)));
-        assert_eq!(section_for_pos(2, 3, 2, 1), Some(Section::Flat(2)));
+        assert_eq!(section_for_pos(0, 3, 1, 2, 1), Some(Section::Flat(0)));
+        assert_eq!(section_for_pos(2, 3, 1, 2, 1), Some(Section::Flat(2)));
+    }
+
+    #[test]
+    fn section_for_pos_maps_pull_request_indices() {
+        assert_eq!(
+            section_for_pos(3, 3, 1, 2, 1),
+            Some(Section::PullRequest(0))
+        );
     }
 
     #[test]
     fn section_for_pos_maps_remote_indices() {
-        assert_eq!(section_for_pos(3, 3, 2, 1), Some(Section::Remote(0)));
-        assert_eq!(section_for_pos(4, 3, 2, 1), Some(Section::Remote(1)));
+        assert_eq!(section_for_pos(4, 3, 1, 2, 1), Some(Section::Remote(0)));
+        assert_eq!(section_for_pos(5, 3, 1, 2, 1), Some(Section::Remote(1)));
     }
 
     #[test]
     fn section_for_pos_maps_worktree_indices() {
-        assert_eq!(section_for_pos(5, 3, 2, 1), Some(Section::Worktree(0)));
+        assert_eq!(section_for_pos(6, 3, 1, 2, 1), Some(Section::Worktree(0)));
     }
 
     #[test]
     fn section_for_pos_out_of_range_is_none() {
-        assert_eq!(section_for_pos(6, 3, 2, 1), None);
-        assert_eq!(section_for_pos(0, 0, 0, 0), None);
+        assert_eq!(section_for_pos(7, 3, 1, 2, 1), None);
+        assert_eq!(section_for_pos(0, 0, 0, 0, 0), None);
     }
 
     #[test]
