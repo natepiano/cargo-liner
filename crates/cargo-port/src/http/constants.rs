@@ -1,6 +1,8 @@
 // GitHub rate limits
 pub(super) const GITHUB_CORE_BUCKET: &str = "core";
 pub(super) const GITHUB_GRAPHQL_BUCKET: &str = "graphql";
+pub(super) const GITHUB_PR_PAGE_CAP: usize = 20;
+pub(super) const GITHUB_PR_PAGE_SIZE: usize = 50;
 pub(super) const GRAPHQL_RATE_LIMITED_ERROR_TYPE: &str = "RATE_LIMITED";
 pub(super) const RATE_LIMIT_LIMIT_HEADER: &str = "x-ratelimit-limit";
 pub(super) const RATE_LIMIT_REMAINING_HEADER: &str = "x-ratelimit-remaining";

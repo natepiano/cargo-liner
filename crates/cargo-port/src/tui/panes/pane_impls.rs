@@ -25,6 +25,7 @@ use tui_pane::Viewport;
 use super::PaneId;
 use super::cpu;
 use super::git;
+use super::git::GitVisualRowSpan;
 use super::lang;
 use super::output;
 use super::package;
@@ -230,7 +231,7 @@ struct GitRowLayout {
     content_area:     Rect,
     scroll_offset:    usize,
     row_offset:       usize,
-    row_line_ys:      Vec<usize>,
+    row_spans:        Vec<GitVisualRowSpan>,
 }
 
 impl GitPane {
@@ -269,19 +270,19 @@ impl GitPane {
 
     pub fn clear_row_layout(&mut self) { self.row_layout = GitRowLayout::default(); }
 
-    pub fn set_row_layout(
+    pub(super) fn set_row_layout(
         &mut self,
         description_rect: Option<Rect>,
         content_area: Rect,
         row_offset: usize,
-        row_line_ys: Vec<usize>,
+        row_spans: Vec<GitVisualRowSpan>,
     ) {
         self.row_layout = GitRowLayout {
             description_rect,
             content_area,
             scroll_offset: self.viewport.scroll_offset(),
             row_offset,
-            row_line_ys,
+            row_spans,
         };
     }
 }
@@ -313,18 +314,19 @@ impl Hittable<HoverTarget> for GitPane {
         }
         let visible_top = inner.y;
         let visible_bottom = inner.y.saturating_add(inner.height);
-        for (row_index, &inner_y) in layout.row_line_ys.iter().enumerate() {
-            if inner_y < layout.scroll_offset {
+        for (row_index, span) in layout.row_spans.iter().enumerate() {
+            if span.start_y.saturating_add(span.height) <= layout.scroll_offset {
                 continue;
             }
-            let offset = inner_y - layout.scroll_offset;
+            let offset = span.start_y.saturating_sub(layout.scroll_offset);
             let screen_y = inner
                 .y
                 .saturating_add(u16::try_from(offset).unwrap_or(u16::MAX));
-            if screen_y < visible_top || screen_y >= visible_bottom {
+            let screen_bottom = screen_y.saturating_add(u16::try_from(span.height).unwrap_or(1));
+            if screen_bottom <= visible_top || screen_y >= visible_bottom {
                 continue;
             }
-            if pos.y == screen_y {
+            if pos.y >= screen_y && pos.y < screen_bottom {
                 return Some(HoverTarget::PaneRow {
                     pane: PaneId::Git,
                     row:  layout.row_offset + row_index,

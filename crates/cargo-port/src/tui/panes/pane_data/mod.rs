@@ -38,7 +38,12 @@ use crate::project::NonRustProject;
 use crate::project::Package;
 use crate::project::PackageRecord;
 use crate::project::ProjectFields;
+use crate::project::ProjectPrData;
+use crate::project::ProjectPrInfo;
 use crate::project::ProjectType;
+use crate::project::PullRequestCompleteness;
+use crate::project::PullRequestInfo;
+use crate::project::PullRequestUnavailableReason;
 use crate::project::PushDisabledReason;
 use crate::project::PushState;
 use crate::project::RemoteKind;
@@ -881,6 +886,7 @@ pub struct GitData {
     pub rate_limit_core:    Option<RateLimitQuota>,
     pub rate_limit_graphql: Option<RateLimitQuota>,
     pub github_status:      AvailabilityStatus,
+    pub pull_requests:      PullRequestSection,
     pub remotes:            Vec<RemoteRow>,
     pub worktrees:          Vec<WorktreeInfo>,
     /// Submodule-specific overlay. `Some` only when this `GitData` is
@@ -889,6 +895,35 @@ pub struct GitData {
     /// is conveyed by the project-list `(s)` marker and the pane's
     /// "Submodule — <name>" title, not by an About-section line.
     pub submodule_ctx:      Option<SubmoduleContext>,
+}
+
+#[derive(Clone, Default)]
+pub struct PullRequestSection {
+    pub state:              PullRequestSectionState,
+    pub rows:               Vec<PullRequestRow>,
+    pub fetched_at:         Option<String>,
+    pub unavailable_reason: Option<PullRequestUnavailableReason>,
+    pub completeness:       Option<PullRequestCompleteness>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PullRequestSectionState {
+    #[default]
+    HiddenConfirmedEmpty,
+    Loading,
+    Loaded,
+    Stale,
+    Unavailable,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PullRequestRow {
+    pub number:      u32,
+    pub title:       String,
+    pub url:         String,
+    pub state_label: &'static str,
+    pub branch:      String,
+    pub base:        String,
 }
 
 /// Submodule-only render context: facts the parent repo provides about
@@ -946,6 +981,7 @@ pub struct WorktreeInfo {
 pub enum GitRow<'a> {
     Description(&'a str),
     Field(DetailField),
+    PullRequest(&'a PullRequestRow),
     Remote(&'a RemoteRow),
     Worktree(&'a WorktreeInfo),
 }
@@ -969,6 +1005,10 @@ pub fn git_row_at(data: &GitData, pos: usize) -> Option<GitRow<'_>> {
         return fields.get(pos).copied().map(GitRow::Field);
     }
     let pos = pos - flat_len;
+    if pos < data.pull_requests.rows.len() {
+        return data.pull_requests.rows.get(pos).map(GitRow::PullRequest);
+    }
+    let pos = pos - data.pull_requests.rows.len();
     if pos < data.remotes.len() {
         return data.remotes.get(pos).map(GitRow::Remote);
     }
@@ -1039,6 +1079,7 @@ pub fn copy_payload_for_git(data: &GitData, pos: usize) -> CopySelectionResult {
         Some(GitRow::Field(field)) => {
             copy_payload(git_field_copy_value(data, field), CopyLabel::Value)
         },
+        Some(GitRow::PullRequest(pull_request)) => copy_payload(&pull_request.url, CopyLabel::Url),
         Some(GitRow::Remote(remote)) => copy_payload(
             remote
                 .full_url
@@ -1461,6 +1502,7 @@ struct GitDetailFields {
     rate_limit_core:    Option<RateLimitQuota>,
     rate_limit_graphql: Option<RateLimitQuota>,
     github_status:      AvailabilityStatus,
+    pull_requests:      PullRequestSection,
     remotes:            Vec<RemoteRow>,
 }
 
@@ -1491,6 +1533,9 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
         .map(format_timestamp);
     let default_host = app.config.current().tui.default_remote_host_url.clone();
     let remotes = repo_info.map_or_else(Vec::new, |repo| build_remote_rows(repo, &default_host));
+    let pull_requests = git_repo
+        .map(|repo| build_pull_request_section(&repo.pr_data))
+        .unwrap_or_default();
     let rate_limit = app.net.rate_limit();
     GitDetailFields {
         head,
@@ -1505,7 +1550,65 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
         rate_limit_core: rate_limit.core,
         rate_limit_graphql: rate_limit.graphql,
         github_status: app.net.github_status(),
+        pull_requests,
         remotes,
+    }
+}
+
+fn build_pull_request_section(data: &ProjectPrData) -> PullRequestSection {
+    match data {
+        ProjectPrData::Unfetched => PullRequestSection::default(),
+        ProjectPrData::Loading => PullRequestSection {
+            state: PullRequestSectionState::Loading,
+            ..PullRequestSection::default()
+        },
+        ProjectPrData::Loaded(info) => section_from_pr_info(info, PullRequestSectionState::Loaded),
+        ProjectPrData::Unavailable(unavailable) => unavailable.stale.as_ref().map_or_else(
+            || PullRequestSection {
+                state: PullRequestSectionState::Unavailable,
+                unavailable_reason: Some(unavailable.reason),
+                fetched_at: unavailable.fetched_at.clone(),
+                ..PullRequestSection::default()
+            },
+            |info| {
+                let mut section = section_from_pr_info(info, PullRequestSectionState::Stale);
+                section.unavailable_reason = Some(unavailable.reason);
+                section
+            },
+        ),
+    }
+}
+
+fn section_from_pr_info(
+    info: &ProjectPrInfo,
+    state: PullRequestSectionState,
+) -> PullRequestSection {
+    let rows = info
+        .open
+        .iter()
+        .map(|pull_request| pull_request_row(pull_request, &info.default_branch))
+        .collect();
+    PullRequestSection {
+        state: if info.open.is_empty() {
+            PullRequestSectionState::HiddenConfirmedEmpty
+        } else {
+            state
+        },
+        rows,
+        fetched_at: Some(info.fetched_at.clone()),
+        unavailable_reason: None,
+        completeness: Some(info.completeness),
+    }
+}
+
+fn pull_request_row(info: &PullRequestInfo, default_branch: &str) -> PullRequestRow {
+    PullRequestRow {
+        number:      info.number,
+        title:       info.title.clone(),
+        url:         info.url.clone(),
+        state_label: info.state.label(),
+        branch:      info.branch_label(default_branch),
+        base:        info.base.clone(),
     }
 }
 
@@ -1737,6 +1840,7 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
             rate_limit_core: git_detail.rate_limit_core,
             rate_limit_graphql: git_detail.rate_limit_graphql,
             github_status: git_detail.github_status,
+            pull_requests: git_detail.pull_requests,
             remotes: git_detail.remotes,
             worktrees: Vec::new(),
             submodule_ctx,
@@ -2286,6 +2390,7 @@ fn assemble_detail_pane_data(
             rate_limit_core: git_detail.rate_limit_core,
             rate_limit_graphql: git_detail.rate_limit_graphql,
             github_status: git_detail.github_status,
+            pull_requests: git_detail.pull_requests,
             remotes: git_detail.remotes,
             worktrees,
             submodule_ctx: None,

@@ -1,12 +1,16 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use ratatui::style::Color;
 use tui_pane::title_color;
 
+use crate::ci;
+use crate::ci::OwnerRepo;
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
 use crate::project::ExampleGroup;
 use crate::project::Package;
+use crate::project::ProjectEntry;
 use crate::project::ProjectFields;
 use crate::project::ProjectType;
 use crate::project::RootItem;
@@ -36,6 +40,13 @@ pub struct FinderItem {
     pub branch:        String,
     /// Directory name (last path component).
     pub dir:           String,
+    pub pr_target:     Option<PullRequestTarget>,
+}
+
+#[derive(Clone)]
+pub struct PullRequestTarget {
+    pub owner_repo: OwnerRepo,
+    pub number:     u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -44,6 +55,7 @@ pub enum FinderKind {
     Binary,
     Example,
     Bench,
+    PullRequest,
 }
 
 impl FinderKind {
@@ -53,12 +65,13 @@ impl FinderKind {
             Self::Binary => "bin",
             Self::Example => "example",
             Self::Bench => "bench",
+            Self::PullRequest => "pr",
         }
     }
 
     pub fn color(self) -> Color {
         match self {
-            Self::Project => title_color(),
+            Self::Project | Self::PullRequest => title_color(),
             Self::Binary => RunTargetKind::Binary.color(),
             Self::Example => RunTargetKind::Example.color(),
             Self::Bench => RunTargetKind::Bench.color(),
@@ -83,6 +96,7 @@ pub fn build_finder_index(
     entries: &ProjectList,
 ) -> (Vec<FinderItem>, [usize; FINDER_COLUMN_COUNT]) {
     let mut items = Vec::new();
+    let mut seen_pull_requests = HashSet::new();
 
     for entry in entries {
         if entry.item.visibility() != Visibility::Visible {
@@ -129,6 +143,7 @@ pub fn build_finder_index(
                 }
             },
         }
+        add_pull_request_items(entries, &mut items, &mut seen_pull_requests, entry);
     }
 
     // Pre-compute column widths from the full index
@@ -146,6 +161,61 @@ pub fn build_finder_index(
     }
 
     (items, col_widths)
+}
+
+fn add_pull_request_items(
+    entries: &ProjectList,
+    items: &mut Vec<FinderItem>,
+    seen: &mut HashSet<(OwnerRepo, u32)>,
+    entry: &ProjectEntry,
+) {
+    let Some(url) = entries.fetch_url_for(entry.item.path()) else {
+        return;
+    };
+    if ci::parse_owner_repo(&url).is_none() {
+        return;
+    }
+    let Some(info) = entry.git_repo.as_ref().and_then(|repo| repo.pr_data.info()) else {
+        return;
+    };
+    let project_label = entry.item.root_directory_name().into_string();
+    let dir = entry.item.display_path().into_string();
+    for pull_request in &info.open {
+        if !seen.insert((info.owner_repo.clone(), pull_request.number)) {
+            continue;
+        }
+        let display_name = format!("#{} {}", pull_request.number, pull_request.title);
+        let branch = pull_request.branch_label(&info.default_branch);
+        let number = pull_request.number.to_string();
+        let state_label = pull_request.state.label();
+        let head_owner = pull_request.head_owner.as_deref().unwrap_or("");
+        let head_repo = pull_request.head_repo.as_deref().unwrap_or("");
+        items.push(FinderItem {
+            search_tokens: build_search_tokens(&[
+                &number,
+                &pull_request.title,
+                &branch,
+                &pull_request.head,
+                &pull_request.base,
+                state_label,
+                head_owner,
+                head_repo,
+                &info.viewer_login,
+                FinderKind::PullRequest.label(),
+            ]),
+            display_name,
+            kind: FinderKind::PullRequest,
+            project_path: entry.item.path().clone(),
+            target_name: None,
+            parent_label: project_label.clone(),
+            branch,
+            dir: dir.clone(),
+            pr_target: Some(PullRequestTarget {
+                owner_repo: info.owner_repo.clone(),
+                number:     pull_request.number,
+            }),
+        });
+    }
 }
 
 fn branch_for(git_info: Option<&CheckoutInfo>) -> String {
@@ -265,6 +335,7 @@ fn add_vendored_items_typed(
         parent_label: parent_name.to_string(),
         branch: branch.clone(),
         dir: dir.clone(),
+        pr_target: None,
     });
 
     let cargo = &project.cargo;
@@ -287,6 +358,7 @@ fn add_vendored_items_typed(
             parent_label: project_name.clone(),
             branch: branch.clone(),
             dir: dir.clone(),
+            pr_target: None,
         });
     }
 
@@ -314,6 +386,7 @@ fn add_vendored_items_typed(
                 parent_label: project_name.clone(),
                 branch: branch.clone(),
                 dir: dir.clone(),
+                pr_target: None,
             });
         }
     }
@@ -336,6 +409,7 @@ fn add_vendored_items_typed(
             parent_label: project_name.clone(),
             branch: branch.clone(),
             dir: dir.clone(),
+            pr_target: None,
         });
     }
 }
@@ -372,6 +446,7 @@ fn add_project_items_from_typed(
         parent_label: String::new(),
         branch: branch.clone(),
         dir: dir.clone(),
+        pr_target: None,
     });
 
     // Binary
@@ -388,6 +463,7 @@ fn add_project_items_from_typed(
             parent_label: project_name.clone(),
             branch: branch.clone(),
             dir: dir.clone(),
+            pr_target: None,
         });
     }
 
@@ -412,6 +488,7 @@ fn add_project_items_from_typed(
                 parent_label: project_name.clone(),
                 branch: branch.clone(),
                 dir: dir.clone(),
+                pr_target: None,
             });
         }
     }
@@ -431,6 +508,7 @@ fn add_project_items_from_typed(
             parent_label: project_name.clone(),
             branch: branch.clone(),
             dir: dir.clone(),
+            pr_target: None,
         });
     }
 }

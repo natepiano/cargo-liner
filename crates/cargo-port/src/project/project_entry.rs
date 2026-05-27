@@ -6,6 +6,7 @@ use super::git;
 use super::git::RepoInfo;
 use super::info::GitHubInfo;
 use super::info::ProjectCiData;
+use super::info::ProjectPrData;
 use super::root_item::RootItem;
 
 /// Repo-level metadata shared by every checkout of the same git repo.
@@ -20,6 +21,7 @@ pub(crate) struct GitRepo {
     pub repo_info:   Option<RepoInfo>,
     pub github_info: Option<GitHubInfo>,
     pub ci_data:     ProjectCiData,
+    pub pr_data:     ProjectPrData,
 }
 
 /// A top-level entry in the project list. Wraps a `RootItem` with the

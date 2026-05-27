@@ -23,6 +23,7 @@ use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::GitRepoPresence;
 use crate::project::ProjectFields;
+use crate::project::ProjectPrData;
 use crate::project::RootItem;
 
 /// Build a normalized project item for a discovered root directory.
@@ -150,6 +151,7 @@ pub(crate) struct CachedRepoData {
     pub(crate) runs:         Vec<CiRun>,
     pub(crate) meta:         Option<RepoMetaInfo>,
     pub(crate) github_total: u32,
+    pub(crate) pr_data:      ProjectPrData,
 }
 
 pub(crate) type RepoCache = Arc<Mutex<HashMap<OwnerRepo, CachedRepoData>>>;

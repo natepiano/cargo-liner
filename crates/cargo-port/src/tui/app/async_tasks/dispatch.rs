@@ -128,6 +128,9 @@ impl App {
             } => self.insert_ci_runs(path.as_path(), runs, github_total),
             BackgroundMsg::RepoFetchQueued { repo } => self.handle_repo_fetch_queued(repo),
             BackgroundMsg::RepoFetchComplete { repo } => self.handle_repo_fetch_complete(repo),
+            BackgroundMsg::PullRequests { repo, data } => {
+                self.handle_pull_requests(&repo, &data);
+            },
             BackgroundMsg::CratesIoFetchQueued { name } => {
                 self.handle_crates_io_fetch_queued(name);
             },

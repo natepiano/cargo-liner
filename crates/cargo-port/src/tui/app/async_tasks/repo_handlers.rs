@@ -7,10 +7,14 @@ use tui_pane::TrackedItem;
 
 use crate::ci;
 use crate::ci::OwnerRepo;
+use crate::http::PullRequestFetch;
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
 use crate::project::GitStatus;
 use crate::project::LocalGitState;
+use crate::project::ProjectPrData;
+use crate::project::ProjectPrUnavailable;
+use crate::project::PullRequestUnavailableReason;
 use crate::project::RepoInfo;
 use crate::project::RootItem;
 use crate::scan;
@@ -47,35 +51,69 @@ impl App {
         let repo_url = repo_url.to_string();
         let ci_run_count = self.config.ci_run_count();
         thread::spawn(move || {
-            let data = scan::load_cached_repo_data(&repo_cache, &owner_repo).unwrap_or_else(|| {
+            let mut data =
+                scan::load_cached_repo_data(&repo_cache, &owner_repo).unwrap_or_else(|| {
+                    let _ = tx.send(BackgroundMsg::RepoFetchQueued {
+                        repo: owner_repo.clone(),
+                    });
+                    let (result, meta, signal) = scan::fetch_ci_runs_cached(
+                        &client,
+                        &repo_url,
+                        owner_repo.owner(),
+                        owner_repo.repo(),
+                        ci_run_count,
+                    );
+                    scan::emit_service_signal(&tx, signal);
+                    let (runs, github_total) = match result {
+                        CiFetchResult::Loaded { runs, github_total } => (runs, github_total),
+                        CiFetchResult::CacheOnly(runs) => (runs, 0),
+                    };
+                    let data = CachedRepoData {
+                        runs,
+                        meta,
+                        github_total,
+                        pr_data: ProjectPrData::Unfetched,
+                    };
+                    scan::store_cached_repo_data(&repo_cache, &owner_repo, data.clone());
+                    data
+                });
+            if data.pr_data.needs_fetch() {
                 let _ = tx.send(BackgroundMsg::RepoFetchQueued {
                     repo: owner_repo.clone(),
                 });
-                let (result, meta, signal) = scan::fetch_ci_runs_cached(
-                    &client,
-                    &repo_url,
-                    owner_repo.owner(),
-                    owner_repo.repo(),
-                    ci_run_count,
-                );
+                let _ = tx.send(BackgroundMsg::PullRequests {
+                    repo: owner_repo.clone(),
+                    data: ProjectPrData::Loading,
+                });
+                let stale = data.pr_data.info().cloned();
+                let (pr_fetch, signal) = client.fetch_open_pull_requests(owner_repo.clone());
                 scan::emit_service_signal(&tx, signal);
-                let (runs, github_total) = match result {
-                    CiFetchResult::Loaded { runs, github_total } => (runs, github_total),
-                    CiFetchResult::CacheOnly(runs) => (runs, 0),
-                };
-                let data = CachedRepoData {
-                    runs,
-                    meta,
-                    github_total,
+                data.pr_data = match pr_fetch {
+                    Some(PullRequestFetch::Loaded(info)) => ProjectPrData::Loaded(info),
+                    Some(PullRequestFetch::Unavailable(reason)) => {
+                        ProjectPrData::Unavailable(ProjectPrUnavailable {
+                            reason,
+                            stale,
+                            fetched_at: None,
+                        })
+                    },
+                    None => ProjectPrData::Unavailable(ProjectPrUnavailable {
+                        reason: PullRequestUnavailableReason::Network,
+                        stale,
+                        fetched_at: None,
+                    }),
                 };
                 scan::store_cached_repo_data(&repo_cache, &owner_repo, data.clone());
-                data
-            });
+            }
 
             let _ = tx.send(BackgroundMsg::CiRuns {
                 path:         path.clone(),
                 runs:         data.runs,
                 github_total: data.github_total,
+            });
+            let _ = tx.send(BackgroundMsg::PullRequests {
+                repo: owner_repo.clone(),
+                data: data.pr_data,
             });
             if let Some(meta) = data.meta {
                 let _ = tx.send(BackgroundMsg::RepoMeta {
@@ -334,6 +372,20 @@ impl App {
         self.startup.repo.seen.insert(repo);
         self.maybe_log_startup_phase_completions();
         self.sync_running_repo_fetch_toast();
+    }
+
+    pub(super) fn handle_pull_requests(&mut self, repo: &OwnerRepo, data: &ProjectPrData) {
+        let selected_matches = self
+            .project_list
+            .selected_project_path()
+            .and_then(|path| self.project_list.fetch_url_for(path))
+            .and_then(|url| ci::parse_owner_repo(&url))
+            .as_ref()
+            == Some(repo);
+        self.project_list.replace_pr_data_for_repo(repo, data);
+        if selected_matches {
+            self.scan.bump_generation();
+        }
     }
 
     /// Flip the sync-toast eligibility flag for every project that

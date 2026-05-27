@@ -185,6 +185,7 @@ pub(super) const fn record_background_msg_kind(
             stats.lint_status_msgs += 1;
         },
         BackgroundMsg::CiRuns { .. }
+        | BackgroundMsg::PullRequests { .. }
         | BackgroundMsg::RepoFetchQueued { .. }
         | BackgroundMsg::RepoFetchComplete { .. }
         | BackgroundMsg::CratesIoVersion { .. }

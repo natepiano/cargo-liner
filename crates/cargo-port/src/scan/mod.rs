@@ -59,6 +59,7 @@ use crate::ci::OwnerRepo;
 use crate::lint::CacheUsage;
 use crate::lint::LintStatus;
 use crate::project::LanguageStats;
+use crate::project::ProjectPrData;
 
 /// Messages sent from background threads to the main event loop.
 pub(crate) enum BackgroundMsg {
@@ -123,6 +124,11 @@ pub(crate) enum BackgroundMsg {
         path:        AbsolutePath,
         stars:       u64,
         description: Option<String>,
+    },
+    /// Open pull requests authored by the current GitHub user for a repo.
+    PullRequests {
+        repo: OwnerRepo,
+        data: ProjectPrData,
     },
     /// Complete project tree from the streaming scan, plus disk entry
     /// paths for background disk usage computation.
@@ -267,6 +273,7 @@ impl BackgroundMsg {
             // Fetch lifecycle is reflected via toasts, not detail data.
             | Self::RepoFetchQueued { .. }
             | Self::RepoFetchComplete { .. }
+            | Self::PullRequests { .. }
             | Self::CratesIoFetchQueued { .. }
             | Self::CratesIoFetchComplete { .. }
             // Live lint statuses resolve the lint-owning project before

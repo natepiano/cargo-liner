@@ -4,6 +4,7 @@ use scan::RepoMetaInfo;
 use super::*;
 use crate::channel;
 use crate::project::AbsolutePath;
+use crate::project::ProjectPrData;
 use crate::watcher::WatcherMsg;
 
 #[test]
@@ -487,6 +488,7 @@ fn recovery_invalidates_failed_github_cache_entries() {
                 description: Some("ok".to_string()),
             }),
             github_total: 0,
+            pr_data:      ProjectPrData::Unfetched,
         },
     );
     scan::store_cached_repo_data(
@@ -496,6 +498,7 @@ fn recovery_invalidates_failed_github_cache_entries() {
             runs:         Vec::new(),
             meta:         None,
             github_total: 0,
+            pr_data:      ProjectPrData::Unfetched,
         },
     );
 
