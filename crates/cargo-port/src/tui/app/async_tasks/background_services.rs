@@ -184,6 +184,7 @@ fn collect_publishable_children(item: &RootItem, out: &mut Vec<(AbsolutePath, St
                 if let Some(name) = member.crates_io_name() {
                     out.push((member.path().clone(), name.to_string()));
                 }
+                push_package_vendored(member, out);
             }
         }
         for vendored in ws.vendored() {

@@ -267,20 +267,13 @@ impl RootItem {
     /// lint history.
     pub(crate) fn vendored_owner_lint(&self, path: &Path) -> Option<&LintRuns> {
         match self {
-            Self::Rust(RustProject::Workspace(ws)) => ws
-                .vendored()
-                .iter()
-                .any(|v| v.path() == path)
-                .then_some(&ws.rust.lint_runs),
-            Self::Rust(RustProject::Package(pkg)) => pkg
-                .vendored()
-                .iter()
-                .any(|v| v.path() == path)
-                .then_some(&pkg.rust.lint_runs),
+            Self::Rust(project) => project
+                .vendored_at_path(path)
+                .map(|_| &project.rust_info().lint_runs),
             Self::NonRust(_) => None,
             Self::Worktrees(g) => g
                 .iter_entries()
-                .find(|p| p.rust_info().vendored().iter().any(|v| v.path() == path))
+                .find(|p| p.vendored_at_path(path).is_some())
                 .map(|p| &p.rust_info().lint_runs),
         }
     }

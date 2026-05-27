@@ -637,22 +637,8 @@ impl ProjectList {
     }
 
     pub(super) fn is_vendored_path(&self, path: &Path) -> bool {
-        self.iter().any(|item| match &item.item {
-            RootItem::Rust(RustProject::Workspace(ws)) => {
-                ws.vendored().iter().any(|v| v.path() == path)
-            },
-            RootItem::Rust(RustProject::Package(pkg)) => {
-                pkg.vendored().iter().any(|v| v.path() == path)
-            },
-            RootItem::Worktrees(group) => group.iter_entries().any(|entry| {
-                entry
-                    .rust_info()
-                    .vendored()
-                    .iter()
-                    .any(|v| v.path() == path)
-            }),
-            RootItem::NonRust(_) => false,
-        })
+        self.iter()
+            .any(|item| item.item.vendored_at_path(path).is_some())
     }
 
     pub(super) fn is_workspace_member_path(&self, path: &Path) -> bool {
@@ -1542,6 +1528,16 @@ impl ProjectList {
                                     expanded.insert(ExpandKey::Group(ni, gi));
                                 }
                             }
+                            if member
+                                .vendored()
+                                .iter()
+                                .any(|vendored| vendored.path() == target_path)
+                            {
+                                expanded.insert(ExpandKey::Node(ni));
+                                if group.is_named() {
+                                    expanded.insert(ExpandKey::Group(ni, gi));
+                                }
+                            }
                         }
                     }
                     for vendored in ws.vendored() {
@@ -1567,6 +1563,17 @@ impl ProjectList {
                             for (gi, g) in ws.groups().iter().enumerate() {
                                 for member in g.members() {
                                     if member.path() == target_path {
+                                        expanded.insert(ExpandKey::Node(ni));
+                                        expanded.insert(ExpandKey::Worktree(ni, wi));
+                                        if g.is_named() {
+                                            expanded.insert(ExpandKey::WorktreeGroup(ni, wi, gi));
+                                        }
+                                    }
+                                    if member
+                                        .vendored()
+                                        .iter()
+                                        .any(|vendored| vendored.path() == target_path)
+                                    {
                                         expanded.insert(ExpandKey::Node(ni));
                                         expanded.insert(ExpandKey::Worktree(ni, wi));
                                         if g.is_named() {

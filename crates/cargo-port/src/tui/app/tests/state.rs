@@ -781,6 +781,122 @@ fn vendored_path_dependency_becomes_ci_owner() {
 }
 
 #[test]
+fn member_vendored_path_receives_project_info_updates() {
+    let vendored_path = test_path("~/app/vendor/helper");
+    let member = make_package_with_vendored(
+        Some("member"),
+        "~/app/crates/member",
+        vec![super::make_vendored(Some("helper"), "~/app/vendor/helper")],
+    );
+    let root_item = RootItem::Rust(RustProject::Workspace(make_workspace_raw(
+        Some("app"),
+        "~/app",
+        vec![inline_group(vec![member])],
+        None,
+    )));
+    let mut app = make_app(&[make_workspace_project(Some("app"), "~/app")]);
+    apply_items(&mut app, &[root_item]);
+
+    app.handle_disk_usage(vendored_path.as_path(), 4097);
+    app.project_list.handle_language_stats_batch(vec![(
+        vendored_path.clone(),
+        crate::project::LanguageStats {
+            entries: vec![crate::project::LangEntry {
+                language: "Rust".to_string(),
+                files:    1,
+                code:     7,
+                comments: 0,
+                blanks:   0,
+            }],
+        },
+    )]);
+    app.project_list.handle_crates_io_version_msg(
+        vendored_path.as_path(),
+        "0.4.0".to_string(),
+        3_208,
+    );
+
+    let vendored = app
+        .project_list
+        .vendored_at_path(vendored_path.as_path())
+        .expect("member-owned vendored package should be addressable by path");
+    assert_eq!(vendored.info.disk_usage_bytes, Some(4097));
+    assert_eq!(
+        vendored
+            .info
+            .language_stats
+            .as_ref()
+            .map(|s| s.entries.len()),
+        Some(1)
+    );
+    assert_eq!(vendored.crates_version(), Some("0.4.0"));
+    assert_eq!(vendored.crates_downloads(), Some(3_208));
+}
+
+#[test]
+fn member_vendored_path_receives_cargo_metadata_fields() {
+    let workspace_path = test_path("~/app");
+    let vendored_path = test_path("~/app/vendor/helper");
+    let member = make_package_with_vendored(
+        Some("member"),
+        "~/app/crates/member",
+        vec![super::make_vendored(Some("helper"), "~/app/vendor/helper")],
+    );
+    let root_item = RootItem::Rust(RustProject::Workspace(make_workspace_raw(
+        Some("app"),
+        "~/app",
+        vec![inline_group(vec![member])],
+        None,
+    )));
+    let mut app = make_app(&[make_workspace_project(Some("app"), "~/app")]);
+    apply_items(&mut app, &[root_item]);
+
+    let record_id = PackageId {
+        repr: "helper-id".into(),
+    };
+    let record = PackageRecord {
+        name:          "helper".into(),
+        version:       Version::new(0, 4, 0),
+        edition:       "2024".into(),
+        description:   None,
+        license:       None,
+        homepage:      None,
+        repository:    None,
+        manifest_path: AbsolutePath::from(vendored_path.as_path().join("Cargo.toml")),
+        targets:       vec![crate::project::TargetRecord {
+            name:     "helper".into(),
+            kinds:    vec![TargetKind::Lib],
+            src_path: AbsolutePath::from(vendored_path.as_path().join("src").join("lib.rs")),
+        }],
+        publish:       PublishPolicy::Never,
+    };
+    let mut packages = HashMap::new();
+    packages.insert(record_id, record);
+    let workspace_metadata = WorkspaceMetadata {
+        workspace_root: workspace_path,
+        target_directory: test_path("~/app/target"),
+        packages,
+        fingerprint: fake_fingerprint(),
+        out_of_tree_target_bytes: None,
+    };
+
+    app.project_list
+        .apply_cargo_fields_from_workspace_metadata(&workspace_metadata);
+
+    let cargo = &app
+        .project_list
+        .vendored_at_path(vendored_path.as_path())
+        .expect("member-owned vendored package should receive cargo metadata")
+        .cargo;
+    assert!(
+        cargo
+            .types()
+            .contains(&crate::project::ProjectType::Library)
+    );
+    assert!(!cargo.publishable());
+}
+
+#[test]
 fn git_status_suppresses_sync_for_untracked_and_ignored() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));

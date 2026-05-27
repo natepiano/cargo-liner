@@ -196,6 +196,9 @@ fn add_workspace_items(items: &mut Vec<FinderItem>, ws: &Workspace) {
                 member_cargo.examples(),
                 member_cargo.benches(),
             );
+            for vendored in member.vendored() {
+                add_vendored_items_typed(items, vendored, &member_name);
+            }
         }
     }
 

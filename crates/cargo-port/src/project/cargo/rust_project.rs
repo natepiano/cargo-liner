@@ -223,6 +223,11 @@ pub(super) fn info_in_workspace<'a>(ws: &'a Workspace, path: &Path) -> Option<&'
             if member.path() == path {
                 return Some(&member.rust.info);
             }
+            for vendored in member.vendored() {
+                if vendored.path() == path {
+                    return Some(&vendored.info);
+                }
+            }
         }
     }
     for vendored in ws.vendored() {
@@ -252,32 +257,71 @@ pub(super) fn info_in_workspace_mut<'a>(
     if ws.path() == path {
         return Some(&mut ws.rust.info);
     }
-    let member_index = ws
-        .groups()
-        .iter()
-        .enumerate()
-        .find_map(|(group_index, group)| {
-            group
-                .members()
-                .iter()
-                .position(|member| member.path() == path)
-                .map(|member_index| (group_index, member_index))
-        });
-    if let Some((group_index, member_index)) = member_index {
-        return Some(
+    match workspace_info_target(ws, path)? {
+        WorkspaceInfoTarget::Member {
+            group_index,
+            member_index,
+        } => Some(
             &mut ws.groups_mut()[group_index].members_mut()[member_index]
                 .rust
                 .info,
-        );
+        ),
+        WorkspaceInfoTarget::MemberVendored {
+            group_index,
+            member_index,
+            vendored_index,
+        } => Some(
+            &mut ws.groups_mut()[group_index].members_mut()[member_index].vendored_mut()
+                [vendored_index]
+                .info,
+        ),
+        WorkspaceInfoTarget::RootVendored { vendored_index } => {
+            Some(&mut ws.vendored_mut()[vendored_index].info)
+        },
     }
-    let vendored_index = ws
-        .vendored()
+}
+
+enum WorkspaceInfoTarget {
+    Member {
+        group_index:  usize,
+        member_index: usize,
+    },
+    MemberVendored {
+        group_index:    usize,
+        member_index:   usize,
+        vendored_index: usize,
+    },
+    RootVendored {
+        vendored_index: usize,
+    },
+}
+
+fn workspace_info_target(ws: &Workspace, path: &Path) -> Option<WorkspaceInfoTarget> {
+    for (group_index, group) in ws.groups().iter().enumerate() {
+        for (member_index, member) in group.members().iter().enumerate() {
+            if member.path() == path {
+                return Some(WorkspaceInfoTarget::Member {
+                    group_index,
+                    member_index,
+                });
+            }
+            if let Some(vendored_index) = member
+                .vendored()
+                .iter()
+                .position(|vendored| vendored.path() == path)
+            {
+                return Some(WorkspaceInfoTarget::MemberVendored {
+                    group_index,
+                    member_index,
+                    vendored_index,
+                });
+            }
+        }
+    }
+    ws.vendored()
         .iter()
-        .position(|vendored| vendored.path() == path);
-    if let Some(vendored_index) = vendored_index {
-        return Some(&mut ws.vendored_mut()[vendored_index].info);
-    }
-    None
+        .position(|vendored| vendored.path() == path)
+        .map(|vendored_index| WorkspaceInfoTarget::RootVendored { vendored_index })
 }
 
 pub(super) fn info_in_package_mut<'a>(
@@ -358,6 +402,13 @@ pub(super) fn vendored_in_workspace<'a>(
     ws: &'a Workspace,
     path: &Path,
 ) -> Option<&'a VendoredPackage> {
+    for group in ws.groups() {
+        for member in group.members() {
+            if let Some(vendored) = vendored_in_package(member, path) {
+                return Some(vendored);
+            }
+        }
+    }
     ws.vendored().iter().find(|v| v.path() == path)
 }
 
@@ -372,7 +423,52 @@ pub(super) fn vendored_in_workspace_mut<'a>(
     ws: &'a mut Workspace,
     path: &Path,
 ) -> Option<&'a mut VendoredPackage> {
-    ws.vendored_mut().iter_mut().find(|v| v.path() == path)
+    match workspace_vendored_target(ws, path)? {
+        WorkspaceVendoredTarget::Member {
+            group_index,
+            member_index,
+            vendored_index,
+        } => Some(
+            &mut ws.groups_mut()[group_index].members_mut()[member_index].vendored_mut()
+                [vendored_index],
+        ),
+        WorkspaceVendoredTarget::Root { vendored_index } => {
+            Some(&mut ws.vendored_mut()[vendored_index])
+        },
+    }
+}
+
+enum WorkspaceVendoredTarget {
+    Member {
+        group_index:    usize,
+        member_index:   usize,
+        vendored_index: usize,
+    },
+    Root {
+        vendored_index: usize,
+    },
+}
+
+fn workspace_vendored_target(ws: &Workspace, path: &Path) -> Option<WorkspaceVendoredTarget> {
+    for (group_index, group) in ws.groups().iter().enumerate() {
+        for (member_index, member) in group.members().iter().enumerate() {
+            if let Some(vendored_index) = member
+                .vendored()
+                .iter()
+                .position(|vendored| vendored.path() == path)
+            {
+                return Some(WorkspaceVendoredTarget::Member {
+                    group_index,
+                    member_index,
+                    vendored_index,
+                });
+            }
+        }
+    }
+    ws.vendored()
+        .iter()
+        .position(|vendored| vendored.path() == path)
+        .map(|vendored_index| WorkspaceVendoredTarget::Root { vendored_index })
 }
 
 pub(super) fn vendored_in_package_mut<'a>(
@@ -444,6 +540,9 @@ fn collect_project_info_from_workspace(ws: &Workspace, out: &mut Vec<(AbsolutePa
     for group in ws.groups() {
         for member in group.members() {
             out.push((member.path().clone(), member.rust.info.clone()));
+            for vendored in member.vendored() {
+                out.push((vendored.path().clone(), vendored.info.clone()));
+            }
         }
     }
     for vendored in ws.vendored() {

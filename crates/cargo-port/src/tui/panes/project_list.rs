@@ -1327,6 +1327,7 @@ fn collect_member_group_disk(groups: &[MemberGroup], values: &mut Vec<u64>) {
             if let Some(bytes) = member.disk_usage_bytes() {
                 values.push(bytes);
             }
+            collect_vendored_disk(member.vendored(), values);
         }
     }
 }
