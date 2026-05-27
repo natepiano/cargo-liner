@@ -41,6 +41,7 @@ use crate::project::ProjectEntry;
 use crate::project::ProjectFields;
 use crate::project::ProjectInfo;
 use crate::project::ProjectPrData;
+use crate::project::ProjectPrInfo;
 use crate::project::RepoInfo;
 use crate::project::RootItem;
 use crate::project::RustInfo;
@@ -434,6 +435,15 @@ impl ProjectList {
                 repo.pr_data = data.clone();
             }
         }
+    }
+
+    pub(super) fn pr_info_for_repo(&self, owner_repo: &OwnerRepo) -> Option<&ProjectPrInfo> {
+        self.roots.values().find_map(|entry| {
+            let url = self.fetch_url_for(entry.item.path())?;
+            (ci::parse_owner_repo(&url).as_ref() == Some(owner_repo))
+                .then(|| entry.git_repo.as_ref()?.pr_data.info())
+                .flatten()
+        })
     }
 
     // -- Git/Repo reads --------------------------------------------------
