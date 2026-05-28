@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="50 100 520 735" role="img" aria-labelledby="title desc">
+  <title id="title">cargo-port project tree callouts</title>
+  <desc id="desc">Annotated crop of the project tree showing project hierarchy, status columns, and disk usage.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#f5d90a"/>
+    </marker>
+    <filter id="label-shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#000" flood-opacity="0.65"/>
+    </filter>
+  </defs>
+  <image href="dashboard-main.png" x="0" y="0" width="1840" height="1196"/>
+  <rect x="66" y="118" width="488" height="695" fill="none" stroke="#f5d90a" stroke-width="3"/>
+  <g font-family="Menlo, Consolas, monospace" font-size="18" font-weight="700" filter="url(#label-shadow)">
+    <g>
+      <rect x="205" y="132" width="205" height="38" rx="6" fill="#101820" stroke="#f5d90a" stroke-width="2"/>
+      <text x="219" y="157" fill="#f5d90a">Project hierarchy</text>
+      <path d="M205 151 L92 151" stroke="#f5d90a" stroke-width="3" marker-end="url(#arrow)"/>
+    </g>
+    <g>
+      <rect x="245" y="213" width="230" height="38" rx="6" fill="#101820" stroke="#f5d90a" stroke-width="2"/>
+      <text x="259" y="238" fill="#f5d90a">Health columns</text>
+      <path d="M360 213 L389 142" stroke="#f5d90a" stroke-width="3" marker-end="url(#arrow)"/>
+    </g>
+    <g>
+      <rect x="110" y="735" width="220" height="38" rx="6" fill="#101820" stroke="#f5d90a" stroke-width="2"/>
+      <text x="124" y="760" fill="#f5d90a">Disk rollups</text>
+      <path d="M330 750 L522 535" stroke="#f5d90a" stroke-width="3" marker-end="url(#arrow)"/>
+    </g>
+    <g>
+      <rect x="238" y="318" width="246" height="38" rx="6" fill="#101820" stroke="#f5d90a" stroke-width="2"/>
+      <text x="252" y="343" fill="#f5d90a">Worktree groups</text>
+      <path d="M238 337 L90 216" stroke="#f5d90a" stroke-width="3" marker-end="url(#arrow)"/>
+    </g>
+  </g>
+</svg>

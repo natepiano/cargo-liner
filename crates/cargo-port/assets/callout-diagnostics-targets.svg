@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="550 510 1240 315" role="img" aria-labelledby="title desc">
+  <title id="title">cargo-port diagnostics and target callouts</title>
+  <desc id="desc">Annotated crop of the languages, CPU and GPU diagnostics, and targets panes.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#f5d90a"/>
+    </marker>
+    <filter id="label-shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#000" flood-opacity="0.65"/>
+    </filter>
+  </defs>
+  <image href="dashboard-main.png" x="0" y="0" width="1840" height="1196"/>
+  <rect x="562" y="520" width="540" height="295" fill="none" stroke="#f5d90a" stroke-width="3"/>
+  <rect x="1110" y="520" width="125" height="295" fill="none" stroke="#f5d90a" stroke-width="3"/>
+  <rect x="1240" y="520" width="532" height="295" fill="none" stroke="#f5d90a" stroke-width="3"/>
+  <g font-family="Menlo, Consolas, monospace" font-size="18" font-weight="700" filter="url(#label-shadow)">
+    <g>
+      <rect x="620" y="548" width="230" height="38" rx="6" fill="#101820" stroke="#f5d90a" stroke-width="2"/>
+      <text x="634" y="573" fill="#f5d90a">Language stats</text>
+      <path d="M735 586 L602 555" stroke="#f5d90a" stroke-width="3" marker-end="url(#arrow)"/>
+    </g>
+    <g>
+      <rect x="960" y="598" width="230" height="38" rx="6" fill="#101820" stroke="#f5d90a" stroke-width="2"/>
+      <text x="974" y="623" fill="#f5d90a">CPU + GPU</text>
+      <path d="M1124 636 L1135 545" stroke="#f5d90a" stroke-width="3" marker-end="url(#arrow)"/>
+    </g>
+    <g>
+      <rect x="1390" y="548" width="255" height="38" rx="6" fill="#101820" stroke="#f5d90a" stroke-width="2"/>
+      <text x="1404" y="573" fill="#f5d90a">Runnable targets</text>
+      <path d="M1390 570 L1260 550" stroke="#f5d90a" stroke-width="3" marker-end="url(#arrow)"/>
+    </g>
+    <g>
+      <rect x="1495" y="750" width="230" height="38" rx="6" fill="#101820" stroke="#f5d90a" stroke-width="2"/>
+      <text x="1509" y="775" fill="#f5d90a">Source package</text>
+      <path d="M1495 768 L1627 545" stroke="#f5d90a" stroke-width="3" marker-end="url(#arrow)"/>
+    </g>
+  </g>
+</svg>

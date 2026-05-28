@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="55 815 1730 295" role="img" aria-labelledby="title desc">
+  <title id="title">cargo-port lint and CI callouts</title>
+  <desc id="desc">Annotated crop of the lint runs and CI runs panes.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#f5d90a"/>
+    </marker>
+    <filter id="label-shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#000" flood-opacity="0.65"/>
+    </filter>
+  </defs>
+  <image href="dashboard-main.png" x="0" y="0" width="1840" height="1196"/>
+  <rect x="66" y="830" width="488" height="268" fill="none" stroke="#f5d90a" stroke-width="3"/>
+  <rect x="570" y="830" width="1202" height="268" fill="none" stroke="#f5d90a" stroke-width="3"/>
+  <g font-family="Menlo, Consolas, monospace" font-size="18" font-weight="700" filter="url(#label-shadow)">
+    <g>
+      <rect x="110" y="858" width="208" height="38" rx="6" fill="#101820" stroke="#f5d90a" stroke-width="2"/>
+      <text x="124" y="883" fill="#f5d90a">Local lint runs</text>
+      <path d="M214 896 L95 856" stroke="#f5d90a" stroke-width="3" marker-end="url(#arrow)"/>
+    </g>
+    <g>
+      <rect x="330" y="990" width="192" height="38" rx="6" fill="#101820" stroke="#f5d90a" stroke-width="2"/>
+      <text x="344" y="1015" fill="#f5d90a">Cached logs</text>
+      <path d="M330 1008 L464 846" stroke="#f5d90a" stroke-width="3" marker-end="url(#arrow)"/>
+    </g>
+    <g>
+      <rect x="640" y="858" width="245" height="38" rx="6" fill="#101820" stroke="#f5d90a" stroke-width="2"/>
+      <text x="654" y="883" fill="#f5d90a">CI run history</text>
+      <path d="M762 896 L586 856" stroke="#f5d90a" stroke-width="3" marker-end="url(#arrow)"/>
+    </g>
+    <g>
+      <rect x="1242" y="858" width="310" height="38" rx="6" fill="#101820" stroke="#f5d90a" stroke-width="2"/>
+      <text x="1256" y="883" fill="#f5d90a">Job-level status</text>
+      <path d="M1397 896 L1258 858" stroke="#f5d90a" stroke-width="3" marker-end="url(#arrow)"/>
+    </g>
+    <g>
+      <rect x="1432" y="1012" width="285" height="38" rx="6" fill="#101820" stroke="#f5d90a" stroke-width="2"/>
+      <text x="1446" y="1037" fill="#f5d90a">Duration trends</text>
+      <path d="M1432 1032 L1712 858" stroke="#f5d90a" stroke-width="3" marker-end="url(#arrow)"/>
+    </g>
+  </g>
+</svg>

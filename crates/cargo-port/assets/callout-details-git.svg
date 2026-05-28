@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="550 105 1240 420" role="img" aria-labelledby="title desc">
+  <title id="title">cargo-port package and Git detail callouts</title>
+  <desc id="desc">Annotated crop of the package structure and Git detail panes.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#f5d90a"/>
+    </marker>
+    <filter id="label-shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#000" flood-opacity="0.65"/>
+    </filter>
+  </defs>
+  <image href="dashboard-main.png" x="0" y="0" width="1840" height="1196"/>
+  <rect x="562" y="116" width="604" height="392" fill="none" stroke="#f5d90a" stroke-width="3"/>
+  <rect x="1172" y="116" width="600" height="392" fill="none" stroke="#f5d90a" stroke-width="3"/>
+  <g font-family="Menlo, Consolas, monospace" font-size="18" font-weight="700" filter="url(#label-shadow)">
+    <g>
+      <rect x="611" y="155" width="250" height="38" rx="6" fill="#101820" stroke="#f5d90a" stroke-width="2"/>
+      <text x="625" y="180" fill="#f5d90a">Workspace summary</text>
+      <path d="M736 193 L624 247" stroke="#f5d90a" stroke-width="3" marker-end="url(#arrow)"/>
+    </g>
+    <g>
+      <rect x="904" y="170" width="210" height="38" rx="6" fill="#101820" stroke="#f5d90a" stroke-width="2"/>
+      <text x="918" y="195" fill="#f5d90a">Target counts</text>
+      <path d="M1030 208 L1077 155" stroke="#f5d90a" stroke-width="3" marker-end="url(#arrow)"/>
+    </g>
+    <g>
+      <rect x="1252" y="145" width="210" height="38" rx="6" fill="#101820" stroke="#f5d90a" stroke-width="2"/>
+      <text x="1266" y="170" fill="#f5d90a">Git health</text>
+      <path d="M1350 183 L1217 207" stroke="#f5d90a" stroke-width="3" marker-end="url(#arrow)"/>
+    </g>
+    <g>
+      <rect x="1468" y="263" width="240" height="38" rx="6" fill="#101820" stroke="#f5d90a" stroke-width="2"/>
+      <text x="1482" y="288" fill="#f5d90a">Remotes + sync</text>
+      <path d="M1468 282 L1225 300" stroke="#f5d90a" stroke-width="3" marker-end="url(#arrow)"/>
+    </g>
+    <g>
+      <rect x="1460" y="370" width="220" height="38" rx="6" fill="#101820" stroke="#f5d90a" stroke-width="2"/>
+      <text x="1474" y="395" fill="#f5d90a">Worktrees</text>
+      <path d="M1460 390 L1215 358" stroke="#f5d90a" stroke-width="3" marker-end="url(#arrow)"/>
+    </g>
+  </g>
+</svg>

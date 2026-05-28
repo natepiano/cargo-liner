@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Add CPU, GPU, and sccache diagnostics panes with background polling and platform-specific GPU detection
+- Add a runtime theme system with built-in dark, light, and high-contrast themes, user theme hot-reload, appearance settings, terminal background matching, and focused-pane tinting
+- Add open pull request display, deleted-pull-request toasts, pull request check polling, and animated pull request check status
+- Add global shortcuts overlay, vim paging, chord keymaps, tab traversal, edge-scroll navigation, and selection copy support
+- Add cargo metadata-backed package and target details, workspace target aggregation, running-target markers, and richer clean-plan confirmation
+- Add GitHub rate-limit and service-recovery status in the Git pane, including persistent recovery toasts and automatic refetch after service recovery
+- Add richer worktree, submodule, and vendored-package handling, including submodule Git state and vendored workspace member rows
+
+### Changed
+- Convert the app into a Cargo workspace and extract reusable TUI framework code into the new `tui_pane` crate
+- Rework pane rendering, keymaps, overlays, settings, toasts, themes, and hit testing around shared framework APIs
+- Replace hand-parsed Cargo target and package fallbacks with `cargo_metadata`-driven records
+- Improve app responsiveness with cached scroll hot paths, event-driven rendering, background diagnostics polling, and higher scan concurrency
+- Improve clean behavior with target-directory indexing, async re-fingerprinting, affected-sibling confirmation, and target vs non-target disk breakdowns
+
+### Fixed
+- Fix lint runtime reliability across interrupted runs, deleted worktrees, Windows execution, Linux file-read events, cache pruning, and cloned runtime handles
+- Fix CI and pull request rendering edge cases, including skipped vs cancelled runs, manual fetch and clear, pull request snapshot loading, pull request tables, CI column layout, and inherited CI on vendored rows
+- Fix finder and keymap behavior for visible-entry indexing, path separator matching, TOML override preservation, keymap popup height, and app-global shortcut registration
+- Fix toast lifecycle bugs for cargo clean completion, task countdowns, startup disk scans, duplicate CI toasts, char-boundary panics, and elapsed-time display noise
+- Fix live project and worktree state for refreshed worktree groups, deleted project cleanup, inline dirs, newly discovered project metadata, and member vendored details
+
 ## [0.0.3] - 2026-04-16
 
 ### Added

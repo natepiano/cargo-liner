@@ -5,18 +5,20 @@
 [![docs.rs](https://docs.rs/cargo-port/badge.svg)](https://docs.rs/cargo-port)
 [![license](https://img.shields.io/crates/l/cargo-port.svg)](LICENSE-MIT)
 
-<img src="assets/screenshot.png" alt="cargo-port TUI" width="100%">
+<img src="assets/dashboard-main.png" alt="cargo-port dashboard showing project tree, worktree details, Git status, CPU and GPU diagnostics, targets, lint runs, and CI runs" width="100%">
 
-A terminal dashboard for all your Rust projects. Point it at a directory and it discovers every workspace, crate, worktree, and vendored dependency underneath.
+A terminal dashboard for a Rust workspace forest. Point it at a directory and it keeps workspaces, crates, worktrees, vendored dependencies, targets, local lint state, GitHub CI, pull requests, and machine diagnostics in one keyboard-driven view.
 
-- **Find everything** — examples, benchmarks, binaries, and test targets across all your projects in one place
-- **Launch instantly** — run any example, benchmark, or binary in debug or release mode with live output
-- **Jump to context** — open crates.io, GitHub, or your editor directly from any project field
-- **CI at a glance** — per-project GitHub Actions status with job-level detail and run history
-- **Fuzzy search** — find any project, example, or binary across your entire tree in seconds
-- **Offline-ready** — CI data cached to disk, works without network
+- **Inventory everything** - workspaces, members, linked worktrees, submodules, vendored crates, examples, benches, binaries, tests, and non-Rust git repos
+- **Run and inspect targets** - launch examples, benches, and binaries in debug or release mode with live output and running-target markers
+- **Track project health** - see lint status, archived lint runs, GitHub Actions history, open pull requests, PR check polling, and GitHub rate-limit state
+- **Keep context visible** - inspect package metadata, target directories, language stats, worktree summaries, remotes, CI jobs, and pull request rows without leaving the TUI
+- **Navigate quickly** - fuzzy search, vim-style paging, chord keymaps, tab traversal, edge-scroll pane movement, global shortcuts, and selection copy
+- **Tune the view** - runtime themes, light/dark/high-contrast variants, user theme hot-reload, appearance settings, and CPU/GPU/sccache diagnostics
 
 ## Try me
+
+Build the current `main` branch:
 
 ```bash
 git clone https://github.com/natepiano/cargo-port.git
@@ -24,6 +26,60 @@ cd cargo-port
 cargo build
 cargo run
 ```
+
+Install the latest published crates.io release:
+
+```bash
+cargo install cargo-port
+cargo-port
+```
+
+## What You Can See
+
+The main dashboard combines the project tree with detail panes for package metadata, Git state, languages, targets, diagnostics, lint history, and CI runs.
+
+<img src="assets/callout-project-tree.png" alt="Annotated project tree showing hierarchy, health columns, worktree groups, and disk rollups" width="100%">
+
+- **Project tree**: groups workspaces, members, linked worktrees, submodules, vendored crates, and optional non-Rust repos under the configured scan roots
+- **Package and targets**: shows Cargo metadata-backed type, version, edition, license, homepage, repository, target, example, bench, and binary information
+- **Git and pull requests**: shows branch, sync status, remotes, worktrees, GitHub rate-limit state, open PR rows, and PR check polling
+- **Diagnostics**: shows CPU usage per core, GPU utilization when available, and sccache statistics when `sccache` is configured
+- **Lint and CI history**: shows local lint/watch runs from disk and GitHub Actions run history with job-level status and durations
+
+<img src="assets/callout-details-git.png" alt="Annotated details and Git panes showing workspace summary, target counts, Git health, remotes, and worktrees" width="100%">
+
+<img src="assets/callout-diagnostics-targets.png" alt="Annotated languages, CPU and GPU diagnostics, and runnable targets panes" width="100%">
+
+<img src="assets/callout-lint-ci.png" alt="Annotated lint runs and CI runs panes showing cached lint logs and job-level CI status" width="100%">
+
+## Navigation
+
+Press `?` in the TUI to open the global shortcuts overlay.
+
+- Use `/` to fuzzy-find projects, packages, examples, benches, binaries, and tests
+- Use `Tab` to move between panes; optional edge-scroll can advance focus when a list hits its top or bottom
+- Enable vim navigation with `navigation_keys = true` for `hjkl` movement in non-text panes
+- Use chord keymaps for multi-key commands and `y` to copy the selected pane row's path, URL, or field value when available
+- Open projects, config, keymaps, GitHub URLs, crates.io pages, and terminal sessions from the selected context
+
+## GitHub, CI, and PRs
+
+cargo-port uses local git data plus the GitHub CLI where available.
+
+- GitHub Actions runs are cached to disk so the dashboard stays useful offline
+- Pull request rows show open PRs for the selected repo, including deleted/disappeared PR toasts and check polling
+- GitHub API rate-limit and service recovery state are shown in the Git pane
+- If `gh` is missing or unauthenticated, cargo-port warns in the UI instead of silently hiding the problem
+
+## Themes and Diagnostics
+
+The TUI has runtime-swappable themes and lightweight machine diagnostics.
+
+- Built-in themes include default dark, default light, and high-contrast variants
+- User themes live under the platform config directory in `cargo-port/themes/` and reload while the app is running
+- `[appearance]` can follow the OS appearance or force light/dark mode
+- The CPU/GPU pane refreshes in the background; GPU availability depends on platform support
+- The sccache pane appears when a configured Rust compiler wrapper points at `sccache`
 
 ## Configuration
 
@@ -44,7 +100,7 @@ include_dirs = ["rust", "projects", "/opt/work"]
 
 An empty list (the default) scans the entire scan root. Changes to `include_dirs` in the settings editor trigger an automatic rescan.
 
-### Include Non-Rust Projects
+### Include non-Rust projects
 
 To also show non-Rust git repositories in the project tree:
 
@@ -54,6 +110,41 @@ include_non_rust = true
 ```
 
 These show up with reduced details (no types, version, examples) but can still display disk usage, git info, and CI runs.
+
+### Navigation
+
+```toml
+[tui]
+navigation_keys = true
+edge_scroll = true
+```
+
+`navigation_keys` enables `hjkl` movement in non-text panes. `edge_scroll` moves focus to the adjacent pane when scrolling past the top or bottom of a list.
+
+### Appearance
+
+```toml
+[appearance]
+mode = "auto"
+light_theme = "Default Light"
+dark_theme = "Default Dark"
+focused_pane_tint = true
+```
+
+`mode` accepts `"auto"`, `"light"`, or `"dark"`. Custom themes can be added under the platform config directory:
+- **macOS**: `~/Library/Application Support/cargo-port/themes/`
+- **Linux**: `~/.config/cargo-port/themes/`
+
+### Diagnostics
+
+```toml
+[cpu]
+poll_ms = 1000
+green_max_percent = 60
+yellow_max_percent = 85
+```
+
+CPU and GPU diagnostics refresh in the background. GPU usage is shown when cargo-port can read it from the current platform; otherwise the GPU row reports unavailable.
 
 ### Lints
 
