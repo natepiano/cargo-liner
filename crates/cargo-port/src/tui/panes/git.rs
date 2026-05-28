@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -5,6 +7,7 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
+use tui_pane::ACTIVITY_SPINNER;
 use tui_pane::PaneFocusState;
 use tui_pane::PaneRule;
 use tui_pane::PaneSelectionState;
@@ -52,12 +55,13 @@ use crate::tui::pane::PaneRenderCtx;
 use crate::tui::panes;
 
 struct GitRenderCtx<'a> {
-    data:       &'a GitData,
-    fields:     &'a [DetailField],
-    pane:       &'a Viewport,
-    focus:      PaneFocusState,
-    styles:     &'a RenderStyles,
-    row_offset: usize,
+    data:              &'a GitData,
+    fields:            &'a [DetailField],
+    pane:              &'a Viewport,
+    focus:             PaneFocusState,
+    styles:            &'a RenderStyles,
+    row_offset:        usize,
+    animation_elapsed: Duration,
 }
 
 /// Which section a flat `pos()` index lives in, plus the offset within
@@ -293,7 +297,7 @@ fn append_pull_requests_section(
         return;
     }
 
-    let col_widths = pull_request_col_widths(&section.rows, area_width);
+    let col_widths = pull_request_col_widths(&section.rows, area_width, ctx.animation_elapsed);
     render_pull_request_header(accum.lines, &col_widths);
     let active = matches!(ctx.focus, PaneFocusState::Active);
     for (i, row) in section.rows.iter().enumerate() {
@@ -303,9 +307,12 @@ fn append_pull_requests_section(
             *accum.focused_output_line = start_y;
         }
         let selection = tui_pane::selection_state(ctx.pane, row_index, ctx.focus);
-        accum
-            .lines
-            .push(pull_request_row_line(row, &col_widths, selection));
+        accum.lines.push(pull_request_row_line(
+            row,
+            &col_widths,
+            selection,
+            ctx.animation_elapsed,
+        ));
         accum
             .row_spans
             .push(GitVisualRowSpan { start_y, height: 1 });
@@ -357,7 +364,11 @@ const PULL_REQUEST_STATUS_HEADER: &str = "Status";
 const PULL_REQUEST_BRANCH_HEADER: &str = "Branch";
 const PULL_REQUEST_TITLE_HEADER: &str = "Title";
 
-fn pull_request_col_widths(rows: &[PullRequestRow], area_width: u16) -> PullRequestColWidths {
+fn pull_request_col_widths(
+    rows: &[PullRequestRow],
+    area_width: u16,
+    animation_elapsed: Duration,
+) -> PullRequestColWidths {
     let number = rows
         .iter()
         .map(|row| format!("#{}", row.number).width())
@@ -366,7 +377,7 @@ fn pull_request_col_widths(rows: &[PullRequestRow], area_width: u16) -> PullRequ
         .max(PULL_REQUEST_NUMBER_HEADER.width());
     let status = rows
         .iter()
-        .map(|row| pull_request_state_text(row).width())
+        .map(|row| pull_request_state_text(row, animation_elapsed).width())
         .max()
         .unwrap_or(0)
         .max(PULL_REQUEST_STATUS_HEADER.width());
@@ -425,8 +436,9 @@ fn pull_request_row_line(
     row: &PullRequestRow,
     widths: &PullRequestColWidths,
     selection: PaneSelectionState,
+    animation_elapsed: Duration,
 ) -> Line<'static> {
-    let state = pull_request_state_text(row);
+    let state = pull_request_state_text(row, animation_elapsed);
     let text = format!(
         " {:<number$}  {:<status$}  {:<branch$}  {}",
         fit_text(&format!("#{}", row.number), widths.number),
@@ -441,9 +453,13 @@ fn pull_request_row_line(
     Line::from(Span::styled(text, style))
 }
 
-fn pull_request_state_text(row: &PullRequestRow) -> String {
+fn pull_request_state_text(row: &PullRequestRow, animation_elapsed: Duration) -> String {
     if row.is_polling {
-        format!("{}...", row.state_label)
+        format!(
+            "{} {}",
+            row.state_label,
+            ACTIVITY_SPINNER.frame_at(animation_elapsed)
+        )
     } else {
         row.state_label.to_string()
     }
@@ -990,6 +1006,7 @@ pub(super) fn render_git_pane_body(
         focus,
         styles,
         row_offset: description_rows,
+        animation_elapsed: ctx.animation_elapsed,
     };
     let layout = render_git_column_inner(frame, &git_ctx, area, about_layout.content_area);
     pane.viewport.set_scroll_offset(layout.scroll_offset);
@@ -1212,7 +1229,7 @@ mod tests {
             branch:      "natepiano:feat/open-prs".to_string(),
             base:        "main".to_string(),
         };
-        let widths = pull_request_col_widths(&[row], 80);
+        let widths = pull_request_col_widths(&[row], 80, Duration::ZERO);
         let mut lines = Vec::new();
 
         render_pull_request_header(&mut lines, &widths);
@@ -1233,9 +1250,14 @@ mod tests {
             branch:      "natepiano:feat/open-prs".to_string(),
             base:        "main".to_string(),
         };
-        let widths = pull_request_col_widths(std::slice::from_ref(&row), 46);
+        let widths = pull_request_col_widths(std::slice::from_ref(&row), 46, Duration::ZERO);
 
-        let line = pull_request_row_line(&row, &widths, PaneSelectionState::Unselected);
+        let line = pull_request_row_line(
+            &row,
+            &widths,
+            PaneSelectionState::Unselected,
+            Duration::ZERO,
+        );
         let text = line_text(&line);
 
         assert!(text.starts_with(" #1  ready"));
@@ -1253,11 +1275,16 @@ mod tests {
             branch:      "natepiano:feat/open-prs".to_string(),
             base:        "main".to_string(),
         };
-        let widths = pull_request_col_widths(std::slice::from_ref(&row), 80);
+        let widths = pull_request_col_widths(std::slice::from_ref(&row), 80, Duration::ZERO);
 
-        let line = pull_request_row_line(&row, &widths, PaneSelectionState::Unselected);
+        let line = pull_request_row_line(
+            &row,
+            &widths,
+            PaneSelectionState::Unselected,
+            Duration::ZERO,
+        );
 
-        assert!(line_text(&line).contains("checks..."));
+        assert!(line_text(&line).contains(ACTIVITY_SPINNER.frame_at(Duration::ZERO)));
     }
 
     #[test]

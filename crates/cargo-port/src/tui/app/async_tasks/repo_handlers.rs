@@ -416,18 +416,41 @@ impl App {
         let ProjectPrData::Loaded(info) = data else {
             return;
         };
+        let active = self.net.github.pr_check_poll_numbers(repo);
         let checking: HashSet<u32> = info
             .open
             .iter()
             .filter(|pull_request| pull_request.state == PullRequestState::ChecksFailing)
             .map(|pull_request| pull_request.number)
             .collect();
+        for pull_request in info.open.iter().filter(|pull_request| {
+            active.contains(&pull_request.number)
+                && pull_request.state != PullRequestState::ChecksFailing
+        }) {
+            self.toast_pull_request_checks_finished(repo, pull_request);
+        }
         self.net
             .github
             .retain_pr_check_polls_for_repo(repo, &checking);
         for number in checking {
             self.start_pull_request_check_poll(repo, number);
         }
+    }
+
+    fn toast_pull_request_checks_finished(
+        &mut self,
+        repo: &OwnerRepo,
+        pull_request: &PullRequestInfo,
+    ) {
+        self.framework.toasts.push_status(
+            "Pull request checks finished",
+            format!(
+                "{repo}: #{} {} is {}",
+                pull_request.number,
+                pull_request.title,
+                pull_request.state.label()
+            ),
+        );
     }
 
     fn start_pull_request_check_poll(&mut self, repo: &OwnerRepo, number: u32) {

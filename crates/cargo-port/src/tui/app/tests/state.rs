@@ -36,11 +36,19 @@ use crate::tui::panes;
 use crate::tui::terminal::CleanMsg;
 
 fn test_pull_request_info(number: u32, title: &str) -> PullRequestInfo {
+    test_pull_request_info_with_state(number, title, PullRequestState::Ready)
+}
+
+fn test_pull_request_info_with_state(
+    number: u32,
+    title: &str,
+    state: PullRequestState,
+) -> PullRequestInfo {
     PullRequestInfo {
         number,
         title: title.to_string(),
         url: format!("https://github.com/natepiano/cargo-port/pull/{number}"),
-        state: PullRequestState::Ready,
+        state,
         head: "feat/open-prs".to_string(),
         head_owner: Some("natepiano".to_string()),
         head_repo: Some("cargo-port".to_string()),
@@ -227,6 +235,42 @@ fn open_pull_request_count_does_not_change_project_list_label() {
         .resolved_root_labels(app.config.include_non_rust().includes_non_rust());
 
     assert_eq!(labels, vec!["cargo-port"]);
+}
+
+#[test]
+fn pull_request_checks_finished_pushes_toast() {
+    let project = make_project(Some("cargo-port"), "~/cargo-port");
+    let path = test_path("~/cargo-port");
+    let mut app = make_app(&[project]);
+    apply_git_info(
+        &mut app,
+        path.as_path(),
+        make_git_info(Some("https://github.com/natepiano/cargo-port")),
+    );
+    let repo = crate::ci::OwnerRepo::new("natepiano", "cargo-port");
+    app.net.github.insert_pr_check_poll(repo.clone(), 7);
+
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::PullRequests {
+            repo,
+            data: test_pr_data(vec![test_pull_request_info_with_state(
+                7,
+                "test: exercise PR check marker",
+                PullRequestState::Ready,
+            )]),
+        },
+    );
+
+    let toast = app
+        .framework
+        .toasts
+        .active_now()
+        .into_iter()
+        .find(|toast| toast.title() == "Pull request checks finished")
+        .expect("checks-finished toast should be visible");
+    assert!(toast.body().contains("#7 test: exercise PR check marker"));
+    assert!(toast.body().contains("is ready"));
 }
 
 #[test]
