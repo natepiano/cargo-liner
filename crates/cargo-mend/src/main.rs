@@ -47,8 +47,6 @@ use reporting::EXIT_CODE_WARNING;
 use reporting::ExecutionOutcome;
 use reporting::MendFailure;
 use reporting::OutputFormat;
-use reporting::TERM_DUMB_VALUE;
-use reporting::TERM_ENV;
 use selection::DisplayFilter;
 use selection::Selection;
 
@@ -277,11 +275,7 @@ fn color_mode() -> ColorMode {
         return ColorMode::Enabled;
     }
 
-    if env::var(TERM_ENV).is_ok_and(|term| term != TERM_DUMB_VALUE) {
-        ColorMode::Enabled
-    } else {
-        ColorMode::Disabled
-    }
+    ColorMode::Disabled
 }
 
 #[cfg(test)]
@@ -298,7 +292,6 @@ mod tests {
     use crate::reporting::CLICOLOR_ENV;
     use crate::reporting::CLICOLOR_FORCE_ENV;
     use crate::reporting::ColorMode;
-    use crate::reporting::TERM_ENV;
 
     struct EnvGuard {
         key:      &'static str,
@@ -349,12 +342,12 @@ mod tests {
     }
 
     #[test]
-    fn term_enables_color_when_terminal_detection_is_unavailable() {
+    fn term_does_not_enable_color_when_output_is_captured() {
         let _cargo_term_color = EnvGuard::remove(CARGO_TERM_COLOR_ENV);
         let _clicolor = EnvGuard::remove(CLICOLOR_ENV);
         let _clicolor_force = EnvGuard::remove(CLICOLOR_FORCE_ENV);
-        let _term = EnvGuard::set(TERM_ENV, "xterm-256color");
-        assert!(matches!(color_mode(), ColorMode::Enabled));
+        let _term = EnvGuard::set("TERM", "xterm-256color");
+        assert!(matches!(color_mode(), ColorMode::Disabled));
     }
 
     #[test]

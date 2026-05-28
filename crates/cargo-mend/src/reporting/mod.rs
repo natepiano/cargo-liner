@@ -12,8 +12,6 @@ pub(crate) use colors::CARGO_TERM_COLOR_NEVER;
 pub(crate) use colors::CLICOLOR_DISABLED_VALUE;
 pub(crate) use colors::CLICOLOR_ENV;
 pub(crate) use colors::CLICOLOR_FORCE_ENV;
-pub(crate) use colors::TERM_DUMB_VALUE;
-pub(crate) use colors::TERM_ENV;
 pub(crate) use diagnostics::BuildOutcome;
 pub(crate) use diagnostics::CompilerWarningFacts;
 pub(crate) use diagnostics::Finding;

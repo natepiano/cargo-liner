@@ -10,10 +10,8 @@ pub(super) const ANSI_DIM: &str = "2";
 pub(crate) const CARGO_TERM_COLOR_ALWAYS: &str = "always";
 pub(crate) const CARGO_TERM_COLOR_NEVER: &str = "never";
 pub(crate) const CLICOLOR_DISABLED_VALUE: &str = "0";
-pub(crate) const TERM_DUMB_VALUE: &str = "dumb";
 
 // color/terminal environment variables
 pub(crate) const CARGO_TERM_COLOR_ENV: &str = "CARGO_TERM_COLOR";
 pub(crate) const CLICOLOR_ENV: &str = "CLICOLOR";
 pub(crate) const CLICOLOR_FORCE_ENV: &str = "CLICOLOR_FORCE";
-pub(crate) const TERM_ENV: &str = "TERM";
