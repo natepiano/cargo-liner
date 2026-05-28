@@ -212,6 +212,8 @@ impl Github {
             .collect()
     }
 
+    pub fn has_pr_check_polls(&self) -> bool { !self.pr_check_polls.is_empty() }
+
     pub fn retain_pr_check_polls_for_repo(
         &mut self,
         repo: &OwnerRepo,

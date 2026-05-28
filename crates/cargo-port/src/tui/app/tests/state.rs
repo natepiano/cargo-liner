@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use cargo_metadata::PackageId;
 use cargo_metadata::TargetKind;
@@ -271,6 +272,21 @@ fn pull_request_checks_finished_pushes_toast() {
         .expect("checks-finished toast should be visible");
     assert!(toast.body().contains("#7 test: exercise PR check marker"));
     assert!(toast.body().contains("is ready"));
+}
+
+#[test]
+fn active_pull_request_check_poll_keeps_animation_tick_live() {
+    let project = make_project(Some("cargo-port"), "~/cargo-port");
+    let mut app = make_app(&[project]);
+    app.scan.state.phase = ScanPhase::Complete;
+
+    assert_eq!(app.animation_timeout(), Duration::from_secs(1));
+
+    app.net
+        .github
+        .insert_pr_check_poll(crate::ci::OwnerRepo::new("natepiano", "cargo-port"), 7);
+
+    assert_eq!(app.animation_timeout(), Duration::from_millis(80));
 }
 
 #[test]
