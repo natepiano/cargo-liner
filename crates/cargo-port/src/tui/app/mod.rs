@@ -493,6 +493,7 @@ impl App {
         self.scan.needs_animation()
             || self.project_list.has_running_lints()
             || self.inflight.needs_animation()
+            || self.net.github.has_pr_check_polls()
             || !self.framework.toasts.active_now().is_empty()
     }
 

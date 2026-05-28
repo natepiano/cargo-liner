@@ -14,6 +14,7 @@ use tui_pane::PaneSelectionState;
 use tui_pane::PaneTitleCount;
 use tui_pane::RuleTitle;
 use tui_pane::Viewport;
+use tui_pane::accent_color;
 use tui_pane::column_header_color;
 use tui_pane::error_color;
 use tui_pane::inactive_border_color;
@@ -438,19 +439,51 @@ fn pull_request_row_line(
     selection: PaneSelectionState,
     animation_elapsed: Duration,
 ) -> Line<'static> {
-    let state = pull_request_state_text(row, animation_elapsed);
-    let text = format!(
-        " {:<number$}  {:<status$}  {:<branch$}  {}",
-        fit_text(&format!("#{}", row.number), widths.number),
-        fit_text(&state, widths.status),
-        fit_text(&row.branch, widths.branch),
-        fit_text(&row.title, widths.title),
-        number = widths.number,
-        status = widths.status,
-        branch = widths.branch,
-    );
     let style = selection.patch(Style::default().fg(inactive_title_color()));
-    Line::from(Span::styled(text, style))
+    if !row.is_polling {
+        let state = pull_request_state_text(row, animation_elapsed);
+        let text = format!(
+            " {:<number$}  {:<status$}  {:<branch$}  {}",
+            fit_text(&format!("#{}", row.number), widths.number),
+            fit_text(&state, widths.status),
+            fit_text(&row.branch, widths.branch),
+            fit_text(&row.title, widths.title),
+            number = widths.number,
+            status = widths.status,
+            branch = widths.branch,
+        );
+        return Line::from(Span::styled(text, style));
+    }
+
+    let spinner = ACTIVITY_SPINNER.frame_at(animation_elapsed);
+    let label_width = widths.status.saturating_sub(spinner.width() + 1);
+    let state_label = fit_text(row.state_label, label_width);
+    let state_text = format!("{state_label} {spinner}");
+    let state_padding = " ".repeat(widths.status.saturating_sub(state_text.width()));
+    Line::from(vec![
+        Span::styled(
+            format!(
+                " {:<number$}  {} ",
+                fit_text(&format!("#{}", row.number), widths.number),
+                state_label,
+                number = widths.number,
+            ),
+            style,
+        ),
+        Span::styled(
+            spinner.to_string(),
+            selection.patch(Style::default().fg(accent_color())),
+        ),
+        Span::styled(
+            format!(
+                "{state_padding}  {:<branch$}  {}",
+                fit_text(&row.branch, widths.branch),
+                fit_text(&row.title, widths.title),
+                branch = widths.branch,
+            ),
+            style,
+        ),
+    ])
 }
 
 fn pull_request_state_text(row: &PullRequestRow, animation_elapsed: Duration) -> String {
@@ -1285,6 +1318,10 @@ mod tests {
         );
 
         assert!(line_text(&line).contains(ACTIVITY_SPINNER.frame_at(Duration::ZERO)));
+        assert!(line.spans.iter().any(|span| {
+            span.content.as_ref() == ACTIVITY_SPINNER.frame_at(Duration::ZERO)
+                && span.style.fg == Some(accent_color())
+        }));
     }
 
     #[test]
