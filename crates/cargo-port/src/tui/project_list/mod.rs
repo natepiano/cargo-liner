@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::fmt::Write as _;
 use std::ops::Index;
 use std::path::Path;
 
@@ -206,15 +205,6 @@ impl ProjectList {
         for (label, entry) in labels.iter_mut().zip(self.roots.values()) {
             if let Some(suffix) = entry.item.worktree_badge_suffix() {
                 label.push_str(&suffix);
-            }
-            if let Some(count) = entry
-                .git_repo
-                .as_ref()
-                .and_then(|repo| repo.pr_data.info())
-                .map(|info| info.open.len())
-                .filter(|count| *count > 0)
-            {
-                let _ = write!(label, " PR{count}");
             }
         }
 

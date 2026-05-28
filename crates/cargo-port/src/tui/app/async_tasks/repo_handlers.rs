@@ -18,6 +18,7 @@ use crate::project::LocalGitState;
 use crate::project::ProjectPrData;
 use crate::project::ProjectPrInfo;
 use crate::project::ProjectPrUnavailable;
+use crate::project::PullRequestGoneReason;
 use crate::project::PullRequestInfo;
 use crate::project::PullRequestState;
 use crate::project::PullRequestUnavailableReason;
@@ -385,10 +386,11 @@ impl App {
 
     pub(super) fn handle_pull_requests(&mut self, repo: &OwnerRepo, data: &ProjectPrData) {
         let prior = self.project_list.pr_info_for_repo(repo).cloned();
+        let data = preserve_live_pr_snapshot_while_loading(data, prior.as_ref());
         let selected_matches = self.selected_repo_matches(repo);
-        self.maybe_toast_deleted_pull_requests(repo, prior.as_ref(), data);
-        self.project_list.replace_pr_data_for_repo(repo, data);
-        self.sync_pull_request_check_polls(repo, data);
+        self.maybe_toast_deleted_pull_requests(repo, prior.as_ref(), &data);
+        self.project_list.replace_pr_data_for_repo(repo, &data);
+        self.sync_pull_request_check_polls(repo, &data);
         if selected_matches {
             self.scan.bump_generation();
         }
@@ -459,7 +461,7 @@ impl App {
     }
 
     fn maybe_toast_deleted_pull_requests(
-        &mut self,
+        &self,
         repo: &OwnerRepo,
         prior: Option<&ProjectPrInfo>,
         data: &ProjectPrData,
@@ -468,19 +470,37 @@ impl App {
         if deleted.is_empty() {
             return;
         }
-        let title = if deleted.len() == 1 {
-            "Pull request deleted".to_string()
-        } else {
-            format!("{} pull requests deleted", deleted.len())
-        };
-        let body = format!(
-            "{repo}: {}",
-            deleted
-                .iter()
-                .map(|pull_request| format!("#{} {}", pull_request.number, pull_request.title))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+        self.spawn_pull_request_disappearance_classification(repo.clone(), deleted);
+    }
+
+    fn spawn_pull_request_disappearance_classification(
+        &self,
+        repo: OwnerRepo,
+        pull_requests: Vec<PullRequestInfo>,
+    ) {
+        let tx = self.background.background_sender();
+        let client = self.net.http_client();
+        thread::spawn(move || {
+            for pull_request in pull_requests {
+                let (reason, signal) =
+                    client.fetch_pull_request_gone_reason(repo.clone(), pull_request.number);
+                scan::emit_service_signal(&tx, signal);
+                let _ = tx.send(BackgroundMsg::PullRequestDisappeared {
+                    repo: repo.clone(),
+                    pull_request,
+                    reason: reason.unwrap_or(PullRequestGoneReason::Unknown),
+                });
+            }
+        });
+    }
+
+    pub(super) fn handle_pull_request_disappeared(
+        &mut self,
+        repo: &OwnerRepo,
+        pull_request: &PullRequestInfo,
+        reason: &PullRequestGoneReason,
+    ) {
+        let (title, body) = pull_request_disappeared_toast(repo, pull_request, reason);
         self.framework.toasts.push_status(title, body);
     }
 
@@ -588,6 +608,42 @@ impl App {
             .iter()
             .find(|entry| entry.item.at_path(path).is_some())
             .and_then(|entry| entry.item.git_directory())
+    }
+}
+
+fn preserve_live_pr_snapshot_while_loading(
+    data: &ProjectPrData,
+    prior: Option<&ProjectPrInfo>,
+) -> ProjectPrData {
+    match (data, prior) {
+        (ProjectPrData::Loading(None), Some(prior)) => ProjectPrData::Loading(Some(prior.clone())),
+        _ => data.clone(),
+    }
+}
+
+fn pull_request_disappeared_toast(
+    repo: &OwnerRepo,
+    pull_request: &PullRequestInfo,
+    reason: &PullRequestGoneReason,
+) -> (String, String) {
+    let prefix = format!(
+        "#{number} {title}",
+        number = pull_request.number,
+        title = pull_request.title
+    );
+    match reason {
+        PullRequestGoneReason::Merged { base } => (
+            "Pull request merged".to_string(),
+            format!("{repo}: {prefix} merged into {base}"),
+        ),
+        PullRequestGoneReason::Closed => (
+            "Pull request closed".to_string(),
+            format!("{repo}: {prefix} closed"),
+        ),
+        PullRequestGoneReason::Missing | PullRequestGoneReason::Unknown => (
+            "Pull request no longer open".to_string(),
+            format!("{repo}: {prefix} is no longer open"),
+        ),
     }
 }
 

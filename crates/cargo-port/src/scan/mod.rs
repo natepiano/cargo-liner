@@ -60,6 +60,8 @@ use crate::lint::CacheUsage;
 use crate::lint::LintStatus;
 use crate::project::LanguageStats;
 use crate::project::ProjectPrData;
+use crate::project::PullRequestGoneReason;
+use crate::project::PullRequestInfo;
 
 /// Messages sent from background threads to the main event loop.
 pub(crate) enum BackgroundMsg {
@@ -132,6 +134,13 @@ pub(crate) enum BackgroundMsg {
     },
     /// A background poll for one PR's `checks` state has stopped.
     PullRequestCheckPollStopped { repo: OwnerRepo, number: u32 },
+    /// A previously-open PR disappeared from the open-PR list and was
+    /// classified by querying that PR number directly.
+    PullRequestDisappeared {
+        repo:         OwnerRepo,
+        pull_request: PullRequestInfo,
+        reason:       PullRequestGoneReason,
+    },
     /// Complete project tree from the streaming scan, plus disk entry
     /// paths for background disk usage computation.
     ScanResult {
@@ -277,6 +286,7 @@ impl BackgroundMsg {
             | Self::RepoFetchComplete { .. }
             | Self::PullRequests { .. }
             | Self::PullRequestCheckPollStopped { .. }
+            | Self::PullRequestDisappeared { .. }
             | Self::CratesIoFetchQueued { .. }
             | Self::CratesIoFetchComplete { .. }
             // Live lint statuses resolve the lint-owning project before

@@ -66,6 +66,7 @@ pub(crate) use info::ProjectPrData;
 pub(crate) use info::ProjectPrInfo;
 pub(crate) use info::ProjectPrUnavailable;
 pub(crate) use info::PullRequestCompleteness;
+pub(crate) use info::PullRequestGoneReason;
 pub(crate) use info::PullRequestInfo;
 pub(crate) use info::PullRequestState;
 pub(crate) use info::PullRequestUnavailableReason;
