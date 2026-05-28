@@ -208,6 +208,9 @@ impl App {
             BackgroundMsg::LanguageStatsBatch { entries } => {
                 self.project_list.handle_language_stats_batch(entries);
             },
+            BackgroundMsg::SccacheStats { request_id, result } => {
+                self.overlays.sccache_pane.apply_result(request_id, result);
+            },
             BackgroundMsg::CargoMetadata {
                 workspace_root,
                 generation,

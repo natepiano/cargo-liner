@@ -62,6 +62,7 @@ use crate::project::LanguageStats;
 use crate::project::ProjectPrData;
 use crate::project::PullRequestGoneReason;
 use crate::project::PullRequestInfo;
+use crate::sccache::StatsResult as SccacheStatsResult;
 
 /// Messages sent from background threads to the main event loop.
 pub(crate) enum BackgroundMsg {
@@ -203,6 +204,11 @@ pub(crate) enum BackgroundMsg {
     LanguageStatsBatch {
         entries: Vec<(AbsolutePath, LanguageStats)>,
     },
+    /// Result of an on-demand `sccache --show-stats` request.
+    SccacheStats {
+        request_id: u64,
+        result:     SccacheStatsResult,
+    },
     /// `cargo metadata --no-deps --offline` result for one workspace root.
     /// The `fingerprint` was captured *before* the spawn; callers recompute
     /// at merge time and discard the result on mismatch. `generation`
@@ -281,6 +287,8 @@ impl BackgroundMsg {
             | Self::DiskUsageBatch { .. }
             // Language stats live in `RustInfo`, not in the detail set.
             | Self::LanguageStatsBatch { .. }
+            // On-demand tooling overlay data does not affect project detail.
+            | Self::SccacheStats { .. }
             // Fetch lifecycle is reflected via toasts, not detail data.
             | Self::RepoFetchQueued { .. }
             | Self::RepoFetchComplete { .. }

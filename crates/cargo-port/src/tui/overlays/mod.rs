@@ -23,6 +23,7 @@ use tui_pane::FocusedPane;
 pub(super) use tui_pane::PopupFrame;
 
 use super::integration::AppPaneId;
+use super::sccache::SccachePane;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum FinderMode {
@@ -31,13 +32,22 @@ pub(crate) enum FinderMode {
     Visible,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum SccacheMode {
+    #[default]
+    Hidden,
+    Visible,
+}
+
 #[derive(Default)]
 pub(crate) struct Overlays {
-    finder:          FinderMode,
-    finder_return:   Option<FocusedPane<AppPaneId>>,
-    inline_error:    Option<String>,
-    status_flash:    Option<(String, Instant)>,
-    pub finder_pane: FinderPane,
+    finder:           FinderMode,
+    sccache:          SccacheMode,
+    finder_return:    Option<FocusedPane<AppPaneId>>,
+    inline_error:     Option<String>,
+    status_flash:     Option<(String, Instant)>,
+    pub finder_pane:  FinderPane,
+    pub sccache_pane: SccachePane,
 }
 
 impl Overlays {
@@ -50,6 +60,14 @@ impl Overlays {
     pub(crate) const fn open_finder(&mut self) { self.finder = FinderMode::Visible; }
 
     pub(crate) const fn close_finder(&mut self) { self.finder = FinderMode::Hidden; }
+
+    pub(crate) const fn is_sccache_open(&self) -> bool {
+        matches!(self.sccache, SccacheMode::Visible)
+    }
+
+    pub(crate) const fn open_sccache(&mut self) { self.sccache = SccacheMode::Visible; }
+
+    pub(crate) const fn close_sccache(&mut self) { self.sccache = SccacheMode::Hidden; }
 
     pub(crate) const fn set_finder_return(&mut self, focus: FocusedPane<AppPaneId>) {
         self.finder_return = Some(focus);

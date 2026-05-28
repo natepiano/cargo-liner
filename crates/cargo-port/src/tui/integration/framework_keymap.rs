@@ -67,6 +67,7 @@ use crate::tui::panes;
 use crate::tui::panes::DetailField;
 use crate::tui::panes::GitRow;
 use crate::tui::panes::PaneId;
+use crate::tui::sccache;
 
 /// Stable identifier for every app-side pane the framework keys its
 /// per-pane registries on.
@@ -133,7 +134,7 @@ impl AppPaneId {
             PaneId::CiRuns => Some(Self::CiRuns),
             PaneId::Output => Some(Self::Output),
             PaneId::Finder => Some(Self::Finder),
-            PaneId::Settings | PaneId::Keymap | PaneId::Toasts => None,
+            PaneId::Settings | PaneId::Keymap | PaneId::Toasts | PaneId::Sccache => None,
         }
     }
 }
@@ -181,6 +182,7 @@ tui_pane::action_enum! {
         OpenTerminal => ("open_terminal", "terminal", "Open terminal");
         Rescan       => ("rescan",        "rescan",   "Rescan projects");
         Clean        => ("clean",         "clean",    "Clean project");
+        SccacheStats => ("sccache_stats", "sccache",  "Show sccache stats");
     }
 }
 
@@ -305,6 +307,7 @@ impl Globals<App> for AppGlobalAction {
             't'                  => Self::OpenTerminal,
             KeyBind::ctrl('r')   => Self::Rescan,
             'c'                  => Self::Clean,
+            'S'                  => Self::SccacheStats,
         }
     }
 
@@ -319,6 +322,7 @@ fn dispatch_app_global(action: AppGlobalAction, app: &mut App) {
         AppGlobalAction::OpenTerminal => input::open_terminal(app),
         AppGlobalAction::Rescan => app.rescan(),
         AppGlobalAction::Clean => panes::request_clean(app),
+        AppGlobalAction::SccacheStats => sccache::open_sccache_stats_overlay(app),
     }
 }
 
@@ -905,6 +909,16 @@ mod tests {
         assert_eq!(
             defaults.action_for(&tui_pane::KeyBind::ctrl(tui_pane::KeyBind::shift('c'))),
             None,
+        );
+    }
+
+    #[test]
+    fn app_global_sccache_stats_defaults_to_shift_s() {
+        let defaults = AppGlobalAction::defaults().into_scope_map();
+
+        assert_eq!(
+            defaults.action_for(&tui_pane::KeyBind::from('S')),
+            Some(AppGlobalAction::SccacheStats),
         );
     }
 }

@@ -202,9 +202,9 @@ fn row_line<'a>(row: &GlobalShortcutRow) -> Line<'a> {
     Line::from(vec![
         Span::styled(
             format!("{SECTION_ITEM_INDENT}  {padded_desc}"),
-            Style::default().fg(text_default()),
+            Style::default().fg(label_color()),
         ),
-        Span::styled(key_display, Style::default().fg(label_color())),
+        Span::styled(key_display, Style::default().fg(text_default())),
     ])
 }
 

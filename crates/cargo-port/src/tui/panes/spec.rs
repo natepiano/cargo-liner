@@ -17,6 +17,7 @@ pub enum PaneId {
     Settings,
     Finder,
     Keymap,
+    Sccache,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,7 +43,9 @@ pub const fn behavior(id: PaneId) -> PaneBehavior {
         PaneId::CiRuns => PaneBehavior::CiRuns,
         PaneId::Output => PaneBehavior::Output,
         PaneId::Toasts => PaneBehavior::Toasts,
-        PaneId::Settings | PaneId::Finder | PaneId::Keymap => PaneBehavior::Overlay,
+        PaneId::Settings | PaneId::Finder | PaneId::Keymap | PaneId::Sccache => {
+            PaneBehavior::Overlay
+        },
     }
 }
 
@@ -62,7 +65,7 @@ mod tests {
     //! `size_spec` mappings.
     use super::*;
 
-    fn all_pane_ids() -> [PaneId; 13] {
+    fn all_pane_ids() -> [PaneId; 14] {
         [
             PaneId::ProjectList,
             PaneId::Package,
@@ -77,6 +80,7 @@ mod tests {
             PaneId::Settings,
             PaneId::Finder,
             PaneId::Keymap,
+            PaneId::Sccache,
         ]
     }
 
@@ -95,6 +99,7 @@ mod tests {
         assert_eq!(behavior(PaneId::Settings), PaneBehavior::Overlay);
         assert_eq!(behavior(PaneId::Finder), PaneBehavior::Overlay);
         assert_eq!(behavior(PaneId::Keymap), PaneBehavior::Overlay);
+        assert_eq!(behavior(PaneId::Sccache), PaneBehavior::Overlay);
     }
 
     #[test]

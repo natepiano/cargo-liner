@@ -287,7 +287,7 @@ where
             Line::from(vec![
                 Span::styled(
                     format!("{SECTION_ITEM_INDENT}  {padded_desc}"),
-                    selection.patch(Style::default().fg(text_default())),
+                    selection.patch(Style::default().fg(label_color())),
                 ),
                 Span::styled(
                     key_text,
@@ -298,7 +298,7 @@ where
             Line::from(vec![
                 Span::styled(
                     format!("{SECTION_ITEM_INDENT}▸ {padded_desc}"),
-                    selection.patch(Style::default().fg(text_default())),
+                    selection.patch(Style::default().fg(label_color())),
                 ),
                 Span::styled(
                     key_text,
@@ -307,7 +307,7 @@ where
                             .fg(title_color())
                             .add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(label_color())
+                        Style::default().fg(text_default())
                     }),
                 ),
             ])
@@ -315,9 +315,9 @@ where
             Line::from(vec![
                 Span::styled(
                     format!("{SECTION_ITEM_INDENT}  {padded_desc}"),
-                    Style::default().fg(text_default()),
+                    Style::default().fg(label_color()),
                 ),
-                Span::styled(key_text, Style::default().fg(label_color())),
+                Span::styled(key_text, Style::default().fg(text_default())),
             ])
         };
 

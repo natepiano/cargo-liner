@@ -416,7 +416,8 @@ fn active_detail_pane(app: &mut App) -> &mut Viewport {
         | PaneId::Toasts
         | PaneId::Settings
         | PaneId::Finder
-        | PaneId::Keymap => &mut app.panes.package.viewport,
+        | PaneId::Keymap
+        | PaneId::Sccache => &mut app.panes.package.viewport,
     }
 }
 
@@ -436,7 +437,8 @@ fn active_detail_viewport(app: &App) -> &Viewport {
         | PaneId::Toasts
         | PaneId::Settings
         | PaneId::Finder
-        | PaneId::Keymap => &app.panes.package.viewport,
+        | PaneId::Keymap
+        | PaneId::Sccache => &app.panes.package.viewport,
     }
 }
 

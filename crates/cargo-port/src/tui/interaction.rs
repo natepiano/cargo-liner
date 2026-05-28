@@ -99,6 +99,13 @@ impl InputContext for App {
     }
 
     fn app_modal_overlay_hit(&self, pos: Position) -> ModalHit<HoverTarget> {
+        if self.overlays.is_sccache_open() {
+            return self
+                .overlays
+                .sccache_pane
+                .hit_test_at(pos)
+                .map_or(ModalHit::MissedRow, ModalHit::Hit);
+        }
         if !self.overlays.is_finder_open() {
             return ModalHit::Closed;
         }
@@ -147,6 +154,7 @@ pub(super) const fn set_pane_pos(app: &mut App, id: PaneId, row: usize) {
         PaneId::Toasts => app.framework.toasts.viewport.set_pos(row),
         PaneId::Keymap => app.framework.keymap_pane.viewport_mut().set_pos(row),
         PaneId::Settings => app.framework.settings_pane.viewport_mut().set_pos(row),
+        PaneId::Sccache => app.overlays.sccache_pane.viewport_mut().set_pos(row),
         _ => {
             if let Some(viewport) = viewport_mut_for(app, id) {
                 viewport.set_pos(row);
@@ -165,6 +173,7 @@ pub(super) const fn viewport_mut_for(app: &mut App, id: PaneId) -> Option<&mut V
         PaneId::Package => &mut app.panes.package.viewport,
         PaneId::Git => &mut app.panes.git.viewport,
         PaneId::Finder => &mut app.overlays.finder_pane.viewport,
+        PaneId::Sccache => &mut app.overlays.sccache_pane.viewport,
         PaneId::Output => &mut app.panes.output.viewport,
         PaneId::Targets => &mut app.panes.targets.viewport,
         PaneId::ProjectList => &mut app.panes.project_list.viewport,
@@ -178,6 +187,7 @@ const fn set_hovered(app: &mut App, pane: PaneId, row: Option<usize>) {
         PaneId::Toasts => app.framework.toasts.viewport.set_hovered(row),
         PaneId::Keymap => app.framework.keymap_pane.viewport_mut().set_hovered(row),
         PaneId::Settings => app.framework.settings_pane.viewport_mut().set_hovered(row),
+        PaneId::Sccache => app.overlays.sccache_pane.viewport_mut().set_hovered(row),
         _ => {
             if let Some(viewport) = viewport_mut_for(app, pane) {
                 viewport.set_hovered(row);
@@ -192,6 +202,7 @@ const fn set_hovered(app: &mut App, pane: PaneId, row: Option<usize>) {
 pub(super) fn apply_hovered_pane_row(app: &mut App) {
     app.framework.clear_hover();
     app.overlays.finder_pane.viewport.set_hovered(None);
+    app.overlays.sccache_pane.viewport.set_hovered(None);
     app.panes.output.viewport.set_hovered(None);
     tui_pane::clear_all_hover(app);
     if let Some(hovered) = app.panes.hovered_row() {

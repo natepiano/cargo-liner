@@ -12,6 +12,7 @@ mod http;
 mod lint;
 mod project;
 mod scan;
+mod sccache;
 #[cfg(test)]
 mod test_support;
 mod themes;

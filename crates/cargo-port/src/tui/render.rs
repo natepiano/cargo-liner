@@ -48,6 +48,7 @@ use super::pane::PaneRenderCtx;
 use super::panes;
 use super::panes::EmptyDescriptionBehavior;
 use super::panes::PaneId;
+use super::sccache;
 use super::settings;
 use crate::ci::CiStatus;
 use crate::constants::TARGET_DIR;
@@ -190,6 +191,9 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     }
     if app.overlays.is_finder_open() {
         dispatch_finder_render(app, frame);
+    }
+    if app.overlays.is_sccache_open() {
+        sccache::render_sccache_popup(frame, app);
     }
     if let Some(action) = app.confirm() {
         let body = confirm_action_body(app, action);
@@ -471,7 +475,11 @@ fn sync_pane_focus(app: &mut App) {
             PaneId::Output => app.panes.output.focus = focus,
             PaneId::Lints => app.lint.focus = focus,
             PaneId::CiRuns => app.ci.focus = focus,
-            PaneId::Toasts | PaneId::Settings | PaneId::Finder | PaneId::Keymap => {},
+            PaneId::Toasts
+            | PaneId::Settings
+            | PaneId::Finder
+            | PaneId::Keymap
+            | PaneId::Sccache => {},
         }
     }
 }

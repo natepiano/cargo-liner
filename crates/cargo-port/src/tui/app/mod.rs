@@ -252,7 +252,7 @@ impl PaneRegistry for RenderRegistry<'_> {
             PaneId::Lints => self.lint,
             PaneId::CiRuns => self.ci,
             PaneId::Settings => self.settings_pane,
-            PaneId::Keymap | PaneId::Toasts | PaneId::Finder => return None,
+            PaneId::Keymap | PaneId::Toasts | PaneId::Finder | PaneId::Sccache => return None,
         };
         Some(pane)
     }

@@ -163,9 +163,12 @@ fn resolve_pane_area(rows: &[Rect], cols: &[Rect], pane: PaneId, bottom_row: Bot
         PaneId::Lints => rows[2].intersection(project_col),
         PaneId::CiRuns => rows[2].intersection(right_col),
         PaneId::Output if matches!(bottom_row, BottomRow::Output) => rows[2],
-        PaneId::Output | PaneId::Toasts | PaneId::Settings | PaneId::Finder | PaneId::Keymap => {
-            Rect::ZERO
-        },
+        PaneId::Output
+        | PaneId::Toasts
+        | PaneId::Settings
+        | PaneId::Finder
+        | PaneId::Keymap
+        | PaneId::Sccache => Rect::ZERO,
     }
 }
 

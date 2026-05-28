@@ -20,6 +20,7 @@ prev_pane             = "shift-tab"
 quit                  = "q"
 rescan                = "ctrl-r"
 restart               = "R"
+sccache_stats         = "S"
 
 [navigation]
 down           = "down"

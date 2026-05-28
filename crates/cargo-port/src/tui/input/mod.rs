@@ -50,6 +50,7 @@ use super::keymap_ui;
 use super::panes;
 use super::panes::PaneBehavior;
 use super::panes::PaneId;
+use super::sccache;
 use super::settings;
 use super::terminal;
 
@@ -138,6 +139,10 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
         return;
     }
     if dispatch_finder_overlay(app, &bind) {
+        app.pending_nav_chord.clear();
+        return;
+    }
+    if sccache::dispatch_sccache_overlay(app, &bind) {
         app.pending_nav_chord.clear();
         return;
     }
@@ -506,6 +511,10 @@ const fn scroll_modal_overlay_at(app: &mut App, pos: Position, up: bool) -> bool
         scroll_viewport_if_contains(&mut app.overlays.finder_pane.viewport, pos, up);
         return true;
     }
+    if app.overlays.is_sccache_open() {
+        scroll_viewport_if_contains(app.overlays.sccache_pane.viewport_mut(), pos, up);
+        return true;
+    }
 
     match app.framework.overlay() {
         Some(FrameworkOverlayId::Settings) => {
@@ -554,6 +563,7 @@ const fn pane_label(pane: PaneId) -> &'static str {
         PaneId::Settings => "settings",
         PaneId::Finder => "finder",
         PaneId::Keymap => "keymap",
+        PaneId::Sccache => "sccache",
     }
 }
 
@@ -568,7 +578,10 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
         return;
     }
 
-    if app.framework.overlay().is_some() || app.overlays.is_finder_open() {
+    if app.framework.overlay().is_some()
+        || app.overlays.is_finder_open()
+        || app.overlays.is_sccache_open()
+    {
         return;
     }
 
