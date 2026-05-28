@@ -189,7 +189,7 @@ fn edge_scroll_probe(
 
 /// Current cursor row for the focused pane's list, or `None` for panes
 /// that do not take part in edge-scroll focus advance (text input,
-/// static output, and framework panes).
+/// static output, and non-list framework panes).
 fn list_cursor(focused: FocusedPane<AppPaneId>, app: &App) -> Option<usize> {
     match focused {
         FocusedPane::App(AppPaneId::ProjectList) => Some(app.project_list.cursor()),
@@ -199,8 +199,12 @@ fn list_cursor(focused: FocusedPane<AppPaneId>, app: &App) -> Option<usize> {
         ) => Some(active_detail_viewport(app).pos()),
         FocusedPane::App(AppPaneId::Lints) => Some(app.lint.viewport.pos()),
         FocusedPane::App(AppPaneId::CiRuns) => Some(app.ci.viewport.pos()),
-        FocusedPane::App(AppPaneId::Output | AppPaneId::Finder)
-        | FocusedPane::Framework(FrameworkFocusId::Toasts) => None,
+        FocusedPane::Framework(FrameworkFocusId::Toasts) => app
+            .framework
+            .toasts
+            .has_active()
+            .then_some(app.framework.toasts.viewport.pos()),
+        FocusedPane::App(AppPaneId::Output | AppPaneId::Finder) => None,
     }
 }
 
@@ -359,6 +363,8 @@ fn navigate_ci_runs(app: &mut App, action: NavigationAction) {
 }
 
 fn navigate_toasts(app: &mut App, action: NavigationAction) {
+    let active_count = app.framework.toasts.active_now().len();
+    app.framework.toasts.viewport.set_len(active_count);
     match action {
         NavigationAction::Up | NavigationAction::Left => app.framework.toasts.viewport.up(),
         NavigationAction::Down | NavigationAction::Right => app.framework.toasts.viewport.down(),
@@ -368,7 +374,7 @@ fn navigate_toasts(app: &mut App, action: NavigationAction) {
         NavigationAction::HalfPageUp => app.framework.toasts.viewport.half_page_up(),
         NavigationAction::HalfPageDown => app.framework.toasts.viewport.half_page_down(),
         NavigationAction::End => {
-            let last_index = app.framework.toasts.active_now().len().saturating_sub(1);
+            let last_index = active_count.saturating_sub(1);
             app.framework.toasts.viewport.set_pos(last_index);
         },
     }

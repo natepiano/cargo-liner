@@ -17,9 +17,9 @@ pub(super) const PULL_REQUEST_MIN_TITLE_WIDTH: usize = 8;
 
 // Row prefix strings — single source of truth for width calc and render.
 
-pub(super) const PREFIX_ROOT_EXPANDED: &str = "▼";
-pub const PREFIX_ROOT_COLLAPSED: &str = "▶";
-pub const PREFIX_ROOT_LEAF: &str = " ";
+pub(super) const PREFIX_ROOT_EXPANDED: &str = "▼ ";
+pub const PREFIX_ROOT_COLLAPSED: &str = "▶ ";
+pub const PREFIX_ROOT_LEAF: &str = "  ";
 pub(super) const PREFIX_MEMBER_INLINE: &str = "   ";
 pub(super) const PREFIX_MEMBER_NAMED: &str = "       ";
 pub(super) const PREFIX_MEMBER_VENDORED_INLINE: &str = "       ";

@@ -20,6 +20,7 @@ use ratatui::layout::Position;
 use tempfile::TempDir;
 use tui_pane::AppContext;
 use tui_pane::FocusedPane;
+use tui_pane::FrameworkFocusId;
 use tui_pane::GlobalAction as FrameworkGlobalAction;
 use tui_pane::PaneFocusState;
 use tui_pane::PaneSelectionState;
@@ -1119,6 +1120,38 @@ fn edge_scroll_down_past_bottom_advances_to_next_pane() {
         app.focused_pane_id(),
         PaneId::Package,
         "Down at the bottom row should roll focus to the next pane in tab order",
+    );
+}
+
+#[test]
+fn edge_scroll_down_past_last_toast_advances_to_next_pane() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let project_dir = tmp.path().join("demo");
+    std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+
+    let mut app = make_app(&[make_package("demo", &project_dir)]);
+    app.config.current_mut().tui.edge_scroll = EdgeScroll::AdvancesPane;
+    let _ = app
+        .framework
+        .toasts
+        .push_persistent("First", "", ToastStyle::Normal, None, 1);
+    let _ = app
+        .framework
+        .toasts
+        .push_persistent("Second", "", ToastStyle::Normal, None, 1);
+    app.set_focus_to_pane(PaneId::Toasts);
+    app.framework.toasts.reset_to_last();
+
+    panes::dispatch_navigation_action(
+        NavigationAction::Down,
+        FocusedPane::Framework(FrameworkFocusId::Toasts),
+        &mut app,
+    );
+
+    assert_eq!(
+        app.focused_pane_id(),
+        PaneId::ProjectList,
+        "Down at the last toast should roll focus to the next pane in tab order",
     );
 }
 

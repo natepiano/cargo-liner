@@ -180,7 +180,7 @@ pub fn render_project_list_pane_body(
                 .filter_map(|entry| entry.item.disk_usage_bytes())
                 .sum(),
         );
-        let header = columns::header_line(widths, " Projects");
+        let header = columns::header_line(widths, "  Projects");
         let summary = columns::build_summary_cells(widths, &total_str);
         let summary_line = Some(columns::row_to_line(&summary, widths));
         let row_width = u16::try_from(widths.total_width()).unwrap_or(u16::MAX);
