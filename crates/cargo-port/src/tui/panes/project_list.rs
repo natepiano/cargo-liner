@@ -484,7 +484,7 @@ fn render_child_item<P: project::ProjectFields>(
     } else {
         LintCell::hidden()
     };
-    let ci = if is_workspace_member {
+    let ci = if is_workspace_member || ctx.project_list.is_vendored_path(path) {
         None
     } else {
         ctx.project_list

@@ -1,4 +1,5 @@
 use super::*;
+use crate::constants::CI_PASSED;
 use crate::project::Submodule;
 use crate::tui::columns;
 use crate::tui::panes;
@@ -1030,4 +1031,43 @@ fn visible_rows_include_member_vendored_children() {
             vendored_index: 0,
         }
     ));
+}
+
+#[test]
+fn vendored_rows_do_not_render_parent_ci_status() {
+    let vendored_path = "~/ws/vendor/helper";
+    let member = make_package_with_vendored(
+        Some("member"),
+        "~/ws/member",
+        vec![super::make_vendored(Some("helper"), vendored_path)],
+    );
+    let root = make_workspace_with_members(Some("ws"), "~/ws", vec![inline_group(vec![member])]);
+    let mut app = make_app(&[make_workspace_project(Some("ws"), "~/ws")]);
+    apply_items(&mut app, std::slice::from_ref(&root));
+
+    set_loaded_ci(
+        &mut app,
+        root.path(),
+        vec![make_ci_run(1, CiStatus::Passed)],
+        false,
+        1,
+    );
+
+    app.project_list.expanded.insert(ExpandKey::Node(0));
+
+    let rendered = rendered_root_name_cells(&mut app);
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line.contains("ws") && line.contains(CI_PASSED)),
+        "root row should still render CI status: {rendered:?}"
+    );
+    let vendored_row = rendered
+        .iter()
+        .find(|line| line.contains("helper (v)"))
+        .unwrap_or_else(|| panic!("vendored row should render: {rendered:?}"));
+    assert!(
+        !vendored_row.contains(CI_PASSED),
+        "vendored row should not inherit parent CI status: {vendored_row}"
+    );
 }
