@@ -15,6 +15,7 @@ use tui_pane::Viewport;
 use tui_pane::column_header_color;
 use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
+use tui_pane::text_default;
 use tui_pane::title_color;
 
 use super::package::RenderStyles;
@@ -88,8 +89,8 @@ fn lang_footer_row(stats: &LanguageStats) -> Row<'static> {
     let num_bold = Style::default()
         .fg(title_color())
         .add_modifier(Modifier::BOLD);
-    let dim_bold = Style::default()
-        .fg(label_color())
+    let data_bold = Style::default()
+        .fg(text_default())
         .add_modifier(Modifier::BOLD);
     let total_files: usize = stats.entries.iter().map(|e| e.files).sum();
     let total_code: usize = stats.entries.iter().map(|e| e.code).sum();
@@ -102,13 +103,13 @@ fn lang_footer_row(stats: &LanguageStats) -> Row<'static> {
         Cell::from(ratatui::text::Line::from(total_files.to_string()).alignment(Alignment::Right))
             .style(num_bold),
         Cell::from(ratatui::text::Line::from(total_code.to_string()).alignment(Alignment::Right))
-            .style(num_bold),
+            .style(data_bold),
         Cell::from(
             ratatui::text::Line::from(total_comments.to_string()).alignment(Alignment::Right),
         )
-        .style(dim_bold),
+        .style(data_bold),
         Cell::from(ratatui::text::Line::from(total_blanks.to_string()).alignment(Alignment::Right))
-            .style(dim_bold),
+            .style(data_bold),
         Cell::from(ratatui::text::Line::from(grand_total.to_string()).alignment(Alignment::Right))
             .style(num_bold),
     ])
@@ -120,19 +121,20 @@ fn lang_entry_row(entry: &LangEntry, name_width: usize) -> Row<'static> {
     let total = entry.code + entry.comments + entry.blanks;
     let num_style = Style::default().fg(title_color());
     let dim_style = Style::default().fg(label_color());
+    let data_style = Style::default().fg(text_default());
     Row::new(vec![
         Cell::from(format!(" {icon}")),
         Cell::from(name).style(dim_style),
         Cell::from(ratatui::text::Line::from(entry.files.to_string()).alignment(Alignment::Right))
             .style(num_style),
         Cell::from(ratatui::text::Line::from(entry.code.to_string()).alignment(Alignment::Right))
-            .style(num_style),
+            .style(data_style),
         Cell::from(
             ratatui::text::Line::from(entry.comments.to_string()).alignment(Alignment::Right),
         )
-        .style(dim_style),
+        .style(data_style),
         Cell::from(ratatui::text::Line::from(entry.blanks.to_string()).alignment(Alignment::Right))
-            .style(dim_style),
+            .style(data_style),
         Cell::from(ratatui::text::Line::from(total.to_string()).alignment(Alignment::Right))
             .style(num_style),
     ])
