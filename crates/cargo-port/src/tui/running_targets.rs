@@ -15,8 +15,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
 
+use sysinfo::Pid;
 use sysinfo::ProcessRefreshKind;
 use sysinfo::ProcessesToUpdate;
+use sysinfo::Signal;
 use sysinfo::System;
 use sysinfo::UpdateKind;
 
@@ -36,13 +38,16 @@ pub(crate) struct RunningTargetsPoller {
 
 #[derive(Default)]
 pub(crate) struct RunningTargets {
-    by_key: HashMap<RunningKey, RunningMetrics>,
+    by_key: HashMap<RunningKey, Vec<RunningInstance>>,
 }
 
-/// Aggregated resource use of a running target's process(es), summed when
-/// a single target maps to more than one OS process.
+/// One running OS process for a target. A single target can map to more
+/// than one process (multiple `cargo run` invocations); each gets its own
+/// instance so the pane can list them separately and kill one by PID.
 #[derive(Clone, Copy)]
-pub(crate) struct RunningMetrics {
+pub(crate) struct RunningInstance {
+    /// OS process id, used to terminate the instance.
+    pub pid:          u32,
     /// CPU usage in percent. A busy multi-threaded process can exceed 100.
     pub cpu_percent:  f32,
     /// Resident memory in bytes.
@@ -130,7 +135,7 @@ impl RunningTargetsPoller {
         );
 
         let install_bin_dir = self.install_bin_dir.as_ref().map(AbsolutePath::as_path);
-        let mut by_key: HashMap<RunningKey, RunningMetrics> = HashMap::new();
+        let mut by_key: HashMap<RunningKey, Vec<RunningInstance>> = HashMap::new();
         for (pid, process) in self.system.processes() {
             let Some(exe) = process.exe() else {
                 tracing::debug!(pid = pid.as_u32(), "running_targets_exe_unavailable");
@@ -147,53 +152,103 @@ impl RunningTargetsPoller {
                     .cwd()
                     .map_or(Cow::Borrowed(exe), |cwd| Cow::Owned(cwd.join(exe)))
             };
+            let pid = pid.as_u32();
             let cpu = process.cpu_usage();
             let memory = process.memory();
             if let Some((key, profile)) = classify_exe(&exe, projects) {
-                accumulate(&mut by_key, key, profile, cpu, memory);
+                push_instance(&mut by_key, key, instance(pid, cpu, memory, profile));
             } else {
                 for key in installed_bin_keys(&exe, projects, install_bin_dir) {
-                    accumulate(&mut by_key, key, RunProfile::Installed, cpu, memory);
+                    push_instance(
+                        &mut by_key,
+                        key,
+                        instance(pid, cpu, memory, RunProfile::Installed),
+                    );
                 }
             }
+        }
+        // Stable per-key order so the pane's instance rows (and the cursor
+        // resting on one) don't reshuffle between ticks.
+        for instances in by_key.values_mut() {
+            instances.sort_by_key(|inst| inst.pid);
         }
         self.snapshot = RunningTargets { by_key };
         &self.snapshot
     }
 
     pub(super) const fn snapshot(&self) -> &RunningTargets { &self.snapshot }
+
+    /// Send `SIGTERM` to `pid` if it is still a live process. Returns
+    /// `true` when the signal was delivered. Uses the most recent process
+    /// table; a PID that has already exited returns `false`.
+    pub(super) fn kill(&self, pid: u32) -> bool {
+        self.system
+            .process(Pid::from_u32(pid))
+            .is_some_and(|process| process.kill_with(Signal::Term).unwrap_or(false))
+    }
+
+    /// Drop `pids` from the current snapshot without waiting for the next
+    /// poll. After killing an instance this collapses its row immediately
+    /// so the pane reflects the change on the very next render (the next
+    /// poll would do the same once the process exits).
+    pub(super) fn drop_instances(&mut self, pids: &[u32]) { self.snapshot.drop_pids(pids); }
 }
 
 impl RunningTargets {
-    /// Aggregated CPU/memory for `key`'s running process(es), or `None`
-    /// when no matching process is in the latest snapshot (i.e. the
-    /// target is not running).
-    pub(super) fn metrics(&self, key: &RunningKey) -> Option<RunningMetrics> {
-        self.by_key.get(key).copied()
+    /// Running instances for `key`, sorted by PID. Empty when the target
+    /// is not running.
+    pub(super) fn instances(&self, key: &RunningKey) -> &[RunningInstance] {
+        self.by_key.get(key).map_or(&[], Vec::as_slice)
+    }
+
+    /// Remove every instance whose PID is in `pids`, dropping any key left
+    /// with no instances.
+    fn drop_pids(&mut self, pids: &[u32]) {
+        for instances in self.by_key.values_mut() {
+            instances.retain(|inst| !pids.contains(&inst.pid));
+        }
+        self.by_key.retain(|_, instances| !instances.is_empty());
+    }
+
+    /// Build a snapshot directly from `(key, instances)` pairs, bypassing
+    /// the process poll. Used by render/dispatch tests.
+    #[cfg(test)]
+    pub(crate) fn from_pairs(pairs: Vec<(RunningKey, Vec<RunningInstance>)>) -> Self {
+        Self {
+            by_key: pairs.into_iter().collect(),
+        }
     }
 }
 
-/// Fold one process's CPU/memory into `by_key` under `key`, summing when
-/// the key already has an entry (a target with more than one process) and
-/// keeping the first-seen `profile`.
-fn accumulate(
-    by_key: &mut HashMap<RunningKey, RunningMetrics>,
-    key: RunningKey,
-    profile: RunProfile,
-    cpu: f32,
-    memory: u64,
-) {
-    by_key
-        .entry(key)
-        .and_modify(|metrics| {
-            metrics.cpu_percent += cpu;
-            metrics.memory_bytes += memory;
-        })
-        .or_insert(RunningMetrics {
-            cpu_percent: cpu,
-            memory_bytes: memory,
+#[cfg(test)]
+impl RunningInstance {
+    /// A test instance with the given PID and profile; zeroed metrics.
+    pub(crate) fn for_test(pid: u32, profile: RunProfile) -> Self {
+        Self {
+            pid,
+            cpu_percent: 0.0,
+            memory_bytes: 0,
             profile,
-        });
+        }
+    }
+}
+
+const fn instance(pid: u32, cpu: f32, memory: u64, profile: RunProfile) -> RunningInstance {
+    RunningInstance {
+        pid,
+        cpu_percent: cpu,
+        memory_bytes: memory,
+        profile,
+    }
+}
+
+/// Append one process's metrics under `key`.
+fn push_instance(
+    by_key: &mut HashMap<RunningKey, Vec<RunningInstance>>,
+    key: RunningKey,
+    inst: RunningInstance,
+) {
+    by_key.entry(key).or_default().push(inst);
 }
 
 /// Classify an exe that lives under a project's `target_dir` as a bin /

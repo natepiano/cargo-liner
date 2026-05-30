@@ -65,6 +65,9 @@ use crate::tui::app::App;
 use crate::tui::app::AvailabilityStatus;
 use crate::tui::project_list::ProjectList;
 use crate::tui::render;
+use crate::tui::running_targets::RunningInstance;
+use crate::tui::running_targets::RunningKey;
+use crate::tui::running_targets::RunningTargets;
 use crate::tui::state::ServiceStatus;
 
 #[derive(Default)]
@@ -282,6 +285,130 @@ pub struct PendingExampleRun {
     pub kind:              RunTargetKind,
     pub build_mode:        BuildMode,
     pub required_features: Vec<String>,
+}
+
+/// One rendered row in the Targets pane. The pane is no longer a 1:1 map
+/// of [`TargetEntry`]: a target with more than one running instance
+/// expands into a parent row plus one indented child row per instance, so
+/// each instance's metrics get their own line and can be killed by PID.
+pub struct TargetDisplayRow {
+    /// Index into the flat target-entry list this row renders.
+    pub entry_index: usize,
+    pub kind:        TargetDisplayKind,
+}
+
+pub enum TargetDisplayKind {
+    /// Target with no running process.
+    Idle,
+    /// Target with exactly one running process, rendered inline on the
+    /// target row.
+    Inline(RunningInstance),
+    /// Parent row of a target with N>1 running processes; carries the
+    /// count. Each instance follows as an [`TargetDisplayKind::Instance`].
+    MultiParent(usize),
+    /// One running instance of a multi-instance target, rendered indented
+    /// below its parent.
+    Instance(RunningInstance),
+}
+
+/// The PID(s) to terminate for a kill request, plus a label for the
+/// confirm dialog.
+pub struct KillRequest {
+    pub label: String,
+    pub pids:  Vec<u32>,
+}
+
+/// Build the [`RunningKey`] for `entry` within `dir`'s workspace.
+fn running_key(entry: &TargetEntry, dir: &AbsolutePath) -> RunningKey {
+    RunningKey {
+        target_dir: dir.clone(),
+        kind:       entry.kind,
+        name:       entry.name.clone(),
+    }
+}
+
+/// Expand the flat target list into render rows, joining each entry
+/// against the running-process snapshot. Targets with two or more
+/// instances gain indented per-instance child rows; zero- and
+/// one-instance targets stay a single row.
+pub fn build_target_display_rows(
+    entries: &[TargetEntry],
+    running: &RunningTargets,
+    dir: Option<&AbsolutePath>,
+) -> Vec<TargetDisplayRow> {
+    let mut rows = Vec::with_capacity(entries.len());
+    for (entry_index, entry) in entries.iter().enumerate() {
+        let instances = dir.map_or(&[][..], |dir| running.instances(&running_key(entry, dir)));
+        match instances {
+            [] => rows.push(TargetDisplayRow {
+                entry_index,
+                kind: TargetDisplayKind::Idle,
+            }),
+            [only] => rows.push(TargetDisplayRow {
+                entry_index,
+                kind: TargetDisplayKind::Inline(*only),
+            }),
+            many => {
+                rows.push(TargetDisplayRow {
+                    entry_index,
+                    kind: TargetDisplayKind::MultiParent(many.len()),
+                });
+                for inst in many {
+                    rows.push(TargetDisplayRow {
+                        entry_index,
+                        kind: TargetDisplayKind::Instance(*inst),
+                    });
+                }
+            },
+        }
+    }
+    rows
+}
+
+/// Index of the first display row that renders `entry_index` (its target
+/// or multi-instance parent row), or the last row when the entry is gone.
+/// `None` when there are no rows. Used to re-anchor the Targets cursor to
+/// the same target after a kill collapses its instance rows.
+pub fn display_row_for_entry(rows: &[TargetDisplayRow], entry_index: usize) -> Option<usize> {
+    if rows.is_empty() {
+        return None;
+    }
+    Some(
+        rows.iter()
+            .position(|row| row.entry_index == entry_index)
+            .unwrap_or(rows.len() - 1),
+    )
+}
+
+/// Resolve the kill request for the selected display row. An instance row
+/// (or a single-instance target row) kills that one PID; a multi-instance
+/// parent row kills every instance of the target. Returns `None` for an
+/// idle row or when nothing is running.
+pub fn resolve_kill_request(
+    entries: &[TargetEntry],
+    rows: &[TargetDisplayRow],
+    running: &RunningTargets,
+    dir: Option<&AbsolutePath>,
+    selected: usize,
+) -> Option<KillRequest> {
+    let row = rows.get(selected)?;
+    let entry = entries.get(row.entry_index)?;
+    let pids: Vec<u32> = match &row.kind {
+        TargetDisplayKind::Idle => return None,
+        TargetDisplayKind::Inline(inst) | TargetDisplayKind::Instance(inst) => vec![inst.pid],
+        TargetDisplayKind::MultiParent(_) => running
+            .instances(&running_key(entry, dir?))
+            .iter()
+            .map(|inst| inst.pid)
+            .collect(),
+    };
+    if pids.is_empty() {
+        return None;
+    }
+    Some(KillRequest {
+        label: format!("{} ({})", entry.display_name, entry.kind.label()),
+        pids,
+    })
 }
 
 /// Whether a CI fetch should sync recent runs or discover older history.
@@ -1467,6 +1594,10 @@ mod test_row_tests {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "tests should panic on unexpected values"
+)]
 mod target_list_tests {
     use super::*;
 
@@ -1499,6 +1630,130 @@ mod target_list_tests {
         let entries = build_target_list_from_data(&data);
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["a", "b", "c", "ex1", "bn1"]);
+    }
+
+    use crate::tui::running_targets::RunProfile;
+    use crate::tui::running_targets::RunningInstance;
+
+    fn dir() -> AbsolutePath { AbsolutePath::from("/tmp/ws/target") }
+
+    fn key(name: &str, kind: RunTargetKind) -> RunningKey {
+        RunningKey {
+            target_dir: dir(),
+            kind,
+            name: name.into(),
+        }
+    }
+
+    #[test]
+    fn idle_target_is_one_row() {
+        let entries = vec![entry("a", RunTargetKind::Binary)];
+        let running = RunningTargets::from_pairs(vec![]);
+        let rows = build_target_display_rows(&entries, &running, Some(&dir()));
+        assert_eq!(rows.len(), 1);
+        assert!(matches!(rows[0].kind, TargetDisplayKind::Idle));
+    }
+
+    #[test]
+    fn single_instance_renders_inline() {
+        let entries = vec![entry("a", RunTargetKind::Binary)];
+        let running = RunningTargets::from_pairs(vec![(
+            key("a", RunTargetKind::Binary),
+            vec![RunningInstance::for_test(10, RunProfile::Debug)],
+        )]);
+        let rows = build_target_display_rows(&entries, &running, Some(&dir()));
+        assert_eq!(rows.len(), 1);
+        assert!(matches!(rows[0].kind, TargetDisplayKind::Inline(_)));
+    }
+
+    #[test]
+    fn multiple_instances_expand_to_parent_plus_children() {
+        let entries = vec![entry("a", RunTargetKind::Binary)];
+        let running = RunningTargets::from_pairs(vec![(
+            key("a", RunTargetKind::Binary),
+            vec![
+                RunningInstance::for_test(10, RunProfile::Debug),
+                RunningInstance::for_test(11, RunProfile::Debug),
+            ],
+        )]);
+        let rows = build_target_display_rows(&entries, &running, Some(&dir()));
+        assert_eq!(rows.len(), 3);
+        assert!(matches!(rows[0].kind, TargetDisplayKind::MultiParent(2)));
+        assert!(matches!(rows[1].kind, TargetDisplayKind::Instance(_)));
+        assert!(matches!(rows[2].kind, TargetDisplayKind::Instance(_)));
+        assert!(rows.iter().all(|row| row.entry_index == 0));
+    }
+
+    #[test]
+    fn kill_request_on_instance_row_targets_one_pid() {
+        let entries = vec![entry("a", RunTargetKind::Binary)];
+        let running = RunningTargets::from_pairs(vec![(
+            key("a", RunTargetKind::Binary),
+            vec![
+                RunningInstance::for_test(10, RunProfile::Debug),
+                RunningInstance::for_test(11, RunProfile::Debug),
+            ],
+        )]);
+        let rows = build_target_display_rows(&entries, &running, Some(&dir()));
+        // Row 0 is the parent; row 1 is the first instance (pid 10).
+        let request = resolve_kill_request(&entries, &rows, &running, Some(&dir()), 1).unwrap();
+        assert_eq!(request.pids, vec![10]);
+    }
+
+    #[test]
+    fn kill_request_on_multi_parent_targets_all_pids() {
+        let entries = vec![entry("a", RunTargetKind::Binary)];
+        let running = RunningTargets::from_pairs(vec![(
+            key("a", RunTargetKind::Binary),
+            vec![
+                RunningInstance::for_test(10, RunProfile::Debug),
+                RunningInstance::for_test(11, RunProfile::Debug),
+            ],
+        )]);
+        let rows = build_target_display_rows(&entries, &running, Some(&dir()));
+        let request = resolve_kill_request(&entries, &rows, &running, Some(&dir()), 0).unwrap();
+        assert_eq!(request.pids, vec![10, 11]);
+    }
+
+    #[test]
+    fn kill_request_on_idle_row_is_none() {
+        let entries = vec![entry("a", RunTargetKind::Binary)];
+        let running = RunningTargets::from_pairs(vec![]);
+        let rows = build_target_display_rows(&entries, &running, Some(&dir()));
+        assert!(resolve_kill_request(&entries, &rows, &running, Some(&dir()), 0).is_none());
+    }
+
+    #[test]
+    fn killing_one_instance_keeps_cursor_on_same_target_after_collapse() {
+        // Two targets: "a" runs two instances, "b" is idle below it.
+        let entries = vec![
+            entry("a", RunTargetKind::Binary),
+            entry("b", RunTargetKind::Binary),
+        ];
+        let before = RunningTargets::from_pairs(vec![(
+            key("a", RunTargetKind::Binary),
+            vec![
+                RunningInstance::for_test(10, RunProfile::Debug),
+                RunningInstance::for_test(11, RunProfile::Debug),
+            ],
+        )]);
+        // Rows: [a parent, a:pid10, a:pid11, b idle]. Cursor sits on the
+        // second instance row (index 2), which belongs to entry "a" (0).
+        let rows_before = build_target_display_rows(&entries, &before, Some(&dir()));
+        assert_eq!(rows_before.len(), 4);
+        assert_eq!(rows_before[2].entry_index, 0);
+
+        // Kill pid 11 — "a" collapses to a single inline row.
+        let after = RunningTargets::from_pairs(vec![(
+            key("a", RunTargetKind::Binary),
+            vec![RunningInstance::for_test(10, RunProfile::Debug)],
+        )]);
+        let rows_after = build_target_display_rows(&entries, &after, Some(&dir()));
+        assert_eq!(rows_after.len(), 2); // [a inline, b idle]
+
+        // Anchoring to entry "a" lands on a's row (0), not the row that
+        // now sits at the old cursor index (which would be "b").
+        assert_eq!(display_row_for_entry(&rows_after, 0), Some(0));
     }
 }
 

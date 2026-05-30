@@ -441,6 +441,9 @@ fn handle_confirm_key(app: &mut App, key: KeyCode) -> bool {
                     }
                 }
             },
+            ConfirmAction::KillTarget { pids, .. } => {
+                panes::execute_target_kill(app, &pids);
+            },
         }
     }
     true

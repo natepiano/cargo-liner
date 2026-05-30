@@ -9,6 +9,7 @@ use ratatui::layout::Alignment;
 use ratatui::layout::Constraint;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
+use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
@@ -25,6 +26,8 @@ use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
 use tui_pane::success_color;
 
+use super::TargetDisplayKind;
+use super::TargetDisplayRow;
 use super::TargetEntry;
 use super::TargetSource;
 use super::TargetsData;
@@ -33,8 +36,7 @@ use super::pane_impls::TargetsPane;
 use crate::tui::pane::PaneRenderCtx;
 use crate::tui::panes;
 use crate::tui::render;
-use crate::tui::running_targets::RunningKey;
-use crate::tui::running_targets::RunningMetrics;
+use crate::tui::running_targets::RunningInstance;
 
 /// Cap on the Source column width so a single long member name can't
 /// crowd out the target name. Overflow truncates with an ellipsis.
@@ -85,21 +87,20 @@ fn render_targets_with_data(
     let focus = pane.focus.state;
     let cursor = pane.viewport.pos();
 
-    let targets_title = build_targets_title(focus, cursor, data);
+    let entries = panes::build_target_list_from_data(data);
+    let display_rows =
+        panes::build_target_display_rows(&entries, ctx.running_targets, ctx.running_targets_dir);
+    pane.viewport.set_len(display_rows.len());
+
+    // The pane cursor indexes display rows (which include per-instance
+    // child rows); map it back to the owning target entry so the title's
+    // section counter points at the right bin/example/bench group.
+    let cursor_entry = display_rows.get(cursor).map(|row| row.entry_index);
+    let targets_title = build_targets_title(focus, cursor_entry, data);
     let targets_block = styles
         .chrome
         .block(targets_title, matches!(focus, PaneFocusState::Active));
 
-    let metrics_for = |entry: &TargetEntry| -> Option<RunningMetrics> {
-        let dir = ctx.running_targets_dir?;
-        ctx.running_targets.metrics(&RunningKey {
-            target_dir: dir.clone(),
-            kind:       entry.kind,
-            name:       entry.name.clone(),
-        })
-    };
-    let entries = panes::build_target_list_from_data(data);
-    pane.viewport.set_len(entries.len());
     let content_inner = targets_block.inner(area);
 
     // The header row is always rendered so the pane layout stays
@@ -118,7 +119,7 @@ fn render_targets_with_data(
         .set_viewport_rows(usize::from(data_area.height));
 
     let layout = compute_layout(&entries, content_inner.width);
-    let rows = build_rows(&entries, pane, focus, &layout, &metrics_for);
+    let rows = build_rows(&entries, &display_rows, pane, focus, &layout);
     let widths = build_widths(&layout);
 
     let table = Table::new(rows, widths)
@@ -140,12 +141,18 @@ fn render_targets_with_data(
     let _ = ctx;
 }
 
-fn build_targets_title(focus: PaneFocusState, cursor: usize, data: &TargetsData) -> String {
+fn build_targets_title(
+    focus: PaneFocusState,
+    cursor_entry: Option<usize>,
+    data: &TargetsData,
+) -> String {
     let bin_count = data.binaries.len();
     let ex_count = data.examples.len();
     let bench_count = data.benches.len();
 
-    let focused_cursor = matches!(focus, PaneFocusState::Active).then_some(cursor);
+    let focused_cursor = matches!(focus, PaneFocusState::Active)
+        .then_some(cursor_entry)
+        .flatten();
     let section_cursor = |section_start: usize, section_len: usize| {
         focused_cursor
             .filter(|cursor| *cursor >= section_start && *cursor < section_start + section_len)
@@ -193,13 +200,15 @@ fn compute_layout(entries: &[TargetEntry], content_width: u16) -> Layout {
 /// Running marker for a target: ` (debug)` / ` (release)` / ` (cargo)`
 /// depending on how the process was launched. Leading space so it sits one
 /// column off from the name (or the ellipsis when truncated).
-fn running_marker(metrics: RunningMetrics) -> String { format!(" ({})", metrics.profile.label()) }
+fn running_marker(instance: RunningInstance) -> String {
+    format!(" ({})", instance.profile.label())
+}
 
 /// Compact CPU + resident-memory annotation rendered after the running
 /// marker, e.g. `47% 312.4 MiB`.
-fn format_running_metrics(metrics: RunningMetrics) -> String {
-    let cpu = metrics.cpu_percent;
-    format!("{cpu:.0}% {}", render::format_bytes(metrics.memory_bytes))
+fn format_running_metrics(instance: RunningInstance) -> String {
+    let cpu = instance.cpu_percent;
+    format!("{cpu:.0}% {}", render::format_bytes(instance.memory_bytes))
 }
 
 /// Name cell for a target that is not running: ` <name>`, truncated.
@@ -208,15 +217,16 @@ fn idle_name_cell(display_name: &str, name_max: usize) -> Cell<'static> {
     Cell::from(format!(" {display}"))
 }
 
-/// Name cell for a running target: ` <name> (<profile>) <cpu>% <mem>`, with
-/// the name truncated so the green profile marker and its metrics always fit.
+/// Name cell for a single-instance running target:
+/// ` <name> (<profile>) <cpu>% <mem>`, with the name truncated so the
+/// green profile marker and its metrics always fit.
 fn running_name_cell(
     display_name: &str,
     name_max: usize,
-    metrics: RunningMetrics,
+    instance: RunningInstance,
 ) -> Cell<'static> {
-    let marker = running_marker(metrics);
-    let suffix = format!("{marker} {}", format_running_metrics(metrics));
+    let marker = running_marker(instance);
+    let suffix = format!("{marker} {}", format_running_metrics(instance));
     let (visible, _) = render::truncate_with_suffix(display_name, &suffix, name_max, "\u{2026}");
     let mut spans = Vec::new();
     if !visible.is_empty() {
@@ -224,39 +234,98 @@ fn running_name_cell(
     }
     spans.push(Span::styled(marker, Style::default().fg(success_color())));
     spans.push(Span::styled(
-        format!(" {}", format_running_metrics(metrics)),
+        format!(" {}", format_running_metrics(instance)),
         Style::default().fg(label_color()),
     ));
     Cell::from(Line::from(spans))
 }
 
-fn build_rows<'a>(
-    entries: &'a [TargetEntry],
+/// Name cell for the parent row of a target with several running
+/// instances: ` <name> (<N> running)`. The per-instance metrics live on
+/// the indented child rows below.
+fn multi_parent_name_cell(display_name: &str, name_max: usize, count: usize) -> Cell<'static> {
+    let suffix = format!(" ({count} running)");
+    let (visible, _) = render::truncate_with_suffix(display_name, &suffix, name_max, "\u{2026}");
+    let mut spans = Vec::new();
+    if !visible.is_empty() {
+        spans.push(Span::raw(format!(" {visible}")));
+    }
+    spans.push(Span::styled(suffix, Style::default().fg(success_color())));
+    Cell::from(Line::from(spans))
+}
+
+/// Indented child row for one running instance of a multi-instance
+/// target: `   (<profile>) <cpu>% <mem> · pid <pid>`. The Source and Kind
+/// columns are blank — the instance belongs to the target row above it.
+fn instance_name_cell(instance: RunningInstance) -> Cell<'static> {
+    let spans = vec![
+        Span::raw("   "),
+        Span::styled(
+            format!("({})", instance.profile.label()),
+            Style::default().fg(success_color()),
+        ),
+        Span::styled(
+            format!(" {}", format_running_metrics(instance)),
+            Style::default().fg(label_color()),
+        ),
+        Span::styled(
+            format!(" · pid {}", instance.pid),
+            Style::default()
+                .fg(label_color())
+                .add_modifier(Modifier::DIM),
+        ),
+    ];
+    Cell::from(Line::from(spans))
+}
+
+/// Three-column target row: name cell + Source + Kind.
+fn target_row(entry: &TargetEntry, name_cell: Cell<'static>, layout: &Layout) -> Row<'static> {
+    let source_label =
+        render::truncate_with_ellipsis(entry.source.label(), layout.source, "\u{2026}");
+    Row::new(vec![
+        name_cell,
+        Cell::from(source_label).style(Style::default().fg(source_color(&entry.source))),
+        Cell::from(Line::from(format!("{} ", entry.kind.label())).alignment(Alignment::Right))
+            .style(Style::default().fg(entry.kind.color())),
+    ])
+}
+
+fn build_rows(
+    entries: &[TargetEntry],
+    display_rows: &[TargetDisplayRow],
     pane: &TargetsPane,
     focus: PaneFocusState,
     layout: &Layout,
-    metrics_for: &dyn Fn(&TargetEntry) -> Option<RunningMetrics>,
-) -> Vec<Row<'a>> {
-    entries
+) -> Vec<Row<'static>> {
+    display_rows
         .iter()
         .enumerate()
-        .map(|(row_index, entry)| {
+        .map(|(row_index, display)| {
             let selection = tui_pane::selection_state(&pane.viewport, row_index, focus);
-            let name_cell = metrics_for(entry).map_or_else(
-                || idle_name_cell(&entry.display_name, layout.name_max),
-                |metrics| running_name_cell(&entry.display_name, layout.name_max, metrics),
-            );
-            let source_label =
-                render::truncate_with_ellipsis(entry.source.label(), layout.source, "\u{2026}");
-            Row::new(vec![
-                name_cell,
-                Cell::from(source_label).style(Style::default().fg(source_color(&entry.source))),
-                Cell::from(
-                    Line::from(format!("{} ", entry.kind.label())).alignment(Alignment::Right),
-                )
-                .style(Style::default().fg(entry.kind.color())),
-            ])
-            .style(selection.overlay_style())
+            let entry = &entries[display.entry_index];
+            let row = match &display.kind {
+                TargetDisplayKind::Idle => target_row(
+                    entry,
+                    idle_name_cell(&entry.display_name, layout.name_max),
+                    layout,
+                ),
+                TargetDisplayKind::Inline(instance) => target_row(
+                    entry,
+                    running_name_cell(&entry.display_name, layout.name_max, *instance),
+                    layout,
+                ),
+                TargetDisplayKind::MultiParent(count) => target_row(
+                    entry,
+                    multi_parent_name_cell(&entry.display_name, layout.name_max, *count),
+                    layout,
+                ),
+                TargetDisplayKind::Instance(instance) => Row::new(vec![
+                    instance_name_cell(*instance),
+                    Cell::from(""),
+                    Cell::from(""),
+                ]),
+            };
+            row.style(selection.overlay_style())
         })
         .collect()
 }

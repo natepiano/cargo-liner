@@ -17,7 +17,9 @@ use super::PaneId;
 use super::PendingCiFetch;
 use super::PendingExampleRun;
 use super::TargetSource;
+use super::build_target_display_rows;
 use super::build_target_list_from_data;
+use super::resolve_kill_request;
 use crate::lint;
 use crate::project;
 use crate::project::AbsolutePath;
@@ -46,7 +48,19 @@ fn handle_target_action(app: &mut App, mode: BuildMode) {
         return;
     };
     let entries = build_target_list_from_data(&targets_data);
-    if let Some(entry) = entries.get(app.panes.targets.viewport.pos())
+    // The pane cursor indexes display rows (which include per-instance
+    // child rows), so resolve it back to the owning target entry before
+    // running. Running from an instance child row launches another
+    // instance of that same target.
+    let display_rows = build_target_display_rows(
+        &entries,
+        app.panes.running_targets.snapshot(),
+        app.panes.detail_target_dir.as_ref(),
+    );
+    let entry_index = display_rows
+        .get(app.panes.targets.viewport.pos())
+        .map(|row| row.entry_index);
+    if let Some(entry) = entry_index.and_then(|index| entries.get(index))
         && let Some(abs_path) = app.project_list.selected_project_path()
     {
         // Member-owned targets carry the owning package's name in
@@ -89,6 +103,80 @@ pub(super) fn dispatch_targets_action(action: TargetsAction, app: &mut App) {
     match action {
         TargetsAction::Activate => handle_detail_enter(app),
         TargetsAction::ReleaseBuild => handle_target_action(app, BuildMode::Release),
+        TargetsAction::Kill => handle_target_kill(app),
+    }
+}
+
+/// Open a confirm dialog to `SIGTERM` the running instance(s) under the
+/// selected Targets row. An instance child row (or a single-instance
+/// target row) kills that one PID; a multi-instance parent row kills every
+/// instance of the target. A no-op when the selected row has nothing
+/// running.
+fn handle_target_kill(app: &mut App) {
+    let Some(targets_data) = app.panes.targets.content().cloned() else {
+        return;
+    };
+    let entries = build_target_list_from_data(&targets_data);
+    let dir = app.panes.detail_target_dir.clone();
+    let display_rows =
+        build_target_display_rows(&entries, app.panes.running_targets.snapshot(), dir.as_ref());
+    let request = resolve_kill_request(
+        &entries,
+        &display_rows,
+        app.panes.running_targets.snapshot(),
+        dir.as_ref(),
+        app.panes.targets.viewport.pos(),
+    );
+    if let Some(request) = request {
+        app.request_kill_confirm(request.label, request.pids);
+    }
+}
+
+/// Send `SIGTERM` to `pids` (the confirmed kill), drop them from the
+/// running snapshot so their rows collapse on the next render, and keep
+/// the Targets cursor anchored to the same target. Without the anchor,
+/// killing one of several instances would let the cursor slide onto the
+/// next target when the instance rows collapse away.
+pub(super) fn execute_target_kill(app: &mut App, pids: &[u32]) {
+    for pid in pids {
+        app.panes.running_targets.kill(*pid);
+    }
+    let anchor_entry = targets_cursor_entry(app);
+    app.panes.running_targets.drop_instances(pids);
+    if let Some(entry_index) = anchor_entry {
+        anchor_targets_cursor_to_entry(app, entry_index);
+    }
+}
+
+/// The target entry index under the Targets cursor, or `None` when there
+/// is no target data or the cursor is out of range.
+fn targets_cursor_entry(app: &App) -> Option<usize> {
+    let data = app.panes.targets.content()?;
+    let entries = build_target_list_from_data(data);
+    let rows = build_target_display_rows(
+        &entries,
+        app.panes.running_targets.snapshot(),
+        app.panes.detail_target_dir.as_ref(),
+    );
+    rows.get(app.panes.targets.viewport.pos())
+        .map(|row| row.entry_index)
+}
+
+/// Move the Targets cursor to the first display row that renders
+/// `entry_index` (its target or multi-instance parent row), clamping to
+/// the last row if the entry is gone.
+fn anchor_targets_cursor_to_entry(app: &mut App, entry_index: usize) {
+    let Some(data) = app.panes.targets.content().cloned() else {
+        return;
+    };
+    let entries = build_target_list_from_data(&data);
+    let rows = build_target_display_rows(
+        &entries,
+        app.panes.running_targets.snapshot(),
+        app.panes.detail_target_dir.as_ref(),
+    );
+    if let Some(pos) = super::display_row_for_entry(&rows, entry_index) {
+        app.panes.targets.viewport.set_pos(pos);
     }
 }
 

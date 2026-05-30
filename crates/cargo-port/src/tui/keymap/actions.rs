@@ -29,6 +29,7 @@ tui_pane::action_enum! {
     pub enum TargetsAction {
         Activate     => ("activate",      "run",     "Run in debug mode");
         ReleaseBuild => ("release_build", "release", "Run in release mode");
+        Kill         => ("kill",          "kill",    "Kill running instance");
     }
 }
 

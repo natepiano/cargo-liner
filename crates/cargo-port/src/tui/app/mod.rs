@@ -784,6 +784,13 @@ impl App {
         self.confirm = Some(ConfirmAction::CleanGroup { primary, linked });
     }
 
+    /// Open a confirm dialog to `SIGTERM` the running target instance(s)
+    /// named by `label`. `pids` is one PID for a single instance, or every
+    /// instance's PID when killing a multi-instance target wholesale.
+    pub fn request_kill_confirm(&mut self, label: String, pids: Vec<u32>) {
+        self.confirm = Some(ConfirmAction::KillTarget { label, pids });
+    }
+
     /// A `MetadataDispatchContext` built from the current App state.
     /// Any path that admits a Rust project into the list (discovery,
     /// refresh) builds one and hands it to the insertion method, which

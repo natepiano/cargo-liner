@@ -70,6 +70,8 @@ impl ResolvedKeymap {
             KeyBind::from(KeyCode::Char('r')),
             TargetsAction::ReleaseBuild,
         );
+        km.targets
+            .insert(KeyBind::from(KeyCode::Char('K')), TargetsAction::Kill);
 
         // CI runs
         km.ci_runs

@@ -19,6 +19,10 @@ pub(crate) enum ConfirmAction {
         primary: AbsolutePath,
         linked:  Vec<AbsolutePath>,
     },
+    /// Send `SIGTERM` to the running target instance(s) named by `label`.
+    /// `pids` is one PID for a single instance, or every instance's PID
+    /// when killing a multi-instance target from its parent row.
+    KillTarget { label: String, pids: Vec<u32> },
 }
 
 #[derive(Clone)]

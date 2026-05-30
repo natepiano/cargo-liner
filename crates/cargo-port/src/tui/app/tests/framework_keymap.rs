@@ -205,7 +205,7 @@ fn focused_app_panes_render_expected_pane_action_labels() {
         (AppPaneId::Git, &["activate"], |app| {
             app.panes.git.set_content(GitData::default());
         }),
-        (AppPaneId::Targets, &["run", "release"], |_| {}),
+        (AppPaneId::Targets, &["run", "release", "kill"], |_| {}),
         (AppPaneId::Lints, &["open", "del history"], |_| {}),
         (
             AppPaneId::CiRuns,

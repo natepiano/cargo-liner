@@ -482,6 +482,7 @@ impl Shortcuts<App> for TargetsPane {
         tui_pane::bindings! {
             crossterm::event::KeyCode::Enter => TargetsAction::Activate,
             'r' => TargetsAction::ReleaseBuild,
+            'K' => TargetsAction::Kill,
         }
     }
 

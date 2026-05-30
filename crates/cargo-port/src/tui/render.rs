@@ -264,6 +264,22 @@ fn confirm_action_body(app: &App, action: &ConfirmAction) -> Vec<String> {
 
             lines
         },
+        ConfirmAction::KillTarget { label, pids } => {
+            let mut lines = vec![label.clone()];
+            if let [pid] = pids.as_slice() {
+                lines.push(format!("pid {pid}"));
+            } else {
+                lines.push(format!("{} instances:", pids.len()));
+                for pid in pids.iter().take(AFFECTED_EXTRAS_VISIBLE_CAP) {
+                    lines.push(format!("  pid {pid}"));
+                }
+                if pids.len() > AFFECTED_EXTRAS_VISIBLE_CAP {
+                    let extra = pids.len() - AFFECTED_EXTRAS_VISIBLE_CAP;
+                    lines.push(format!("  +{extra} more"));
+                }
+            }
+            lines
+        },
     }
 }
 
@@ -306,6 +322,7 @@ fn render_confirm_popup(
     let prompt = match action {
         ConfirmAction::Clean(_) => "Run cargo clean?",
         ConfirmAction::CleanGroup { .. } => "Run cargo clean on all checkouts?",
+        ConfirmAction::KillTarget { .. } => "Send SIGTERM?",
     };
     let keys_suffix = if verifying { "" } else { " (y/n)" };
     let prompt_text = if verifying {
