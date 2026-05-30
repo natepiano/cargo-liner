@@ -227,19 +227,26 @@ pub(crate) struct LanguageStats {
     pub entries: Vec<LangEntry>,
 }
 
-/// Per-project test-function counts collected by a source scan that
-/// matches `#[test]`-family attributes in `.rs` files, bucketed by the
-/// directory the file lives in.
+/// Per-project test counts collected by a source scan, bucketed by the
+/// directory and kind of test each one represents.
 ///
 /// `None` on `ProjectInfo` means the scan hasn't completed yet. The
-/// counts are a heuristic: they match a fixed attribute set (see
-/// `scan::test_counts`) and do not include doctests.
+/// counts are a heuristic: `unit` / `integration` match a fixed
+/// `#[test]`-family attribute set and `doc` counts rustdoc code fences,
+/// both without the item-boundary awareness rustdoc itself has (see
+/// `scan::test_counts`).
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct TestCounts {
     /// `#[test]`-family functions under `src/` (unit tests).
     pub unit:        usize,
     /// `#[test]`-family functions under `tests/` (integration tests).
     pub integration: usize,
+    /// Runnable rustdoc doctests — code fences in doc comments under
+    /// `src/` that rustdoc would compile and run.
+    pub doc:         usize,
+    /// Doctests rustdoc registers but skips: `ignore`-tagged fences under
+    /// `src/`. Surfaced as an annotation, not folded into the total.
+    pub doc_ignored: usize,
 }
 
 impl TestCounts {
@@ -249,6 +256,8 @@ impl TestCounts {
         Self {
             unit:        self.unit + other.unit,
             integration: self.integration + other.integration,
+            doc:         self.doc + other.doc,
+            doc_ignored: self.doc_ignored + other.doc_ignored,
         }
     }
 }

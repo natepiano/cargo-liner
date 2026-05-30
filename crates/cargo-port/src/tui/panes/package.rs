@@ -23,7 +23,9 @@ use tui_pane::error_color;
 use tui_pane::inactive_border_color;
 use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
+use tui_pane::secondary_text_color;
 use tui_pane::success_color;
+use tui_pane::text_default;
 use tui_pane::title_color;
 use tui_pane::warning_color;
 use unicode_width::UnicodeWidthStr;
@@ -36,6 +38,8 @@ use super::LintDisplay;
 use super::PackageData;
 use super::PackageRow;
 use super::SyncedDescriptionHeight;
+use super::pane_data::TESTS_IGNORED_LABEL;
+use super::pane_data::TESTS_TOTAL_LABEL;
 use super::pane_impls::PackagePane;
 use crate::constants::LINT_NO_LOG;
 use crate::lint::LintStatus;
@@ -139,12 +143,14 @@ fn stats_label_width(data: &PackageData) -> u16 {
 }
 
 /// Number of rendered lines in the stats column: the Structure rows plus,
-/// when there are test rows, the `Tests` title rule and its rows.
+/// when there are test rows, a blank spacer (only when Structure has
+/// rows), the `Tests` title rule, and its rows.
 const fn stats_column_line_count(data: &PackageData) -> usize {
     let tests = if data.test_rows.is_empty() {
         0
     } else {
-        1 + data.test_rows.len()
+        let spacer = if data.stats_rows.is_empty() { 0 } else { 1 };
+        spacer + 1 + data.test_rows.len()
     };
     data.stats_rows.len() + tests
 }
@@ -714,23 +720,32 @@ fn render_stats_column(frame: &mut Frame, context: &StatsColumnRender<'_>) -> Ve
         frame,
         &data.stats_rows,
         PackageRow::Structure,
+        structure_value_style,
         area.y,
         &ctx,
         &mut row_rects,
     );
 
     if !data.test_rows.is_empty() {
+        // Leave a blank row between the last Structure row and the Tests
+        // rule so the two sections read as distinct groups; skipped when
+        // Structure has no rows, since there is nothing to separate from.
+        let spacer = u16::from(!data.stats_rows.is_empty());
         let title_y = area
             .y
-            .saturating_add(u16::try_from(data.stats_rows.len()).unwrap_or(u16::MAX));
-        // The rule spans the full column so its `├` endcap tees into the
-        // column's left vertical rule; rendered after it so the join wins.
+            .saturating_add(u16::try_from(data.stats_rows.len()).unwrap_or(u16::MAX))
+            .saturating_add(spacer);
+        // Span one column past the stats area so the `├` endcap tees into
+        // the column's left vertical rule and the `┤` endcap tees into the
+        // pane's right border (the column's last cell is one inside it) —
+        // matching the full-width "Structure" rule above. Rendered after
+        // the vertical rule so the left join wins.
         tui_pane::render_horizontal_rule(
             frame,
             Rect {
                 x:      area.x,
                 y:      title_y,
-                width:  area.width,
+                width:  area.width.saturating_add(1),
                 height: 1,
             },
             context.border_style,
@@ -744,12 +759,31 @@ fn render_stats_column(frame: &mut Frame, context: &StatsColumnRender<'_>) -> Ve
             frame,
             &data.test_rows,
             PackageRow::Tests,
+            tests_value_style,
             title_y.saturating_add(1),
             &ctx,
             &mut row_rects,
         );
     }
     row_rects
+}
+
+/// Value-cell style for a Structure row — the accent title color, shared
+/// across every `ws` / `lib` / `bin` / … count.
+fn structure_value_style(_: &str) -> Style { Style::default().fg(title_color()) }
+
+/// Value-cell style for a Tests row: `unit` / `integration` / `doc`
+/// counts render in primary white; the unlabelled `total` renders in bold
+/// accent color (matching the Languages pane footer); the `(ignored)`
+/// annotation renders dimmed, since rustdoc registers but never runs it.
+fn tests_value_style(label: &str) -> Style {
+    match label {
+        TESTS_IGNORED_LABEL => Style::default().fg(secondary_text_color()),
+        TESTS_TOTAL_LABEL => Style::default()
+            .fg(title_color())
+            .add_modifier(Modifier::BOLD),
+        _ => Style::default().fg(text_default()),
+    }
 }
 
 /// Render one stat section's rows starting at `start_y`, pushing a
@@ -760,12 +794,12 @@ fn render_stat_section(
     frame: &mut Frame,
     section_rows: &[(&'static str, usize)],
     row_for_index: fn(usize) -> PackageRow,
+    value_style: fn(&str) -> Style,
     start_y: u16,
     ctx: &StatSectionCtx<'_>,
     row_rects: &mut Vec<(Rect, usize)>,
 ) {
     let label_style = Style::default().fg(label_color());
-    let num_style = Style::default().fg(title_color());
     let lw = ctx.label_width;
     let dw = ctx.digit_width;
     let lines: Vec<Line<'_>> = section_rows
@@ -791,7 +825,10 @@ fn render_stat_section(
             });
             Line::from(vec![
                 Span::styled(format!(" {label:<lw$} "), selection.patch(label_style)),
-                Span::styled(format!("{count:>dw$} "), selection.patch(num_style)),
+                Span::styled(
+                    format!("{count:>dw$} "),
+                    selection.patch(value_style(label)),
+                ),
             ])
         })
         .collect();

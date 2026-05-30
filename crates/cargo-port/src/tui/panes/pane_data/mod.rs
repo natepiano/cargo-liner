@@ -123,9 +123,24 @@ impl ProjectCounts {
     }
 }
 
-/// Build the Tests-section rows from accumulated test-function counts.
-/// Returns an empty vec when both counts are zero, which hides the
-/// section (matching the pre-scan state where the counts are `None`).
+/// Label of the `(ignored)` annotation row in the Tests section. Shared
+/// with the renderer, which dims this row's value (the count is a
+/// registered-but-skipped doctest tally, not a runnable test).
+pub(super) const TESTS_IGNORED_LABEL: &str = "(ignored)";
+
+/// Label of the runnable-total row in the Tests section — intentionally
+/// blank. The Languages pane shows its grand total as an unlabelled bold
+/// bottom value; the Tests total matches, so the renderer keys off this
+/// empty label to render the value in bold accent color.
+pub(super) const TESTS_TOTAL_LABEL: &str = "";
+
+/// Build the Tests-section rows from accumulated test counts. Lists the
+/// non-zero `unit` / `integration` / `doc` buckets, an `(ignored)`
+/// annotation when doctests are skipped, and a `total` of the runnable
+/// buckets once two or more rows are present. Returns an empty vec when
+/// nothing runs, which hides the section (matching the pre-scan state
+/// where the counts are `None`). `(ignored)` is excluded from the total —
+/// rustdoc registers those doctests but never runs them.
 fn test_rows_from_counts(counts: TestCounts) -> Vec<(&'static str, usize)> {
     let mut rows = Vec::new();
     if counts.unit > 0 {
@@ -133,6 +148,18 @@ fn test_rows_from_counts(counts: TestCounts) -> Vec<(&'static str, usize)> {
     }
     if counts.integration > 0 {
         rows.push(("integration", counts.integration));
+    }
+    if counts.doc > 0 {
+        rows.push(("doc", counts.doc));
+    }
+    if counts.doc_ignored > 0 {
+        rows.push((TESTS_IGNORED_LABEL, counts.doc_ignored));
+    }
+    if rows.len() >= 2 {
+        rows.push((
+            TESTS_TOTAL_LABEL,
+            counts.unit + counts.integration + counts.doc,
+        ));
     }
     rows
 }
@@ -827,10 +854,11 @@ pub struct PackageData {
     /// Structure section of the stats column — cargo target-kind counts
     /// (`ws` / `lib` / `bin` / `proc-macro` / `example` / `bench`).
     pub stats_rows:               Vec<(&'static str, usize)>,
-    /// Tests section of the stats column — `unit` / `integration` test
-    /// function counts from the source scan. Empty until the scan lands
-    /// (or when the project has no test functions); an empty vec hides
-    /// the section.
+    /// Tests section of the stats column — `unit` / `integration` /
+    /// `doc` test counts from the source scan, plus an `(ignored)`
+    /// doctest annotation and a runnable `total` when applicable. Empty
+    /// until the scan lands (or when the project has no tests); an empty
+    /// vec hides the section.
     pub test_rows:                Vec<(&'static str, usize)>,
     pub has_package:              bool,
     /// Cargo edition ("2021", "2024", …) from the workspace metadata.
@@ -1387,6 +1415,55 @@ fn example_category(manifest_dir: Option<&Path>, src_path: &Path, target_name: &
             }
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod test_row_tests {
+    use super::*;
+
+    fn counts(unit: usize, integration: usize, doc: usize, doc_ignored: usize) -> TestCounts {
+        TestCounts {
+            unit,
+            integration,
+            doc,
+            doc_ignored,
+        }
+    }
+
+    #[test]
+    fn single_bucket_has_no_total_row() {
+        assert_eq!(test_rows_from_counts(counts(5, 0, 0, 0)), vec![("unit", 5)]);
+    }
+
+    #[test]
+    fn multiple_buckets_append_runnable_total() {
+        assert_eq!(
+            test_rows_from_counts(counts(117, 48, 1185, 0)),
+            vec![
+                ("unit", 117),
+                ("integration", 48),
+                ("doc", 1185),
+                (TESTS_TOTAL_LABEL, 1350),
+            ]
+        );
+    }
+
+    #[test]
+    fn ignored_is_shown_but_excluded_from_total() {
+        assert_eq!(
+            test_rows_from_counts(counts(0, 0, 1185, 152)),
+            vec![
+                ("doc", 1185),
+                (TESTS_IGNORED_LABEL, 152),
+                (TESTS_TOTAL_LABEL, 1185),
+            ]
+        );
+    }
+
+    #[test]
+    fn all_zero_counts_hide_the_section() {
+        assert!(test_rows_from_counts(counts(0, 0, 0, 0)).is_empty());
+    }
 }
 
 #[cfg(test)]
