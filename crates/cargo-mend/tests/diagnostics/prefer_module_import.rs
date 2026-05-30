@@ -1138,6 +1138,87 @@ fn example() -> bool {
 }
 
 #[test]
+fn deletes_function_import_when_module_already_imported() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "already_imported_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod parent;\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/parent.rs"),
+        "mod utils;\nmod consumer;\n",
+    )
+    .expect("write parent mod");
+    fs::write(
+        temp.path().join("src/parent/utils.rs"),
+        "pub fn format_bytes(bytes: u64) -> String { format!(\"{bytes}\") }\npub fn truncate() -> i32 { 0 }\n",
+    )
+    .expect("write utils");
+    // The module is already imported (used by `truncate`), and the function is
+    // also imported separately. Rewriting the function import to
+    // `use crate::parent::utils;` would duplicate the existing module import
+    // (E0252), so the function import must be deleted instead.
+    fs::write(
+        temp.path().join("src/parent/consumer.rs"),
+        r#"use crate::parent::utils;
+use crate::parent::utils::format_bytes;
+
+fn example() -> String {
+    let _ = utils::truncate();
+    format!("{}", format_bytes(42))
+}
+"#,
+    )
+    .expect("write consumer");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let consumer =
+        fs::read_to_string(temp.path().join("src/parent/consumer.rs")).expect("read fixed file");
+    // The existing module import is kept (the shorten-import rule may rewrite it
+    // to the `super::` sibling form), and it must appear exactly once — the
+    // redundant function import is deleted rather than rewritten to a duplicate.
+    let module_import_count = consumer.matches("use crate::parent::utils;").count()
+        + consumer.matches("use super::utils;").count();
+    assert_eq!(
+        module_import_count, 1,
+        "module import must be kept exactly once, not duplicated, got:\n{consumer}"
+    );
+    assert!(
+        !consumer.contains("use crate::parent::utils::format_bytes;")
+            && !consumer.contains("use super::utils::format_bytes;"),
+        "redundant function import should be removed, got:\n{consumer}"
+    );
+    assert!(
+        consumer.contains("utils::format_bytes(42)"),
+        "call site should be qualified, got:\n{consumer}"
+    );
+}
+
+#[test]
 fn inline_call_inserts_use_and_qualifies() {
     let temp = tempdir().expect("create temp fixture dir");
 

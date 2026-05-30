@@ -59,9 +59,14 @@ impl ScanFileContext<'_> {
 }
 
 pub(super) struct ImportFindingInputs<'a> {
-    module_to_functions: &'a BTreeMap<String, Vec<RawCandidate>>,
-    func_to_module:      &'a BTreeMap<&'a str, (&'a str, ImportTarget)>,
-    references:          &'a [BareReference],
+    module_to_functions:     &'a BTreeMap<String, Vec<RawCandidate>>,
+    func_to_module:          &'a BTreeMap<&'a str, (&'a str, ImportTarget)>,
+    references:              &'a [BareReference],
+    /// Absolute paths of modules the file already imports with a bare `use
+    /// module;`. A function import whose target module is in this set is
+    /// rewritten to nothing (deleted) instead of to `use module;`, which would
+    /// duplicate the existing import and fail to compile (E0252).
+    existing_module_imports: &'a BTreeSet<Vec<String>>,
 }
 
 pub(super) struct InlineCallFindingInputs<'a> {
@@ -175,22 +180,22 @@ fn scan_file(
         }
     }
 
+    let existing_module_imports =
+        collect_existing_module_imports(&syntax, source_root, &current_module_path);
+
     let (mut findings, mut fixes) = build_findings_and_fixes(
         &file_context,
         &ImportFindingInputs {
-            module_to_functions: &module_to_functions,
-            func_to_module:      &func_to_module,
-            references:          &collector.references,
+            module_to_functions:     &module_to_functions,
+            func_to_module:          &func_to_module,
+            references:              &collector.references,
+            existing_module_imports: &existing_module_imports,
         },
     );
 
     if !inline_detector.candidates.is_empty() {
-        let will_import_modules = build_will_import_modules(
-            &syntax,
-            source_root,
-            &current_module_path,
-            &module_to_functions,
-        );
+        let will_import_modules =
+            build_will_import_modules(&existing_module_imports, &module_to_functions);
         let file_insertion_offset = file_level_insertion_offset(&syntax, &text, &offsets);
         let (inline_findings, inline_fixes) = inline_calls::build_inline_call_findings_and_fixes(
             &file_context,
@@ -223,13 +228,12 @@ fn collect_declared_modules(syntax: &File) -> BTreeSet<String> {
         .collect()
 }
 
-fn build_will_import_modules(
+fn collect_existing_module_imports(
     syntax: &File,
     source_root: &Path,
     current_module_path: &[String],
-    module_to_functions: &BTreeMap<String, Vec<RawCandidate>>,
 ) -> BTreeSet<Vec<String>> {
-    let mut will_import_modules: BTreeSet<Vec<String>> = BTreeSet::new();
+    let mut modules: BTreeSet<Vec<String>> = BTreeSet::new();
     for item in &syntax.items {
         if let Item::Use(item_use) = item
             && let Some(flat) = shared::flatten_use_tree(&item_use.tree)
@@ -238,10 +242,17 @@ fn build_will_import_modules(
             && !absolute.is_empty()
             && shared::leaf_is_module(source_root, &absolute)
         {
-            will_import_modules.insert(absolute);
+            modules.insert(absolute);
         }
     }
+    modules
+}
 
+fn build_will_import_modules(
+    existing_module_imports: &BTreeSet<Vec<String>>,
+    module_to_functions: &BTreeMap<String, Vec<RawCandidate>>,
+) -> BTreeSet<Vec<String>> {
+    let mut will_import_modules = existing_module_imports.clone();
     for functions in module_to_functions.values() {
         for candidate in functions {
             will_import_modules.insert(candidate.absolute_module.clone());
@@ -288,6 +299,7 @@ fn build_findings_and_fixes(
             fixes.push(build_function_use_fix(
                 function,
                 file_context,
+                import_inputs.existing_module_imports,
                 &mut rewritten_modules,
             ));
         }
@@ -350,6 +362,7 @@ fn build_function_finding(
 fn build_function_use_fix(
     function: &RawCandidate,
     file_context: &ScanFileContext<'_>,
+    existing_module_imports: &BTreeSet<Vec<String>>,
     rewritten_modules: &mut BTreeSet<String>,
 ) -> UseFix {
     let byte_start = shared::offset(file_context.offsets, function.span_start);
@@ -364,7 +377,14 @@ fn build_function_use_fix(
         full_path: function.absolute_module.join(MODULE_PATH_SEPARATOR),
     });
 
-    if function.import_target == ImportTarget::ParentModule {
+    if function.import_target == ImportTarget::ParentModule
+        || existing_module_imports.contains(&function.absolute_module)
+    {
+        // Either call sites become `super::fn(...)` (parent module, no `use`
+        // needed), or the file already imports the target module — so the
+        // function import is redundant. Delete the line in both cases;
+        // rewriting it to `use module;` when the module is already imported
+        // would produce a duplicate import (E0252).
         UseFix {
             path:         file_context.path.to_path_buf(),
             start:        byte_start,

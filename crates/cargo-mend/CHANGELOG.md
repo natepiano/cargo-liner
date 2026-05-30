@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Disable ANSI color in captured `cargo mend` output unless color is explicitly forced.
+- `prefer_module_import` no longer rewrites a function import to `use module;` when the file already imports that module, which produced a duplicate import (rustc error E0252: the same name imported twice) and forced `cargo mend --fix` to roll back; the redundant function import is now deleted instead.
 
 ## [0.15.3] - 2026-05-26
 
