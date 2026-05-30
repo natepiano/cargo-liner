@@ -5,6 +5,7 @@ use super::cargo::RustProject;
 use super::git::CheckoutInfo;
 use super::git::Submodule;
 use super::git::WorktreeGroup;
+use super::git::WorktreeStatus;
 use super::info::ProjectInfo;
 use super::info::Visibility;
 use super::info::WorktreeHealth;
@@ -187,6 +188,21 @@ impl RootItem {
                 .find(|s| s.path.as_path() == path)
                 .map(|s| &s.info)
         })
+    }
+
+    /// The `WorktreeStatus` of the specific checkout that owns `path`.
+    /// Resolves into worktree groups so a linked checkout reports its own
+    /// `Linked` status instead of the group primary's. `None` when no
+    /// checkout in this item contains `path`.
+    pub(crate) fn worktree_status_at(&self, path: &Path) -> Option<&WorktreeStatus> {
+        match self {
+            Self::Rust(p) => p.at_path(path).map(|_| p.worktree_status()),
+            Self::NonRust(p) => (p.path() == path).then(|| p.worktree_status()),
+            Self::Worktrees(g) => g
+                .iter_entries()
+                .find(|entry| entry.at_path(path).is_some())
+                .map(RustProject::worktree_status),
+        }
     }
 
     pub(crate) fn rust_info_at_path(&self, path: &Path) -> Option<&RustInfo> {

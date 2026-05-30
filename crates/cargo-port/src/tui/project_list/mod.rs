@@ -49,6 +49,7 @@ use crate::project::VendoredPackage;
 use crate::project::Visibility;
 use crate::project::WorkspaceMetadata;
 use crate::project::WorktreeGroup;
+use crate::project::WorktreeStatus;
 
 mod grouping;
 mod selection;
@@ -388,6 +389,10 @@ impl ProjectList {
         self.roots
             .values()
             .find(|entry| project::entry_contains(entry, target))
+    }
+
+    pub(super) fn worktree_status_for(&self, path: &Path) -> Option<&WorktreeStatus> {
+        self.entry_containing(path)?.item.worktree_status_at(path)
     }
 
     pub(super) fn entry_containing_mut(&mut self, target: &Path) -> Option<&mut ProjectEntry> {

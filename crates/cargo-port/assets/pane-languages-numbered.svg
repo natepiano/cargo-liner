@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="561 505 540 311" role="img" aria-labelledby="title desc">
+  <title id="title">cargo-port languages pane with numbered markers</title>
+  <desc id="desc">Languages pane with markers for detected languages, file count, code/comment/blank totals, and project totals.</desc>
+  <defs>
+    <filter id="pin-shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#000" flood-opacity="0.65"/>
+    </filter>
+    <style>
+      .pin { fill: #48d7d0; stroke: #071115; stroke-width: 3; filter: url(#pin-shadow); }
+      .pin-text { fill: #071115; font-family: Helvetica, Arial, sans-serif; font-size: 26px; font-weight: 800; text-anchor: middle; }
+    </style>
+  </defs>
+  <image href="dashboard-main.png" x="0" y="0" width="1840" height="1196"/>
+  <circle class="pin" cx="655" cy="755" r="17"/><text class="pin-text" x="655" y="755" dx=".02em" dy=".19em">1</text>
+  <circle class="pin" cx="750" cy="755" r="17"/><text class="pin-text" x="750" y="755" dx=".02em" dy=".19em">2</text>
+  <circle class="pin" cx="845" cy="755" r="17"/><text class="pin-text" x="845" y="755" dx=".02em" dy=".19em">3</text>
+  <circle class="pin" cx="1055" cy="755" r="17"/><text class="pin-text" x="1055" y="755" dx=".02em" dy=".19em">4</text>
+</svg>

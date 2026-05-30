@@ -7,7 +7,7 @@
 
 <img src="assets/dashboard-main.png" alt="cargo-port dashboard showing project tree, worktree details, Git status, CPU and GPU diagnostics, targets, lint runs, and CI runs" width="100%">
 
-A terminal dashboard for a Rust workspace forest. Point it at a directory and it keeps workspaces, crates, worktrees, vendored dependencies, targets, local lint state, GitHub CI, pull requests, and machine diagnostics in one keyboard-driven view.
+cargo-port is a terminal dashboard for all your Rust workspaces and projects. Point it at a directory to view workspaces, crates, worktrees, vendored dependencies, targets, local lint state, GitHub CI, pull requests, and machine diagnostics in one keyboard-driven view.
 
 - **Inventory everything** - workspaces, members, linked worktrees, submodules, vendored crates, examples, benches, binaries, tests, and non-Rust git repos
 - **Run and inspect targets** - launch examples, benches, and binaries in debug or release mode with live output and running-target markers
@@ -34,23 +34,103 @@ cargo install cargo-port
 cargo-port
 ```
 
-## What You Can See
+## The Main cargo-port Panes
 
-The main dashboard combines the project tree with detail panes for package metadata, Git state, languages, targets, diagnostics, lint history, and CI runs.
+The dashboard combines a project tree in the upper left with detail panes for package metadata, Git state, languages, targets, diagnostics, lint history, and CI runs.
 
-<img src="assets/callout-project-tree.png" alt="Annotated project tree showing hierarchy, health columns, worktree groups, and disk rollups" width="100%">
+### Dashboard View
+<img src="assets/dashboard-overview-numbered.png" alt="Numbered cargo-port dashboard overview showing each major pane" width="100%">
 
-- **Project tree**: groups workspaces, members, linked worktrees, submodules, vendored crates, and optional non-Rust repos under the configured scan roots
-- **Package and targets**: shows Cargo metadata-backed type, version, edition, license, homepage, repository, target, example, bench, and binary information
-- **Git and pull requests**: shows branch, sync status, remotes, worktrees, GitHub rate-limit state, open PR rows, and PR check polling
-- **Diagnostics**: shows CPU usage per core, GPU utilization when available, and sccache statistics when `sccache` is configured
-- **Lint and CI history**: shows local lint/watch runs from disk and GitHub Actions run history with job-level status and durations
+#### Panel Descriptions
+1. **Project tree** workspaces, members, linked worktrees, submodules, vendored crates, optional non-Rust repos, status columns, and disk rollups.
+2. **Workspace details**: Cargo metadata-backed package summary, disk breakdown, lint/CI rollups, and target structure counts.
+3. **Git**: branch status, sync state, remotes, worktrees, GitHub rate-limit state, and pull request rows when available.
+4. **Languages**: per-project language totals by file count, code, comments, blanks, and total lines.
+5. **Diagnostics**: CPU and GPU utilization, with background refresh.
+6. **Targets**: examples, benches, binaries, and tests with source package and target kind.
+7. **Lint runs**: local lint/watch history and cached run artifacts.
+8. **CI runs**: GitHub Actions history with job-level status and duration columns.
+9. **Status bar**: current mode, pane navigation, active action, and shortcut help.
 
-<img src="assets/callout-details-git.png" alt="Annotated details and Git panes showing workspace summary, target counts, Git health, remotes, and worktrees" width="100%">
+### Project Tree
 
-<img src="assets/callout-diagnostics-targets.png" alt="Annotated languages, CPU and GPU diagnostics, and runnable targets panes" width="100%">
+<img src="assets/pane-project-tree-numbered.png" alt="Numbered project tree pane" width="75%">
 
-<img src="assets/callout-lint-ci.png" alt="Annotated lint runs and CI runs panes showing cached lint logs and job-level CI status" width="100%">
+1. Scan roots and project counts.
+2. Hierarchical project list with expandable workspaces, members, worktrees, submodules, and vendored crates.
+3. Lint, CI, Git, origin, main-branch, and disk columns.
+4. Worktree-group rows with branch and status rollups.
+5. Total disk usage across the visible project set.
+
+### Workspace Details
+
+<img src="assets/pane-details-numbered.png" alt="Numbered workspace details pane" width="75%">
+
+1. Selected row title and description.
+2. Path on disk
+3. Disk split between `target/` and everything else.
+4. Lint and CI Status
+5. If published, version locally, version on crates.io and download
+6. Structure counts for workspaces, libraries, binaries, proc-macros, examples, test files and benches
+
+### Git
+
+<img src="assets/pane-git-numbered.png" alt="Numbered Git pane" width="75%">
+
+1. Selected repo, current branch, and project description.
+2. Branch sync status, stars, inception date, latest commit, and fetch timestamp.
+3. GitHub API rate-limit state for core and GraphQL requests.
+4. Remotes table with shortened GitHub URLs.
+5. Linked worktrees and branch/status summary.
+6. Remote tracking and sync state.
+
+### Languages
+
+<img src="assets/pane-languages-numbered.png" alt="Numbered languages pane" width="75%">
+
+1. Detected languages with file-type icons.
+2. File counts per language.
+3. Code, comment, blank-line, and total-line counts.
+
+### Diagnostics
+
+<img src="assets/pane-diagnostics-numbered.png" alt="Numbered CPU and GPU diagnostics pane" width="25%">
+
+1. Per-core CPU usage bars.
+2. Aggregate system, user, and idle CPU percentages.
+3. GPU utilization when available for the current platform.
+
+### Targets
+
+<img src="assets/pane-targets-numbered.png" alt="Numbered targets pane" width="75%">
+
+1. Runnable target names.
+2. Source package for each target.
+3. Target kind, such as example or bench.
+4. Page position for long target lists.
+
+### Lint Runs
+
+<img src="assets/pane-lint-runs-numbered.png" alt="Numbered lint runs pane" width="75%">
+
+1. Lint history count for the selected project.
+2. Run dates grouped in the history table.
+3. Runtime duration.
+4. Cached artifact size.
+5. Pass/fail result.
+6. Page position for long lint histories.
+
+### CI Runs
+
+<img src="assets/pane-ci-runs-numbered.png" alt="Numbered CI runs pane" width="100%">
+
+1. CI run count and selected branch.
+2. Commit summary for each run.
+3. Branch and timestamp.
+4. Test-suite duration and status.
+5. Job-level status columns.
+6. Total run duration.
+7. Page position for long CI histories.
 
 ## Navigation
 

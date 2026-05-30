@@ -57,6 +57,7 @@ use crate::project::VendoredPackage;
 use crate::project::Visibility;
 use crate::project::Workspace;
 use crate::project::WorkspaceMetadata;
+use crate::project::WorktreeStatus;
 use crate::tui::app::App;
 use crate::tui::app::AvailabilityStatus;
 use crate::tui::project_list::ProjectList;
@@ -327,7 +328,7 @@ impl DetailField {
             Self::DiskOutOfTreeTarget => "  target/ (out of tree)",
             Self::Lint => "Lint",
             Self::Ci => "CI",
-            Self::Head => "Head",
+            Self::Head => "Branch",
             Self::Tracks => "Tracks",
             Self::Pinned => "Pinned",
             Self::GitStatus => "Status",
@@ -428,17 +429,10 @@ impl DetailField {
             Self::Head => match data.head.as_ref() {
                 None | Some(HeadState::Unborn) => "unborn".to_string(),
                 Some(HeadState::Detached { short_sha }) => format!("detached @ {short_sha}"),
-                Some(HeadState::Branch(name)) => {
-                    let is_default = data
-                        .local_main_branch
-                        .as_deref()
-                        .is_some_and(|db| db == name);
-                    if is_default {
-                        format!("{name} (HEAD)")
-                    } else {
-                        name.clone()
-                    }
-                },
+                Some(HeadState::Branch(name)) => data.head_relation.map_or_else(
+                    || name.clone(),
+                    |relation| format!("{name} · {}", relation.label()),
+                ),
             },
             Self::GitStatus => data
                 .status
@@ -872,13 +866,59 @@ fn or_dash(value: Option<&str>) -> String {
         .map_or_else(|| "—".to_string(), String::from)
 }
 
+/// How the current `HEAD` relates to the repo, rendered as a qualifier
+/// after the branch name in the Git pane's Branch row (`main · default`,
+/// `feature/x · feature`, `feature/x · worktree`). `None` for detached and
+/// unborn checkouts, whose value (`detached @ <sha>`, `unborn`) already
+/// describes the state without a qualifier.
+#[derive(Clone, Copy)]
+pub enum HeadRelation {
+    /// On the repo's default branch.
+    Default,
+    /// On a non-default branch in the primary checkout.
+    Feature,
+    /// On a branch in a linked worktree checkout.
+    Worktree,
+}
+
+impl HeadRelation {
+    /// Classify a branch `HEAD` against the repo's default branch and the
+    /// checkout's worktree status. `None` when `HEAD` is not on a branch.
+    fn classify(
+        head: &HeadState,
+        default_branch: Option<&str>,
+        worktree_status: Option<&WorktreeStatus>,
+    ) -> Option<Self> {
+        let HeadState::Branch(name) = head else {
+            return None;
+        };
+        Some(
+            if worktree_status.is_some_and(WorktreeStatus::is_linked_worktree) {
+                Self::Worktree
+            } else if default_branch == Some(name.as_str()) {
+                Self::Default
+            } else {
+                Self::Feature
+            },
+        )
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Feature => "feature",
+            Self::Worktree => "worktree",
+        }
+    }
+}
+
 /// Per-pane data for the Git detail panel.
 #[derive(Clone, Default)]
 pub struct GitData {
     pub head:               Option<HeadState>,
+    pub head_relation:      Option<HeadRelation>,
     pub status:             Option<GitStatus>,
     pub vs_local:           Option<String>,
-    pub local_main_branch:  Option<String>,
     pub stars:              Option<u64>,
     pub description:        Option<String>,
     pub inception:          Option<String>,
@@ -1493,9 +1533,9 @@ fn format_downloads(count: u64) -> String {
 
 struct GitDetailFields {
     head:               Option<HeadState>,
+    head_relation:      Option<HeadRelation>,
     path:               Option<GitStatus>,
     vs_local:           Option<String>,
-    local_main_branch:  Option<String>,
     stars:              Option<u64>,
     description:        Option<String>,
     inception:          Option<String>,
@@ -1515,6 +1555,13 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
 
     let head = checkout.map(|info| info.head.clone());
     let local_main_branch = repo_info.and_then(|repo| repo.local_main_branch.clone());
+    let head_relation = head.as_ref().and_then(|head| {
+        HeadRelation::classify(
+            head,
+            local_main_branch.as_deref(),
+            app.project_list.worktree_status_for(abs_path),
+        )
+    });
     let local_main_label = local_main_branch
         .as_deref()
         .unwrap_or_else(|| app.config.current().tui.main_branch.as_str());
@@ -1547,9 +1594,9 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
     let rate_limit = app.net.rate_limit();
     GitDetailFields {
         head,
+        head_relation,
         path: app.project_list.git_status_for(abs_path),
         vs_local,
-        local_main_branch,
         stars,
         description,
         inception,
@@ -1855,9 +1902,9 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
         },
         git:     GitData {
             head: git_detail.head,
+            head_relation: git_detail.head_relation,
             status: git_detail.path,
             vs_local: git_detail.vs_local,
-            local_main_branch: git_detail.local_main_branch,
             stars: git_detail.stars,
             description: git_detail.description,
             inception: git_detail.inception,
@@ -2405,9 +2452,9 @@ fn assemble_detail_pane_data(
         package,
         git: GitData {
             head: git_detail.head,
+            head_relation: git_detail.head_relation,
             status: git_detail.path,
             vs_local: git_detail.vs_local,
-            local_main_branch: git_detail.local_main_branch,
             stars: git_detail.stars,
             description: git_detail.description,
             inception: git_detail.inception,

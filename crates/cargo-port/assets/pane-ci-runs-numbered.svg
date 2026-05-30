@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="561 819 1212 277" role="img" aria-labelledby="title desc">
+  <title id="title">cargo-port CI runs pane with numbered markers</title>
+  <desc id="desc">CI runs pane with markers for branch, commits, timestamps, job columns, durations, and paging.</desc>
+  <defs>
+    <filter id="pin-shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#000" flood-opacity="0.65"/>
+    </filter>
+    <style>
+      .pin { fill: #48d7d0; stroke: #071115; stroke-width: 3; filter: url(#pin-shadow); }
+      .pin-text { fill: #071115; font-family: Helvetica, Arial, sans-serif; font-size: 26px; font-weight: 800; text-anchor: middle; }
+    </style>
+  </defs>
+  <image href="dashboard-main.png" x="0" y="0" width="1840" height="1196"/>
+  <circle class="pin" cx="930" cy="1075" r="17"/><text class="pin-text" x="930" y="1075" dx=".02em" dy=".19em">1</text>
+  <circle class="pin" cx="988" cy="1075" r="17"/><text class="pin-text" x="988" y="1075" dx=".02em" dy=".19em">2</text>
+  <circle class="pin" cx="1046" cy="1075" r="17"/><text class="pin-text" x="1046" y="1075" dx=".02em" dy=".19em">3</text>
+  <circle class="pin" cx="1104" cy="1075" r="17"/><text class="pin-text" x="1104" y="1075" dx=".02em" dy=".19em">4</text>
+  <circle class="pin" cx="1162" cy="1075" r="17"/><text class="pin-text" x="1162" y="1075" dx=".02em" dy=".19em">5</text>
+  <circle class="pin" cx="1220" cy="1075" r="17"/><text class="pin-text" x="1220" y="1075" dx=".02em" dy=".19em">6</text>
+  <circle class="pin" cx="1278" cy="1075" r="17"/><text class="pin-text" x="1278" y="1075" dx=".02em" dy=".19em">7</text>
+</svg>
