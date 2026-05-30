@@ -6,6 +6,7 @@ use crate::constants::NO_REMOTE_SYNC;
 use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
 use crate::http::RateLimitQuota;
+use crate::project::BisectProgress;
 
 /// Get the local UTC offset in seconds (e.g., -28800 for PST).
 fn local_utc_offset_secs() -> i64 {
@@ -221,6 +222,29 @@ pub fn format_ahead_behind_against((ahead, behind): (usize, usize), branch: &str
         (ahead, 0) => format!("{SYNC_UP}{ahead} ahead of {branch}"),
         (0, behind) => format!("{SYNC_DOWN}{behind} behind {branch}"),
         (ahead, behind) => format!("{SYNC_UP}{ahead} {SYNC_DOWN}{behind} diverged from {branch}"),
+    }
+}
+
+/// Render the Git pane's `Bisect` row, mirroring git's own
+/// "N revisions left to test (roughly M steps)" phrasing.
+pub(super) fn format_bisect_progress(progress: &BisectProgress) -> String {
+    match progress {
+        BisectProgress::Awaiting => "bisecting — mark a known-good & known-bad commit".to_string(),
+        BisectProgress::Narrowing { revisions, steps } => {
+            format!(
+                "{} left · ~{}",
+                pluralize(*revisions, "revision"),
+                pluralize(*steps, "step"),
+            )
+        },
+    }
+}
+
+fn pluralize(count: usize, noun: &str) -> String {
+    if count == 1 {
+        format!("{count} {noun}")
+    } else {
+        format!("{count} {noun}s")
     }
 }
 

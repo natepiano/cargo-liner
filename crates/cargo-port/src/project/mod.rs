@@ -31,6 +31,7 @@ pub(crate) use cargo::WorkspaceMetadataStore;
 pub(crate) use cargo::from_cargo_toml;
 pub(crate) use cargo::from_git_dir;
 // ── Git types and functions ──────────────────────────────────────────
+pub(crate) use git::BisectProgress;
 pub(crate) use git::CheckoutInfo;
 pub(crate) use git::GitOrigin;
 pub(crate) use git::GitRepoPresence;

@@ -7,6 +7,7 @@ use std::path::Path;
 
 use cargo_metadata::TargetKind;
 pub use formatting::format_ahead_behind_against;
+use formatting::format_bisect_progress;
 pub use formatting::format_date;
 pub use formatting::format_duration;
 use formatting::format_rate_limit_bucket;
@@ -31,6 +32,7 @@ use crate::lint;
 use crate::lint::LintRun;
 use crate::project;
 use crate::project::AbsolutePath;
+use crate::project::BisectProgress;
 use crate::project::Cargo;
 use crate::project::GitOrigin;
 use crate::project::GitStatus;
@@ -296,6 +298,7 @@ pub enum DetailField {
     Lint,
     Ci,
     Head,
+    Bisect,
     GitStatus,
     VsLocal,
     Stars,
@@ -329,6 +332,7 @@ impl DetailField {
             Self::Lint => "Lint",
             Self::Ci => "CI",
             Self::Head => "Branch",
+            Self::Bisect => "Bisect",
             Self::Tracks => "Tracks",
             Self::Pinned => "Pinned",
             Self::GitStatus => "Status",
@@ -408,6 +412,7 @@ impl DetailField {
             // their typed-enum fields (`PackageData.lint_display` /
             // `ci_display`) at render time.
             Self::Head
+            | Self::Bisect
             | Self::Tracks
             | Self::Pinned
             | Self::GitStatus
@@ -434,6 +439,10 @@ impl DetailField {
                     |relation| format!("{name} · {}", relation.label()),
                 ),
             },
+            Self::Bisect => data
+                .bisect
+                .as_ref()
+                .map_or_else(String::new, format_bisect_progress),
             Self::GitStatus => data
                 .status
                 .map_or_else(String::new, GitStatus::label_with_icon),
@@ -701,6 +710,9 @@ pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
     if data.head.is_some() {
         fields.push(DetailField::Head);
     }
+    if data.bisect.is_some() {
+        fields.push(DetailField::Bisect);
+    }
     if let Some(ctx) = data.submodule_ctx.as_ref() {
         if ctx.tracks.is_some() {
             fields.push(DetailField::Tracks);
@@ -917,6 +929,7 @@ impl HeadRelation {
 pub struct GitData {
     pub head:               Option<HeadState>,
     pub head_relation:      Option<HeadRelation>,
+    pub bisect:             Option<BisectProgress>,
     pub status:             Option<GitStatus>,
     pub vs_local:           Option<String>,
     pub stars:              Option<u64>,
@@ -1534,6 +1547,7 @@ fn format_downloads(count: u64) -> String {
 struct GitDetailFields {
     head:               Option<HeadState>,
     head_relation:      Option<HeadRelation>,
+    bisect:             Option<BisectProgress>,
     path:               Option<GitStatus>,
     vs_local:           Option<String>,
     stars:              Option<u64>,
@@ -1554,6 +1568,7 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
     let checkout = app.project_list.git_info_for(abs_path);
 
     let head = checkout.map(|info| info.head.clone());
+    let bisect = checkout.and_then(|info| info.bisect.clone());
     let local_main_branch = repo_info.and_then(|repo| repo.local_main_branch.clone());
     let head_relation = head.as_ref().and_then(|head| {
         HeadRelation::classify(
@@ -1595,6 +1610,7 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
     GitDetailFields {
         head,
         head_relation,
+        bisect,
         path: app.project_list.git_status_for(abs_path),
         vs_local,
         stars,
@@ -1903,6 +1919,7 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
         git:     GitData {
             head: git_detail.head,
             head_relation: git_detail.head_relation,
+            bisect: git_detail.bisect,
             status: git_detail.path,
             vs_local: git_detail.vs_local,
             stars: git_detail.stars,
@@ -2453,6 +2470,7 @@ fn assemble_detail_pane_data(
         git: GitData {
             head: git_detail.head,
             head_relation: git_detail.head_relation,
+            bisect: git_detail.bisect,
             status: git_detail.path,
             vs_local: git_detail.vs_local,
             stars: git_detail.stars,

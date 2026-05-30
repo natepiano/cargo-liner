@@ -420,6 +420,7 @@ fn ci_for_prefers_runs_matching_local_branch() {
                 last_commit:         None,
                 ahead_behind_local:  None,
                 primary_tracked_ref: Some("origin/main".to_string()),
+                bisect:              None,
             },
             RepoInfo {
                 remotes:           vec![RemoteInfo {
@@ -480,6 +481,7 @@ fn ci_for_default_branch_prefers_matching_branch_runs() {
                 last_commit:         None,
                 ahead_behind_local:  None,
                 primary_tracked_ref: Some("origin/main".to_string()),
+                bisect:              None,
             },
             RepoInfo {
                 remotes:           vec![RemoteInfo {
@@ -548,6 +550,7 @@ fn ci_toggle_switches_non_default_branch_between_branch_only_and_all_runs() {
                 last_commit:         None,
                 ahead_behind_local:  None,
                 primary_tracked_ref: Some("origin/main".to_string()),
+                bisect:              None,
             },
             RepoInfo {
                 remotes:           vec![RemoteInfo {
@@ -1105,6 +1108,7 @@ fn git_status_suppresses_sync_for_untracked_and_ignored() {
                 last_commit:         None,
                 ahead_behind_local:  None,
                 primary_tracked_ref: Some("origin/main".to_string()),
+                bisect:              None,
             },
             RepoInfo {
                 remotes:           vec![RemoteInfo {
@@ -1186,6 +1190,7 @@ fn background_git_info_updates_rendered_git_status() {
                 last_commit:         None,
                 ahead_behind_local:  None,
                 primary_tracked_ref: Some("origin/main".to_string()),
+                bisect:              None,
             },
         },
     );
@@ -1229,6 +1234,7 @@ fn background_git_info_updates_rendered_git_status() {
                 last_commit:         None,
                 ahead_behind_local:  None,
                 primary_tracked_ref: Some("origin/main".to_string()),
+                bisect:              None,
             },
         },
     );
@@ -1253,6 +1259,7 @@ fn git_sync_shows_ascii_fill_for_local_only_branch() {
                 last_commit:         None,
                 ahead_behind_local:  Some((3, 0)),
                 primary_tracked_ref: None,
+                bisect:              None,
             },
             RepoInfo {
                 remotes:           vec![RemoteInfo {
@@ -1294,6 +1301,7 @@ fn git_sync_shows_ascii_fill_for_branch_without_upstream() {
                 last_commit:         None,
                 ahead_behind_local:  Some((2, 1)),
                 primary_tracked_ref: None,
+                bisect:              None,
             },
             RepoInfo {
                 remotes:           vec![RemoteInfo {
@@ -1335,6 +1343,7 @@ fn ci_empty_state_reports_unpublished_branch_when_no_upstream_exists() {
                 last_commit:         None,
                 ahead_behind_local:  None,
                 primary_tracked_ref: None,
+                bisect:              None,
             },
             RepoInfo {
                 remotes:           vec![RemoteInfo {
@@ -1393,6 +1402,7 @@ fn package_details_show_unpublished_branch_for_ci_when_branch_has_no_upstream() 
                 last_commit:         None,
                 ahead_behind_local:  None,
                 primary_tracked_ref: None,
+                bisect:              None,
             },
             RepoInfo {
                 remotes:           vec![RemoteInfo {
@@ -1452,6 +1462,7 @@ fn git_main_shows_synced_for_non_main_branch_in_sync_with_main() {
                 last_commit:         None,
                 ahead_behind_local:  Some((0, 0)),
                 primary_tracked_ref: Some("origin/main".to_string()),
+                bisect:              None,
             },
             RepoInfo {
                 remotes:           vec![RemoteInfo {

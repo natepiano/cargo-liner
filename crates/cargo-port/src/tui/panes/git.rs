@@ -717,13 +717,18 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
         };
         let ls = selection.patch(styles.readonly_label);
         let vs = selection.patch(base_value_style);
-        if matches!(*field, DetailField::Head | DetailField::WorktreeError) && !value.is_empty() {
+        if matches!(
+            *field,
+            DetailField::Head | DetailField::WorktreeError | DetailField::Bisect
+        ) && !value.is_empty()
+        {
             let prefix = format!(" {label:<label_width$} ");
             let prefix_len = prefix.width();
             let col_width = area_width as usize;
             let avail = col_width.saturating_sub(prefix_len + 1);
             if avail > 0 && value.width() > avail {
-                let wrapped = if matches!(*field, DetailField::WorktreeError) {
+                let wrapped = if matches!(*field, DetailField::WorktreeError | DetailField::Bisect)
+                {
                     package::word_wrap(&value, avail)
                 } else {
                     package::hard_wrap(&value, avail)

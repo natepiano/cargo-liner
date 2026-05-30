@@ -5,6 +5,7 @@ mod repo;
 mod submodule;
 mod worktree_group;
 
+pub(crate) use checkout::BisectProgress;
 pub(crate) use checkout::CheckoutInfo;
 pub(crate) use checkout::GitStatus;
 pub(crate) use checkout::HeadState;

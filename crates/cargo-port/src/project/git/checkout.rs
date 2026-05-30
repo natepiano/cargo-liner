@@ -69,6 +69,25 @@ pub(crate) struct CheckoutInfo {
     /// rewrite cannot silently invalidate a linked checkout's pointer.
     /// `None` when the current branch has no upstream tracking ref.
     pub primary_tracked_ref: Option<String>,
+    /// Progress of an in-flight `git bisect`, when one is running for this
+    /// checkout. `None` when no bisect is active.
+    pub bisect:              Option<BisectProgress>,
+}
+
+/// Progress of an in-flight `git bisect`.
+///
+/// `git bisect` checks out each candidate in detached `HEAD`, so this is
+/// the only context where the Git pane reports position-in-history rather
+/// than just the detached SHA.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum BisectProgress {
+    /// Bisect started, but a known-good and known-bad commit are not both
+    /// marked yet, so git cannot estimate the remaining work.
+    Awaiting,
+    /// Narrowing the range, carrying git's own remaining-work estimate:
+    /// `revisions` left to test and the rough `steps` count.
+    Narrowing { revisions: usize, steps: usize },
 }
 
 impl CheckoutInfo {
@@ -131,8 +150,78 @@ impl CheckoutInfo {
             last_commit,
             ahead_behind_local,
             primary_tracked_ref: current_upstream,
+            bisect: bisect_progress(&repo_root),
         })
     }
+}
+
+/// Detect an in-flight `git bisect` for `repo_root` and report its
+/// progress. Returns `None` in the common case where no bisect is running.
+///
+/// The `BISECT_START` existence check is a cheap gate that keeps the
+/// non-bisecting path free of any subprocess spawn — git writes the file
+/// on `git bisect start` and removes it on `git bisect reset`.
+fn bisect_progress(repo_root: &Path) -> Option<BisectProgress> {
+    let git_dir = discovery::resolve_git_dir(repo_root)?;
+    if !git_dir.as_path().join("BISECT_START").exists() {
+        return None;
+    }
+
+    let refs = command::git_output_logged(
+        repo_root,
+        "bisect_refs",
+        ["for-each-ref", "--format=%(refname)", "refs/bisect/"],
+    )
+    .ok()?;
+    let refs = String::from_utf8_lossy(&refs.stdout);
+
+    let mut bad = false;
+    let mut good = Vec::new();
+    for refname in refs.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        if refname == "refs/bisect/bad" {
+            bad = true;
+        } else if refname.starts_with("refs/bisect/good-") {
+            good.push(refname.to_string());
+        }
+    }
+
+    // git can only estimate remaining work once both bounds are marked.
+    if !bad || good.is_empty() {
+        return Some(BisectProgress::Awaiting);
+    }
+    Some(bisect_vars(repo_root, &good).unwrap_or(BisectProgress::Awaiting))
+}
+
+/// Run `git rev-list --bisect-vars` over the marked range and parse the
+/// `bisect_nr` (revisions left) and `bisect_steps` (rough step count)
+/// fields git emits. `good` must be non-empty.
+fn bisect_vars(repo_root: &Path, good: &[String]) -> Option<BisectProgress> {
+    let mut args: Vec<&str> = vec!["rev-list", "--bisect-vars", "refs/bisect/bad", "--not"];
+    args.extend(good.iter().map(String::as_str));
+    let output = command::git_command(repo_root).args(&args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_bisect_vars(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Parse the `bisect_nr` (revisions left) and `bisect_steps` (rough step
+/// count) fields from `git rev-list --bisect-vars` output. `None` if
+/// either field is absent or unparseable.
+fn parse_bisect_vars(stdout: &str) -> Option<BisectProgress> {
+    let mut revisions = None;
+    let mut steps = None;
+    for line in stdout.lines() {
+        if let Some(value) = line.strip_prefix("bisect_nr=") {
+            revisions = value.trim().parse::<usize>().ok();
+        } else if let Some(value) = line.strip_prefix("bisect_steps=") {
+            steps = value.trim().parse::<usize>().ok();
+        }
+    }
+    Some(BisectProgress::Narrowing {
+        revisions: revisions?,
+        steps:     steps?,
+    })
 }
 
 /// Resolve `HEAD` to a `HeadState`:
@@ -401,5 +490,30 @@ mod tests {
             let back: HeadState = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(state, back);
         }
+    }
+
+    #[test]
+    fn parse_bisect_vars_reads_nr_and_steps() {
+        let stdout = "\
+bisect_rev=abc123
+bisect_nr=6
+bisect_steps=3
+bisect_good=def456
+bisect_bad=789abc
+bisect_all=13
+";
+        assert_eq!(
+            parse_bisect_vars(stdout),
+            Some(BisectProgress::Narrowing {
+                revisions: 6,
+                steps:     3,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_bisect_vars_missing_field_is_none() {
+        assert_eq!(parse_bisect_vars("bisect_nr=6\n"), None);
+        assert_eq!(parse_bisect_vars(""), None);
     }
 }

@@ -32,6 +32,7 @@ use crate::lint::LintCommandStatus;
 use crate::lint::LintRun;
 use crate::lint::LintRunStatus;
 use crate::project::AbsolutePath;
+use crate::project::BisectProgress;
 use crate::project::GitStatus;
 use crate::project::ProjectType;
 use crate::tui::app::AvailabilityStatus;
@@ -75,6 +76,7 @@ fn git_data() -> GitData {
     GitData {
         head:               None,
         head_relation:      None,
+        bisect:             None,
         submodule_ctx:      None,
         status:             None,
         vs_local:           None,
@@ -674,6 +676,51 @@ fn git_path_value_appends_status_icon() {
     };
 
     assert_eq!(DetailField::GitStatus.git_value(&data), "🟠 modified");
+}
+
+#[test]
+fn git_bisect_value_mirrors_git_phrasing() {
+    let data = GitData {
+        bisect: Some(BisectProgress::Narrowing {
+            revisions: 6,
+            steps:     3,
+        }),
+        ..git_data()
+    };
+
+    assert_eq!(
+        DetailField::Bisect.git_value(&data),
+        "6 revisions left · ~3 steps"
+    );
+}
+
+#[test]
+fn git_bisect_value_pluralizes_singular_counts() {
+    let data = GitData {
+        bisect: Some(BisectProgress::Narrowing {
+            revisions: 1,
+            steps:     1,
+        }),
+        ..git_data()
+    };
+
+    assert_eq!(
+        DetailField::Bisect.git_value(&data),
+        "1 revision left · ~1 step"
+    );
+}
+
+#[test]
+fn git_bisect_awaiting_value_prompts_for_bounds() {
+    let data = GitData {
+        bisect: Some(BisectProgress::Awaiting),
+        ..git_data()
+    };
+
+    assert_eq!(
+        DetailField::Bisect.git_value(&data),
+        "bisecting — mark a known-good & known-bad commit"
+    );
 }
 
 #[test]

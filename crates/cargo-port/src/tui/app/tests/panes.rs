@@ -158,6 +158,7 @@ fn tabbable_panes_follow_canonical_order() {
                 last_commit:         None,
                 ahead_behind_local:  None,
                 primary_tracked_ref: None,
+                bisect:              None,
             },
             RepoInfo {
                 remotes:           vec![RemoteInfo {

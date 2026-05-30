@@ -551,6 +551,7 @@ fn make_git_info(url: Option<&str>) -> (CheckoutInfo, RepoInfo) {
         last_commit:         None,
         ahead_behind_local:  None,
         primary_tracked_ref: Some("origin/main".to_string()),
+        bisect:              None,
     };
     let repo = RepoInfo {
         remotes:           vec![RemoteInfo {
