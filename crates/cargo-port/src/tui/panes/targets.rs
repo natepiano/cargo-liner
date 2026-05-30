@@ -34,6 +34,7 @@ use crate::tui::pane::PaneRenderCtx;
 use crate::tui::panes;
 use crate::tui::render;
 use crate::tui::running_targets::RunningKey;
+use crate::tui::running_targets::RunningMetrics;
 
 /// Cap on the Source column width so a single long member name can't
 /// crowd out the target name. Overflow truncates with an ellipsis.
@@ -89,16 +90,15 @@ fn render_targets_with_data(
         .chrome
         .block(targets_title, matches!(focus, PaneFocusState::Active));
 
-    let running_for = |entry: &TargetEntry| {
-        ctx.running_targets_dir.is_some_and(|dir| {
-            ctx.running_targets.is_running(&RunningKey {
-                target_dir: dir.clone(),
-                kind:       entry.kind,
-                name:       entry.name.clone(),
-            })
+    let metrics_for = |entry: &TargetEntry| -> Option<RunningMetrics> {
+        let dir = ctx.running_targets_dir?;
+        ctx.running_targets.metrics(&RunningKey {
+            target_dir: dir.clone(),
+            kind:       entry.kind,
+            name:       entry.name.clone(),
         })
     };
-    let entries = panes::build_target_list_from_data(data, &running_for);
+    let entries = panes::build_target_list_from_data(data);
     pane.viewport.set_len(entries.len());
     let content_inner = targets_block.inner(area);
 
@@ -118,7 +118,7 @@ fn render_targets_with_data(
         .set_viewport_rows(usize::from(data_area.height));
 
     let layout = compute_layout(&entries, content_inner.width);
-    let rows = build_rows(&entries, pane, focus, &layout, &running_for);
+    let rows = build_rows(&entries, pane, focus, &layout, &metrics_for);
     let widths = build_widths(&layout);
 
     let table = Table::new(rows, widths)
@@ -194,37 +194,59 @@ fn compute_layout(entries: &[TargetEntry], content_width: u16) -> Layout {
 /// off from the name (or the ellipsis when truncated).
 const RUNNING_SUFFIX: &str = " (r)";
 
+/// Compact CPU + resident-memory annotation rendered after the `(r)`
+/// marker on a running target's row, e.g. `47% 312.4 MiB`.
+fn format_running_metrics(metrics: RunningMetrics) -> String {
+    let cpu = metrics.cpu_percent;
+    format!("{cpu:.0}% {}", render::format_bytes(metrics.memory_bytes))
+}
+
+/// Name cell for a target that is not running: ` <name>`, truncated.
+fn idle_name_cell(display_name: &str, name_max: usize) -> Cell<'static> {
+    let display = render::truncate_with_ellipsis(display_name, name_max, "\u{2026}");
+    Cell::from(format!(" {display}"))
+}
+
+/// Name cell for a running target: ` <name> (r) <cpu>% <mem>`, with the
+/// name truncated so the green `(r)` marker and its metrics always fit.
+fn running_name_cell(
+    display_name: &str,
+    name_max: usize,
+    metrics: RunningMetrics,
+) -> Cell<'static> {
+    let suffix = format!("{RUNNING_SUFFIX} {}", format_running_metrics(metrics));
+    let (visible, _) = render::truncate_with_suffix(display_name, &suffix, name_max, "\u{2026}");
+    let mut spans = Vec::new();
+    if !visible.is_empty() {
+        spans.push(Span::raw(format!(" {visible}")));
+    }
+    spans.push(Span::styled(
+        RUNNING_SUFFIX,
+        Style::default().fg(success_color()),
+    ));
+    spans.push(Span::styled(
+        format!(" {}", format_running_metrics(metrics)),
+        Style::default().fg(label_color()),
+    ));
+    Cell::from(Line::from(spans))
+}
+
 fn build_rows<'a>(
     entries: &'a [TargetEntry],
     pane: &TargetsPane,
     focus: PaneFocusState,
     layout: &Layout,
-    running_for: &dyn Fn(&TargetEntry) -> bool,
+    metrics_for: &dyn Fn(&TargetEntry) -> Option<RunningMetrics>,
 ) -> Vec<Row<'a>> {
     entries
         .iter()
         .enumerate()
         .map(|(row_index, entry)| {
             let selection = tui_pane::selection_state(&pane.viewport, row_index, focus);
-            let name_cell = if running_for(entry) {
-                let (visible, suffix) = render::truncate_with_suffix(
-                    &entry.display_name,
-                    RUNNING_SUFFIX,
-                    layout.name_max,
-                    "\u{2026}",
-                );
-                Cell::from(Line::from(vec![
-                    Span::raw(format!(" {visible}")),
-                    Span::styled(suffix, Style::default().fg(success_color())),
-                ]))
-            } else {
-                let display = render::truncate_with_ellipsis(
-                    &entry.display_name,
-                    layout.name_max,
-                    "\u{2026}",
-                );
-                Cell::from(format!(" {display}"))
-            };
+            let name_cell = metrics_for(entry).map_or_else(
+                || idle_name_cell(&entry.display_name, layout.name_max),
+                |metrics| running_name_cell(&entry.display_name, layout.name_max, metrics),
+            );
             let source_label =
                 render::truncate_with_ellipsis(entry.source.label(), layout.source, "\u{2026}");
             Row::new(vec![

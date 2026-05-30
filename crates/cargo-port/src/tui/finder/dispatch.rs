@@ -224,9 +224,7 @@ fn navigate_to_target(app: &mut App, item: &FinderItem) {
 
         // Build target list and find the matching entry index
         {
-            let entries = panes::build_target_list_from_data(&targets_data, &|entry| {
-                app.target_is_running(entry)
-            });
+            let entries = panes::build_target_list_from_data(&targets_data);
             let target_kind = match item.kind {
                 FinderKind::Binary => RunTargetKind::Binary,
                 FinderKind::Example => RunTargetKind::Example,

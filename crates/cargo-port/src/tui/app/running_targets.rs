@@ -8,9 +8,7 @@ use cargo_metadata::TargetKind;
 
 use super::App;
 use crate::project::AbsolutePath;
-use crate::tui::panes::TargetEntry;
 use crate::tui::running_targets::ProjectTargetSlice;
-use crate::tui::running_targets::RunningKey;
 
 /// One owned slice entry per known workspace. Lives across the tick call
 /// so `ProjectTargetSlice<'_>` views can borrow from its fields.
@@ -35,20 +33,6 @@ impl App {
             })
             .collect();
         self.panes.running_targets_tick(now, &slices);
-    }
-
-    /// `true` when `entry` (a target of the currently-displayed project)
-    /// has at least one matching OS process in the latest snapshot.
-    pub fn target_is_running(&self, entry: &TargetEntry) -> bool {
-        let Some(dir) = self.panes.detail_target_dir.as_ref() else {
-            return false;
-        };
-        let key = RunningKey {
-            target_dir: dir.clone(),
-            kind:       entry.kind,
-            name:       entry.name.clone(),
-        };
-        self.panes.running_targets.snapshot().is_running(&key)
     }
 
     fn collect_running_target_slices(&self) -> Vec<OwnedSlice> {

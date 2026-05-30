@@ -493,9 +493,7 @@ impl CopySelection<App> for TargetsPane {
         let Some(targets) = ctx.panes.targets.content() else {
             return CopySelectionResult::Nothing;
         };
-        panes::copy_payload_for_targets(targets, ctx.panes.targets.viewport.pos(), &|entry| {
-            ctx.target_is_running(entry)
-        })
+        panes::copy_payload_for_targets(targets, ctx.panes.targets.viewport.pos())
     }
 }
 

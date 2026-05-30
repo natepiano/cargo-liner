@@ -12,7 +12,6 @@ use std::path::Path;
 use std::time::Duration;
 use std::time::Instant;
 
-use sysinfo::Pid;
 use sysinfo::ProcessRefreshKind;
 use sysinfo::ProcessesToUpdate;
 use sysinfo::System;
@@ -30,7 +29,17 @@ pub(crate) struct RunningTargetsPoller {
 
 #[derive(Default)]
 pub(crate) struct RunningTargets {
-    by_key: HashMap<RunningKey, Vec<Pid>>,
+    by_key: HashMap<RunningKey, RunningMetrics>,
+}
+
+/// Aggregated resource use of a running target's process(es), summed when
+/// a single target maps to more than one OS process.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct RunningMetrics {
+    /// CPU usage in percent. A busy multi-threaded process can exceed 100.
+    pub cpu_percent:  f32,
+    /// Resident memory in bytes.
+    pub memory_bytes: u64,
 }
 
 /// Key identifying a running target. Matched against `(target_dir, kind, name)`
@@ -78,17 +87,22 @@ impl RunningTargetsPoller {
         self.system.refresh_processes_specifics(
             ProcessesToUpdate::All,
             true,
-            ProcessRefreshKind::nothing().with_exe(UpdateKind::Always),
+            ProcessRefreshKind::nothing()
+                .with_exe(UpdateKind::Always)
+                .with_cpu()
+                .with_memory(),
         );
 
-        let mut by_key: HashMap<RunningKey, Vec<Pid>> = HashMap::new();
+        let mut by_key: HashMap<RunningKey, RunningMetrics> = HashMap::new();
         for (pid, process) in self.system.processes() {
             let Some(exe) = process.exe() else {
                 tracing::debug!(pid = pid.as_u32(), "running_targets_exe_unavailable");
                 continue;
             };
             if let Some(key) = classify_exe(exe, projects) {
-                by_key.entry(key).or_default().push(*pid);
+                let metrics = by_key.entry(key).or_default();
+                metrics.cpu_percent += process.cpu_usage();
+                metrics.memory_bytes += process.memory();
             }
         }
         self.snapshot = RunningTargets { by_key };
@@ -99,7 +113,12 @@ impl RunningTargetsPoller {
 }
 
 impl RunningTargets {
-    pub(super) fn is_running(&self, key: &RunningKey) -> bool { self.by_key.contains_key(key) }
+    /// Aggregated CPU/memory for `key`'s running process(es), or `None`
+    /// when no matching process is in the latest snapshot (i.e. the
+    /// target is not running).
+    pub(super) fn metrics(&self, key: &RunningKey) -> Option<RunningMetrics> {
+        self.by_key.get(key).copied()
+    }
 }
 
 /// Classify `exe` against the project slices. Returns the matching slice plus

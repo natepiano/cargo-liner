@@ -226,23 +226,12 @@ impl BuildMode {
 /// [`TargetsData::from_workspace_metadata`]; this fn applies a stable
 /// running-first pre-pass per section, so running rows float to the top
 /// of their kind without disturbing alphabetical order otherwise.
-pub fn build_target_list_from_data(
-    data: &TargetsData,
-    running_for: &dyn Fn(&TargetEntry) -> bool,
-) -> Vec<TargetEntry> {
-    let mut binaries = data.binaries.clone();
-    let mut examples = data.examples.clone();
-    let mut benches = data.benches.clone();
-    let stable_running_first = |xs: &mut Vec<TargetEntry>| {
-        xs.sort_by_key(|entry| !running_for(entry));
-    };
-    stable_running_first(&mut binaries);
-    stable_running_first(&mut examples);
-    stable_running_first(&mut benches);
-    let mut entries = Vec::with_capacity(binaries.len() + examples.len() + benches.len());
-    entries.extend(binaries);
-    entries.extend(examples);
-    entries.extend(benches);
+pub fn build_target_list_from_data(data: &TargetsData) -> Vec<TargetEntry> {
+    let mut entries =
+        Vec::with_capacity(data.binaries.len() + data.examples.len() + data.benches.len());
+    entries.extend(data.binaries.iter().cloned());
+    entries.extend(data.examples.iter().cloned());
+    entries.extend(data.benches.iter().cloned());
     entries
 }
 
@@ -1178,12 +1167,8 @@ pub fn copy_payload_for_ci(data: &CiData, pos: usize) -> CopySelectionResult {
     copy_payload(&run.url, CopyLabel::Url)
 }
 
-pub fn copy_payload_for_targets(
-    data: &TargetsData,
-    pos: usize,
-    running_for: &dyn Fn(&TargetEntry) -> bool,
-) -> CopySelectionResult {
-    let entries = build_target_list_from_data(data, running_for);
+pub fn copy_payload_for_targets(data: &TargetsData, pos: usize) -> CopySelectionResult {
+    let entries = build_target_list_from_data(data);
     let Some(entry) = entries.get(pos) else {
         return CopySelectionResult::Nothing;
     };
@@ -1390,25 +1375,9 @@ mod target_list_tests {
     }
 
     #[test]
-    fn running_binary_floats_to_top_of_its_section() {
+    fn preserves_input_order_binaries_then_examples_then_benches() {
         let data = data();
-        let entries = build_target_list_from_data(&data, &|e| e.name == "b");
-        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, vec!["b", "a", "c", "ex1", "bn1"]);
-    }
-
-    #[test]
-    fn empty_running_set_preserves_input_order() {
-        let data = data();
-        let entries = build_target_list_from_data(&data, &|_| false);
-        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, vec!["a", "b", "c", "ex1", "bn1"]);
-    }
-
-    #[test]
-    fn all_running_preserves_input_order() {
-        let data = data();
-        let entries = build_target_list_from_data(&data, &|_| true);
+        let entries = build_target_list_from_data(&data);
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["a", "b", "c", "ex1", "bn1"]);
     }
