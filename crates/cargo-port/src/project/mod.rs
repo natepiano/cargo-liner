@@ -71,6 +71,7 @@ pub(crate) use info::PullRequestGoneReason;
 pub(crate) use info::PullRequestInfo;
 pub(crate) use info::PullRequestState;
 pub(crate) use info::PullRequestUnavailableReason;
+pub(crate) use info::TestCounts;
 pub(crate) use info::Visibility;
 pub(crate) use info::WorktreeHealth;
 pub(crate) use member_group::MemberGroup;

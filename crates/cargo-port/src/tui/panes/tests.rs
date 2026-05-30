@@ -59,6 +59,7 @@ fn package_data(is_rust_project: bool) -> PackageData {
         types:                    Some(vec![ProjectType::Library]),
         disk:                     Some(38_989_922_304),
         stats_rows:               Vec::new(),
+        test_rows:                Vec::new(),
         has_package:              true,
         edition:                  None,
         license:                  None,

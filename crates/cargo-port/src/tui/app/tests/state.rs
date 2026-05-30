@@ -2791,7 +2791,7 @@ fn cargo_metadata_arrival_stamps_cargo_fields_onto_package() {
     let mut app = make_app(&[pkg_item]);
 
     // Before metadata arrival: Cargo::default() → publishable true but
-    // empty types / examples / benches / test_count.
+    // empty types / examples / benches.
     let pre_types = app
         .project_list
         .rust_info_at_path(project_path.as_path())

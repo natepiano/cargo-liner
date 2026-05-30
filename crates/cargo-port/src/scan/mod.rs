@@ -17,6 +17,7 @@ mod ci_cache;
 mod discovery;
 mod disk_usage;
 mod language_stats;
+mod test_counts;
 mod tree;
 
 pub(crate) use cargo_metadata::CargoMetadataError;
@@ -48,6 +49,7 @@ pub(crate) use discovery::store_cached_repo_data;
 pub(crate) use disk_usage::DirSizes;
 pub(crate) use disk_usage::disk_usage_batch_for_item;
 pub(crate) use language_stats::collect_language_stats_single;
+pub(crate) use test_counts::collect_test_counts_single;
 pub(crate) use tree::build_tree;
 pub(crate) use tree::cargo_project_to_item;
 pub(crate) use tree::dir_size;
@@ -62,6 +64,7 @@ use crate::project::LanguageStats;
 use crate::project::ProjectPrData;
 use crate::project::PullRequestGoneReason;
 use crate::project::PullRequestInfo;
+use crate::project::TestCounts;
 use crate::sccache::StatsResult as SccacheStatsResult;
 
 /// Messages sent from background threads to the main event loop.
@@ -204,6 +207,10 @@ pub(crate) enum BackgroundMsg {
     LanguageStatsBatch {
         entries: Vec<(AbsolutePath, LanguageStats)>,
     },
+    /// Test-function counts (unit / integration) from the source scan.
+    TestCountsBatch {
+        entries: Vec<(AbsolutePath, TestCounts)>,
+    },
     /// Result of an on-demand `sccache --show-stats` request.
     SccacheStats {
         request_id: u64,
@@ -287,6 +294,10 @@ impl BackgroundMsg {
             | Self::DiskUsageBatch { .. }
             // Language stats live in `RustInfo`, not in the detail set.
             | Self::LanguageStatsBatch { .. }
+            // Test counts feed the detail set's Tests section, but as a
+            // batch the handler bumps generation explicitly (see
+            // `handle_test_counts_batch`).
+            | Self::TestCountsBatch { .. }
             // On-demand tooling overlay data does not affect project detail.
             | Self::SccacheStats { .. }
             // Fetch lifecycle is reflected via toasts, not detail data.

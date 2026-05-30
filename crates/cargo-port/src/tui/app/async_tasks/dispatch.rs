@@ -208,6 +208,10 @@ impl App {
             BackgroundMsg::LanguageStatsBatch { entries } => {
                 self.project_list.handle_language_stats_batch(entries);
             },
+            BackgroundMsg::TestCountsBatch { entries } => {
+                self.project_list.handle_test_counts_batch(entries);
+                self.scan.bump_generation();
+            },
             BackgroundMsg::SccacheStats { request_id, result } => {
                 self.overlays.sccache_pane.apply_result(request_id, result);
             },

@@ -17,6 +17,7 @@ use super::BackgroundMsg;
 use super::discovery;
 use super::disk_usage;
 use super::language_stats;
+use super::test_counts;
 use super::tree;
 use crate::channel;
 use crate::channel::Receiver;
@@ -137,6 +138,7 @@ pub(crate) fn spawn_streaming_scan(
         });
         disk_usage::spawn_initial_disk_usage(&scan_context, &phase1.disk_entries);
         language_stats::spawn_initial_language_stats(&scan_context, &phase1.disk_entries);
+        test_counts::spawn_initial_test_counts(&scan_context, &phase1.disk_entries);
         spawn_cargo_metadata_tree(&scan_context, workspace_roots);
     });
 

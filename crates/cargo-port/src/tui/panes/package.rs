@@ -86,16 +86,28 @@ struct StatsColumnRender<'a> {
     area:         Rect,
     digit_width:  u16,
     border_style: Style,
+    /// Style for the `Tests` sub-section title rule, matching the
+    /// `Structure` title (chrome title style for the current focus).
+    title_style:  Style,
 }
 
 type FieldWrapFn = fn(&str, usize) -> Vec<String>;
 
-/// Compute the fixed stats column width from the stat rows and language stats.
-/// Returns `(total_width, digit_width)`.
+/// Floor on the stats-column label field, so a project with only short
+/// labels keeps the same column width it had before the Tests section
+/// existed (the widest Structure label, `proc-macro`, is 10 wide).
+const MIN_STATS_LABEL_WIDTH: u16 = 10;
+
+/// Title of the Tests sub-section rule in the stats column.
+const TESTS_TITLE: &str = "Tests";
+
+/// Compute the fixed stats column width across both stat sections
+/// (Structure + Tests). Returns `(total_width, digit_width)`.
 pub fn stats_column_width(data: &PackageData) -> (u16, u16) {
     let max_count = data
         .stats_rows
         .iter()
+        .chain(&data.test_rows)
         .map(|(_, count)| *count)
         .max()
         .unwrap_or(0);
@@ -105,9 +117,36 @@ pub fn stats_column_width(data: &PackageData) -> (u16, u16) {
         10_000..100_000 => 5,
         _ => 6,
     };
-    let label_width: u16 = 10;
-    let total = 1 + 1 + digit_width + 1 + label_width + 1;
+    let label_width = stats_label_width(data);
+    let total = 1 + 1 + label_width + 1 + digit_width + 1;
     (total, digit_width)
+}
+
+/// Width of the label field shared by both stat sections, so the
+/// right-aligned counts line up on a single right edge across Structure
+/// and Tests.
+fn stats_label_width(data: &PackageData) -> u16 {
+    let widest = data
+        .stats_rows
+        .iter()
+        .chain(&data.test_rows)
+        .map(|(label, _)| label.width())
+        .max()
+        .unwrap_or(0);
+    u16::try_from(widest)
+        .unwrap_or(u16::MAX)
+        .max(MIN_STATS_LABEL_WIDTH)
+}
+
+/// Number of rendered lines in the stats column: the Structure rows plus,
+/// when there are test rows, the `Tests` title rule and its rows.
+const fn stats_column_line_count(data: &PackageData) -> usize {
+    let tests = if data.test_rows.is_empty() {
+        0
+    } else {
+        1 + data.test_rows.len()
+    };
+    data.stats_rows.len() + tests
 }
 
 pub fn detail_column_scroll_offset(
@@ -139,7 +178,10 @@ pub fn package_label_width(fields: &[DetailField]) -> usize {
 fn package_row_label_width(rows: &[PackageRow]) -> usize {
     rows.iter()
         .filter_map(|row| match row {
-            PackageRow::Description | PackageRow::Section(_) | PackageRow::Structure(_) => None,
+            PackageRow::Description
+            | PackageRow::Section(_)
+            | PackageRow::Structure(_)
+            | PackageRow::Tests(_) => None,
             PackageRow::Field(field) => Some(field.label().width()),
         })
         .max()
@@ -177,12 +219,12 @@ fn render_column_inner(
                     package_field_render(ctx, *field, label_width, area.width, selection),
                 );
             },
-            PackageRow::Structure(_) => {
-                // Structure rows render in the separate stats column,
-                // which doesn't scroll. Anchor the metadata column to its
-                // own last line rather than a position past its content,
-                // so focusing a stat keeps the metadata steady instead of
-                // scrolling it up.
+            PackageRow::Structure(_) | PackageRow::Tests(_) => {
+                // Structure and Tests rows render in the separate stats
+                // column, which doesn't scroll. Anchor the metadata column
+                // to its own last line rather than a position past its
+                // content, so focusing a stat keeps the metadata steady
+                // instead of scrolling it up.
                 if matches!(focus, PaneFocusState::Active) && i == pane.pos() {
                     focused_output_line = lines.len().saturating_sub(1);
                 }
@@ -462,9 +504,14 @@ fn render_project_description_section(
     let metadata_line_count = context
         .rows
         .iter()
-        .filter(|row| !matches!(row, PackageRow::Description | PackageRow::Structure(_)))
+        .filter(|row| {
+            !matches!(
+                row,
+                PackageRow::Description | PackageRow::Structure(_) | PackageRow::Tests(_)
+            )
+        })
         .count();
-    let lower_metadata_height = metadata_line_count.max(context.pkg_data.stats_rows.len());
+    let lower_metadata_height = metadata_line_count.max(stats_column_line_count(context.pkg_data));
     let reserved_lower_height = u16::from(lower_metadata_height > 0);
     let reserved_separator_height =
         u16::from(project_inner.height > reserved_lower_height.saturating_add(1));
@@ -597,6 +644,10 @@ fn render_project_metadata(
                 area: sub_cols[1],
                 digit_width,
                 border_style: context.border_style,
+                title_style: context
+                    .styles
+                    .chrome
+                    .title_style(matches!(context.focus, PaneFocusState::Active)),
             },
         ));
         layout
@@ -618,14 +669,22 @@ fn project_stats_connector_x(data: &PackageData, lower_area: Rect) -> Option<u16
     sub_cols.get(1).map(|area| area.x)
 }
 
+/// Shared geometry and pane state for rendering one stat section
+/// (Structure or Tests) inside the stats column.
+struct StatSectionCtx<'a> {
+    rows:        &'a [PackageRow],
+    pane:        &'a Viewport,
+    focus:       PaneFocusState,
+    inner_x:     u16,
+    inner_width: u16,
+    label_width: usize,
+    digit_width: usize,
+    area_bottom: u16,
+}
+
 fn render_stats_column(frame: &mut Frame, context: &StatsColumnRender<'_>) -> Vec<(Rect, usize)> {
     let data = context.data;
-    let rows = context.rows;
-    let pane = context.pane;
-    let focus = context.focus;
     let area = context.area;
-    let digit_width = context.digit_width;
-    let border_style = context.border_style;
     tui_pane::render_rules(
         frame,
         &[PaneRule::Vertical {
@@ -636,52 +695,113 @@ fn render_stats_column(frame: &mut Frame, context: &StatsColumnRender<'_>) -> Ve
                 height: area.height,
             },
         }],
-        border_style,
+        context.border_style,
     );
-    let stats_inner = Rect {
-        x:      area.x.saturating_add(1),
-        y:      area.y,
-        width:  area.width.saturating_sub(1),
-        height: area.height,
+
+    let ctx = StatSectionCtx {
+        rows:        context.rows,
+        pane:        context.pane,
+        focus:       context.focus,
+        inner_x:     area.x.saturating_add(1),
+        inner_width: area.width.saturating_sub(1),
+        label_width: stats_label_width(data) as usize,
+        digit_width: context.digit_width as usize,
+        area_bottom: area.bottom(),
     };
 
-    let stat_label_style = Style::default().fg(label_color());
-    let stat_num_style = Style::default().fg(title_color());
-    let dw = digit_width as usize;
     let mut row_rects = Vec::new();
-    let stat_lines: Vec<Line<'_>> = data
-        .stats_rows
+    render_stat_section(
+        frame,
+        &data.stats_rows,
+        PackageRow::Structure,
+        area.y,
+        &ctx,
+        &mut row_rects,
+    );
+
+    if !data.test_rows.is_empty() {
+        let title_y = area
+            .y
+            .saturating_add(u16::try_from(data.stats_rows.len()).unwrap_or(u16::MAX));
+        // The rule spans the full column so its `├` endcap tees into the
+        // column's left vertical rule; rendered after it so the join wins.
+        tui_pane::render_horizontal_rule(
+            frame,
+            Rect {
+                x:      area.x,
+                y:      title_y,
+                width:  area.width,
+                height: 1,
+            },
+            context.border_style,
+            Some(RuleTitle {
+                text:  TESTS_TITLE,
+                style: context.title_style,
+            }),
+            None,
+        );
+        render_stat_section(
+            frame,
+            &data.test_rows,
+            PackageRow::Tests,
+            title_y.saturating_add(1),
+            &ctx,
+            &mut row_rects,
+        );
+    }
+    row_rects
+}
+
+/// Render one stat section's rows starting at `start_y`, pushing a
+/// hit-test rect for each visible selectable row. Labels are left-aligned
+/// in the shared label field; counts are right-aligned against the column
+/// edge so both sections share one right edge.
+fn render_stat_section(
+    frame: &mut Frame,
+    section_rows: &[(&'static str, usize)],
+    row_for_index: fn(usize) -> PackageRow,
+    start_y: u16,
+    ctx: &StatSectionCtx<'_>,
+    row_rects: &mut Vec<(Rect, usize)>,
+) {
+    let label_style = Style::default().fg(label_color());
+    let num_style = Style::default().fg(title_color());
+    let lw = ctx.label_width;
+    let dw = ctx.digit_width;
+    let lines: Vec<Line<'_>> = section_rows
         .iter()
         .enumerate()
-        .map(|(stat_index, (label, count))| {
-            let row_index = rows.iter().position(
-                |row| matches!(row, PackageRow::Structure(index) if *index == stat_index),
-            );
-            let selection = row_index.map_or(PaneSelectionState::Unselected, |index| {
-                if stat_index < usize::from(stats_inner.height) {
-                    let rect_y = stats_inner
-                        .y
-                        .saturating_add(u16::try_from(stat_index).unwrap_or(u16::MAX));
+        .map(|(i, (label, count))| {
+            let y_abs = start_y.saturating_add(u16::try_from(i).unwrap_or(u16::MAX));
+            let target = row_for_index(i);
+            let pane_index = ctx.rows.iter().position(|row| *row == target);
+            let selection = pane_index.map_or(PaneSelectionState::Unselected, |index| {
+                if y_abs < ctx.area_bottom {
                     row_rects.push((
                         Rect {
-                            x:      stats_inner.x,
-                            y:      rect_y,
-                            width:  stats_inner.width,
+                            x:      ctx.inner_x,
+                            y:      y_abs,
+                            width:  ctx.inner_width,
                             height: 1,
                         },
                         index,
                     ));
                 }
-                tui_pane::selection_state(pane, index, focus)
+                tui_pane::selection_state(ctx.pane, index, ctx.focus)
             });
             Line::from(vec![
-                Span::styled(format!(" {count:>dw$} "), selection.patch(stat_num_style)),
-                Span::styled(*label, selection.patch(stat_label_style)),
+                Span::styled(format!(" {label:<lw$} "), selection.patch(label_style)),
+                Span::styled(format!("{count:>dw$} "), selection.patch(num_style)),
             ])
         })
         .collect();
-    frame.render_widget(Paragraph::new(stat_lines), stats_inner);
-    row_rects
+    let section_area = Rect {
+        x:      ctx.inner_x,
+        y:      start_y,
+        width:  ctx.inner_width,
+        height: u16::try_from(section_rows.len()).unwrap_or(u16::MAX),
+    };
+    frame.render_widget(Paragraph::new(lines), section_area);
 }
 
 /// Style for the Lint row in the Package detail pane, derived

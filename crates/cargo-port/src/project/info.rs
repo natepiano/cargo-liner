@@ -227,6 +227,32 @@ pub(crate) struct LanguageStats {
     pub entries: Vec<LangEntry>,
 }
 
+/// Per-project test-function counts collected by a source scan that
+/// matches `#[test]`-family attributes in `.rs` files, bucketed by the
+/// directory the file lives in.
+///
+/// `None` on `ProjectInfo` means the scan hasn't completed yet. The
+/// counts are a heuristic: they match a fixed attribute set (see
+/// `scan::test_counts`) and do not include doctests.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct TestCounts {
+    /// `#[test]`-family functions under `src/` (unit tests).
+    pub unit:        usize,
+    /// `#[test]`-family functions under `tests/` (integration tests).
+    pub integration: usize,
+}
+
+impl TestCounts {
+    /// Sum two count snapshots — used to fold a workspace's members into
+    /// the workspace-level total.
+    pub(crate) const fn merged(self, other: Self) -> Self {
+        Self {
+            unit:        self.unit + other.unit,
+            integration: self.integration + other.integration,
+        }
+    }
+}
+
 /// Shared metadata for all project types (Rust and non-Rust).
 ///
 /// Identity fields (`path`, `name`) live on each project struct directly —
@@ -250,6 +276,7 @@ pub(crate) struct ProjectInfo {
     pub in_project_target:     Option<u64>,
     pub local_git_state:       LocalGitState,
     pub language_stats:        Option<LanguageStats>,
+    pub test_counts:           Option<TestCounts>,
     pub visibility:            Visibility,
     pub worktree_health:       WorktreeHealth,
     pub submodules:            Vec<Submodule>,

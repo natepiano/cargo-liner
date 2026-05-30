@@ -181,6 +181,7 @@ fn package_data_no_version() -> PackageData {
         types:                    Some(vec![ProjectType::Library]),
         disk:                     Some(1_048_576),
         stats_rows:               Vec::new(),
+        test_rows:                Vec::new(),
         has_package:              true,
         edition:                  None,
         license:                  None,

@@ -1300,7 +1300,6 @@ fn package_pane_structure_rows_are_clickable_after_metadata_rows() {
             names:    vec!["demo".to_string()],
         }],
         benches:     Vec::new(),
-        test_count:  0,
         publishable: true,
     };
     let root = make_workspace_with_members(

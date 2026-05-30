@@ -55,6 +55,7 @@ use crate::project::RootItem;
 use crate::project::RustInfo;
 use crate::project::RustProject;
 use crate::project::Submodule;
+use crate::project::TestCounts;
 use crate::project::VendoredPackage;
 use crate::project::Visibility;
 use crate::project::Workspace;
@@ -74,7 +75,6 @@ struct ProjectCounts {
     proc_macros: usize,
     examples:    usize,
     benches:     usize,
-    tests:       usize,
 }
 
 impl ProjectCounts {
@@ -96,7 +96,6 @@ impl ProjectCounts {
         }
         self.examples += cargo.example_count();
         self.benches += cargo.benches().len();
-        self.tests += cargo.test_count();
     }
 
     /// Returns non-zero stats as (label, count) pairs for column display.
@@ -120,11 +119,22 @@ impl ProjectCounts {
         if self.benches > 0 {
             rows.push(("bench", self.benches));
         }
-        if self.tests > 0 {
-            rows.push(("test", self.tests));
-        }
         rows
     }
+}
+
+/// Build the Tests-section rows from accumulated test-function counts.
+/// Returns an empty vec when both counts are zero, which hides the
+/// section (matching the pre-scan state where the counts are `None`).
+fn test_rows_from_counts(counts: TestCounts) -> Vec<(&'static str, usize)> {
+    let mut rows = Vec::new();
+    if counts.unit > 0 {
+        rows.push(("unit", counts.unit));
+    }
+    if counts.integration > 0 {
+        rows.push(("integration", counts.integration));
+    }
+    rows
 }
 
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
@@ -553,7 +563,10 @@ pub enum PackageRow {
     Description,
     Section(PackageSection),
     Field(DetailField),
+    /// Index into `PackageData::stats_rows` (the Structure section).
     Structure(usize),
+    /// Index into `PackageData::test_rows` (the Tests section).
+    Tests(usize),
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -626,6 +639,7 @@ pub fn package_rows_from_data(data: &PackageData) -> Vec<PackageRow> {
     let Some(summary) = data.worktree_group_summary.as_ref() else {
         rows.extend(fields.into_iter().map(PackageRow::Field));
         rows.extend((0..data.stats_rows.len()).map(PackageRow::Structure));
+        rows.extend((0..data.test_rows.len()).map(PackageRow::Tests));
         return rows;
     };
 
@@ -651,6 +665,7 @@ pub fn package_rows_from_data(data: &PackageData) -> Vec<PackageRow> {
             .map(PackageRow::Field),
     );
     rows.extend((0..data.stats_rows.len()).map(PackageRow::Structure));
+    rows.extend((0..data.test_rows.len()).map(PackageRow::Tests));
     rows
 }
 
@@ -658,7 +673,10 @@ pub fn package_field_at(data: &PackageData, pos: usize) -> Option<DetailField> {
     package_rows_from_data(data)
         .get(pos)
         .and_then(|row| match row {
-            PackageRow::Description | PackageRow::Section(_) | PackageRow::Structure(_) => None,
+            PackageRow::Description
+            | PackageRow::Section(_)
+            | PackageRow::Structure(_)
+            | PackageRow::Tests(_) => None,
             PackageRow::Field(field) => Some(*field),
         })
 }
@@ -666,7 +684,10 @@ pub fn package_field_at(data: &PackageData, pos: usize) -> Option<DetailField> {
 pub const fn package_row_is_selectable(row: &PackageRow) -> bool {
     matches!(
         row,
-        PackageRow::Description | PackageRow::Field(_) | PackageRow::Structure(_)
+        PackageRow::Description
+            | PackageRow::Field(_)
+            | PackageRow::Structure(_)
+            | PackageRow::Tests(_)
     )
 }
 
@@ -803,7 +824,14 @@ pub struct PackageData {
     /// reported; the renderer formats `Some` and leaves `None` blank,
     /// matching the `target/` / `other` sub-rows.
     pub disk:                     Option<u64>,
+    /// Structure section of the stats column — cargo target-kind counts
+    /// (`ws` / `lib` / `bin` / `proc-macro` / `example` / `bench`).
     pub stats_rows:               Vec<(&'static str, usize)>,
+    /// Tests section of the stats column — `unit` / `integration` test
+    /// function counts from the source scan. Empty until the scan lands
+    /// (or when the project has no test functions); an empty vec hides
+    /// the section.
+    pub test_rows:                Vec<(&'static str, usize)>,
     pub has_package:              bool,
     /// Cargo edition ("2021", "2024", …) from the workspace metadata.
     /// `None` until metadata has landed or for non-Rust projects.
@@ -1092,6 +1120,12 @@ pub fn copy_payload_for_package(data: &PackageData, pos: usize) -> CopySelection
             ),
             PackageRow::Structure(index) => {
                 let Some((label, count)) = data.stats_rows.get(index) else {
+                    return CopySelectionResult::Nothing;
+                };
+                copy_payload(format!("{count} {label}"), CopyLabel::Value)
+            },
+            PackageRow::Tests(index) => {
+                let Some((label, count)) = data.test_rows.get(index) else {
                     return CopySelectionResult::Nothing;
                 };
                 copy_payload(format!("{count} {label}"), CopyLabel::Value)
@@ -1828,6 +1862,7 @@ pub fn build_pane_data_for_vendored(app: &App, vendored: &VendoredPackage) -> De
     let mut counts = ProjectCounts::default();
     counts.add_cargo(cargo);
     let stats_rows = counts.to_rows();
+    let test_rows = test_rows_from_counts(vendored.info().test_counts.unwrap_or_default());
 
     build_pane_data_common(
         app,
@@ -1839,6 +1874,7 @@ pub fn build_pane_data_for_vendored(app: &App, vendored: &VendoredPackage) -> De
             cargo: Some(cargo),
             wt_item: None,
             stats_rows,
+            test_rows,
             primary_section: None,
             fallback_type: None,
             package_title: "Vendored Crate".to_string(),
@@ -1879,6 +1915,7 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
             types:                    None,
             disk:                     submodule.info.disk_usage_bytes,
             stats_rows:               Vec::new(),
+            test_rows:                Vec::new(),
             has_package:              false,
             edition:                  None,
             license:                  None,
@@ -1927,15 +1964,18 @@ fn build_pane_data_for_workspace(
     let cargo = &ws.cargo;
 
     let mut counts = ProjectCounts::default();
+    let mut test_counts = ws.info().test_counts.unwrap_or_default();
     counts.add_workspace(ws);
     if ws.has_members() {
         for group in ws.groups() {
             for member in group.members() {
                 counts.add_package(member);
+                test_counts = test_counts.merged(member.info().test_counts.unwrap_or_default());
             }
         }
     }
     let stats_rows = counts.to_rows();
+    let test_rows = test_rows_from_counts(test_counts);
 
     let wt_item_ref = wt_item.filter(|_| is_wt_group);
     let package_title = wt_item_ref.map_or_else(
@@ -1952,6 +1992,7 @@ fn build_pane_data_for_workspace(
             cargo: Some(cargo),
             wt_item: wt_item_ref,
             stats_rows,
+            test_rows,
             primary_section: Some(PackageSection::PrimaryWorkspace).filter(|_| is_wt_group),
             fallback_type: Some(ProjectType::Workspace),
             package_title,
@@ -1972,6 +2013,7 @@ fn build_pane_data_for_package(
     let mut counts = ProjectCounts::default();
     counts.add_package(pkg);
     let stats_rows = counts.to_rows();
+    let test_rows = test_rows_from_counts(pkg.info().test_counts.unwrap_or_default());
 
     let wt_item_ref = wt_item.filter(|_| is_wt_group);
     let package_title = wt_item.map_or_else(
@@ -1989,6 +2031,7 @@ fn build_pane_data_for_package(
             cargo: Some(cargo),
             wt_item: wt_item_ref,
             stats_rows,
+            test_rows,
             primary_section: Some(PackageSection::PrimaryPackage).filter(|_| is_wt_group),
             fallback_type: None,
             package_title,
@@ -2016,6 +2059,7 @@ fn build_pane_data_non_rust(
             cargo: None,
             wt_item: wt_item_ref,
             stats_rows: Vec::new(),
+            test_rows: Vec::new(),
             primary_section: None,
             fallback_type: None,
             package_title: "Project".to_string(),
@@ -2031,6 +2075,7 @@ struct PaneDataSource<'a> {
     cargo:           Option<&'a Cargo>,
     wt_item:         Option<&'a RootItem>,
     stats_rows:      Vec<(&'static str, usize)>,
+    test_rows:       Vec<(&'static str, usize)>,
     primary_section: Option<PackageSection>,
     fallback_type:   Option<ProjectType>,
     package_title:   String,
@@ -2104,6 +2149,7 @@ struct BuildPackageDataArgs {
     primary_section:          Option<PackageSection>,
     display_path:             String,
     stats_rows:               Vec<(&'static str, usize)>,
+    test_rows:                Vec<(&'static str, usize)>,
     has_cargo:                bool,
     manifest:                 ManifestFields,
     crates_version:           Option<String>,
@@ -2146,6 +2192,7 @@ fn build_package_data(args: BuildPackageDataArgs) -> PackageData {
         types: args.types,
         disk: args.disk,
         stats_rows: args.stats_rows,
+        test_rows: args.test_rows,
         has_package: args.has_cargo,
         edition,
         license,
@@ -2241,6 +2288,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
         title_name: src.title_name,
         display_path: src.display_path.to_owned(),
         stats_rows: src.stats_rows,
+        test_rows: src.test_rows,
         worktree_group_summary: runtime.worktree_group_summary,
         primary_section: src.primary_section,
         has_cargo: src.has_cargo,

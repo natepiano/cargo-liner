@@ -56,7 +56,7 @@ impl DerefMut for RustInfo {
 /// [`WorkspaceMetadata`](super::cargo_metadata_store::WorkspaceMetadata).
 ///
 /// Step 3b full retirement: these fields are no longer hand-parsed out
-/// of `Cargo.toml`. `types` / `examples` / `benches` / `test_count` stay
+/// of `Cargo.toml`. `types` / `examples` / `benches` stay
 /// empty until the metadata lands and gets stamped in via
 /// `Cargo::apply_package_record`; `publishable` defaults to `true` so
 /// the crates.io scheduler continues firing for named packages
@@ -67,7 +67,6 @@ pub(crate) struct Cargo {
     pub types:       Vec<ProjectType>,
     pub examples:    Vec<ExampleGroup>,
     pub benches:     Vec<String>,
-    pub test_count:  usize,
     pub publishable: bool,
 }
 
@@ -77,7 +76,6 @@ impl Default for Cargo {
             types:       Vec::new(),
             examples:    Vec::new(),
             benches:     Vec::new(),
-            test_count:  0,
             publishable: true,
         }
     }
@@ -89,8 +87,6 @@ impl Cargo {
     pub fn examples(&self) -> &[ExampleGroup] { &self.examples }
 
     pub fn benches(&self) -> &[String] { &self.benches }
-
-    pub const fn test_count(&self) -> usize { self.test_count }
 
     pub fn example_count(&self) -> usize { self.examples.iter().map(|g| g.names.len()).sum() }
 
@@ -119,7 +115,6 @@ impl Cargo {
         let mut has_proc_macro = false;
         let mut example_groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut benches: Vec<String> = Vec::new();
-        let mut test_count: usize = 0;
 
         for target in &record.targets {
             for kind in &target.kinds {
@@ -139,7 +134,6 @@ impl Cargo {
                             .push(target.name.clone());
                     },
                     TargetKind::Bench => benches.push(target.name.clone()),
-                    TargetKind::Test => test_count += 1,
                     _ => {},
                 }
             }
@@ -181,7 +175,6 @@ impl Cargo {
             types,
             examples,
             benches,
-            test_count,
             publishable,
         }
     }

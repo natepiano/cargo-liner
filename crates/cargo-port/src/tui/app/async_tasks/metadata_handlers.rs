@@ -123,8 +123,8 @@ impl App {
         let needs_out_of_tree_walk = !target_directory
             .as_path()
             .starts_with(workspace_root.as_path());
-        // Stamp Cargo fields (types / examples / benches / test_count
-        // / publishable) from each PackageRecord onto the matching
+        // Stamp Cargo fields (types / examples / benches /
+        // publishable) from each PackageRecord onto the matching
         // Package / Workspace / VendoredPackage in the project list.
         // The workspace metadata is authoritative.
         self.project_list

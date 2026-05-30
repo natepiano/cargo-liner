@@ -206,6 +206,7 @@ pub(super) const fn record_background_msg_kind(
         | BackgroundMsg::ServiceUnreachableConfirmed { .. }
         | BackgroundMsg::ServiceRateLimited { .. }
         | BackgroundMsg::LanguageStatsBatch { .. }
+        | BackgroundMsg::TestCountsBatch { .. }
         | BackgroundMsg::SccacheStats { .. }
         | BackgroundMsg::CargoMetadata { .. }
         | BackgroundMsg::OutOfTreeTargetSize { .. }

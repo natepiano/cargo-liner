@@ -45,6 +45,7 @@ use crate::project::RepoInfo;
 use crate::project::RootItem;
 use crate::project::RustInfo;
 use crate::project::RustProject;
+use crate::project::TestCounts;
 use crate::project::VendoredPackage;
 use crate::project::Visibility;
 use crate::project::WorkspaceMetadata;
@@ -1974,6 +1975,15 @@ impl ProjectList {
         for (path, stats) in entries {
             if let Some(project) = self.at_path_mut(path.as_path()) {
                 project.language_stats = Some(stats);
+            }
+        }
+    }
+
+    /// Apply a batch of `TestCounts` to matching projects.
+    pub(super) fn handle_test_counts_batch(&mut self, entries: Vec<(AbsolutePath, TestCounts)>) {
+        for (path, counts) in entries {
+            if let Some(project) = self.at_path_mut(path.as_path()) {
+                project.test_counts = Some(counts);
             }
         }
     }

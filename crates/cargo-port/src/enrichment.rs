@@ -33,6 +33,7 @@ pub(crate) fn enrich(entry: &dyn ProjectFields, tx: &Sender<BackgroundMsg>, ctx:
     scan::emit_git_info(tx, &path);
     emit_disk(&path, tx);
     spawn_language_scan(path.clone(), tx.clone());
+    spawn_test_count_scan(path.clone(), tx.clone());
     if let Some(name) = entry.crates_io_name() {
         emit_crates_io(name, &path, tx, ctx);
     }
@@ -54,6 +55,15 @@ pub(crate) fn spawn_language_scan(path: AbsolutePath, tx: Sender<BackgroundMsg>)
                 entries: vec![(path, stats)],
             });
         }
+    });
+}
+
+pub(crate) fn spawn_test_count_scan(path: AbsolutePath, tx: Sender<BackgroundMsg>) {
+    rayon::spawn(move || {
+        let counts = scan::collect_test_counts_single(path.as_path());
+        let _ = tx.send(BackgroundMsg::TestCountsBatch {
+            entries: vec![(path, counts)],
+        });
     });
 }
 
