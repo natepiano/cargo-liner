@@ -431,9 +431,12 @@ fn build_workspace_metadata(
                     .targets
                     .iter()
                     .map(|target| TargetRecord {
-                        name:     target.name.clone(),
-                        kinds:    target.kind.clone(),
-                        src_path: AbsolutePath::from(PathBuf::from(target.src_path.as_std_path())),
+                        name:              target.name.clone(),
+                        kinds:             target.kind.clone(),
+                        src_path:          AbsolutePath::from(PathBuf::from(
+                            target.src_path.as_std_path(),
+                        )),
+                        required_features: target.required_features.clone(),
                     })
                     .collect(),
                 publish:       PublishPolicy::from_cargo_publish(pkg.publish.as_deref()),

@@ -196,11 +196,14 @@ impl TargetSource {
 
 #[derive(Clone, Debug)]
 pub struct TargetEntry {
-    pub name:         String,
-    pub display_name: String,
-    pub kind:         RunTargetKind,
-    pub source:       TargetSource,
-    pub src_path:     AbsolutePath,
+    pub name:              String,
+    pub display_name:      String,
+    pub kind:              RunTargetKind,
+    pub source:            TargetSource,
+    pub src_path:          AbsolutePath,
+    /// Cargo `required-features` for this target, passed as `--features`
+    /// when running so feature-gated targets launch without manual flags.
+    pub required_features: Vec<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -236,11 +239,12 @@ pub fn build_target_list_from_data(data: &TargetsData) -> Vec<TargetEntry> {
 }
 
 pub struct PendingExampleRun {
-    pub abs_path:     String,
-    pub target_name:  String,
-    pub package_name: Option<String>,
-    pub kind:         RunTargetKind,
-    pub build_mode:   BuildMode,
+    pub abs_path:          String,
+    pub target_name:       String,
+    pub package_name:      Option<String>,
+    pub kind:              RunTargetKind,
+    pub build_mode:        BuildMode,
+    pub required_features: Vec<String>,
 }
 
 /// Whether a CI fetch should sync recent runs or discover older history.
@@ -1257,11 +1261,12 @@ impl TargetsData {
             for target in &record.targets {
                 if target.kinds.contains(&TargetKind::Bin) && target.name == record.name {
                     binaries.push(TargetEntry {
-                        name:         target.name.clone(),
-                        display_name: target.name.clone(),
-                        kind:         RunTargetKind::Binary,
-                        source:       source.clone(),
-                        src_path:     target.src_path.clone(),
+                        name:              target.name.clone(),
+                        display_name:      target.name.clone(),
+                        kind:              RunTargetKind::Binary,
+                        source:            source.clone(),
+                        src_path:          target.src_path.clone(),
+                        required_features: target.required_features.clone(),
                     });
                 }
                 if target.kinds.contains(&TargetKind::Example) {
@@ -1278,15 +1283,17 @@ impl TargetsData {
                         kind: RunTargetKind::Example,
                         source: source.clone(),
                         src_path: target.src_path.clone(),
+                        required_features: target.required_features.clone(),
                     });
                 }
                 if target.kinds.contains(&TargetKind::Bench) {
                     benches.push(TargetEntry {
-                        name:         target.name.clone(),
-                        display_name: target.name.clone(),
-                        kind:         RunTargetKind::Bench,
-                        source:       source.clone(),
-                        src_path:     target.src_path.clone(),
+                        name:              target.name.clone(),
+                        display_name:      target.name.clone(),
+                        kind:              RunTargetKind::Bench,
+                        source:            source.clone(),
+                        src_path:          target.src_path.clone(),
+                        required_features: target.required_features.clone(),
                     });
                 }
             }
@@ -1359,6 +1366,7 @@ mod target_list_tests {
             kind,
             source: TargetSource::Workspace,
             src_path: AbsolutePath::from(format!("/tmp/{name}.rs")),
+            required_features: Vec::new(),
         }
     }
 

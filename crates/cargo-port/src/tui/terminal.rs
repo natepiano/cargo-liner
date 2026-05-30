@@ -564,6 +564,12 @@ fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
     if let Some(pkg) = &run.package_name {
         cmd.arg("-p").arg(pkg);
     }
+    // Cargo does not auto-enable a target's `required-features`, so a
+    // feature-gated target (e.g. an example with `required-features`)
+    // errors out unless we pass them ourselves.
+    if !run.required_features.is_empty() {
+        cmd.arg("--features").arg(run.required_features.join(","));
+    }
     cmd.current_dir(&run.abs_path)
         .arg("--color=always")
         .stdout(Stdio::piped())

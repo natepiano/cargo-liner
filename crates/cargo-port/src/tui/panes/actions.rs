@@ -68,6 +68,7 @@ fn handle_target_action(app: &mut App, mode: BuildMode) {
             package_name,
             kind: entry.kind,
             build_mode: mode,
+            required_features: entry.required_features.clone(),
         });
     }
 }

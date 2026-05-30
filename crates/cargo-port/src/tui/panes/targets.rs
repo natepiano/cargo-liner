@@ -128,6 +128,7 @@ fn render_targets_with_data(
         .header(build_header_row());
 
     let mut table_state = TableState::default().with_selected(Some(cursor));
+    *table_state.offset_mut() = pane.viewport.scroll_offset();
     frame.render_stateful_widget(table, area, &mut table_state);
     pane.viewport.set_scroll_offset(table_state.offset());
     render_overflow_affordance(
@@ -189,13 +190,13 @@ fn compute_layout(entries: &[TargetEntry], content_width: u16) -> Layout {
     }
 }
 
-/// Trailing marker appended to the target name when the target's process
-/// is currently running. Includes a leading space so it sits one column
-/// off from the name (or the ellipsis when truncated).
-const RUNNING_SUFFIX: &str = " (r)";
+/// Running marker for a target: ` (debug)` / ` (release)` / ` (cargo)`
+/// depending on how the process was launched. Leading space so it sits one
+/// column off from the name (or the ellipsis when truncated).
+fn running_marker(metrics: RunningMetrics) -> String { format!(" ({})", metrics.profile.label()) }
 
-/// Compact CPU + resident-memory annotation rendered after the `(r)`
-/// marker on a running target's row, e.g. `47% 312.4 MiB`.
+/// Compact CPU + resident-memory annotation rendered after the running
+/// marker, e.g. `47% 312.4 MiB`.
 fn format_running_metrics(metrics: RunningMetrics) -> String {
     let cpu = metrics.cpu_percent;
     format!("{cpu:.0}% {}", render::format_bytes(metrics.memory_bytes))
@@ -207,23 +208,21 @@ fn idle_name_cell(display_name: &str, name_max: usize) -> Cell<'static> {
     Cell::from(format!(" {display}"))
 }
 
-/// Name cell for a running target: ` <name> (r) <cpu>% <mem>`, with the
-/// name truncated so the green `(r)` marker and its metrics always fit.
+/// Name cell for a running target: ` <name> (<profile>) <cpu>% <mem>`, with
+/// the name truncated so the green profile marker and its metrics always fit.
 fn running_name_cell(
     display_name: &str,
     name_max: usize,
     metrics: RunningMetrics,
 ) -> Cell<'static> {
-    let suffix = format!("{RUNNING_SUFFIX} {}", format_running_metrics(metrics));
+    let marker = running_marker(metrics);
+    let suffix = format!("{marker} {}", format_running_metrics(metrics));
     let (visible, _) = render::truncate_with_suffix(display_name, &suffix, name_max, "\u{2026}");
     let mut spans = Vec::new();
     if !visible.is_empty() {
         spans.push(Span::raw(format!(" {visible}")));
     }
-    spans.push(Span::styled(
-        RUNNING_SUFFIX,
-        Style::default().fg(success_color()),
-    ));
+    spans.push(Span::styled(marker, Style::default().fg(success_color())));
     spans.push(Span::styled(
         format!(" {}", format_running_metrics(metrics)),
         Style::default().fg(label_color()),

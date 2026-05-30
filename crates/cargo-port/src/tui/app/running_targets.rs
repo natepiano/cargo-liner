@@ -15,6 +15,7 @@ use crate::tui::running_targets::ProjectTargetSlice;
 struct OwnedSlice {
     target_dir:  AbsolutePath,
     bench_names: HashSet<String>,
+    bin_names:   HashSet<String>,
 }
 
 impl App {
@@ -30,6 +31,7 @@ impl App {
             .map(|entry| ProjectTargetSlice {
                 target_dir:  &entry.target_dir,
                 bench_names: &entry.bench_names,
+                bin_names:   &entry.bin_names,
             })
             .collect();
         self.panes.running_targets_tick(now, &slices);
@@ -45,16 +47,21 @@ impl App {
             .map(|meta| {
                 let target_dir = canonicalize_path(&meta.target_directory);
                 let mut bench_names = HashSet::new();
+                let mut bin_names = HashSet::new();
                 for record in meta.packages.values() {
                     for target in &record.targets {
                         if target.kinds.contains(&TargetKind::Bench) {
                             bench_names.insert(target.name.clone());
+                        }
+                        if target.kinds.contains(&TargetKind::Bin) {
+                            bin_names.insert(target.name.clone());
                         }
                     }
                 }
                 OwnedSlice {
                     target_dir,
                     bench_names,
+                    bin_names,
                 }
             })
             .collect()

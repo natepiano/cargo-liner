@@ -202,9 +202,14 @@ impl PublishPolicy {
 /// A single build target (bin, lib, example, test, bench, proc-macro, …).
 #[derive(Clone, Debug)]
 pub(crate) struct TargetRecord {
-    pub name:     String,
-    pub kinds:    Vec<TargetKind>,
-    pub src_path: AbsolutePath,
+    pub name:              String,
+    pub kinds:             Vec<TargetKind>,
+    pub src_path:          AbsolutePath,
+    /// Cargo `required-features` for this target. Passed as `--features`
+    /// when running so a target gated behind non-default features (e.g. an
+    /// example with `required-features = ["fit_overlay"]`) launches without
+    /// the user having to enable them by hand.
+    pub required_features: Vec<String>,
 }
 
 /// Inputs whose bytes determine a cargo-metadata invocation's result.

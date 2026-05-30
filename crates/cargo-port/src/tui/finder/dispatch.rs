@@ -531,6 +531,7 @@ fn render_finder_results(
         .row_highlight_style(Style::default());
 
     let mut table_state = TableState::default().with_selected(Some(pane.viewport.pos()));
+    *table_state.offset_mut() = pane.viewport.scroll_offset();
     frame.render_stateful_widget(table, area, &mut table_state);
     pane.viewport.set_scroll_offset(table_state.offset());
     render_overflow_affordance(

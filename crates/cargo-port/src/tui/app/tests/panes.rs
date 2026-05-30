@@ -102,9 +102,10 @@ fn seed_single_example_metadata(app: &App, project_path: &AbsolutePath, example_
         repository:    None,
         manifest_path: AbsolutePath::from(project_path.as_path().join("Cargo.toml")),
         targets:       vec![crate::project::TargetRecord {
-            name:     example_name.to_string(),
-            kinds:    vec![TargetKind::Example],
-            src_path: AbsolutePath::from(
+            name:              example_name.to_string(),
+            kinds:             vec![TargetKind::Example],
+            required_features: vec![],
+            src_path:          AbsolutePath::from(
                 project_path
                     .as_path()
                     .join(format!("examples/{example_name}.rs")),
@@ -280,9 +281,10 @@ fn metadata_arrival_populates_selected_tree_project_targets() {
     let workspace_root = AbsolutePath::from("/never-real/demo");
     let manifest_path = AbsolutePath::from("/never-real/demo/Cargo.toml");
     let example = TargetRecord {
-        name:     "tracked_row_paths".to_string(),
-        kinds:    vec![TargetKind::Example],
-        src_path: AbsolutePath::from("/never-real/demo/examples/tracked_row_paths.rs"),
+        name:              "tracked_row_paths".to_string(),
+        kinds:             vec![TargetKind::Example],
+        required_features: vec![],
+        src_path:          AbsolutePath::from("/never-real/demo/examples/tracked_row_paths.rs"),
     };
     let pkg_id = PackageId {
         repr: "demo-id".into(),

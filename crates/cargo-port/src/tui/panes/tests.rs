@@ -417,18 +417,20 @@ fn ci_copy_returns_selected_run_url() {
 fn targets_copy_returns_source_path_for_any_target_row() {
     let data = TargetsData {
         binaries: vec![TargetEntry {
-            name:         "demo".to_string(),
-            display_name: "demo".to_string(),
-            kind:         RunTargetKind::Binary,
-            source:       TargetSource::Workspace,
-            src_path:     AbsolutePath::from("/ws/src/main.rs"),
+            name:              "demo".to_string(),
+            display_name:      "demo".to_string(),
+            kind:              RunTargetKind::Binary,
+            source:            TargetSource::Workspace,
+            src_path:          AbsolutePath::from("/ws/src/main.rs"),
+            required_features: Vec::new(),
         }],
         examples: vec![TargetEntry {
-            name:         "demo_example".to_string(),
-            display_name: "demo_example".to_string(),
-            kind:         RunTargetKind::Example,
-            source:       TargetSource::Workspace,
-            src_path:     AbsolutePath::from("/ws/examples/demo_example.rs"),
+            name:              "demo_example".to_string(),
+            display_name:      "demo_example".to_string(),
+            kind:              RunTargetKind::Example,
+            source:            TargetSource::Workspace,
+            src_path:          AbsolutePath::from("/ws/examples/demo_example.rs"),
+            required_features: Vec::new(),
         }],
         benches:  Vec::new(),
     };
@@ -784,6 +786,7 @@ mod targets_from_metadata {
             name: name.into(),
             kinds,
             src_path: AbsolutePath::from(PathBuf::from(src_path)),
+            required_features: Vec::new(),
         }
     }
 

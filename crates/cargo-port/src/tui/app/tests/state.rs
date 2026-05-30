@@ -1063,9 +1063,12 @@ fn member_vendored_path_receives_cargo_metadata_fields() {
         repository:    None,
         manifest_path: AbsolutePath::from(vendored_path.as_path().join("Cargo.toml")),
         targets:       vec![crate::project::TargetRecord {
-            name:     "helper".into(),
-            kinds:    vec![TargetKind::Lib],
-            src_path: AbsolutePath::from(vendored_path.as_path().join("src").join("lib.rs")),
+            name:              "helper".into(),
+            kinds:             vec![TargetKind::Lib],
+            required_features: vec![],
+            src_path:          AbsolutePath::from(
+                vendored_path.as_path().join("src").join("lib.rs"),
+            ),
         }],
         publish:       PublishPolicy::Never,
     };
@@ -2812,14 +2815,16 @@ fn cargo_metadata_arrival_stamps_cargo_fields_onto_package() {
         manifest_path,
         targets: vec![
             crate::project::TargetRecord {
-                name:     "demo".into(),
-                kinds:    vec![TargetKind::Bin],
-                src_path: bin_src,
+                name:              "demo".into(),
+                kinds:             vec![TargetKind::Bin],
+                required_features: vec![],
+                src_path:          bin_src,
             },
             crate::project::TargetRecord {
-                name:     "hello".into(),
-                kinds:    vec![TargetKind::Example],
-                src_path: example_src,
+                name:              "hello".into(),
+                kinds:             vec![TargetKind::Example],
+                required_features: vec![],
+                src_path:          example_src,
             },
         ],
         publish: PublishPolicy::Never,

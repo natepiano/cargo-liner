@@ -1121,11 +1121,12 @@ fn output_active_excludes_diagnostics_and_reaches_output() {
     let mut app = make_app(&[project]);
     app.panes.targets.set_content(TargetsData {
         binaries: vec![crate::tui::panes::TargetEntry {
-            name:         "demo".to_string(),
-            display_name: "demo".to_string(),
-            kind:         crate::tui::panes::RunTargetKind::Binary,
-            source:       crate::tui::panes::TargetSource::Workspace,
-            src_path:     crate::project::AbsolutePath::from("/tmp/demo/src/main.rs"),
+            name:              "demo".to_string(),
+            display_name:      "demo".to_string(),
+            kind:              crate::tui::panes::RunTargetKind::Binary,
+            source:            crate::tui::panes::TargetSource::Workspace,
+            src_path:          crate::project::AbsolutePath::from("/tmp/demo/src/main.rs"),
+            required_features: Vec::new(),
         }],
         examples: Vec::new(),
         benches:  Vec::new(),

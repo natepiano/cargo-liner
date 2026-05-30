@@ -1346,9 +1346,10 @@ fn targets_pane_row_click_selects_target() {
 
     let mut app = make_app(&[make_package("demo", &project_dir)]);
     let make_target = |name: &str| TargetRecord {
-        name:     name.to_string(),
-        kinds:    vec![TargetKind::Example],
-        src_path: AbsolutePath::from(project_dir.join(format!("examples/{name}.rs"))),
+        name:              name.to_string(),
+        kinds:             vec![TargetKind::Example],
+        required_features: vec![],
+        src_path:          AbsolutePath::from(project_dir.join(format!("examples/{name}.rs"))),
     };
     let pkg_id = PackageId {
         repr: "demo-id".into(),
