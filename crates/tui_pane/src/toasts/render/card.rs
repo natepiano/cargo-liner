@@ -214,11 +214,21 @@ fn body_lines_plain(
         (toast.body().to_owned(), None)
     };
 
+    let line_colors = toast.body_line_colors();
     let mut result = visible_body
         .lines()
-        .map(|line| {
+        .enumerate()
+        .map(|(idx, line)| {
             toast.linger_progress().map_or_else(
-                || Line::from(Span::styled(line.to_owned(), body_style)),
+                || {
+                    // No linger: use the per-line color when present, else the
+                    // uniform body style.
+                    let style = line_colors
+                        .and_then(|colors| colors.get(idx).copied())
+                        .map_or(body_style, |color| Style::default().fg(color));
+                    Line::from(Span::styled(line.to_owned(), style))
+                },
+                // A finishing toast fades to grey regardless of per-line color.
                 |progress| format::fade_to_color(line, f64::from(progress)),
             )
         })

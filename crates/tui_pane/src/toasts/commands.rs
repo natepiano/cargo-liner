@@ -1,6 +1,8 @@
 use std::time::Duration;
 use std::time::Instant;
 
+use ratatui::style::Color;
+
 use super::Toast;
 use super::ToastBody;
 use super::ToastId;
@@ -124,6 +126,35 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     /// Start a task-backed toast using the default body height.
     pub fn start_task(&mut self, title: impl Into<String>, body: impl Into<String>) -> ToastTaskId {
         self.push_task(title, body, 1)
+    }
+
+    /// Start a task-backed toast whose body lines each carry their own
+    /// foreground color (the multi-row startup panel). `lines` and `colors`
+    /// are zipped per row; a missing color falls back to the body style.
+    pub fn start_colored_task(
+        &mut self,
+        title: impl Into<String>,
+        lines: Vec<String>,
+        colors: Vec<Color>,
+    ) -> ToastTaskId {
+        let id = ToastTaskId(self.next_id);
+        let now = Instant::now();
+        self.push_entry(
+            ToastSpec {
+                title:              title.into(),
+                body:               ToastBody::Colored { lines, colors },
+                style:              ToastStyle::Normal,
+                lifetime:           ToastLifetime::Task {
+                    task_id: id,
+                    status:  ToastTaskStatus::Running,
+                },
+                action:             None,
+                min_interior_lines: 1,
+                item_linger:        Duration::ZERO,
+            },
+            now,
+        );
+        id
     }
 
     /// Push a persistent toast with explicit style, action, and body height.

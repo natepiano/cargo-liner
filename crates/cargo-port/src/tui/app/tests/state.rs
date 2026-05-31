@@ -31,8 +31,9 @@ use crate::project::WorkspaceMetadata;
 use crate::project::WorktreeGroup;
 use crate::project::WorktreeStatus;
 use crate::scan::CargoMetadataError;
-use crate::tui::app::Startup;
+use crate::tui::app::phase_state::Denominator;
 use crate::tui::app::target_index::CleanSelection;
+use crate::tui::constants::STARTUP_ROW_MIN_VISIBLE;
 use crate::tui::panes;
 use crate::tui::terminal::CleanMsg;
 
@@ -630,13 +631,9 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
 
     app.initialize_startup_phase_tracker();
 
-    let expected = app
-        .startup
-        .lint_phase
-        .expected
-        .as_ref()
-        .expect("lint expected");
-    assert!(expected.is_empty());
+    // Lint starts omitted (Unknown) — the row stays hidden until a real
+    // lint run is queued.
+    assert!(app.startup.lint_phase.expected.is_unknown());
     assert!(app.lint.running_toast_id().is_none());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
@@ -648,7 +645,7 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
         .startup
         .lint_phase
         .expected
-        .as_ref()
+        .keys()
         .expect("lint expected");
     assert_eq!(expected.len(), 1);
     assert!(expected.contains(project_a.path().as_path()));
@@ -669,26 +666,6 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
     assert!(app.startup.lint_phase.complete_at.is_some());
     assert!(app.lint.running_toast_is_empty());
     app.prune_toasts();
-}
-
-#[test]
-fn startup_lint_toast_body_shows_paths_then_others() {
-    let expected = HashSet::from([
-        test_path("~/a"),
-        test_path("~/b"),
-        test_path("~/c"),
-        test_path("~/d"),
-        test_path("~/e"),
-    ]);
-    let seen = HashSet::from([test_path("~/e")]);
-
-    let body = Startup::lint_toast_body_for(&expected, &seen);
-    let lines: Vec<&str> = body.lines().collect();
-
-    assert_eq!(lines.len(), 4);
-    for line in lines {
-        assert!(line.starts_with("~/"));
-    }
 }
 
 #[test]
@@ -748,8 +725,8 @@ fn startup_git_expected_uses_top_level_git_directories() {
     app.initialize_startup_phase_tracker();
 
     assert_eq!(
-        app.startup.git.expected,
-        Some(HashSet::from([
+        app.startup.git.expected.keys(),
+        Some(&HashSet::from([
             AbsolutePath::from(non_rust_dir.join(".git")),
             AbsolutePath::from(workspace_dir.join(".git")),
             AbsolutePath::from(primary_dir.join(".git")),
@@ -2122,22 +2099,6 @@ fn fake_metadata(workspace_root: &AbsolutePath) -> WorkspaceMetadata {
     }
 }
 
-fn metadata_toast_items(app: &App) -> Vec<String> {
-    app.framework
-        .toasts
-        .active_now()
-        .iter()
-        .find(|toast| toast.title() == "Running cargo metadata")
-        .map(|toast| {
-            toast
-                .tracked_items()
-                .iter()
-                .map(|item| item.label.clone())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default()
-}
-
 fn lint_toast_running_items(app: &App) -> Vec<String> {
     app.framework
         .toasts
@@ -2156,7 +2117,7 @@ fn lint_toast_running_items(app: &App) -> Vec<String> {
 }
 
 #[test]
-fn initialize_startup_phase_seeds_metadata_expected_and_grouped_toast() {
+fn initialize_startup_phase_seeds_metadata_expected() {
     let project_a = make_project(Some("a"), "~/never-real/a");
     let project_b = make_project(Some("b"), "~/never-real/b");
     let mut app = make_app(&[project_a.clone(), project_b.clone()]);
@@ -2168,7 +2129,7 @@ fn initialize_startup_phase_seeds_metadata_expected_and_grouped_toast() {
         .startup
         .metadata
         .expected
-        .as_ref()
+        .keys()
         .expect("metadata expected set is seeded at startup");
     assert_eq!(
         expected.len(),
@@ -2177,20 +2138,12 @@ fn initialize_startup_phase_seeds_metadata_expected_and_grouped_toast() {
     );
     assert!(expected.contains(project_a.path()));
     assert!(expected.contains(project_b.path()));
-
-    assert!(
-        app.startup.metadata.toast.is_some(),
-        "a grouped 'Running cargo metadata' detail toast is created when expected is non-empty"
-    );
-    let items = metadata_toast_items(&app);
-    assert_eq!(items.len(), 2, "one tracked item per workspace root");
 }
 
 /// Happy path: a successful arrival at the current generation inserts
-/// the metadata into the store, advances `metadata.seen`, and ticks the
-/// tracked item in the grouped toast.
+/// the metadata into the store and advances `metadata.seen`.
 #[test]
-fn successful_metadata_arrival_advances_phase_and_tracked_item() {
+fn successful_metadata_arrival_advances_phase() {
     let project_a = make_project(Some("a"), "~/never-real/a");
     let mut app = make_app(std::slice::from_ref(&project_a));
     app.scan.state.phase = ScanPhase::Complete;
@@ -2231,9 +2184,8 @@ fn successful_metadata_arrival_advances_phase_and_tracked_item() {
 }
 
 /// Race guard: an arrival stamped with a generation older than the
-/// current one is dropped. `metadata.seen` must not advance, the store
-/// must not upsert, and the toast must still show the workspace as
-/// pending.
+/// current one is dropped. `metadata.seen` must not advance and the
+/// store must not upsert.
 #[test]
 fn stale_generation_metadata_arrival_is_dropped() {
     let project_a = make_project(Some("a"), "~/never-real/a");
@@ -2541,11 +2493,13 @@ fn startup_ready_waits_on_metadata_phase() {
     let now = std::time::Instant::now();
     let scan_started = app.startup.scan_complete_at.expect("scan complete at");
 
-    // Force disk/git/repo phases complete so only metadata is left
-    // gating startup_complete_at.
-    app.startup.disk.expected = Some(HashSet::new());
-    app.startup.git.expected = Some(HashSet::new());
-    app.startup.repo.expected = Some(HashSet::new());
+    // Force every phase except metadata complete (empty denominators
+    // complete immediately) so only metadata gates startup_complete_at.
+    app.startup.disk.expected = Denominator::Stable(HashSet::new());
+    app.startup.git.expected = Denominator::Stable(HashSet::new());
+    app.startup.repo.expected = Denominator::Stable(HashSet::new());
+    app.startup.languages.expected = Denominator::Stable(HashSet::new());
+    app.startup.tests.expected = Denominator::Stable(HashSet::new());
     app.maybe_complete_startup_disk(now, scan_started);
     app.maybe_complete_startup_git(now, scan_started);
     app.maybe_complete_startup_repo(now, scan_started);
@@ -2585,9 +2539,151 @@ fn startup_ready_waits_on_metadata_phase() {
         app.startup.metadata.complete_at.is_some(),
         "metadata phase completes after the arrival"
     );
+    // Every phase has resolved, but the panel holds each row visible until
+    // its minimum-visible floor elapses; advance past it and re-check.
+    app.maybe_complete_startup_ready(now + STARTUP_ROW_MIN_VISIBLE * 2, scan_started);
     assert!(
         app.startup.complete_at.is_some(),
-        "startup is now ready once every phase has resolved"
+        "startup is ready once every phase has resolved and the floor elapses"
+    );
+}
+
+/// The languages and test-count rows seed their denominator from the
+/// project-root set at scan start and mark `seen` as each batch applies.
+#[test]
+fn startup_languages_and_tests_rows_track_their_batches() {
+    let project_a = make_project(Some("a"), "~/never-real/a");
+    let mut app = make_app(std::slice::from_ref(&project_a));
+    app.scan.state.phase = ScanPhase::Complete;
+    app.initialize_startup_phase_tracker();
+
+    let root = project_a.path().clone();
+    assert!(
+        app.startup
+            .languages
+            .expected
+            .keys()
+            .is_some_and(|expected| expected.contains(root.as_path())),
+        "languages denominator is seeded from the project roots at scan start"
+    );
+    assert!(
+        app.startup
+            .tests
+            .expected
+            .keys()
+            .is_some_and(|expected| expected.contains(root.as_path())),
+        "tests denominator is seeded from the project roots at scan start"
+    );
+    assert!(app.startup.languages.seen.is_empty());
+    assert!(app.startup.tests.seen.is_empty());
+
+    app.handle_bg_msg(BackgroundMsg::LanguageStatsBatch {
+        entries: vec![(
+            root.clone(),
+            crate::project::LanguageStats { entries: vec![] },
+        )],
+    });
+    app.handle_bg_msg(BackgroundMsg::TestCountsBatch {
+        entries: vec![(root.clone(), crate::project::TestCounts::default())],
+    });
+
+    assert!(
+        app.startup.languages.seen.contains(root.as_path()),
+        "a language-stats batch marks its project root seen on the languages row"
+    );
+    assert!(
+        app.startup.tests.seen.contains(root.as_path()),
+        "a test-counts batch marks its project root seen on the tests row"
+    );
+}
+
+/// The crates.io row seeds its denominator upfront and holds the panel open
+/// until every seeded fetch reports complete.
+#[test]
+fn startup_crates_io_row_gates_until_fetches_complete() {
+    let project_a = make_project(Some("a"), "~/never-real/a");
+    let mut app = make_app(std::slice::from_ref(&project_a));
+    app.scan.state.phase = ScanPhase::Complete;
+    app.initialize_startup_phase_tracker();
+
+    let now = std::time::Instant::now();
+    let scan_started = app.startup.scan_complete_at.expect("scan complete at");
+
+    // Isolate crates.io: force every other row to an empty (immediately
+    // complete) denominator, and seed crates.io with one expected crate.
+    app.startup.disk.expected = Denominator::Stable(HashSet::new());
+    app.startup.git.expected = Denominator::Stable(HashSet::new());
+    app.startup.repo.expected = Denominator::Stable(HashSet::new());
+    app.startup.metadata.expected = Denominator::Stable(HashSet::new());
+    app.startup.languages.expected = Denominator::Stable(HashSet::new());
+    app.startup.tests.expected = Denominator::Stable(HashSet::new());
+    app.startup.crates_io.expected = Denominator::Stable(HashSet::from(["serde".to_string()]));
+    app.startup.crates_io.stamp_first_seen(now);
+    app.maybe_log_startup_phase_completions();
+
+    app.maybe_complete_startup_ready(now + STARTUP_ROW_MIN_VISIBLE * 2, scan_started);
+    assert!(
+        app.startup.complete_at.is_none(),
+        "panel stays open while a crates.io fetch is still pending"
+    );
+
+    app.handle_bg_msg(BackgroundMsg::CratesIoFetchComplete {
+        name: "serde".to_string(),
+    });
+    assert!(
+        app.startup.crates_io.seen.contains("serde"),
+        "a crates.io fetch-complete marks the crate seen on the row"
+    );
+
+    app.maybe_complete_startup_ready(now + STARTUP_ROW_MIN_VISIBLE * 2, scan_started);
+    assert!(
+        app.startup.complete_at.is_some(),
+        "panel closes once the crates.io row finishes and the floor elapses"
+    );
+}
+
+/// A repo fetch queued after the GitHub row already completed reopens the
+/// row, so the panel waits for the late fetch instead of closing early.
+#[test]
+fn startup_late_repo_fetch_reopens_github_row() {
+    let project_a = make_project(Some("a"), "~/never-real/a");
+    let mut app = make_app(std::slice::from_ref(&project_a));
+    app.scan.state.phase = ScanPhase::Complete;
+    app.initialize_startup_phase_tracker();
+
+    let now = std::time::Instant::now();
+    let scan_started = app.startup.scan_complete_at.expect("scan complete at");
+
+    // Git terminal + empty repo set → the GitHub row completes.
+    app.startup.git.expected = Denominator::Stable(HashSet::new());
+    app.maybe_complete_startup_git(now, scan_started);
+    app.maybe_complete_startup_repo(now, scan_started);
+    assert!(
+        app.startup.repo.complete_at.is_some(),
+        "GitHub row completes when git is terminal and no repos are queued"
+    );
+
+    // A repo fetch queued after that completion reopens the row.
+    let repo = crate::ci::OwnerRepo::new("natepiano", "cargo-port");
+    app.handle_bg_msg(BackgroundMsg::RepoFetchQueued { repo: repo.clone() });
+    assert!(
+        app.startup.repo.complete_at.is_none(),
+        "a late repo fetch reopens the completed GitHub row"
+    );
+    assert!(
+        app.startup
+            .repo
+            .expected
+            .keys()
+            .is_some_and(|expected| expected.contains(&repo)),
+        "the late repo joins the GitHub denominator"
+    );
+
+    // Completing it marks it seen and re-completes the row.
+    app.handle_bg_msg(BackgroundMsg::RepoFetchComplete { repo: repo.clone() });
+    assert!(
+        app.startup.repo.seen.contains(&repo) && app.startup.repo.complete_at.is_some(),
+        "completing the late fetch marks it seen and re-completes the row"
     );
 }
 

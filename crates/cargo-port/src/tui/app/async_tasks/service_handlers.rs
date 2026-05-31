@@ -11,6 +11,7 @@ use crate::http::ServiceSignal;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::tui::app::App;
+use crate::tui::app::phase_state::FailureReason;
 use crate::tui::state::AvailabilityStatus;
 use crate::tui::state::RecoveryOutcome;
 
@@ -114,6 +115,17 @@ impl App {
         }
         let toast_id = self.push_service_unavailable_toast(service, kind);
         self.net.availability_for(service).set_toast(toast_id);
+        // A confirmed-down GitHub means startup repo fetches will never
+        // complete; fail the startup panel's repo row so it finishes
+        // instead of waiting out the timeout. The toast above names the
+        // reason, so the row failure adds none of its own.
+        if service == ServiceKind::GitHub {
+            let reason = match kind {
+                AvailabilityKind::RateLimited => FailureReason::RateLimited,
+                AvailabilityKind::Unreachable => FailureReason::FetchError,
+            };
+            self.fail_startup_repo_phase(reason);
+        }
     }
     pub(super) fn push_service_unavailable_toast(
         &mut self,

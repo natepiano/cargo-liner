@@ -1,3 +1,5 @@
+use ratatui::style::Color;
+
 use crate::ToastSettings;
 
 /// Interior body width available inside toast cards for the current settings.
@@ -13,6 +15,13 @@ pub enum ToastBody {
     Text(String),
     /// Pre-split multi-line body.
     Lines(Vec<String>),
+    /// Multi-line body with a foreground color per line, rendered with each
+    /// line in its own color (the plain-text path is recovered via
+    /// [`as_text`](Self::as_text), so width and truncation are unaffected).
+    Colored {
+        lines:  Vec<String>,
+        colors: Vec<Color>,
+    },
 }
 
 impl ToastBody {
@@ -21,7 +30,15 @@ impl ToastBody {
     pub fn as_text(&self) -> String {
         match self {
             Self::Text(text) => text.clone(),
-            Self::Lines(lines) => lines.join("\n"),
+            Self::Lines(lines) | Self::Colored { lines, .. } => lines.join("\n"),
+        }
+    }
+
+    /// The per-line foreground colors, when this body carries them.
+    pub(super) fn line_colors(&self) -> Option<Vec<Color>> {
+        match self {
+            Self::Colored { colors, .. } => Some(colors.clone()),
+            Self::Text(_) | Self::Lines(_) => None,
         }
     }
 

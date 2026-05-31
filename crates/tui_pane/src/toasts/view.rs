@@ -1,4 +1,5 @@
 use ratatui::layout::Rect;
+use ratatui::style::Color;
 
 use super::ToastId;
 use super::ToastStyle;
@@ -7,16 +8,20 @@ use super::TrackedItemView;
 /// Render-ready view of a toast.
 #[derive(Clone, Debug)]
 pub struct ToastView {
-    pub(super) id:              ToastId,
-    pub(super) title:           String,
-    pub(super) body:            String,
-    pub(super) style:           ToastStyle,
-    pub(super) has_action:      bool,
-    pub(super) linger_progress: Option<f32>,
-    pub(super) remaining_secs:  Option<u64>,
-    pub(super) tracked_items:   Vec<TrackedItemView>,
-    pub(super) min_height:      u16,
-    pub(super) desired_height:  u16,
+    pub(super) id:               ToastId,
+    pub(super) title:            String,
+    pub(super) body:             String,
+    /// One foreground color per body line, when the toast body carries them
+    /// (the multi-row startup panel). `None` falls back to the uniform body
+    /// style.
+    pub(super) body_line_colors: Option<Vec<Color>>,
+    pub(super) style:            ToastStyle,
+    pub(super) has_action:       bool,
+    pub(super) linger_progress:  Option<f32>,
+    pub(super) remaining_secs:   Option<u64>,
+    pub(super) tracked_items:    Vec<TrackedItemView>,
+    pub(super) min_height:       u16,
+    pub(super) desired_height:   u16,
 }
 
 impl ToastView {
@@ -31,6 +36,10 @@ impl ToastView {
     /// Return this toast's body text.
     #[must_use]
     pub fn body(&self) -> &str { &self.body }
+
+    /// Per-line body foreground colors, when the body carries them.
+    #[must_use]
+    pub(super) fn body_line_colors(&self) -> Option<&[Color]> { self.body_line_colors.as_deref() }
 
     /// Return this toast's style.
     #[must_use]

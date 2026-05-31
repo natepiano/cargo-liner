@@ -26,8 +26,18 @@ impl App {
         self.lint.set_running_toast(next);
     }
     /// Keep a single "Retrieving GitHub repo details" toast in sync
-    /// with the live in-flight repo fetches.
+    /// with the live in-flight repo fetches. Suppressed while the startup
+    /// panel is open — the panel's GitHub row is the surface there, and a
+    /// competing standalone toast would crowd it out of the stack.
     pub(super) fn sync_running_repo_fetch_toast(&mut self) {
+        if self.startup_panel_owns_network_rows() {
+            if let Some(task_id) = self.net.github.running_mut().toast.take() {
+                self.framework
+                    .toasts
+                    .complete_missing_items(task_id, &HashSet::new());
+            }
+            return;
+        }
         let (toast_slot, items) = self
             .net
             .github
@@ -37,9 +47,17 @@ impl App {
         self.net.github.running_mut().toast = next;
     }
     /// Keep a single "Fetching crates.io info" toast in sync with the
-    /// live in-flight crates.io fetches. Mirrors the GitHub
-    /// repo-fetch toast.
+    /// live in-flight crates.io fetches. Mirrors the GitHub repo-fetch
+    /// toast, including the startup-panel suppression.
     pub(super) fn sync_running_crates_io_toast(&mut self) {
+        if self.startup_panel_owns_network_rows() {
+            if let Some(task_id) = self.net.crates_io.running_mut().toast.take() {
+                self.framework
+                    .toasts
+                    .complete_missing_items(task_id, &HashSet::new());
+            }
+            return;
+        }
         let (toast_slot, items) = self
             .net
             .crates_io
@@ -48,6 +66,10 @@ impl App {
         let next = self.sync_running_toast(toast_slot, "Fetching crates.io info", &items);
         self.net.crates_io.running_mut().toast = next;
     }
+    /// `true` while the consolidated startup panel is open and therefore owns
+    /// the GitHub / crates.io progress rows. The standalone running toasts for
+    /// those fetches stay suppressed until the panel closes.
+    const fn startup_panel_owns_network_rows(&self) -> bool { self.startup.toast.is_some() }
     /// Shared tracked-task toast sync. Grows as new items appear,
     /// marks items completed (freezing elapsed + starting strikethrough)
     /// as items disappear, and begins the toast-level linger

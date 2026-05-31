@@ -183,6 +183,7 @@ impl<Ctx: AppContext> Toast<Ctx> {
             id: self.id,
             title: self.title.clone(),
             body: self.body.as_text(),
+            body_line_colors: self.body.line_colors(),
             style: self.style,
             has_action: self.action.is_some(),
             linger_progress: self.linger_progress(now),

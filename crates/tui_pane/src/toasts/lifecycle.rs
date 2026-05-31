@@ -2,6 +2,8 @@ use std::collections::HashSet;
 use std::time::Duration;
 use std::time::Instant;
 
+use ratatui::style::Color;
+
 use super::ReactivateOutcome;
 use super::Toast;
 use super::ToastBody;
@@ -109,6 +111,20 @@ impl<Ctx: AppContext> Toasts<Ctx> {
             return false;
         };
         toast.body = ToastBody::from(body.into());
+        true
+    }
+
+    /// Replace a task toast's body with per-line colored lines.
+    pub fn update_task_colored(
+        &mut self,
+        task_id: ToastTaskId,
+        lines: Vec<String>,
+        colors: Vec<Color>,
+    ) -> bool {
+        let Some(toast) = self.toast_for_task_mut(task_id) else {
+            return false;
+        };
+        toast.body = ToastBody::Colored { lines, colors };
         true
     }
 

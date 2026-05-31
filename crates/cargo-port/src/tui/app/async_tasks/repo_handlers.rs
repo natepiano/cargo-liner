@@ -30,12 +30,8 @@ use crate::scan::CachedRepoData;
 use crate::scan::CiFetchResult;
 use crate::scan::RepoCache;
 use crate::tui::app::App;
-use crate::tui::constants::STARTUP_PHASE_GITHUB;
-use crate::tui::integration;
 use crate::tui::state;
-
 const PR_CHECK_POLL_SECS: u64 = 10;
-
 impl App {
     pub(super) fn spawn_repo_fetch_for_git_info(&mut self, path: &Path, repo_url: &str) {
         let Some(owner_repo) = ci::parse_owner_repo(repo_url) else {
@@ -53,7 +49,6 @@ impl App {
         {
             return;
         }
-
         let tx = self.background.background_sender();
         let client = self.net.http_client();
         let repo_cache = self.net.github.fetch_cache.clone();
@@ -115,7 +110,6 @@ impl App {
                 };
                 scan::store_cached_repo_data(&repo_cache, &owner_repo, data.clone());
             }
-
             let _ = tx.send(BackgroundMsg::CiRuns {
                 path:         path.clone(),
                 runs:         data.runs,
@@ -150,7 +144,6 @@ impl App {
             git_status = %info.status.label(),
             "checkout_info_applied"
         );
-
         let status = info.status;
         if let Some(project) = self.project_list.at_path_mut(path) {
             project.local_git_state = LocalGitState::Detected(Box::new(info));
@@ -159,23 +152,16 @@ impl App {
         // git repo. Ensure a `GitRepo` slot exists for `path` so per-repo
         // writes (CI, GitHub meta, RepoInfo) can land on it.
         self.project_list.ensure_git_repo_for(path);
-
         if self.scan.is_complete() {
             let git_dir = self
                 .startup_git_directory_for_path(path)
                 .unwrap_or_else(|| AbsolutePath::from(path));
-            self.startup.git.seen.insert(git_dir.clone());
-            if let Some(git_toast) = self.startup.git.toast {
-                let key = integration::path_key(&git_dir);
-                self.framework.toasts.mark_item_completed(git_toast, &key);
-            }
+            self.startup.git.seen.insert(git_dir);
             self.maybe_log_startup_phase_completions();
         }
-
         self.record_git_status_observation(path, status);
         self.maybe_trigger_repo_fetch(path);
     }
-
     /// Diff the current `GitStatus` for `path` against the tracker's
     /// baseline; on transition, push or extend the "Git status changes"
     /// task toast.
@@ -200,7 +186,6 @@ impl App {
             started_at: None,
             completed_at: Some(Instant::now()),
         };
-
         let reuse = self
             .git_status_tracker
             .current_toast()
@@ -233,7 +218,6 @@ impl App {
             info.first_commit = preserved_first_commit
                 .or_else(|| self.scan.pending_git_first_commit_mut().remove(path));
         }
-
         // Gate GitHub cache invalidation on `FETCH_HEAD` mtime actually
         // advancing. Without this, every watcher tick / commit / branch
         // switch would invalidate the cache and trigger a refetch,
@@ -245,7 +229,6 @@ impl App {
             .and_then(|existing| existing.last_fetched.clone());
         let fetch_head_advanced =
             info.last_fetched.is_some() && info.last_fetched != previous_last_fetched;
-
         // Submodules write to their own `git_repo`; for top-level
         // entries we still apply the primary-only-write policy below.
         let is_submodule_target = self.project_list.is_submodule_path(path);
@@ -261,7 +244,6 @@ impl App {
             let git_repo = entry.git_repo.get_or_insert_with(Default::default);
             git_repo.repo_info = Some(info);
         }
-
         if fetch_head_advanced
             && self.scan.is_complete()
             && let Some(url) = self.project_list.fetch_url_for(path)
@@ -270,11 +252,9 @@ impl App {
         {
             scan::invalidate_cached_repo_data(&self.net.github.fetch_cache, &owner_repo);
         }
-
         self.record_sync_observation(path);
         self.maybe_trigger_repo_fetch(path);
     }
-
     /// Diff the current sync state for `path` against the tracker's
     /// baseline; on transition, push or extend the "Sync changes" task
     /// toast.
@@ -297,7 +277,6 @@ impl App {
             started_at: None,
             completed_at: Some(Instant::now()),
         };
-
         let reuse = self
             .sync_tracker
             .current_toast()
@@ -347,32 +326,22 @@ impl App {
         }
     }
     pub(super) fn handle_repo_fetch_queued(&mut self, repo: OwnerRepo) {
-        let first_repo = self
-            .startup
-            .repo
-            .expected
-            .as_ref()
-            .is_none_or(HashSet::is_empty);
-        self.startup.repo.ensure_expected().insert(repo.clone());
-        self.net.github.running_mut().insert(repo, Instant::now());
-        if first_repo {
-            // First repo queued — add the "GitHub repos" tracked item
-            // to the startup toast and reset completion so the phase
-            // is re-evaluated now that there's actual work to track.
-            self.startup.repo.complete_at = None;
-            self.startup.complete_at = None;
-            if let Some(toast) = self.startup.toast {
-                self.framework.toasts.add_new_tracked_items(
-                    toast,
-                    &[TrackedItem {
-                        label:        STARTUP_PHASE_GITHUB.to_string(),
-                        key:          STARTUP_PHASE_GITHUB.into(),
-                        started_at:   Some(Instant::now()),
-                        completed_at: None,
-                    }],
-                );
+        // Grow the repo denominator for as long as the startup panel is open,
+        // so a fetch queued after local-git completes (and the denominator
+        // stabilized) still feeds the GitHub row and holds the panel until it
+        // finishes — without this the panel reached 100% and closed while
+        // late fetches were still running. Once the panel has closed, the
+        // fetch only drives the steady-state "Retrieving GitHub repo details"
+        // toast.
+        if self.startup.complete_at.is_none() {
+            let newly_tracked = self.startup.repo.expected.insert(repo.clone());
+            if newly_tracked && self.startup.repo.complete_at.is_some() {
+                // A late repo reopens the row (and so the panel gate) that it
+                // had already satisfied.
+                self.startup.repo.complete_at = None;
             }
         }
+        self.net.github.running_mut().insert(repo, Instant::now());
         self.sync_running_repo_fetch_toast();
     }
     pub(super) fn handle_repo_fetch_complete(&mut self, repo: OwnerRepo) {
@@ -383,7 +352,6 @@ impl App {
         self.maybe_log_startup_phase_completions();
         self.sync_running_repo_fetch_toast();
     }
-
     pub(super) fn handle_pull_requests(&mut self, repo: &OwnerRepo, data: &ProjectPrData) {
         let prior = self.project_list.pr_info_for_repo(repo).cloned();
         let data = preserve_live_pr_snapshot_while_loading(data, prior.as_ref());
@@ -395,14 +363,12 @@ impl App {
             self.scan.bump_generation();
         }
     }
-
     pub(super) fn handle_pull_request_check_poll_stopped(&mut self, repo: &OwnerRepo, number: u32) {
         let removed = self.net.github.remove_pr_check_poll(repo, number);
         if removed && self.selected_repo_matches(repo) {
             self.scan.bump_generation();
         }
     }
-
     fn selected_repo_matches(&self, repo: &OwnerRepo) -> bool {
         self.project_list
             .selected_project_path()
@@ -411,7 +377,6 @@ impl App {
             .as_ref()
             == Some(repo)
     }
-
     fn sync_pull_request_check_polls(&mut self, repo: &OwnerRepo, data: &ProjectPrData) {
         let ProjectPrData::Loaded(info) = data else {
             return;
@@ -436,7 +401,6 @@ impl App {
             self.start_pull_request_check_poll(repo, number);
         }
     }
-
     fn toast_pull_request_checks_finished(
         &mut self,
         repo: &OwnerRepo,
@@ -452,7 +416,6 @@ impl App {
             ),
         );
     }
-
     fn start_pull_request_check_poll(&mut self, repo: &OwnerRepo, number: u32) {
         if !self.net.github.insert_pr_check_poll(repo.clone(), number) {
             return;
@@ -482,7 +445,6 @@ impl App {
             let _ = tx.send(BackgroundMsg::PullRequestCheckPollStopped { repo, number });
         });
     }
-
     fn maybe_toast_deleted_pull_requests(
         &self,
         repo: &OwnerRepo,
@@ -495,7 +457,6 @@ impl App {
         }
         self.spawn_pull_request_disappearance_classification(repo.clone(), deleted);
     }
-
     fn spawn_pull_request_disappearance_classification(
         &self,
         repo: OwnerRepo,
@@ -516,7 +477,6 @@ impl App {
             }
         });
     }
-
     pub(super) fn handle_pull_request_disappeared(
         &mut self,
         repo: &OwnerRepo,
@@ -526,7 +486,6 @@ impl App {
         let (title, body) = pull_request_disappeared_toast(repo, pull_request, reason);
         self.framework.toasts.push_status(title, body);
     }
-
     /// Flip the sync-toast eligibility flag for every project that
     /// resolves to `repo` via its fetch URL, seeding each baseline with
     /// the current ahead/behind so the next change toasts.
@@ -560,7 +519,6 @@ impl App {
         if already_exists {
             return false;
         }
-
         self.background.register_item_background_services(&item);
         self.register_lint_project_if_eligible(&item);
         // Insert into the hierarchy directly — under a parent workspace if
@@ -584,7 +542,6 @@ impl App {
     pub fn handle_project_refreshed(&mut self, item: RootItem) -> bool {
         let legacy_expansions = self.project_list.capture_legacy_root_expansions();
         let path = item.path().to_path_buf();
-
         // Replace the leaf in project_list_items, transferring runtime data
         // from the old item to the incoming one. `worktree_health` is
         // filesystem-detected at refresh time and must survive the info copy.
@@ -625,7 +582,6 @@ impl App {
         // Signal that derived state needs refresh (batched by caller).
         true
     }
-
     fn startup_git_directory_for_path(&self, path: &Path) -> Option<AbsolutePath> {
         self.project_list
             .iter()
@@ -633,7 +589,6 @@ impl App {
             .and_then(|entry| entry.item.git_directory())
     }
 }
-
 fn preserve_live_pr_snapshot_while_loading(
     data: &ProjectPrData,
     prior: Option<&ProjectPrInfo>,
@@ -643,7 +598,6 @@ fn preserve_live_pr_snapshot_while_loading(
         _ => data.clone(),
     }
 }
-
 fn pull_request_disappeared_toast(
     repo: &OwnerRepo,
     pull_request: &PullRequestInfo,
@@ -669,7 +623,6 @@ fn pull_request_disappeared_toast(
         ),
     }
 }
-
 fn deleted_pull_requests(
     prior: Option<&ProjectPrInfo>,
     data: &ProjectPrData,
@@ -695,7 +648,6 @@ fn deleted_pull_requests(
         .cloned()
         .collect()
 }
-
 fn fetch_pull_requests_for_check_poll(
     client: &HttpClient,
     repo_cache: &RepoCache,
@@ -709,7 +661,6 @@ fn fetch_pull_requests_for_check_poll(
     store_polled_pull_request_data(repo_cache, repo, &data);
     (Some(data), signal)
 }
-
 fn store_polled_pull_request_data(repo_cache: &RepoCache, repo: &OwnerRepo, data: &ProjectPrData) {
     let Some(mut cached) = scan::load_cached_repo_data(repo_cache, repo) else {
         return;
@@ -717,7 +668,6 @@ fn store_polled_pull_request_data(repo_cache: &RepoCache, repo: &OwnerRepo, data
     cached.pr_data = data.clone();
     scan::store_cached_repo_data(repo_cache, repo, cached);
 }
-
 fn pull_request_still_checking(data: &ProjectPrData, number: u32) -> bool {
     data.info().is_some_and(|info| {
         info.open.iter().any(|pull_request| {

@@ -5,8 +5,6 @@ use crate::project::Visibility::Deleted;
 use crate::project::Visibility::Visible;
 use crate::scan::DirSizes;
 use crate::tui::app::App;
-use crate::tui::integration;
-
 impl App {
     pub fn handle_disk_usage(&mut self, path: &Path, bytes: u64) {
         self.apply_disk_usage(path, bytes);
@@ -52,12 +50,7 @@ impl App {
         }
     }
     pub(super) fn handle_disk_usage_msg(&mut self, path: &Path, bytes: u64) {
-        let abs = AbsolutePath::from(path);
-        self.startup.disk.seen.insert(abs.clone());
-        if let Some(disk_toast) = self.startup.disk.toast {
-            let key = integration::path_key(&abs);
-            self.framework.toasts.mark_item_completed(disk_toast, &key);
-        }
+        self.startup.disk.seen.insert(AbsolutePath::from(path));
         self.handle_disk_usage(path, bytes);
         self.maybe_log_startup_phase_completions();
     }
@@ -79,24 +72,12 @@ impl App {
         // `disk_entries`, the two sources can disagree about
         // what's "the" root. Marking only `root_path` leaves any
         // expected path that ends up listed in `entries` stuck
-        // on the toast forever; marking all of them is a no-op
-        // for keys that aren't tracked.
+        // pending in the panel row forever; marking all of them is
+        // a no-op for keys that aren't tracked.
         self.startup.disk.seen.insert(root_path.clone());
         for (path, _) in &entries {
             if path != root_path {
                 self.startup.disk.seen.insert(path.clone());
-            }
-        }
-        if let Some(disk_toast) = self.startup.disk.toast {
-            let root_key = integration::path_key(root_path);
-            self.framework
-                .toasts
-                .mark_item_completed(disk_toast, &root_key);
-            for (path, _) in &entries {
-                if path != root_path {
-                    let key = integration::path_key(path);
-                    self.framework.toasts.mark_item_completed(disk_toast, &key);
-                }
             }
         }
         self.handle_disk_usage_batch(entries);

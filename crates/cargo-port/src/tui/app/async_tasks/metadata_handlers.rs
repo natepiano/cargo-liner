@@ -6,15 +6,12 @@ use crate::scan;
 use crate::scan::CargoMetadataError;
 use crate::tui::app::App;
 use crate::tui::app::target_index::TargetDirMember;
-use crate::tui::integration;
-
 impl App {
     /// Merge a `cargo metadata` arrival back into the process-wide store and
-    /// advance the startup metadata phase. The startup path drives UI
-    /// feedback via the grouped "Running cargo metadata" tracked toast
-    /// created in `start_startup_detail_toasts`; post-startup per-workspace
-    /// spinners land with Step 1b (watcher-triggered refresh) — until then
-    /// only the startup path can arrive here.
+    /// advance the startup metadata phase. The startup path drives the
+    /// "Cargo metadata" row of the consolidated Startup panel; post-startup
+    /// per-workspace refreshes land with Step 1b (watcher-triggered refresh)
+    /// — until then only the startup path can arrive here.
     pub(super) fn handle_cargo_metadata_msg(
         &mut self,
         workspace_root: AbsolutePath,
@@ -44,7 +41,6 @@ impl App {
             );
             return;
         }
-
         match result {
             Ok(workspace_metadata) => {
                 if !self.accept_cargo_metadata(
@@ -82,11 +78,6 @@ impl App {
                     );
                 },
             },
-        }
-
-        if let Some(task_id) = self.startup.metadata.toast {
-            let key = integration::path_key(&workspace_root);
-            self.framework.toasts.mark_item_completed(task_id, &key);
         }
         // If the user had a confirm popup waiting on this workspace's
         // re-fingerprint, clear the Verifying flag so the next render
@@ -160,7 +151,6 @@ impl App {
         true
     }
 }
-
 /// Project root for each package covered by a [`WorkspaceMetadata`] —
 /// derived from each package's `manifest_path.parent()`. Feeds the
 /// `TargetDirIndex` membership update after a successful

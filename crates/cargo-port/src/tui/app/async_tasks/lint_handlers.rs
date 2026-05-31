@@ -6,7 +6,6 @@ use crate::lint::LintStatus;
 use crate::project::AbsolutePath;
 use crate::tui::app::App;
 use crate::tui::app::phase_state::PhaseCompletion;
-use crate::tui::constants::STARTUP_PHASE_LINT;
 
 impl App {
     pub(super) fn handle_lint_startup_status_msg(
@@ -27,19 +26,10 @@ impl App {
             return;
         }
         // All startup lint statuses collected — compute cache size once.
+        // `lint_count` is internal cardinality (the cached-status load), not
+        // a panel row; the lint *row* tracks `lint_phase`. The panel is
+        // closed by `maybe_complete_startup_ready`, not here.
         self.refresh_lint_cache_usage_from_disk();
-        if let Some(toast) = self.startup.toast {
-            self.framework
-                .toasts
-                .mark_tracked_item_completed(toast, STARTUP_PHASE_LINT);
-        }
-        // Clear the embedding's slot if core startup already finished.
-        // The overall startup toast auto-finishes when its last item
-        // (the Lint item, just marked completed above) is marked
-        // completed — matching the prior explicit-finish gate.
-        if self.startup.complete_at.is_some() {
-            let _ = self.startup.toast.take();
-        }
         if let Some(scan_complete_at) = self.startup.scan_complete_at {
             tracing::info!(
                 phase = "lint_startup_applied",
@@ -111,17 +101,20 @@ impl App {
             return;
         }
         if status_started {
-            let expected = self.startup.lint_phase.ensure_expected();
-            if expected.insert(owner_abs.clone()) {
+            let now = Instant::now();
+            if self.startup.lint_phase.expected.insert(owner_abs.clone()) {
                 self.startup.lint_phase.complete_at = None;
             }
+            // The lint row becomes visible now that real work is queued;
+            // stamp its minimum-visible floor.
+            self.startup.lint_phase.stamp_first_seen(now);
         }
         if status_is_terminal
             && self
                 .startup
                 .lint_phase
                 .expected
-                .as_ref()
+                .keys()
                 .is_some_and(|expected| expected.contains(owner_abs.as_path()))
         {
             self.startup.lint_phase.seen.insert(owner_abs);

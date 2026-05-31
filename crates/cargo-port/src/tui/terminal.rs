@@ -462,6 +462,7 @@ fn poll_background_frame(app: &mut App) -> (PollBackgroundStats, Duration) {
     app.maybe_reload_keymap_from_disk();
     app.maybe_reload_themes_from_disk();
     let stats = app.poll_background();
+    app.tick_startup_panel();
     (stats, started.elapsed())
 }
 

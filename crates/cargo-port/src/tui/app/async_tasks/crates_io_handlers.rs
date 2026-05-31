@@ -16,9 +16,12 @@ impl App {
     }
 
     /// Remove `name` from the live tracker; the toast finishes when
-    /// the tracker drains.
+    /// the tracker drains. Also advances the startup panel's crates.io row
+    /// (`seen` marked here, denominator seeded upfront at startup).
     pub(super) fn handle_crates_io_fetch_complete(&mut self, name: &str) {
         self.net.crates_io.running_mut().remove(name);
+        self.startup.crates_io.seen.insert(name.to_string());
+        self.maybe_log_startup_phase_completions();
         self.sync_running_crates_io_toast();
     }
 }
