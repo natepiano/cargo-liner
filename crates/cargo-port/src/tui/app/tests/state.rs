@@ -1808,14 +1808,12 @@ fn worktree_group_detail_lint_rollup_ignores_deleted_worktrees() {
         duration_ms: Some(60_000),
         status,
         commands: Vec::new(),
+        archive_bytes: 0,
     };
     app.project_list
         .lint_at_path_mut(&primary_path)
         .unwrap()
-        .set_runs(
-            vec![make_lint_run("primary", LintRunStatus::Passed)],
-            primary_path.as_path(),
-        );
+        .set_runs(vec![make_lint_run("primary", LintRunStatus::Passed)]);
     app.project_list
         .lint_at_path_mut(&primary_path)
         .unwrap()
@@ -1823,10 +1821,7 @@ fn worktree_group_detail_lint_rollup_ignores_deleted_worktrees() {
     app.project_list
         .lint_at_path_mut(&linked_path)
         .unwrap()
-        .set_runs(
-            vec![make_lint_run("linked", LintRunStatus::Failed)],
-            linked_path.as_path(),
-        );
+        .set_runs(vec![make_lint_run("linked", LintRunStatus::Failed)]);
     app.project_list
         .lint_at_path_mut(&linked_path)
         .unwrap()
@@ -1864,17 +1859,15 @@ fn worktree_group_detail_lint_rollup_rebuilds_when_linked_worktree_finishes() {
 
     let linked_path = test_path("~/ws_feat");
     let linked_lints = app.project_list.lint_at_path_mut(&linked_path).unwrap();
-    linked_lints.set_runs(
-        vec![LintRun {
-            run_id:      "previous".to_string(),
-            started_at:  "2026-03-30T16:12:18-05:00".to_string(),
-            finished_at: Some("2026-03-30T16:13:18-05:00".to_string()),
-            duration_ms: Some(60_000),
-            status:      LintRunStatus::Passed,
-            commands:    Vec::new(),
-        }],
-        linked_path.as_path(),
-    );
+    linked_lints.set_runs(vec![LintRun {
+        run_id:        "previous".to_string(),
+        started_at:    "2026-03-30T16:12:18-05:00".to_string(),
+        finished_at:   Some("2026-03-30T16:13:18-05:00".to_string()),
+        duration_ms:   Some(60_000),
+        status:        LintRunStatus::Passed,
+        commands:      Vec::new(),
+        archive_bytes: 0,
+    }]);
     linked_lints.set_status(LintStatus::Running(parse_ts("2026-03-30T16:22:18-05:00")));
     app.scan.bump_generation();
     app.ensure_detail_cached();

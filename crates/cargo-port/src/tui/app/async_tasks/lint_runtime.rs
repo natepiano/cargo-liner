@@ -1,8 +1,10 @@
 use std::path::Path;
 
 use crate::lint;
+use crate::lint::LintRun;
 use crate::lint::RegisterProjectRequest;
 use crate::project;
+use crate::project::AbsolutePath;
 use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::scan;
@@ -40,20 +42,47 @@ impl App {
         self.register_existing_projects();
         self.finish_watcher_registration_batch();
     }
-    pub fn refresh_lint_runs_from_disk(&mut self) {
+    /// Load every Rust project's lint history off the main thread. Reading
+    /// and JSON-parsing one history file per project synchronously freezes
+    /// the first content paint for over a second on a large tree, so the
+    /// reads run on the tokio blocking pool and land back as
+    /// [`BackgroundMsg::LintHistoryLoaded`], applied by
+    /// [`Self::apply_lint_history_loaded`].
+    pub fn refresh_lint_runs_from_disk(&self) {
         let mut paths = Vec::new();
         self.project_list.for_each_leaf_path(|path, is_rust| {
             if is_rust {
-                paths.push(path.to_path_buf());
+                paths.push(AbsolutePath::from(path.to_path_buf()));
             }
         });
-        for path in &paths {
-            let runs = lint::read_history(path);
-            if let Some(lr) = self.project_list.lint_at_path_mut(path) {
-                lr.set_runs(runs, path);
+        let tx = self.background.background_sender();
+        let handle = self.net.http_client().handle;
+        handle.spawn(async move {
+            let entries = tokio::task::spawn_blocking(move || {
+                paths
+                    .into_iter()
+                    .map(|path| {
+                        let runs = lint::read_history(path.as_path());
+                        (path, runs)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await
+            .unwrap_or_default();
+            let _ = tx.send(BackgroundMsg::LintHistoryLoaded { entries });
+        });
+        self.refresh_lint_cache_usage_from_disk();
+    }
+    /// Apply lint history read off the main thread by
+    /// [`Self::refresh_lint_runs_from_disk`], then invalidate the detail
+    /// cache so the selected project's lint runs render.
+    pub(super) fn apply_lint_history_loaded(&mut self, entries: Vec<(AbsolutePath, Vec<LintRun>)>) {
+        for (path, runs) in entries {
+            if let Some(lr) = self.project_list.lint_at_path_mut(path.as_path()) {
+                lr.set_runs(runs);
             }
         }
-        self.refresh_lint_cache_usage_from_disk();
+        self.scan.bump_generation();
     }
     pub(super) fn reload_lint_history(&mut self, project_path: &Path) {
         if !self.project_list.is_rust_at_path(project_path) {
@@ -61,7 +90,7 @@ impl App {
         }
         let runs = lint::read_history(project_path);
         if let Some(lr) = self.project_list.lint_at_path_mut(project_path) {
-            lr.set_runs(runs, project_path);
+            lr.set_runs(runs);
         }
     }
     /// Spawn the lint-cache-size disk walk on the tokio blocking pool.

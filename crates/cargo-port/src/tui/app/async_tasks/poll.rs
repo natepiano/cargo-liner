@@ -181,7 +181,9 @@ pub(super) const fn record_background_msg_kind(
         | BackgroundMsg::GitFirstCommit { .. } => {
             stats.git_info_msgs += 1;
         },
-        BackgroundMsg::LintStatus { .. } | BackgroundMsg::LintStartupStatus { .. } => {
+        BackgroundMsg::LintStatus { .. }
+        | BackgroundMsg::LintStartupStatus { .. }
+        | BackgroundMsg::LintHistoryLoaded { .. } => {
             stats.lint_status_msgs += 1;
         },
         BackgroundMsg::CiRuns { .. }

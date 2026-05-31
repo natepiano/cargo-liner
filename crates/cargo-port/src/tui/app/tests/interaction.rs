@@ -235,6 +235,7 @@ fn make_lint_run(run_id: &str, status: LintRunStatus) -> LintRun {
             exit_code:   Some(0),
             log_file:    "clippy.log".to_string(),
         }],
+        archive_bytes: 0,
     }
 }
 

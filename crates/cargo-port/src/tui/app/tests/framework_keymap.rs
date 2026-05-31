@@ -365,12 +365,13 @@ fn ci_data_with_runs(count: usize) -> CiData {
 fn lints_data_with_runs(count: usize) -> LintsData {
     let runs = (0..count)
         .map(|i| LintRun {
-            run_id:      format!("lint-{i}"),
-            started_at:  "2026-04-01T21:00:00-04:00".to_string(),
-            finished_at: None,
-            duration_ms: None,
-            status:      LintRunStatus::Passed,
-            commands:    Vec::new(),
+            run_id:        format!("lint-{i}"),
+            started_at:    "2026-04-01T21:00:00-04:00".to_string(),
+            finished_at:   None,
+            duration_ms:   None,
+            status:        LintRunStatus::Passed,
+            commands:      Vec::new(),
+            archive_bytes: 0,
         })
         .collect();
     LintsData {

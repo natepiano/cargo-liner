@@ -53,12 +53,21 @@ pub struct SyncTransition {
 }
 
 impl SyncTracker {
-    /// Mark a project eligible for sync-change toasts and seed its
-    /// baseline if not yet observed. Called once per project, the first
-    /// time that project's GitHub fetch completes.
-    pub fn mark_eligible(&mut self, path: AbsolutePath, current: Option<(usize, usize)>) {
+    /// Mark a project eligible for sync-change toasts. Called once per
+    /// project, the first time that project's GitHub fetch completes.
+    /// Seeding the baseline is a separate step ([`Self::seed_baseline`]) so
+    /// a project whose git info is still loading becomes eligible without
+    /// recording a premature "no remote" baseline that a later
+    /// `CheckoutInfo` would flip to "in sync".
+    pub fn mark_eligible(&mut self, path: AbsolutePath) {
+        self.entries.entry(path).or_default().eligible = true;
+    }
+
+    /// Seed a project's baseline from a fully-resolved ahead/behind value,
+    /// but only if no observation has been recorded yet. A `None` here is a
+    /// real "no remote-tracking branch", not git info that is still loading.
+    pub fn seed_baseline(&mut self, path: AbsolutePath, current: Option<(usize, usize)>) {
         let entry = self.entries.entry(path).or_default();
-        entry.eligible = true;
         if matches!(entry.last_seen, Baseline::Unseen) {
             entry.last_seen = Baseline::Seen(current);
         }
@@ -140,9 +149,10 @@ mod tests {
     }
 
     #[test]
-    fn mark_eligible_seeds_baseline_then_first_change_toasts() {
+    fn seeded_baseline_then_first_change_toasts() {
         let mut tracker = SyncTracker::default();
-        tracker.mark_eligible(path("a"), Some((1, 0)));
+        tracker.seed_baseline(path("a"), Some((1, 0)));
+        tracker.mark_eligible(path("a"));
         assert!(
             tracker.observe(path("a"), Some((1, 0))).is_none(),
             "same value, no toast"
@@ -157,7 +167,8 @@ mod tests {
     #[test]
     fn back_to_in_sync_is_a_transition() {
         let mut tracker = SyncTracker::default();
-        tracker.mark_eligible(path("a"), Some((3, 0)));
+        tracker.seed_baseline(path("a"), Some((3, 0)));
+        tracker.mark_eligible(path("a"));
         let transition = tracker
             .observe(path("a"), Some((0, 0)))
             .expect("3-ahead → in sync should toast");
@@ -168,7 +179,9 @@ mod tests {
     #[test]
     fn no_remote_to_remote_is_a_transition() {
         let mut tracker = SyncTracker::default();
-        tracker.mark_eligible(path("a"), None);
+        // A genuinely-resolved "no remote-tracking branch" baseline.
+        tracker.seed_baseline(path("a"), None);
+        tracker.mark_eligible(path("a"));
         let transition = tracker
             .observe(path("a"), Some((0, 1)))
             .expect("None → behind 1 should toast");
@@ -177,20 +190,40 @@ mod tests {
     }
 
     #[test]
-    fn mark_eligible_a_second_time_does_not_re_seed_baseline() {
+    fn eligible_without_baseline_seeds_silently_on_first_observation() {
+        // The startup race: the project becomes eligible (GitHub fetch
+        // completed) while git info is still loading, so no baseline is
+        // seeded. The first resolved observation must establish the
+        // baseline silently — not toast a spurious "no remote → in sync".
         let mut tracker = SyncTracker::default();
-        tracker.mark_eligible(path("a"), Some((1, 0)));
+        tracker.mark_eligible(path("a"));
+        assert!(
+            tracker.observe(path("a"), Some((0, 0))).is_none(),
+            "first resolved observation seeds the baseline, no toast"
+        );
+        let transition = tracker
+            .observe(path("a"), Some((0, 1)))
+            .expect("a later real change still toasts");
+        assert_eq!(transition.previous, Some((0, 0)));
+        assert_eq!(transition.current, Some((0, 1)));
+    }
+
+    #[test]
+    fn seeding_a_second_time_does_not_re_seed_baseline() {
+        let mut tracker = SyncTracker::default();
+        tracker.seed_baseline(path("a"), Some((1, 0)));
+        tracker.mark_eligible(path("a"));
         // Observe a change so last_seen advances to (2, 0)
         let _ = tracker.observe(path("a"), Some((2, 0)));
-        // Re-eligibility (shouldn't happen in practice but defensive):
-        tracker.mark_eligible(path("a"), Some((9, 9)));
+        // A second seed (shouldn't happen in practice but defensive):
+        tracker.seed_baseline(path("a"), Some((9, 9)));
         let transition = tracker
             .observe(path("a"), Some((3, 0)))
-            .expect("baseline preserved across re-eligibility");
+            .expect("baseline preserved across re-seeding");
         assert_eq!(
             transition.previous,
             Some((2, 0)),
-            "must compare against last observed, not the re-eligibility seed"
+            "must compare against last observed, not the re-seed value"
         );
     }
 

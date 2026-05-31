@@ -26,6 +26,7 @@ fn run(status: LintRunStatus) -> LintRun {
         duration_ms: Some(17_000),
         status,
         commands: Vec::new(),
+        archive_bytes: 0,
     }
 }
 
@@ -140,20 +141,22 @@ fn history_reads_newest_first_and_excludes_running_latest() {
     let cache_dir = tempfile::tempdir().expect("tempdir");
     let project_dir = tempfile::tempdir().expect("tempdir");
     let completed = LintRun {
-        run_id:      "completed".to_string(),
-        started_at:  "2026-04-01T18:00:00-04:00".to_string(),
-        finished_at: Some("2026-04-01T18:00:10-04:00".to_string()),
-        duration_ms: Some(10_000),
-        status:      LintRunStatus::Passed,
-        commands:    Vec::new(),
+        run_id:        "completed".to_string(),
+        started_at:    "2026-04-01T18:00:00-04:00".to_string(),
+        finished_at:   Some("2026-04-01T18:00:10-04:00".to_string()),
+        duration_ms:   Some(10_000),
+        status:        LintRunStatus::Passed,
+        commands:      Vec::new(),
+        archive_bytes: 0,
     };
     let running = LintRun {
-        run_id:      "running".to_string(),
-        started_at:  "2026-04-01T18:05:00-04:00".to_string(),
-        finished_at: None,
-        duration_ms: None,
-        status:      LintRunStatus::Running,
-        commands:    Vec::new(),
+        run_id:        "running".to_string(),
+        started_at:    "2026-04-01T18:05:00-04:00".to_string(),
+        finished_at:   None,
+        duration_ms:   None,
+        status:        LintRunStatus::Running,
+        commands:      Vec::new(),
+        archive_bytes: 0,
     };
 
     history::append_history_under(cache_dir.path(), project_dir.path(), &completed, None)
@@ -171,12 +174,13 @@ fn clear_latest_if_running_removes_running_latest() {
     let cache_dir = tempfile::tempdir().expect("tempdir");
     let project_dir = tempfile::tempdir().expect("tempdir");
     let running = LintRun {
-        run_id:      "running".to_string(),
-        started_at:  Utc::now().format("%+").to_string(),
-        finished_at: None,
-        duration_ms: None,
-        status:      LintRunStatus::Running,
-        commands:    Vec::new(),
+        run_id:        "running".to_string(),
+        started_at:    Utc::now().format("%+").to_string(),
+        finished_at:   None,
+        duration_ms:   None,
+        status:        LintRunStatus::Running,
+        commands:      Vec::new(),
+        archive_bytes: 0,
     };
     read_write::write_latest_under(cache_dir.path(), project_dir.path(), &running)
         .expect("write latest");
@@ -262,12 +266,13 @@ fn latest_final_run_does_not_duplicate_completed_history() {
     let cache_dir = tempfile::tempdir().expect("tempdir");
     let project_dir = tempfile::tempdir().expect("tempdir");
     let completed = LintRun {
-        run_id:      "same-run".to_string(),
-        started_at:  "2026-04-01T18:00:00-04:00".to_string(),
-        finished_at: Some("2026-04-01T18:00:10-04:00".to_string()),
-        duration_ms: Some(10_000),
-        status:      LintRunStatus::Passed,
-        commands:    Vec::new(),
+        run_id:        "same-run".to_string(),
+        started_at:    "2026-04-01T18:00:00-04:00".to_string(),
+        finished_at:   Some("2026-04-01T18:00:10-04:00".to_string()),
+        duration_ms:   Some(10_000),
+        status:        LintRunStatus::Passed,
+        commands:      Vec::new(),
+        archive_bytes: 0,
     };
 
     history::append_history_under(cache_dir.path(), project_dir.path(), &completed, None)
@@ -300,12 +305,12 @@ fn retained_cache_usage_counts_latest_and_history_bytes() {
 
 fn run_with_commands(run_id: &str, started_at: &str) -> LintRun {
     LintRun {
-        run_id:      run_id.to_string(),
-        started_at:  started_at.to_string(),
-        finished_at: Some(started_at.to_string()),
-        duration_ms: Some(5_000),
-        status:      LintRunStatus::Passed,
-        commands:    vec![
+        run_id:        run_id.to_string(),
+        started_at:    started_at.to_string(),
+        finished_at:   Some(started_at.to_string()),
+        duration_ms:   Some(5_000),
+        status:        LintRunStatus::Passed,
+        commands:      vec![
             LintCommand {
                 name:        "clippy".to_string(),
                 command:     "cargo clippy".to_string(),
@@ -323,6 +328,7 @@ fn run_with_commands(run_id: &str, started_at: &str) -> LintRun {
                 log_file:    "mend-latest.log".to_string(),
             },
         ],
+        archive_bytes: 0,
     }
 }
 
@@ -387,6 +393,17 @@ fn archive_run_copies_logs_to_run_id_directory() {
     let clippy_content = std::fs::read_to_string(run_dir.join("clippy.log")).expect("read");
     assert_eq!(clippy_content, "clippy: test output\n");
 
+    // The archived run carries the total bytes of its copied logs, summed
+    // once at archive time so reading history never walks the directory.
+    let clippy_bytes = std::fs::metadata(run_dir.join("clippy.log"))
+        .expect("clippy meta")
+        .len();
+    let mend_bytes = std::fs::metadata(run_dir.join("mend.log"))
+        .expect("mend meta")
+        .len();
+    assert!(clippy_bytes > 0 && mend_bytes > 0);
+    assert_eq!(archived.archive_bytes, clippy_bytes + mend_bytes);
+
     // Latest logs should still exist (convenience copies)
     let output_dir = paths::output_dir_under(cache_dir.path(), project_dir.path());
     assert!(output_dir.join("clippy-latest.log").exists());
@@ -410,6 +427,9 @@ fn archive_run_with_missing_logs_still_succeeds() {
     let project_cache = paths::project_dir_under(cache_dir.path(), project_dir.path());
     let run_dir = project_cache.join("runs/run-missing");
     assert!(!run_dir.join("clippy.log").exists());
+
+    // Nothing copied, so the persisted archive size is zero.
+    assert_eq!(archived.archive_bytes, 0);
 }
 
 // ── run-based pruning ──────────────────────────────────────────

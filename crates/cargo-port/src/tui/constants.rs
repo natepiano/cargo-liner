@@ -40,4 +40,4 @@ pub(super) const STARTUP_PHASE_GITHUB: &str = "GitHub repos";
 pub(super) const STARTUP_PHASE_LANGUAGES: &str = "Languages";
 pub(super) const STARTUP_PHASE_LINT: &str = "Lint history";
 pub(super) const STARTUP_PHASE_METADATA: &str = "Cargo metadata";
-pub(super) const STARTUP_PHASE_TESTS: &str = "Tests";
+pub(super) const STARTUP_PHASE_TESTS: &str = "Test counts";

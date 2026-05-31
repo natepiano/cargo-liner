@@ -272,6 +272,14 @@ phase no-ops with a debug log — it never touches a stale toast id or mutates
   > item comes from the live in-flight fetch for the network rows and a
   > deterministic pending key (`KeyedPhase::pending_sample`) for the batch rows;
   > rows that finish under 1s never show it.
+  >
+  > **Post-ship addition (2026-05-31):** on completion the panel now lingers for
+  > the standard `finished_task_visible` window with a **"Closing in N"
+  > countdown** like every other toast, instead of vanishing at once. Because the
+  > panel renders a body (no tracked items), `finish_task` would have given it a
+  > zero linger; `Toasts::finish_task_lingering` sets an explicit linger and
+  > `App::finish_body_toast_with_countdown` passes `finished_task_visible`. The
+  > test-count row label is **"Test counts"** (not "Tests").
 - Refactor `maybe_complete_startup_ready` to iterate the tracked phases
   (`[&dyn PhaseCompletion; 5]`: disk, git, repo, metadata, lint) via
   `gate_satisfied` rather than hard-coding each one, gating on the per-row floor

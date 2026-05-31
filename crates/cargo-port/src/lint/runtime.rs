@@ -561,12 +561,12 @@ impl Drop for RunFinalizeGuard<'_> {
 /// which is illegal on Windows. `started_at` keeps the unsanitized timestamp.
 fn build_pending_run(commands: &[LintCommandConfig], started_at_str: String) -> LintRun {
     LintRun {
-        run_id:      paths::sanitize_run_id(&started_at_str),
-        started_at:  started_at_str,
-        finished_at: None,
-        duration_ms: None,
-        status:      LintRunStatus::Running,
-        commands:    commands
+        run_id:        paths::sanitize_run_id(&started_at_str),
+        started_at:    started_at_str,
+        finished_at:   None,
+        duration_ms:   None,
+        status:        LintRunStatus::Running,
+        commands:      commands
             .iter()
             .enumerate()
             .map(|(index, command)| {
@@ -585,6 +585,7 @@ fn build_pending_run(commands: &[LintCommandConfig], started_at_str: String) -> 
                 }
             })
             .collect(),
+        archive_bytes: 0,
     }
 }
 

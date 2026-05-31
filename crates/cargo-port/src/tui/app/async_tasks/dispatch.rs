@@ -61,26 +61,16 @@ impl App {
             .selected_project_path()
             .map(AbsolutePath::from)
             .or_else(|| self.project_list.paths.last_selected.clone());
-        let _t = std::time::Instant::now();
         self.mutate_tree().replace_all(ProjectList::new(projects));
         self.prune_inactive_project_state();
-        tracing::info!(perf_probe = "replace+prune", ms = _t.elapsed().as_millis());
-        let _t = std::time::Instant::now();
         let lint_registered = self.register_lint_for_root_items();
-        tracing::info!(perf_probe = "register_lint", ms = _t.elapsed().as_millis());
         self.startup.lint_count.expected = Some(lint_registered);
         self.startup.lint_count.seen = 0;
         self.startup.lint_count.complete_at = None;
-        let _t = std::time::Instant::now();
         self.refresh_lint_runs_from_disk();
-        tracing::info!(
-            perf_probe = "refresh_lint_runs_from_disk",
-            ms = _t.elapsed().as_millis()
-        );
         self.scan.bump_generation();
 
         // Restore selection.
-        let _t = std::time::Instant::now();
         if let Some(path) = selected_path {
             self.project_list.select_project_in_tree(
                 path.as_path(),
@@ -90,19 +80,10 @@ impl App {
             self.project_list.set_cursor(0);
         }
         self.sync_selected_project();
-        tracing::info!(
-            perf_probe = "select+sync_selected",
-            ms = _t.elapsed().as_millis()
-        );
 
         // Register watcher for each item (same as register_item_background_services).
-        let _t = std::time::Instant::now();
         self.register_background_services_for_tree();
         self.finish_watcher_registration_batch();
-        tracing::info!(
-            perf_probe = "register_bg+finish_watcher",
-            ms = _t.elapsed().as_millis()
-        );
 
         // Mark scan complete and initialize startup tracking.
         self.scan.state.phase = ScanPhase::Complete;
@@ -118,13 +99,8 @@ impl App {
         if lint_registered == 0 {
             self.maybe_complete_startup_lint_cache();
         }
-        let _t = std::time::Instant::now();
         self.schedule_startup_project_details();
         self.schedule_git_first_commit_refreshes();
-        tracing::info!(
-            perf_probe = "schedule_details+git",
-            ms = _t.elapsed().as_millis()
-        );
     }
     /// Handle a single `BackgroundMsg`. Returns `true` if the tree
     /// needs rebuilding. The match is a 1:1 mapping from variant to
@@ -210,6 +186,9 @@ impl App {
                 bytes_reclaimed,
             } => self.handle_lint_cache_pruned(runs_evicted, bytes_reclaimed),
             BackgroundMsg::LintCacheUsage { usage } => self.lint.set_cache_usage(usage),
+            BackgroundMsg::LintHistoryLoaded { entries } => {
+                self.apply_lint_history_loaded(entries);
+            },
             BackgroundMsg::LintStatus { path, status } => {
                 self.handle_lint_status_msg(path.as_path(), status);
             },

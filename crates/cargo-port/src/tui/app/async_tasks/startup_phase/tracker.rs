@@ -469,10 +469,12 @@ impl App {
         }
         self.startup.complete_at = Some(now);
         // Paint the final all-complete panel, then close it explicitly —
-        // the body-string panel has no tracked-items auto-finish.
+        // the body-string panel has no tracked-items auto-finish, so it
+        // lingers for the standard finished-task window with a "Closing in
+        // N" countdown like every other toast.
         self.refresh_startup_panel(now);
         if let Some(toast) = self.startup.toast.take() {
-            self.finish_task_toast(toast);
+            self.finish_body_toast_with_countdown(toast);
         }
         let since_scan_ms = tui_pane::perf_log_ms(now.duration_since(scan_complete_at).as_millis());
         tracing::info!(

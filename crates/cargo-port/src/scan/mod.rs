@@ -59,6 +59,7 @@ use tui_pane::Appearance;
 use crate::ci::CiRun;
 use crate::ci::OwnerRepo;
 use crate::lint::CacheUsage;
+use crate::lint::LintRun;
 use crate::lint::LintStatus;
 use crate::project::LanguageStats;
 use crate::project::ProjectPrData;
@@ -188,6 +189,13 @@ pub(crate) enum BackgroundMsg {
     /// otherwise block the first paint when the cache has thousands of
     /// archived run files.
     LintCacheUsage { usage: CacheUsage },
+    /// Per-project lint history read from disk off the main thread. Spawned
+    /// by `App::refresh_lint_runs_from_disk`; reading and JSON-parsing the
+    /// history file for every Rust project synchronously would otherwise
+    /// freeze the first content paint for over a second on a large tree.
+    LintHistoryLoaded {
+        entries: Vec<(AbsolutePath, Vec<LintRun>)>,
+    },
     /// An external service (GitHub, crates.io) is reachable.
     ServiceReachable { service: ServiceKind },
     /// An external service recovered after being unreachable or
@@ -316,6 +324,9 @@ impl BackgroundMsg {
             // the lint subsystem.
             | Self::LintCachePruned { .. }
             | Self::LintCacheUsage { .. }
+            // Startup history load is a batch spanning every project; the
+            // handler bumps generation explicitly after applying it.
+            | Self::LintHistoryLoaded { .. }
             // Service availability is a separate UI surface.
             | Self::ServiceReachable { .. }
             | Self::ServiceRecovered { .. }

@@ -68,6 +68,14 @@ pub(super) use visible_rows::LegacyRootExpansion;
 pub(super) use visible_rows::VisibleRow;
 use visible_rows::worst_git_status;
 
+/// Whether a project's primary ahead/behind sync value is known yet.
+/// `Unresolved` means git info (checkout or repo) is still loading;
+/// `Resolved(None)` means it loaded and there is no remote-tracking branch.
+pub(super) enum SyncResolution {
+    Unresolved,
+    Resolved(Option<(usize, usize)>),
+}
+
 fn project_lint_is_running(project: &RustProject) -> bool {
     project.visibility() == Visibility::Visible
         && matches!(
@@ -531,6 +539,20 @@ impl ProjectList {
         let checkout = self.git_info_for(path)?;
         let repo = self.repo_info_for(path)?;
         checkout.primary_ahead_behind(repo)
+    }
+
+    /// Sync state for the checkout at `path`, distinguishing "git info not
+    /// loaded yet" from "loaded, but no remote-tracking branch". The plain
+    /// [`Self::primary_ahead_behind_for`] collapses both to `None`; the
+    /// sync-change tracker needs them apart so a startup race (the cached
+    /// GitHub fetch landing before local `CheckoutInfo`) is not mistaken
+    /// for a real "no remote" baseline.
+    pub(super) fn primary_sync_resolution(&self, path: &Path) -> SyncResolution {
+        let (Some(checkout), Some(repo)) = (self.git_info_for(path), self.repo_info_for(path))
+        else {
+            return SyncResolution::Unresolved;
+        };
+        SyncResolution::Resolved(checkout.primary_ahead_behind(repo))
     }
 
     /// Pick a remote URL to drive the GitHub fetch for the entry

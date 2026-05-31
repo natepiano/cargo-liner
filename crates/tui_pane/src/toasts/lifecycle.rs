@@ -82,6 +82,30 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         true
     }
 
+    /// Mark a task toast as finished but keep it on screen for `linger`,
+    /// showing the same "Closing in N" countdown that item-bearing task
+    /// toasts get. [`Self::finish_task`] gives an item-less toast a zero
+    /// linger (it prunes on the next pass); a toast that renders its own
+    /// body instead of tracked items — the startup panel — uses this so its
+    /// close is announced like every other toast.
+    pub fn finish_task_lingering(&mut self, task_id: ToastTaskId, linger: Duration) -> bool {
+        let now = Instant::now();
+        let Some(toast) = self.toast_for_task_mut(task_id) else {
+            return false;
+        };
+        if !matches!(toast.lifetime, ToastLifetime::Task { .. }) {
+            return false;
+        }
+        toast.lifetime = ToastLifetime::Task {
+            task_id,
+            status: ToastTaskStatus::Finished {
+                finished_at: now,
+                linger,
+            },
+        };
+        true
+    }
+
     /// Mark a finished task toast as running again — unless the
     /// user explicitly dismissed it during this tracker session.
     ///

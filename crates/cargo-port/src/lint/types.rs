@@ -105,10 +105,16 @@ pub struct LintCommand {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LintRun {
-    pub run_id:      String,
-    pub started_at:  String,
-    pub finished_at: Option<String>,
-    pub duration_ms: Option<u64>,
-    pub status:      LintRunStatus,
-    pub commands:    Vec<LintCommand>,
+    pub run_id:        String,
+    pub started_at:    String,
+    pub finished_at:   Option<String>,
+    pub duration_ms:   Option<u64>,
+    pub status:        LintRunStatus,
+    pub commands:      Vec<LintCommand>,
+    /// Total bytes of this run's archived command logs, summed once when the
+    /// run is archived (see [`crate::lint::history::archive_run_output`]) and
+    /// persisted on the history line. Reading it back is O(1) — the UI no
+    /// longer walks every run's directory at startup to size the list.
+    #[serde(default)]
+    pub archive_bytes: u64,
 }

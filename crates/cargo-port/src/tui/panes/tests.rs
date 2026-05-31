@@ -463,12 +463,12 @@ fn lints_copy_returns_selected_run_log_path() {
     let project_root = AbsolutePath::from("/Users/natemccoy/rust/demo");
     let data = LintsData {
         runs:    vec![LintRun {
-            run_id:      "run-1".to_string(),
-            started_at:  "2026-05-19T10:00:00-04:00".to_string(),
-            finished_at: Some("2026-05-19T10:01:00-04:00".to_string()),
-            duration_ms: Some(60_000),
-            status:      LintRunStatus::Passed,
-            commands:    vec![LintCommand {
+            run_id:        "run-1".to_string(),
+            started_at:    "2026-05-19T10:00:00-04:00".to_string(),
+            finished_at:   Some("2026-05-19T10:01:00-04:00".to_string()),
+            duration_ms:   Some(60_000),
+            status:        LintRunStatus::Passed,
+            commands:      vec![LintCommand {
                 name:        "clippy".to_string(),
                 command:     "cargo clippy".to_string(),
                 status:      LintCommandStatus::Passed,
@@ -476,6 +476,7 @@ fn lints_copy_returns_selected_run_log_path() {
                 exit_code:   Some(0),
                 log_file:    "runs/run-1/clippy.log".to_string(),
             }],
+            archive_bytes: 0,
         }],
         sizes:   vec![Some(1024)],
         is_rust: true,

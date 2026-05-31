@@ -1,7 +1,5 @@
 use std::collections::HashMap;
-use std::path::Path;
 
-use super::history;
 use super::status;
 use super::types::LintRun;
 use super::types::LintStatus;
@@ -34,19 +32,15 @@ impl LintRuns {
         self.archive_bytes.get(run_id).copied()
     }
 
-    /// Replace run history and derive status from the latest run. Recomputes
-    /// archive sizes from disk once; subsequent `archive_bytes` lookups are
-    /// O(1) and do no I/O.
-    pub fn set_runs(&mut self, runs: Vec<LintRun>, project_root: &Path) {
+    /// Replace run history and derive status from the latest run. Archive
+    /// sizes are read straight off each run (persisted when the run was
+    /// archived), so this does no disk I/O and `archive_bytes` lookups stay
+    /// O(1).
+    pub fn set_runs(&mut self, runs: Vec<LintRun>) {
         self.status = runs.first().map_or(LintStatus::NoLog, status::parse_run);
         self.archive_bytes = runs
             .iter()
-            .map(|run| {
-                (
-                    run.run_id.clone(),
-                    history::run_archive_bytes(project_root, &run.run_id),
-                )
-            })
+            .map(|run| (run.run_id.clone(), run.archive_bytes))
             .collect();
         self.runs = runs;
     }
@@ -71,28 +65,25 @@ impl LintRuns {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use super::*;
     use crate::lint::types::LintRunStatus;
 
     fn make_run(run_id: &str) -> LintRun {
         LintRun {
-            run_id:      run_id.to_string(),
-            started_at:  "2026-04-24T12:00:00Z".to_string(),
-            finished_at: Some("2026-04-24T12:00:01Z".to_string()),
-            duration_ms: Some(1000),
-            status:      LintRunStatus::Passed,
-            commands:    Vec::new(),
+            run_id:        run_id.to_string(),
+            started_at:    "2026-04-24T12:00:00Z".to_string(),
+            finished_at:   Some("2026-04-24T12:00:01Z".to_string()),
+            duration_ms:   Some(1000),
+            status:        LintRunStatus::Passed,
+            commands:      Vec::new(),
+            archive_bytes: 0,
         }
     }
-
-    fn stub_root() -> PathBuf { PathBuf::from("/tmp/cargo-port-lint-runs-test-stub") }
 
     #[test]
     fn set_runs_populates_archive_entry_per_run() {
         let mut lr = LintRuns::default();
-        lr.set_runs(vec![make_run("a"), make_run("b")], &stub_root());
+        lr.set_runs(vec![make_run("a"), make_run("b")]);
 
         assert!(lr.has_archive_entry("a"));
         assert!(lr.has_archive_entry("b"));
@@ -106,12 +97,12 @@ mod tests {
     }
 
     #[test]
-    fn archive_bytes_returns_some_for_known_run_id_even_when_zero() {
-        // After `set_runs`, the entry is present even if the archive
-        // directory doesn't exist yet (size will be 0). Distinguishing
-        // this from "unknown" is the whole point of the `Option` API.
+    fn archive_bytes_returns_the_size_persisted_on_the_run() {
+        // The entry is present for every run in the set; its value is the
+        // `archive_bytes` field carried on the run. Distinguishing a present
+        // entry from an unknown run is the whole point of the `Option` API.
         let mut lr = LintRuns::default();
-        lr.set_runs(vec![make_run("a")], &stub_root());
+        lr.set_runs(vec![make_run("a")]);
         assert_eq!(lr.archive_bytes("a"), Some(0));
         assert_eq!(lr.archive_bytes("not-a-real-run"), None);
     }
@@ -119,7 +110,7 @@ mod tests {
     #[test]
     fn clear_runs_empties_archive_entries() {
         let mut lr = LintRuns::default();
-        lr.set_runs(vec![make_run("a")], &stub_root());
+        lr.set_runs(vec![make_run("a")]);
         assert!(lr.has_archive_entry("a"));
 
         lr.clear_runs();
@@ -130,8 +121,8 @@ mod tests {
     #[test]
     fn set_runs_replaces_previous_archive_entries() {
         let mut lr = LintRuns::default();
-        lr.set_runs(vec![make_run("a")], &stub_root());
-        lr.set_runs(vec![make_run("b")], &stub_root());
+        lr.set_runs(vec![make_run("a")]);
+        lr.set_runs(vec![make_run("b")]);
 
         assert!(!lr.has_archive_entry("a"), "old run's entry should be gone");
         assert!(lr.has_archive_entry("b"));

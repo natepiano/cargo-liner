@@ -30,6 +30,7 @@ use crate::scan::CachedRepoData;
 use crate::scan::CiFetchResult;
 use crate::scan::RepoCache;
 use crate::tui::app::App;
+use crate::tui::project_list::SyncResolution;
 use crate::tui::state;
 const PR_CHECK_POLL_SECS: u64 = 10;
 impl App {
@@ -259,7 +260,12 @@ impl App {
     /// baseline; on transition, push or extend the "Sync changes" task
     /// toast.
     fn record_sync_observation(&mut self, path: &Path) {
-        let current = self.project_list.primary_ahead_behind_for(path);
+        // Skip while git info is still loading — a not-yet-resolved value is
+        // not a real sync state and must not become a baseline.
+        let SyncResolution::Resolved(current) = self.project_list.primary_sync_resolution(path)
+        else {
+            return;
+        };
         let Some(transition) = self.sync_tracker.observe(AbsolutePath::from(path), current) else {
             return;
         };
@@ -486,11 +492,13 @@ impl App {
         let (title, body) = pull_request_disappeared_toast(repo, pull_request, reason);
         self.framework.toasts.push_status(title, body);
     }
-    /// Flip the sync-toast eligibility flag for every project that
-    /// resolves to `repo` via its fetch URL, seeding each baseline with
-    /// the current ahead/behind so the next change toasts.
+    /// Flip the sync-toast eligibility flag for every project that resolves
+    /// to `repo` via its fetch URL. The baseline is only seeded from a
+    /// fully-resolved ahead/behind value — if git info is still loading the
+    /// project becomes eligible with no baseline, and the first resolved
+    /// observation seeds it silently (so a startup race never toasts).
     fn mark_sync_eligible_for(&mut self, repo: &OwnerRepo) {
-        let mut targets: Vec<(AbsolutePath, Option<(usize, usize)>)> = Vec::new();
+        let mut targets: Vec<(AbsolutePath, SyncResolution)> = Vec::new();
         self.project_list.for_each_leaf_path(|path, _| {
             let Some(url) = self.project_list.fetch_url_for(path) else {
                 return;
@@ -500,11 +508,14 @@ impl App {
             }
             targets.push((
                 AbsolutePath::from(path),
-                self.project_list.primary_ahead_behind_for(path),
+                self.project_list.primary_sync_resolution(path),
             ));
         });
-        for (path, current) in targets {
-            self.sync_tracker.mark_eligible(path, current);
+        for (path, resolution) in targets {
+            if let SyncResolution::Resolved(current) = resolution {
+                self.sync_tracker.seed_baseline(path.clone(), current);
+            }
+            self.sync_tracker.mark_eligible(path);
         }
     }
     pub fn handle_project_discovered(&mut self, item: RootItem) -> bool {

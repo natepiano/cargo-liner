@@ -40,11 +40,6 @@ pub fn retained_cache_usage(cache_size_bytes: Option<u64>) -> CacheUsage {
 ///
 /// Called only when seeding `LintRuns::archive_bytes` — UI reads go through
 /// the in-memory cache.
-pub(super) fn run_archive_bytes(project_root: &Path, run_id: &str) -> u64 {
-    let run_dir = paths::project_dir(project_root).join("runs").join(run_id);
-    total_bytes_under(&run_dir)
-}
-
 pub(super) fn retained_cache_usage_under(
     cache_root: &Path,
     cache_size_bytes: Option<u64>,
@@ -103,6 +98,7 @@ pub(super) fn archive_run_output(
             i64::try_from(archived_bytes).unwrap_or(i64::MAX),
         );
     }
+    archived.archive_bytes = archived_bytes;
     Ok(archived)
 }
 

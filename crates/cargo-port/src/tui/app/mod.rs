@@ -544,6 +544,15 @@ impl App {
         self.prune_toasts();
     }
 
+    /// Finish a task toast that renders its own body (no tracked items),
+    /// keeping it visible for the standard finished-task linger so it shows
+    /// the "Closing in N" countdown instead of vanishing at once.
+    pub(super) fn finish_body_toast_with_countdown(&mut self, task_id: ToastTaskId) {
+        let linger = self.framework.toast_settings().finished_task_visible.get();
+        self.framework.toasts.finish_task_lingering(task_id, linger);
+        self.prune_toasts();
+    }
+
     pub(super) fn set_task_tracked_items(&mut self, task_id: ToastTaskId, items: &[TrackedItem]) {
         self.framework.toasts.set_tracked_items(task_id, items);
     }
