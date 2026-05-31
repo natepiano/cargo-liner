@@ -196,8 +196,12 @@ fn render_git_column_inner(
         current_section,
     );
 
-    let scroll_y =
-        package::detail_column_scroll_offset(ctx.focus, focused_output_line, inner_area.height);
+    let scroll_y = package::detail_column_scroll_offset(
+        ctx.focus,
+        focused_output_line,
+        inner_area.height,
+        lines.len(),
+    );
     frame.render_widget(Paragraph::new(lines).scroll((scroll_y, 0)), inner_area);
     render_section_overlays(
         frame,

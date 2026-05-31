@@ -12,15 +12,18 @@ use ratatui::text::Span;
 use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
 use ratatui::widgets::Paragraph;
+use tui_pane::Band;
 use tui_pane::PaneChrome;
 use tui_pane::PaneFocusState;
 use tui_pane::PaneRule;
 use tui_pane::PaneSelectionState;
 use tui_pane::RuleTitle;
 use tui_pane::Viewport;
+use tui_pane::ViewportOverflow;
 use tui_pane::accent_color;
 use tui_pane::error_color;
 use tui_pane::inactive_border_color;
+use tui_pane::keep_visible_scroll_offset;
 use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
 use tui_pane::secondary_text_color;
@@ -68,8 +71,11 @@ struct PackageRenderCtx<'a> {
 }
 
 struct PackageRenderLayout {
-    scroll_offset: usize,
-    row_rects:     Vec<(Rect, usize)>,
+    scroll_offset:     usize,
+    /// Held Tests-band scroll offset for the next frame; `0` for the
+    /// metadata-only path, which has no Tests band.
+    tests_band_offset: usize,
+    row_rects:         Vec<(Rect, usize)>,
 }
 
 struct PackageFieldRender {
@@ -83,16 +89,26 @@ struct PackageFieldRender {
 }
 
 struct StatsColumnRender<'a> {
-    data:         &'a PackageData,
-    rows:         &'a [PackageRow],
-    pane:         &'a Viewport,
-    focus:        PaneFocusState,
-    area:         Rect,
-    digit_width:  u16,
-    border_style: Style,
+    data:              &'a PackageData,
+    rows:              &'a [PackageRow],
+    pane:              &'a Viewport,
+    focus:             PaneFocusState,
+    area:              Rect,
+    digit_width:       u16,
+    border_style:      Style,
     /// Style for the `Tests` sub-section title rule, matching the
     /// `Structure` title (chrome title style for the current focus).
-    title_style:  Style,
+    title_style:       Style,
+    /// Held Tests-band offset from the prior frame (see
+    /// [`ProjectPanelRender::prior_tests_band_offset`]).
+    prior_band_offset: usize,
+}
+
+/// Result of rendering the stats column: hit-test rects plus the Tests-band
+/// offset to hold for the next frame.
+struct StatsColumnLayout {
+    row_rects:         Vec<(Rect, usize)>,
+    tests_band_offset: usize,
 }
 
 type FieldWrapFn = fn(&str, usize) -> Vec<String>;
@@ -159,15 +175,14 @@ pub fn detail_column_scroll_offset(
     focus: PaneFocusState,
     focused_output_line: usize,
     visible_height: u16,
+    line_count: usize,
 ) -> u16 {
-    if !matches!(focus, PaneFocusState::Active) || visible_height == 0 {
+    if !matches!(focus, PaneFocusState::Active) {
         return 0;
     }
 
-    let visible_height = usize::from(visible_height);
-    let offset = focused_output_line
-        .saturating_add(1)
-        .saturating_sub(visible_height);
+    let offset =
+        keep_visible_scroll_offset(focused_output_line, usize::from(visible_height), line_count);
     u16::try_from(offset).unwrap_or(u16::MAX)
 }
 
@@ -247,11 +262,13 @@ fn render_column_inner(
         }
     }
 
-    let scroll_y = detail_column_scroll_offset(focus, focused_output_line, area.height);
+    let scroll_y =
+        detail_column_scroll_offset(focus, focused_output_line, area.height, lines.len());
     frame.render_widget(Paragraph::new(lines).scroll((scroll_y, 0)), area);
     let scroll_offset = usize::from(scroll_y);
     PackageRenderLayout {
         scroll_offset,
+        tests_band_offset: 0,
         row_rects: visible_row_rects(row_line_ys, scroll_offset, area),
     }
 }
@@ -398,6 +415,9 @@ struct ProjectPanelRender<'a> {
     border_style:              Style,
     animation_elapsed:         Duration,
     lint_enabled:              bool,
+    /// Held Tests-band scroll offset from the prior frame, so the band
+    /// stays put while the cursor sits on a pinned (non-Tests) row.
+    prior_tests_band_offset:   usize,
     /// Inter-pane description sync floor; clamped per-pane by the
     /// available `description_max_height`. Read by
     /// [`DescriptionBlock::render`] so the rendered content stays in
@@ -482,12 +502,14 @@ pub(super) fn render_package_pane_body(
         border_style,
         animation_elapsed: *animation_elapsed,
         lint_enabled,
+        prior_tests_band_offset: pane.tests_band_offset(),
         synced_description_height: *synced_description_height,
     };
     let areas = render_project_description_section(frame, &context, area, project_inner);
 
     let layout = render_project_metadata(frame, &pane.viewport, &context, areas.lower);
     pane.viewport.set_scroll_offset(layout.scroll_offset);
+    pane.set_tests_band_offset(layout.tests_band_offset);
     let mut row_rects = layout.row_rects;
     if let Some(rect) = areas.description_rect {
         row_rects.push((rect, 0));
@@ -640,7 +662,7 @@ fn render_project_metadata(
             .split(lower_area);
 
         let mut layout = render_column_inner(frame, &col_ctx, sub_cols[0]);
-        layout.row_rects.extend(render_stats_column(
+        let stats = render_stats_column(
             frame,
             &StatsColumnRender {
                 data: context.pkg_data,
@@ -654,8 +676,11 @@ fn render_project_metadata(
                     .styles
                     .chrome
                     .title_style(matches!(context.focus, PaneFocusState::Active)),
+                prior_band_offset: context.prior_tests_band_offset,
             },
-        ));
+        );
+        layout.row_rects.extend(stats.row_rects);
+        layout.tests_band_offset = stats.tests_band_offset;
         layout
     } else {
         render_column_inner(frame, &col_ctx, lower_area)
@@ -688,7 +713,7 @@ struct StatSectionCtx<'a> {
     area_bottom: u16,
 }
 
-fn render_stats_column(frame: &mut Frame, context: &StatsColumnRender<'_>) -> Vec<(Rect, usize)> {
+fn render_stats_column(frame: &mut Frame, context: &StatsColumnRender<'_>) -> StatsColumnLayout {
     let data = context.data;
     let area = context.area;
     tui_pane::render_rules(
@@ -721,51 +746,151 @@ fn render_stats_column(frame: &mut Frame, context: &StatsColumnRender<'_>) -> Ve
         &data.stats_rows,
         PackageRow::Structure,
         structure_value_style,
-        area.y,
+        SectionPlacement {
+            start_y:      area.y,
+            row_offset:   0,
+            visible_rows: data.stats_rows.len(),
+        },
         &ctx,
         &mut row_rects,
     );
 
-    if !data.test_rows.is_empty() {
-        // Leave a blank row between the last Structure row and the Tests
-        // rule so the two sections read as distinct groups; skipped when
-        // Structure has no rows, since there is nothing to separate from.
-        let spacer = u16::from(!data.stats_rows.is_empty());
-        let title_y = area
-            .y
-            .saturating_add(u16::try_from(data.stats_rows.len()).unwrap_or(u16::MAX))
-            .saturating_add(spacer);
-        // Span one column past the stats area so the `├` endcap tees into
-        // the column's left vertical rule and the `┤` endcap tees into the
-        // pane's right border (the column's last cell is one inside it) —
-        // matching the full-width "Structure" rule above. Rendered after
-        // the vertical rule so the left join wins.
-        tui_pane::render_horizontal_rule(
-            frame,
-            Rect {
-                x:      area.x,
-                y:      title_y,
-                width:  area.width.saturating_add(1),
-                height: 1,
-            },
-            context.border_style,
-            Some(RuleTitle {
-                text:  TESTS_TITLE,
-                style: context.title_style,
-            }),
-            None,
-        );
-        render_stat_section(
-            frame,
-            &data.test_rows,
-            PackageRow::Tests,
-            tests_value_style,
-            title_y.saturating_add(1),
-            &ctx,
-            &mut row_rects,
-        );
+    let tests_band_offset = if data.test_rows.is_empty() {
+        0
+    } else {
+        render_tests_section(frame, context, &ctx, &mut row_rects)
+    };
+    StatsColumnLayout {
+        row_rects,
+        tests_band_offset,
     }
-    row_rects
+}
+
+/// Render the scrolling Tests section below the pinned Structure rows: the
+/// `Tests` rule, the visible band slice, and the overflow affordance. Returns
+/// the band offset to hold for the next frame.
+fn render_tests_section(
+    frame: &mut Frame,
+    context: &StatsColumnRender<'_>,
+    ctx: &StatSectionCtx<'_>,
+    row_rects: &mut Vec<(Rect, usize)>,
+) -> usize {
+    let data = context.data;
+    let area = context.area;
+    // Leave a blank row between the last Structure row and the Tests rule so
+    // the two sections read as distinct groups; skipped when Structure has no
+    // rows, since there is nothing to separate from.
+    let spacer = u16::from(!data.stats_rows.is_empty());
+    let title_y = area
+        .y
+        .saturating_add(u16::try_from(data.stats_rows.len()).unwrap_or(u16::MAX))
+        .saturating_add(spacer);
+    // Span one column past the stats area so the `├` endcap tees into the
+    // column's left vertical rule and the `┤` endcap tees into the pane's
+    // right border (the column's last cell is one inside it) — matching the
+    // full-width "Structure" rule above. Rendered after the vertical rule so
+    // the left join wins.
+    tui_pane::render_horizontal_rule(
+        frame,
+        Rect {
+            x:      area.x,
+            y:      title_y,
+            width:  area.width.saturating_add(1),
+            height: 1,
+        },
+        context.border_style,
+        Some(RuleTitle {
+            text:  TESTS_TITLE,
+            style: context.title_style,
+        }),
+        None,
+    );
+    let tests_start_y = title_y.saturating_add(1);
+    // The Tests band scrolls; the pinned head above it (Structure rows, the
+    // spacer, and the Tests rule) is everything down to `tests_start_y`.
+    let band_visible = usize::from(area.bottom().saturating_sub(tests_start_y));
+    let band = tests_band(context.rows, data.test_rows.len());
+    let band_offset = band.map_or(0, |band| {
+        tests_band_offset_for(
+            band,
+            context.pane.pos(),
+            context.prior_band_offset,
+            band_visible,
+        )
+    });
+    render_stat_section(
+        frame,
+        &data.test_rows,
+        PackageRow::Tests,
+        tests_value_style,
+        SectionPlacement {
+            start_y:      tests_start_y,
+            row_offset:   band_offset,
+            visible_rows: band_visible,
+        },
+        ctx,
+        row_rects,
+    );
+    render_tests_affordance(
+        frame,
+        context.pane,
+        band,
+        Rect {
+            x:      area.x,
+            y:      tests_start_y,
+            width:  area.width,
+            height: u16::try_from(band_visible).unwrap_or(u16::MAX),
+        },
+        band_offset,
+    );
+    band_offset
+}
+
+/// Band partition for the stats column: the Tests rows are the last
+/// `test_count` selectable rows, everything above them (Description, fields,
+/// Structure) is the pinned head.
+const fn tests_band(rows: &[PackageRow], test_count: usize) -> Option<Band> {
+    Band::new(rows.len().saturating_sub(test_count), 0, rows.len())
+}
+
+/// Tests-band scroll offset for this frame. While the cursor is on a Tests
+/// row, clamp the offset to keep it visible; otherwise hold the prior offset
+/// (clamped to the band's range in case the Tests count shrank).
+fn tests_band_offset_for(
+    band: Band,
+    cursor_pos: usize,
+    prior_offset: usize,
+    band_visible: usize,
+) -> usize {
+    band.band_local_cursor(cursor_pos).map_or_else(
+        || prior_offset.min(band.band_len().saturating_sub(band_visible)),
+        |band_local| keep_visible_scroll_offset(band_local, band_visible, band.band_len()),
+    )
+}
+
+/// Draw the `▲ n of m ▼` overflow label on the Tests band when more test
+/// rows exist than fit. Skipped when the band has no visible rows.
+fn render_tests_affordance(
+    frame: &mut Frame,
+    pane: &Viewport,
+    band: Option<Band>,
+    tests_rect: Rect,
+    band_offset: usize,
+) {
+    let band_visible = usize::from(tests_rect.height);
+    if band_visible == 0 {
+        return;
+    }
+    let Some(band) = band else {
+        return;
+    };
+    let band_cursor = band.band_local_cursor(pane.pos()).unwrap_or(band_offset);
+    render_overflow_affordance(
+        frame,
+        tests_rect,
+        ViewportOverflow::band(band.band_len(), band_offset, band_visible, band_cursor),
+        Style::default().fg(label_color()),
+    );
 }
 
 /// Value-cell style for a Structure row — the accent title color, shared
@@ -786,27 +911,44 @@ fn tests_value_style(label: &str) -> Style {
     }
 }
 
-/// Render one stat section's rows starting at `start_y`, pushing a
-/// hit-test rect for each visible selectable row. Labels are left-aligned
-/// in the shared label field; counts are right-aligned against the column
-/// edge so both sections share one right edge.
+/// Where a stat section renders: the top row, the first section-row index to
+/// draw, and how many rows are visible. Structure draws every row from `0`
+/// (it never overflows); the Tests band draws the slice
+/// `[row_offset, row_offset + visible_rows)`.
+#[derive(Clone, Copy)]
+struct SectionPlacement {
+    start_y:      u16,
+    row_offset:   usize,
+    visible_rows: usize,
+}
+
+/// Render one stat section's visible row slice, pushing a hit-test rect for
+/// each visible selectable row. Labels are left-aligned in the shared label
+/// field; counts are right-aligned against the column edge so both sections
+/// share one right edge.
 fn render_stat_section(
     frame: &mut Frame,
     section_rows: &[(&'static str, usize)],
     row_for_index: fn(usize) -> PackageRow,
     value_style: fn(&str) -> Style,
-    start_y: u16,
+    placement: SectionPlacement,
     ctx: &StatSectionCtx<'_>,
     row_rects: &mut Vec<(Rect, usize)>,
 ) {
     let label_style = Style::default().fg(label_color());
     let lw = ctx.label_width;
     let dw = ctx.digit_width;
-    let lines: Vec<Line<'_>> = section_rows
-        .iter()
-        .enumerate()
-        .map(|(i, (label, count))| {
-            let y_abs = start_y.saturating_add(u16::try_from(i).unwrap_or(u16::MAX));
+    let end = placement
+        .row_offset
+        .saturating_add(placement.visible_rows)
+        .min(section_rows.len());
+    let lines: Vec<Line<'_>> = (placement.row_offset..end)
+        .map(|i| {
+            let (label, count) = section_rows[i];
+            let slot = i - placement.row_offset;
+            let y_abs = placement
+                .start_y
+                .saturating_add(u16::try_from(slot).unwrap_or(u16::MAX));
             let target = row_for_index(i);
             let pane_index = ctx.rows.iter().position(|row| *row == target);
             let selection = pane_index.map_or(PaneSelectionState::Unselected, |index| {
@@ -834,9 +976,9 @@ fn render_stat_section(
         .collect();
     let section_area = Rect {
         x:      ctx.inner_x,
-        y:      start_y,
+        y:      placement.start_y,
         width:  ctx.inner_width,
-        height: u16::try_from(section_rows.len()).unwrap_or(u16::MAX),
+        height: u16::try_from(end - placement.row_offset).unwrap_or(u16::MAX),
     };
     frame.render_widget(Paragraph::new(lines), section_area);
 }
@@ -981,9 +1123,46 @@ mod tests {
     use chrono::DateTime;
     use tui_pane::ACTIVITY_SPINNER;
 
+    use super::PackageRow;
     use super::lint_display_to_string;
+    use super::tests_band;
+    use super::tests_band_offset_for;
     use crate::lint::LintStatus;
     use crate::tui::panes::LintDisplay;
+
+    // 15 pinned head rows (Structure-and-above), 5 Tests rows in the band.
+    fn band_rows() -> Vec<PackageRow> {
+        (0..15)
+            .map(PackageRow::Structure)
+            .chain((0..5).map(PackageRow::Tests))
+            .collect()
+    }
+
+    #[test]
+    fn tests_band_partitions_trailing_test_rows() {
+        let band = tests_band(&band_rows(), 5).expect("head + tail fits within len");
+        assert_eq!(band.band_len(), 5);
+        // The first Tests row is logical index 15 (band-local 0).
+        assert_eq!(band.band_local_cursor(15), Some(0));
+        // A Structure row is pinned, outside the band.
+        assert_eq!(band.band_local_cursor(10), None);
+    }
+
+    #[test]
+    fn tests_band_offset_tracks_cursor_on_a_test_row() {
+        let band = tests_band(&band_rows(), 5).expect("head + tail fits within len");
+        // Cursor on the last Tests row (logical 19, band-local 4) scrolls a
+        // 3-tall band to its last page.
+        assert_eq!(tests_band_offset_for(band, 19, 0, 3), 2);
+    }
+
+    #[test]
+    fn tests_band_offset_holds_prior_on_a_pinned_row() {
+        let band = tests_band(&band_rows(), 5).expect("head + tail fits within len");
+        // Cursor on a Structure row holds the prior offset, clamped to the
+        // band's last page.
+        assert_eq!(tests_band_offset_for(band, 10, 5, 3), 2);
+    }
 
     #[test]
     fn package_lint_row_uses_framework_activity_spinner() {

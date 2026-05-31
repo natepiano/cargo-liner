@@ -652,21 +652,43 @@ fn description_block_wraps_overflowing_text_into_rows() {
 #[test]
 fn detail_column_scroll_waits_until_cursor_reaches_bottom() {
     let focus = PaneFocusState::Active;
+    let line_count = 20;
 
-    assert_eq!(panes::detail_column_scroll_offset(focus, 0, 4), 0);
-    assert_eq!(panes::detail_column_scroll_offset(focus, 3, 4), 0);
-    assert_eq!(panes::detail_column_scroll_offset(focus, 4, 4), 1);
-    assert_eq!(panes::detail_column_scroll_offset(focus, 7, 4), 4);
+    assert_eq!(
+        panes::detail_column_scroll_offset(focus, 0, 4, line_count),
+        0
+    );
+    assert_eq!(
+        panes::detail_column_scroll_offset(focus, 3, 4, line_count),
+        0
+    );
+    assert_eq!(
+        panes::detail_column_scroll_offset(focus, 4, 4, line_count),
+        1
+    );
+    assert_eq!(
+        panes::detail_column_scroll_offset(focus, 7, 4, line_count),
+        4
+    );
+}
+
+#[test]
+fn detail_column_scroll_clamps_to_last_page() {
+    let focus = PaneFocusState::Active;
+
+    // The cursor sits on the last line; the offset stops at the last full
+    // page rather than scrolling content off the bottom.
+    assert_eq!(panes::detail_column_scroll_offset(focus, 9, 4, 10), 6);
 }
 
 #[test]
 fn detail_column_scroll_stays_at_top_when_not_active() {
     assert_eq!(
-        panes::detail_column_scroll_offset(PaneFocusState::Remembered, 7, 4),
+        panes::detail_column_scroll_offset(PaneFocusState::Remembered, 7, 4, 20),
         0
     );
     assert_eq!(
-        panes::detail_column_scroll_offset(PaneFocusState::Inactive, 7, 4),
+        panes::detail_column_scroll_offset(PaneFocusState::Inactive, 7, 4, 20),
         0
     );
 }

@@ -9,6 +9,7 @@ use tui_pane::SECTION_HEADER_INDENT;
 use tui_pane::SECTION_ITEM_INDENT;
 use tui_pane::ViewportOverflow;
 use tui_pane::active_border_color;
+use tui_pane::keep_visible_scroll_offset;
 use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
 use tui_pane::selection_state;
@@ -303,22 +304,6 @@ fn push_target(
 }
 
 const fn stat_label_width() -> usize { 36 }
-
-fn keep_visible_scroll_offset(
-    selected_line: usize,
-    visible_height: usize,
-    line_count: usize,
-) -> usize {
-    if visible_height == 0 || line_count <= visible_height {
-        return 0;
-    }
-    let max_offset = line_count - visible_height;
-    if selected_line >= visible_height {
-        (selected_line + 1 - visible_height).min(max_offset)
-    } else {
-        0
-    }
-}
 
 fn content_width(lines: &[Line<'_>]) -> u16 {
     lines

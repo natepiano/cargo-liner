@@ -27,6 +27,7 @@ use tui_pane::ViewportOverflow;
 use tui_pane::active_border_color;
 use tui_pane::error_color;
 use tui_pane::inline_error_color;
+use tui_pane::keep_visible_scroll_offset;
 use tui_pane::label_color;
 use tui_pane::read_array;
 use tui_pane::read_bool;
@@ -121,15 +122,6 @@ fn settings_popup_height(line_count: usize, area_height: u16) -> u16 {
         .unwrap_or(u16::MAX)
         .saturating_add(3);
     content_height.min(area_height.saturating_sub(2))
-}
-
-fn settings_scroll_offset(selected_line: usize, visible_height: usize, line_count: usize) -> usize {
-    if visible_height == 0 {
-        return 0;
-    }
-    selected_line
-        .saturating_sub(visible_height.saturating_sub(1))
-        .min(line_count.saturating_sub(visible_height))
 }
 
 fn format_lint_projects(config: &CargoPortConfig) -> String {
@@ -1348,7 +1340,8 @@ pub(super) fn render_settings_pane_body(
     let selected_line = pane
         .line_for_selection(pane.viewport().pos())
         .unwrap_or_else(|| pane.viewport().pos());
-    let scroll_offset = settings_scroll_offset(selected_line, visible_height, inputs.line_count);
+    let scroll_offset =
+        keep_visible_scroll_offset(selected_line, visible_height, inputs.line_count);
     pane.viewport_mut().set_viewport_rows(visible_height);
     pane.viewport_mut().set_scroll_offset(scroll_offset);
 
@@ -1897,13 +1890,6 @@ mod tests {
     fn settings_popup_height_is_capped_to_terminal() {
         assert_eq!(settings_popup_height(10, 80), 13);
         assert_eq!(settings_popup_height(100, 20), 18);
-    }
-
-    #[test]
-    fn settings_scroll_keeps_selected_line_visible() {
-        assert_eq!(settings_scroll_offset(0, 5, 20), 0);
-        assert_eq!(settings_scroll_offset(7, 5, 20), 3);
-        assert_eq!(settings_scroll_offset(19, 5, 20), 15);
     }
 
     #[test]
