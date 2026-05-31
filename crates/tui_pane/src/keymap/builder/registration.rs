@@ -3,12 +3,12 @@ use toml::Table;
 use super::overlay;
 use crate::AppContext;
 use crate::Bindings;
-use crate::KeyBind;
 use crate::KeySequence;
 use crate::KeymapError;
-use crate::Navigation;
+use crate::NavAction;
 use crate::Shortcuts;
 use crate::VimMode;
+use crate::keymap::nav_action;
 
 /// Apply TOML and vim overlay onto a pane's defaults.
 ///
@@ -39,19 +39,16 @@ pub(super) fn build_pane_bindings<Ctx: AppContext + 'static, P: Shortcuts<Ctx>>(
 
 /// Append vim navigation extras to the navigation scope. Skips any
 /// sequence already bound to another action.
-pub(super) fn apply_vim_navigation_extras<Ctx: AppContext + 'static, N: Navigation<Ctx>>(
-    bindings: &mut Bindings<N::Actions>,
-) {
-    for (key, action) in vim_navigation_extras::<Ctx, N>() {
+pub(super) fn apply_vim_navigation_extras(bindings: &mut Bindings<NavAction>) {
+    for (key, action) in nav_action::vim_letter_extras() {
         if !bindings.has_key(&key) {
             bindings.bind(key, action);
         }
     }
 }
 
-pub(super) fn reserved_vim_navigation_keys<Ctx: AppContext + 'static, N: Navigation<Ctx>>()
--> Vec<KeySequence> {
-    vim_navigation_extras::<Ctx, N>()
+pub(super) fn reserved_vim_navigation_keys() -> Vec<KeySequence> {
+    nav_action::vim_letter_extras()
         .into_iter()
         .map(|(key, _)| key)
         .collect()
@@ -80,36 +77,4 @@ pub(super) fn check_reserved_vim_navigation_keys<A: crate::Action>(
 
 fn keys_conflict(left: &KeySequence, right: &KeySequence) -> bool {
     left == right || left.starts_with_strict(right.keys()) || right.starts_with_strict(left.keys())
-}
-
-fn vim_navigation_extras<Ctx: AppContext + 'static, N: Navigation<Ctx>>()
--> [(KeySequence, N::Actions); 10] {
-    let pairs: [(KeySequence, N::Actions); 10] = [
-        (KeySequence::from('h'), <N as Navigation<Ctx>>::LEFT),
-        (KeySequence::from('j'), <N as Navigation<Ctx>>::DOWN),
-        (KeySequence::from('k'), <N as Navigation<Ctx>>::UP),
-        (KeySequence::from('l'), <N as Navigation<Ctx>>::RIGHT),
-        (
-            KeySequence::new(vec![KeyBind::from('g'), KeyBind::from('g')]),
-            <N as Navigation<Ctx>>::HOME,
-        ),
-        (KeySequence::from('G'), <N as Navigation<Ctx>>::END),
-        (
-            KeySequence::from(KeyBind::ctrl('u')),
-            <N as Navigation<Ctx>>::HALF_PAGE_UP,
-        ),
-        (
-            KeySequence::from(KeyBind::ctrl('d')),
-            <N as Navigation<Ctx>>::HALF_PAGE_DOWN,
-        ),
-        (
-            KeySequence::from(KeyBind::ctrl('b')),
-            <N as Navigation<Ctx>>::PAGE_UP,
-        ),
-        (
-            KeySequence::from(KeyBind::ctrl('f')),
-            <N as Navigation<Ctx>>::PAGE_DOWN,
-        ),
-    ];
-    pairs
 }

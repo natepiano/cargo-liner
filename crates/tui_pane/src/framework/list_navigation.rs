@@ -2,13 +2,11 @@
 //!
 //! [`ListNavigation`] is the direction enum the framework uses internally
 //! when it routes resolved navigation actions to a focused list-style
-//! pane (today: [`Toasts`](crate::Toasts)). Decouples the framework
-//! from any specific binary's `NavigationAction` enum: the binary's
-//! [`Navigation`](crate::Navigation) impl translates a resolved action
-//! into [`ListNavigation`] via the trait's
-//! [`list_navigation`](crate::Navigation::list_navigation) accessor,
-//! and the framework operates on the result without naming the
-//! binary's enum.
+//! pane (today: [`Toasts`](crate::Toasts)). The binary translates a
+//! resolved [`NavAction`](crate::NavAction) into [`ListNavigation`] and
+//! calls [`Toasts::on_navigation`](crate::Toasts::on_navigation), so the
+//! framework operates on the direction set without naming the binary's
+//! dispatch.
 //!
 //! [`CycleDirection`] is the closed direction set the focus cycler
 //! uses for [`GlobalAction::NextPane`](crate::GlobalAction::NextPane) /

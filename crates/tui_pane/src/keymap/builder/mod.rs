@@ -26,6 +26,7 @@ use super::Keymap;
 use super::Navigation;
 use super::Shortcuts;
 use super::load::KeymapError;
+use super::nav_action;
 use super::runtime_scope;
 use super::runtime_scope::PaneScope;
 use super::runtime_scope::RuntimeScope;
@@ -34,6 +35,7 @@ use super::vim::VimMode;
 use crate::AppContext;
 use crate::CopySelection;
 use crate::Framework;
+use crate::NavAction;
 use crate::OverlayAction;
 use crate::Pane;
 use crate::SettingsPane;
@@ -119,7 +121,7 @@ pub struct KeymapBuilder<Ctx: AppContext + 'static, State = Configuring> {
     on_quit:                  Option<fn(&mut Ctx)>,
     on_restart:               Option<fn(&mut Ctx)>,
     dismiss_fallback:         Option<fn(&mut Ctx) -> bool>,
-    navigation_scope:         Option<ErasedSingleton>,
+    navigation_scope:         Option<ScopeMap<NavAction>>,
     navigation_scope_name:    Option<&'static str>,
     /// `N`-monomorphized renderer captured at
     /// [`Self::register_navigation`] time; copied onto the keymap in
@@ -300,26 +302,26 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
     /// Returns [`KeymapError`] on TOML parse / validation failures
     /// inside the `[N::SCOPE_NAME]` table.
     pub fn register_navigation<N: Navigation<Ctx>>(mut self) -> Result<Self, KeymapError> {
-        let defaults = N::defaults();
         let scope_name = <N as Navigation<Ctx>>::SCOPE_NAME;
-        let mut bindings = apply_toml_overlay::<N::Actions>(
+        let mut bindings = apply_toml_overlay_with_peer::<NavAction>(
             scope_name,
-            defaults,
+            nav_action::default_bindings(),
             self.toml_table.as_ref(),
+            None,
             self.ignore_unknown.then_some(&mut self.unknown_warnings),
+            true,
         )?;
         if matches!(self.vim_mode, VimMode::Enabled) {
-            apply_vim_navigation_extras::<Ctx, N>(&mut bindings);
-            self.vim_reserved_keys = reserved_vim_navigation_keys::<Ctx, N>();
+            apply_vim_navigation_extras(&mut bindings);
+            self.vim_reserved_keys = reserved_vim_navigation_keys();
         }
         overlay::check_cross_action_collision(scope_name, &bindings)?;
-        let scope_map: ScopeMap<N::Actions> = bindings.into_scope_map();
-        self.navigation_scope = Some(Box::new(scope_map));
+        self.navigation_scope = Some(bindings.into_scope_map());
         self.navigation_scope_name = Some(scope_name);
-        self.navigation_render_fn = Some(runtime_scope::render_navigation_slots::<Ctx, N>);
+        self.navigation_render_fn = Some(runtime_scope::render_navigation_slots::<Ctx>);
         self.navigation_help_rows_fn =
             Some(runtime_scope::keymap_help_rows_for_navigation::<Ctx, N>);
-        self.navigation_toml_keys_fn = Some(runtime_scope::navigation_toml_action_keys::<Ctx, N>);
+        self.navigation_toml_keys_fn = Some(runtime_scope::navigation_toml_action_keys::<Ctx>);
         self.registered_scopes.insert(scope_name);
         Ok(self)
     }
@@ -343,6 +345,7 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
             self.toml_table.as_ref(),
             peer_keys,
             self.ignore_unknown.then_some(&mut self.unknown_warnings),
+            false,
         )?;
         check_reserved_vim_navigation_keys(scope_name, &bindings, &self.vim_reserved_keys)?;
         let scope_map: ScopeMap<G::Actions> = bindings.into_scope_map();

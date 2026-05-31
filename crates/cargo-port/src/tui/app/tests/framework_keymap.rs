@@ -54,6 +54,7 @@ use crate::tui::integration::AppPaneId;
 use crate::tui::integration::CiRunsPane;
 use crate::tui::integration::FinderPane;
 use crate::tui::integration::GitPane;
+use crate::tui::integration::NavAction;
 use crate::tui::integration::PackagePane;
 use crate::tui::keymap;
 use crate::tui::keymap::CiRunsAction;
@@ -460,14 +461,14 @@ fn focused_project_list_bar_renders_pane_action_and_nav_slots() {
     );
 }
 
-// ── Output (Mode::Static) ─────────────────────────────────────────
+// ── Output (Mode::Navigable) ──────────────────────────────────────
 
 #[test]
-fn focused_output_bar_renders_close_label() {
-    // OutputPane returns Mode::Static, which suppresses the Nav region
-    // and renders PaneAction + Global. The single OutputAction::Cancel
-    // entry has bar_label "close" (toml_key "cancel" — diverges, hence
-    // the 3-positional invocation).
+fn focused_output_bar_renders_select_and_close_labels() {
+    // OutputPane is Navigable: the Nav region shows (the cursor scrolls
+    // the buffer) alongside PaneAction, which carries the
+    // OutputAction::SelectLinewise label "select" and the Cancel label
+    // "close".
     let project = super::make_project(Some("demo"), "~/demo");
     let mut app = make_app(&[project]);
     focus_app_pane_in_framework(&mut app, AppPaneId::Output);
@@ -488,8 +489,12 @@ fn focused_output_bar_renders_close_label() {
         "Output bar must show the Cancel label \"close\" (got {pane_action:?})",
     );
     assert!(
-        nav.is_empty(),
-        "Mode::Static must suppress the Nav region (got {nav:?})",
+        pane_action.contains("select"),
+        "Output bar must show the SelectLinewise label \"select\" (got {pane_action:?})",
+    );
+    assert!(
+        !nav.is_empty(),
+        "Navigable Output must surface the Nav region (got {nav:?})",
     );
 }
 
@@ -620,11 +625,31 @@ fn focused_package_status_line_collapses_globals_to_shortcuts_help() {
 
 // ── Base-pane navigation routed through framework keymap ──────────
 
-/// Rebinding `NavigationAction::Down` to `'j'` (vim-off) moves the
+/// Rebinding `NavAction::Down` to `'j'` (vim-off) moves the
 /// project-list cursor when `'j'` is dispatched through the real
 /// `src/tui/input.rs` key path. Validates that `handle_normal_key`
 /// consults the framework keymap's navigation scope after the legacy
 /// pane-scope match.
+#[test]
+fn ctrl_b_and_ctrl_f_page_the_project_list() {
+    let projects: Vec<_> = (0..40)
+        .map(|i| super::make_project(Some("p"), &format!("~/p{i}")))
+        .collect();
+    let mut app = make_app_with_keymap_toml(&projects, "");
+    let _ = buffer_text_sized(&mut app, 120, 30);
+    assert_eq!(app.project_list.cursor(), 0);
+
+    press(&mut app, KeyCode::Char('f'), KeyModifiers::CONTROL);
+    let after_ctrl_f = app.project_list.cursor();
+    assert!(after_ctrl_f > 0, "Ctrl-f paged down (got {after_ctrl_f})");
+
+    press(&mut app, KeyCode::Char('b'), KeyModifiers::CONTROL);
+    assert!(
+        app.project_list.cursor() < after_ctrl_f,
+        "Ctrl-b paged up from {after_ctrl_f}",
+    );
+}
+
 #[test]
 fn navigation_action_rebound_to_j_moves_cursor_down() {
     let projects = vec![
@@ -640,7 +665,128 @@ fn navigation_action_rebound_to_j_moves_cursor_down() {
     assert_eq!(
         app.project_list.cursor(),
         baseline + 1,
-        "cursor must advance after `'j'` resolves to NavigationAction::Down",
+        "cursor must advance after `'j'` resolves to NavAction::Down",
+    );
+}
+
+/// A stale on-disk keymap with `home = ""` must NOT unbind Home — the
+/// framework owns the navigation defaults and an empty value keeps the
+/// compiled default. This is the original live bug: an empty entry left
+/// over from an older keymap silently disabled Home/End at startup.
+#[test]
+fn empty_navigation_entry_keeps_the_compiled_default() {
+    let projects = vec![
+        super::make_project(Some("alpha"), "~/alpha"),
+        super::make_project(Some("beta"), "~/beta"),
+        super::make_project(Some("gamma"), "~/gamma"),
+    ];
+    let mut app = make_app_with_keymap_toml(&projects, "[navigation]\nhome = \"\"\n");
+
+    // Move down so Home has somewhere to return from.
+    for _ in 0..2 {
+        input::handle_event(
+            &mut app,
+            &Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+        );
+    }
+    assert!(app.project_list.cursor() > 0, "cursor moved down");
+
+    input::handle_event(
+        &mut app,
+        &Event::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)),
+    );
+
+    assert_eq!(
+        app.project_list.cursor(),
+        0,
+        "Home stays bound to its compiled default despite the empty TOML entry",
+    );
+}
+
+/// Reloading the bindings the TOML writer emits (page keys as a
+/// `["pageup", "ctrl-b"]` array, half-page as `ctrl-u` / `ctrl-d`) must
+/// round-trip: every key still resolves to its action and the extra
+/// Ctrl aliases do not trip the cross-action collision check at build.
+#[test]
+fn generated_navigation_defaults_round_trip_without_collision() {
+    let projects = vec![super::make_project(Some("alpha"), "~/alpha")];
+    let app = make_app_with_keymap_toml(
+        &projects,
+        "[navigation]\n\
+         page_up = [\"pageup\", \"ctrl-b\"]\n\
+         page_down = [\"pagedown\", \"ctrl-f\"]\n\
+         half_page_up = \"ctrl-u\"\n\
+         half_page_down = \"ctrl-d\"\n",
+    );
+
+    let nav = app
+        .framework_keymap
+        .navigation()
+        .expect("navigation scope is registered");
+
+    assert_eq!(
+        nav.action_for(&KeyBind::from(KeyCode::PageUp)),
+        Some(NavAction::PageUp),
+    );
+    assert_eq!(nav.action_for(&KeyBind::ctrl('b')), Some(NavAction::PageUp));
+    assert_eq!(
+        nav.action_for(&KeyBind::ctrl('f')),
+        Some(NavAction::PageDown)
+    );
+    assert_eq!(
+        nav.action_for(&KeyBind::ctrl('u')),
+        Some(NavAction::HalfPageUp)
+    );
+    assert_eq!(
+        nav.action_for(&KeyBind::ctrl('d')),
+        Some(NavAction::HalfPageDown),
+    );
+}
+
+/// Vim navigation keys drive the output pane through the shared viewport
+/// navigation — `k` scrolls up off the tail (freezing the view), `j` and
+/// `G` return to the tail (resuming follow) — with no output-specific
+/// motion code.
+#[test]
+fn output_pane_navigates_with_vim_keys() {
+    let projects = vec![super::make_project(Some("alpha"), "~/alpha")];
+    let mut cfg = CargoPortConfig::default();
+    cfg.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
+    let mut app = make_app_with_config_and_keymap_toml(&projects, &cfg, "");
+    app.set_example_output((0..30).map(|i| format!("line {i}")).collect());
+    // Render once so the viewport learns its length and visible rows.
+    let _ = buffer_text_sized(&mut app, 120, 20);
+
+    assert_eq!(app.focused_pane_id(), PaneId::Output);
+    assert!(
+        app.panes.output.is_following(),
+        "the view opens following the streaming tail",
+    );
+
+    press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
+    let _ = buffer_text_sized(&mut app, 120, 20);
+    assert!(
+        !app.panes.output.is_following(),
+        "`k` scrolls up off the tail and freezes the view",
+    );
+
+    press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+    let _ = buffer_text_sized(&mut app, 120, 20);
+    assert!(
+        app.panes.output.is_following(),
+        "`j` back at the tail resumes following",
+    );
+
+    // Scroll up again, then `G` jumps to the tail and follows.
+    press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
+    press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
+    let _ = buffer_text_sized(&mut app, 120, 20);
+    assert!(!app.panes.output.is_following());
+    press(&mut app, KeyCode::Char('G'), KeyModifiers::NONE);
+    let _ = buffer_text_sized(&mut app, 120, 20);
+    assert!(
+        app.panes.output.is_following(),
+        "`G` jumps to the tail and resumes following",
     );
 }
 
@@ -854,7 +1000,14 @@ fn keymap_ui_save_preserves_framework_owned_scopes() {
     assert!(saved.contains("[finder]"));
     assert!(saved.contains("activate = \"tab\""));
     assert!(saved.contains("[output]"));
-    assert!(saved.contains("cancel = \"q\""));
+    // The output scope now aligns its keys (select_linewise is wider), so
+    // match the preserved cancel binding without depending on padding.
+    assert!(
+        saved
+            .lines()
+            .any(|line| line.starts_with("cancel") && line.contains("\"q\"")),
+        "custom output cancel binding must be preserved (got {saved:?})",
+    );
     assert!(saved.contains("[overlay]"));
     assert!(saved.contains("start_edit = \"f2\""));
 }
@@ -1329,7 +1482,7 @@ fn focused_package_bar_nav_region_renders_arrow_keys() {
     // Lock the framework's nav-region rendering for a focused
     // Mode::Navigable pane. The nav region surfaces the pane-cycle row
     // plus the navigation defaults; the keymap's default for
-    // `NavigationAction::Up` is `↑` so we look for that glyph as a
+    // `NavAction::Up` is `↑` so we look for that glyph as a
     // stable anchor.
     let project = super::make_project(Some("demo"), "~/demo");
     let mut app = make_app(&[project]);

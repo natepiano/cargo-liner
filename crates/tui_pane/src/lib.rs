@@ -106,6 +106,7 @@ pub use keymap::Keymap;
 pub use keymap::KeymapBuilder;
 pub use keymap::KeymapError;
 pub use keymap::KeymapHelpRow;
+pub use keymap::NavAction;
 pub use keymap::Navigation;
 pub use keymap::ScopeMap;
 pub use keymap::Shortcuts;

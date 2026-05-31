@@ -113,6 +113,11 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     let core_count = app.panes.cpu.content().map_or(1, |usage| usage.cores.len());
     let tiled = panes::resolve_layout(outer_layout[0], left_width, core_count, bottom_row);
 
+    // Keep focus off the bottom-row pane this layout hides before
+    // stamping focus snapshots, so the status bar reflects the visible
+    // pane.
+    app.reconcile_bottom_row_focus();
+
     // Stamp every renderable pane's focus snapshot before splitting
     // App so each pane can read its own focus state from `&mut self`
     // inside the trait-dispatched render loop.

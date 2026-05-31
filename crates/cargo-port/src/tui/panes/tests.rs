@@ -497,6 +497,46 @@ fn lints_copy_returns_selected_run_log_path() {
 }
 
 #[test]
+fn output_copy_joins_range_and_strips_ansi() {
+    let snapshot = [
+        "first".to_string(),
+        "\u{1b}[31msecond\u{1b}[0m".to_string(),
+        "third".to_string(),
+        "fourth".to_string(),
+    ];
+
+    // anchor and cursor in either order select the same inclusive range,
+    // joined with newlines and stripped of ANSI escapes.
+    assert_eq!(
+        model::copy_payload_for_output(&snapshot, 1, 2),
+        CopySelectionResult::Payload(CopyPayload::new("second\nthird", CopyLabel::Row)),
+    );
+    assert_eq!(
+        model::copy_payload_for_output(&snapshot, 2, 1),
+        CopySelectionResult::Payload(CopyPayload::new("second\nthird", CopyLabel::Row)),
+    );
+}
+
+#[test]
+fn output_copy_clamps_out_of_range_indices() {
+    let snapshot = ["only".to_string(), "two".to_string()];
+
+    // A cursor past the end clamps to the last row rather than panicking.
+    assert_eq!(
+        model::copy_payload_for_output(&snapshot, 0, 99),
+        CopySelectionResult::Payload(CopyPayload::new("only\ntwo", CopyLabel::Row)),
+    );
+}
+
+#[test]
+fn output_copy_empty_snapshot_is_nothing() {
+    assert_eq!(
+        model::copy_payload_for_output(&[], 0, 0),
+        CopySelectionResult::Nothing,
+    );
+}
+
+#[test]
 fn stats_width_cases() {
     let cases = [
         (

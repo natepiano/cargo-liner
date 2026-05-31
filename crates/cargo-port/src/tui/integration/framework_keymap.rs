@@ -7,7 +7,8 @@
 //! Surface:
 //!
 //! - [`AppPaneId`]: every app-side pane id the framework keys on.
-//! - [`NavigationAction`]: directional nav enum the [`Navigation`] singleton routes through.
+//! - [`NavAction`](tui_pane::NavAction): the framework-owned directional nav enum the
+//!   [`Navigation`] singleton routes through.
 //! - [`AppGlobalAction`]: app-extension globals scope. Currently ships a single placeholder variant
 //!   ([`AppGlobalAction::Find`]); grows to cover the rest of the binary's non-framework globals.
 //! - [`AppNavigation`] / [`PackagePane`]: the `Navigation` and `Pane` + `Shortcuts` impls the
@@ -37,6 +38,7 @@ use tui_pane::KeymapBuilder;
 use tui_pane::KeymapError;
 use tui_pane::KeymapUiContext;
 use tui_pane::Mode;
+use tui_pane::NavAction;
 use tui_pane::Navigation;
 use tui_pane::Pane;
 use tui_pane::PaneFocusState;
@@ -66,6 +68,7 @@ use crate::tui::keymap::TargetsAction;
 use crate::tui::panes;
 use crate::tui::panes::DetailField;
 use crate::tui::panes::GitRow;
+use crate::tui::panes::OutputSelection;
 use crate::tui::panes::PaneId;
 use crate::tui::sccache;
 
@@ -159,22 +162,6 @@ fn output_is_tabbable(app: &App) -> bool { app.is_pane_tabbable(PaneId::Output) 
 
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-    pub enum NavigationAction {
-        Up    => ("up",    "up",    "Move up");
-        Down  => ("down",  "down",  "Move down");
-        Left  => ("left",  "left",  "Move left");
-        Right => ("right", "right", "Move right");
-        Home  => ("home",  "home",  "Jump to start");
-        End   => ("end",   "end",   "Jump to end");
-        PageUp       => ("page_up",       "page up",       "Page up");
-        PageDown     => ("page_down",     "page down",     "Page down");
-        HalfPageUp   => ("half_page_up",   "half up",       "Half-page up");
-        HalfPageDown => ("half_page_down", "half down",     "Half-page down");
-    }
-}
-
-tui_pane::action_enum! {
-    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
     pub enum AppGlobalAction {
         Copy         => ("copy",          "copy",     "Copy selection");
         Find         => ("find",          "find",     "Open finder");
@@ -259,35 +246,9 @@ impl KeymapUiContext for App {
 pub struct AppNavigation;
 
 impl Navigation<App> for AppNavigation {
-    type Actions = NavigationAction;
-
     const SECTION_NAME: &'static str = "List Navigation";
 
-    const DOWN: Self::Actions = NavigationAction::Down;
-    const END: Self::Actions = NavigationAction::End;
-    const HOME: Self::Actions = NavigationAction::Home;
-    const HALF_PAGE_DOWN: Self::Actions = NavigationAction::HalfPageDown;
-    const HALF_PAGE_UP: Self::Actions = NavigationAction::HalfPageUp;
-    const LEFT: Self::Actions = NavigationAction::Left;
-    const PAGE_DOWN: Self::Actions = NavigationAction::PageDown;
-    const PAGE_UP: Self::Actions = NavigationAction::PageUp;
-    const RIGHT: Self::Actions = NavigationAction::Right;
-    const UP: Self::Actions = NavigationAction::Up;
-
-    fn defaults() -> Bindings<Self::Actions> {
-        tui_pane::bindings! {
-            crossterm::event::KeyCode::Up    => NavigationAction::Up,
-            crossterm::event::KeyCode::Down  => NavigationAction::Down,
-            crossterm::event::KeyCode::Left  => NavigationAction::Left,
-            crossterm::event::KeyCode::Right => NavigationAction::Right,
-            crossterm::event::KeyCode::Home  => NavigationAction::Home,
-            crossterm::event::KeyCode::End   => NavigationAction::End,
-            crossterm::event::KeyCode::PageUp   => NavigationAction::PageUp,
-            crossterm::event::KeyCode::PageDown => NavigationAction::PageDown,
-        }
-    }
-
-    fn dispatcher() -> fn(Self::Actions, FocusedPane<AppPaneId>, &mut App) {
+    fn dispatcher() -> fn(NavAction, FocusedPane<AppPaneId>, &mut App) {
         panes::dispatch_navigation_action
     }
 }
@@ -694,15 +655,13 @@ static PROJECT_LIST_VIM_EXTRAS: [(ProjectListAction, KeyBind); 2] = [
 
 /// `Pane<App>` + `Shortcuts<App>` host for the Output pane.
 ///
-/// First non-`Navigable` pane: `Mode::Static` suppresses the `Nav`
-/// region so the bar shows only `PaneAction` (the `Esc close` slot)
-/// plus the global strip.
+/// `Navigable`: the cursor scrolls the buffer (and the `Nav` region
+/// shows in the bar), `V` starts a linewise selection, and `y` yanks the
+/// selected range through the framework copy path.
 pub struct OutputPane;
 
 impl Pane<App> for OutputPane {
     const APP_PANE_ID: AppPaneId = AppPaneId::Output;
-
-    fn mode() -> fn(&App) -> Mode<App> { |_ctx| Mode::Static }
 
     fn tab_stop() -> TabStop<App> { TabStop::ordered(OUTPUT_TAB_ORDER, output_is_tabbable) }
 }
@@ -715,11 +674,21 @@ impl Shortcuts<App> for OutputPane {
 
     fn defaults() -> Bindings<Self::Actions> {
         tui_pane::bindings! {
+            'V'                            => OutputAction::SelectLinewise,
             crossterm::event::KeyCode::Esc => OutputAction::Cancel,
         }
     }
 
     fn dispatcher() -> fn(Self::Actions, &mut App) { input::dispatch_output_action }
+}
+
+impl CopySelection<App> for OutputPane {
+    fn copy_selection(ctx: &App) -> CopySelectionResult {
+        let OutputSelection::Active { anchor, snapshot } = ctx.panes.output.selection() else {
+            return CopySelectionResult::Nothing;
+        };
+        panes::copy_payload_for_output(snapshot, *anchor, ctx.panes.output.viewport.pos())
+    }
 }
 
 /// `Pane<App>` + `Shortcuts<App>` host for the Finder overlay.
@@ -810,6 +779,7 @@ pub fn build_framework_keymap(
         .register::<CiRunsPane>(CiRunsPane)
         .register_copy_selection::<CiRunsPane>()
         .register::<OutputPane>(OutputPane)
+        .register_copy_selection::<OutputPane>()
         .register::<FinderPane>(FinderPane)
         .build_into(framework)
 }
@@ -834,8 +804,6 @@ pub fn owner_repo_key(repo: &OwnerRepo) -> TrackedItemKey { TrackedItemKey::new(
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
-    use crossterm::event::KeyCode;
-
     use super::*;
 
     #[test]
@@ -851,22 +819,6 @@ mod tests {
         let repo = OwnerRepo::new("natepiano", "cargo-port");
 
         assert_eq!(owner_repo_key(&repo).as_str(), "natepiano/cargo-port");
-    }
-
-    #[test]
-    fn nav_action_count_includes_paging_actions() {
-        let defaults = AppNavigation::defaults().into_scope_map();
-
-        assert_eq!(
-            defaults.action_for(&tui_pane::KeyBind::from(KeyCode::PageUp)),
-            Some(NavigationAction::PageUp),
-        );
-        assert_eq!(
-            defaults.action_for(&tui_pane::KeyBind::from(KeyCode::PageDown)),
-            Some(NavigationAction::PageDown),
-        );
-        assert!(NavigationAction::ALL.contains(&NavigationAction::HalfPageUp));
-        assert!(NavigationAction::ALL.contains(&NavigationAction::HalfPageDown));
     }
 
     #[test]

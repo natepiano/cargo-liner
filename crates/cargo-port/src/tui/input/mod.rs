@@ -40,7 +40,7 @@ use super::integration::AppGlobalAction;
 use super::integration::AppNavigation;
 use super::integration::AppPaneId;
 use super::integration::FinderPane;
-use super::integration::NavigationAction;
+use super::integration::NavAction;
 use super::integration::OutputPane;
 use super::interaction;
 use super::keymap;
@@ -48,6 +48,7 @@ use super::keymap::OutputAction;
 use super::keymap::ProjectListAction;
 use super::keymap_ui;
 use super::panes;
+use super::panes::OutputSelection;
 use super::panes::PaneBehavior;
 use super::panes::PaneId;
 use super::sccache;
@@ -91,6 +92,9 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
 
 fn handle_key_event(app: &mut App, raw: &KeyEvent) {
     app.mouse_pos = None;
+    // Drop stale focus on a bottom-row pane the current layout hides so
+    // dispatch routes keys to the visible pane, not the overlaid one.
+    app.reconcile_bottom_row_focus();
 
     let normalized = normalize_nav(app, raw);
     let code = raw.code;
@@ -114,14 +118,24 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
         return;
     }
     let bind = key_bind_from_event(raw);
-    if !app.inflight.example_output().is_empty()
-        && !focused_text_input_mode(app)
+    let is_output_cancel = !focused_text_input_mode(app)
         && app.framework_keymap.is_key_bound_to_toml_key(
             OutputPane::APP_PANE_ID,
             OutputAction::Cancel.toml_key(),
             &bind,
-        )
+        );
+    // Status-aware cancel: while a linewise selection is active in the
+    // focused output pane, the cancel key clears the selection and
+    // resumes following the tail instead of closing the pane.
+    if is_output_cancel
+        && app.focus_is(PaneId::Output)
+        && matches!(app.panes.output.selection(), OutputSelection::Active { .. })
     {
+        app.pending_nav_chord.clear();
+        app.panes.output.clear_selection();
+        return;
+    }
+    if is_output_cancel && !app.inflight.example_output().is_empty() {
         app.pending_nav_chord.clear();
         let was_on_output = app.focus_is(PaneId::Output);
         app.inflight.example_output_mut().clear();
@@ -311,7 +325,7 @@ fn dispatch_finder_overlay(app: &mut App, bind: &KeyBind) -> bool {
 
 fn dispatch_navigation(app: &mut App, focused: FocusedPane<AppPaneId>, bind: &KeyBind) -> bool {
     let keymap = Rc::clone(&app.framework_keymap);
-    let Some(nav_scope) = keymap.navigation::<AppNavigation>() else {
+    let Some(nav_scope) = keymap.navigation() else {
         return false;
     };
     app.pending_nav_chord.push(*bind);
@@ -490,11 +504,7 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
             continue;
         }
         if pane_id == PaneId::Package {
-            let action = if up {
-                NavigationAction::Up
-            } else {
-                NavigationAction::Down
-            };
+            let action = if up { NavAction::Up } else { NavAction::Down };
             panes::navigate_package_detail(app, action);
             return;
         }
@@ -631,6 +641,10 @@ pub(super) fn dispatch_project_list_action(action: ProjectListAction, app: &mut 
 
 pub(super) fn dispatch_output_action(action: OutputAction, app: &mut App) {
     match action {
+        OutputAction::SelectLinewise => {
+            let live = app.inflight.example_output().to_vec();
+            app.panes.output.toggle_select(&live);
+        },
         OutputAction::Cancel => {
             if !app.inflight.example_output().is_empty() {
                 app.inflight.example_output_mut().clear();

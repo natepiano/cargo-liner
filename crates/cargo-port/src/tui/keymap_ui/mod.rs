@@ -22,13 +22,12 @@ use tui_pane::Shortcuts;
 
 use super::app::App;
 use super::integration::AppGlobalAction;
-use super::integration::AppNavigation;
 use super::integration::AppPaneId;
 use super::integration::CiRunsPane;
 use super::integration::FinderPane;
 use super::integration::GitPane;
 use super::integration::LintsPane;
-use super::integration::NavigationAction;
+use super::integration::NavAction;
 use super::integration::OutputPane;
 use super::integration::PackagePane;
 use super::integration::ProjectListPane;
@@ -369,6 +368,10 @@ fn is_navigation_generated_vim_extra(action_key: &str, bind: &KeySequence) -> bo
         return action_key == "home"
             && bind.keys() == [FrameworkKeyBind::from('g'), FrameworkKeyBind::from('g')];
     };
+    // Only the vim letter aliases are generated extras stripped from the
+    // written TOML. The Ctrl-u/d/b/f bindings are unconditional compiled
+    // defaults (see `tui_pane::NavAction::default_keys`), so they are
+    // emitted like any other default key.
     matches!(
         (action_key, key.code, key.mods),
         ("left", KeyCode::Char('h'), KeyModifiers::NONE)
@@ -376,10 +379,6 @@ fn is_navigation_generated_vim_extra(action_key: &str, bind: &KeySequence) -> bo
             | ("up", KeyCode::Char('k'), KeyModifiers::NONE)
             | ("right", KeyCode::Char('l'), KeyModifiers::NONE)
             | ("end", KeyCode::Char('G'), KeyModifiers::NONE)
-            | ("half_page_up", KeyCode::Char('u'), KeyModifiers::CONTROL)
-            | ("half_page_down", KeyCode::Char('d'), KeyModifiers::CONTROL)
-            | ("page_up", KeyCode::Char('b'), KeyModifiers::CONTROL)
-            | ("page_down", KeyCode::Char('f'), KeyModifiers::CONTROL)
     )
 }
 
@@ -407,8 +406,8 @@ fn app_global_binds_for_action(app: &App, action_key: &str) -> Vec<KeySequence> 
 }
 
 fn navigation_binds_for_action(app: &App, action_key: &str) -> Vec<KeySequence> {
-    if let Some(action) = NavigationAction::from_toml_key(action_key)
-        && let Some(scope) = app.framework_keymap.navigation::<AppNavigation>()
+    if let Some(action) = NavAction::from_toml_key(action_key)
+        && let Some(scope) = app.framework_keymap.navigation()
     {
         return scope.display_keys_for(action).to_vec();
     }

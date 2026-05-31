@@ -24,6 +24,7 @@ use tui_pane::FrameworkFocusId;
 use tui_pane::GlobalAction;
 use tui_pane::Globals;
 use tui_pane::Keymap;
+use tui_pane::NavAction;
 use tui_pane::Navigation;
 use tui_pane::Pane;
 use tui_pane::Shortcuts;
@@ -44,25 +45,6 @@ tui_pane::action_enum! {
         Activate => ("activate", "go",     "Activate row");
         /// Refresh the pane.
         Refresh  => ("refresh",  "refresh","Refresh");
-    }
-}
-
-tui_pane::action_enum! {
-    /// Test-only navigation actions.
-    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-    pub enum NavAction {
-        /// Move up.
-        Up    => ("up",    "up",    "Up");
-        /// Move down.
-        Down  => ("down",  "down",  "Down");
-        /// Move left.
-        Left  => ("left",  "left",  "Left");
-        /// Move right.
-        Right => ("right", "right", "Right");
-        /// Jump to the start.
-        Home  => ("home",  "home",  "Home");
-        /// Jump to the end.
-        End   => ("end",   "end",   "End");
     }
 }
 
@@ -113,27 +95,7 @@ impl Shortcuts<App> for ProjectPane {
 struct AppNav;
 
 impl Navigation<App> for AppNav {
-    type Actions = NavAction;
-
-    const DOWN: Self::Actions = NavAction::Down;
-    const END: Self::Actions = NavAction::End;
-    const HOME: Self::Actions = NavAction::Home;
-    const LEFT: Self::Actions = NavAction::Left;
-    const RIGHT: Self::Actions = NavAction::Right;
-    const UP: Self::Actions = NavAction::Up;
-
-    fn defaults() -> Bindings<Self::Actions> {
-        tui_pane::bindings! {
-            KeyCode::Up    => NavAction::Up,
-            KeyCode::Down  => NavAction::Down,
-            KeyCode::Left  => NavAction::Left,
-            KeyCode::Right => NavAction::Right,
-            KeyCode::Home  => NavAction::Home,
-            KeyCode::End   => NavAction::End,
-        }
-    }
-
-    fn dispatcher() -> fn(Self::Actions, FocusedPane<AppPaneId>, &mut App) {
+    fn dispatcher() -> fn(NavAction, FocusedPane<AppPaneId>, &mut App) {
         |_action, _focused, _ctx| { /* no-op */ }
     }
 }

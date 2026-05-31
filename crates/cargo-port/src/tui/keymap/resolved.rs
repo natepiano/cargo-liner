@@ -42,7 +42,7 @@ impl ResolvedKeymap {
         );
         // ExpandRow / CollapseRow are pane-scope actions routed through
         // the pane-scope match in `handle_normal_key`. Bare Right / Left
-        // are already mapped to NavigationAction::Right / ::Left in the
+        // are already mapped to NavAction::Right / ::Left in the
         // framework keymap, so the pane-scope defaults bind ExpandRow /
         // CollapseRow to Shift+Right / Shift+Left to avoid colliding
         // with the navigation defaults.

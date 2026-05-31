@@ -22,6 +22,7 @@ use crate::Globals;
 use crate::KeyBind;
 use crate::KeymapPane;
 use crate::Mode;
+use crate::NavAction;
 use crate::Navigation;
 use crate::Pane;
 use crate::SettingsPane;
@@ -39,18 +40,6 @@ crate::action_enum! {
     pub enum FooAction {
         Activate => ("activate", "go",     "Activate row");
         Clean    => ("clean",    "clean",  "Clean target");
-    }
-}
-
-crate::action_enum! {
-    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-    pub enum NavAction {
-        Up    => ("up",    "up",    "Move up");
-        Down  => ("down",  "down",  "Move down");
-        Left  => ("left",  "left",  "Move left");
-        Right => ("right", "right", "Move right");
-        Home  => ("home",  "home",  "Jump to start");
-        End   => ("end",   "end",   "Jump to end");
     }
 }
 
@@ -150,27 +139,7 @@ impl Shortcuts<TestApp> for TextInputPane {
 struct AppNav;
 
 impl Navigation<TestApp> for AppNav {
-    type Actions = NavAction;
-
-    const DOWN: Self::Actions = NavAction::Down;
-    const END: Self::Actions = NavAction::End;
-    const HOME: Self::Actions = NavAction::Home;
-    const LEFT: Self::Actions = NavAction::Left;
-    const RIGHT: Self::Actions = NavAction::Right;
-    const UP: Self::Actions = NavAction::Up;
-
-    fn defaults() -> Bindings<Self::Actions> {
-        crate::bindings! {
-            KeyCode::Up    => NavAction::Up,
-            KeyCode::Down  => NavAction::Down,
-            KeyCode::Left  => NavAction::Left,
-            KeyCode::Right => NavAction::Right,
-            KeyCode::Home  => NavAction::Home,
-            KeyCode::End   => NavAction::End,
-        }
-    }
-
-    fn dispatcher() -> fn(Self::Actions, FocusedPane<TestPaneId>, &mut TestApp) {
+    fn dispatcher() -> fn(NavAction, FocusedPane<TestPaneId>, &mut TestApp) {
         |_action, _focused, _ctx| { /* no-op */ }
     }
 }

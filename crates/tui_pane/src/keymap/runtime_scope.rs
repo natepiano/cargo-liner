@@ -21,6 +21,7 @@ use super::KeyBind;
 use super::KeyOutcome;
 use super::KeySequence;
 use super::Keymap;
+use super::NavAction;
 use super::Navigation;
 use super::ScopeMap;
 use super::Shortcuts;
@@ -289,13 +290,13 @@ pub(super) fn slots_from_scope<A: Action>(
 /// Emits one [`BarRegion::Nav`] slot per [`Action::ALL`] entry in the
 /// app's navigation enum that has a bound key. The bar's
 /// `nav_region.rs` reduces these to the rendered nav row.
-pub(crate) fn render_navigation_slots<Ctx: AppContext + 'static, N: Navigation<Ctx>>(
+pub(crate) fn render_navigation_slots<Ctx: AppContext + 'static>(
     keymap: &Keymap<Ctx>,
 ) -> Vec<RenderedSlot> {
-    let Some(scope) = keymap.navigation::<N>() else {
+    let Some(scope) = keymap.navigation() else {
         return Vec::new();
     };
-    slots_from_scope(BarRegion::Nav, N::Actions::ALL, scope)
+    slots_from_scope(BarRegion::Nav, NavAction::ALL, scope)
 }
 
 /// `G`-monomorphized renderer the keymap stores at
@@ -335,12 +336,12 @@ pub(crate) fn render_app_global_shortcut_rows<Ctx: AppContext + 'static, G: Glob
 pub(crate) fn keymap_help_rows_for_navigation<Ctx: AppContext + 'static, N: Navigation<Ctx>>(
     keymap: &Keymap<Ctx>,
 ) -> Vec<KeymapHelpRow> {
-    let Some(scope) = keymap.navigation::<N>() else {
+    let Some(scope) = keymap.navigation() else {
         return Vec::new();
     };
-    let mut rows = Vec::with_capacity(N::Actions::ALL.len() + 1);
+    let mut rows = Vec::with_capacity(NavAction::ALL.len() + 1);
     rows.push(KeymapHelpRow::header(N::SECTION_NAME, N::SCOPE_NAME));
-    rows.extend(N::Actions::ALL.iter().copied().map(|action| KeymapHelpRow {
+    rows.extend(NavAction::ALL.iter().copied().map(|action| KeymapHelpRow {
         section:     N::SECTION_NAME,
         scope:       N::SCOPE_NAME,
         action:      action.toml_key(),
@@ -373,13 +374,14 @@ pub(crate) fn keymap_help_rows_for_app_globals<Ctx: AppContext + 'static, G: Glo
         .collect()
 }
 
-/// `N`-monomorphized TOML-action-keys collector for the navigation
-/// scope. Used by the keymap TOML writer to enumerate every action
-/// regardless of whether it currently has a binding.
-pub(crate) fn navigation_toml_action_keys<Ctx: AppContext + 'static, N: Navigation<Ctx>>(
+/// TOML-action-keys collector for the navigation scope. Used by the
+/// keymap TOML writer to enumerate every action regardless of whether
+/// it currently has a binding. The action set is framework-owned, so
+/// this is not parameterized by the app's `Navigation` impl.
+pub(crate) fn navigation_toml_action_keys<Ctx: AppContext + 'static>(
     _keymap: &Keymap<Ctx>,
 ) -> Vec<&'static str> {
-    N::Actions::ALL.iter().map(|a| a.toml_key()).collect()
+    NavAction::ALL.iter().map(|a| a.toml_key()).collect()
 }
 
 /// `G`-monomorphized TOML-action-keys collector for the app-globals

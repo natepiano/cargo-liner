@@ -145,6 +145,9 @@ impl App {
         self.inflight
             .example_output_mut()
             .push("── done ──".to_string());
+        // Process exit resumes following the tail so the final output is
+        // visible — unless a selection is holding the view.
+        self.panes.output.on_process_exit();
         self.scan.mark_terminal_dirty();
     }
     pub(super) fn poll_clean_msgs(&mut self) {

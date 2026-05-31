@@ -11,6 +11,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
+use std::rc::Rc;
 
 use ratatui::Frame;
 use ratatui::layout::Position;
@@ -441,17 +442,144 @@ impl Hittable<HoverTarget> for ProjectListPane {
 }
 
 // ── Output ──────────────────────────────────────────────────────
+
+/// Linewise selection state for the output pane.
+///
+/// `Active` holds the buffer snapshot taken when `V` was pressed, so a
+/// streaming child process can't drift the frozen range, plus the
+/// `anchor` row the selection extends from. The cursor end of the range
+/// is [`OutputPane::viewport`]'s `pos`.
+pub enum OutputSelection {
+    Inactive,
+    Active {
+        anchor:   usize,
+        snapshot: Rc<[String]>,
+    },
+}
+
 pub struct OutputPane {
     pub viewport: Viewport,
     pub focus:    RenderFocus,
+    selection:    OutputSelection,
 }
 
 impl OutputPane {
     pub const fn new() -> Self {
         Self {
-            viewport: Viewport::new(),
-            focus:    RenderFocus::inactive(),
+            viewport:  Viewport::new(),
+            focus:     RenderFocus::inactive(),
+            selection: OutputSelection::Inactive,
         }
+    }
+
+    /// The current linewise selection state.
+    pub const fn selection(&self) -> &OutputSelection { &self.selection }
+
+    /// Whether the view is pinned to the streaming tail. Derived from the
+    /// cursor: following means the cursor sits on the last row. There is
+    /// no separate follow flag to fall out of sync with the cursor.
+    pub const fn is_following(&self) -> bool {
+        self.viewport.pos() >= self.viewport.len().saturating_sub(1)
+    }
+
+    /// Reset to the open-time state: following the tail, no selection.
+    pub fn reset_for_open(&mut self) {
+        self.selection = OutputSelection::Inactive;
+        self.viewport.end();
+    }
+
+    /// Toggle linewise selection. Entering snapshots `live` (so streaming
+    /// output can't drift the range) and anchors at the cursor; leaving
+    /// clears the selection and resumes following the tail.
+    pub fn toggle_select(&mut self, live: &[String]) {
+        match self.selection {
+            OutputSelection::Inactive => {
+                self.selection = OutputSelection::Active {
+                    anchor:   self.viewport.pos(),
+                    snapshot: Rc::from(live.to_vec()),
+                };
+            },
+            OutputSelection::Active { .. } => self.clear_selection(),
+        }
+    }
+
+    /// Clear any selection and resume following the tail. Used after a
+    /// yank and by the status-aware cancel key.
+    pub fn clear_selection(&mut self) {
+        self.selection = OutputSelection::Inactive;
+        self.viewport.end();
+    }
+
+    /// Number of lines the active selection spans (`0` when inactive).
+    pub fn selection_line_count(&self) -> usize {
+        self.selected_range().map_or(0, |(lo, hi)| hi - lo + 1)
+    }
+
+    /// Inclusive `[lo, hi]` snapshot row range of the active selection,
+    /// clamped to the snapshot bounds. `None` when inactive or the
+    /// snapshot is empty.
+    pub fn selected_range(&self) -> Option<(usize, usize)> {
+        let OutputSelection::Active { anchor, snapshot } = &self.selection else {
+            return None;
+        };
+        let last = snapshot.len().checked_sub(1)?;
+        let anchor = (*anchor).min(last);
+        let cursor = self.viewport.pos().min(last);
+        Some((anchor.min(cursor), anchor.max(cursor)))
+    }
+
+    /// Resume following the tail when a process exits, unless a selection
+    /// is holding the view in place.
+    pub const fn on_process_exit(&mut self) {
+        if matches!(self.selection, OutputSelection::Inactive) {
+            self.viewport.end();
+        }
+    }
+
+    /// Sync the viewport surface to the rendered rows and compute the
+    /// scroll offset. While following — the cursor was on the last row
+    /// and no selection holds the view — the cursor sticks to the new
+    /// last row so streaming output stays visible; otherwise the offset
+    /// keeps the cursor on screen at its frozen position.
+    pub const fn sync_viewport(&mut self, len: usize, visible_rows: usize, content_area: Rect) {
+        let following = matches!(self.selection, OutputSelection::Inactive)
+            && self.viewport.pos() >= self.viewport.len().saturating_sub(1);
+        self.viewport.set_len(len);
+        self.viewport.set_viewport_rows(visible_rows);
+        self.viewport.set_content_area(content_area);
+        if following {
+            self.viewport.end();
+        }
+        self.viewport.set_scroll_offset(scroll_to_show_cursor(
+            self.viewport.pos(),
+            self.viewport.scroll_offset(),
+            visible_rows,
+            len,
+        ));
+    }
+}
+
+/// Smallest scroll offset that keeps `cursor` on screen, starting from
+/// the `current` offset and clamped so the view never scrolls past the
+/// end.
+const fn scroll_to_show_cursor(
+    cursor: usize,
+    current: usize,
+    visible_rows: usize,
+    len: usize,
+) -> usize {
+    if visible_rows == 0 {
+        return 0;
+    }
+    let mut offset = if cursor < current { cursor } else { current };
+    if cursor + 1 > offset + visible_rows {
+        offset = cursor + 1 - visible_rows;
+    }
+    let max_offset = len.saturating_sub(visible_rows);
+    if offset > max_offset {
+        max_offset
+    } else {
+        offset
     }
 }
 

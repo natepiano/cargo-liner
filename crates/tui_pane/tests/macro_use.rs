@@ -20,6 +20,7 @@ use tui_pane::Globals;
 use tui_pane::KeyBind;
 use tui_pane::KeySequence;
 use tui_pane::Mode;
+use tui_pane::NavAction;
 use tui_pane::Navigation;
 use tui_pane::Pane;
 use tui_pane::ShortcutState;
@@ -259,27 +260,7 @@ impl Shortcuts<CrossCrateApp> for CrossCratePane {
 struct CrossCrateNavigation;
 
 impl Navigation<CrossCrateApp> for CrossCrateNavigation {
-    type Actions = CrossCrateNavAction;
-
-    const DOWN: Self::Actions = CrossCrateNavAction::Down;
-    const END: Self::Actions = CrossCrateNavAction::End;
-    const HOME: Self::Actions = CrossCrateNavAction::Home;
-    const LEFT: Self::Actions = CrossCrateNavAction::Left;
-    const RIGHT: Self::Actions = CrossCrateNavAction::Right;
-    const UP: Self::Actions = CrossCrateNavAction::Up;
-
-    fn defaults() -> Bindings<Self::Actions> {
-        tui_pane::bindings! {
-            KeyCode::Up    => CrossCrateNavAction::Up,
-            KeyCode::Down  => CrossCrateNavAction::Down,
-            KeyCode::Left  => CrossCrateNavAction::Left,
-            KeyCode::Right => CrossCrateNavAction::Right,
-            KeyCode::Home  => CrossCrateNavAction::Home,
-            KeyCode::End   => CrossCrateNavAction::End,
-        }
-    }
-
-    fn dispatcher() -> fn(Self::Actions, FocusedPane<CrossCratePaneId>, &mut CrossCrateApp) {
+    fn dispatcher() -> fn(NavAction, FocusedPane<CrossCratePaneId>, &mut CrossCrateApp) {
         |_action, _focused, _ctx| { /* no-op for the smoke test */ }
     }
 }
@@ -356,15 +337,6 @@ fn navigation_trait_works_from_outside_crate() {
     assert_eq!(
         <CrossCrateNavigation as Navigation<CrossCrateApp>>::SCOPE_NAME,
         "navigation",
-    );
-    assert_eq!(
-        <CrossCrateNavigation as Navigation<CrossCrateApp>>::UP,
-        CrossCrateNavAction::Up,
-    );
-    let map = CrossCrateNavigation::defaults().into_scope_map();
-    assert_eq!(
-        map.action_for(&KeyCode::Up.into()),
-        Some(CrossCrateNavAction::Up),
     );
 }
 

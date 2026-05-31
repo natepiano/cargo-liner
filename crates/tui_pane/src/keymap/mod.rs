@@ -9,6 +9,7 @@ mod key_bind;
 mod key_outcome;
 mod key_sequence;
 mod load;
+mod nav_action;
 mod navigation;
 mod runtime_scope;
 mod scope_map;
@@ -37,6 +38,7 @@ pub use key_bind::KeyParseError;
 pub use key_outcome::KeyOutcome;
 pub use key_sequence::KeySequence;
 pub use load::KeymapError;
+pub use nav_action::NavAction;
 pub use navigation::Navigation;
 pub use runtime_scope::GlobalShortcutRow;
 pub use runtime_scope::KeymapHelpRow;
@@ -94,7 +96,7 @@ type ScopeTomlActionKeysFn<Ctx> = fn(&Keymap<Ctx>) -> Vec<&'static str>;
 /// callers.
 pub struct Keymap<Ctx: AppContext + 'static> {
     scopes:                       HashMap<Ctx::AppPaneId, Box<dyn RuntimeScope<Ctx>>>,
-    navigation:                   Option<Box<dyn Any>>,
+    navigation:                   Option<ScopeMap<NavAction>>,
     /// Monomorphized renderer for the navigation scope. Each
     /// [`KeymapBuilder::register_navigation::<N>`](crate::KeymapBuilder::register_navigation)
     /// call sets this to the `N`-specialized free fn in
@@ -162,8 +164,10 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
     }
 
     /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
-    /// constructs one.
-    pub(super) fn set_navigation(&mut self, scope_map: Box<dyn Any>) {
+    /// constructs one. The navigation action set is framework-owned
+    /// ([`NavAction`]), so the scope map is stored with its concrete
+    /// type — no `Box<dyn Any>` erasure, no downcast on read.
+    pub(super) fn set_navigation(&mut self, scope_map: ScopeMap<NavAction>) {
         self.navigation = Some(scope_map);
     }
 
@@ -467,20 +471,16 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
             .map(|scope| scope.scope_name())
     }
 
-    /// Typed singleton getter for the registered [`Navigation`] impl.
+    /// The registered navigation scope ([`NavAction`] → [`KeyBind`]).
     ///
     /// Returns `None` when [`KeymapBuilder::register_navigation`] was
-    /// not called, or when the caller asks for a `N` that does not
-    /// match the type the builder stored. The builder rejects
-    /// missing-navigation builds with [`KeymapError::NavigationMissing`]
-    /// for any non-empty pane set, so production callers can rely on
-    /// `Some(_)`.
+    /// not called. The builder rejects missing-navigation builds with
+    /// [`KeymapError::NavigationMissing`] for any non-empty pane set, so
+    /// production callers can rely on `Some(_)`. The action set is
+    /// framework-owned, so the map is stored and returned with its
+    /// concrete type — a stored-vs-read type mismatch is unrepresentable.
     #[must_use]
-    pub fn navigation<N: Navigation<Ctx>>(&self) -> Option<&ScopeMap<N::Actions>> {
-        self.navigation
-            .as_ref()
-            .and_then(|stored| stored.downcast_ref::<ScopeMap<N::Actions>>())
-    }
+    pub const fn navigation(&self) -> Option<&ScopeMap<NavAction>> { self.navigation.as_ref() }
 
     /// Typed singleton getter for the registered [`Globals`] impl.
     ///
@@ -660,6 +660,7 @@ mod tests {
     use super::KeyOutcome;
     use super::Keymap;
     use super::KeymapBuilder;
+    use super::NavAction;
     use super::Navigation;
     use super::Shortcuts;
     use crate::AppContext;
@@ -678,18 +679,6 @@ mod tests {
         pub enum FooAction {
             Activate => ("activate", "go",    "Activate row");
             Clean    => ("clean",    "clean", "Clean target");
-        }
-    }
-
-    crate::action_enum! {
-        #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-        pub enum NavAction {
-            Up    => ("up",    "up",    "Move up");
-            Down  => ("down",  "down",  "Move down");
-            Left  => ("left",  "left",  "Move left");
-            Right => ("right", "right", "Move right");
-            Home  => ("home",  "home",  "Jump to start");
-            End   => ("end",   "end",   "Jump to end");
         }
     }
 
@@ -738,27 +727,7 @@ mod tests {
     struct AppNav;
 
     impl Navigation<TestApp> for AppNav {
-        type Actions = NavAction;
-
-        const DOWN: Self::Actions = NavAction::Down;
-        const END: Self::Actions = NavAction::End;
-        const HOME: Self::Actions = NavAction::Home;
-        const LEFT: Self::Actions = NavAction::Left;
-        const RIGHT: Self::Actions = NavAction::Right;
-        const UP: Self::Actions = NavAction::Up;
-
-        fn defaults() -> Bindings<Self::Actions> {
-            crate::bindings! {
-                KeyCode::Up    => NavAction::Up,
-                KeyCode::Down  => NavAction::Down,
-                KeyCode::Left  => NavAction::Left,
-                KeyCode::Right => NavAction::Right,
-                KeyCode::Home  => NavAction::Home,
-                KeyCode::End   => NavAction::End,
-            }
-        }
-
-        fn dispatcher() -> fn(Self::Actions, FocusedPane<TestPaneId>, &mut TestApp) {
+        fn dispatcher() -> fn(NavAction, FocusedPane<TestPaneId>, &mut TestApp) {
             |_action, _focused, _ctx| { /* no-op */ }
         }
     }

@@ -19,6 +19,8 @@ use ratatui::backend::TestBackend;
 use ratatui::layout::Position;
 use tempfile::TempDir;
 use tui_pane::AppContext;
+use tui_pane::ClipboardBackend;
+use tui_pane::ClipboardError;
 use tui_pane::FocusedPane;
 use tui_pane::FrameworkFocusId;
 use tui_pane::GlobalAction as FrameworkGlobalAction;
@@ -75,12 +77,13 @@ use crate::tui::app::OverlayRenderInputs;
 use crate::tui::finder;
 use crate::tui::input;
 use crate::tui::integration::AppPaneId;
-use crate::tui::integration::NavigationAction;
+use crate::tui::integration::NavAction;
 use crate::tui::interaction;
 use crate::tui::pane::DismissTarget;
 use crate::tui::pane::HoverTarget;
 use crate::tui::panes;
 use crate::tui::panes::LintsData;
+use crate::tui::panes::OutputSelection;
 use crate::tui::panes::PaneId;
 use crate::tui::panes::SyncedDescriptionHeight;
 use crate::tui::project_list::ProjectList;
@@ -1113,7 +1116,7 @@ fn edge_scroll_down_past_bottom_advances_to_next_pane() {
     app.project_list.move_to_bottom();
 
     panes::dispatch_navigation_action(
-        NavigationAction::Down,
+        NavAction::Down,
         FocusedPane::App(AppPaneId::ProjectList),
         &mut app,
     );
@@ -1145,7 +1148,7 @@ fn edge_scroll_down_past_last_toast_advances_to_next_pane() {
     app.framework.toasts.reset_to_last();
 
     panes::dispatch_navigation_action(
-        NavigationAction::Down,
+        NavAction::Down,
         FocusedPane::Framework(FrameworkFocusId::Toasts),
         &mut app,
     );
@@ -1169,7 +1172,7 @@ fn edge_scroll_off_holds_focus_at_list_edge() {
     app.project_list.move_to_bottom();
 
     panes::dispatch_navigation_action(
-        NavigationAction::Down,
+        NavAction::Down,
         FocusedPane::App(AppPaneId::ProjectList),
         &mut app,
     );
@@ -1920,4 +1923,307 @@ fn clean_group_confirm_popup_lists_all_checkouts() {
             "every checkout appears in the popup (expected {label:?})"
         );
     }
+}
+
+// ── Output-pane linewise yank ─────────────────────────────────────
+
+/// Test clipboard backend that records the most recent write.
+#[derive(Default)]
+struct RecordingClipboard {
+    written: Option<String>,
+}
+
+impl ClipboardBackend for RecordingClipboard {
+    fn write_clipboard(&mut self, text: &str) -> Result<(), ClipboardError> {
+        self.written = Some(text.to_string());
+        Ok(())
+    }
+}
+
+/// Open the output pane with `lines` and render once so the viewport
+/// syncs to the streaming tail (the realistic open state).
+fn open_output(app: &mut App, lines: &[&str]) {
+    app.set_example_output(lines.iter().map(|line| (*line).to_string()).collect());
+    let _ = buffer_text_sized(app, 120, 40);
+}
+
+#[test]
+fn output_v_starts_linewise_selection_at_tail() {
+    let project = make_package("demo", Path::new("/tmp/demo"));
+    let mut app = make_app(&[project]);
+    open_output(&mut app, &["alpha", "beta", "gamma"]);
+
+    assert_eq!(app.focused_pane_id(), PaneId::Output);
+    assert!(app.panes.output.is_following());
+
+    press_key(&mut app, KeyCode::Char('V'));
+
+    assert!(matches!(
+        app.panes.output.selection(),
+        OutputSelection::Active { .. }
+    ));
+    assert_eq!(app.panes.output.selection_line_count(), 1);
+}
+
+#[test]
+fn output_selection_extends_and_yanks_against_snapshot() {
+    let project = make_package("demo", Path::new("/tmp/demo"));
+    let mut app = make_app(&[project]);
+    open_output(&mut app, &["alpha", "beta", "gamma", "delta", "epsilon"]);
+
+    press_key(&mut app, KeyCode::Char('V')); // anchor on the last row
+    press_key(&mut app, KeyCode::Up); // extend up one row
+    press_key(&mut app, KeyCode::Up); // extend up another row
+
+    assert_eq!(app.panes.output.selected_range(), Some((2, 4)));
+
+    // Streaming output after the snapshot must not drift the frozen range.
+    app.inflight
+        .apply_example_progress("epsilon-updated".to_string());
+    app.inflight.example_output_mut().push("zeta".to_string());
+
+    let mut clipboard = RecordingClipboard::default();
+    app.copy_focused_selection_with_backend(&mut clipboard);
+
+    assert_eq!(clipboard.written.as_deref(), Some("gamma\ndelta\nepsilon"));
+    assert!(matches!(
+        app.panes.output.selection(),
+        OutputSelection::Inactive
+    ));
+    assert!(
+        app.panes.output.is_following(),
+        "a yank resumes following the tail",
+    );
+}
+
+#[test]
+fn output_yank_strips_ansi_from_selection() {
+    let project = make_package("demo", Path::new("/tmp/demo"));
+    let mut app = make_app(&[project]);
+    open_output(&mut app, &["\u{1b}[31mred line\u{1b}[0m"]);
+
+    press_key(&mut app, KeyCode::Char('V'));
+
+    let mut clipboard = RecordingClipboard::default();
+    app.copy_focused_selection_with_backend(&mut clipboard);
+
+    assert_eq!(clipboard.written.as_deref(), Some("red line"));
+}
+
+#[test]
+fn output_esc_clears_selection_then_closes_pane() {
+    let project = make_package("demo", Path::new("/tmp/demo"));
+    let mut app = make_app(&[project]);
+    open_output(&mut app, &["alpha", "beta"]);
+
+    press_key(&mut app, KeyCode::Char('V'));
+    assert!(matches!(
+        app.panes.output.selection(),
+        OutputSelection::Active { .. }
+    ));
+
+    press_key(&mut app, KeyCode::Esc);
+    assert!(matches!(
+        app.panes.output.selection(),
+        OutputSelection::Inactive
+    ));
+    assert!(
+        !app.inflight.example_output().is_empty(),
+        "the first Esc clears the selection, not the pane",
+    );
+    assert_eq!(app.focused_pane_id(), PaneId::Output);
+
+    press_key(&mut app, KeyCode::Esc);
+    assert!(
+        app.inflight.example_output().is_empty(),
+        "the second Esc closes the pane",
+    );
+    assert_eq!(app.focused_pane_id(), PaneId::Targets);
+}
+
+#[test]
+fn focused_output_cursor_row_highlight_fills_full_width() {
+    let project = make_package("demo", Path::new("/tmp/demo"));
+    let mut app = make_app(&[project]);
+    open_output(&mut app, &["alpha", "beta", "gamma"]);
+
+    assert_eq!(app.focused_pane_id(), PaneId::Output);
+    assert!(
+        app.panes.output.is_following(),
+        "cursor sits on the tail row"
+    );
+
+    let backend = TestBackend::new(120, 40);
+    let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
+    terminal
+        .draw(|frame| render::ui(frame, &mut app))
+        .unwrap_or_else(|_| std::process::abort());
+    let buffer = terminal.backend().buffer().clone();
+    let area = buffer.area;
+
+    // Find the tail row ("gamma") — the cursor row while following.
+    let mut cursor_row = None;
+    for y in 0..area.height {
+        let row: String = (0..area.width)
+            .map(|x| buffer[(x, y)].symbol().to_string())
+            .collect();
+        if let Some(col) = row.find("gamma") {
+            cursor_row = Some((u16::try_from(col).unwrap_or(0), y));
+            break;
+        }
+    }
+    let (text_col, y) = cursor_row.expect("the tail row is rendered");
+
+    // A cell well past the 5-char text must carry the active-row
+    // background, so the highlight spans the row rather than stopping at
+    // the text.
+    let probe = buffer[(text_col + 30, y)].bg;
+    assert_eq!(
+        probe,
+        tui_pane::active_focus_color(),
+        "cursor row highlight should fill the full pane width",
+    );
+}
+
+#[test]
+fn cursor_row_highlight_covers_ansi_colored_log_text() {
+    let project = make_package("demo", Path::new("/tmp/demo"));
+    let mut app = make_app(&[project]);
+    // A green ANSI segment followed by plain text — the colored span
+    // carries its own background, which must not punch a hole in the
+    // row highlight.
+    open_output(&mut app, &["\u{1b}[32mINFO\u{1b}[0m starting up"]);
+
+    assert_eq!(app.focused_pane_id(), PaneId::Output);
+
+    let backend = TestBackend::new(120, 40);
+    let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
+    terminal
+        .draw(|frame| render::ui(frame, &mut app))
+        .unwrap_or_else(|_| std::process::abort());
+    let buffer = terminal.backend().buffer().clone();
+    let area = buffer.area;
+
+    let mut info_cell = None;
+    for y in 0..area.height {
+        let row: String = (0..area.width)
+            .map(|x| buffer[(x, y)].symbol().to_string())
+            .collect();
+        if let Some(col) = row.find("INFO") {
+            info_cell = Some((u16::try_from(col).unwrap_or(0), y));
+            break;
+        }
+    }
+    let (col, y) = info_cell.expect("the colored log line is rendered");
+
+    // The 'I' of the green "INFO" must carry the cursor-row background,
+    // not the bare default behind the colored glyph.
+    assert_eq!(
+        buffer[(col, y)].bg,
+        tui_pane::active_focus_color(),
+        "the highlight must cover the ANSI-colored text, not just the padding",
+    );
+    // And the green foreground survives the highlight.
+    assert_eq!(buffer[(col, y)].fg, ratatui::style::Color::Green);
+}
+
+#[test]
+fn overlaid_output_steals_focus_from_hidden_diagnostics_pane() {
+    let project = make_package("demo", Path::new("/tmp/demo"));
+    let mut app = make_app(&[project]);
+    open_output(&mut app, &["alpha", "beta"]);
+
+    // Simulate the stale focus left when a pane that the Output layout
+    // hides was focused before output appeared.
+    app.set_focus_to_pane(PaneId::CiRuns);
+    assert_eq!(app.focused_pane_id(), PaneId::CiRuns);
+
+    // Rendering reconciles focus to the visible bottom-row pane.
+    let _ = buffer_text_sized(&mut app, 120, 40);
+    assert_eq!(
+        app.focused_pane_id(),
+        PaneId::Output,
+        "focus must not stay on a pane the Output overlay hides",
+    );
+}
+
+#[test]
+fn closing_output_releases_focus_to_a_visible_pane() {
+    let project = make_package("demo", Path::new("/tmp/demo"));
+    let mut app = make_app(&[project]);
+    open_output(&mut app, &["alpha", "beta"]);
+    assert_eq!(app.focused_pane_id(), PaneId::Output);
+
+    // Output emptied without the Esc-close path redirecting focus.
+    app.inflight.example_output_mut().clear();
+
+    let _ = buffer_text_sized(&mut app, 120, 40);
+    assert_eq!(
+        app.focused_pane_id(),
+        PaneId::Targets,
+        "focus must not stay on the Output pane once it is hidden",
+    );
+}
+
+#[test]
+fn output_yank_without_selection_copies_nothing() {
+    let project = make_package("demo", Path::new("/tmp/demo"));
+    let mut app = make_app(&[project]);
+    open_output(&mut app, &["alpha", "beta"]);
+
+    let mut clipboard = RecordingClipboard::default();
+    app.copy_focused_selection_with_backend(&mut clipboard);
+
+    assert!(
+        clipboard.written.is_none(),
+        "y with no selection writes nothing to the clipboard",
+    );
+}
+
+#[test]
+fn output_scroll_up_freezes_and_end_resumes_follow() {
+    let project = make_package("demo", Path::new("/tmp/demo"));
+    let mut app = make_app(&[project]);
+    open_output(&mut app, &["a", "b", "c", "d", "e"]);
+
+    assert!(app.panes.output.is_following());
+    press_key(&mut app, KeyCode::Up);
+    assert!(
+        !app.panes.output.is_following(),
+        "scrolling up freezes the view",
+    );
+    press_key(&mut app, KeyCode::End);
+    assert!(
+        app.panes.output.is_following(),
+        "End resumes following the tail",
+    );
+}
+
+#[test]
+fn output_process_exit_holds_active_selection_but_resumes_when_inactive() {
+    let project = make_package("demo", Path::new("/tmp/demo"));
+    let mut app = make_app(&[project]);
+    open_output(&mut app, &["a", "b", "c"]);
+
+    // Inactive but scrolled up: a process exit resumes following.
+    press_key(&mut app, KeyCode::Up);
+    assert!(!app.panes.output.is_following());
+    app.panes.output.on_process_exit();
+    assert!(
+        app.panes.output.is_following(),
+        "exit resumes follow when no selection is active",
+    );
+
+    // Active selection: a process exit must leave it untouched (D5).
+    press_key(&mut app, KeyCode::Char('V'));
+    press_key(&mut app, KeyCode::Up);
+    app.panes.output.on_process_exit();
+    assert!(
+        matches!(app.panes.output.selection(), OutputSelection::Active { .. }),
+        "exit must not clear an active selection",
+    );
+    assert!(
+        !app.panes.output.is_following(),
+        "exit must not resume follow while a selection holds the view",
+    );
 }

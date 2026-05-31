@@ -31,10 +31,8 @@ use crate::tui::app::CiRunDisplayMode;
 use crate::tui::app::CleanSelection;
 use crate::tui::input;
 use crate::tui::integration;
-#[cfg(test)]
-use crate::tui::integration::AppNavigation;
 use crate::tui::integration::AppPaneId;
-use crate::tui::integration::NavigationAction;
+use crate::tui::integration::NavAction;
 use crate::tui::keymap::CiRunsAction;
 use crate::tui::keymap::GitAction;
 #[cfg(test)]
@@ -212,7 +210,7 @@ fn set_ci_display_mode(app: &mut App, mode: CiRunDisplayMode) {
 }
 
 pub(super) fn dispatch_navigation_action(
-    action: NavigationAction,
+    action: NavAction,
     focused: FocusedPane<AppPaneId>,
     app: &mut App,
 ) {
@@ -226,7 +224,8 @@ pub(super) fn dispatch_navigation_action(
         ) => navigate_detail(app, action),
         FocusedPane::App(AppPaneId::Lints) => navigate_lints(app, action),
         FocusedPane::App(AppPaneId::CiRuns) => navigate_ci_runs(app, action),
-        FocusedPane::App(AppPaneId::Output | AppPaneId::Finder) => {},
+        FocusedPane::App(AppPaneId::Output) => navigate_output(app, action),
+        FocusedPane::App(AppPaneId::Finder) => {},
         FocusedPane::Framework(FrameworkFocusId::Toasts) => navigate_toasts(app, action),
     }
 
@@ -254,7 +253,7 @@ enum EdgeAdvance {
 /// action is not a single vertical step, or the focused pane has no
 /// participating list.
 fn edge_scroll_probe(
-    action: NavigationAction,
+    action: NavAction,
     focused: FocusedPane<AppPaneId>,
     app: &App,
 ) -> Option<(EdgeAdvance, usize)> {
@@ -262,16 +261,16 @@ fn edge_scroll_probe(
         return None;
     }
     let advance = match action {
-        NavigationAction::Up => EdgeAdvance::Prev,
-        NavigationAction::Down => EdgeAdvance::Next,
-        NavigationAction::Left
-        | NavigationAction::Right
-        | NavigationAction::Home
-        | NavigationAction::End
-        | NavigationAction::PageUp
-        | NavigationAction::PageDown
-        | NavigationAction::HalfPageUp
-        | NavigationAction::HalfPageDown => return None,
+        NavAction::Up => EdgeAdvance::Prev,
+        NavAction::Down => EdgeAdvance::Next,
+        NavAction::Left
+        | NavAction::Right
+        | NavAction::Home
+        | NavAction::End
+        | NavAction::PageUp
+        | NavAction::PageDown
+        | NavAction::HalfPageUp
+        | NavAction::HalfPageDown => return None,
     };
     list_cursor(focused, app).map(|cursor| (advance, cursor))
 }
@@ -297,39 +296,39 @@ fn list_cursor(focused: FocusedPane<AppPaneId>, app: &App) -> Option<usize> {
     }
 }
 
-fn navigate_project_list(app: &mut App, action: NavigationAction) {
+fn navigate_project_list(app: &mut App, action: NavAction) {
     let include_non_rust = app.config.include_non_rust().includes_non_rust();
     match action {
-        NavigationAction::Up => app.project_list.move_up(),
-        NavigationAction::Down => app.project_list.move_down(),
-        NavigationAction::Home => app.project_list.move_to_top(),
-        NavigationAction::End => app.project_list.move_to_bottom(),
-        NavigationAction::PageUp => {
+        NavAction::Up => app.project_list.move_up(),
+        NavAction::Down => app.project_list.move_down(),
+        NavAction::Home => app.project_list.move_to_top(),
+        NavAction::End => app.project_list.move_to_bottom(),
+        NavAction::PageUp => {
             if let Some(step) = project_list_page_step(app) {
                 app.project_list.move_up_by(step);
             }
         },
-        NavigationAction::PageDown => {
+        NavAction::PageDown => {
             if let Some(step) = project_list_page_step(app) {
                 app.project_list.move_down_by(step);
             }
         },
-        NavigationAction::HalfPageUp => {
+        NavAction::HalfPageUp => {
             if let Some(step) = project_list_half_page_step(app) {
                 app.project_list.move_up_by(step);
             }
         },
-        NavigationAction::HalfPageDown => {
+        NavAction::HalfPageDown => {
             if let Some(step) = project_list_half_page_step(app) {
                 app.project_list.move_down_by(step);
             }
         },
-        NavigationAction::Right => {
+        NavAction::Right => {
             if !app.expand() {
                 app.project_list.move_down();
             }
         },
-        NavigationAction::Left => {
+        NavAction::Left => {
             if !app.project_list.collapse(include_non_rust) {
                 app.project_list.move_up();
             }
@@ -337,25 +336,25 @@ fn navigate_project_list(app: &mut App, action: NavigationAction) {
     }
 }
 
-fn navigate_detail(app: &mut App, action: NavigationAction) {
+fn navigate_detail(app: &mut App, action: NavAction) {
     let pane = active_detail_pane(app);
     navigate_viewport(pane, action);
 }
 
-fn navigate_viewport(pane: &mut Viewport, action: NavigationAction) {
+fn navigate_viewport(pane: &mut Viewport, action: NavAction) {
     match action {
-        NavigationAction::Up | NavigationAction::Left => pane.up(),
-        NavigationAction::Down | NavigationAction::Right => pane.down(),
-        NavigationAction::Home => pane.home(),
-        NavigationAction::End => pane.end(),
-        NavigationAction::PageUp => pane.page_up(),
-        NavigationAction::PageDown => pane.page_down(),
-        NavigationAction::HalfPageUp => pane.half_page_up(),
-        NavigationAction::HalfPageDown => pane.half_page_down(),
+        NavAction::Up | NavAction::Left => pane.up(),
+        NavAction::Down | NavAction::Right => pane.down(),
+        NavAction::Home => pane.home(),
+        NavAction::End => pane.end(),
+        NavAction::PageUp => pane.page_up(),
+        NavAction::PageDown => pane.page_down(),
+        NavAction::HalfPageUp => pane.half_page_up(),
+        NavAction::HalfPageDown => pane.half_page_down(),
     }
 }
 
-pub(super) fn navigate_package_detail(app: &mut App, action: NavigationAction) {
+pub(super) fn navigate_package_detail(app: &mut App, action: NavAction) {
     let Some(package) = app.panes.package.content() else {
         navigate_viewport(&mut app.panes.package.viewport, action);
         return;
@@ -369,17 +368,17 @@ pub(super) fn navigate_package_detail(app: &mut App, action: NavigationAction) {
         .pos()
         .min(rows.len().saturating_sub(1));
     let target = match action {
-        NavigationAction::Up | NavigationAction::Left => {
+        NavAction::Up | NavAction::Left => {
             super::package_selectable_row_at_or_before(&rows, current.saturating_sub(1))
                 .or_else(|| super::package_first_selectable_row(&rows))
         },
-        NavigationAction::Down | NavigationAction::Right => {
+        NavAction::Down | NavAction::Right => {
             super::package_selectable_row_at_or_after(&rows, current.saturating_add(1))
                 .or_else(|| super::package_last_selectable_row(&rows))
         },
-        NavigationAction::Home => super::package_first_selectable_row(&rows),
-        NavigationAction::End => super::package_last_selectable_row(&rows),
-        NavigationAction::PageUp => {
+        NavAction::Home => super::package_first_selectable_row(&rows),
+        NavAction::End => super::package_last_selectable_row(&rows),
+        NavAction::PageUp => {
             let step = app
                 .panes
                 .package
@@ -391,7 +390,7 @@ pub(super) fn navigate_package_detail(app: &mut App, action: NavigationAction) {
             super::package_selectable_row_at_or_before(&rows, target)
                 .or_else(|| super::package_selectable_row_at_or_after(&rows, target))
         },
-        NavigationAction::PageDown => {
+        NavAction::PageDown => {
             let step = app
                 .panes
                 .package
@@ -405,13 +404,13 @@ pub(super) fn navigate_package_detail(app: &mut App, action: NavigationAction) {
             super::package_selectable_row_at_or_after(&rows, target)
                 .or_else(|| super::package_selectable_row_at_or_before(&rows, target))
         },
-        NavigationAction::HalfPageUp => {
+        NavAction::HalfPageUp => {
             let step = (app.panes.package.viewport.visible_rows() / 2).max(1);
             let target = current.saturating_sub(step);
             super::package_selectable_row_at_or_before(&rows, target)
                 .or_else(|| super::package_selectable_row_at_or_after(&rows, target))
         },
-        NavigationAction::HalfPageDown => {
+        NavAction::HalfPageDown => {
             let step = (app.panes.package.viewport.visible_rows() / 2).max(1);
             let target = current
                 .saturating_add(step)
@@ -425,44 +424,55 @@ pub(super) fn navigate_package_detail(app: &mut App, action: NavigationAction) {
     }
 }
 
-fn navigate_lints(app: &mut App, action: NavigationAction) {
+fn navigate_lints(app: &mut App, action: NavAction) {
     match action {
-        NavigationAction::Up | NavigationAction::Left => app.lint.viewport.up(),
-        NavigationAction::Down | NavigationAction::Right => app.lint.viewport.down(),
-        NavigationAction::Home => app.lint.viewport.home(),
-        NavigationAction::End => app.lint.viewport.end(),
-        NavigationAction::PageUp => app.lint.viewport.page_up(),
-        NavigationAction::PageDown => app.lint.viewport.page_down(),
-        NavigationAction::HalfPageUp => app.lint.viewport.half_page_up(),
-        NavigationAction::HalfPageDown => app.lint.viewport.half_page_down(),
+        NavAction::Up | NavAction::Left => app.lint.viewport.up(),
+        NavAction::Down | NavAction::Right => app.lint.viewport.down(),
+        NavAction::Home => app.lint.viewport.home(),
+        NavAction::End => app.lint.viewport.end(),
+        NavAction::PageUp => app.lint.viewport.page_up(),
+        NavAction::PageDown => app.lint.viewport.page_down(),
+        NavAction::HalfPageUp => app.lint.viewport.half_page_up(),
+        NavAction::HalfPageDown => app.lint.viewport.half_page_down(),
     }
 }
 
-fn navigate_ci_runs(app: &mut App, action: NavigationAction) {
+fn navigate_ci_runs(app: &mut App, action: NavAction) {
     match action {
-        NavigationAction::Up | NavigationAction::Left => app.ci.viewport.up(),
-        NavigationAction::Down | NavigationAction::Right => app.ci.viewport.down(),
-        NavigationAction::Home => app.ci.viewport.home(),
-        NavigationAction::End => app.ci.viewport.end(),
-        NavigationAction::PageUp => app.ci.viewport.page_up(),
-        NavigationAction::PageDown => app.ci.viewport.page_down(),
-        NavigationAction::HalfPageUp => app.ci.viewport.half_page_up(),
-        NavigationAction::HalfPageDown => app.ci.viewport.half_page_down(),
+        NavAction::Up | NavAction::Left => app.ci.viewport.up(),
+        NavAction::Down | NavAction::Right => app.ci.viewport.down(),
+        NavAction::Home => app.ci.viewport.home(),
+        NavAction::End => app.ci.viewport.end(),
+        NavAction::PageUp => app.ci.viewport.page_up(),
+        NavAction::PageDown => app.ci.viewport.page_down(),
+        NavAction::HalfPageUp => app.ci.viewport.half_page_up(),
+        NavAction::HalfPageDown => app.ci.viewport.half_page_down(),
     }
 }
 
-fn navigate_toasts(app: &mut App, action: NavigationAction) {
+/// Drive the output pane cursor through the shared viewport navigation —
+/// the same handler every scroll pane uses, so vim keys and page/half-page
+/// motions come for free. Follow-vs-frozen is derived from the cursor:
+/// moving up off the last row frees the view, returning to it (Down at the
+/// tail, `End`) follows again. While a selection is active the same motions
+/// extend the range against the frozen snapshot (the cursor is one end, the
+/// anchor the other).
+fn navigate_output(app: &mut App, action: NavAction) {
+    navigate_viewport(&mut app.panes.output.viewport, action);
+}
+
+fn navigate_toasts(app: &mut App, action: NavAction) {
     let active_count = app.framework.toasts.active_now().len();
     app.framework.toasts.viewport.set_len(active_count);
     match action {
-        NavigationAction::Up | NavigationAction::Left => app.framework.toasts.viewport.up(),
-        NavigationAction::Down | NavigationAction::Right => app.framework.toasts.viewport.down(),
-        NavigationAction::Home => app.framework.toasts.viewport.home(),
-        NavigationAction::PageUp => app.framework.toasts.viewport.page_up(),
-        NavigationAction::PageDown => app.framework.toasts.viewport.page_down(),
-        NavigationAction::HalfPageUp => app.framework.toasts.viewport.half_page_up(),
-        NavigationAction::HalfPageDown => app.framework.toasts.viewport.half_page_down(),
-        NavigationAction::End => {
+        NavAction::Up | NavAction::Left => app.framework.toasts.viewport.up(),
+        NavAction::Down | NavAction::Right => app.framework.toasts.viewport.down(),
+        NavAction::Home => app.framework.toasts.viewport.home(),
+        NavAction::PageUp => app.framework.toasts.viewport.page_up(),
+        NavAction::PageDown => app.framework.toasts.viewport.page_down(),
+        NavAction::HalfPageUp => app.framework.toasts.viewport.half_page_up(),
+        NavAction::HalfPageDown => app.framework.toasts.viewport.half_page_down(),
+        NavAction::End => {
             let last_index = active_count.saturating_sub(1);
             app.framework.toasts.viewport.set_pos(last_index);
         },
@@ -599,19 +609,19 @@ pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
 
     // Navigation scope.
     let dispatch_bind = TuiKeyBind::from_key_event(*event);
-    if let Some(nav_scope) = app.framework_keymap.navigation::<AppNavigation>()
+    if let Some(nav_scope) = app.framework_keymap.navigation()
         && let Some(nav_action) = nav_scope.action_for(&dispatch_bind)
     {
         match nav_action {
-            NavigationAction::Up => app.ci.viewport.up(),
-            NavigationAction::Down => app.ci.viewport.down(),
-            NavigationAction::Home => app.ci.viewport.home(),
-            NavigationAction::End => app.ci.viewport.end(),
-            NavigationAction::PageUp => app.ci.viewport.page_up(),
-            NavigationAction::PageDown => app.ci.viewport.page_down(),
-            NavigationAction::HalfPageUp => app.ci.viewport.half_page_up(),
-            NavigationAction::HalfPageDown => app.ci.viewport.half_page_down(),
-            NavigationAction::Left | NavigationAction::Right => {},
+            NavAction::Up => app.ci.viewport.up(),
+            NavAction::Down => app.ci.viewport.down(),
+            NavAction::Home => app.ci.viewport.home(),
+            NavAction::End => app.ci.viewport.end(),
+            NavAction::PageUp => app.ci.viewport.page_up(),
+            NavAction::PageDown => app.ci.viewport.page_down(),
+            NavAction::HalfPageUp => app.ci.viewport.half_page_up(),
+            NavAction::HalfPageDown => app.ci.viewport.half_page_down(),
+            NavAction::Left | NavAction::Right => {},
         }
     }
 }

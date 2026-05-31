@@ -76,6 +76,7 @@ pub(super) fn finalize<Ctx: AppContext + 'static, State>(
         builder
             .ignore_unknown
             .then_some(&mut builder.unknown_warnings),
+        false,
     )?;
     registration::check_reserved_vim_navigation_keys(
         "global",

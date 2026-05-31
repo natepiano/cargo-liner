@@ -21,6 +21,7 @@ use crate::FrameworkOverlayId;
 use crate::GlobalAction;
 use crate::KeyBind;
 use crate::KeySequence;
+use crate::NavAction;
 use crate::OverlayAction;
 use crate::Pane;
 use crate::TabStop;
@@ -49,18 +50,6 @@ crate::action_enum! {
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
     pub enum FooAction {
         Activate => ("activate", "go", "Activate row");
-    }
-}
-
-crate::action_enum! {
-    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-    pub enum NavAction {
-        Up    => ("up",    "up",    "Move up");
-        Down  => ("down",  "down",  "Move down");
-        Left  => ("left",  "left",  "Move left");
-        Right => ("right", "right", "Move right");
-        Home  => ("home",  "home",  "Jump to start");
-        End   => ("end",   "end",   "Jump to end");
     }
 }
 
@@ -275,27 +264,7 @@ impl Shortcuts<TestApp> for HiddenPane {
 struct AppNav;
 
 impl Navigation<TestApp> for AppNav {
-    type Actions = NavAction;
-
-    const DOWN: Self::Actions = NavAction::Down;
-    const END: Self::Actions = NavAction::End;
-    const HOME: Self::Actions = NavAction::Home;
-    const LEFT: Self::Actions = NavAction::Left;
-    const RIGHT: Self::Actions = NavAction::Right;
-    const UP: Self::Actions = NavAction::Up;
-
-    fn defaults() -> Bindings<Self::Actions> {
-        crate::bindings! {
-            KeyCode::Up    => NavAction::Up,
-            KeyCode::Down  => NavAction::Down,
-            KeyCode::Left  => NavAction::Left,
-            KeyCode::Right => NavAction::Right,
-            KeyCode::Home  => NavAction::Home,
-            KeyCode::End   => NavAction::End,
-        }
-    }
-
-    fn dispatcher() -> fn(Self::Actions, FocusedPane<TestPaneId>, &mut TestApp) {
+    fn dispatcher() -> fn(NavAction, FocusedPane<TestPaneId>, &mut TestApp) {
         |_action, _focused, _ctx| { /* no-op */ }
     }
 }
@@ -465,9 +434,7 @@ fn vim_mode_appends_hjkl_to_navigation() {
         .register::<FooPane>(FooPane)
         .build()
         .expect("build must succeed");
-    let nav = keymap
-        .navigation::<AppNav>()
-        .expect("nav must be registered");
+    let nav = keymap.navigation().expect("nav must be registered");
     assert_eq!(nav.action_for(&KeyBind::from('h')), Some(NavAction::Left));
     assert_eq!(nav.action_for(&KeyBind::from('j')), Some(NavAction::Down));
     assert_eq!(nav.action_for(&KeyBind::from('k')), Some(NavAction::Up));
@@ -498,9 +465,7 @@ fn vim_navigation_chords_survive_toml_home_end_overrides() {
         .register::<FooPane>(FooPane)
         .build()
         .expect("build must succeed");
-    let nav = keymap
-        .navigation::<AppNav>()
-        .expect("nav must be registered");
+    let nav = keymap.navigation().expect("nav must be registered");
 
     assert_eq!(
         nav.action_for_sequence(&KeySequence::parse("g g").expect("parse chord")),
@@ -522,9 +487,7 @@ fn vim_mode_preserves_arrow_primaries_for_navigation() {
         .register::<FooPane>(FooPane)
         .build()
         .expect("build must succeed");
-    let nav = keymap
-        .navigation::<AppNav>()
-        .expect("nav must be registered");
+    let nav = keymap.navigation().expect("nav must be registered");
     assert_eq!(
         nav.key_for(NavAction::Up).and_then(KeySequence::single_key),
         Some(KeyBind::from(KeyCode::Up))
@@ -666,57 +629,6 @@ fn toml_unknown_scope_surfaces_at_build() {
         .build();
     assert!(matches!(result, Err(KeymapError::UnknownScope { .. })));
     let _ = std::fs::remove_file(&path);
-}
-
-#[test]
-fn vim_mode_treats_shift_letter_as_distinct_from_bare_letter() {
-    struct ShiftKNav;
-    impl Navigation<TestApp> for ShiftKNav {
-        type Actions = NavAction;
-
-        const DOWN: Self::Actions = NavAction::Down;
-        const END: Self::Actions = NavAction::End;
-        const HOME: Self::Actions = NavAction::Home;
-        const LEFT: Self::Actions = NavAction::Left;
-        const RIGHT: Self::Actions = NavAction::Right;
-        const UP: Self::Actions = NavAction::Up;
-
-        fn defaults() -> Bindings<Self::Actions> {
-            crate::bindings! {
-                KeyCode::Up    => NavAction::Up,
-                KeyCode::Down  => NavAction::Down,
-                KeyCode::Left  => NavAction::Left,
-                KeyCode::Right => NavAction::Right,
-                KeyCode::Home  => NavAction::Home,
-                KeyCode::End   => NavAction::End,
-                KeyBind::shift('K') => NavAction::Right,
-            }
-        }
-
-        fn dispatcher() -> fn(Self::Actions, FocusedPane<TestPaneId>, &mut TestApp) {
-            |_action, _focused, _ctx| { /* no-op */ }
-        }
-    }
-
-    let keymap = Keymap::<TestApp>::builder()
-        .vim_mode(VimMode::Enabled)
-        .register_navigation::<ShiftKNav>()
-        .expect("nav register must succeed")
-        .register_globals::<AppGlobals>()
-        .expect("globals register must succeed")
-        .register::<FooPane>(FooPane)
-        .build()
-        .expect("build must succeed");
-
-    let nav = keymap
-        .navigation::<ShiftKNav>()
-        .expect("nav must be registered");
-    assert_eq!(nav.action_for(&KeyBind::from('k')), Some(NavAction::Up));
-    assert_eq!(
-        nav.action_for(&KeyBind::shift('K')),
-        Some(NavAction::Right),
-        "Shift+K still binds the original action — vim's bare k is distinct on (code, mods)",
-    );
 }
 
 #[test]

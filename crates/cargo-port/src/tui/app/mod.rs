@@ -171,6 +171,7 @@ use super::panes::CpuPane;
 use super::panes::GitPane;
 use super::panes::LangPane;
 use super::panes::OutputPane;
+use super::panes::OutputSelection;
 use super::panes::PackagePane;
 use super::panes::PaneBehavior;
 use super::panes::ProjectListPane;
@@ -511,6 +512,22 @@ impl App {
         B: ClipboardBackend,
     {
         let outcome = self.framework.copy_selection(self, backend);
+        // A deliberate output-pane yank reports the line count and resets
+        // the pane back to following the tail. The generic CopyOutcome
+        // only carries the label, so the count is read here.
+        if matches!(outcome, CopyOutcome::Copied { .. })
+            && self.focus_is(PaneId::Output)
+            && matches!(
+                self.panes.output.selection(),
+                OutputSelection::Active { .. }
+            )
+        {
+            let count = self.panes.output.selection_line_count();
+            self.panes.output.clear_selection();
+            let lines = if count == 1 { "line" } else { "lines" };
+            self.show_timed_toast("Copy", format!("Copied {count} {lines}"));
+            return;
+        }
         self.show_copy_outcome(outcome);
     }
 
@@ -826,6 +843,7 @@ impl App {
         let was_empty = self.inflight.example_output_is_empty();
         self.inflight.set_example_output(output);
         if was_empty && !self.inflight.example_output_is_empty() {
+            self.panes.output.reset_for_open();
             self.set_focus_to_pane(PaneId::Output);
         }
     }
@@ -936,6 +954,24 @@ impl App {
     }
 
     pub(super) fn focus_is(&self, pane: PaneId) -> bool { self.focused_pane_id() == pane }
+
+    /// Keep focus off whichever bottom-row pane the layout currently
+    /// hides. The bottom row shows the full-width Output pane while
+    /// example output is present and the Lints/CiRuns diagnostics panes
+    /// otherwise — the two layouts are never on screen together. Focus
+    /// is tracked separately from that choice, so a stale focus can
+    /// point at the hidden pane (e.g. starting a second run while the
+    /// previous run's buffer is still shown leaves focus on `CiRuns`).
+    /// Redirect focus to the visible counterpart so the status bar and
+    /// key dispatch match what the user sees.
+    pub(super) fn reconcile_bottom_row_focus(&mut self) {
+        let output_active = !self.inflight.example_output_is_empty();
+        match (output_active, self.focused_pane_id()) {
+            (true, PaneId::Lints | PaneId::CiRuns) => self.set_focus_to_pane(PaneId::Output),
+            (false, PaneId::Output) => self.set_focus_to_pane(PaneId::Targets),
+            _ => {},
+        }
+    }
 
     pub(super) fn base_focus(&self) -> PaneId {
         if self.overlays.is_finder_open() && self.focus_is(PaneId::Finder) {

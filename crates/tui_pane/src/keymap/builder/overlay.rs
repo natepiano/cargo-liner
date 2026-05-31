@@ -29,18 +29,25 @@ pub(super) fn apply_toml_overlay<A>(
 where
     A: Action,
 {
-    apply_toml_overlay_with_peer(scope_name, defaults, table, None, unknown)
+    apply_toml_overlay_with_peer(scope_name, defaults, table, None, unknown, false)
 }
 
 /// Same as [`apply_toml_overlay`], but unknown actions present in
 /// `peer_action_keys` are treated as belonging to another enum that
 /// shares the same TOML table. Used for the split `[global]` table.
+///
+/// `never_unbind` controls the empty-value case: when `true` (the
+/// navigation scope), an empty TOML value (e.g. a stale `home = ""`)
+/// keeps the compiled default instead of clearing it, so a navigation
+/// action can never end up with no key. When `false` (pane / global
+/// scopes), an empty value clears the action's binding as before.
 pub(super) fn apply_toml_overlay_with_peer<A>(
     scope_name: &str,
     mut defaults: Bindings<A>,
     table: Option<&Table>,
     peer_action_keys: Option<&HashSet<&'static str>>,
     mut unknown: Option<&mut Vec<String>>,
+    never_unbind: bool,
 ) -> Result<Bindings<A>, KeymapError>
 where
     A: Action,
@@ -72,6 +79,13 @@ where
             });
         };
         let keys = parse_toml_value(scope_name, action_key, value)?;
+        if never_unbind && keys.is_empty() {
+            // A stale `home = ""` (or any empty navigation value) keeps
+            // the compiled default rather than unbinding the action. No
+            // warning: the entry names a real action, it just resolves
+            // to "leave the default in place."
+            continue;
+        }
         check_in_array_duplicates(scope_name, action_key, &keys)?;
         defaults.override_action(&action, keys);
     }

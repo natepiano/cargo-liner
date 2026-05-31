@@ -94,6 +94,7 @@ pub(super) use pane_data::build_target_list_from_data;
 pub(super) use pane_data::copy_payload_for_ci;
 pub(super) use pane_data::copy_payload_for_git;
 pub(super) use pane_data::copy_payload_for_lints;
+pub(super) use pane_data::copy_payload_for_output;
 pub(super) use pane_data::copy_payload_for_package;
 pub(super) use pane_data::copy_payload_for_targets;
 pub(super) use pane_data::crates_io_value_is_unreachable_placeholder;
@@ -119,6 +120,7 @@ pub(super) use pane_impls::CpuPane;
 pub(super) use pane_impls::GitPane;
 pub(super) use pane_impls::LangPane;
 pub(super) use pane_impls::OutputPane;
+pub(super) use pane_impls::OutputSelection;
 pub(super) use pane_impls::PackagePane;
 pub(super) use pane_impls::ProjectListPane;
 pub(super) use pane_impls::TargetsPane;
@@ -139,7 +141,7 @@ pub(super) use widths::name_width_with_gutter;
 
 use super::app::App;
 use super::integration::AppPaneId;
-use super::integration::NavigationAction;
+use super::integration::NavAction;
 use super::keymap::CiRunsAction;
 use super::keymap::GitAction;
 use super::keymap::LintsAction;
@@ -174,14 +176,14 @@ pub(super) fn dispatch_ci_runs_action(action: CiRunsAction, app: &mut App) {
 }
 
 pub(super) fn dispatch_navigation_action(
-    action: NavigationAction,
+    action: NavAction,
     focused: FocusedPane<AppPaneId>,
     app: &mut App,
 ) {
     actions::dispatch_navigation_action(action, focused, app);
 }
 
-pub(super) fn navigate_package_detail(app: &mut App, action: NavigationAction) {
+pub(super) fn navigate_package_detail(app: &mut App, action: NavAction) {
     actions::navigate_package_detail(app, action);
 }
 

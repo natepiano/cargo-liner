@@ -1360,6 +1360,49 @@ pub fn copy_payload_for_ci(data: &CiData, pos: usize) -> CopySelectionResult {
     copy_payload(&run.url, CopyLabel::Url)
 }
 
+/// Join the snapshot rows in the inclusive `[min(anchor, cursor),
+/// max(anchor, cursor)]` range, ANSI-stripped, into a clipboard payload.
+/// `anchor` and `cursor` are clamped to the snapshot bounds. Returns
+/// `Nothing` for an empty snapshot or an all-blank range.
+pub fn copy_payload_for_output(
+    snapshot: &[String],
+    anchor: usize,
+    cursor: usize,
+) -> CopySelectionResult {
+    let Some(last) = snapshot.len().checked_sub(1) else {
+        return CopySelectionResult::Nothing;
+    };
+    let lo = anchor.min(cursor).min(last);
+    let hi = anchor.max(cursor).min(last);
+    let text = snapshot[lo..=hi]
+        .iter()
+        .map(|line| strip_ansi(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    copy_payload(text, CopyLabel::Row)
+}
+
+/// Strip ANSI escape sequences from `raw`, leaving only the printable
+/// text. Reuses the same parser the output renderer feeds, so the copied
+/// text matches what is on screen.
+fn strip_ansi(raw: &str) -> String {
+    ansi_to_tui::IntoText::into_text(&raw.to_owned()).map_or_else(
+        |_| raw.to_string(),
+        |text| {
+            text.lines
+                .iter()
+                .map(|line| {
+                    line.spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        },
+    )
+}
+
 pub fn copy_payload_for_targets(data: &TargetsData, pos: usize) -> CopySelectionResult {
     let entries = build_target_list_from_data(data);
     let Some(entry) = entries.get(pos) else {
