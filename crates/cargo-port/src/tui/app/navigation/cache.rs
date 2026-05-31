@@ -46,7 +46,7 @@ impl App {
         }
         let started = std::time::Instant::now();
         let pane_started = std::time::Instant::now();
-        let pane = desired.and_then(|key| self.build_selected_pane_data().map(|data| (key, data)));
+        let pane = desired.zip(self.build_selected_pane_data());
         let pane_ms = tui_pane::perf_log_ms(pane_started.elapsed().as_millis());
         if let Some((key, data)) = pane {
             let ci_started = std::time::Instant::now();
