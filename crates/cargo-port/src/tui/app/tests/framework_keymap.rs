@@ -464,11 +464,12 @@ fn focused_project_list_bar_renders_pane_action_and_nav_slots() {
 // ── Output (Mode::Navigable) ──────────────────────────────────────
 
 #[test]
-fn focused_output_bar_renders_select_and_close_labels() {
+fn focused_output_bar_renders_select_all_and_close_labels() {
     // OutputPane is Navigable: the Nav region shows (the cursor scrolls
     // the buffer) alongside PaneAction, which carries the
-    // OutputAction::SelectLinewise label "select" and the Cancel label
-    // "close".
+    // OutputAction::SelectAll label "select all" and the Cancel label
+    // "close". The vim visual-line toggle (`V`) is a built-in, not a
+    // rebindable action, so it has no bar slot.
     let project = super::make_project(Some("demo"), "~/demo");
     let mut app = make_app(&[project]);
     focus_app_pane_in_framework(&mut app, AppPaneId::Output);
@@ -489,12 +490,60 @@ fn focused_output_bar_renders_select_and_close_labels() {
         "Output bar must show the Cancel label \"close\" (got {pane_action:?})",
     );
     assert!(
-        pane_action.contains("select"),
-        "Output bar must show the SelectLinewise label \"select\" (got {pane_action:?})",
+        pane_action.contains("select all"),
+        "Output bar must show the SelectAll label \"select all\" (got {pane_action:?})",
     );
     assert!(
         !nav.is_empty(),
         "Navigable Output must surface the Nav region (got {nav:?})",
+    );
+}
+
+#[test]
+fn output_cancel_label_tracks_state() {
+    fn output_pane_action(app: &App) -> String {
+        let palette = BarPalette::default();
+        let bar = render_status_bar(
+            &FocusedPane::App(AppPaneId::Output),
+            app,
+            &app.framework_keymap,
+            app.framework(),
+            &palette,
+        );
+        flatten(&bar.pane_action)
+    }
+
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+    // Stream output and render so the output pane is laid out and its
+    // action bar populates, then focus it.
+    app.inflight
+        .set_example_output(vec!["line one".to_string()]);
+    let _ = buffer_text_sized(&mut app, 120, 40);
+    focus_app_pane_in_framework(&mut app, AppPaneId::Output);
+
+    // Idle (no run): Esc closes the pane.
+    let idle = output_pane_action(&app);
+    assert!(
+        idle.contains("close"),
+        "idle cancel label is close (got {idle:?})"
+    );
+
+    // A run is streaming: Esc stops it.
+    app.inflight.set_example_running(Some("demo".to_string()));
+    let running = output_pane_action(&app);
+    assert!(
+        running.contains("stop") && !running.contains("close"),
+        "running cancel label is stop (got {running:?})",
+    );
+
+    // There is no separate selection state, so the cancel label only ever
+    // tracks run-vs-idle: stop while a run streams, close otherwise.
+    app.inflight.set_example_running(None);
+    let idle_again = output_pane_action(&app);
+    assert!(
+        idle_again.contains("close"),
+        "with no run the cancel label returns to close (got {idle_again:?})",
     );
 }
 
@@ -625,17 +674,19 @@ fn focused_package_status_line_collapses_globals_to_shortcuts_help() {
 
 // ── Base-pane navigation routed through framework keymap ──────────
 
-/// Rebinding `NavAction::Down` to `'j'` (vim-off) moves the
-/// project-list cursor when `'j'` is dispatched through the real
-/// `src/tui/input.rs` key path. Validates that `handle_normal_key`
-/// consults the framework keymap's navigation scope after the legacy
-/// pane-scope match.
+/// `Ctrl-f` / `Ctrl-b` page the project list when vim mode is on. They
+/// are vim-only motions (not keymappable), so the test enables
+/// `ArrowsAndVim`; with vim off these keys do nothing. Validates that
+/// `handle_normal_key` consults the framework keymap's navigation scope
+/// after the legacy pane-scope match.
 #[test]
 fn ctrl_b_and_ctrl_f_page_the_project_list() {
     let projects: Vec<_> = (0..40)
         .map(|i| super::make_project(Some("p"), &format!("~/p{i}")))
         .collect();
-    let mut app = make_app_with_keymap_toml(&projects, "");
+    let mut cfg = CargoPortConfig::default();
+    cfg.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
+    let mut app = make_app_with_config_and_keymap_toml(&projects, &cfg, "");
     let _ = buffer_text_sized(&mut app, 120, 30);
     assert_eq!(app.project_list.cursor(), 0);
 
@@ -703,20 +754,25 @@ fn empty_navigation_entry_keeps_the_compiled_default() {
     );
 }
 
-/// Reloading the bindings the TOML writer emits (page keys as a
-/// `["pageup", "ctrl-b"]` array, half-page as `ctrl-u` / `ctrl-d`) must
-/// round-trip: every key still resolves to its action and the extra
-/// Ctrl aliases do not trip the cross-action collision check at build.
+/// Reloading exactly what the TOML writer emits — named page keys and
+/// empty half-page entries — with vim mode on must layer the vim Ctrl
+/// motions back on without tripping the build-time cross-action
+/// collision check. The page keys keep their named default; `Ctrl-b/f`
+/// and `Ctrl-u/d` arrive only as vim extras; empty half-page entries
+/// keep the (empty) compiled default rather than erroring.
 #[test]
 fn generated_navigation_defaults_round_trip_without_collision() {
     let projects = vec![super::make_project(Some("alpha"), "~/alpha")];
-    let app = make_app_with_keymap_toml(
+    let mut cfg = CargoPortConfig::default();
+    cfg.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
+    let app = make_app_with_config_and_keymap_toml(
         &projects,
+        &cfg,
         "[navigation]\n\
-         page_up = [\"pageup\", \"ctrl-b\"]\n\
-         page_down = [\"pagedown\", \"ctrl-f\"]\n\
-         half_page_up = \"ctrl-u\"\n\
-         half_page_down = \"ctrl-d\"\n",
+         page_up = \"pageup\"\n\
+         page_down = \"pagedown\"\n\
+         half_page_up = \"\"\n\
+         half_page_down = \"\"\n",
     );
 
     let nav = app

@@ -120,7 +120,6 @@ pub(super) use pane_impls::CpuPane;
 pub(super) use pane_impls::GitPane;
 pub(super) use pane_impls::LangPane;
 pub(super) use pane_impls::OutputPane;
-pub(super) use pane_impls::OutputSelection;
 pub(super) use pane_impls::PackagePane;
 pub(super) use pane_impls::ProjectListPane;
 pub(super) use pane_impls::TargetsPane;

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use crate::lint;
@@ -42,6 +43,21 @@ impl App {
         self.register_existing_projects();
         self.finish_watcher_registration_batch();
     }
+    /// Every Rust leaf project's path — the set whose lint history is read
+    /// from disk at startup. Drives both the off-thread load in
+    /// [`Self::refresh_lint_runs_from_disk`] and the startup panel's "Lint
+    /// history" row, so the row's denominator is identical to the set the
+    /// load reports back and the row always completes.
+    pub(super) fn lint_history_project_paths(&self) -> HashSet<AbsolutePath> {
+        let mut paths = HashSet::new();
+        self.project_list.for_each_leaf_path(|path, is_rust| {
+            if is_rust {
+                paths.insert(AbsolutePath::from(path.to_path_buf()));
+            }
+        });
+        paths
+    }
+
     /// Load every Rust project's lint history off the main thread. Reading
     /// and JSON-parsing one history file per project synchronously freezes
     /// the first content paint for over a second on a large tree, so the
@@ -49,12 +65,7 @@ impl App {
     /// [`BackgroundMsg::LintHistoryLoaded`], applied by
     /// [`Self::apply_lint_history_loaded`].
     pub fn refresh_lint_runs_from_disk(&self) {
-        let mut paths = Vec::new();
-        self.project_list.for_each_leaf_path(|path, is_rust| {
-            if is_rust {
-                paths.push(AbsolutePath::from(path.to_path_buf()));
-            }
-        });
+        let paths: Vec<AbsolutePath> = self.lint_history_project_paths().into_iter().collect();
         let tx = self.background.background_sender();
         let handle = self.net.http_client().handle;
         handle.spawn(async move {
@@ -74,15 +85,18 @@ impl App {
         self.refresh_lint_cache_usage_from_disk();
     }
     /// Apply lint history read off the main thread by
-    /// [`Self::refresh_lint_runs_from_disk`], then invalidate the detail
-    /// cache so the selected project's lint runs render.
+    /// [`Self::refresh_lint_runs_from_disk`], mark the startup "Lint history"
+    /// row's projects as loaded, then invalidate the detail cache so the
+    /// selected project's lint runs render.
     pub(super) fn apply_lint_history_loaded(&mut self, entries: Vec<(AbsolutePath, Vec<LintRun>)>) {
         for (path, runs) in entries {
             if let Some(lr) = self.project_list.lint_at_path_mut(path.as_path()) {
                 lr.set_runs(runs);
             }
+            self.startup.lint_phase.seen.insert(path);
         }
         self.scan.bump_generation();
+        self.maybe_log_startup_phase_completions();
     }
     pub(super) fn reload_lint_history(&mut self, project_path: &Path) {
         if !self.project_list.is_rust_at_path(project_path) {

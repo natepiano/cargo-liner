@@ -48,7 +48,6 @@ use super::keymap::OutputAction;
 use super::keymap::ProjectListAction;
 use super::keymap_ui;
 use super::panes;
-use super::panes::OutputSelection;
 use super::panes::PaneBehavior;
 use super::panes::PaneId;
 use super::sccache;
@@ -99,7 +98,26 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
     let normalized = normalize_nav(app, raw);
     let code = raw.code;
 
-    // Structural keys checked by code only (modifiers irrelevant).
+    let bind = key_bind_from_event(raw);
+    let is_output_cancel = !focused_text_input_mode(app)
+        && app.framework_keymap.is_key_bound_to_toml_key(
+            OutputPane::APP_PANE_ID,
+            OutputAction::Cancel.toml_key(),
+            &bind,
+        );
+    // Esc first leaves vim visual-line mode (collapsing back to the
+    // single cursor row) without killing a streaming run; then it stops a
+    // running process; then it closes the pane. There is no deselect step
+    // — the cursor row is always a one-line selection.
+    if is_output_cancel && app.focus_is(PaneId::Output) && app.panes.output.selection().is_visual()
+    {
+        app.pending_nav_chord.clear();
+        app.panes.output.exit_visual();
+        return;
+    }
+    // Stop a running example. Checked by raw code (modifiers irrelevant)
+    // so any focus can stop it; only reached once no selection consumed
+    // the key above.
     if code == KeyCode::Esc && app.inflight.example_running().is_some() {
         let pid_holder = app.inflight.example_child();
         let pid = *pid_holder
@@ -110,29 +128,8 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
                 .arg(pid.to_string())
                 .output();
         }
-        app.inflight.set_example_running(None);
-        app.inflight
-            .example_output_mut()
-            .push("── killed ──".to_string());
+        app.inflight.mark_run_killed();
         app.scan.mark_terminal_dirty();
-        return;
-    }
-    let bind = key_bind_from_event(raw);
-    let is_output_cancel = !focused_text_input_mode(app)
-        && app.framework_keymap.is_key_bound_to_toml_key(
-            OutputPane::APP_PANE_ID,
-            OutputAction::Cancel.toml_key(),
-            &bind,
-        );
-    // Status-aware cancel: while a linewise selection is active in the
-    // focused output pane, the cancel key clears the selection and
-    // resumes following the tail instead of closing the pane.
-    if is_output_cancel
-        && app.focus_is(PaneId::Output)
-        && matches!(app.panes.output.selection(), OutputSelection::Active { .. })
-    {
-        app.pending_nav_chord.clear();
-        app.panes.output.clear_selection();
         return;
     }
     if is_output_cancel && !app.inflight.example_output().is_empty() {
@@ -180,7 +177,52 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
         app.pending_nav_chord.clear();
         return;
     }
+    if app.focus_is(PaneId::Output)
+        && !focused_text_input_mode(app)
+        && dispatch_output_selection_gesture(app, raw)
+    {
+        app.pending_nav_chord.clear();
+        return;
+    }
     let _ = dispatch_navigation(app, focused, &bind);
+}
+
+/// Output-pane selection gestures, built in and not rebindable:
+///   V (vim mode only)                toggle vim visual-line mode
+///   Shift+Up / Shift+Down            extend the range one row
+///   Ctrl+Shift+Up / Ctrl+Shift+Down  extend the range to top / bottom
+///
+/// The cursor row is always a one-line selection, so these grow it from
+/// the anchor rather than entering a mode. `V` is the vim affordance:
+/// with vim keys off it does nothing. Returns whether the key was
+/// consumed. Caller guards on Output focus and non-text-input mode.
+fn dispatch_output_selection_gesture(app: &mut App, raw: &KeyEvent) -> bool {
+    let code = raw.code;
+    if app.config.navigation_keys().uses_vim()
+        && code == KeyCode::Char('V')
+        && !raw.modifiers.contains(KeyModifiers::CONTROL)
+        && !raw.modifiers.contains(KeyModifiers::ALT)
+    {
+        let live = app.inflight.example_output().to_vec();
+        app.panes.output.toggle_visual(&live);
+        return true;
+    }
+    let ctrl_shift = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+    let to_edge = raw.modifiers == ctrl_shift;
+    let one_row = raw.modifiers == KeyModifiers::SHIFT;
+    if (one_row || to_edge) && matches!(code, KeyCode::Up | KeyCode::Down) {
+        let live = app.inflight.example_output().to_vec();
+        let output = &mut app.panes.output;
+        match (to_edge, code) {
+            (false, KeyCode::Up) => output.select_extend_up(&live),
+            (false, KeyCode::Down) => output.select_extend_down(&live),
+            (true, KeyCode::Up) => output.select_extend_to_top(&live),
+            (true, _) => output.select_extend_to_bottom(&live),
+            (false, _) => {},
+        }
+        return true;
+    }
+    false
 }
 
 fn key_bind_from_event(event: &KeyEvent) -> KeyBind {
@@ -641,9 +683,9 @@ pub(super) fn dispatch_project_list_action(action: ProjectListAction, app: &mut 
 
 pub(super) fn dispatch_output_action(action: OutputAction, app: &mut App) {
     match action {
-        OutputAction::SelectLinewise => {
+        OutputAction::SelectAll => {
             let live = app.inflight.example_output().to_vec();
-            app.panes.output.toggle_select(&live);
+            app.panes.output.select_all(&live);
         },
         OutputAction::Cancel => {
             if !app.inflight.example_output().is_empty() {

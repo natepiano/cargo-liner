@@ -76,6 +76,7 @@ impl HitTestRegistry for App {
             HittableId::Targets => &self.panes.targets,
             HittableId::Lints => &self.lint,
             HittableId::CiRuns => &self.ci,
+            HittableId::Output => &self.panes.output,
         })
     }
 
@@ -89,6 +90,7 @@ impl HitTestRegistry for App {
             HittableId::Targets => &mut self.panes.targets.viewport,
             HittableId::Lints => &mut self.lint.viewport,
             HittableId::CiRuns => &mut self.ci.viewport,
+            HittableId::Output => &mut self.panes.output.viewport,
         })
     }
 }

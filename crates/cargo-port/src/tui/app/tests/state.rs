@@ -623,48 +623,37 @@ fn ci_toggle_switches_non_default_branch_between_branch_only_and_all_runs() {
 }
 
 #[test]
-fn startup_lint_expectation_tracks_running_startup_lints() {
+fn startup_lint_history_completes_when_loaded_from_disk() {
     let project_a = make_project(Some("a"), "~/a");
     let project_b = make_project(Some("b"), "~/b");
-    let mut app = make_app(&[project_a.clone(), project_b]);
+    let mut app = make_app(&[project_a.clone(), project_b.clone()]);
     app.scan.state.phase = ScanPhase::Complete;
 
     app.initialize_startup_phase_tracker();
 
-    // Lint starts omitted (Unknown) — the row stays hidden until a real
-    // lint run is queued.
-    assert!(app.startup.lint_phase.expected.is_unknown());
-    assert!(app.lint.running_toast_id().is_none());
-
-    app.handle_bg_msg(BackgroundMsg::LintStatus {
-        path:   project_a.path().to_path_buf().into(),
-        status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
-    });
-
+    // The "Lint history" row is seeded with every Rust project whose history
+    // will be read from disk — it tracks the load, never live lint runs.
     let expected = app
         .startup
         .lint_phase
         .expected
         .keys()
         .expect("lint expected");
-    assert_eq!(expected.len(), 1);
+    assert_eq!(expected.len(), 2);
     assert!(expected.contains(project_a.path().as_path()));
-    assert!(
-        !app.startup
-            .lint_phase
-            .seen
-            .contains(project_a.path().as_path())
-    );
-    assert!(app.lint.running_toast_contains_path(project_a.path()));
-    assert!(app.lint.running_toast_id().is_some());
+    assert!(expected.contains(project_b.path().as_path()));
+    assert!(app.startup.lint_phase.complete_at.is_none());
 
-    app.handle_bg_msg(BackgroundMsg::LintStatus {
-        path:   project_a.path().to_path_buf().into(),
-        status: LintStatus::Passed(parse_ts("2026-03-30T14:23:18-05:00")),
+    // The single off-thread history-load batch marks every project seen and
+    // completes the row.
+    app.handle_bg_msg(BackgroundMsg::LintHistoryLoaded {
+        entries: vec![
+            (project_a.path().to_path_buf().into(), Vec::new()),
+            (project_b.path().to_path_buf().into(), Vec::new()),
+        ],
     });
 
     assert!(app.startup.lint_phase.complete_at.is_some());
-    assert!(app.lint.running_toast_is_empty());
     app.prune_toasts();
 }
 
@@ -2493,6 +2482,7 @@ fn startup_ready_waits_on_metadata_phase() {
     app.startup.repo.expected = Denominator::Stable(HashSet::new());
     app.startup.languages.expected = Denominator::Stable(HashSet::new());
     app.startup.tests.expected = Denominator::Stable(HashSet::new());
+    app.startup.lint_phase.expected = Denominator::Stable(HashSet::new());
     app.maybe_complete_startup_disk(now, scan_started);
     app.maybe_complete_startup_git(now, scan_started);
     app.maybe_complete_startup_repo(now, scan_started);
@@ -2610,6 +2600,7 @@ fn startup_crates_io_row_gates_until_fetches_complete() {
     app.startup.metadata.expected = Denominator::Stable(HashSet::new());
     app.startup.languages.expected = Denominator::Stable(HashSet::new());
     app.startup.tests.expected = Denominator::Stable(HashSet::new());
+    app.startup.lint_phase.expected = Denominator::Stable(HashSet::new());
     app.startup.crates_io.expected = Denominator::Stable(HashSet::from(["serde".to_string()]));
     app.startup.crates_io.stamp_first_seen(now);
     app.maybe_log_startup_phase_completions();

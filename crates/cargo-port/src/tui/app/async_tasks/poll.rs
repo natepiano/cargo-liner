@@ -142,9 +142,7 @@ impl App {
     }
     pub(super) fn finish_example_run(&mut self) {
         self.inflight.set_example_running(None);
-        self.inflight
-            .example_output_mut()
-            .push("── done ──".to_string());
+        self.inflight.append_done_marker();
         // Process exit resumes following the tail so the final output is
         // visible — unless a selection is holding the view.
         self.panes.output.on_process_exit();

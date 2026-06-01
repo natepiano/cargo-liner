@@ -14,12 +14,10 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
-use tui_pane::active_focus_color;
 use tui_pane::finder_match_bg;
 use tui_pane::label_color;
 
 use super::pane_impls::OutputPane;
-use super::pane_impls::OutputSelection;
 use crate::tui::pane::PaneRenderCtx;
 
 pub fn render_output_pane_body(
@@ -28,15 +26,13 @@ pub fn render_output_pane_body(
     pane: &mut OutputPane,
     ctx: &PaneRenderCtx<'_>,
 ) {
-    // While a selection is active, render and yank read the frozen
-    // snapshot so streaming output can't drift the highlighted range;
-    // otherwise render the live buffer. Cloning the `Rc` only bumps the
-    // refcount and releases the `&pane` borrow before `sync_viewport`.
+    // Render and yank read the frozen snapshot once the selection is
+    // pinned off the tail, so streaming output can't drift the range;
+    // while following the tail they read the live buffer. Cloning the
+    // `Rc` only bumps the refcount and releases the `&pane` borrow before
+    // `sync_viewport`.
     let live = ctx.inflight.example_output();
-    let snapshot: Option<Rc<[String]>> = match pane.selection() {
-        OutputSelection::Active { snapshot, .. } => Some(Rc::clone(snapshot)),
-        OutputSelection::Inactive => None,
-    };
+    let snapshot: Option<Rc<[String]>> = pane.selection().snapshot().map(Rc::clone);
     let source: &[String] = snapshot.as_deref().unwrap_or(live);
 
     let visible_rows = usize::from(area.height.saturating_sub(2));
@@ -49,8 +45,7 @@ pub fn render_output_pane_body(
     pane.sync_viewport(source.len(), visible_rows, inner);
 
     let scroll_offset = u16::try_from(pane.viewport.scroll_offset()).unwrap_or(u16::MAX);
-    let cursor = pane.viewport.pos();
-    let selected_range = pane.selected_range();
+    let selected_range = pane.selected_range(source);
     let focused = pane.focus.is_focused;
     let inner_width = usize::from(inner.width);
 
@@ -58,10 +53,10 @@ pub fn render_output_pane_body(
         .with_inactive_border(Style::default().fg(label_color()))
         .block(output_title(pane, ctx), focused);
 
-    // The selected range takes the finder match background; the bare
-    // cursor row (focused, not yet selecting) takes the same active-row
-    // background every other pane uses, so navigating before pressing
-    // `V` has a visible affordance and the two states read distinctly.
+    // There is always a selection — at minimum the single cursor row — so
+    // it is drawn in one color (the selection background). A single
+    // highlighted row is just a one-line selection; an extended range is
+    // the same color, wider.
     let lines: Vec<Line> = source
         .iter()
         .enumerate()
@@ -69,8 +64,6 @@ pub fn render_output_pane_body(
             let parsed = parse_output_line(raw);
             if selected_range.is_some_and(|(lo, hi)| row >= lo && row <= hi) {
                 fill_row(parsed, inner_width, finder_match_bg())
-            } else if focused && selected_range.is_none() && row == cursor {
-                fill_row(parsed, inner_width, active_focus_color())
             } else {
                 parsed
             }
@@ -122,26 +115,38 @@ fn parse_output_line(raw: &str) -> Line<'static> {
     )
 }
 
-/// Title with a follow / frozen / selecting indicator so the user can
-/// tell whether the view is pinned to the streaming tail.
+/// Title with a follow / selection indicator so the user can tell
+/// whether the view is pinned to the streaming tail and how many lines
+/// are selected. There is always a selection; the title only calls it
+/// out once it is more than the single tail line being followed.
 fn output_title(pane: &OutputPane, ctx: &PaneRenderCtx<'_>) -> String {
-    if let Some(name) = ctx.inflight.example_running() {
-        return format!(" Running: {name} ");
-    }
+    let live = ctx.inflight.example_output();
+    let count = pane.selection_line_count(live);
+    let lines = if count == 1 { "line" } else { "lines" };
     let focused = pane.focus.is_focused;
-    match pane.selection() {
-        OutputSelection::Active { .. } => {
-            let count = pane.selection_line_count();
-            let lines = if count == 1 { "line" } else { "lines" };
-            format!(" Output — {count} {lines} selected (y copy · Esc cancel) ")
-        },
-        OutputSelection::Inactive if pane.is_following() && focused => {
-            " Output (V select · Esc close) ".to_string()
-        },
-        OutputSelection::Inactive if pane.is_following() => " Output (Esc to close) ".to_string(),
-        OutputSelection::Inactive if focused => {
-            " Output — scrolled (V select · End follow) ".to_string()
-        },
-        OutputSelection::Inactive => " Output — scrolled (End to follow) ".to_string(),
+
+    // Vim visual-line mode owns the title with the copy hint.
+    if pane.selection().is_visual() {
+        return format!(" Output — visual: {count} {lines} (y copy · Esc done) ");
+    }
+    // A multi-line selection (Shift+arrow / Ctrl-A) owns the title too.
+    if count > 1 {
+        return format!(" Output — {count} {lines} selected (y copy) ");
+    }
+    // A single-row selection: parked above the tail, or following it.
+    if !pane.is_following() {
+        return if focused {
+            " Output — scrolled (End follow · y copy) ".to_string()
+        } else {
+            " Output — scrolled (End to follow) ".to_string()
+        };
+    }
+    if let Some(name) = ctx.inflight.example_running() {
+        return format!(" Running: {name} (Esc to stop) ");
+    }
+    if focused {
+        " Output (y copy · Esc close) ".to_string()
+    } else {
+        " Output (Esc to close) ".to_string()
     }
 }

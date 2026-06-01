@@ -25,12 +25,12 @@ sccache_stats         = "S"
 [navigation]
 down           = "down"
 end            = "end"
-half_page_down = "ctrl-d"
-half_page_up   = "ctrl-u"
+half_page_down = ""
+half_page_up   = ""
 home           = "home"
 left           = "left"
-page_down      = ["pagedown", "ctrl-f"]
-page_up        = ["pageup", "ctrl-b"]
+page_down      = "pagedown"
+page_up        = "pageup"
 right          = "right"
 up             = "up"
 
@@ -63,8 +63,8 @@ show_all    = "a"
 show_branch = "b"
 
 [output]
-cancel          = "escape"
-select_linewise = "V"
+cancel     = "escape"
+select_all = "ctrl-a"
 
 [finder]
 activate = "enter"

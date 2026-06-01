@@ -146,6 +146,9 @@ impl KeyBind {
             KeyCode::Down => "↓",
             KeyCode::Left => "←",
             KeyCode::Right => "→",
+            // Compact "Esc" in the bar; the TOML form stays "escape"
+            // (via `display`), which the parser also round-trips.
+            KeyCode::Esc => "Esc",
             _ => return with_short_modifier_prefix(self.mods, &key_name(self.code)),
         };
         with_short_modifier_prefix(self.mods, key)
@@ -606,5 +609,14 @@ mod tests {
         assert_eq!(KeyBind::from(KeyCode::Right).display_short(), "→");
         assert_eq!(KeyBind::ctrl(KeyCode::Up).display_short(), "⌃↑");
         assert_eq!(KeyBind::ctrl('k').display_short(), "⌃k");
+    }
+
+    #[test]
+    fn display_short_abbreviates_escape_but_display_keeps_full_form() {
+        // The bar shows the compact "Esc"; the keymap TOML keeps the
+        // full "escape" form, which the parser also round-trips.
+        assert_eq!(KeyBind::from(KeyCode::Esc).display_short(), "Esc");
+        assert_eq!(KeyBind::from(KeyCode::Esc).display(), "escape");
+        assert_eq!(KeyBind::parse("Esc").unwrap(), KeyBind::from(KeyCode::Esc));
     }
 }

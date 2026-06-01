@@ -368,10 +368,11 @@ fn is_navigation_generated_vim_extra(action_key: &str, bind: &KeySequence) -> bo
         return action_key == "home"
             && bind.keys() == [FrameworkKeyBind::from('g'), FrameworkKeyBind::from('g')];
     };
-    // Only the vim letter aliases are generated extras stripped from the
-    // written TOML. The Ctrl-u/d/b/f bindings are unconditional compiled
-    // defaults (see `tui_pane::NavAction::default_keys`), so they are
-    // emitted like any other default key.
+    // Every vim navigation alias is generated and stripped from the
+    // written TOML — the letters (h/j/k/l/G) and the Ctrl page /
+    // half-page motions (Ctrl-b/f/u/d). None of these are keymappable;
+    // they exist only while vim mode is on (see
+    // `tui_pane::NavAction::vim_letter_extras`).
     matches!(
         (action_key, key.code, key.mods),
         ("left", KeyCode::Char('h'), KeyModifiers::NONE)
@@ -379,6 +380,10 @@ fn is_navigation_generated_vim_extra(action_key: &str, bind: &KeySequence) -> bo
             | ("up", KeyCode::Char('k'), KeyModifiers::NONE)
             | ("right", KeyCode::Char('l'), KeyModifiers::NONE)
             | ("end", KeyCode::Char('G'), KeyModifiers::NONE)
+            | ("page_up", KeyCode::Char('b'), KeyModifiers::CONTROL)
+            | ("page_down", KeyCode::Char('f'), KeyModifiers::CONTROL)
+            | ("half_page_up", KeyCode::Char('u'), KeyModifiers::CONTROL)
+            | ("half_page_down", KeyCode::Char('d'), KeyModifiers::CONTROL)
     )
 }
 

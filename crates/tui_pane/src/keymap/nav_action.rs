@@ -1,16 +1,20 @@
 //! `NavAction`: the framework-owned navigation action set.
 //!
 //! The framework owns the navigation vocabulary, its default keymap,
-//! and the vim letter aliases so that every embedding app inherits the
-//! same guarantees: every action has a compiled default key (an unbound
-//! navigation action is unrepresentable), and page / half-page motions
-//! are distinct variants that cannot collapse onto a single-line move.
+//! and the vim aliases so that every embedding app inherits the same
+//! guarantee: page / half-page motions are distinct variants that
+//! cannot collapse onto a single-line move.
 //!
-//! [`default_keys`] is an exhaustive `match` — adding a variant fails to
-//! compile until it is given a key. [`default_bindings`] folds those
-//! into a [`Bindings`] table, and [`vim_letter_extras`] supplies the
-//! `h`/`j`/`k`/`l`/`gg`/`G` aliases the builder layers on in
-//! [`VimMode::Enabled`](crate::VimMode).
+//! [`default_keys`] is the rebindable, vim-independent keymap (arrows,
+//! Home/End, PageUp/PageDown) — an exhaustive `match` so adding a
+//! variant forces a decision about its default. Half-page has no
+//! hardware key, so its arms return an empty slice: half-page is
+//! reachable only through vim. [`vim_letter_extras`] supplies every
+//! vim-only alias the builder layers on in
+//! [`VimMode::Enabled`](crate::VimMode): the `h`/`j`/`k`/`l`/`gg`/`G`
+//! letters plus the Ctrl page / half-page motions (`Ctrl-u`/`Ctrl-d`
+//! and `Ctrl-b`/`Ctrl-f`). Those Ctrl motions are not keymappable and
+//! turn off with vim mode.
 
 use crossterm::event::KeyCode;
 use crossterm::event::KeyModifiers;
@@ -53,11 +57,15 @@ crate::action_enum! {
     }
 }
 
-/// Compiled default key(s) for one navigation action. The first key is
-/// the action's primary binding (what the bar shows); later keys are
-/// aliases. Every arm returns a non-empty slice — the exhaustive `match`
-/// (no wildcard) forces a key when a variant is added, so an unbound
-/// navigation action cannot compile.
+/// Compiled, rebindable default key(s) for one navigation action. The
+/// first key is the action's primary binding (what the bar shows); these
+/// are the keys the TOML `[navigation]` overlay can rebind, and the only
+/// navigation keys active when vim mode is off.
+///
+/// The exhaustive `match` (no wildcard) forces a decision when a variant
+/// is added. Half-page has no hardware key, so its arms return an empty
+/// slice — half-page is reachable only through the vim Ctrl motions in
+/// [`vim_letter_extras`], never as a keymappable default.
 ///
 /// All defaults are single keystrokes, so `&[KeyBind]` suffices; the
 /// multi-key vim chord (`gg`) lives in [`vim_letter_extras`] as a
@@ -88,39 +96,22 @@ pub(super) const fn default_keys(action: NavAction) -> &'static [KeyBind] {
             code: KeyCode::End,
             mods: KeyModifiers::NONE,
         }],
-        NavAction::PageUp => &[
-            KeyBind {
-                code: KeyCode::PageUp,
-                mods: KeyModifiers::NONE,
-            },
-            KeyBind {
-                code: KeyCode::Char('b'),
-                mods: KeyModifiers::CONTROL,
-            },
-        ],
-        NavAction::PageDown => &[
-            KeyBind {
-                code: KeyCode::PageDown,
-                mods: KeyModifiers::NONE,
-            },
-            KeyBind {
-                code: KeyCode::Char('f'),
-                mods: KeyModifiers::CONTROL,
-            },
-        ],
-        NavAction::HalfPageUp => &[KeyBind {
-            code: KeyCode::Char('u'),
-            mods: KeyModifiers::CONTROL,
+        NavAction::PageUp => &[KeyBind {
+            code: KeyCode::PageUp,
+            mods: KeyModifiers::NONE,
         }],
-        NavAction::HalfPageDown => &[KeyBind {
-            code: KeyCode::Char('d'),
-            mods: KeyModifiers::CONTROL,
+        NavAction::PageDown => &[KeyBind {
+            code: KeyCode::PageDown,
+            mods: KeyModifiers::NONE,
         }],
+        NavAction::HalfPageUp | NavAction::HalfPageDown => &[],
     }
 }
 
 /// The full default navigation keymap: every [`NavAction::ALL`] entry
-/// bound to its [`default_keys`], primary key first.
+/// bound to its [`default_keys`], primary key first. Actions whose
+/// [`default_keys`] is empty (half-page) contribute no binding here —
+/// they enter the table only via [`vim_letter_extras`].
 pub(super) fn default_bindings() -> Bindings<NavAction> {
     let mut table = Bindings::new();
     for action in NavAction::ALL.iter().copied() {
@@ -131,12 +122,13 @@ pub(super) fn default_bindings() -> Bindings<NavAction> {
     table
 }
 
-/// Vim letter aliases layered on in [`VimMode::Enabled`](crate::VimMode):
-/// `h`/`j`/`k`/`l` for the arrows, the `gg` chord for Home, and `G` for
-/// End. The Ctrl-based page / half-page aliases are unconditional
-/// defaults (see [`default_keys`]), not vim extras, so half-page motions
-/// work with vim off too.
-pub(super) fn vim_letter_extras() -> [(KeySequence, NavAction); 6] {
+/// Vim aliases layered on in [`VimMode::Enabled`](crate::VimMode):
+/// `h`/`j`/`k`/`l` for the arrows, the `gg` chord for Home, `G` for End,
+/// and the Ctrl page / half-page motions `Ctrl-b`/`Ctrl-f` (full page)
+/// and `Ctrl-u`/`Ctrl-d` (half page). All of these are vim-only — they
+/// are not keymappable and disappear when vim mode is off. Half-page has
+/// no other binding, so it exists only while vim is enabled.
+pub(super) fn vim_letter_extras() -> [(KeySequence, NavAction); 10] {
     [
         (KeySequence::from('h'), NavAction::Left),
         (KeySequence::from('j'), NavAction::Down),
@@ -147,6 +139,13 @@ pub(super) fn vim_letter_extras() -> [(KeySequence, NavAction); 6] {
             NavAction::Home,
         ),
         (KeySequence::from('G'), NavAction::End),
+        (KeySequence::from(KeyBind::ctrl('b')), NavAction::PageUp),
+        (KeySequence::from(KeyBind::ctrl('f')), NavAction::PageDown),
+        (KeySequence::from(KeyBind::ctrl('u')), NavAction::HalfPageUp),
+        (
+            KeySequence::from(KeyBind::ctrl('d')),
+            NavAction::HalfPageDown,
+        ),
     ]
 }
 
@@ -162,32 +161,73 @@ mod tests {
 
     fn ctrl(c: char) -> KeyBind { KeyBind::ctrl(c) }
 
+    /// Every non-vim action carries a compiled default; half-page is the
+    /// sole exception — it has no hardware key and is vim-only.
     #[test]
-    fn every_action_has_a_default_key() {
+    fn only_half_page_has_no_compiled_default() {
+        for action in NavAction::ALL.iter().copied() {
+            let empty = default_keys(action).is_empty();
+            let is_half_page = matches!(action, NavAction::HalfPageUp | NavAction::HalfPageDown);
+            assert_eq!(
+                empty, is_half_page,
+                "{action:?}: empty default ({empty}) must match half-page status ({is_half_page})",
+            );
+        }
+    }
+
+    /// Defaults + vim extras together reach every action — nothing is
+    /// unreachable once vim mode is on.
+    #[test]
+    fn defaults_and_vim_extras_cover_every_action() {
+        let mut table = default_bindings();
+        for (key, action) in vim_letter_extras() {
+            table.bind(key, action);
+        }
+        let map = table.into_scope_map();
         for action in NavAction::ALL.iter().copied() {
             assert!(
-                !default_keys(action).is_empty(),
-                "{action:?} has no compiled default key",
+                map.key_for(action).is_some(),
+                "{action:?} is unreachable even with vim extras applied",
             );
         }
     }
 
     #[test]
-    fn default_bindings_bind_half_page_to_ctrl_u_and_d() {
-        let map = default_bindings().into_scope_map();
-        assert_eq!(map.action_for(&ctrl('u')), Some(NavAction::HalfPageUp));
-        assert_eq!(map.action_for(&ctrl('d')), Some(NavAction::HalfPageDown));
+    fn half_page_is_vim_only() {
+        assert!(default_keys(NavAction::HalfPageUp).is_empty());
+        assert!(default_keys(NavAction::HalfPageDown).is_empty());
+
+        let extras = vim_letter_extras();
+        let half_up = extras.contains(&(KeySequence::from(ctrl('u')), NavAction::HalfPageUp));
+        let half_down = extras.contains(&(KeySequence::from(ctrl('d')), NavAction::HalfPageDown));
+        assert!(half_up, "Ctrl-u must be the vim binding for half-page up");
+        assert!(
+            half_down,
+            "Ctrl-d must be the vim binding for half-page down"
+        );
     }
 
     #[test]
-    fn default_bindings_keep_arrow_keys_primary() {
+    fn page_keys_keep_named_default_and_ctrl_is_vim_only() {
         let map = default_bindings().into_scope_map();
+        // PageUp/PageDown keep their rebindable named-key default.
         assert_eq!(
             map.key_for(NavAction::PageUp)
                 .and_then(KeySequence::single_key),
             Some(KeyBind::from(KeyCode::PageUp)),
         );
-        assert_eq!(map.action_for(&ctrl('b')), Some(NavAction::PageUp));
-        assert_eq!(map.action_for(&ctrl('f')), Some(NavAction::PageDown));
+        assert_eq!(
+            map.key_for(NavAction::PageDown)
+                .and_then(KeySequence::single_key),
+            Some(KeyBind::from(KeyCode::PageDown)),
+        );
+        // Ctrl-b/Ctrl-f are not compiled defaults — they arrive only via
+        // the vim extras.
+        assert_eq!(map.action_for(&ctrl('b')), None);
+        assert_eq!(map.action_for(&ctrl('f')), None);
+
+        let extras = vim_letter_extras();
+        assert!(extras.contains(&(KeySequence::from(ctrl('b')), NavAction::PageUp)));
+        assert!(extras.contains(&(KeySequence::from(ctrl('f')), NavAction::PageDown)));
     }
 }

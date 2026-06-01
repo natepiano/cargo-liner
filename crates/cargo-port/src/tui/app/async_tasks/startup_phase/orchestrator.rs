@@ -40,12 +40,16 @@ pub struct Startup {
     /// error toast.
     pub metadata:  KeyedPhase<AbsolutePath>,
 
-    /// Tracks terminal lint events (`Passed` / `Failed`) keyed
-    /// on project path; `seen` counts only terminal arrivals.
+    /// Drives the "Lint history" startup row: keyed on each Rust project's
+    /// path, with `seen` marked when `BackgroundMsg::LintHistoryLoaded`
+    /// applies that project's history. Seeded with the full project set up
+    /// front, so the row always completes and never strands the panel on a
+    /// live lint run.
     pub lint_phase: KeyedPhase<AbsolutePath>,
-    /// Counts startup-time lint completions across the project tree.
-    /// Used by `Startup::maybe_complete_lints` to decide when the
-    /// startup-lint pass is done.
+    /// Counts the startup cached-lint-status load across the project tree
+    /// (internal cardinality, not a panel row). Used by
+    /// `App::maybe_complete_startup_lint_cache` to decide when the cached
+    /// statuses are all applied.
     pub lint_count: CountedPhase,
 
     /// Tokei language stats, keyed on project root; `seen` marked as each

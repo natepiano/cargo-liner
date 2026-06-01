@@ -37,36 +37,13 @@ impl Startup {
             "startup_phase_plan"
         );
     }
-    pub(super) fn maybe_complete_lints(&mut self, now: Instant, scan_complete_at: Instant) {
-        // Lint is only "complete" once real lint work has been registered —
-        // an initialized-empty expected set stays open. This diverges from
-        // the generic `PhaseCompletion::is_complete` semantics on purpose,
-        // so the check stays inline rather than going through the trait.
-        let lint = &self.lint_phase;
-        let should_complete = lint.complete_at.is_none()
-            && lint
-                .expected
-                .keys()
-                .is_some_and(|expected| !expected.is_empty() && lint.seen.len() >= expected.len());
-        if !should_complete {
-            return;
-        }
-        self.lint_phase.complete_at = Some(now);
-        tracing::info!(
-            phase = "lint_terminal_applied",
-            since_scan_complete_ms =
-                tui_pane::perf_log_ms(now.duration_since(scan_complete_at).as_millis()),
-            seen = self.lint_phase.seen.len(),
-            expected = self.lint_phase.expected_len(),
-            "startup_phase_complete"
-        );
-    }
-    /// The panel rows, in display order: disk, git, GitHub (repo), crates.io,
-    /// metadata, lint, languages, tests. Each phase contributes a row only
-    /// when it is not omitted (lint and crates.io are omitted until they have
-    /// work). The repo row renders `Waiting` until its denominator
-    /// stabilizes. The phases are keyed differently, so the array is over
-    /// `&dyn PhaseCompletion`.
+    /// The panel rows, sorted alphabetically by label (case-insensitive) for
+    /// display. The phase array below is in phase order — matching the gate
+    /// and timeout arrays — and the result is sorted before returning. Each
+    /// phase contributes a row only when it is not omitted (lint and crates.io
+    /// are omitted until they have work). The repo row renders `Waiting` until
+    /// its denominator stabilizes. The phases are keyed differently, so the
+    /// array is over `&dyn PhaseCompletion`.
     pub(super) fn startup_panel_rows(
         &self,
         now: Instant,
@@ -83,7 +60,7 @@ impl Startup {
             (STARTUP_PHASE_LANGUAGES, &self.languages),
             (STARTUP_PHASE_TESTS, &self.tests),
         ];
-        phases
+        let mut rows: Vec<ProgressRow> = phases
             .into_iter()
             .filter_map(|(label, phase)| {
                 let state = phase.progress_state(now, STARTUP_ROW_MIN_VISIBLE)?;
@@ -96,7 +73,14 @@ impl Startup {
                     detail,
                 })
             })
-            .collect()
+            .collect();
+        rows.sort_by(|a, b| {
+            a.label
+                .bytes()
+                .map(|byte| byte.to_ascii_lowercase())
+                .cmp(b.label.bytes().map(|byte| byte.to_ascii_lowercase()))
+        });
+        rows
     }
     /// The item a slow row is currently working on (or about to): the live
     /// in-flight fetch for the network rows, the lexically-first pending key
@@ -199,21 +183,32 @@ impl App {
                 .crates_io
                 .reset_with_expected(crates_io_expected);
         }
-        // Lint stays omitted (Unknown) until a real lint run is queued, so
-        // an empty lint set never renders a premature 100% row.
-        self.startup.lint_phase.reset_unknown();
+        // The "Lint history" row tracks the off-thread history load: seed it
+        // with every Rust project whose history will be read from disk — the
+        // same set `refresh_lint_runs_from_disk` reports back via
+        // `LintHistoryLoaded` — so `seen` always catches up and the row can
+        // never strand the panel on a live lint run. An empty set omits the
+        // row.
+        let lint_history_expected = self.lint_history_project_paths();
+        if lint_history_expected.is_empty() {
+            self.startup.lint_phase.reset_unknown();
+        } else {
+            self.startup
+                .lint_phase
+                .reset_with_expected(lint_history_expected);
+        }
         self.startup.metadata.reset_with_expected(metadata_expected);
     }
     pub(super) fn start_startup_toast(&mut self) {
         let now = Instant::now();
         // These rows are visible from panel creation; stamp their
         // minimum-visible floor now. Repo renders `Waiting` from the start.
-        // Lint stamps later, when its first run is queued.
         self.startup.disk.stamp_first_seen(now);
         self.startup.git.stamp_first_seen(now);
         self.startup.repo.stamp_first_seen(now);
         self.startup.crates_io.stamp_first_seen(now);
         self.startup.metadata.stamp_first_seen(now);
+        self.startup.lint_phase.stamp_first_seen(now);
         self.startup.languages.stamp_first_seen(now);
         self.startup.tests.stamp_first_seen(now);
         let (lines, colors) = self.startup_panel_lines(now);
@@ -272,7 +267,7 @@ impl App {
         self.maybe_complete_startup_git(now, scan_complete_at);
         self.maybe_complete_startup_repo(now, scan_complete_at);
         self.maybe_complete_startup_metadata(now, scan_complete_at);
-        self.startup.maybe_complete_lints(now, scan_complete_at);
+        self.maybe_complete_startup_lint_history(now, scan_complete_at);
         // crates.io, languages, and test counts have no special logging;
         // just record their completion timestamp (for the min-visible floor)
         // once every expected entry has been seen.
@@ -455,6 +450,27 @@ impl App {
                 tui_pane::perf_log_ms(now.duration_since(scan_complete_at).as_millis()),
             seen = self.startup.metadata.seen.len(),
             expected = self.startup.metadata.expected_len(),
+            "startup_phase_complete"
+        );
+    }
+    /// Mark the "Lint history" row complete once every Rust project's history
+    /// has been read from disk (the single `BackgroundMsg::LintHistoryLoaded`
+    /// batch). The row is seeded with the same project set the load reports,
+    /// so `seen` always catches up — the panel can't strand on it.
+    pub(super) fn maybe_complete_startup_lint_history(
+        &mut self,
+        now: Instant,
+        scan_complete_at: Instant,
+    ) {
+        if !self.startup.lint_phase.complete_once(now) {
+            return;
+        }
+        tracing::info!(
+            phase = "lint_history_applied",
+            since_scan_complete_ms =
+                tui_pane::perf_log_ms(now.duration_since(scan_complete_at).as_millis()),
+            seen = self.startup.lint_phase.seen.len(),
+            expected = self.startup.lint_phase.expected_len(),
             "startup_phase_complete"
         );
     }

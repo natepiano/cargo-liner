@@ -458,7 +458,13 @@ fn navigate_ci_runs(app: &mut App, action: NavAction) {
 /// extend the range against the frozen snapshot (the cursor is one end, the
 /// anchor the other).
 fn navigate_output(app: &mut App, action: NavAction) {
-    navigate_viewport(&mut app.panes.output.viewport, action);
+    // Plain motions move the single-row selection (or grow it while in
+    // vim visual-line mode); `navigate` keeps the anchor, snapshot, and
+    // follow state in sync with the cursor.
+    let live = app.inflight.example_output().to_vec();
+    app.panes
+        .output
+        .navigate(&live, |viewport| navigate_viewport(viewport, action));
 }
 
 fn navigate_toasts(app: &mut App, action: NavAction) {

@@ -54,7 +54,6 @@ impl App {
         };
         let owner_abs = owner_path;
         let status_kind = status.kind();
-        let status_started = matches!(status, LintStatus::Running(_));
         let status_is_terminal = matches!(
             status,
             LintStatus::Passed(_) | LintStatus::Failed(_) | LintStatus::Stale | LintStatus::NoLog
@@ -97,29 +96,6 @@ impl App {
             generation = self.scan.generation(),
             "lint_status_applied"
         );
-        if !self.scan.is_complete() {
-            return;
-        }
-        if status_started {
-            let now = Instant::now();
-            if self.startup.lint_phase.expected.insert(owner_abs.clone()) {
-                self.startup.lint_phase.complete_at = None;
-            }
-            // The lint row becomes visible now that real work is queued;
-            // stamp its minimum-visible floor.
-            self.startup.lint_phase.stamp_first_seen(now);
-        }
-        if status_is_terminal
-            && self
-                .startup
-                .lint_phase
-                .expected
-                .keys()
-                .is_some_and(|expected| expected.contains(owner_abs.as_path()))
-        {
-            self.startup.lint_phase.seen.insert(owner_abs);
-        }
-        self.maybe_log_startup_phase_completions();
     }
     pub(super) fn handle_lint_cache_pruned(&mut self, runs_evicted: usize, bytes_reclaimed: u64) {
         let noun = if runs_evicted == 1 { "run" } else { "runs" };

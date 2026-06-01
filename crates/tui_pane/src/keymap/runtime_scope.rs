@@ -185,7 +185,7 @@ impl<Ctx: AppContext + 'static, P: Shortcuts<Ctx>> RuntimeScope<Ctx> for PaneSco
                     let key = self.bindings.key_for(action).cloned()?;
                     Some(RenderedSlot {
                         region,
-                        label: action.bar_label(),
+                        label: self.pane.bar_label(action, ctx),
                         key,
                         state: self.pane.state(action, ctx),
                         visibility,

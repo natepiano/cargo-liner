@@ -68,7 +68,6 @@ use crate::tui::keymap::TargetsAction;
 use crate::tui::panes;
 use crate::tui::panes::DetailField;
 use crate::tui::panes::GitRow;
-use crate::tui::panes::OutputSelection;
 use crate::tui::panes::PaneId;
 use crate::tui::sccache;
 
@@ -674,8 +673,24 @@ impl Shortcuts<App> for OutputPane {
 
     fn defaults() -> Bindings<Self::Actions> {
         tui_pane::bindings! {
-            'V'                            => OutputAction::SelectLinewise,
+            KeyBind::ctrl('a')             => OutputAction::SelectAll,
             crossterm::event::KeyCode::Esc => OutputAction::Cancel,
+        }
+    }
+
+    /// The cancel label tracks what the next Esc actually does, matching
+    /// the output pane's own title: stop a running process, or close the
+    /// pane.
+    fn bar_label(&self, action: OutputAction, ctx: &App) -> &'static str {
+        match action {
+            OutputAction::Cancel => {
+                if ctx.inflight.example_running().is_some() {
+                    "stop"
+                } else {
+                    "close"
+                }
+            },
+            OutputAction::SelectAll => action.bar_label(),
         }
     }
 
@@ -684,10 +699,7 @@ impl Shortcuts<App> for OutputPane {
 
 impl CopySelection<App> for OutputPane {
     fn copy_selection(ctx: &App) -> CopySelectionResult {
-        let OutputSelection::Active { anchor, snapshot } = ctx.panes.output.selection() else {
-            return CopySelectionResult::Nothing;
-        };
-        panes::copy_payload_for_output(snapshot, *anchor, ctx.panes.output.viewport.pos())
+        ctx.panes.output.copy_payload(ctx.inflight.example_output())
     }
 }
 

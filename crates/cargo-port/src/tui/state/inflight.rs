@@ -115,6 +115,37 @@ impl Inflight {
             self.example_output.push(line);
         }
     }
+
+    /// Marker appended when a run finishes on its own.
+    const DONE_MARKER: &'static str = "── done ──";
+    /// Marker appended when the user stops a run with the cancel key.
+    const KILLED_MARKER: &'static str = "── killed ──";
+
+    /// Whether the last output line is already a terminal marker. Guards
+    /// against a second marker when a killed child's `Finished` arrives
+    /// after the kill already recorded its own marker.
+    fn run_already_terminated(&self) -> bool {
+        self.example_output
+            .last()
+            .is_some_and(|line| line == Self::DONE_MARKER || line == Self::KILLED_MARKER)
+    }
+
+    /// Record a normal completion: append the done marker unless the run
+    /// was already terminated (e.g. the user killed it first).
+    pub fn append_done_marker(&mut self) {
+        if !self.run_already_terminated() {
+            self.example_output.push(Self::DONE_MARKER.to_string());
+        }
+    }
+
+    /// Stop tracking the run as live and record that the user killed it,
+    /// unless a terminal marker is already present.
+    pub fn mark_run_killed(&mut self) {
+        self.example_running = None;
+        if !self.run_already_terminated() {
+            self.example_output.push(Self::KILLED_MARKER.to_string());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -196,6 +227,43 @@ mod tests {
 
         inflight.set_example_output(vec!["replaced".to_string()]);
         assert_eq!(inflight.example_output(), &["replaced".to_string()]);
+    }
+
+    #[test]
+    fn killed_run_does_not_also_append_done_marker() {
+        let mut inflight = fresh();
+        inflight.example_output_mut().push("line".to_string());
+        inflight.set_example_running(Some("demo".to_string()));
+
+        inflight.mark_run_killed();
+        assert!(inflight.example_running().is_none());
+        assert_eq!(
+            inflight.example_output().last().map(String::as_str),
+            Some(Inflight::KILLED_MARKER),
+        );
+
+        // The killed child's `Finished` arriving afterward must not stack
+        // a second terminal marker on top of the kill marker.
+        inflight.append_done_marker();
+        let markers = inflight
+            .example_output()
+            .iter()
+            .filter(|line| line.starts_with("──"))
+            .count();
+        assert_eq!(markers, 1, "a killed run keeps exactly one terminal marker");
+    }
+
+    #[test]
+    fn normal_finish_appends_done_marker_once() {
+        let mut inflight = fresh();
+        inflight.example_output_mut().push("line".to_string());
+
+        inflight.append_done_marker();
+        inflight.append_done_marker();
+        assert_eq!(
+            inflight.example_output(),
+            &["line".to_string(), Inflight::DONE_MARKER.to_string()],
+        );
     }
 
     #[test]

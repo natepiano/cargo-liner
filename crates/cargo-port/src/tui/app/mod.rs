@@ -171,7 +171,6 @@ use super::panes::CpuPane;
 use super::panes::GitPane;
 use super::panes::LangPane;
 use super::panes::OutputPane;
-use super::panes::OutputSelection;
 use super::panes::PackagePane;
 use super::panes::PaneBehavior;
 use super::panes::ProjectListPane;
@@ -512,18 +511,13 @@ impl App {
         B: ClipboardBackend,
     {
         let outcome = self.framework.copy_selection(self, backend);
-        // A deliberate output-pane yank reports the line count and resets
-        // the pane back to following the tail. The generic CopyOutcome
-        // only carries the label, so the count is read here.
-        if matches!(outcome, CopyOutcome::Copied { .. })
-            && self.focus_is(PaneId::Output)
-            && matches!(
-                self.panes.output.selection(),
-                OutputSelection::Active { .. }
-            )
-        {
-            let count = self.panes.output.selection_line_count();
-            self.panes.output.clear_selection();
+        // A deliberate output-pane yank reports the line count and
+        // collapses the selection back to following the tail. The generic
+        // CopyOutcome only carries the label, so the count is read here.
+        if matches!(outcome, CopyOutcome::Copied { .. }) && self.focus_is(PaneId::Output) {
+            let live = self.inflight.example_output().to_vec();
+            let count = self.panes.output.selection_line_count(&live);
+            self.panes.output.collapse_to_tail();
             let lines = if count == 1 { "line" } else { "lines" };
             self.show_timed_toast("Copy", format!("Copied {count} {lines}"));
             return;

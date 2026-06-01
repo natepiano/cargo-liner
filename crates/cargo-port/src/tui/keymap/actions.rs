@@ -55,8 +55,8 @@ tui_pane::action_enum! {
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub enum OutputAction {
-        SelectLinewise => ("select_linewise", "select", "Select lines");
-        Cancel         => ("cancel",          "close",  "Close output pane");
+        SelectAll => ("select_all", "select all", "Select all lines");
+        Cancel    => ("cancel",     "close",      "Close output pane");
     }
 }
 

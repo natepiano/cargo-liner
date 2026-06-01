@@ -35,7 +35,9 @@ use crate::ci::CiJob;
 use crate::ci::CiRun;
 use crate::ci::CiStatus;
 use crate::ci::FetchStatus;
+use crate::config::CargoPortConfig;
 use crate::config::EdgeScroll;
+use crate::config::NavigationKeys;
 use crate::lint::LintCommand;
 use crate::lint::LintCommandStatus;
 use crate::lint::LintRun;
@@ -83,7 +85,6 @@ use crate::tui::pane::DismissTarget;
 use crate::tui::pane::HoverTarget;
 use crate::tui::panes;
 use crate::tui::panes::LintsData;
-use crate::tui::panes::OutputSelection;
 use crate::tui::panes::PaneId;
 use crate::tui::panes::SyncedDescriptionHeight;
 use crate::tui::project_list::ProjectList;
@@ -244,6 +245,34 @@ fn make_lint_run(run_id: &str, status: LintRunStatus) -> LintRun {
 
 fn make_app(projects: &[RootItem]) -> App { tui_test_support::make_app(projects) }
 
+/// Build an app with vim navigation enabled so the output pane's `V`
+/// toggles the visual-line sub-mode (it is inert with vim off). The
+/// config is passed through the constructor so the built keymap matches,
+/// and vim mode is re-asserted on the app's own config afterward so the
+/// runtime `V` check does not depend on the process-wide active-config
+/// singleton that concurrent tests mutate.
+fn make_app_vim(projects: &[RootItem]) -> App {
+    let mut cfg = CargoPortConfig::default();
+    cfg.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
+    let mut app = tui_test_support::make_app_with_config(projects, &cfg);
+    app.config.current_mut().tui.navigation_keys = NavigationKeys::ArrowsAndVim;
+    app
+}
+
+/// The output pane's inclusive selection range against the live buffer.
+fn output_range(app: &App) -> Option<(usize, usize)> {
+    app.panes
+        .output
+        .selected_range(app.inflight.example_output())
+}
+
+/// The output pane's selection line count against the live buffer.
+fn output_count(app: &App) -> usize {
+    app.panes
+        .output
+        .selection_line_count(app.inflight.example_output())
+}
+
 fn render_ui(app: &mut App) {
     app.ensure_visible_rows_cached();
     app.ensure_detail_cached();
@@ -360,6 +389,30 @@ fn press_key(app: &mut App, code: KeyCode) {
         &Event::Key(KeyEvent {
             code,
             modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        }),
+    );
+}
+
+fn press_shift_key(app: &mut App, code: KeyCode) {
+    input::handle_event(
+        app,
+        &Event::Key(KeyEvent {
+            code,
+            modifiers: KeyModifiers::SHIFT,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        }),
+    );
+}
+
+fn press_ctrl_shift_key(app: &mut App, code: KeyCode) {
+    input::handle_event(
+        app,
+        &Event::Key(KeyEvent {
+            code,
+            modifiers: KeyModifiers::CONTROL | KeyModifiers::SHIFT,
             kind: KeyEventKind::Press,
             state: crossterm::event::KeyEventState::NONE,
         }),
@@ -499,6 +552,18 @@ fn ci_run_point(app: &App, run_index: usize) -> (u16, u16) {
         area.y
             .saturating_add(1)
             .saturating_add(u16::try_from(run_index).unwrap_or(u16::MAX)),
+    )
+}
+
+/// Screen point for output row `row`. The output pane has no header, so
+/// rows start at the top of the content area; `content_area` is already
+/// the inner rect inside the border.
+fn output_point(app: &App, row: usize) -> (u16, u16) {
+    let area = app.panes.output.viewport.content_area();
+    (
+        area.x,
+        area.y
+            .saturating_add(u16::try_from(row).unwrap_or(u16::MAX)),
     )
 }
 
@@ -1948,7 +2013,58 @@ fn open_output(app: &mut App, lines: &[&str]) {
 }
 
 #[test]
-fn output_v_starts_linewise_selection_at_tail() {
+fn output_row_click_selects_clicked_line() {
+    let project = make_package("demo", Path::new("/tmp/demo"));
+    let mut app = make_app(&[project]);
+    open_output(&mut app, &["alpha", "beta", "gamma", "delta", "epsilon"]);
+
+    // Opening follows the tail, so the cursor starts on the last row.
+    assert_eq!(app.focused_pane_id(), PaneId::Output);
+    assert!(app.panes.output.is_following());
+
+    let (x, y) = output_point(&app, 1);
+    click(&mut app, x, y);
+
+    assert_eq!(app.focused_pane_id(), PaneId::Output);
+    assert_eq!(
+        app.panes.output.viewport.pos(),
+        1,
+        "clicking the second output line selects row index 1",
+    );
+    assert!(
+        !app.panes.output.is_following(),
+        "selecting an interior row freezes the view off the tail",
+    );
+}
+
+/// Regression: with the diagnostics panes shown first (recording their
+/// content area), switching to Output and clicking must land on Output —
+/// the hidden Lints/CiRuns rects are reset each frame so they cannot
+/// claim the click.
+#[test]
+fn output_click_does_not_hit_stale_diagnostics_rect() {
+    let project = make_package("demo", Path::new("/tmp/demo"));
+    let mut app = make_app(&[project]);
+
+    // Render once with output empty so the bottom row shows Lints/CiRuns
+    // and they record a content area over the bottom strip.
+    let _ = buffer_text_sized(&mut app, 120, 40);
+
+    // Now show output (hiding Lints/CiRuns) and click an output line.
+    open_output(&mut app, &["alpha", "beta", "gamma"]);
+    let (x, y) = output_point(&app, 0);
+    click(&mut app, x, y);
+
+    assert_eq!(
+        app.focused_pane_id(),
+        PaneId::Output,
+        "the click must focus Output, not a hidden diagnostics pane",
+    );
+    assert_eq!(app.panes.output.viewport.pos(), 0);
+}
+
+#[test]
+fn output_toggle_visual_enters_and_leaves_visual_mode() {
     let project = make_package("demo", Path::new("/tmp/demo"));
     let mut app = make_app(&[project]);
     open_output(&mut app, &["alpha", "beta", "gamma"]);
@@ -1956,13 +2072,33 @@ fn output_v_starts_linewise_selection_at_tail() {
     assert_eq!(app.focused_pane_id(), PaneId::Output);
     assert!(app.panes.output.is_following());
 
-    press_key(&mut app, KeyCode::Char('V'));
+    // There is always a selection — at rest the single cursor row.
+    assert_eq!(output_count(&app), 1);
 
-    assert!(matches!(
-        app.panes.output.selection(),
-        OutputSelection::Active { .. }
-    ));
-    assert_eq!(app.panes.output.selection_line_count(), 1);
+    // Entering vim visual-line mode anchors on the cursor row.
+    let live = app.inflight.example_output().to_vec();
+    app.panes.output.toggle_visual(&live);
+    assert!(app.panes.output.selection().is_visual());
+    assert_eq!(output_count(&app), 1);
+
+    // Toggling again leaves visual mode, collapsing to the cursor row.
+    let live = app.inflight.example_output().to_vec();
+    app.panes.output.toggle_visual(&live);
+    assert!(!app.panes.output.selection().is_visual());
+    assert_eq!(output_count(&app), 1);
+}
+
+#[test]
+fn output_v_is_inert_without_vim() {
+    let project = make_package("demo", Path::new("/tmp/demo"));
+    let mut app = make_app(&[project]);
+    open_output(&mut app, &["alpha", "beta", "gamma"]);
+
+    // `V` is the vim affordance; with vim navigation off it does nothing.
+    press_key(&mut app, KeyCode::Char('V'));
+    assert!(!app.panes.output.selection().is_visual());
+    assert!(app.panes.output.is_following());
+    assert_eq!(output_count(&app), 1);
 }
 
 #[test]
@@ -1971,11 +2107,10 @@ fn output_selection_extends_and_yanks_against_snapshot() {
     let mut app = make_app(&[project]);
     open_output(&mut app, &["alpha", "beta", "gamma", "delta", "epsilon"]);
 
-    press_key(&mut app, KeyCode::Char('V')); // anchor on the last row
-    press_key(&mut app, KeyCode::Up); // extend up one row
-    press_key(&mut app, KeyCode::Up); // extend up another row
+    press_shift_key(&mut app, KeyCode::Up); // extend up one row, freezing
+    press_shift_key(&mut app, KeyCode::Up); // extend up another row
 
-    assert_eq!(app.panes.output.selected_range(), Some((2, 4)));
+    assert_eq!(output_range(&app), Some((2, 4)));
 
     // Streaming output after the snapshot must not drift the frozen range.
     app.inflight
@@ -1986,13 +2121,231 @@ fn output_selection_extends_and_yanks_against_snapshot() {
     app.copy_focused_selection_with_backend(&mut clipboard);
 
     assert_eq!(clipboard.written.as_deref(), Some("gamma\ndelta\nepsilon"));
-    assert!(matches!(
-        app.panes.output.selection(),
-        OutputSelection::Inactive
-    ));
     assert!(
         app.panes.output.is_following(),
-        "a yank resumes following the tail",
+        "a yank collapses back to following the tail",
+    );
+    assert_eq!(output_count(&app), 1);
+}
+
+#[test]
+fn output_ctrl_a_selects_all_lines_and_yanks_them() {
+    let project = make_package("demo", Path::new("/tmp/demo"));
+    let mut app = make_app(&[project]);
+    open_output(&mut app, &["alpha", "beta", "gamma", "delta"]);
+
+    input::handle_event(
+        &mut app,
+        &Event::Key(KeyEvent {
+            code:      KeyCode::Char('a'),
+            modifiers: KeyModifiers::CONTROL,
+            kind:      KeyEventKind::Press,
+            state:     crossterm::event::KeyEventState::NONE,
+        }),
+    );
+
+    assert_eq!(
+        output_range(&app),
+        Some((0, 3)),
+        "Ctrl-A selects every line",
+    );
+    assert_eq!(output_count(&app), 4, "the selection spans every line");
+
+    let mut clipboard = RecordingClipboard::default();
+    app.copy_focused_selection_with_backend(&mut clipboard);
+    assert_eq!(
+        clipboard.written.as_deref(),
+        Some("alpha\nbeta\ngamma\ndelta"),
+    );
+}
+
+#[test]
+fn output_esc_collapses_vim_visual_to_the_cursor_row() {
+    let project = make_package("demo", Path::new("/tmp/demo"));
+    let mut app = make_app_vim(&[project]);
+    open_output(&mut app, &["alpha", "beta", "gamma", "delta", "epsilon"]);
+
+    // Enter visual mode at the tail, then extend up one row.
+    press_key(&mut app, KeyCode::Char('V'));
+    press_key(&mut app, KeyCode::Up);
+    let _ = buffer_text_sized(&mut app, 120, 40);
+    assert_eq!(output_range(&app), Some((3, 4)));
+
+    // Esc leaves visual mode, collapsing the selection back to the single
+    // cursor row where the user was reading — not snapping to the tail.
+    press_key(&mut app, KeyCode::Esc);
+    assert!(!app.panes.output.selection().is_visual());
+    assert_eq!(output_count(&app), 1);
+    assert_eq!(
+        app.panes.output.viewport.pos(),
+        3,
+        "collapse leaves the cursor where the visual range ended",
+    );
+    assert!(
+        !app.panes.output.is_following(),
+        "the view stays where the user was reading, not at the tail",
+    );
+}
+
+#[test]
+fn output_shift_arrows_grow_the_selection_from_the_cursor_row() {
+    let project = make_package("demo", Path::new("/tmp/demo"));
+    let mut app = make_app(&[project]);
+    open_output(&mut app, &["alpha", "beta", "gamma", "delta", "epsilon"]);
+
+    // Opening follows the tail; the at-rest selection is the cursor row.
+    assert!(app.panes.output.is_following());
+    assert_eq!(output_count(&app), 1);
+
+    // Shift+Up grows the selection upward from the anchor (no vim needed).
+    press_shift_key(&mut app, KeyCode::Up);
+    assert_eq!(
+        output_range(&app),
+        Some((3, 4)),
+        "the selection spans the anchor row and the row above",
+    );
+    assert!(
+        !app.panes.output.is_following(),
+        "extending the selection freezes the view off the tail",
+    );
+
+    // Shift+Down shrinks it back toward the anchor.
+    press_shift_key(&mut app, KeyCode::Down);
+    assert_eq!(output_range(&app), Some((4, 4)));
+}
+
+#[test]
+fn shift_arrows_do_nothing_outside_the_output_pane() {
+    let mut app = make_app(&[
+        make_package("first", Path::new("/tmp/first")),
+        make_package("second", Path::new("/tmp/second")),
+    ]);
+    app.set_focus(FocusedPane::App(AppPaneId::ProjectList));
+    let _ = buffer_text_sized(&mut app, 120, 40);
+    app.project_list.move_down();
+    assert_eq!(app.project_list.cursor(), 1);
+
+    // Shift+arrows are an output-only gesture; in other panes they are
+    // inert (they would only duplicate the plain arrow navigation).
+    press_shift_key(&mut app, KeyCode::Up);
+    assert_eq!(
+        app.project_list.cursor(),
+        1,
+        "Shift+Up is inert outside Output",
+    );
+    press_shift_key(&mut app, KeyCode::Down);
+    assert_eq!(
+        app.project_list.cursor(),
+        1,
+        "Shift+Down is inert outside Output",
+    );
+}
+
+#[test]
+fn output_ctrl_shift_up_selects_from_the_cursor_to_the_top() {
+    let project = make_package("demo", Path::new("/tmp/demo"));
+    let mut app = make_app(&[project]);
+    open_output(&mut app, &["alpha", "beta", "gamma", "delta", "epsilon"]);
+
+    // Park the cursor on an interior row; the at-rest selection follows it.
+    press_key(&mut app, KeyCode::Up);
+    press_key(&mut app, KeyCode::Up);
+    assert_eq!(app.panes.output.viewport.pos(), 2);
+    assert_eq!(output_count(&app), 1);
+
+    // Ctrl+Shift+Up extends the selection from here to row 0.
+    press_ctrl_shift_key(&mut app, KeyCode::Up);
+    assert_eq!(output_range(&app), Some((0, 2)));
+}
+
+#[test]
+fn output_ctrl_shift_down_selects_from_the_cursor_to_the_bottom() {
+    let project = make_package("demo", Path::new("/tmp/demo"));
+    let mut app = make_app(&[project]);
+    open_output(&mut app, &["alpha", "beta", "gamma", "delta", "epsilon"]);
+
+    press_key(&mut app, KeyCode::Up);
+    press_key(&mut app, KeyCode::Up);
+    assert_eq!(app.panes.output.viewport.pos(), 2);
+
+    // Ctrl+Shift+Down extends the selection from here to the last row.
+    press_ctrl_shift_key(&mut app, KeyCode::Down);
+    assert_eq!(output_range(&app), Some((2, 4)));
+}
+
+#[test]
+fn output_shift_arrows_extend_and_shrink_an_active_selection() {
+    let project = make_package("demo", Path::new("/tmp/demo"));
+    let mut app = make_app(&[project]);
+    open_output(&mut app, &["alpha", "beta", "gamma", "delta", "epsilon"]);
+
+    // The at-rest selection is the tail row; grow it upward with Shift+Up.
+    assert_eq!(output_range(&app), Some((4, 4)));
+
+    press_shift_key(&mut app, KeyCode::Up);
+    press_shift_key(&mut app, KeyCode::Up);
+    assert_eq!(
+        output_range(&app),
+        Some((2, 4)),
+        "Shift+Up extends the selection from the anchor",
+    );
+
+    // Shift+Down shrinks it back toward the anchor.
+    press_shift_key(&mut app, KeyCode::Down);
+    assert_eq!(
+        output_range(&app),
+        Some((3, 4)),
+        "Shift+Down shrinks the selection",
+    );
+}
+
+#[test]
+fn output_esc_collapses_vim_visual_before_stopping_the_run() {
+    let project = make_package("demo", Path::new("/tmp/demo"));
+    let mut app = make_app_vim(&[project]);
+    open_output(&mut app, &["alpha", "beta", "gamma"]);
+    // A process is still streaming while the user enters visual mode.
+    app.inflight.set_example_running(Some("demo".to_string()));
+
+    press_key(&mut app, KeyCode::Char('V'));
+    assert!(app.panes.output.selection().is_visual());
+
+    // First Esc leaves visual mode — it must NOT kill the run.
+    press_key(&mut app, KeyCode::Esc);
+    assert!(!app.panes.output.selection().is_visual());
+    assert!(
+        app.inflight.example_running().is_some(),
+        "leaving visual mode must not stop the running process",
+    );
+
+    // Second Esc stops the run and records a single kill marker.
+    press_key(&mut app, KeyCode::Esc);
+    assert!(app.inflight.example_running().is_none());
+    assert_eq!(
+        app.inflight.example_output().last().map(String::as_str),
+        Some("── killed ──"),
+    );
+}
+
+#[test]
+fn output_title_shows_visual_hint_even_while_running() {
+    let project = make_package("demo", Path::new("/tmp/demo"));
+    let mut app = make_app_vim(&[project]);
+    open_output(&mut app, &["alpha", "beta", "gamma"]);
+    app.inflight.set_example_running(Some("demo".to_string()));
+
+    // At rest (collapsed, following), the title advertises the run.
+    let running = buffer_text_sized(&mut app, 120, 40);
+    assert!(
+        running.contains("Running: demo"),
+        "title shows the running process before entering visual mode",
+    );
+
+    press_key(&mut app, KeyCode::Char('V'));
+    let visual = buffer_text_sized(&mut app, 120, 40);
+    assert!(
+        visual.contains("visual") && visual.contains("y copy"),
+        "pressing V switches the title to the visual hint even while running",
     );
 }
 
@@ -2002,8 +2355,7 @@ fn output_yank_strips_ansi_from_selection() {
     let mut app = make_app(&[project]);
     open_output(&mut app, &["\u{1b}[31mred line\u{1b}[0m"]);
 
-    press_key(&mut app, KeyCode::Char('V'));
-
+    // The at-rest selection is the cursor row; yank copies it ANSI-stripped.
     let mut clipboard = RecordingClipboard::default();
     app.copy_focused_selection_with_backend(&mut clipboard);
 
@@ -2011,28 +2363,26 @@ fn output_yank_strips_ansi_from_selection() {
 }
 
 #[test]
-fn output_esc_clears_selection_then_closes_pane() {
+fn output_vim_esc_collapses_then_a_second_esc_closes_the_pane() {
     let project = make_package("demo", Path::new("/tmp/demo"));
-    let mut app = make_app(&[project]);
+    let mut app = make_app_vim(&[project]);
     open_output(&mut app, &["alpha", "beta"]);
 
+    // Enter visual mode, then extend so the selection spans two rows.
     press_key(&mut app, KeyCode::Char('V'));
-    assert!(matches!(
-        app.panes.output.selection(),
-        OutputSelection::Active { .. }
-    ));
+    press_key(&mut app, KeyCode::Up);
+    assert!(app.panes.output.selection().is_visual());
 
+    // First Esc leaves visual mode without closing the pane.
     press_key(&mut app, KeyCode::Esc);
-    assert!(matches!(
-        app.panes.output.selection(),
-        OutputSelection::Inactive
-    ));
+    assert!(!app.panes.output.selection().is_visual());
     assert!(
         !app.inflight.example_output().is_empty(),
-        "the first Esc clears the selection, not the pane",
+        "the first Esc only leaves visual mode, not the pane",
     );
     assert_eq!(app.focused_pane_id(), PaneId::Output);
 
+    // Second Esc closes the pane.
     press_key(&mut app, KeyCode::Esc);
     assert!(
         app.inflight.example_output().is_empty(),
@@ -2042,7 +2392,7 @@ fn output_esc_clears_selection_then_closes_pane() {
 }
 
 #[test]
-fn focused_output_cursor_row_highlight_fills_full_width() {
+fn focused_output_selection_row_highlight_fills_full_width() {
     let project = make_package("demo", Path::new("/tmp/demo"));
     let mut app = make_app(&[project]);
     open_output(&mut app, &["alpha", "beta", "gamma"]);
@@ -2061,7 +2411,7 @@ fn focused_output_cursor_row_highlight_fills_full_width() {
     let buffer = terminal.backend().buffer().clone();
     let area = buffer.area;
 
-    // Find the tail row ("gamma") — the cursor row while following.
+    // Find the tail row ("gamma") — the one-line selection while following.
     let mut cursor_row = None;
     for y in 0..area.height {
         let row: String = (0..area.width)
@@ -2074,19 +2424,19 @@ fn focused_output_cursor_row_highlight_fills_full_width() {
     }
     let (text_col, y) = cursor_row.expect("the tail row is rendered");
 
-    // A cell well past the 5-char text must carry the active-row
-    // background, so the highlight spans the row rather than stopping at
-    // the text.
+    // A cell well past the 5-char text must carry the selection
+    // background — the cursor row is a one-line selection, drawn in the
+    // single selection color — so the highlight spans the full width.
     let probe = buffer[(text_col + 30, y)].bg;
     assert_eq!(
         probe,
-        tui_pane::active_focus_color(),
-        "cursor row highlight should fill the full pane width",
+        tui_pane::finder_match_bg(),
+        "selection row highlight should fill the full pane width",
     );
 }
 
 #[test]
-fn cursor_row_highlight_covers_ansi_colored_log_text() {
+fn selection_row_highlight_covers_ansi_colored_log_text() {
     let project = make_package("demo", Path::new("/tmp/demo"));
     let mut app = make_app(&[project]);
     // A green ANSI segment followed by plain text — the colored span
@@ -2116,11 +2466,12 @@ fn cursor_row_highlight_covers_ansi_colored_log_text() {
     }
     let (col, y) = info_cell.expect("the colored log line is rendered");
 
-    // The 'I' of the green "INFO" must carry the cursor-row background,
-    // not the bare default behind the colored glyph.
+    // The 'I' of the green "INFO" must carry the selection-row background
+    // (the cursor row is a one-line selection), not the bare default
+    // behind the colored glyph.
     assert_eq!(
         buffer[(col, y)].bg,
-        tui_pane::active_focus_color(),
+        tui_pane::finder_match_bg(),
         "the highlight must cover the ANSI-colored text, not just the padding",
     );
     // And the green foreground survives the highlight.
@@ -2166,18 +2517,17 @@ fn closing_output_releases_focus_to_a_visible_pane() {
 }
 
 #[test]
-fn output_yank_without_selection_copies_nothing() {
+fn output_yank_copies_the_cursor_row_by_default() {
     let project = make_package("demo", Path::new("/tmp/demo"));
     let mut app = make_app(&[project]);
     open_output(&mut app, &["alpha", "beta"]);
 
+    // The cursor row is always a one-line selection, so a yank copies it
+    // (here the followed tail row) rather than copying nothing.
     let mut clipboard = RecordingClipboard::default();
     app.copy_focused_selection_with_backend(&mut clipboard);
 
-    assert!(
-        clipboard.written.is_none(),
-        "y with no selection writes nothing to the clipboard",
-    );
+    assert_eq!(clipboard.written.as_deref(), Some("beta"));
 }
 
 #[test]
@@ -2200,30 +2550,32 @@ fn output_scroll_up_freezes_and_end_resumes_follow() {
 }
 
 #[test]
-fn output_process_exit_holds_active_selection_but_resumes_when_inactive() {
+fn output_process_exit_holds_a_range_but_resumes_when_collapsed() {
     let project = make_package("demo", Path::new("/tmp/demo"));
     let mut app = make_app(&[project]);
     open_output(&mut app, &["a", "b", "c"]);
 
-    // Inactive but scrolled up: a process exit resumes following.
+    // Collapsed but scrolled up: a process exit snaps back to the tail so
+    // the final output shows.
     press_key(&mut app, KeyCode::Up);
     assert!(!app.panes.output.is_following());
     app.panes.output.on_process_exit();
     assert!(
         app.panes.output.is_following(),
-        "exit resumes follow when no selection is active",
+        "exit resumes follow when the selection is a single collapsed row",
     );
 
-    // Active selection: a process exit must leave it untouched (D5).
-    press_key(&mut app, KeyCode::Char('V'));
-    press_key(&mut app, KeyCode::Up);
+    // A multi-row selection (the user is copying): exit must leave it put.
+    let live = app.inflight.example_output().to_vec();
+    app.panes.output.select_extend_up(&live);
+    assert_eq!(output_count(&app), 2);
     app.panes.output.on_process_exit();
     assert!(
-        matches!(app.panes.output.selection(), OutputSelection::Active { .. }),
-        "exit must not clear an active selection",
+        output_count(&app) >= 2,
+        "exit must not collapse a range the user is selecting",
     );
     assert!(
         !app.panes.output.is_following(),
-        "exit must not resume follow while a selection holds the view",
+        "exit must not resume follow while a range holds the view",
     );
 }

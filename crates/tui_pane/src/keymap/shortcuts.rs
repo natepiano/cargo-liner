@@ -57,6 +57,13 @@ pub trait Shortcuts<Ctx: AppContext>: Pane<Ctx> {
     /// but inert (e.g. an action grayed out when no target exists).
     fn state(&self, _action: Self::Actions, _ctx: &Ctx) -> ShortcutState { ShortcutState::Enabled }
 
+    /// Bar label for `action`. Default delegates to the action's static
+    /// [`Action::bar_label`]. Override when the label depends on pane
+    /// state — e.g. a cancel key that reads `deselect` / `stop` /
+    /// `close` depending on what the next press will do, so the bar
+    /// matches the pane's own status text.
+    fn bar_label(&self, action: Self::Actions, _ctx: &Ctx) -> &'static str { action.bar_label() }
+
     /// Bar slot layout. Default: one
     /// `(BarRegion::PaneAction, BarSlot::Single(action))` per
     /// [`Action::ALL`] in declaration order. Override to introduce

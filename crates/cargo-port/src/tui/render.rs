@@ -83,6 +83,14 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     sync_hovered_pane_row(app);
     app.panes.tiled_layout = ResolvedPaneLayout::default();
     app.panes.project_list.body_rect = Rect::ZERO;
+    // The bottom row shows either the diagnostics panes (Lints + CiRuns)
+    // or Output, never both. The layout omits the hidden set entirely, so
+    // those panes never re-render and their content area would otherwise
+    // stay at last frame's rect. Reset all three here so a hidden pane
+    // reports no hittable area and a click can't land on a stale rect.
+    app.lint.viewport.set_content_area(Rect::ZERO);
+    app.ci.viewport.set_content_area(Rect::ZERO);
+    app.panes.output.viewport.set_content_area(Rect::ZERO);
     app.prune_toasts();
 
     // Paint the backdrop when the active theme's appearance disagrees with
