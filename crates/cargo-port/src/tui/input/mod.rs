@@ -513,8 +513,25 @@ fn handle_mouse_event(app: &mut App, kind: MouseEventKind, column: u16, row: u16
         MouseEventKind::ScrollUp => scroll_pane_at(app, column, row, true),
         MouseEventKind::ScrollDown => scroll_pane_at(app, column, row, false),
         MouseEventKind::Down(MouseButton::Left) => handle_mouse_click(app, column, row),
+        MouseEventKind::Drag(MouseButton::Left) => handle_output_drag(app, column, row),
         _ => {},
     }
+}
+
+/// Extend the output pane's linewise selection to the row under the
+/// pointer while the left button is held. Gated on output focus, so a
+/// drag that began in another pane never reaches here. Off-pane motion
+/// (above/below the body) yields no row and leaves the range as-is.
+fn handle_output_drag(app: &mut App, column: u16, row: u16) {
+    if !app.focus_is(PaneId::Output) {
+        return;
+    }
+    let pos = Position::new(column, row);
+    let Some(row) = app.panes.output.viewport.pos_to_local_row(pos) else {
+        return;
+    };
+    let live = app.inflight.example_output().to_vec();
+    app.panes.output.select_drag_to(&live, row);
 }
 
 fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
@@ -626,6 +643,19 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
     let pos = Position::new(column, row);
 
     if app.confirm().is_some() {
+        return;
+    }
+
+    // A fresh left-press in the output body collapses any prior drag
+    // selection back to the single clicked line, so release-then-click
+    // starts over instead of extending from the old anchor. Handled here
+    // because the generic hit-test only moves the cursor.
+    if let Some(hovered) = interaction::hovered_pane_row_at(app, pos)
+        && hovered.pane == PaneId::Output
+    {
+        app.set_focus(FocusedPane::App(AppPaneId::Output));
+        let live = app.inflight.example_output().to_vec();
+        app.panes.output.click_select_row(&live, hovered.row);
         return;
     }
 

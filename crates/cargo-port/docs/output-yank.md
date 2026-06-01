@@ -74,10 +74,38 @@ Posture: strengthen. 4 lenses (correctness lifecycle, state-machine consistency,
 
 Keyboard yank shipped. Refinements to the recorded model, all consequences of M12 (cursor-driven scroll):
 
-- **No `ScrollMode` field — follow is derived from the cursor.** M11 sketched `enum ScrollMode { FollowTail, Frozen { offset } }`; the first implementation kept a payload-free `FollowTail | Frozen` field. Both are a second source of truth for something the cursor already encodes: following *is* "the cursor sits on the last row" (`pos >= len - 1`). The field is removed entirely. `is_following()` derives from the viewport; navigation is the shared `navigate_viewport(&mut viewport, action)` every scroll pane uses (so vim `hjkl`, page, half-page, Home/End come for free); the only stateful bit — stick to the tail as new lines append — lives in `sync_viewport`, which re-pins the cursor to the new last row when it was on the old one and no selection holds the view. The `FollowTail`/`Frozen` contradiction (mode disagreeing with the cursor) is now unrepresentable. `OutputSelection { Inactive, Active { anchor, snapshot: Rc<[String]> } }` is unchanged.
-- **`V` toggles.** `V` while selecting exits the selection (vim linewise toggle) and resumes following, alongside the `y` (yank) and `Esc` (cancel) exits from M13/M14.
-- **Row highlight fills the full width.** The cursor row (`active_focus_color`) and the selected range (`finder_match_bg`) force their background onto every span and pad to the pane width, so the highlight covers ANSI-colored log text instead of stopping at the timestamp.
+- **No `ScrollMode` field — follow is derived from the cursor.** M11 sketched `enum ScrollMode { FollowTail, Frozen { offset } }`; the first implementation kept a payload-free `FollowTail | Frozen` field. Both are a second source of truth for something the cursor already encodes: following *is* "the cursor sits on the last row" (`pos >= len - 1`). The field is removed entirely. `is_following()` derives from the viewport; navigation is the shared `navigate_viewport(&mut viewport, action)` every scroll pane uses (so vim `hjkl`, page, half-page, Home/End come for free); the only stateful bit — stick to the tail as new lines append — lives in `sync_viewport`, which re-pins the cursor to the new last row when it was on the old one and no selection holds the view. The `FollowTail`/`Frozen` contradiction (mode disagreeing with the cursor) is now unrepresentable.
 
-Files: `panes/pane_impls.rs` (`OutputPane` state + methods), `panes/output.rs` (render reads viewport, highlights the range, follow/frozen title), `panes/actions.rs` (`navigate_output`), `panes/pane_data/mod.rs` (`copy_payload_for_output` + ANSI strip), `keymap/actions.rs` (`SelectLinewise`), `integration/framework_keymap.rs` (Navigable + `V` + `CopySelection`), `input/mod.rs` (status-aware cancel + `V` dispatch), `app/mod.rs` (N-lines toast + reset on open), `async_tasks/poll.rs` (process-exit follow resume). Tests in `panes/tests.rs` (pure copy helper) and `app/tests/interaction.rs` (V/extend/yank/Esc/freeze/exit).
+> **Superseded by the non-modal redesign (2026-05-31), below.** The model `OutputSelection { Inactive, Active }`, the `SelectLinewise` action, and the two-color highlight described in the original Phase-1 bullets were all replaced. Read the redesign section for the shipped behavior.
 
 Phase 2 (mouse wheel scroll + drag-to-select-lines) and character-level selection remain deferred.
+
+---
+
+## Non-modal redesign (2026-05-31)
+
+The modal "press `V` to start selecting" model was collapsed into an always-present selection: there is no select/deselect mode, the cursor row *is* a one-line selection at rest, and motions manipulate it directly.
+
+- **`OutputSelection` is a struct, not an `Inactive`/`Active` enum.** `{ anchor: usize, mode: SelectionMode, snapshot: Option<Rc<[String]>> }`, where `enum SelectionMode { Normal, Visual }`. In `Normal` the selection is the single cursor row and plain motions move it whole (anchor follows the cursor); in `Visual` (the vim visual-line sub-mode) plain motions grow the range from the fixed `anchor`. `snapshot` freezes the buffer once the selection stops following the live tail, so a streaming child can't drift a pinned range. There is always a selection — `selected_range` returns `(cursor, cursor)` in `Normal`.
+- **`V` is a built-in gated to vim mode, not a rebindable action.** `OutputAction::SelectLinewise` was deleted; the action set is now `{ SelectAll, Cancel }`. `V` toggles visual mode (`toggle_visual`) only when `navigation_keys` is `ArrowsAndVim`. The editor-style gestures — Shift+Up/Down (`select_extend_up`/`down`), Ctrl+Shift+Up/Down (`select_extend_to_top`/`to_bottom`) — are always available and enter visual mode on demand. Dispatched in `input/mod.rs::dispatch_output_selection_gesture`.
+- **One selection color.** The separate cursor tint (`active_focus_color`) was removed; the whole selected range — a single row or many — renders in `finder_match_bg`, forced onto every span and padded to the pane width so it covers ANSI-colored log text.
+- **Vocabulary matches the keymap.** Identifiers use "visual" (`is_visual`/`enter_visual`/`toggle_visual`/`exit_visual`), matching the `V` binding and the `visual: N lines` title.
+
+Files: `panes/pane_impls.rs` (`OutputSelection` struct + `SelectionMode` + `OutputPane` methods), `panes/output.rs` (single-color highlight, visual title), `panes/actions.rs` (`navigate_output`), `panes/pane_data/mod.rs` (`copy_payload_for_output` + ANSI strip), `keymap/actions.rs` (`OutputAction { SelectAll, Cancel }`), `integration/framework_keymap.rs` (Navigable + `CopySelection`), `input/mod.rs` (status-aware Esc + `dispatch_output_selection_gesture`), `app/mod.rs` (N-lines toast + reset on open). Tests in `app/tests/interaction.rs`.
+
+---
+
+## Phase 2 — mouse (2026-05-31)
+
+Both Phase-2 mouse pieces are now shipped:
+
+- **Wheel scroll already worked.** `input/mod.rs` routes `MouseEventKind::ScrollUp`/`ScrollDown` through `scroll_pane_at` to each pane's `Viewport`; mouse capture is already enabled (clicks focus panes and position cursors). The plan's "currently-dead wheel scroll" note (decision 2 / line 7) was stale — no work needed.
+- **Drag-to-select-lines added.** Left-press already positions the output cursor at the clicked row via the existing hit-test path (`interaction.rs::handle_click` → `set_pane_pos`). The new `MouseEventKind::Drag(Left)` arm calls `handle_output_drag`, which maps the pointer to a buffer row with `Viewport::pos_to_local_row` and calls `OutputPane::select_drag_to(live, row)`: the first drag enters visual mode anchored at the press row (the cursor the press left), each subsequent drag moves the cursor end — so the range grows, flips across the anchor, and yanks through the same `selected_range`/`copy_payload` path the keyboard uses. The drag is gated on output focus, so a drag begun in another pane never starts an output selection. Off-body motion (above/below the pane) yields no row and holds the range.
+
+Files: `panes/pane_impls.rs` (`OutputPane::select_drag_to`), `input/mod.rs` (`Drag(Left)` arm + `handle_output_drag`). Tests in `app/tests/interaction.rs` (`output_drag_selects_the_line_range_and_yanks_it`, `output_drag_ignored_when_output_not_focused`).
+
+No Shift/Alt-drag escape hatch to native terminal selection was added — mouse capture already suppresses native selection app-wide, so drag-select takes nothing away. Deferrable if native selection is ever missed (line 44).
+
+**Click-after-drag resets the selection.** A left-press routes through the generic hit-test (`interaction.rs::handle_click` → `set_pane_pos`), which only moves the cursor — it left visual mode and the old anchor in place, so a click after a drag extended the prior range instead of starting fresh. Now an output-body press is intercepted in `handle_mouse_click` and routed through `OutputPane::click_select_row`, which collapses to Normal mode with the anchor on the clicked line. So click-drag selects a range; release-then-click clears it and selects just the clicked line, and a following drag anchors at the new click. Test: `output_click_after_drag_clears_the_selection_to_the_clicked_line`.
+
+Character-level (sub-line) selection — decision 3's deferred Option-D remainder — is the only output-yank item left.

@@ -684,7 +684,12 @@ impl Shortcuts<App> for OutputPane {
     fn bar_label(&self, action: OutputAction, ctx: &App) -> &'static str {
         match action {
             OutputAction::Cancel => {
-                if ctx.inflight.example_running().is_some() {
+                if ctx.panes.output.selection().is_visual() {
+                    // A visual selection is active: Esc collapses it back to
+                    // the cursor row rather than stopping a run or closing
+                    // the pane. Matches the title's "(y copy · Esc done)".
+                    "done"
+                } else if ctx.inflight.example_running().is_some() {
                     "stop"
                 } else {
                     "close"

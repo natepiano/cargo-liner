@@ -626,6 +626,33 @@ impl OutputPane {
         self.viewport.end();
     }
 
+    /// Position the selection on `row` (a buffer index from
+    /// [`Viewport::pos_to_local_row`]) as a fresh left-button press does:
+    /// collapse any visual range back to the single clicked line — Normal
+    /// mode, anchor on that row — so a release-then-click starts a new
+    /// selection rather than extending the old one. Re-follows the tail
+    /// when `row` is the last line, freezes `live` otherwise.
+    pub fn click_select_row(&mut self, live: &[String], row: usize) {
+        self.selection.mode = SelectionMode::Normal;
+        self.viewport.set_pos(row);
+        self.selection.anchor = row;
+        if self.viewport.pos() >= self.viewport.len().saturating_sub(1) {
+            self.selection.snapshot = None;
+        } else {
+            self.freeze(live);
+        }
+    }
+
+    /// Extend a mouse drag-select to `row` (a buffer index from
+    /// [`Viewport::pos_to_local_row`]), entering visual mode anchored at
+    /// the press row (the cursor [`click_select_row`](Self::click_select_row)
+    /// just positioned) on the first call. Bound to a left-button drag in
+    /// the output pane.
+    pub fn select_drag_to(&mut self, live: &[String], row: usize) {
+        self.enter_visual(live);
+        self.viewport.set_pos(row);
+    }
+
     /// Collapse the selection back to the single cursor row and resume
     /// following the tail. Used after a yank, where returning to the live
     /// tail is the expected next state.

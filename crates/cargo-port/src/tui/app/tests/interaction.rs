@@ -383,6 +383,18 @@ fn scroll_down(app: &mut App, column: u16, row: u16) {
     );
 }
 
+fn drag(app: &mut App, column: u16, row: u16) {
+    input::handle_event(
+        app,
+        &Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }),
+    );
+}
+
 fn press_key(app: &mut App, code: KeyCode) {
     input::handle_event(
         app,
@@ -2035,6 +2047,79 @@ fn output_row_click_selects_clicked_line() {
         !app.panes.output.is_following(),
         "selecting an interior row freezes the view off the tail",
     );
+}
+
+#[test]
+fn output_drag_selects_the_line_range_and_yanks_it() {
+    let project = make_package("demo", Path::new("/tmp/demo"));
+    let mut app = make_app(&[project]);
+    open_output(&mut app, &["alpha", "beta", "gamma", "delta", "epsilon"]);
+
+    // Press on "beta" (row 1) positions the cursor; dragging to "delta"
+    // (row 3) enters visual mode anchored at the press row and grows the
+    // range to cover the pointer.
+    let (x1, y1) = output_point(&app, 1);
+    click(&mut app, x1, y1);
+    let (x3, y3) = output_point(&app, 3);
+    drag(&mut app, x3, y3);
+
+    assert!(app.panes.output.selection().is_visual());
+    assert_eq!(output_range(&app), Some((1, 3)));
+
+    // Dragging back up past the anchor flips the range without losing it.
+    let (x0, y0) = output_point(&app, 0);
+    drag(&mut app, x0, y0);
+    assert_eq!(output_range(&app), Some((0, 1)));
+
+    // Drag down again, then yank the selected lines.
+    drag(&mut app, x3, y3);
+    assert_eq!(output_range(&app), Some((1, 3)));
+
+    let mut clipboard = RecordingClipboard::default();
+    app.copy_focused_selection_with_backend(&mut clipboard);
+    assert_eq!(clipboard.written.as_deref(), Some("beta\ngamma\ndelta"));
+}
+
+#[test]
+fn output_click_after_drag_clears_the_selection_to_the_clicked_line() {
+    let project = make_package("demo", Path::new("/tmp/demo"));
+    let mut app = make_app(&[project]);
+    open_output(&mut app, &["alpha", "beta", "gamma", "delta", "epsilon"]);
+
+    // Drag out a multi-line range.
+    let (x1, y1) = output_point(&app, 1);
+    click(&mut app, x1, y1);
+    let (x3, y3) = output_point(&app, 3);
+    drag(&mut app, x3, y3);
+    assert!(app.panes.output.selection().is_visual());
+    assert_eq!(output_range(&app), Some((1, 3)));
+
+    // A fresh click (no drag) collapses the range to just the clicked
+    // line and leaves visual mode, so it does not extend from the old
+    // anchor.
+    let (x0, y0) = output_point(&app, 0);
+    click(&mut app, x0, y0);
+    assert!(!app.panes.output.selection().is_visual());
+    assert_eq!(output_range(&app), Some((0, 0)));
+
+    // Dragging again anchors at the new click, not the stale one.
+    let (x2, y2) = output_point(&app, 2);
+    drag(&mut app, x2, y2);
+    assert_eq!(output_range(&app), Some((0, 2)));
+}
+
+#[test]
+fn output_drag_ignored_when_output_not_focused() {
+    let project = make_package("demo", Path::new("/tmp/demo"));
+    let mut app = make_app(&[project]);
+    open_output(&mut app, &["alpha", "beta", "gamma"]);
+
+    // Focus elsewhere; a stray drag must not start an output selection.
+    app.set_focus(FocusedPane::App(AppPaneId::ProjectList));
+    let (x, y) = output_point(&app, 0);
+    drag(&mut app, x, y);
+
+    assert!(!app.panes.output.selection().is_visual());
 }
 
 /// Regression: with the diagnostics panes shown first (recording their

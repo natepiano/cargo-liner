@@ -537,13 +537,23 @@ fn output_cancel_label_tracks_state() {
         "running cancel label is stop (got {running:?})",
     );
 
-    // There is no separate selection state, so the cancel label only ever
-    // tracks run-vs-idle: stop while a run streams, close otherwise.
     app.inflight.set_example_running(None);
     let idle_again = output_pane_action(&app);
     assert!(
         idle_again.contains("close"),
         "with no run the cancel label returns to close (got {idle_again:?})",
+    );
+
+    // A visual selection is active: Esc collapses it, so the label reads
+    // "done" — taking priority over stop/close (it is the first thing Esc
+    // does). The bar tracks the title's "(y copy · Esc done)".
+    let live = app.inflight.example_output().to_vec();
+    app.panes.output.toggle_visual(&live);
+    assert!(app.panes.output.selection().is_visual());
+    let selecting = output_pane_action(&app);
+    assert!(
+        selecting.contains("done") && !selecting.contains("close"),
+        "with a visual selection the cancel label is done (got {selecting:?})",
     );
 }
 
