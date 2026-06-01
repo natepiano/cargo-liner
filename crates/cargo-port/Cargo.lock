@@ -509,6 +509,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "indexmap",
+ "itertools 0.14.0",
  "notify",
  "nucleo-matcher",
  "pulldown-cmark",

@@ -31,7 +31,7 @@ fn read_status_from_path(path: &Path) -> LintStatus {
     parse_run(&run)
 }
 
-pub fn parse_timestamp(value: &str) -> Option<DateTime<FixedOffset>> {
+pub(crate) fn parse_timestamp(value: &str) -> Option<DateTime<FixedOffset>> {
     DateTime::parse_from_rfc3339(value.trim()).ok()
 }
 

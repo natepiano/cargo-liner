@@ -1116,6 +1116,31 @@ impl ProjectList {
         self.path_for_row(row)
     }
 
+    /// When the selected row is a worktree-group **parent** (a `Root` over a
+    /// group that renders as one), the paths of its visible checkouts
+    /// (primary first). `None` for every other row, including an individual
+    /// checkout (`WorktreeEntry`) — callers then fall back to the single
+    /// selected path. Lets the Lints pane aggregate the whole group's
+    /// history instead of just the primary's.
+    pub(super) fn selected_worktree_group_checkout_paths(&self) -> Option<Vec<AbsolutePath>> {
+        let VisibleRow::Root { node_index } = self.selected_row()? else {
+            return None;
+        };
+        let RootItem::Worktrees(group) = &self.get(node_index)?.item else {
+            return None;
+        };
+        if !group.renders_as_group() {
+            return None;
+        }
+        Some(
+            group
+                .iter_entries()
+                .filter(|entry| entry.visibility() == Visibility::Visible)
+                .map(|entry| entry.path().clone())
+                .collect(),
+        )
+    }
+
     pub(super) fn path_for_row(&self, row: VisibleRow) -> Option<&Path> {
         match row {
             VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {

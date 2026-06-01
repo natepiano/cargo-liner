@@ -378,6 +378,8 @@ fn lints_data_with_runs(count: usize) -> LintsData {
     LintsData {
         runs,
         sizes: Vec::new(),
+        owner_paths: Vec::new(),
+        owner_of: Vec::new(),
         is_rust: true,
     }
 }

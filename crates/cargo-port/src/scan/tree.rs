@@ -6,6 +6,7 @@ use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 
+use itertools::Itertools;
 use toml::Table;
 use toml::Value;
 use walkdir::WalkDir;
@@ -322,11 +323,12 @@ pub(super) fn merge_worktrees_new(items: &mut Vec<RootItem>) {
         }
     }
 
-    // Group linked worktrees by identity, preserving order
-    let mut linked_by_id: HashMap<AbsolutePath, Vec<RootItem>> = HashMap::new();
-    for (item, id) in extracted {
-        linked_by_id.entry(id).or_default().push(item);
-    }
+    // Group linked worktrees by identity, preserving encounter order within
+    // each group.
+    let mut linked_by_id: HashMap<AbsolutePath, Vec<RootItem>> = extracted
+        .into_iter()
+        .map(|(item, id)| (id, item))
+        .into_group_map();
 
     // Replace each primary with a WorktreeGroup wrapping primary + linked.
     // Process in reverse to avoid index shifting.
@@ -695,25 +697,21 @@ fn group_members_new(
     members: Vec<Package>,
     inline_dirs: &[String],
 ) -> Vec<MemberGroup> {
-    let mut group_map: HashMap<String, Vec<Package>> = HashMap::new();
-
-    for member in members {
-        let relative = member
-            .path()
-            .strip_prefix(workspace_path)
-            .ok()
-            .map(normalize_workspace_path)
-            .unwrap_or_default();
-        let subdir = relative.split('/').next().unwrap_or("").to_string();
-
-        let group_name = if inline_dirs.contains(&subdir) || !relative.contains('/') {
-            String::new()
-        } else {
-            subdir
-        };
-
-        group_map.entry(group_name).or_default().push(member);
-    }
+    let group_map: HashMap<String, Vec<Package>> =
+        members.into_iter().into_group_map_by(|member| {
+            let relative = member
+                .path()
+                .strip_prefix(workspace_path)
+                .ok()
+                .map(normalize_workspace_path)
+                .unwrap_or_default();
+            let subdir = relative.split('/').next().unwrap_or("").to_string();
+            if inline_dirs.contains(&subdir) || !relative.contains('/') {
+                String::new()
+            } else {
+                subdir
+            }
+        });
 
     let mut groups: Vec<MemberGroup> = group_map
         .into_iter()

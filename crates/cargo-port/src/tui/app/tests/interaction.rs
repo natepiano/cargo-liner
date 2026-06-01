@@ -286,9 +286,11 @@ fn render_ui(app: &mut App) {
 fn render_lints_panel(app: &mut App, runs: &[LintRun]) {
     app.ensure_detail_cached();
     app.lint.set_content(LintsData {
-        runs:    runs.to_vec(),
-        sizes:   vec![Some(0); runs.len()],
-        is_rust: true,
+        runs:        runs.to_vec(),
+        sizes:       vec![Some(0); runs.len()],
+        owner_paths: Vec::new(),
+        owner_of:    Vec::new(),
+        is_rust:     true,
     });
     let backend = TestBackend::new(120, 20);
     let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());

@@ -462,7 +462,7 @@ fn targets_copy_returns_source_path_for_any_target_row() {
 fn lints_copy_returns_selected_run_log_path() {
     let project_root = AbsolutePath::from("/Users/natemccoy/rust/demo");
     let data = LintsData {
-        runs:    vec![LintRun {
+        runs:        vec![LintRun {
             run_id:        "run-1".to_string(),
             started_at:    "2026-05-19T10:00:00-04:00".to_string(),
             finished_at:   Some("2026-05-19T10:01:00-04:00".to_string()),
@@ -478,8 +478,10 @@ fn lints_copy_returns_selected_run_log_path() {
             }],
             archive_bytes: 0,
         }],
-        sizes:   vec![Some(1024)],
-        is_rust: true,
+        sizes:       vec![Some(1024)],
+        owner_paths: vec![project_root.clone()],
+        owner_of:    vec![0],
+        is_rust:     true,
     };
 
     let expected = lint::project_dir(project_root.as_path())
@@ -487,11 +489,11 @@ fn lints_copy_returns_selected_run_log_path() {
         .display()
         .to_string();
     assert_eq!(
-        model::copy_payload_for_lints(&data, 0, project_root.as_path()),
+        model::copy_payload_for_lints(&data, 0),
         CopySelectionResult::Payload(CopyPayload::new(expected, CopyLabel::Path)),
     );
     assert_eq!(
-        model::copy_payload_for_lints(&data, 1, project_root.as_path()),
+        model::copy_payload_for_lints(&data, 1),
         CopySelectionResult::Nothing,
     );
 }

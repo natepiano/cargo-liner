@@ -24,6 +24,7 @@ crossbeam-channel    = "0.5"
 crossterm            = "0.29.0"
 dirs                 = "6.0.0"
 indexmap             = "2"
+itertools            = "0.14"
 notify               = "9.0.0-rc.2"
 nucleo-matcher       = "0.3.1"
 pulldown-cmark       = { version = "0.13.4", default-features = false }
@@ -43,7 +44,7 @@ tracing              = "0.1.44"
 unicode-width        = "0.2.2"
 walkdir              = "2"
 
-# tui_pane re-exports KeyBind / Keymap / etc. used by the binary.
+# tui_pane provides the framework used by the binary.
 tui_pane = { path = "tui_pane", version = "0.0.4-dev" }
 
 [dev-dependencies]

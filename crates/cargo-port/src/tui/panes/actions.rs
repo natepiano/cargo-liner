@@ -758,20 +758,21 @@ fn open_lint_run_output(app: &App) {
     if !app.selected_row_owns_lint() {
         return;
     }
-    let Some(abs_path) = app.project_list.selected_project_path() else {
+    let Some(data) = app.lint.content() else {
         return;
     };
-    let Some(runs) = app.lint.content().map(|data| data.runs.as_slice()) else {
+    let pos = app.lint.viewport.pos();
+    let Some(run) = data.runs.get(pos) else {
         return;
     };
-    if runs.is_empty() {
-        return;
-    }
-    let Some(run) = runs.get(app.lint.viewport.pos()) else {
+    // Resolve logs against the checkout the run came from (the primary for
+    // a single project, or the specific checkout for a worktree-group
+    // aggregate), not the selected row's path.
+    let Some(abs_path) = data.owner_path_for_run(pos) else {
         return;
     };
 
-    let project_cache_dir = lint::project_dir(abs_path);
+    let project_cache_dir = lint::project_dir(abs_path.as_path());
     let log_paths: Vec<AbsolutePath> = run
         .commands
         .iter()

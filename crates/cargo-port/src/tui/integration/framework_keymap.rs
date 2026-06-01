@@ -488,13 +488,10 @@ impl CopySelection<App> for LintsPane {
         if !ctx.selected_row_owns_lint() {
             return CopySelectionResult::Nothing;
         }
-        let Some(project_root) = ctx.project_list.selected_project_path() else {
-            return CopySelectionResult::Nothing;
-        };
         let Some(lints) = ctx.lint.content() else {
             return CopySelectionResult::Nothing;
         };
-        panes::copy_payload_for_lints(lints, ctx.lint.viewport.pos(), project_root)
+        panes::copy_payload_for_lints(lints, ctx.lint.viewport.pos())
     }
 }
 

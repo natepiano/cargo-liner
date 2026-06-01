@@ -1834,6 +1834,129 @@ fn worktree_group_detail_lint_rollup_ignores_deleted_worktrees() {
 }
 
 #[test]
+fn worktree_group_lints_pane_aggregates_every_checkout_newest_first() {
+    let root = make_package_worktrees_item(
+        make_package_raw(None, "~/ws", None),
+        vec![make_package_raw(None, "~/ws_feat", Some("ws_feat"))],
+    );
+
+    let mut app = make_app(&[make_project(None, "~/ws")]);
+    app.config.current_mut().lint.enabled = true;
+    apply_items(&mut app, &[root]);
+    let primary_path = test_path("~/ws");
+    let linked_path = test_path("~/ws_feat");
+
+    let run = |run_id: &str, started_at: &str| LintRun {
+        run_id:        run_id.to_string(),
+        started_at:    started_at.to_string(),
+        finished_at:   None,
+        duration_ms:   None,
+        status:        LintRunStatus::Passed,
+        commands:      Vec::new(),
+        archive_bytes: 0,
+    };
+    // Primary has one (older) run; the linked checkout has two newer ones.
+    app.project_list
+        .lint_at_path_mut(&primary_path)
+        .unwrap()
+        .set_runs(vec![run("primary-1", "2026-03-30T10:00:00-04:00")]);
+    app.project_list
+        .lint_at_path_mut(&linked_path)
+        .unwrap()
+        .set_runs(vec![
+            run("linked-2", "2026-03-30T12:00:00-04:00"),
+            run("linked-1", "2026-03-30T11:00:00-04:00"),
+        ]);
+
+    // Select the group parent (header) row.
+    app.project_list.set_cursor(0);
+    app.sync_selected_project();
+
+    let data = panes::build_lints_data(&app);
+
+    // Every checkout's runs are merged, newest-first across checkouts.
+    let ids: Vec<&str> = data.runs.iter().map(|r| r.run_id.as_str()).collect();
+    assert_eq!(ids, vec!["linked-2", "linked-1", "primary-1"]);
+
+    // Both checkouts are owners; each run resolves to the checkout it came
+    // from, so its logs open against the right cache directory.
+    assert_eq!(data.owner_paths.len(), 2);
+    assert_eq!(data.owner_path_for_run(0), Some(&linked_path));
+    assert_eq!(data.owner_path_for_run(1), Some(&linked_path));
+    assert_eq!(data.owner_path_for_run(2), Some(&primary_path));
+}
+
+#[test]
+fn worktree_group_lints_pane_reindexes_when_a_new_run_lands() {
+    // The owner index is not maintained incrementally — every new run bumps
+    // the generation, which invalidates the detail cache and rebuilds the
+    // whole merged list. This test drives that real refresh chain and
+    // checks the rebuilt list re-sorts and the owner index follows.
+    let root = make_package_worktrees_item(
+        make_package_raw(None, "~/ws", None),
+        vec![make_package_raw(None, "~/ws_feat", Some("ws_feat"))],
+    );
+
+    let mut app = make_app(&[make_project(None, "~/ws")]);
+    app.config.current_mut().lint.enabled = true;
+    apply_items(&mut app, &[root]);
+    let primary_path = test_path("~/ws");
+    let linked_path = test_path("~/ws_feat");
+
+    let run = |run_id: &str, started_at: &str| LintRun {
+        run_id:        run_id.to_string(),
+        started_at:    started_at.to_string(),
+        finished_at:   None,
+        duration_ms:   None,
+        status:        LintRunStatus::Passed,
+        commands:      Vec::new(),
+        archive_bytes: 0,
+    };
+    app.project_list
+        .lint_at_path_mut(&primary_path)
+        .unwrap()
+        .set_runs(vec![run("primary-1", "2026-03-30T10:00:00-04:00")]);
+    app.project_list
+        .lint_at_path_mut(&linked_path)
+        .unwrap()
+        .set_runs(vec![run("linked-1", "2026-03-30T11:00:00-04:00")]);
+
+    app.project_list.set_cursor(0);
+    app.sync_selected_project();
+    app.ensure_detail_cached();
+
+    let before: Vec<&str> = app
+        .lint
+        .content()
+        .unwrap()
+        .runs
+        .iter()
+        .map(|r| r.run_id.as_str())
+        .collect();
+    assert_eq!(before, vec!["linked-1", "primary-1"]);
+
+    // A newer run lands on the primary checkout (the loader replaces the
+    // whole history per path). Bumping the generation invalidates the cache.
+    app.project_list
+        .lint_at_path_mut(&primary_path)
+        .unwrap()
+        .set_runs(vec![
+            run("primary-2", "2026-03-30T12:00:00-04:00"),
+            run("primary-1", "2026-03-30T10:00:00-04:00"),
+        ]);
+    app.scan.bump_generation();
+    app.ensure_detail_cached();
+
+    let data = app.lint.content().unwrap();
+    let ids: Vec<&str> = data.runs.iter().map(|r| r.run_id.as_str()).collect();
+    // Rebuilt newest-first, and the owner index realigns with the new order.
+    assert_eq!(ids, vec!["primary-2", "linked-1", "primary-1"]);
+    assert_eq!(data.owner_path_for_run(0), Some(&primary_path));
+    assert_eq!(data.owner_path_for_run(1), Some(&linked_path));
+    assert_eq!(data.owner_path_for_run(2), Some(&primary_path));
+}
+
+#[test]
 fn worktree_group_detail_lint_rollup_rebuilds_when_linked_worktree_finishes() {
     let root = make_package_worktrees_item(
         make_package_raw(None, "~/ws", None),
