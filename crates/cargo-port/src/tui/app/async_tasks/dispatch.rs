@@ -162,10 +162,14 @@ impl App {
             BackgroundMsg::CratesIoVersion {
                 path,
                 version,
+                prerelease,
                 downloads,
-            } => self
-                .project_list
-                .handle_crates_io_version_msg(path.as_path(), version, downloads),
+            } => self.project_list.handle_crates_io_version_msg(
+                path.as_path(),
+                version,
+                prerelease,
+                downloads,
+            ),
             BackgroundMsg::RepoMeta {
                 path,
                 stars,

@@ -97,9 +97,10 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
         emit_service_signal(tx, signal);
         if let Some(info) = info {
             let _ = tx.send(BackgroundMsg::CratesIoVersion {
-                path:      abs.clone(),
-                version:   info.version,
-                downloads: info.downloads,
+                path:       abs.clone(),
+                version:    info.version,
+                prerelease: info.prerelease,
+                downloads:  info.downloads,
             });
         }
         let _ = tx.send(BackgroundMsg::CratesIoFetchComplete {

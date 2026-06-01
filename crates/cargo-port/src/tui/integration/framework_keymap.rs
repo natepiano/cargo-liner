@@ -66,8 +66,8 @@ use crate::tui::keymap::PackageAction;
 use crate::tui::keymap::ProjectListAction;
 use crate::tui::keymap::TargetsAction;
 use crate::tui::panes;
-use crate::tui::panes::DetailField;
 use crate::tui::panes::GitRow;
+use crate::tui::panes::PackageRow;
 use crate::tui::panes::PaneId;
 use crate::tui::sccache;
 
@@ -327,20 +327,19 @@ impl CopySelection<App> for PackagePane {
 
 /// `Activate` on the Package pane is enabled only when the cursor is
 /// on a row whose dispatch has a real effect. Today the legacy path
-/// only opens a URL on the `CratesIo` row (see
+/// only opens a URL on a crates.io row (see
 /// `src/tui/panes/actions.rs::handle_detail_enter`); every other row
-/// is a no-op. The `CratesIo` row itself is rendered only when
-/// `crates_version` is known (see `package_fields_from_data`), so
-/// `Activate` is implicitly disabled on packages without a crates.io
-/// version too.
+/// is a no-op. The crates.io rows are rendered only for publishable
+/// projects with data (see `build_crates_io_rows`), so `Activate` is
+/// implicitly disabled on packages without crates.io data too.
 fn activate_state(ctx: &App) -> ShortcutState {
     let Some(pkg) = ctx.panes.package.content() else {
         return ShortcutState::Disabled;
     };
     let pos = ctx.panes.package.viewport.pos();
     if matches!(
-        panes::package_field_at(pkg, pos),
-        Some(DetailField::CratesIo)
+        panes::package_rows_from_data(pkg).get(pos),
+        Some(PackageRow::CratesIo(_))
     ) {
         ShortcutState::Enabled
     } else {

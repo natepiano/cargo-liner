@@ -615,14 +615,16 @@ fn transfer_crates_io(old: &RootItem, item: &mut RootItem, path: &AbsolutePath) 
             (source.crates_version(), source.crates_downloads())
         && let Some(target) = item.rust_info_at_path_mut(path)
     {
-        target.set_crates_io(version.to_string(), downloads);
+        let prerelease = source.crates_prerelease().map(str::to_string);
+        target.set_crates_io(version.to_string(), prerelease, downloads);
     }
     if let Some(source) = old.vendored_at_path(path)
         && let (Some(version), Some(downloads)) =
             (source.crates_version(), source.crates_downloads())
         && let Some(target) = item.vendored_at_path_mut(path)
     {
-        target.set_crates_io(version.to_string(), downloads);
+        let prerelease = source.crates_prerelease().map(str::to_string);
+        target.set_crates_io(version.to_string(), prerelease, downloads);
     }
 }
 fn preserve_live_pr_snapshot_while_loading(

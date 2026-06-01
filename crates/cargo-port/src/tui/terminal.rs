@@ -774,6 +774,7 @@ pub(super) fn spawn_priority_fetch(app: &App, _path: &str, abs_path: &str, name:
                 let _ = tx.send(BackgroundMsg::CratesIoVersion {
                     path,
                     version: info.version,
+                    prerelease: info.prerelease,
                     downloads: info.downloads,
                 });
             }

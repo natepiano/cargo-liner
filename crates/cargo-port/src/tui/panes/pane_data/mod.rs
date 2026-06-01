@@ -28,7 +28,6 @@ use crate::constants::GIT_DIR;
 use crate::constants::GIT_FORK;
 use crate::constants::NO_REMOTE_SYNC;
 use crate::http::RateLimitQuota;
-use crate::http::ServiceKind;
 use crate::lint;
 use crate::lint::LintRun;
 use crate::project;
@@ -435,7 +434,6 @@ pub enum DetailField {
     DeletedWorktrees,
     Path,
     Targets,
-    DiskTotal,
     Disk,
     /// Submodule overlay: `.gitmodules` tracking branch (the `branch =` line).
     Tracks,
@@ -466,8 +464,6 @@ pub enum DetailField {
     RateLimitCore,
     RateLimitGraphQl,
     WorktreeError,
-    CratesIo,
-    Downloads,
     Version,
     Edition,
     License,
@@ -482,7 +478,6 @@ impl DetailField {
             Self::DeletedWorktrees => "Deleted",
             Self::Path => "Path",
             Self::Targets => "Type",
-            Self::DiskTotal => "Disk total",
             Self::Disk => "Disk",
             Self::DiskTarget => "  target/",
             Self::DiskNonTarget => "  other",
@@ -502,8 +497,6 @@ impl DetailField {
             Self::RateLimitCore => "Rate limit core",
             Self::RateLimitGraphQl => "Rate limit GraphQL",
             Self::WorktreeError => "Error",
-            Self::CratesIo => "crates.io",
-            Self::Downloads => "Downloads",
             Self::Version => "Version",
             Self::Edition => "Edition",
             Self::License => "License",
@@ -528,10 +521,6 @@ impl DetailField {
                 .worktree_group_summary
                 .as_ref()
                 .map_or_else(String::new, |summary| summary.deleted.to_string()),
-            Self::DiskTotal => data
-                .worktree_group_summary
-                .as_ref()
-                .map_or_else(String::new, |summary| summary.disk.clone()),
             Self::Path => data.path.clone(),
             Self::Disk => data.disk.map_or_else(String::new, render::format_bytes),
             Self::Targets => match &data.types {
@@ -543,13 +532,6 @@ impl DetailField {
                     .collect::<Vec<_>>()
                     .join(", "),
             },
-            Self::CratesIo => data.crates_version.as_deref().map_or_else(
-                || crates_io_placeholder(data).to_string(),
-                ToString::to_string,
-            ),
-            Self::Downloads => data
-                .crates_downloads
-                .map_or_else(|| crates_io_placeholder(data).to_string(), format_downloads),
             Self::Version => data.version.clone().unwrap_or_else(|| "-".to_string()),
             Self::DiskTarget => data
                 .in_project_target
@@ -627,7 +609,6 @@ impl DetailField {
             Self::Worktrees
             | Self::DeletedWorktrees
             | Self::Path
-            | Self::DiskTotal
             | Self::Disk
             | Self::DiskTarget
             | Self::DiskNonTarget
@@ -635,8 +616,6 @@ impl DetailField {
             | Self::Targets
             | Self::Lint
             | Self::Ci
-            | Self::CratesIo
-            | Self::Downloads
             | Self::Version
             | Self::Edition
             | Self::License
@@ -647,48 +626,10 @@ impl DetailField {
     }
 }
 
-/// Per-service "unreachable" placeholder string. Shared across the
-/// crates.io placeholder rows on the Package pane and the GitHub
-/// stars placeholder row on the Git pane, so the wording stays
-/// consistent across surfaces.
-pub(super) const fn service_unreachable_placeholder(service: ServiceKind) -> &'static str {
-    match service {
-        ServiceKind::CratesIo => "crates.io unreachable",
-        ServiceKind::GitHub => "github unreachable",
-    }
-}
-
-/// Placeholder text shown in the `CratesIo` / Downloads value cells
-/// when no data has landed and the service is confirmed unreachable.
-/// Empty string in every other case — `package_fields_from_data`
-/// already gates the row's visibility, so an empty string here means
-/// "we have data but it's None" (e.g. workspace member with no
-/// version), not "service is down."
-pub(super) const fn crates_io_placeholder(data: &PackageData) -> &'static str {
-    if data.publish_status.is_publishable()
-        && matches!(data.crates_io_service, ServiceStatus::Unreachable)
-    {
-        service_unreachable_placeholder(ServiceKind::CratesIo)
-    } else {
-        ""
-    }
-}
-
-/// True iff the value cell should be rendered in warning color —
-/// publishable project with no version landed yet during a confirmed
-/// crates.io outage.
-pub const fn crates_io_value_is_unreachable_placeholder(data: &PackageData) -> bool {
-    data.crates_version.is_none()
-        && data.publish_status.is_publishable()
-        && matches!(data.crates_io_service, ServiceStatus::Unreachable)
-}
-
 /// True iff the Git pane's Stars row should render a "github
 /// unreachable" placeholder in warning color: GitHub is confirmed
 /// down (Unreachable / `RateLimited`) and no stars count has landed
-/// yet. Mirrors [`crates_io_value_is_unreachable_placeholder`] for
-/// the GitHub-derived field — see [`service_unreachable_placeholder`]
-/// for the shared string. Unauthenticated is excluded: it's not an
+/// yet. Unauthenticated is excluded: it's not an
 /// outage, and the rate-limit rows already carry the auth hint.
 pub const fn github_stars_is_unreachable_placeholder(data: &GitData) -> bool {
     data.stars.is_none()
@@ -722,13 +663,14 @@ pub enum PackageRow {
     Structure(usize),
     /// Index into `PackageData::test_rows` (the Tests section).
     Tests(usize),
+    /// Index into `PackageData::crates_io_rows` (the crates.io section).
+    CratesIo(usize),
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WorktreeGroupSummary {
     pub worktrees: usize,
     pub deleted:   usize,
-    pub disk:      String,
 }
 
 /// Primary project fields for the `Package` column.
@@ -763,19 +705,8 @@ pub fn package_fields_from_data(data: &PackageData) -> Vec<DetailField> {
     if data.has_package {
         fields.push(DetailField::Version);
     }
-    // Show the CratesIo / Downloads rows when:
-    //   - data has landed (real value), OR
-    //   - the project is publishable AND the crates.io service is confirmed unreachable
-    //     (placeholder in warning color, so the user knows why the field is empty). When the
-    //     service recovers the placeholder hides again until a fetch lands.
-    let show_unreachable_placeholder = data.publish_status.is_publishable()
-        && matches!(data.crates_io_service, ServiceStatus::Unreachable);
-    if data.crates_version.is_some() || show_unreachable_placeholder {
-        fields.push(DetailField::CratesIo);
-    }
-    if data.crates_downloads.is_some() || show_unreachable_placeholder {
-        fields.push(DetailField::Downloads);
-    }
+    // crates.io version / prerelease / downloads now render in their own
+    // right-side stats section (`crates_io_rows`), not as left-column fields.
     // Step 4 fields: show unconditionally on Rust packages so that
     // unset values render as `—` and the UI surface matches the
     // manifest faithfully even before metadata arrives.
@@ -795,6 +726,7 @@ pub fn package_rows_from_data(data: &PackageData) -> Vec<PackageRow> {
         rows.extend(fields.into_iter().map(PackageRow::Field));
         rows.extend((0..data.stats_rows.len()).map(PackageRow::Structure));
         rows.extend((0..data.test_rows.len()).map(PackageRow::Tests));
+        rows.extend((0..data.crates_io_rows.len()).map(PackageRow::CratesIo));
         return rows;
     };
 
@@ -806,7 +738,6 @@ pub fn package_rows_from_data(data: &PackageData) -> Vec<PackageRow> {
         rows.push(PackageRow::Field(DetailField::DeletedWorktrees));
     }
     rows.extend([
-        PackageRow::Field(DetailField::DiskTotal),
         PackageRow::Field(DetailField::Lint),
         PackageRow::Field(DetailField::Ci),
     ]);
@@ -824,18 +755,6 @@ pub fn package_rows_from_data(data: &PackageData) -> Vec<PackageRow> {
     rows
 }
 
-pub fn package_field_at(data: &PackageData, pos: usize) -> Option<DetailField> {
-    package_rows_from_data(data)
-        .get(pos)
-        .and_then(|row| match row {
-            PackageRow::Description
-            | PackageRow::Section(_)
-            | PackageRow::Structure(_)
-            | PackageRow::Tests(_) => None,
-            PackageRow::Field(field) => Some(*field),
-        })
-}
-
 pub const fn package_row_is_selectable(row: &PackageRow) -> bool {
     matches!(
         row,
@@ -843,6 +762,7 @@ pub const fn package_row_is_selectable(row: &PackageRow) -> bool {
             | PackageRow::Field(_)
             | PackageRow::Structure(_)
             | PackageRow::Tests(_)
+            | PackageRow::CratesIo(_)
     )
 }
 
@@ -928,14 +848,14 @@ pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
 /// non-publishable projects never trigger a fetch, so showing
 /// placeholder rows for them during an outage would be misleading.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum PublishStatus {
+enum PublishStatus {
     Publishable,
     #[default]
     NotPublishable,
 }
 
 impl PublishStatus {
-    pub const fn is_publishable(self) -> bool { matches!(self, Self::Publishable) }
+    const fn is_publishable(self) -> bool { matches!(self, Self::Publishable) }
 }
 
 /// Per-pane data for the Package detail panel.
@@ -955,19 +875,14 @@ pub struct PackageData {
     /// pinned commit rather than a semver.
     pub version:                  Option<String>,
     pub description:              Option<String>,
-    pub crates_version:           Option<String>,
-    pub crates_downloads:         Option<u64>,
-    /// Whether this project would have fired a crates.io fetch.
-    /// Combined with `crates_io_service`, drives the "crates.io
-    /// unreachable" placeholder row that keeps the field visible
-    /// during an outage. Non-publishable rows never show the row.
-    pub publish_status:           PublishStatus,
-    /// Snapshot of the crates.io service's render-side availability.
-    /// Set at build time from the live availability state. While
-    /// `Unreachable`, publishable rows without a version yet render
-    /// the warning placeholder; once it flips back to `Available`,
-    /// the placeholder disappears (the row hides until a fetch lands).
-    pub crates_io_service:        ServiceStatus,
+    /// crates.io section of the stats column — `version` (latest stable,
+    /// or the newest prerelease when there is no stable), an optional
+    /// prerelease row (`rc` / `beta` / `alpha`) when a newer prerelease
+    /// exists alongside a stable, and `downloads`. Empty for
+    /// non-publishable projects; a publishable project with no data during
+    /// a confirmed crates.io outage gets a single `version` →
+    /// `unreachable` row so the user knows why it is empty.
+    pub crates_io_rows:           Vec<(&'static str, String)>,
     /// Resolved cargo target kinds. `None` before `cargo metadata`
     /// lands and for non-Rust projects; `Some(vec)` once resolved —
     /// the vec is empty only for the rare crate with no lib/bin/
@@ -1264,6 +1179,19 @@ fn copy_payload(text: impl Into<String>, label: CopyLabel) -> CopySelectionResul
     })
 }
 
+/// The crates.io URL for the project, or `Nothing` when there is no
+/// usable crate name.
+fn crates_io_url_payload(data: &PackageData) -> CopySelectionResult {
+    if data.title_name.trim().is_empty() || data.title_name == "-" {
+        CopySelectionResult::Nothing
+    } else {
+        copy_payload(
+            format!("https://crates.io/crates/{}", data.title_name),
+            CopyLabel::Url,
+        )
+    }
+}
+
 pub fn copy_payload_for_package(data: &PackageData, pos: usize) -> CopySelectionResult {
     let Some(row) = package_rows_from_data(data).get(pos).copied() else {
         return CopySelectionResult::Nothing;
@@ -1286,21 +1214,13 @@ pub fn copy_payload_for_package(data: &PackageData, pos: usize) -> CopySelection
                 };
                 copy_payload(format!("{count} {label}"), CopyLabel::Value)
             },
+            // Every crates.io row copies the crate's crates.io URL.
+            PackageRow::CratesIo(_) => crates_io_url_payload(data),
             PackageRow::Section(_) | PackageRow::Field(_) => CopySelectionResult::Nothing,
         };
     };
     match field {
         DetailField::Lint | DetailField::Ci => CopySelectionResult::Nothing,
-        DetailField::CratesIo => {
-            if data.title_name.trim().is_empty() || data.title_name == "-" {
-                CopySelectionResult::Nothing
-            } else {
-                copy_payload(
-                    format!("https://crates.io/crates/{}", data.title_name),
-                    CopyLabel::Url,
-                )
-            }
-        },
         DetailField::Path | DetailField::GitStatus => {
             copy_payload(field.package_value(data), CopyLabel::Path)
         },
@@ -2304,10 +2224,7 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
             path:                     display_path,
             version:                  submodule.commit.clone(),
             description:              submodule.url.clone(),
-            crates_version:           None,
-            crates_downloads:         None,
-            publish_status:           PublishStatus::NotPublishable,
-            crates_io_service:        ServiceStatus::Available,
+            crates_io_rows:           Vec::new(),
             types:                    None,
             disk:                     submodule.info.disk_usage_bytes,
             stats_rows:               Vec::new(),
@@ -2480,12 +2397,13 @@ struct PaneDataSource<'a> {
 /// Crates-io fields pulled from either a Rust info or vendored entry.
 struct CratesIoFields {
     version:     Option<String>,
+    prerelease:  Option<String>,
     downloads:   Option<u64>,
     /// True iff this project would have fired a crates.io fetch — i.e.
-    /// a publishable package. Used by `package_fields_from_data` to
-    /// keep the `CratesIo` placeholder row visible during a crates.io
-    /// outage even before any version landed; non-publishable rows
-    /// (where no fetch ever runs) never show the row.
+    /// a publishable package. Used to keep the crates.io section's
+    /// placeholder row visible during a crates.io outage even before any
+    /// version landed; non-publishable rows (where no fetch ever runs)
+    /// never show the section.
     publishable: bool,
 }
 
@@ -2498,6 +2416,9 @@ fn resolve_crates_io_fields(app: &App, abs_path: &Path) -> CratesIoFields {
         version: rust_info
             .and_then(|r| r.crates_version().map(String::from))
             .or_else(|| vendored.and_then(|v| v.crates_version().map(String::from))),
+        prerelease: rust_info
+            .and_then(|r| r.crates_prerelease().map(String::from))
+            .or_else(|| vendored.and_then(|v| v.crates_prerelease().map(String::from))),
         downloads: rust_info
             .and_then(RustInfo::crates_downloads)
             .or_else(|| vendored.and_then(VendoredPackage::crates_downloads)),
@@ -2548,10 +2469,7 @@ struct BuildPackageDataArgs {
     test_rows:                Vec<(&'static str, usize)>,
     has_cargo:                bool,
     manifest:                 ManifestFields,
-    crates_version:           Option<String>,
-    crates_downloads:         Option<u64>,
-    publish_status:           PublishStatus,
-    crates_io_service:        ServiceStatus,
+    crates_io_rows:           Vec<(&'static str, String)>,
     types:                    Option<Vec<ProjectType>>,
     disk:                     Option<u64>,
     in_project_target:        Option<u64>,
@@ -2581,10 +2499,7 @@ fn build_package_data(args: BuildPackageDataArgs) -> PackageData {
         path: args.display_path,
         version,
         description,
-        crates_version: args.crates_version,
-        crates_downloads: args.crates_downloads,
-        publish_status: args.publish_status,
-        crates_io_service: args.crates_io_service,
+        crates_io_rows: args.crates_io_rows,
         types: args.types,
         disk: args.disk,
         stats_rows: args.stats_rows,
@@ -2610,17 +2525,16 @@ fn resolve_worktrees(app: &App, wt_item: Option<&RootItem>) -> Vec<WorktreeInfo>
     })
 }
 
-fn worktree_group_summary_for(item: &RootItem, disk: String) -> Option<WorktreeGroupSummary> {
+fn worktree_group_summary_for(item: &RootItem) -> Option<WorktreeGroupSummary> {
     let RootItem::Worktrees(group) = item else {
         return None;
     };
     Some(WorktreeGroupSummary {
         worktrees: group.visible_entry_count(),
-        deleted: group
+        deleted:   group
             .iter_entries()
             .filter(|entry| entry.visibility() == Visibility::Deleted)
             .count(),
-        disk,
     })
 }
 
@@ -2689,10 +2603,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
         primary_section: src.primary_section,
         has_cargo: src.has_cargo,
         manifest: metadata.manifest,
-        publish_status: crates_io_status.publish,
-        crates_io_service: crates_io_status.service,
-        crates_version: runtime.crates_io.version,
-        crates_downloads: runtime.crates_io.downloads,
+        crates_io_rows: build_crates_io_rows(&runtime.crates_io, &crates_io_status),
         types: metadata.types,
         disk: runtime.disk,
         in_project_target: metadata.in_project_target,
@@ -2760,8 +2671,7 @@ fn collect_runtime_fields(app: &App, abs_path: &Path, wt_item: Option<&RootItem>
         .project_list
         .at_path(abs_path)
         .and_then(|project| project.disk_usage_bytes);
-    let worktree_group_summary = wt_item
-        .and_then(|item| worktree_group_summary_for(item, super::formatted_disk_for_item(item)));
+    let worktree_group_summary = wt_item.and_then(worktree_group_summary_for);
     let ci = compute_ci_status(app, abs_path, wt_item);
     let disk_ms = tui_pane::perf_log_ms(t_disk.elapsed().as_millis());
 
@@ -2843,6 +2753,52 @@ const fn derive_crates_io_status(crates_io: &CratesIoFields, app: &App) -> Crate
         ServiceStatus::Available
     };
     CratesIoStatus { publish, service }
+}
+
+/// Value shown in the crates.io `version` row when the project is
+/// publishable but a confirmed crates.io outage means no data has landed
+/// — the title already says "crates.io", so the cell only needs to say
+/// the service is unreachable.
+pub(super) const CRATES_IO_UNREACHABLE: &str = "unreachable";
+
+/// Build the crates.io stats-section rows from the resolved fields plus
+/// the live availability state. Empty for non-publishable projects.
+fn build_crates_io_rows(
+    crates_io: &CratesIoFields,
+    status: &CratesIoStatus,
+) -> Vec<(&'static str, String)> {
+    let mut rows = Vec::new();
+    if let Some(version) = crates_io.version.as_deref() {
+        rows.push(("version", version.to_string()));
+        if let Some(prerelease) = crates_io.prerelease.as_deref() {
+            rows.push((prerelease_label(prerelease), prerelease.to_string()));
+        }
+        if let Some(downloads) = crates_io.downloads {
+            rows.push(("downloads", format_downloads(downloads)));
+        }
+    } else if status.publish.is_publishable()
+        && matches!(status.service, ServiceStatus::Unreachable)
+    {
+        rows.push(("version", CRATES_IO_UNREACHABLE.to_string()));
+    }
+    rows
+}
+
+/// Label for the prerelease row, derived from the leading alphabetic
+/// token of the prerelease identifier: `0.21.0-rc.2` → `rc`,
+/// `1.0.0-beta.1` → `beta`, `1.0.0-alpha` → `alpha`; anything else → `pre`.
+fn prerelease_label(prerelease: &str) -> &'static str {
+    let identifier = prerelease.split('-').nth(1).unwrap_or_default();
+    let token = identifier
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .next()
+        .unwrap_or_default();
+    match token {
+        "rc" => "rc",
+        "beta" => "beta",
+        "alpha" => "alpha",
+        _ => "pre",
+    }
 }
 
 /// Emit the combined `pane_common_breakdown` perf log line so each
@@ -3113,5 +3069,89 @@ mod tests {
             reset_at:  Some(0),
         };
         assert_eq!(format_rate_limit_bucket(Some(quota)), "4900/5000 resets 0s");
+    }
+
+    fn publishable_available() -> CratesIoStatus {
+        CratesIoStatus {
+            publish: PublishStatus::Publishable,
+            service: ServiceStatus::Available,
+        }
+    }
+
+    #[test]
+    fn crates_io_rows_show_stable_and_prerelease_when_both_present() {
+        let fields = CratesIoFields {
+            version:     Some("0.20.2".to_string()),
+            prerelease:  Some("0.21.0-rc.2".to_string()),
+            downloads:   Some(663),
+            publishable: true,
+        };
+        assert_eq!(
+            build_crates_io_rows(&fields, &publishable_available()),
+            vec![
+                ("version", "0.20.2".to_string()),
+                ("rc", "0.21.0-rc.2".to_string()),
+                ("downloads", "663".to_string()),
+            ],
+        );
+    }
+
+    #[test]
+    fn crates_io_rows_omit_prerelease_row_when_only_stable() {
+        let fields = CratesIoFields {
+            version:     Some("1.0.0".to_string()),
+            prerelease:  None,
+            downloads:   Some(10),
+            publishable: true,
+        };
+        assert_eq!(
+            build_crates_io_rows(&fields, &publishable_available()),
+            vec![
+                ("version", "1.0.0".to_string()),
+                ("downloads", "10".to_string())
+            ],
+        );
+    }
+
+    #[test]
+    fn crates_io_rows_empty_for_non_publishable() {
+        let fields = CratesIoFields {
+            version:     None,
+            prerelease:  None,
+            downloads:   None,
+            publishable: false,
+        };
+        let status = CratesIoStatus {
+            publish: PublishStatus::NotPublishable,
+            service: ServiceStatus::Unreachable,
+        };
+        assert!(build_crates_io_rows(&fields, &status).is_empty());
+    }
+
+    #[test]
+    fn crates_io_rows_show_unreachable_placeholder_during_outage() {
+        let fields = CratesIoFields {
+            version:     None,
+            prerelease:  None,
+            downloads:   None,
+            publishable: true,
+        };
+        let status = CratesIoStatus {
+            publish: PublishStatus::Publishable,
+            service: ServiceStatus::Unreachable,
+        };
+        assert_eq!(
+            build_crates_io_rows(&fields, &status),
+            vec![("version", CRATES_IO_UNREACHABLE.to_string())],
+        );
+    }
+
+    #[test]
+    fn prerelease_label_reflects_identifier_kind() {
+        assert_eq!(prerelease_label("0.21.0-rc.2"), "rc");
+        assert_eq!(prerelease_label("1.0.0-beta.1"), "beta");
+        assert_eq!(prerelease_label("1.0.0-alpha"), "alpha");
+        assert_eq!(prerelease_label("1.0.0-pre.3"), "pre");
+        assert_eq!(prerelease_label("1.0.0"), "pre");
     }
 }

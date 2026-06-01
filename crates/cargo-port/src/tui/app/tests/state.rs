@@ -981,6 +981,7 @@ fn member_vendored_path_receives_project_info_updates() {
     app.project_list.handle_crates_io_version_msg(
         vendored_path.as_path(),
         "0.4.0".to_string(),
+        None,
         3_208,
     );
 
@@ -1006,8 +1007,12 @@ fn project_refresh_preserves_crates_io_version() {
     let path = test_path("~/demo");
     let mut app = make_app(&[make_project(Some("demo"), "~/demo")]);
 
-    app.project_list
-        .handle_crates_io_version_msg(path.as_path(), "0.20.2".to_string(), 663);
+    app.project_list.handle_crates_io_version_msg(
+        path.as_path(),
+        "0.20.2".to_string(),
+        Some("0.21.0-rc.2".to_string()),
+        663,
+    );
 
     // A filesystem-triggered refresh re-scans the project. The fresh item has
     // no crates.io data (it is never persisted), so the refresh handler must
@@ -1024,6 +1029,7 @@ fn project_refresh_preserves_crates_io_version() {
         .rust_info_at_path(path.as_path())
         .expect("package should remain addressable after refresh");
     assert_eq!(rust_info.crates_version(), Some("0.20.2"));
+    assert_eq!(rust_info.crates_prerelease(), Some("0.21.0-rc.2"));
     assert_eq!(rust_info.crates_downloads(), Some(663));
 }
 

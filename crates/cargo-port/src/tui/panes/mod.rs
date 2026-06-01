@@ -69,8 +69,6 @@ pub(super) use pane_data::PackageRow;
 pub(super) use pane_data::PackageSection;
 pub(super) use pane_data::PendingCiFetch;
 pub(super) use pane_data::PendingExampleRun;
-#[cfg(test)]
-pub(super) use pane_data::PublishStatus;
 pub(super) use pane_data::PullRequestRow;
 pub(super) use pane_data::PullRequestSection;
 pub(super) use pane_data::PullRequestSectionState;
@@ -97,7 +95,6 @@ pub(super) use pane_data::copy_payload_for_lints;
 pub(super) use pane_data::copy_payload_for_output;
 pub(super) use pane_data::copy_payload_for_package;
 pub(super) use pane_data::copy_payload_for_targets;
-pub(super) use pane_data::crates_io_value_is_unreachable_placeholder;
 pub(super) use pane_data::display_row_for_entry;
 pub(super) use pane_data::format_date;
 pub(super) use pane_data::format_duration;
@@ -107,7 +104,6 @@ pub(super) use pane_data::git_fields_from_data;
 pub(super) use pane_data::git_has_description_row;
 pub(super) use pane_data::git_row_at;
 pub(super) use pane_data::github_stars_is_unreachable_placeholder;
-pub(super) use pane_data::package_field_at;
 pub(super) use pane_data::package_first_selectable_row;
 pub(super) use pane_data::package_last_selectable_row;
 pub(super) use pane_data::package_nearest_selectable_row;
@@ -125,6 +121,7 @@ pub(super) use pane_impls::ProjectListPane;
 pub(super) use pane_impls::TargetsPane;
 pub(super) use pane_impls::hit_test_table_row;
 pub(super) use project_list::compute_disk_cache;
+#[cfg(test)]
 pub(super) use project_list::formatted_disk_for_item;
 #[cfg(test)]
 pub(super) use project_list::render_tree_items;

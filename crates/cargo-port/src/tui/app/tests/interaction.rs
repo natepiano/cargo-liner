@@ -1351,7 +1351,7 @@ fn package_pane_keyboard_navigation_skips_section_rows() {
     let package = app.panes.package.content().expect("package pane content");
     let rows = panes::package_rows_from_data(package);
     assert!(matches!(rows.get(1), Some(panes::PackageRow::Section(_))));
-    assert!(matches!(rows.get(6), Some(panes::PackageRow::Section(_))));
+    assert!(matches!(rows.get(5), Some(panes::PackageRow::Section(_))));
     assert_eq!(app.panes.package.viewport.pos(), 0);
 
     press_key(&mut app, KeyCode::Up);
@@ -1361,13 +1361,13 @@ fn package_pane_keyboard_navigation_skips_section_rows() {
     for _ in 0..3 {
         press_key(&mut app, KeyCode::Down);
     }
-    assert_eq!(app.panes.package.viewport.pos(), 5);
+    assert_eq!(app.panes.package.viewport.pos(), 6);
 
     press_key(&mut app, KeyCode::Down);
     assert_eq!(app.panes.package.viewport.pos(), 7);
 
     press_key(&mut app, KeyCode::Up);
-    assert_eq!(app.panes.package.viewport.pos(), 5);
+    assert_eq!(app.panes.package.viewport.pos(), 6);
 }
 
 #[test]

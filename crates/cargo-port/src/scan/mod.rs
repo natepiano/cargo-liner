@@ -115,9 +115,10 @@ pub(crate) enum BackgroundMsg {
     },
     /// Crates.io version and download count fetched for a project.
     CratesIoVersion {
-        path:      AbsolutePath,
-        version:   String,
-        downloads: u64,
+        path:       AbsolutePath,
+        version:    String,
+        prerelease: Option<String>,
+        downloads:  u64,
     },
     /// A crates.io fetch has been queued for `name`. Drives the
     /// "Fetching crates.io info" running toast. Mirrors

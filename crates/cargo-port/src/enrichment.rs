@@ -75,9 +75,10 @@ fn emit_crates_io(name: &str, path: &AbsolutePath, tx: &Sender<BackgroundMsg>, c
     scan::emit_service_signal(tx, signal);
     if let Some(info) = info {
         let _ = tx.send(BackgroundMsg::CratesIoVersion {
-            path:      path.clone(),
-            version:   info.version,
-            downloads: info.downloads,
+            path:       path.clone(),
+            version:    info.version,
+            prerelease: info.prerelease,
+            downloads:  info.downloads,
         });
     }
     let _ = tx.send(BackgroundMsg::CratesIoFetchComplete {

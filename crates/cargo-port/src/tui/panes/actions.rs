@@ -11,8 +11,8 @@ use tui_pane::Viewport;
 
 use super::BuildMode;
 use super::CiFetchKind;
-use super::DetailField;
 use super::GitRow;
+use super::PackageRow;
 use super::PaneId;
 use super::PendingCiFetch;
 use super::PendingExampleRun;
@@ -561,8 +561,8 @@ fn handle_detail_enter(app: &mut App) {
     } else if app.base_focus() == PaneId::Package {
         if let Some(pkg) = app.panes.package.content()
             && matches!(
-                super::package_field_at(pkg, app.panes.package.viewport.pos()),
-                Some(DetailField::CratesIo)
+                super::package_rows_from_data(pkg).get(app.panes.package.viewport.pos()),
+                Some(PackageRow::CratesIo(_))
             )
         {
             open_url(&format!("https://crates.io/crates/{}", pkg.title_name));

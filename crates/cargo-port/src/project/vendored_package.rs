@@ -19,13 +19,14 @@ use super::project_fields::ProjectFields;
 /// relying on convention.
 #[derive(Clone, Default)]
 pub(crate) struct VendoredPackage {
-    pub(crate) path:             AbsolutePath,
-    pub(crate) name:             Option<String>,
-    pub(crate) worktree_status:  WorktreeStatus,
-    pub(crate) info:             ProjectInfo,
-    pub(crate) cargo:            Cargo,
-    pub(crate) crates_version:   Option<String>,
-    pub(crate) crates_downloads: Option<u64>,
+    pub(crate) path:              AbsolutePath,
+    pub(crate) name:              Option<String>,
+    pub(crate) worktree_status:   WorktreeStatus,
+    pub(crate) info:              ProjectInfo,
+    pub(crate) cargo:             Cargo,
+    pub(crate) crates_version:    Option<String>,
+    pub(crate) crates_prerelease: Option<String>,
+    pub(crate) crates_downloads:  Option<u64>,
 }
 
 impl VendoredPackage {
@@ -38,10 +39,18 @@ impl VendoredPackage {
 
     pub(crate) fn crates_version(&self) -> Option<&str> { self.crates_version.as_deref() }
 
+    pub(crate) fn crates_prerelease(&self) -> Option<&str> { self.crates_prerelease.as_deref() }
+
     pub(crate) const fn crates_downloads(&self) -> Option<u64> { self.crates_downloads }
 
-    pub(crate) fn set_crates_io(&mut self, version: String, downloads: u64) {
+    pub(crate) fn set_crates_io(
+        &mut self,
+        version: String,
+        prerelease: Option<String>,
+        downloads: u64,
+    ) {
         self.crates_version = Some(version);
+        self.crates_prerelease = prerelease;
         self.crates_downloads = Some(downloads);
     }
 }

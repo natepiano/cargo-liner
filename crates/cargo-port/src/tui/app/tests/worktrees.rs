@@ -92,12 +92,11 @@ fn workspace_worktree_group_root_uses_worktree_group_title() {
 
     let rows = panes::package_rows_from_data(package);
     assert_eq!(
-        &rows[..7],
+        &rows[..6],
         &[
             panes::PackageRow::Description,
             panes::PackageRow::Section(panes::PackageSection::WorktreeGroupSummary),
             panes::PackageRow::Field(panes::DetailField::Worktrees),
-            panes::PackageRow::Field(panes::DetailField::DiskTotal),
             panes::PackageRow::Field(panes::DetailField::Lint),
             panes::PackageRow::Field(panes::DetailField::Ci),
             panes::PackageRow::Section(panes::PackageSection::PrimaryWorkspace),
@@ -190,13 +189,12 @@ fn worktree_group_summary_counts_visible_and_deleted_entries() {
 
     let rows = panes::package_rows_from_data(package);
     assert_eq!(
-        &rows[..8],
+        &rows[..7],
         &[
             panes::PackageRow::Description,
             panes::PackageRow::Section(panes::PackageSection::WorktreeGroupSummary),
             panes::PackageRow::Field(panes::DetailField::Worktrees),
             panes::PackageRow::Field(panes::DetailField::DeletedWorktrees),
-            panes::PackageRow::Field(panes::DetailField::DiskTotal),
             panes::PackageRow::Field(panes::DetailField::Lint),
             panes::PackageRow::Field(panes::DetailField::Ci),
             panes::PackageRow::Section(panes::PackageSection::PrimaryPackage),

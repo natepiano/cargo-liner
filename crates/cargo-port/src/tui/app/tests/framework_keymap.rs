@@ -65,17 +65,14 @@ use crate::tui::keymap_ui;
 use crate::tui::panes;
 use crate::tui::panes::CiData;
 use crate::tui::panes::CiEmptyState;
-use crate::tui::panes::DetailField;
 use crate::tui::panes::GitData;
 use crate::tui::panes::LintsData;
 use crate::tui::panes::PackageData;
 use crate::tui::panes::PaneId;
-use crate::tui::panes::PublishStatus;
 use crate::tui::panes::RemoteRow;
 use crate::tui::panes::TargetsData;
 use crate::tui::render;
 use crate::tui::settings::SettingOption;
-use crate::tui::state::ServiceStatus;
 
 const TAB_WALK_STEPS: usize = 6;
 const SINGLE_RUN_COUNT: usize = 1;
@@ -175,10 +172,7 @@ fn package_data_no_version() -> PackageData {
         path:                     "~/demo".to_string(),
         version:                  Some("0.1.0".to_string()),
         description:              None,
-        crates_version:           None,
-        crates_downloads:         None,
-        publish_status:           PublishStatus::NotPublishable,
-        crates_io_service:        ServiceStatus::Available,
+        crates_io_rows:           Vec::new(),
         types:                    Some(vec![ProjectType::Library]),
         disk:                     Some(1_048_576),
         stats_rows:               Vec::new(),
@@ -261,7 +255,7 @@ fn package_activate_state_disabled_when_no_crates_version() {
     assert_eq!(
         pane.state(PackageAction::Activate, &app),
         ShortcutState::Disabled,
-        "Activate must be Disabled when crates_version is None — no actionable row exists",
+        "Activate must be Disabled with no crates.io rows — no actionable row exists",
     );
 }
 
@@ -271,12 +265,12 @@ fn package_activate_state_enabled_on_crates_io_with_version() {
     let mut app = make_app(&[project]);
 
     let mut data = package_data_no_version();
-    data.crates_version = Some("0.1.0".to_string());
+    data.crates_io_rows = vec![("version", "0.1.0".to_string())];
     let rows = panes::package_rows_from_data(&data);
     let crates_io_pos = rows
         .iter()
-        .position(|row| matches!(row, panes::PackageRow::Field(DetailField::CratesIo)))
-        .expect("crates.io row must appear for a Rust package with title_name set");
+        .position(|row| matches!(row, panes::PackageRow::CratesIo(_)))
+        .expect("crates.io row must appear for a Rust package with crates.io data");
     app.panes.package.set_content(data);
     app.panes.package.viewport.set_pos(crates_io_pos);
 

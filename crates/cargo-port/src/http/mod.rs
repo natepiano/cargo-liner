@@ -1033,18 +1033,8 @@ impl HttpClient {
         let Some(krate) = json.get("crate") else {
             return (None, Some(ServiceSignal::Reachable(ServiceKind::CratesIo)));
         };
-        let Some(max_stable_version) = krate.get("max_stable_version") else {
-            return (None, Some(ServiceSignal::Reachable(ServiceKind::CratesIo)));
-        };
-        let Some(version) = max_stable_version.as_str().map(String::from) else {
-            return (None, Some(ServiceSignal::Reachable(ServiceKind::CratesIo)));
-        };
-        let downloads = krate
-            .get("downloads")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0);
         (
-            Some(CratesIoInfo { version, downloads }),
+            crates_io_info_from_crate(krate),
             Some(ServiceSignal::Reachable(ServiceKind::CratesIo)),
         )
     }
@@ -1113,6 +1103,88 @@ fn build_client() -> Result<Client, Error> {
         .timeout(GH_TIMEOUT)
         .user_agent(APP_NAME)
         .build()
+}
+
+/// Select the version to show and (when distinct) the newer prerelease
+/// from a crates.io `crate` object. `max_stable_version` is the latest
+/// stable; `max_version` is the highest non-yanked release including
+/// prereleases, so when it differs from the stable it must be a newer
+/// prerelease. A crate with only prereleases shows the newest as its
+/// version. Returns `None` when neither field is present.
+fn crates_io_info_from_crate(krate: &Value) -> Option<CratesIoInfo> {
+    let stable = krate
+        .get("max_stable_version")
+        .and_then(serde_json::Value::as_str);
+    let newest = krate.get("max_version").and_then(serde_json::Value::as_str);
+    let (version, prerelease) = match (stable, newest) {
+        (Some(stable), Some(newest)) if newest != stable && newest.contains('-') => {
+            (stable.to_string(), Some(newest.to_string()))
+        },
+        (Some(stable), _) => (stable.to_string(), None),
+        (None, Some(newest)) => (newest.to_string(), None),
+        (None, None) => return None,
+    };
+    let downloads = krate
+        .get("downloads")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    Some(CratesIoInfo {
+        version,
+        prerelease,
+        downloads,
+    })
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod crates_io_tests {
+    use super::crates_io_info_from_crate;
+
+    #[test]
+    fn stable_with_newer_prerelease_returns_both() {
+        let krate = serde_json::json!({
+            "max_stable_version": "0.20.2",
+            "max_version": "0.21.0-rc.2",
+            "downloads": 663,
+        });
+        let info = crates_io_info_from_crate(&krate).expect("info");
+        assert_eq!(info.version, "0.20.2");
+        assert_eq!(info.prerelease.as_deref(), Some("0.21.0-rc.2"));
+        assert_eq!(info.downloads, 663);
+    }
+
+    #[test]
+    fn stable_without_newer_prerelease_omits_prerelease() {
+        let krate = serde_json::json!({
+            "max_stable_version": "1.2.3",
+            "max_version": "1.2.3",
+            "downloads": 10,
+        });
+        let info = crates_io_info_from_crate(&krate).expect("info");
+        assert_eq!(info.version, "1.2.3");
+        assert_eq!(info.prerelease, None);
+    }
+
+    #[test]
+    fn only_prereleases_shows_newest_as_version() {
+        let krate = serde_json::json!({
+            "max_stable_version": serde_json::Value::Null,
+            "max_version": "0.1.0-alpha.1",
+            "downloads": 5,
+        });
+        let info = crates_io_info_from_crate(&krate).expect("info");
+        assert_eq!(info.version, "0.1.0-alpha.1");
+        assert_eq!(info.prerelease, None);
+    }
+
+    #[test]
+    fn no_versions_returns_none() {
+        let krate = serde_json::json!({ "downloads": 0 });
+        assert!(crates_io_info_from_crate(&krate).is_none());
+    }
 }
 
 #[cfg(test)]

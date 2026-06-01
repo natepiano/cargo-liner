@@ -2040,12 +2040,13 @@ impl ProjectList {
         &mut self,
         path: &Path,
         version: String,
+        prerelease: Option<String>,
         downloads: u64,
     ) {
         if let Some(rust_info) = self.rust_info_at_path_mut(path) {
-            rust_info.set_crates_io(version, downloads);
+            rust_info.set_crates_io(version, prerelease, downloads);
         } else if let Some(vendored) = self.vendored_at_path_mut(path) {
-            vendored.set_crates_io(version, downloads);
+            vendored.set_crates_io(version, prerelease, downloads);
         }
     }
 

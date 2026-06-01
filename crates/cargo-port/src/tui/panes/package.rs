@@ -41,6 +41,7 @@ use super::LintDisplay;
 use super::PackageData;
 use super::PackageRow;
 use super::SyncedDescriptionHeight;
+use super::pane_data::CRATES_IO_UNREACHABLE;
 use super::pane_data::PackageSection;
 use super::pane_data::TESTS_IGNORED_LABEL;
 use super::pane_data::TESTS_TOTAL_LABEL;
@@ -95,7 +96,7 @@ struct StatsColumnRender<'a> {
     pane:              &'a Viewport,
     focus:             PaneFocusState,
     area:              Rect,
-    digit_width:       u16,
+    value_width:       u16,
     border_style:      Style,
     /// Style for the `Tests` sub-section title rule, matching the
     /// `Structure` title (chrome title style for the current focus).
@@ -122,8 +123,17 @@ const MIN_STATS_LABEL_WIDTH: u16 = 10;
 /// Title of the Tests sub-section rule in the stats column.
 const TESTS_TITLE: &str = "Tests";
 
-/// Compute the fixed stats column width across both stat sections
-/// (Structure + Tests). Returns `(total_width, digit_width)`.
+/// Title of the crates.io sub-section rule in the stats column.
+const CRATES_IO_TITLE: &str = "crates.io";
+
+/// True when any stats-column section (Structure / Tests / crates.io)
+/// has rows, so the right-hand column should render at all.
+const fn has_stats_column(data: &PackageData) -> bool {
+    !data.stats_rows.is_empty() || !data.test_rows.is_empty() || !data.crates_io_rows.is_empty()
+}
+
+/// Compute the fixed stats column width across all three stat sections
+/// (Structure + Tests + crates.io). Returns `(total_width, value_width)`.
 pub fn stats_column_width(data: &PackageData) -> (u16, u16) {
     let max_count = data
         .stats_rows
@@ -138,30 +148,41 @@ pub fn stats_column_width(data: &PackageData) -> (u16, u16) {
         10_000..100_000 => 5,
         _ => 6,
     };
+    // The crates.io section stores string values (versions, formatted
+    // download counts) that can be wider than any count; widen the value
+    // field so all three sections share one right edge.
+    let widest_crates_io = data
+        .crates_io_rows
+        .iter()
+        .map(|(_, value)| value.as_str().width())
+        .max()
+        .unwrap_or(0);
+    let value_width = digit_width.max(u16::try_from(widest_crates_io).unwrap_or(u16::MAX));
     let label_width = stats_label_width(data);
-    let total = 1 + 1 + label_width + 1 + digit_width + 1;
-    (total, digit_width)
+    let total = 1 + 1 + label_width + 1 + value_width + 1;
+    (total, value_width)
 }
 
-/// Width of the label field shared by both stat sections, so the
-/// right-aligned counts line up on a single right edge across Structure
-/// and Tests.
+/// Width of the label field shared by all stat sections, so the
+/// right-aligned values line up on a single right edge across Structure,
+/// Tests, and crates.io.
 fn stats_label_width(data: &PackageData) -> u16 {
-    let widest = data
+    let count_labels = data
         .stats_rows
         .iter()
         .chain(&data.test_rows)
-        .map(|(label, _)| label.width())
-        .max()
-        .unwrap_or(0);
+        .map(|(label, _)| label.width());
+    let crates_io_labels = data.crates_io_rows.iter().map(|(label, _)| label.width());
+    let widest = count_labels.chain(crates_io_labels).max().unwrap_or(0);
     u16::try_from(widest)
         .unwrap_or(u16::MAX)
         .max(MIN_STATS_LABEL_WIDTH)
 }
 
-/// Number of rendered lines in the stats column: the Structure rows plus,
-/// when there are test rows, a blank spacer (only when Structure has
-/// rows), the `Tests` title rule, and its rows.
+/// Number of rendered lines in the stats column: the Structure rows, then
+/// (when present) the Tests section and the crates.io section, each
+/// preceded by a blank spacer when a section above it has rows, plus its
+/// own title rule.
 const fn stats_column_line_count(data: &PackageData) -> usize {
     let tests = if data.test_rows.is_empty() {
         0
@@ -169,7 +190,17 @@ const fn stats_column_line_count(data: &PackageData) -> usize {
         let spacer = if data.stats_rows.is_empty() { 0 } else { 1 };
         spacer + 1 + data.test_rows.len()
     };
-    data.stats_rows.len() + tests
+    let crates_io = if data.crates_io_rows.is_empty() {
+        0
+    } else {
+        let spacer = if data.stats_rows.is_empty() && data.test_rows.is_empty() {
+            0
+        } else {
+            1
+        };
+        spacer + 1 + data.crates_io_rows.len()
+    };
+    data.stats_rows.len() + tests + crates_io
 }
 
 pub fn detail_column_scroll_offset(
@@ -203,7 +234,8 @@ fn package_row_label_width(rows: &[PackageRow]) -> usize {
             PackageRow::Description
             | PackageRow::Section(_)
             | PackageRow::Structure(_)
-            | PackageRow::Tests(_) => None,
+            | PackageRow::Tests(_)
+            | PackageRow::CratesIo(_) => None,
             PackageRow::Field(field) => Some(field.label().width()),
         })
         .max()
@@ -241,10 +273,10 @@ fn render_column_inner(
                     package_field_render(ctx, *field, label_width, area.width, selection),
                 );
             },
-            PackageRow::Structure(_) | PackageRow::Tests(_) => {
-                // Structure and Tests rows render in the separate stats
-                // column, which doesn't scroll. Anchor the metadata column
-                // to its own last line rather than a position past its
+            PackageRow::Structure(_) | PackageRow::Tests(_) | PackageRow::CratesIo(_) => {
+                // Structure, Tests, and crates.io rows render in the separate
+                // stats column, which doesn't scroll. Anchor the metadata
+                // column to its own last line rather than a position past its
                 // content, so focusing a stat keeps the metadata steady
                 // instead of scrolling it up.
                 if matches!(focus, PaneFocusState::Active) && i == pane.pos() {
@@ -316,11 +348,6 @@ fn package_field_value_style(ctx: &PackageRenderCtx<'_>, field: DetailField) -> 
     match field {
         DetailField::Ci => ci_display_style(&ctx.data.ci_display),
         DetailField::Lint => lint_display_style(&ctx.data.lint_display),
-        DetailField::CratesIo | DetailField::Downloads
-            if panes::crates_io_value_is_unreachable_placeholder(ctx.data) =>
-        {
-            Style::default().fg(warning_color())
-        },
         _ => Style::default(),
     }
 }
@@ -661,9 +688,8 @@ fn render_project_metadata(
         animation_elapsed: context.animation_elapsed,
         lint_enabled: context.lint_enabled,
     };
-    let has_stats = !context.pkg_data.stats_rows.is_empty();
-    if has_stats {
-        let (stats_width, digit_width) = stats_column_width(context.pkg_data);
+    if has_stats_column(context.pkg_data) {
+        let (stats_width, value_width) = stats_column_width(context.pkg_data);
 
         let sub_cols = Layout::default()
             .direction(Direction::Horizontal)
@@ -679,7 +705,7 @@ fn render_project_metadata(
                 pane,
                 focus: context.focus,
                 area: sub_cols[1],
-                digit_width,
+                value_width,
                 border_style: context.border_style,
                 title_style: context
                     .styles
@@ -697,7 +723,7 @@ fn render_project_metadata(
 }
 
 fn project_stats_connector_x(data: &PackageData, lower_area: Rect) -> Option<u16> {
-    if data.stats_rows.is_empty() {
+    if !has_stats_column(data) {
         return None;
     }
 
@@ -718,7 +744,7 @@ struct StatSectionCtx<'a> {
     inner_x:     u16,
     inner_width: u16,
     label_width: usize,
-    digit_width: usize,
+    value_width: usize,
     area_bottom: u16,
 }
 
@@ -745,14 +771,15 @@ fn render_stats_column(frame: &mut Frame, context: &StatsColumnRender<'_>) -> St
         inner_x:     area.x.saturating_add(1),
         inner_width: area.width.saturating_sub(1),
         label_width: stats_label_width(data) as usize,
-        digit_width: context.digit_width as usize,
+        value_width: context.value_width as usize,
         area_bottom: area.bottom(),
     };
 
     let mut row_rects = Vec::new();
+    let structure_rows = count_rows_as_strings(&data.stats_rows);
     render_stat_section(
         frame,
-        &data.stats_rows,
+        &structure_rows,
         PackageRow::Structure,
         structure_value_style,
         SectionPlacement {
@@ -769,6 +796,7 @@ fn render_stats_column(frame: &mut Frame, context: &StatsColumnRender<'_>) -> St
     } else {
         render_tests_section(frame, context, &ctx, &mut row_rects)
     };
+    render_crates_io_section(frame, context, &ctx, &mut row_rects);
     StatsColumnLayout {
         row_rects,
         tests_band_offset,
@@ -827,9 +855,10 @@ fn render_tests_section(
             band_visible,
         )
     });
+    let test_rows = count_rows_as_strings(&data.test_rows);
     render_stat_section(
         frame,
-        &data.test_rows,
+        &test_rows,
         PackageRow::Tests,
         tests_value_style,
         SectionPlacement {
@@ -853,6 +882,69 @@ fn render_tests_section(
         band_offset,
     );
     band_offset
+}
+
+/// Render the crates.io section below Structure and Tests: a blank-line
+/// spacer (when a section above has rows), the `crates.io` rule, then the
+/// version / prerelease / downloads rows. Unlike Tests it does not scroll —
+/// it is at most three rows and pins below the (top-aligned) sections above.
+fn render_crates_io_section(
+    frame: &mut Frame,
+    context: &StatsColumnRender<'_>,
+    ctx: &StatSectionCtx<'_>,
+    row_rects: &mut Vec<(Rect, usize)>,
+) {
+    let data = context.data;
+    if data.crates_io_rows.is_empty() {
+        return;
+    }
+    let area = context.area;
+    let structure_height = u16::try_from(data.stats_rows.len()).unwrap_or(u16::MAX);
+    let tests_height = if data.test_rows.is_empty() {
+        0
+    } else {
+        let spacer = u16::from(!data.stats_rows.is_empty());
+        spacer
+            .saturating_add(1)
+            .saturating_add(u16::try_from(data.test_rows.len()).unwrap_or(u16::MAX))
+    };
+    let spacer = u16::from(!data.stats_rows.is_empty() || !data.test_rows.is_empty());
+    let title_y = area
+        .y
+        .saturating_add(structure_height)
+        .saturating_add(tests_height)
+        .saturating_add(spacer);
+    // Span one column past the stats area so the rule's endcaps tee into the
+    // column's left vertical rule and the pane's right border — matching the
+    // `Structure` / `Tests` rules above.
+    tui_pane::render_horizontal_rule(
+        frame,
+        Rect {
+            x:      area.x,
+            y:      title_y,
+            width:  area.width.saturating_add(1),
+            height: 1,
+        },
+        context.border_style,
+        Some(RuleTitle {
+            text:  CRATES_IO_TITLE,
+            style: context.title_style,
+        }),
+        None,
+    );
+    render_stat_section(
+        frame,
+        &data.crates_io_rows,
+        PackageRow::CratesIo,
+        crates_io_value_style,
+        SectionPlacement {
+            start_y:      title_y.saturating_add(1),
+            row_offset:   0,
+            visible_rows: data.crates_io_rows.len(),
+        },
+        ctx,
+        row_rects,
+    );
 }
 
 /// Band partition for the stats column: the Tests rows are the last
@@ -904,19 +996,33 @@ fn render_tests_affordance(
 
 /// Value-cell style for a Structure row — the accent title color, shared
 /// across every `ws` / `lib` / `bin` / … count.
-fn structure_value_style(_: &str) -> Style { Style::default().fg(title_color()) }
+fn structure_value_style(_: &str, _: &str) -> Style { Style::default().fg(title_color()) }
 
 /// Value-cell style for a Tests row: `unit` / `integration` / `doc`
 /// counts render in primary white; the unlabelled `total` renders in bold
 /// accent color (matching the Languages pane footer); the `(ignored)`
 /// annotation renders dimmed, since rustdoc registers but never runs it.
-fn tests_value_style(label: &str) -> Style {
+fn tests_value_style(label: &str, _: &str) -> Style {
     match label {
         TESTS_IGNORED_LABEL => Style::default().fg(secondary_text_color()),
         TESTS_TOTAL_LABEL => Style::default()
             .fg(title_color())
             .add_modifier(Modifier::BOLD),
         _ => Style::default().fg(text_default()),
+    }
+}
+
+/// Value-cell style for a crates.io row: `version` and `downloads` render
+/// in primary white, the prerelease (`rc` / `beta` / …) dimmed. The
+/// `unreachable` outage placeholder renders in warning color so the user
+/// can tell data is missing rather than zero.
+fn crates_io_value_style(label: &str, value: &str) -> Style {
+    if value == CRATES_IO_UNREACHABLE {
+        return Style::default().fg(warning_color());
+    }
+    match label {
+        "version" | "downloads" => Style::default().fg(text_default()),
+        _ => Style::default().fg(secondary_text_color()),
     }
 }
 
@@ -931,29 +1037,39 @@ struct SectionPlacement {
     visible_rows: usize,
 }
 
+/// Format the count-valued Structure / Tests rows into the
+/// `(label, value-string)` pairs `render_stat_section` renders, so all
+/// sections share one rendering path.
+fn count_rows_as_strings(rows: &[(&'static str, usize)]) -> Vec<(&'static str, String)> {
+    rows.iter()
+        .map(|(label, count)| (*label, count.to_string()))
+        .collect()
+}
+
 /// Render one stat section's visible row slice, pushing a hit-test rect for
 /// each visible selectable row. Labels are left-aligned in the shared label
-/// field; counts are right-aligned against the column edge so both sections
-/// share one right edge.
+/// field; values are right-aligned against the column edge so all sections
+/// share one right edge. Values are pre-formatted strings — counts for
+/// Structure / Tests, version / download strings for crates.io.
 fn render_stat_section(
     frame: &mut Frame,
-    section_rows: &[(&'static str, usize)],
+    section_rows: &[(&'static str, String)],
     row_for_index: fn(usize) -> PackageRow,
-    value_style: fn(&str) -> Style,
+    value_style: fn(&str, &str) -> Style,
     placement: SectionPlacement,
     ctx: &StatSectionCtx<'_>,
     row_rects: &mut Vec<(Rect, usize)>,
 ) {
     let label_style = Style::default().fg(label_color());
     let lw = ctx.label_width;
-    let dw = ctx.digit_width;
+    let vw = ctx.value_width;
     let end = placement
         .row_offset
         .saturating_add(placement.visible_rows)
         .min(section_rows.len());
     let lines: Vec<Line<'_>> = (placement.row_offset..end)
         .map(|i| {
-            let (label, count) = section_rows[i];
+            let (label, value) = (section_rows[i].0, section_rows[i].1.as_str());
             let slot = i - placement.row_offset;
             let y_abs = placement
                 .start_y
@@ -977,8 +1093,8 @@ fn render_stat_section(
             Line::from(vec![
                 Span::styled(format!(" {label:<lw$} "), selection.patch(label_style)),
                 Span::styled(
-                    format!("{count:>dw$} "),
-                    selection.patch(value_style(label)),
+                    format!("{value:>vw$} "),
+                    selection.patch(value_style(label, value)),
                 ),
             ])
         })

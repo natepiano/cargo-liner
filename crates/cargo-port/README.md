@@ -88,7 +88,6 @@ We'll show the Worktree Group as an example below. Run the app to see any of the
 3. Total space on disk
 4. Rollup of lint runs - if any are failed this would show failed
 5. CI results from GitHub - counts of what run summaries are locally cached vs only on GitHub
-
 #### Primary Package Details
 This is the path to where the actual .git repo is. Cargo port considers it "primary".
 6. Path on disk
@@ -97,8 +96,10 @@ This is the path to where the actual .git repo is. Cargo port considers it "prim
 9. Cargo.toml metadata 
 10. Structure counts for workspaces, libraries, binaries, proc-macros, examples, test files and benches
 11. Counts of tests (unit, integration, doc and ignored)
-
-Missing from this view
+#### Structure, Tests & crates.io
+12. how many lib, bin, example, proc-macro, bench targets are in the project
+13. How many unit, doc, integration and ignored test are there
+14. If published to crates.io, the version and the download counts
 
 ### Git
 

@@ -11,7 +11,6 @@ use super::EmptyDescriptionBehavior;
 use super::GitData;
 use super::LintsData;
 use super::PackageData;
-use super::PublishStatus;
 use super::PullRequestRow;
 use super::PullRequestSection;
 use super::PullRequestSectionState;
@@ -37,7 +36,6 @@ use crate::project::GitStatus;
 use crate::project::ProjectType;
 use crate::tui::app::AvailabilityStatus;
 use crate::tui::panes;
-use crate::tui::state::ServiceStatus;
 
 fn package_data(is_rust_project: bool) -> PackageData {
     PackageData {
@@ -52,10 +50,7 @@ fn package_data(is_rust_project: bool) -> PackageData {
         path:                     "~/demo".to_string(),
         version:                  Some("0.1.0".to_string()),
         description:              None,
-        crates_version:           None,
-        crates_downloads:         None,
-        publish_status:           PublishStatus::NotPublishable,
-        crates_io_service:        ServiceStatus::Available,
+        crates_io_rows:           Vec::new(),
         types:                    Some(vec![ProjectType::Library]),
         disk:                     Some(38_989_922_304),
         stats_rows:               Vec::new(),
@@ -111,82 +106,38 @@ fn ci_run_with_jobs(jobs: Vec<CiJob>) -> CiRun {
 }
 
 #[test]
-fn crates_io_row_hidden_when_publishable_but_service_available() {
-    // Pre-fetch state: no version yet, service is fine. We still
-    // suppress the row — the existing UX before any fetch lands.
+fn crates_io_rows_appended_as_selectable_section_rows() {
+    // The crates.io stats section contributes one selectable
+    // `PackageRow::CratesIo` per row, after the left-column fields.
     let mut data = package_data(true);
-    data.crates_version = None;
-    data.crates_downloads = None;
-    data.publish_status = PublishStatus::Publishable;
-    data.crates_io_service = ServiceStatus::Available;
-    let fields = model::package_fields_from_data(&data);
-    assert!(
-        !fields.contains(&DetailField::CratesIo),
-        "no row before data lands while service is reachable"
-    );
-    assert!(!fields.contains(&DetailField::Downloads));
-}
-
-#[test]
-fn crates_io_row_shows_warning_when_unreachable_and_no_version() {
-    // Confirmed-down state with no version yet: the row surfaces
-    // with the warning placeholder text so the user knows why the
-    // value is empty.
-    let mut data = package_data(true);
-    data.crates_version = None;
-    data.crates_downloads = None;
-    data.publish_status = PublishStatus::Publishable;
-    data.crates_io_service = ServiceStatus::Unreachable;
-    let fields = model::package_fields_from_data(&data);
-    assert!(
-        fields.contains(&DetailField::CratesIo),
-        "row must surface during outage so the user sees the placeholder"
-    );
-    assert!(fields.contains(&DetailField::Downloads));
+    data.crates_io_rows = vec![
+        ("version", "0.20.2".to_string()),
+        ("rc", "0.21.0-rc.2".to_string()),
+        ("downloads", "663".to_string()),
+    ];
+    let crates_io_rows: Vec<_> = model::package_rows_from_data(&data)
+        .into_iter()
+        .filter(|row| matches!(row, model::PackageRow::CratesIo(_)))
+        .collect();
     assert_eq!(
-        DetailField::CratesIo.package_value(&data),
-        "crates.io unreachable",
+        crates_io_rows,
+        vec![
+            model::PackageRow::CratesIo(0),
+            model::PackageRow::CratesIo(1),
+            model::PackageRow::CratesIo(2),
+        ],
     );
-    assert_eq!(
-        DetailField::Downloads.package_value(&data),
-        "crates.io unreachable",
-    );
-    assert!(model::crates_io_value_is_unreachable_placeholder(&data));
 }
 
 #[test]
-fn crates_io_row_shows_normal_value_when_version_present_during_outage() {
-    // Data landed before the outage (or during a brief recovery).
-    // Even with the service currently unreachable, the row renders
-    // the real value — not the warning placeholder.
-    let mut data = package_data(true);
-    data.crates_version = Some("0.1.0".to_string());
-    data.crates_downloads = Some(123);
-    data.publish_status = PublishStatus::Publishable;
-    data.crates_io_service = ServiceStatus::Unreachable;
-    let fields = model::package_fields_from_data(&data);
-    assert!(fields.contains(&DetailField::CratesIo));
-    assert!(fields.contains(&DetailField::Downloads));
-    assert_eq!(DetailField::CratesIo.package_value(&data), "0.1.0");
-    assert!(!model::crates_io_value_is_unreachable_placeholder(&data));
-}
-
-#[test]
-fn crates_io_row_hidden_for_non_publishable_even_during_outage() {
-    // `publish = false` packages never fire a crates.io fetch, so
-    // surfacing the warning row for them would be misleading.
-    let mut data = package_data(true);
-    data.crates_version = None;
-    data.crates_downloads = None;
-    data.publish_status = PublishStatus::NotPublishable;
-    data.crates_io_service = ServiceStatus::Unreachable;
-    let fields = model::package_fields_from_data(&data);
+fn crates_io_section_absent_without_data() {
+    // No crates.io data → no crates.io rows.
+    let data = package_data(true);
     assert!(
-        !fields.contains(&DetailField::CratesIo),
-        "non-publishable rows must stay hidden during outage"
+        !model::package_rows_from_data(&data)
+            .iter()
+            .any(|row| matches!(row, model::PackageRow::CratesIo(_)))
     );
-    assert!(!fields.contains(&DetailField::Downloads));
-    assert!(!model::crates_io_value_is_unreachable_placeholder(&data));
 }
 
 #[test]
@@ -274,11 +225,11 @@ fn stars_row_hidden_when_github_unauthenticated() {
 #[test]
 fn package_copy_crates_io_row_uses_full_url() {
     let mut data = package_data(true);
-    data.crates_version = Some("0.1.0".to_string());
+    data.crates_io_rows = vec![("version", "0.1.0".to_string())];
     let rows = model::package_rows_from_data(&data);
     let pos = rows
         .iter()
-        .position(|row| matches!(row, model::PackageRow::Field(DetailField::CratesIo)))
+        .position(|row| matches!(row, model::PackageRow::CratesIo(_)))
         .unwrap_or(usize::MAX);
     assert_ne!(pos, usize::MAX);
 
@@ -606,11 +557,7 @@ fn package_fields_place_lint_and_ci_before_disk_for_non_rust_projects() {
 
 #[test]
 fn package_label_width_matches_widest_visible_field() {
-    let data = PackageData {
-        crates_version: Some("0.0.3".to_string()),
-        crates_downloads: Some(74),
-        ..package_data(true)
-    };
+    let data = package_data(true);
     let fields = model::package_fields_from_data(&data);
     let expected = fields.iter().map(|f| f.label().len()).max().unwrap_or(0);
     assert_eq!(panes::package_label_width(&fields), expected);

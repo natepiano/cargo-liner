@@ -133,6 +133,7 @@ impl App {
                     let _ = tx.send(BackgroundMsg::CratesIoVersion {
                         path,
                         version: info.version,
+                        prerelease: info.prerelease,
                         downloads: info.downloads,
                     });
                 }
