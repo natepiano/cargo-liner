@@ -292,9 +292,10 @@ fn render_column_inner(
                 ) {
                     lines.push(Line::default());
                 }
-                let style = Style::default()
-                    .fg(title_color())
-                    .add_modifier(Modifier::BOLD);
+                let style = ctx
+                    .styles
+                    .chrome
+                    .title_style(matches!(focus, PaneFocusState::Active));
                 lines.push(Line::from(Span::styled(
                     format!(" {}", section.label()),
                     style,

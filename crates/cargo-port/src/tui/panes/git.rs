@@ -243,7 +243,7 @@ fn append_remotes_section(
     });
     accum.lines.push(Line::from(Span::raw(String::new())));
     let col_widths = remote_col_widths(&ctx.data.remotes);
-    render_remote_header(accum.lines, &col_widths);
+    render_remote_header(accum.lines, &col_widths, focused);
     let active = matches!(ctx.focus, PaneFocusState::Active);
     for (i, remote) in ctx.data.remotes.iter().enumerate() {
         let row_index = ctx.row_offset + flat_len + pull_requests_len + i;
@@ -303,7 +303,7 @@ fn append_pull_requests_section(
     }
 
     let col_widths = pull_request_col_widths(&section.rows, area_width, ctx.animation_elapsed);
-    render_pull_request_header(accum.lines, &col_widths);
+    render_pull_request_header(accum.lines, &col_widths, focused);
     let active = matches!(ctx.focus, PaneFocusState::Active);
     for (i, row) in section.rows.iter().enumerate() {
         let row_index = ctx.row_offset + flat_len + i;
@@ -420,10 +420,21 @@ fn pull_request_col_widths(
     }
 }
 
-fn render_pull_request_header(lines: &mut Vec<Line<'static>>, widths: &PullRequestColWidths) {
-    let style = Style::default()
-        .fg(column_header_color())
-        .add_modifier(Modifier::BOLD);
+fn column_header_style(focused: bool) -> Style {
+    let style = Style::default().fg(column_header_color());
+    if focused {
+        style.add_modifier(Modifier::BOLD)
+    } else {
+        style
+    }
+}
+
+fn render_pull_request_header(
+    lines: &mut Vec<Line<'static>>,
+    widths: &PullRequestColWidths,
+    focused: bool,
+) {
+    let style = column_header_style(focused);
     let text = format!(
         " {:<number$}  {:<status$}  {:<branch$}  {}",
         fit_text(PULL_REQUEST_NUMBER_HEADER, widths.number),
@@ -546,7 +557,7 @@ fn append_worktrees_section(
     });
     accum.lines.push(Line::from(Span::raw(String::new())));
     let col_widths = worktree_col_widths(&ctx.data.worktrees);
-    render_worktree_header(accum.lines, &col_widths);
+    render_worktree_header(accum.lines, &col_widths, focused);
     let active = matches!(ctx.focus, PaneFocusState::Active);
     for (i, wt) in ctx.data.worktrees.iter().enumerate() {
         let row_index = ctx.row_offset + flat_len + pull_requests_len + remotes_len + i;
@@ -599,9 +610,10 @@ fn render_section_overlays(
         } else {
             inactive_title_color()
         };
-        let title_style = Style::default()
-            .fg(title_color)
-            .add_modifier(Modifier::BOLD);
+        let mut title_style = Style::default().fg(title_color);
+        if rule.focused {
+            title_style = title_style.add_modifier(Modifier::BOLD);
+        }
         tui_pane::render_horizontal_rule(
             frame,
             Rect {
@@ -824,10 +836,8 @@ fn remote_col_widths(remotes: &[RemoteRow]) -> RemoteColWidths {
     }
 }
 
-fn render_remote_header(lines: &mut Vec<Line<'static>>, widths: &RemoteColWidths) {
-    let style = Style::default()
-        .fg(column_header_color())
-        .add_modifier(Modifier::BOLD);
+fn render_remote_header(lines: &mut Vec<Line<'static>>, widths: &RemoteColWidths, focused: bool) {
+    let style = column_header_style(focused);
     // Leading: 1 space pad + REMOTE_ICON_COL blank for icon alignment.
     let text = format!(
         " {:<icon$}{:<name$}  {:<url$}  {:<tracked$}  {:>status$}",
@@ -917,10 +927,12 @@ fn worktree_col_widths(worktrees: &[WorktreeInfo]) -> WorktreeColWidths {
     }
 }
 
-fn render_worktree_header(lines: &mut Vec<Line<'static>>, widths: &WorktreeColWidths) {
-    let style = Style::default()
-        .fg(column_header_color())
-        .add_modifier(Modifier::BOLD);
+fn render_worktree_header(
+    lines: &mut Vec<Line<'static>>,
+    widths: &WorktreeColWidths,
+    focused: bool,
+) {
+    let style = column_header_style(focused);
     let text = format!(
         " {:<name$}  {:<branch$}  {:<status$}",
         WORKTREES_NAME_HEADER,
@@ -1255,7 +1267,7 @@ mod tests {
             status:  6,
         };
 
-        render_remote_header(&mut lines, &widths);
+        render_remote_header(&mut lines, &widths, true);
 
         assert!(line_text(&lines[0]).ends_with("  Sync"));
     }
@@ -1274,7 +1286,7 @@ mod tests {
         let widths = pull_request_col_widths(&[row], 80, Duration::ZERO);
         let mut lines = Vec::new();
 
-        render_pull_request_header(&mut lines, &widths);
+        render_pull_request_header(&mut lines, &widths, true);
 
         assert!(line_text(&lines[0]).contains("Status"));
         assert!(line_text(&lines[0]).contains("Branch"));
