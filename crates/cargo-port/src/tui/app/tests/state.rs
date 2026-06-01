@@ -1002,6 +1002,32 @@ fn member_vendored_path_receives_project_info_updates() {
 }
 
 #[test]
+fn project_refresh_preserves_crates_io_version() {
+    let path = test_path("~/demo");
+    let mut app = make_app(&[make_project(Some("demo"), "~/demo")]);
+
+    app.project_list
+        .handle_crates_io_version_msg(path.as_path(), "0.20.2".to_string(), 663);
+
+    // A filesystem-triggered refresh re-scans the project. The fresh item has
+    // no crates.io data (it is never persisted), so the refresh handler must
+    // transfer the prior values rather than re-fetch from crates.io.
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::ProjectRefreshed {
+            item: make_project(Some("demo"), "~/demo"),
+        },
+    );
+
+    let rust_info = app
+        .project_list
+        .rust_info_at_path(path.as_path())
+        .expect("package should remain addressable after refresh");
+    assert_eq!(rust_info.crates_version(), Some("0.20.2"));
+    assert_eq!(rust_info.crates_downloads(), Some(663));
+}
+
+#[test]
 fn member_vendored_path_receives_cargo_metadata_fields() {
     let workspace_path = test_path("~/app");
     let vendored_path = test_path("~/app/vendor/helper");

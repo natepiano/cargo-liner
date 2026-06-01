@@ -577,6 +577,11 @@ impl App {
                     *project = info;
                     project.worktree_health = fresh_worktree_health;
                 }
+                // Crates.io version/downloads live on `RustInfo` /
+                // `VendoredPackage`, not `ProjectInfo`, and are never persisted.
+                // Re-fetching on every refresh would repeatedly call crates.io,
+                // so transfer the values the old item already holds.
+                transfer_crates_io(&old, &mut item, &project_path);
             }
             // Re-replace with the runtime-data-enriched version.
             tree.replace_leaf_by_path(&path, item, &dispatch);
@@ -598,6 +603,26 @@ impl App {
             .iter()
             .find(|entry| entry.item.at_path(path).is_some())
             .and_then(|entry| entry.item.git_directory())
+    }
+}
+/// Copy crates.io version/downloads from `old` onto the freshly-scanned
+/// `item` for the node at `path`. The node is either a `RustInfo` (workspace
+/// root, member, or standalone package) or a `VendoredPackage`; both store the
+/// values set by `BackgroundMsg::CratesIoVersion`.
+fn transfer_crates_io(old: &RootItem, item: &mut RootItem, path: &AbsolutePath) {
+    if let Some(source) = old.rust_info_at_path(path)
+        && let (Some(version), Some(downloads)) =
+            (source.crates_version(), source.crates_downloads())
+        && let Some(target) = item.rust_info_at_path_mut(path)
+    {
+        target.set_crates_io(version.to_string(), downloads);
+    }
+    if let Some(source) = old.vendored_at_path(path)
+        && let (Some(version), Some(downloads)) =
+            (source.crates_version(), source.crates_downloads())
+        && let Some(target) = item.vendored_at_path_mut(path)
+    {
+        target.set_crates_io(version.to_string(), downloads);
     }
 }
 fn preserve_live_pr_snapshot_while_loading(
