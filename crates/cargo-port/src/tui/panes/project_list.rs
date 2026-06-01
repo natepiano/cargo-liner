@@ -324,6 +324,12 @@ fn project_panel_title_with_counts(
     let cursor = ctx.project_list.cursor();
     let roots = scan::resolve_include_dirs(&ctx.config.current().tui.include_dirs);
 
+    // No directories configured (first run): point the user at Settings,
+    // which auto-opens to the Include dirs field at startup.
+    if roots.is_empty() {
+        return project_roots_title("Configure Include dirs in Settings", max_width);
+    }
+
     // Count visible rows per root directory and determine which root the
     // cursor is in.
     let mut root_counts: Vec<(String, usize, usize)> = Vec::new(); // (name, count, start_row)
@@ -353,27 +359,22 @@ fn project_panel_title_with_counts(
         .collect();
 
     let body = PaneTitleCount::Grouped(groups).body();
-    project_roots_title("Roots: ", &body, max_width)
+    project_roots_title(&body, max_width)
 }
 
-fn project_roots_title(prefix: &str, body: &str, max_width: usize) -> String {
-    let inner_max = max_width.saturating_sub(2);
-    if inner_max <= prefix.len() {
-        return format!(" {prefix} ");
-    }
-
-    let full = format!(" {prefix}{body} ");
+/// Build the project-list pane title from `body` (the directory list with
+/// counts, or the first-run placeholder), padded with one space each side
+/// and truncated with an ellipsis when it overflows `max_width`. No label
+/// prefix — the home-relative paths read as directories on their own.
+fn project_roots_title(body: &str, max_width: usize) -> String {
+    let full = format!(" {body} ");
     if full.len() <= max_width + 2 {
         return full;
     }
 
     format!(
-        " {prefix}{} ",
-        render::truncate_with_ellipsis(
-            body,
-            inner_max.saturating_sub(prefix.len()),
-            TITLE_ELLIPSIS,
-        )
+        " {} ",
+        render::truncate_with_ellipsis(body, max_width.saturating_sub(2), TITLE_ELLIPSIS)
     )
 }
 
@@ -1358,16 +1359,23 @@ mod tests {
 
     #[test]
     fn project_roots_title_adds_ellipsis_when_roots_overflow() {
-        let title = project_roots_title("Roots: ", "~/rust (12)  ~/work (7)", 20);
+        let title = project_roots_title("~/rust (12)  ~/work (7)", 20);
 
-        assert_eq!(title, " Roots: ~/rust (12… ");
+        assert_eq!(title, " ~/rust (12)  ~/wo… ");
     }
 
     #[test]
     fn project_roots_title_keeps_full_body_when_roots_fit() {
-        let title = project_roots_title("Roots: ", "~/rust (12)", 24);
+        let title = project_roots_title("~/rust (12)", 24);
 
-        assert_eq!(title, " Roots: ~/rust (12) ");
+        assert_eq!(title, " ~/rust (12) ");
+    }
+
+    #[test]
+    fn project_roots_title_shows_configure_hint_when_no_roots() {
+        let title = project_roots_title("Configure Include dirs in Settings", 50);
+
+        assert_eq!(title, " Configure Include dirs in Settings ");
     }
 
     #[test]
