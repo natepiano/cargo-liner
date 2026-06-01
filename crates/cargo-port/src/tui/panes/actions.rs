@@ -40,6 +40,7 @@ use crate::tui::keymap::KeyBind;
 use crate::tui::keymap::LintsAction;
 use crate::tui::keymap::PackageAction;
 use crate::tui::keymap::TargetsAction;
+use crate::tui::render;
 
 fn handle_target_action(app: &mut App, mode: BuildMode) {
     let Some(targets_data) = app.panes.targets.content().cloned() else {
@@ -690,6 +691,11 @@ fn handle_ci_fetch_more(app: &mut App) {
 
 /// Clear CI cache for a project and remove its runs from the app.
 fn clear_ci_cache(app: &mut App, abs: &Path) {
+    let run_count = app
+        .project_list
+        .ci_data_for(abs)
+        .and_then(ProjectCiData::info)
+        .map_or(0, |info| info.runs.len());
     let (title, body) = if let Some(repo) = app.owner_repo_for_path(abs) {
         let dir = scan::ci_cache_dir_pub(repo.owner(), repo.repo());
         let result = std::fs::remove_dir_all(&dir);
@@ -698,10 +704,13 @@ fn clear_ci_cache(app: &mut App, abs: &Path) {
             cache.remove(&repo);
         }
         match result {
-            Ok(()) => (
-                "CI cache cleared",
-                format!("{}/{}", repo.owner(), repo.repo()),
-            ),
+            Ok(()) => {
+                let runs = if run_count == 1 { "run" } else { "runs" };
+                (
+                    "CI cache cleared",
+                    format!("{}/{}: {run_count} {runs}", repo.owner(), repo.repo()),
+                )
+            },
             Err(err) => ("CI cache clear failed", format!("{}: {err}", dir.display())),
         }
     } else {
@@ -732,21 +741,56 @@ fn clear_lint_history(app: &mut App) {
     if !app.selected_row_owns_lint() {
         return;
     }
-    let Some(abs_path) = app
+    // A worktree-group parent row aggregates every visible checkout's
+    // history, so clearing it must clear each checkout — otherwise the
+    // aggregate rebuild keeps re-showing the linked checkouts' runs.
+    // Other rows clear their single selected path.
+    let paths: Vec<AbsolutePath> = app
         .project_list
-        .selected_project_path()
-        .map(Path::to_path_buf)
-    else {
+        .selected_worktree_group_checkout_paths()
+        .unwrap_or_else(|| {
+            app.project_list
+                .selected_project_path()
+                .map(AbsolutePath::from)
+                .into_iter()
+                .collect()
+        });
+    if paths.is_empty() {
         return;
-    };
-    // Removes the per-project cache dir AND decrements the cache-size
-    // index so the lint cache-usage total stays accurate. A bare
-    // `remove_dir_all` would leave the index (at the cache root, outside
-    // this dir) overcounting until the next walk-and-rewrite.
-    lint::reclaim_project_cache(&abs_path);
+    }
+    // Tally before deleting: how many runs go away and the disk they held,
+    // summing each run's archived-log bytes across every checkout being cleared.
+    let mut run_count: usize = 0;
+    let mut freed_bytes: u64 = 0;
+    for abs_path in &paths {
+        if let Some(lr) = app.lint_at_path(abs_path.as_path()) {
+            for run in lr.runs() {
+                run_count += 1;
+                freed_bytes += lr.archive_bytes(&run.run_id).unwrap_or(0);
+            }
+        }
+    }
+    for abs_path in &paths {
+        // Removes the per-project cache dir AND decrements the cache-size
+        // index so the lint cache-usage total stays accurate. A bare
+        // `remove_dir_all` would leave the index (at the cache root, outside
+        // this dir) overcounting until the next walk-and-rewrite.
+        lint::reclaim_project_cache(abs_path.as_path());
 
-    if let Some(lr) = app.lint_at_path_mut(&abs_path) {
-        lr.clear_runs();
+        if let Some(lr) = app.lint_at_path_mut(abs_path.as_path()) {
+            lr.clear_runs();
+        }
+    }
+    if run_count > 0 {
+        let runs = if run_count == 1 { "run" } else { "runs" };
+        let body = format!(
+            "{run_count} {runs}, {} freed",
+            render::format_bytes(freed_bytes)
+        );
+        let _ = app
+            .framework
+            .toasts
+            .push_status("Lint history cleared", body);
     }
     app.lint.viewport.home();
     app.set_focus_to_pane(PaneId::ProjectList);

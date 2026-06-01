@@ -9,6 +9,7 @@ use cargo_metadata::TargetKind;
 use cargo_metadata::semver::Version;
 
 use super::*;
+use crate::config;
 use crate::constants::IN_SYNC;
 use crate::constants::NO_REMOTE_SYNC;
 use crate::lint::LintRun;
@@ -34,6 +35,8 @@ use crate::scan::CargoMetadataError;
 use crate::tui::app::phase_state::Denominator;
 use crate::tui::app::target_index::CleanSelection;
 use crate::tui::constants::STARTUP_ROW_MIN_VISIBLE;
+use crate::tui::keymap::CiRunsAction;
+use crate::tui::keymap::LintsAction;
 use crate::tui::panes;
 use crate::tui::terminal::CleanMsg;
 
@@ -1954,6 +1957,190 @@ fn worktree_group_lints_pane_reindexes_when_a_new_run_lands() {
     assert_eq!(data.owner_path_for_run(0), Some(&primary_path));
     assert_eq!(data.owner_path_for_run(1), Some(&linked_path));
     assert_eq!(data.owner_path_for_run(2), Some(&primary_path));
+}
+
+#[test]
+fn clear_history_on_group_parent_clears_every_checkout() {
+    let root = make_package_worktrees_item(
+        make_package_raw(None, "~/ws", None),
+        vec![make_package_raw(None, "~/ws_feat", Some("ws_feat"))],
+    );
+
+    let mut app = make_app(&[make_project(None, "~/ws")]);
+    app.config.current_mut().lint.enabled = true;
+    apply_items(&mut app, &[root]);
+    let primary_path = test_path("~/ws");
+    let linked_path = test_path("~/ws_feat");
+
+    let run = |run_id: &str, started_at: &str| LintRun {
+        run_id:        run_id.to_string(),
+        started_at:    started_at.to_string(),
+        finished_at:   None,
+        duration_ms:   None,
+        status:        LintRunStatus::Passed,
+        commands:      Vec::new(),
+        archive_bytes: 0,
+    };
+    app.project_list
+        .lint_at_path_mut(&primary_path)
+        .unwrap()
+        .set_runs(vec![run("primary-1", "2026-03-30T10:00:00-04:00")]);
+    app.project_list
+        .lint_at_path_mut(&linked_path)
+        .unwrap()
+        .set_runs(vec![run("linked-1", "2026-03-30T11:00:00-04:00")]);
+
+    // Select the group parent (header) row, where the pane aggregates every
+    // checkout's history.
+    app.project_list.set_cursor(0);
+    app.sync_selected_project();
+
+    panes::dispatch_lints_action(LintsAction::ClearHistory, &mut app);
+
+    // Both checkouts' histories are gone — not just the primary's — so the
+    // rebuilt aggregate is empty instead of re-showing the linked runs.
+    assert!(
+        app.project_list
+            .lint_at_path_mut(&primary_path)
+            .unwrap()
+            .runs()
+            .is_empty()
+    );
+    assert!(
+        app.project_list
+            .lint_at_path_mut(&linked_path)
+            .unwrap()
+            .runs()
+            .is_empty()
+    );
+    assert!(panes::build_lints_data(&app).runs.is_empty());
+}
+
+#[test]
+fn clear_history_toasts_run_count_and_freed_bytes_across_group() {
+    let root = make_package_worktrees_item(
+        make_package_raw(None, "~/ws", None),
+        vec![make_package_raw(None, "~/ws_feat", Some("ws_feat"))],
+    );
+
+    let mut app = make_app(&[make_project(None, "~/ws")]);
+    app.config.current_mut().lint.enabled = true;
+    apply_items(&mut app, &[root]);
+    let primary_path = test_path("~/ws");
+    let linked_path = test_path("~/ws_feat");
+
+    let run = |run_id: &str, started_at: &str, archive_bytes: u64| LintRun {
+        run_id: run_id.to_string(),
+        started_at: started_at.to_string(),
+        finished_at: None,
+        duration_ms: None,
+        status: LintRunStatus::Passed,
+        commands: Vec::new(),
+        archive_bytes,
+    };
+    // Two runs on the primary checkout, one on the linked checkout: three runs
+    // totalling 3072 bytes (3.0 KiB) across the aggregate.
+    app.project_list
+        .lint_at_path_mut(&primary_path)
+        .unwrap()
+        .set_runs(vec![
+            run("primary-2", "2026-03-30T12:00:00-04:00", 1024),
+            run("primary-1", "2026-03-30T10:00:00-04:00", 1024),
+        ]);
+    app.project_list
+        .lint_at_path_mut(&linked_path)
+        .unwrap()
+        .set_runs(vec![run("linked-1", "2026-03-30T11:00:00-04:00", 1024)]);
+
+    app.project_list.set_cursor(0);
+    app.sync_selected_project();
+
+    panes::dispatch_lints_action(LintsAction::ClearHistory, &mut app);
+
+    let toast = app
+        .framework
+        .toasts
+        .active()
+        .last()
+        .expect("clearing lint history emits a toast");
+    assert_eq!(toast.title(), "Lint history cleared");
+    assert_eq!(toast.body_text(), "3 runs, 3.0 KiB freed");
+}
+
+#[test]
+fn clear_ci_cache_toasts_removed_run_count() {
+    // Point the app cache root at a tempdir so the real on-disk CI cache is
+    // untouched and `remove_dir_all` lands on the success branch (where the
+    // run count is reported).
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let mut cfg = CargoPortConfig::default();
+    cfg.cache.root = tmp.path().to_string_lossy().into_owned();
+    config::set_active_config(&cfg);
+
+    let project = make_project(Some("demo"), "~/demo");
+    let mut app = make_app(std::slice::from_ref(&project));
+    apply_git_info(
+        &mut app,
+        project.path(),
+        (
+            CheckoutInfo {
+                status:              GitStatus::Clean,
+                head:                HeadState::Branch("main".to_string()),
+                last_commit:         None,
+                ahead_behind_local:  None,
+                primary_tracked_ref: Some("origin/main".to_string()),
+                bisect:              None,
+            },
+            RepoInfo {
+                remotes:           vec![RemoteInfo {
+                    name:         "origin".to_string(),
+                    url:          Some("https://github.com/acme/demo".to_string()),
+                    owner:        Some("acme".to_string()),
+                    repo:         Some("demo".to_string()),
+                    tracked_ref:  Some("origin/main".to_string()),
+                    ahead_behind: None,
+                    kind:         RemoteKind::Clone,
+                    push:         crate::project::PushState::Enabled {
+                        push_url: String::new(),
+                    },
+                }],
+                workflows:         WorkflowPresence::Present,
+                first_commit:      None,
+                last_fetched:      None,
+                default_branch:    Some("main".to_string()),
+                local_main_branch: Some("main".to_string()),
+            },
+        ),
+    );
+    set_loaded_ci(
+        &mut app,
+        project.path(),
+        vec![
+            make_ci_run(9, CiStatus::Passed),
+            make_ci_run(8, CiStatus::Failed),
+        ],
+        false,
+        2,
+    );
+    // The repo's cache dir must exist for the clear to reach the success path.
+    std::fs::create_dir_all(scan::ci_cache_dir_pub("acme", "demo").as_path())
+        .unwrap_or_else(|_| std::process::abort());
+
+    app.project_list.set_cursor(0);
+    app.sync_selected_project();
+
+    panes::dispatch_ci_runs_action(CiRunsAction::ClearCache, &mut app);
+
+    let toast = app
+        .framework
+        .toasts
+        .active()
+        .last()
+        .expect("clearing CI cache emits a toast");
+    assert_eq!(toast.title(), "CI cache cleared");
+    assert_eq!(toast.body_text(), "acme/demo: 2 runs");
+
+    config::set_active_config(&CargoPortConfig::default());
 }
 
 #[test]

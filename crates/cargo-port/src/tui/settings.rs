@@ -1106,7 +1106,7 @@ fn general_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsUiR
         ),
         (
             Some(SettingOption::CiRunCount),
-            "CI run count".to_string(),
+            "CI runs to fetch".to_string(),
             config.tui.ci_run_count.to_string(),
         ),
         (
