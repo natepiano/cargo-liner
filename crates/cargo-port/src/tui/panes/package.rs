@@ -41,6 +41,7 @@ use super::LintDisplay;
 use super::PackageData;
 use super::PackageRow;
 use super::SyncedDescriptionHeight;
+use super::pane_data::PackageSection;
 use super::pane_data::TESTS_IGNORED_LABEL;
 use super::pane_data::TESTS_TOTAL_LABEL;
 use super::pane_impls::PackagePane;
@@ -251,6 +252,14 @@ fn render_column_inner(
                 }
             },
             PackageRow::Section(section) => {
+                // Separate the Primary Package / Workspace block from the
+                // Worktree Group Summary above it with a blank row.
+                if matches!(
+                    section,
+                    PackageSection::PrimaryPackage | PackageSection::PrimaryWorkspace
+                ) {
+                    lines.push(Line::default());
+                }
                 let style = Style::default()
                     .fg(title_color())
                     .add_modifier(Modifier::BOLD);

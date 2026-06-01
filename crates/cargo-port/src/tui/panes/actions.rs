@@ -739,8 +739,11 @@ fn clear_lint_history(app: &mut App) {
     else {
         return;
     };
-    let project_cache_dir = lint::project_dir(&abs_path);
-    let _ = std::fs::remove_dir_all(project_cache_dir);
+    // Removes the per-project cache dir AND decrements the cache-size
+    // index so the lint cache-usage total stays accurate. A bare
+    // `remove_dir_all` would leave the index (at the cache root, outside
+    // this dir) overcounting until the next walk-and-rewrite.
+    lint::reclaim_project_cache(&abs_path);
 
     if let Some(lr) = app.lint_at_path_mut(&abs_path) {
         lr.clear_runs();
