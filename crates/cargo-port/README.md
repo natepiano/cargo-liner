@@ -7,14 +7,14 @@
 
 <img src="assets/dashboard-main.png" alt="cargo-port dashboard showing project tree, worktree details, Git status, CPU and GPU diagnostics, targets, lint runs, and CI runs" width="100%">
 
-cargo-port is a terminal dashboard for all your Rust workspaces and projects. Point it at a directory to view workspaces, crates, worktrees, vendored dependencies, targets, local lint state, GitHub CI, pull requests, and machine diagnostics in one keyboard-driven view.
+cargo-port is a terminal dashboard for your Rust workspaces and projects. Configure it to scan one or more directories to view workspaces, crates, worktrees, vendored dependencies, targets, local lint state, GitHub CI, pull requests, and machine diagnostics in one keyboard-driven view.
 
 - **Inventory everything** - workspaces, members, linked worktrees, submodules, vendored crates, examples, benches, binaries, tests, and non-Rust git repos
 - **Run and inspect targets** - launch examples, benches, and binaries in debug or release mode with live output and running-target markers
 - **Track project health** - see lint status, archived lint runs, GitHub Actions history, open pull requests, PR check polling, and GitHub rate-limit state
 - **Keep context visible** - inspect package metadata, target directories, language stats, worktree summaries, remotes, CI jobs, and pull request rows without leaving the TUI
 - **Navigate quickly** - fuzzy search, vim-style paging, chord keymaps, tab traversal, edge-scroll pane movement, global shortcuts, and selection copy
-- **Tune the view** - runtime themes, light/dark/high-contrast variants, user theme hot-reload, appearance settings, and CPU/GPU/sccache diagnostics
+- **Tune the view** - runtime themes, light/dark/high-contrast variants, and hot-reload
 
 ## Try me
 
@@ -31,13 +31,12 @@ Install the latest published crates.io release:
 
 ```bash
 cargo install cargo-port
-cargo-port
+cargo port
 ```
 
 ## The Main cargo-port Panes
 
-The dashboard combines a project tree in the upper left with detail panes for package metadata, Git state, languages, targets, diagnostics, lint history, and CI runs.
-
+The dashboard combines a project tree in the upper left with detail panes for package metadata, Git state, languages, CPU/GPU activity, targets, lint history, and CI runs.
 ### Dashboard View
 <img src="assets/dashboard-overview-numbered.png" alt="Numbered cargo-port dashboard overview showing each major pane" width="100%">
 
@@ -53,14 +52,23 @@ The dashboard combines a project tree in the upper left with detail panes for pa
 9. **Status bar**: current mode, pane navigation, active action, and shortcut help.
 
 ### Project Tree
+On startup, the configured `Include dirs` are scanned by cargo port to get their Cargo metadata, GitHub remotes  and metadata, disk usage, local lint pass/fail status, and CI run status from GitHub, programming language line counts and configured targets. 
+
+The Project Tree is the main navigation point for the app - other panes adapt to show detailed information about the selected row in the tree.
 
 <img src="assets/pane-project-tree-numbered.png" alt="Numbered project tree pane" width="75%">
 
-1. Scan roots and project counts.
-2. Hierarchical project list with expandable workspaces, members, worktrees, submodules, and vendored crates.
-3. Lint, CI, Git, origin, main-branch, and disk columns.
-4. Worktree-group rows with branch and status rollups.
-5. Total disk usage across the visible project set.
+1. The title shows scanned directories and project counts for each configured scan dir.  On first run, cargo port will prompt you to define your "Include dirs" in Settings.
+2. Hierarchical project list with expandable workspaces, members, worktrees, submodules, and vendored crates. You can configure whether non-Rust git projects are included. 
+3. - Status columns
+	1. Lint pass/fail - a lint command configurable in settings. Lint column will show an activity spinner for a currently running lint. 
+	2. CI pass/fail/skipped/cancel. Not shown if ci is not configured or if a remote isn't configured for a branch. Currently only supports GitHub.
+	3. Git status (clean, modified, untracked)
+	4. Origin sync - whether the project is synced with configured origin or ahead/behind
+	5. main sync whether a worktree checkout is synced with the main branch or ahead/behind
+	6. Disk usage
+4. Worktree-group rows with branch and status rollups. Any row with a tree emoji is a worktree group and appends the count of checkouts next to it.  You can expand it to see info about each separate checkout.
+5. Total disk usage across the visible project set because, you know, rustc consumes a lot of disk.  There is a keyboard shortcut (defaults to 'c') to clean the currently selected workspace/project.
 
 ### Workspace Details
 
@@ -336,3 +344,19 @@ Rules:
 - an absolute path replaces it
 
 Lint run data is stored under `lint-runs/` within the cache root. CI cache uses the same shared root under `ci/`.
+## Platforms
+Tested primarily on macos, limited testing on windows and linux.
+
+## License
+
+`cargo-port` is free, open source and permissively licensed!
+Except where noted (below and/or in individual files), all code in this repository is dual-licensed under either:
+
+* MIT License ([LICENSE-MIT](LICENSE-MIT) or [http://opensource.org/licenses/MIT](http://opensource.org/licenses/MIT))
+* Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or [http://www.apache.org/licenses/LICENSE-2.0](http://www.apache.org/licenses/LICENSE-2.0))
+
+at your option.
+
+### Your contributions
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
