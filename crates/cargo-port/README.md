@@ -62,24 +62,43 @@ The Project Tree is the main navigation point for the app - other panes adapt to
 2. Hierarchical project list with expandable workspaces, members, worktrees, submodules, and vendored crates. You can configure whether non-Rust git projects are included. 
 3. - Status columns
 	1. Lint pass/fail - a lint command configurable in settings. Lint column will show an activity spinner for a currently running lint. 
-	2. CI pass/fail/skipped/cancel. Not shown if ci is not configured or if a remote isn't configured for a branch. Currently only supports GitHub.
-	3. Git status (clean, modified, untracked)
-	4. Origin sync - whether the project is synced with configured origin or ahead/behind
-	5. main sync whether a worktree checkout is synced with the main branch or ahead/behind
-	6. Disk usage
-4. Worktree-group rows with branch and status rollups. Any row with a tree emoji is a worktree group and appends the count of checkouts next to it.  You can expand it to see info about each separate checkout.
+	2. CI passed 🟢, failed 🔴, skipped ⚪, cancelled ⚫. Not shown if ci is not configured or if a remote isn't configured for a branch. Currently only supports GitHub.
+	3. Git status - clean ✨, modified 🟠, untracked 🟢
+	4. Origin sync - whether the project is synced (☑️), with configured origin or ahead/behind
+	5. main sync whether a worktree checkout is synced (☑️) with the main branch or ahead/behind
+	6. Disk usage - <span style="color: yellow;">Σ</span>
+4. Worktree-group rows with branch and status rollups. Any row with a tree emoji (🌲) is a worktree group and appends the count of checkouts next to it (🌲:2).  You can expand it to see info about each separate checkout.
 5. Total disk usage across the visible project set because, you know, rustc consumes a lot of disk.  There is a keyboard shortcut (defaults to 'c') to clean the currently selected workspace/project.
 
-### Workspace Details
+### Details
+There are separate details screens for:
+- Worktree Group
+- Workspace
+- Package
+- Non-rust Project
+- Git Submodule
+- Vendored crate
+We'll show the Worktree Group as an example below. Run the app to see any of these that match up with your projects. They're pretty self-explanatory so we'll just cover the Worktree Group as one of the more comprehensive examples.
 
 <img src="assets/pane-details-numbered.png" alt="Numbered workspace details pane" width="75%">
 
+#### Worktree Group Details
 1. Selected row title and description.
-2. Path on disk
-3. Disk split between `target/` and everything else.
-4. Lint and CI Status
-5. If published, version locally, version on crates.io and download
-6. Structure counts for workspaces, libraries, binaries, proc-macros, examples, test files and benches
+2. Number of worktrees
+3. Total space on disk
+4. Rollup of lint runs - if any are failed this would show failed
+5. CI results from GitHub - counts of what run summaries are locally cached vs only on GitHub
+
+#### Primary Package Details
+This is the path to where the actual .git repo is. Cargo port considers it "primary".
+6. Path on disk
+7. Disk split between `target/` and everything else.
+8. Type
+9. Cargo.toml metadata 
+10. Structure counts for workspaces, libraries, binaries, proc-macros, examples, test files and benches
+11. Counts of tests (unit, integration, doc and ignored)
+
+Missing from this view
 
 ### Git
 
