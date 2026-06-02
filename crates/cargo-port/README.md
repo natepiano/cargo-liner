@@ -82,36 +82,21 @@ We'll show the Worktree Group as an example below. Run the app to see any of the
 
 <img src="assets/pane-details-numbered.png" alt="Numbered workspace details pane" width="75%">
 
-#### Worktree Group Details
-1. Selected row title and description.
-2. Number of worktrees
-3. Total space on disk
-4. Rollup of lint runs - if any are failed this would show failed
-5. CI results from GitHub - counts of what run summaries are locally cached vs only on GitHub
-#### Primary Package Details
-This is the path to where the actual .git repo is. Cargo port considers it "primary".
-6. Path on disk
-7. Disk split between `target/` and everything else.
-8. Type
-9. Cargo.toml metadata 
-10. Structure counts for workspaces, libraries, binaries, proc-macros, examples, test files and benches
-11. Counts of tests (unit, integration, doc and ignored)
-#### Structure, Tests & crates.io
-12. how many lib, bin, example, proc-macro, bench targets are in the project
-13. How many unit, doc, integration and ignored test are there
-14. If published to crates.io, the version and the download counts
+1. The title shows what kind of detail working looking at - in this case it's a WorktreeGroup for the bevy_window_manager project.  The description from Cargo.toml is shown if there is one.
+2. Summary of how many worktrees, the aggregate lint status across all checkouts, and the CI status from GitHub. The numbers show local cached run metadata and how many runs are there in total on GitHub.
+3. Package location, disk breakdown and metadata from Cargo.toml
+4. Structure indicates what targets are configured - counts of bins, libs, examples, benches, proc-macros.
+5. Tests shows counts of unit, integration and doc tests as well as the count of ignored. It doesn't attempt to break it out by feature gates so it may not always match up exactly.
+6. crates.io version info and download count
 
 ### Git
 
 <img src="assets/pane-git-numbered.png" alt="Numbered Git pane" width="75%">
 
-1. Selected repo, current branch, and project description.
-2. Branch sync status, stars, inception date, latest commit, and fetch timestamp.
-3. GitHub API rate-limit state for core and GraphQL requests.
-4. Remotes table with shortened GitHub URLs.
-5. Linked worktrees and branch/status summary.
-6. Remote tracking and sync state.
-
+1. Pane title shows the current branch and the description from GitHub if it exists.
+2. Branch info, status, stars. Project incept date and date of latest commit. Also date of last fetch.  Rate limits exist on GitHub so we show them in case you are hammering github with requests, you'll see it reflected here.
+3. All configured remotes - including sync (synced/ahead/behind) status
+- 
 ### Languages
 
 <img src="assets/pane-languages-numbered.png" alt="Numbered languages pane" width="75%">

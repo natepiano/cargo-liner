@@ -248,12 +248,16 @@ fn pluralize(count: usize, noun: &str) -> String {
     }
 }
 
-pub fn format_remote_status(ahead_behind: Option<(usize, usize)>) -> String {
+/// Spell out an ahead/behind pair for the Git pane's Remotes "Sync" and
+/// Worktrees "vs primary" columns. Both columns share this phrasing; the
+/// reference each is measured against is named by its column header (the
+/// Remotes "Tracked" ref, the primary worktree) rather than inline.
+pub fn format_ahead_behind(ahead_behind: Option<(usize, usize)>) -> String {
     match ahead_behind {
         Some((0, 0)) => IN_SYNC.to_string(),
         Some((ahead, 0)) => format!("{SYNC_UP}{ahead} ahead"),
         Some((0, behind)) => format!("{SYNC_DOWN}{behind} behind"),
-        Some((ahead, behind)) => format!("{SYNC_UP}{ahead} {SYNC_DOWN}{behind}"),
+        Some((ahead, behind)) => format!("{SYNC_UP}{ahead} ahead {SYNC_DOWN}{behind} behind"),
         None => NO_REMOTE_SYNC.to_string(),
     }
 }

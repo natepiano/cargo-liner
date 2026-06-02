@@ -287,6 +287,7 @@ fn git_remote_with_url(url: &str) -> RemoteRow {
         name:            "origin".to_string(),
         icon:            "",
         display_url:     url.to_string(),
+        branch:          "main".to_string(),
         tracked_ref:     String::new(),
         status:          String::new(),
         full_url:        Some(url.to_string()),

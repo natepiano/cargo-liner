@@ -118,7 +118,13 @@ impl Panes {
 
     /// Drop tree-derived caches owned by per-pane structs.
     /// Currently only `GitPane`'s worktree-summary map.
-    pub fn clear_for_tree_change(&self) { self.git.clear_worktree_summary_cache(); }
+    pub fn clear_for_tree_change(&self) { self.clear_worktree_summary_cache(); }
+
+    /// Drop `GitPane`'s cached worktree-summary rows. The cached rows embed
+    /// each entry's branch name, read from in-memory `CheckoutInfo`; when a
+    /// later `CheckoutInfo` lands the rows must recompute, or branches that
+    /// were unresolved at first render stay blank.
+    pub fn clear_worktree_summary_cache(&self) { self.git.clear_worktree_summary_cache(); }
 
     /// Drain the CPU pane's background sampler. Delegates to `CpuPane::tick`.
     pub fn cpu_tick(&mut self) { self.cpu.tick(); }

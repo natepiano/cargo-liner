@@ -6,12 +6,12 @@ use std::path::Component;
 use std::path::Path;
 
 use cargo_metadata::TargetKind;
+pub use formatting::format_ahead_behind;
 pub use formatting::format_ahead_behind_against;
 use formatting::format_bisect_progress;
 pub use formatting::format_date;
 pub use formatting::format_duration;
 use formatting::format_rate_limit_bucket;
-pub use formatting::format_remote_status;
 pub use formatting::format_time;
 pub use formatting::format_timestamp;
 use itertools::Itertools;
@@ -1099,6 +1099,9 @@ pub struct RemoteRow {
     pub name:            String,
     pub icon:            &'static str,
     pub display_url:     String,
+    /// Local branch (current `HEAD`) compared against `tracked_ref` —
+    /// the source side of the `status` ahead/behind delta.
+    pub branch:          String,
     pub tracked_ref:     String,
     pub status:          String,
     pub full_url:        Option<String>,
@@ -1115,6 +1118,10 @@ pub struct WorktreeInfo {
     pub name:         String,
     pub path:         String,
     pub branch:       Option<String>,
+    /// The primary worktree's branch this entry is measured against —
+    /// the target side of the `ahead_behind` delta. `None` for the
+    /// primary entry itself, which is the baseline (nothing to compare).
+    pub tracked:      Option<String>,
     pub ahead_behind: Option<(usize, usize)>,
 }
 
@@ -1923,7 +1930,13 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
         .and_then(|repo| repo.last_fetched.as_deref())
         .map(format_timestamp);
     let default_host = app.config.current().tui.default_remote_host_url.clone();
-    let remotes = repo_info.map_or_else(Vec::new, |repo| build_remote_rows(repo, &default_host));
+    let current_branch = head
+        .as_ref()
+        .and_then(HeadState::branch_name)
+        .unwrap_or("-");
+    let remotes = repo_info.map_or_else(Vec::new, |repo| {
+        build_remote_rows(repo, &default_host, current_branch)
+    });
     let pr_check_polls = app
         .project_list
         .fetch_url_for(abs_path)
@@ -2031,7 +2044,7 @@ fn pull_request_row(
 /// Convert each `RemoteInfo` into a render-ready `RemoteRow`, shortening
 /// the URL when it begins with `default_host` and collapsing missing
 /// tracked refs / ahead-behind values to placeholder runes.
-fn build_remote_rows(repo: &RepoInfo, default_host: &str) -> Vec<RemoteRow> {
+fn build_remote_rows(repo: &RepoInfo, default_host: &str, current_branch: &str) -> Vec<RemoteRow> {
     repo.remotes
         .iter()
         .map(|remote| {
@@ -2047,12 +2060,13 @@ fn build_remote_rows(repo: &RepoInfo, default_host: &str) -> Vec<RemoteRow> {
                 .tracked_ref
                 .clone()
                 .unwrap_or_else(|| NO_REMOTE_SYNC.to_string());
-            let status = format_remote_status(remote.ahead_behind);
+            let status = format_ahead_behind(remote.ahead_behind);
             let push_annotation = format_push_annotation(&remote.push);
             RemoteRow {
                 name: remote.name.clone(),
                 icon,
                 display_url,
+                branch: current_branch.to_string(),
                 tracked_ref,
                 status,
                 full_url: remote.url.clone(),
@@ -2115,6 +2129,13 @@ fn worktrees_from_item(app: &App, item: &RootItem) -> Vec<WorktreeInfo> {
         _ => return Vec::new(),
     };
 
+    // The branch each linked worktree is measured against — the primary's
+    // current branch. `None` if the primary's HEAD isn't on a branch.
+    let primary_branch = app
+        .project_list
+        .git_info_for(primary_path.as_path())
+        .and_then(|info| info.head.branch_name().map(str::to_string));
+
     paths_and_names
         .into_iter()
         .map(|(path, name)| {
@@ -2122,15 +2143,22 @@ fn worktrees_from_item(app: &App, item: &RootItem) -> Vec<WorktreeInfo> {
                 .project_list
                 .git_info_for(path.as_path())
                 .and_then(|info| info.head.branch_name().map(str::to_string));
-            let ahead_behind = if path.as_path() == primary_path.as_path() {
-                Some((0, 0))
+            // The primary is the baseline: nothing to track against and no
+            // delta. Linked worktrees compare their HEAD to the primary's.
+            let is_primary = path.as_path() == primary_path.as_path();
+            let (tracked, ahead_behind) = if is_primary {
+                (None, None)
             } else {
-                project::worktree_ahead_behind_primary(path.as_path(), primary_path.as_path())
+                (
+                    primary_branch.clone(),
+                    project::worktree_ahead_behind_primary(path.as_path(), primary_path.as_path()),
+                )
             };
             WorktreeInfo {
                 name,
                 path: path.display().to_string(),
                 branch,
+                tracked,
                 ahead_behind,
             }
         })

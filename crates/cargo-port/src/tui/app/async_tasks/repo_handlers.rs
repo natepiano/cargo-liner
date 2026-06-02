@@ -149,6 +149,10 @@ impl App {
         if let Some(project) = self.project_list.at_path_mut(path) {
             project.local_git_state = LocalGitState::Detected(Box::new(info));
         }
+        // The worktree-summary cache embeds each entry's branch name read
+        // from this in-memory state; drop it so the rows recompute against
+        // the checkout info that just landed.
+        self.panes.clear_worktree_summary_cache();
         // Detected git state implies the entry (or submodule) is in a
         // git repo. Ensure a `GitRepo` slot exists for `path` so per-repo
         // writes (CI, GitHub meta, RepoInfo) can land on it.

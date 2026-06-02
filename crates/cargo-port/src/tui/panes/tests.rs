@@ -266,6 +266,7 @@ fn git_copy_remote_uses_full_url_and_worktree_uses_path() {
         name:            "origin".to_string(),
         icon:            "",
         display_url:     "github.com/natepiano/cargo-port".to_string(),
+        branch:          "main".to_string(),
         tracked_ref:     "main".to_string(),
         status:          "ok".to_string(),
         full_url:        Some("https://github.com/natepiano/cargo-port".to_string()),
@@ -275,6 +276,7 @@ fn git_copy_remote_uses_full_url_and_worktree_uses_path() {
         name:         "cargo-port_style_fix".to_string(),
         path:         "/Users/natemccoy/rust/cargo-port_style_fix".to_string(),
         branch:       Some("refactor/style".to_string()),
+        tracked:      Some("main".to_string()),
         ahead_behind: Some((0, 0)),
     });
 
@@ -317,6 +319,7 @@ fn git_copy_pull_request_uses_url_and_routes_before_remotes() {
         name:            "origin".to_string(),
         icon:            "",
         display_url:     "github.com/natepiano/cargo-port".to_string(),
+        branch:          "main".to_string(),
         tracked_ref:     "main".to_string(),
         status:          "ok".to_string(),
         full_url:        Some("https://github.com/natepiano/cargo-port".to_string()),
@@ -745,7 +748,7 @@ fn git_path_label_is_status() {
 
 #[test]
 fn sync_value_uses_synced_label_when_in_sync() {
-    assert_eq!(model::format_remote_status(Some((0, 0))), "☑️");
+    assert_eq!(model::format_ahead_behind(Some((0, 0))), "☑️");
 }
 
 #[test]

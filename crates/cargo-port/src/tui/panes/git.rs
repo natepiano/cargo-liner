@@ -40,6 +40,7 @@ use super::SyncedDescriptionHeight;
 use super::WorktreeInfo;
 use super::constants::FIT_TEXT_ELLIPSIS;
 use super::constants::PULL_REQUEST_MIN_TITLE_WIDTH;
+use super::format_ahead_behind;
 use super::github_stars_is_unreachable_placeholder;
 use super::package;
 use super::package::RenderStyles;
@@ -47,8 +48,6 @@ use super::pane_impls::GitPane;
 use crate::constants::GIT_LOCAL;
 use crate::constants::IN_SYNC;
 use crate::constants::NO_REMOTE_SYNC;
-use crate::constants::SYNC_DOWN;
-use crate::constants::SYNC_UP;
 use crate::project::HeadState;
 use crate::project::PullRequestCompleteness;
 use crate::tui::app::AvailabilityStatus;
@@ -180,12 +179,20 @@ fn render_git_column_inner(
         },
     );
     append_pull_requests_section(&mut accum, ctx, flat_len, current_section, inner_area.width);
+    // Remotes and Worktrees share one column layout so their Branch /
+    // Tracked / Sync columns line up vertically across both sections.
+    let sync_layout = sync_col_layout(
+        &ctx.data.remotes,
+        &ctx.data.worktrees,
+        usize::from(inner_area.width),
+    );
     append_remotes_section(
         &mut accum,
         ctx,
         flat_len,
         pull_requests_len,
         current_section,
+        &sync_layout,
     );
     append_worktrees_section(
         &mut accum,
@@ -194,6 +201,7 @@ fn render_git_column_inner(
         pull_requests_len,
         remotes_len,
         current_section,
+        &sync_layout,
     );
 
     let scroll_y = package::detail_column_scroll_offset(
@@ -224,6 +232,7 @@ fn append_remotes_section(
     flat_len: usize,
     pull_requests_len: usize,
     current_section: Option<Section>,
+    layout: &SyncColLayout,
 ) {
     if ctx.data.remotes.is_empty() {
         return;
@@ -242,8 +251,7 @@ fn append_remotes_section(
         focused,
     });
     accum.lines.push(Line::from(Span::raw(String::new())));
-    let col_widths = remote_col_widths(&ctx.data.remotes);
-    render_remote_header(accum.lines, &col_widths, focused);
+    render_remote_header(accum.lines, layout, focused);
     let active = matches!(ctx.focus, PaneFocusState::Active);
     for (i, remote) in ctx.data.remotes.iter().enumerate() {
         let row_index = ctx.row_offset + flat_len + pull_requests_len + i;
@@ -255,9 +263,7 @@ fn append_remotes_section(
             *accum.focused_output_line = accum.lines.len();
         }
         let selection = tui_pane::selection_state(ctx.pane, row_index, ctx.focus);
-        accum
-            .lines
-            .push(remote_row_line(remote, &col_widths, selection));
+        accum.lines.push(remote_row_line(remote, layout, selection));
     }
 }
 
@@ -539,6 +545,7 @@ fn append_worktrees_section(
     pull_requests_len: usize,
     remotes_len: usize,
     current_section: Option<Section>,
+    layout: &SyncColLayout,
 ) {
     if ctx.data.worktrees.is_empty() {
         return;
@@ -556,8 +563,7 @@ fn append_worktrees_section(
         focused,
     });
     accum.lines.push(Line::from(Span::raw(String::new())));
-    let col_widths = worktree_col_widths(&ctx.data.worktrees);
-    render_worktree_header(accum.lines, &col_widths, focused);
+    render_worktree_header(accum.lines, layout, focused);
     let active = matches!(ctx.focus, PaneFocusState::Active);
     for (i, wt) in ctx.data.worktrees.iter().enumerate() {
         let row_index = ctx.row_offset + flat_len + pull_requests_len + remotes_len + i;
@@ -569,9 +575,7 @@ fn append_worktrees_section(
             *accum.focused_output_line = accum.lines.len();
         }
         let selection = tui_pane::selection_state(ctx.pane, row_index, ctx.focus);
-        accum
-            .lines
-            .push(worktree_row_line(wt, &col_widths, selection));
+        accum.lines.push(worktree_row_line(wt, layout, selection));
     }
 }
 
@@ -788,76 +792,172 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
 
 // ── Remotes table ────────────────────────────────────────────────────
 
-struct RemoteColWidths {
-    name:    usize,
-    url:     usize,
-    tracked: usize,
-    status:  usize,
-}
-
 /// The icon column pads to this display width. Emoji render as 2 cells on
 /// most terminals; we append a trailing space for separation, giving 3.
 const REMOTE_ICON_COL: usize = 3;
 const REMOTES_NAME_HEADER: &str = "Remote";
 const REMOTES_URL_HEADER: &str = "URL";
-const REMOTES_TRACKED_HEADER: &str = "Tracked";
-const REMOTES_STATUS_HEADER: &str = "Sync";
+const WORKTREES_NAME_HEADER: &str = "Name";
 
-fn remote_col_widths(remotes: &[RemoteRow]) -> RemoteColWidths {
-    let name = remotes
+// The trailing Branch/Tracked/Sync trio is shared by both tables so the
+// columns line up vertically across the Remotes and Worktrees sections.
+const BRANCH_HEADER: &str = "Branch";
+const TRACKED_HEADER: &str = "Tracked";
+const SYNC_HEADER: &str = "Sync";
+
+/// Column layout shared between the Remotes and Worktrees tables. The
+/// leading columns differ (Remote/URL vs Name), but the trailing
+/// Branch/Tracked/Sync trio uses identical widths and starts at the same
+/// `lead` display column in both tables, so the two sections line up.
+struct SyncColLayout {
+    remote_name:   usize,
+    remote_url:    usize,
+    worktree_name: usize,
+    /// Display column where the Branch column starts in both tables.
+    lead:          usize,
+    branch:        usize,
+    tracked:       usize,
+    sync:          usize,
+}
+
+/// The worktree's own checked-out branch — the source side of its delta.
+fn worktree_branch_text(wt: &WorktreeInfo) -> &str { wt.branch.as_deref().unwrap_or("-") }
+
+/// What the worktree is measured against (the primary's branch), or the
+/// no-comparison rune for the primary entry itself.
+fn worktree_tracked_text(wt: &WorktreeInfo) -> &str {
+    wt.tracked.as_deref().unwrap_or(NO_REMOTE_SYNC)
+}
+
+/// Floor for the flexible columns (Remotes URL, Worktrees Name). When the
+/// pane is too narrow they truncate with an ellipsis down to this width,
+/// then stop — past here there's nothing useful left to shrink, so the
+/// line is allowed to clip at the pane edge rather than squeeze further.
+const MIN_FLEX_COL: usize = 8;
+
+fn sync_col_layout(
+    remotes: &[RemoteRow],
+    worktrees: &[WorktreeInfo],
+    available: usize,
+) -> SyncColLayout {
+    let remote_name = remotes
         .iter()
         .map(|r| r.name.width())
         .max()
         .unwrap_or(0)
         .max(REMOTES_NAME_HEADER.width());
-    let url = remotes
+    let remote_url = remotes
         .iter()
         .map(|r| r.display_url.width())
         .max()
         .unwrap_or(0)
         .max(REMOTES_URL_HEADER.width());
+    let worktree_name = worktrees
+        .iter()
+        .map(|w| w.name.width())
+        .max()
+        .unwrap_or(0)
+        .max(WORKTREES_NAME_HEADER.width());
+
+    let branch = remotes
+        .iter()
+        .map(|r| r.branch.width())
+        .chain(worktrees.iter().map(|w| worktree_branch_text(w).width()))
+        .max()
+        .unwrap_or(0)
+        .max(BRANCH_HEADER.width());
     let tracked = remotes
         .iter()
         .map(|r| r.tracked_ref.width())
+        .chain(worktrees.iter().map(|w| worktree_tracked_text(w).width()))
         .max()
         .unwrap_or(0)
-        .max(REMOTES_TRACKED_HEADER.width());
-    let status = remotes
+        .max(TRACKED_HEADER.width());
+    let sync = remotes
         .iter()
         .map(|r| r.status.width())
+        .chain(
+            worktrees
+                .iter()
+                .map(|w| format_ahead_behind(w.ahead_behind).width()),
+        )
         .max()
         .unwrap_or(0)
-        .max(REMOTES_STATUS_HEADER.width());
-    RemoteColWidths {
-        name,
-        url,
+        .max(SYNC_HEADER.width());
+
+    // Fixed leading widths (everything before the flexible column), plus the
+    // 2-space gap that precedes the Branch column.
+    let remote_fixed = 1 + REMOTE_ICON_COL + remote_name + 2 + 2;
+    let worktree_fixed = 1 + 2;
+
+    // Branch starts at `lead`. We keep the trio at full width and let the
+    // flexible column (URL / Name) absorb any shortfall, down to MIN_FLEX_COL.
+    let natural_lead = remote_lead_or(remotes, remote_fixed + remote_url)
+        .max(worktree_lead_or(worktrees, worktree_fixed + worktree_name));
+    let min_lead = remote_lead_or(remotes, remote_fixed + MIN_FLEX_COL)
+        .max(worktree_lead_or(worktrees, worktree_fixed + MIN_FLEX_COL))
+        .min(natural_lead);
+    let trio_total = branch + 2 + tracked + 2 + sync;
+    let budget_lead = available.saturating_sub(trio_total);
+    let lead = budget_lead.clamp(min_lead, natural_lead);
+
+    SyncColLayout {
+        remote_name,
+        // Clamp each flexible column to what `lead` leaves for it; the render
+        // path ellipsis-truncates the content to this width.
+        remote_url: remote_url.min(lead.saturating_sub(remote_fixed)),
+        worktree_name: worktree_name.min(lead.saturating_sub(worktree_fixed)),
+        lead,
+        branch,
         tracked,
-        status,
+        sync,
     }
 }
 
-fn render_remote_header(lines: &mut Vec<Line<'static>>, widths: &RemoteColWidths, focused: bool) {
+/// `lead` for the Remotes table, or 0 when there are no remotes (so an empty
+/// table doesn't inflate the shared layout).
+const fn remote_lead_or(remotes: &[RemoteRow], lead: usize) -> usize {
+    if remotes.is_empty() { 0 } else { lead }
+}
+
+const fn worktree_lead_or(worktrees: &[WorktreeInfo], lead: usize) -> usize {
+    if worktrees.is_empty() { 0 } else { lead }
+}
+
+/// Format the shared Branch/Tracked/Sync trio. `branch` and `tracked` are
+/// left-aligned text; `sync` is right-aligned (numeric ahead/behind).
+fn sync_trio(layout: &SyncColLayout, branch: &str, tracked: &str, sync: &str) -> String {
+    format!(
+        "{branch:<bw$}  {tracked:<tw$}  {sync:>sw$}",
+        bw = layout.branch,
+        tw = layout.tracked,
+        sw = layout.sync,
+    )
+}
+
+fn render_remote_header(lines: &mut Vec<Line<'static>>, layout: &SyncColLayout, focused: bool) {
     let style = column_header_style(focused);
     // Leading: 1 space pad + REMOTE_ICON_COL blank for icon alignment.
-    let text = format!(
-        " {:<icon$}{:<name$}  {:<url$}  {:<tracked$}  {:>status$}",
+    let leading = format!(
+        " {:<icon$}{:<name$}  {:<url$}",
         "",
         REMOTES_NAME_HEADER,
         REMOTES_URL_HEADER,
-        REMOTES_TRACKED_HEADER,
-        REMOTES_STATUS_HEADER,
         icon = REMOTE_ICON_COL,
-        name = widths.name,
-        url = widths.url,
-        tracked = widths.tracked,
-        status = widths.status,
+        name = layout.remote_name,
+        url = layout.remote_url,
     );
-    lines.push(Line::from(Span::styled(text, style)));
+    let pad = " ".repeat(layout.lead.saturating_sub(leading.width()));
+    let trio = sync_trio(layout, BRANCH_HEADER, TRACKED_HEADER, SYNC_HEADER);
+    lines.push(Line::from(Span::styled(
+        format!("{leading}{pad}{trio}"),
+        style,
+    )));
 }
 
 fn remote_row_line(
     row: &RemoteRow,
-    widths: &RemoteColWidths,
+    layout: &SyncColLayout,
     selection: PaneSelectionState,
 ) -> Line<'static> {
     // Icon cell: emoji + trailing spaces to reach REMOTE_ICON_COL width.
@@ -869,16 +969,18 @@ fn remote_row_line(
         .as_deref()
         .map(|annotation| format!("  {annotation}"))
         .unwrap_or_default();
+    // Width already spent by the leading space + icon spans, then the
+    // Remote/URL columns, before the Branch column begins.
+    let consumed = 1 + REMOTE_ICON_COL + layout.remote_name + 2 + layout.remote_url;
+    let pad = " ".repeat(layout.lead.saturating_sub(consumed));
+    let trio = sync_trio(layout, &row.branch, &row.tracked_ref, &row.status);
+    let url = fit_text(&row.display_url, layout.remote_url);
     let text = format!(
-        "{:<name$}  {:<url$}  {:<tracked$}  {:>status$}{push_suffix}",
+        "{:<name$}  {:<url$}{pad}{trio}{push_suffix}",
         row.name,
-        row.display_url,
-        row.tracked_ref,
-        row.status,
-        name = widths.name,
-        url = widths.url,
-        tracked = widths.tracked,
-        status = widths.status,
+        url,
+        name = layout.remote_name,
+        url = layout.remote_url,
     );
     let data_style = selection.patch(Style::default().fg(inactive_title_color()));
     let icon_style = selection.patch(Style::default());
@@ -891,88 +993,38 @@ fn remote_row_line(
 
 // ── Worktrees table ──────────────────────────────────────────────────
 
-struct WorktreeColWidths {
-    name:   usize,
-    branch: usize,
-    status: usize,
-}
-
-const WORKTREES_NAME_HEADER: &str = "Name";
-const WORKTREES_BRANCH_HEADER: &str = "Branch";
-const WORKTREES_STATUS_HEADER: &str = "Status";
-
-fn worktree_col_widths(worktrees: &[WorktreeInfo]) -> WorktreeColWidths {
-    let name = worktrees
-        .iter()
-        .map(|w| w.name.width())
-        .max()
-        .unwrap_or(0)
-        .max(WORKTREES_NAME_HEADER.width());
-    let branch = worktrees
-        .iter()
-        .map(|w| w.branch.as_deref().unwrap_or("").width())
-        .max()
-        .unwrap_or(0)
-        .max(WORKTREES_BRANCH_HEADER.width());
-    let status = worktrees
-        .iter()
-        .map(|w| worktree_status_text(w.ahead_behind).width())
-        .max()
-        .unwrap_or(0)
-        .max(WORKTREES_STATUS_HEADER.width());
-    WorktreeColWidths {
-        name,
-        branch,
-        status,
-    }
-}
-
-fn render_worktree_header(
-    lines: &mut Vec<Line<'static>>,
-    widths: &WorktreeColWidths,
-    focused: bool,
-) {
+fn render_worktree_header(lines: &mut Vec<Line<'static>>, layout: &SyncColLayout, focused: bool) {
     let style = column_header_style(focused);
-    let text = format!(
-        " {:<name$}  {:<branch$}  {:<status$}",
+    let leading = format!(
+        " {:<name$}",
         WORKTREES_NAME_HEADER,
-        WORKTREES_BRANCH_HEADER,
-        WORKTREES_STATUS_HEADER,
-        name = widths.name,
-        branch = widths.branch,
-        status = widths.status,
+        name = layout.worktree_name
     );
-    lines.push(Line::from(Span::styled(text, style)));
+    let pad = " ".repeat(layout.lead.saturating_sub(leading.width()));
+    let trio = sync_trio(layout, BRANCH_HEADER, TRACKED_HEADER, SYNC_HEADER);
+    lines.push(Line::from(Span::styled(
+        format!("{leading}{pad}{trio}"),
+        style,
+    )));
 }
 
 fn worktree_row_line(
     row: &WorktreeInfo,
-    widths: &WorktreeColWidths,
+    layout: &SyncColLayout,
     selection: PaneSelectionState,
 ) -> Line<'static> {
-    let branch = row.branch.clone().unwrap_or_else(|| "-".to_string());
-    let status = worktree_status_text(row.ahead_behind);
-    let text = format!(
-        " {:<name$}  {:<branch$}  {:<status$}",
-        row.name,
-        branch,
-        status,
-        name = widths.name,
-        branch = widths.branch,
-        status = widths.status,
+    let sync = format_ahead_behind(row.ahead_behind);
+    let name = fit_text(&row.name, layout.worktree_name);
+    let leading = format!(" {:<name$}", name, name = layout.worktree_name);
+    let pad = " ".repeat(layout.lead.saturating_sub(leading.width()));
+    let trio = sync_trio(
+        layout,
+        worktree_branch_text(row),
+        worktree_tracked_text(row),
+        &sync,
     );
     let style = selection.patch(Style::default().fg(inactive_title_color()));
-    Line::from(Span::styled(text, style))
-}
-
-fn worktree_status_text(ahead_behind: Option<(usize, usize)>) -> String {
-    match ahead_behind {
-        Some((0, 0)) => IN_SYNC.to_string(),
-        Some((a, 0)) => format!("{SYNC_UP}{a}"),
-        Some((0, b)) => format!("{SYNC_DOWN}{b}"),
-        Some((a, b)) => format!("{SYNC_UP}{a} {SYNC_DOWN}{b}"),
-        None => NO_REMOTE_SYNC.to_string(),
-    }
+    Line::from(Span::styled(format!("{leading}{pad}{trio}"), style))
 }
 
 fn git_panel_title(data: &GitData) -> String {
@@ -1259,17 +1311,16 @@ mod tests {
 
     #[test]
     fn remotes_header_labels_sync_column() {
+        let layout = sync_col_layout(&[], &[], WIDE_PANE);
         let mut lines = Vec::new();
-        let widths = RemoteColWidths {
-            name:    6,
-            url:     8,
-            tracked: 10,
-            status:  6,
-        };
 
-        render_remote_header(&mut lines, &widths, true);
+        render_remote_header(&mut lines, &layout, true);
 
-        assert!(line_text(&lines[0]).ends_with("  Sync"));
+        let text = line_text(&lines[0]);
+        assert!(text.contains("Branch"));
+        assert!(text.contains("Tracked"));
+        // Sync is the last, right-aligned column.
+        assert!(text.ends_with("Sync"));
     }
 
     #[test]
@@ -1345,26 +1396,113 @@ mod tests {
         }));
     }
 
-    #[test]
-    fn remotes_sync_values_align_right() {
-        let row = RemoteRow {
+    /// A pane width wider than any test layout, so the flexible columns
+    /// never truncate.
+    const WIDE_PANE: usize = 200;
+
+    fn sample_remote() -> RemoteRow {
+        RemoteRow {
             name:            "origin".to_string(),
             icon:            GIT_LOCAL,
-            display_url:     "git@x".to_string(),
+            display_url:     "natepiano/bevy_window_manager".to_string(),
+            branch:          "main".to_string(),
             tracked_ref:     "origin/main".to_string(),
             status:          IN_SYNC.to_string(),
             full_url:        None,
             push_annotation: None,
-        };
-        let widths = RemoteColWidths {
-            name:    6,
-            url:     8,
-            tracked: 11,
-            status:  6,
-        };
+        }
+    }
 
-        let line = remote_row_line(&row, &widths, PaneSelectionState::Unselected);
+    fn sample_worktree() -> WorktreeInfo {
+        WorktreeInfo {
+            name:         "bevy_window_manager_bevy_update".to_string(),
+            path:         String::new(),
+            branch:       Some("update/bevy_0.19.0".to_string()),
+            tracked:      Some("main".to_string()),
+            ahead_behind: Some((0, 0)),
+        }
+    }
 
-        assert!(line_text(&line).ends_with("    ☑️"));
+    #[test]
+    fn remotes_sync_values_align_right() {
+        let row = sample_remote();
+        let layout = sync_col_layout(std::slice::from_ref(&row), &[], WIDE_PANE);
+
+        let line = remote_row_line(&row, &layout, PaneSelectionState::Unselected);
+
+        // Right-aligned Sync is the last column, so no trailing pad follows.
+        assert!(line_text(&line).ends_with("☑️"));
+    }
+
+    #[test]
+    fn worktree_sync_values_align_right() {
+        let row = sample_worktree();
+        let layout = sync_col_layout(&[], std::slice::from_ref(&row), WIDE_PANE);
+
+        let line = worktree_row_line(&row, &layout, PaneSelectionState::Unselected);
+
+        assert!(line_text(&line).ends_with("☑️"));
+    }
+
+    #[test]
+    fn remotes_and_worktrees_columns_line_up() {
+        let remote = sample_remote();
+        let wt = sample_worktree();
+        let layout = sync_col_layout(
+            std::slice::from_ref(&remote),
+            std::slice::from_ref(&wt),
+            WIDE_PANE,
+        );
+
+        let mut remote_header = Vec::new();
+        render_remote_header(&mut remote_header, &layout, true);
+        let mut worktree_header = Vec::new();
+        render_worktree_header(&mut worktree_header, &layout, true);
+
+        let remote_text = line_text(&remote_header[0]);
+        let worktree_text = line_text(&worktree_header[0]);
+        // The shared trio starts at the same column in both tables. Leading
+        // text is ASCII, so byte index equals display column here.
+        assert_eq!(remote_text.find("Branch"), worktree_text.find("Branch"));
+        assert_eq!(remote_text.find("Tracked"), worktree_text.find("Tracked"));
+        assert!(remote_text.ends_with("Sync"));
+        assert!(worktree_text.ends_with("Sync"));
+    }
+
+    #[test]
+    fn flex_columns_truncate_before_trio() {
+        let remote = sample_remote();
+        let wt = sample_worktree();
+        // Narrow enough to shrink the URL / Name columns while the
+        // Branch/Tracked/Sync trio stays at full width.
+        let layout = sync_col_layout(std::slice::from_ref(&remote), std::slice::from_ref(&wt), 67);
+
+        let remote_line = line_text(&remote_row_line(
+            &remote,
+            &layout,
+            PaneSelectionState::Unselected,
+        ));
+        let worktree_line = line_text(&worktree_row_line(
+            &wt,
+            &layout,
+            PaneSelectionState::Unselected,
+        ));
+
+        // The flexible columns ellipsize...
+        assert!(remote_line.contains("..."));
+        assert!(worktree_line.contains("..."));
+        // ...but the Sync delta survives at the right edge of both rows.
+        assert!(remote_line.ends_with("☑️"));
+        assert!(worktree_line.ends_with("☑️"));
+    }
+
+    #[test]
+    fn flex_columns_stop_shrinking_at_floor() {
+        let remote = sample_remote();
+        // Absurdly narrow: the URL can't squeeze past the floor, so the line
+        // is left to clip rather than shrinking the column to nothing.
+        let layout = sync_col_layout(std::slice::from_ref(&remote), &[], 4);
+
+        assert_eq!(layout.remote_url, MIN_FLEX_COL);
     }
 }
