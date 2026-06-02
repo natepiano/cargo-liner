@@ -4,9 +4,7 @@
 [![crates.io](https://img.shields.io/crates/v/cargo-port.svg)](https://crates.io/crates/cargo-port)
 [![docs.rs](https://docs.rs/cargo-port/badge.svg)](https://docs.rs/cargo-port)
 [![license](https://img.shields.io/crates/l/cargo-port.svg)](LICENSE-MIT)
-
-<img src="assets/dashboard-main.png" alt="cargo-port dashboard showing project tree, worktree details, Git status, CPU and GPU diagnostics, targets, lint runs, and CI runs" width="100%">
-
+<img src="assets/dashboard.gif" alt="cargo-port dashboard showing project tree, worktree details, Git status, CPU and GPU diagnostics, targets, lint runs, and CI runs" width="100%">
 cargo-port is a terminal dashboard for your Rust workspaces and projects. Configure it to scan one or more directories to view workspaces, crates, worktrees, vendored dependencies, targets, local lint state, GitHub CI, pull requests, and machine diagnostics in one keyboard-driven view.
 
 - **Inventory everything** - workspaces, members, linked worktrees, submodules, vendored crates, examples, benches, binaries, tests, and non-Rust git repos
@@ -95,13 +93,14 @@ We'll show the Worktree Group as an example below. Run the app to see any of the
 
 1. Pane title shows the current branch and the description from GitHub if it exists.
 2. Branch info, status, stars. Project incept date and date of latest commit. Also date of last fetch.  Rate limits exist on GitHub so we show them in case you are hammering github with requests, you'll see it reflected here.
-3. All configured remotes - including sync (synced/ahead/behind) status
-- 
+3. All configured remotes - including sync (synced/ahead/behind) status between the branch and the tracked origin.
+4. All worktree checkouts. The primary isn't tracked versus anything so just shows the dash. Other checkouts show their branch and tracked status versus main.
 ### Languages
+Cargo port uses the tokei crate to scan for languages at startup. It doesn't refresh automatically but you can always ctrl-r to rescan (default key binding) if your curiosity is getting to you. Can you guess what famous rust game engine has these stats?
 
 <img src="assets/pane-languages-numbered.png" alt="Numbered languages pane" width="75%">
 
-1. Detected languages with file-type icons.
+1. Detected languages with file-type icons. As you can see not everything has an icon - what do you think RON should be?
 2. File counts per language.
 3. Code, comment, blank-line, and total-line counts.
 
