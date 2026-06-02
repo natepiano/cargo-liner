@@ -212,42 +212,11 @@ fn confirm_finder(app: &mut App) {
     }
 }
 
-/// After selecting the parent project, focus the targets column and scroll
-/// to the matching target entry.
-fn navigate_to_target(app: &mut App, item: &FinderItem) {
-    // Focus the targets pane (now in the left panel below the project list).
-    let Some(targets_data) = app.panes.targets.content().cloned() else {
-        return;
-    };
-    if targets_data.has_targets() {
-        app.set_focus(FocusedPane::App(AppPaneId::Targets));
-
-        // Build target list and find the matching entry index
-        {
-            let entries = panes::build_target_list_from_data(&targets_data);
-            let target_kind = match item.kind {
-                FinderKind::Binary => RunTargetKind::Binary,
-                FinderKind::Example => RunTargetKind::Example,
-                FinderKind::Bench => RunTargetKind::Bench,
-                FinderKind::Project | FinderKind::PullRequest => return,
-            };
-            let target_name = item.target_name.as_deref().unwrap_or("");
-            for (i, entry) in entries.iter().enumerate() {
-                if entry.name == target_name
-                    && std::mem::discriminant(&entry.kind) == std::mem::discriminant(&target_kind)
-                {
-                    app.panes.targets.viewport.set_pos(i);
-                    return;
-                }
-            }
-        }
-    }
-}
-
-fn navigate_to_pull_request(app: &mut App, item: &FinderItem) {
-    let Some(target) = item.pr_target.as_ref() else {
-        return;
-    };
+/// Rebuild the detail panes for the just-selected project. `select_project_in_tree`
+/// only moves the tree cursor; the panes are otherwise repopulated lazily on the
+/// next render — too late for the finder, which reads pane content synchronously
+/// here to land the cursor on a specific row.
+fn repopulate_selected_detail_panes(app: &mut App) {
     app.sync_selected_project();
     if let Some(data) = app
         .project_list
@@ -259,6 +228,44 @@ fn navigate_to_pull_request(app: &mut App, item: &FinderItem) {
         app.panes.git.set_content(data.git);
         app.panes.targets.set_content(data.targets);
     }
+}
+
+/// After selecting the parent project, focus the targets column and scroll
+/// to the matching target entry.
+fn navigate_to_target(app: &mut App, item: &FinderItem) {
+    repopulate_selected_detail_panes(app);
+    let Some(targets_data) = app.panes.targets.content().cloned() else {
+        return;
+    };
+    if !targets_data.has_targets() {
+        return;
+    }
+    app.set_focus(FocusedPane::App(AppPaneId::Targets));
+
+    // Find the matching target entry and land the cursor on it.
+    let entries = panes::build_target_list_from_data(&targets_data);
+    let target_kind = match item.kind {
+        FinderKind::Binary => RunTargetKind::Binary,
+        FinderKind::Example => RunTargetKind::Example,
+        FinderKind::Bench => RunTargetKind::Bench,
+        FinderKind::Project | FinderKind::PullRequest => return,
+    };
+    let target_name = item.target_name.as_deref().unwrap_or("");
+    for (i, entry) in entries.iter().enumerate() {
+        if entry.name == target_name
+            && std::mem::discriminant(&entry.kind) == std::mem::discriminant(&target_kind)
+        {
+            app.panes.targets.viewport.set_pos(i);
+            return;
+        }
+    }
+}
+
+fn navigate_to_pull_request(app: &mut App, item: &FinderItem) {
+    let Some(target) = item.pr_target.as_ref() else {
+        return;
+    };
+    repopulate_selected_detail_panes(app);
     let selected_owner_repo = app
         .project_list
         .selected_project_path()

@@ -30,6 +30,7 @@ pub(super) fn language_icon(language: &str) -> &'static str {
     match language.to_ascii_lowercase().as_str() {
         "rust" => "\u{1f980}",                                                 // 🦀
         "c" | "c++" | "c header" | "c++ header" | "c++ module" => "\u{1f30a}", // 🌊
+        "java" => "\u{2615}",                                                  // ☕
         "go" => "Go",
         "python" => "\u{1f40d}", // 🐍
         "javascript" | "jsx" => "JS",
@@ -42,7 +43,8 @@ pub(super) fn language_icon(language: &str) -> &'static str {
         "html" => "\u{1f310}",       // 🌐
         "plain text" => "\u{1f4c4}", // 📄
         "xml" => "<>",
-        "glsl" => "\u{1f53a}", // 🔺
+        "glsl" | "webgpu shader language" => "\u{1f53a}", // 🔺 (shading languages)
+        "svg" => "\u{1f4d0}",                             // 📐
         "yaml" => "Y:",
         "bitbake" => "\u{1f35e}",          // 🍞
         "cmake" => "\u{1f528}",            // 🔨
@@ -50,6 +52,8 @@ pub(super) fn language_icon(language: &str) -> &'static str {
         "autoconf" => "\u{1f527}",         // 🔧
         "asciidoc" => "A\u{2193}",         // A↓
         "batch" => "C:",
+        // tokei reports RON as "Rusty Object Notation"; abbreviate to RON.
+        "rusty object notation" => "RON",
         _ => "  ",
     }
 }
@@ -60,7 +64,8 @@ const LANG_NUM_COL: u16 = 8;
 /// Column constraints for the language stats table.
 const fn lang_table_widths() -> [Constraint; 7] {
     [
-        Constraint::Length(3),
+        // Icon column: 1-space inset + up to a 3-char text icon (e.g. "RON").
+        Constraint::Length(4),
         Constraint::Fill(1),
         Constraint::Length(LANG_NUM_COL),
         Constraint::Length(LANG_NUM_COL),
