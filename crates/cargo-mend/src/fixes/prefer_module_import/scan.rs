@@ -21,7 +21,7 @@ use super::inline_calls::InlineCallCandidate;
 use super::inline_calls::InlineCallDetector;
 use super::references::BareReference;
 use super::references::ReferenceCollector;
-use super::shared;
+use super::support;
 use crate::compiler::RUST_SOURCE_FILE_EXTENSION;
 use crate::compiler::SOURCE_DIR_SRC;
 use crate::config::DiagnosticCode;
@@ -122,7 +122,7 @@ fn scan_file(
         parse_file(&text).with_context(|| format!("failed to parse {}", path.display()))?;
     let current_module_path = rust_syntax::file_module_path(source_root, path)
         .with_context(|| format!("failed to determine module path for {}", path.display()))?;
-    let offsets = shared::line_offsets(&text);
+    let offsets = support::line_offsets(&text);
     let file_context = ScanFileContext {
         analysis_root,
         path,
@@ -236,11 +236,12 @@ fn collect_existing_module_imports(
     let mut modules: BTreeSet<Vec<String>> = BTreeSet::new();
     for item in &syntax.items {
         if let Item::Use(item_use) = item
-            && let Some(flat) = shared::flatten_use_tree(&item_use.tree)
+            && let Some(flat) = support::flatten_use_tree(&item_use.tree)
             && flat.rename.is_none()
-            && let Some(absolute) = shared::resolve_to_absolute(&flat.segments, current_module_path)
+            && let Some(absolute) =
+                support::resolve_to_absolute(&flat.segments, current_module_path)
             && !absolute.is_empty()
-            && shared::leaf_is_module(source_root, &absolute)
+            && support::leaf_is_module(source_root, &absolute)
         {
             modules.insert(absolute);
         }
@@ -265,10 +266,10 @@ fn file_level_insertion_offset(syntax: &File, text: &str, offsets: &[usize]) -> 
     let mut last_use_end: Option<usize> = None;
     let mut first_item_start: Option<usize> = None;
     for item in &syntax.items {
-        let item_start = shared::offset(offsets, item.span().start());
+        let item_start = support::offset(offsets, item.span().start());
         first_item_start.get_or_insert(item_start);
         if let Item::Use(item_use) = item {
-            let end = shared::offset(offsets, item_use.span().end());
+            let end = support::offset(offsets, item_use.span().end());
             let end = if text.as_bytes().get(end) == Some(&b'\n') {
                 end + 1
             } else {
@@ -365,8 +366,8 @@ fn build_function_use_fix(
     existing_module_imports: &BTreeSet<Vec<String>>,
     rewritten_modules: &mut BTreeSet<String>,
 ) -> UseFix {
-    let byte_start = shared::offset(file_context.offsets, function.span_start);
-    let byte_end = shared::offset(file_context.offsets, function.span_end);
+    let byte_start = support::offset(file_context.offsets, function.span_start);
+    let byte_end = support::offset(file_context.offsets, function.span_end);
     let byte_end_with_newline = if file_context.text.as_bytes().get(byte_end) == Some(&b'\n') {
         byte_end + 1
     } else {

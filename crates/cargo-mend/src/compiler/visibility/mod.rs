@@ -1,4 +1,4 @@
-mod field_visibility;
+mod field;
 mod policy;
 mod scan;
 mod source;

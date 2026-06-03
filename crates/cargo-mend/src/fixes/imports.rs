@@ -148,19 +148,19 @@ struct ImportFinding {
     use_fix:             UseFix,
 }
 
-impl ShortenImportFact {
-    fn into_finding(self) -> Finding {
-        let replacement = self.replacement;
-        Finding {
+impl From<ShortenImportFact> for Finding {
+    fn from(fact: ShortenImportFact) -> Self {
+        let replacement = fact.replacement;
+        Self {
             severity:        Severity::Warning,
-            diagnostic_code: self.diagnostic_code,
-            path:            self.path,
-            line:            self.line,
-            column:          self.column,
-            highlight_len:   self.highlight_len,
-            source_line:     self.source_line,
+            diagnostic_code: fact.diagnostic_code,
+            path:            fact.path,
+            line:            fact.line,
+            column:          fact.column,
+            highlight_len:   fact.highlight_len,
+            source_line:     fact.source_line,
             item:            None,
-            message:         self.message.to_string(),
+            message:         fact.message.to_string(),
             suggestion:      Some(format!("consider using: `{replacement}`")),
             fixability:      FixSupport::ShortenImport,
             related:         None,
@@ -179,7 +179,7 @@ pub(crate) fn scan_selection(selection: &Selection) -> Result<ImportScan> {
     Ok(ImportScan {
         findings: findings_with_fixes
             .iter()
-            .map(|finding| finding.shorten_import_fact.clone().into_finding())
+            .map(|finding| Finding::from(finding.shorten_import_fact.clone()))
             .collect(),
         fixes,
     })

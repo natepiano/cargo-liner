@@ -8,7 +8,7 @@ use syn::spanned::Spanned;
 use syn::visit::Visit;
 use syn::visit::visit_item_mod;
 
-use super::shared;
+use super::support;
 use crate::rust_syntax::MODULE_PATH_SEPARATOR;
 use crate::rust_syntax::PATH_KEYWORD_CRATE;
 use crate::rust_syntax::PATH_KEYWORD_SUPER;
@@ -68,7 +68,7 @@ fn analyze_function_import(
     declared_modules: &BTreeSet<String>,
     node: &ItemUse,
 ) -> Option<RawCandidate> {
-    let flat = shared::flatten_use_tree(&node.tree)?;
+    let flat = support::flatten_use_tree(&node.tree)?;
 
     if flat.rename.is_some() {
         return None;
@@ -84,12 +84,12 @@ fn analyze_function_import(
     }
 
     let leaf = flat.segments.last()?;
-    if !shared::is_snake_case_function_name(leaf) {
+    if !support::is_snake_case_function_name(leaf) {
         return None;
     }
 
-    let absolute_segments = shared::resolve_to_absolute(&flat.segments, current_module_path)?;
-    if shared::leaf_is_module(source_root, &absolute_segments) {
+    let absolute_segments = support::resolve_to_absolute(&flat.segments, current_module_path)?;
+    if support::leaf_is_module(source_root, &absolute_segments) {
         return None;
     }
 
@@ -98,7 +98,7 @@ fn analyze_function_import(
     if module_name == PATH_KEYWORD_SUPER || module_name == PATH_KEYWORD_CRATE {
         return None;
     }
-    if !shared::is_snake_case_module_name(&module_name) {
+    if !support::is_snake_case_module_name(&module_name) {
         return None;
     }
     if declared_modules.contains(&module_name) {
@@ -106,7 +106,7 @@ fn analyze_function_import(
     }
 
     let shortened_module_segments =
-        shared::shorten_module_path(current_module_path, module_segments);
+        support::shorten_module_path(current_module_path, module_segments);
     let import_target = if shortened_module_segments.as_slice() == [PATH_KEYWORD_SUPER] {
         ImportTarget::ParentModule
     } else {
@@ -116,7 +116,7 @@ fn analyze_function_import(
     let replacement_use = if import_target == ImportTarget::ParentModule {
         String::new()
     } else {
-        let vis_prefix = shared::extract_visibility_prefix(node);
+        let vis_prefix = support::extract_visibility_prefix(node);
         format!("{vis_prefix}use {module_path};")
     };
     let span = node.span();

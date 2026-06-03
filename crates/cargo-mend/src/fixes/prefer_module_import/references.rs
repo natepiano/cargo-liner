@@ -20,7 +20,7 @@ use syn::TraitItemFn;
 use syn::visit;
 use syn::visit::Visit;
 
-use super::shared;
+use super::support;
 
 pub(super) struct BareReference {
     pub(super) name:       String,
@@ -209,8 +209,8 @@ impl Visit<'_> for ReferenceCollector<'_> {
                     let name = segment.ident.to_string();
                     if self.imported_names.contains(&name) && !self.is_shadowed(&name) {
                         let span = segment.ident.span();
-                        let start = shared::offset(self.offsets, span.start());
-                        let end = shared::offset(self.offsets, span.end());
+                        let start = support::offset(self.offsets, span.start());
+                        let end = support::offset(self.offsets, span.end());
                         self.references.push(BareReference {
                             name,
                             byte_start: start,
@@ -298,8 +298,8 @@ pub(super) fn collect_bare_refs_from_tokens(
                 let name = ident.to_string();
                 if previous_token.allows_bare_reference() && imported_names.contains(&name) {
                     let span = ident.span();
-                    let start = shared::offset(offsets, span.start());
-                    let end = shared::offset(offsets, span.end());
+                    let start = support::offset(offsets, span.start());
+                    let end = support::offset(offsets, span.end());
                     references.push(BareReference {
                         name,
                         byte_start: start,
@@ -338,12 +338,12 @@ mod tests {
 
     use super::BareReference;
     use super::collect_bare_refs_from_tokens;
-    use super::shared;
+    use super::support;
 
     #[test]
     fn collect_bare_refs_finds_ident_in_macro_tokens() {
         let src = r"matches!(do_thing(x), MyEnum::Variant)";
-        let offsets = shared::line_offsets(src);
+        let offsets = support::line_offsets(src);
         let mut names = BTreeSet::new();
         names.insert("do_thing".to_string());
         let tokens: TokenStream = src.parse().expect("parse tokens");
@@ -357,7 +357,7 @@ mod tests {
     #[test]
     fn collect_bare_refs_skips_qualified_ident_in_macro_tokens() {
         let src = r"matches!(module::do_thing(x), MyEnum::Variant)";
-        let offsets = shared::line_offsets(src);
+        let offsets = support::line_offsets(src);
         let mut names = BTreeSet::new();
         names.insert("do_thing".to_string());
         let tokens: TokenStream = src.parse().expect("parse tokens");
@@ -369,7 +369,7 @@ mod tests {
     #[test]
     fn collect_bare_refs_finds_nested_in_group() {
         let src = r"assert!(do_thing(foo(bar())))";
-        let offsets = shared::line_offsets(src);
+        let offsets = support::line_offsets(src);
         let mut names = BTreeSet::new();
         names.insert("do_thing".to_string());
         let tokens: TokenStream = src.parse().expect("parse tokens");

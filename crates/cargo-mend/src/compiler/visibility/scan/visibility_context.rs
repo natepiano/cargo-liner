@@ -19,7 +19,7 @@ use crate::compiler::persistence::StoredReport;
 use crate::compiler::settings::DriverSettings;
 use crate::compiler::source_cache;
 use crate::compiler::source_cache::SourceCache;
-use crate::compiler::visibility::field_visibility;
+use crate::compiler::visibility::field;
 use crate::compiler::visibility::source;
 use crate::compiler::visibility::use_sites;
 use crate::reporting::CompilerWarningFacts;
@@ -79,7 +79,7 @@ pub fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) ->
     for item_id in crate_items.free_items() {
         let item = tcx.hir_item(item_id);
         visit::visit_item(&ctx, item, &mut sink)?;
-        field_visibility::check_item(&ctx, item, &mut sink)?;
+        field::check_item(&ctx, item, &mut sink)?;
     }
 
     for item_id in crate_items.impl_items() {

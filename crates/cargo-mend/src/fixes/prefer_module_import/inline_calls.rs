@@ -12,7 +12,7 @@ use syn::visit::Visit;
 use super::function_imports::ImportTarget;
 use super::scan::InlineCallFindingInputs;
 use super::scan::ScanFileContext;
-use super::shared;
+use super::support;
 use crate::config::DiagnosticCode;
 use crate::fixes::imports::ImportGroup;
 use crate::fixes::imports::UseFix;
@@ -85,10 +85,10 @@ pub(super) fn build_inline_call_findings_and_fixes(
     let mut inserted_modules: BTreeSet<Vec<String>> = BTreeSet::new();
 
     for candidate in inline_inputs.candidates {
-        let prefix_start_byte = shared::offset(file_context.offsets, candidate.prefix_start);
-        let leaf_start_byte = shared::offset(file_context.offsets, candidate.leaf_start);
-        let full_start_byte = shared::offset(file_context.offsets, candidate.full_span_start);
-        let full_end_byte = shared::offset(file_context.offsets, candidate.full_span_end);
+        let prefix_start_byte = support::offset(file_context.offsets, candidate.prefix_start);
+        let leaf_start_byte = support::offset(file_context.offsets, candidate.leaf_start);
+        let full_start_byte = support::offset(file_context.offsets, candidate.full_span_start);
+        let full_end_byte = support::offset(file_context.offsets, candidate.full_span_end);
 
         let source_line = file_context
             .text
@@ -206,20 +206,20 @@ fn analyze_inline_call(
     }
 
     let leaf = segments.last()?;
-    if !shared::is_snake_case_function_name(leaf) {
+    if !support::is_snake_case_function_name(leaf) {
         return None;
     }
 
-    let absolute_segments = shared::resolve_to_absolute(&segments, current_module_path)?;
+    let absolute_segments = support::resolve_to_absolute(&segments, current_module_path)?;
     if absolute_segments.is_empty() {
         return None;
     }
-    if shared::leaf_is_module(source_root, &absolute_segments) {
+    if support::leaf_is_module(source_root, &absolute_segments) {
         return None;
     }
 
     let absolute_module = absolute_segments[..absolute_segments.len() - 1].to_vec();
-    if absolute_module.is_empty() || !shared::leaf_is_module(source_root, &absolute_module) {
+    if absolute_module.is_empty() || !support::leaf_is_module(source_root, &absolute_module) {
         return None;
     }
 
@@ -227,7 +227,7 @@ fn analyze_inline_call(
     if module_name == PATH_KEYWORD_SUPER || module_name == PATH_KEYWORD_CRATE {
         return None;
     }
-    if !shared::is_snake_case_module_name(&module_name) {
+    if !support::is_snake_case_module_name(&module_name) {
         return None;
     }
     if declared_modules.contains(&module_name) {
@@ -235,7 +235,7 @@ fn analyze_inline_call(
     }
 
     let module_segments = &segments[..segments.len() - 1];
-    let shortened = shared::shorten_module_path(current_module_path, module_segments);
+    let shortened = support::shorten_module_path(current_module_path, module_segments);
     let import_target = if shortened.as_slice() == [PATH_KEYWORD_SUPER] {
         ImportTarget::ParentModule
     } else {
