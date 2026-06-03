@@ -57,7 +57,7 @@ impl DerefMut for RustInfo {
 }
 
 /// Shared Cargo fields populated from the `cargo metadata`
-/// [`WorkspaceMetadata`](super::cargo_metadata_store::WorkspaceMetadata).
+/// [`WorkspaceMetadata`](super::metadata_store::WorkspaceMetadata).
 ///
 /// Step 3b full retirement: these fields are no longer hand-parsed out
 /// of `Cargo.toml`. `types` / `examples` / `benches` stay

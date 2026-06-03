@@ -2020,8 +2020,8 @@ impl ProjectList {
         }
     }
 
-    /// Stamp each [`PackageRecord`]'s derived [`Cargo`] fields onto the
-    /// matching package / workspace member / vendored package.
+    /// Stamp each [`PackageRecord`](crate::project::PackageRecord)'s derived [`Cargo`] fields onto
+    /// the matching package / workspace member / vendored package.
     pub(super) fn apply_cargo_fields_from_workspace_metadata(
         &mut self,
         metadata: &WorkspaceMetadata,

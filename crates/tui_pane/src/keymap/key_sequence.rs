@@ -67,7 +67,7 @@ impl KeySequence {
     ///
     /// # Errors
     ///
-    /// Returns [`KeyParseError`] when the string is empty or any step is not a
+    /// Returns `KeyParseError` when the string is empty or any step is not a
     /// valid key binding.
     pub fn parse(s: &str) -> Result<Self, KeyParseError> {
         let s = s.trim();

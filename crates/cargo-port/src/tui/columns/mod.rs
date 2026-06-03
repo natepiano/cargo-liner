@@ -200,11 +200,11 @@ pub(super) struct StyledSegment {
 }
 
 /// Resolved Lint column cell — bundles the icon glyph and its style so the
-/// two cannot drift. Production code constructs one via [`App::lint_cell`]
+/// two cannot drift. Production code constructs one via `App::lint_cell`
 /// (see `tui/app/lint.rs`), which derives both fields from a single
 /// [`LintStatus`](crate::lint::LintStatus). Non-Rust child rows use
 /// [`Self::hidden`]; tests/fixtures that just need a glyph use
-/// [`Self::with_icon`].
+/// `Self::with_icon`.
 #[derive(Clone, Copy)]
 pub(super) struct LintCell {
     icon:  &'static str,
@@ -221,7 +221,7 @@ impl LintCell {
     }
 
     /// Test/fixture helper: a specific icon with the default style.
-    /// Production code should use [`App::lint_cell`] instead so the style
+    /// Production code should use `App::lint_cell` instead so the style
     /// stays in sync with the status.
     #[cfg(test)]
     pub(super) const fn with_icon(icon: &'static str) -> Self {
@@ -232,7 +232,7 @@ impl LintCell {
     }
 
     /// Construct from already-resolved icon + style. Visible to the App
-    /// layer so [`App::lint_cell`] can populate both fields from a single
+    /// layer so `App::lint_cell` can populate both fields from a single
     /// [`LintStatus`](crate::lint::LintStatus).
     pub(super) const fn from_parts(icon: &'static str, style: Style) -> Self {
         Self { icon, style }

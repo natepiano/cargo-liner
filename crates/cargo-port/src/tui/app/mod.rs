@@ -40,7 +40,7 @@
 //! bespoke state, write the lifecycle as a generic struct and have
 //! each subsystem compose it.
 //!
-//! - See [`super::support::WatchedFile<T>`], composed by [`super::state::Config`] and
+//! - See [`tui_pane::WatchedFile<T>`], composed by [`super::state::Config`] and
 //!   [`super::state::Keymap`] (with the diagnostics-toast id). The primitive captures the
 //!   load-on-disk-change contract once; the two subsystems add their bespoke state on top.
 
@@ -304,7 +304,7 @@ pub(super) struct App {
     pub(super) lint:               Lint,
     /// Ci subsystem. Owns `fetch_tracker`, `fetch_toast`, and
     /// per-project `display_modes`, plus `Ci::package_display`
-    /// which returns the typed [`CiDisplay`] for the package
+    /// which returns the typed [`CiDisplay`](crate::tui::state::CiDisplay) for the package
     /// detail row.
     pub(super) ci:                 Ci,
     /// Config subsystem. Owns `current_config`, `config_path`,

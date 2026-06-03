@@ -410,7 +410,7 @@ impl<Ctx: AppContext> Framework<Ctx> {
 
     /// Run the framework dismiss chain. Returns `true` when something
     /// was dismissed at the framework level. The free
-    /// [`dismiss_chain`](crate::framework::global_action::dismiss_chain)
+    /// `dismiss_chain`
     /// helper (called from the
     /// [`GlobalAction::Dismiss`](crate::GlobalAction::Dismiss)
     /// dispatcher) consults this; on `false`, it falls through to the

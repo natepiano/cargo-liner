@@ -7,8 +7,8 @@
 //! Surface:
 //!
 //! - [`AppPaneId`]: every app-side pane id the framework keys on.
-//! - [`NavAction`](tui_pane::NavAction): the framework-owned directional nav enum the
-//!   [`Navigation`] singleton routes through.
+//! - [`NavAction`]: the framework-owned directional nav enum the [`Navigation`] singleton routes
+//!   through.
 //! - [`AppGlobalAction`]: app-extension globals scope. Currently ships a single placeholder variant
 //!   ([`AppGlobalAction::Find`]); grows to cover the rest of the binary's non-framework globals.
 //! - [`AppNavigation`] / [`PackagePane`]: the `Navigation` and `Pane` + `Shortcuts` impls the

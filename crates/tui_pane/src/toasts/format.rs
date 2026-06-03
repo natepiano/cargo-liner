@@ -12,7 +12,7 @@ const MAX_VISIBLE_ITEMS: usize = usize::MAX;
 /// - 1 item: returned as-is (the renderer wraps; if it exceeds two lines the second line is
 ///   truncated with `…` by the renderer)
 /// - 2+ items: one per line, each truncated with `…` if too wide
-/// - If extras remain beyond the visible items, the last visible line uses [`truncate_with_suffix`]
+/// - If extras remain beyond the visible items, the last visible line uses `truncate_with_suffix`
 ///   to guarantee `(+ N others)` fits
 #[must_use]
 pub fn format_toast_items(items: &[&str], max_width: usize) -> String {

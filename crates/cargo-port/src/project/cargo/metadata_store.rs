@@ -68,7 +68,7 @@ impl WorkspaceMetadataStore {
     /// Resolve the owning workspace's `target_directory` for any `path`
     /// inside a known workspace. Returns `None` when no metadata covers
     /// `path` yet; callers should fall back to `<project_root>/target`.
-    /// This is the lock-free core of [`crate::tui::App::resolve_target_dir`].
+    /// This is the lock-free core of `App::resolve_target_dir`.
     pub fn resolved_target_dir(&self, path: &AbsolutePath) -> Option<&AbsolutePath> {
         let root = self.containing_workspace_root(path)?;
         self.by_root.get(root).map(|snap| &snap.target_directory)

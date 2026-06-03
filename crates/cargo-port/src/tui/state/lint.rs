@@ -2,7 +2,7 @@
 //!
 //! Owns the lint runtime, in-flight paths, the running-toast slot,
 //! and the on-disk cache stat counter. Startup-pass trackers live on
-//! the [`Startup`] subsystem.
+//! the `Startup` subsystem.
 //!
 //! The four lookup functions (`status_for_path`, `status_for_root`,
 //! `status_for_worktree`, `run_count_at`) return unframed

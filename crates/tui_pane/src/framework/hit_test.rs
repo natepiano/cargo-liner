@@ -1,5 +1,5 @@
 //! Per-pane hit-test routing: the [`Hittable`] trait that panes
-//! implement and the [`hit_test_at`] loop that walks a
+//! implement and the `hit_test_at` loop that walks a
 //! [`HitTestRegistry`].
 
 use ratatui::layout::Position;
@@ -13,7 +13,7 @@ use crate::Viewport;
 /// uses (typically an enum carrying the matched pane id plus a row
 /// index or affordance variant). The trait stays free of generic
 /// associated types and supertraits so it is object-safe — the
-/// dispatch loop in [`hit_test_at`] needs `&dyn Hittable<Target>`
+/// dispatch loop in `hit_test_at` needs `&dyn Hittable<Target>`
 /// to work. `Target` is a generic parameter rather than an associated
 /// type so impls for foreign types (the framework's own pane structs)
 /// can be written in the embedding crate against an
@@ -30,7 +30,7 @@ pub trait Hittable<Target> {
 /// already owns refs to every pane (often the top-level `App` or a
 /// dedicated `Panes` aggregate). `z_order` returns the static
 /// ordering; `pane` maps a pane id to the trait object that answers
-/// hit queries. [`hit_test_at`] walks the order, returning the first
+/// hit queries. `hit_test_at` walks the order, returning the first
 /// non-`None` hit.
 pub trait HitTestRegistry {
     /// Pane identifier carried in the z-order array.

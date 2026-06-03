@@ -5,11 +5,11 @@
 //! guarantee: page / half-page motions are distinct variants that
 //! cannot collapse onto a single-line move.
 //!
-//! [`default_keys`] is the rebindable, vim-independent keymap (arrows,
+//! `default_keys` is the rebindable, vim-independent keymap (arrows,
 //! Home/End, PageUp/PageDown) — an exhaustive `match` so adding a
 //! variant forces a decision about its default. Half-page has no
 //! hardware key, so its arms return an empty slice: half-page is
-//! reachable only through vim. [`vim_letter_extras`] supplies every
+//! reachable only through vim. `vim_letter_extras` supplies every
 //! vim-only alias the builder layers on in
 //! [`VimMode::Enabled`](crate::VimMode): the `h`/`j`/`k`/`l`/`gg`/`G`
 //! letters plus the Ctrl page / half-page motions (`Ctrl-u`/`Ctrl-d`
@@ -28,8 +28,8 @@ crate::action_enum! {
     /// The framework-owned navigation action set.
     ///
     /// Closed enum: the framework owns the directional vocabulary, its
-    /// default keymap ([`default_keys`]), and the vim aliases
-    /// ([`vim_letter_extras`]). Apps route resolved actions through
+    /// default keymap (`default_keys`), and the vim aliases
+    /// (`vim_letter_extras`). Apps route resolved actions through
     /// their [`Navigation`](crate::Navigation) impl's dispatcher; they
     /// neither define the set nor supply its default keys.
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -65,10 +65,10 @@ crate::action_enum! {
 /// The exhaustive `match` (no wildcard) forces a decision when a variant
 /// is added. Half-page has no hardware key, so its arms return an empty
 /// slice — half-page is reachable only through the vim Ctrl motions in
-/// [`vim_letter_extras`], never as a keymappable default.
+/// `vim_letter_extras`, never as a keymappable default.
 ///
 /// All defaults are single keystrokes, so `&[KeyBind]` suffices; the
-/// multi-key vim chord (`gg`) lives in [`vim_letter_extras`] as a
+/// multi-key vim chord (`gg`) lives in `vim_letter_extras` as a
 /// [`KeySequence`].
 pub(super) const fn default_keys(action: NavAction) -> &'static [KeyBind] {
     match action {
@@ -109,9 +109,9 @@ pub(super) const fn default_keys(action: NavAction) -> &'static [KeyBind] {
 }
 
 /// The full default navigation keymap: every [`NavAction::ALL`] entry
-/// bound to its [`default_keys`], primary key first. Actions whose
-/// [`default_keys`] is empty (half-page) contribute no binding here —
-/// they enter the table only via [`vim_letter_extras`].
+/// bound to its `default_keys`, primary key first. Actions whose
+/// `default_keys` is empty (half-page) contribute no binding here —
+/// they enter the table only via `vim_letter_extras`.
 pub(super) fn default_bindings() -> Bindings<NavAction> {
     let mut table = Bindings::new();
     for action in NavAction::ALL.iter().copied() {

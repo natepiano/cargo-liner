@@ -2,7 +2,7 @@
 //! renderer.
 //!
 //! The framework owns the per-slot styling pass — it knows
-//! [`RenderedSlot::state`](crate::keymap::RenderedSlot) at the moment
+//! `RenderedSlot::state` at the moment
 //! a span is emitted, and the binary does not — but it ships no
 //! colors of its own. The default constructor is theme-neutral: every
 //! field is [`Style::default()`]. Binaries supply a populated
@@ -16,7 +16,7 @@ use ratatui::style::Style;
 /// Five fields select between enabled / disabled `key` and `label`
 /// styling; the fifth styles the inter-slot separator.
 /// [`render_status_bar`](super::render) reads
-/// [`RenderedSlot::state`](crate::keymap::RenderedSlot) and chooses
+/// `RenderedSlot::state` and chooses
 /// `enabled_*` vs `disabled_*` per slot at emit time.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BarPalette {

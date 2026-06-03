@@ -3,7 +3,7 @@
 //! Re-exports `crossbeam-channel` under stable names so the render loop
 //! can `Select` over heterogeneous receivers (input, background, CI
 //! fetch, clean, example, CPU samples) and block until one is ready —
-//! see [`crate::tui::terminal`].
+//! see `crate::tui::terminal`.
 //!
 //! Every channel that reaches the render-loop `Select` flows through
 //! this module: swap a site's `use std::sync::mpsc::X` for

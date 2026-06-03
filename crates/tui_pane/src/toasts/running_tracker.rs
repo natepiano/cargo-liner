@@ -1,6 +1,6 @@
 //! Generic in-flight tracker: a `HashMap<K, Instant>` of running
 //! work paired with the single sticky [`ToastTaskId`] that displays
-//! "N <thing> running."
+//! "N \<thing\> running."
 //!
 //! The tracker only owns state — it does not drive the toast itself.
 //! Callers materialize a `Vec<TrackedItem>` from the tracker and

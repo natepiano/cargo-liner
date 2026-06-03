@@ -47,13 +47,13 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     /// Mark a task toast as finished.
     ///
     /// For a toast with tracked items, this marks any still-incomplete
-    /// item as completed at `now` and then runs [`Self::recompute_task_status`],
+    /// item as completed at `now` and then runs `Self::recompute_task_status`,
     /// which derives `finished_at = max(item.completed_at)`. That
     /// anchoring makes the "Closing in N" countdown coincide exactly
     /// with the last item's individual `item_linger`.
     ///
     /// For a toast with no items, transitions directly to
-    /// [`ToastTaskStatus::Finished`] with `Duration::ZERO` linger —
+    /// `ToastTaskStatus::Finished` with `Duration::ZERO` linger —
     /// the toast closes on the next prune pass.
     pub fn finish_task(&mut self, task_id: ToastTaskId) -> bool {
         let now = Instant::now();

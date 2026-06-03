@@ -80,11 +80,11 @@ pub enum ReactivateOutcome {
     /// create a fresh toast for the tracker.
     NotFound,
     /// Toast existed and was returned to
-    /// [`toast::ToastPhase::Visible`] with task status reset to
+    /// `toast::ToastPhase::Visible` with task status reset to
     /// `Running`.
     Revived,
     /// Toast existed but its dismissal is
-    /// [`toast::ToastDismissal::ClosedByUser`]. Caller should neither
+    /// `toast::ToastDismissal::ClosedByUser`. Caller should neither
     /// touch the toast nor create a replacement — the user
     /// closed it, and the underlying tracker work continues
     /// without UI surface.

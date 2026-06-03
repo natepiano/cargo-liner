@@ -74,7 +74,8 @@ impl App {
     /// marks items completed (freezing elapsed + starting strikethrough)
     /// as items disappear, and begins the toast-level linger
     /// countdown once the tracker drains. Used by lint, clean, and
-    /// GitHub repo-fetch flows via [`RunningTracker::items_for_toast`].
+    /// GitHub repo-fetch flows via
+    /// [`RunningTracker::items_for_toast`](tui_pane::RunningTracker::items_for_toast).
     pub(super) fn sync_running_toast(
         &mut self,
         toast_slot: Option<ToastTaskId>,

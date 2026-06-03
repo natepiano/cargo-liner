@@ -6,7 +6,7 @@
 //! - [`Configuring`]: settings phase. Settings methods (`config_path`, `load_toml`, `vim_mode`,
 //!   `on_quit`, `on_restart`, `dismiss_fallback`, `register_navigation`, `register_globals`,
 //!   `register_settings_overlay`, `register_keymap_overlay`) are reachable here only.
-//! - [`Registering`]: panes phase. Entered on the first [`KeymapBuilder::register`] call. Settings
+//! - `Registering`: panes phase. Entered on the first [`KeymapBuilder::register`] call. Settings
 //!   methods drop off the type — the compiler enforces "settings before panes" at compile time.
 //!   `build_into(&mut Framework<Ctx>)` is the production finalizer.
 
@@ -78,7 +78,7 @@ struct CopyRegistration<Ctx: AppContext> {
 
 /// Marker: builder is in the settings phase. Consumes settings
 /// chained methods (`config_path`, etc.). Transitions to
-/// [`Registering`] on the first [`KeymapBuilder::register`] call.
+/// `Registering` on the first [`KeymapBuilder::register`] call.
 pub struct Configuring;
 
 /// Marker: builder is in the panes phase. Settings methods are no
@@ -88,7 +88,7 @@ pub struct Registering;
 /// Builder for [`Keymap<Ctx>`].
 ///
 /// Constructed via [`Keymap::<Ctx>::builder()`]. Type parameter
-/// `State` is one of [`Configuring`] (default) or [`Registering`];
+/// `State` is one of [`Configuring`] (default) or `Registering`;
 /// the first [`Self::register`] call transitions the type.
 ///
 /// `build()` returns [`Result<Keymap<Ctx>, KeymapError>`] so loader
@@ -97,7 +97,7 @@ pub struct Registering;
 /// # Compile-time ordering
 ///
 /// Settings methods are not callable on a builder in the
-/// [`Registering`] state — the type system enforces "settings before
+/// `Registering` state — the type system enforces "settings before
 /// panes":
 ///
 /// ```compile_fail
@@ -294,7 +294,7 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
     }
 
     /// Register the [`Navigation`] singleton. Eagerly collapses
-    /// [`N::defaults()`](Navigation::defaults) (with TOML overlay,
+    /// `N::defaults()` (with TOML overlay,
     /// then vim extras) into a [`ScopeMap<N::Actions>`].
     ///
     /// # Errors
@@ -388,8 +388,8 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
     /// Register a [`Shortcuts<Ctx>`] impl. Eagerly collapses
     /// [`P::defaults()`](Shortcuts::defaults) (with TOML and vim
     /// extras overlay) into a [`ScopeMap<P::Actions>`] and stores the
-    /// typed pane behind a [`RuntimeScope`] trait object keyed on
-    /// `P::APP_PANE_ID`. Transitions the builder to [`Registering`].
+    /// typed pane behind a `RuntimeScope` trait object keyed on
+    /// `P::APP_PANE_ID`. Transitions the builder to `Registering`.
     ///
     /// Errors during overlay are deferred until [`Self::build`] /
     /// [`Self::build_into`] so the chain stays a `Self`-returning
@@ -433,7 +433,7 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
 
 impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Registering> {
     /// Register an additional [`Shortcuts<Ctx>`] impl. Same body as
-    /// the [`Configuring`]-state form, but stays in [`Registering`].
+    /// the [`Configuring`]-state form, but stays in `Registering`.
     #[must_use]
     pub fn register<P: Shortcuts<Ctx>>(mut self, pane: P) -> Self {
         self.insert_pane::<P>(pane);
@@ -545,7 +545,7 @@ impl<Ctx: AppContext + 'static, State> KeymapBuilder<Ctx, State> {
     }
 }
 
-/// Move from the [`Configuring`] type to [`Registering`]. Field-by-
+/// Move from the [`Configuring`] type to `Registering`. Field-by-
 /// field move so the typestate transition is purely a type change at
 /// runtime.
 fn transition<Ctx: AppContext + 'static>(

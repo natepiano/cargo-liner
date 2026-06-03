@@ -194,12 +194,12 @@ impl<Ctx: AppContext> Toasts<Ctx> {
 
     /// Start dismissing the toast with `id`.
     ///
-    /// If the toast is already in [`ToastPhase::Exiting`] the
+    /// If the toast is already in `ToastPhase::Exiting` the
     /// existing `started_at` is preserved — re-dismissing a
     /// fading toast must not restart its exit animation from the
     /// beginning, which would visibly "pop" the toast back to
     /// full size. Records the dismissal as
-    /// [`ToastDismissal::ClosedByUser`] either way, so
+    /// `ToastDismissal::ClosedByUser` either way, so
     /// [`Self::reactivate_task`](super::Toasts::reactivate_task) does
     /// not bring the toast back when its tracker keeps reporting
     /// in-flight work.

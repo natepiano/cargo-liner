@@ -1,7 +1,7 @@
 //! `KeymapPane`: framework-owned keymap viewer/editor overlay.
 //!
 //! Lives behind [`Framework::keymap_pane`](crate::Framework). Owns the
-//! [`EditState`] machine and the inherent action surface (`defaults`,
+//! `EditState` machine and the inherent action surface (`defaults`,
 //! `handle_key`, `mode`, `bar_slots`, `editor_target`). The binary's
 //! keymap overlay input path routes through this pane.
 
@@ -67,7 +67,7 @@ pub struct KeymapPane {
 }
 
 impl KeymapPane {
-    /// Construct a fresh overlay in [`EditState::Browse`].
+    /// Construct a fresh overlay in `EditState::Browse`.
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -94,8 +94,8 @@ impl KeymapPane {
     /// [`KeyOutcome::Consumed`] — the overlay short-circuits all input
     /// when open, matching the existing cargo-port `keymap_open`
     /// behavior. Resolves `bind` against [`Self::defaults`] and flips
-    /// [`EditState`] accordingly: `StartEdit` enters
-    /// [`EditState::Awaiting`] from `Browse`; `Cancel` returns to
+    /// `EditState` accordingly: `StartEdit` enters
+    /// `EditState::Awaiting` from `Browse`; `Cancel` returns to
     /// `Browse` from any state. Capture-conflict resolution
     /// (`Awaiting → Conflict`) is driven by the binary's collision
     /// check.
@@ -183,9 +183,9 @@ impl KeymapPane {
 
     /// Current input mode for the overlay.
     ///
-    /// - [`EditState::Browse`] → [`Mode::Navigable`].
-    /// - [`EditState::Awaiting`] → [`Mode::TextInput`] with an inert marker handler.
-    /// - [`EditState::Conflict`] → [`Mode::Static`] so the conflict bar actions remain visible. The
+    /// - `EditState::Browse` → [`Mode::Navigable`].
+    /// - `EditState::Awaiting` → [`Mode::TextInput`] with an inert marker handler.
+    /// - `EditState::Conflict` → [`Mode::Static`] so the conflict bar actions remain visible. The
     ///   input path still calls [`Self::handle_capture_key`] directly for both capture states.
     #[must_use]
     pub fn mode<Ctx: AppContext>(&self, _ctx: &Ctx) -> Mode<Ctx> {
@@ -199,8 +199,8 @@ impl KeymapPane {
     /// File path of the binding being edited, if any. Drives the
     /// framework's [`editor_target_path`](crate::Framework::editor_target_path)
     /// surface so the binary's status line can show the active TOML
-    /// file. Returns `None` outside [`EditState::Awaiting`] /
-    /// [`EditState::Conflict`].
+    /// file. Returns `None` outside `EditState::Awaiting` /
+    /// `EditState::Conflict`.
     #[must_use]
     pub fn editor_target(&self) -> Option<&Path> { self.editor_target.as_deref() }
 
@@ -224,7 +224,7 @@ impl Default for KeymapPane {
 #[cfg(test)]
 impl KeymapPane {
     /// Test-only constructor placing the pane in
-    /// [`EditState::Awaiting`] with an optional editor target. Snapshot
+    /// `EditState::Awaiting` with an optional editor target. Snapshot
     /// tests build this state directly so they can lock the bar output
     /// without driving the production `Browse → Awaiting` transition.
     pub(crate) fn for_test_awaiting(editor_target: Option<PathBuf>) -> Self {
@@ -238,7 +238,7 @@ impl KeymapPane {
     }
 
     /// Test-only constructor placing the pane in
-    /// [`EditState::Conflict`]. See [`Self::for_test_awaiting`].
+    /// `EditState::Conflict`. See [`Self::for_test_awaiting`].
     pub(crate) fn for_test_conflict(editor_target: Option<PathBuf>) -> Self {
         Self {
             edit_state: EditState::Conflict,

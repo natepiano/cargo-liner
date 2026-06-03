@@ -161,7 +161,7 @@ impl KeyBind {
     ///
     /// # Errors
     ///
-    /// Returns [`KeyParseError`] if the string is empty, names an unknown
+    /// Returns `KeyParseError` if the string is empty, names an unknown
     /// modifier, or names an unknown key.
     pub fn parse(s: &str) -> Result<Self, KeyParseError> {
         if s.is_empty() {

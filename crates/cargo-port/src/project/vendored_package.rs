@@ -13,7 +13,7 @@ use super::project_fields::ProjectFields;
 
 /// A crate vendored under a parent Rust project.
 ///
-/// Distinct from [`Package`](super::package::Package) because vendored crates do
+/// Distinct from [`Package`](super::cargo::Package) because vendored crates do
 /// not own lint state and cannot themselves have nested vendored children.
 /// Keeping this as its own type makes those invariants structural rather than
 /// relying on convention.

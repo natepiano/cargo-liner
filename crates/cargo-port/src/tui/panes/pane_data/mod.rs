@@ -1039,7 +1039,7 @@ pub struct GitData {
     /// built for a submodule pane — the renderer reads this to decide
     /// whether to emit the `Tracks` / `Pinned` rows. Submodule identity
     /// is conveyed by the project-list `(s)` marker and the pane's
-    /// "Submodule — <name>" title, not by an About-section line.
+    /// "Submodule — \<name\>" title, not by an About-section line.
     pub submodule_ctx:      Option<SubmoduleContext>,
 }
 

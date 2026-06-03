@@ -71,8 +71,8 @@ pub(crate) struct PaneRenderCtx<'a> {
     /// Inter-pane description sync floor: the height both the Package
     /// and Git panes' description blocks must clear so their bottom
     /// edges align. Constructed via [`crate::tui::panes::sync_floor`],
-    /// which reads each pane's [`DescriptionBlock`] so the rendered
-    /// content and the sync height can't diverge. `0` when either
+    /// which reads each pane's [`DescriptionBlock`](crate::tui::panes::DescriptionBlock) so the
+    /// rendered content and the sync height can't diverge. `0` when either
     /// pane has empty source text.
     pub(crate) synced_description_height: SyncedDescriptionHeight,
     /// Snapshot of currently-running cargo targets across the host,

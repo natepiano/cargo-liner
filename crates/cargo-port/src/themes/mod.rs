@@ -18,7 +18,7 @@ const THEMES_DIRNAME: &str = "themes";
 /// Returns `None` on platforms where the OS config dir can't be
 /// resolved (extremely rare; same conservative behavior as
 /// [`crate::config::config_path`]). Tests can override via
-/// [`set_themes_dir_override_for_test`].
+/// `set_themes_dir_override_for_test`.
 #[must_use]
 pub(crate) fn themes_dir() -> Option<PathBuf> {
     #[cfg(test)]

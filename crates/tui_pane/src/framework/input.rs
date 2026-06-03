@@ -89,7 +89,7 @@ pub trait InputContext: HitTestRegistry {
 /// Walks the framework-owned ladder first (toasts → framework
 /// overlay → modal-miss block), then the app-owned modal overlay
 /// short-circuit, then the tiled-pane z-order via
-/// [`hit_test_at`](super::hit_test::hit_test_at).
+/// `hit_test_at`.
 pub fn dispatch_hit_test<C: InputContext>(ctx: &C, pos: Position) -> Option<C::Target> {
     if let Some(hit) = ctx.framework_hit(pos) {
         return ctx.map_framework_hit(hit);

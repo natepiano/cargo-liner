@@ -16,8 +16,7 @@ pub(super) struct TargetDirMember {
 
 /// Forward map: `target_directory` → projects that resolve to it.
 /// Reverse map: `project_root` → its current `target_directory`.
-/// Both maps stay in sync via [`TargetDirIndex::upsert`] /
-/// [`TargetDirIndex::remove`].
+/// Both maps stay in sync via [`TargetDirIndex::upsert`].
 #[derive(Debug, Default)]
 pub(crate) struct TargetDirIndex {
     by_target_dir: HashMap<AbsolutePath, Vec<TargetDirMember>>,

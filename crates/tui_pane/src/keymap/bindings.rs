@@ -83,7 +83,7 @@ impl<A> Bindings<A> {
     ///
     /// `debug_assert!`s on cross-action collision (defaults are author-
     /// controlled; collisions are bugs, not user input). User-supplied
-    /// TOML goes through [`load`](super::load), which returns
+    /// TOML goes through `load`, which returns
     /// [`KeymapError::CrossActionCollision`](super::load::KeymapError::CrossActionCollision)
     /// for the same condition.
     #[must_use]

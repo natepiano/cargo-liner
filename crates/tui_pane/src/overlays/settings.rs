@@ -1,7 +1,7 @@
 //! `SettingsPane`: framework-owned settings overlay.
 //!
 //! Lives behind [`Framework::settings_pane`](crate::Framework). Owns the
-//! [`EditState`] machine and the inherent action surface (`defaults`,
+//! `EditState` machine and the inherent action surface (`defaults`,
 //! `handle_key`, `mode`, `bar_slots`, `editor_target`). The binary's
 //! settings overlay input path routes through this pane.
 
@@ -113,7 +113,7 @@ pub struct SettingsPane {
 }
 
 impl SettingsPane {
-    /// Construct a fresh overlay in [`EditState::Browse`].
+    /// Construct a fresh overlay in `EditState::Browse`.
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -142,7 +142,7 @@ impl SettingsPane {
     /// [`KeyOutcome::Consumed`] — the overlay short-circuits all input
     /// when open, matching the existing cargo-port `settings_open`
     /// behavior. Resolves `bind` against [`Self::defaults`] and flips
-    /// [`EditState`] accordingly: `StartEdit` enters [`EditState::Editing`]
+    /// `EditState` accordingly: `StartEdit` enters `EditState::Editing`
     /// from `Browse`; `Cancel` returns to `Browse`. Per-setting buffer
     /// mutation lives on this pane; [`Self::handle_text_input`] returns
     /// the command the binary applies after the framework borrow ends.
@@ -410,8 +410,8 @@ impl SettingsPane {
 
     /// Current input mode for the overlay.
     ///
-    /// - [`EditState::Browse`] → [`Mode::Navigable`].
-    /// - [`EditState::Editing`] → [`Mode::TextInput`] with an inert handler. The input path calls
+    /// - `EditState::Browse` → [`Mode::Navigable`].
+    /// - `EditState::Editing` → [`Mode::TextInput`] with an inert handler. The input path calls
     ///   [`Self::handle_text_input`] directly and uses this mode only as a suppression signal for
     ///   global dispatch.
     #[must_use]
@@ -424,7 +424,7 @@ impl SettingsPane {
 
     /// File path of the setting being edited, if any. Drives the
     /// framework's [`editor_target_path`](crate::Framework::editor_target_path)
-    /// surface. Returns `None` outside [`EditState::Editing`].
+    /// surface. Returns `None` outside `EditState::Editing`.
     #[must_use]
     pub fn editor_target(&self) -> Option<&Path> { self.editor_target.as_deref() }
 
@@ -448,7 +448,7 @@ impl Default for SettingsPane {
 #[cfg(test)]
 impl SettingsPane {
     /// Test-only constructor placing the pane in
-    /// [`EditState::Editing`] with an optional editor target. Snapshot
+    /// `EditState::Editing` with an optional editor target. Snapshot
     /// tests build this state directly so they can lock the bar output
     /// without driving the production `Browse → Editing` transition.
     pub(crate) fn for_test_editing(editor_target: Option<PathBuf>) -> Self {

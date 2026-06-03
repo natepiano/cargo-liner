@@ -6,8 +6,8 @@
 //! - `example_running`, `example_child`, `example_output`
 //!
 //! Lint lifecycle (`runtime`, running paths, toast) lives on
-//! [`Lint`](super::state::Lint); CI fetch lifecycle lives on
-//! [`Ci`](super::state::Ci).
+//! [`Lint`](super::Lint); CI fetch lifecycle lives on
+//! [`Ci`](super::Ci).
 
 use std::collections::VecDeque;
 use std::sync::Arc;

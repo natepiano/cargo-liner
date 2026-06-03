@@ -88,7 +88,7 @@ type ScopeTomlActionKeysFn<Ctx> = fn(&Keymap<Ctx>) -> Vec<&'static str>;
 /// registered pane. Public callers reach pane operations through
 /// [`Self::dispatch_app_pane`], [`Self::render_app_pane_bar_slots`],
 /// [`Self::key_for_toml_key`], and [`Self::is_key_bound_to_toml_key`] — the underlying
-/// [`RuntimeScope`](self::runtime_scope::RuntimeScope) trait is
+/// `RuntimeScope` trait is
 /// crate-private.
 ///
 /// Framework panes are not stored in this map — they are special-cased
@@ -135,7 +135,7 @@ pub struct Keymap<Ctx: AppContext + 'static> {
 impl<Ctx: AppContext + 'static> Keymap<Ctx> {
     /// Canonical entry point for assembling a keymap. Returns the
     /// builder in [`Configuring`] state — settings methods first,
-    /// then [`KeymapBuilder::register`] transitions to [`Registering`].
+    /// then [`KeymapBuilder::register`] transitions to `Registering`.
     #[must_use]
     pub fn builder() -> KeymapBuilder<Ctx, Configuring> { KeymapBuilder::new() }
 
@@ -497,7 +497,7 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
     /// framework Global Shortcuts (with app-globals appended), the
     /// registered navigation scope, every app-pane scope in
     /// `app_pane_order`, then the framework overlay scope. Each scope
-    /// emits one [`KeymapHelpRow::header`] followed by its action
+    /// emits one `KeymapHelpRow::header` followed by its action
     /// rows.
     ///
     /// `app_pane_order` controls display order across registered pane
