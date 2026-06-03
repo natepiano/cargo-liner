@@ -187,6 +187,25 @@ pub(super) const fn forbidden_pub_crate_help(module_location: ModuleLocation) ->
     }
 }
 
+/// Suggestion for a forbidden `pub(crate)` item. When the item is structurally
+/// exposed through a reachable public signature (a return type or parameter of
+/// a function reachable at `pub(crate)`), narrowing to `pub(super)` or removing
+/// the modifier would fail to compile under `private_interfaces`: the type must
+/// stay at least as visible as the signature that exposes it. The only correct
+/// modifier is then `pub` — the compiler minimum that satisfies the signature
+/// while the private module chain still caps the actual reach. Otherwise defer
+/// to the location-based help.
+pub(super) const fn forbidden_pub_crate_suggestion(
+    module_location: ModuleLocation,
+    structurally_exposed: bool,
+) -> &'static str {
+    if structurally_exposed {
+        return "this item is exposed through a public signature; consider using `pub` (a narrower \
+                modifier would not compile)";
+    }
+    forbidden_pub_crate_help(module_location)
+}
+
 pub(super) fn is_top_level_module_file(
     source_root: &Path,
     root_module: &Path,
@@ -341,6 +360,7 @@ mod tests {
     use super::allow_pub_crate_by_policy;
     use super::crate_kind_for_root;
     use super::forbidden_pub_crate_help;
+    use super::forbidden_pub_crate_suggestion;
     use super::suspicious_pub_note;
     use crate::compiler::source_cache::SOURCE_DIR_BENCHES;
     use crate::compiler::source_cache::SOURCE_DIR_EXAMPLES;
@@ -489,6 +509,23 @@ mod tests {
         assert_eq!(
             forbidden_pub_crate_help(ModuleLocation::Nested),
             "consider using `pub(super)` or removing `pub(crate)` entirely"
+        );
+    }
+
+    #[test]
+    fn forbidden_pub_crate_suggestion_recommends_pub_when_structurally_exposed() {
+        assert_eq!(
+            forbidden_pub_crate_suggestion(ModuleLocation::Nested, true),
+            "this item is exposed through a public signature; consider using `pub` (a narrower \
+             modifier would not compile)"
+        );
+    }
+
+    #[test]
+    fn forbidden_pub_crate_suggestion_defers_to_location_help_when_not_exposed() {
+        assert_eq!(
+            forbidden_pub_crate_suggestion(ModuleLocation::Nested, false),
+            forbidden_pub_crate_help(ModuleLocation::Nested)
         );
     }
 

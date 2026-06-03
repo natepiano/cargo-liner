@@ -181,6 +181,8 @@ fn record_forbidden_pub_crate(
     if parent_facade_caps_at_pub_crate(ctx, item)? {
         return Ok(());
     }
+    let structurally_exposed =
+        policy::has_signature_exposure_allowance(ctx, item.file_path, item.name)?;
     sink.findings.push(source::build_finding(
         ctx.tcx,
         item.file_path,
@@ -191,7 +193,11 @@ fn record_forbidden_pub_crate(
             item:                    None,
             message:                 "use of `pub(crate)` is forbidden by policy".to_string(),
             suggestion:              Some(
-                policy::forbidden_pub_crate_help(finding_context.module_location).to_string(),
+                policy::forbidden_pub_crate_suggestion(
+                    finding_context.module_location,
+                    structurally_exposed,
+                )
+                .to_string(),
             ),
             fixability:              FixSupport::None,
             related:                 None,

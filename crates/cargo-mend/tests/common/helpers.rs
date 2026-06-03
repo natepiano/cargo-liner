@@ -254,7 +254,19 @@ fn finding_from_compiler_message(message: &Value) -> super::types::Finding {
             .and_then(Value::as_str)
             .map(String::from),
         fix_support: fix_support_from_diagnostic_children(diagnostic),
+        help: diagnostic_child_messages(diagnostic),
     }
+}
+
+fn diagnostic_child_messages(diagnostic: &Value) -> Vec<String> {
+    diagnostic
+        .get("children")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|child| child.get("message").and_then(Value::as_str))
+        .map(String::from)
+        .collect()
 }
 
 fn code_from_str(code: &str) -> DiagnosticCode {

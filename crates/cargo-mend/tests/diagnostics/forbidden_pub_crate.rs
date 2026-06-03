@@ -259,6 +259,86 @@ edition = "2024"
 }
 
 #[test]
+fn pub_crate_at_depth_3_suggests_pub_when_structurally_exposed_by_return_type() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "depth_3_structural_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src/foo/bar")).expect("create src/foo/bar");
+    fs::write(temp.path().join("src/lib.rs"), "mod consumer;\nmod foo;\n").expect("write lib");
+    fs::write(
+        temp.path().join("src/foo/mod.rs"),
+        "mod bar;\npub(crate) use bar::Cache;\n",
+    )
+    .expect("write foo/mod.rs");
+    fs::write(
+        temp.path().join("src/foo/bar/mod.rs"),
+        "mod baz;\npub(crate) use baz::Cache;\n",
+    )
+    .expect("write foo/bar/mod.rs");
+    // `Cache` is a named, re-exported crate export, so its own `pub(crate)` is
+    // capped by the facade and is not flagged. `Storage` is returned by Cache's
+    // public method but never named outside this module: it is exposed only
+    // structurally, so narrowing it to `pub(super)` would fail
+    // `private_interfaces` and the correct modifier is `pub`.
+    fs::write(
+        temp.path().join("src/foo/bar/baz.rs"),
+        r#"pub(crate) struct Cache;
+
+impl Cache {
+    pub fn commit(&self) -> Storage {
+        Storage { mesh: 0 }
+    }
+}
+
+pub(crate) struct Storage {
+    pub mesh: u32,
+}
+"#,
+    )
+    .expect("write foo/bar/baz.rs");
+    fs::write(
+        temp.path().join("src/consumer.rs"),
+        r#"pub(crate) fn use_storage() -> u32 {
+    let cache = crate::foo::Cache;
+    let storage = cache.commit();
+    storage.mesh
+}
+"#,
+    )
+    .expect("write consumer");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let storage_finding = report
+        .findings
+        .iter()
+        .find(|f| {
+            f.code == DiagnosticCode::ForbiddenPubCrate && f.path.ends_with("src/foo/bar/baz.rs")
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected forbidden_pub_crate on structurally-exposed `Storage`: {:?}",
+                report.findings,
+            )
+        });
+    assert!(
+        storage_finding
+            .help
+            .iter()
+            .any(|line| line.contains("consider using `pub`")),
+        "a structurally-exposed pub(crate) item must suggest `pub`, not `pub(super)`: {:?}",
+        storage_finding.help,
+    );
+}
+
+#[test]
 fn pub_crate_in_library_pub_mod_fires() {
     let temp = tempdir().expect("create temp fixture dir");
 

@@ -12,6 +12,10 @@ pub struct Finding {
     pub item:        Option<String>,
     #[serde(default)]
     pub fix_support: FixSupport,
+    /// Child help/note messages attached to the diagnostic (the rendered
+    /// suggestion lines), captured so tests can assert on suggestion wording.
+    #[serde(default)]
+    pub help:        Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]

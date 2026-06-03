@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `forbidden_pub_crate` now suggests `pub` instead of `pub(super)` for a `pub(crate)` item that is exposed only structurally through a reachable public signature (e.g. a type returned by a `pub` method on a re-exported type); narrowing such an item to `pub(super)` would have introduced a `private_interfaces` error.
+
 ## [0.15.4] - 2026-05-30
 
 ### Fixed
