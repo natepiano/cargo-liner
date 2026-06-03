@@ -37,6 +37,16 @@ cargo install cargo-port
 cargo port
 ```
 
+### Light up the GitHub panes
+
+CI runs, the CI status column, pull requests, repo stars/description, and rate-limit state all come from GitHub's API. cargo-port reads your auth token from the [GitHub CLI](https://cli.github.com), so install it and log in to turn those panes on:
+
+```bash
+gh auth login
+```
+
+Everything local - git status, remotes, worktrees, languages, targets, lint runs, CPU/GPU - works without it; you'll just get a warning where the GitHub data would be. The token is read once at startup, so restart cargo port after logging in.
+
 ## cargo port panes overview
 
 The dashboard combines a project tree in the upper left with detail panes for package metadata, Git state, languages, CPU/GPU activity, targets, lint history, and CI runs - all shown based on the currently selected project in the upper left.
@@ -96,6 +106,7 @@ Below, we're showing a Worktree Group as an example as the rest will be self-exp
 6. crates.io version info and download count
 
 ### Git Pane
+cargo-port uses local git data plus GitHub's REST and GraphQL APIs, authenticated with the token from your `gh` login (see [Try me](#try-me)).
 
 <img src="assets/pane-git-numbered.png" alt="Numbered Git pane" width="75%">
 
@@ -146,15 +157,15 @@ You can select and hit enter on a run to open the stdout from each command in yo
 4. Pass/fail result.
 ### CI Runs
 
+GitHub Actions runs are cached to disk so the dashboard stays useful offline 
 <img src="assets/pane-ci-runs-numbered.png" alt="Numbered CI runs pane" width="100%">
 
-1. CI run count and selected branch.
-2. Commit summary for each run.
+1. CI run count and selected branch. You can filter for the current branch or show all ci runs.
+2. Commit summary for each run. 
 3. Branch and timestamp.
-4. Test-suite duration and status.
-5. Job-level status columns.
-6. Total run duration.
-7. Page position for long CI histories.
+4. Job-level status columns. These are constructed from the ci runs themselves. If there are too many columns it will show the ones that have the longest durations and collapse the ones that don't. 
+   
+   I didn't choose to implement side scrolling. this may not work for you but you can press enter on any run and it will open a browser to take you to that run in GitHub where you can see everything you want to see.
 
 ## Navigation
 
@@ -168,9 +179,8 @@ Press `?` in the TUI to open the global shortcuts overlay.
 
 ## GitHub, CI, and PRs
 
-cargo-port uses local git data plus the GitHub CLI where available.
 
-- GitHub Actions runs are cached to disk so the dashboard stays useful offline
+
 - Pull request rows show open PRs for the selected repo, including deleted/disappeared PR toasts and check polling
 - GitHub API rate-limit and service recovery state are shown in the Git pane
 - If `gh` is missing or unauthenticated, cargo-port warns in the UI instead of silently hiding the problem
