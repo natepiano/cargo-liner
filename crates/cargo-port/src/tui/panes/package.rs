@@ -198,6 +198,19 @@ pub(super) fn package_lower_metadata_height(data: &PackageData, rows: &[PackageR
     metadata_line_count.max(stats_column_line_count(data))
 }
 
+/// Total vertical rows the Package pane's content occupies: the synced
+/// About-section description height (at least one row — the section always
+/// renders, showing a placeholder when the crate has no description), the
+/// separator below it, and the lower metadata block. Shared by the render
+/// path (the viewport's scroll-overflow extent) and the cross-project top-row
+/// measurement so the pager and the row height agree on what renders.
+pub(super) fn package_content_height(
+    synced_description_height: usize,
+    lower_metadata_height: usize,
+) -> usize {
+    synced_description_height.max(1) + 1 + lower_metadata_height
+}
+
 /// Number of rendered lines in the stats column: the Structure rows, then
 /// (when present) the Tests section and the crates.io section, each
 /// preceded by a blank spacer when a section above it has rows, plus its
@@ -524,6 +537,14 @@ pub(super) fn render_package_pane_body(
 
     let rows = panes::package_rows_from_data(&pkg_data);
     pane.viewport.set_len(rows.len());
+    // The lower metadata and stats render in two parallel columns, so the
+    // content's rendered height is the taller column plus the About section —
+    // not the flat row count. Tell the viewport the rendered height so the
+    // scroll pager does not page on rows that never stack vertically.
+    pane.viewport.set_content_height(package_content_height(
+        usize::from(synced_description_height.rows()),
+        package_lower_metadata_height(&pkg_data, &rows),
+    ));
     if !rows
         .get(pane.viewport.pos())
         .is_some_and(panes::package_row_is_selectable)

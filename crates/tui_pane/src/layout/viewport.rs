@@ -142,12 +142,22 @@ impl Band {
 /// Cursor, hover, and rendered-area state for framework-owned panes.
 #[derive(Clone, Debug, Default)]
 pub struct Viewport {
-    pos:           usize,
-    hovered:       Option<usize>,
-    len:           usize,
-    content_area:  Rect,
-    scroll_offset: usize,
-    visible_rows:  usize,
+    pos:            usize,
+    hovered:        Option<usize>,
+    /// Addressable row count: the rows the cursor moves through. For a
+    /// single-column pane this also equals the content's rendered height; a
+    /// multi-column pane (rows that render side by side) has more addressable
+    /// rows than rendered height, so the two diverge.
+    len:            usize,
+    /// Rendered vertical height of the content, in rows. The scroll overflow
+    /// pager paginates this, not [`Self::len`]. [`Self::set_len`] resets it to
+    /// the row count (the single-column default); a multi-column pane lowers
+    /// it via [`Self::set_content_height`] so the pager counts rows that
+    /// actually stack rather than the flat addressable-row total.
+    content_height: usize,
+    content_area:   Rect,
+    scroll_offset:  usize,
+    visible_rows:   usize,
 }
 
 impl Viewport {
@@ -155,12 +165,13 @@ impl Viewport {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            pos:           0,
-            hovered:       None,
-            len:           0,
-            content_area:  Rect::ZERO,
-            scroll_offset: 0,
-            visible_rows:  0,
+            pos:            0,
+            hovered:        None,
+            len:            0,
+            content_height: 0,
+            content_area:   Rect::ZERO,
+            scroll_offset:  0,
+            visible_rows:   0,
         }
     }
 
@@ -246,9 +257,13 @@ impl Viewport {
     /// Set the current cursor row.
     pub const fn set_pos(&mut self, pos: usize) { self.pos = pos; }
 
-    /// Set the backing row count.
+    /// Set the addressable row count. Also resets the content height to match
+    /// (the single-column default, where rendered height equals the row
+    /// count); a multi-column pane overrides it afterward with
+    /// [`Self::set_content_height`].
     pub const fn set_len(&mut self, len: usize) {
         self.len = len;
+        self.content_height = len;
         if len == 0 {
             self.pos = 0;
         } else if self.pos >= len {
@@ -264,6 +279,7 @@ impl Viewport {
     /// Clear rendered viewport surface state.
     pub const fn clear_surface(&mut self) {
         self.len = 0;
+        self.content_height = 0;
         self.hovered = None;
         self.content_area = Rect::ZERO;
         self.scroll_offset = 0;
@@ -278,6 +294,20 @@ impl Viewport {
     /// Whether the backing row set is empty.
     #[must_use]
     pub const fn is_empty(&self) -> bool { self.len == 0 }
+
+    /// Override the rendered content height the scroll overflow pager
+    /// paginates. Call after [`Self::set_len`] for a multi-column pane whose
+    /// rows render side by side, passing the height the rows actually occupy
+    /// when stacked, so the pager does not count the wider addressable-row
+    /// total. [`Self::set_len`] resets this to the row count, so it must be
+    /// called after `set_len`.
+    pub const fn set_content_height(&mut self, content_height: usize) {
+        self.content_height = content_height;
+    }
+
+    /// Rendered content height in rows (see [`Self::set_content_height`]).
+    #[must_use]
+    pub const fn content_height(&self) -> usize { self.content_height }
 
     /// Set the screen-space content area.
     pub const fn set_content_area(&mut self, area: Rect) { self.content_area = area; }
@@ -307,11 +337,17 @@ impl Viewport {
     #[must_use]
     pub const fn hovered(&self) -> Option<usize> { self.hovered }
 
-    /// Scroll overflow facts for this viewport. Uses `pos` as the
+    /// Scroll overflow facts for this viewport. Paginates the rendered
+    /// content height (not the addressable row count), with `pos` as the
     /// cursor row anchoring the page indicator.
     #[must_use]
     pub const fn overflow(&self) -> ViewportOverflow {
-        ViewportOverflow::new(self.len, self.scroll_offset, self.visible_rows, self.pos)
+        ViewportOverflow::new(
+            self.content_height,
+            self.scroll_offset,
+            self.visible_rows,
+            self.pos,
+        )
     }
 
     /// Current overflow label for this viewport.
@@ -540,6 +576,34 @@ mod tests {
         viewport.set_len(5);
         viewport.set_viewport_rows(3);
 
+        assert_eq!(viewport.overflow_affordance().as_deref(), Some("1 of 2 ▼"));
+    }
+
+    #[test]
+    fn overflow_paginates_content_height_not_addressable_rows() {
+        // A multi-column pane: more addressable rows (cursor space) than the
+        // rendered height, because rows render side by side. With the content
+        // height matching the visible rows, every row is on screen, so no
+        // pager — even though the flat row count exceeds the visible rows.
+        let mut viewport = Viewport::new();
+        viewport.set_len(20);
+        viewport.set_content_height(16);
+        viewport.set_viewport_rows(16);
+
+        assert_eq!(viewport.overflow_affordance(), None);
+    }
+
+    #[test]
+    fn set_len_defaults_content_height_to_the_row_count() {
+        // Single-column default: without an explicit content height, the pager
+        // paginates the row count, and `set_len` clears any prior override.
+        let mut viewport = Viewport::new();
+        viewport.set_len(20);
+        viewport.set_content_height(16);
+        viewport.set_len(5);
+        viewport.set_viewport_rows(3);
+
+        assert_eq!(viewport.content_height(), 5);
         assert_eq!(viewport.overflow_affordance().as_deref(), Some("1 of 2 ▼"));
     }
 

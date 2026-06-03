@@ -2211,16 +2211,13 @@ fn project_top_inner_height(app: &App, item: &RootItem, package_width: u16, git_
     // pane with the shorter description still reserves the shared height.
     let synced_desc = package_desc.max(git_desc);
 
-    // The Package About section always renders (a placeholder when the crate
-    // has no description), so it always contributes a description row plus the
-    // separator. The Git About section renders only when the repo has a
-    // description of its own.
-    let package_total = synced_desc.max(1) + 1 + package_lower;
-    let git_total = if git_desc > 0 {
-        synced_desc + 1 + git_lower
-    } else {
-        git_lower
-    };
+    // Both panes compute their rendered height via the same helpers the
+    // render path feeds to each viewport, so the measured row height and the
+    // per-pane scroll pager agree on what renders. The Package About section
+    // always renders (a placeholder when the crate has no description); the Git
+    // About section renders only when the repo has a description of its own.
+    let package_total = package::package_content_height(synced_desc, package_lower);
+    let git_total = git::git_content_height(synced_desc, git_desc > 0, git_lower);
 
     u16::try_from(package_total.max(git_total)).unwrap_or(u16::MAX)
 }

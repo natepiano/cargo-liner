@@ -1071,6 +1071,15 @@ pub(super) fn render_git_pane_body(
     }
 
     pane.viewport.set_len(total_rows);
+    // The lower blocks add header/spacing rows the addressable-row count omits,
+    // and a multi-line description renders taller than its single cursor row,
+    // so the rendered height is not the flat row count. Tell the viewport the
+    // rendered height so the scroll pager pages on what actually renders.
+    pane.viewport.set_content_height(git_content_height(
+        usize::from(ctx.synced_description_height.rows()),
+        description_rows > 0,
+        git_lower_content_height(&git_data, flat_fields.len()),
+    ));
     let focus = pane.focus.state;
     let border_style = if matches!(focus, PaneFocusState::Active) {
         styles.chrome.active_border
@@ -1257,6 +1266,24 @@ pub(super) fn git_lower_content_height(data: &GitData, flat_fields_len: usize) -
     };
     let pr_block = pull_request_block_height(&data.pull_requests);
     flat_fields_len + pr_block + remotes_block + worktrees_block
+}
+
+/// Total vertical rows the Git pane's content occupies. When the repo has a
+/// description the About section renders, contributing the synced description
+/// height plus the separator above the lower content; otherwise the section is
+/// absent and only the lower content occupies the pane. Shared by the render
+/// path (the viewport's scroll-overflow extent) and the cross-project top-row
+/// measurement so the pager and the row height agree on what renders.
+pub(super) const fn git_content_height(
+    synced_description_height: usize,
+    has_description: bool,
+    lower_content_height: usize,
+) -> usize {
+    if has_description {
+        synced_description_height + 1 + lower_content_height
+    } else {
+        lower_content_height
+    }
 }
 
 fn pull_request_block_height(section: &PullRequestSection) -> usize {
