@@ -55,6 +55,20 @@ pub struct Panes {
     /// project. Stashed by `set_detail_data` and read by the Targets
     /// pane render path to build `RunningKey`s.
     pub detail_target_dir: Option<AbsolutePath>,
+
+    /// Cached cross-project Details/Git top-row inner height, keyed on the
+    /// scan generation and the two top-pane widths. The cross-project scan
+    /// rebuilds every project's pane data, so it runs only when project data
+    /// changes or the terminal resizes.
+    top_row_height_cache: TopRowHeightCache,
+}
+
+/// One-entry memo for [`Panes::cached_top_row_height`]. The key is
+/// `(scan generation, package pane width, git pane width)`.
+#[derive(Default)]
+struct TopRowHeightCache {
+    key:   Option<(u64, u16, u16)>,
+    value: u16,
 }
 
 impl Panes {
@@ -68,12 +82,28 @@ impl Panes {
             targets:      TargetsPane::new(),
             project_list: ProjectListPane::new(),
 
-            pane_data:         PaneDataStore::new(),
-            tiled_layout:      ResolvedPaneLayout::default(),
-            hovered_row:       None,
-            running_targets:   RunningTargetsPoller::new(RUNNING_TARGETS_POLL_INTERVAL),
-            detail_target_dir: None,
+            pane_data:            PaneDataStore::new(),
+            tiled_layout:         ResolvedPaneLayout::default(),
+            hovered_row:          None,
+            running_targets:      RunningTargetsPoller::new(RUNNING_TARGETS_POLL_INTERVAL),
+            detail_target_dir:    None,
+            top_row_height_cache: TopRowHeightCache::default(),
         }
+    }
+
+    /// Cached cross-project top-row inner height for `key` =
+    /// `(scan generation, package width, git width)`, or `None` when the cache
+    /// holds a different key. The caller recomputes on a miss via
+    /// [`super::max_top_pane_inner_height`] and stores it with
+    /// [`Self::store_top_row_height`].
+    pub fn cached_top_row_height(&self, key: (u64, u16, u16)) -> Option<u16> {
+        (self.top_row_height_cache.key == Some(key)).then_some(self.top_row_height_cache.value)
+    }
+
+    /// Store the cross-project top-row inner height computed for `key`.
+    pub const fn store_top_row_height(&mut self, key: (u64, u16, u16), value: u16) {
+        self.top_row_height_cache.key = Some(key);
+        self.top_row_height_cache.value = value;
     }
 
     /// Currently-hovered pane/row pair, or `None`. Used by the

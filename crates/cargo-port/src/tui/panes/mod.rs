@@ -46,6 +46,7 @@ pub(super) use git::git_label_width;
 pub(super) use layout::BottomRow;
 pub(super) use layout::resolve_layout;
 pub(super) use layout::tab_order;
+pub(super) use layout::top_pane_widths;
 pub(super) use lints::render_lints_pane_body;
 #[cfg(test)]
 pub(super) use package::detail_column_scroll_offset;
@@ -105,6 +106,7 @@ pub(super) use pane_data::git_fields_from_data;
 pub(super) use pane_data::git_has_description_row;
 pub(super) use pane_data::git_row_at;
 pub(super) use pane_data::github_stars_is_unreachable_placeholder;
+pub(super) use pane_data::max_top_pane_inner_height;
 pub(super) use pane_data::package_first_selectable_row;
 pub(super) use pane_data::package_last_selectable_row;
 pub(super) use pane_data::package_nearest_selectable_row;

@@ -31,6 +31,7 @@ use tui_pane::success_color;
 use tui_pane::text_default;
 use tui_pane::title_color;
 use tui_pane::warning_color;
+use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
 use super::CiDisplay;
@@ -177,6 +178,24 @@ fn stats_label_width(data: &PackageData) -> u16 {
     u16::try_from(widest)
         .unwrap_or(u16::MAX)
         .max(MIN_STATS_LABEL_WIDTH)
+}
+
+/// Rows the Package pane's lower (metadata) content occupies, below the About
+/// section: the taller of the left metadata column (every row that is not the
+/// Description / Structure / Tests band) and the right stats column. Shared by
+/// the render path and the cross-project top-row height measurement so the
+/// predicted height matches what renders.
+pub(super) fn package_lower_metadata_height(data: &PackageData, rows: &[PackageRow]) -> usize {
+    let metadata_line_count = rows
+        .iter()
+        .filter(|row| {
+            !matches!(
+                row,
+                PackageRow::Description | PackageRow::Structure(_) | PackageRow::Tests(_)
+            )
+        })
+        .count();
+    metadata_line_count.max(stats_column_line_count(data))
 }
 
 /// Number of rendered lines in the stats column: the Structure rows, then
@@ -566,17 +585,7 @@ fn render_project_description_section(
     area: Rect,
     project_inner: Rect,
 ) -> ProjectPanelAreas {
-    let metadata_line_count = context
-        .rows
-        .iter()
-        .filter(|row| {
-            !matches!(
-                row,
-                PackageRow::Description | PackageRow::Structure(_) | PackageRow::Tests(_)
-            )
-        })
-        .count();
-    let lower_metadata_height = metadata_line_count.max(stats_column_line_count(context.pkg_data));
+    let lower_metadata_height = package_lower_metadata_height(context.pkg_data, context.rows);
     let reserved_lower_height = u16::from(lower_metadata_height > 0);
     let reserved_separator_height =
         u16::from(project_inner.height > reserved_lower_height.saturating_add(1));
@@ -1232,12 +1241,27 @@ pub(super) fn hard_wrap(text: &str, max_width: usize) -> Vec<String> {
         return vec![text.to_string()];
     }
     let mut result = Vec::new();
-    let mut remaining = text;
-    while remaining.len() > max_width {
-        result.push(remaining[..max_width].to_string());
-        remaining = &remaining[max_width..];
+    let mut current = String::new();
+    let mut current_width = 0;
+    for ch in text.chars() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        // Break before a char that would overflow the column budget, but never
+        // on an empty line: a single char wider than `max_width` overflows
+        // onto its own line rather than splitting inside the character (which
+        // byte slicing would do, panicking on a multi-byte char like `·`).
+        if current_width + ch_width > max_width && !current.is_empty() {
+            result.push(std::mem::take(&mut current));
+            current_width = 0;
+        }
+        current.push(ch);
+        current_width += ch_width;
     }
-    result.push(remaining.to_string());
+    if !current.is_empty() {
+        result.push(current);
+    }
+    if result.is_empty() {
+        result.push(String::new());
+    }
     result
 }
 
@@ -1248,6 +1272,7 @@ mod tests {
 
     use chrono::DateTime;
     use tui_pane::ACTIVITY_SPINNER;
+    use unicode_width::UnicodeWidthStr;
 
     use super::PackageRow;
     use super::lint_display_to_string;
@@ -1262,6 +1287,15 @@ mod tests {
             .map(PackageRow::Structure)
             .chain((0..5).map(PackageRow::Tests))
             .collect()
+    }
+
+    #[test]
+    fn hard_wrap_splits_multibyte_value_without_panicking() {
+        // The Branch field value carries a middle dot (`·`, two bytes); byte
+        // slicing panicked when a narrow column cut inside the character.
+        let lines = super::hard_wrap("main · default", 4);
+        assert!(lines.iter().all(|line| line.width() <= 4));
+        assert_eq!(lines.concat(), "main · default");
     }
 
     #[test]

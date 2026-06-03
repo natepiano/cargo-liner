@@ -102,10 +102,15 @@ pub fn resolve_layout(
     left_width: u16,
     core_count: usize,
     bottom_row: BottomRow,
+    top_required_inner: u16,
 ) -> ResolvedPaneLayout<PaneId> {
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(tiled_row_constraints(core_count, area.height))
+        .constraints(tiled_row_constraints(
+            core_count,
+            area.height,
+            top_required_inner,
+        ))
         .split(area);
     let cols = Layout::default()
         .direction(Direction::Horizontal)
@@ -172,15 +177,42 @@ fn resolve_pane_area(rows: &[Rect], cols: &[Rect], pane: PaneId, bottom_row: Bot
     }
 }
 
-fn tiled_row_constraints(core_count: usize, total_height: u16) -> [Constraint; 3] {
-    let desired_middle = cpu::cpu_required_pane_height(core_count);
+/// Heights for the three tiled rows. The top row (Details/Git) is sized to the
+/// tallest project's content (`top_required_inner`, measured across all
+/// projects, plus the pane border) so the middle row (Lang/CPU/Targets) grows
+/// into the space the previous fixed split left empty above it. The top is
+/// capped so the middle always keeps at least the CPU pane's required height,
+/// and the bottom row keeps the size it had under the previous fixed-middle
+/// split. On a screen too small for all three, fall back to proportional rows.
+fn tiled_row_constraints(
+    core_count: usize,
+    total_height: u16,
+    top_required_inner: u16,
+) -> [Constraint; 3] {
+    let cpu_floor = cpu::cpu_required_pane_height(core_count);
     let minimum_outer_rows = 8;
+    let top_content = top_required_inner.saturating_add(PANE_BORDER_HEIGHT);
 
-    if total_height >= desired_middle.saturating_add(minimum_outer_rows) {
+    // The bottom row keeps the size it had when the middle was pinned to the
+    // CPU floor: the previous split handed the top and bottom 35:25 of the
+    // leftover, so the bottom took 25/60 of it.
+    let prior_slack = total_height.saturating_sub(cpu_floor);
+    let bottom = prior_slack.saturating_mul(25) / 60;
+
+    let reserved = cpu_floor
+        .saturating_add(bottom)
+        .saturating_add(minimum_outer_rows);
+    if total_height >= reserved {
+        // Cap the top so the middle — everything the content-sized top leaves
+        // between itself and the bottom — never drops below the CPU floor.
+        let max_top = total_height
+            .saturating_sub(cpu_floor)
+            .saturating_sub(bottom);
+        let top = top_content.clamp(minimum_outer_rows, max_top);
         [
-            Constraint::Fill(35),
-            Constraint::Length(desired_middle),
-            Constraint::Fill(25),
+            Constraint::Length(top),
+            Constraint::Fill(1),
+            Constraint::Length(bottom),
         ]
     } else {
         [
@@ -192,6 +224,31 @@ fn tiled_row_constraints(core_count: usize, total_height: u16) -> [Constraint; 3
 }
 
 const fn cpu_column_width() -> u16 { CPU_PANE_WIDTH }
+
+/// Rows a bordered pane spends on its top and bottom border. Outer pane height
+/// is inner content height plus this.
+const PANE_BORDER_HEIGHT: u16 = 2;
+
+/// Outer widths of the two top-row panes (Details and Git) for the given outer
+/// area and project-list column width. The cross-project top-row height
+/// measurement wraps each pane's description to these widths, and
+/// [`resolve_pane_area`] lays the panes out at the same widths, so the
+/// measured height matches the rendered layout.
+pub fn top_pane_widths(area: Rect, left_width: u16) -> (u16, u16) {
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(left_width), Constraint::Min(20)])
+        .split(area);
+    let right_col = cols[1];
+    let top_right = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(tui_pane::constraints_for_sizes(&[
+            super::size_spec(PaneId::Package, CPU_PANE_WIDTH).width,
+            super::size_spec(PaneId::Git, CPU_PANE_WIDTH).width,
+        ]))
+        .split(Rect::new(right_col.x, area.y, right_col.width, area.height));
+    (top_right[0].width, top_right[1].width)
+}
 
 #[cfg(test)]
 mod tests {
@@ -281,7 +338,7 @@ mod tests {
 
     #[test]
     fn resolved_layout_keeps_top_row_flush_with_targets() {
-        let layout = resolve_layout(Rect::new(0, 0, 120, 30), 30, 12, BottomRow::Diagnostics);
+        let layout = resolve_layout(Rect::new(0, 0, 120, 30), 30, 12, BottomRow::Diagnostics, 20);
         let package = layout.area(PaneId::Package);
         let git = layout.area(PaneId::Git);
         let targets = layout.area(PaneId::Targets);
@@ -300,13 +357,59 @@ mod tests {
     }
 
     #[test]
-    fn resolved_layout_gives_cpu_its_required_height_when_room_exists() {
-        let layout = resolve_layout(Rect::new(0, 0, 120, 40), 30, 12, BottomRow::Diagnostics);
+    fn resolved_layout_floors_cpu_at_required_height_when_top_is_tall() {
+        // A top row whose content needs more than the screen can spare is
+        // capped so the middle (CPU) row keeps at least the CPU pane's
+        // required height.
+        let layout = resolve_layout(
+            Rect::new(0, 0, 120, 40),
+            30,
+            12,
+            BottomRow::Diagnostics,
+            100,
+        );
 
         assert_eq!(
             layout.area(PaneId::Cpu).height,
             super::cpu::cpu_required_pane_height(12)
         );
+    }
+
+    #[test]
+    fn resolved_layout_sizes_top_row_to_content_when_it_fits() {
+        // With room to spare, the top row is the measured content inner height
+        // plus the pane border — no taller, so the leftover goes to the middle.
+        let top_inner = 8;
+        let layout = resolve_layout(
+            Rect::new(0, 0, 120, 40),
+            30,
+            12,
+            BottomRow::Diagnostics,
+            top_inner,
+        );
+
+        assert_eq!(
+            layout.area(PaneId::Package).height,
+            top_inner + super::PANE_BORDER_HEIGHT
+        );
+    }
+
+    #[test]
+    fn resolved_layout_grows_middle_when_top_content_is_short() {
+        // A short top row leaves the middle row taller than the CPU floor, so
+        // the Targets pane below shows more rows than when the top is tall.
+        let cpu_floor = super::cpu::cpu_required_pane_height(12);
+        let tall = resolve_layout(
+            Rect::new(0, 0, 120, 40),
+            30,
+            12,
+            BottomRow::Diagnostics,
+            100,
+        );
+        let short = resolve_layout(Rect::new(0, 0, 120, 40), 30, 12, BottomRow::Diagnostics, 4);
+
+        assert!(short.area(PaneId::Cpu).height > cpu_floor);
+        assert!(short.area(PaneId::Targets).height > tall.area(PaneId::Targets).height);
     }
 
     fn assert_layout_has_no_overlaps(layout: &PaneGridLayout<PaneId>) {

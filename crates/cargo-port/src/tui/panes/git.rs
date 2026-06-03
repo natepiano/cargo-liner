@@ -1158,18 +1158,7 @@ struct GitAboutLayout {
 fn render_git_about_section(frame: &mut Frame, ctx: &GitAboutCtx<'_>) -> GitAboutLayout {
     let git_inner = ctx.git_inner;
 
-    let remotes_block = if ctx.data.remotes.is_empty() {
-        0
-    } else {
-        3 + ctx.data.remotes.len()
-    };
-    let worktrees_block = if ctx.data.worktrees.is_empty() {
-        0
-    } else {
-        3 + ctx.data.worktrees.len()
-    };
-    let pr_block = pull_request_block_height(&ctx.data.pull_requests);
-    let lower_content_height = ctx.flat_fields.len() + pr_block + remotes_block + worktrees_block;
+    let lower_content_height = git_lower_content_height(ctx.data, ctx.flat_fields.len());
     let reserved_lower_height = u16::from(lower_content_height > 0);
     let reserved_separator_height =
         u16::from(git_inner.height > reserved_lower_height.saturating_add(1));
@@ -1248,6 +1237,26 @@ fn render_git_about_section(frame: &mut Frame, ctx: &GitAboutCtx<'_>) -> GitAbou
             height: description_height,
         }),
     }
+}
+
+/// Rows the Git pane's lower (scrolling) content occupies, below the About
+/// section: the flat field rows plus the pull-request, remotes, and worktrees
+/// blocks. Each of the remotes / worktrees blocks adds three header/spacing
+/// rows when non-empty. Shared by the render path and the cross-project
+/// top-row height measurement so the predicted height matches what renders.
+pub(super) fn git_lower_content_height(data: &GitData, flat_fields_len: usize) -> usize {
+    let remotes_block = if data.remotes.is_empty() {
+        0
+    } else {
+        3 + data.remotes.len()
+    };
+    let worktrees_block = if data.worktrees.is_empty() {
+        0
+    } else {
+        3 + data.worktrees.len()
+    };
+    let pr_block = pull_request_block_height(&data.pull_requests);
+    flat_fields_len + pr_block + remotes_block + worktrees_block
 }
 
 fn pull_request_block_height(section: &PullRequestSection) -> usize {

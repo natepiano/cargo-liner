@@ -79,6 +79,36 @@ pub(super) fn conclusion_style(ci_status: Option<CiStatus>) -> Style {
     }
 }
 
+/// Resolve the tiled pane layout for the top area. Sizes the Details/Git top
+/// row to the tallest project's content (measured across all projects and
+/// cached against the scan generation and top-pane widths) so the
+/// Lang/CPU/Targets row grows into the space the previous fixed split left
+/// empty above it.
+fn resolve_tiled_layout(
+    app: &mut App,
+    top_area: Rect,
+    left_width: u16,
+    bottom_row: panes::BottomRow,
+) -> ResolvedPaneLayout<PaneId> {
+    let core_count = app.panes.cpu.content().map_or(1, |usage| usage.cores.len());
+    let (package_width, git_width) = panes::top_pane_widths(top_area, left_width);
+    let key = (app.scan.generation(), package_width, git_width);
+    let top_required_inner = if let Some(height) = app.panes.cached_top_row_height(key) {
+        height
+    } else {
+        let height = panes::max_top_pane_inner_height(app, package_width, git_width);
+        app.panes.store_top_row_height(key, height);
+        height
+    };
+    panes::resolve_layout(
+        top_area,
+        left_width,
+        core_count,
+        bottom_row,
+        top_required_inner,
+    )
+}
+
 pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     sync_hovered_pane_row(app);
     app.panes.tiled_layout = ResolvedPaneLayout::default();
@@ -118,8 +148,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     } else {
         panes::BottomRow::Output
     };
-    let core_count = app.panes.cpu.content().map_or(1, |usage| usage.cores.len());
-    let tiled = panes::resolve_layout(outer_layout[0], left_width, core_count, bottom_row);
+    let tiled = resolve_tiled_layout(app, outer_layout[0], left_width, bottom_row);
 
     // Keep focus off the bottom-row pane this layout hides before
     // stamping focus snapshots, so the status bar reflects the visible
@@ -670,8 +699,10 @@ mod tests {
 
     #[test]
     fn resolved_layout_keeps_cpu_column_fixed() {
-        let narrow = panes::resolve_layout(Rect::new(0, 0, 80, 30), 30, 12, BottomRow::Diagnostics);
-        let wide = panes::resolve_layout(Rect::new(0, 0, 150, 30), 30, 12, BottomRow::Diagnostics);
+        let narrow =
+            panes::resolve_layout(Rect::new(0, 0, 80, 30), 30, 12, BottomRow::Diagnostics, 20);
+        let wide =
+            panes::resolve_layout(Rect::new(0, 0, 150, 30), 30, 12, BottomRow::Diagnostics, 20);
 
         assert_eq!(narrow.area(PaneId::Cpu).width, super::panes::CPU_PANE_WIDTH);
         assert_eq!(wide.area(PaneId::Cpu).width, super::panes::CPU_PANE_WIDTH);
@@ -680,7 +711,7 @@ mod tests {
     #[test]
     fn top_row_has_no_dead_space_above_targets() {
         let layout =
-            panes::resolve_layout(Rect::new(0, 0, 120, 30), 30, 12, BottomRow::Diagnostics);
+            panes::resolve_layout(Rect::new(0, 0, 120, 30), 30, 12, BottomRow::Diagnostics, 20);
         let package = layout.area(PaneId::Package);
         let git = layout.area(PaneId::Git);
         let targets = layout.area(PaneId::Targets);
@@ -700,13 +731,12 @@ mod tests {
 
     #[test]
     fn middle_row_expands_to_fit_all_cpu_rows_when_height_allows() {
+        // A short cross-project top row leaves the middle row taller than the
+        // CPU floor, so every CPU row fits and the Targets pane shows more.
         let layout =
-            panes::resolve_layout(Rect::new(0, 0, 120, 40), 30, 12, BottomRow::Diagnostics);
+            panes::resolve_layout(Rect::new(0, 0, 120, 40), 30, 12, BottomRow::Diagnostics, 4);
 
-        assert_eq!(
-            layout.area(PaneId::Cpu).height,
-            super::panes::cpu_required_pane_height(12)
-        );
+        assert!(layout.area(PaneId::Cpu).height > super::panes::cpu_required_pane_height(12));
     }
 
     #[test]

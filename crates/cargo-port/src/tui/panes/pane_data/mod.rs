@@ -15,11 +15,15 @@ use formatting::format_rate_limit_bucket;
 pub use formatting::format_time;
 pub use formatting::format_timestamp;
 use itertools::Itertools;
+use ratatui::layout::Rect;
 use ratatui::style::Color;
 use tui_pane::CopyLabel;
 use tui_pane::CopyPayload;
 use tui_pane::CopySelectionResult;
 
+use super::EmptyDescriptionBehavior;
+use super::git;
+use super::package;
 use crate::ci;
 use crate::ci::CiRun;
 use crate::ci::CiStatus;
@@ -2159,6 +2163,84 @@ fn worktrees_from_item(app: &App, item: &RootItem) -> Vec<WorktreeInfo> {
             }
         })
         .collect()
+}
+
+/// Inner height (excluding the pane border) the Details and Git top row must
+/// reserve to show every project's content without clipping, measured across
+/// all projects. Sizing to the tallest project keeps the row height stable as
+/// the selection moves — a per-project height would resize the row on every
+/// navigation. Shorter projects render with blank space below their content;
+/// only the tallest fills the row exactly.
+///
+/// `package_width` / `git_width` are the outer widths of the two top-row panes
+/// (descriptions wrap to those widths), so the result is valid only for the
+/// layout that produced them. The caller caches this against the scan
+/// generation and the widths, since it rebuilds every project's pane data.
+pub fn max_top_pane_inner_height(app: &App, package_width: u16, git_width: u16) -> u16 {
+    app.project_list
+        .iter()
+        .map(|entry| project_top_inner_height(app, &entry.item, package_width, git_width))
+        .max()
+        .unwrap_or(0)
+}
+
+/// Inner height the Details and Git panes need to render `item`'s content
+/// without clipping: the taller of the two panes. Each pane is its
+/// About-section description (wrapped to the pane width and raised to the
+/// shared sync height) plus the separator plus its lower content block.
+fn project_top_inner_height(app: &App, item: &RootItem, package_width: u16, git_width: u16) -> u16 {
+    let data = build_pane_data(app, item);
+
+    let package_lower = package::package_lower_metadata_height(
+        &data.package,
+        &package_rows_from_data(&data.package),
+    );
+    let git_lower = git::git_lower_content_height(&data.git, git_fields_from_data(&data.git).len());
+
+    let package_desc = description_natural_rows(
+        data.package.description.as_deref(),
+        package_width,
+        EmptyDescriptionBehavior::ShowPlaceholder,
+    );
+    let git_desc = description_natural_rows(
+        data.git.description.as_deref(),
+        git_width,
+        EmptyDescriptionBehavior::RenderEmpty,
+    );
+    // Both panes sync their description blocks to the taller of the two, so a
+    // pane with the shorter description still reserves the shared height.
+    let synced_desc = package_desc.max(git_desc);
+
+    // The Package About section always renders (a placeholder when the crate
+    // has no description), so it always contributes a description row plus the
+    // separator. The Git About section renders only when the repo has a
+    // description of its own.
+    let package_total = synced_desc.max(1) + 1 + package_lower;
+    let git_total = if git_desc > 0 {
+        synced_desc + 1 + git_lower
+    } else {
+        git_lower
+    };
+
+    u16::try_from(package_total.max(git_total)).unwrap_or(u16::MAX)
+}
+
+/// Natural (uncapped) wrapped row count for an About-section description at
+/// `pane_width`. Builds the same `DescriptionBlock` the render path builds, so
+/// the measured height matches what renders; a tall synthetic area lifts the
+/// height cap so the full wrapped text is counted.
+fn description_natural_rows(
+    text: Option<&str>,
+    pane_width: u16,
+    behavior: super::EmptyDescriptionBehavior,
+) -> usize {
+    let area = Rect {
+        x:      0,
+        y:      0,
+        width:  pane_width,
+        height: u16::MAX,
+    };
+    usize::from(super::DescriptionBlock::for_pane(text, area, behavior).natural_sync_height())
 }
 
 /// Build pane data for a root `RootItem`.
