@@ -1,10 +1,14 @@
 mod column_widths;
+mod region;
 mod viewport;
 
 pub use column_widths::ColumnSpec;
 pub use column_widths::ColumnWidths;
 use ratatui::layout::Constraint;
 use ratatui::layout::Rect;
+pub use region::Placed;
+pub use region::Region;
+pub use region::Size;
 pub use viewport::Band;
 pub use viewport::Viewport;
 pub use viewport::ViewportOverflow;

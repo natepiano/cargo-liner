@@ -1,24 +1,21 @@
 use ratatui::Frame;
-use ratatui::layout::Constraint;
-use ratatui::layout::Direction;
-use ratatui::layout::Layout;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
-use tui_pane::Band;
 use tui_pane::CpuUsage;
 use tui_pane::PaneFocusState;
 use tui_pane::PaneRule;
 use tui_pane::PaneTitleCount;
+use tui_pane::Region;
+use tui_pane::Size;
 use tui_pane::Viewport;
 use tui_pane::ViewportOverflow;
 use tui_pane::accent_color;
 use tui_pane::column_header_color;
 use tui_pane::error_color;
-use tui_pane::keep_visible_scroll_offset;
 use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
 use tui_pane::text_default;
@@ -181,10 +178,22 @@ fn aggregate_line(percent: u8, width: u16) -> Line<'static> {
     ])
 }
 
-/// Resolved rects for one CPU frame. The aggregate row is the pinned head;
-/// the cores band scrolls; the breakdown rows and GPU are the pinned tail.
-/// `band` partitions the selectable-row list and `band_offset` is the band's
-/// scroll position (held across frames so the cursor stays visible).
+/// The CPU pane's box tree: a pinned aggregate row, the scrolling cores band
+/// (the one `Fill` box), the System/User/Idle breakdown (a rule above it), and
+/// the GPU row (a rule above it). Rebuilt each frame from the live core count.
+fn cpu_region(core_count: usize) -> Region {
+    Region::stack(vec![
+        Region::rows(CPU_PINNED_HEAD_ROWS, Size::Fixed),
+        Region::rows(core_count, Size::Fill),
+        Region::rows(CPU_BREAKDOWN_ROWS, Size::Fixed).rule(),
+        Region::rows(CPU_GPU_ROWS, Size::Fixed).rule(),
+    ])
+}
+
+/// Resolved rects for one CPU frame. The aggregate row is pinned at the top;
+/// the cores band is the `Fill` box and scrolls; the breakdown rows and GPU
+/// follow. `band_offset` is the cores band's scroll position, held across
+/// frames so the cursor stays visible.
 struct CpuPanelLayout {
     core_count:    usize,
     aggregate:     Rect,
@@ -195,72 +204,36 @@ struct CpuPanelLayout {
     idle:          Rect,
     gpu_divider:   Rect,
     gpu:           Rect,
-    band:          Option<Band>,
     band_offset:   usize,
 }
 
 impl CpuPanelLayout {
     fn new(inner: Rect, core_count: usize, cursor_pos: usize, prior_offset: usize) -> Self {
-        let core_rows = u16::try_from(core_count).unwrap_or(u16::MAX);
-        let band_height = inner
-            .height
-            .saturating_sub(CPU_STATIC_INNER_HEIGHT)
-            .min(core_rows);
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1),           // aggregate (pinned head)
-                Constraint::Length(band_height), // cores band
-                Constraint::Length(1),           // cores | breakdown rule
-                Constraint::Length(1),           // System
-                Constraint::Length(1),           // User
-                Constraint::Length(1),           // Idle
-                Constraint::Length(1),           // Idle | GPU rule
-                Constraint::Length(1),           // GPU
-                Constraint::Min(0),              // slack below the pinned tail
-            ])
-            .split(inner);
-        let band = Band::new(
-            CPU_PINNED_HEAD_ROWS,
-            cpu_pinned_tail_rows(),
-            total_selectable_rows(core_count),
-        );
-        let band_visible = usize::from(rows[1].height);
-        let band_offset = band.map_or(0, |band| {
-            cpu_band_offset(cursor_pos, prior_offset, band, band_visible)
-        });
+        // The cores band is box 1; only its prior offset is meaningful, the
+        // pinned boxes never scroll.
+        let placed = cpu_region(core_count).place(inner, cursor_pos, &[0, prior_offset, 0, 0]);
+        let breakdown = placed[2].content;
+        let breakdown_row = |offset: u16| Rect {
+            y: breakdown.y.saturating_add(offset),
+            height: 1,
+            ..breakdown
+        };
         Self {
             core_count,
-            aggregate: rows[0],
-            cores: rows[1],
-            cores_divider: rows[2],
-            system: rows[3],
-            user: rows[4],
-            idle: rows[5],
-            gpu_divider: rows[6],
-            gpu: rows[7],
-            band,
-            band_offset,
+            aggregate: placed[0].content,
+            cores: placed[1].content,
+            cores_divider: placed[2].chrome,
+            system: breakdown_row(0),
+            user: breakdown_row(1),
+            idle: breakdown_row(2),
+            gpu_divider: placed[3].chrome,
+            gpu: placed[3].content,
+            band_offset: placed[1].scroll_offset,
         }
     }
 
     /// Number of core rows visible in the band this frame.
     fn band_visible(&self) -> usize { usize::from(self.cores.height) }
-}
-
-/// Band scroll offset for this frame. While the cursor is inside the cores
-/// band, clamp the offset to keep it visible; on a pinned row, hold the prior
-/// offset (clamped to the band's range in case the core count shrank).
-fn cpu_band_offset(
-    cursor_pos: usize,
-    prior_offset: usize,
-    band: Band,
-    band_visible: usize,
-) -> usize {
-    band.band_local_cursor(cursor_pos).map_or_else(
-        || prior_offset.min(band.band_len().saturating_sub(band_visible)),
-        |band_local| keep_visible_scroll_offset(band_local, band_visible, band.band_len()),
-    )
 }
 
 #[derive(Clone, Copy)]
@@ -572,24 +545,26 @@ pub(super) fn render_cpu_pane_body(
 }
 
 /// Draw the `▲ n of m ▼` overflow label on the cores band when more cores
-/// exist than fit. Skipped when the band has no visible rows or no partition.
+/// exist than fit. Skipped when the band has no visible rows.
 fn render_cores_affordance(frame: &mut Frame, layout: &CpuPanelLayout, cursor_pos: usize) {
-    if layout.band_visible() == 0 {
+    let band_visible = layout.band_visible();
+    if band_visible == 0 {
         return;
     }
-    let Some(band) = layout.band else {
-        return;
-    };
-    let band_cursor = band
-        .band_local_cursor(cursor_pos)
+    // The cores band owns selectable rows [CPU_PINNED_HEAD_ROWS,
+    // CPU_PINNED_HEAD_ROWS + core_count); on one of those the pager anchors to
+    // that core, otherwise to the current scroll offset.
+    let band_cursor = cursor_pos
+        .checked_sub(CPU_PINNED_HEAD_ROWS)
+        .filter(|local| *local < layout.core_count)
         .unwrap_or(layout.band_offset);
     render_overflow_affordance(
         frame,
         layout.cores,
         ViewportOverflow::band(
-            band.band_len(),
+            layout.core_count,
             layout.band_offset,
-            layout.band_visible(),
+            band_visible,
             band_cursor,
         ),
         Style::default().fg(label_color()),
@@ -597,49 +572,50 @@ fn render_cores_affordance(frame: &mut Frame, layout: &CpuPanelLayout, cursor_po
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    reason = "tests should panic on unexpected values"
-)]
 mod tests {
-    use super::Band;
-    use super::cpu_band_offset;
+    use ratatui::layout::Rect;
 
-    // A 15-core CPU: 1 pinned aggregate, 15-core band, 4 pinned breakdown
-    // rows. The band is 5 rows tall, so the cores must scroll.
-    fn cores_band() -> Band {
-        Band::new(
-            super::CPU_PINNED_HEAD_ROWS,
-            super::cpu_pinned_tail_rows(),
-            20,
-        )
-        .expect("head + tail fits within len")
+    use super::cpu_region;
+
+    // A 15-core CPU. Fixed boxes take 7 rows (1 aggregate + 1+3 breakdown +
+    // 1+1 GPU), so a 12-row inner leaves the cores band 5 rows and it must
+    // scroll; a 22-row inner fits all 15 cores. These port the old
+    // `cpu_band_offset` `Band` tests onto the box tree (R18): the cores band's
+    // resolved scroll offset is box index 1's `scroll_offset`.
+    fn cores_offset(inner_height: u16, cursor: usize, prior: usize) -> usize {
+        let inner = Rect {
+            x:      0,
+            y:      0,
+            width:  20,
+            height: inner_height,
+        };
+        cpu_region(15).place(inner, cursor, &[0, prior, 0, 0])[1].scroll_offset
     }
 
     #[test]
     fn band_offset_tracks_cursor_inside_the_band() {
         // Cursor on logical row 14 (band-local 13) scrolls a 5-tall band to
         // its last full page.
-        assert_eq!(cpu_band_offset(14, 0, cores_band(), 5), 9);
+        assert_eq!(cores_offset(12, 14, 0), 9);
     }
 
     #[test]
     fn band_offset_holds_prior_on_a_pinned_head_row() {
         // Cursor on the aggregate row (logical 0) is outside the band, so the
         // band stays where it was.
-        assert_eq!(cpu_band_offset(0, 7, cores_band(), 5), 7);
+        assert_eq!(cores_offset(12, 0, 7), 7);
     }
 
     #[test]
     fn band_offset_holds_prior_on_a_pinned_tail_row() {
         // Cursor on the first breakdown row (logical 16) holds the prior
-        // offset, clamped to the band's last page.
-        assert_eq!(cpu_band_offset(16, 20, cores_band(), 5), 10);
+        // offset, clamped to the band's last page (15 cores - 5 visible).
+        assert_eq!(cores_offset(12, 16, 20), 10);
     }
 
     #[test]
     fn band_offset_is_zero_when_every_core_fits() {
         // Band taller than the core count: no scroll regardless of cursor.
-        assert_eq!(cpu_band_offset(14, 0, cores_band(), 15), 0);
+        assert_eq!(cores_offset(22, 14, 0), 0);
     }
 }
