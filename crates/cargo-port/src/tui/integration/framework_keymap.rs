@@ -569,14 +569,18 @@ fn ci_runs_show_all_visibility(ctx: &App) -> Visibility {
 /// Visible when the selected project's current mode is `current_mode`
 /// — the slot points at the destination state, so it shows only when
 /// the user is on the opposite side of the toggle. Hidden when no
-/// project is selected. The dispatcher itself is a no-op when the
-/// project has no current branch, so we don't gate on
-/// `ci_toggle_available_for` here.
+/// project is selected, or when the branch is unpublished (no
+/// upstream, not the default): there's no branch-scoped run set to
+/// filter to, so the all/branch toggle doesn't apply.
 fn ci_runs_destination_visibility(ctx: &App, current_mode: CiRunDisplayMode) -> Visibility {
     let Some(path) = ctx.project_list.selected_project_path() else {
         return Visibility::Hidden;
     };
-    if ctx.ci.display_mode_for(path) == current_mode {
+    if !ctx.ci_toggle_available_for(path) {
+        return Visibility::Hidden;
+    }
+    let owner = ctx.project_list.ci_branch_owner_path(path);
+    if ctx.ci.display_mode_for(owner.as_path()) == current_mode {
         Visibility::Visible
     } else {
         Visibility::Hidden

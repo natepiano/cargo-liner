@@ -205,6 +205,22 @@ impl RootItem {
         }
     }
 
+    /// The checkout root (workspace or package root) whose working tree
+    /// contains `path` — the node that carries the branch and CI state.
+    /// Resolves into worktree groups so a path under a linked checkout
+    /// returns that checkout's root, not the group primary. Members and
+    /// vendored crates resolve to their checkout root.
+    pub(crate) fn checkout_root_for(&self, path: &Path) -> Option<&AbsolutePath> {
+        match self {
+            Self::Rust(p) => p.at_path(path).map(|_| p.path()),
+            Self::NonRust(p) => (p.path() == path).then(|| p.path()),
+            Self::Worktrees(g) => g
+                .iter_entries()
+                .find(|entry| entry.at_path(path).is_some())
+                .map(RustProject::path),
+        }
+    }
+
     pub(crate) fn rust_info_at_path(&self, path: &Path) -> Option<&RustInfo> {
         match self {
             Self::Rust(p) => p.rust_info_at_path(path),

@@ -360,6 +360,13 @@ impl ProjectList {
             .cloned()
     }
 
+    pub(super) fn checkout_root_for(&self, target: &Path) -> Option<AbsolutePath> {
+        self.roots
+            .values()
+            .find_map(|entry| entry.item.checkout_root_for(target))
+            .cloned()
+    }
+
     pub(super) fn has_running_lints(&self) -> bool {
         self.roots.values().any(|entry| match &entry.item {
             RootItem::Rust(project) => project_lint_is_running(project),
@@ -634,9 +641,10 @@ impl ProjectList {
     /// that also isn't the default. Used to suppress stale parent-repo CI
     /// status for unpublished worktree branches.
     pub(super) fn unpublished_ci_branch_name(&self, path: &Path) -> Option<String> {
-        let git = self.git_info_for(path)?;
+        let owner = self.ci_branch_owner_path(path);
+        let git = self.git_info_for(owner.as_path())?;
         let default_branch = self
-            .repo_info_for(path)
+            .repo_info_for(owner.as_path())
             .and_then(|repo| repo.default_branch.as_deref());
         (git.primary_tracked_ref().is_none() && git.head.branch_name() != default_branch)
             .then(|| git.head.branch_name().map(str::to_string))
@@ -655,7 +663,7 @@ impl ProjectList {
         if self.unpublished_ci_branch_name(path).is_some() {
             return None;
         }
-        let display_mode = lookup.display_mode_for(path);
+        let display_mode = lookup.display_mode_for(self.ci_branch_owner_path(path).as_path());
         let info = self.ci_info_for(path)?;
         let runs = info.runs.as_slice();
         let latest = match self.current_branch_for(path) {
@@ -1518,12 +1526,30 @@ impl ProjectList {
         self.paths.last_selected.as_ref()
     }
 
-    pub(super) fn current_branch_for(&self, path: &Path) -> Option<&str> {
-        self.git_info_for(path)?.head.branch_name()
+    /// The checkout root that owns the branch, CI runs, and all/branch
+    /// display mode for `path`. A workspace member or vendored crate
+    /// resolves to its containing checkout root; a checkout root resolves
+    /// to itself. The resolution recurses through worktree groups, so a
+    /// path under a linked checkout resolves to that checkout (not the
+    /// group primary). Falls back to `path` when it resolves to no known
+    /// checkout.
+    pub(super) fn ci_branch_owner_path(&self, path: &Path) -> AbsolutePath {
+        self.checkout_root_for(path)
+            .unwrap_or_else(|| AbsolutePath::from(path))
     }
 
+    pub(super) fn current_branch_for(&self, path: &Path) -> Option<&str> {
+        let owner = self.ci_branch_owner_path(path);
+        self.git_info_for(owner.as_path())?.head.branch_name()
+    }
+
+    /// Whether the all/branch CI filter applies at `path`. It applies
+    /// only on a published branch — one with an upstream, or the repo's
+    /// default — whose runs the parent repo can hold. An unpublished
+    /// branch (no upstream, not the default) has no branch-scoped run
+    /// set to filter to, so the pane shows all runs and offers no toggle.
     pub(super) fn ci_toggle_available_for_inner(&self, path: &Path) -> bool {
-        self.current_branch_for(path).is_some()
+        self.current_branch_for(path).is_some() && self.unpublished_ci_branch_name(path).is_none()
     }
 
     pub(super) fn owner_repo_for_path_inner(&self, path: &Path) -> Option<OwnerRepo> {
@@ -2109,14 +2135,22 @@ impl ProjectList {
 
     /// CI runs at `path`, with display-mode resolved against `ci`.
     /// Consumed by the CI-runs detail pane.
+    ///
+    /// Branch filtering applies only when the all/branch toggle is
+    /// available (see `ci_toggle_available_for_inner`). On an
+    /// unpublished branch — or a row with no branch — every run is
+    /// shown unfiltered, matching the `All` view.
     pub(super) fn ci_runs_for_ci_pane(&self, path: &Path, ci: &Ci) -> Vec<CiRun> {
         let Some(info) = self.ci_info_for(path) else {
             return Vec::new();
         };
+        if !self.ci_toggle_available_for_inner(path) {
+            return info.runs.clone();
+        }
         let Some(branch) = self.current_branch_for(path) else {
             return info.runs.clone();
         };
-        if ci.display_mode_for(path) == CiRunDisplayMode::All {
+        if ci.display_mode_for(self.ci_branch_owner_path(path).as_path()) == CiRunDisplayMode::All {
             return info.runs.clone();
         }
         info.runs

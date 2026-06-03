@@ -141,6 +141,130 @@ fn workspace_members_show_parent_owner_ci_without_storing_member_state() {
 }
 
 #[test]
+fn workspace_member_ci_toggle_branch_and_mode_match_workspace_root() {
+    let workspace = make_workspace_project(Some("ws"), "~/ws");
+    let member = make_project(Some("core"), "~/ws/core");
+    let root = make_workspace_with_members(
+        Some("ws"),
+        "~/ws",
+        vec![inline_group(vec![make_member(Some("core"), "~/ws/core")])],
+    );
+    let mut app = make_app(&[workspace, member]);
+    apply_items(&mut app, &[root]);
+
+    apply_git_info(
+        &mut app,
+        test_path("~/ws").as_path(),
+        make_git_info(Some("https://github.com/natepiano/ws")),
+    );
+    app.insert_ci_runs(
+        test_path("~/ws").as_path(),
+        vec![
+            CiRun {
+                branch: "main".to_string(),
+                ..make_ci_run(1, CiStatus::Passed)
+            },
+            CiRun {
+                branch: "feature".to_string(),
+                ..make_ci_run(2, CiStatus::Failed)
+            },
+        ],
+        0,
+    );
+
+    let ws = test_path("~/ws");
+    let core = test_path("~/ws/core");
+
+    // The member resolves its CI branch and toggle to the workspace root,
+    // so the all/branch filter is offered on the member just like on the
+    // parent, and the default branch-only view filters the shared runs to
+    // the workspace branch.
+    assert!(app.ci_toggle_available_for(ws.as_path()));
+    assert!(app.ci_toggle_available_for(core.as_path()));
+    assert_eq!(
+        app.project_list.current_branch_for(core.as_path()),
+        Some("main")
+    );
+    assert_eq!(
+        app.project_list
+            .ci_runs_for_ci_pane(core.as_path(), &app.ci)
+            .iter()
+            .map(|run| run.branch.as_str())
+            .collect::<Vec<_>>(),
+        vec!["main"]
+    );
+
+    // Toggling on the member writes the owner's mode, so the workspace
+    // root sees All too — the toggle state is shared, not per-row.
+    app.set_ci_display_mode_for(core.as_path(), CiRunDisplayMode::All);
+    assert_eq!(
+        app.project_list
+            .ci_runs_for_ci_pane(ws.as_path(), &app.ci)
+            .iter()
+            .map(|run| run.branch.as_str())
+            .collect::<Vec<_>>(),
+        vec!["main", "feature"]
+    );
+}
+
+#[test]
+fn vendored_crate_ci_toggle_and_branch_resolve_to_checkout_root() {
+    let vendored_path = "~/app/vendor/helper";
+    let member = make_package_with_vendored(
+        Some("member"),
+        "~/app/crates/member",
+        vec![super::make_vendored(Some("helper"), vendored_path)],
+    );
+    let root_item = RootItem::Rust(RustProject::Workspace(make_workspace_raw(
+        Some("app"),
+        "~/app",
+        vec![inline_group(vec![member])],
+        None,
+    )));
+    let mut app = make_app(&[make_workspace_project(Some("app"), "~/app")]);
+    apply_items(&mut app, &[root_item]);
+
+    apply_git_info(
+        &mut app,
+        test_path("~/app").as_path(),
+        make_git_info(Some("https://github.com/natepiano/app")),
+    );
+    app.insert_ci_runs(
+        test_path("~/app").as_path(),
+        vec![
+            CiRun {
+                branch: "main".to_string(),
+                ..make_ci_run(1, CiStatus::Passed)
+            },
+            CiRun {
+                branch: "feature".to_string(),
+                ..make_ci_run(2, CiStatus::Failed)
+            },
+        ],
+        0,
+    );
+
+    let helper = test_path(vendored_path);
+
+    // A vendored crate is not a lint owner, but it still lives inside the
+    // workspace checkout — so its CI branch and toggle resolve to the
+    // workspace root just like a member's.
+    assert!(app.ci_toggle_available_for(helper.as_path()));
+    assert_eq!(
+        app.project_list.current_branch_for(helper.as_path()),
+        Some("main")
+    );
+    assert_eq!(
+        app.project_list
+            .ci_runs_for_ci_pane(helper.as_path(), &app.ci)
+            .iter()
+            .map(|run| run.branch.as_str())
+            .collect::<Vec<_>>(),
+        vec!["main"]
+    );
+}
+
+#[test]
 fn pull_request_disappearance_pushes_deleted_toast() {
     let project = make_project(Some("cargo-port"), "~/cargo-port");
     let path = test_path("~/cargo-port");
@@ -1333,10 +1457,12 @@ fn git_sync_shows_ascii_fill_for_branch_without_upstream() {
 }
 
 #[test]
-fn ci_empty_state_reports_unpublished_branch_when_no_upstream_exists() {
+fn ci_pane_shows_all_runs_for_unpublished_branch_without_toggle() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
     app.scan.state.phase = ScanPhase::Complete;
+    app.project_list.set_cursor(0);
+    app.sync_selected_project();
     apply_git_info(
         &mut app,
         project.path(),
@@ -1381,11 +1507,21 @@ fn ci_empty_state_reports_unpublished_branch_when_no_upstream_exists() {
         0,
     );
 
-    let ci_data = panes::build_ci_data(&app);
+    // Unpublished branch (no upstream, not the default): the all/branch
+    // toggle doesn't apply, so the pane shows every run unfiltered.
+    assert!(!app.ci_toggle_available_for(project.path()));
     assert_eq!(
-        ci_data.empty_state.title(),
-        " No CI runs for unpublished branch enh/various "
+        app.project_list
+            .ci_runs_for_ci_pane(project.path(), &app.ci)
+            .iter()
+            .map(|run| run.branch.as_str())
+            .collect::<Vec<_>>(),
+        vec!["main"]
     );
+
+    let ci_data = panes::build_ci_data(&app);
+    assert!(ci_data.mode_label.is_none());
+    assert_eq!(ci_data.runs.len(), 1);
 }
 
 #[test]

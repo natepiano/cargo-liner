@@ -165,15 +165,21 @@ impl App {
     }
 
     pub(super) fn set_ci_display_mode_for_inner(&mut self, path: &Path, mode: CiRunDisplayMode) {
-        if !self.project_list.ci_toggle_available_for_inner(path) {
-            self.ci.remove_display_mode(path);
+        // Members share the all/branch mode with their checkout root, so
+        // store and read it under the resolved owner path.
+        let owner = self.project_list.ci_branch_owner_path(path);
+        if !self
+            .project_list
+            .ci_toggle_available_for_inner(owner.as_path())
+        {
+            self.ci.remove_display_mode(owner.as_path());
             return;
         }
-        if self.ci_display_mode_for(path) == mode {
+        if self.ci_display_mode_for(owner.as_path()) == mode {
             return;
         }
-        self.ci.set_display_mode(AbsolutePath::from(path), mode);
         self.ci.viewport.home();
+        self.ci.set_display_mode(owner, mode);
         self.scan.bump_generation();
     }
 }

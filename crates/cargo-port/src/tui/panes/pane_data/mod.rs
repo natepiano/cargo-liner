@@ -1751,7 +1751,6 @@ pub enum CiEmptyState {
     Loading,
     NoRuns,
     NoRunsForBranch(String),
-    NoRunsForUnpublishedBranch(String),
     NoWorkflowConfigured,
     NotGitRepo,
     RequiresGithubRemote,
@@ -1764,9 +1763,6 @@ impl CiEmptyState {
             Self::Fetching | Self::Loading => " CI Runs — loading… ".to_string(),
             Self::NoRuns => " No CI Runs ".to_string(),
             Self::NoRunsForBranch(branch) => format!(" No CI runs for branch {branch} "),
-            Self::NoRunsForUnpublishedBranch(branch) => {
-                format!(" No CI runs for unpublished branch {branch} ")
-            },
             Self::NoWorkflowConfigured => " No CI workflow configured ".to_string(),
             Self::NotGitRepo => " CI Runs — not a git repository ".to_string(),
             Self::RequiresGithubRemote => " CI Runs — requires a GitHub origin remote ".to_string(),
@@ -2909,16 +2905,18 @@ fn build_submodule_context(submodule: &Submodule) -> Option<SubmoduleContext> {
 pub fn build_ci_data(app: &App) -> CiData {
     let selected_path = app.project_list.selected_project_path();
     let has_ci_owner = app.project_list.selected_ci_path().is_some();
-    let git_info = selected_path.and_then(|path| app.project_list.git_info_for(path));
+    // CI branch, toggle, and display mode resolve to the checkout root
+    // that owns them, so a workspace member reads the same values as its
+    // parent row.
+    let ci_owner = selected_path.map(|path| app.project_list.ci_branch_owner_path(path));
+    let git_info = ci_owner
+        .as_ref()
+        .and_then(|owner| app.project_list.git_info_for(owner.as_path()));
     let repo_info = selected_path.and_then(|path| app.project_list.repo_info_for(path));
     let ci_info = selected_path.and_then(|path| app.project_list.ci_info_for(path));
-    let current_branch = selected_path.and_then(|path| {
-        app.project_list
-            .git_info_for(path)
-            .and_then(|git| git.head.branch_name().map(str::to_string))
-    });
-    let unpublished_branch_name =
-        selected_path.and_then(|path| app.project_list.unpublished_ci_branch_name(path));
+    let current_branch = selected_path
+        .and_then(|path| app.project_list.current_branch_for(path))
+        .map(str::to_string);
     let runs = app
         .project_list
         .selected_project_path()
@@ -2927,7 +2925,10 @@ pub fn build_ci_data(app: &App) -> CiData {
         });
     let is_fetching = selected_path.is_some_and(|path| app.ci.fetch_tracker.is_fetching(path));
     let branch_filtered_empty = selected_path.is_some_and(|path| {
-        app.ci_toggle_available_for(path) && app.ci.display_mode_label_for(path) == "branch"
+        app.ci_toggle_available_for(path)
+            && ci_owner
+                .as_ref()
+                .is_some_and(|owner| app.ci.display_mode_label_for(owner.as_path()) == "branch")
     }) && ci_info.is_some_and(|info| !info.runs.is_empty())
         && runs.is_empty();
     // "Do we have a GitHub-parseable remote?" is a per-repo question and
@@ -2955,15 +2956,10 @@ pub fn build_ci_data(app: &App) -> CiData {
     } else if ci_info.is_none() || !app.scan.is_complete() {
         CiEmptyState::Loading
     } else if branch_filtered_empty {
-        unpublished_branch_name.map_or_else(
-            || {
-                CiEmptyState::NoRunsForBranch(
-                    current_branch
-                        .clone()
-                        .unwrap_or_else(|| "current".to_string()),
-                )
-            },
-            CiEmptyState::NoRunsForUnpublishedBranch,
+        CiEmptyState::NoRunsForBranch(
+            current_branch
+                .clone()
+                .unwrap_or_else(|| "current".to_string()),
         )
     } else {
         CiEmptyState::NoRuns
@@ -2971,9 +2967,10 @@ pub fn build_ci_data(app: &App) -> CiData {
 
     CiData {
         runs,
-        mode_label: selected_path.and_then(|path| {
-            app.ci_toggle_available_for(path)
-                .then(|| app.ci.display_mode_label_for(path).to_string())
+        mode_label: ci_owner.as_ref().and_then(|owner| {
+            selected_path
+                .is_some_and(|path| app.ci_toggle_available_for(path))
+                .then(|| app.ci.display_mode_label_for(owner.as_path()).to_string())
         }),
         current_branch,
         empty_state,

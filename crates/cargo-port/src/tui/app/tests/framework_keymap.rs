@@ -202,9 +202,11 @@ fn focused_app_panes_render_expected_pane_action_labels() {
         }),
         (AppPaneId::Targets, &["run", "release", "kill"], |_| {}),
         (AppPaneId::Lints, &["open", "del history"], |_| {}),
+        // No git branch on this fixture, so the all/branch toggle is
+        // hidden — only the always-on CiRuns actions render.
         (
             AppPaneId::CiRuns,
-            &["open", "fetch more", "all", "del cache"],
+            &["open", "fetch more", "del cache"],
             |app| {
                 app.ci.set_content(ci_data_with_runs(2));
                 app.ci.viewport.set_pos(0);
