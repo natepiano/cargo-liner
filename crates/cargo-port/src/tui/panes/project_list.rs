@@ -476,6 +476,7 @@ fn render_child_item<P: project::ProjectFields>(
     let ds = disk_color(disk_percentile(disk_bytes, child_sorted));
     let lang = project::Package::lang_icon();
     let is_workspace_member = ctx.project_list.is_workspace_member_path(path);
+    let is_vendored = ctx.project_list.is_vendored_path(path);
     let lint_cell = if ctx.project_list.is_rust_at_path(path) && !is_workspace_member {
         state::lint_cell_for(
             &Lint::status_for_path(ctx.project_list, path),
@@ -485,13 +486,17 @@ fn render_child_item<P: project::ProjectFields>(
     } else {
         LintCell::hidden()
     };
-    let ci = if is_workspace_member || ctx.project_list.is_vendored_path(path) {
+    let ci = if is_workspace_member || is_vendored {
         None
     } else {
         ctx.project_list
             .ci_status_using_lookup(path, ctx.ci_status_lookup)
     };
-    let hide_git_status = is_workspace_member;
+    // Members and vendored crates share their owning checkout's `.git`, so a
+    // per-row probe of either resolves up to the worktree and reports the
+    // worktree's own branch/main delta — not anything about the child. Blank
+    // both git columns so that leaked delta never renders on a child row.
+    let hide_git_status = is_workspace_member || is_vendored;
     let origin_sync = if hide_git_status
         || matches!(
             ctx.project_list.git_status_for(path),

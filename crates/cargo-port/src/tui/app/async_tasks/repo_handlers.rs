@@ -146,7 +146,18 @@ impl App {
             "checkout_info_applied"
         );
         let status = info.status;
-        if let Some(project) = self.project_list.at_path_mut(path) {
+        // Vendored crates and workspace members share their owning checkout's
+        // `.git`, so a probe of their path resolves up to the worktree and
+        // reports the worktree's branch / main delta and tracked ref — none of
+        // which describe the child. They have no independent git identity (CI,
+        // branch, and lint already resolve them to the owner), so never store
+        // worktree state under a child path. The startup-tracking and
+        // repo-fetch bookkeeping below still runs: those resolve `path` to the
+        // owner's git directory / repo, so a child-path probe correctly counts
+        // toward the owner.
+        let stores_own_git_state = !self.project_list.is_vendored_path(path)
+            && !self.project_list.is_workspace_member_path(path);
+        if stores_own_git_state && let Some(project) = self.project_list.at_path_mut(path) {
             project.local_git_state = LocalGitState::Detected(Box::new(info));
         }
         // The worktree-summary cache embeds each entry's branch name read
