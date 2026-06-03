@@ -4,8 +4,7 @@
 //! [`HttpClient`], the GitHub sub-state (availability, repo-fetch
 //! cache, in-flight set, running tracker + toast), and the
 //! crates.io sub-state (availability). App orchestration reaches
-//! in via [`Net::github`] / [`Net::github_mut`] and
-//! [`Net::crates_io`] / [`Net::crates_io_mut`].
+//! in via the public [`Net::github`] and [`Net::crates_io`] fields.
 //!
 //! Cross-subsystem orchestration that touches Net plus other
 //! subsystems (toast push/dismiss, background spawn, scan reset)
@@ -33,25 +32,36 @@ use crate::scan::RepoCache;
 /// Availability for a single service. `Unreachable` means the network
 /// layer can't talk to the service at all; `RateLimited` means the
 /// service is reachable but refusing our requests for quota reasons;
-/// `Unauthenticated` (GitHub only) means `gh auth token` returned no
-/// token at startup, so authenticated calls silently no-op. Recovery,
-/// display text, and toast copy diverge between them — hence the
-/// explicit enum.
+/// `Unauthenticated` and `NotInstalled` (GitHub only) both mean `gh auth
+/// token` produced no token at startup — `Unauthenticated` when `gh` is
+/// installed but logged out, `NotInstalled` when the `gh` binary is
+/// absent — so authenticated calls silently no-op. Recovery, display
+/// text, and toast copy diverge between them — hence the explicit enum.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AvailabilityStatus {
     #[default]
     Reachable,
     Unreachable,
     RateLimited,
-    /// GitHub only: no auth token at startup. Authenticated REST /
-    /// GraphQL calls short-circuit, so CI + rate-limit data never load.
+    /// GitHub only: `gh` is installed but returned no token. Authenticated
+    /// REST / GraphQL calls short-circuit, so CI + rate-limit data never
+    /// load.
     Unauthenticated,
+    /// GitHub only: the `gh` binary was not found on `PATH`, so no token
+    /// could be obtained. Same no-op effect as `Unauthenticated`; the
+    /// remediation differs (install `gh` rather than `gh auth login`).
+    NotInstalled,
 }
 
 impl AvailabilityStatus {
     pub const fn is_available(self) -> bool { matches!(self, Self::Reachable) }
 
-    pub const fn is_unauthenticated(self) -> bool { matches!(self, Self::Unauthenticated) }
+    /// True when GitHub has no usable auth token — whether `gh` is logged
+    /// out (`Unauthenticated`) or absent (`NotInstalled`). Both render the
+    /// same actionable-warning state; only the remediation copy differs.
+    pub const fn is_unauthenticated(self) -> bool {
+        matches!(self, Self::Unauthenticated | Self::NotInstalled)
+    }
 }
 
 /// Outcome of a "service became reachable" call. The retry / recovery
@@ -152,6 +162,12 @@ impl ServiceAvailability {
     pub const fn mark_unauthenticated(&mut self) {
         self.status = AvailabilityStatus::Unauthenticated;
     }
+
+    /// Marks GitHub unavailable because the `gh` binary was not found at
+    /// startup. Like [`Self::mark_unauthenticated`] this spawns no retry
+    /// loop — installing `gh` needs a restart. Set once from
+    /// `App::warn_if_github_unauthenticated`.
+    pub const fn mark_not_installed(&mut self) { self.status = AvailabilityStatus::NotInstalled; }
 
     /// The id of the tracked unavailability toast, if one was ever
     /// pushed. Callers must verify liveness against the toast manager
@@ -331,6 +347,17 @@ mod tests {
         assert!(avail.status().is_unauthenticated());
         // Unauthenticated is not "available" — the git pane reads this
         // to suppress real values and surface the auth hint instead.
+        assert!(!avail.status().is_available());
+    }
+
+    #[test]
+    fn mark_not_installed_sets_status_and_reports_unavailable() {
+        let mut avail = ServiceAvailability::new();
+        avail.mark_not_installed();
+        assert_eq!(avail.status(), AvailabilityStatus::NotInstalled);
+        // `gh` missing is still "no auth token" — the predicate the git
+        // pane and pane-data readers branch on must cover both gaps.
+        assert!(avail.status().is_unauthenticated());
         assert!(!avail.status().is_available());
     }
 }

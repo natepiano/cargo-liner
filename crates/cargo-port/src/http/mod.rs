@@ -9,7 +9,10 @@ mod rate_limit;
 
 use std::collections::HashMap;
 use std::fmt::Write;
+use std::io;
+use std::io::ErrorKind;
 use std::process::Command;
+use std::process::Output;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
@@ -381,7 +384,7 @@ fn reduce_pull_request_state(
 #[derive(Clone)]
 pub(crate) struct HttpClient {
     client:                  Client,
-    github_token:            Option<String>,
+    github_auth:             GithubAuth,
     github_viewer_login:     Arc<Mutex<Option<String>>>,
     rate_limit:              Arc<Mutex<GitHubRateLimit>>,
     /// When true, every GitHub REST + GraphQL call (and the recovery
@@ -397,22 +400,77 @@ pub(crate) struct HttpClient {
     pub(crate) handle:       Handle,
 }
 
+/// Result of the one-shot `gh auth token` probe run at startup. Holds the
+/// token when authenticated; otherwise records *why* there is no token so
+/// the UI can give the right remediation — install `gh` versus run `gh
+/// auth login`. Keeping token and reason in one enum makes the "token
+/// present but `gh` missing" combination unrepresentable.
+#[derive(Clone)]
+enum GithubAuth {
+    Authenticated(String),
+    /// `gh` ran but returned no token (the user is not logged in).
+    Unauthenticated,
+    /// The `gh` binary was not found on `PATH`.
+    NotInstalled,
+}
+
+impl GithubAuth {
+    /// Classify the outcome of the startup `gh auth token` probe. A
+    /// success exit yields the trimmed token — or `Unauthenticated` when
+    /// stdout is not valid UTF-8. A spawn error of kind `NotFound` means
+    /// the `gh` binary is absent; every other outcome (non-success exit,
+    /// other spawn errors) is treated as logged-out.
+    fn classify(output: io::Result<Output>) -> Self {
+        match output {
+            Ok(output) if output.status.success() => String::from_utf8(output.stdout)
+                .map_or(Self::Unauthenticated, |token| {
+                    Self::Authenticated(token.trim().to_string())
+                }),
+            Err(error) if error.kind() == ErrorKind::NotFound => Self::NotInstalled,
+            Ok(_) | Err(_) => Self::Unauthenticated,
+        }
+    }
+
+    /// The bearer token when authenticated; `None` for either gap.
+    const fn token(&self) -> Option<&str> {
+        match self {
+            Self::Authenticated(token) => Some(token.as_str()),
+            Self::Unauthenticated | Self::NotInstalled => None,
+        }
+    }
+
+    /// Projects the auth state to the gap the UI surfaces, dropping the
+    /// token. `None` means authenticated — there is nothing to warn about.
+    const fn gap(&self) -> Option<GithubAuthGap> {
+        match self {
+            Self::Authenticated(_) => None,
+            Self::Unauthenticated => Some(GithubAuthGap::Unauthenticated),
+            Self::NotInstalled => Some(GithubAuthGap::NotInstalled),
+        }
+    }
+}
+
+/// Why GitHub calls are disabled, surfaced to the UI so the startup toast
+/// and git-pane row give the right remediation. Excludes the authenticated
+/// case — there is no gap to report.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GithubAuthGap {
+    /// The `gh` binary was not found on `PATH`.
+    NotInstalled,
+    /// `gh` is installed but returned no token.
+    Unauthenticated,
+}
+
 impl HttpClient {
     /// Build a new client. Obtains the GitHub auth token from `gh auth
     /// token` (single subprocess call). If `gh` is unavailable or not
     /// authenticated, GitHub API methods degrade gracefully.
     pub(crate) fn new(handle: Handle) -> Option<Self> {
         let client = build_client().ok()?;
-        let github_token = Command::new("gh")
-            .args(["auth", "token"])
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim().to_string());
+        let github_auth = GithubAuth::classify(Command::new("gh").args(["auth", "token"]).output());
         Some(Self {
             client,
-            github_token,
+            github_auth,
             github_viewer_login: Arc::new(Mutex::new(None)),
             rate_limit: Arc::new(Mutex::new(GitHubRateLimit::default())),
             force_github_rate_limit: Arc::new(AtomicBool::new(false)),
@@ -425,7 +483,13 @@ impl HttpClient {
     /// false, every authenticated REST / GraphQL call short-circuits to
     /// a no-op (see `github_get_async` / `github_graphql_async`), so CI
     /// runs and rate-limit buckets never load.
-    pub(crate) const fn has_github_token(&self) -> bool { self.github_token.is_some() }
+    pub(crate) const fn has_github_token(&self) -> bool {
+        matches!(self.github_auth, GithubAuth::Authenticated(_))
+    }
+
+    /// The GitHub auth gap to surface at startup, or `None` when a token
+    /// was obtained. Drives the startup toast copy and the git-pane row.
+    pub(crate) const fn github_auth_gap(&self) -> Option<GithubAuthGap> { self.github_auth.gap() }
 
     /// Toggle the synthetic GitHub rate-limit short-circuit at runtime.
     /// Intended for the `[debug] force_github_rate_limit` config flag.
@@ -500,7 +564,7 @@ impl HttpClient {
         if self.github_rate_limit_forced() {
             return (None, Some(ServiceSignal::RateLimited(ServiceKind::GitHub)));
         }
-        let Some(token) = self.github_token.as_ref() else {
+        let Some(token) = self.github_auth.token() else {
             return (None, None);
         };
         let url = format!("{GITHUB_API_BASE}/{path}");
@@ -543,7 +607,7 @@ impl HttpClient {
         if self.github_rate_limit_forced() {
             return (None, Some(ServiceSignal::RateLimited(ServiceKind::GitHub)));
         }
-        let Some(token) = self.github_token.as_ref() else {
+        let Some(token) = self.github_auth.token() else {
             return (None, None);
         };
         let payload = serde_json::json!({ "query": query });
@@ -918,7 +982,7 @@ impl HttpClient {
     /// the quota and therefore safe to poll while we're rate-limited.
     /// Updates the shared live `rate_limit` on success.
     pub(crate) async fn fetch_rate_limit_async(&self) -> HttpOutcome<GitHubRateLimit> {
-        let Some(token) = self.github_token.as_ref() else {
+        let Some(token) = self.github_auth.token() else {
             return (None, None);
         };
         let url = format!("{GITHUB_API_BASE}/rate_limit");
@@ -1210,6 +1274,64 @@ mod tests {
     use super::*;
     use crate::test_support;
 
+    /// Exercises `GithubAuth::classify` directly with constructed process
+    /// outcomes — the one place the missing-vs-logged-out distinction is
+    /// decided. Gated to unix because `ExitStatus` is only constructible
+    /// there (`ExitStatusExt::from_raw`); the primary platforms are unix.
+    #[cfg(unix)]
+    mod classify {
+        use std::io;
+        use std::io::ErrorKind;
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::ExitStatus;
+        use std::process::Output;
+
+        use super::GithubAuth;
+
+        fn gh_output(raw_wait_status: i32, stdout: &[u8]) -> Output {
+            Output {
+                status: ExitStatus::from_raw(raw_wait_status),
+                stdout: stdout.to_vec(),
+                stderr: Vec::new(),
+            }
+        }
+
+        #[test]
+        fn success_exit_with_token_is_authenticated() {
+            // raw wait status 0 encodes a normal exit with code 0 (success).
+            let github_auth = GithubAuth::classify(Ok(gh_output(0, b"  gho_abc123\n")));
+            assert!(
+                matches!(github_auth, GithubAuth::Authenticated(token) if token == "gho_abc123")
+            );
+        }
+
+        #[test]
+        fn success_exit_with_invalid_utf8_is_unauthenticated() {
+            let github_auth = GithubAuth::classify(Ok(gh_output(0, &[0xff, 0xfe])));
+            assert!(matches!(github_auth, GithubAuth::Unauthenticated));
+        }
+
+        #[test]
+        fn nonsuccess_exit_is_unauthenticated() {
+            // raw wait status `1 << 8` encodes a normal exit with code 1.
+            let github_auth = GithubAuth::classify(Ok(gh_output(1 << 8, b"not logged in")));
+            assert!(matches!(github_auth, GithubAuth::Unauthenticated));
+        }
+
+        #[test]
+        fn missing_binary_is_not_installed() {
+            let github_auth = GithubAuth::classify(Err(io::Error::from(ErrorKind::NotFound)));
+            assert!(matches!(github_auth, GithubAuth::NotInstalled));
+        }
+
+        #[test]
+        fn other_spawn_error_is_unauthenticated() {
+            let github_auth =
+                GithubAuth::classify(Err(io::Error::from(ErrorKind::PermissionDenied)));
+            assert!(matches!(github_auth, GithubAuth::Unauthenticated));
+        }
+    }
+
     #[test]
     fn rate_limit_headers_core_bucket_parsed() {
         let headers = test_support::header_map(&[
@@ -1336,7 +1458,7 @@ mod tests {
     fn test_client(handle: &Handle) -> HttpClient {
         HttpClient {
             client:                  build_client().expect("build http client"),
-            github_token:            None,
+            github_auth:             GithubAuth::Unauthenticated,
             github_viewer_login:     Arc::new(Mutex::new(None)),
             rate_limit:              Arc::new(Mutex::new(GitHubRateLimit::default())),
             force_github_rate_limit: Arc::new(AtomicBool::new(false)),

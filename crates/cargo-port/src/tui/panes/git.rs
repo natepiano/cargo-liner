@@ -686,6 +686,7 @@ const fn github_status_suffix(status: AvailabilityStatus) -> Option<&'static str
         AvailabilityStatus::Unreachable => Some("github unreachable"),
         AvailabilityStatus::RateLimited => Some("github rate-limited"),
         AvailabilityStatus::Unauthenticated => Some("unauthenticated — gh auth login"),
+        AvailabilityStatus::NotInstalled => Some("gh not installed"),
     }
 }
 
