@@ -3149,6 +3149,165 @@ fn startup_late_repo_fetch_reopens_github_row() {
     );
 }
 
+// ── network-toast stage (startup-owned vs steady state) ────────────
+
+/// The network-toast stage is a three-state machine: it starts `StartupOwned`,
+/// `begin_steady_state_network_toasts` installs the slots, and
+/// `set_network_toasts_startup_owned` removes them again (the rescan path).
+#[test]
+fn network_toast_stage_round_trips_startup_owned_and_steady() {
+    let project_a = make_project(Some("a"), "~/never-real/a");
+    let mut app = make_app(std::slice::from_ref(&project_a));
+
+    assert!(
+        app.net.network_toasts().is_none(),
+        "construction starts in the startup-owned stage — no standalone slot"
+    );
+    app.net.begin_steady_state_network_toasts();
+    assert!(
+        app.net.network_toasts().is_some(),
+        "entering steady state installs the standalone-toast slots"
+    );
+    app.net.set_network_toasts_startup_owned();
+    assert!(
+        app.net.network_toasts().is_none(),
+        "returning to startup-owned discards the slots"
+    );
+}
+
+/// While the startup panel owns the network rows the stage is `StartupOwned`:
+/// a queued crates.io fetch is still tracked in flight (the panel's detail row
+/// reads it), but no standalone-toast slot exists, so the "Fetching crates.io
+/// info" toast cannot be created.
+#[test]
+fn startup_owned_stage_suppresses_crates_io_standalone_toast() {
+    let project_a = make_project(Some("a"), "~/never-real/a");
+    let mut app = make_app(std::slice::from_ref(&project_a));
+    app.scan.state.phase = ScanPhase::Complete;
+    app.initialize_startup_phase_tracker();
+
+    assert!(
+        app.net.network_toasts().is_none(),
+        "the open startup panel owns the network rows — no standalone slot exists"
+    );
+
+    app.handle_bg_msg(BackgroundMsg::CratesIoFetchQueued {
+        name: "serde".to_string(),
+    });
+
+    assert!(
+        app.net.crates_io.running().running.contains_key("serde"),
+        "the queued fetch is still tracked in flight for the panel's detail row"
+    );
+    assert!(
+        app.net.network_toasts().is_none(),
+        "no standalone crates.io toast slot is created while the panel owns the row"
+    );
+}
+
+/// The reported leak: a crates.io fetch processed before the scan completes —
+/// and so before `initialize_startup_phase_tracker` creates the panel — must
+/// not pop a standalone toast. The stage begins `StartupOwned` at
+/// construction, so the slot is absent in this pre-panel window too.
+#[test]
+fn crates_io_fetch_before_startup_panel_is_suppressed() {
+    let project_a = make_project(Some("a"), "~/never-real/a");
+    let mut app = make_app(std::slice::from_ref(&project_a));
+    // No `initialize_startup_phase_tracker`: the scan has not completed.
+
+    assert!(
+        app.net.network_toasts().is_none(),
+        "the network-toast stage starts `StartupOwned` before any panel exists"
+    );
+
+    app.handle_bg_msg(BackgroundMsg::CratesIoFetchQueued {
+        name: "serde".to_string(),
+    });
+
+    assert!(
+        app.net.crates_io.running().running.contains_key("serde"),
+        "the fetch is tracked in flight even before the panel opens"
+    );
+    assert!(
+        app.net.network_toasts().is_none(),
+        "a fetch processed before the panel exists cannot leak a standalone toast"
+    );
+}
+
+/// When startup completes, the panel hands the network rows back: the stage
+/// flips to `SteadyState`, installing the toast slots. A crates.io fetch
+/// queued afterward then creates its standalone toast.
+#[test]
+fn startup_completion_enters_steady_state_and_emits_crates_io_toast() {
+    let project_a = make_project(Some("a"), "~/never-real/a");
+    let mut app = make_app(std::slice::from_ref(&project_a));
+    app.scan.state.phase = ScanPhase::Complete;
+    app.initialize_startup_phase_tracker();
+
+    let now = std::time::Instant::now();
+    let scan_started = app.startup.scan_complete_at.expect("scan complete at");
+
+    // Force every row to an empty (immediately complete) denominator so the
+    // panel can close once the minimum-visible floor elapses.
+    app.startup.disk.expected = Denominator::Stable(HashSet::new());
+    app.startup.git.expected = Denominator::Stable(HashSet::new());
+    app.startup.repo.expected = Denominator::Stable(HashSet::new());
+    app.startup.crates_io.expected = Denominator::Stable(HashSet::new());
+    app.startup.metadata.expected = Denominator::Stable(HashSet::new());
+    app.startup.languages.expected = Denominator::Stable(HashSet::new());
+    app.startup.tests.expected = Denominator::Stable(HashSet::new());
+    app.startup.lint_phase.expected = Denominator::Stable(HashSet::new());
+    app.maybe_log_startup_phase_completions();
+
+    assert!(
+        app.net.network_toasts().is_none(),
+        "the panel still owns the rows until it closes"
+    );
+
+    app.maybe_complete_startup_ready(now + STARTUP_ROW_MIN_VISIBLE * 2, scan_started);
+    assert!(
+        app.startup.complete_at.is_some(),
+        "the panel closes once every row is complete past its floor"
+    );
+    assert!(
+        app.net
+            .network_toasts()
+            .is_some_and(|toasts| toasts.crates_io.is_none()),
+        "panel close enters steady state with empty slots — no fetch has run yet"
+    );
+
+    app.handle_bg_msg(BackgroundMsg::CratesIoFetchQueued {
+        name: "serde".to_string(),
+    });
+    assert!(
+        app.net
+            .network_toasts()
+            .is_some_and(|toasts| toasts.crates_io.is_some()),
+        "a steady-state crates.io fetch creates the standalone toast"
+    );
+}
+
+/// In steady state a GitHub repo fetch creates the standalone "Retrieving
+/// GitHub repo details" toast — the mirror of the crates.io path.
+#[test]
+fn steady_state_repo_fetch_emits_github_toast() {
+    let project_a = make_project(Some("a"), "~/never-real/a");
+    let mut app = make_app(std::slice::from_ref(&project_a));
+    // Enter steady state directly: the panel has closed.
+    app.startup.complete_at = Some(std::time::Instant::now());
+    app.net.begin_steady_state_network_toasts();
+
+    let repo = crate::ci::OwnerRepo::new("natepiano", "cargo-port");
+    app.handle_bg_msg(BackgroundMsg::RepoFetchQueued { repo });
+
+    assert!(
+        app.net
+            .network_toasts()
+            .is_some_and(|toasts| toasts.github.is_some()),
+        "a steady-state repo fetch creates the standalone GitHub toast"
+    );
+}
+
 // ── App::clean_selection (Step 6c gating) ──────────────────────────
 
 #[test]

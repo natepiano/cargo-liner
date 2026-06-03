@@ -52,6 +52,11 @@ impl App {
         self.clear_all_lint_state();
         self.lint.set_cache_usage(CacheUsage::default());
         self.net.clear_for_tree_change();
+        // The rescan re-opens the consolidated startup panel, which takes back
+        // ownership of the GitHub / crates.io rows: finish any live standalone
+        // network toasts and return the stage to startup-owned so a fetch
+        // dispatched during this scan cannot leak a standalone toast.
+        self.enter_startup_owned_network_stage();
         self.scan.discovery_shimmers_mut().clear();
         self.scan.state.phase = ScanPhase::Running;
         self.scan.state.started_at = Instant::now();

@@ -25,51 +25,58 @@ impl App {
         let next = self.sync_running_toast(toast_slot, "Lints", &items);
         self.lint.set_running_toast(next);
     }
-    /// Keep a single "Retrieving GitHub repo details" toast in sync
-    /// with the live in-flight repo fetches. Suppressed while the startup
-    /// panel is open — the panel's GitHub row is the surface there, and a
-    /// competing standalone toast would crowd it out of the stack.
+    /// Keep a single "Retrieving GitHub repo details" toast in sync with the
+    /// live in-flight repo fetches. The toast slot lives only in the
+    /// steady-state network-toast stage: while the startup panel owns the
+    /// GitHub row, `Net::network_toasts` returns `None`, so there is nowhere
+    /// to store a toast id and this no-ops.
     pub(super) fn sync_running_repo_fetch_toast(&mut self) {
-        if self.startup_panel_owns_network_rows() {
-            if let Some(task_id) = self.net.github.running_mut().toast.take() {
-                self.framework
-                    .toasts
-                    .complete_missing_items(task_id, &HashSet::new());
-            }
+        let Some(toast_slot) = self.net.network_toasts().map(|toasts| toasts.github) else {
             return;
-        }
-        let (toast_slot, items) = self
+        };
+        let (_, items) = self
             .net
             .github
             .running()
             .items_for_toast(ToString::to_string, integration::owner_repo_key);
         let next = self.sync_running_toast(toast_slot, "Retrieving GitHub repo details", &items);
-        self.net.github.running_mut().toast = next;
-    }
-    /// Keep a single "Fetching crates.io info" toast in sync with the
-    /// live in-flight crates.io fetches. Mirrors the GitHub repo-fetch
-    /// toast, including the startup-panel suppression.
-    pub(super) fn sync_running_crates_io_toast(&mut self) {
-        if self.startup_panel_owns_network_rows() {
-            if let Some(task_id) = self.net.crates_io.running_mut().toast.take() {
-                self.framework
-                    .toasts
-                    .complete_missing_items(task_id, &HashSet::new());
-            }
-            return;
+        if let Some(toasts) = self.net.network_toasts_mut() {
+            toasts.github = next;
         }
-        let (toast_slot, items) = self
+    }
+    /// Keep a single "Fetching crates.io info" toast in sync with the live
+    /// in-flight crates.io fetches. Mirrors the GitHub repo-fetch toast: the
+    /// slot exists only in steady state, so while the startup panel owns the
+    /// crates.io row this no-ops and no standalone toast can be created.
+    pub(super) fn sync_running_crates_io_toast(&mut self) {
+        let Some(toast_slot) = self.net.network_toasts().map(|toasts| toasts.crates_io) else {
+            return;
+        };
+        let (_, items) = self
             .net
             .crates_io
             .running()
             .items_for_toast(String::clone, |name| TrackedItemKey::from(name.as_str()));
         let next = self.sync_running_toast(toast_slot, "Fetching crates.io info", &items);
-        self.net.crates_io.running_mut().toast = next;
+        if let Some(toasts) = self.net.network_toasts_mut() {
+            toasts.crates_io = next;
+        }
     }
-    /// `true` while the consolidated startup panel is open and therefore owns
-    /// the GitHub / crates.io progress rows. The standalone running toasts for
-    /// those fetches stay suppressed until the panel closes.
-    const fn startup_panel_owns_network_rows(&self) -> bool { self.startup.toast.is_some() }
+    /// Return the network-toast stage to `StartupOwned`: finish any live
+    /// standalone GitHub / crates.io toasts (their slots are about to be
+    /// discarded, so their ids would otherwise strand), then drop the slots.
+    /// Called when a rescan re-opens the consolidated panel, which takes back
+    /// ownership of those rows.
+    pub(super) fn enter_startup_owned_network_stage(&mut self) {
+        if let Some(slots) = self.net.network_toasts().map(|t| [t.crates_io, t.github]) {
+            for task_id in slots.into_iter().flatten() {
+                self.framework
+                    .toasts
+                    .complete_missing_items(task_id, &HashSet::new());
+            }
+        }
+        self.net.set_network_toasts_startup_owned();
+    }
     /// Shared tracked-task toast sync. Grows as new items appear,
     /// marks items completed (freezing elapsed + starting strikethrough)
     /// as items disappear, and begins the toast-level linger

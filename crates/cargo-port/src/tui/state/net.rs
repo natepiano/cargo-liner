@@ -6,6 +6,12 @@
 //! crates.io sub-state (availability). App orchestration reaches
 //! in via the public [`Net::github`] and [`Net::crates_io`] fields.
 //!
+//! The standalone GitHub / crates.io running toasts are gated by
+//! [`NetworkToastStage`]: their toast slots live only in
+//! [`NetworkToastStage::SteadyState`], so while a scan's "Startup" panel owns
+//! those rows there is no slot to populate and the standalone toast cannot
+//! fire.
+//!
 //! Cross-subsystem orchestration that touches Net plus other
 //! subsystems (toast push/dismiss, background spawn, scan reset)
 //! stays on `App` — see `App::apply_unavailability`,
@@ -21,6 +27,7 @@ use std::collections::HashSet;
 
 use tui_pane::RunningTracker;
 use tui_pane::ToastId;
+use tui_pane::ToastTaskId;
 
 use crate::ci::OwnerRepo;
 use crate::http::GitHubRateLimit;
@@ -279,10 +286,43 @@ impl CratesIo {
     pub const fn running_mut(&mut self) -> &mut RunningTracker<String> { &mut self.running }
 }
 
+/// The standalone GitHub / crates.io running-toast slots. One sticky toast
+/// per service, created only in steady state. This value exists exclusively
+/// inside [`NetworkToastStage::SteadyState`]: during startup the consolidated
+/// panel owns those rows, so there is no slot here to populate and the
+/// standalone toast cannot be created.
+#[derive(Default)]
+pub struct NetworkRunningToasts {
+    /// "Fetching crates.io info" toast slot.
+    pub crates_io: Option<ToastTaskId>,
+    /// "Retrieving GitHub repo details" toast slot.
+    pub github:    Option<ToastTaskId>,
+}
+
+/// Lifecycle of the GitHub + crates.io progress surface.
+///
+/// While a scan runs and its consolidated "Startup" panel is open, the panel
+/// owns the GitHub and crates.io rows — `StartupOwned` carries no toast slot,
+/// so no standalone running toast can be created. When startup completes the
+/// stage flips to `SteadyState`, which is the only variant that holds the
+/// per-service slots. A rescan returns the stage to `StartupOwned`. Making the
+/// slot absent during startup is what prevents the standalone crates.io /
+/// GitHub toast from firing while the panel owns the row.
+pub enum NetworkToastStage {
+    /// Pre-startup and while the panel is open. No standalone-toast slot.
+    StartupOwned,
+    /// Steady state: standalone running toasts emit from these slots.
+    SteadyState(NetworkRunningToasts),
+}
+
 pub struct Net {
     pub http_client: HttpClient,
     pub github:      Github,
     pub crates_io:   CratesIo,
+    /// Lifecycle gate for the standalone GitHub / crates.io running toasts.
+    /// Begins `StartupOwned` so a network fetch processed before the startup
+    /// panel even exists cannot leak a standalone toast.
+    toast_stage:     NetworkToastStage,
 }
 
 impl Net {
@@ -291,7 +331,41 @@ impl Net {
             http_client,
             github: Github::new(),
             crates_io: CratesIo::new(),
+            toast_stage: NetworkToastStage::StartupOwned,
         }
+    }
+
+    /// The steady-state network-toast slots, or `None` while startup owns the
+    /// rows. The standalone-toast sync paths read the slot through this: a
+    /// `None` return means there is structurally nowhere to store a toast id,
+    /// so they no-op.
+    pub const fn network_toasts(&self) -> Option<&NetworkRunningToasts> {
+        match &self.toast_stage {
+            NetworkToastStage::SteadyState(toasts) => Some(toasts),
+            NetworkToastStage::StartupOwned => None,
+        }
+    }
+
+    /// Mutable view of the steady-state network-toast slots, or `None` while
+    /// startup owns the rows.
+    pub const fn network_toasts_mut(&mut self) -> Option<&mut NetworkRunningToasts> {
+        match &mut self.toast_stage {
+            NetworkToastStage::SteadyState(toasts) => Some(toasts),
+            NetworkToastStage::StartupOwned => None,
+        }
+    }
+
+    /// Enter steady state: the panel has closed, so standalone GitHub /
+    /// crates.io running toasts may now be created. Installs the (empty) slots.
+    pub fn begin_steady_state_network_toasts(&mut self) {
+        self.toast_stage = NetworkToastStage::SteadyState(NetworkRunningToasts::default());
+    }
+
+    /// Return the stage to `StartupOwned`, discarding the slots. The caller is
+    /// responsible for finishing any live toasts first — once the slots are
+    /// gone their ids are unrecoverable.
+    pub const fn set_network_toasts_startup_owned(&mut self) {
+        self.toast_stage = NetworkToastStage::StartupOwned;
     }
 
     pub fn http_client(&self) -> HttpClient { self.http_client.clone() }

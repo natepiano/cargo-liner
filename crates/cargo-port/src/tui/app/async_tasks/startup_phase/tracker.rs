@@ -492,6 +492,12 @@ impl App {
         if let Some(toast) = self.startup.toast.take() {
             self.finish_body_toast_with_countdown(toast);
         }
+        // The panel no longer owns the network rows: install the steady-state
+        // toast slots, then surface any GitHub / crates.io fetch still in
+        // flight as its own standalone toast (a no-op when none are running).
+        self.net.begin_steady_state_network_toasts();
+        self.sync_running_crates_io_toast();
+        self.sync_running_repo_fetch_toast();
         let since_scan_ms = tui_pane::perf_log_ms(now.duration_since(scan_complete_at).as_millis());
         tracing::info!(
             since_scan_complete_ms = since_scan_ms,
