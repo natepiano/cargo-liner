@@ -513,3 +513,148 @@ impl LocalHelper {
         "unused public annotations should be gone: {helpers}"
     );
 }
+
+#[test]
+fn type_named_in_trait_impl_interface_is_not_flagged_unused() {
+    // Regression for the `TextExtensionKey`-style false positive.
+    // `ExtensionKey` appears only inside `impl Iterator for Extension` —
+    // the associated type binding and `next`'s return type. That interface
+    // is usable wherever `Extension` is (`pub(crate)`), so a fully private
+    // `ExtensionKey` is rejected by rustc (E0446). The same applies to
+    // derive-generated impls (`#[derive(AsBindGroup)]` +
+    // `#[bind_group_data(...)]` in bevy), which exist only in expanded HIR.
+    // `Orphan` has no interface mention and stays flagged.
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "trait_impl_interface_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "mod consumer;\nmod material;\n",
+    )
+    .expect("write lib");
+    fs::write(
+        temp.path().join("src/material.rs"),
+        r#"pub(crate) struct Extension {
+    pub seed: u32,
+}
+
+pub struct ExtensionKey {
+    pub seed: u32,
+}
+
+pub struct Orphan {
+    pub o: u32,
+}
+
+impl Iterator for Extension {
+    type Item = ExtensionKey;
+
+    fn next(&mut self) -> Option<ExtensionKey> {
+        None
+    }
+}
+"#,
+    )
+    .expect("write material");
+    fs::write(
+        temp.path().join("src/consumer.rs"),
+        "pub fn run() {\n    let _extension = crate::material::Extension { seed: 0 };\n}\n",
+    )
+    .expect("write consumer");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+
+    let unused_items: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.code == DiagnosticCode::UnusedPub)
+        .filter_map(|finding| finding.item.as_deref())
+        .collect();
+    assert!(
+        !unused_items.contains(&"struct ExtensionKey"),
+        "`ExtensionKey` is required by the trait impl interface and must not be flagged unused: {unused_items:?}",
+    );
+    assert!(
+        unused_items.contains(&"struct Orphan"),
+        "unused `Orphan` should still be flagged: {unused_items:?}",
+    );
+    assert_summary_matches_findings(&report);
+}
+
+#[test]
+fn fix_keeps_trait_impl_interface_type_compiling() {
+    // End-to-end form of the bevy_diegetic failure: before trait-impl
+    // interfaces were recorded as use sites, `--fix` removed `pub` from
+    // `ExtensionKey`, the `impl Iterator for Extension` interface then
+    // leaked a private type (E0446), and the whole batch rolled back.
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "trait_impl_interface_fix_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "mod consumer;\nmod material;\n",
+    )
+    .expect("write lib");
+    fs::write(
+        temp.path().join("src/material.rs"),
+        r#"pub(crate) struct Extension {
+    pub seed: u32,
+}
+
+pub struct ExtensionKey {
+    pub seed: u32,
+}
+
+impl Iterator for Extension {
+    type Item = ExtensionKey;
+
+    fn next(&mut self) -> Option<ExtensionKey> {
+        None
+    }
+}
+"#,
+    )
+    .expect("write material");
+    fs::write(
+        temp.path().join("src/consumer.rs"),
+        "pub fn run() {\n    let _extension = crate::material::Extension { seed: 0 };\n}\n",
+    )
+    .expect("write consumer");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed (trait-impl interface types must stay visible): {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let material = fs::read_to_string(temp.path().join("src/material.rs")).expect("read material");
+    assert!(
+        material.contains("pub(crate) struct ExtensionKey")
+            || material.contains("pub struct ExtensionKey"),
+        "`ExtensionKey` must keep at least `pub(crate)` visibility: {material}"
+    );
+}

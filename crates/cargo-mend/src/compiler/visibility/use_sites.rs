@@ -78,7 +78,7 @@ struct UseSiteCollector<'a, 'tcx> {
     out:            &'a mut Vec<UseSite>,
 }
 
-impl UseSiteCollector<'_, '_> {
+impl<'tcx> UseSiteCollector<'_, 'tcx> {
     fn record_target(&mut self, target: DefId) {
         // Skip references to items in other crates — narrowing decisions
         // only apply to local items.
@@ -170,6 +170,97 @@ impl UseSiteCollector<'_, '_> {
         }
     }
 
+    /// Record every local ADT named in a trait impl's interface — trait-ref
+    /// type arguments, associated type bindings, associated const types, and
+    /// associated fn signatures — as used from the widest module the
+    /// interface reaches. HIR holds post-expansion items, so this covers
+    /// interface mentions that exist in no source file: `#[derive(AsBindGroup)]`
+    /// on a `pub(crate)` type generates `type Data = TextExtensionKey;`,
+    /// which requires `TextExtensionKey` to stay at least `pub(crate)`
+    /// (E0446). Without these sites, `unused_pub` suggests removing `pub`
+    /// and the `--fix` validation fails and rolls back.
+    fn record_trait_impl_interface(&mut self, impl_def: LocalDefId) {
+        if !matches!(
+            self.tcx.def_kind(impl_def.to_def_id()),
+            DefKind::Impl { of_trait: true }
+        ) {
+            return;
+        }
+        let trait_ref = self.tcx.impl_trait_ref(impl_def).instantiate_identity();
+        let self_adt = trait_ref.self_ty().ty_adt_def().map(ty::AdtDef::did);
+
+        let previous_module = self.current_module;
+        self.current_module = self.interface_scope_module(trait_ref.def_id, self_adt);
+
+        let mut seen = HashSet::new();
+        for arg in trait_ref.args {
+            if let Some(arg_type) = arg.as_type() {
+                self.record_interface_component_types(arg_type, self_adt, &mut seen);
+            }
+        }
+        for assoc_def_id in self.tcx.associated_item_def_ids(impl_def) {
+            match self.tcx.def_kind(*assoc_def_id) {
+                DefKind::AssocTy | DefKind::AssocConst { .. } => {
+                    let assoc_type = self.tcx.type_of(*assoc_def_id).instantiate_identity();
+                    self.record_interface_component_types(assoc_type, self_adt, &mut seen);
+                },
+                DefKind::AssocFn => {
+                    let signature = self.tcx.fn_sig(*assoc_def_id).instantiate_identity();
+                    for input_or_output in signature.skip_binder().inputs_and_output {
+                        self.record_interface_component_types(input_or_output, self_adt, &mut seen);
+                    }
+                },
+                _ => {},
+            }
+        }
+
+        self.current_module = previous_module;
+    }
+
+    /// The widest module a trait impl's interface is usable from: the
+    /// narrower of the trait's visibility and the self type's visibility.
+    /// `Public` on both sides reaches the whole crate (and beyond), so the
+    /// crate root stands in as the caller module.
+    fn interface_scope_module(&self, trait_def_id: DefId, self_adt: Option<DefId>) -> DefId {
+        let trait_visibility = self.tcx.visibility(trait_def_id);
+        let self_visibility =
+            self_adt.map_or(Visibility::Public, |adt_did| self.tcx.visibility(adt_did));
+        match (trait_visibility, self_visibility) {
+            (Visibility::Restricted(trait_scope), Visibility::Restricted(self_scope)) => {
+                if self.tcx.is_descendant_of(trait_scope, self_scope) {
+                    trait_scope
+                } else {
+                    self_scope
+                }
+            },
+            (Visibility::Restricted(scope), Visibility::Public)
+            | (Visibility::Public, Visibility::Restricted(scope)) => scope,
+            (Visibility::Public, Visibility::Public) => CRATE_DEF_ID.to_def_id(),
+        }
+    }
+
+    /// Record every local ADT mentioned in `component_type` as used from the
+    /// current caller module. The impl's own self type is skipped: narrowing
+    /// the self type narrows the interface with it, so the interface imposes
+    /// no visibility floor on it.
+    fn record_interface_component_types(
+        &mut self,
+        component_type: ty::Ty<'tcx>,
+        self_adt: Option<DefId>,
+        seen: &mut HashSet<DefId>,
+    ) {
+        for arg in component_type.walk() {
+            if let Some(component) = arg.as_type()
+                && let ty::TyKind::Adt(adt_def, _) = component.kind()
+                && adt_def.did().is_local()
+                && Some(adt_def.did()) != self_adt
+                && seen.insert(adt_def.did())
+            {
+                self.push_site(adt_def.did());
+            }
+        }
+    }
+
     /// True when `field` is visible beyond `owning_module` — i.e. its
     /// visibility is `pub` or restricted to a scope wider than the type's own
     /// module. A module-private field caps the reach of its type and is not
@@ -222,6 +313,9 @@ impl<'tcx> Visitor<'tcx> for UseSiteCollector<'_, 'tcx> {
                 .tcx
                 .parent_module_from_def_id(item.owner_id.def_id)
                 .to_def_id();
+        }
+        if matches!(item.kind, ItemKind::Impl(..)) {
+            self.record_trait_impl_interface(item.owner_id.def_id);
         }
         walk_item(self, item);
         self.current_module = prev;
