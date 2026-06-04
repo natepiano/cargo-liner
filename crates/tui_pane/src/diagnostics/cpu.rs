@@ -14,6 +14,7 @@
 use std::collections::HashMap;
 #[cfg(target_os = "linux")]
 use std::collections::HashSet;
+use std::collections::VecDeque;
 #[cfg(target_os = "linux")]
 use std::process::Command;
 #[cfg(target_os = "macos")]
@@ -134,6 +135,36 @@ impl CpuSeverity {
     }
 }
 
+/// How many poll samples a [`RollingMean`] window averages.
+///
+/// A workload running in ~1 s bursts aliases against a 1 s poll cadence
+/// — the instantaneous sample swings wildly with phase alignment. At the
+/// 1 s cadence this window reads as the average over the last 5 s.
+pub const CPU_SMOOTHING_WINDOW_POLLS: usize = 5;
+
+/// Bounded rolling-mean window for utilization samples.
+///
+/// Damps single-poll spikes and the transient zeros the macOS GPU
+/// counter publishes mid-update. Used for the GPU row here and for the
+/// per-process CPU column in consumers' process lists.
+#[derive(Clone, Debug, Default)]
+pub struct RollingMean {
+    window: VecDeque<f32>,
+}
+
+impl RollingMean {
+    /// Fold `sample` into the window and return the new mean. The first
+    /// sample is the mean of one — no zero dilution.
+    pub fn push(&mut self, sample: f32) -> f32 {
+        self.window.push_back(sample);
+        if self.window.len() > CPU_SMOOTHING_WINDOW_POLLS {
+            self.window.pop_front();
+        }
+        let len = u16::try_from(self.window.len()).unwrap_or(u16::MAX);
+        self.window.iter().sum::<f32>() / f32::from(len)
+    }
+}
+
 /// Sysinfo-backed CPU/GPU sampler.
 ///
 /// Each [`poll`](Self::poll) refreshes the sysinfo [`System`], computes
@@ -144,6 +175,9 @@ impl CpuSeverity {
 pub struct CpuPoller {
     system:             System,
     last_breakdown_raw: CpuBreakdownRaw,
+    /// Rolling window over GPU samples; an unavailable poll leaves it
+    /// untouched rather than diluting the mean.
+    gpu_smoothing:      RollingMean,
     /// Persistent PDH query for GPU utilization (Windows only).
     #[cfg(target_os = "windows")]
     gpu_query:          Option<GpuQuery>,
@@ -168,6 +202,7 @@ impl CpuPoller {
         Self {
             system,
             last_breakdown_raw: read_cpu_breakdown_raw(),
+            gpu_smoothing: RollingMean::default(),
             #[cfg(target_os = "windows")]
             gpu_query: GpuQuery::new(),
             #[cfg(target_os = "linux")]
@@ -202,6 +237,8 @@ impl CpuPoller {
         let gpu_percent = read_gpu_percent().or_else(|| self.fdinfo_gpu.sample());
         #[cfg(not(any(target_os = "windows", target_os = "linux")))]
         let gpu_percent = read_gpu_percent();
+        let gpu_percent =
+            gpu_percent.map(|percent| cpu_percent(self.gpu_smoothing.push(f32::from(percent))));
 
         CpuUsage {
             total_percent,
@@ -426,13 +463,18 @@ const KERN_SUCCESS: i32 = 0;
 /// whose `PerformanceStatistics` dictionary reports a device utilization
 /// percentage. Replaces spawning `ioreg` on every poll.
 #[cfg(target_os = "macos")]
+#[allow(unsafe_code, reason = "IOKit FFI replaces the per-poll ioreg spawn")]
 fn read_gpu_percent() -> Option<u8> {
+    // SAFETY: the argument is a valid NUL-terminated C string the call
+    // copies into the returned matching dictionary.
     let matching = unsafe { IOServiceMatching(c"IOAccelerator".as_ptr()) }?;
     // `IOServiceGetMatchingServices` consumes one dictionary reference, so
     // hand it a second retain and let `matching` release the original.
     let matching = CFRetained::<CFDictionary>::from(&*matching);
 
     let mut services: io_iterator_t = 0;
+    // SAFETY: `services` is a valid out-param; the call consumes the
+    // `matching` reference handed to it.
     let result = unsafe {
         IOServiceGetMatchingServices(kIOMainPortDefault, Some(matching), &raw mut services)
     };
@@ -446,6 +488,8 @@ fn read_gpu_percent() -> Option<u8> {
         if accelerator == 0 {
             break;
         }
+        // SAFETY: `accelerator` is a live service handle from
+        // `IOIteratorNext`, released right below; the key outlives the call.
         let statistics = unsafe {
             IORegistryEntryCreateCFProperty(
                 accelerator,
@@ -475,18 +519,31 @@ fn read_gpu_percent() -> Option<u8> { linux_sysfs_gpu_percent().or_else(linux_nv
 fn read_gpu_percent() -> Option<u8> { None }
 
 #[cfg(target_os = "macos")]
+#[allow(
+    unsafe_code,
+    reason = "CoreFoundation dictionary FFI for the GPU statistics lookup"
+)]
 fn device_utilization_percent(statistics: &CFDictionary) -> Option<u8> {
     let key = CFString::from_static_str("Device Utilization %");
-    let value = unsafe { statistics.value(from_ref(&key).cast()) };
+    // SAFETY: the key pointer must target the `CFString` object itself, not
+    // the `CFRetained` wrapper — hence the explicit deref target; the
+    // returned pointer is borrowed from `statistics`, which outlives it.
+    let value = unsafe { statistics.value(from_ref::<CFString>(&key).cast()) };
     if value.is_null() {
         return None;
     }
+    // SAFETY: a non-null value out of a CF dictionary is a valid CF object;
+    // `downcast_ref` verifies the concrete type before any use.
     let number = unsafe { &*value.cast::<CFType>() }.downcast_ref::<CFNumber>()?;
     let percent = u64::try_from(number.as_i64()?).ok()?;
     Some(bounded_percent_u8(percent))
 }
 
 #[cfg(target_os = "macos")]
+#[allow(
+    unsafe_code,
+    reason = "mach host_statistics FFI for the system/user/idle tick split"
+)]
 fn macos_cpu_breakdown_raw() -> CpuBreakdownRaw {
     type Integer = i32;
     type Natural = u32;
@@ -527,6 +584,8 @@ fn macos_cpu_breakdown_raw() -> CpuBreakdownRaw {
         return CpuBreakdownRaw::default();
     };
 
+    // SAFETY: `info` is a writable buffer of exactly the size `count`
+    // reports in `Integer` units, per the `host_statistics` contract.
     let result = unsafe {
         host_statistics(
             mach_host_self(),
@@ -750,6 +809,10 @@ fn engine_busy_percent(busy_ns: u64, elapsed_ns: u128) -> Option<u8> {
 }
 
 #[cfg(target_os = "windows")]
+#[allow(
+    unsafe_code,
+    reason = "Win32 GetSystemTimes FFI for the system/user/idle tick split"
+)]
 fn windows_cpu_breakdown_raw() -> CpuBreakdownRaw {
     #[repr(C)]
     #[derive(Clone, Copy)]
@@ -844,6 +907,7 @@ struct PdhFmtCounterValueItem {
 }
 
 #[cfg(target_os = "windows")]
+#[allow(unsafe_code, reason = "PDH FFI for the GPU engine counters")]
 #[link(name = "pdh")]
 unsafe extern "system" {
     fn PdhOpenQueryW(data_source: *const u16, user_data: usize, query: *mut isize) -> u32;
@@ -879,6 +943,7 @@ struct GpuQuery {
 }
 
 #[cfg(target_os = "windows")]
+#[allow(unsafe_code, reason = "PDH FFI for the GPU engine counters")]
 impl GpuQuery {
     /// Open the query, add the wildcard counter, and prime the baseline
     /// sample. Returns `None` if PDH or the GPU counter is unavailable.
@@ -970,6 +1035,7 @@ impl GpuQuery {
 }
 
 #[cfg(target_os = "windows")]
+#[allow(unsafe_code, reason = "PDH FFI for the GPU engine counters")]
 impl Drop for GpuQuery {
     fn drop(&mut self) {
         // SAFETY: `self.query` was opened by PdhOpenQueryW and is closed once.
@@ -980,6 +1046,28 @@ impl Drop for GpuQuery {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rolling_mean_first_sample_is_undiluted() {
+        let mut mean = RollingMean::default();
+        assert!((mean.push(20.0) - 20.0).abs() < f32::EPSILON);
+        assert!((mean.push(10.0) - 15.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn rolling_mean_evicts_the_oldest_sample() {
+        let mut mean = RollingMean::default();
+        // Fill the window with zeros, then push spikes: once the window
+        // holds only the spikes, the zeros no longer drag the mean down.
+        for _ in 0..CPU_SMOOTHING_WINDOW_POLLS {
+            mean.push(0.0);
+        }
+        let mut value = 0.0;
+        for _ in 0..CPU_SMOOTHING_WINDOW_POLLS {
+            value = mean.push(50.0);
+        }
+        assert!((value - 50.0).abs() < f32::EPSILON);
+    }
 
     #[test]
     fn filled_cells_rounds_up_per_ten_percent_bucket() {

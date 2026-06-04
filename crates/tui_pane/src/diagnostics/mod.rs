@@ -10,12 +10,14 @@ mod constants;
 mod cpu;
 mod perf_log;
 
+pub use cpu::CPU_SMOOTHING_WINDOW_POLLS;
 pub use cpu::CpuBreakdown;
 pub use cpu::CpuCoreUsage;
 pub use cpu::CpuMonitor;
 pub use cpu::CpuPoller;
 pub use cpu::CpuSeverity;
 pub use cpu::CpuUsage;
+pub use cpu::RollingMean;
 pub use cpu::blank_bar_color;
 pub use cpu::filled_cells;
 pub use cpu::severity;

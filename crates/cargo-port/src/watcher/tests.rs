@@ -215,10 +215,11 @@ impl Watcher for RecordingWatcher {
 /// `~/.cargo` (or `$CARGO_HOME`) when the cargo home is already
 /// inside one of the recursive watch roots. macOS `FSEvents`
 /// tracks one mode per path, so a redundant `NonRecursive` call
-/// would clobber the recursive subscription — the failure mode
+/// would overwrite the recursive subscription — the failure mode
 /// that originally killed event delivery for everything under
 /// `~/rust`.
 #[test]
+#[allow(unsafe_code, reason = "env-var mutation is unsafe in edition 2024")]
 fn cargo_home_watch_skipped_when_covered_by_recursive_root() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let cargo_home = tmp.path().join(".cargo");
@@ -235,6 +236,7 @@ fn cargo_home_watch_skipped_when_covered_by_recursive_root() {
         std::env::set_var("CARGO_HOME", cargo_home.as_os_str());
     }
     register_cargo_home_watch(&mut watcher, &registered_roots);
+    // SAFETY: same serial-test reasoning as the `set_var` above.
     unsafe { std::env::remove_var("CARGO_HOME") };
 
     let recorded: Vec<(PathBuf, RecursiveMode)> = watched_handle
@@ -410,6 +412,7 @@ fn guarded_watcher_rejects_overlap_with_recursive_root() {
 /// new `watcher.watch()` call to any helper invoked here will fail
 /// this test if it overlaps an existing registration.
 #[test]
+#[allow(unsafe_code, reason = "env-var mutation is unsafe in edition 2024")]
 fn startup_registration_introduces_no_overlapping_watches() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root_a = tmp.path().join("rust");
@@ -440,6 +443,7 @@ fn startup_registration_introduces_no_overlapping_watches() {
         std::env::set_var("CARGO_HOME", cargo_home.as_os_str());
     }
     register_cargo_home_watch(&mut guard, &registered_roots);
+    // SAFETY: same serial-test reasoning as the `set_var` above.
     unsafe { std::env::remove_var("CARGO_HOME") };
 
     // Expected registered set: the two recursive roots plus the

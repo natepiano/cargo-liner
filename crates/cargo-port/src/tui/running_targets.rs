@@ -8,7 +8,6 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::collections::VecDeque;
 use std::env;
 use std::path::Component;
 use std::path::Path;
@@ -24,16 +23,10 @@ use sysinfo::ProcessesToUpdate;
 use sysinfo::Signal;
 use sysinfo::System;
 use sysinfo::UpdateKind;
+use tui_pane::RollingMean;
 
 use super::panes::RunTargetKind;
 use crate::project::AbsolutePath;
-
-/// Poll samples averaged into the CPU column. `process.cpu_usage()` is the
-/// average over the window between two refreshes, and a process working in
-/// ~1 s bursts aliases against the 1 s poll cadence — the instantaneous
-/// sample swings wildly with phase alignment. At the 1 s cadence this window
-/// reads as the average over the last 5 s.
-const CPU_SMOOTHING_WINDOW_POLLS: usize = 5;
 
 /// Ceiling on the ancestor walk, against parent-link cycles from PID reuse.
 /// Real process trees are nowhere near this deep.
@@ -53,11 +46,11 @@ pub(crate) struct RunningTargetsPoller {
     /// ordering: insert on first sight, retain only live PIDs after each
     /// poll, and evict on [`Self::drop_instances`].
     first_seen:      HashMap<u32, Instant>,
-    /// Each tracked PID's last [`CPU_SMOOTHING_WINDOW_POLLS`] CPU samples;
+    /// Each tracked PID's [`RollingMean`] window over CPU samples;
     /// instances carry the mean. Same lifecycle as `first_seen`: fed during
     /// the poll loop, retained against live PIDs, evicted on
     /// [`Self::drop_instances`].
-    cpu_history:     HashMap<u32, VecDeque<f32>>,
+    cpu_history:     HashMap<u32, RollingMean>,
 }
 
 #[derive(Default)]
@@ -589,18 +582,10 @@ fn shown_parent(
     links(pid)?.parent
 }
 
-/// Fold this poll's CPU sample into `pid`'s history and return the mean of
-/// the window — the value the Running list's CPU column shows. A new PID's
-/// first reading is the raw sample (the mean of one), not a zero-diluted
-/// average.
-fn smoothed_cpu(history: &mut HashMap<u32, VecDeque<f32>>, pid: u32, sample: f32) -> f32 {
-    let window = history.entry(pid).or_default();
-    window.push_back(sample);
-    if window.len() > CPU_SMOOTHING_WINDOW_POLLS {
-        window.pop_front();
-    }
-    let len = u16::try_from(window.len()).unwrap_or(u16::MAX);
-    window.iter().sum::<f32>() / f32::from(len)
+/// Fold this poll's CPU sample into `pid`'s [`RollingMean`] window and
+/// return the mean — the value the Running list's CPU column shows.
+fn smoothed_cpu(history: &mut HashMap<u32, RollingMean>, pid: u32, sample: f32) -> f32 {
+    history.entry(pid).or_default().push(sample)
 }
 
 /// Append one process's metrics under `key`, recording the owning member
@@ -1064,16 +1049,14 @@ mod tests {
         let mut history = HashMap::new();
         // Fill the window with zeros, then push spikes: once the window
         // holds only the spikes, the zeros no longer drag the mean down.
-        for _ in 0..CPU_SMOOTHING_WINDOW_POLLS {
+        for _ in 0..tui_pane::CPU_SMOOTHING_WINDOW_POLLS {
             smoothed_cpu(&mut history, 7, 0.0);
         }
         let mut mean = 0.0;
-        for _ in 0..CPU_SMOOTHING_WINDOW_POLLS {
+        for _ in 0..tui_pane::CPU_SMOOTHING_WINDOW_POLLS {
             mean = smoothed_cpu(&mut history, 7, 50.0);
         }
         assert!((mean - 50.0).abs() < f32::EPSILON);
-        let window = history.get(&7).expect("window exists");
-        assert_eq!(window.len(), CPU_SMOOTHING_WINDOW_POLLS);
     }
 
     #[test]

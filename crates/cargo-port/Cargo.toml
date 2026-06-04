@@ -64,6 +64,7 @@ allow_attributes_without_reason = "deny"
 expect_used                     = "deny"
 panic                           = "deny"
 self_named_module_files         = "deny" # use module/mod.rs (directory form) when a module has submodules
+undocumented_unsafe_blocks      = "deny" # every unsafe block carries a `// SAFETY:` justification
 unreachable                     = "deny"
 unwrap_used                     = "deny"
 
@@ -79,3 +80,4 @@ redundant_pub_crate     = "allow"
 
 [workspace.lints.rust]
 missing_docs = "deny"
+unsafe_code  = "deny" # FFI-only; opt back in per item with a reasoned allow
