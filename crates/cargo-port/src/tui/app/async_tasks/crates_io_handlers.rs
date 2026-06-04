@@ -8,6 +8,20 @@ impl App {
     /// as fetches enqueue and finishes when the tracker drains. Mirrors
     /// the GitHub repo-fetch lifecycle.
     pub(super) fn handle_crates_io_fetch_queued(&mut self, name: String) {
+        // Grow the crates.io denominator for as long as the startup panel
+        // is open — mirrors `handle_repo_fetch_queued`. A fetch queued
+        // outside the upfront plan (a submodule, the priority fetch, a
+        // recovery refetch) joins the row, and a re-fetch of an
+        // already-seen name un-marks it, so the row cannot read done
+        // while this fetch is in flight. Once the panel has closed, the
+        // fetch only drives the steady-state toast.
+        if self.startup.complete_at.is_none() {
+            self.startup.crates_io.expected.insert(name.clone());
+            self.startup.crates_io.seen.remove(&name);
+            // The name is now expected-but-unseen, so any earlier row
+            // completion no longer holds.
+            self.startup.crates_io.complete_at = None;
+        }
         self.net
             .crates_io
             .running_mut()

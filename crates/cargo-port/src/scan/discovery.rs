@@ -88,6 +88,26 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
         emit_git_info(tx, &abs);
     }
 
+    // Submodules are read up front (local, fast — .gitmodules + one git
+    // ls-tree) so every crates.io fetch this task will issue — the
+    // project's own and each submodule's — registers via
+    // `CratesIoFetchQueued` before the first one completes. The startup
+    // panel's crates.io row can then never read done while a fetch from
+    // this task is still pending. (`enrich` re-sends Queued for its own
+    // fetch; registration is idempotent.)
+    let submodules = if repo_presence.is_in_repo() {
+        project::get_submodules(abs_path)
+    } else {
+        Vec::new()
+    };
+    for sub in &submodules {
+        if let Some(name) = sub.crates_io_name() {
+            let _ = tx.send(BackgroundMsg::CratesIoFetchQueued {
+                name: name.to_string(),
+            });
+        }
+    }
+
     // Crates.io version + downloads (network)
     if let Some(name) = project_name {
         let _ = tx.send(BackgroundMsg::CratesIoFetchQueued {
@@ -108,22 +128,18 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
         });
     }
 
-    // Submodules (local, fast — reads .gitmodules + one git ls-tree).
     // Send the Submodules message first so `at_path_mut` can resolve each
     // submodule before its per-entry enrichment messages arrive. Each
     // submodule's `enrich` call emits its own disk-usage message — that
     // path is *not* covered by the initial batch scan, so the per-submodule
     // singular `BackgroundMsg::DiskUsage` is the only writer for it.
-    if repo_presence.is_in_repo() {
-        let submodules = project::get_submodules(abs_path);
-        if !submodules.is_empty() {
-            let _ = tx.send(BackgroundMsg::Submodules {
-                path:       abs,
-                submodules: submodules.clone(),
-            });
-            for sub in &submodules {
-                enrichment::enrich(sub, tx, fetch_context);
-            }
+    if !submodules.is_empty() {
+        let _ = tx.send(BackgroundMsg::Submodules {
+            path:       abs,
+            submodules: submodules.clone(),
+        });
+        for sub in &submodules {
+            enrichment::enrich(sub, tx, fetch_context);
         }
     }
 

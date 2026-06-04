@@ -20,7 +20,7 @@ And if you're old school, the information is dense and informative. And fast. Th
 - **Navigate quickly** - fuzzy search, vim-style paging, keymaps, tab traversal, global shortcuts, and selection copy
 - **Themes** - light/dark/high-contrast variants, and hot-reload - there's not a lot of themes here yet, but you know, PR's welcome
 
-The initial startup scan is async and fun to watch. If you have a lot of projects crates.io may take the longest to scan at startup but it doesn't stop you from using cargo-port while this is happening.
+The initial startup scan runs async and is fun to watch. 
 ## Try me
 
 Build the current `main` branch:

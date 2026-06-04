@@ -167,22 +167,14 @@ impl App {
         // Repo's GitHub set accrues as git remotes resolve; it renders
         // `Waiting` until git completes and the denominator stabilizes.
         self.startup.repo.reset_growing();
-        // crates.io fetches are dispatched for every publishable crate the
-        // moment background services register, so the target set is known
-        // upfront — seed a stable denominator (empty target list omits the
-        // row). `seen` is marked as each `CratesIoFetchComplete` arrives.
-        let crates_io_expected: HashSet<String> = self
-            .collect_publishable_crates_io_targets()
-            .into_iter()
-            .map(|(_, name)| name)
-            .collect();
-        if crates_io_expected.is_empty() {
-            self.startup.crates_io.reset_unknown();
-        } else {
-            self.startup
-                .crates_io
-                .reset_with_expected(crates_io_expected);
-        }
+        // crates.io is seeded and dispatched together by
+        // `schedule_startup_project_details`: one fetch plan both seeds
+        // the row's denominator and drives the dispatcher, so the row
+        // cannot read done while a planned query is still pending. Until
+        // that runs the row stays omitted; fetches queued outside the
+        // plan (submodules, the priority fetch) join the denominator in
+        // `handle_crates_io_fetch_queued`.
+        self.startup.crates_io.reset_unknown();
         // The "Lint history" row tracks the off-thread history load: seed it
         // with every Rust project whose history will be read from disk — the
         // same set `refresh_lint_runs_from_disk` reports back via

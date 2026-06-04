@@ -1081,6 +1081,16 @@ impl HttpClient {
             Ok(response) => response,
             Err(error) => return (None, classify_network_error(ServiceKind::CratesIo, &error)),
         };
+        // Surface a 429 as a rate-limit signal instead of a silent miss:
+        // the service state machine pauses, probes, and refetches the
+        // missing versions on recovery. Without this the body parse below
+        // yields no version while reporting the service reachable.
+        if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return (
+                None,
+                Some(ServiceSignal::RateLimited(ServiceKind::CratesIo)),
+            );
+        }
         let body = match response.bytes().await {
             Ok(body) => body,
             Err(error) => {

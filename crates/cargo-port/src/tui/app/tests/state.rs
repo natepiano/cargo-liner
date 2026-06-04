@@ -3149,6 +3149,68 @@ fn startup_late_repo_fetch_reopens_github_row() {
     );
 }
 
+/// A crates.io fetch queued while the startup panel is open joins the
+/// denominator, and a re-fetch of an already-seen name un-marks it — so
+/// the row cannot read done while any registered fetch is in flight.
+#[test]
+fn startup_late_crates_io_fetch_reopens_row() {
+    let project_a = make_project(Some("a"), "~/never-real/a");
+    let mut app = make_app(std::slice::from_ref(&project_a));
+    app.scan.state.phase = ScanPhase::Complete;
+    app.initialize_startup_phase_tracker();
+
+    // Seed one expected crate and complete it — the row is done.
+    app.startup.crates_io.expected = Denominator::Stable(HashSet::from(["serde".to_string()]));
+    app.startup
+        .crates_io
+        .stamp_first_seen(std::time::Instant::now());
+    app.handle_bg_msg(BackgroundMsg::CratesIoFetchComplete {
+        name: "serde".to_string(),
+    });
+    assert!(
+        app.startup.crates_io.complete_at.is_some(),
+        "row completes once the seeded fetch reports"
+    );
+
+    // A re-fetch of the same name un-marks it and reopens the row.
+    app.handle_bg_msg(BackgroundMsg::CratesIoFetchQueued {
+        name: "serde".to_string(),
+    });
+    assert!(
+        !app.startup.crates_io.seen.contains("serde"),
+        "a queued re-fetch un-marks the name"
+    );
+    assert!(
+        app.startup.crates_io.complete_at.is_none(),
+        "a queued re-fetch reopens the completed row"
+    );
+
+    // A fetch for a name outside the plan joins the denominator.
+    app.handle_bg_msg(BackgroundMsg::CratesIoFetchQueued {
+        name: "tokio".to_string(),
+    });
+    assert!(
+        app.startup
+            .crates_io
+            .expected
+            .keys()
+            .is_some_and(|expected| expected.contains("tokio")),
+        "a late fetch joins the crates.io denominator"
+    );
+
+    // Completing both re-completes the row.
+    app.handle_bg_msg(BackgroundMsg::CratesIoFetchComplete {
+        name: "serde".to_string(),
+    });
+    app.handle_bg_msg(BackgroundMsg::CratesIoFetchComplete {
+        name: "tokio".to_string(),
+    });
+    assert!(
+        app.startup.crates_io.complete_at.is_some(),
+        "completing the late fetches re-completes the row"
+    );
+}
+
 // ── network-toast stage (startup-owned vs steady state) ────────────
 
 /// The network-toast stage is a three-state machine: it starts `StartupOwned`,
