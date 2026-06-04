@@ -10,6 +10,8 @@
 
 mod running_subpane;
 
+use std::collections::HashSet;
+
 use ratatui::Frame;
 use ratatui::layout::Alignment;
 use ratatui::layout::Constraint;
@@ -29,6 +31,7 @@ use running_subpane::RunningSubpaneRender;
 pub use running_subpane::build_running_list;
 pub use running_subpane::build_running_rows;
 pub use running_subpane::format_start_age;
+pub use running_subpane::outline_subtree_len;
 use running_subpane::render_running_subpane;
 pub use running_subpane::resolve_kill_request;
 use tui_pane::PaneFocusState;
@@ -194,7 +197,12 @@ fn render_targets_with_data(
 ) {
     let focus = pane.focus.state;
     let entries = panes::build_target_list_from_data(data);
-    let running_list = build_running_list(running_rows, pane.cargo_group());
+    // Drop expanded-outline state for PIDs that left the list, so a
+    // reused PID starts collapsed.
+    let live: HashSet<u32> = running_rows.iter().map(|row| row.pid).collect();
+    pane.retain_expanded_parents(&live);
+    let running_list =
+        build_running_list(running_rows, pane.cargo_group(), pane.expanded_parents());
     let table_len = entries.len();
 
     pane.viewport.set_len(table_len + running_list.len());
@@ -232,6 +240,7 @@ fn render_targets_with_data(
                 rows: running_rows,
                 list: &running_list,
                 cargo_group: pane.cargo_group(),
+                expanded_parents: pane.expanded_parents(),
                 viewport: &pane.viewport,
                 focus,
                 table_len,

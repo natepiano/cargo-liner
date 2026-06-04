@@ -10,6 +10,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::Path;
 use std::rc::Rc;
 
@@ -371,10 +372,15 @@ pub struct TargetsPane {
     /// Expansion state of the Running list's `cargo` group; `Enter` on
     /// its header row toggles it.
     cargo_group:        CargoGroup,
+    /// Outline parents (Running rows with sub-process children) the user
+    /// has expanded; absent means collapsed (the default). Retained
+    /// against the live row set each frame so a reused PID starts
+    /// collapsed.
+    expanded_parents:   HashSet<u32>,
 }
 
 impl TargetsPane {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             viewport:           Viewport::new(),
             focus:              RenderFocus::inactive(),
@@ -382,6 +388,7 @@ impl TargetsPane {
             row_rects:          Vec::new(),
             running_cursor_pid: None,
             cargo_group:        CargoGroup::Collapsed,
+            expanded_parents:   HashSet::new(),
         }
     }
 
@@ -404,6 +411,23 @@ impl TargetsPane {
     pub const fn cargo_group(&self) -> CargoGroup { self.cargo_group }
 
     pub const fn toggle_cargo_group(&mut self) { self.cargo_group = self.cargo_group.toggled(); }
+
+    pub const fn expanded_parents(&self) -> &HashSet<u32> { &self.expanded_parents }
+
+    /// Flip one outline parent between expanded and collapsed.
+    pub fn toggle_expanded_parent(&mut self, pid: u32) {
+        if !self.expanded_parents.insert(pid) {
+            self.expanded_parents.remove(&pid);
+        }
+    }
+
+    pub fn collapse_parent(&mut self, pid: u32) { self.expanded_parents.remove(&pid); }
+
+    /// Drop expanded-outline entries whose PID left the Running list, so
+    /// a reused PID starts collapsed (the default).
+    pub fn retain_expanded_parents(&mut self, live: &HashSet<u32>) {
+        self.expanded_parents.retain(|pid| live.contains(pid));
+    }
 }
 
 impl Hittable<HoverTarget> for TargetsPane {

@@ -133,6 +133,7 @@ pub(super) use targets::RunningListRow;
 pub(super) use targets::build_running_list;
 pub(super) use targets::build_running_rows;
 pub(super) use targets::format_start_age;
+pub(super) use targets::outline_subtree_len;
 pub(super) use targets::resolve_kill_request;
 use tui_pane::FocusedPane;
 pub(super) use widths::compute_project_list_widths;

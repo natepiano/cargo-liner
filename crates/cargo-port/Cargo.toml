@@ -14,6 +14,10 @@ version     = "0.0.4-dev"
 members  = ["tui_pane"]
 resolver = "3"
 
+[workspace.dependencies]
+objc2-core-foundation = { version = "0.3.2", default-features = false }
+objc2-io-kit          = { version = "0.3.2", default-features = false }
+
 [dependencies]
 ansi-to-tui          = "8.0.1"
 anyhow               = "1"

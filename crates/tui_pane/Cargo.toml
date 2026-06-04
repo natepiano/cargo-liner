@@ -32,5 +32,11 @@ tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 unicode-width      = "0.2.2"
 
+# Already in the tree via sysinfo with these exact features, so the direct
+# dependency adds no compile units; used for the IOKit GPU sampler.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-foundation = { workspace = true, features = ["CFBase", "CFDictionary", "CFNumber", "CFString", "std"] }
+objc2-io-kit          = { workspace = true, features = ["libc", "std"] }
+
 [dev-dependencies]
 # none in Phase 1; later phases add only std + the crate's own types.

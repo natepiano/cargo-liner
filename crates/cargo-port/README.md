@@ -19,6 +19,8 @@ And if you're old school, the information is dense and informative. And fast. Th
 - **Keep context visible** - inspect package metadata, target directories, language stats, worktree summaries, remotes, CI jobs, and pull request rows without leaving the TUI
 - **Navigate quickly** - fuzzy search, vim-style paging, keymaps, tab traversal, global shortcuts, and selection copy
 - **Themes** - light/dark/high-contrast variants, and hot-reload - there's not a lot of themes here yet, but you know, PR's welcome
+
+The initial startup scan is async and fun to watch. If you have a lot of projects crates.io may take the longest to scan at startup but it doesn't stop you from using cargo-port while this is happening.
 ## Try me
 
 Build the current `main` branch:
@@ -162,21 +164,32 @@ GitHub Actions runs are cached to disk so the dashboard stays useful offline
 
 1. CI run count and selected branch. You can filter for the current branch or show all ci runs.
 2. Commit summary for each run. 
-3. Branch and timestamp.
+3. Branch and timestamp. 'Nuff said.
 4. Job-level status columns. These are constructed from the ci runs themselves. If there are too many columns it will show the ones that have the longest durations and collapse the ones that don't. 
    
-   I didn't choose to implement side scrolling. this may not work for you but you can press enter on any run and it will open a browser to take you to that run in GitHub where you can see everything you want to see.
+   I didn't choose to implement side scrolling. The chosen columns may not be helpful to you as a result but you can press enter on any run and it will open a browser to take you to that run in GitHub where you can see everything you want to see.
 
 ## Navigation
 
 Press `?` in the TUI to open the global shortcuts overlay.
+<img src="assets/overlay-global-shortcuts.png" alt="Numbered CI runs pane" width="50%">
 
-- Use `/` to fuzzy-find projects, packages, examples, benches, binaries, and tests
-- Use `Tab` to move between panes; optional edge-scroll can advance focus when a list hits its top or bottom
-- Enable vim navigation with `navigation_keys = true` for `hjkl` movement in non-text panes
-- Use chord keymaps for multi-key commands and `y` to copy the selected pane row's path, URL, or field value when available
-- Open projects, config, keymaps, GitHub URLs, crates.io pages, and terminal sessions from the selected context
-
+- Next and Previous are self explanatory
+- **Clean** does a cargo clean (with a modal yes/no prompt) on a selected rust project. If you select a worktree checkout, it will clean all targets.
+- **Dismiss overlay / output**
+	- When you delete a project or a worktree checkout, that row doesn't immediately disappear in the project list - it outputs with a strikethrough and you can select it and hit x to cancel it.
+	- Same goes for toasts that pop up in the bottom right corner
+- **Open finder** - not a macos thing - this is a fuzzy search of any project or target. Let's you jump directly to it. Slick.
+- **Open in editor** - configure your editor and then press this shortcut to open the currently selected project in it.
+- **Open keymap viewer** - you can remap all shortcuts except VIM - maybe some day VIM, too.
+- **Open settings** - just as it says.
+- **Quit** - don't accidentally hit q if you don't want to quit :) - fortunately cargo-port starts fast so quit and restart all you want.
+- **Rescan projects** - that's what it does.
+- **Restart** - I have this in their for debugging - the make a change, install, restart loop. I don't know if this will be useful to you but it is why Rescan is on ctrl-r.
+- **Show global shortcuts** - this overlay
+- **Show sccache stats** - I mean - you could just run `sccache --show-stats` but hey, `S` is faster. Pure plating - you choose the metal.
+## Keymap Viewer
+## Settings
 ## GitHub, CI, and PRs
 
 

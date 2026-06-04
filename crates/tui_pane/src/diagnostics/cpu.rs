@@ -14,8 +14,10 @@
 use std::collections::HashMap;
 #[cfg(target_os = "linux")]
 use std::collections::HashSet;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(target_os = "linux")]
 use std::process::Command;
+#[cfg(target_os = "macos")]
+use std::ptr::from_ref;
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -25,6 +27,32 @@ use std::time::Instant;
 use crossbeam_channel::Receiver;
 use crossbeam_channel::RecvTimeoutError;
 use crossbeam_channel::Sender;
+#[cfg(target_os = "macos")]
+use objc2_core_foundation::CFDictionary;
+#[cfg(target_os = "macos")]
+use objc2_core_foundation::CFNumber;
+#[cfg(target_os = "macos")]
+use objc2_core_foundation::CFRetained;
+#[cfg(target_os = "macos")]
+use objc2_core_foundation::CFString;
+#[cfg(target_os = "macos")]
+use objc2_core_foundation::CFType;
+#[cfg(target_os = "macos")]
+use objc2_core_foundation::kCFAllocatorDefault;
+#[cfg(target_os = "macos")]
+use objc2_io_kit::IOIteratorNext;
+#[cfg(target_os = "macos")]
+use objc2_io_kit::IOObjectRelease;
+#[cfg(target_os = "macos")]
+use objc2_io_kit::IORegistryEntryCreateCFProperty;
+#[cfg(target_os = "macos")]
+use objc2_io_kit::IOServiceGetMatchingServices;
+#[cfg(target_os = "macos")]
+use objc2_io_kit::IOServiceMatching;
+#[cfg(target_os = "macos")]
+use objc2_io_kit::io_iterator_t;
+#[cfg(target_os = "macos")]
+use objc2_io_kit::kIOMainPortDefault;
 use ratatui::style::Color;
 use sysinfo::CpuRefreshKind;
 use sysinfo::RefreshKind;
@@ -390,16 +418,53 @@ fn read_cpu_breakdown_raw() -> CpuBreakdownRaw { windows_cpu_breakdown_raw() }
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn read_cpu_breakdown_raw() -> CpuBreakdownRaw { CpuBreakdownRaw::default() }
 
+/// `kern_return_t` success code shared by the mach and `IOKit` calls below.
+#[cfg(target_os = "macos")]
+const KERN_SUCCESS: i32 = 0;
+
+/// Query the I/O Registry directly for the first `IOAccelerator` service
+/// whose `PerformanceStatistics` dictionary reports a device utilization
+/// percentage. Replaces spawning `ioreg` on every poll.
 #[cfg(target_os = "macos")]
 fn read_gpu_percent() -> Option<u8> {
-    let output = Command::new("ioreg")
-        .args(["-r", "-d", "1", "-w0", "-c", "IOAccelerator"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
+    let matching = unsafe { IOServiceMatching(c"IOAccelerator".as_ptr()) }?;
+    // `IOServiceGetMatchingServices` consumes one dictionary reference, so
+    // hand it a second retain and let `matching` release the original.
+    let matching = CFRetained::<CFDictionary>::from(&*matching);
+
+    let mut services: io_iterator_t = 0;
+    let result = unsafe {
+        IOServiceGetMatchingServices(kIOMainPortDefault, Some(matching), &raw mut services)
+    };
+    if result != KERN_SUCCESS {
         return None;
     }
-    parse_gpu_percent(&String::from_utf8_lossy(&output.stdout))
+
+    let mut gpu_percent = None;
+    loop {
+        let accelerator = IOIteratorNext(services);
+        if accelerator == 0 {
+            break;
+        }
+        let statistics = unsafe {
+            IORegistryEntryCreateCFProperty(
+                accelerator,
+                Some(&CFString::from_static_str("PerformanceStatistics")),
+                kCFAllocatorDefault,
+                0,
+            )
+        };
+        IOObjectRelease(accelerator);
+        if let Some(statistics) = statistics
+            && let Ok(statistics) = statistics.downcast::<CFDictionary>()
+            && let Some(percent) = device_utilization_percent(&statistics)
+        {
+            gpu_percent = Some(percent);
+            break;
+        }
+    }
+    IOObjectRelease(services);
+    gpu_percent
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -410,14 +475,15 @@ fn read_gpu_percent() -> Option<u8> { linux_sysfs_gpu_percent().or_else(linux_nv
 fn read_gpu_percent() -> Option<u8> { None }
 
 #[cfg(target_os = "macos")]
-fn parse_gpu_percent(output: &str) -> Option<u8> {
-    let needle = "\"Device Utilization %\"=";
-    let after = output.split_once(needle)?.1.trim_start();
-    let digits = after
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect::<String>();
-    digits.parse::<u8>().ok().map(|value| value.min(100))
+fn device_utilization_percent(statistics: &CFDictionary) -> Option<u8> {
+    let key = CFString::from_static_str("Device Utilization %");
+    let value = unsafe { statistics.value(from_ref(&key).cast()) };
+    if value.is_null() {
+        return None;
+    }
+    let number = unsafe { &*value.cast::<CFType>() }.downcast_ref::<CFNumber>()?;
+    let percent = u64::try_from(number.as_i64()?).ok()?;
+    Some(bounded_percent_u8(percent))
 }
 
 #[cfg(target_os = "macos")]
@@ -435,7 +501,6 @@ fn macos_cpu_breakdown_raw() -> CpuBreakdownRaw {
     const CPU_STATE_IDLE: usize = 2;
     const CPU_STATE_MAX: usize = 4;
     const HOST_CPU_LOAD_INFO: HostFlavor = 3;
-    const KERN_SUCCESS: KernReturn = 0;
 
     #[repr(C)]
     struct HostCpuLoadInfo {
@@ -923,14 +988,6 @@ mod tests {
         assert_eq!(filled_cells(10), 1);
         assert_eq!(filled_cells(11), 2);
         assert_eq!(filled_cells(100), 10);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn parse_gpu_percent_finds_device_utilization() {
-        let input =
-            r#""PerformanceStatistics" = {"Renderer Utilization %"=10,"Device Utilization %"=42}"#;
-        assert_eq!(parse_gpu_percent(input), Some(42));
     }
 
     #[cfg(target_os = "linux")]
