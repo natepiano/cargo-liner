@@ -202,11 +202,13 @@ fn focused_app_panes_render_expected_pane_action_labels() {
         (AppPaneId::Git, &["activate"], |app| {
             app.panes.git.set_content(GitData::default());
         }),
-        // Kill is gated on the Running-row anchor: hidden while the
-        // highlight is on a table row, shown once it sits on a Running
-        // row (the anchor pid is `Some` exactly then).
-        (AppPaneId::Targets, &["run", "release"], |_| {}),
-        (AppPaneId::Targets, &["run", "release", "kill"], |app| {
+        // The targets shortcuts split by highlight zone: run/release
+        // show on table rows (Kill hidden), Kill shows on Running rows
+        // (run/release hidden — the anchor pid is `Some` exactly then).
+        (AppPaneId::Targets, &["run", "release"], |app| {
+            app.panes.targets.set_content(targets_data_with_binary());
+        }),
+        (AppPaneId::Targets, &["kill"], |app| {
             app.panes.targets.set_running_cursor_pid(Some(4242));
         }),
         (AppPaneId::Lints, &["open", "del history"], |_| {}),
@@ -389,6 +391,21 @@ fn lints_data_with_runs(count: usize) -> LintsData {
     }
 }
 
+fn targets_data_with_binary() -> TargetsData {
+    TargetsData {
+        binaries: vec![crate::tui::panes::TargetEntry {
+            name:              "demo".to_string(),
+            display_name:      "demo".to_string(),
+            kind:              crate::tui::panes::RunTargetKind::Binary,
+            source:            crate::tui::panes::TargetSource::Workspace,
+            src_path:          crate::project::AbsolutePath::from("/tmp/demo/src/main.rs"),
+            required_features: Vec::new(),
+        }],
+        examples: Vec::new(),
+        benches:  Vec::new(),
+    }
+}
+
 #[test]
 fn ci_runs_activate_visibility_hidden_at_eol() {
     // CiRuns `pane.visibility(Activate, ctx)` returns
@@ -433,7 +450,8 @@ fn targets_kill_visibility_hidden_without_running_anchor() {
     // `running_cursor_pid` is `None` whenever the highlight is on a
     // table row (or no Running rows exist), so Kill drops from the bar.
     let project = super::make_project(Some("demo"), "~/demo");
-    let app = make_app(&[project]);
+    let mut app = make_app(&[project]);
+    app.panes.targets.set_content(targets_data_with_binary());
 
     let pane = TargetsPane;
     assert_eq!(
@@ -444,7 +462,12 @@ fn targets_kill_visibility_hidden_without_running_anchor() {
     assert_eq!(
         pane.visibility(TargetsAction::Activate, &app),
         Visibility::Visible,
-        "Activate stays Visible regardless of the Running anchor",
+        "Activate is Visible while the highlight is on a table row",
+    );
+    assert_eq!(
+        pane.visibility(TargetsAction::ReleaseBuild, &app),
+        Visibility::Visible,
+        "ReleaseBuild is Visible while the highlight is on a table row",
     );
 }
 
@@ -459,6 +482,31 @@ fn targets_kill_visibility_visible_with_running_anchor() {
         pane.visibility(TargetsAction::Kill, &app),
         Visibility::Visible,
         "Kill is Visible while the highlight sits on a Running row",
+    );
+}
+
+#[test]
+fn targets_run_visibility_hidden_in_the_running_list() {
+    // The run shortcuts belong to the targets table: a highlight past
+    // the table's rows sits in the Running list, where only Kill
+    // applies.
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+    app.panes.targets.set_content(targets_data_with_binary());
+    let table_len = targets_data_with_binary().target_count();
+    app.panes.targets.viewport.set_len(table_len + 1);
+    app.panes.targets.viewport.set_pos(table_len);
+
+    let pane = TargetsPane;
+    assert_eq!(
+        pane.visibility(TargetsAction::Activate, &app),
+        Visibility::Hidden,
+        "Activate must be Hidden while the highlight is in the Running list",
+    );
+    assert_eq!(
+        pane.visibility(TargetsAction::ReleaseBuild, &app),
+        Visibility::Hidden,
+        "ReleaseBuild must be Hidden while the highlight is in the Running list",
     );
 }
 
@@ -1381,18 +1429,7 @@ fn shift_tab_skips_unavailable_panes_in_reverse() {
 fn output_active_excludes_diagnostics_and_reaches_output() {
     let project = super::make_project(Some("demo"), "~/demo");
     let mut app = make_app(&[project]);
-    app.panes.targets.set_content(TargetsData {
-        binaries: vec![crate::tui::panes::TargetEntry {
-            name:              "demo".to_string(),
-            display_name:      "demo".to_string(),
-            kind:              crate::tui::panes::RunTargetKind::Binary,
-            source:            crate::tui::panes::TargetSource::Workspace,
-            src_path:          crate::project::AbsolutePath::from("/tmp/demo/src/main.rs"),
-            required_features: Vec::new(),
-        }],
-        examples: Vec::new(),
-        benches:  Vec::new(),
-    });
+    app.panes.targets.set_content(targets_data_with_binary());
     app.lint.set_content(lints_data_with_runs(SINGLE_RUN_COUNT));
     app.ci.set_content(ci_data_with_runs(SINGLE_RUN_COUNT));
     app.inflight.example_output_mut().push("line".to_string());

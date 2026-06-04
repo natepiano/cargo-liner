@@ -85,7 +85,17 @@ impl CpuSelectableRow {
     }
 }
 
-fn cpu_bar_line(percent: u8, cpu_cfg: &CpuConfig) -> Line<'static> {
+/// One scrolling core row: the usage bar with the 1-based core number
+/// embedded in the bar's leftmost cells, right-aligned to `number_width` and
+/// followed by a one-cell margin before the block glyphs. Digits render in
+/// the default text color; the fill behind the number and margin is drawn as
+/// background shading, so the bar still spans its full width.
+fn cpu_bar_line(
+    core_number: usize,
+    number_width: usize,
+    percent: u8,
+    cpu_cfg: &CpuConfig,
+) -> Line<'static> {
     let filled = tui_pane::cpu_filled_cells(percent);
     let severity = tui_pane::cpu_severity(
         percent,
@@ -93,14 +103,29 @@ fn cpu_bar_line(percent: u8, cpu_cfg: &CpuConfig) -> Line<'static> {
         cpu_cfg.yellow_max_percent,
     )
     .color();
-    let filled_span = Span::styled("█".repeat(filled), Style::default().fg(severity));
+    let number_text = format!("{core_number:>number_width$} ");
+    let (number_on_filled, number_past_fill) = number_text.split_at(filled.min(number_text.len()));
+    let number_filled_span = Span::styled(
+        number_on_filled.to_string(),
+        Style::default().fg(text_default()).bg(severity),
+    );
+    let number_empty_span = Span::styled(
+        number_past_fill.to_string(),
+        Style::default().fg(text_default()),
+    );
+    let filled_span = Span::styled(
+        "█".repeat(filled.saturating_sub(number_text.len())),
+        Style::default().fg(severity),
+    );
     let empty_span = Span::styled(
-        " ".repeat(CPU_BAR_WIDTH.saturating_sub(filled)),
+        " ".repeat(CPU_BAR_WIDTH.saturating_sub(filled.max(number_text.len()))),
         Style::default().fg(tui_pane::cpu_blank_bar_color()),
     );
     let percent_span = Span::raw(format!("{percent:>3}%"));
     Line::from(vec![
         Span::raw(" "),
+        number_filled_span,
+        number_empty_span,
         filled_span,
         empty_span,
         Span::raw(" "),
@@ -347,6 +372,7 @@ fn render_core_rows(
         .band_offset
         .saturating_add(layout.band_visible())
         .min(usage.cores.len());
+    let number_width = layout.core_count.to_string().len();
     for (slot, core_index) in (layout.band_offset..end).enumerate() {
         let core = &usage.cores[core_index];
         let logical_row = CpuSelectableRow::Core(core_index).logical_index(layout.core_count);
@@ -366,7 +392,12 @@ fn render_core_rows(
             area,
             logical_row,
             focus,
-            Paragraph::new(cpu_bar_line(core.percent, cpu_cfg)),
+            Paragraph::new(cpu_bar_line(
+                core_index + 1,
+                number_width,
+                core.percent,
+                cpu_cfg,
+            )),
         );
     }
 }
@@ -574,8 +605,12 @@ fn render_cores_affordance(frame: &mut Frame, layout: &CpuPanelLayout, cursor_po
 #[cfg(test)]
 mod tests {
     use ratatui::layout::Rect;
+    use tui_pane::text_default;
 
+    use super::CPU_CONTENT_WIDTH;
+    use super::cpu_bar_line;
     use super::cpu_region;
+    use crate::config::CpuConfig;
 
     // A 15-core CPU. Fixed boxes take 7 rows (1 aggregate + 1+3 breakdown +
     // 1+1 GPU), so a 12-row inner leaves the cores band 5 rows and it must
@@ -617,5 +652,49 @@ mod tests {
         // Cores band taller than the core count: no scroll regardless of
         // cursor.
         assert_eq!(cores_offset(22, 14, 0), 0);
+    }
+
+    // cpu_bar_line spans: [space, number-on-filled, number-past-fill,
+    // filled bar, empty bar, space, percent, space]. The number text
+    // carries a one-cell margin before the bar's block glyphs.
+
+    #[test]
+    fn core_number_renders_as_text_on_the_filled_bar() {
+        // 35% fills 4 of 10 cells, so a 2-wide number plus its margin sit
+        // entirely on the fill (as background shading) and the bar
+        // continues with one block glyph.
+        let line = cpu_bar_line(12, 2, 35, &CpuConfig::default());
+        assert_eq!(line.spans[1].content, "12 ");
+        assert_eq!(line.spans[1].style.fg, Some(text_default()));
+        assert!(line.spans[1].style.bg.is_some());
+        assert_eq!(line.spans[2].content, "");
+        assert_eq!(line.spans[3].content, "█");
+    }
+
+    #[test]
+    fn core_number_splits_at_the_fill_boundary() {
+        // 10% fills 1 cell: the first digit is shaded by the fill, the
+        // second digit and the margin render on the row background.
+        let line = cpu_bar_line(12, 2, 10, &CpuConfig::default());
+        assert_eq!(line.spans[1].content, "1");
+        assert_eq!(line.spans[2].content, "2 ");
+        assert_eq!(line.spans[2].style.fg, Some(text_default()));
+        assert_eq!(line.spans[2].style.bg, None);
+        assert_eq!(line.spans[3].content, "");
+    }
+
+    #[test]
+    fn single_digit_core_number_is_right_aligned() {
+        let line = cpu_bar_line(3, 2, 0, &CpuConfig::default());
+        assert_eq!(line.spans[1].content, "");
+        assert_eq!(line.spans[2].content, " 3 ");
+    }
+
+    #[test]
+    fn embedded_core_number_keeps_the_content_width() {
+        for percent in [0, 10, 35, 100] {
+            let line = cpu_bar_line(12, 2, percent, &CpuConfig::default());
+            assert_eq!(line.width(), usize::from(CPU_CONTENT_WIDTH));
+        }
     }
 }

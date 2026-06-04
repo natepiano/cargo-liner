@@ -448,7 +448,7 @@ impl Shortcuts<App> for TargetsPane {
     fn visibility(&self, action: TargetsAction, ctx: &App) -> Visibility {
         match action {
             TargetsAction::Kill => targets_kill_visibility(ctx),
-            _ => Visibility::Visible,
+            TargetsAction::Activate | TargetsAction::ReleaseBuild => targets_run_visibility(ctx),
         }
     }
 
@@ -471,6 +471,24 @@ impl CopySelection<App> for TargetsPane {
 /// (`resolve_kill_request` returns `None`).
 const fn targets_kill_visibility(ctx: &App) -> Visibility {
     if ctx.panes.targets.running_cursor_pid().is_some() {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    }
+}
+
+/// `Activate`/`ReleaseBuild` belong to the targets table: hidden while
+/// the highlight sits in the Running list (any row at or past the
+/// table's length), where only `Kill` applies. Hiding is presentational
+/// — `handle_target_action` already runs nothing on Running rows, and
+/// Enter on the `cargo` header still toggles the group.
+fn targets_run_visibility(ctx: &App) -> Visibility {
+    let table_len = ctx
+        .panes
+        .targets
+        .content()
+        .map_or(0, panes::TargetsData::target_count);
+    if ctx.panes.targets.viewport.pos() < table_len {
         Visibility::Visible
     } else {
         Visibility::Hidden
