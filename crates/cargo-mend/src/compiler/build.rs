@@ -362,7 +362,7 @@ fn stream_cargo_stderr(
                 output_mode,
                 &mut progress,
             );
-            if should_forward_progress_line(&current, output_mode, progress.is_active()) {
+            if should_forward_progress_line(&current, output_mode, progress.is_active().into()) {
                 eprint!("{current}");
             }
             continue;
@@ -391,12 +391,22 @@ fn stream_cargo_stderr(
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProgressStatus {
+    Active,
+    Inactive,
+}
+
+impl From<bool> for ProgressStatus {
+    fn from(value: bool) -> Self { if value { Self::Active } else { Self::Inactive } }
+}
+
 fn should_forward_progress_line(
     line: &str,
     output_mode: BuildOutputMode,
-    progress_active: bool,
+    progress_status: ProgressStatus,
 ) -> bool {
-    !progress_active
+    matches!(progress_status, ProgressStatus::Inactive)
         && !is_finished_line(line)
         && !matches!(output_mode, BuildOutputMode::Json | BuildOutputMode::Quiet)
 }
@@ -692,6 +702,7 @@ mod tests {
     use super::CompilerWarningFacts;
     use super::DiagnosticBlockKind;
     use super::ProgressDisplay;
+    use super::ProgressStatus;
     use super::SuppressionNotice;
     use super::classify_diagnostic_block;
     use super::clear_progress_line;
@@ -818,12 +829,12 @@ mod tests {
         assert!(!should_forward_progress_line(
             line,
             BuildOutputMode::SuppressUnusedImportWarnings,
-            true
+            ProgressStatus::Active
         ));
         assert!(should_forward_progress_line(
             line,
             BuildOutputMode::SuppressUnusedImportWarnings,
-            false
+            ProgressStatus::Inactive
         ));
     }
 

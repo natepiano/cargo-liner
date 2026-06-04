@@ -14,6 +14,7 @@ use syn::parse_file;
 use syn::visit;
 use syn::visit::Visit;
 
+use crate::rust_syntax::MODULE_GLOB_SEGMENT;
 use crate::rust_syntax::PATH_KEYWORD_CRATE;
 use crate::selection::CARGO_TARGET_KIND_LIB;
 use crate::selection::CARGO_TARGET_KIND_MAIN;
@@ -216,7 +217,7 @@ pub(super) fn flatten_use_tree(prefix: Vec<String>, tree: &UseTree, out: &mut Ve
         },
         UseTree::Glob(_) => {
             let mut next = prefix;
-            next.push("*".to_string());
+            next.push(MODULE_GLOB_SEGMENT.to_string());
             out.push(next);
         },
     }

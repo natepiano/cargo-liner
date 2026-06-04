@@ -13,6 +13,7 @@ use super::classify;
 use super::classify::CrateKind;
 use super::classify::ModuleLocation;
 use super::classify::ParentVisibility;
+use super::classify::SignatureExposure;
 use super::classify::VisibilityFindingContext;
 use crate::compiler::RUST_MODULE_FILE_STEM;
 use crate::compiler::facade;
@@ -181,8 +182,8 @@ fn record_forbidden_pub_crate(
     if parent_facade_caps_at_pub_crate(ctx, item)? {
         return Ok(());
     }
-    let structurally_exposed =
-        policy::has_signature_exposure_allowance(ctx, item.file_path, item.name)?;
+    let signature_exposure: SignatureExposure =
+        policy::has_signature_exposure_allowance(ctx, item.file_path, item.name)?.into();
     sink.findings.push(source::build_finding(
         ctx.tcx,
         item.file_path,
@@ -195,7 +196,7 @@ fn record_forbidden_pub_crate(
             suggestion:              Some(
                 policy::forbidden_pub_crate_suggestion(
                     finding_context.module_location,
-                    structurally_exposed,
+                    signature_exposure,
                 )
                 .to_string(),
             ),

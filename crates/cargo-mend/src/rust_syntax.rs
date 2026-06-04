@@ -15,6 +15,7 @@ pub(crate) const PATH_KEYWORD_SUPER: &str = "super";
 pub(crate) const PATH_PREFIX_SUPER: &str = "super::";
 
 // rust module paths
+pub(crate) const MODULE_GLOB_SEGMENT: &str = "*";
 pub(crate) const MODULE_GLOB_SUFFIX: &str = "::*";
 pub(crate) const MODULE_PATH_SEPARATOR: &str = "::";
 

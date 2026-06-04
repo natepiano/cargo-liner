@@ -20,6 +20,7 @@ use crate::compiler::RUST_SOURCE_FILE_EXTENSION;
 use crate::compiler::SOURCE_DIR_SRC;
 use crate::fixes::imports::UseFix;
 use crate::rust_syntax;
+use crate::rust_syntax::MODULE_GLOB_SEGMENT;
 use crate::rust_syntax::MODULE_PATH_SEPARATOR;
 use crate::rust_syntax::PATH_KEYWORD_CRATE;
 use crate::rust_syntax::PATH_KEYWORD_SELF;
@@ -422,7 +423,7 @@ pub(super) fn render_use_tree(tree: &UseTree) -> Result<String> {
         UseTree::Path(path) => Ok(format!("{}::{}", path.ident, render_use_tree(&path.tree)?)),
         UseTree::Name(name) => Ok(name.ident.to_string()),
         UseTree::Rename(rename) => Ok(format!("{} as {}", rename.ident, rename.rename)),
-        UseTree::Glob(_) => Ok("*".to_string()),
+        UseTree::Glob(_) => Ok(MODULE_GLOB_SEGMENT.to_string()),
         UseTree::Group(group) => {
             let mut rendered_items = Vec::new();
             for item in &group.items {

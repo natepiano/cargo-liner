@@ -7,6 +7,7 @@ mod visit;
 pub(super) use classify::CrateKind;
 pub(super) use classify::ModuleLocation;
 pub(super) use classify::ParentVisibility;
+pub(super) use classify::SignatureExposure;
 pub(super) use finding_params::AllowanceReason;
 pub(super) use finding_params::FindingParams;
 pub(super) use finding_params::SuspiciousPubAssessment;

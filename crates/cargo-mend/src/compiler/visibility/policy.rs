@@ -12,6 +12,7 @@ use super::scan::AllowanceReason;
 use super::scan::CrateKind;
 use super::scan::ModuleLocation;
 use super::scan::ParentVisibility;
+use super::scan::SignatureExposure;
 use super::scan::SuspiciousPubAssessment;
 use super::scan::SuspiciousPubInput;
 use super::scan::VisibilityContext;
@@ -197,13 +198,15 @@ pub(super) const fn forbidden_pub_crate_help(module_location: ModuleLocation) ->
 /// to the location-based help.
 pub(super) const fn forbidden_pub_crate_suggestion(
     module_location: ModuleLocation,
-    structurally_exposed: bool,
+    signature_exposure: SignatureExposure,
 ) -> &'static str {
-    if structurally_exposed {
-        return "this item is exposed through a public signature; consider using `pub` (a narrower \
-                modifier would not compile)";
+    match signature_exposure {
+        SignatureExposure::Present => {
+            "this item is exposed through a public signature; consider using `pub` (a narrower \
+             modifier would not compile)"
+        },
+        SignatureExposure::Absent => forbidden_pub_crate_help(module_location),
     }
-    forbidden_pub_crate_help(module_location)
 }
 
 pub(super) fn is_top_level_module_file(
@@ -357,6 +360,7 @@ mod tests {
     use super::CrateKind;
     use super::ModuleLocation;
     use super::ParentVisibility;
+    use super::SignatureExposure;
     use super::allow_pub_crate_by_policy;
     use super::crate_kind_for_root;
     use super::forbidden_pub_crate_help;
@@ -515,7 +519,7 @@ mod tests {
     #[test]
     fn forbidden_pub_crate_suggestion_recommends_pub_when_structurally_exposed() {
         assert_eq!(
-            forbidden_pub_crate_suggestion(ModuleLocation::Nested, true),
+            forbidden_pub_crate_suggestion(ModuleLocation::Nested, SignatureExposure::Present),
             "this item is exposed through a public signature; consider using `pub` (a narrower \
              modifier would not compile)"
         );
@@ -524,7 +528,7 @@ mod tests {
     #[test]
     fn forbidden_pub_crate_suggestion_defers_to_location_help_when_not_exposed() {
         assert_eq!(
-            forbidden_pub_crate_suggestion(ModuleLocation::Nested, false),
+            forbidden_pub_crate_suggestion(ModuleLocation::Nested, SignatureExposure::Absent),
             forbidden_pub_crate_help(ModuleLocation::Nested)
         );
     }

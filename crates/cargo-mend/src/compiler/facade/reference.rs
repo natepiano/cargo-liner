@@ -13,6 +13,7 @@ use crate::compiler::source_cache::ExtractedPaths;
 use crate::compiler::source_cache::PathOrigin;
 use crate::compiler::source_cache::SourceCache;
 use crate::compiler::source_cache::UseRename;
+use crate::rust_syntax::MODULE_GLOB_SEGMENT;
 use crate::rust_syntax::MODULE_PATH_SEPARATOR;
 use crate::rust_syntax::PATH_KEYWORD_CRATE;
 use crate::rust_syntax::PATH_KEYWORD_SELF;
@@ -466,7 +467,8 @@ fn path_mentions_child_item(
 ) -> bool {
     path.len() > child_module_path.len()
         && path[..child_module_path.len()] == *child_module_path
-        && (path[child_module_path.len()] == item_name || path[child_module_path.len()] == "*")
+        && (path[child_module_path.len()] == item_name
+            || path[child_module_path.len()] == MODULE_GLOB_SEGMENT)
 }
 
 fn relative_tail_mentions_child_item(
@@ -497,7 +499,7 @@ fn relative_tail_mentions_child_item(
     (1..=child_module_path.len()).any(|suffix_len| {
         tail.len() > suffix_len
             && child_module_path[child_module_path.len() - suffix_len..] == tail[..suffix_len]
-            && (tail[suffix_len] == item_name || tail[suffix_len] == "*")
+            && (tail[suffix_len] == item_name || tail[suffix_len] == MODULE_GLOB_SEGMENT)
     })
 }
 

@@ -18,6 +18,7 @@ use crate::compiler::settings::DriverSettings;
 use crate::compiler::source_cache;
 use crate::compiler::source_cache::SourceCache;
 use crate::rust_syntax;
+use crate::rust_syntax::MODULE_GLOB_SEGMENT;
 use crate::rust_syntax::PATH_KEYWORD_CRATE;
 use crate::rust_syntax::PATH_KEYWORD_SELF;
 use crate::rust_syntax::PATH_KEYWORD_SUPER;
@@ -195,7 +196,9 @@ fn parent_boundary_has_matching_pub_use_glob(file: &File, child_module_name: &st
             } else {
                 &path[..]
             };
-            normalized.len() == 2 && normalized[0] == child_module_name && normalized[1] == "*"
+            normalized.len() == 2
+                && normalized[0] == child_module_name
+                && normalized[1] == MODULE_GLOB_SEGMENT
         })
     })
 }

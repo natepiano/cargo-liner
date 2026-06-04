@@ -18,6 +18,7 @@ use syn::spanned::Spanned;
 
 use super::validated_plan;
 use crate::fixes::imports::UseFix;
+use crate::rust_syntax::MODULE_GLOB_SEGMENT;
 use crate::rust_syntax::MODULE_GLOB_SUFFIX;
 use crate::rust_syntax::MODULE_PATH_SEPARATOR;
 use crate::rust_syntax::PATH_KEYWORD_SELF;
@@ -281,7 +282,7 @@ fn collect_use_lines(
         },
         UseTree::Glob(_) => {
             let rendered_prefix = if path_prefix.is_empty() {
-                "*".to_string()
+                MODULE_GLOB_SEGMENT.to_string()
             } else {
                 format!(
                     "{}{MODULE_GLOB_SUFFIX}",

@@ -27,12 +27,12 @@ use crate::config::DiagnosticCode;
 use crate::reporting::Finding;
 use crate::reporting::FixSupport;
 use crate::reporting::Severity;
+use crate::rust_syntax::MODULE_GLOB_SEGMENT;
 use crate::rust_syntax::MODULE_PATH_SEPARATOR;
 use crate::selection::Selection;
 
 const MESSAGE: &str = "lift this `use` to the top of its enclosing module";
 const SUGGESTION: &str = "move this `use` to the top of the file or inline module";
-const GLOB_BARE_NAME: &str = "*";
 
 pub(crate) struct ImportsAtTopScan {
     pub findings: Vec<Finding>,
@@ -249,9 +249,9 @@ fn walk_use_tree(tree: &UseTree, prefix: &mut Vec<String>, out: &mut Vec<(String
         },
         UseTree::Glob(_) => {
             let mut segments = prefix.clone();
-            segments.push(GLOB_BARE_NAME.to_string());
+            segments.push(MODULE_GLOB_SEGMENT.to_string());
             out.push((
-                GLOB_BARE_NAME.to_string(),
+                MODULE_GLOB_SEGMENT.to_string(),
                 segments.join(MODULE_PATH_SEPARATOR),
             ));
         },
@@ -282,7 +282,10 @@ impl InBodyUseFinder<'_> {
             return;
         }
         // Globs may shadow arbitrary names — don't lift.
-        if bare_paths.iter().any(|(bare, _)| bare == GLOB_BARE_NAME) {
+        if bare_paths
+            .iter()
+            .any(|(bare, _)| bare == MODULE_GLOB_SEGMENT)
+        {
             return;
         }
 
