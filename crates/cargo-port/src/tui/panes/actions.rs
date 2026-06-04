@@ -10,14 +10,18 @@ use tui_pane::TrackedItem;
 use tui_pane::Viewport;
 
 use super::BuildMode;
+use super::CargoGroup;
 use super::CiFetchKind;
 use super::GitRow;
 use super::PackageRow;
 use super::PaneId;
 use super::PendingCiFetch;
 use super::PendingExampleRun;
+use super::RunningListRow;
 use super::TargetSource;
-use super::build_target_display_rows;
+use super::TargetsData;
+use super::build_running_list;
+use super::build_running_rows;
 use super::build_target_list_from_data;
 use super::resolve_kill_request;
 use crate::lint;
@@ -47,19 +51,9 @@ fn handle_target_action(app: &mut App, mode: BuildMode) {
         return;
     };
     let entries = build_target_list_from_data(&targets_data);
-    // The pane cursor indexes display rows (which include per-instance
-    // child rows), so resolve it back to the owning target entry before
-    // running. Running from an instance child row launches another
-    // instance of that same target.
-    let display_rows = build_target_display_rows(
-        &entries,
-        app.panes.running_targets.snapshot(),
-        app.panes.detail_target_dir.as_ref(),
-    );
-    let entry_index = display_rows
-        .get(app.panes.targets.viewport.pos())
-        .map(|row| row.entry_index);
-    if let Some(entry) = entry_index.and_then(|index| entries.get(index))
+    // The table's rows map 1:1 to entries; a highlight in the Running box
+    // sits past them and runs nothing.
+    if let Some(entry) = entries.get(app.panes.targets.viewport.pos())
         && let Some(abs_path) = app.project_list.selected_project_path()
     {
         // Member-owned targets carry the owning package's name in
@@ -106,77 +100,151 @@ pub(super) fn dispatch_targets_action(action: TargetsAction, app: &mut App) {
     }
 }
 
-/// Open a confirm dialog to `SIGTERM` the running instance(s) under the
-/// selected Targets row. An instance child row (or a single-instance
-/// target row) kills that one PID; a multi-instance parent row kills every
-/// instance of the target. A no-op when the selected row has nothing
-/// running.
+/// Open a confirm dialog to `SIGTERM` the running instance under the
+/// selected Running row. A no-op while the highlight is on a table row
+/// or the `cargo` group header — per-instance kill only exists on
+/// instance rows in the Running box.
 fn handle_target_kill(app: &mut App) {
-    let Some(targets_data) = app.panes.targets.content().cloned() else {
-        return;
-    };
-    let entries = build_target_list_from_data(&targets_data);
-    let dir = app.panes.detail_target_dir.clone();
-    let display_rows =
-        build_target_display_rows(&entries, app.panes.running_targets.snapshot(), dir.as_ref());
+    let table_len = targets_table_len(app);
+    let running_rows = build_running_rows(app.panes.running_targets.snapshot());
+    let list = build_running_list(&running_rows, app.panes.targets.cargo_group());
     let request = resolve_kill_request(
-        &entries,
-        &display_rows,
-        app.panes.running_targets.snapshot(),
-        dir.as_ref(),
+        table_len,
+        &running_rows,
+        &list,
         app.panes.targets.viewport.pos(),
     );
     if let Some(request) = request {
-        app.request_kill_confirm(request.label, request.pids);
+        app.request_kill_confirm(request.label, request.pid, request.create_time);
     }
 }
 
-/// Send `SIGTERM` to `pids` (the confirmed kill), drop them from the
-/// running snapshot so their rows collapse on the next render, and keep
-/// the Targets cursor anchored to the same target. Without the anchor,
-/// killing one of several instances would let the cursor slide onto the
-/// next target when the instance rows collapse away.
-pub(super) fn execute_target_kill(app: &mut App, pids: &[u32]) {
-    for pid in pids {
-        app.panes.running_targets.kill(*pid);
-    }
-    let anchor_entry = targets_cursor_entry(app);
-    app.panes.running_targets.drop_instances(pids);
-    if let Some(entry_index) = anchor_entry {
-        anchor_targets_cursor_to_entry(app, entry_index);
-    }
+/// The Targets table's row count — zero when the selected project has no
+/// targets (the Running list still renders below the empty table).
+fn targets_table_len(app: &App) -> usize {
+    app.panes
+        .targets
+        .content()
+        .map_or(0, TargetsData::target_count)
 }
 
-/// The target entry index under the Targets cursor, or `None` when there
-/// is no target data or the cursor is out of range.
-fn targets_cursor_entry(app: &App) -> Option<usize> {
-    let data = app.panes.targets.content()?;
-    let entries = build_target_list_from_data(data);
-    let rows = build_target_display_rows(
-        &entries,
-        app.panes.running_targets.snapshot(),
-        app.panes.detail_target_dir.as_ref(),
+/// The Running-list row under the highlight — `None` while the highlight
+/// is in the table or past the list's end.
+fn running_row_under_highlight(app: &App) -> Option<RunningListRow> {
+    let table_len = targets_table_len(app);
+    let running_rows = build_running_rows(app.panes.running_targets.snapshot());
+    let list = build_running_list(&running_rows, app.panes.targets.cargo_group());
+    app.panes
+        .targets
+        .viewport
+        .pos()
+        .checked_sub(table_len)
+        .and_then(|local| list.get(local).copied())
+}
+
+/// The `cargo` group's state while the highlight sits on its header row —
+/// `None` anywhere else.
+fn cargo_header_under_highlight(app: &App) -> Option<CargoGroup> {
+    matches!(
+        running_row_under_highlight(app)?,
+        RunningListRow::CargoHeader { .. }
+    )
+    .then(|| app.panes.targets.cargo_group())
+}
+
+/// Toggle the Running list's `cargo` group when the highlight sits on its
+/// header row. Returns whether the toggle consumed the `Enter`.
+fn toggle_cargo_group(app: &mut App) -> bool {
+    let on_header = cargo_header_under_highlight(app).is_some();
+    if on_header {
+        app.panes.targets.toggle_cargo_group();
+    }
+    on_header
+}
+
+/// `Right` on the collapsed `cargo` header expands the group — the same
+/// key the project list's rows expand with. Returns whether it consumed
+/// the move.
+fn expand_cargo_group(app: &mut App) -> bool {
+    let on_collapsed_header = matches!(
+        cargo_header_under_highlight(app),
+        Some(CargoGroup::Collapsed)
     );
-    rows.get(app.panes.targets.viewport.pos())
-        .map(|row| row.entry_index)
+    if on_collapsed_header {
+        app.panes.targets.toggle_cargo_group();
+    }
+    on_collapsed_header
 }
 
-/// Move the Targets cursor to the first display row that renders
-/// `entry_index` (its target or multi-instance parent row), clamping to
-/// the last row if the entry is gone.
-fn anchor_targets_cursor_to_entry(app: &mut App, entry_index: usize) {
-    let Some(data) = app.panes.targets.content().cloned() else {
-        return;
+/// `Left` collapses the `cargo` group: on its expanded header directly,
+/// and on a grouped instance row by handing the highlight back to the
+/// header — the project list's collapse idiom. Returns whether it
+/// consumed the move.
+fn collapse_cargo_group(app: &mut App) -> bool {
+    if matches!(
+        cargo_header_under_highlight(app),
+        Some(CargoGroup::Expanded)
+    ) {
+        app.panes.targets.toggle_cargo_group();
+        return true;
+    }
+    let table_len = targets_table_len(app);
+    let running_rows = build_running_rows(app.panes.running_targets.snapshot());
+    let list = build_running_list(&running_rows, app.panes.targets.cargo_group());
+    let Some(RunningListRow::CargoHeader { count }) = list.first().copied() else {
+        return false;
     };
-    let entries = build_target_list_from_data(&data);
-    let rows = build_target_display_rows(
-        &entries,
-        app.panes.running_targets.snapshot(),
-        app.panes.detail_target_dir.as_ref(),
-    );
-    if let Some(pos) = super::display_row_for_entry(&rows, entry_index) {
-        app.panes.targets.viewport.set_pos(pos);
+    let on_grouped_instance = app
+        .panes
+        .targets
+        .viewport
+        .pos()
+        .checked_sub(table_len)
+        .and_then(|local| list.get(local))
+        .is_some_and(|row| matches!(row, RunningListRow::Instance(i) if *i < count));
+    if on_grouped_instance {
+        app.panes.targets.toggle_cargo_group();
+        app.panes.targets.viewport.set_pos(table_len);
+        app.panes.targets.set_running_cursor_pid(None);
     }
+    on_grouped_instance
+}
+
+/// Send `SIGTERM` to the confirmed instance — verified against its create
+/// time immediately before the signal — and drop it from the running
+/// snapshot so its row collapses on the next render. The highlight's PID
+/// anchor hands the cursor to the adjacent Running row (or back into the
+/// table) on that render.
+pub(super) fn execute_target_kill(app: &mut App, pid: u32, create_time: u64) {
+    app.panes.running_targets.kill(pid, create_time);
+    app.panes.running_targets.drop_instances(&[pid]);
+}
+
+/// Re-derive the Running-box PID anchor from the row the highlight sits
+/// on (D2). Called after every user-driven cursor move (navigation,
+/// click, wheel); the render pass then follows the anchored instance as
+/// the Running rows reorder between moves. The `cargo` group header has
+/// no PID — it anchors by its stable list position instead.
+pub(super) fn sync_running_cursor_pid(app: &mut App) {
+    let table_len = app
+        .panes
+        .targets
+        .content()
+        .map_or(0, TargetsData::target_count);
+    let running_rows = build_running_rows(app.panes.running_targets.snapshot());
+    let list = build_running_list(&running_rows, app.panes.targets.cargo_group());
+    let pid = app
+        .panes
+        .targets
+        .viewport
+        .pos()
+        .checked_sub(table_len)
+        .and_then(|local| list.get(local))
+        .and_then(|row| match row {
+            RunningListRow::Instance(index) => running_rows.get(*index).map(|r| r.pid),
+            RunningListRow::CargoHeader { .. } => None,
+        });
+    app.panes.targets.set_running_cursor_pid(pid);
 }
 
 pub(super) fn dispatch_lints_action(action: LintsAction, app: &mut App) {
@@ -220,9 +288,10 @@ pub(super) fn dispatch_navigation_action(
     match focused {
         FocusedPane::App(AppPaneId::ProjectList) => navigate_project_list(app, action),
         FocusedPane::App(AppPaneId::Package) => navigate_package_detail(app, action),
-        FocusedPane::App(
-            AppPaneId::Lang | AppPaneId::Cpu | AppPaneId::Git | AppPaneId::Targets,
-        ) => navigate_detail(app, action),
+        FocusedPane::App(AppPaneId::Lang | AppPaneId::Cpu | AppPaneId::Git) => {
+            navigate_detail(app, action);
+        },
+        FocusedPane::App(AppPaneId::Targets) => navigate_targets(app, action),
         FocusedPane::App(AppPaneId::Lints) => navigate_lints(app, action),
         FocusedPane::App(AppPaneId::CiRuns) => navigate_ci_runs(app, action),
         FocusedPane::App(AppPaneId::Output) => navigate_output(app, action),
@@ -340,6 +409,25 @@ fn navigate_project_list(app: &mut App, action: NavAction) {
 fn navigate_detail(app: &mut App, action: NavAction) {
     let pane = active_detail_pane(app);
     navigate_viewport(pane, action);
+}
+
+/// Drive the Targets cursor through the shared viewport navigation, then
+/// re-derive the Running-box PID anchor from the row it landed on.
+fn navigate_targets(app: &mut App, action: NavAction) {
+    // `Right`/`Left` (and vim `l`/`h`, which the navigation scope maps to
+    // the same actions) expand/collapse the Running list's `cargo` group
+    // first — the project list's row idiom — and fall through to the
+    // ordinary row move everywhere else.
+    let consumed = match action {
+        NavAction::Right => expand_cargo_group(app),
+        NavAction::Left => collapse_cargo_group(app),
+        _ => false,
+    };
+    if consumed {
+        return;
+    }
+    navigate_viewport(&mut app.panes.targets.viewport, action);
+    sync_running_cursor_pid(app);
 }
 
 fn navigate_viewport(pane: &mut Viewport, action: NavAction) {
@@ -557,7 +645,11 @@ fn active_detail_viewport(app: &App) -> &Viewport {
 /// Handle the Enter key in the detail panel.
 fn handle_detail_enter(app: &mut App) {
     if app.focus_is(PaneId::Targets) {
-        handle_target_action(app, BuildMode::Debug);
+        // On the Running list's `cargo` header, Enter expands/collapses
+        // the group instead of running a target.
+        if !toggle_cargo_group(app) {
+            handle_target_action(app, BuildMode::Debug);
+        }
     } else if app.base_focus() == PaneId::Package {
         if let Some(pkg) = app.panes.package.content()
             && matches!(

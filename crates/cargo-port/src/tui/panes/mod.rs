@@ -75,8 +75,6 @@ pub(super) use pane_data::PullRequestSection;
 pub(super) use pane_data::PullRequestSectionState;
 pub(super) use pane_data::RemoteRow;
 pub(super) use pane_data::RunTargetKind;
-pub(super) use pane_data::TargetDisplayKind;
-pub(super) use pane_data::TargetDisplayRow;
 pub(super) use pane_data::TargetEntry;
 pub(super) use pane_data::TargetSource;
 pub(super) use pane_data::TargetsData;
@@ -88,7 +86,6 @@ pub(super) use pane_data::build_pane_data_for_member;
 pub(super) use pane_data::build_pane_data_for_submodule;
 pub(super) use pane_data::build_pane_data_for_vendored;
 pub(super) use pane_data::build_pane_data_for_workspace_ref;
-pub(super) use pane_data::build_target_display_rows;
 pub(super) use pane_data::build_target_list_from_data;
 pub(super) use pane_data::copy_payload_for_ci;
 pub(super) use pane_data::copy_payload_for_git;
@@ -96,7 +93,6 @@ pub(super) use pane_data::copy_payload_for_lints;
 pub(super) use pane_data::copy_payload_for_output;
 pub(super) use pane_data::copy_payload_for_package;
 pub(super) use pane_data::copy_payload_for_targets;
-pub(super) use pane_data::display_row_for_entry;
 pub(super) use pane_data::format_ahead_behind;
 pub(super) use pane_data::format_date;
 pub(super) use pane_data::format_duration;
@@ -114,7 +110,6 @@ pub(super) use pane_data::package_row_is_selectable;
 pub(super) use pane_data::package_rows_from_data;
 pub(super) use pane_data::package_selectable_row_at_or_after;
 pub(super) use pane_data::package_selectable_row_at_or_before;
-pub(super) use pane_data::resolve_kill_request;
 pub(super) use pane_impls::CpuPane;
 pub(super) use pane_impls::GitPane;
 pub(super) use pane_impls::LangPane;
@@ -133,6 +128,12 @@ pub(super) use spec::PaneId;
 pub(super) use spec::behavior;
 pub(super) use spec::size_spec;
 pub(super) use system::Panes;
+pub(super) use targets::CargoGroup;
+pub(super) use targets::RunningListRow;
+pub(super) use targets::build_running_list;
+pub(super) use targets::build_running_rows;
+pub(super) use targets::format_start_age;
+pub(super) use targets::resolve_kill_request;
 use tui_pane::FocusedPane;
 pub(super) use widths::compute_project_list_widths;
 #[cfg(test)]
@@ -162,9 +163,11 @@ pub(super) fn dispatch_targets_action(action: TargetsAction, app: &mut App) {
     actions::dispatch_targets_action(action, app);
 }
 
-pub(super) fn execute_target_kill(app: &mut App, pids: &[u32]) {
-    actions::execute_target_kill(app, pids);
+pub(super) fn execute_target_kill(app: &mut App, pid: u32, create_time: u64) {
+    actions::execute_target_kill(app, pid, create_time);
 }
+
+pub(super) fn sync_running_targets_cursor(app: &mut App) { actions::sync_running_cursor_pid(app); }
 
 pub(super) fn dispatch_lints_action(action: LintsAction, app: &mut App) {
     actions::dispatch_lints_action(action, app);

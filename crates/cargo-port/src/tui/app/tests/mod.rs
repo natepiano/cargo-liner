@@ -158,7 +158,6 @@ fn build_project_list_render_ctx_for_test<'a>(
         settings_render_inputs:    None,
         synced_description_height: crate::tui::panes::SyncedDescriptionHeight::default(),
         running_targets:           app.panes.running_targets.snapshot(),
-        running_targets_dir:       app.panes.detail_target_dir.as_ref(),
     }
 }
 

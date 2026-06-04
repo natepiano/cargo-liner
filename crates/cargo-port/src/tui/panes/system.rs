@@ -22,7 +22,6 @@ use super::pane_impls::PackagePane;
 use super::pane_impls::ProjectListPane;
 use super::pane_impls::TargetsPane;
 use crate::config::CpuConfig;
-use crate::project::AbsolutePath;
 use crate::tui::app::HoveredPaneRow;
 use crate::tui::running_targets::ProjectTargetSlice;
 use crate::tui::running_targets::RunningTargetsPoller;
@@ -42,19 +41,15 @@ pub struct Panes {
     pub targets:      TargetsPane,
     pub project_list: ProjectListPane,
 
-    pub pane_data:         PaneDataStore,
+    pub pane_data:       PaneDataStore,
     /// Resolved tiled-pane layout computed by the most recent render.
     /// Input dispatch (mouse hit-tests, scroll routing) reads this;
     /// render writes it once per draw.
-    pub tiled_layout:      ResolvedPaneLayout<super::PaneId>,
-    hovered_row:           Option<HoveredPaneRow>,
+    pub tiled_layout:    ResolvedPaneLayout<super::PaneId>,
+    hovered_row:         Option<HoveredPaneRow>,
     /// Polls running OS processes and matches them against known cargo
     /// targets. Ticked once per frame from the render thread.
-    pub running_targets:   RunningTargetsPoller,
-    /// Resolved canonical `target_directory` of the currently-displayed
-    /// project. Stashed by `set_detail_data` and read by the Targets
-    /// pane render path to build `RunningKey`s.
-    pub detail_target_dir: Option<AbsolutePath>,
+    pub running_targets: RunningTargetsPoller,
 
     /// Cached cross-project Details/Git top-row inner height, keyed on the
     /// scan generation and the two top-pane widths. The cross-project scan
@@ -86,7 +81,6 @@ impl Panes {
             tiled_layout:         ResolvedPaneLayout::default(),
             hovered_row:          None,
             running_targets:      RunningTargetsPoller::new(RUNNING_TARGETS_POLL_INTERVAL),
-            detail_target_dir:    None,
             top_row_height_cache: TopRowHeightCache::default(),
         }
     }
@@ -122,13 +116,11 @@ impl Panes {
         package: super::PackageData,
         git: super::GitData,
         targets: super::TargetsData,
-        target_dir: Option<AbsolutePath>,
     ) {
         self.package.set_content(package);
         self.git.set_content(git);
         self.targets.set_content(targets);
         self.pane_data.set_detail_stamp(Some(stamp));
-        self.detail_target_dir = target_dir;
     }
 
     /// Clear the detail set across the migrated detail panes owned by `Panes`,
@@ -139,7 +131,6 @@ impl Panes {
         self.git.clear_content();
         self.targets.clear_content();
         self.pane_data.set_detail_stamp(stamp);
-        self.detail_target_dir = None;
     }
 
     pub const fn set_hover(&mut self, hovered: Option<HoveredPaneRow>) {
@@ -229,7 +220,7 @@ mod detail_set_tests {
             generation: 3,
         };
         let (pkg, git, targets) = empty_detail();
-        panes.set_detail_data(key, pkg, git, targets, None);
+        panes.set_detail_data(key, pkg, git, targets);
 
         assert!(panes.pane_data.detail_is_current(Some(key)));
         assert!(panes.package.content().is_some());
@@ -256,7 +247,7 @@ mod detail_set_tests {
             generation: 7,
         };
         let (pkg, git, targets) = empty_detail();
-        panes.set_detail_data(key, pkg, git, targets, None);
+        panes.set_detail_data(key, pkg, git, targets);
 
         let clear_key = DetailCacheKey {
             row:        other_row(),

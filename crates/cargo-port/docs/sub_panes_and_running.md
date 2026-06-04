@@ -1,6 +1,6 @@
 # Running sub-pane for the Targets pane
 
-Status: in progress — Phase 1 (box tree + CPU) complete 2026-06-03
+Status: complete 2026-06-03 — Phases 1 (box tree + CPU), 2 (detail pane), 3 (Targets switch), and 4 (gate `K` + wheel re-anchor) all shipped
 Authored: 2026-06-03 (architecture revised same day to the box-tree model)
 
 ## Goal
@@ -210,11 +210,13 @@ the table box.
 
 ### `K` hint gating
 
-The `Shortcuts` trait already exposes `visibility(&self, action, ctx)` and
-`state(&self, action, ctx)` (`tui_pane/src/keymap/shortcuts.rs:53,58`),
-defaulting to Visible/Enabled. The `TargetsPane` impl
-(`src/tui/integration/framework_keymap.rs`) overrides them so `Kill` is Visible
-and Enabled only when the highlight is in the Running box and it has rows.
+The `Shortcuts` trait already exposes `visibility(&self, action, ctx)`
+(`tui_pane/src/keymap/shortcuts.rs:53`), defaulting to Visible. The
+`TargetsPane` impl (`src/tui/integration/framework_keymap.rs`) overrides it so
+`Kill` is Visible only when the highlight sits on a Running row —
+`running_cursor_pid().is_some()` is that fact. No `state()` override: a Hidden
+slot never reaches `state()`, and there is no Visible-but-Disabled case for
+`Kill`.
 
 ## Files touched
 
@@ -227,11 +229,11 @@ and Enabled only when the highlight is in the Running box and it has rows.
 | `src/tui/panes/targets/` (promote `targets.rs` to `targets/mod.rs`) | build `Stack[ rows(table, Fill), rows(running, Cap(80)) ]`; render table without inline running; render the Running box |
 | `src/tui/panes/targets/running_subpane.rs` (new) | `RunningRow`, `build_running_rows`, render the Running box |
 | `src/tui/panes/pane_data/mod.rs` | delete `TargetDisplayKind::{Inline,MultiParent,Instance}` + expansion; table is one row per entry; single-PID `resolve_kill_request` |
-| `src/tui/panes/pane_impls.rs` | `TargetsPane` keeps its `Viewport` (the highlight) plus the per-box scroll offsets |
-| `src/tui/panes/actions.rs` | highlight navigation across the boxes; single-instance kill; post-kill clamp |
-| `src/tui/integration/framework_keymap.rs` | `TargetsPane` `visibility()`/`state()` for `Kill` |
+| `src/tui/panes/pane_impls.rs` | `TargetsPane` keeps its `Viewport` (the highlight; its `scroll_offset` is the table box's persisted offset) plus `running_cursor_pid` (also the `K`-gating fact) and hit-test `row_rects` |
+| `src/tui/panes/actions.rs` | highlight navigation across the boxes; single-instance kill; the PID-anchor re-derive hooks (nav, click, wheel) |
+| `src/tui/integration/framework_keymap.rs` | `TargetsPane` `visibility()` for `Kill` (Hidden off a Running row) |
 | `src/tui/app/types.rs`, `src/tui/render.rs` | `KillTarget` doc + confirm body (one PID now) |
-| relevant `constants.rs` | the 80% cap, sub-pane chrome rows, column widths |
+| `src/tui/panes/targets/` constants | the 80% cap, sub-pane chrome rows, `MIN_TABLE_ROWS`, column widths |
 
 ## Phases
 
@@ -324,7 +326,7 @@ Shipped in `tui_pane/src/layout/region.rs` (`Region`, `Size`, `Rows`, `Placed`,
   fail the per-phase dead-code gate; the engine grows in the phase its first
   user appears, as the Phases intro states.
 
-### Phase 2 — detail pane onto the tree
+### Phase 2 — detail pane onto the tree ✅ complete (2026-06-03)
 
 Add `Columns` and nested-stack handling to the layout pass, then rebuild the
 detail (Package) pane. The real tree is two levels deep: the About/Description
@@ -367,7 +369,107 @@ rebuild the pane:
   assert the tree's offsets before deleting `Band`; `box_scroll_offset` already
   reproduces its in-band / hold-clamped logic, so the port is mechanical.
 
-### Phase 3 — Targets data model + adoption (the switch)
+Shipped in `tui_pane/src/layout/region.rs` (`Columns` variant, recursive
+`place`/`locate`/`leaves`, per-stack-node fill invariant, `.spacer()`,
+`.lines()`) and `src/tui/panes/package.rs` (`package_region` + `PackageBoxes`;
+sections render from `Placed` rects). `Band`, `ViewportOverflow::band`,
+`tests_band`, `tests_band_offset_for`, `project_stats_connector_x`,
+`StatsColumnLayout`, and `ProjectPanelAreas` deleted;
+`PackagePane.tests_band_offset` renamed `tests_scroll_offset`.
+
+#### Retrospective
+
+**What worked:**
+- The recursion was small: `place` became a walk with a `PlaceWalk` state
+  struct (cursor, prior offsets, running leaf index), a `place_stack` for the
+  one-fill-per-stack sizing, and a `place_leaf` shared by every path. The CPU
+  tree needed no changes.
+- Column widths reuse ratatui `Constraint` directly
+  (`Columns(Vec<(Constraint, Region)>)`), so the pane's old
+  `Min(20)`/`Length(stats_width)` split is byte-identical — no new width type.
+- The per-section `title_y` accumulation in the stats column (structure
+  height + spacer + rule + …) deleted wholesale; sections now read
+  `Placed.content`/`.chrome`/`.scroll_offset`.
+
+**What deviated from the plan:**
+- `.title(name)`/`.header()` were not added. Chrome is count-only and the pane
+  draws all chrome, so a stored title would be dead data; a titled rule is one
+  `.rule()` row and `.spacer()` covers the section gaps. `.header()` has no
+  Phase 2 user — per the dead-code gate it lands in Phase 3 with the Running
+  box (which can build its divider + column-header chrome as `.rule().spacer()`
+  or grow `.header()` then).
+- `.lines(h)` is engine surface the plan didn't name: a box that is N
+  selectable rows rendered as `h` screen lines. Needed twice — the description
+  block (1 selectable row, H wrapped lines; H known only after the block
+  renders, so the pane renders the description first and feeds the returned
+  height into the frame's tree) and the crates.io section, whose rendered rows
+  can have no flat-list counterpart (worktree-summary data), so the box keeps
+  the flat count for the cursor and reserves rendered rows via `lines`.
+- "Preserve current behaviour exactly" has the same over-tall exception as
+  Phase 1: with column slack, crates.io now pins to the column bottom
+  (previously it stacked directly under Tests with the slack below); in
+  cramped panes crates.io stays visible and the Tests box shrinks (previously
+  Tests extended to the column bottom and crates.io rendered off-screen).
+  Exactly-sized columns are pixel-identical. Same cause, same acceptance.
+- The shared separator rule (full-width, "Structure" title) is modeled as one
+  chrome row on **both** columns' top boxes — the tree reserves the row in
+  each column; the pane draws the rule once at full width.
+
+**Surprises:**
+- The old trailing-rows `Band` partition (`head = len - test_count`) misfiled
+  crates.io rows as Tests rows — the flat list ends `…, Tests…, CratesIo…` —
+  so Tests scrolling and its pager misbehaved whenever crates.io rows were
+  present. The tree maps each row to its own box; a regression test pins it
+  (`package_tree_maps_section_rows_to_their_boxes`).
+- The right column's one-fill invariant is data-dependent: Tests is the fill
+  when present, otherwise the last present section becomes the fill (its rows
+  render from the top of the leftover, so it draws the same as a pinned box).
+- `render_package_pane_body` tripped clippy `too_many_lines` after absorbing
+  the tree placement; extracted `render_no_project_selected` and
+  `sync_package_viewport`.
+
+**Implications for remaining phases:**
+- Phase 3's tree is the trivial case: `Stack[ rows(table, Fill),
+  rows(running, Cap(80)) ]` — no nesting, no columns. Only `Cap`, its scroll
+  arm, and the `MIN_TABLE_ROWS` floor are new engine work.
+- The Running box's divider + column-header chrome needs no stored titles:
+  reserve two chrome rows and draw them in the pane, as Tests/crates.io do.
+- `prior_offsets` indexing by flattened-leaf order is settled and tested; the
+  Targets pane's two offsets are `[table, running]` in that order.
+
+#### Phase 2 Review
+
+- Phase 3's engine scope tightened to exactly `Cap`: the `Size::cap` ctor, the
+  outer-height clamp where `place_stack` sizes non-fill children, and the
+  bottom-pinned `Cap` arm in `box_scroll_offset` — everything else the phase
+  assumed (nesting, `Columns`, leaf-order offsets, `.lines()`) shipped in
+  Phase 2.
+- Phase 3 chrome settled: no `.header()` ctor required — the Running box's
+  divider + column-header rows are count-only chrome the pane draws (the
+  `render_section_rule` pattern); the Targets table's ratatui `Table::header`
+  row is modeled as one chrome row on the table box so the 80% cap and
+  `MIN_TABLE_ROWS` floor measure the true inner height.
+- Phase 3 data model expanded with work the snapshot does not carry today:
+  owning-member manifest-dir resolution from the target name via the
+  `TargetEntry` metadata (D1/R20 — the exe path cannot recover it), the
+  first-seen map surviving `tick()`'s per-poll rebuild with `kill`/
+  `drop_instances` evicting entries, `create_time` via sysinfo `start_time()`
+  (extend `ProcessRefreshKind`), and an all-keys accessor on `RunningTargets`
+  for the global list.
+- Phase 3 adoption expanded: the cursor-split audit now names the run path
+  (`handle_target_action`), the anchors (`targets_cursor_entry` /
+  `anchor_targets_cursor_to_entry`, `display_row_for_entry` deleted), and the
+  title's `cursor_entry` counter; the confirm body is rewritten once in
+  Phase 3 with D4's text; viewport `set_len`/`set_content_height` plus
+  `[table, running]` prior offsets follow the Package precedent; `row_rects` +
+  the `Hittable` rewrite (R5/R24) are now phased deliverables.
+- Phase 4 narrowed to prompt/doc cleanup on the confirm path and sharpened to
+  override **both** `visibility()` and `state()` from the stored Phase 3
+  fields (the `CiRunsPane` Hidden pattern).
+- No findings were rejected and none required a user decision — all twelve
+  were plan-completion against the settled D1–D4 / R-requirements.
+
+### Phase 3 — Targets data model + adoption (the switch) ✅ complete (2026-06-03)
 
 Merged from the former Phases 3 and 4 (Phase 1 review): the data model alone had
 no consumer until the switch, so a standalone phase could not ship clean under
@@ -412,29 +514,293 @@ Carried from the Phase 1 review:
   PID→row remap (R21) runs each frame after the table row count is known, since
   the global highlight is `table_rows + running_row`.
 
-### Phase 4 — gate `K` + cleanup
+Carried from the Phase 2 review:
 
-Override `visibility()`/`state()` on `TargetsPane` so `Kill` appears only on a
-Running row. Simplify the confirm body and `KillTarget` doc to one PID. Sync
-`docs/app-api.md` and remove stale references.
+- **Engine scope is exactly `Cap`.** Nesting, `Columns`, the per-stack-node
+  fill invariant, the `prior_offsets` leaf order, and `.lines()` all shipped in
+  Phase 2. What remains: the `Size::Cap` variant + `Size::cap` ctor, the
+  `min(rows + chrome, floor(percent * inner))` clamp where `place_stack` sizes
+  non-fill children, and the `Cap` arm in `box_scroll_offset` (bottom-pinned
+  non-cursor default, R19).
+- **No `.header()` ctor — chrome stays count-only.** The Running box reserves
+  its two chrome rows (divider + column header) with count-only chrome ctors
+  and the pane draws both, the way `package.rs` `render_section_rule` draws the
+  Tests/crates.io titled rules. If a `.header()` name aids readability, add it
+  here with its first user — it is still just a chrome-count increment.
+- **The table box gets a header chrome row.** `render_targets_with_data`
+  renders a ratatui `Table` with `.header(build_header_row())` and offsets the
+  data area one row down by hand. Model that header as one chrome row on the
+  table box so `place` accounts for it and the 80% cap / `MIN_TABLE_ROWS`
+  floor measure against the true inner height; the pane keeps drawing the
+  header into the box.
+- **Member-dir resolution is new data-model work (D1, R20).** Nothing in the
+  snapshot knows the owning member today: `detail_target_dir` is the workspace
+  `target_directory`, and `classify_exe` recovers only
+  `(target_dir, kind, name)` — the exe path does not encode the member.
+  Resolve the owning member's manifest dir from the target name via the same
+  metadata that builds `TargetEntry`/`TargetSource::Member`, and store it per
+  instance/row.
+- **Poller details for first-seen + `create_time` (D3, R19).** `tick()`
+  rebuilds `by_key` from scratch each poll and sorts by PID; the first-seen
+  `pid -> Instant` map must live outside that rebuild, and `kill`/
+  `drop_instances` must drop its entries. `RunningInstance` gains
+  `create_time` from sysinfo `start_time()` — extend the `ProcessRefreshKind`
+  to request it.
+- **Global snapshot accessor.** `build_running_rows` flattens every tracked
+  key, but `RunningTargets.by_key` is private with only a per-key
+  `instances(&key)` accessor — add an all-keys iterator to the snapshot.
+- **Cursor-split audit beyond kill (R22).** The run path and anchors still
+  read the flat table: `handle_target_action` (run/launch),
+  `targets_cursor_entry` / `anchor_targets_cursor_to_entry`, and the title's
+  `cursor_entry` counter. A table-region cursor maps 1:1 to an entry; a
+  Running-region cursor must not trigger run/launch, and the title counter
+  ignores it. Delete `display_row_for_entry`; the PID anchor (D2, R21)
+  replaces the entry re-anchor in `execute_target_kill`.
+- **Confirm body is rewritten once, here.** `confirm_action_body`'s multi-PID
+  arm and `ConfirmAction::KillTarget { pids: Vec<u32> }` scalarize together
+  with D4's `label (profile)` / `pid · started Nm ago` text, so Phase 4 keeps
+  only prompt/doc-comment cleanup — no half-rewritten match arm between
+  phases.
+- **Viewport sync + hit-testing follow the Package precedent.** Set
+  `set_len(total_selectable())` and `set_content_height` for the stacked
+  two-box height; `prior_offsets` are `[table, running]` in leaf order.
+  `TargetsPane` gains `row_rects: Vec<(Rect, usize)>` and its `Hittable` impl
+  moves off `pos_to_local_row`, so clicks and hover resolve Running rows
+  (R5, R24).
 
-Carried from the Phase 1 review:
+#### Retrospective
 
-- **Persist the gating fact.** `visibility()`/`state()` run in
-  `framework_keymap.rs` outside render and see only `TargetsPane`'s stored
-  state. Persist "the highlight is in the Running box and it has rows" each frame
-  (the running row count plus whether the cursor is in that box) so the keymap
-  reads it without the per-frame layout result.
+**What worked:**
+
+- The engine addition really was exactly `Cap`: the `Size::cap` ctor, a
+  `Rows::claimed_height` helper that `place_stack` uses to size every
+  non-fill child (`Fixed` exact, `Cap` clamped), and the `Cap` arm in
+  `box_scroll_offset` — plus four tree tests against a Targets-like fixture.
+- The Package render structure transferred directly: block → `place` →
+  per-box render → explicit `row_rects` → `Hittable` off the rect list.
+  `targets_region` is one small function; the Running sub-pane is its own
+  module (`targets/running_subpane.rs`, R10) with `RunningRow`,
+  `build_running_rows`, `resolve_kill_request`, and the box renderer.
+- `RunningInstance` stayed `Copy`: `first_seen: Instant` and
+  `create_time: u64` are per-instance fields, while the owning member dir
+  lives once per key on the snapshot (a private `RunningTarget
+  { member_dir, instances }` value struct) with an `iter_targets()`
+  accessor as the global all-keys view.
+- `kill(pid, create_time)` refreshes the single PID, compares the live
+  process's `start_time()` against the request, and skips on mismatch —
+  D3's check is three lines on the existing poller.
+
+**What deviated from the plan:**
+
+- No `ProcessRefreshKind` extension: sysinfo collects `start_time()` with
+  the base process info, so capturing `create_time` was a field read.
+- The `MIN_TABLE_ROWS` floor is pane-side, not engine-side: `targets_region`
+  clamps the Running box's rendered window with Phase 2's `.lines()`
+  override before the engine cap applies, keeping the engine surface
+  exactly `Cap`.
+- The `Cap` scroll arm ignores `prior_offsets` entirely (cursor →
+  keep-visible, else bottom-pin), so the pane persists no Running offset;
+  `prior_offsets` is `[viewport.scroll_offset(), 0]` and the planned
+  per-box-offsets field reduced to the existing viewport field alone.
+- The table kept ratatui's sticky scrolling: while the highlight is in the
+  table, the prior offset feeds `TableState` and ratatui adjusts it; the
+  engine's table offset is used only when the highlight is in the Running
+  box. Same divergence-avoidance reasoning as Phase 1's accepted cases,
+  but resolved in favour of pixel-identical table behaviour.
+- `running_cursor_pid` alone cannot tell "rows shifted under the cursor"
+  from "the user moved the cursor", so the anchor is re-derived on every
+  user move (a `navigate_targets` hook and a Targets click hook in
+  `interaction.rs`) and the render-pass `sync_running_cursor` only follows
+  or repairs it (gone → same-index "next" row, else previous; empty →
+  last table row).
+- The global list dedups multi-attributed installed binaries by PID — one
+  OS process is one Running row, attribution chosen by lowest path so it
+  doesn't flicker between ticks. The plan's N-way attribution was designed
+  for the per-project join and said nothing about the global list.
+- `Panes.detail_target_dir` and `PaneRenderCtx::running_targets_dir` were
+  deleted outright: the global Running list needs no per-project join and
+  the kill path no longer resolves keys, so the whole plumbing
+  (`set_detail_data` param, `FinderSplit` field, detail-cache resolve) had
+  no remaining reader. `render::truncate_with_suffix` went with it.
+- `KillTarget`'s doc comment was rewritten here, not Phase 4 — the variant's
+  fields changed (`pids: Vec<u32>` → `pid` + `create_time`), so the stale
+  comment could not survive the compile anyway.
+- Added `TargetsData::target_count()` so kill/anchor paths read the table
+  length without cloning the entry list.
+
+**Surprises:**
+
+- The standing `targets_pane_row_click_selects_target` test aims clicks
+  through `viewport.content_area()`; the rewrite keeps `content_area`
+  pointed at the table's data rect (header excluded) so click geometry
+  holds, while `set_viewport_rows` now counts both boxes' visible rows for
+  page-step sizing.
+- `cargo mend` rejected the `pub use RunningRow` facade (internal-only
+  consumer) and the test-only `OnceLock` import landed `#[cfg(test)]`-gated
+  at the top of `running_targets.rs`.
+
+**Implications for remaining phases:**
+
+- Phase 4's gating fact needs no new field: `running_cursor_pid.is_some()`
+  is exactly "the highlight is on a Running row", and the anchor is `Some`
+  only while rows exist.
+- Phase 4 shrinks to the two keymap overrides plus `docs/app-api.md` sync —
+  the confirm body, prompt text, and `KillTarget` doc comment all shipped
+  here.
+
+#### Phase 3 Review
+
+- Phase 4 re-scoped to "gate `K` + wheel re-anchor": the `state()` override
+  is dropped (a Hidden slot never consults it and dispatch self-guards, so
+  it would be dead code), the doc-comment/prompt deliverable is marked
+  shipped in Phase 3, and the `docs/app-api.md` sync is deleted — that file
+  no longer exists (replaced by `docs/workspace.md`) and no surviving doc
+  describes Targets/Kill/running.
+- New Phase 4 deliverable: the mouse-wheel path moves the Targets highlight
+  without re-deriving the PID anchor, so a wheel step inside the Running
+  box snaps back to the stale anchored instance on the next render — hook
+  `sync_running_cursor_pid` the way navigation and clicks already are.
+- Recorded as already satisfied, so later passes don't re-open them: the
+  `Shortcuts` ctx is the full `App` (the gating fact needs no plumbing),
+  table-row `K` is a safe no-op today (`resolve_kill_request` returns
+  `None`), and hover/click on Running rows already resolve through
+  `row_rects` + global logical rows.
+- Defaults and the files-touched table synced to the as-built state:
+  member-relative paths (D1) replace the stale workspace-root bullet, the
+  divider renders through `render_horizontal_rule` (R11), and `TargetsPane`
+  carries no per-box-offset or separate gating fields —
+  `viewport.scroll_offset` is the table offset and `running_cursor_pid` is
+  the gate.
+- No findings were rejected and none required a user decision — all nine
+  were plan-consistency against the shipped Phase 3 code.
+
+### Phase 4 — gate `K` + wheel re-anchor ✅ complete (2026-06-03)
+
+Override `visibility()` on `TargetsPane` (`framework_keymap.rs`) so the `Kill`
+hint appears only while the highlight sits on a Running row, reading
+`ctx.panes.targets.running_cursor_pid().is_some()` — the anchor is `Some`
+exactly when the highlight is on a Running row, so no separate gating field
+exists. The change is presentational: dispatch never consults
+`visibility()`/`state()`, and `handle_target_kill` already self-guards
+(`resolve_kill_request` returns `None` on table rows), so a table-row `K` is
+a safe no-op today.
+
+Route the Targets mouse-wheel scroll through the PID re-anchor: the wheel
+path (`input/mod.rs` → `viewport_mut_for(...).up()/down()`) moves the
+highlight without calling `sync_running_cursor_pid`, so a wheel step within
+the Running box snaps back to the stale anchored instance on the next
+render. Hook it the way navigation (`navigate_targets`) and clicks
+(`interaction.rs`) already are.
+
+Resolved against the as-built code (Phase 3 review):
+
+- **`state()` override dropped.** The `CiRunsPane` pattern overrides only
+  `visibility()`; a Hidden slot is dropped from the bar before `state()` is
+  ever consulted, and there is no Visible-but-Disabled case for `Kill` — a
+  `state()` override would be dead code under the per-phase gate.
+- **Ctx reachability is a non-issue.** `render_bar_slots` passes the full
+  `App` as the `Shortcuts` ctx, so the override reads
+  `running_cursor_pid()` directly; the Phase 1 "persist the gating fact"
+  bullet is satisfied by that field alone.
+- **No doc sync remains.** `docs/app-api.md` was deleted (replaced by
+  `docs/workspace.md`) and no surviving doc describes Targets/Kill/running;
+  the `KillTarget` doc comment, confirm body, and prompt text all shipped
+  with Phase 3's field changes.
+- **Hover on Running rows already works.** `render_rows` styles by global
+  logical row through `selection_state`, and `TargetsPane::hit_test_at`
+  resolves Running rows from `row_rects` — no Phase 4 work.
+
+#### Retrospective
+
+**What worked:**
+
+- The `CiRunsPane` pattern transplanted directly: a `visibility()` match
+  with a catch-all `Visible` arm plus a `targets_kill_visibility` helper
+  reading `running_cursor_pid().is_some()` (`framework_keymap.rs`).
+- The wheel hook is three lines in `scroll_pane_at` (`input/mod.rs`): after
+  the viewport step, `pane_id == PaneId::Targets` calls
+  `panes::sync_running_targets_cursor`, mirroring the click hook in
+  `interaction.rs`.
+
+**What deviated from the plan:**
+
+- The bar-snapshot test
+  (`focused_app_panes_render_expected_pane_action_labels`) hardcoded `kill`
+  in the default Targets bar and failed once the gate landed. It split into
+  an un-anchored case (`run`/`release` only) and an anchored case
+  (`set_running_cursor_pid(Some(..))` shows `kill`), plus a direct
+  visibility test pair mirroring the CiRuns ones.
+
+**Surprises:**
+
+- `Option::is_some` is const-eligible, so clippy's `missing_const_for_fn`
+  required `const fn` on the visibility helper — unlike the CiRuns helpers,
+  which call non-const accessors.
+
+**Implications for remaining phases:**
+
+- None — this was the final phase; the plan is complete.
+
+#### Phase 4 Review
+
+Closure pass over the whole plan; every finding was minor and none required
+a user decision.
+
+- Every promised behavior verified against shipped code: single-PID kill
+  with create-time validation, continuous cursor with newest-at-bottom
+  ordering, `Cap(80)` + `MIN_TABLE_ROWS` floor, present-only-when-running,
+  member-relative paths (D1), and the `K` gate.
+- The hidden `K` slot is confirmed purely presentational:
+  `resolve_kill_request` returns `None` on every table row, so a bound but
+  hidden `K` stays a no-op.
+- All cursor-moving paths audited: Home/End/Page/HalfPage funnel through
+  `navigate_targets`'s single sync call; `reset_project_panes` (project
+  switch) and finder `navigate_to_target` land on table rows, where the
+  render-pass `sync_running_cursor` clears the anchor — no hooks needed.
+- Invariant for future input paths: the render-pass reconcile self-heals
+  every case except a move *within* the Running box while a live anchored
+  PID is set — any new path that can do that needs the
+  `sync_running_targets_cursor` hook (wheel was exactly this case).
+- §`K` hint gating prose synced to the as-built single `visibility()`
+  override (the `state()` half was dropped in the Phase 3 review).
+- R1's "Targets holds two offsets" wording is superseded by the as-built
+  single-offset design but stays as a historical cycle log; the live
+  Defaults section already records the shipped reality.
 
 ## Defaults taken (call out to change)
 
-- The sub-pane title shows a count: `Running (3)`.
-- The divider uses `├ ┤` tees merged into the side borders (a few direct
-  buffer-cell writes, the same technique as the existing overflow affordance).
-- `TargetsPane` keeps its `Viewport` (the highlighted row) and gains a small
-  per-box scroll-offset field — no rename of the existing field.
-- Workspace-member running targets display the workspace root path (where
-  `target/` lives), not the member sub-directory.
+- The sub-pane title shows a count: `Running (3)`, or `Running (2 of 3)`
+  while the highlight is in the box.
+- The divider's `├ ┤` tees merge into the side borders through
+  `tui_pane::render_horizontal_rule` spanning the full pane width (R11).
+- The table reserves a footer boundary row above the Running divider
+  (`Region::footer()`, engine-owned): blank while every table row is
+  visible, a full-width rule with the pager centered on it (the shared
+  `render_overflow_affordance`, `label_color`) once it scrolls — the pager
+  never overlaps the last table row.
+- Installed (`cargo`-profile) instances fold under a collapsible
+  `▶ cargo (N)` header row at the top of the Running list, collapsed by
+  default (`CargoGroup` on `TargetsPane`; some are always running —
+  cargo-port itself at minimum). `Right`/`Left` (and vim `l`/`h`, via the
+  shared navigation scope `navigate_targets` intercepts) expand/collapse
+  with the project list's row idiom — fall through to a row move when not
+  on the group — and `Enter` on the header toggles; the header has no
+  PID, so `K` hides there and the kill resolver skips it; the divider's
+  `(i of N)` counts instances, with collapsed cargo rows occupying
+  `1..=count`.
+- The Running list is global, so it renders — and the pane stays
+  tab-reachable — even when the selected project has no targets
+  (`has_instances` joins `has_targets` in both gates); the
+  `MIN_TABLE_ROWS` floor drops when the table is empty. The empty block
+  shows only when there are no targets and nothing running.
+- `TargetsPane` keeps its `Viewport` (the highlighted row, whose
+  `scroll_offset` doubles as the table box's persisted offset) and gains
+  `running_cursor_pid` (also the `K`-gating fact) and hit-test `row_rects` —
+  no rename of the existing field, and no Running offset field since the
+  `Cap` box derives its offset every frame.
+- Workspace-member running targets display the member-relative path
+  (per D1) — each row resolves its owning member's manifest dir, falling
+  back to the workspace root for stale artifacts.
 
 ## Review refinements (cycle 1, auto-recorded)
 

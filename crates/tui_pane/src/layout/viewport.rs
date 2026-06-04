@@ -30,21 +30,6 @@ impl ViewportOverflow {
         }
     }
 
-    /// Construct overflow facts for a scrolling [`Band`]. A named alias for
-    /// [`ViewportOverflow::new`] whose argument names spell out the band
-    /// partition, so a pane builds band overflow facts the same typed way
-    /// instead of hand-passing four bare numbers and risking a drift between
-    /// consumers. The label paginates the band, not the full list.
-    #[must_use]
-    pub const fn band(
-        band_len: usize,
-        band_offset: usize,
-        band_visible: usize,
-        band_cursor: usize,
-    ) -> Self {
-        Self::new(band_len, band_offset, band_visible, band_cursor)
-    }
-
     /// Return the overflow label for the current position. The label
     /// pairs scroll arrows with an `N of M` indicator. `M` is
     /// `len.div_ceil(visible_rows)`; `N` is the page containing the
@@ -66,75 +51,6 @@ impl ViewportOverflow {
             (true, false) => Some(format!("▲ {body}")),
             (false, true) => Some(format!("{body} ▼")),
             (false, false) => None,
-        }
-    }
-}
-
-/// Partition of a viewport's logical rows into a pinned head, a scrolling
-/// middle band, and a pinned tail.
-///
-/// The first `head` rows and the last `tail` rows never scroll; the rows in
-/// `[head, len - tail)` form the single scrolling band. The cursor stays one
-/// sequence over the full `0..len` list — only the band's offset responds to
-/// the partition, computed from the band-local cursor with
-/// [`keep_visible_scroll_offset`].
-///
-/// ```
-/// use tui_pane::Band;
-/// use tui_pane::keep_visible_scroll_offset;
-///
-/// // A CPU pane: 1 pinned aggregate row, 15 scrolling cores, 4 pinned
-/// // breakdown rows. With the cursor on row 14 (band-local 13) and a
-/// // 5-tall band, the band scrolls to keep that core visible.
-/// let band = Band::new(1, 4, 20).expect("head + tail fits within len");
-/// let pos = 14;
-/// let band_visible = 5;
-/// let band_local = band.band_local_cursor(pos).expect("cursor is in the band");
-/// let offset = keep_visible_scroll_offset(band_local, band_visible, band.band_len());
-/// assert_eq!(band.band_len(), 15);
-/// assert_eq!(band_local, 13);
-/// assert_eq!(offset, 9);
-/// ```
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Band {
-    head: usize,
-    tail: usize,
-    len:  usize,
-}
-
-impl Band {
-    /// Construct a band over a `len`-row list with `head` pinned leading rows
-    /// and `tail` pinned trailing rows. Returns `None` when the pinned rows
-    /// leave no room (`head + tail > len`), so an empty or negative band
-    /// cannot be built.
-    #[must_use]
-    pub const fn new(head: usize, tail: usize, len: usize) -> Option<Self> {
-        if head + tail > len {
-            None
-        } else {
-            Some(Self { head, tail, len })
-        }
-    }
-
-    /// Number of rows in the scrolling band: `len - head - tail`.
-    #[must_use]
-    pub const fn band_len(self) -> usize { self.len - self.head - self.tail }
-
-    /// Whether `pos` falls inside the scrolling band (`[head, len - tail)`).
-    #[must_use]
-    pub const fn contains_cursor(self, pos: usize) -> bool {
-        pos >= self.head && pos < self.len - self.tail
-    }
-
-    /// The cursor's row within the band, or `None` when `pos` is on a pinned
-    /// row. In-band it returns `Some(pos - head)`, so the scroll clamp is only
-    /// reachable with a band-local cursor.
-    #[must_use]
-    pub const fn band_local_cursor(self, pos: usize) -> Option<usize> {
-        if self.contains_cursor(pos) {
-            Some(pos - self.head)
-        } else {
-            None
         }
     }
 }
@@ -427,72 +343,9 @@ pub fn render_overflow_affordance(
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
-    use super::Band;
     use super::Viewport;
     use super::ViewportOverflow;
     use super::keep_visible_scroll_offset;
-
-    #[test]
-    fn band_new_rejects_pinned_rows_that_exceed_len() {
-        assert_eq!(Band::new(3, 3, 5), None);
-        assert!(Band::new(3, 2, 5).is_some());
-    }
-
-    #[test]
-    fn band_len_for_tail_only_pins() {
-        // Package: head = Structure-and-above, tail = 0.
-        let band = Band::new(4, 0, 10).expect("head + tail fits within len");
-        assert_eq!(band.band_len(), 6);
-    }
-
-    #[test]
-    fn band_len_for_head_and_tail_pins() {
-        // CPU: head = aggregate, tail = breakdown + GPU.
-        let band = Band::new(1, 4, 20).expect("head + tail fits within len");
-        assert_eq!(band.band_len(), 15);
-    }
-
-    #[test]
-    fn band_cursor_classification_across_the_partition() {
-        let band = Band::new(1, 4, 20).expect("head + tail fits within len");
-        // First band row (at head).
-        assert!(band.contains_cursor(1));
-        assert_eq!(band.band_local_cursor(1), Some(0));
-        // Mid-band.
-        assert!(band.contains_cursor(8));
-        assert_eq!(band.band_local_cursor(8), Some(7));
-        // Last pinned-head row is not in the band.
-        assert!(!band.contains_cursor(0));
-        assert_eq!(band.band_local_cursor(0), None);
-        // First pinned-tail row (index len - tail) is not in the band.
-        assert!(!band.contains_cursor(16));
-        assert_eq!(band.band_local_cursor(16), None);
-    }
-
-    #[test]
-    fn band_with_no_scrolling_rows() {
-        // head + tail == len: every row is pinned, the band is empty.
-        let band = Band::new(3, 2, 5).expect("head + tail equals len");
-        assert_eq!(band.band_len(), 0);
-        assert_eq!(band.band_local_cursor(3), None);
-    }
-
-    #[test]
-    fn band_overflow_facts_track_the_band_pages() {
-        // 15-row band, 5 visible. Top, middle, and bottom of the band.
-        assert_eq!(
-            ViewportOverflow::band(15, 0, 5, 0).label().as_deref(),
-            Some("1 of 3 ▼")
-        );
-        assert_eq!(
-            ViewportOverflow::band(15, 5, 5, 7).label().as_deref(),
-            Some("▲ 2 of 3 ▼")
-        );
-        assert_eq!(
-            ViewportOverflow::band(15, 10, 5, 14).label().as_deref(),
-            Some("▲ 3 of 3")
-        );
-    }
 
     #[test]
     fn keep_visible_offset_is_zero_when_all_rows_fit() {

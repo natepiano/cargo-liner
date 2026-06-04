@@ -19,10 +19,15 @@ pub(crate) enum ConfirmAction {
         primary: AbsolutePath,
         linked:  Vec<AbsolutePath>,
     },
-    /// Send `SIGTERM` to the running target instance(s) named by `label`.
-    /// `pids` is one PID for a single instance, or every instance's PID
-    /// when killing a multi-instance target from its parent row.
-    KillTarget { label: String, pids: Vec<u32> },
+    /// Send `SIGTERM` to the running instance named by `label`. The PID
+    /// is verified against `create_time` (the process's start time in
+    /// epoch seconds) immediately before the signal, so a PID the OS
+    /// reassigned while the dialog was open is never killed.
+    KillTarget {
+        label:       String,
+        pid:         u32,
+        create_time: u64,
+    },
 }
 
 #[derive(Clone)]

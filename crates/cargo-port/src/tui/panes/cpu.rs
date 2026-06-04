@@ -561,7 +561,7 @@ fn render_cores_affordance(frame: &mut Frame, layout: &CpuPanelLayout, cursor_po
     render_overflow_affordance(
         frame,
         layout.cores,
-        ViewportOverflow::band(
+        ViewportOverflow::new(
             layout.core_count,
             layout.band_offset,
             band_visible,
@@ -579,9 +579,8 @@ mod tests {
 
     // A 15-core CPU. Fixed boxes take 7 rows (1 aggregate + 1+3 breakdown +
     // 1+1 GPU), so a 12-row inner leaves the cores band 5 rows and it must
-    // scroll; a 22-row inner fits all 15 cores. These port the old
-    // `cpu_band_offset` `Band` tests onto the box tree (R18): the cores band's
-    // resolved scroll offset is box index 1's `scroll_offset`.
+    // scroll; a 22-row inner fits all 15 cores. The cores band's resolved
+    // scroll offset is box index 1's `scroll_offset`.
     fn cores_offset(inner_height: u16, cursor: usize, prior: usize) -> usize {
         let inner = Rect {
             x:      0,
@@ -615,7 +614,8 @@ mod tests {
 
     #[test]
     fn band_offset_is_zero_when_every_core_fits() {
-        // Band taller than the core count: no scroll regardless of cursor.
+        // Cores band taller than the core count: no scroll regardless of
+        // cursor.
         assert_eq!(cores_offset(22, 14, 0), 0);
     }
 }

@@ -2,8 +2,6 @@ use std::time::Duration;
 
 use ratatui::Frame;
 use ratatui::layout::Constraint;
-use ratatui::layout::Direction;
-use ratatui::layout::Layout;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
@@ -12,12 +10,14 @@ use ratatui::text::Span;
 use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
 use ratatui::widgets::Paragraph;
-use tui_pane::Band;
 use tui_pane::PaneChrome;
 use tui_pane::PaneFocusState;
 use tui_pane::PaneRule;
 use tui_pane::PaneSelectionState;
+use tui_pane::Placed;
+use tui_pane::Region;
 use tui_pane::RuleTitle;
+use tui_pane::Size;
 use tui_pane::Viewport;
 use tui_pane::ViewportOverflow;
 use tui_pane::accent_color;
@@ -74,11 +74,8 @@ struct PackageRenderCtx<'a> {
 }
 
 struct PackageRenderLayout {
-    scroll_offset:     usize,
-    /// Held Tests-band scroll offset for the next frame; `0` for the
-    /// metadata-only path, which has no Tests band.
-    tests_band_offset: usize,
-    row_rects:         Vec<(Rect, usize)>,
+    scroll_offset: usize,
+    row_rects:     Vec<(Rect, usize)>,
 }
 
 struct PackageFieldRender {
@@ -92,29 +89,30 @@ struct PackageFieldRender {
 }
 
 struct StatsColumnRender<'a> {
-    data:              &'a PackageData,
-    rows:              &'a [PackageRow],
-    pane:              &'a Viewport,
-    focus:             PaneFocusState,
-    area:              Rect,
-    value_width:       u16,
-    border_style:      Style,
-    /// Style for the `Tests` sub-section title rule, matching the
-    /// `Structure` title (chrome title style for the current focus).
-    title_style:       Style,
-    /// Held Tests-band offset from the prior frame (see
-    /// [`ProjectPanelRender::prior_tests_band_offset`]).
-    prior_band_offset: usize,
-}
-
-/// Result of rendering the stats column: hit-test rects plus the Tests-band
-/// offset to hold for the next frame.
-struct StatsColumnLayout {
-    row_rects:         Vec<(Rect, usize)>,
-    tests_band_offset: usize,
+    data:         &'a PackageData,
+    rows:         &'a [PackageRow],
+    pane:         &'a Viewport,
+    focus:        PaneFocusState,
+    value_width:  u16,
+    border_style: Style,
+    /// Style for the `Tests` / `crates.io` sub-section title rules, matching
+    /// the `Structure` title (chrome title style for the current focus).
+    title_style:  Style,
+    /// Tests-box row the cursor sits on, when it is on a Tests row — anchors
+    /// the Tests pager.
+    tests_cursor: Option<usize>,
 }
 
 type FieldWrapFn = fn(&str, usize) -> Vec<String>;
+
+/// Leaf index of the description box in the package tree.
+const DESCRIPTION_BOX: usize = 0;
+
+/// Leaf index of the metadata column in the package tree.
+const METADATA_BOX: usize = 1;
+
+/// Floor on the metadata column's width when the stats column is present.
+const MIN_METADATA_WIDTH: u16 = 20;
 
 /// Floor on the stats-column label field, so a project with only short
 /// labels keeps the same column width it had before the Tests section
@@ -126,6 +124,135 @@ const TESTS_TITLE: &str = "Tests";
 
 /// Title of the crates.io sub-section rule in the stats column.
 const CRATES_IO_TITLE: &str = "crates.io";
+
+/// Leaf indices of the stats-column sections in the package tree's
+/// flattened-leaf order. The description and metadata boxes are always
+/// leaves [`DESCRIPTION_BOX`] and [`METADATA_BOX`]; the sections follow, top
+/// to bottom, for the sections with rendered rows.
+struct PackageBoxes {
+    structure: Option<usize>,
+    tests:     Option<usize>,
+    crates_io: Option<usize>,
+}
+
+impl PackageBoxes {
+    /// Leaf index of the stats column's top box; `None` when the pane has no
+    /// stats column.
+    const fn first(&self) -> Option<usize> {
+        match (self.structure, self.tests, self.crates_io) {
+            (Some(index), _, _) | (None, Some(index), _) | (None, None, Some(index)) => Some(index),
+            (None, None, None) => None,
+        }
+    }
+
+    /// Number of leaves in the tree (the two fixed boxes plus the present
+    /// sections), sizing the `prior_offsets` slice.
+    fn leaf_count(&self) -> usize {
+        METADATA_BOX
+            + 1
+            + usize::from(self.structure.is_some())
+            + usize::from(self.tests.is_some())
+            + usize::from(self.crates_io.is_some())
+    }
+}
+
+/// The package pane's layout tree and its section leaf indices: the
+/// description block on top, then the metadata column beside the stats
+/// column (Structure pinned, Tests scrolling, crates.io below). Sections
+/// without rendered rows are omitted; the box that takes the column's
+/// leftover room is Tests when present, otherwise the last present section
+/// (whose rows render from the top of the leftover, so it draws the same as
+/// a pinned box). Both columns' top boxes reserve one chrome row for the
+/// shared separator rule when `separator` is `1`.
+fn package_region(
+    data: &PackageData,
+    rows: &[PackageRow],
+    description_lines: u16,
+    separator: u16,
+    stats_width: u16,
+) -> (Region, PackageBoxes) {
+    let metadata_count = rows
+        .iter()
+        .filter(|row| matches!(row, PackageRow::Field(_) | PackageRow::Section(_)))
+        .count();
+    let description = Region::rows(1, Size::Fixed).lines(description_lines);
+    let mut metadata = Region::rows(metadata_count, Size::Fill);
+    if separator > 0 {
+        metadata = metadata.rule();
+    }
+    let mut boxes = PackageBoxes {
+        structure: None,
+        tests:     None,
+        crates_io: None,
+    };
+    if !has_stats_column(data) {
+        return (Region::stack(vec![description, metadata]), boxes);
+    }
+
+    let structure_count = data.stats_rows.len();
+    let tests_count = data.test_rows.len();
+    // The crates.io section can render rows that have no selectable
+    // counterpart in the flat row list (worktree-summary data), so its box
+    // keeps the flat count for the cursor mapping and reserves the rendered
+    // rows through `lines`.
+    let crates_io_selectable = rows
+        .iter()
+        .filter(|row| matches!(row, PackageRow::CratesIo(_)))
+        .count();
+    let crates_io_lines = data.crates_io_rows.len();
+
+    let mut sections: Vec<Region> = Vec::new();
+    if structure_count > 0 {
+        let size = if tests_count > 0 || crates_io_lines > 0 {
+            Size::Fixed
+        } else {
+            Size::Fill
+        };
+        let mut structure = Region::rows(structure_count, size);
+        if separator > 0 {
+            structure = structure.rule();
+        }
+        boxes.structure = Some(METADATA_BOX + 1 + sections.len());
+        sections.push(structure);
+    }
+    if tests_count > 0 {
+        let mut tests = Region::rows(tests_count, Size::Fill);
+        if separator > 0 && sections.is_empty() {
+            tests = tests.rule();
+        }
+        if structure_count > 0 {
+            tests = tests.spacer();
+        }
+        boxes.tests = Some(METADATA_BOX + 1 + sections.len());
+        sections.push(tests.rule());
+    }
+    if crates_io_lines > 0 {
+        let size = if tests_count > 0 {
+            Size::Fixed
+        } else {
+            Size::Fill
+        };
+        let mut crates_io = Region::rows(crates_io_selectable, size)
+            .lines(u16::try_from(crates_io_lines).unwrap_or(u16::MAX));
+        if separator > 0 && sections.is_empty() {
+            crates_io = crates_io.rule();
+        }
+        if structure_count > 0 || tests_count > 0 {
+            crates_io = crates_io.spacer();
+        }
+        boxes.crates_io = Some(METADATA_BOX + 1 + sections.len());
+        sections.push(crates_io.rule());
+    }
+
+    let region = Region::stack(vec![
+        description,
+        Region::columns(vec![
+            (Constraint::Min(MIN_METADATA_WIDTH), metadata),
+            (Constraint::Length(stats_width), Region::stack(sections)),
+        ]),
+    ]);
+    (region, boxes)
+}
 
 /// True when any stats-column section (Structure / Tests / crates.io)
 /// has rows, so the right-hand column should render at all.
@@ -342,7 +469,6 @@ fn render_column_inner(
     let scroll_offset = usize::from(scroll_y);
     PackageRenderLayout {
         scroll_offset,
-        tests_band_offset: 0,
         row_rects: visible_row_rects(row_line_ys, scroll_offset, area),
     }
 }
@@ -482,22 +608,11 @@ struct ProjectPanelRender<'a> {
     focus:                     PaneFocusState,
     styles:                    &'a RenderStyles,
     border_style:              Style,
-    animation_elapsed:         Duration,
-    lint_enabled:              bool,
-    /// Held Tests-band scroll offset from the prior frame, so the band
-    /// stays put while the cursor sits on a pinned (non-Tests) row.
-    prior_tests_band_offset:   usize,
     /// Inter-pane description sync floor; clamped per-pane by the
     /// available `description_max_height`. Read by
     /// [`DescriptionBlock::render`] so the rendered content stays in
     /// step with what `sync_floor` saw at the top of the frame.
     synced_description_height: SyncedDescriptionHeight,
-}
-
-#[derive(Clone, Copy)]
-struct ProjectPanelAreas {
-    lower:            Rect,
-    description_rect: Option<Rect>,
 }
 
 /// Body of `PackagePane::render`. Reads pane state through
@@ -520,38 +635,12 @@ pub(super) fn render_package_pane_body(
     let lint_enabled = config.current().lint.enabled;
 
     let Some(pkg_data) = pane.content().cloned() else {
-        let title_style = Style::default()
-            .fg(title_color())
-            .add_modifier(Modifier::BOLD);
-        pane.viewport.clear_surface();
-        pane.clear_row_rects();
-        let empty_block = Block::default()
-            .borders(Borders::ALL)
-            .title(" Details ")
-            .title_style(title_style);
-        let content = vec![Line::from("  No project selected")];
-        let detail = Paragraph::new(content).block(empty_block);
-        frame.render_widget(detail, area);
+        render_no_project_selected(frame, area, pane);
         return;
     };
 
     let rows = panes::package_rows_from_data(&pkg_data);
-    pane.viewport.set_len(rows.len());
-    // The lower metadata and stats render in two parallel columns, so the
-    // content's rendered height is the taller column plus the About section —
-    // not the flat row count. Tell the viewport the rendered height so the
-    // scroll pager does not page on rows that never stack vertically.
-    pane.viewport.set_content_height(package_content_height(
-        usize::from(synced_description_height.rows()),
-        package_lower_metadata_height(&pkg_data, &rows),
-    ));
-    if !rows
-        .get(pane.viewport.pos())
-        .is_some_and(panes::package_row_is_selectable)
-        && let Some(pos) = panes::package_nearest_selectable_row(&rows, pane.viewport.pos())
-    {
-        pane.viewport.set_pos(pos);
-    }
+    sync_package_viewport(pane, &pkg_data, &rows, *synced_description_height);
     let border_style = if matches!(focus_state, PaneFocusState::Active) {
         styles.chrome.active_border
     } else {
@@ -577,19 +666,66 @@ pub(super) fn render_package_pane_body(
         focus: focus_state,
         styles,
         border_style,
-        animation_elapsed: *animation_elapsed,
-        lint_enabled,
-        prior_tests_band_offset: pane.tests_band_offset(),
         synced_description_height: *synced_description_height,
     };
-    let areas = render_project_description_section(frame, &context, area, project_inner);
 
-    let layout = render_project_metadata(frame, &pane.viewport, &context, areas.lower);
-    pane.viewport.set_scroll_offset(layout.scroll_offset);
-    pane.set_tests_band_offset(layout.tests_band_offset);
+    // The description renders first; its returned height fixes the
+    // description box's rendered lines for this frame's tree.
+    let description_height = render_project_description(frame, &context, area, project_inner);
+    let separator = u16::from(
+        description_height > 0
+            && project_inner.y.saturating_add(description_height) < project_inner.bottom(),
+    );
+    let (stats_width, value_width) = stats_column_width(&pkg_data);
+    let (region, boxes) =
+        package_region(&pkg_data, &rows, description_height, separator, stats_width);
+    let mut prior_offsets = vec![0; boxes.leaf_count()];
+    if let Some(tests) = boxes.tests {
+        prior_offsets[tests] = pane.tests_scroll_offset();
+    }
+    let placed = region.place(project_inner, pane.viewport.pos(), &prior_offsets);
+
+    render_separator(frame, &context, area, &placed, &boxes, separator);
+
+    let col_ctx = PackageRenderCtx {
+        data: &pkg_data,
+        rows: &rows,
+        pane: &pane.viewport,
+        focus: focus_state,
+        styles,
+        animation_elapsed: *animation_elapsed,
+        lint_enabled,
+    };
+    let layout = render_column_inner(frame, &col_ctx, placed[METADATA_BOX].content);
     let mut row_rects = layout.row_rects;
-    if let Some(rect) = areas.description_rect {
-        row_rects.push((rect, 0));
+
+    let tests_cursor = region
+        .locate(pane.viewport.pos())
+        .and_then(|(box_index, row)| (Some(box_index) == boxes.tests).then_some(row));
+    row_rects.extend(render_stats_column(
+        frame,
+        &StatsColumnRender {
+            data: &pkg_data,
+            rows: &rows,
+            pane: &pane.viewport,
+            focus: focus_state,
+            value_width,
+            border_style,
+            title_style: styles
+                .chrome
+                .title_style(matches!(focus_state, PaneFocusState::Active)),
+            tests_cursor,
+        },
+        &placed,
+        &boxes,
+        project_inner,
+        separator,
+    ));
+
+    pane.viewport.set_scroll_offset(layout.scroll_offset);
+    pane.set_tests_scroll_offset(boxes.tests.map_or(0, |tests| placed[tests].scroll_offset));
+    if description_height > 0 {
+        row_rects.push((placed[DESCRIPTION_BOX].content, 0));
     }
     pane.set_row_rects(row_rects);
     render_overflow_affordance(
@@ -600,12 +736,58 @@ pub(super) fn render_package_pane_body(
     );
 }
 
-fn render_project_description_section(
+/// Render the bordered "No project selected" placeholder and clear the
+/// pane's rendered state.
+fn render_no_project_selected(frame: &mut Frame, area: Rect, pane: &mut PackagePane) {
+    let title_style = Style::default()
+        .fg(title_color())
+        .add_modifier(Modifier::BOLD);
+    pane.viewport.clear_surface();
+    pane.clear_row_rects();
+    let empty_block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Details ")
+        .title_style(title_style);
+    let content = vec![Line::from("  No project selected")];
+    let detail = Paragraph::new(content).block(empty_block);
+    frame.render_widget(detail, area);
+}
+
+/// Sync the pane's viewport to this frame's row list: the addressable row
+/// count, the rendered content height, and a cursor nudge off any
+/// non-selectable row.
+fn sync_package_viewport(
+    pane: &mut PackagePane,
+    pkg_data: &PackageData,
+    rows: &[PackageRow],
+    synced_description_height: SyncedDescriptionHeight,
+) {
+    pane.viewport.set_len(rows.len());
+    // The lower metadata and stats render in two parallel columns, so the
+    // content's rendered height is the taller column plus the About section —
+    // not the flat row count. Tell the viewport the rendered height so the
+    // scroll pager does not page on rows that never stack vertically.
+    pane.viewport.set_content_height(package_content_height(
+        usize::from(synced_description_height.rows()),
+        package_lower_metadata_height(pkg_data, rows),
+    ));
+    if !rows
+        .get(pane.viewport.pos())
+        .is_some_and(panes::package_row_is_selectable)
+        && let Some(pos) = panes::package_nearest_selectable_row(rows, pane.viewport.pos())
+    {
+        pane.viewport.set_pos(pos);
+    }
+}
+
+/// Render the About/description block at the top of the pane and return its
+/// rendered height — the description box's `lines` override for this frame.
+fn render_project_description(
     frame: &mut Frame,
     context: &ProjectPanelRender<'_>,
     area: Rect,
     project_inner: Rect,
-) -> ProjectPanelAreas {
+) -> u16 {
     let lower_metadata_height = package_lower_metadata_height(context.pkg_data, context.rows);
     let reserved_lower_height = u16::from(lower_metadata_height > 0);
     let reserved_separator_height =
@@ -622,39 +804,32 @@ fn render_project_description_section(
         area,
         EmptyDescriptionBehavior::ShowPlaceholder,
     );
-    let description_height = block.render_with_selection(
+    block.render_with_selection(
         frame,
         project_inner,
         context.synced_description_height,
         baseline_max,
         tui_pane::selection_state(context.pane, 0, context.focus),
-    );
-    let description_area = Rect {
-        x:      project_inner.x,
-        y:      project_inner.y,
-        width:  project_inner.width,
-        height: description_height,
-    };
+    )
+}
 
-    let separator_height = u16::from(
-        description_height > 0
-            && description_area.y.saturating_add(description_height) < project_inner.bottom(),
-    );
-    let lower_y = description_area
-        .y
-        .saturating_add(description_height)
-        .saturating_add(separator_height);
-    let lower_area = Rect {
-        x:      project_inner.x,
-        y:      lower_y,
-        width:  project_inner.width,
-        height: project_inner.bottom().saturating_sub(lower_y),
-    };
-    let stats_connector_x = project_stats_connector_x(context.pkg_data, lower_area);
-    if separator_height > 0 {
+/// Draw the full-width separator rule between the description and the
+/// columns below — titled `Structure` and teed into the stats column's
+/// vertical rule when that column is present — plus the `┴` connector where
+/// the vertical rule meets the pane's bottom border.
+fn render_separator(
+    frame: &mut Frame,
+    context: &ProjectPanelRender<'_>,
+    area: Rect,
+    placed: &[Placed],
+    boxes: &PackageBoxes,
+    separator: u16,
+) {
+    let stats_connector_x = boxes.first().map(|index| placed[index].content.x);
+    if separator > 0 {
         let rule_area = Rect {
             x:      area.x,
-            y:      description_area.y.saturating_add(description_height),
+            y:      placed[METADATA_BOX].chrome.y,
             width:  area.width,
             height: 1,
         };
@@ -696,74 +871,6 @@ fn render_project_description_section(
             );
         }
     }
-
-    let description_rect = (description_height > 0).then_some(description_area);
-    ProjectPanelAreas {
-        lower: lower_area,
-        description_rect,
-    }
-}
-
-fn render_project_metadata(
-    frame: &mut Frame,
-    pane: &Viewport,
-    context: &ProjectPanelRender<'_>,
-    lower_area: Rect,
-) -> PackageRenderLayout {
-    let col_ctx = PackageRenderCtx {
-        data: context.pkg_data,
-        rows: context.rows,
-        pane,
-        focus: context.focus,
-        styles: context.styles,
-        animation_elapsed: context.animation_elapsed,
-        lint_enabled: context.lint_enabled,
-    };
-    if has_stats_column(context.pkg_data) {
-        let (stats_width, value_width) = stats_column_width(context.pkg_data);
-
-        let sub_cols = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Min(20), Constraint::Length(stats_width)])
-            .split(lower_area);
-
-        let mut layout = render_column_inner(frame, &col_ctx, sub_cols[0]);
-        let stats = render_stats_column(
-            frame,
-            &StatsColumnRender {
-                data: context.pkg_data,
-                rows: context.rows,
-                pane,
-                focus: context.focus,
-                area: sub_cols[1],
-                value_width,
-                border_style: context.border_style,
-                title_style: context
-                    .styles
-                    .chrome
-                    .title_style(matches!(context.focus, PaneFocusState::Active)),
-                prior_band_offset: context.prior_tests_band_offset,
-            },
-        );
-        layout.row_rects.extend(stats.row_rects);
-        layout.tests_band_offset = stats.tests_band_offset;
-        layout
-    } else {
-        render_column_inner(frame, &col_ctx, lower_area)
-    }
-}
-
-fn project_stats_connector_x(data: &PackageData, lower_area: Rect) -> Option<u16> {
-    if !has_stats_column(data) {
-        return None;
-    }
-
-    let (stats_width, _) = stats_column_width(data);
-    let sub_cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(20), Constraint::Length(stats_width)])
-        .split(lower_area);
-    sub_cols.get(1).map(|area| area.x)
 }
 
 /// Shared geometry and pane state for rendering one stat section
@@ -779,17 +886,34 @@ struct StatSectionCtx<'a> {
     area_bottom: u16,
 }
 
-fn render_stats_column(frame: &mut Frame, context: &StatsColumnRender<'_>) -> StatsColumnLayout {
-    let data = context.data;
-    let area = context.area;
+/// Render the stats column from its placed boxes: the vertical rule along
+/// the column's left edge, then each present section — Structure pinned at
+/// the top, Tests scrolling in the middle (with its overflow affordance),
+/// crates.io below — into its box's content rect. Returns the sections'
+/// hit-test rects; a no-stats-column pane returns none.
+fn render_stats_column(
+    frame: &mut Frame,
+    context: &StatsColumnRender<'_>,
+    placed: &[Placed],
+    boxes: &PackageBoxes,
+    project_inner: Rect,
+    separator: u16,
+) -> Vec<(Rect, usize)> {
+    let Some(first) = boxes.first() else {
+        return Vec::new();
+    };
+    let column = placed[first].chrome;
+    // Vertical rule along the column's left edge, from below the separator
+    // row to the pane's bottom border.
+    let rule_top = column.y.saturating_add(separator);
     tui_pane::render_rules(
         frame,
         &[PaneRule::Vertical {
             area: Rect {
-                x:      area.x,
-                y:      area.y,
+                x:      column.x,
+                y:      rule_top,
                 width:  1,
-                height: area.height,
+                height: project_inner.bottom().saturating_sub(rule_top),
             },
         }],
         context.border_style,
@@ -799,228 +923,115 @@ fn render_stats_column(frame: &mut Frame, context: &StatsColumnRender<'_>) -> St
         rows:        context.rows,
         pane:        context.pane,
         focus:       context.focus,
-        inner_x:     area.x.saturating_add(1),
-        inner_width: area.width.saturating_sub(1),
-        label_width: stats_label_width(data) as usize,
+        inner_x:     column.x.saturating_add(1),
+        inner_width: column.width.saturating_sub(1),
+        label_width: stats_label_width(context.data) as usize,
         value_width: context.value_width as usize,
-        area_bottom: area.bottom(),
+        area_bottom: project_inner.bottom(),
     };
 
     let mut row_rects = Vec::new();
-    let structure_rows = count_rows_as_strings(&data.stats_rows);
-    render_stat_section(
-        frame,
-        &structure_rows,
-        PackageRow::Structure,
-        structure_value_style,
-        SectionPlacement {
-            start_y:      area.y,
-            row_offset:   0,
-            visible_rows: data.stats_rows.len(),
-        },
-        &ctx,
-        &mut row_rects,
-    );
+    if let Some(index) = boxes.structure {
+        let structure_rows = count_rows_as_strings(&context.data.stats_rows);
+        render_stat_section(
+            frame,
+            &structure_rows,
+            PackageRow::Structure,
+            structure_value_style,
+            section_placement(placed[index]),
+            &ctx,
+            &mut row_rects,
+        );
+    }
+    if let Some(index) = boxes.tests {
+        render_section_rule(frame, context, placed[index].chrome, TESTS_TITLE);
+        let test_rows = count_rows_as_strings(&context.data.test_rows);
+        render_stat_section(
+            frame,
+            &test_rows,
+            PackageRow::Tests,
+            tests_value_style,
+            section_placement(placed[index]),
+            &ctx,
+            &mut row_rects,
+        );
+        render_tests_affordance(frame, context, placed[index]);
+    }
+    if let Some(index) = boxes.crates_io {
+        render_section_rule(frame, context, placed[index].chrome, CRATES_IO_TITLE);
+        render_stat_section(
+            frame,
+            &context.data.crates_io_rows,
+            PackageRow::CratesIo,
+            crates_io_value_style,
+            section_placement(placed[index]),
+            &ctx,
+            &mut row_rects,
+        );
+    }
+    row_rects
+}
 
-    let tests_band_offset = if data.test_rows.is_empty() {
-        0
-    } else {
-        render_tests_section(frame, context, &ctx, &mut row_rects)
-    };
-    render_crates_io_section(frame, context, &ctx, &mut row_rects);
-    StatsColumnLayout {
-        row_rects,
-        tests_band_offset,
+/// Where a stat section renders, read off its placed box: the content rows
+/// from the top of the box's content rect, scrolled by the box's resolved
+/// offset.
+const fn section_placement(placed: Placed) -> SectionPlacement {
+    SectionPlacement {
+        start_y:      placed.content.y,
+        row_offset:   placed.scroll_offset,
+        visible_rows: placed.content.height as usize,
     }
 }
 
-/// Render the scrolling Tests section below the pinned Structure rows: the
-/// `Tests` rule, the visible band slice, and the overflow affordance. Returns
-/// the band offset to hold for the next frame.
-fn render_tests_section(
+/// Draw a section's titled rule on the last row of its chrome rect (the
+/// rows above it are blank spacers or the shared separator row). Spans one
+/// column past the section so the `├` endcap tees into the column's left
+/// vertical rule and the `┤` endcap tees into the pane's right border —
+/// matching the full-width "Structure" rule above. Rendered after the
+/// vertical rule so the left join wins.
+fn render_section_rule(
     frame: &mut Frame,
     context: &StatsColumnRender<'_>,
-    ctx: &StatSectionCtx<'_>,
-    row_rects: &mut Vec<(Rect, usize)>,
-) -> usize {
-    let data = context.data;
-    let area = context.area;
-    // Leave a blank row between the last Structure row and the Tests rule so
-    // the two sections read as distinct groups; skipped when Structure has no
-    // rows, since there is nothing to separate from.
-    let spacer = u16::from(!data.stats_rows.is_empty());
-    let title_y = area
-        .y
-        .saturating_add(u16::try_from(data.stats_rows.len()).unwrap_or(u16::MAX))
-        .saturating_add(spacer);
-    // Span one column past the stats area so the `├` endcap tees into the
-    // column's left vertical rule and the `┤` endcap tees into the pane's
-    // right border (the column's last cell is one inside it) — matching the
-    // full-width "Structure" rule above. Rendered after the vertical rule so
-    // the left join wins.
+    chrome: Rect,
+    title: &'static str,
+) {
+    if chrome.height == 0 {
+        return;
+    }
     tui_pane::render_horizontal_rule(
         frame,
         Rect {
-            x:      area.x,
-            y:      title_y,
-            width:  area.width.saturating_add(1),
+            x:      chrome.x,
+            y:      chrome.bottom().saturating_sub(1),
+            width:  chrome.width.saturating_add(1),
             height: 1,
         },
         context.border_style,
         Some(RuleTitle {
-            text:  TESTS_TITLE,
+            text:  title,
             style: context.title_style,
         }),
         None,
     );
-    let tests_start_y = title_y.saturating_add(1);
-    // The Tests band scrolls; the pinned head above it (Structure rows, the
-    // spacer, and the Tests rule) is everything down to `tests_start_y`.
-    let band_visible = usize::from(area.bottom().saturating_sub(tests_start_y));
-    let band = tests_band(context.rows, data.test_rows.len());
-    let band_offset = band.map_or(0, |band| {
-        tests_band_offset_for(
-            band,
-            context.pane.pos(),
-            context.prior_band_offset,
-            band_visible,
-        )
-    });
-    let test_rows = count_rows_as_strings(&data.test_rows);
-    render_stat_section(
-        frame,
-        &test_rows,
-        PackageRow::Tests,
-        tests_value_style,
-        SectionPlacement {
-            start_y:      tests_start_y,
-            row_offset:   band_offset,
-            visible_rows: band_visible,
-        },
-        ctx,
-        row_rects,
-    );
-    render_tests_affordance(
-        frame,
-        context.pane,
-        band,
-        Rect {
-            x:      area.x,
-            y:      tests_start_y,
-            width:  area.width,
-            height: u16::try_from(band_visible).unwrap_or(u16::MAX),
-        },
-        band_offset,
-    );
-    band_offset
 }
 
-/// Render the crates.io section below Structure and Tests: a blank-line
-/// spacer (when a section above has rows), the `crates.io` rule, then the
-/// version / prerelease / downloads rows. Unlike Tests it does not scroll —
-/// it is at most three rows and pins below the (top-aligned) sections above.
-fn render_crates_io_section(
-    frame: &mut Frame,
-    context: &StatsColumnRender<'_>,
-    ctx: &StatSectionCtx<'_>,
-    row_rects: &mut Vec<(Rect, usize)>,
-) {
-    let data = context.data;
-    if data.crates_io_rows.is_empty() {
+/// Draw the `▲ n of m ▼` overflow label on the Tests box when more test
+/// rows exist than fit. Skipped when the box has no visible rows.
+fn render_tests_affordance(frame: &mut Frame, context: &StatsColumnRender<'_>, placed: Placed) {
+    let visible = usize::from(placed.content.height);
+    if visible == 0 {
         return;
     }
-    let area = context.area;
-    let structure_height = u16::try_from(data.stats_rows.len()).unwrap_or(u16::MAX);
-    let tests_height = if data.test_rows.is_empty() {
-        0
-    } else {
-        let spacer = u16::from(!data.stats_rows.is_empty());
-        spacer
-            .saturating_add(1)
-            .saturating_add(u16::try_from(data.test_rows.len()).unwrap_or(u16::MAX))
-    };
-    let spacer = u16::from(!data.stats_rows.is_empty() || !data.test_rows.is_empty());
-    let title_y = area
-        .y
-        .saturating_add(structure_height)
-        .saturating_add(tests_height)
-        .saturating_add(spacer);
-    // Span one column past the stats area so the rule's endcaps tee into the
-    // column's left vertical rule and the pane's right border — matching the
-    // `Structure` / `Tests` rules above.
-    tui_pane::render_horizontal_rule(
-        frame,
-        Rect {
-            x:      area.x,
-            y:      title_y,
-            width:  area.width.saturating_add(1),
-            height: 1,
-        },
-        context.border_style,
-        Some(RuleTitle {
-            text:  CRATES_IO_TITLE,
-            style: context.title_style,
-        }),
-        None,
-    );
-    render_stat_section(
-        frame,
-        &data.crates_io_rows,
-        PackageRow::CratesIo,
-        crates_io_value_style,
-        SectionPlacement {
-            start_y:      title_y.saturating_add(1),
-            row_offset:   0,
-            visible_rows: data.crates_io_rows.len(),
-        },
-        ctx,
-        row_rects,
-    );
-}
-
-/// Band partition for the stats column: the Tests rows are the last
-/// `test_count` selectable rows, everything above them (Description, fields,
-/// Structure) is the pinned head.
-const fn tests_band(rows: &[PackageRow], test_count: usize) -> Option<Band> {
-    Band::new(rows.len().saturating_sub(test_count), 0, rows.len())
-}
-
-/// Tests-band scroll offset for this frame. While the cursor is on a Tests
-/// row, clamp the offset to keep it visible; otherwise hold the prior offset
-/// (clamped to the band's range in case the Tests count shrank).
-fn tests_band_offset_for(
-    band: Band,
-    cursor_pos: usize,
-    prior_offset: usize,
-    band_visible: usize,
-) -> usize {
-    band.band_local_cursor(cursor_pos).map_or_else(
-        || prior_offset.min(band.band_len().saturating_sub(band_visible)),
-        |band_local| keep_visible_scroll_offset(band_local, band_visible, band.band_len()),
-    )
-}
-
-/// Draw the `▲ n of m ▼` overflow label on the Tests band when more test
-/// rows exist than fit. Skipped when the band has no visible rows.
-fn render_tests_affordance(
-    frame: &mut Frame,
-    pane: &Viewport,
-    band: Option<Band>,
-    tests_rect: Rect,
-    band_offset: usize,
-) {
-    let band_visible = usize::from(tests_rect.height);
-    if band_visible == 0 {
-        return;
-    }
-    let Some(band) = band else {
-        return;
-    };
-    let band_cursor = band.band_local_cursor(pane.pos()).unwrap_or(band_offset);
+    let cursor = context.tests_cursor.unwrap_or(placed.scroll_offset);
     render_overflow_affordance(
         frame,
-        tests_rect,
-        ViewportOverflow::band(band.band_len(), band_offset, band_visible, band_cursor),
+        placed.content,
+        ViewportOverflow::new(
+            context.data.test_rows.len(),
+            placed.scroll_offset,
+            visible,
+            cursor,
+        ),
         Style::default().fg(label_color()),
     );
 }
@@ -1292,22 +1303,58 @@ mod tests {
     use std::time::Duration;
 
     use chrono::DateTime;
+    use ratatui::layout::Rect;
     use tui_pane::ACTIVITY_SPINNER;
     use unicode_width::UnicodeWidthStr;
 
+    use super::PackageData;
     use super::PackageRow;
     use super::lint_display_to_string;
-    use super::tests_band;
-    use super::tests_band_offset_for;
+    use super::package_region;
+    use super::stats_column_width;
     use crate::lint::LintStatus;
+    use crate::tui::panes;
     use crate::tui::panes::LintDisplay;
 
-    // 15 pinned head rows (Structure-and-above), 5 Tests rows in the band.
-    fn band_rows() -> Vec<PackageRow> {
-        (0..15)
-            .map(PackageRow::Structure)
-            .chain((0..5).map(PackageRow::Tests))
-            .collect()
+    /// 15 Structure rows and 5 Tests rows; the flat row list is Description,
+    /// the metadata fields, then the section rows.
+    fn band_data() -> PackageData {
+        PackageData {
+            stats_rows: vec![("lib", 1); 15],
+            test_rows: vec![("unit", 1); 5],
+            ..PackageData::default()
+        }
+    }
+
+    /// Pane inner area wide enough for both columns (`Min(20)` metadata plus
+    /// the fixture's 17-wide stats column).
+    fn inner(height: u16) -> Rect {
+        Rect {
+            x: 0,
+            y: 0,
+            width: 40,
+            height,
+        }
+    }
+
+    fn first_tests_row(rows: &[PackageRow]) -> usize {
+        rows.iter()
+            .position(|row| matches!(row, PackageRow::Tests(0)))
+            .expect("fixture has Tests rows")
+    }
+
+    /// The Tests box's resolved scroll offset for the band fixture: a 1-line
+    /// description with a separator, so a 22-row inner leaves the 5-row Tests
+    /// box 3 content rows (21 column rows - 16 Structure outer - 2 chrome).
+    fn placed_tests_offset(inner_height: u16, cursor: usize, prior: usize) -> usize {
+        let data = band_data();
+        let rows = panes::package_rows_from_data(&data);
+        let (stats_width, _) = stats_column_width(&data);
+        let (region, boxes) = package_region(&data, &rows, 1, 1, stats_width);
+        let tests = boxes.tests.expect("fixture has a Tests box");
+        let mut prior_offsets = vec![0; boxes.leaf_count()];
+        prior_offsets[tests] = prior;
+        region.place(inner(inner_height), cursor, &prior_offsets)[tests].scroll_offset
     }
 
     #[test]
@@ -1320,29 +1367,51 @@ mod tests {
     }
 
     #[test]
-    fn tests_band_partitions_trailing_test_rows() {
-        let band = tests_band(&band_rows(), 5).expect("head + tail fits within len");
-        assert_eq!(band.band_len(), 5);
-        // The first Tests row is logical index 15 (band-local 0).
-        assert_eq!(band.band_local_cursor(15), Some(0));
-        // A Structure row is pinned, outside the band.
-        assert_eq!(band.band_local_cursor(10), None);
+    fn package_tree_maps_section_rows_to_their_boxes() {
+        let mut data = band_data();
+        data.crates_io_rows = vec![
+            ("version", "1.0.0".to_string()),
+            ("downloads", "12".to_string()),
+        ];
+        let rows = panes::package_rows_from_data(&data);
+        let (stats_width, _) = stats_column_width(&data);
+        let (region, boxes) = package_region(&data, &rows, 1, 1, stats_width);
+        // The cursor walks the flat row list, so the tree must address
+        // exactly those rows.
+        assert_eq!(region.total_selectable(), rows.len());
+        let first_tests = first_tests_row(&rows);
+        assert_eq!(
+            region.locate(first_tests),
+            boxes.tests.map(|tests| (tests, 0))
+        );
+        // A crates.io row resolves to the crates.io box, not the Tests box,
+        // even though both sit past the Tests rows' flat-list start.
+        let first_crates = rows
+            .iter()
+            .position(|row| matches!(row, PackageRow::CratesIo(0)))
+            .expect("fixture has crates.io rows");
+        assert_eq!(
+            region.locate(first_crates),
+            boxes.crates_io.map(|crates_io| (crates_io, 0))
+        );
     }
 
     #[test]
-    fn tests_band_offset_tracks_cursor_on_a_test_row() {
-        let band = tests_band(&band_rows(), 5).expect("head + tail fits within len");
-        // Cursor on the last Tests row (logical 19, band-local 4) scrolls a
-        // 3-tall band to its last page.
-        assert_eq!(tests_band_offset_for(band, 19, 0, 3), 2);
+    fn tests_box_offset_tracks_cursor_on_a_test_row() {
+        // Cursor on the last Tests row (box-local 4) scrolls the 3-tall box
+        // to its last page.
+        let rows = panes::package_rows_from_data(&band_data());
+        let last_tests = first_tests_row(&rows) + 4;
+        assert_eq!(placed_tests_offset(22, last_tests, 0), 2);
     }
 
     #[test]
-    fn tests_band_offset_holds_prior_on_a_pinned_row() {
-        let band = tests_band(&band_rows(), 5).expect("head + tail fits within len");
+    fn tests_box_offset_holds_prior_on_a_pinned_row() {
         // Cursor on a Structure row holds the prior offset, clamped to the
-        // band's last page.
-        assert_eq!(tests_band_offset_for(band, 10, 5, 3), 2);
+        // box's last page (5 rows - 3 visible).
+        let rows = panes::package_rows_from_data(&band_data());
+        let structure_row = first_tests_row(&rows) - 1;
+        assert_eq!(placed_tests_offset(22, structure_row, 5), 2);
     }
 
     #[test]

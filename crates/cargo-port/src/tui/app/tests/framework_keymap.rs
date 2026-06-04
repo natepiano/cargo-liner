@@ -56,11 +56,13 @@ use crate::tui::integration::FinderPane;
 use crate::tui::integration::GitPane;
 use crate::tui::integration::NavAction;
 use crate::tui::integration::PackagePane;
+use crate::tui::integration::TargetsPane;
 use crate::tui::keymap;
 use crate::tui::keymap::CiRunsAction;
 use crate::tui::keymap::GitAction;
 use crate::tui::keymap::OutputAction;
 use crate::tui::keymap::PackageAction;
+use crate::tui::keymap::TargetsAction;
 use crate::tui::keymap_ui;
 use crate::tui::panes;
 use crate::tui::panes::CiData;
@@ -200,7 +202,13 @@ fn focused_app_panes_render_expected_pane_action_labels() {
         (AppPaneId::Git, &["activate"], |app| {
             app.panes.git.set_content(GitData::default());
         }),
-        (AppPaneId::Targets, &["run", "release", "kill"], |_| {}),
+        // Kill is gated on the Running-row anchor: hidden while the
+        // highlight is on a table row, shown once it sits on a Running
+        // row (the anchor pid is `Some` exactly then).
+        (AppPaneId::Targets, &["run", "release"], |_| {}),
+        (AppPaneId::Targets, &["run", "release", "kill"], |app| {
+            app.panes.targets.set_running_cursor_pid(Some(4242));
+        }),
         (AppPaneId::Lints, &["open", "del history"], |_| {}),
         // No git branch on this fixture, so the all/branch toggle is
         // hidden — only the always-on CiRuns actions render.
@@ -417,6 +425,40 @@ fn ci_runs_activate_visibility_visible_on_run_row() {
         pane.visibility(CiRunsAction::Activate, &app),
         Visibility::Visible,
         "Activate is Visible when cursor sits on a real run row",
+    );
+}
+
+#[test]
+fn targets_kill_visibility_hidden_without_running_anchor() {
+    // `running_cursor_pid` is `None` whenever the highlight is on a
+    // table row (or no Running rows exist), so Kill drops from the bar.
+    let project = super::make_project(Some("demo"), "~/demo");
+    let app = make_app(&[project]);
+
+    let pane = TargetsPane;
+    assert_eq!(
+        pane.visibility(TargetsAction::Kill, &app),
+        Visibility::Hidden,
+        "Kill must be Hidden while the highlight is on a table row",
+    );
+    assert_eq!(
+        pane.visibility(TargetsAction::Activate, &app),
+        Visibility::Visible,
+        "Activate stays Visible regardless of the Running anchor",
+    );
+}
+
+#[test]
+fn targets_kill_visibility_visible_with_running_anchor() {
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+    app.panes.targets.set_running_cursor_pid(Some(4242));
+
+    let pane = TargetsPane;
+    assert_eq!(
+        pane.visibility(TargetsAction::Kill, &app),
+        Visibility::Visible,
+        "Kill is Visible while the highlight sits on a Running row",
     );
 }
 

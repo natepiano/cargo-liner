@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Instant;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 use ratatui::Frame;
 use ratatui::layout::Constraint;
@@ -306,21 +308,24 @@ fn confirm_action_body(app: &App, action: &ConfirmAction) -> Vec<String> {
 
             lines
         },
-        ConfirmAction::KillTarget { label, pids } => {
-            let mut lines = vec![label.clone()];
-            if let [pid] = pids.as_slice() {
-                lines.push(format!("pid {pid}"));
-            } else {
-                lines.push(format!("{} instances:", pids.len()));
-                for pid in pids.iter().take(AFFECTED_EXTRAS_VISIBLE_CAP) {
-                    lines.push(format!("  pid {pid}"));
-                }
-                if pids.len() > AFFECTED_EXTRAS_VISIBLE_CAP {
-                    let extra = pids.len() - AFFECTED_EXTRAS_VISIBLE_CAP;
-                    lines.push(format!("  +{extra} more"));
-                }
-            }
-            lines
+        ConfirmAction::KillTarget {
+            label,
+            pid,
+            create_time,
+        } => {
+            // The label already carries the profile (`my_app (debug)`);
+            // the start age tells apart two otherwise-identical instances
+            // by how long each has been running.
+            let now_epoch = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_secs());
+            vec![
+                label.clone(),
+                format!(
+                    "pid {pid} · {}",
+                    panes::format_start_age(*create_time, now_epoch)
+                ),
+            ]
         },
     }
 }
@@ -496,7 +501,6 @@ fn dispatch_finder_render(app: &mut App, frame: &mut Frame) {
         settings_render_inputs: None,
         synced_description_height: panes::SyncedDescriptionHeight::default(),
         running_targets: split.running_targets,
-        running_targets_dir: split.running_targets_dir,
     };
     // Finder body sizes the popup itself; area arg is unused.
     Renderable::render(split.finder_pane, frame, frame.area(), &ctx);
@@ -579,35 +583,6 @@ pub(super) fn truncate_with_ellipsis(text: &str, max_width: usize, ellipsis: &st
     }
     let prefix = truncate_to_width(text, max_width.saturating_sub(ellipsis.width()));
     format!("{prefix}{ellipsis}")
-}
-
-/// Truncate `text` so that `text + suffix` fits within `max_width` columns.
-///
-/// Returns `(visible_name, suffix_text)` so the caller can style each piece
-/// independently. When truncation occurs the ellipsis lands inside the name,
-/// keeping the suffix verbatim at the right edge.
-pub(super) fn truncate_with_suffix(
-    text: &str,
-    suffix: &str,
-    max_width: usize,
-    ellipsis: &str,
-) -> (String, String) {
-    let suffix_width = suffix.width();
-    if max_width == 0 {
-        return (String::new(), String::new());
-    }
-    if suffix_width >= max_width {
-        return (
-            String::new(),
-            truncate_with_ellipsis(suffix, max_width, ellipsis),
-        );
-    }
-    let name_budget = max_width - suffix_width;
-    if name_budget < ellipsis.width() && text.width() > name_budget {
-        return (String::new(), suffix.to_string());
-    }
-    let visible = truncate_with_ellipsis(text, name_budget, ellipsis);
-    (visible, suffix.to_string())
 }
 
 /// Palette wiring `accent_color()` / `secondary_text_color()` / `Modifier::BOLD`
@@ -737,40 +712,5 @@ mod tests {
             panes::resolve_layout(Rect::new(0, 0, 120, 40), 30, 12, BottomRow::Diagnostics, 4);
 
         assert!(layout.area(PaneId::Cpu).height > super::panes::cpu_required_pane_height(12));
-    }
-
-    #[test]
-    fn truncate_with_suffix_fits_without_truncation() {
-        let (name, suffix) = super::truncate_with_suffix("hello", " (r)", 20, "\u{2026}");
-        assert_eq!(name, "hello");
-        assert_eq!(suffix, " (r)");
-    }
-
-    #[test]
-    fn truncate_with_suffix_truncates_name_keeps_suffix() {
-        let (name, suffix) = super::truncate_with_suffix("very_long_name", " (r)", 10, "\u{2026}");
-        assert_eq!(name, "very_\u{2026}");
-        assert_eq!(suffix, " (r)");
-    }
-
-    #[test]
-    fn truncate_with_suffix_drops_name_when_only_suffix_fits() {
-        let (name, suffix) = super::truncate_with_suffix("ab", " (r)", 4, "\u{2026}");
-        assert_eq!(name, "");
-        assert_eq!(suffix, " (r)");
-    }
-
-    #[test]
-    fn truncate_with_suffix_truncates_suffix_when_name_cannot_fit() {
-        let (name, suffix) = super::truncate_with_suffix("a", " (r)", 3, "\u{2026}");
-        assert_eq!(name, "");
-        assert_eq!(suffix, " (\u{2026}");
-    }
-
-    #[test]
-    fn truncate_with_suffix_zero_width() {
-        let (name, suffix) = super::truncate_with_suffix("a", " (r)", 0, "\u{2026}");
-        assert_eq!(name, "");
-        assert_eq!(suffix, "");
     }
 }

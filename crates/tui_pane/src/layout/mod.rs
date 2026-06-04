@@ -9,7 +9,6 @@ use ratatui::layout::Rect;
 pub use region::Placed;
 pub use region::Region;
 pub use region::Size;
-pub use viewport::Band;
 pub use viewport::Viewport;
 pub use viewport::ViewportOverflow;
 pub use viewport::keep_visible_scroll_offset;

@@ -111,7 +111,6 @@ pub use keymap::Navigation;
 pub use keymap::ScopeMap;
 pub use keymap::Shortcuts;
 pub use keymap::VimMode;
-pub use layout::Band;
 pub use layout::ColumnSpec;
 pub use layout::ColumnWidths;
 pub use layout::PaneAxisSize;

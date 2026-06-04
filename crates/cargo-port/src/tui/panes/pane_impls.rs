@@ -35,6 +35,7 @@ use super::package;
 use super::package::RenderStyles;
 use super::project_list;
 use super::targets;
+use super::targets::CargoGroup;
 use crate::channel::Receiver;
 use crate::config::CpuConfig;
 use crate::project::AbsolutePath;
@@ -44,24 +45,24 @@ use crate::tui::pane::PaneRenderCtx;
 
 // ── Package ─────────────────────────────────────────────────────
 pub struct PackagePane {
-    pub viewport:      Viewport,
-    pub focus:         RenderFocus,
-    content:           Option<super::PackageData>,
-    row_rects:         Vec<(Rect, usize)>,
-    /// Scroll offset of the Tests band in the stats column, held across
-    /// frames so the band stays put while the cursor is on a pinned row.
+    pub viewport:        Viewport,
+    pub focus:           RenderFocus,
+    content:             Option<super::PackageData>,
+    row_rects:           Vec<(Rect, usize)>,
+    /// Scroll offset of the Tests box in the stats column, held across
+    /// frames so the box stays put while the cursor is on a pinned row.
     /// Separate from `viewport.scroll_offset`, which the metadata column owns.
-    tests_band_offset: usize,
+    tests_scroll_offset: usize,
 }
 
 impl PackagePane {
     pub const fn new() -> Self {
         Self {
-            viewport:          Viewport::new(),
-            focus:             RenderFocus::inactive(),
-            content:           None,
-            row_rects:         Vec::new(),
-            tests_band_offset: 0,
+            viewport:            Viewport::new(),
+            focus:               RenderFocus::inactive(),
+            content:             None,
+            row_rects:           Vec::new(),
+            tests_scroll_offset: 0,
         }
     }
 
@@ -75,10 +76,10 @@ impl PackagePane {
 
     pub fn clear_row_rects(&mut self) { self.row_rects.clear(); }
 
-    pub const fn tests_band_offset(&self) -> usize { self.tests_band_offset }
+    pub const fn tests_scroll_offset(&self) -> usize { self.tests_scroll_offset }
 
-    pub const fn set_tests_band_offset(&mut self, offset: usize) {
-        self.tests_band_offset = offset;
+    pub const fn set_tests_scroll_offset(&mut self, offset: usize) {
+        self.tests_scroll_offset = offset;
     }
 }
 
@@ -353,17 +354,34 @@ impl Hittable<HoverTarget> for GitPane {
 
 // ── Targets ─────────────────────────────────────────────────────
 pub struct TargetsPane {
-    pub viewport: Viewport,
-    pub focus:    RenderFocus,
-    content:      Option<super::TargetsData>,
+    pub viewport:       Viewport,
+    pub focus:          RenderFocus,
+    content:            Option<super::TargetsData>,
+    /// Per-rendered-row `(Rect, logical_row)` recorded each frame so
+    /// `Hittable::hit_test_at` can map `pos` back to the logical row.
+    /// The pane stacks two boxes (the table above the Running list), so
+    /// a flat `viewport.pos_to_local_row` won't work.
+    row_rects:          Vec<(Rect, usize)>,
+    /// PID of the Running-box instance under the highlight, `None` while
+    /// the highlight is in the table or on the `cargo` group header. The
+    /// render pass follows it as rows reorder (D2); navigation and clicks
+    /// re-derive it; the `K` keymap gating reads `is_some()` as "the
+    /// highlight is on a killable Running row".
+    running_cursor_pid: Option<u32>,
+    /// Expansion state of the Running list's `cargo` group; `Enter` on
+    /// its header row toggles it.
+    cargo_group:        CargoGroup,
 }
 
 impl TargetsPane {
     pub const fn new() -> Self {
         Self {
-            viewport: Viewport::new(),
-            focus:    RenderFocus::inactive(),
-            content:  None,
+            viewport:           Viewport::new(),
+            focus:              RenderFocus::inactive(),
+            content:            None,
+            row_rects:          Vec::new(),
+            running_cursor_pid: None,
+            cargo_group:        CargoGroup::Collapsed,
         }
     }
 
@@ -372,11 +390,29 @@ impl TargetsPane {
     pub fn set_content(&mut self, data: super::TargetsData) { self.content = Some(data); }
 
     pub fn clear_content(&mut self) { self.content = None; }
+
+    pub fn set_row_rects(&mut self, rects: Vec<(Rect, usize)>) { self.row_rects = rects; }
+
+    pub fn clear_row_rects(&mut self) { self.row_rects.clear(); }
+
+    pub const fn running_cursor_pid(&self) -> Option<u32> { self.running_cursor_pid }
+
+    pub const fn set_running_cursor_pid(&mut self, pid: Option<u32>) {
+        self.running_cursor_pid = pid;
+    }
+
+    pub const fn cargo_group(&self) -> CargoGroup { self.cargo_group }
+
+    pub const fn toggle_cargo_group(&mut self) { self.cargo_group = self.cargo_group.toggled(); }
 }
 
 impl Hittable<HoverTarget> for TargetsPane {
     fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
-        let row = self.viewport.pos_to_local_row(pos)?;
+        let (_rect, row) = self
+            .row_rects
+            .iter()
+            .find(|(rect, _)| rect.contains(pos))
+            .copied()?;
         Some(HoverTarget::PaneRow {
             pane: PaneId::Targets,
             row,

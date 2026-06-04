@@ -497,8 +497,10 @@ fn handle_confirm_key(app: &mut App, key: KeyCode) -> bool {
                     }
                 }
             },
-            ConfirmAction::KillTarget { pids, .. } => {
-                panes::execute_target_kill(app, &pids);
+            ConfirmAction::KillTarget {
+                pid, create_time, ..
+            } => {
+                panes::execute_target_kill(app, pid, create_time);
             },
         }
     }
@@ -572,6 +574,11 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
                 pane.up();
             } else {
                 pane.down();
+            }
+            if pane_id == PaneId::Targets {
+                // A wheel step is a user-driven cursor move: re-derive
+                // the Running-box PID anchor from the new row.
+                panes::sync_running_targets_cursor(app);
             }
         }
         return;

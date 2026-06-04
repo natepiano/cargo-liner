@@ -57,13 +57,8 @@ impl App {
             let lints_ms = tui_pane::perf_log_ms(lints_started.elapsed().as_millis());
             self.ci.set_content(ci);
             self.lint.set_content(lints);
-            let target_dir = self
-                .project_list
-                .selected_project_path()
-                .map(crate::project::AbsolutePath::from)
-                .and_then(|path| self.scan.resolve_target_dir(&path));
             self.panes
-                .set_detail_data(key, data.package, data.git, data.targets, target_dir);
+                .set_detail_data(key, data.package, data.git, data.targets);
             tracing::info!(
                 total_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
                 pane_ms,

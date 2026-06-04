@@ -86,9 +86,15 @@ use crate::tui::pane::HoverTarget;
 use crate::tui::panes;
 use crate::tui::panes::LintsData;
 use crate::tui::panes::PaneId;
+use crate::tui::panes::RunTargetKind;
 use crate::tui::panes::SyncedDescriptionHeight;
+use crate::tui::panes::TargetsData;
 use crate::tui::project_list::ProjectList;
 use crate::tui::render;
+use crate::tui::running_targets::RunProfile;
+use crate::tui::running_targets::RunningInstance;
+use crate::tui::running_targets::RunningKey;
+use crate::tui::running_targets::RunningTargets;
 use crate::tui::settings;
 use crate::tui::settings::SettingOption;
 use crate::tui::test_support as tui_test_support;
@@ -1475,6 +1481,83 @@ fn targets_pane_row_click_selects_target() {
 
     assert_eq!(app.focused_pane_id(), PaneId::Targets);
     assert_eq!(app.panes.targets.viewport.pos(), 1);
+}
+
+/// `Right`/`Left` expand and collapse the Running list's `cargo` group —
+/// the same keys the project list's rows use — falling through to
+/// ordinary row moves everywhere else.
+#[test]
+fn arrow_keys_expand_and_collapse_the_running_cargo_group() {
+    let mut app = make_app(&[make_package("demo", Path::new("/tmp/demo"))]);
+    app.panes.targets.set_content(TargetsData {
+        binaries: vec![panes::TargetEntry {
+            name:              "demo".to_string(),
+            display_name:      "demo".to_string(),
+            kind:              panes::RunTargetKind::Binary,
+            source:            panes::TargetSource::Workspace,
+            src_path:          AbsolutePath::from("/tmp/demo/src/main.rs"),
+            required_features: Vec::new(),
+        }],
+        examples: Vec::new(),
+        benches:  Vec::new(),
+    });
+    let key = |name: &str| RunningKey {
+        target_dir: AbsolutePath::from(format!("/tmp/{name}/target")),
+        kind:       RunTargetKind::Binary,
+        name:       name.into(),
+    };
+    app.panes
+        .running_targets
+        .set_snapshot_for_test(RunningTargets::from_pairs(vec![
+            (
+                key("cargo-port"),
+                vec![
+                    RunningInstance::for_test(7, RunProfile::Installed),
+                    RunningInstance::for_test(8, RunProfile::Installed),
+                ],
+            ),
+            (
+                key("worker"),
+                vec![RunningInstance::for_test(9, RunProfile::Debug)],
+            ),
+        ]));
+    app.set_focus_to_pane(PaneId::Targets);
+    // One table row + the collapsed list (header, debug instance).
+    app.panes.targets.viewport.set_len(3);
+    app.panes.targets.viewport.set_pos(1);
+
+    press_key(&mut app, KeyCode::Right);
+    assert_eq!(
+        app.panes.targets.cargo_group(),
+        panes::CargoGroup::Expanded,
+        "Right on the collapsed header expands the group",
+    );
+    assert_eq!(
+        app.panes.targets.viewport.pos(),
+        1,
+        "the highlight stays on the header",
+    );
+
+    // On the expanded header, Right falls through to a row move — into
+    // the first grouped instance, anchoring its PID.
+    press_key(&mut app, KeyCode::Right);
+    assert_eq!(app.panes.targets.viewport.pos(), 2);
+    assert_eq!(app.panes.targets.running_cursor_pid(), Some(7));
+
+    // Left on a grouped instance collapses the group and hands the
+    // highlight back to the header.
+    press_key(&mut app, KeyCode::Left);
+    assert_eq!(
+        app.panes.targets.cargo_group(),
+        panes::CargoGroup::Collapsed
+    );
+    assert_eq!(app.panes.targets.viewport.pos(), 1);
+    assert_eq!(app.panes.targets.running_cursor_pid(), None);
+
+    // Left on the collapsed header falls through to a row-up move, back
+    // into the table.
+    press_key(&mut app, KeyCode::Left);
+    assert_eq!(app.panes.targets.viewport.pos(), 0);
 }
 
 #[test]

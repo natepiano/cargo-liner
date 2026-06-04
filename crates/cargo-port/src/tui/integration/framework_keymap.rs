@@ -445,6 +445,13 @@ impl Shortcuts<App> for TargetsPane {
         }
     }
 
+    fn visibility(&self, action: TargetsAction, ctx: &App) -> Visibility {
+        match action {
+            TargetsAction::Kill => targets_kill_visibility(ctx),
+            _ => Visibility::Visible,
+        }
+    }
+
     fn dispatcher() -> fn(Self::Actions, &mut App) { panes::dispatch_targets_action }
 }
 
@@ -454,6 +461,19 @@ impl CopySelection<App> for TargetsPane {
             return CopySelectionResult::Nothing;
         };
         panes::copy_payload_for_targets(targets, ctx.panes.targets.viewport.pos())
+    }
+}
+
+/// `Kill` on the Targets pane is hidden unless the highlight sits on a
+/// Running row: `running_cursor_pid` is `Some` exactly then. Hiding is
+/// presentational — dispatch never consults `visibility()`, and
+/// `handle_target_kill` already no-ops on table rows
+/// (`resolve_kill_request` returns `None`).
+const fn targets_kill_visibility(ctx: &App) -> Visibility {
+    if ctx.panes.targets.running_cursor_pid().is_some() {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
     }
 }
 

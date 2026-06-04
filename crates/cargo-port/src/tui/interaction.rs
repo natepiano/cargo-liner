@@ -14,6 +14,7 @@ use super::pane::DismissTarget;
 use super::pane::HITTABLE_Z_ORDER;
 use super::pane::HittableId;
 use super::pane::HoverTarget;
+use super::panes;
 use super::panes::PaneId;
 
 pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
@@ -27,6 +28,11 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
                 app.project_list.set_cursor(row);
             } else {
                 set_pane_pos(app, pane, row);
+            }
+            if pane == PaneId::Targets {
+                // A click is a user-driven cursor move: re-derive the
+                // Running-box PID anchor from the clicked row.
+                panes::sync_running_targets_cursor(app);
             }
             true
         },
