@@ -18,7 +18,6 @@ use super::PaneId;
 use super::PendingCiFetch;
 use super::PendingExampleRun;
 use super::RunningListRow;
-use super::TargetSource;
 use super::TargetsData;
 use super::build_running_list;
 use super::build_running_rows;
@@ -54,28 +53,13 @@ fn handle_target_action(app: &mut App, mode: BuildMode) {
     let entries = build_target_list_from_data(&targets_data);
     // The table's rows map 1:1 to entries; a highlight in the Running box
     // sits past them and runs nothing.
-    if let Some(entry) = entries.get(app.panes.targets.viewport.pos())
-        && let Some(abs_path) = app.project_list.selected_project_path()
-    {
-        // Member-owned targets carry the owning package's name in
-        // `TargetSource::Member`, which downstream cargo invocations
-        // pass as `--package <name>`. Workspace-root targets fall back
-        // to the selected project's package title (cargo runs against
-        // the default-run package when no `-p` is given).
-        let package_name = match &entry.source {
-            TargetSource::Member(name) => Some(name.clone()),
-            TargetSource::Workspace => app
-                .panes
-                .package
-                .content()
-                .and_then(|d| (d.title_name != "-").then(|| d.title_name.clone())),
-        };
+    if let Some(entry) = entries.get(app.panes.targets.viewport.pos()) {
         app.inflight.set_pending_example_run(PendingExampleRun {
-            abs_path: abs_path.display().to_string(),
-            target_name: entry.name.clone(),
-            package_name,
-            kind: entry.kind,
-            build_mode: mode,
+            abs_path:          entry.project_path.display().to_string(),
+            target_name:       entry.name.clone(),
+            package_name:      Some(entry.package_name.clone()),
+            kind:              entry.kind,
+            build_mode:        mode,
             required_features: entry.required_features.clone(),
         });
     }

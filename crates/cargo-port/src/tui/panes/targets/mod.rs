@@ -51,16 +51,22 @@ use super::TargetSource;
 use super::TargetsData;
 use super::package::RenderStyles;
 use super::pane_impls::TargetsPane;
+use crate::tui::columns;
 use crate::tui::pane::PaneRenderCtx;
 use crate::tui::panes;
 use crate::tui::render;
 
-/// Cap on the Source column width so a single long member name can't
-/// crowd out the target name. Overflow truncates with an ellipsis.
-const SOURCE_COL_MAX: usize = 24;
+/// Header text for the Target column, excluding the row's leading pad.
+const TARGET_HEADER: &str = "Target";
 /// Header text for the Source column — also defines the column's
 /// minimum width so the header never gets truncated.
 const SOURCE_HEADER: &str = "Source";
+/// Target rows render one leading space before the target name.
+const TARGET_LEADING_PAD: usize = 1;
+/// Number of 1-column gaps between Target/Source/Kind.
+const TARGET_TABLE_GAP_COUNT: usize = 2;
+/// Inter-column gap used by the `ratatui` table.
+const TARGET_TABLE_COLUMN_SPACING: u16 = 1;
 
 /// Leaf index of the targets table box in the pane's tree.
 const TABLE_BOX: usize = 0;
@@ -113,8 +119,9 @@ fn render_empty_targets(frame: &mut Frame, area: Rect, pane: &mut TargetsPane) {
 
 /// Per-row geometry derived from the entry list and content width.
 /// Computed once per render and shared between the row builder and
-/// the table-widths declaration. All fields are character widths.
+/// the table-widths declaration. All fields are terminal display widths.
 struct Layout {
+    target:   usize,
     kind:     usize,
     source:   usize,
     name_max: usize,
@@ -283,7 +290,7 @@ fn render_targets_table(
     let rows = build_rows(entries, pane, focus, &layout);
     let widths = build_widths(&layout);
     let table = Table::new(rows, widths)
-        .column_spacing(1)
+        .column_spacing(TARGET_TABLE_COLUMN_SPACING)
         .row_highlight_style(Style::default())
         .header(build_header_row());
     // Feed ratatui the prior offset while the highlight is in the table so
@@ -423,14 +430,16 @@ fn build_targets_title(
 fn compute_layout(entries: &[TargetEntry], content_width: u16) -> Layout {
     let kind = panes::RunTargetKind::padded_label_width();
     let source = source_col_width_from(entries);
-    let col_spacing: usize = 1;
-    let leading_pad: usize = 1;
-    let reserved = kind + source + (col_spacing * 2) + leading_pad;
-    let name_max = (content_width as usize).saturating_sub(reserved);
+    let target = target_col_width_from(entries);
+    let gaps = usize::from(TARGET_TABLE_COLUMN_SPACING) * TARGET_TABLE_GAP_COUNT;
+    let text_budget = usize::from(content_width).saturating_sub(kind + gaps);
+    let source = source.min(text_budget);
+    let target = target.min(text_budget.saturating_sub(source));
     Layout {
+        target,
         kind,
         source,
-        name_max,
+        name_max: target.saturating_sub(TARGET_LEADING_PAD),
     }
 }
 
@@ -475,7 +484,7 @@ fn build_rows(
 
 fn build_widths(layout: &Layout) -> Vec<Constraint> {
     vec![
-        Constraint::Fill(1),
+        Constraint::Length(u16::try_from(layout.target).unwrap_or(u16::MAX)),
         Constraint::Length(u16::try_from(layout.source).unwrap_or(u16::MAX)),
         Constraint::Length(u16::try_from(layout.kind).unwrap_or(u16::MAX)),
     ]
@@ -484,31 +493,39 @@ fn build_widths(layout: &Layout) -> Vec<Constraint> {
 fn build_header_row() -> Row<'static> {
     let header_style = Style::default().fg(column_header_color());
     Row::new(vec![
-        Cell::from(Span::styled(" Target", header_style)),
+        Cell::from(Span::styled(format!(" {TARGET_HEADER}"), header_style)),
         Cell::from(Span::styled(SOURCE_HEADER, header_style)),
         Cell::from(Line::from(Span::styled("Kind ", header_style)).alignment(Alignment::Right)),
     ])
     .height(1)
 }
 
-/// Width of the Source column: the longest label among the entries
-/// (or the header text, whichever is wider), plus 1 for trailing pad,
-/// clamped to [`SOURCE_COL_MAX`] so a runaway member name can't
-/// dominate the table.
+/// Width of the Target column: the longest visible target label plus the
+/// leading pad, or the header if it is wider.
+fn target_col_width_from(entries: &[TargetEntry]) -> usize {
+    let max_entry_width = entries
+        .iter()
+        .map(|entry| columns::display_width(&entry.display_name))
+        .max()
+        .unwrap_or(0);
+    TARGET_LEADING_PAD + max_entry_width.max(columns::display_width(TARGET_HEADER))
+}
+
+/// Width of the Source column: the longest label among the entries, or
+/// the header text if it is wider.
 fn source_col_width_from(entries: &[TargetEntry]) -> usize {
     let max_entry_width = entries
         .iter()
-        .map(|entry| entry.source.label().chars().count())
+        .map(|entry| columns::display_width(entry.source.label()))
         .max()
         .unwrap_or(0);
-    let header_width = SOURCE_HEADER.chars().count();
-    (max_entry_width.max(header_width) + 1).min(SOURCE_COL_MAX)
+    max_entry_width.max(columns::display_width(SOURCE_HEADER))
 }
 
 fn source_color(source: &TargetSource) -> Color {
     match source {
         TargetSource::Workspace => accent_color(),
-        TargetSource::Member(_) => label_color(),
+        TargetSource::Member(_) | TargetSource::Worktree(_) => label_color(),
     }
 }
 
@@ -520,7 +537,30 @@ mod tests {
     use super::RUNNING_BOX;
     use super::TABLE_BOX;
     use super::TABLE_CHROME;
+    use super::TARGET_LEADING_PAD;
+    use super::TARGET_TABLE_COLUMN_SPACING;
+    use super::TARGET_TABLE_GAP_COUNT;
+    use super::compute_layout;
+    use super::source_col_width_from;
+    use super::target_col_width_from;
     use super::targets_region;
+    use crate::project::AbsolutePath;
+    use crate::tui::panes::RunTargetKind;
+    use crate::tui::panes::TargetEntry;
+    use crate::tui::panes::TargetSource;
+
+    fn entry(display_name: &str, source_label: &str) -> TargetEntry {
+        TargetEntry {
+            name:              display_name.to_string(),
+            display_name:      display_name.to_string(),
+            kind:              RunTargetKind::Example,
+            source:            TargetSource::Worktree(source_label.to_string()),
+            project_path:      AbsolutePath::from("/tmp/demo"),
+            package_name:      "demo".to_string(),
+            src_path:          AbsolutePath::from(format!("/tmp/demo/examples/{display_name}.rs")),
+            required_features: Vec::new(),
+        }
+    }
 
     fn inner(height: u16) -> Rect {
         Rect {
@@ -529,6 +569,48 @@ mod tests {
             width: 60,
             height,
         }
+    }
+
+    #[test]
+    fn target_table_keeps_target_column_to_content_width_when_roomy() {
+        let entries = vec![
+            entry("cascade", "bevy_hana/bevy_diegetic"),
+            entry("two_window_panels", "bevy_hana/bevy_lagrange"),
+        ];
+
+        let layout = compute_layout(&entries, 80);
+
+        assert_eq!(layout.target, target_col_width_from(&entries));
+        assert_eq!(layout.source, source_col_width_from(&entries));
+        assert_eq!(
+            layout.name_max,
+            layout.target.saturating_sub(TARGET_LEADING_PAD)
+        );
+    }
+
+    #[test]
+    fn target_table_shrinks_target_before_source_when_narrow() {
+        let entries = vec![
+            entry(
+                "long_target_name_that_will_not_fit",
+                "bevy_hana/bevy_diegetic",
+            ),
+            entry("short", "bevy_hana/bevy_lagrange"),
+        ];
+        let kind = RunTargetKind::padded_label_width();
+        let gaps = usize::from(TARGET_TABLE_COLUMN_SPACING) * TARGET_TABLE_GAP_COUNT;
+        let source = source_col_width_from(&entries);
+        let target_budget = target_col_width_from(&entries).saturating_sub(6);
+        let content_width = u16::try_from(kind + gaps + source + target_budget).unwrap_or(u16::MAX);
+
+        let layout = compute_layout(&entries, content_width);
+
+        assert_eq!(layout.source, source);
+        assert_eq!(layout.target, target_budget);
+        assert_eq!(
+            layout.name_max,
+            target_budget.saturating_sub(TARGET_LEADING_PAD)
+        );
     }
 
     #[test]

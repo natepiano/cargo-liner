@@ -1495,6 +1495,8 @@ fn arrow_keys_expand_and_collapse_the_running_cargo_group() {
             display_name:      "demo".to_string(),
             kind:              panes::RunTargetKind::Binary,
             source:            panes::TargetSource::Workspace,
+            project_path:      AbsolutePath::from("/tmp/demo"),
+            package_name:      "demo".to_string(),
             src_path:          AbsolutePath::from("/tmp/demo/src/main.rs"),
             required_features: Vec::new(),
         }],

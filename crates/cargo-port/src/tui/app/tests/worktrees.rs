@@ -1,11 +1,75 @@
+use std::collections::BTreeMap;
+use std::collections::HashMap;
+
+use cargo_metadata::PackageId;
+use cargo_metadata::TargetKind;
+use cargo_metadata::semver::Version;
 use notify::event::DataChange;
 use notify::event::EventKind;
 use notify::event::ModifyKind;
 
 use super::*;
 use crate::lint;
+use crate::project::FileStamp;
+use crate::project::ManifestFingerprint;
+use crate::project::PackageRecord;
+use crate::project::PublishPolicy;
+use crate::project::TargetRecord;
+use crate::project::WorkspaceMetadata;
 use crate::scan;
+use crate::tui::keymap::TargetsAction;
 use crate::tui::panes;
+
+fn metadata_with_example(
+    root: &AbsolutePath,
+    package_name: &str,
+    example_name: &str,
+) -> WorkspaceMetadata {
+    let target = TargetRecord {
+        name:              example_name.to_string(),
+        kinds:             vec![TargetKind::Example],
+        src_path:          AbsolutePath::from(
+            root.as_path()
+                .join("examples")
+                .join(format!("{example_name}.rs")),
+        ),
+        required_features: Vec::new(),
+    };
+    let package = PackageRecord {
+        name:          package_name.to_string(),
+        version:       Version::new(0, 1, 0),
+        edition:       "2021".to_string(),
+        description:   None,
+        license:       None,
+        homepage:      None,
+        repository:    None,
+        manifest_path: AbsolutePath::from(root.as_path().join("Cargo.toml")),
+        targets:       vec![target],
+        publish:       PublishPolicy::Any,
+    };
+    let mut packages = HashMap::new();
+    packages.insert(
+        PackageId {
+            repr: format!("{package_name}-{}", root.display()),
+        },
+        package,
+    );
+
+    WorkspaceMetadata {
+        workspace_root: root.clone(),
+        target_directory: AbsolutePath::from(root.as_path().join("target")),
+        packages,
+        fingerprint: ManifestFingerprint {
+            manifest:       FileStamp {
+                content_hash: [0_u8; 32],
+            },
+            lockfile:       None,
+            rust_toolchain: None,
+            configs:        BTreeMap::new(),
+        },
+        out_of_tree_target_bytes: None,
+    }
+}
 
 #[test]
 fn detail_cache_separates_root_and_worktree_rows_with_same_path() {
@@ -102,6 +166,70 @@ fn workspace_worktree_group_root_uses_worktree_group_title() {
             panes::PackageRow::Section(panes::PackageSection::PrimaryWorkspace),
         ]
     );
+}
+
+#[test]
+fn workspace_worktree_group_root_targets_include_each_checkout() {
+    let primary_ws = make_workspace_raw(Some("hana"), "/tmp/hana", vec![], None);
+    let linked_ws = make_workspace_raw(
+        Some("hana"),
+        "/tmp/hana_style_fix",
+        vec![],
+        Some("hana_style_fix"),
+    );
+    let root = make_workspace_worktrees_item(primary_ws, vec![linked_ws]);
+    let primary_path = test_path("/tmp/hana");
+    let linked_path = test_path("/tmp/hana_style_fix");
+
+    let mut app = make_app(&[]);
+    apply_items(&mut app, &[root]);
+    {
+        let handle = app.scan.metadata_store_handle();
+        let mut store = handle.lock().unwrap_or_else(|_| std::process::abort());
+        store.upsert(metadata_with_example(&primary_path, "hana", "showcase"));
+        store.upsert(metadata_with_example(&linked_path, "hana", "showcase"));
+    }
+
+    app.project_list.set_cursor(0);
+    app.sync_selected_project();
+    app.ensure_detail_cached();
+
+    let targets = app.panes.targets.content().unwrap();
+    let labels: Vec<String> = targets
+        .examples
+        .iter()
+        .map(|entry| entry.source.label().to_string())
+        .collect();
+    assert_eq!(labels, vec!["hana/hana", "hana_style_fix/hana"]);
+
+    let project_paths: Vec<String> = targets
+        .examples
+        .iter()
+        .map(|entry| entry.project_path.display().to_string())
+        .collect();
+    assert_eq!(
+        project_paths,
+        vec![
+            primary_path.display().to_string(),
+            linked_path.display().to_string(),
+        ]
+    );
+    assert!(
+        targets
+            .examples
+            .iter()
+            .all(|entry| entry.package_name == "hana")
+    );
+
+    app.panes.targets.viewport.set_pos(1);
+    panes::dispatch_targets_action(TargetsAction::ReleaseBuild, &mut app);
+    let pending = app
+        .inflight
+        .take_pending_example_run()
+        .unwrap_or_else(|| std::process::abort());
+    assert_eq!(pending.abs_path, linked_path.display().to_string());
+    assert_eq!(pending.package_name.as_deref(), Some("hana"));
+    assert!(pending.build_mode.is_release());
 }
 
 #[test]

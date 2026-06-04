@@ -216,6 +216,7 @@ impl RunTargetKind {
 pub enum TargetSource {
     Workspace,
     Member(String),
+    Worktree(String),
 }
 
 impl TargetSource {
@@ -223,14 +224,16 @@ impl TargetSource {
         match self {
             Self::Workspace => "workspace",
             Self::Member(name) => name.as_str(),
+            Self::Worktree(label) => label.as_str(),
         }
     }
 
-    /// Sort key: `Workspace` first, then members alphabetical by name.
+    /// Sort key: workspace root first, then members, then worktree labels.
     const fn sort_key(&self) -> (u8, &str) {
         match self {
             Self::Workspace => (0, ""),
             Self::Member(name) => (1, name.as_str()),
+            Self::Worktree(label) => (2, label.as_str()),
         }
     }
 }
@@ -241,6 +244,8 @@ pub struct TargetEntry {
     pub display_name:      String,
     pub kind:              RunTargetKind,
     pub source:            TargetSource,
+    pub project_path:      AbsolutePath,
+    pub package_name:      String,
     pub src_path:          AbsolutePath,
     /// Cargo `required-features` for this target, passed as `--features`
     /// when running so feature-gated targets launch without manual flags.
@@ -1261,6 +1266,30 @@ impl TargetsData {
         self.binaries.len() + self.examples.len() + self.benches.len()
     }
 
+    fn append(&mut self, mut other: Self) {
+        self.binaries.append(&mut other.binaries);
+        self.examples.append(&mut other.examples);
+        self.benches.append(&mut other.benches);
+    }
+
+    fn relabel_as_worktree(&mut self, checkout_name: &str) {
+        for entry in self
+            .binaries
+            .iter_mut()
+            .chain(self.examples.iter_mut())
+            .chain(self.benches.iter_mut())
+        {
+            entry.source =
+                TargetSource::Worktree(format!("{checkout_name}/{}", entry.package_name));
+        }
+    }
+
+    fn sort_entries(&mut self) {
+        self.binaries.sort_by(compare_target_name);
+        self.examples.sort_by(compare_example_name);
+        self.benches.sort_by(compare_target_name);
+    }
+
     /// Aggregate runnable targets for the project at `selected_path`.
     ///
     /// When `selected_path` is the workspace root, every package's
@@ -1288,6 +1317,7 @@ impl TargetsData {
         let selected_path = selected_path.as_path();
         let include_all_members = selected_path == workspace_root;
         let is_real_workspace = metadata.packages.len() > 1;
+        let project_path = AbsolutePath::from(selected_path);
         let mut binaries: Vec<TargetEntry> = Vec::new();
         let mut examples: Vec<TargetEntry> = Vec::new();
         let mut benches: Vec<TargetEntry> = Vec::new();
@@ -1310,6 +1340,8 @@ impl TargetsData {
                         display_name:      target.name.clone(),
                         kind:              RunTargetKind::Binary,
                         source:            source.clone(),
+                        project_path:      project_path.clone(),
+                        package_name:      record.name.clone(),
                         src_path:          target.src_path.clone(),
                         required_features: target.required_features.clone(),
                     });
@@ -1327,6 +1359,8 @@ impl TargetsData {
                         display_name,
                         kind: RunTargetKind::Example,
                         source: source.clone(),
+                        project_path: project_path.clone(),
+                        package_name: record.name.clone(),
                         src_path: target.src_path.clone(),
                         required_features: target.required_features.clone(),
                     });
@@ -1337,6 +1371,8 @@ impl TargetsData {
                         display_name:      target.name.clone(),
                         kind:              RunTargetKind::Bench,
                         source:            source.clone(),
+                        project_path:      project_path.clone(),
+                        package_name:      record.name.clone(),
                         src_path:          target.src_path.clone(),
                         required_features: target.required_features.clone(),
                     });
@@ -1344,31 +1380,28 @@ impl TargetsData {
             }
         }
 
-        binaries.sort_by(|a, b| {
-            a.source
-                .sort_key()
-                .cmp(&b.source.sort_key())
-                .then_with(|| a.name.cmp(&b.name))
-        });
-        examples.sort_by(|a, b| {
-            a.source
-                .sort_key()
-                .cmp(&b.source.sort_key())
-                .then_with(|| example_display_order(&a.display_name, &b.display_name))
-        });
-        benches.sort_by(|a, b| {
-            a.source
-                .sort_key()
-                .cmp(&b.source.sort_key())
-                .then_with(|| a.name.cmp(&b.name))
-        });
-
-        Self {
+        let mut data = Self {
             binaries,
             examples,
             benches,
-        }
+        };
+        data.sort_entries();
+        data
     }
+}
+
+fn compare_target_name(a: &TargetEntry, b: &TargetEntry) -> Ordering {
+    a.source
+        .sort_key()
+        .cmp(&b.source.sort_key())
+        .then_with(|| a.name.cmp(&b.name))
+}
+
+fn compare_example_name(a: &TargetEntry, b: &TargetEntry) -> Ordering {
+    a.source
+        .sort_key()
+        .cmp(&b.source.sort_key())
+        .then_with(|| example_display_order(&a.display_name, &b.display_name))
 }
 
 /// Derive the example's category subdirectory from its `src_path`
@@ -1463,6 +1496,8 @@ mod target_list_tests {
             display_name: name.into(),
             kind,
             source: TargetSource::Workspace,
+            project_path: AbsolutePath::from("/tmp"),
+            package_name: "demo".into(),
             src_path: AbsolutePath::from(format!("/tmp/{name}.rs")),
             required_features: Vec::new(),
         }
@@ -2480,7 +2515,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
         ci_display,
     });
 
-    let targets = lookup_targets_data(app, &abs_path_owned);
+    let targets = lookup_targets_data(app, &abs_path_owned, src.wt_item);
     assemble_detail_pane_data(package, runtime.git_detail, runtime.worktrees, targets)
 }
 
@@ -2688,7 +2723,39 @@ fn log_pane_common_breakdown(abs_path: &Path, runtime: &RuntimeFields, metadata:
 /// metadata covers the path yet — callers render an empty pane in
 /// that case so we don't surface a hand-parsed view that disagrees
 /// with cargo's discovery rules.
-fn lookup_targets_data(app: &App, abs_path: &AbsolutePath) -> TargetsData {
+fn lookup_targets_data(
+    app: &App,
+    abs_path: &AbsolutePath,
+    wt_item: Option<&RootItem>,
+) -> TargetsData {
+    if let Some(data) = lookup_worktree_group_targets(app, wt_item) {
+        return data;
+    }
+    lookup_targets_data_for_path(app, abs_path)
+}
+
+fn lookup_worktree_group_targets(app: &App, wt_item: Option<&RootItem>) -> Option<TargetsData> {
+    let RootItem::Worktrees(group) = wt_item? else {
+        return None;
+    };
+    if !group.renders_as_group() {
+        return None;
+    }
+
+    let mut merged = TargetsData::default();
+    for entry in group
+        .iter_entries()
+        .filter(|entry| entry.visibility() == Visibility::Visible)
+    {
+        let mut targets = lookup_targets_data_for_path(app, entry.path());
+        targets.relabel_as_worktree(&entry.root_directory_name().into_string());
+        merged.append(targets);
+    }
+    merged.sort_entries();
+    Some(merged)
+}
+
+fn lookup_targets_data_for_path(app: &App, abs_path: &AbsolutePath) -> TargetsData {
     let handle = app.scan.metadata_store_handle();
     let Ok(store) = handle.lock() else {
         return TargetsData::default();
