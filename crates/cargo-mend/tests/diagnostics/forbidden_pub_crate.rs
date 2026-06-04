@@ -371,3 +371,92 @@ edition = "2024"
         report.findings,
     );
 }
+
+#[test]
+fn mutually_referencing_public_signatures_do_not_overflow_exposure_walk() {
+    // Regression: the structural-exposure walk follows public signatures from
+    // item to item. `Alpha`'s public field graph mentions `Beta` and `Beta`'s
+    // mentions `Alpha`, which used to recurse Alpha -> Beta -> Alpha forever
+    // and overflow the compiler-driver stack. The walk must terminate AND
+    // still find `Storage`'s real exposure through `Cache::commit`.
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "mutual_signature_cycle_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src/foo/bar")).expect("create src/foo/bar");
+    fs::write(temp.path().join("src/lib.rs"), "mod consumer;\nmod foo;\n").expect("write lib");
+    fs::write(
+        temp.path().join("src/foo/mod.rs"),
+        "mod bar;\npub(crate) use bar::Cache;\n",
+    )
+    .expect("write foo/mod.rs");
+    fs::write(
+        temp.path().join("src/foo/bar/mod.rs"),
+        "mod baz;\npub(crate) use baz::Cache;\n",
+    )
+    .expect("write foo/bar/mod.rs");
+    fs::write(
+        temp.path().join("src/foo/bar/baz.rs"),
+        r#"pub(crate) struct Cache;
+
+impl Cache {
+    pub fn commit(&self) -> Storage {
+        Storage { mesh: 0 }
+    }
+}
+
+pub(crate) struct Storage {
+    pub mesh: u32,
+}
+
+pub struct Alpha {
+    pub storage: Option<Box<Storage>>,
+    pub beta: Option<Box<Beta>>,
+}
+
+pub struct Beta {
+    pub alpha: Option<Box<Alpha>>,
+}
+"#,
+    )
+    .expect("write foo/bar/baz.rs");
+    fs::write(
+        temp.path().join("src/consumer.rs"),
+        r#"pub(crate) fn use_storage() -> u32 {
+    let cache = crate::foo::Cache;
+    let storage = cache.commit();
+    storage.mesh
+}
+"#,
+    )
+    .expect("write consumer");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let storage_finding = report
+        .findings
+        .iter()
+        .find(|f| {
+            f.code == DiagnosticCode::ForbiddenPubCrate && f.path.ends_with("src/foo/bar/baz.rs")
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected forbidden_pub_crate on structurally-exposed `Storage`: {:?}",
+                report.findings,
+            )
+        });
+    assert!(
+        storage_finding
+            .help
+            .iter()
+            .any(|line| line.contains("consider using `pub`")),
+        "the cycle guard must not hide Storage's real exposure through Cache::commit: {:?}",
+        storage_finding.help,
+    );
+}

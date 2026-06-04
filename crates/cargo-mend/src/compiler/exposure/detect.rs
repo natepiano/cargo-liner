@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -14,12 +15,39 @@ use crate::compiler::settings::DriverSettings;
 use crate::compiler::source_cache;
 use crate::compiler::source_cache::SourceCache;
 
+/// `(file, item)` pairs already on the exposure-evaluation stack.
+///
+/// Two public items whose signatures mention each other (`Alpha` holds a
+/// `Beta` field, `Beta` holds an `Alpha` field) would otherwise recurse
+/// through `type_is_exposed_outside_parent` forever and overflow the stack.
+/// A revisited pair contributes no new exposure path, so it evaluates to
+/// `false` and any real exposure is found on another branch of the walk.
+type VisitedItems = HashSet<(PathBuf, String)>;
+
 pub fn child_item_is_exposed_by_other_crate_visible_signature(
     source_cache: &SourceCache,
     settings: &DriverSettings,
     source_root: &Path,
     child_file: &Path,
     item_name: &str,
+) -> Result<bool> {
+    crate_visible_signature_exposes_item(
+        source_cache,
+        settings,
+        source_root,
+        child_file,
+        item_name,
+        &mut VisitedItems::new(),
+    )
+}
+
+fn crate_visible_signature_exposes_item(
+    source_cache: &SourceCache,
+    settings: &DriverSettings,
+    source_root: &Path,
+    child_file: &Path,
+    item_name: &str,
+    visited: &mut VisitedItems,
 ) -> Result<bool> {
     let Some(file) = source_cache.parsed_file(child_file) else {
         return Ok(false);
@@ -41,6 +69,7 @@ pub fn child_item_is_exposed_by_other_crate_visible_signature(
             source_root,
             child_file,
             &exposing_item_name,
+            visited,
         )? {
             return Ok(true);
         }
@@ -65,6 +94,7 @@ pub fn child_item_is_exposed_by_other_crate_visible_signature(
             source_root,
             child_file,
             &self_type_name,
+            visited,
         )? {
             return Ok(true);
         }
@@ -79,6 +109,24 @@ pub fn child_item_is_exposed_by_sibling_boundary_signature(
     source_root: &Path,
     child_file: &Path,
     item_name: &str,
+) -> Result<bool> {
+    sibling_boundary_signature_exposes_item(
+        source_cache,
+        settings,
+        source_root,
+        child_file,
+        item_name,
+        &mut VisitedItems::new(),
+    )
+}
+
+fn sibling_boundary_signature_exposes_item(
+    source_cache: &SourceCache,
+    settings: &DriverSettings,
+    source_root: &Path,
+    child_file: &Path,
+    item_name: &str,
+    visited: &mut VisitedItems,
 ) -> Result<bool> {
     let Some(parent_boundary) = facade::parent_boundary_for_child(source_root, child_file) else {
         return Ok(false);
@@ -109,6 +157,7 @@ pub fn child_item_is_exposed_by_sibling_boundary_signature(
                 source_root,
                 candidate_file,
                 &exposing_item_name,
+                visited,
             )? {
                 return Ok(true);
             }
@@ -133,6 +182,7 @@ pub fn child_item_is_exposed_by_sibling_boundary_signature(
                 source_root,
                 candidate_file,
                 &self_type_name,
+                visited,
             )? {
                 return Ok(true);
             }
@@ -153,6 +203,7 @@ pub fn impl_item_is_exposed_by_exported_self_type(
         return Ok(false);
     };
 
+    let mut visited = VisitedItems::new();
     for item in &file.items {
         let Item::Impl(item_impl) = item else {
             continue;
@@ -194,6 +245,7 @@ pub fn impl_item_is_exposed_by_exported_self_type(
                     source_root,
                     check_file,
                     &self_type_name,
+                    &mut visited,
                 )? {
                     return Ok(true);
                 }
@@ -327,7 +379,11 @@ fn type_is_exposed_outside_parent(
     source_root: &Path,
     child_file: &Path,
     item_name: &str,
+    visited: &mut VisitedItems,
 ) -> Result<bool> {
+    if !visited.insert((child_file.to_path_buf(), item_name.to_string())) {
+        return Ok(false);
+    }
     Ok(facade::parent_facade_export_status(
         source_cache,
         settings,
@@ -343,19 +399,21 @@ fn type_is_exposed_outside_parent(
             child_file,
             item_name,
         )?
-        || child_item_is_exposed_by_other_crate_visible_signature(
+        || crate_visible_signature_exposes_item(
             source_cache,
             settings,
             source_root,
             child_file,
             item_name,
+            visited,
         )?
-        || child_item_is_exposed_by_sibling_boundary_signature(
+        || sibling_boundary_signature_exposes_item(
             source_cache,
             settings,
             source_root,
             child_file,
             item_name,
+            visited,
         )?
         || parent_boundary_public_signature_exposes_child_used_outside_parent(
             source_cache,
