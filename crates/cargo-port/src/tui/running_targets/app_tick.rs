@@ -7,13 +7,13 @@ use std::time::Instant;
 
 use cargo_metadata::TargetKind;
 
-use super::App;
+use super::ProjectTargetSlice;
 use crate::project::AbsolutePath;
 use crate::project::WorkspaceMetadata;
+use crate::tui::app::App;
 use crate::tui::panes;
 use crate::tui::panes::RunTargetKind;
 use crate::tui::panes::TargetEntry;
-use crate::tui::running_targets::ProjectTargetSlice;
 
 const SOURCE_DIR: &str = "src";
 const EXAMPLES_DIR: &str = "examples";

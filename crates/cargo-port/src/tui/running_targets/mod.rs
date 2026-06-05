@@ -5,6 +5,8 @@
 //! The path tail is parsed against cargo's filesystem layout to classify
 //! the exe as a bin / example / bench of that workspace.
 
+mod app_tick;
+
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -351,7 +353,7 @@ impl RunningTargetsPoller {
     /// Replace the snapshot directly, bypassing the process poll. Used by
     /// render/dispatch tests.
     #[cfg(test)]
-    pub(crate) fn set_snapshot_for_test(&mut self, snapshot: RunningTargets) {
+    pub(super) fn set_snapshot_for_test(&mut self, snapshot: RunningTargets) {
         self.snapshot = snapshot;
     }
 
@@ -422,7 +424,7 @@ impl RunningTargets {
     /// (the workspace root in the standard layout). Used by render/dispatch
     /// tests.
     #[cfg(test)]
-    pub(crate) fn from_pairs(pairs: Vec<(RunningKey, Vec<RunningInstance>)>) -> Self {
+    pub(super) fn from_pairs(pairs: Vec<(RunningKey, Vec<RunningInstance>)>) -> Self {
         Self {
             by_key:   pairs
                 .into_iter()
@@ -447,7 +449,7 @@ impl RunningTargets {
 
     /// The same snapshot with untracked descendant processes attached.
     #[cfg(test)]
-    pub(crate) fn with_children(mut self, children: Vec<ChildProcess>) -> Self {
+    pub(super) fn with_children(mut self, children: Vec<ChildProcess>) -> Self {
         self.children = children;
         self
     }
@@ -457,7 +459,7 @@ impl RunningTargets {
 impl ChildProcess {
     /// A test child process with zeroed metrics, the PID doubling as the
     /// first-seen order and create time, like `RunningInstance::for_test`.
-    pub(crate) fn for_test(pid: u32, name: &str, parent_pid: u32) -> Self {
+    pub(super) fn for_test(pid: u32, name: &str, parent_pid: u32) -> Self {
         Self {
             pid,
             name: name.to_string(),
@@ -474,7 +476,7 @@ impl ChildProcess {
 impl RunningInstance {
     /// A test instance with the given PID and profile; zeroed metrics, the
     /// PID doubling as the first-seen order (lower PID = seen earlier).
-    pub(crate) fn for_test(pid: u32, profile: RunProfile) -> Self {
+    pub(super) fn for_test(pid: u32, profile: RunProfile) -> Self {
         Self {
             pid,
             cpu_percent: 0.0,
@@ -487,13 +489,13 @@ impl RunningInstance {
     }
 
     /// The same test instance nested under `parent` in the outline.
-    pub(crate) const fn with_parent(mut self, parent: u32) -> Self {
+    pub(super) const fn with_parent(mut self, parent: u32) -> Self {
         self.parent_pid = Some(parent);
         self
     }
 
     /// The same test instance with live-looking metrics.
-    pub(crate) const fn with_metrics(mut self, cpu_percent: f32, memory_bytes: u64) -> Self {
+    pub(super) const fn with_metrics(mut self, cpu_percent: f32, memory_bytes: u64) -> Self {
         self.cpu_percent = cpu_percent;
         self.memory_bytes = memory_bytes;
         self
@@ -503,7 +505,7 @@ impl RunningInstance {
 /// A deterministic `Instant` for test fixtures: a shared base plus `order`
 /// seconds, so fixtures can express relative first-seen order.
 #[cfg(test)]
-pub(crate) fn test_instant_at(order: u32) -> Instant {
+pub(super) fn test_instant_at(order: u32) -> Instant {
     static BASE: OnceLock<Instant> = OnceLock::new();
     *BASE.get_or_init(Instant::now) + Duration::from_secs(u64::from(order))
 }
