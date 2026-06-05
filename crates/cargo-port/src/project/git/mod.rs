@@ -1,5 +1,6 @@
 mod checkout;
 mod command;
+mod constants;
 mod discovery;
 mod repo;
 mod submodule;

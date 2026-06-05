@@ -11,11 +11,18 @@ use super::ServiceSignal;
 use super::constants::GITHUB_CORE_BUCKET;
 use super::constants::GITHUB_GRAPHQL_BUCKET;
 use super::constants::GRAPHQL_RATE_LIMITED_ERROR_TYPE;
+use super::constants::GRAPHQL_RESPONSE_ERRORS_KEY;
+use super::constants::GRAPHQL_RESPONSE_TYPE_KEY;
 use super::constants::RATE_LIMIT_LIMIT_HEADER;
+use super::constants::RATE_LIMIT_LIMIT_KEY;
 use super::constants::RATE_LIMIT_REMAINING_HEADER;
+use super::constants::RATE_LIMIT_REMAINING_KEY;
 use super::constants::RATE_LIMIT_RESET_HEADER;
+use super::constants::RATE_LIMIT_RESET_KEY;
 use super::constants::RATE_LIMIT_RESOURCE_HEADER;
+use super::constants::RATE_LIMIT_RESOURCES_KEY;
 use super::constants::RATE_LIMIT_USED_HEADER;
+use super::constants::RATE_LIMIT_USED_KEY;
 
 /// Which GitHub rate-limit bucket a response belongs to. The REST and
 /// GraphQL APIs share `api.github.com` but track their quotas
@@ -77,14 +84,16 @@ pub(crate) fn parse_rate_limit_headers(
 /// Parse a `/rate_limit` JSON response. Missing buckets stay `None` so
 /// the caller can merge selectively.
 pub(crate) fn parse_rate_limit_response(value: &Value) -> GitHubRateLimit {
-    let resources = value.get("resources");
+    let resources = value.get(RATE_LIMIT_RESOURCES_KEY);
     let bucket = |name: &str| -> Option<RateLimitQuota> {
         let entry = resources?.get(name)?;
         Some(RateLimitQuota {
-            limit:     entry.get("limit")?.as_u64()?,
-            used:      entry.get("used")?.as_u64()?,
-            remaining: entry.get("remaining")?.as_u64()?,
-            reset_at:  entry.get("reset").and_then(serde_json::Value::as_u64),
+            limit:     entry.get(RATE_LIMIT_LIMIT_KEY)?.as_u64()?,
+            used:      entry.get(RATE_LIMIT_USED_KEY)?.as_u64()?,
+            remaining: entry.get(RATE_LIMIT_REMAINING_KEY)?.as_u64()?,
+            reset_at:  entry
+                .get(RATE_LIMIT_RESET_KEY)
+                .and_then(serde_json::Value::as_u64),
         })
     };
     GitHubRateLimit {
@@ -115,11 +124,11 @@ pub(crate) fn github_is_rate_limited(status: StatusCode, headers: &HeaderMap) ->
 /// `RATE_LIMITED`. GraphQL returns HTTP 200 on rate-limit, so
 /// status-based detection alone is not enough for that endpoint.
 pub(crate) fn graphql_body_is_rate_limited(body: &Value) -> bool {
-    body.get("errors")
+    body.get(GRAPHQL_RESPONSE_ERRORS_KEY)
         .and_then(serde_json::Value::as_array)
         .is_some_and(|errors| {
             errors.iter().any(|err| {
-                err.get("type")
+                err.get(GRAPHQL_RESPONSE_TYPE_KEY)
                     .and_then(serde_json::Value::as_str)
                     .is_some_and(|t| t == GRAPHQL_RATE_LIMITED_ERROR_TYPE)
             })

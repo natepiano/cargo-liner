@@ -3,6 +3,9 @@ use std::path::Path;
 use std::process::Command;
 use std::process::Output;
 
+use super::constants::GIT_BINARY;
+use super::constants::GIT_NO_OPTIONAL_LOCKS_ARG;
+
 /// Build a git subprocess rooted at `repo_root` with `--no-optional-locks`
 /// set. The flag prevents `git status` (and any other read-only command
 /// that touches the index stat cache) from rewriting `.git/index`,
@@ -10,8 +13,8 @@ use std::process::Output;
 /// change and re-emit a refresh signal — a self-sustaining CPU and
 /// rate-limit loop.
 pub(super) fn git_command(repo_root: &Path) -> Command {
-    let mut cmd = Command::new("git");
-    cmd.arg("--no-optional-locks").current_dir(repo_root);
+    let mut cmd = Command::new(GIT_BINARY);
+    cmd.arg(GIT_NO_OPTIONAL_LOCKS_ARG).current_dir(repo_root);
     cmd
 }
 

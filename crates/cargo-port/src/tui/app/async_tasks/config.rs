@@ -1,4 +1,5 @@
 use std::fmt::Write as _;
+use std::sync::Arc;
 use std::time::Instant;
 
 use ratatui::style::Color;
@@ -22,6 +23,7 @@ use crate::tui::keymap::KeymapError;
 use crate::tui::keymap::KeymapErrorReason;
 use crate::tui::keymap::KeymapErrorReason::Parse;
 use crate::tui::keymap_ui;
+use crate::tui::theme_roles;
 
 /// The backdrop color to paint when the resolved theme appearance
 /// disagrees with the terminal's detected background. Returns `None`
@@ -194,7 +196,8 @@ impl App {
         if self.themes.take_change().is_none() {
             return;
         }
-        let registry = tui_pane::ThemeRegistry::from_dir_with_builtins(self.themes.dir());
+        let mut registry = tui_pane::ThemeRegistry::from_dir_with_builtins(self.themes.dir());
+        theme_roles::apply_role_defaults_to_registry(&mut registry);
         let failed = registry.status().failed_files.clone();
         let overridden = registry.status().overridden.clone();
         let total = registry.len();
@@ -259,7 +262,9 @@ impl App {
             resolved.theme.text.bg_focus.color,
         );
         self.themes.set_frame_background(frame_background);
-        tui_pane::set_active_theme(resolved.theme);
+        let mut active_theme = (*resolved.theme).clone();
+        theme_roles::apply_role_defaults_to_theme(&mut active_theme, None, resolved.appearance);
+        tui_pane::set_active_theme(Arc::new(active_theme));
         tui_pane::set_focused_pane_tint(self.config.current().appearance.focused_pane_tint);
 
         // Dismiss the prior miss toast unconditionally; we'll push a

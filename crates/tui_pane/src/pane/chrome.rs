@@ -70,7 +70,7 @@ impl PaneChrome {
 /// Focused: accent border + bold accent title. Unfocused: the
 /// theme's `pane_chrome.inactive_border` colour + dim title. Driving
 /// the unfocused border from the theme (rather than
-/// `Style::default()`) so every pane in cargo-port draws the same
+/// `Style::default()`) so every pane using this chrome draws the same
 /// shade, regardless of how a given terminal profile renders its
 /// "default foreground" colour.
 #[must_use]
@@ -118,7 +118,7 @@ fn focused_pane_tint() -> Color {
 /// Bordered empty-state block.
 ///
 /// Used for panes that have no content to render (no data yet, no
-/// git repo, etc.). Matches the unfocused chrome of
+/// selection, etc.). Matches the unfocused chrome of
 /// [`default_pane_chrome`] so empty and populated panes draw the
 /// same border shade.
 #[must_use]

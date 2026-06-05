@@ -4,13 +4,13 @@
 //! TOML templates in `tui_pane/themes/` round-trip to these
 //! constructors; the test in `tui_pane/tests/themes.rs` locks it.
 
+use std::collections::BTreeMap;
+
 use ratatui::style::Color;
 
 use super::DiskUsageTheme;
 use super::FinderTheme;
 use super::FocusTheme;
-use super::GitTheme;
-use super::Modifiers;
 use super::PaneChromeTheme;
 use super::SemanticTheme;
 use super::StatusTheme;
@@ -49,33 +49,18 @@ pub const fn default_dark() -> Theme {
             bright:    StyleSpec::from_color(Color::Cyan),
             bg_focus:  StyleSpec::from_color(Color::Black),
         },
-        git:         GitTheme {
-            ignored:   StyleSpec::from_color(Color::DarkGray),
-            modified:  StyleSpec::from_color(Color::Indexed(208)),
-            untracked: StyleSpec::from_color(Color::Green),
-        },
         status:      StatusTheme {
-            bar:           StyleSpec::from_color(Color::DarkGray),
-            target_bench:  StyleSpec::from_color(Color::Magenta),
-            column_header: StyleSpec {
-                color:     Color::Rgb(150, 190, 180),
-                modifiers: Modifiers {
-                    bold:      true,
-                    italic:    false,
-                    dim:       false,
-                    underline: false,
-                },
-            },
+            bar: StyleSpec::from_color(Color::DarkGray),
         },
         finder:      FinderTheme {
-            match_bg:          StyleSpec::from_color(Color::Rgb(0, 90, 100)),
-            discovery_shimmer: StyleSpec::from_color(Color::Rgb(150, 210, 255)),
+            match_bg: StyleSpec::from_color(Color::Rgb(0, 90, 100)),
         },
         disk_usage:  DiskUsageTheme {
             low:  StyleSpec::from_color(Color::Rgb(100, 220, 100)),
             mid:  StyleSpec::from_color(Color::Rgb(255, 255, 255)),
             high: StyleSpec::from_color(Color::Rgb(255, 100, 100)),
         },
+        roles:       BTreeMap::new(),
     }
 }
 
@@ -110,33 +95,18 @@ pub const fn default_light() -> Theme {
             bright:    StyleSpec::from_color(Color::Rgb(0, 95, 135)),
             bg_focus:  StyleSpec::from_color(Color::White),
         },
-        git:         GitTheme {
-            ignored:   StyleSpec::from_color(Color::Rgb(150, 150, 150)),
-            modified:  StyleSpec::from_color(Color::Indexed(208)),
-            untracked: StyleSpec::from_color(Color::Rgb(0, 120, 0)),
-        },
         status:      StatusTheme {
-            bar:           StyleSpec::from_color(Color::Rgb(220, 220, 220)),
-            target_bench:  StyleSpec::from_color(Color::Rgb(140, 0, 140)),
-            column_header: StyleSpec {
-                color:     Color::Rgb(60, 100, 90),
-                modifiers: Modifiers {
-                    bold:      true,
-                    italic:    false,
-                    dim:       false,
-                    underline: false,
-                },
-            },
+            bar: StyleSpec::from_color(Color::Rgb(220, 220, 220)),
         },
         finder:      FinderTheme {
-            match_bg:          StyleSpec::from_color(Color::Rgb(255, 245, 180)),
-            discovery_shimmer: StyleSpec::from_color(Color::Rgb(120, 140, 200)),
+            match_bg: StyleSpec::from_color(Color::Rgb(255, 245, 180)),
         },
         disk_usage:  DiskUsageTheme {
             low:  StyleSpec::from_color(Color::Rgb(0, 140, 0)),
             mid:  StyleSpec::from_color(Color::Rgb(90, 90, 90)),
             high: StyleSpec::from_color(Color::Rgb(200, 0, 0)),
         },
+        roles:       BTreeMap::new(),
     }
 }
 
@@ -175,25 +145,18 @@ pub const fn high_contrast_dark() -> Theme {
             bright:    StyleSpec::bold(Color::LightYellow),
             bg_focus:  StyleSpec::from_color(Color::Black),
         },
-        git:         GitTheme {
-            ignored:   StyleSpec::from_color(Color::Gray),
-            modified:  StyleSpec::bold(Color::LightYellow),
-            untracked: StyleSpec::bold(Color::LightGreen),
-        },
         status:      StatusTheme {
-            bar:           StyleSpec::from_color(Color::Rgb(60, 60, 60)),
-            target_bench:  StyleSpec::bold(Color::LightMagenta),
-            column_header: StyleSpec::bold(Color::LightCyan),
+            bar: StyleSpec::from_color(Color::Rgb(60, 60, 60)),
         },
         finder:      FinderTheme {
-            match_bg:          StyleSpec::from_color(Color::LightYellow),
-            discovery_shimmer: StyleSpec::bold(Color::LightCyan),
+            match_bg: StyleSpec::from_color(Color::LightYellow),
         },
         disk_usage:  DiskUsageTheme {
             low:  StyleSpec::bold(Color::LightGreen),
             mid:  StyleSpec::from_color(Color::White),
             high: StyleSpec::bold(Color::LightRed),
         },
+        roles:       BTreeMap::new(),
     }
 }
 
@@ -231,24 +194,17 @@ pub const fn high_contrast_light() -> Theme {
             bright:    StyleSpec::bold(Color::Rgb(140, 60, 0)),
             bg_focus:  StyleSpec::from_color(Color::White),
         },
-        git:         GitTheme {
-            ignored:   StyleSpec::from_color(Color::Rgb(80, 80, 80)),
-            modified:  StyleSpec::bold(Color::Rgb(140, 60, 0)),
-            untracked: StyleSpec::bold(Color::Rgb(0, 100, 0)),
-        },
         status:      StatusTheme {
-            bar:           StyleSpec::from_color(Color::Rgb(210, 210, 210)),
-            target_bench:  StyleSpec::bold(Color::Rgb(140, 0, 140)),
-            column_header: StyleSpec::bold(Color::Rgb(0, 0, 140)),
+            bar: StyleSpec::from_color(Color::Rgb(210, 210, 210)),
         },
         finder:      FinderTheme {
-            match_bg:          StyleSpec::from_color(Color::Rgb(255, 230, 100)),
-            discovery_shimmer: StyleSpec::bold(Color::Rgb(0, 0, 140)),
+            match_bg: StyleSpec::from_color(Color::Rgb(255, 230, 100)),
         },
         disk_usage:  DiskUsageTheme {
             low:  StyleSpec::bold(Color::Rgb(0, 100, 0)),
             mid:  StyleSpec::from_color(Color::Black),
             high: StyleSpec::bold(Color::Rgb(180, 0, 0)),
         },
+        roles:       BTreeMap::new(),
     }
 }

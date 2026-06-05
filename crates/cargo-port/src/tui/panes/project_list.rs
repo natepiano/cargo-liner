@@ -19,7 +19,6 @@ use ratatui::widgets::Paragraph;
 use tui_pane::PaneTitleCount;
 use tui_pane::PaneTitleGroup;
 use tui_pane::Viewport;
-use tui_pane::column_header_color;
 use tui_pane::error_color;
 use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
@@ -72,6 +71,7 @@ use crate::tui::project_list::ProjectList;
 use crate::tui::render;
 use crate::tui::state;
 use crate::tui::state::Lint;
+use crate::tui::theme_roles;
 
 const TITLE_ELLIPSIS: &str = "\u{2026}";
 
@@ -201,7 +201,7 @@ pub fn render_project_list_pane_body(
 
     let header_area = Rect::new(inner.x, inner.y, inner.width, 1);
     frame.render_widget(
-        Paragraph::new(header).style(Style::default().fg(column_header_color())),
+        Paragraph::new(header).style(Style::default().fg(theme_roles::column_header_color())),
         header_area,
     );
 

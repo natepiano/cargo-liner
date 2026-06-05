@@ -4,12 +4,7 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 pub(super) use tui_pane::ColumnSpec;
 pub(super) use tui_pane::ColumnWidths;
-use tui_pane::column_header_color;
-use tui_pane::discovery_shimmer_color;
 use tui_pane::error_color;
-use tui_pane::git_ignored_color;
-use tui_pane::git_modified_color;
-use tui_pane::git_untracked_color;
 use tui_pane::label_color;
 use tui_pane::secondary_text_color;
 use tui_pane::text_default;
@@ -17,6 +12,7 @@ use tui_pane::title_color;
 use unicode_width::UnicodeWidthStr;
 
 use super::render;
+use super::theme_roles;
 use crate::ci::CiStatus;
 use crate::constants::IN_SYNC;
 use crate::project::GitStatus;
@@ -457,7 +453,7 @@ pub(super) fn row_to_line(row: &RowCells, widths: &ProjectListWidths) -> Line<'s
 pub(super) fn header_line(widths: &ProjectListWidths, name_text: &str) -> Line<'static> {
     let defs = column_defs(widths.lint_enabled());
     let header_style = Style::default()
-        .fg(column_header_color())
+        .fg(theme_roles::column_header_color())
         .add_modifier(Modifier::BOLD);
 
     let mut spans = Vec::with_capacity(NUM_COLS);
@@ -526,7 +522,7 @@ pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
 
     let compact_status_style = |value: &str| {
         if value == IN_SYNC {
-            Style::default().fg(git_untracked_color())
+            Style::default().fg(theme_roles::git_untracked_color())
         } else {
             Style::default().fg(text_default())
         }
@@ -612,19 +608,21 @@ pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
 
 pub(super) fn project_name_style(git_status: Option<GitStatus>) -> Style {
     match git_status {
-        Some(GitStatus::Modified) => Style::default().fg(git_modified_color()),
-        Some(GitStatus::Untracked) => Style::default().fg(git_untracked_color()),
-        Some(GitStatus::Ignored) => Style::default().fg(git_ignored_color()),
+        Some(GitStatus::Modified) => Style::default().fg(theme_roles::git_modified_color()),
+        Some(GitStatus::Untracked) => Style::default().fg(theme_roles::git_untracked_color()),
+        Some(GitStatus::Ignored) => Style::default().fg(theme_roles::git_ignored_color()),
         Some(GitStatus::Clean) | None => Style::default(),
     }
 }
 
 pub(super) fn project_name_shimmer_style(git_status: Option<GitStatus>) -> Style {
     match git_status {
-        Some(GitStatus::Modified) => Style::default().fg(git_modified_color()),
-        Some(GitStatus::Untracked) => Style::default().fg(git_untracked_color()),
+        Some(GitStatus::Modified) => Style::default().fg(theme_roles::git_modified_color()),
+        Some(GitStatus::Untracked) => Style::default().fg(theme_roles::git_untracked_color()),
         Some(GitStatus::Ignored) => Style::default().fg(secondary_text_color()),
-        Some(GitStatus::Clean) | None => Style::default().fg(discovery_shimmer_color()),
+        Some(GitStatus::Clean) | None => {
+            Style::default().fg(theme_roles::discovery_shimmer_color())
+        },
     }
 }
 
@@ -1048,7 +1046,7 @@ mod tests {
         });
         assert_eq!(
             modified.cells[COL_NAME].style.fg,
-            Some(git_modified_color())
+            Some(theme_roles::git_modified_color())
         );
         assert_eq!(
             modified.cells[COL_GIT_PATH].text,
@@ -1074,7 +1072,7 @@ mod tests {
         });
         assert_eq!(
             untracked.cells[COL_NAME].style.fg,
-            Some(git_untracked_color())
+            Some(theme_roles::git_untracked_color())
         );
         assert_eq!(
             untracked.cells[COL_GIT_PATH].text,
@@ -1120,7 +1118,10 @@ mod tests {
             deleted:           false,
             worktree_health:   WorktreeHealth::Normal,
         });
-        assert_eq!(ignored.cells[COL_NAME].style.fg, Some(git_ignored_color()));
+        assert_eq!(
+            ignored.cells[COL_NAME].style.fg,
+            Some(theme_roles::git_ignored_color())
+        );
         assert!(ignored.cells[COL_GIT_PATH].text.is_empty());
     }
 
@@ -1169,11 +1170,11 @@ mod tests {
     fn clean_shimmer_style_uses_explicit_high_contrast_foreground() {
         assert_eq!(
             project_name_shimmer_style(Some(GitStatus::Clean)).fg,
-            Some(discovery_shimmer_color())
+            Some(theme_roles::discovery_shimmer_color())
         );
         assert_eq!(
             project_name_shimmer_style(None).fg,
-            Some(discovery_shimmer_color())
+            Some(theme_roles::discovery_shimmer_color())
         );
     }
 }

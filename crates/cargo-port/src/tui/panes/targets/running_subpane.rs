@@ -28,7 +28,6 @@ use tui_pane::PaneTitleCount;
 use tui_pane::Placed;
 use tui_pane::RuleTitle;
 use tui_pane::Viewport;
-use tui_pane::column_header_color;
 use tui_pane::label_color;
 use tui_pane::success_color;
 use tui_pane::text_default;
@@ -38,6 +37,7 @@ use crate::project::DisplayPath;
 use crate::tui::render;
 use crate::tui::running_targets::RunProfile;
 use crate::tui::running_targets::RunningTargets;
+use crate::tui::theme_roles;
 
 /// Cap on the Target column width so a single long target name can't
 /// crowd out the metric columns. Overflow truncates with an ellipsis.
@@ -551,7 +551,7 @@ fn render_header(frame: &mut Frame, columns: &RunningColumns, placed: Placed) {
     if placed.chrome.height < 2 {
         return;
     }
-    let header_style = Style::default().fg(column_header_color());
+    let header_style = Style::default().fg(theme_roles::column_header_color());
     let line = columns.line(&RunningCells {
         target:        TARGET_HEADER,
         profile:       "Profile",

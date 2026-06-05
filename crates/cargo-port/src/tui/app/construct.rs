@@ -65,6 +65,7 @@ use crate::tui::state::SyncTracker;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
 use crate::tui::terminal::ExampleMsg;
+use crate::tui::theme_roles;
 use crate::watcher;
 use crate::watcher::WatcherMsg;
 
@@ -158,8 +159,9 @@ impl AppBuilder<Channeled> {
     pub(super) fn run_startup(self) -> AppBuilder<Started> {
         let inputs = &self.state.inputs;
         config::set_active_config(&inputs.cfg);
-        let registry =
+        let mut registry =
             tui_pane::ThemeRegistry::from_dir_with_builtins(themes::themes_dir().as_deref());
+        theme_roles::apply_role_defaults_to_registry(&mut registry);
         // Resolve the initial theme from the loaded `[appearance]`
         // section against the just-built registry. Misses fall back to
         // the appearance-matched built-in silently here — toast
@@ -171,7 +173,8 @@ impl AppBuilder<Channeled> {
             &inputs.cfg.appearance.dark_theme,
             None,
         );
-        let initial_theme = (*resolved.theme).clone();
+        let mut initial_theme = (*resolved.theme).clone();
+        theme_roles::apply_role_defaults_to_theme(&mut initial_theme, None, resolved.appearance);
         tui_pane::install_theme_state(tui_pane::ThemeState::with_registry(registry, initial_theme));
         tui_pane::set_focused_pane_tint(inputs.cfg.appearance.focused_pane_tint);
         let config_path = config::config_path();

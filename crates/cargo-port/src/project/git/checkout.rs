@@ -5,6 +5,33 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use super::command;
+use super::constants::GIT_BISECT_BAD_REF;
+use super::constants::GIT_BISECT_GOOD_REF_PREFIX;
+use super::constants::GIT_BISECT_REFS_PREFIX;
+use super::constants::GIT_BISECT_START_FILE;
+use super::constants::GIT_BISECT_VARS_ARG;
+use super::constants::GIT_CHECK_IGNORE_COMMAND;
+use super::constants::GIT_COUNT_ARG;
+use super::constants::GIT_DOUBLE_DASH_ARG;
+use super::constants::GIT_FOR_EACH_REF_COMMAND;
+use super::constants::GIT_FORMAT_ISO8601_ARG;
+use super::constants::GIT_FORMAT_REFNAME_ARG;
+use super::constants::GIT_HEAD;
+use super::constants::GIT_HEAD_REVSPEC_PREFIX;
+use super::constants::GIT_IGNORED_STATUS_CODE;
+use super::constants::GIT_LEFT_RIGHT_ARG;
+use super::constants::GIT_LOG_COMMAND;
+use super::constants::GIT_LOG_LAST_COMMIT_ARG;
+use super::constants::GIT_NOT_ARG;
+use super::constants::GIT_QUIET_SHORT_ARG;
+use super::constants::GIT_REV_LIST_COMMAND;
+use super::constants::GIT_REV_PARSE_COMMAND;
+use super::constants::GIT_SHORT_HEAD_ARG;
+use super::constants::GIT_STATUS_COMMAND;
+use super::constants::GIT_STATUS_IGNORED_MATCHING_ARG;
+use super::constants::GIT_STATUS_PORCELAIN_V1_ARG;
+use super::constants::GIT_STATUS_UNTRACKED_ALL_ARG;
+use super::constants::GIT_UNTRACKED_STATUS_CODE;
 use super::discovery;
 use super::repo;
 use super::repo::RemoteInfo;
@@ -129,14 +156,18 @@ impl CheckoutInfo {
             .and_then(|branch_name| {
                 parse_ahead_behind(
                     &repo_root,
-                    &format!("HEAD...{branch_name}"),
+                    &format!("{GIT_HEAD_REVSPEC_PREFIX}{branch_name}"),
                     "configured_local_main",
                 )
             });
         let last_commit = command::git_output_logged(
             &repo_root,
             "log_last_commit",
-            ["log", "-1", "--format=%aI"],
+            [
+                GIT_LOG_COMMAND,
+                GIT_LOG_LAST_COMMIT_ARG,
+                GIT_FORMAT_ISO8601_ARG,
+            ],
         )
         .ok()
         .and_then(|o| {
@@ -163,14 +194,18 @@ impl CheckoutInfo {
 /// on `git bisect start` and removes it on `git bisect reset`.
 fn bisect_progress(repo_root: &Path) -> Option<BisectProgress> {
     let git_dir = discovery::resolve_git_dir(repo_root)?;
-    if !git_dir.as_path().join("BISECT_START").exists() {
+    if !git_dir.as_path().join(GIT_BISECT_START_FILE).exists() {
         return None;
     }
 
     let refs = command::git_output_logged(
         repo_root,
         "bisect_refs",
-        ["for-each-ref", "--format=%(refname)", "refs/bisect/"],
+        [
+            GIT_FOR_EACH_REF_COMMAND,
+            GIT_FORMAT_REFNAME_ARG,
+            GIT_BISECT_REFS_PREFIX,
+        ],
     )
     .ok()?;
     let refs = String::from_utf8_lossy(&refs.stdout);
@@ -178,9 +213,9 @@ fn bisect_progress(repo_root: &Path) -> Option<BisectProgress> {
     let mut bad = false;
     let mut good = Vec::new();
     for refname in refs.lines().map(str::trim).filter(|line| !line.is_empty()) {
-        if refname == "refs/bisect/bad" {
+        if refname == GIT_BISECT_BAD_REF {
             bad = true;
-        } else if refname.starts_with("refs/bisect/good-") {
+        } else if refname.starts_with(GIT_BISECT_GOOD_REF_PREFIX) {
             good.push(refname.to_string());
         }
     }
@@ -196,7 +231,12 @@ fn bisect_progress(repo_root: &Path) -> Option<BisectProgress> {
 /// `bisect_nr` (revisions left) and `bisect_steps` (rough step count)
 /// fields git emits. `good` must be non-empty.
 fn bisect_vars(repo_root: &Path, good: &[String]) -> Option<BisectProgress> {
-    let mut args: Vec<&str> = vec!["rev-list", "--bisect-vars", "refs/bisect/bad", "--not"];
+    let mut args: Vec<&str> = vec![
+        GIT_REV_LIST_COMMAND,
+        GIT_BISECT_VARS_ARG,
+        GIT_BISECT_BAD_REF,
+        GIT_NOT_ARG,
+    ];
     args.extend(good.iter().map(String::as_str));
     let output = command::git_command(repo_root).args(&args).output().ok()?;
     if !output.status.success() {
@@ -233,10 +273,10 @@ fn resolve_head_state(repo_root: &Path) -> HeadState {
     let abbrev = repo::get_current_branch(repo_root);
     match abbrev.as_deref() {
         None => HeadState::Unborn,
-        Some("HEAD") => command::git_output_logged(
+        Some(GIT_HEAD) => command::git_output_logged(
             repo_root,
             "rev_parse_short_head",
-            ["rev-parse", "--short=8", "HEAD"],
+            [GIT_REV_PARSE_COMMAND, GIT_SHORT_HEAD_ARG, GIT_HEAD],
         )
         .ok()
         .and_then(|o| {
@@ -315,16 +355,19 @@ pub(crate) fn worktree_ahead_behind_primary(
     worktree_dir: &Path,
     primary_dir: &Path,
 ) -> Option<(usize, usize)> {
-    let primary_sha =
-        command::git_output_logged(primary_dir, "worktree_primary_sha", ["rev-parse", "HEAD"])
-            .ok()
-            .and_then(|o| {
-                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                if s.is_empty() { None } else { Some(s) }
-            })?;
+    let primary_sha = command::git_output_logged(
+        primary_dir,
+        "worktree_primary_sha",
+        [GIT_REV_PARSE_COMMAND, GIT_HEAD],
+    )
+    .ok()
+    .and_then(|o| {
+        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        if s.is_empty() { None } else { Some(s) }
+    })?;
     parse_ahead_behind(
         worktree_dir,
-        &format!("HEAD...{primary_sha}"),
+        &format!("{GIT_HEAD_REVSPEC_PREFIX}{primary_sha}"),
         "worktree_vs_primary",
     )
 }
@@ -336,7 +379,12 @@ fn get_git_status(project_dir: &Path, repo_root: &Path) -> GitStatus {
     let relative_path = relative_git_path(repo_root, project_dir);
     if relative_path != "." {
         let ignored = command::git_command(repo_root)
-            .args(["check-ignore", "-q", "--", &relative_path])
+            .args([
+                GIT_CHECK_IGNORE_COMMAND,
+                GIT_QUIET_SHORT_ARG,
+                GIT_DOUBLE_DASH_ARG,
+                &relative_path,
+            ])
             .status()
             .ok()
             .is_some_and(|status| status.success());
@@ -354,11 +402,11 @@ fn get_git_status(project_dir: &Path, repo_root: &Path) -> GitStatus {
     }
     let status_output = command::git_command(repo_root)
         .args([
-            "status",
-            "--porcelain=v1",
-            "--ignored=matching",
-            "--untracked-files=all",
-            "--",
+            GIT_STATUS_COMMAND,
+            GIT_STATUS_PORCELAIN_V1_ARG,
+            GIT_STATUS_IGNORED_MATCHING_ARG,
+            GIT_STATUS_UNTRACKED_ALL_ARG,
+            GIT_DOUBLE_DASH_ARG,
             &relative_path,
         ])
         .output();
@@ -372,8 +420,8 @@ fn get_git_status(project_dir: &Path, repo_root: &Path) -> GitStatus {
     for line in stdout.lines().filter(|line| line.len() >= 3) {
         let status_code = &line[..2];
         match status_code {
-            "!!" => {},
-            "??" => has_untracked = true,
+            GIT_IGNORED_STATUS_CODE => {},
+            GIT_UNTRACKED_STATUS_CODE => has_untracked = true,
             _ => has_modified = true,
         }
     }
@@ -425,7 +473,12 @@ pub(super) fn parse_ahead_behind(
     command::git_output_logged(
         project_dir,
         &format!("rev_list_{op_suffix}"),
-        ["rev-list", "--left-right", "--count", revspec],
+        [
+            GIT_REV_LIST_COMMAND,
+            GIT_LEFT_RIGHT_ARG,
+            GIT_COUNT_ARG,
+            revspec,
+        ],
     )
     .ok()
     .and_then(|o| {

@@ -2,8 +2,8 @@
 #
 # This file is documentation. The app does NOT load it at startup; the
 # Rust constructor `tui_pane::default_dark()` produces the same values.
-# Copy this file into `~/.config/cargo-port/themes/` (or platform
-# equivalent) as a starting point for a custom theme.
+# Copy this file into your app's theme directory as a starting point
+# for a custom theme.
 #
 # The test in tui_pane/tests/themes.rs locks this file against drift.
 
@@ -40,19 +40,13 @@ default   = "White"
 dim       = "DarkGray"
 secondary = "Gray"
 
-[variants.git]
-ignored   = "DarkGray"
-modified  = { indexed = 208 }
-untracked = "Green"
+[variants.roles]
 
 [variants.status]
-bar           = "DarkGray"
-column_header = { color = { r = 150, g = 190, b = 180 }, bold = true }
-target_bench  = "Magenta"
+bar = "DarkGray"
 
 [variants.finder]
-discovery_shimmer = { r = 150, g = 210, b = 255 }
-match_bg          = { r = 0, g = 90, b = 100 }
+match_bg = { r = 0, g = 90, b = 100 }
 
 [variants.disk_usage]
 high = { r = 255, g = 100, b = 100 }

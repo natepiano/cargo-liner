@@ -1,5 +1,4 @@
-// Git colors moved to the theme system: see `tui_pane::git_modified_color`
-// / `git_untracked_color` / `git_ignored_color`.
+// Cargo-port role colors live in `crate::tui::theme_roles`.
 
 use std::time::Duration;
 

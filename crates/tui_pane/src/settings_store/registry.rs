@@ -5,7 +5,7 @@ use super::SettingsError;
 /// App-owned or framework-owned settings section.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SettingsSection {
-    /// App-owned section, such as `"tui"` or `"lint"`.
+    /// App-owned section, such as `"display"` or `"tools"`.
     App(&'static str),
     /// Framework-owned section, such as `"toasts"`.
     Framework(&'static str),

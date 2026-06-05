@@ -20,5 +20,6 @@ mod state;
 mod terminal;
 #[cfg(test)]
 mod test_support;
+mod theme_roles;
 
 pub use terminal::run;

@@ -235,10 +235,10 @@ mod tests {
     fn tracked_task_toast_height_fits_visible_items_without_blank_bottom_row() {
         let settings = ToastSettings::default();
         let mut toasts = Toasts::<TestApp>::with_settings(settings.clone());
-        let task_id = toasts.start_task("Lints", "");
+        let task_id = toasts.start_task("Checks", "");
         let items = [
-            TrackedItem::new("~/rust/cargo-port-api-fix", "cargo-port-api-fix"),
-            TrackedItem::new("~/rust/bevy_hana", "bevy_hana"),
+            TrackedItem::new("~/work/example-api-fix", "example-api-fix"),
+            TrackedItem::new("~/work/example-ui", "example-ui"),
         ];
         assert!(toasts.set_tracked_items(task_id, &items));
 

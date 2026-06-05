@@ -70,6 +70,7 @@ use crate::tui::app::AvailabilityStatus;
 use crate::tui::project_list::ProjectList;
 use crate::tui::render;
 use crate::tui::state::ServiceStatus;
+use crate::tui::theme_roles;
 
 #[derive(Default)]
 struct ProjectCounts {
@@ -180,7 +181,7 @@ impl RunTargetKind {
         match self {
             Self::Binary => tui_pane::success_color(),
             Self::Example => tui_pane::accent_color(),
-            Self::Bench => tui_pane::target_bench_color(),
+            Self::Bench => theme_roles::target_bench_color(),
         }
     }
 

@@ -40,6 +40,15 @@ use tokio::runtime::Handle;
 use self::constants::ACCEPT_HEADER;
 use self::constants::AUTHORIZATION_HEADER;
 use self::constants::CONTENT_TYPE_HEADER;
+use self::constants::CRATES_IO_CRATE_KEY;
+use self::constants::CRATES_IO_DOWNLOADS_KEY;
+use self::constants::CRATES_IO_MAX_STABLE_VERSION_KEY;
+use self::constants::CRATES_IO_MAX_VERSION_KEY;
+use self::constants::GITHUB_GRAPHQL_DATA_KEY;
+use self::constants::GITHUB_GRAPHQL_DESCRIPTION_KEY;
+use self::constants::GITHUB_GRAPHQL_REPO_KEY;
+use self::constants::GITHUB_GRAPHQL_RUN_ALIAS_PREFIX;
+use self::constants::GITHUB_GRAPHQL_STARGAZER_COUNT_KEY;
 use self::constants::GITHUB_JSON_MEDIA_TYPE;
 use self::constants::GITHUB_PR_PAGE_CAP;
 use self::constants::GITHUB_PR_PAGE_SIZE;
@@ -720,15 +729,15 @@ impl HttpClient {
         let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body) else {
             return (None, signal);
         };
-        let Some(data) = json.get("data") else {
+        let Some(data) = json.get(GITHUB_GRAPHQL_DATA_KEY) else {
             return (None, signal);
         };
 
         // Parse repo metadata.
-        let meta = data.get("repo").and_then(|r| {
-            let stars = r.get("stargazerCount")?.as_u64()?;
+        let meta = data.get(GITHUB_GRAPHQL_REPO_KEY).and_then(|r| {
+            let stars = r.get(GITHUB_GRAPHQL_STARGAZER_COUNT_KEY)?.as_u64()?;
             let description = r
-                .get("description")
+                .get(GITHUB_GRAPHQL_DESCRIPTION_KEY)
                 .and_then(serde_json::Value::as_str)
                 .filter(|s| !s.is_empty())
                 .map(String::from);
@@ -740,7 +749,7 @@ impl HttpClient {
             .as_object()
             .map(|obj| {
                 obj.iter()
-                    .filter(|(key, _)| key.starts_with("run_"))
+                    .filter(|(key, _)| key.starts_with(GITHUB_GRAPHQL_RUN_ALIAS_PREFIX))
                     .filter_map(|(_, val)| {
                         let node: GqlRunNode = serde_json::from_value(val.clone()).ok()?;
                         let check_runs = node.check_suite?.check_runs.nodes;
@@ -1104,7 +1113,7 @@ impl HttpClient {
         let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body) else {
             return (None, Some(ServiceSignal::Reachable(ServiceKind::CratesIo)));
         };
-        let Some(krate) = json.get("crate") else {
+        let Some(krate) = json.get(CRATES_IO_CRATE_KEY) else {
             return (None, Some(ServiceSignal::Reachable(ServiceKind::CratesIo)));
         };
         (
@@ -1187,9 +1196,11 @@ fn build_client() -> Result<Client, Error> {
 /// version. Returns `None` when neither field is present.
 fn crates_io_info_from_crate(krate: &Value) -> Option<CratesIoInfo> {
     let stable = krate
-        .get("max_stable_version")
+        .get(CRATES_IO_MAX_STABLE_VERSION_KEY)
         .and_then(serde_json::Value::as_str);
-    let newest = krate.get("max_version").and_then(serde_json::Value::as_str);
+    let newest = krate
+        .get(CRATES_IO_MAX_VERSION_KEY)
+        .and_then(serde_json::Value::as_str);
     let (version, prerelease) = match (stable, newest) {
         (Some(stable), Some(newest)) if newest != stable && newest.contains('-') => {
             (stable.to_string(), Some(newest.to_string()))
@@ -1199,7 +1210,7 @@ fn crates_io_info_from_crate(krate: &Value) -> Option<CratesIoInfo> {
         (None, None) => return None,
     };
     let downloads = krate
-        .get("downloads")
+        .get(CRATES_IO_DOWNLOADS_KEY)
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
     Some(CratesIoInfo {

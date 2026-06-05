@@ -48,8 +48,8 @@ pub(super) fn render_toast(
     let is_warning = toast.style() == ToastStyle::Warning;
     // Error and warning toasts keep the safety-pinned palette so they
     // stay legible under any user theme. Plain (info) toasts mirror
-    // `default_pane_chrome` so their border and title match every
-    // other pane in cargo-port.
+    // `default_pane_chrome` so their border and title match the
+    // framework pane chrome.
     let border_style = if is_error {
         Style::default().fg(palette.error)
     } else if is_warning {

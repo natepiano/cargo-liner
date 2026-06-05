@@ -92,8 +92,7 @@ impl KeymapPane {
 
     /// Consume one keypress. Always returns
     /// [`KeyOutcome::Consumed`] — the overlay short-circuits all input
-    /// when open, matching the existing cargo-port `keymap_open`
-    /// behavior. Resolves `bind` against [`Self::defaults`] and flips
+    /// when open. Resolves `bind` against [`Self::defaults`] and flips
     /// `EditState` accordingly: `StartEdit` enters
     /// `EditState::Awaiting` from `Browse`; `Cancel` returns to
     /// `Browse` from any state. Capture-conflict resolution

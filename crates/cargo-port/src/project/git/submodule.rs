@@ -3,6 +3,12 @@ use std::path::Path;
 
 use super::checkout::CheckoutInfo;
 use super::command;
+use super::constants::GIT_HEAD;
+use super::constants::GIT_LS_TREE_COMMAND;
+use super::constants::GIT_SUBMODULE_BRANCH_KEY;
+use super::constants::GIT_SUBMODULE_PATH_KEY;
+use super::constants::GIT_SUBMODULE_URL_KEY;
+use super::constants::GIT_TREE_SUBMODULE_MODE;
 use super::discovery::WorktreeStatus;
 use crate::project::GitRepo;
 use crate::project::info::ProjectInfo;
@@ -118,9 +124,9 @@ fn parse_gitmodules(content: &str) -> Vec<Submodule> {
             && let Some((key, value)) = parse_key_value(trimmed)
         {
             match key {
-                "path" => entry.relative_path = value.to_string(),
-                "url" => entry.url = Some(value.to_string()),
-                "branch" => entry.branch = Some(value.to_string()),
+                GIT_SUBMODULE_PATH_KEY => entry.relative_path = value.to_string(),
+                GIT_SUBMODULE_URL_KEY => entry.url = Some(value.to_string()),
+                GIT_SUBMODULE_BRANCH_KEY => entry.branch = Some(value.to_string()),
                 _ => {},
             }
         }
@@ -144,7 +150,7 @@ fn parse_key_value(line: &str) -> Option<(&str, &str)> {
 fn ls_tree_submodule_commits(project_root: &Path) -> HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
     let output = command::git_command(project_root)
-        .args(["ls-tree", "HEAD"])
+        .args([GIT_LS_TREE_COMMAND, GIT_HEAD])
         .output();
     let Ok(output) = output else {
         return map;
@@ -155,7 +161,7 @@ fn ls_tree_submodule_commits(project_root: &Path) -> HashMap<String, String> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     for line in stdout.lines() {
         // Format: "160000 commit <sha>\t<path>"
-        if !line.starts_with("160000") {
+        if !line.starts_with(GIT_TREE_SUBMODULE_MODE) {
             continue;
         }
         let Some((meta, path)) = line.split_once('\t') else {

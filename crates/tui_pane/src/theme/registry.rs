@@ -3,7 +3,7 @@
 //! The registry is the single source of truth for "what themes exist
 //! right now." Phase 2 owns its construction (built-ins seeded by
 //! [`ThemeRegistry::new_with_builtins`]; user themes registered via
-//! [`ThemeRegistry::register`] from cargo-port-side scan code). Phase
+//! [`ThemeRegistry::register`] from client scan code). Phase
 //! 3 resolves config theme names against this registry; Phase 4
 //! populates settings dropdowns from it.
 
@@ -69,8 +69,8 @@ pub struct ThemeVariant {
 /// Outcome of [`ThemeRegistry::register`].
 ///
 /// Tracks whether a register call inserted a fresh variant or replaced
-/// an existing one with the same id — the cargo-port-side scan code
-/// records overrides so the user can see them.
+/// an existing one with the same id — client scan code can record
+/// overrides so the user can see them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RegisterOutcome {
     /// New variant added.
@@ -182,6 +182,14 @@ impl ThemeRegistry {
         } else {
             self.variants.push(variant);
             RegisterOutcome::Inserted
+        }
+    }
+
+    /// Mutate every registered theme while preserving registry order
+    /// and status metadata.
+    pub fn update_themes(&mut self, mut update: impl FnMut(&ThemeId, Appearance, &mut Theme)) {
+        for variant in &mut self.variants {
+            update(&variant.id, variant.appearance, &mut variant.theme);
         }
     }
 

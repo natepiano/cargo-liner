@@ -18,7 +18,6 @@ use tui_pane::PaneFocusState;
 use tui_pane::PaneTitleCount;
 use tui_pane::Viewport;
 use tui_pane::accent_color;
-use tui_pane::column_header_color;
 use tui_pane::error_color;
 use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
@@ -31,6 +30,7 @@ use crate::lint::LintRunStatus;
 use crate::tui::pane::PaneRenderCtx;
 use crate::tui::render;
 use crate::tui::state::Lint;
+use crate::tui::theme_roles;
 
 fn lints_panel_title(data: &LintsData, focused: bool, cursor: usize) -> String {
     if data.runs.is_empty() {
@@ -179,7 +179,7 @@ pub fn render_lints_pane_body(
     pane.viewport.set_len(rows.len());
 
     let col_header_style = Style::default()
-        .fg(column_header_color())
+        .fg(theme_roles::column_header_color())
         .add_modifier(Modifier::BOLD);
 
     let table = Table::new(

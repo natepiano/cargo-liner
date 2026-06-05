@@ -14,7 +14,6 @@ use tui_pane::Size;
 use tui_pane::Viewport;
 use tui_pane::ViewportOverflow;
 use tui_pane::accent_color;
-use tui_pane::column_header_color;
 use tui_pane::error_color;
 use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
@@ -25,6 +24,7 @@ use super::package::RenderStyles;
 use super::pane_impls::CpuPane;
 use crate::config::CpuConfig;
 use crate::tui::pane::PaneRenderCtx;
+use crate::tui::theme_roles;
 
 const CPU_BAR_WIDTH: usize = 10;
 /// Shown in the GPU row when the OS exposes no GPU utilization (e.g. the
@@ -196,7 +196,10 @@ fn aggregate_line(percent: u8, width: u16) -> Line<'static> {
     );
     Line::from(vec![
         Span::raw(" "),
-        Span::styled(label_text, Style::default().fg(column_header_color())),
+        Span::styled(
+            label_text,
+            Style::default().fg(theme_roles::column_header_color()),
+        ),
         Span::raw(" ".repeat(space_count)),
         Span::styled(value_text, Style::default().fg(text_default())),
         Span::raw(" "),

@@ -20,6 +20,7 @@ mod runtime;
 mod spec;
 mod watch;
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::RwLock;
@@ -31,23 +32,20 @@ use serde::Deserialize;
 pub use self::accessors::accent_color;
 pub use self::accessors::active_border_color;
 pub use self::accessors::active_focus_color;
-pub use self::accessors::column_header_color;
-pub use self::accessors::discovery_shimmer_color;
 pub use self::accessors::error_color;
 pub use self::accessors::finder_match_bg;
-pub use self::accessors::git_ignored_color;
-pub use self::accessors::git_modified_color;
-pub use self::accessors::git_untracked_color;
 pub use self::accessors::hover_focus_color;
 pub use self::accessors::inactive_border_color;
 pub use self::accessors::inactive_title_color;
 pub use self::accessors::inline_error_color;
 pub use self::accessors::label_color;
 pub use self::accessors::remembered_focus_color;
+pub use self::accessors::role_color;
+pub use self::accessors::role_spec;
+pub use self::accessors::role_style;
 pub use self::accessors::secondary_text_color;
 pub use self::accessors::status_bar_color;
 pub use self::accessors::success_color;
-pub use self::accessors::target_bench_color;
 pub use self::accessors::text_default;
 pub use self::accessors::title_color;
 pub use self::accessors::warning_color;
@@ -144,35 +142,18 @@ pub struct TextTheme {
     pub bg_focus:  StyleSpec,
 }
 
-/// Git-status markers (ignored, modified, untracked).
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-pub struct GitTheme {
-    /// Git ignored entries.
-    pub ignored:   StyleSpec,
-    /// Git modified entries.
-    pub modified:  StyleSpec,
-    /// Git untracked entries.
-    pub untracked: StyleSpec,
-}
-
-/// Status-bar background and per-purpose accents.
+/// Status-bar background.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct StatusTheme {
     /// Bottom status bar background.
-    pub bar:           StyleSpec,
-    /// Bench target type accent.
-    pub target_bench:  StyleSpec,
-    /// Project list column headers (defaults to Bold).
-    pub column_header: StyleSpec,
+    pub bar: StyleSpec,
 }
 
 /// Finder overlay styles.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct FinderTheme {
     /// Background tint on fuzzy-matched characters.
-    pub match_bg:          StyleSpec,
-    /// Shimmer on newly discovered projects.
-    pub discovery_shimmer: StyleSpec,
+    pub match_bg: StyleSpec,
 }
 
 /// Three stops of the per-row disk-usage gradient.
@@ -202,14 +183,14 @@ pub struct Theme {
     pub semantic:    SemanticTheme,
     /// Foreground text styles.
     pub text:        TextTheme,
-    /// Git-status markers.
-    pub git:         GitTheme,
     /// Status bar and accents.
     pub status:      StatusTheme,
     /// Finder overlay styles.
     pub finder:      FinderTheme,
     /// Per-row disk-usage gradient stops.
     pub disk_usage:  DiskUsageTheme,
+    /// Client-defined style roles keyed by app-owned names.
+    pub roles:       BTreeMap<String, StyleSpec>,
 }
 
 /// Global container for the active theme and the variant registry.
@@ -229,9 +210,9 @@ pub struct ThemeState {
     current:           RwLock<Arc<Theme>>,
     /// When true, [`PaneChrome::block`](crate::PaneChrome::block) paints
     /// a subtle background tint behind the focused pane to lift it
-    /// from neighbours. Defaults to true; cargo-port mirrors the
-    /// user's `appearance.focused_pane_tint` config bit into this slot
-    /// at startup and on config reload.
+    /// from neighbours. Defaults to true; client apps can mirror their
+    /// focused-pane-tint config bit into this slot at startup and on
+    /// config reload.
     focused_pane_tint: AtomicBool,
 }
 
@@ -345,9 +326,9 @@ pub fn set_active_theme(new_theme: Arc<Theme>) {
 /// Whether the focused-pane background tint is enabled.
 ///
 /// Read by [`PaneChrome::block`](crate::PaneChrome::block) every
-/// render; mirrored from cargo-port's
-/// `appearance.focused_pane_tint` config bit. Defaults to true when
-/// no state has been installed yet.
+/// render; client apps can mirror their focused-pane-tint config bit
+/// into this slot. Defaults to true when no state has been installed
+/// yet.
 #[must_use]
 pub fn focused_pane_tint_enabled() -> bool {
     let state = THEME_STATE.get_or_init(|| ThemeState::new(default_dark()));
@@ -364,8 +345,8 @@ pub fn set_focused_pane_tint(enabled: bool) {
 }
 
 /// Replace the theme registry. Subsequent calls to [`registry()`]
-/// return the new value. Used by the cargo-port-side hot-reload path
-/// when files under `~/.config/cargo-port/themes/` change.
+/// return the new value. Used by client hot-reload paths when theme
+/// files change.
 ///
 /// # Panics
 ///
@@ -388,6 +369,7 @@ pub fn replace_registry(new_registry: ThemeRegistry) {
 /// uses it only to parse the starter templates and assert they match
 /// the Rust constructors.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ThemeFamily {
     /// Schema version. Phase 1 only accepts `1`.
     pub schema:   u32,
@@ -399,6 +381,7 @@ pub struct ThemeFamily {
 
 /// Single variant inside a [`ThemeFamily`] TOML file.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ThemeVariantFile {
     /// Unique variant name.
     pub name:        String,
@@ -412,14 +395,14 @@ pub struct ThemeVariantFile {
     pub semantic:    SemanticTheme,
     /// Foreground text styles.
     pub text:        TextTheme,
-    /// Git-status markers.
-    pub git:         GitTheme,
     /// Status bar and accents.
     pub status:      StatusTheme,
     /// Finder overlay styles.
     pub finder:      FinderTheme,
     /// Per-row disk-usage gradient stops.
     pub disk_usage:  DiskUsageTheme,
+    /// Client-defined style roles keyed by app-owned names.
+    pub roles:       BTreeMap<String, StyleSpec>,
 }
 
 impl ThemeVariantFile {
@@ -432,10 +415,10 @@ impl ThemeVariantFile {
             focus:       self.focus,
             semantic:    self.semantic,
             text:        self.text,
-            git:         self.git,
             status:      self.status,
             finder:      self.finder,
             disk_usage:  self.disk_usage,
+            roles:       self.roles,
         }
     }
 }

@@ -140,8 +140,7 @@ impl SettingsPane {
 
     /// Consume one keypress. Always returns
     /// [`KeyOutcome::Consumed`] — the overlay short-circuits all input
-    /// when open, matching the existing cargo-port `settings_open`
-    /// behavior. Resolves `bind` against [`Self::defaults`] and flips
+    /// when open. Resolves `bind` against [`Self::defaults`] and flips
     /// `EditState` accordingly: `StartEdit` enters `EditState::Editing`
     /// from `Browse`; `Cancel` returns to `Browse`. Per-setting buffer
     /// mutation lives on this pane; [`Self::handle_text_input`] returns

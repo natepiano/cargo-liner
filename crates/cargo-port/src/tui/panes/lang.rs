@@ -12,7 +12,6 @@ use ratatui::widgets::TableState;
 use tui_pane::PaneFocusState;
 use tui_pane::PaneTitleCount;
 use tui_pane::Viewport;
-use tui_pane::column_header_color;
 use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
 use tui_pane::text_default;
@@ -24,6 +23,7 @@ use crate::project::LangEntry;
 use crate::project::LanguageStats;
 use crate::tui::pane::PaneRenderCtx;
 use crate::tui::render;
+use crate::tui::theme_roles;
 
 /// Map a tokei language name to a 2-char icon for the Lang column.
 pub(super) fn language_icon(language: &str) -> &'static str {
@@ -77,7 +77,7 @@ const fn lang_table_widths() -> [Constraint; 7] {
 
 fn lang_header_row() -> Row<'static> {
     let style = Style::default()
-        .fg(column_header_color())
+        .fg(theme_roles::column_header_color())
         .add_modifier(Modifier::BOLD);
     Row::new(vec![
         Cell::from(""),

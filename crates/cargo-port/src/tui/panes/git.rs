@@ -15,7 +15,6 @@ use tui_pane::PaneTitleCount;
 use tui_pane::RuleTitle;
 use tui_pane::Viewport;
 use tui_pane::accent_color;
-use tui_pane::column_header_color;
 use tui_pane::error_color;
 use tui_pane::inactive_border_color;
 use tui_pane::inactive_title_color;
@@ -53,6 +52,7 @@ use crate::project::PullRequestCompleteness;
 use crate::tui::app::AvailabilityStatus;
 use crate::tui::pane::PaneRenderCtx;
 use crate::tui::panes;
+use crate::tui::theme_roles;
 
 struct GitRenderCtx<'a> {
     data:              &'a GitData,
@@ -427,7 +427,7 @@ fn pull_request_col_widths(
 }
 
 fn column_header_style(focused: bool) -> Style {
-    let style = Style::default().fg(column_header_color());
+    let style = Style::default().fg(theme_roles::column_header_color());
     if focused {
         style.add_modifier(Modifier::BOLD)
     } else {

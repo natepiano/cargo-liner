@@ -10,7 +10,9 @@
 //! `tui_pane::theme().<group>.<field>.style()` directly.
 
 use ratatui::style::Color;
+use ratatui::style::Style;
 
+use super::StyleSpec;
 use super::theme;
 
 /// Spinners, shortcut hints, finder cursor.
@@ -28,14 +30,6 @@ pub fn active_focus_color() -> Color { theme().focus.active.color }
 /// Background highlight for the row currently under the mouse.
 #[must_use]
 pub fn hover_focus_color() -> Color { theme().focus.hover.color }
-
-/// Project list column headers ("Name", "Disk", "Sync", etc.).
-#[must_use]
-pub fn column_header_color() -> Color { theme().status.column_header.color }
-
-/// Shimmer animation on newly discovered projects.
-#[must_use]
-pub fn discovery_shimmer_color() -> Color { theme().finder.discovery_shimmer.color }
 
 /// Error text, failure icons, broken worktree backgrounds.
 #[must_use]
@@ -75,10 +69,6 @@ pub fn status_bar_color() -> Color { theme().status.bar.color }
 #[must_use]
 pub fn success_color() -> Color { theme().semantic.success.color }
 
-/// Bench target type accent.
-#[must_use]
-pub fn target_bench_color() -> Color { theme().status.target_bench.color }
-
 /// Active pane titles, section headers, group header labels, stat
 /// numbers, confirm dialog prompts, popup titles, summary row.
 #[must_use]
@@ -99,14 +89,16 @@ pub fn finder_match_bg() -> Color { theme().finder.match_bg.color }
 #[must_use]
 pub fn text_default() -> Color { theme().text.default.color }
 
-/// Git ignored marker.
+/// Client-defined role spec by app-owned key.
 #[must_use]
-pub fn git_ignored_color() -> Color { theme().git.ignored.color }
+pub fn role_spec(role: &str, fallback: StyleSpec) -> StyleSpec {
+    theme().roles.get(role).copied().unwrap_or(fallback)
+}
 
-/// Git modified marker.
+/// Client-defined role style by app-owned key.
 #[must_use]
-pub fn git_modified_color() -> Color { theme().git.modified.color }
+pub fn role_style(role: &str, fallback: StyleSpec) -> Style { role_spec(role, fallback).style() }
 
-/// Git untracked marker.
+/// Client-defined role foreground color by app-owned key.
 #[must_use]
-pub fn git_untracked_color() -> Color { theme().git.untracked.color }
+pub fn role_color(role: &str, fallback: StyleSpec) -> Color { role_spec(role, fallback).color }

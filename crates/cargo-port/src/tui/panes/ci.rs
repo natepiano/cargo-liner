@@ -14,7 +14,6 @@ use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 use tui_pane::PaneSelectionState;
 use tui_pane::PaneTitleCount;
-use tui_pane::column_header_color;
 use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
 use unicode_width::UnicodeWidthStr;
@@ -30,6 +29,7 @@ use crate::tui::constants::CI_TIMESTAMP_WIDTH;
 use crate::tui::pane::PaneRenderCtx;
 use crate::tui::render;
 use crate::tui::state::Ci;
+use crate::tui::theme_roles;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum CiDisplayColumn {
@@ -143,7 +143,7 @@ fn ci_grouped_display_columns(
 fn build_ci_header_row(cols: &[CiDisplayColumn], widths: &[Constraint]) -> Row<'static> {
     let right_aligned = Style::default()
         .add_modifier(Modifier::BOLD)
-        .fg(column_header_color());
+        .fg(theme_roles::column_header_color());
     let mut header_cells = vec![
         Cell::from(" Commit").style(right_aligned),
         Cell::from("Branch").style(right_aligned),

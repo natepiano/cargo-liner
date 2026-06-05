@@ -42,7 +42,6 @@ use tui_pane::Region;
 use tui_pane::Size;
 use tui_pane::ViewportOverflow;
 use tui_pane::accent_color;
-use tui_pane::column_header_color;
 use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
 
@@ -55,6 +54,7 @@ use crate::tui::columns;
 use crate::tui::pane::PaneRenderCtx;
 use crate::tui::panes;
 use crate::tui::render;
+use crate::tui::theme_roles;
 
 /// Header text for the Target column, excluding the row's leading pad.
 const TARGET_HEADER: &str = "Target";
@@ -491,7 +491,7 @@ fn build_widths(layout: &Layout) -> Vec<Constraint> {
 }
 
 fn build_header_row() -> Row<'static> {
-    let header_style = Style::default().fg(column_header_color());
+    let header_style = Style::default().fg(theme_roles::column_header_color());
     Row::new(vec![
         Cell::from(Span::styled(format!(" {TARGET_HEADER}"), header_style)),
         Cell::from(Span::styled(SOURCE_HEADER, header_style)),

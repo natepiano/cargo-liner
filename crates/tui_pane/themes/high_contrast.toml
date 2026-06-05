@@ -3,8 +3,8 @@
 # This file is documentation. The app does NOT load it at startup; the
 # Rust constructors `tui_pane::high_contrast_dark()` and
 # `tui_pane::high_contrast_light()` produce the same values. Copy this
-# file into `~/.config/cargo-port/themes/` (or platform equivalent) as
-# a starting point for a custom theme.
+# file into your app's theme directory as a starting point for a
+# custom theme.
 #
 # The test in tui_pane/tests/themes.rs locks this file against drift.
 
@@ -41,19 +41,13 @@ default   = "White"
 dim       = "Gray"
 secondary = "White"
 
-[variants.git]
-ignored   = "Gray"
-modified  = { color = "LightYellow", bold = true }
-untracked = { color = "LightGreen", bold = true }
+[variants.roles]
 
 [variants.status]
-bar           = { r = 60, g = 60, b = 60 }
-column_header = { color = "LightCyan", bold = true }
-target_bench  = { color = "LightMagenta", bold = true }
+bar = { r = 60, g = 60, b = 60 }
 
 [variants.finder]
-discovery_shimmer = { color = "LightCyan", bold = true }
-match_bg          = "LightYellow"
+match_bg = "LightYellow"
 
 [variants.disk_usage]
 high = { color = "LightRed", bold = true }
@@ -90,19 +84,13 @@ default   = "Black"
 dim       = { r = 80, g = 80, b = 80 }
 secondary = "Black"
 
-[variants.git]
-ignored   = { r = 80, g = 80, b = 80 }
-modified  = { color = { r = 140, g = 60, b = 0 }, bold = true }
-untracked = { color = { r = 0, g = 100, b = 0 }, bold = true }
+[variants.roles]
 
 [variants.status]
-bar           = { r = 210, g = 210, b = 210 }
-column_header = { color = { r = 0, g = 0, b = 140 }, bold = true }
-target_bench  = { color = { r = 140, g = 0, b = 140 }, bold = true }
+bar = { r = 210, g = 210, b = 210 }
 
 [variants.finder]
-discovery_shimmer = { color = { r = 0, g = 0, b = 140 }, bold = true }
-match_bg          = { r = 255, g = 230, b = 100 }
+match_bg = { r = 255, g = 230, b = 100 }
 
 [variants.disk_usage]
 high = { color = { r = 180, g = 0, b = 0 }, bold = true }

@@ -6,6 +6,35 @@ use serde::Serialize;
 
 use super::checkout;
 use super::command;
+use super::constants::GIT_ABBREV_REF_ARG;
+use super::constants::GIT_CONFIG_COMMAND;
+use super::constants::GIT_CONFIG_REMOTE_PREFIX;
+use super::constants::GIT_CONFIG_REMOTE_PUSHURL_PATTERN;
+use super::constants::GIT_CONFIG_REMOTE_PUSHURL_SUFFIX;
+use super::constants::GIT_FORMAT_ISO8601_ARG;
+use super::constants::GIT_GET_REGEXP_ARG;
+use super::constants::GIT_GET_URL_ARG;
+use super::constants::GIT_HEAD;
+use super::constants::GIT_HEAD_REVSPEC_PREFIX;
+use super::constants::GIT_LOCAL_BRANCH_REF_PREFIX;
+use super::constants::GIT_LOG_COMMAND;
+use super::constants::GIT_MAX_PARENTS_ZERO_ARG;
+use super::constants::GIT_ORIGIN_HEAD_REF;
+use super::constants::GIT_QUIET_ARG;
+use super::constants::GIT_REMOTE_COMMAND;
+use super::constants::GIT_REMOTE_HEAD_REF_SUFFIX;
+use super::constants::GIT_REMOTE_ORIGIN;
+use super::constants::GIT_REMOTE_ORIGIN_PREFIX;
+use super::constants::GIT_REMOTE_REF_PREFIX;
+use super::constants::GIT_REMOTE_UPSTREAM;
+use super::constants::GIT_REV_PARSE_COMMAND;
+use super::constants::GIT_REVERSE_ARG;
+use super::constants::GIT_SHORT_ARG;
+use super::constants::GIT_SHOW_REF_COMMAND;
+use super::constants::GIT_SYMBOLIC_FULL_NAME_ARG;
+use super::constants::GIT_SYMBOLIC_REF_COMMAND;
+use super::constants::GIT_UPSTREAM_REF;
+use super::constants::GIT_VERIFY_ARG;
 use super::discovery;
 use crate::config;
 use crate::config::CargoPortConfig;
@@ -131,7 +160,7 @@ impl RepoInfo {
     pub fn origin_kind(&self) -> GitOrigin {
         if self.remotes.is_empty() {
             GitOrigin::Local
-        } else if self.remotes.iter().any(|r| r.name == "upstream") {
+        } else if self.remotes.iter().any(|r| r.name == GIT_REMOTE_UPSTREAM) {
             GitOrigin::Fork
         } else {
             GitOrigin::Clone
@@ -156,7 +185,7 @@ impl RepoInfo {
         let local_main_branch = resolve_local_main_branch(&repo_root);
 
         let remote_names = list_remote_names(&repo_root);
-        let has_upstream = remote_names.iter().any(|n| n == "upstream");
+        let has_upstream = remote_names.iter().any(|n| n == GIT_REMOTE_UPSTREAM);
         let pushurls = list_remote_pushurls(&repo_root);
         let remote_context = RemoteResolveContext {
             repo_root: &repo_root,
@@ -192,7 +221,7 @@ pub(super) fn get_current_branch(repo_root: &Path) -> Option<String> {
     command::git_output_logged(
         repo_root,
         "rev_parse_head",
-        ["rev-parse", "--abbrev-ref", "HEAD"],
+        [GIT_REV_PARSE_COMMAND, GIT_ABBREV_REF_ARG, GIT_HEAD],
     )
     .ok()
     .and_then(|o| {
@@ -206,10 +235,10 @@ pub(super) fn get_upstream_branch(project_dir: &Path) -> Option<String> {
         project_dir,
         "rev_parse_upstream_name",
         [
-            "rev-parse",
-            "--abbrev-ref",
-            "--symbolic-full-name",
-            "@{upstream}",
+            GIT_REV_PARSE_COMMAND,
+            GIT_ABBREV_REF_ARG,
+            GIT_SYMBOLIC_FULL_NAME_ARG,
+            GIT_UPSTREAM_REF,
         ],
     )
     .ok()
@@ -224,19 +253,19 @@ fn get_default_branch(repo_root: &Path) -> Option<String> {
     command::git_output_logged(
         repo_root,
         "symbolic_ref_origin_head",
-        ["symbolic-ref", "refs/remotes/origin/HEAD", "--short"],
+        [GIT_SYMBOLIC_REF_COMMAND, GIT_ORIGIN_HEAD_REF, GIT_SHORT_ARG],
     )
     .ok()
     .and_then(|o| {
         let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-        s.strip_prefix("origin/")
+        s.strip_prefix(GIT_REMOTE_ORIGIN_PREFIX)
             .filter(|b| !b.is_empty())
             .map(str::to_string)
     })
 }
 
 fn list_remote_names(repo_root: &Path) -> Vec<String> {
-    command::git_output_logged(repo_root, "remote", ["remote"])
+    command::git_output_logged(repo_root, "remote", [GIT_REMOTE_COMMAND])
         .ok()
         .map(|o| {
             String::from_utf8_lossy(&o.stdout)
@@ -275,11 +304,11 @@ fn build_remote_info(
     let ahead_behind = tracked_ref.as_deref().and_then(|r| {
         checkout::parse_ahead_behind(
             context.repo_root,
-            &format!("HEAD...{r}"),
+            &format!("{GIT_HEAD_REVSPEC_PREFIX}{r}"),
             &format!("tracked_{name}"),
         )
     });
-    let kind = if name == "origin" && context.has_upstream {
+    let kind = if name == GIT_REMOTE_ORIGIN && context.has_upstream {
         RemoteKind::Fork
     } else {
         RemoteKind::Clone
@@ -336,7 +365,11 @@ fn list_remote_pushurls(repo_root: &Path) -> HashMap<String, String> {
     let Ok(output) = command::git_output_logged(
         repo_root,
         "config_get_regexp_pushurl",
-        ["config", "--get-regexp", r"^remote\..*\.pushurl$"],
+        [
+            GIT_CONFIG_COMMAND,
+            GIT_GET_REGEXP_ARG,
+            GIT_CONFIG_REMOTE_PUSHURL_PATTERN,
+        ],
     ) else {
         return map;
     };
@@ -345,10 +378,10 @@ fn list_remote_pushurls(repo_root: &Path) -> HashMap<String, String> {
         let Some((key, value)) = line.split_once(' ') else {
             continue;
         };
-        let Some(rest) = key.strip_prefix("remote.") else {
+        let Some(rest) = key.strip_prefix(GIT_CONFIG_REMOTE_PREFIX) else {
             continue;
         };
-        let Some(name) = rest.strip_suffix(".pushurl") else {
+        let Some(name) = rest.strip_suffix(GIT_CONFIG_REMOTE_PUSHURL_SUFFIX) else {
             continue;
         };
         map.insert(name.to_string(), value.to_string());
@@ -363,7 +396,7 @@ fn remote_url_info(
     command::git_output_logged(
         repo_root,
         &format!("remote_get_url_{name}"),
-        ["remote", "get-url", name],
+        [GIT_REMOTE_COMMAND, GIT_GET_URL_ARG, name],
     )
     .ok()
     .map_or((None, None, None), |out| {
@@ -398,9 +431,9 @@ fn resolve_tracked_ref(
         repo_root,
         &format!("symbolic_ref_{remote_name}_head"),
         [
-            "symbolic-ref",
-            &format!("refs/remotes/{remote_name}/HEAD"),
-            "--short",
+            GIT_SYMBOLIC_REF_COMMAND,
+            &format!("{GIT_REMOTE_REF_PREFIX}{remote_name}{GIT_REMOTE_HEAD_REF_SUFFIX}"),
+            GIT_SHORT_ARG,
         ],
     ) {
         let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
@@ -429,10 +462,10 @@ fn remote_ref_exists(repo_root: &Path, remote_name: &str, branch: &str) -> bool 
         repo_root,
         &format!("show_ref_{remote_name}"),
         [
-            "show-ref",
-            "--verify",
-            "--quiet",
-            &format!("refs/remotes/{remote_name}/{branch}"),
+            GIT_SHOW_REF_COMMAND,
+            GIT_VERIFY_ARG,
+            GIT_QUIET_ARG,
+            &format!("{GIT_REMOTE_REF_PREFIX}{remote_name}/{branch}"),
         ],
     )
     .is_ok()
@@ -451,10 +484,10 @@ fn local_branch_exists(project_dir: &Path, branch: &str) -> bool {
         project_dir,
         "show_ref_local_main",
         [
-            "show-ref",
-            "--verify",
-            "--quiet",
-            &format!("refs/heads/{branch}"),
+            GIT_SHOW_REF_COMMAND,
+            GIT_VERIFY_ARG,
+            GIT_QUIET_ARG,
+            &format!("{GIT_LOCAL_BRANCH_REF_PREFIX}{branch}"),
         ],
     )
     .is_ok()
@@ -482,11 +515,11 @@ pub(crate) fn get_first_commit(project_dir: &Path) -> Option<String> {
         &repo_root,
         "log_first_commit",
         [
-            "log",
-            "--max-parents=0",
-            "--reverse",
-            "--format=%aI",
-            "HEAD",
+            GIT_LOG_COMMAND,
+            GIT_MAX_PARENTS_ZERO_ARG,
+            GIT_REVERSE_ARG,
+            GIT_FORMAT_ISO8601_ARG,
+            GIT_HEAD,
         ],
     )
     .ok()
