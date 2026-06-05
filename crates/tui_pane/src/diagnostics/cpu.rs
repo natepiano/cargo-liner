@@ -115,12 +115,12 @@ pub struct CpuBreakdown {
 /// Severity bucket for a CPU utilization percentage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CpuSeverity {
-    /// Below the green-max threshold.
-    Green,
-    /// Between green-max and yellow-max.
-    Yellow,
-    /// Above the yellow-max threshold.
-    Red,
+    /// At or below the low-utilization threshold.
+    Low,
+    /// Above low utilization and at or below the medium-utilization threshold.
+    Medium,
+    /// Above the medium-utilization threshold.
+    High,
 }
 
 impl CpuSeverity {
@@ -128,9 +128,9 @@ impl CpuSeverity {
     #[must_use]
     pub fn color(self) -> Color {
         match self {
-            Self::Green => theme::success_color(),
-            Self::Yellow => theme::title_color(),
-            Self::Red => theme::error_color(),
+            Self::Low => theme::success_color(),
+            Self::Medium => theme::title_color(),
+            Self::High => theme::error_color(),
         }
     }
 }
@@ -371,13 +371,17 @@ pub fn filled_cells(percent: u8) -> usize {
 
 /// Map a percentage to a [`CpuSeverity`] using caller-supplied thresholds.
 #[must_use]
-pub const fn severity(percent: u8, green_max_percent: u8, yellow_max_percent: u8) -> CpuSeverity {
-    if percent <= green_max_percent {
-        CpuSeverity::Green
-    } else if percent <= yellow_max_percent {
-        CpuSeverity::Yellow
+pub const fn severity(
+    percent: u8,
+    low_utilization_max_percent: u8,
+    medium_utilization_max_percent: u8,
+) -> CpuSeverity {
+    if percent <= low_utilization_max_percent {
+        CpuSeverity::Low
+    } else if percent <= medium_utilization_max_percent {
+        CpuSeverity::Medium
     } else {
-        CpuSeverity::Red
+        CpuSeverity::High
     }
 }
 

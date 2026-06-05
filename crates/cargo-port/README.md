@@ -11,6 +11,8 @@ See everything about your rust environment in one place. Every question answered
 
 And if you're old school, the information is dense and informative. And fast. There is no better overview of all of your project info (confidently asserted...and...PR's welcome).
 
+I try to keep the screenshots up to date but it's a lot of work so it is possible the version you install will vary slightly from this readme (again, PR's welcome).
+
 <img src="assets/dashboard.gif" alt="cargo-port dashboard showing project tree, worktree details, Git status, CPU and GPU diagnostics, targets, lint runs, and CI runs" width="100%">
 
 - **Inventory everything** - workspaces, members, linked worktrees, submodules, vendored crates, examples, benches, binaries, tests, and non-Rust git repos
@@ -19,8 +21,7 @@ And if you're old school, the information is dense and informative. And fast. Th
 - **Keep context visible** - inspect package metadata, target directories, language stats, worktree summaries, remotes, CI jobs, and pull request rows without leaving the TUI
 - **Navigate quickly** - fuzzy search, vim-style paging, keymaps, tab traversal, global shortcuts, and selection copy
 - **Themes** - light/dark/high-contrast variants, and hot-reload - there's not a lot of themes here yet, but you know, PR's welcome
-
-The initial startup scan runs async and is fun to watch. 
+The initial startup scan runs async and is fun to watch.
 ## Try me
 
 Build the current `main` branch:
@@ -53,6 +54,7 @@ Everything local - git status, remotes, worktrees, languages, targets, lint runs
 
 The dashboard combines a project tree in the upper left with detail panes for package metadata, Git state, languages, CPU/GPU activity, targets, lint history, and CI runs - all shown based on the currently selected project in the upper left.
 ### Dashboard View
+
 <img src="assets/dashboard-overview-numbered.png" alt="Numbered cargo-port dashboard overview showing each major pane" width="100%">
 
 1. **Project tree** workspaces, members, linked worktrees, submodules, vendored crates, optional non-Rust repos, status columns, and disk rollups.
@@ -65,8 +67,77 @@ The dashboard combines a project tree in the upper left with detail panes for pa
 8. **CI runs**: GitHub Actions history with job-level status and duration columns.
 9. **Status bar**: current mode, pane navigation, active action, and shortcut help.
 
+### Settings Overlay
+At first run, you will be prompted to update your Include dirs in the Settings overlay so we may as well cover this now. Settings impact much of what is discussed further on so we'll cover it first.
+
+<img src="assets/overlay-settings-numbered.png" alt="Numbered cargo-port dashboard overview showing each major pane" width="75%">
+#### 1 - General
+- **Cache root** - shared storage root for lint runs and CI cache. Leave blank to use the displayed platform cache directory.
+- **Invert scroll** - cargo-port supports mouse scrolling so you can set this how you like
+- **Non-Rust projects** - when on, if `Include dirs` finds a directory with a .git repo, it will include it whether it is rust or not. Cargo-port has a lot of rust focused features but you can see useful information about non-rust this way also.
+- **Vim nav keys** - we have very basic vim motion controls. Turn this on if Vim is your jam.
+- **Edge scroll advances pane** - if you use your keyboard to scroll, scrolling past the last row in an info pane will take you to the next pane and continue all the way around the loop. Turn it off if this doesn't suit you. This feature is not mouse-aware.
+- **Editor** - pressing `e` will pass the directory of the currently selected project to this configured editor.
+- **Terminal** - pressing t will open a terminal window at this path. I'm on macos and this turned out to be a pain. There has to be a better way but right now, what you see configured works in my environment.
+- **Main branch** - what is branch name that should be considered `main` in cargo-port. See details after this section.
+- **Other primary branches** - you may want to have one or more other branches considered primary.
+- **Include dirs** - you may provide a list of directories that will be scanned at startup for display in cargo-port. Cargo-port cannot function without a value here.
+- **Inline dirs** - The project list is hierarchical and will display workspace members within the directories in which they are located. If you don't want that level of indirection, you can put a list of names here, and that level will be removed.  For example, if you have a bunch of workspace members in a `crates` directory, entering crates here will have all of those members show up immediately underneath the workspace name in the project list.
+- **Cache root** - location for lint runs and locally cached ci runs from GitHub. Default comes from
+
+Main and Primary branches:
+```
+In practice:
+
+  - For local Git info, cargo-port checks main_branch first, then each
+    other_primary_branches entry, and uses the first branch that exists as the
+    local primary comparison branch. That drives the Git pane’s “vs main/
+    primary/etc” ahead-behind display.
+
+  - For remotes, it is the last fallback when deciding what remote ref to
+    compare against. Higher-priority choices like the current upstream, remote
+    HEAD, default branch, or current branch win first.
+
+  - It does not create branches, change Git upstreams, change GitHub default
+    branches, or affect fetch/push behavior.
+
+  Example: if Main branch = main and Other primary branches = master, trunk, a
+  repo without local main but with local trunk will show comparisons against
+  trunk. Order matters; cargo-port checks them in the order you enter them.
+```
+#### 2 - Toasts
+
+<img src="assets/overlay-settings-toasts-numbered.png" alt="Numbered cargo-port dashboard overview showing each major pane" width="75%">
+
+- **Status toast visible secs** - toasts pop up with notifications in the bottom right of cargo-port. This is how long they stay visible.
+- **Finished task visible secs** - tasks such as "Startup" and "Lint runs" also have a duration they are visible when finished.  Lint runs can run for some time, and if new runs start on other projects, they will group together.  Sometimes it is helpful to see all of this before it disappears so you can control this timing also.
+- **Discovery shimmer secs** - when a new project shows up in your scanned `Include dirs` the text will "shimmer" for this amount of time, to catch your attention. Pure chrome.
+#### 3 - CPU
+
+<img src="assets/overlay-settings-cpu-numbered.png" alt="Numbered cargo-port dashboard overview showing each major pane" width="75%">
+
+- **Poll ms** - how frequently do we poll for core stats
+- **Low utilization max %** - the highest CPU usage considered low utilization
+- **Medium utilization max %** - the highest CPU usage considered medium utilization
+
+High utilization is anything above the medium threshold.
+#### 4 - Lints
+
+A list of commands can be configured in the Lints section. These commands will run after every file edit of a rust file or the Cargo.toml within the project.
+
+When a lint is running a "spinner" will show up in the Lint column in the project list, the lint row on the details pane and  also a toast will pop up in the bottom right. If more than one lint is running, the toast in the bottom right will accumulate a row for each concurrently executing lint run.
+
+<img src="assets/overlay-settings-lints-numbered.png" alt="Numbered cargo-port dashboard overview showing each major pane" width="75%">
+- **Enabled** - turn it on or off
+- **Lint on discovery** - when a new project is added, will a lint run automatically on it? Depending on the lint, this could kick off an unwanted build so use this with caution.
+- **Projects**  - this feature is opt-in, it will not lint every project scanned, you have to explicitly specify which ones you wish to lint in a comma-delimited list.
+- **Commands** - a comma-delimited list of lint runs. I'm thinking about putting mine into a bash file as it makes this example hard to read...
+- **Cache size** - a
+#### 5 - Appearance
+
 ### Project Tree
-On startup, the configured `Include dirs` are scanned by cargo port to retrieve Cargo.toml metadata, GitHub metadata including CI runs, disk usage, local lint pass/fail status, programming language line counts and configured targets. 
+
+On startup, the configured `Include dirs` are scanned by cargo port to retrieve Cargo.toml metadata, GitHub metadata including CI runs, disk usage, local lint pass/fail status, programming language line counts and configured targets.
 
 The Project Tree is the main navigation point for the app - other panes adapt to show detailed information about the selected row in the tree.
 
@@ -75,9 +146,9 @@ We set a file watcher on these projects so any changes will invoke a lint run (i
 <img src="assets/pane-project-tree-numbered.png" alt="Numbered project tree pane" width="75%">
 
 1. The title shows scanned directories and project counts for each configured scan dir.  On first run, cargo port will prompt you to define your "Include dirs" in Settings.
-2. Hierarchical project list with expandable workspaces, members, worktrees, submodules, and vendored crates. You can configure whether non-Rust git projects are included. 
+2. Hierarchical project list with expandable workspaces, members, worktrees, submodules, and vendored crates. You can configure whether non-Rust git projects are included.
 3. - Status columns
-	1. Lint pass/fail - a lint command configurable in settings. Lint column will show an activity spinner for a currently running lint. 
+	1. Lint pass/fail - a lint command configurable in settings. Lint column will show an activity spinner for a currently running lint.
 	2. CI passed 🟢, failed 🔴, skipped ⚪, cancelled ⚫. Not shown if ci is not configured or if a remote isn't configured for a branch. Currently only supports GitHub.
 	3. Git status - clean ✨, modified 🟠, untracked 🟢
 	4. Origin sync - whether the project is synced (☑️), with configured origin or ahead/behind
@@ -108,6 +179,7 @@ Below, we're showing a Worktree Group as an example as the rest will be self-exp
 6. crates.io version info and download count
 
 ### Git Pane
+
 cargo-port uses local git data plus GitHub's REST and GraphQL APIs, authenticated with the token from your `gh` login (see [Try me](#try-me)).
 
 <img src="assets/pane-git-numbered.png" alt="Numbered Git pane" width="75%">
@@ -117,6 +189,7 @@ cargo-port uses local git data plus GitHub's REST and GraphQL APIs, authenticate
 3. All configured remotes - including sync (synced/ahead/behind) status between the branch and the tracked origin.
 4. All worktree checkouts. The primary checkout (where the .git directory lives) isn't tracked versus anything so just shows dashes for Tracked and Sync. Other checkouts show their branch and tracked status versus the local main. It's what i find most useful in my workflow - and I'm interested in other points of view so make an issue or a PR and we'll discuss.
 ### Languages Pane
+
 Cargo port uses the tokei crate to scan project languages at startup. It doesn't refresh automatically but you can always ctrl-r to rescan (default key binding) if your curiosity is getting to you. Can you guess what famous rust game engine has these stats?
 
 <img src="assets/pane-languages-numbered.png" alt="Numbered languages pane" width="75%">
@@ -127,6 +200,7 @@ Cargo port uses the tokei crate to scan project languages at startup. It doesn't
 
 What good is this? Is this useful information taking up value screen real estate? I don't know. But we have it so enjoy!
 ### CPU/GPU Pane
+
 Dynamic character based CPU/GPU usage. If this doesn't get you out of bed in the morning, I don't know what will.  On my MacBook Pro, I have 12 cores. And it all fits in the pane.  But you might have many more. Don't worry, it will scroll - or you might turn your terminal sideways and see them all. I don't know. Is this useful? The aggregate is always interesting - but the per core?
 
 <img src="assets/pane-diagnostics-numbered.png" alt="Numbered CPU and GPU diagnostics pane" width="20%">
@@ -135,21 +209,25 @@ Dynamic character based CPU/GPU usage. If this doesn't get you out of bed in the
 2. Aggregate system, user, and idle CPU percentages.
 3. GPU utilization when available for the current platform. Not super tested for your particular wacky setup yet.  GPU is an aggregate right now. If you don't like this view, PR's are welcome. And I will have opinions about style.
 
-"You will ride eternal, shiny and chrome". 
+"You will ride eternal, shiny and chrome".
 ### Targets Pane
+
+The targets pane will show you this projects targets - bins, examples, benches.
 
 <img src="assets/pane-targets-numbered.png" alt="Numbered targets pane" width="75%">
 
-1. Runnable target names - you can launch it by hitting enter for a debug run, 'r' for `cargo-run --release`. Once running you can type 'K' to kill (uppercase to not clash with vim bindings in case you turned them on).  If you run multiple instances, they will who as running in this pane and you can type 'K' on the parent name to killall. 
-2. Source package for each target.
-3. Target kind: example, bench, bin
-4. Page position for long target lists - just mentioning it here but any pane that has a list that exceeds will show these markers. You can scroll through and pgup/pgdown/home/end are available and you can turn on vim bindings for limited vim navigation support.
+1. The title bar of the pane will show you the count of each kind of target that is available in your project
+2. Runnable target names - you can launch it by hitting 'Enter' for a debug run, 'r' for `cargo-run --release`.  The Source package is listed as a convenience so you have to scan back over to the project window. If it's a workspace, you'll see each target listed with its associated package. If it's a worktree group, you'll see the worktree checkout prefix the package (e.g. `worktree_checkout\package_name`).
+3. This screenshot has both examples and benches available to run. An output overlay window will pop up to show you the stdout when you run one.
+4. Also in the Targets window you will see a second subpane showing currently running projects. If you installed cargo port it will group it under an expandable `cargo` label where all running cargo sub commands can be found (while they're running).
+5. Every other target you have launched from cargo-port will show below that - in whichever profile you ran them in. You can type 'K' to kill (uppercase to not clash with vim bindings in case you turned them on). If a process launches other processes, they will group into an expandable hierarchy.
 ### Lint Runs
-You may optionally configure a comma delimited list of commands to run as a lint on rust projects (only).  The included directories have a watcher on them and if any rust file or Cargo.toml changes, then the lint commands will be asynchronously executed and tracked to completion. 
 
-When finished results from historical runs will showin the Lint Runs pane. 
+You may optionally configure a comma delimited list of commands to run as a lint on rust projects (only).  The included directories have a watcher on them and if any rust file or Cargo.toml changes, then the lint commands will be asynchronously executed and tracked to completion.
 
-You can select and hit enter on a run to open the stdout from each command in your configured eidtor.
+When finished results from historical runs will show in the Lint Runs pane.
+
+You can select and hit enter on a run to open the stdout from each command in your configured editor.
 
 <img src="assets/pane-lint-runs-numbered.png" alt="Numbered lint runs pane" width="75%">
 
@@ -159,14 +237,14 @@ You can select and hit enter on a run to open the stdout from each command in yo
 4. Pass/fail result.
 ### CI Runs
 
-GitHub Actions runs are cached to disk so the dashboard stays useful offline 
+GitHub Actions runs are cached to disk so the dashboard stays useful offline
 <img src="assets/pane-ci-runs-numbered.png" alt="Numbered CI runs pane" width="100%">
 
 1. CI run count and selected branch. You can filter for the current branch or show all ci runs.
-2. Commit summary for each run. 
+2. Commit summary for each run.
 3. Branch and timestamp. 'Nuff said.
-4. Job-level status columns. These are constructed from the ci runs themselves. If there are too many columns it will show the ones that have the longest durations and collapse the ones that don't. 
-   
+4. Job-level status columns. These are constructed from the ci runs themselves. If there are too many columns it will show the ones that have the longest durations and collapse the ones that don't.
+
    I didn't choose to implement side scrolling. The chosen columns may not be helpful to you as a result but you can press enter on any run and it will open a browser to take you to that run in GitHub where you can see everything you want to see.
 
 ## Navigation
@@ -189,10 +267,8 @@ Press `?` in the TUI to open the global shortcuts overlay.
 - **Show global shortcuts** - this overlay
 - **Show sccache stats** - I mean - you could just run `sccache --show-stats` but hey, `S` is faster. Pure plating - you choose the metal.
 ## Keymap Viewer
-## Settings
+
 ## GitHub, CI, and PRs
-
-
 
 - Pull request rows show open PRs for the selected repo, including deleted/disappeared PR toasts and check polling
 - GitHub API rate-limit and service recovery state are shown in the Git pane
@@ -267,8 +343,8 @@ focused_pane_tint = true
 ```toml
 [cpu]
 poll_ms = 1000
-green_max_percent = 60
-yellow_max_percent = 85
+low_utilization_max_percent = 60
+medium_utilization_max_percent = 85
 ```
 
 CPU and GPU diagnostics refresh in the background. GPU usage is shown when cargo-port can read it from the current platform; otherwise the GPU row reports unavailable.

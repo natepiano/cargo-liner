@@ -3,8 +3,8 @@ use crate::config::CargoPortConfig;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ConfigKey {
     CpuPollMs,
-    CpuGreenMax,
-    CpuYellowMax,
+    CpuLowUtilizationMax,
+    CpuMediumUtilizationMax,
     InvertScroll,
     IncludeNonRust,
     CiRunCount,
@@ -79,11 +79,11 @@ const CONFIG_HANDLERS: &[ConfigHandler] = &[
         mark: mark_refresh_cpu,
     },
     ConfigHandler {
-        key:  ConfigKey::CpuGreenMax,
+        key:  ConfigKey::CpuLowUtilizationMax,
         mark: mark_refresh_cpu,
     },
     ConfigHandler {
-        key:  ConfigKey::CpuYellowMax,
+        key:  ConfigKey::CpuMediumUtilizationMax,
         mark: mark_refresh_cpu,
     },
     ConfigHandler {
@@ -206,11 +206,11 @@ fn changed_keys(old: &CargoPortConfig, new: &CargoPortConfig) -> Vec<ConfigKey> 
     if old.cpu.poll_ms != new.cpu.poll_ms {
         keys.push(ConfigKey::CpuPollMs);
     }
-    if old.cpu.green_max_percent != new.cpu.green_max_percent {
-        keys.push(ConfigKey::CpuGreenMax);
+    if old.cpu.low_utilization_max_percent != new.cpu.low_utilization_max_percent {
+        keys.push(ConfigKey::CpuLowUtilizationMax);
     }
-    if old.cpu.yellow_max_percent != new.cpu.yellow_max_percent {
-        keys.push(ConfigKey::CpuYellowMax);
+    if old.cpu.medium_utilization_max_percent != new.cpu.medium_utilization_max_percent {
+        keys.push(ConfigKey::CpuMediumUtilizationMax);
     }
     if old.mouse.invert_scroll != new.mouse.invert_scroll {
         keys.push(ConfigKey::InvertScroll);
@@ -405,7 +405,7 @@ mod tests {
     fn cpu_settings_mark_refresh_cpu_only() {
         let mut new = CargoPortConfig::default();
         new.cpu.poll_ms = 1500;
-        new.cpu.green_max_percent = 55;
+        new.cpu.low_utilization_max_percent = 55;
 
         assert_eq!(
             collect_reload_actions(&CargoPortConfig::default(), &new, ReloadContext::default()),

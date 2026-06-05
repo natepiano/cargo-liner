@@ -99,8 +99,8 @@ fn cpu_bar_line(
     let filled = tui_pane::cpu_filled_cells(percent);
     let severity = tui_pane::cpu_severity(
         percent,
-        cpu_cfg.green_max_percent,
-        cpu_cfg.yellow_max_percent,
+        cpu_cfg.low_utilization_max_percent,
+        cpu_cfg.medium_utilization_max_percent,
     )
     .color();
     let number_text = format!("{core_number:>number_width$} ");
@@ -144,8 +144,8 @@ fn gpu_metric_line(percent: Option<u8>, cpu_cfg: &CpuConfig, width: u16) -> Line
         |percent| {
             let severity = tui_pane::cpu_severity(
                 percent,
-                cpu_cfg.green_max_percent,
-                cpu_cfg.yellow_max_percent,
+                cpu_cfg.low_utilization_max_percent,
+                cpu_cfg.medium_utilization_max_percent,
             )
             .color();
             (format!("{percent:>3}%"), severity)

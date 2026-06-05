@@ -45,6 +45,7 @@ use super::keymap_ui;
 use super::overlays::PopupFrame;
 use super::pane::PaneRenderCtx;
 use super::render;
+use crate::cache_paths;
 use crate::config;
 use crate::config::CargoPortConfig;
 use crate::config::LintCommandConfig;
@@ -53,6 +54,7 @@ use crate::constants::CONFIG_FILE;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SettingOption {
+    CacheRoot,
     InvertScroll,
     IncludeNonRust,
     NavigationKeys,
@@ -68,8 +70,8 @@ pub(super) enum SettingOption {
     FinishedTaskVisibleSecs,
     DiscoveryShimmerSecs,
     CpuPollMs,
-    CpuGreenMaxPercent,
-    CpuYellowMaxPercent,
+    CpuLowUtilizationMaxPercent,
+    CpuMediumUtilizationMaxPercent,
     LintsEnabled,
     LintOnDiscovery,
     LintProjects,
@@ -306,6 +308,14 @@ fn format_lint_commands(config: &CargoPortConfig) -> String {
 
 fn format_lint_cache_size(config: &CargoPortConfig) -> String { config.lint.cache_size.clone() }
 
+fn format_cache_root(config: &CargoPortConfig) -> String {
+    if config.cache.root.trim().is_empty() {
+        format!("{} (default)", cache_paths::default_app_cache_root())
+    } else {
+        config.cache.root.clone()
+    }
+}
+
 fn format_terminal_command(config: &CargoPortConfig) -> String {
     if config.tui.terminal_command.trim().is_empty() {
         "Not configured. Set this command to enable the global terminal shortcut.".to_string()
@@ -349,12 +359,12 @@ fn format_discovery_shimmer_secs(config: &CargoPortConfig) -> String {
 
 fn format_cpu_poll_ms(config: &CargoPortConfig) -> String { config.cpu.poll_ms.to_string() }
 
-fn format_cpu_green_max(config: &CargoPortConfig) -> String {
-    config.cpu.green_max_percent.to_string()
+fn format_cpu_low_utilization_max(config: &CargoPortConfig) -> String {
+    config.cpu.low_utilization_max_percent.to_string()
 }
 
-fn format_cpu_yellow_max(config: &CargoPortConfig) -> String {
-    config.cpu.yellow_max_percent.to_string()
+fn format_cpu_medium_utilization_max(config: &CargoPortConfig) -> String {
+    config.cpu.medium_utilization_max_percent.to_string()
 }
 
 pub(super) fn cargo_port_settings_registry() -> SettingsRegistry {
@@ -395,6 +405,12 @@ fn register_appearance_settings(registry: SettingsRegistry) -> SettingsRegistry 
 
 fn register_general_settings(registry: SettingsRegistry) -> SettingsRegistry {
     registry
+        .add_string_in(
+            SettingsSection::App("cache"),
+            "root",
+            get_cache_root,
+            set_cache_root,
+        )
         .add_bool_in(
             SettingsSection::App("mouse"),
             "invert_scroll",
@@ -488,15 +504,15 @@ fn register_cpu_settings(registry: SettingsRegistry) -> SettingsRegistry {
         )
         .add_int_in(
             SettingsSection::App("cpu"),
-            "green_max_percent",
-            get_cpu_green_max,
-            set_cpu_green_max,
+            "low_utilization_max_percent",
+            get_cpu_low_utilization_max,
+            set_cpu_low_utilization_max,
         )
         .add_int_in(
             SettingsSection::App("cpu"),
-            "yellow_max_percent",
-            get_cpu_yellow_max,
-            set_cpu_yellow_max,
+            "medium_utilization_max_percent",
+            get_cpu_medium_utilization_max,
+            set_cpu_medium_utilization_max,
         )
 }
 
@@ -579,6 +595,7 @@ pub(super) fn load_cargo_port_settings_for_startup() -> Result<StartupSettings, 
 
 pub(super) fn settings_table_from_config(config: &CargoPortConfig) -> Result<Table, SettingsError> {
     let mut table = Table::new();
+    set_cache_root(&mut table, &config.cache.root)?;
     set_invert_scroll(&mut table, config.mouse.invert_scroll.is_inverted())?;
     set_include_non_rust(&mut table, config.tui.include_non_rust.includes_non_rust())?;
     set_navigation_keys(&mut table, config.tui.navigation_keys.uses_vim())?;
@@ -610,8 +627,14 @@ pub(super) fn settings_table_from_config(config: &CargoPortConfig) -> Result<Tab
         &mut table,
         i64::try_from(config.cpu.poll_ms).unwrap_or(i64::MAX),
     )?;
-    set_cpu_green_max(&mut table, i64::from(config.cpu.green_max_percent))?;
-    set_cpu_yellow_max(&mut table, i64::from(config.cpu.yellow_max_percent))?;
+    set_cpu_low_utilization_max(
+        &mut table,
+        i64::from(config.cpu.low_utilization_max_percent),
+    )?;
+    set_cpu_medium_utilization_max(
+        &mut table,
+        i64::from(config.cpu.medium_utilization_max_percent),
+    )?;
     set_lints_enabled(&mut table, config.lint.enabled)?;
     set_lint_on_discovery(&mut table, config.lint.on_discovery.is_immediate())?;
     write_string_array(&mut table, "lint", "include", config.lint.include.clone())?;
@@ -780,6 +803,14 @@ fn set_inline_dirs(value: &str, table: &mut Table) -> Result<(), SettingsError> 
     write_string_array(table, "tui", "inline_dirs", normalize_sorted_list(value))
 }
 
+fn get_cache_root(table: &Table) -> String {
+    read_string(table, "cache", "root").map_or_else(|| default_config().cache.root, str::to_string)
+}
+
+fn set_cache_root(table: &mut Table, value: &str) -> Result<(), SettingsError> {
+    write_value(table, "cache", "root", value.trim().into())
+}
+
 fn get_discovery_shimmer_secs(table: &Table) -> f64 {
     read_float(table, "tui", "discovery_shimmer_secs")
         .unwrap_or_else(|| default_config().tui.discovery_shimmer_secs)
@@ -812,27 +843,32 @@ fn set_cpu_poll_ms(table: &mut Table, value: i64) -> Result<(), SettingsError> {
     )
 }
 
-fn get_cpu_green_max(table: &Table) -> i64 {
-    read_int(table, "cpu", "green_max_percent")
-        .unwrap_or_else(|| i64::from(default_config().cpu.green_max_percent))
+fn get_cpu_low_utilization_max(table: &Table) -> i64 {
+    read_int(table, "cpu", "low_utilization_max_percent")
+        .unwrap_or_else(|| i64::from(default_config().cpu.low_utilization_max_percent))
 }
 
-fn set_cpu_green_max(table: &mut Table, value: i64) -> Result<(), SettingsError> {
-    let percent = u8::try_from(value.clamp(0, 100)).unwrap_or(100);
-    write_value(table, "cpu", "green_max_percent", i64::from(percent).into())
-}
-
-fn get_cpu_yellow_max(table: &Table) -> i64 {
-    read_int(table, "cpu", "yellow_max_percent")
-        .unwrap_or_else(|| i64::from(default_config().cpu.yellow_max_percent))
-}
-
-fn set_cpu_yellow_max(table: &mut Table, value: i64) -> Result<(), SettingsError> {
+fn set_cpu_low_utilization_max(table: &mut Table, value: i64) -> Result<(), SettingsError> {
     let percent = u8::try_from(value.clamp(0, 100)).unwrap_or(100);
     write_value(
         table,
         "cpu",
-        "yellow_max_percent",
+        "low_utilization_max_percent",
+        i64::from(percent).into(),
+    )
+}
+
+fn get_cpu_medium_utilization_max(table: &Table) -> i64 {
+    read_int(table, "cpu", "medium_utilization_max_percent")
+        .unwrap_or_else(|| i64::from(default_config().cpu.medium_utilization_max_percent))
+}
+
+fn set_cpu_medium_utilization_max(table: &mut Table, value: i64) -> Result<(), SettingsError> {
+    let percent = u8::try_from(value.clamp(0, 100)).unwrap_or(100);
+    write_value(
+        table,
+        "cpu",
+        "medium_utilization_max_percent",
         i64::from(percent).into(),
     )
 }
@@ -1139,6 +1175,11 @@ fn general_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsUiR
             "Inline dirs".to_string(),
             format_sorted_list(&config.tui.inline_dirs),
         ),
+        (
+            Some(SettingOption::CacheRoot),
+            "Cache root".to_string(),
+            format_cache_root(config),
+        ),
     ]
 }
 
@@ -1172,14 +1213,14 @@ fn cpu_settings_rows(config: &CargoPortConfig) -> Vec<SettingsUiRow> {
             format_cpu_poll_ms(config),
         ),
         (
-            Some(SettingOption::CpuGreenMaxPercent),
-            "Green max %".to_string(),
-            format_cpu_green_max(config),
+            Some(SettingOption::CpuLowUtilizationMaxPercent),
+            "Low utilization max %".to_string(),
+            format_cpu_low_utilization_max(config),
         ),
         (
-            Some(SettingOption::CpuYellowMaxPercent),
-            "Yellow max %".to_string(),
-            format_cpu_yellow_max(config),
+            Some(SettingOption::CpuMediumUtilizationMaxPercent),
+            "Medium utilization max %".to_string(),
+            format_cpu_medium_utilization_max(config),
         ),
     ]
 }
@@ -1528,6 +1569,7 @@ fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<Setti
         Some(
             SettingOption::Editor
             | SettingOption::TerminalCommand
+            | SettingOption::CacheRoot
             | SettingOption::MainBranch
             | SettingOption::OtherPrimaryBranches
             | SettingOption::IncludeDirs
@@ -1536,8 +1578,8 @@ fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<Setti
             | SettingOption::FinishedTaskVisibleSecs
             | SettingOption::DiscoveryShimmerSecs
             | SettingOption::CpuPollMs
-            | SettingOption::CpuGreenMaxPercent
-            | SettingOption::CpuYellowMaxPercent
+            | SettingOption::CpuLowUtilizationMaxPercent
+            | SettingOption::CpuMediumUtilizationMaxPercent
             | SettingOption::LintProjects
             | SettingOption::LintCommands
             | SettingOption::LintCacheSize,
@@ -1585,6 +1627,9 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
         Some(SettingOption::CiRunCount) => {
             begin_settings_edit(app, app.config.current().tui.ci_run_count.to_string());
         },
+        Some(SettingOption::CacheRoot) => {
+            begin_settings_edit(app, app.config.current().cache.root.clone());
+        },
         Some(SettingOption::InlineDirs) => {
             begin_settings_edit(app, app.config.current().tui.inline_dirs.join(", "));
         },
@@ -1612,11 +1657,11 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
         Some(SettingOption::CpuPollMs) => {
             begin_settings_edit(app, format_cpu_poll_ms(app.config.current()));
         },
-        Some(SettingOption::CpuGreenMaxPercent) => {
-            begin_settings_edit(app, format_cpu_green_max(app.config.current()));
+        Some(SettingOption::CpuLowUtilizationMaxPercent) => {
+            begin_settings_edit(app, format_cpu_low_utilization_max(app.config.current()));
         },
-        Some(SettingOption::CpuYellowMaxPercent) => {
-            begin_settings_edit(app, format_cpu_yellow_max(app.config.current()));
+        Some(SettingOption::CpuMediumUtilizationMaxPercent) => {
+            begin_settings_edit(app, format_cpu_medium_utilization_max(app.config.current()));
         },
         Some(SettingOption::IncludeNonRust) => {
             let next = !app.config.include_non_rust().includes_non_rust();
@@ -1711,6 +1756,9 @@ fn apply_general_settings_edit(
         SettingOption::Editor if !value.trim().is_empty() => {
             save_string_setting(app, value, |table, editor| set_editor(table, &editor));
         },
+        SettingOption::CacheRoot => {
+            save_string_setting(app, value, |table, root| set_cache_root(table, &root));
+        },
         SettingOption::TerminalCommand => {
             save_string_setting(app, value, |table, command| {
                 set_terminal_command(table, &command)
@@ -1775,8 +1823,8 @@ fn apply_general_settings_edit(
             }
         },
         SettingOption::CpuPollMs
-        | SettingOption::CpuGreenMaxPercent
-        | SettingOption::CpuYellowMaxPercent => {
+        | SettingOption::CpuLowUtilizationMaxPercent
+        | SettingOption::CpuMediumUtilizationMaxPercent => {
             if !apply_cpu_settings_edit(app, setting, value) {
                 return Ok(true);
             }
@@ -1790,12 +1838,19 @@ fn apply_cpu_settings_edit(app: &mut App, setting: SettingOption, value: &str) -
         SettingOption::CpuPollMs => save_u32_setting(app, value, |table, poll_ms| {
             set_cpu_poll_ms(table, i64::from(poll_ms))
         }),
-        SettingOption::CpuGreenMaxPercent => save_u32_setting(app, value, |table, percent| {
-            set_cpu_green_max(table, i64::from(bounded_u8_from_u32(percent.min(100))))
-        }),
-        SettingOption::CpuYellowMaxPercent => save_u32_setting(app, value, |table, percent| {
-            set_cpu_yellow_max(table, i64::from(bounded_u8_from_u32(percent.min(100))))
-        }),
+        SettingOption::CpuLowUtilizationMaxPercent => {
+            save_u32_setting(app, value, |table, percent| {
+                set_cpu_low_utilization_max(table, i64::from(bounded_u8_from_u32(percent.min(100))))
+            })
+        },
+        SettingOption::CpuMediumUtilizationMaxPercent => {
+            save_u32_setting(app, value, |table, percent| {
+                set_cpu_medium_utilization_max(
+                    table,
+                    i64::from(bounded_u8_from_u32(percent.min(100))),
+                )
+            })
+        },
         _ => true,
     }
 }
@@ -1912,6 +1967,24 @@ mod tests {
         config.tui.terminal_command = "open -a Terminal .".to_string();
 
         assert_eq!(format_terminal_command(&config), "open -a Terminal .");
+    }
+
+    #[test]
+    fn format_cache_root_shows_resolved_default_for_blank_value() {
+        let config = config::CargoPortConfig::default();
+
+        assert_eq!(
+            format_cache_root(&config),
+            format!("{} (default)", cache_paths::default_app_cache_root())
+        );
+    }
+
+    #[test]
+    fn format_cache_root_preserves_configured_value() {
+        let mut config = config::CargoPortConfig::default();
+        config.cache.root = "/tmp/cargo-port-cache".to_string();
+
+        assert_eq!(format_cache_root(&config), "/tmp/cargo-port-cache");
     }
 
     #[test]

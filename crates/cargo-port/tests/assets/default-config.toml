@@ -12,15 +12,15 @@
 # Default value: 1000
 #poll_ms = 1000
 
-# Upper bound for the green CPU severity band.
+# Upper bound for the low CPU utilization band.
 #
 # Default value: 60
-#green_max_percent = 60
+#low_utilization_max_percent = 60
 
-# Upper bound for the yellow CPU severity band.
+# Upper bound for the medium CPU utilization band.
 #
 # Default value: 85
-#yellow_max_percent = 85
+#medium_utilization_max_percent = 85
 
 [mouse]
 # Whether to invert mouse scroll direction.
