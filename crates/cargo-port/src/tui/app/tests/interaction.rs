@@ -2535,6 +2535,23 @@ fn output_yank_strips_ansi_from_selection() {
 }
 
 #[test]
+fn output_render_drops_non_sgr_escape_sequences() {
+    let project = make_package("demo", Path::new("/tmp/demo"));
+    let mut app = make_app(&[project]);
+    open_output(
+        &mut app,
+        &["before \u{1b}[6nafter", "start \u{1b}Pignored\u{1b}\\end"],
+    );
+
+    let text = buffer_text_sized(&mut app, 120, 40);
+    assert!(text.contains("before after"));
+    assert!(text.contains("start end"));
+    assert!(!text.contains('\u{1b}'));
+    assert!(!text.contains("[6n"));
+    assert!(!text.contains("ignored"));
+}
+
+#[test]
 fn output_vim_esc_collapses_then_a_second_esc_closes_the_pane() {
     let project = make_package("demo", Path::new("/tmp/demo"));
     let mut app = make_app_vim(&[project]);

@@ -1196,9 +1196,10 @@ pub fn copy_payload_for_output(
 /// Strip ANSI escape sequences from `raw`, leaving only the printable
 /// text. Reuses the same parser the output renderer feeds, so the copied
 /// text matches what is on screen.
-fn strip_ansi(raw: &str) -> String {
-    ansi_to_tui::IntoText::into_text(&raw.to_owned()).map_or_else(
-        |_| raw.to_string(),
+pub(super) fn strip_ansi(raw: &str) -> String {
+    let safe = sanitize_ansi_for_output(raw);
+    ansi_to_tui::IntoText::into_text(&safe).map_or_else(
+        |_| strip_control_sequences(&safe),
         |text| {
             text.lines
                 .iter()
@@ -1213,6 +1214,84 @@ fn strip_ansi(raw: &str) -> String {
         },
     )
 }
+
+pub(super) fn sanitize_ansi_for_output(raw: &str) -> String { sanitize_ansi(raw, true) }
+
+fn strip_control_sequences(raw: &str) -> String { sanitize_ansi(raw, false) }
+
+fn sanitize_ansi(raw: &str, preserve_sgr: bool) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut state = EscapeStripState::Ground;
+    for ch in raw.chars() {
+        state = state.consume(ch, &mut out, preserve_sgr);
+    }
+    out
+}
+
+enum EscapeStripState {
+    Ground,
+    Escape,
+    Csi(String),
+    ControlString,
+    ControlStringEscape,
+}
+
+impl EscapeStripState {
+    fn consume(self, ch: char, out: &mut String, preserve_sgr: bool) -> Self {
+        match self {
+            Self::Ground => consume_ground(ch, out),
+            Self::Escape => consume_escape(ch),
+            Self::Csi(mut sequence) => {
+                sequence.push(ch);
+                if is_csi_final(ch) {
+                    if preserve_sgr && ch == 'm' {
+                        out.push_str(&sequence);
+                    }
+                    Self::Ground
+                } else {
+                    Self::Csi(sequence)
+                }
+            },
+            Self::ControlString => match ch {
+                '\x07' => Self::Ground,
+                '\x1b' => Self::ControlStringEscape,
+                _ => Self::ControlString,
+            },
+            Self::ControlStringEscape => {
+                if ch == '\\' {
+                    Self::Ground
+                } else {
+                    Self::ControlString
+                }
+            },
+        }
+    }
+}
+
+fn consume_ground(ch: char, out: &mut String) -> EscapeStripState {
+    match ch {
+        '\x1b' => EscapeStripState::Escape,
+        '\t' => {
+            out.push(' ');
+            EscapeStripState::Ground
+        },
+        _ if ch.is_control() => EscapeStripState::Ground,
+        _ => {
+            out.push(ch);
+            EscapeStripState::Ground
+        },
+    }
+}
+
+fn consume_escape(ch: char) -> EscapeStripState {
+    match ch {
+        '[' => EscapeStripState::Csi("\x1b[".to_string()),
+        ']' | 'P' | 'X' | '^' | '_' => EscapeStripState::ControlString,
+        _ => EscapeStripState::Ground,
+    }
+}
+
+const fn is_csi_final(ch: char) -> bool { matches!(ch, '\u{40}'..='\u{7e}') }
 
 pub fn copy_payload_for_targets(data: &TargetsData, pos: usize) -> CopySelectionResult {
     let entries = build_target_list_from_data(data);

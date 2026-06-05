@@ -17,6 +17,7 @@ use ratatui::widgets::Paragraph;
 use tui_pane::finder_match_bg;
 use tui_pane::label_color;
 
+use super::pane_data;
 use super::pane_impls::OutputPane;
 use crate::tui::pane::PaneRenderCtx;
 
@@ -100,12 +101,13 @@ fn fill_row(parsed: Line<'static>, width: usize, bg: Color) -> Line<'static> {
 }
 
 /// Parse one raw output line (carrying ANSI) into a styled `Line`,
-/// padded by a leading space. Falls back to the raw text when the ANSI
-/// parser rejects the input.
+/// padded by a leading space. Falls back to sanitized plain text when the
+/// ANSI parser rejects the input.
 fn parse_output_line(raw: &str) -> Line<'static> {
     let padded = format!(" {raw}");
-    ansi_to_tui::IntoText::into_text(&padded).map_or_else(
-        |_| Line::from(Span::raw(padded.clone())),
+    let safe = pane_data::sanitize_ansi_for_output(&padded);
+    ansi_to_tui::IntoText::into_text(&safe).map_or_else(
+        |_| Line::from(Span::raw(pane_data::strip_ansi(&safe))),
         |text| {
             text.lines
                 .into_iter()

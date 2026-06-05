@@ -478,6 +478,19 @@ fn output_copy_joins_range_and_strips_ansi() {
 }
 
 #[test]
+fn output_copy_drops_non_sgr_escape_sequences() {
+    let snapshot = [
+        "before \u{1b}[6nafter".to_string(),
+        "start \u{1b}Pignored\u{1b}\\end".to_string(),
+    ];
+
+    assert_eq!(
+        model::copy_payload_for_output(&snapshot, 0, 1),
+        CopySelectionResult::Payload(CopyPayload::new("before after\nstart end", CopyLabel::Row)),
+    );
+}
+
+#[test]
 fn output_copy_clamps_out_of_range_indices() {
     let snapshot = ["only".to_string(), "two".to_string()];
 

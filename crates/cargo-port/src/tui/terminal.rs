@@ -573,6 +573,7 @@ fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
     }
     cmd.current_dir(&run.abs_path)
         .arg("--color=always")
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -606,18 +607,24 @@ fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
     let pid_holder = app.inflight.example_child();
     let tx = app.background.example_sender();
     thread::spawn(move || {
-        // Read stderr with \r handling for cargo progress lines
-        if let Some(stderr) = stderr {
-            read_with_progress(&tx, stderr);
-        }
-        // Read stdout (typically just program output, plain lines)
-        if let Some(stdout) = stdout {
-            read_with_progress(&tx, stdout);
-        }
+        let stderr_reader = stderr.map(|stream| {
+            let tx = tx.clone();
+            thread::spawn(move || read_with_progress(&tx, stream))
+        });
+        let stdout_reader = stdout.map(|stream| {
+            let tx = tx.clone();
+            thread::spawn(move || read_with_progress(&tx, stream))
+        });
 
         // Wait for the child to finish and clear the PID.
         // Disk usage is updated automatically by the filesystem watcher.
         let _ = child.wait();
+        if let Some(reader) = stderr_reader {
+            let _ = reader.join();
+        }
+        if let Some(reader) = stdout_reader {
+            let _ = reader.join();
+        }
         *pid_holder
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
