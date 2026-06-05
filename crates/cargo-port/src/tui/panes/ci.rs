@@ -6,6 +6,8 @@ use ratatui::layout::Constraint;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
+use ratatui::text::Line;
+use ratatui::text::Span;
 use ratatui::widgets::Cell;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
@@ -52,8 +54,8 @@ impl CiDisplayColumn {
 
     fn header_target_width(&self) -> usize {
         match self {
-            Self::Job(name) => name.chars().count().min(CI_JOB_LABEL_MAX_WIDTH),
-            Self::Other { .. } => OTHER_JOBS_HEADER.len(),
+            Self::Job(name) => name.width().min(CI_JOB_LABEL_MAX_WIDTH),
+            Self::Other { .. } => OTHER_JOBS_HEADER.width(),
         }
     }
 }
@@ -148,31 +150,24 @@ fn build_ci_header_row(cols: &[CiDisplayColumn], widths: &[Constraint]) -> Row<'
         Cell::from("Timestamp").style(right_aligned),
     ];
     for (i, col) in cols.iter().enumerate() {
-        let width = constraint_width(widths.get(3 + i * 2)).unwrap_or(CI_JOB_LABEL_MIN_WIDTH);
+        let width = constraint_width(widths.get(3 + i)).unwrap_or(CI_JOB_LABEL_MIN_WIDTH);
         header_cells.push(
-            Cell::from(
-                ratatui::text::Line::from(col.header_label_for_width(width))
-                    .alignment(Alignment::Right),
-            )
-            .style(right_aligned),
+            Cell::from(Line::from(col.header_label_for_width(width)).alignment(Alignment::Right))
+                .style(right_aligned),
         );
-        header_cells.push(Cell::from(""));
     }
-    header_cells.push(
-        Cell::from(ratatui::text::Line::from("Total").alignment(Alignment::Right))
-            .style(right_aligned),
-    );
-    header_cells.push(Cell::from(""));
+    header_cells
+        .push(Cell::from(Line::from("Total").alignment(Alignment::Right)).style(right_aligned));
     Row::new(header_cells).bottom_margin(0)
 }
 
-const CI_COMPACT_DURATION_WIDTH: usize = 2;
 const CI_COMMIT_MIN_WIDTH: usize = 7;
 const CI_BRANCH_MIN_WIDTH: usize = 6;
 const CI_COMMIT_LONG_MIN_WIDTH: usize = 22;
 const CI_BRANCH_LONG_MIN_WIDTH: usize = 16;
 const CI_JOB_LABEL_MIN_WIDTH: usize = 8;
 const CI_JOB_LABEL_MAX_WIDTH: usize = 16;
+const CI_STATUS_GAP_WIDTH: usize = 1;
 const OTHER_JOBS_HEADER: &str = "Other";
 
 fn build_ci_data_row(
@@ -204,42 +199,55 @@ fn build_ci_data_row(
         let data = ci_column_data(ci_run, col);
         if let Some(data) = data {
             let style = render::conclusion_style(Some(data.status));
-            cells.push(
-                Cell::from(
-                    ratatui::text::Line::from(if show_durations {
-                        data.duration.trim().to_string()
-                    } else {
-                        String::new()
-                    })
-                    .alignment(Alignment::Right),
-                )
-                .style(style),
-            );
-            cells.push(Cell::from(data.status.icon().to_string()).style(style));
+            cells.push(ci_metric_cell(
+                data.duration.trim(),
+                data.status,
+                show_durations,
+                style,
+            ));
         } else {
-            cells.push(
-                Cell::from(ratatui::text::Line::from("—").alignment(Alignment::Right))
-                    .style(Style::default().fg(label_color())),
-            );
-            cells.push(Cell::from(""));
+            cells.push(ci_missing_metric_cell(show_durations));
         }
     }
 
     let total_style = render::conclusion_style(Some(ci_run.ci_status));
-    cells.push(
-        Cell::from(
-            ratatui::text::Line::from(if show_durations {
-                total_dur.trim().to_string()
-            } else {
-                String::new()
-            })
-            .alignment(Alignment::Right),
-        )
-        .style(total_style),
-    );
-    cells.push(Cell::from(ci_run.ci_status.icon().to_string()).style(total_style));
+    cells.push(ci_metric_cell(
+        total_dur.trim(),
+        ci_run.ci_status,
+        show_durations,
+        total_style,
+    ));
 
     Row::new(cells).style(selection.overlay_style())
+}
+
+fn ci_metric_cell(
+    duration: &str,
+    status: CiStatus,
+    show_durations: bool,
+    style: Style,
+) -> Cell<'static> {
+    let mut spans = Vec::new();
+    if show_durations {
+        spans.push(Span::styled(duration.to_string(), style));
+        spans.push(Span::styled(" ".repeat(CI_STATUS_GAP_WIDTH), style));
+    }
+    spans.push(Span::styled(status.icon().to_string(), style));
+    Cell::from(Line::from(spans).alignment(Alignment::Right))
+}
+
+fn ci_missing_metric_cell(show_durations: bool) -> Cell<'static> {
+    let style = Style::default().fg(label_color());
+    let label = if show_durations {
+        format!(
+            "—{}{}",
+            " ".repeat(CI_STATUS_GAP_WIDTH),
+            " ".repeat(ci_status_glyph_width())
+        )
+    } else {
+        "—".to_string()
+    };
+    Cell::from(Line::from(Span::styled(label, style)).alignment(Alignment::Right))
 }
 
 struct CiColumnData {
@@ -300,17 +308,9 @@ fn build_ci_widths(
     show_durations: bool,
     inner_width: u16,
 ) -> Vec<Constraint> {
-    let glyph_width = u16::try_from(
-        CiStatus::Passed
-            .icon()
-            .width()
-            .max(CiStatus::Failed.icon().width()),
-    )
-    .unwrap_or(u16::MAX);
-
-    // Column layout: Commit, Branch, Timestamp, then per-job (duration,
-    // glyph) pairs, then (Total, glyph). Header-label minimums seed the
-    // `Fit` columns; `Fixed` columns ignore observed content.
+    // Column layout: Commit, Branch, Timestamp, then one metric column per
+    // job, then Total. A metric cell contains the duration plus its status
+    // glyph, so headers can use the whole duration and status area.
     let (commit_width, branch_width) =
         ci_description_widths(ci_runs, cols, show_durations, inner_width);
     let mut specs = vec![
@@ -327,22 +327,23 @@ fn build_ci_widths(
     for col in cols {
         let label_min = label_width(&col.header_min_label());
         if show_durations {
-            specs.push(ColumnSpec::fit(label_min));
+            specs.push(ColumnSpec::fit(label_min.max(ci_status_glyph_width_u16())));
         } else {
             specs.push(ColumnSpec::fixed(
-                label_min.max(u16::try_from(CI_COMPACT_DURATION_WIDTH).unwrap_or(u16::MAX)),
+                label_min.max(ci_status_glyph_width_u16()),
             ));
         }
-        specs.push(ColumnSpec::fixed(glyph_width));
     }
     let total_label = label_width("Total");
     if show_durations {
-        specs.push(ColumnSpec::fit(total_label));
+        specs.push(ColumnSpec::fit(
+            total_label.max(ci_status_glyph_width_u16()),
+        ));
     } else {
-        let compact = u16::try_from(CI_COMPACT_DURATION_WIDTH).unwrap_or(u16::MAX);
-        specs.push(ColumnSpec::fixed(total_label.max(compact)));
+        specs.push(ColumnSpec::fixed(
+            total_label.max(ci_status_glyph_width_u16()),
+        ));
     }
-    specs.push(ColumnSpec::fixed(glyph_width));
 
     let spec_len = specs.len();
     let mut widths = ColumnWidths::new(specs);
@@ -353,17 +354,23 @@ fn build_ci_widths(
     }
     if show_durations {
         for (i, col) in cols.iter().enumerate() {
-            let col_idx = 3 + i * 2;
+            let col_idx = 3 + i;
             for run in ci_runs {
                 if let Some(data) = ci_column_data(run, col) {
-                    widths.observe_cell_usize(col_idx, data.duration.trim().len());
+                    widths.observe_cell_usize(
+                        col_idx,
+                        ci_metric_content_width(data.duration.trim().width()),
+                    );
                 }
             }
         }
-        let total_idx = 3 + cols.len() * 2;
+        let total_idx = 3 + cols.len();
         for run in ci_runs {
             if let Some(seconds) = run.wall_clock_secs {
-                widths.observe_cell_usize(total_idx, ci::format_secs(seconds).trim().len());
+                widths.observe_cell_usize(
+                    total_idx,
+                    ci_metric_content_width(ci::format_secs(seconds).trim().width()),
+                );
             }
         }
     }
@@ -374,20 +381,10 @@ fn build_ci_widths(
 }
 
 /// Display width of a header label, clamped to `u16`.
-fn label_width(label: &str) -> u16 { u16::try_from(label.len()).unwrap_or(u16::MAX) }
+fn label_width(label: &str) -> u16 { u16::try_from(label.width()).unwrap_or(u16::MAX) }
 
 fn ci_header_label_for_width(label: &str, width: usize) -> String {
-    let count = label.chars().count();
-    if count <= width {
-        return label.to_string();
-    }
-    if width <= 1 {
-        return label.chars().take(width).collect();
-    }
-
-    let mut out: String = label.chars().take(width - 1).collect();
-    out.push('…');
-    out
+    render::truncate_with_ellipsis(label, width, "\u{2026}")
 }
 
 fn widen_ci_header_columns(widths: &mut [u16], cols: &[CiDisplayColumn], inner_width: u16) {
@@ -399,7 +396,7 @@ fn widen_ci_header_columns(widths: &mut [u16], cols: &[CiDisplayColumn], inner_w
         if slack == 0 {
             break;
         }
-        let idx = 3 + i * 2;
+        let idx = 3 + i;
         let target = col.header_target_width();
         let current = usize::from(widths[idx]);
         let grow_by = target.saturating_sub(current).min(slack);
@@ -426,20 +423,45 @@ fn constraint_width(constraint: Option<&Constraint>) -> Option<usize> {
 
 fn ci_duration_width(ci_runs: &[CiRun], col: &CiDisplayColumn, show_durations: bool) -> usize {
     if show_durations {
-        ci_duration_min_width(ci_runs, col)
+        ci_metric_width(
+            ci_duration_data_width(ci_runs, col),
+            col.header_min_label().width(),
+        )
     } else {
-        col.header_min_label().len().max(CI_COMPACT_DURATION_WIDTH)
+        col.header_min_label().width().max(ci_status_glyph_width())
     }
 }
 
-fn ci_duration_min_width(ci_runs: &[CiRun], col: &CiDisplayColumn) -> usize {
-    let max_data = ci_runs
+fn ci_duration_data_width(ci_runs: &[CiRun], col: &CiDisplayColumn) -> usize {
+    ci_runs
         .iter()
         .filter_map(|run| ci_column_data(run, col))
-        .map(|data| data.duration.trim().len())
+        .map(|data| data.duration.trim().width())
         .max()
-        .unwrap_or(0);
-    col.header_min_label().len().max(max_data)
+        .unwrap_or(0)
+}
+
+fn ci_metric_width(duration_width: usize, header_width: usize) -> usize {
+    duration_width.max(header_width) + CI_STATUS_GAP_WIDTH + ci_status_glyph_width()
+}
+
+fn ci_metric_content_width(duration_width: usize) -> usize {
+    duration_width + CI_STATUS_GAP_WIDTH + ci_status_glyph_width()
+}
+
+fn ci_status_glyph_width_u16() -> u16 { u16::try_from(ci_status_glyph_width()).unwrap_or(u16::MAX) }
+
+fn ci_status_glyph_width() -> usize {
+    [
+        CiStatus::Passed,
+        CiStatus::Failed,
+        CiStatus::Cancelled,
+        CiStatus::Skipped,
+    ]
+    .into_iter()
+    .map(|status| status.icon().width())
+    .max()
+    .unwrap_or(0)
 }
 
 fn ci_description_widths(
@@ -484,20 +506,19 @@ fn ci_description_widths(
 
 fn ci_total_width(ci_runs: &[CiRun], show_durations: bool) -> usize {
     if show_durations {
-        ci_total_min_width(ci_runs)
+        ci_metric_width(ci_total_duration_width(ci_runs), "Total".width())
     } else {
-        CI_COMPACT_DURATION_WIDTH
+        "Total".width().max(ci_status_glyph_width())
     }
 }
 
-fn ci_total_min_width(ci_runs: &[CiRun]) -> usize {
-    let max_data = ci_runs
+fn ci_total_duration_width(ci_runs: &[CiRun]) -> usize {
+    ci_runs
         .iter()
         .filter_map(|run| run.wall_clock_secs)
-        .map(|seconds| ci::format_secs(seconds).trim().len())
+        .map(|seconds| ci::format_secs(seconds).trim().width())
         .max()
-        .unwrap_or(0);
-    "Total".len().max(max_data)
+        .unwrap_or(0)
 }
 
 fn ci_table_fixed_width(
@@ -547,22 +568,13 @@ fn ci_non_description_width(
     cols: &[CiDisplayColumn],
     show_durations: bool,
 ) -> usize {
-    let glyph_width = CiStatus::Passed
-        .icon()
-        .width()
-        .max(CiStatus::Failed.icon().width());
-    let column_count = 1 + 2 + (cols.len() * 2) + 2;
+    let column_count = 3 + cols.len() + 1;
     let base = usize::from(CI_TIMESTAMP_WIDTH);
     let job_columns: usize = cols
         .iter()
-        .map(|col| ci_duration_width(ci_runs, col, show_durations) + glyph_width)
+        .map(|col| ci_duration_width(ci_runs, col, show_durations))
         .sum();
-    let total_duration_width = if show_durations {
-        ci_total_width(ci_runs, show_durations)
-    } else {
-        "Total".len().max(CI_COMPACT_DURATION_WIDTH)
-    };
-    let total = total_duration_width + glyph_width;
+    let total = ci_total_width(ci_runs, show_durations);
     base + job_columns + total + column_count.saturating_sub(1)
 }
 
@@ -676,6 +688,7 @@ fn render_empty_ci_block(frame: &mut Frame, title: &str, area: Rect) {
 #[cfg(test)]
 mod tests {
     use ratatui::layout::Constraint;
+    use unicode_width::UnicodeWidthStr;
 
     use super::CI_BRANCH_LONG_MIN_WIDTH;
     use super::CI_COMMIT_LONG_MIN_WIDTH;
@@ -690,6 +703,7 @@ mod tests {
     use super::ci_display_table_shows_durations;
     use super::ci_grouped_display_columns;
     use super::ci_panel_title;
+    use super::ci_status_glyph_width;
     use super::ci_table_fixed_width;
     use super::constraint_width;
     use super::infer_ci_columns;
@@ -822,8 +836,62 @@ mod tests {
         assert!(ci_display_table_shows_durations(&runs, &cols[..1], 80));
         assert_eq!(
             super::ci_total_width(&runs, false),
-            super::CI_COMPACT_DURATION_WIDTH
+            "Total".len().max(ci_status_glyph_width())
         );
+    }
+
+    #[test]
+    fn ci_job_headers_use_combined_duration_status_width() {
+        let runs = vec![ci_run_with_jobs(vec![ci_job(
+            "Format Check",
+            18,
+            CiStatus::Passed,
+        )])];
+        let cols = vec![CiDisplayColumn::Job("Format Check".to_string())];
+        let baseline_width = super::ci_duration_width(&runs, &cols[0], true);
+        let target_width = "Format Check".len();
+        let inner_width = ci_table_fixed_width(&runs, &cols, true) + target_width - baseline_width;
+
+        let widths = build_ci_widths(
+            &runs,
+            &cols,
+            true,
+            u16::try_from(inner_width).unwrap_or_else(|_| std::process::abort()),
+        );
+        let job_width = constraint_width(widths.get(3)).unwrap_or(0);
+
+        assert_eq!(job_width, target_width);
+        assert_eq!(cols[0].header_label_for_width(job_width), "Format Check");
+    }
+
+    #[test]
+    fn ci_job_header_minimum_includes_status_area() {
+        let runs = vec![ci_run_with_jobs(vec![ci_job(
+            "Format Check",
+            18,
+            CiStatus::Passed,
+        )])];
+        let cols = vec![CiDisplayColumn::Job("Format Check".to_string())];
+        let expected_min = cols[0].header_min_label().width()
+            + super::CI_STATUS_GAP_WIDTH
+            + ci_status_glyph_width();
+
+        assert_eq!(
+            super::ci_duration_width(&runs, &cols[0], true),
+            expected_min
+        );
+
+        let widths = build_ci_widths(
+            &runs,
+            &cols,
+            true,
+            u16::try_from(ci_table_fixed_width(&runs, &cols, true))
+                .unwrap_or_else(|_| std::process::abort()),
+        );
+        let job_width = constraint_width(widths.get(3)).unwrap_or(0);
+
+        assert!(job_width >= expected_min);
+        assert!(cols[0].header_label_for_width(job_width).width() > CI_JOB_LABEL_MIN_WIDTH);
     }
 
     #[test]
@@ -917,8 +985,7 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, col)| {
-                let width =
-                    constraint_width(widths.get(3 + i * 2)).unwrap_or(CI_JOB_LABEL_MIN_WIDTH);
+                let width = constraint_width(widths.get(3 + i)).unwrap_or(CI_JOB_LABEL_MIN_WIDTH);
                 col.header_label_for_width(width)
             })
             .collect();
