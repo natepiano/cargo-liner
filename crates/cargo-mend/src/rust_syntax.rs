@@ -1,30 +1,6 @@
 use std::ffi::OsStr;
 use std::path::Path;
 
-use crate::compiler::RUST_LIB_FILE;
-use crate::compiler::RUST_MAIN_FILE;
-use crate::compiler::RUST_MODULE_FILE;
-
-// path keywords
-pub(crate) const PATH_KEYWORD_CRATE: &str = "crate";
-pub(crate) const PATH_KEYWORD_SELF: &str = "self";
-pub(crate) const PATH_KEYWORD_SELF_TYPE: &str = "Self";
-pub(crate) const PATH_KEYWORD_SUPER: &str = "super";
-
-// path prefixes
-pub(crate) const PATH_PREFIX_SUPER: &str = "super::";
-
-// rust module paths
-pub(crate) const MODULE_GLOB_SEGMENT: &str = "*";
-pub(crate) const MODULE_GLOB_SUFFIX: &str = "::*";
-pub(crate) const MODULE_PATH_SEPARATOR: &str = "::";
-
-// visibility
-pub(crate) const PUB_CRATE_VISIBILITY: &str = "pub(crate)";
-pub(crate) const PUB_IN_CRATE_VISIBILITY_PREFIX: &str = "pub(in crate::";
-pub(crate) const PUB_VISIBILITY_PREFIX: &str = "pub ";
-pub(crate) const PUB_VISIBILITY_TOKEN: &str = "pub";
-
 pub(crate) fn file_module_path(source_root: &Path, path: &Path) -> Option<Vec<String>> {
     let relative = path.strip_prefix(source_root).ok()?;
     let mut result: Vec<String> = relative
@@ -55,23 +31,17 @@ enum BoundaryModuleName<'a> {
 
 fn module_name_for_boundary_file(path: &Path) -> Option<BoundaryModuleName<'_>> {
     match path.file_name().and_then(OsStr::to_str) {
-        Some(name) if name == RUST_MODULE_FILE => Some(BoundaryModuleName::Named(
+        Some("mod.rs") => Some(BoundaryModuleName::Named(
             path.parent()?.file_name()?.to_str()?,
         )),
-        Some(name) if name == RUST_LIB_FILE || name == RUST_MAIN_FILE => {
-            Some(BoundaryModuleName::Root)
-        },
+        Some(name) if name == "lib.rs" || name == "main.rs" => Some(BoundaryModuleName::Root),
         _ => Some(BoundaryModuleName::Named(path.file_stem()?.to_str()?)),
     }
 }
 
 fn module_name_for_file_module_path(path: &Path) -> Option<&str> {
     match path.file_name().and_then(OsStr::to_str) {
-        Some(name)
-            if name == RUST_MODULE_FILE || name == RUST_LIB_FILE || name == RUST_MAIN_FILE =>
-        {
-            None
-        },
+        Some(name) if name == "mod.rs" || name == "lib.rs" || name == "main.rs" => None,
         _ => path.file_stem()?.to_str(),
     }
 }

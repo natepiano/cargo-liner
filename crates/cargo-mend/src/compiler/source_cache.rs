@@ -14,24 +14,12 @@ use syn::parse_file;
 use syn::visit;
 use syn::visit::Visit;
 
-use crate::rust_syntax::MODULE_GLOB_SEGMENT;
-use crate::rust_syntax::PATH_KEYWORD_CRATE;
+use super::constants::SOURCE_DIR_BENCHES;
+use super::constants::SOURCE_DIR_EXAMPLES;
+use super::constants::SOURCE_DIR_SRC;
+use super::constants::SOURCE_DIR_TESTS;
 use crate::selection::CARGO_TARGET_KIND_LIB;
 use crate::selection::CARGO_TARGET_KIND_MAIN;
-
-// rust source files
-pub(crate) const RUST_LIB_FILE: &str = "lib.rs";
-pub(crate) const RUST_MAIN_FILE: &str = "main.rs";
-pub(crate) const RUST_MODULE_FILE: &str = "mod.rs";
-pub(crate) const RUST_MODULE_FILE_STEM: &str = "mod";
-pub(crate) const RUST_SOURCE_FILE_EXTENSION: &str = "rs";
-pub(crate) const RUST_SOURCE_FILE_SUFFIX: &str = ".rs";
-
-// source-tree directories
-pub(crate) const SOURCE_DIR_BENCHES: &str = "benches";
-pub(crate) const SOURCE_DIR_EXAMPLES: &str = "examples";
-pub(crate) const SOURCE_DIR_SRC: &str = "src";
-pub(crate) const SOURCE_DIR_TESTS: &str = "tests";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PathOrigin {
@@ -154,7 +142,7 @@ pub(super) fn module_path_from_boundary_file(
         .map(|component| component.as_os_str().to_string_lossy().into_owned())
         .collect::<Vec<_>>();
     let last = components.last_mut()?;
-    *last = last.strip_suffix(RUST_SOURCE_FILE_SUFFIX)?.to_string();
+    *last = last.strip_suffix(".rs")?.to_string();
     if matches!(
         components.as_slice(),
         [name] if name == CARGO_TARGET_KIND_LIB || name == CARGO_TARGET_KIND_MAIN
@@ -169,7 +157,7 @@ pub(super) fn module_path_from_source_file(
     source_root: &Path,
     source_file: &Path,
 ) -> Option<Vec<String>> {
-    if source_file.file_name().and_then(OsStr::to_str) == Some(RUST_MODULE_FILE) {
+    if source_file.file_name().and_then(OsStr::to_str) == Some("mod.rs") {
         module_path_from_dir(source_root, source_file.parent()?)
     } else {
         module_path_from_boundary_file(source_root, source_file)
@@ -217,7 +205,7 @@ pub(super) fn flatten_use_tree(prefix: Vec<String>, tree: &UseTree, out: &mut Ve
         },
         UseTree::Glob(_) => {
             let mut next = prefix;
-            next.push(MODULE_GLOB_SEGMENT.to_string());
+            next.push("*".to_string());
             out.push(next);
         },
     }
@@ -237,7 +225,7 @@ fn collect_rust_source_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()>
         let path = entry.path();
         if path.is_dir() {
             collect_rust_source_files(&path, files)?;
-        } else if path.extension().and_then(OsStr::to_str) == Some(RUST_SOURCE_FILE_EXTENSION) {
+        } else if path.extension().and_then(OsStr::to_str) == Some("rs") {
             files.push(path);
         }
     }
@@ -245,7 +233,7 @@ fn collect_rust_source_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()>
 }
 
 pub(super) fn path_origin(raw: &[String]) -> PathOrigin {
-    if raw.first().map(String::as_str) == Some(PATH_KEYWORD_CRATE) {
+    if raw.first().map(String::as_str) == Some("crate") {
         PathOrigin::Crate
     } else {
         PathOrigin::Relative

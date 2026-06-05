@@ -8,11 +8,10 @@ use dirs::config_dir;
 use serde::Deserialize;
 use toml::from_str;
 
+use super::constants::APP_NAME;
+use super::constants::GLOBAL_CONFIG_FILE;
 use super::diagnostics_config::DiagnosticsConfig;
 use crate::constants::HELP_URL_BASE;
-
-pub(crate) const APP_NAME: &str = "cargo-mend";
-pub(crate) const GLOBAL_CONFIG_FILE: &str = "config.toml";
 
 #[derive(Debug, Default, Deserialize)]
 struct GlobalConfigFile {

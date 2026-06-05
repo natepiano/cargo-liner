@@ -1,4 +1,5 @@
 mod cli;
+mod constants;
 mod diagnostic_code;
 mod diagnostic_status;
 mod diagnostics_config;

@@ -84,7 +84,7 @@ pub(crate) struct DiagnosticSpec {
     pub inline_help: Option<&'static str>,
     pub help_anchor: &'static str,
     detail_mode:     DetailMode,
-    pub fixability:  FixSupport,
+    pub fix_support: FixSupport,
 }
 
 static FORBIDDEN_PUB_CRATE: DiagnosticSpec = DiagnosticSpec {
@@ -92,70 +92,70 @@ static FORBIDDEN_PUB_CRATE: DiagnosticSpec = DiagnosticSpec {
     inline_help: None,
     help_anchor: "forbidden-pub-crate",
     detail_mode: DetailMode::None,
-    fixability:  FixSupport::None,
+    fix_support: FixSupport::None,
 };
 static FORBIDDEN_PUB_IN_CRATE: DiagnosticSpec = DiagnosticSpec {
     headline:    "use of `pub(in crate::...)` is forbidden by policy",
     inline_help: None,
     help_anchor: "forbidden-pub-in-crate",
     detail_mode: DetailMode::None,
-    fixability:  FixSupport::None,
+    fix_support: FixSupport::None,
 };
 static REVIEW_PUB_MOD: DiagnosticSpec = DiagnosticSpec {
     headline:    "`pub mod` requires explicit review or allowlisting",
     inline_help: None,
     help_anchor: "review-pub-mod",
     detail_mode: DetailMode::None,
-    fixability:  FixSupport::None,
+    fix_support: FixSupport::None,
 };
 static SUSPICIOUS_PUB: DiagnosticSpec = DiagnosticSpec {
     headline:    "`pub` is broader than this nested module boundary",
     inline_help: Some("consider using: `pub(super)`"),
     help_anchor: "suspicious-pub",
     detail_mode: DetailMode::MessageRelatedAndFix,
-    fixability:  FixSupport::None,
+    fix_support: FixSupport::None,
 };
 static UNUSED_PUB: DiagnosticSpec = DiagnosticSpec {
     headline:    "`pub` item is not used outside its defining module",
     inline_help: Some("consider removing `pub`"),
     help_anchor: "unused-pub",
     detail_mode: DetailMode::MessageRelatedAndFix,
-    fixability:  FixSupport::UnusedPub,
+    fix_support: FixSupport::UnusedPub,
 };
 static PREFER_MODULE_IMPORT: DiagnosticSpec = DiagnosticSpec {
     headline:    "function import should use module-qualified form",
     inline_help: None,
     help_anchor: "prefer-module-import",
     detail_mode: DetailMode::MessageRelatedAndFix,
-    fixability:  FixSupport::PreferModuleImport,
+    fix_support: FixSupport::PreferModuleImport,
 };
 static INLINE_PATH_QUALIFIED_TYPE: DiagnosticSpec = DiagnosticSpec {
     headline:    "inline path-qualified type should use a `use` import",
     inline_help: None,
     help_anchor: "inline-path-qualified-type",
     detail_mode: DetailMode::MessageRelatedAndFix,
-    fixability:  FixSupport::InlinePathQualifiedType,
+    fix_support: FixSupport::InlinePathQualifiedType,
 };
 static SHORTEN_LOCAL_CRATE_IMPORT: DiagnosticSpec = DiagnosticSpec {
     headline:    "crate-relative import can be shortened to a local-relative import",
     inline_help: None,
     help_anchor: "shorten-local-crate-import",
     detail_mode: DetailMode::MessageRelatedAndFix,
-    fixability:  FixSupport::ShortenImport,
+    fix_support: FixSupport::ShortenImport,
 };
 static REPLACE_DEEP_SUPER_IMPORT: DiagnosticSpec = DiagnosticSpec {
     headline:    "deep `super::` chain should use a `crate::` path",
     inline_help: None,
     help_anchor: "replace-deep-super-import",
     detail_mode: DetailMode::MessageRelatedAndFix,
-    fixability:  FixSupport::ShortenImport,
+    fix_support: FixSupport::ShortenImport,
 };
 static WILDCARD_PARENT_PUB_USE: DiagnosticSpec = DiagnosticSpec {
     headline:    "parent module `pub use *` should be explicit",
     inline_help: Some("consider re-exporting explicit items instead of `*`"),
     help_anchor: "wildcard-parent-pub-use",
     detail_mode: DetailMode::None,
-    fixability:  FixSupport::None,
+    fix_support: FixSupport::None,
 };
 static INTERNAL_PARENT_PUB_USE_FACADE: DiagnosticSpec = DiagnosticSpec {
     headline:    "parent module `pub use` is acting as an internal facade",
@@ -164,28 +164,28 @@ static INTERNAL_PARENT_PUB_USE_FACADE: DiagnosticSpec = DiagnosticSpec {
     ),
     help_anchor: "internal-parent-pub-use-facade",
     detail_mode: DetailMode::MessageRelatedAndFix,
-    fixability:  FixSupport::InternalParentFacade,
+    fix_support: FixSupport::InternalParentFacade,
 };
 static NARROW_TO_PUB_CRATE: DiagnosticSpec = DiagnosticSpec {
     headline:    "`pub` exceeds the item's effective reach — use `pub(crate)`",
     inline_help: Some("consider using: `pub(crate)`"),
     help_anchor: "narrow-to-pub-crate",
     detail_mode: DetailMode::MessageRelatedAndFix,
-    fixability:  FixSupport::NarrowToPubCrate,
+    fix_support: FixSupport::NarrowToPubCrate,
 };
 static FIELD_VISIBILITY_WIDER_THAN_TYPE: DiagnosticSpec = DiagnosticSpec {
     headline:    "field visibility is wider than its containing type",
     inline_help: None,
     help_anchor: "field-visibility-wider-than-type",
     detail_mode: DetailMode::MessageRelatedAndFix,
-    fixability:  FixSupport::FieldVisibility,
+    fix_support: FixSupport::FieldVisibility,
 };
 static IMPORTS_AT_TOP: DiagnosticSpec = DiagnosticSpec {
     headline:    "`use` statement should live at the top of the file or inline module",
     inline_help: None,
     help_anchor: "imports-at-top",
     detail_mode: DetailMode::MessageRelatedAndFix,
-    fixability:  FixSupport::ImportsAtTop,
+    fix_support: FixSupport::ImportsAtTop,
 };
 
 pub(crate) fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
@@ -219,8 +219,8 @@ pub(crate) struct Finding {
     pub item:            Option<String>,
     pub message:         String,
     pub suggestion:      Option<String>,
-    #[serde(default)]
-    pub fixability:      FixSupport,
+    #[serde(default, rename = "fixability")]
+    pub fix_support:     FixSupport,
     #[serde(default)]
     pub related:         Option<String>,
 }
@@ -345,10 +345,10 @@ impl Report {
 }
 
 pub(crate) fn effective_fixability(finding: &Finding) -> FixSupport {
-    if matches!(finding.fixability, FixSupport::None) {
-        diagnostic_spec(finding.diagnostic_code).fixability
+    if matches!(finding.fix_support, FixSupport::None) {
+        diagnostic_spec(finding.diagnostic_code).fix_support
     } else {
-        finding.fixability
+        finding.fix_support
     }
 }
 

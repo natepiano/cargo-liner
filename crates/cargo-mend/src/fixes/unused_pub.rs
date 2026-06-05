@@ -7,7 +7,6 @@ use anyhow::Result;
 use super::imports::UseFix;
 use crate::config::DiagnosticCode;
 use crate::reporting::Report;
-use crate::rust_syntax::PUB_VISIBILITY_TOKEN;
 
 pub(crate) struct UnusedPubScan {
     pub fixes: Vec<UseFix>,
@@ -55,10 +54,10 @@ pub(crate) fn scan_from_report(report: &Report) -> Result<UnusedPubScan> {
 }
 
 fn bare_pub_annotation_byte_len(text: &str) -> Option<usize> {
-    let rest = text.strip_prefix(PUB_VISIBILITY_TOKEN)?;
+    let rest = text.strip_prefix("pub")?;
     match rest.chars().next() {
-        Some(c) if c.is_whitespace() => Some(PUB_VISIBILITY_TOKEN.len()),
-        None => Some(PUB_VISIBILITY_TOKEN.len()),
+        Some(c) if c.is_whitespace() => Some("pub".len()),
+        None => Some("pub".len()),
         _ => None,
     }
 }

@@ -1,13 +1,14 @@
+mod constants;
 mod display_filter;
 mod metadata;
 
+pub(crate) use constants::CARGO_TARGET_KIND_BENCH;
+pub(crate) use constants::CARGO_TARGET_KIND_BIN;
+pub(crate) use constants::CARGO_TARGET_KIND_EXAMPLE;
+pub(crate) use constants::CARGO_TARGET_KIND_LIB;
+pub(crate) use constants::CARGO_TARGET_KIND_MAIN;
+pub(crate) use constants::CARGO_TARGET_KIND_TEST;
 pub(crate) use display_filter::DisplayFilter;
-pub(crate) use metadata::CARGO_TARGET_KIND_BENCH;
-pub(crate) use metadata::CARGO_TARGET_KIND_BIN;
-pub(crate) use metadata::CARGO_TARGET_KIND_EXAMPLE;
-pub(crate) use metadata::CARGO_TARGET_KIND_LIB;
-pub(crate) use metadata::CARGO_TARGET_KIND_MAIN;
-pub(crate) use metadata::CARGO_TARGET_KIND_TEST;
 pub(crate) use metadata::CargoCheckPlan;
 pub(crate) use metadata::PackageMetadata;
 pub(crate) use metadata::Selection;

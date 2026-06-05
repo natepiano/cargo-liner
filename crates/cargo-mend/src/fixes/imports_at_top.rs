@@ -18,21 +18,17 @@ use syn::visit;
 use syn::visit::Visit;
 use walkdir::WalkDir;
 
+use super::constants::IMPORTS_AT_TOP_MESSAGE;
+use super::constants::IMPORTS_AT_TOP_SUGGESTION;
 use super::imports::ImportGroup;
 use super::imports::UseFix;
 use super::imports::ValidatedFixSet;
-use crate::compiler::RUST_SOURCE_FILE_EXTENSION;
 use crate::compiler::SOURCE_DIR_SRC;
 use crate::config::DiagnosticCode;
 use crate::reporting::Finding;
 use crate::reporting::FixSupport;
 use crate::reporting::Severity;
-use crate::rust_syntax::MODULE_GLOB_SEGMENT;
-use crate::rust_syntax::MODULE_PATH_SEPARATOR;
 use crate::selection::Selection;
-
-const MESSAGE: &str = "lift this `use` to the top of its enclosing module";
-const SUGGESTION: &str = "move this `use` to the top of the file or inline module";
 
 pub(crate) struct ImportsAtTopScan {
     pub findings: Vec<Finding>,
@@ -53,7 +49,7 @@ pub(crate) fn scan_selection(selection: &Selection) -> Result<ImportsAtTopScan> 
         {
             let path = entry.path();
             if !entry.file_type().is_file()
-                || path.extension().and_then(OsStr::to_str) != Some(RUST_SOURCE_FILE_EXTENSION)
+                || path.extension().and_then(OsStr::to_str) != Some("rs")
             {
                 continue;
             }
@@ -234,13 +230,13 @@ fn walk_use_tree(tree: &UseTree, prefix: &mut Vec<String>, out: &mut Vec<(String
             let bare = name.ident.to_string();
             let mut segments = prefix.clone();
             segments.push(bare.clone());
-            out.push((bare, segments.join(MODULE_PATH_SEPARATOR)));
+            out.push((bare, segments.join("::")));
         },
         UseTree::Rename(rename) => {
             let bare = rename.rename.to_string();
             let mut segments = prefix.clone();
             segments.push(rename.ident.to_string());
-            out.push((bare, segments.join(MODULE_PATH_SEPARATOR)));
+            out.push((bare, segments.join("::")));
         },
         UseTree::Group(group) => {
             for item in &group.items {
@@ -249,11 +245,8 @@ fn walk_use_tree(tree: &UseTree, prefix: &mut Vec<String>, out: &mut Vec<(String
         },
         UseTree::Glob(_) => {
             let mut segments = prefix.clone();
-            segments.push(MODULE_GLOB_SEGMENT.to_string());
-            out.push((
-                MODULE_GLOB_SEGMENT.to_string(),
-                segments.join(MODULE_PATH_SEPARATOR),
-            ));
+            segments.push("*".to_string());
+            out.push(("*".to_string(), segments.join("::")));
         },
     }
 }
@@ -282,10 +275,7 @@ impl InBodyUseFinder<'_> {
             return;
         }
         // Globs may shadow arbitrary names — don't lift.
-        if bare_paths
-            .iter()
-            .any(|(bare, _)| bare == MODULE_GLOB_SEGMENT)
-        {
+        if bare_paths.iter().any(|(bare, _)| bare == "*") {
             return;
         }
 
@@ -348,9 +338,9 @@ impl InBodyUseFinder<'_> {
             highlight_len: (use_end - use_start).max(1),
             source_line,
             item: None,
-            message: MESSAGE.to_string(),
-            suggestion: Some(SUGGESTION.to_string()),
-            fixability: FixSupport::ImportsAtTop,
+            message: IMPORTS_AT_TOP_MESSAGE.to_string(),
+            suggestion: Some(IMPORTS_AT_TOP_SUGGESTION.to_string()),
+            fix_support: FixSupport::ImportsAtTop,
             related: None,
         });
 

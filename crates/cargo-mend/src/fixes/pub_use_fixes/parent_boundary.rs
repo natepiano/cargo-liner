@@ -18,11 +18,6 @@ use syn::spanned::Spanned;
 
 use super::validated_plan;
 use crate::fixes::imports::UseFix;
-use crate::rust_syntax::MODULE_GLOB_SEGMENT;
-use crate::rust_syntax::MODULE_GLOB_SUFFIX;
-use crate::rust_syntax::MODULE_PATH_SEPARATOR;
-use crate::rust_syntax::PATH_KEYWORD_SELF;
-use crate::rust_syntax::PATH_KEYWORD_SUPER;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct ParentBoundaryKey {
@@ -133,10 +128,7 @@ fn parent_pub_use_exports_item_with_prefix(
             parent_pub_use_exports_item_with_prefix(next, &path.tree, child_module_name, item_name)
         },
         UseTree::Name(name) => {
-            let normalized = if prefix
-                .first()
-                .is_some_and(|segment| segment == PATH_KEYWORD_SELF)
-            {
+            let normalized = if prefix.first().is_some_and(|segment| segment == "self") {
                 &prefix[1..]
             } else {
                 &prefix[..]
@@ -175,7 +167,7 @@ fn facade_use_prefix(vis: &Visibility) -> Option<&'static str> {
         Visibility::Public(_) => Some("pub use"),
         Visibility::Restricted(restricted)
             if restricted.path.segments.len() == 1
-                && restricted.path.segments[0].ident == PATH_KEYWORD_SUPER =>
+                && restricted.path.segments[0].ident == "super" =>
         {
             Some("pub(super) use")
         },
@@ -200,10 +192,7 @@ fn remove_exports_from_use_tree(
             }))
         },
         UseTree::Name(name) => {
-            let normalized = if prefix
-                .first()
-                .is_some_and(|segment| segment == PATH_KEYWORD_SELF)
-            {
+            let normalized = if prefix.first().is_some_and(|segment| segment == "self") {
                 &prefix[1..]
             } else {
                 &prefix[..]
@@ -264,10 +253,7 @@ fn collect_use_lines(
         UseTree::Name(name) => {
             let mut segments = path_prefix;
             segments.push(name.ident.to_string());
-            lines.push(format!(
-                "{use_prefix} {};",
-                segments.join(MODULE_PATH_SEPARATOR)
-            ));
+            lines.push(format!("{use_prefix} {};", segments.join("::")));
             Ok(())
         },
         UseTree::Rename(rename) => {
@@ -275,19 +261,16 @@ fn collect_use_lines(
             segments.push(rename.ident.to_string());
             lines.push(format!(
                 "{use_prefix} {} as {};",
-                segments.join(MODULE_PATH_SEPARATOR),
+                segments.join("::"),
                 rename.rename
             ));
             Ok(())
         },
         UseTree::Glob(_) => {
             let rendered_prefix = if path_prefix.is_empty() {
-                MODULE_GLOB_SEGMENT.to_string()
+                "*".to_string()
             } else {
-                format!(
-                    "{}{MODULE_GLOB_SUFFIX}",
-                    path_prefix.join(MODULE_PATH_SEPARATOR)
-                )
+                format!("{}::*", path_prefix.join("::"))
             };
             lines.push(format!("{use_prefix} {rendered_prefix};"));
             Ok(())

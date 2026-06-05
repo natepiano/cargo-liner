@@ -349,9 +349,17 @@ edition = "2024"
     fs::create_dir_all(temp.path().join("src")).expect("create src");
     fs::write(
         temp.path().join("src/lib.rs"),
-        "mod types;\npub use types::Icon;\npub use types::DEFAULT_FRAME;\n",
+        "mod constants;\nmod types;\npub use constants::DEFAULT_FRAME;\npub use types::Icon;\n",
     )
     .expect("write lib");
+    fs::write(
+        temp.path().join("src/constants.rs"),
+        r#"use crate::types::FrameCycle;
+
+ pub const DEFAULT_FRAME: FrameCycle = FrameCycle::new(&["a", "b"]);
+"#,
+    )
+    .expect("write constants");
     fs::write(
         temp.path().join("src/types.rs"),
         r#"pub struct FrameCycle {
@@ -372,8 +380,6 @@ pub enum Icon {
     Static(&'static str),
     Animated(FrameCycle),
 }
-
-pub const DEFAULT_FRAME: FrameCycle = FrameCycle::new(&["a", "b"]);
 "#,
     )
     .expect("write types");

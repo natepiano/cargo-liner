@@ -9,9 +9,6 @@ use syn::visit::Visit;
 use syn::visit::visit_item_mod;
 
 use super::support;
-use crate::rust_syntax::MODULE_PATH_SEPARATOR;
-use crate::rust_syntax::PATH_KEYWORD_CRATE;
-use crate::rust_syntax::PATH_KEYWORD_SUPER;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ImportTarget {
@@ -75,7 +72,7 @@ fn analyze_function_import(
     }
 
     let first = flat.segments.first()?;
-    if first != PATH_KEYWORD_CRATE && first != PATH_KEYWORD_SUPER {
+    if first != "crate" && first != "super" {
         return None;
     }
 
@@ -95,7 +92,7 @@ fn analyze_function_import(
 
     let module_segments = &flat.segments[..flat.segments.len() - 1];
     let module_name = flat.segments[flat.segments.len() - 2].clone();
-    if module_name == PATH_KEYWORD_SUPER || module_name == PATH_KEYWORD_CRATE {
+    if module_name == "super" || module_name == "crate" {
         return None;
     }
     if !support::is_snake_case_module_name(&module_name) {
@@ -107,12 +104,12 @@ fn analyze_function_import(
 
     let shortened_module_segments =
         support::shorten_module_path(current_module_path, module_segments);
-    let import_target = if shortened_module_segments.as_slice() == [PATH_KEYWORD_SUPER] {
+    let import_target = if shortened_module_segments.as_slice() == ["super"] {
         ImportTarget::ParentModule
     } else {
         ImportTarget::OtherModule
     };
-    let module_path = shortened_module_segments.join(MODULE_PATH_SEPARATOR);
+    let module_path = shortened_module_segments.join("::");
     let replacement_use = if import_target == ImportTarget::ParentModule {
         String::new()
     } else {

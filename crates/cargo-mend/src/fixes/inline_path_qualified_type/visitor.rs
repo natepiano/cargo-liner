@@ -25,12 +25,6 @@ use syn::UseTree;
 use syn::visit;
 use syn::visit::Visit;
 
-use crate::rust_syntax::MODULE_PATH_SEPARATOR;
-use crate::rust_syntax::PATH_KEYWORD_CRATE;
-use crate::rust_syntax::PATH_KEYWORD_SELF;
-use crate::rust_syntax::PATH_KEYWORD_SELF_TYPE;
-use crate::rust_syntax::PATH_KEYWORD_SUPER;
-
 pub(super) struct InlinePathOccurrence {
     /// The original fully-qualified path as written (e.g.
     /// `crate::project::RustProject::Package`).
@@ -87,7 +81,7 @@ impl InlinePathVisitor {
         }
 
         let first = &segments[0];
-        let is_intra_crate = first == PATH_KEYWORD_CRATE || first == PATH_KEYWORD_SUPER;
+        let is_intra_crate = first == "crate" || first == "super";
 
         // For intra-crate paths, require at least 3 segments — `crate::Foo` /
         // `super::Foo` are already short enough that hoisting them to a `use`
@@ -100,7 +94,7 @@ impl InlinePathVisitor {
 
         // Filter obvious non-crate roots. `self::` is a same-module reference,
         // not a candidate for a `use`.
-        if first == PATH_KEYWORD_SELF || first == PATH_KEYWORD_SELF_TYPE {
+        if first == "self" || first == "Self" {
             return;
         }
 
@@ -128,7 +122,7 @@ impl InlinePathVisitor {
             return;
         }
 
-        let full_path = segments.join(MODULE_PATH_SEPARATOR);
+        let full_path = segments.join("::");
 
         // Heuristic: if the penultimate segment is also PascalCase, the leaf
         // is almost certainly an enum variant (or associated type/const) of
@@ -138,14 +132,14 @@ impl InlinePathVisitor {
         // same-named structs or other variants that share a leaf name.
         let penultimate = &segments[segments.len() - 2];
         let (import_segments, import_name, replacement) =
-            if is_pascal_case(penultimate) && penultimate != PATH_KEYWORD_SELF_TYPE {
+            if is_pascal_case(penultimate) && penultimate != "Self" {
                 let import_segments = segments[..segments.len() - 1].to_vec();
                 let replacement = format!("{penultimate}::{leaf}");
                 (import_segments, penultimate.clone(), replacement)
             } else {
                 (segments.clone(), leaf.clone(), leaf.clone())
             };
-        let import_path = import_segments.join(MODULE_PATH_SEPARATOR);
+        let import_path = import_segments.join("::");
 
         // Use ident spans to exclude generic arguments from the replacement range.
         // path.span() includes generic args (e.g., `<T>`), but we only want to
@@ -185,7 +179,7 @@ impl InlinePathVisitor {
         }
         if path.segments.len() == 1 {
             self.bare_type_names.insert(name);
-        } else if name != PATH_KEYWORD_SELF_TYPE {
+        } else if name != "Self" {
             // A bare `Self::method` is fine — `Self` isn't a name we'd ever
             // import. Anything else PascalCase as the first segment is a real
             // type reference whose meaning would change under a same-named
@@ -367,7 +361,7 @@ pub(super) fn flatten_use_path(tree: &UseTree) -> Option<String> {
             _ => return None,
         }
     }
-    Some(segments.join(MODULE_PATH_SEPARATOR))
+    Some(segments.join("::"))
 }
 
 pub(super) fn is_pascal_case(name: &str) -> bool {

@@ -7,7 +7,6 @@ use anyhow::Result;
 use super::imports::UseFix;
 use crate::config::DiagnosticCode;
 use crate::reporting::Report;
-use crate::rust_syntax::PUB_VISIBILITY_PREFIX;
 
 pub(crate) struct NarrowPubCrateScan {
     pub fixes: Vec<UseFix>,
@@ -30,14 +29,14 @@ pub(crate) fn scan_from_report(report: &Report) -> Result<NarrowPubCrateScan> {
             .find('\n')
             .map_or(source.len(), |pos| line_start + pos);
         let line_text = &source[line_start..line_end];
-        let Some(relative_start) = line_text.find(PUB_VISIBILITY_PREFIX) else {
+        let Some(relative_start) = line_text.find("pub ") else {
             continue;
         };
         let start = line_start + relative_start;
         fixes.push(UseFix {
             path: absolute_path,
             start,
-            end: start + PUB_VISIBILITY_PREFIX.len(),
+            end: start + "pub ".len(),
             replacement: "pub(crate) ".to_string(),
             import_group: None,
         });

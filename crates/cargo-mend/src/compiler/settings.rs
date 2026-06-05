@@ -7,22 +7,15 @@ use anyhow::Context;
 use anyhow::Result;
 use serde_json::from_str;
 
+use super::constants::BUILD_ID_FALLBACK;
+use super::constants::CONFIG_FINGERPRINT_ENV;
+use super::constants::CONFIG_JSON_ENV;
+use super::constants::CONFIG_ROOT_ENV;
+use super::constants::FINDINGS_DIR_ENV;
+use super::constants::GIT_HASH_FALLBACK;
+use super::constants::PACKAGE_ROOT_ENV;
+use super::constants::SCOPE_FINGERPRINT_ENV;
 use crate::config::VisibilityConfig;
-
-// build-fingerprint fallbacks
-const BUILD_ID_FALLBACK: &str = "nobuild";
-const GIT_HASH_FALLBACK: &str = "nogit";
-
-// driver-IPC environment variables
-pub(crate) const CONFIG_FINGERPRINT_ENV: &str = "MEND_CONFIG_FINGERPRINT";
-pub(crate) const CONFIG_JSON_ENV: &str = "MEND_CONFIG_JSON";
-pub(crate) const CONFIG_ROOT_ENV: &str = "MEND_CONFIG_ROOT";
-pub(crate) const DRIVER_ENV: &str = "MEND_DRIVER";
-pub(crate) const DRIVER_ENV_ENABLED: &str = "1";
-pub(crate) const FINDINGS_DIR_ENV: &str = "MEND_FINDINGS_DIR";
-pub(crate) const PACKAGE_ROOT_ENV: &str = "CARGO_MANIFEST_DIR";
-pub(crate) const RUSTC_WORKSPACE_WRAPPER_ENV: &str = "RUSTC_WORKSPACE_WRAPPER";
-pub(crate) const SCOPE_FINGERPRINT_ENV: &str = "MEND_SCOPE_FINGERPRINT";
 
 pub(super) fn current_analysis_fingerprint() -> String {
     let version = env!("CARGO_PKG_VERSION");

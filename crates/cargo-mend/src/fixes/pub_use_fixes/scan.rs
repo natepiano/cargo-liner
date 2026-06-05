@@ -12,12 +12,10 @@ use super::parent_boundary;
 use super::parent_boundary::ParentBoundaryKey;
 use super::validated_plan;
 use super::validated_plan::ValidatedPubUsePlan;
-use crate::compiler::RUST_MODULE_FILE;
 use crate::fixes::imports::UseFix;
 use crate::fixes::imports::ValidatedFixSet;
 use crate::reporting::Report;
 use crate::rust_syntax;
-use crate::rust_syntax::PUB_VISIBILITY_PREFIX;
 use crate::selection::Selection;
 
 pub(crate) struct PubUseFixScan {
@@ -218,7 +216,7 @@ fn build_child_pub_super_fix(candidate: &PubUseCandidate) -> Result<UseFix> {
     let line_span = validated_plan::line_span(&source, candidate.child_line)
         .context("failed to compute child visibility line span")?;
     let line_text = &source[line_span.0..line_span.1];
-    let Some(relative_start) = line_text.find(PUB_VISIBILITY_PREFIX) else {
+    let Some(relative_start) = line_text.find("pub ") else {
         bail!(
             "child item line {} does not contain a plain `pub ` prefix",
             candidate.child_line
@@ -227,7 +225,7 @@ fn build_child_pub_super_fix(candidate: &PubUseCandidate) -> Result<UseFix> {
     Ok(UseFix {
         path:         candidate.child_file.clone(),
         start:        line_span.0 + relative_start,
-        end:          line_span.0 + relative_start + PUB_VISIBILITY_PREFIX.len(),
+        end:          line_span.0 + relative_start + "pub ".len(),
         replacement:  "pub(super) ".to_string(),
         import_group: None,
     })
@@ -236,7 +234,7 @@ fn build_child_pub_super_fix(candidate: &PubUseCandidate) -> Result<UseFix> {
 fn line_contains_plain_pub(source: &str, line: usize) -> Result<bool> {
     let line_span = validated_plan::line_span(source, line)
         .context("failed to compute child item line span")?;
-    Ok(source[line_span.0..line_span.1].contains(PUB_VISIBILITY_PREFIX))
+    Ok(source[line_span.0..line_span.1].contains("pub "))
 }
 
 fn group_parent_pub_use_plans(
@@ -266,7 +264,7 @@ fn module_path_from_dir(source_root: &Path, module_dir: &Path) -> Option<Vec<Str
 }
 
 fn module_path_from_boundary_file(source_root: &Path, boundary_file: &Path) -> Option<Vec<String>> {
-    if boundary_file.file_name().and_then(OsStr::to_str) == Some(RUST_MODULE_FILE) {
+    if boundary_file.file_name().and_then(OsStr::to_str) == Some("mod.rs") {
         return module_path_from_dir(source_root, boundary_file.parent()?);
     }
 

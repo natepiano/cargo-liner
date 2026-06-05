@@ -47,10 +47,6 @@ use crate::reporting::RollbackStatus;
 use crate::selection::CargoCheckPlan;
 use crate::selection::Selection;
 
-/// Maximum number of mend passes during `--fix-all`. Prevents an infinite
-/// loop if a fix oscillates; in practice convergence happens in 1–2 passes.
-pub(crate) const FIX_ALL_MAX_PASSES: usize = 5;
-
 pub(crate) struct MendRunner<'a> {
     selection:     &'a Selection,
     cargo_plan:    &'a CargoCheckPlan,

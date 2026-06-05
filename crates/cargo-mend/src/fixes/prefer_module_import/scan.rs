@@ -22,7 +22,6 @@ use super::inline_calls::InlineCallDetector;
 use super::references::BareReference;
 use super::references::ReferenceCollector;
 use super::support;
-use crate::compiler::RUST_SOURCE_FILE_EXTENSION;
 use crate::compiler::SOURCE_DIR_SRC;
 use crate::config::DiagnosticCode;
 use crate::fixes::imports::ImportGroup;
@@ -32,8 +31,6 @@ use crate::reporting::Finding;
 use crate::reporting::FixSupport;
 use crate::reporting::Severity;
 use crate::rust_syntax;
-use crate::rust_syntax::MODULE_PATH_SEPARATOR;
-use crate::rust_syntax::PATH_KEYWORD_SUPER;
 use crate::selection::Selection;
 
 pub(crate) struct PreferModuleImportScan {
@@ -89,7 +86,7 @@ pub(crate) fn scan_selection(selection: &Selection) -> Result<PreferModuleImport
         {
             let path = entry.path();
             if !entry.file_type().is_file()
-                || path.extension().and_then(OsStr::to_str) != Some(RUST_SOURCE_FILE_EXTENSION)
+                || path.extension().and_then(OsStr::to_str) != Some("rs")
             {
                 continue;
             }
@@ -355,7 +352,7 @@ fn build_function_finding(
         item: None,
         message,
         suggestion,
-        fixability: FixSupport::PreferModuleImport,
+        fix_support: FixSupport::PreferModuleImport,
         related: None,
     }
 }
@@ -375,7 +372,7 @@ fn build_function_use_fix(
     };
     let group = Some(ImportGroup {
         bare_name: function.module_name.clone(),
-        full_path: function.absolute_module.join(MODULE_PATH_SEPARATOR),
+        full_path: function.absolute_module.join("::"),
     });
 
     if function.import_target == ImportTarget::ParentModule
@@ -428,10 +425,10 @@ fn build_reference_fixes(
                 .find(|function| function.module_name == module_name)
                 .map(|function| ImportGroup {
                     bare_name: function.module_name.clone(),
-                    full_path: function.absolute_module.join(MODULE_PATH_SEPARATOR),
+                    full_path: function.absolute_module.join("::"),
                 });
             let prefix = if import_target == ImportTarget::ParentModule {
-                PATH_KEYWORD_SUPER
+                "super"
             } else {
                 module_name
             };

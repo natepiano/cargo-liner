@@ -13,11 +13,6 @@ use crate::compiler::source_cache::ExtractedPaths;
 use crate::compiler::source_cache::PathOrigin;
 use crate::compiler::source_cache::SourceCache;
 use crate::compiler::source_cache::UseRename;
-use crate::rust_syntax::MODULE_GLOB_SEGMENT;
-use crate::rust_syntax::MODULE_PATH_SEPARATOR;
-use crate::rust_syntax::PATH_KEYWORD_CRATE;
-use crate::rust_syntax::PATH_KEYWORD_SELF;
-use crate::rust_syntax::PATH_KEYWORD_SUPER;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParentFacadeUsage {
@@ -130,10 +125,7 @@ pub fn workspace_source_mentions_parent_export_literal(
         return Ok(false);
     }
 
-    let module_prefix = format!(
-        "{PATH_KEYWORD_CRATE}{MODULE_PATH_SEPARATOR}{}",
-        parent_boundary.module_path.join(MODULE_PATH_SEPARATOR)
-    );
+    let module_prefix = format!("crate::{}", parent_boundary.module_path.join("::"));
     let findings_root = settings
         .findings_dir
         .parent()
@@ -249,32 +241,26 @@ pub(super) fn resolve_module_relative_paths(
         return Vec::new();
     }
 
-    if raw.first().map(String::as_str) == Some(PATH_KEYWORD_CRATE) {
+    if raw.first().map(String::as_str) == Some("crate") {
         return vec![raw[1..].to_vec()];
     }
 
-    if raw.first().map(String::as_str) == Some(PATH_KEYWORD_SELF) {
+    if raw.first().map(String::as_str) == Some("self") {
         let mut resolved = current_module_path.to_vec();
         resolved.extend(raw[1..].iter().cloned());
         return vec![resolved];
     }
 
-    if raw.first().map(String::as_str) == Some(PATH_KEYWORD_SUPER) {
+    if raw.first().map(String::as_str) == Some("super") {
         let mut index = 0usize;
         let mut resolved = current_module_path.to_vec();
-        while raw
-            .get(index)
-            .is_some_and(|segment| segment == PATH_KEYWORD_SUPER)
-        {
+        while raw.get(index).is_some_and(|segment| segment == "super") {
             if resolved.pop().is_none() {
                 return Vec::new();
             }
             index += 1;
         }
-        if raw
-            .get(index)
-            .is_some_and(|segment| segment == PATH_KEYWORD_SELF)
-        {
+        if raw.get(index).is_some_and(|segment| segment == "self") {
             index += 1;
         }
         resolved.extend(raw[index..].iter().cloned());
@@ -369,10 +355,7 @@ pub fn public_reexport_exists_outside_parent(
     }
 
     if settings.config_root != settings.package_root {
-        let module_prefix = format!(
-            "{PATH_KEYWORD_CRATE}{MODULE_PATH_SEPARATOR}{}",
-            child_module_path.join(MODULE_PATH_SEPARATOR)
-        );
+        let module_prefix = format!("crate::{}", child_module_path.join("::"));
         let findings_root = settings
             .findings_dir
             .parent()
@@ -467,8 +450,7 @@ fn path_mentions_child_item(
 ) -> bool {
     path.len() > child_module_path.len()
         && path[..child_module_path.len()] == *child_module_path
-        && (path[child_module_path.len()] == item_name
-            || path[child_module_path.len()] == MODULE_GLOB_SEGMENT)
+        && (path[child_module_path.len()] == item_name || path[child_module_path.len()] == "*")
 }
 
 fn relative_tail_mentions_child_item(
@@ -476,21 +458,20 @@ fn relative_tail_mentions_child_item(
     child_module_path: &[String],
     item_name: &str,
 ) -> bool {
-    if path.first().map(String::as_str) == Some(PATH_KEYWORD_CRATE) || child_module_path.is_empty()
-    {
+    if path.first().map(String::as_str) == Some("crate") || child_module_path.is_empty() {
         return false;
     }
 
     let mut tail_start = 0usize;
     while path
         .get(tail_start)
-        .is_some_and(|segment| segment == PATH_KEYWORD_SUPER)
+        .is_some_and(|segment| segment == "super")
     {
         tail_start += 1;
     }
     if path
         .get(tail_start)
-        .is_some_and(|segment| segment == PATH_KEYWORD_SELF)
+        .is_some_and(|segment| segment == "self")
     {
         tail_start += 1;
     }
@@ -499,7 +480,7 @@ fn relative_tail_mentions_child_item(
     (1..=child_module_path.len()).any(|suffix_len| {
         tail.len() > suffix_len
             && child_module_path[child_module_path.len() - suffix_len..] == tail[..suffix_len]
-            && (tail[suffix_len] == item_name || tail[suffix_len] == MODULE_GLOB_SEGMENT)
+            && (tail[suffix_len] == item_name || tail[suffix_len] == "*")
     })
 }
 

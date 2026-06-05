@@ -11,9 +11,9 @@ use rustc_span::def_id::LocalDefId;
 use serde_json::to_vec_pretty;
 
 use super::visit;
+use crate::compiler::constants::FINDINGS_SCHEMA_VERSION;
 use crate::compiler::persistence;
 use crate::compiler::persistence::CacheBuildKind;
-use crate::compiler::persistence::FINDINGS_SCHEMA_VERSION;
 use crate::compiler::persistence::FindingsSink;
 use crate::compiler::persistence::StoredReport;
 use crate::compiler::settings::DriverSettings;

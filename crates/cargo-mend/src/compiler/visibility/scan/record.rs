@@ -15,7 +15,6 @@ use super::classify::ModuleLocation;
 use super::classify::ParentVisibility;
 use super::classify::SignatureExposure;
 use super::classify::VisibilityFindingContext;
-use crate::compiler::RUST_MODULE_FILE_STEM;
 use crate::compiler::facade;
 use crate::compiler::facade::ParentFacadeVisibility;
 use crate::compiler::persistence::FindingsSink;
@@ -26,9 +25,6 @@ use crate::compiler::visibility::use_sites;
 use crate::config::DiagnosticCode;
 use crate::reporting::FixSupport;
 use crate::reporting::Severity;
-use crate::rust_syntax::PUB_CRATE_VISIBILITY;
-use crate::rust_syntax::PUB_IN_CRATE_VISIBILITY_PREFIX;
-use crate::rust_syntax::PUB_VISIBILITY_TOKEN;
 
 pub(super) fn record_visibility_findings(
     ctx: &VisibilityContext<'_, '_>,
@@ -42,7 +38,7 @@ pub(super) fn record_visibility_findings(
     record_review_pub_mod(ctx, item, &finding_context, sink)?;
     maybe_record_unused_pub(ctx, item, &finding_context, sink)?;
 
-    if item.vis_text == PUB_VISIBILITY_TOKEN
+    if item.vis_text == "pub"
         && finding_context.parent_visibility == ParentVisibility::Private
         && policy::is_top_level_module_file(ctx.source_root, ctx.root_module, item.file_path)
         && policy::allow_pub_crate_by_policy(
@@ -54,7 +50,7 @@ pub(super) fn record_visibility_findings(
         maybe_record_narrow_to_pub_crate(ctx, item, sink)?;
     }
 
-    if item.vis_text == PUB_VISIBILITY_TOKEN
+    if item.vis_text == "pub"
         && finding_context.parent_visibility == ParentVisibility::Private
         && !policy::is_top_level_module_file(ctx.source_root, ctx.root_module, item.file_path)
         && finding_context.crate_kind != CrateKind::IntegrationTest
@@ -62,7 +58,7 @@ pub(super) fn record_visibility_findings(
         maybe_record_narrow_to_pub_crate_nested(ctx, item, sink)?;
     }
 
-    if item.vis_text == PUB_VISIBILITY_TOKEN
+    if item.vis_text == "pub"
         && !policy::is_boundary_file(ctx.source_root, ctx.root_module, item.file_path)
     {
         maybe_record_suspicious_pub(
@@ -90,7 +86,7 @@ fn maybe_record_unused_pub(
     finding_context: &VisibilityFindingContext,
     sink: &mut FindingsSink,
 ) -> Result<()> {
-    if item.vis_text != PUB_VISIBILITY_TOKEN || item.category == ItemCategory::Module {
+    if item.vis_text != "pub" || item.category == ItemCategory::Module {
         return Ok(());
     }
     let (Some(name), Some(kind_label)) = (item.name, item.kind_label) else {
@@ -138,7 +134,7 @@ fn maybe_record_unused_pub(
                 "{kind_label} is not used outside its defining module"
             ),
             suggestion:              Some(String::from("consider removing `pub`")),
-            fixability:              FixSupport::UnusedPub,
+            fix_support:             FixSupport::UnusedPub,
             related:                 None,
             item_def_path:           Some(use_sites::def_path_string(ctx.tcx, item.def_id)),
             narrower_scope_def_path: Some(use_sites::parent_module_def_path(ctx.tcx, item.def_id)),
@@ -169,7 +165,7 @@ fn record_forbidden_pub_crate(
     finding_context: &VisibilityFindingContext,
     sink: &mut FindingsSink,
 ) -> Result<()> {
-    if !matches!(item.vis_text, PUB_CRATE_VISIBILITY) {
+    if !matches!(item.vis_text, "pub(crate)") {
         return Ok(());
     }
     if policy::allow_pub_crate_by_policy(
@@ -200,7 +196,7 @@ fn record_forbidden_pub_crate(
                 )
                 .to_string(),
             ),
-            fixability:              FixSupport::None,
+            fix_support:             FixSupport::None,
             related:                 None,
             item_def_path:           None,
             narrower_scope_def_path: None,
@@ -214,7 +210,7 @@ fn record_forbidden_pub_in_crate(
     item: &ItemInfo<'_>,
     sink: &mut FindingsSink,
 ) -> Result<()> {
-    if !item.vis_text.starts_with(PUB_IN_CRATE_VISIBILITY_PREFIX) {
+    if !item.vis_text.starts_with("pub(in crate::") {
         return Ok(());
     }
     sink.findings.push(source::build_finding(
@@ -228,7 +224,7 @@ fn record_forbidden_pub_in_crate(
             message:                 "use of `pub(in crate::...)` is forbidden by policy"
                 .to_string(),
             suggestion:              None,
-            fixability:              FixSupport::None,
+            fix_support:             FixSupport::None,
             related:                 None,
             item_def_path:           None,
             narrower_scope_def_path: None,
@@ -243,7 +239,7 @@ fn record_review_pub_mod(
     finding_context: &VisibilityFindingContext,
     sink: &mut FindingsSink,
 ) -> Result<()> {
-    if item.category != ItemCategory::Module || !item.vis_text.starts_with(PUB_VISIBILITY_TOKEN) {
+    if item.category != ItemCategory::Module || !item.vis_text.starts_with("pub") {
         return Ok(());
     }
     let allowlisted = finding_context
@@ -270,7 +266,7 @@ fn record_review_pub_mod(
             message:                 "`pub mod` requires explicit review or allowlisting"
                 .to_string(),
             suggestion:              None,
-            fixability:              FixSupport::None,
+            fix_support:             FixSupport::None,
             related:                 None,
             item_def_path:           None,
             narrower_scope_def_path: None,
@@ -318,7 +314,7 @@ fn maybe_record_narrow_to_pub_crate(
                 "item is not re-exported by the crate root — use `pub(crate)`",
             ),
             suggestion:              Some(String::from("consider using: `pub(crate)`")),
-            fixability:              FixSupport::NarrowToPubCrate,
+            fix_support:             FixSupport::NarrowToPubCrate,
             related:                 None,
             item_def_path:           None,
             narrower_scope_def_path: None,
@@ -350,7 +346,7 @@ fn maybe_record_narrow_to_pub_crate_nested(
                 "parent facade caps reach at `pub(crate)` — narrow source to match",
             ),
             suggestion:              Some(String::from("consider using: `pub(crate)`")),
-            fixability:              FixSupport::NarrowToPubCrate,
+            fix_support:             FixSupport::NarrowToPubCrate,
             related:                 None,
             item_def_path:           None,
             narrower_scope_def_path: None,
@@ -436,7 +432,7 @@ fn maybe_record_suspicious_pub(
                         "this `pub use` is used inside its parent module subtree",
                     ),
                     suggestion: None,
-                    fixability: FixSupport::InternalParentFacade,
+                    fix_support: FixSupport::InternalParentFacade,
                     related,
                     item_def_path: None,
                     narrower_scope_def_path: None,
@@ -444,7 +440,7 @@ fn maybe_record_suspicious_pub(
             )?);
         },
         SuspiciousPubAssessment::Warn {
-            fixability,
+            fix_support,
             related,
             stale_parent_pub_use,
         } => {
@@ -461,14 +457,14 @@ fn maybe_record_suspicious_pub(
                     item: input.name.map(|name| format!("{kind_label} {name}")),
                     message: policy::suspicious_pub_note(input.crate_kind, kind_label),
                     suggestion: None,
-                    fixability,
+                    fix_support,
                     related,
                     item_def_path,
                     narrower_scope_def_path,
                 },
             )?);
             if let (Some(status), Some(item_name)) = (stale_parent_pub_use, input.name)
-                && fixability == FixSupport::PubUse
+                && fix_support == FixSupport::PubUse
             {
                 let child_line = ctx
                     .tcx
@@ -480,7 +476,7 @@ fn maybe_record_suspicious_pub(
                     .file_path
                     .file_stem()
                     .and_then(OsStr::to_str)
-                    .filter(|stem| *stem != RUST_MODULE_FILE_STEM)
+                    .filter(|stem| *stem != "mod")
                     .map(String::from)
                 else {
                     return Ok(());

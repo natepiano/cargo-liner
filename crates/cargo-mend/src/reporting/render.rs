@@ -1,12 +1,12 @@
 use std::fmt::Write as _;
 use std::time::Duration;
 
-use super::colors::ANSI_BOLD;
-use super::colors::ANSI_BOLD_BLUE;
-use super::colors::ANSI_BOLD_GREEN;
-use super::colors::ANSI_BOLD_RED;
-use super::colors::ANSI_BOLD_YELLOW;
-use super::colors::ANSI_DIM;
+use super::constants::ANSI_BOLD;
+use super::constants::ANSI_BOLD_BLUE;
+use super::constants::ANSI_BOLD_GREEN;
+use super::constants::ANSI_BOLD_RED;
+use super::constants::ANSI_BOLD_YELLOW;
+use super::constants::ANSI_DIM;
 use super::constants::CARGO_MEND_FIX;
 use super::constants::CARGO_MEND_FIX_ALL;
 use super::constants::CARGO_MEND_FIX_COMPILER;
@@ -18,9 +18,6 @@ use super::diagnostics::Report;
 use super::diagnostics::Severity;
 use crate::compiler::DIAGNOSTIC_SEVERITY_ERROR_PREFIX;
 use crate::compiler::DIAGNOSTIC_SEVERITY_WARNING_PREFIX;
-
-// diagnostics help
-pub(crate) const DIAGNOSTICS_HELP_NAME_COLUMN_WIDTH: usize = 40;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ColorMode {
@@ -432,7 +429,7 @@ mod tests {
                 item:            Some("example".to_string()),
                 message:         "example warning".to_string(),
                 suggestion:      Some("pub(crate) fn example() {}".to_string()),
-                fixability:      FixSupport::NarrowToPubCrate,
+                fix_support:     FixSupport::NarrowToPubCrate,
                 related:         None,
             }],
             ..Report::default()
@@ -551,7 +548,7 @@ mod tests {
                 item:            None,
                 message:         "example".to_string(),
                 suggestion:      None,
-                fixability:      FixSupport::PubUse,
+                fix_support:     FixSupport::PubUse,
                 related:         None,
             }],
             ..Report::default()
@@ -576,7 +573,7 @@ mod tests {
                 item:            Some("x".to_string()),
                 message:         "forbidden".to_string(),
                 suggestion:      None,
-                fixability:      FixSupport::None,
+                fix_support:     FixSupport::None,
                 related:         None,
             }],
             ..Report::default()

@@ -16,7 +16,6 @@ use super::scope;
 use super::scope::ScopeCollectionContext;
 use super::scope::ScopeSpan;
 use super::visitor::InlinePathVisitor;
-use crate::compiler::RUST_SOURCE_FILE_EXTENSION;
 use crate::compiler::SOURCE_DIR_SRC;
 use crate::fixes::imports::UseFix;
 use crate::fixes::imports::ValidatedFixSet;
@@ -43,7 +42,7 @@ pub(crate) fn scan_selection(selection: &Selection) -> Result<InlinePathScan> {
         {
             let path = entry.path();
             if !entry.file_type().is_file()
-                || path.extension().and_then(OsStr::to_str) != Some(RUST_SOURCE_FILE_EXTENSION)
+                || path.extension().and_then(OsStr::to_str) != Some("rs")
             {
                 continue;
             }

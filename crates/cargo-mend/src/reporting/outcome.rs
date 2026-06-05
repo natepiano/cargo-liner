@@ -6,13 +6,10 @@ use std::time::Duration;
 
 use anyhow::Error;
 
+use super::constants::EXIT_CODE_WARNING;
 use super::diagnostics::CompilerWarningFacts;
 use super::diagnostics::Report;
 use crate::config::OperationIntent;
-
-// exit codes
-pub(crate) const EXIT_CODE_ERROR: u8 = 1;
-pub(crate) const EXIT_CODE_WARNING: u8 = 2;
 
 #[derive(Debug)]
 pub(crate) struct ExecutionOutcome {

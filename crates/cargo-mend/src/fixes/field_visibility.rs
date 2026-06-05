@@ -9,7 +9,6 @@ use super::constants::RUSTC_LINT_SUGGESTION_PREFIX;
 use super::imports::UseFix;
 use crate::config::DiagnosticCode;
 use crate::reporting::Report;
-use crate::rust_syntax::PUB_VISIBILITY_TOKEN;
 
 pub(crate) struct FieldVisibilityFixScan {
     pub fixes: Vec<UseFix>,
@@ -87,17 +86,17 @@ fn parse_replacement_from_suggestion(suggestion: Option<&str>) -> Option<String>
 /// or `pub(in <path>)` annotation at the start of `text`. Returns `None` when
 /// `text` does not begin with `pub`.
 fn vis_annotation_byte_len(text: &str) -> Option<usize> {
-    let rest = text.strip_prefix(PUB_VISIBILITY_TOKEN)?;
+    let rest = text.strip_prefix("pub")?;
     let mut chars = rest.char_indices();
     match chars.next() {
         Some((_, '(')) => {
             // Walk to the matching `)`. `pub(in crate::foo)` may contain
             // colons and identifiers but never nested parens.
             let close = rest.find(')')?;
-            Some(PUB_VISIBILITY_TOKEN.len() + close + 1)
+            Some("pub".len() + close + 1)
         },
-        Some((_, c)) if c.is_whitespace() || c == ':' => Some(PUB_VISIBILITY_TOKEN.len()),
-        None => Some(PUB_VISIBILITY_TOKEN.len()),
+        Some((_, c)) if c.is_whitespace() || c == ':' => Some("pub".len()),
+        None => Some("pub".len()),
         _ => None,
     }
 }

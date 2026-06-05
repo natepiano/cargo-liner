@@ -18,10 +18,6 @@ use crate::compiler::settings::DriverSettings;
 use crate::compiler::source_cache;
 use crate::compiler::source_cache::SourceCache;
 use crate::rust_syntax;
-use crate::rust_syntax::MODULE_GLOB_SEGMENT;
-use crate::rust_syntax::PATH_KEYWORD_CRATE;
-use crate::rust_syntax::PATH_KEYWORD_SELF;
-use crate::rust_syntax::PATH_KEYWORD_SUPER;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ParentFacadeFixSupport {
@@ -188,17 +184,12 @@ fn parent_boundary_has_matching_pub_use_glob(file: &File, child_module_name: &st
         let mut paths = Vec::new();
         source_cache::flatten_use_tree(Vec::new(), &item_use.tree, &mut paths);
         paths.into_iter().any(|path| {
-            let normalized = if path
-                .first()
-                .is_some_and(|segment| segment == PATH_KEYWORD_SELF)
-            {
+            let normalized = if path.first().is_some_and(|segment| segment == "self") {
                 &path[1..]
             } else {
                 &path[..]
             };
-            normalized.len() == 2
-                && normalized[0] == child_module_name
-                && normalized[1] == MODULE_GLOB_SEGMENT
+            normalized.len() == 2 && normalized[0] == child_module_name && normalized[1] == "*"
         })
     })
 }
@@ -240,10 +231,7 @@ fn collect_matching_pub_use_exports(
     source_cache::flatten_use_tree(Vec::new(), &item_use.tree, &mut paths);
     let mut matched = false;
     for path in paths {
-        let normalized = if path
-            .first()
-            .is_some_and(|segment| segment == PATH_KEYWORD_SELF)
-        {
+        let normalized = if path.first().is_some_and(|segment| segment == "self") {
             &path[1..]
         } else {
             &path[..]
@@ -295,10 +283,7 @@ fn pub_use_is_fix_supported_with_prefix(
             pub_use_is_fix_supported_with_prefix(next, &path.tree, child_module_name, item_name)
         },
         UseTree::Name(name) => {
-            let normalized = if prefix
-                .first()
-                .is_some_and(|segment| segment == PATH_KEYWORD_SELF)
-            {
+            let normalized = if prefix.first().is_some_and(|segment| segment == "self") {
                 &prefix[1..]
             } else {
                 &prefix[..]
@@ -317,13 +302,13 @@ pub(super) fn parent_facade_visibility(vis: &Visibility) -> Option<ParentFacadeV
         Visibility::Public(_) => Some(ParentFacadeVisibility::Public),
         Visibility::Restricted(restricted)
             if restricted.path.segments.len() == 1
-                && restricted.path.segments[0].ident == PATH_KEYWORD_SUPER =>
+                && restricted.path.segments[0].ident == "super" =>
         {
             Some(ParentFacadeVisibility::Super)
         },
         Visibility::Restricted(restricted)
             if restricted.path.segments.len() == 1
-                && restricted.path.segments[0].ident == PATH_KEYWORD_CRATE =>
+                && restricted.path.segments[0].ident == "crate" =>
         {
             Some(ParentFacadeVisibility::Crate)
         },

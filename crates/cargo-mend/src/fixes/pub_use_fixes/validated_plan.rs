@@ -16,15 +16,9 @@ use syn::spanned::Spanned;
 use syn::visit::Visit;
 
 use super::parent_boundary::ParentBoundaryKey;
-use crate::compiler::RUST_SOURCE_FILE_EXTENSION;
 use crate::compiler::SOURCE_DIR_SRC;
 use crate::fixes::imports::UseFix;
 use crate::rust_syntax;
-use crate::rust_syntax::MODULE_GLOB_SEGMENT;
-use crate::rust_syntax::MODULE_PATH_SEPARATOR;
-use crate::rust_syntax::PATH_KEYWORD_CRATE;
-use crate::rust_syntax::PATH_KEYWORD_SELF;
-use crate::rust_syntax::PATH_KEYWORD_SUPER;
 use crate::selection::Selection;
 
 pub(super) struct ValidatedPubUsePlan {
@@ -352,21 +346,18 @@ fn rewrite_leaf_under_base(
 fn absolute_use_path(current_module_path: &[String], segments: &[String]) -> Option<Vec<String>> {
     let first = segments.first()?.as_str();
     match first {
-        PATH_KEYWORD_CRATE => Some(segments[1..].to_vec()),
-        PATH_KEYWORD_SELF => Some(
+        "crate" => Some(segments[1..].to_vec()),
+        "self" => Some(
             current_module_path
                 .iter()
                 .cloned()
                 .chain(segments[1..].iter().cloned())
                 .collect(),
         ),
-        PATH_KEYWORD_SUPER => {
+        "super" => {
             let mut module = current_module_path.to_vec();
             let mut index = 0usize;
-            while segments
-                .get(index)
-                .is_some_and(|seg| seg == PATH_KEYWORD_SUPER)
-            {
+            while segments.get(index).is_some_and(|seg| seg == "super") {
                 module.pop()?;
                 index += 1;
             }
@@ -396,14 +387,14 @@ fn relative_path_from_module(
     let up_count = current_module_path.len().saturating_sub(common);
     let mut segments = Vec::new();
     for _ in 0..up_count {
-        segments.push(PATH_KEYWORD_SUPER.to_string());
+        segments.push("super".to_string());
     }
     segments.extend(target_path[common..].iter().cloned());
     format_path(&segments, rename)
 }
 
 fn format_path(segments: &[String], rename: Option<&str>) -> String {
-    let mut path = segments.join(MODULE_PATH_SEPARATOR);
+    let mut path = segments.join("::");
     if let Some(rename) = rename {
         path.push_str(" as ");
         path.push_str(rename);
@@ -423,7 +414,7 @@ pub(super) fn render_use_tree(tree: &UseTree) -> Result<String> {
         UseTree::Path(path) => Ok(format!("{}::{}", path.ident, render_use_tree(&path.tree)?)),
         UseTree::Name(name) => Ok(name.ident.to_string()),
         UseTree::Rename(rename) => Ok(format!("{} as {}", rename.ident, rename.rename)),
-        UseTree::Glob(_) => Ok(MODULE_GLOB_SEGMENT.to_string()),
+        UseTree::Glob(_) => Ok("*".to_string()),
         UseTree::Group(group) => {
             let mut rendered_items = Vec::new();
             for item in &group.items {
@@ -479,7 +470,7 @@ fn collect_rust_source_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()>
         let path = entry.path();
         if path.is_dir() {
             collect_rust_source_files(&path, files)?;
-        } else if path.extension().and_then(OsStr::to_str) == Some(RUST_SOURCE_FILE_EXTENSION) {
+        } else if path.extension().and_then(OsStr::to_str) == Some("rs") {
             files.push(path);
         }
     }

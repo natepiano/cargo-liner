@@ -6,11 +6,6 @@ use syn::ItemUse;
 use syn::UseTree;
 use syn::Visibility;
 
-use crate::compiler::RUST_MODULE_FILE;
-use crate::rust_syntax::PATH_KEYWORD_CRATE;
-use crate::rust_syntax::PATH_KEYWORD_SUPER;
-use crate::rust_syntax::PUB_VISIBILITY_PREFIX;
-
 pub(super) struct FlattenedImport {
     pub(super) segments: Vec<String>,
     pub(super) rename:   Option<String>,
@@ -21,12 +16,12 @@ pub(super) fn resolve_to_absolute(
     current_module_path: &[String],
 ) -> Option<Vec<String>> {
     let first = segments.first()?;
-    if first == PATH_KEYWORD_CRATE {
+    if first == "crate" {
         Some(segments[1..].to_vec())
-    } else if first == PATH_KEYWORD_SUPER {
+    } else if first == "super" {
         let super_count = segments
             .iter()
-            .take_while(|segment| *segment == PATH_KEYWORD_SUPER)
+            .take_while(|segment| *segment == "super")
             .count();
         if super_count > current_module_path.len() {
             return None;
@@ -53,7 +48,7 @@ pub(super) fn leaf_is_module(source_root: &Path, absolute_segments: &[String]) -
     }
 
     parent_dir.join(format!("{leaf}.rs")).is_file()
-        || parent_dir.join(leaf).join(RUST_MODULE_FILE).is_file()
+        || parent_dir.join(leaf).join("mod.rs").is_file()
 }
 
 pub(super) fn shorten_module_path(
@@ -62,7 +57,7 @@ pub(super) fn shorten_module_path(
 ) -> Vec<String> {
     if module_segments
         .first()
-        .is_some_and(|segment| segment == PATH_KEYWORD_SUPER)
+        .is_some_and(|segment| segment == "super")
     {
         return module_segments.to_vec();
     }
@@ -70,7 +65,7 @@ pub(super) fn shorten_module_path(
     let Some(first) = module_segments.first() else {
         return module_segments.to_vec();
     };
-    if first != PATH_KEYWORD_CRATE {
+    if first != "crate" {
         return module_segments.to_vec();
     }
 
@@ -91,7 +86,7 @@ pub(super) fn shorten_module_path(
 
     let mut relative = Vec::new();
     if up_count == 1 {
-        relative.push(PATH_KEYWORD_SUPER.to_string());
+        relative.push("super".to_string());
     }
     relative.extend(target[common..].iter().cloned());
 
@@ -111,7 +106,7 @@ pub(super) fn common_prefix_len(left: &[String], right: &[String]) -> usize {
 
 pub(super) fn extract_visibility_prefix(node: &ItemUse) -> String {
     match &node.vis {
-        Visibility::Public(_) => PUB_VISIBILITY_PREFIX.to_string(),
+        Visibility::Public(_) => "pub ".to_string(),
         Visibility::Restricted(vis) => {
             let path = &vis.path;
             format!("pub({}) ", quote!(#path))

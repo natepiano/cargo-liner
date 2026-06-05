@@ -12,10 +12,8 @@ use serde::Serialize;
 use serde_json::to_string;
 use toml::from_str;
 
+use super::constants::CONFIG_FILE_NAME;
 use super::diagnostics_config::DiagnosticsConfig;
-
-// config file
-const CONFIG_FILE_NAME: &str = "mend.toml";
 
 #[derive(Debug, Default, Deserialize)]
 struct ConfigFile {

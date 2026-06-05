@@ -13,8 +13,6 @@ use super::diagnostics::BuildOutcome;
 use super::diagnostics::Finding;
 use super::diagnostics::Report;
 use super::diagnostics::Severity;
-use crate::compiler::RUST_LIB_FILE;
-use crate::compiler::RUST_MAIN_FILE;
 use crate::compiler::SOURCE_DIR_SRC;
 use crate::selection::CARGO_TARGET_KIND_BIN;
 use crate::selection::CARGO_TARGET_KIND_LIB;
@@ -317,7 +315,7 @@ fn preferred_package_target<'a>(
     if relative.starts_with(SOURCE_DIR_SRC) {
         if let Some(target) = package.targets.iter().find(|target| {
             target.kind.iter().any(|kind| kind == CARGO_TARGET_KIND_LIB)
-                && target.src_path.file_name().and_then(|name| name.to_str()) == Some(RUST_LIB_FILE)
+                && target.src_path.file_name().and_then(|name| name.to_str()) == Some("lib.rs")
                 && target
                     .src_path
                     .parent()
@@ -329,8 +327,7 @@ fn preferred_package_target<'a>(
         }
         return package.targets.iter().find(|target| {
             target.kind.iter().any(|kind| kind == CARGO_TARGET_KIND_BIN)
-                && target.src_path.file_name().and_then(|name| name.to_str())
-                    == Some(RUST_MAIN_FILE)
+                && target.src_path.file_name().and_then(|name| name.to_str()) == Some("main.rs")
                 && target
                     .src_path
                     .parent()

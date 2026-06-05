@@ -15,7 +15,6 @@ use crate::compiler::visibility::source;
 use crate::config::DiagnosticCode;
 use crate::reporting::FixSupport;
 use crate::reporting::Severity;
-use crate::rust_syntax::PUB_VISIBILITY_TOKEN;
 
 pub(super) fn visit_item(
     ctx: &VisibilityContext<'_, '_>,
@@ -34,7 +33,7 @@ pub(super) fn visit_item(
 
     let name = item.kind.ident().as_ref().map(ToString::to_string);
 
-    if vis_text == PUB_VISIBILITY_TOKEN
+    if vis_text == "pub"
         && policy::is_boundary_file(ctx.source_root, ctx.root_module, &file_path)
         && matches!(item.kind, ItemKind::Use(..))
         && source::use_item_contains_glob(ctx.tcx, item.span)?
@@ -49,7 +48,7 @@ pub(super) fn visit_item(
                 item:                    None,
                 message:                 String::new(),
                 suggestion:              None,
-                fixability:              FixSupport::None,
+                fix_support:             FixSupport::None,
                 related:                 None,
                 item_def_path:           None,
                 narrower_scope_def_path: None,

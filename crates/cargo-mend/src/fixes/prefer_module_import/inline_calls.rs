@@ -19,10 +19,6 @@ use crate::fixes::imports::UseFix;
 use crate::reporting::Finding;
 use crate::reporting::FixSupport;
 use crate::reporting::Severity;
-use crate::rust_syntax::MODULE_PATH_SEPARATOR;
-use crate::rust_syntax::PATH_KEYWORD_CRATE;
-use crate::rust_syntax::PATH_KEYWORD_SUPER;
-use crate::rust_syntax::PATH_PREFIX_SUPER;
 
 pub(super) struct InlineCallCandidate {
     pub(super) function_name:   String,
@@ -138,17 +134,17 @@ pub(super) fn build_inline_call_findings_and_fixes(
             item: None,
             message,
             suggestion,
-            fixability: FixSupport::PreferModuleImport,
+            fix_support: FixSupport::PreferModuleImport,
             related: None,
         });
 
         let group = Some(ImportGroup {
             bare_name: candidate.module_name.clone(),
-            full_path: candidate.absolute_module.join(MODULE_PATH_SEPARATOR),
+            full_path: candidate.absolute_module.join("::"),
         });
 
         let call_prefix = if candidate.import_target == ImportTarget::ParentModule {
-            PATH_PREFIX_SUPER.to_string()
+            "super::".to_string()
         } else {
             format!("{}::", candidate.module_name)
         };
@@ -201,7 +197,7 @@ fn analyze_inline_call(
     }
 
     let first = segments.first()?;
-    if first != PATH_KEYWORD_CRATE && first != PATH_KEYWORD_SUPER {
+    if first != "crate" && first != "super" {
         return None;
     }
 
@@ -224,7 +220,7 @@ fn analyze_inline_call(
     }
 
     let module_name = segments[segments.len() - 2].clone();
-    if module_name == PATH_KEYWORD_SUPER || module_name == PATH_KEYWORD_CRATE {
+    if module_name == "super" || module_name == "crate" {
         return None;
     }
     if !support::is_snake_case_module_name(&module_name) {
@@ -236,12 +232,12 @@ fn analyze_inline_call(
 
     let module_segments = &segments[..segments.len() - 1];
     let shortened = support::shorten_module_path(current_module_path, module_segments);
-    let import_target = if shortened.as_slice() == [PATH_KEYWORD_SUPER] {
+    let import_target = if shortened.as_slice() == ["super"] {
         ImportTarget::ParentModule
     } else {
         ImportTarget::OtherModule
     };
-    let module_path = shortened.join(MODULE_PATH_SEPARATOR);
+    let module_path = shortened.join("::");
 
     let first_seg = path.segments.first()?;
     let leaf_seg = path.segments.last()?;

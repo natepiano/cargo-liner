@@ -19,17 +19,12 @@ use syn::spanned::Spanned;
 use syn::visit::Visit;
 use walkdir::WalkDir;
 
-use crate::compiler::RUST_SOURCE_FILE_EXTENSION;
 use crate::compiler::SOURCE_DIR_SRC;
 use crate::config::DiagnosticCode;
 use crate::reporting::Finding;
 use crate::reporting::FixSupport;
 use crate::reporting::Severity;
 use crate::rust_syntax;
-use crate::rust_syntax::MODULE_PATH_SEPARATOR;
-use crate::rust_syntax::PATH_KEYWORD_CRATE;
-use crate::rust_syntax::PATH_KEYWORD_SUPER;
-use crate::rust_syntax::PATH_PREFIX_SUPER;
 use crate::selection::Selection;
 
 pub(crate) struct ImportScan {
@@ -162,7 +157,7 @@ impl From<ShortenImportFact> for Finding {
             item:            None,
             message:         fact.message.to_string(),
             suggestion:      Some(format!("consider using: `{replacement}`")),
-            fixability:      FixSupport::ShortenImport,
+            fix_support:     FixSupport::ShortenImport,
             related:         None,
         }
     }
@@ -247,7 +242,7 @@ fn scan_selection_with_fixes(selection: &Selection) -> Result<Vec<ImportFinding>
         {
             let path = entry.path();
             if !entry.file_type().is_file()
-                || path.extension().and_then(OsStr::to_str) != Some(RUST_SOURCE_FILE_EXTENSION)
+                || path.extension().and_then(OsStr::to_str) != Some("rs")
             {
                 continue;
             }
@@ -376,7 +371,7 @@ struct ImportCandidate {
 
 fn analyze_use_tree(current_module_path: &[String], tree: &UseTree) -> Option<ImportCandidate> {
     let import = flatten_use_tree(tree)?;
-    if import.segments.first()? != PATH_KEYWORD_CRATE {
+    if import.segments.first()? != "crate" {
         return None;
     }
 
@@ -397,8 +392,7 @@ fn analyze_use_tree(current_module_path: &[String], tree: &UseTree) -> Option<Im
 
     let relative = build_relative_path(current_module_path, target_segments, &import)?;
     if relative == import.original
-        || !(relative.starts_with(PATH_PREFIX_SUPER)
-            || target_segments.starts_with(current_module_path))
+        || !(relative.starts_with("super::") || target_segments.starts_with(current_module_path))
     {
         return None;
     }
@@ -413,11 +407,7 @@ fn analyze_use_tree(current_module_path: &[String], tree: &UseTree) -> Option<Im
 
 fn analyze_deep_super(current_module_path: &[String], tree: &UseTree) -> Option<ImportCandidate> {
     let import = flatten_use_tree(tree)?;
-    let super_count = import
-        .segments
-        .iter()
-        .take_while(|s| *s == PATH_KEYWORD_SUPER)
-        .count();
+    let super_count = import.segments.iter().take_while(|s| *s == "super").count();
     if super_count < 2 {
         return None;
     }
@@ -427,7 +417,7 @@ fn analyze_deep_super(current_module_path: &[String], tree: &UseTree) -> Option<
 
     let ancestor_path = &current_module_path[..current_module_path.len() - super_count];
     let remaining = &import.segments[super_count..];
-    let mut replacement_segments = vec![PATH_KEYWORD_CRATE.to_string()];
+    let mut replacement_segments = vec!["crate".to_string()];
     replacement_segments.extend(ancestor_path.iter().cloned());
     replacement_segments.extend(remaining.iter().cloned());
     let replacement = format_path(&replacement_segments, import.rename.as_deref());
@@ -491,7 +481,7 @@ fn build_relative_path(
         return None;
     }
     if up_count == 1 {
-        relative_segments.push(PATH_KEYWORD_SUPER.to_string());
+        relative_segments.push("super".to_string());
     }
     relative_segments.extend(target_segments[common..].iter().cloned());
     Some(format_path(&relative_segments, import.rename.as_deref()))
@@ -505,7 +495,7 @@ fn common_prefix_len(left: &[String], right: &[String]) -> usize {
 }
 
 fn format_path(segments: &[String], rename: Option<&str>) -> String {
-    let mut path = segments.join(MODULE_PATH_SEPARATOR);
+    let mut path = segments.join("::");
     if let Some(rename) = rename {
         path.push_str(" as ");
         path.push_str(rename);

@@ -7,9 +7,6 @@ use syn::spanned::Spanned;
 
 use super::offsets;
 use super::visitor;
-use crate::rust_syntax::MODULE_PATH_SEPARATOR;
-use crate::rust_syntax::PATH_KEYWORD_CRATE;
-use crate::rust_syntax::PATH_KEYWORD_SUPER;
 
 pub(super) struct ScopeInfo {
     pub(super) span_start:              usize,
@@ -60,7 +57,7 @@ pub(super) fn collect_scopes(
         if let Item::Use(item_use) = item {
             if let Some(import_path) = visitor::flatten_use_path(&item_use.tree) {
                 if !matches!(item_use.vis, Visibility::Inherited)
-                    && let Some(import_name) = import_path.rsplit(MODULE_PATH_SEPARATOR).next()
+                    && let Some(import_name) = import_path.rsplit("::").next()
                 {
                     existing_reexport_names.insert(import_name.to_string());
                 }
@@ -142,17 +139,17 @@ fn indentation_at(text: &str, byte_offset: usize) -> String {
 }
 
 pub(super) fn canonicalize_inserted_use_path(scope: &ScopeInfo, full_path: &str) -> String {
-    let segments: Vec<&str> = full_path.split(MODULE_PATH_SEPARATOR).collect();
+    let segments: Vec<&str> = full_path.split("::").collect();
     let super_count = segments
         .iter()
-        .take_while(|segment| **segment == PATH_KEYWORD_SUPER)
+        .take_while(|segment| **segment == "super")
         .count();
     if super_count < 2 || super_count > scope.module_path.len() {
         return full_path.to_string();
     }
 
     let mut absolute_segments = Vec::with_capacity(1 + scope.module_path.len() + segments.len());
-    absolute_segments.push(PATH_KEYWORD_CRATE.to_string());
+    absolute_segments.push("crate".to_string());
     absolute_segments.extend(
         scope.module_path[..scope.module_path.len() - super_count]
             .iter()
@@ -163,5 +160,5 @@ pub(super) fn canonicalize_inserted_use_path(scope: &ScopeInfo, full_path: &str)
             .iter()
             .map(|segment| (*segment).to_string()),
     );
-    absolute_segments.join(MODULE_PATH_SEPARATOR)
+    absolute_segments.join("::")
 }

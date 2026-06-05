@@ -12,10 +12,6 @@ use crate::fixes::imports::UseFix;
 use crate::reporting::Finding;
 use crate::reporting::FixSupport;
 use crate::reporting::Severity;
-use crate::rust_syntax::MODULE_PATH_SEPARATOR;
-use crate::rust_syntax::PATH_KEYWORD_CRATE;
-use crate::rust_syntax::PATH_KEYWORD_SELF;
-use crate::rust_syntax::PATH_KEYWORD_SUPER;
 
 pub(super) struct OccurrenceContext<'a> {
     pub(super) path:            &'a Path,
@@ -83,7 +79,7 @@ pub(super) fn process_occurrence(
             occ.import_name
         ),
         suggestion: Some(format!("consider adding: `use {import_path};`")),
-        fixability: FixSupport::InlinePathQualifiedType,
+        fix_support: FixSupport::InlinePathQualifiedType,
         related: None,
     });
 
@@ -169,13 +165,10 @@ fn shadows_prelude(name: &str) -> bool {
 /// `std::fmt::Display`. The returned import is self-contained — it doesn't
 /// rely on a sibling module import staying in place.
 fn absolutize_import_path(import_path: &str, existing_imports: &BTreeSet<String>) -> String {
-    let Some((leading, rest)) = import_path.split_once(MODULE_PATH_SEPARATOR) else {
+    let Some((leading, rest)) = import_path.split_once("::") else {
         return import_path.to_string();
     };
-    if leading == PATH_KEYWORD_CRATE
-        || leading == PATH_KEYWORD_SUPER
-        || leading == PATH_KEYWORD_SELF
-    {
+    if leading == "crate" || leading == "super" || leading == "self" {
         return import_path.to_string();
     }
     // Look for an existing `use a::b::<leading>;` (i.e. an import whose final
@@ -183,7 +176,7 @@ fn absolutize_import_path(import_path: &str, existing_imports: &BTreeSet<String>
     // Without a parent segment, the existing import is itself a top-level
     // crate name — already absolute.
     for existing in existing_imports {
-        let Some((parent, last)) = existing.rsplit_once(MODULE_PATH_SEPARATOR) else {
+        let Some((parent, last)) = existing.rsplit_once("::") else {
             continue;
         };
         if last == leading {

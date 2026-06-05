@@ -16,17 +16,15 @@ use super::scan::SignatureExposure;
 use super::scan::SuspiciousPubAssessment;
 use super::scan::SuspiciousPubInput;
 use super::scan::VisibilityContext;
+use crate::compiler::constants::SOURCE_DIR_BENCHES;
+use crate::compiler::constants::SOURCE_DIR_EXAMPLES;
+use crate::compiler::constants::SOURCE_DIR_TESTS;
 use crate::compiler::exposure;
 use crate::compiler::facade;
 use crate::compiler::facade::ParentFacadeExportStatus;
 use crate::compiler::facade::ParentFacadeFixSupport;
 use crate::compiler::facade::ParentFacadeUsage;
 use crate::compiler::facade::ParentFacadeVisibility;
-use crate::compiler::source_cache::RUST_LIB_FILE;
-use crate::compiler::source_cache::RUST_MODULE_FILE;
-use crate::compiler::source_cache::SOURCE_DIR_BENCHES;
-use crate::compiler::source_cache::SOURCE_DIR_EXAMPLES;
-use crate::compiler::source_cache::SOURCE_DIR_TESTS;
 use crate::reporting::FixSupport;
 
 pub(super) fn classify_suspicious_pub(
@@ -90,20 +88,20 @@ pub(super) fn classify_suspicious_pub(
         ));
     }
 
-    let (related, fixability, stale_parent_pub_use) = match stale_result {
+    let (related, fix_support, stale_parent_pub_use) = match stale_result {
         Some((message, status)) => {
-            let fixability = if status.fix_support == ParentFacadeFixSupport::Supported {
+            let fix_support = if status.fix_support == ParentFacadeFixSupport::Supported {
                 FixSupport::PubUse
             } else {
                 FixSupport::NeedsManualPubUseCleanup
             };
-            (Some(message), fixability, Some(status.clone()))
+            (Some(message), fix_support, Some(status.clone()))
         },
         None => (None, FixSupport::None, None),
     };
 
     Ok(SuspiciousPubAssessment::Warn {
-        fixability,
+        fix_support,
         related,
         stale_parent_pub_use,
     })
@@ -153,7 +151,7 @@ pub(super) const fn allow_pub_crate_by_policy(
 }
 
 pub(super) fn crate_kind_for_root(root_module: &Path, package_root: &Path) -> CrateKind {
-    if root_module.file_name().and_then(OsStr::to_str) == Some(RUST_LIB_FILE) {
+    if root_module.file_name().and_then(OsStr::to_str) == Some("lib.rs") {
         return CrateKind::Library;
     }
     let canonical_root =
@@ -224,12 +222,12 @@ pub(super) fn is_top_level_module_file(
     if count == 1 {
         return true;
     }
-    count == 2 && relative.file_name().and_then(OsStr::to_str) == Some(RUST_MODULE_FILE)
+    count == 2 && relative.file_name().and_then(OsStr::to_str) == Some("mod.rs")
 }
 
 pub(super) fn is_boundary_file(source_root: &Path, root_module: &Path, file: &Path) -> bool {
     let is_root_file = file == root_module;
-    let is_module_rs = file.file_name().and_then(OsStr::to_str) == Some(RUST_MODULE_FILE);
+    let is_module_rs = file.file_name().and_then(OsStr::to_str) == Some("mod.rs");
     let is_top_level_file = file
         .strip_prefix(source_root)
         .ok()
@@ -366,9 +364,9 @@ mod tests {
     use super::forbidden_pub_crate_help;
     use super::forbidden_pub_crate_suggestion;
     use super::suspicious_pub_note;
-    use crate::compiler::source_cache::SOURCE_DIR_BENCHES;
-    use crate::compiler::source_cache::SOURCE_DIR_EXAMPLES;
-    use crate::compiler::source_cache::SOURCE_DIR_TESTS;
+    use crate::compiler::constants::SOURCE_DIR_BENCHES;
+    use crate::compiler::constants::SOURCE_DIR_EXAMPLES;
+    use crate::compiler::constants::SOURCE_DIR_TESTS;
 
     #[test]
     fn allow_pub_crate_allows_library_crate_root_items() {

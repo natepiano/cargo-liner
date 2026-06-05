@@ -29,7 +29,7 @@ pub struct FindingParams {
     pub item:                    Option<String>,
     pub message:                 String,
     pub suggestion:              Option<String>,
-    pub fixability:              FixSupport,
+    pub fix_support:             FixSupport,
     pub related:                 Option<String>,
     pub item_def_path:           Option<String>,
     pub narrower_scope_def_path: Option<String>,
@@ -53,7 +53,7 @@ pub enum SuspiciousPubAssessment {
         related: Option<String>,
     },
     Warn {
-        fixability:           FixSupport,
+        fix_support:          FixSupport,
         related:              Option<String>,
         stale_parent_pub_use: Option<ParentFacadeExportStatus>,
     },

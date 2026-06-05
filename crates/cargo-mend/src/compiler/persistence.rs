@@ -14,6 +14,9 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::from_str;
 
+use super::constants::FINDINGS_DIR_NAME;
+use super::constants::FINDINGS_SCHEMA_VERSION;
+use super::constants::JSON_FILE_EXTENSION;
 use super::settings;
 use crate::config::DiagnosticCode;
 use crate::reporting::CompilerWarningFacts;
@@ -24,15 +27,7 @@ use crate::reporting::Report;
 use crate::reporting::ReportFacts;
 use crate::reporting::ReportSummary;
 use crate::reporting::Severity;
-use crate::rust_syntax::MODULE_PATH_SEPARATOR;
 use crate::selection::Selection;
-
-// file extensions
-pub(crate) const JSON_FILE_EXTENSION: &str = "json";
-
-// findings
-const FINDINGS_DIR_NAME: &str = "mend-findings";
-pub(crate) const FINDINGS_SCHEMA_VERSION: u32 = 16;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct StoredReport {
@@ -76,8 +71,8 @@ pub(super) struct StoredFinding {
     pub item:                    Option<String>,
     pub message:                 String,
     pub suggestion:              Option<String>,
-    #[serde(default)]
-    pub fixability:              FixSupport,
+    #[serde(default, rename = "fixability")]
+    pub fix_support:             FixSupport,
     #[serde(default)]
     pub related:                 Option<String>,
     /// Canonical def-path of the item this finding is about. Set on
@@ -348,7 +343,7 @@ fn extend_report_from_stored(
             item:            finding.item,
             message:         finding.message,
             suggestion:      finding.suggestion,
-            fixability:      finding.fixability,
+            fix_support:     finding.fix_support,
             related:         finding
                 .related
                 .map(|related| relativize_path(&related, analysis_root)),
@@ -444,7 +439,7 @@ fn def_path_is_descendant(caller_path: &str, narrower_scope: &str) -> bool {
         return true;
     }
     if let Some(rest) = caller_path.strip_prefix(narrower_scope)
-        && rest.starts_with(MODULE_PATH_SEPARATOR)
+        && rest.starts_with("::")
     {
         return true;
     }

@@ -123,7 +123,7 @@ fn check_field(
             item:                    Some(format!("field {field_name}")),
             message:                 format_message(&field_vis_text, &type_vis_text),
             suggestion:              Some(suggested_replacement(&type_vis_text)),
-            fixability:              FixSupport::FieldVisibility,
+            fix_support:             FixSupport::FieldVisibility,
             related:                 None,
             item_def_path:           None,
             narrower_scope_def_path: None,

@@ -2,9 +2,6 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use crate::compiler::source_cache;
-use crate::compiler::source_cache::RUST_LIB_FILE;
-use crate::compiler::source_cache::RUST_MAIN_FILE;
-use crate::compiler::source_cache::RUST_MODULE_FILE;
 
 #[derive(Debug, Clone)]
 pub struct ParentBoundary {
@@ -15,7 +12,7 @@ pub struct ParentBoundary {
 
 pub fn parent_boundary_for_child(source_root: &Path, child_file: &Path) -> Option<ParentBoundary> {
     let parent_dir = child_file.parent()?;
-    let parent_module_rs = parent_dir.join(RUST_MODULE_FILE);
+    let parent_module_rs = parent_dir.join("mod.rs");
     if parent_module_rs.is_file() {
         return Some(ParentBoundary {
             boundary_file: parent_module_rs,
@@ -45,7 +42,7 @@ pub(super) fn parent_of_boundary(
     source_root: &Path,
     boundary_file: &Path,
 ) -> Option<ParentBoundary> {
-    if boundary_file.file_name()?.to_str() != Some(RUST_MODULE_FILE) {
+    if boundary_file.file_name()?.to_str() != Some("mod.rs") {
         return parent_boundary_for_child(source_root, boundary_file);
     }
 
@@ -53,7 +50,7 @@ pub(super) fn parent_of_boundary(
     // level to reach the parent module's directory.
     let container_dir = boundary_file.parent()?.parent()?;
 
-    let module_rs = container_dir.join(RUST_MODULE_FILE);
+    let module_rs = container_dir.join("mod.rs");
     if module_rs.is_file() {
         return Some(ParentBoundary {
             boundary_file: module_rs,
@@ -71,7 +68,7 @@ pub(super) fn parent_of_boundary(
         });
     }
 
-    for name in [RUST_LIB_FILE, RUST_MAIN_FILE] {
+    for name in ["lib.rs", "main.rs"] {
         let root = container_dir.join(name);
         if root.is_file() {
             return Some(ParentBoundary {
