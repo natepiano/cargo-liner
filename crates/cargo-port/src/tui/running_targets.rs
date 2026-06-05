@@ -231,14 +231,16 @@ impl RunningTargetsPoller {
                     start_time: process.start_time(),
                 })
         };
-        let tracked: HashSet<u32> = by_key
-            .values()
-            .flat_map(|target| target.instances.iter().map(|inst| inst.pid))
+        let tracked_keys: HashMap<u32, RunningKey> = by_key
+            .iter()
+            .flat_map(|(key, target)| target.instances.iter().map(|inst| (inst.pid, key.clone())))
             .collect();
-        for target in by_key.values_mut() {
+        let tracked: HashSet<u32> = tracked_keys.keys().copied().collect();
+        for (key, target) in &mut by_key {
             target.instances.sort_by_key(|inst| inst.pid);
             for inst in &mut target.instances {
-                inst.parent_pid = shown_parent(&links, inst.pid, &tracked);
+                inst.parent_pid =
+                    shown_parent_for_instance(&links, inst.pid, &tracked, &tracked_keys, key);
             }
         }
         // Everything a tracked instance spawned, however deep: any process
@@ -582,6 +584,22 @@ fn shown_parent(
     links(pid)?.parent
 }
 
+/// The outline parent for a tracked target instance. Only nest it under
+/// another tracked instance when the nearest tracked ancestor is the same
+/// cargo target. This keeps examples launched by the installed
+/// `cargo-port` process visible as top-level app rows instead of hiding
+/// them inside the collapsed installed-cargo group.
+fn shown_parent_for_instance(
+    links: &impl Fn(u32) -> Option<ParentLink>,
+    pid: u32,
+    tracked: &HashSet<u32>,
+    tracked_keys: &HashMap<u32, RunningKey>,
+    key: &RunningKey,
+) -> Option<u32> {
+    let ancestor = nearest_tracked_ancestor(links, pid, tracked)?;
+    (tracked_keys.get(&ancestor) == Some(key)).then(|| links(pid)?.parent)?
+}
+
 /// Fold this poll's CPU sample into `pid`'s [`RollingMean`] window and
 /// return the mean — the value the Running list's CPU column shows.
 fn smoothed_cpu(history: &mut HashMap<u32, RollingMean>, pid: u32, sample: f32) -> f32 {
@@ -783,6 +801,14 @@ mod tests {
     fn exe_path(path: &str) -> PathBuf { crate::project::normalize_test_path(Path::new(path)) }
 
     fn names(names: &[&str]) -> HashSet<String> { names.iter().map(|s| (*s).to_string()).collect() }
+
+    fn running_key(target_dir: &str, kind: RunTargetKind, name: &str) -> RunningKey {
+        RunningKey {
+            target_dir: AbsolutePath::from(PathBuf::from(target_dir)),
+            kind,
+            name: name.to_string(),
+        }
+    }
 
     #[test]
     fn debug_bin() {
@@ -1033,6 +1059,51 @@ mod tests {
         let links = links_from(vec![(1, None, 0), (10, Some(1), 100)]);
         let tracked = HashSet::from([10]);
         assert_eq!(shown_parent(&links, 10, &tracked), None);
+    }
+
+    #[test]
+    fn tracked_instance_does_not_nest_under_unrelated_tracked_parent() {
+        // cargo-port (10) launched an unrelated workspace example (20).
+        // Both are tracked targets, but the example should stay visible as
+        // a top-level app row rather than hide under the installed-cargo
+        // group.
+        let links = links_from(vec![(10, Some(1), 100), (20, Some(10), 200)]);
+        let parent_key = running_key(
+            "/tmp/cargo-port/target",
+            RunTargetKind::Binary,
+            "cargo-port",
+        );
+        let child_key = running_key("/tmp/hana/target", RunTargetKind::Example, "units");
+        let tracked_keys = HashMap::from([(10, parent_key), (20, child_key.clone())]);
+        let tracked = HashSet::from([10, 20]);
+
+        assert_eq!(
+            shown_parent_for_instance(&links, 20, &tracked, &tracked_keys, &child_key),
+            None,
+        );
+    }
+
+    #[test]
+    fn tracked_instance_keeps_same_target_outline_parent() {
+        // Same target through an untracked cargo shim: preserve the
+        // wrapper outline so repeated invocations still group together.
+        let links = links_from(vec![
+            (10, Some(1), 100),
+            (15, Some(10), 150),
+            (20, Some(15), 200),
+        ]);
+        let key = running_key(
+            "/tmp/cargo-mend/target",
+            RunTargetKind::Binary,
+            "cargo-mend",
+        );
+        let tracked_keys = HashMap::from([(10, key.clone()), (20, key.clone())]);
+        let tracked = HashSet::from([10, 20]);
+
+        assert_eq!(
+            shown_parent_for_instance(&links, 20, &tracked, &tracked_keys, &key),
+            Some(15),
+        );
     }
 
     #[test]
