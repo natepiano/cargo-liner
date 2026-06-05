@@ -82,28 +82,28 @@ At first run, you will be prompted to update your Include dirs in the Settings o
 - **Main branch** - what is branch name that should be considered `main` in cargo-port. See details after this section.
 - **Other primary branches** - you may want to have one or more other branches considered primary.
 - **Include dirs** - you may provide a list of directories that will be scanned at startup for display in cargo-port. Cargo-port cannot function without a value here.
-- **Inline dirs** - The project list is hierarchical and will display workspace members within the directories in which they are located. If you don't want that level of indirection, you can put a list of names here, and that level will be removed.  For example, if you have a bunch of workspace members in a `crates` directory, entering crates here will have all of those members show up immediately underneath the workspace name in the project list.
-- **Cache root** - location for lint runs and locally cached ci runs from GitHub. Default comes from
+- **Inline dirs** - The project tree is hierarchical and will display workspace members within the directories in which they are located. If you don't want that level of indirection, you can put a list of names here, and that level will be removed.  For example, if you have a bunch of workspace members in a `crates` directory, entering crates here will have all of those members show up immediately underneath the workspace name in the project tree.
+- **Cache root** - location for lint runs and locally cached ci runs from GitHub. Default comes from dirs crate - `dirs::cache_dir()`.
 
-Main and Primary branches:
-```
+**Main and Primary branches:**
+```text
 In practice:
 
-  - For local Git info, cargo-port checks main_branch first, then each
+- For local Git info, cargo-port checks main_branch first, then each
     other_primary_branches entry, and uses the first branch that exists as the
     local primary comparison branch. That drives the Git pane’s “vs main/
     primary/etc” ahead-behind display.
 
-  - For remotes, it is the last fallback when deciding what remote ref to
+- For remotes, it is the last fallback when deciding what remote ref to
     compare against. Higher-priority choices like the current upstream, remote
     HEAD, default branch, or current branch win first.
 
-  - It does not create branches, change Git upstreams, change GitHub default
+- It does not create branches, change Git upstreams, change GitHub default
     branches, or affect fetch/push behavior.
 
-  Example: if Main branch = main and Other primary branches = master, trunk, a
-  repo without local main but with local trunk will show comparisons against
-  trunk. Order matters; cargo-port checks them in the order you enter them.
+Example: if Main branch = main and Other primary branches = master, trunk, a
+repo without local main but with local trunk will show comparisons against
+trunk. Order matters; cargo-port checks them in the order you enter them.
 ```
 #### 2 - Toasts
 
@@ -125,16 +125,35 @@ High utilization is anything above the medium threshold.
 
 A list of commands can be configured in the Lints section. These commands will run after every file edit of a rust file or the Cargo.toml within the project.
 
-When a lint is running a "spinner" will show up in the Lint column in the project list, the lint row on the details pane and  also a toast will pop up in the bottom right. If more than one lint is running, the toast in the bottom right will accumulate a row for each concurrently executing lint run.
+When a lint is running a "spinner" will show up in the Lint column in the project tree, the lint row on the details pane and  also a toast will pop up in the bottom right. If more than one lint is running, the toast in the bottom right will accumulate a row for each concurrently executing lint run.
 
 <img src="assets/overlay-settings-lints-numbered.png" alt="Numbered cargo-port dashboard overview showing each major pane" width="75%">
+
 - **Enabled** - turn it on or off
 - **Lint on discovery** - when a new project is added, will a lint run automatically on it? Depending on the lint, this could kick off an unwanted build so use this with caution.
 - **Projects**  - this feature is opt-in, it will not lint every project scanned, you have to explicitly specify which ones you wish to lint in a comma-delimited list.
 - **Commands** - a comma-delimited list of lint runs. I'm thinking about putting mine into a bash file as it makes this example hard to read...
-- **Cache size** - a
+- **Cache size** - lint's don't take up much space. And in practice you rarely need to look at old runs. You can make this as big as you want but a few megabytes will probably be fine. If your workflow would benefit from more or less lint cache space, you're in charge.
 #### 5 - Appearance
 
+Cargo-port supports light / dark mode and will follow your OS's settings if you like.
+
+Custom themes are TOML files: copy a built-in theme into your user themes directory, edit the colors, and select it in Settings > Appearance.
+
+<img src="assets/overlay-settings-appearance-numbered.png" alt="Numbered cargo-port dashboard overview showing each major pane" width="75%">
+
+- **Mode** - auto - follow the OS.  Light and Dark can be explicitly chosen.
+- **Light theme** - A default and high contrast theme are included out of the box.
+- **Dark theme** - A default and high contrast theme are included out of the box.
+- **Focused pane tint** - whether or not to tint the background of the focused pane.
+
+**User themes**
+```text
+User themes are optional TOML files placed in `dirs::config_dir()/cargo-
+port/themes/`. The app does not create this directory or seed theme files
+there; use the theme TOML files in the repository’s `tui_pane/themes/`
+directory as examples.
+```
 ### Project Tree
 
 On startup, the configured `Include dirs` are scanned by cargo port to retrieve Cargo.toml metadata, GitHub metadata including CI runs, disk usage, local lint pass/fail status, programming language line counts and configured targets.
@@ -146,7 +165,7 @@ We set a file watcher on these projects so any changes will invoke a lint run (i
 <img src="assets/pane-project-tree-numbered.png" alt="Numbered project tree pane" width="75%">
 
 1. The title shows scanned directories and project counts for each configured scan dir.  On first run, cargo port will prompt you to define your "Include dirs" in Settings.
-2. Hierarchical project list with expandable workspaces, members, worktrees, submodules, and vendored crates. You can configure whether non-Rust git projects are included.
+2. Hierarchical project tree with expandable workspaces, members, worktrees, submodules, and vendored crates. You can configure whether non-Rust git projects are included.
 3. - Status columns
 	1. Lint pass/fail - a lint command configurable in settings. Lint column will show an activity spinner for a currently running lint.
 	2. CI passed 🟢, failed 🔴, skipped ⚪, cancelled ⚫. Not shown if ci is not configured or if a remote isn't configured for a branch. Currently only supports GitHub.
@@ -237,7 +256,10 @@ You can select and hit enter on a run to open the stdout from each command in yo
 4. Pass/fail result.
 ### CI Runs
 
-GitHub Actions runs are cached to disk so the dashboard stays useful offline
+GitHub Actions runs are cached to disk so the dashboard stays useful offline.
+
+Press `Enter` on any row to open that CI in GitHub.
+
 <img src="assets/pane-ci-runs-numbered.png" alt="Numbered CI runs pane" width="100%">
 
 1. CI run count and selected branch. You can filter for the current branch or show all ci runs.
@@ -245,17 +267,24 @@ GitHub Actions runs are cached to disk so the dashboard stays useful offline
 3. Branch and timestamp. 'Nuff said.
 4. Job-level status columns. These are constructed from the ci runs themselves. If there are too many columns it will show the ones that have the longest durations and collapse the ones that don't.
 
-   I didn't choose to implement side scrolling. The chosen columns may not be helpful to you as a result but you can press enter on any run and it will open a browser to take you to that run in GitHub where you can see everything you want to see.
+**CI Key**
+- passed 🟢
+- failed 🔴
+- skipped ⚪
+- cancelled ⚫
 
-## Navigation
+**Note:** The automatically selected columns may not be helpful to you but you can press enter on any run and it will open a browser to take you to that run in GitHub where you can see everything you want to see.
+
+## Global Shortcuts
 
 Press `?` in the TUI to open the global shortcuts overlay.
+
 <img src="assets/overlay-global-shortcuts.png" alt="Numbered CI runs pane" width="50%">
 
 - Next and Previous are self explanatory
 - **Clean** does a cargo clean (with a modal yes/no prompt) on a selected rust project. If you select a worktree checkout, it will clean all targets.
 - **Dismiss overlay / output**
-	- When you delete a project or a worktree checkout, that row doesn't immediately disappear in the project list - it outputs with a strikethrough and you can select it and hit x to cancel it.
+	- When you delete a project or a worktree checkout, that row doesn't immediately disappear in the project tree - it outputs with a strikethrough and you can select it and hit x to cancel it.
 	- Same goes for toasts that pop up in the bottom right corner
 - **Open finder** - not a macos thing - this is a fuzzy search of any project or target. Let's you jump directly to it. Slick.
 - **Open in editor** - configure your editor and then press this shortcut to open the currently selected project in it.
@@ -266,199 +295,18 @@ Press `?` in the TUI to open the global shortcuts overlay.
 - **Restart** - I have this in their for debugging - the make a change, install, restart loop. I don't know if this will be useful to you but it is why Rescan is on ctrl-r.
 - **Show global shortcuts** - this overlay
 - **Show sccache stats** - I mean - you could just run `sccache --show-stats` but hey, `S` is faster. Pure plating - you choose the metal.
-## Keymap Viewer
+## Keymap Editor
 
-## GitHub, CI, and PRs
+Press ^k to open the Keymap editor (if you haven't already remapped it). Select a row and press enter to change it to what you like.
 
-- Pull request rows show open PRs for the selected repo, including deleted/disappeared PR toasts and check polling
-- GitHub API rate-limit and service recovery state are shown in the Git pane
-- If `gh` is missing or unauthenticated, cargo-port warns in the UI instead of silently hiding the problem
+<img src="assets/overlay-keymap.png" alt="Numbered CI runs pane" width="50%">
 
-## Themes and Diagnostics
-
-The TUI has runtime-swappable themes and lightweight machine diagnostics.
-
-- Built-in themes include default dark, default light, and high-contrast variants
-- User themes live under the platform config directory in `cargo-port/themes/` and reload while the app is running
-- `[appearance]` can follow the OS appearance or force light/dark mode
-- The CPU/GPU pane refreshes in the background; GPU availability depends on platform support
-- The sccache pane appears when a configured Rust compiler wrapper points at `sccache`
-
+I'm not going to go through keymaps one by one as they are largely self-explanatory.
 ## Configuration
 
 cargo-port creates a config file on first run at:
 - **macOS**: `~/Library/Application Support/cargo-port/config.toml`
 - **Linux**: `~/.config/cargo-port/config.toml`
-
-### Scan directories
-
-By default, cargo-port scans the entire scan root (defaults to `~`). To limit scanning to specific directories, set `include_dirs` in the config file or via the in-app settings editor (press `s`).
-
-Paths can be relative to the scan root or absolute:
-
-```toml
-[tui]
-include_dirs = ["rust", "projects", "/opt/work"]
-```
-
-An empty list (the default) scans the entire scan root. Changes to `include_dirs` in the settings editor trigger an automatic rescan.
-
-### Include non-Rust projects
-
-To also show non-Rust git repositories in the project tree:
-
-```toml
-[tui]
-include_non_rust = true
-```
-
-These show up with reduced details (no types, version, examples) but can still display disk usage, git info, and CI runs.
-
-### Navigation
-
-```toml
-[tui]
-navigation_keys = true
-edge_scroll = true
-```
-
-`navigation_keys` enables `hjkl` movement in non-text panes. `edge_scroll` moves focus to the adjacent pane when scrolling past the top or bottom of a list.
-
-### Appearance
-
-```toml
-[appearance]
-mode = "auto"
-light_theme = "Default Light"
-dark_theme = "Default Dark"
-focused_pane_tint = true
-```
-
-`mode` accepts `"auto"`, `"light"`, or `"dark"`. Custom themes can be added under the platform config directory:
-- **macOS**: `~/Library/Application Support/cargo-port/themes/`
-- **Linux**: `~/.config/cargo-port/themes/`
-
-### Diagnostics
-
-```toml
-[cpu]
-poll_ms = 1000
-low_utilization_max_percent = 60
-medium_utilization_max_percent = 85
-```
-
-CPU and GPU diagnostics refresh in the background. GPU usage is shown when cargo-port can read it from the current platform; otherwise the GPU row reports unavailable.
-
-### Lints
-
-Lints is cargo-port's local lint/watch runtime. When enabled, cargo-port watches only the projects you allow-list, runs configured commands when they change, and shows the current status in the project list.
-
-Lints is off by default.
-
-In the Settings popup (`s`), the `Lints` section exposes:
-- `Enabled`
-- `Projects`
-- `Commands`
-- `Cache size`
-
-`Projects` is an allow-list. If it is empty, Lints watches nothing.
-
-#### Basic config
-
-```toml
-[lint]
-enabled = true
-include = ["cargo-port", "bevy_lagrange"]
-exclude = []
-commands = []
-
-[port_report]
-cache_size = "512 MiB"
-```
-
-Notes:
-- `include` entries can be bare project names, display-path prefixes, or absolute-path prefixes
-- `exclude` is applied after `include`
-- an empty `commands` list uses the built-in default command
-- `port_report.cache_size` caps retained lint run storage across JSON history and cached artifacts; `0` and `unlimited` disable pruning
-
-#### Commands
-
-The released default is a single clippy command:
-
-```toml
-[lint]
-enabled = true
-include = ["cargo-port"]
-exclude = []
-commands = []
-
-[port_report]
-cache_size = "512 MiB"
-```
-
-That expands to:
-
-```toml
-[[lint.commands]]
-name = "clippy"
-command = "cargo clippy --workspace --all-targets --all-features --manifest-path \"$MANIFEST_PATH\" -- -D warnings"
-```
-
-If you want to override that, you can configure explicit commands:
-
-```toml
-[lint]
-enabled = true
-include = ["cargo-port"]
-
-[[lint.commands]]
-name = "mend"
-command = "cargo mend --manifest-path \"$MANIFEST_PATH\" --all-targets"
-
-[[lint.commands]]
-name = "clippy"
-command = "cargo clippy --workspace --all-targets --all-features -- -D warnings"
-```
-
-`command` is executed as a shell command in the project root, not as an implied Cargo subcommand. That means values like `cargo fmt --check`, `cargo mend --manifest-path "$MANIFEST_PATH" --all-targets`, `cargo clippy --workspace --all-targets --all-features --manifest-path "$MANIFEST_PATH" -- -D warnings`, or `something --else` are all valid.
-
-In the Settings popup, `Commands` accepts a comma-separated list of full shell commands.
-
-Legacy preset-style entries such as `clippy` or `mend` are normalized to their built-in command definitions when config is loaded or saved.
-
-#### Cache size
-
-`port_report.cache_size` accepts flexible binary-size strings such as:
-- `512MiB`
-- `512 MiB`
-- `1.5 GiB`
-- `0`
-- `unlimited`
-
-Values are normalized when config is loaded or saved. The cache size caps retained lint run storage under the shared cache root. When stored runs exceed the limit, cargo-port prunes the oldest runs first and keeps current/latest artifacts even if that live floor alone exceeds the configured size.
-
-#### Cache location
-
-Lints writes its cache under cargo-port's shared cache root.
-
-By default this uses the platform cache directory:
-- macOS: `~/Library/Caches/cargo-port`
-- Linux: `~/.cache/cargo-port`
-
-You can override the root:
-
-```toml
-[cache]
-root = ""
-```
-
-Rules:
-- empty string means use the default platform cache root
-- a relative path extends the default cargo-port cache root
-- an absolute path replaces it
-
-Lint run data is stored under `lint-runs/` within the cache root. CI cache uses the same shared root under `ci/`.
 ## Platforms
 Tested primarily on macos, limited testing on windows and linux.
 ## License

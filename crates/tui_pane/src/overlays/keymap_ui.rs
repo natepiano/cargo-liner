@@ -61,7 +61,10 @@ pub trait KeymapUiContext: AppContext {
     fn keymap_pane_display_order(&self) -> &[<Self as AppContext>::AppPaneId];
 }
 
-/// Maximum content height for the keymap popup.
+/// Compatibility constant for the old fixed-height keymap popup.
+///
+/// The current keymap popup height is percentage-based; this constant remains
+/// exported so existing callers do not break.
 pub const KEYMAP_POPUP_MAX_HEIGHT: u16 = 43;
 
 /// Lines + per-line target table built for the keymap overlay.
@@ -169,6 +172,9 @@ impl KeymapPane {
 }
 
 const BASE_POPUP_WIDTH: u16 = 52;
+const KEYMAP_POPUP_HEIGHT_PERCENT: u16 = 80;
+const POPUP_BORDER_HEIGHT: u16 = 2;
+const PERCENT_DENOMINATOR: u32 = 100;
 
 /// Sort action rows within each section. Headers are anchors; rows
 /// between two headers are sorted by `ctx.keymap_pane_sort_priority`
@@ -220,13 +226,18 @@ fn keep_visible_scroll_offset(
     }
 }
 
-/// Bound the popup height to terminal height + a max.
+/// Bound the popup height to its content and 80% of the terminal height.
 fn keymap_popup_height(row_count: usize, area_height: u16) -> u16 {
     let content_height = u16::try_from(row_count).unwrap_or(u16::MAX);
+    let height_cap = percent_of_height(area_height, KEYMAP_POPUP_HEIGHT_PERCENT);
     content_height
-        .saturating_add(2)
-        .min(area_height.saturating_sub(2))
-        .min(KEYMAP_POPUP_MAX_HEIGHT)
+        .saturating_add(POPUP_BORDER_HEIGHT)
+        .min(height_cap)
+}
+
+fn percent_of_height(height: u16, percent: u16) -> u16 {
+    let scaled = u32::from(height).saturating_mul(u32::from(percent)) / PERCENT_DENOMINATOR;
+    u16::try_from(scaled).unwrap_or(u16::MAX)
 }
 
 fn keymap_header_line(row: &KeymapHelpRow) -> Line<'static> {
@@ -348,5 +359,39 @@ fn selection_state(
         PaneSelectionState::Remembered
     } else {
         PaneSelectionState::Unselected
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MANY_ROWS: usize = 100;
+    const TALL_TERMINAL_HEIGHT: u16 = 80;
+    const SHORT_TERMINAL_HEIGHT: u16 = 30;
+    const COMPACT_ROWS: usize = 5;
+
+    #[test]
+    fn keymap_popup_height_caps_to_eighty_percent_of_terminal_height() {
+        assert_eq!(
+            keymap_popup_height(MANY_ROWS, TALL_TERMINAL_HEIGHT),
+            percent_of_height(TALL_TERMINAL_HEIGHT, KEYMAP_POPUP_HEIGHT_PERCENT)
+        );
+        assert_eq!(
+            keymap_popup_height(MANY_ROWS, SHORT_TERMINAL_HEIGHT),
+            percent_of_height(SHORT_TERMINAL_HEIGHT, KEYMAP_POPUP_HEIGHT_PERCENT)
+        );
+    }
+
+    #[test]
+    fn keymap_popup_height_keeps_compact_content_height() {
+        let compact_content_height = u16::try_from(COMPACT_ROWS)
+            .unwrap_or(u16::MAX)
+            .saturating_add(POPUP_BORDER_HEIGHT);
+
+        assert_eq!(
+            keymap_popup_height(COMPACT_ROWS, TALL_TERMINAL_HEIGHT),
+            compact_content_height
+        );
     }
 }

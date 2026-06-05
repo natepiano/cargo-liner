@@ -1298,7 +1298,7 @@ fn legacy_project_list_removed_action_does_not_override_framework_global() {
 }
 
 #[test]
-fn keymap_popup_keeps_legacy_global_layout_compact() {
+fn keymap_popup_keeps_legacy_global_shortcuts_layout() {
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let toml_path = temp_dir.path().join("keymap.toml");
     let _keymap_path = keymap::override_keymap_path_for_test(toml_path);
@@ -1324,10 +1324,6 @@ fn keymap_popup_keeps_legacy_global_layout_compact() {
     assert!(
         !text.contains("App Global Shortcuts:"),
         "app-owned globals must stay merged into the legacy Global Shortcuts section",
-    );
-    assert!(
-        !text.contains("Close finder"),
-        "the keymap popup should stay compact on tall terminals instead of exposing every section",
     );
 }
 
