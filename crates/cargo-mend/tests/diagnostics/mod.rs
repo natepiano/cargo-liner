@@ -13,8 +13,6 @@
 )]
 
 mod allowances;
-#[path = "../common/mod.rs"]
-mod common;
 mod field_visibility_wider_than_type;
 mod forbidden_pub_crate;
 mod import_fixes;
@@ -24,4 +22,6 @@ mod narrow_pub_crate;
 mod prefer_module_import;
 mod pub_use_fixes;
 mod rendering;
+#[path = "../support/mod.rs"]
+mod support;
 mod unused_pub;

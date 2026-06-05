@@ -33,10 +33,10 @@ pub(crate) fn scan_from_report(report: &Report) -> Result<UnusedPubScan> {
         if column_offset > line_text.len() {
             continue;
         }
-        let Some(vis_len) = bare_pub_annotation_byte_len(&line_text[column_offset..]) else {
+        let Some(visibility_len) = bare_pub_annotation_byte_len(&line_text[column_offset..]) else {
             continue;
         };
-        let trailing_ws_len = line_text[column_offset + vis_len..]
+        let trailing_whitespace_len = line_text[column_offset + visibility_len..]
             .chars()
             .take_while(|c| c.is_whitespace() && *c != '\n')
             .map(char::len_utf8)
@@ -45,7 +45,7 @@ pub(crate) fn scan_from_report(report: &Report) -> Result<UnusedPubScan> {
         fixes.push(UseFix {
             path:         absolute_path,
             start:        absolute_start,
-            end:          absolute_start + vis_len + trailing_ws_len,
+            end:          absolute_start + visibility_len + trailing_whitespace_len,
             replacement:  String::new(),
             import_group: None,
         });

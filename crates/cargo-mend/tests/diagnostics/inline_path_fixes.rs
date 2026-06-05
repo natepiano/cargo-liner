@@ -1,4 +1,4 @@
-use crate::common::*;
+use crate::support::*;
 
 #[test]
 fn basic_inline_type_adds_use() {

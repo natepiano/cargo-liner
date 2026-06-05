@@ -1,6 +1,6 @@
 use tempfile::TempDir;
 
-use crate::common::*;
+use crate::support::*;
 
 #[test]
 fn fix_pub_use_reports_import_cleanup_suggestion_after_summary() {

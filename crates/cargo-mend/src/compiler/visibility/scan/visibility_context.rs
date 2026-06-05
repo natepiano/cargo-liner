@@ -40,14 +40,14 @@ pub struct VisibilityContext<'a, 'tcx> {
 }
 
 pub struct ItemInfo<'a> {
-    pub def_id:         LocalDefId,
-    pub file_path:      &'a Path,
-    pub vis_text:       &'a str,
-    pub kind_label:     Option<&'static str>,
-    pub name:           Option<&'a str>,
-    pub highlight_span: Span,
-    pub category:       ItemCategory,
-    pub impl_self_name: Option<String>,
+    pub def_id:          LocalDefId,
+    pub file_path:       &'a Path,
+    pub visibility_text: &'a str,
+    pub kind_label:      Option<&'static str>,
+    pub name:            Option<&'a str>,
+    pub highlight_span:  Span,
+    pub category:        ItemCategory,
+    pub impl_self_name:  Option<String>,
 }
 
 pub fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) -> Result<bool> {

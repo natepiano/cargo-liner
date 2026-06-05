@@ -1,4 +1,4 @@
-use crate::common::*;
+use crate::support::*;
 
 fn write_manifest(dir: &std::path::Path, package_name: &str) {
     fs::write(

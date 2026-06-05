@@ -16,13 +16,13 @@
 )]
 #![allow(clippy::panic, reason = "tests should panic on unexpected values")]
 
-mod common;
+mod support;
 
 use std::path::Path;
 use std::process::Output;
 
-use common::*;
 use serde_json::Value;
+use support::*;
 use tempfile::TempDir;
 
 fn run_mend_json_in(dir: &Path, args: &[&str]) -> Report {

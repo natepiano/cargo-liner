@@ -3,7 +3,7 @@ use std::path::Path;
 use serde_json::Value;
 use tempfile::TempDir;
 
-use crate::common::*;
+use crate::support::*;
 
 #[test]
 fn every_diagnostic_has_a_unique_readme_anchor() {
@@ -37,7 +37,7 @@ fn create_all_diagnostics_fixture() -> TempDir {
         "src/func_parent",
         "src/internal_parent",
         "src/deep_parent/nested",
-        "src/field_vis_parent",
+        "src/field_visibility_parent",
         "src/in_body_use",
         "src/unused_pub",
     ] {
@@ -64,7 +64,7 @@ mod func_parent;
 mod type_parent;
 mod deep_parent;
 mod narrow_mod;
-mod field_vis_parent;
+mod field_visibility_parent;
 mod in_body_use;
 mod unused_pub;
 pub mod review_mod;
@@ -193,7 +193,7 @@ pub struct Suspicious;
         "use super::super::DeepTarget;\n\nfn use_it(_target: DeepTarget) {}\n",
     )
     .expect("write deep leaf");
-    write_field_vis_fixture(root);
+    write_field_visibility_fixture(root);
     write_in_body_use_fixture(root);
 }
 
@@ -207,11 +207,11 @@ fn write_in_body_use_fixture(root: &Path) {
     .expect("write in_body_use consumer");
 }
 
-fn write_field_vis_fixture(root: &Path) {
-    fs::write(root.join("src/field_vis_parent.rs"), "mod hidden;\n")
+fn write_field_visibility_fixture(root: &Path) {
+    fs::write(root.join("src/field_visibility_parent.rs"), "mod hidden;\n")
         .expect("write field-vis parent");
     fs::write(
-        root.join("src/field_vis_parent/hidden.rs"),
+        root.join("src/field_visibility_parent/hidden.rs"),
         "struct Hidden {\n    pub leaked: u32,\n}\n",
     )
     .expect("write field-vis fixture");

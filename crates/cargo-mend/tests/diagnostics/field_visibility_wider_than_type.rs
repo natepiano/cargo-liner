@@ -1,4 +1,4 @@
-use crate::common::*;
+use crate::support::*;
 
 #[test]
 fn pub_field_on_private_struct_is_flagged() {
@@ -9,7 +9,7 @@ fn pub_field_on_private_struct_is_flagged() {
     fs::write(
         temp.path().join("Cargo.toml"),
         r#"[package]
-name = "field_vis_pub_on_private"
+name = "field_visibility_pub_on_private"
 version = "0.1.0"
 edition = "2024"
 "#,
@@ -45,7 +45,7 @@ fn pub_crate_field_on_private_struct_is_flagged() {
     fs::write(
         temp.path().join("Cargo.toml"),
         r#"[package]
-name = "field_vis_pub_crate_on_private"
+name = "field_visibility_pub_crate_on_private"
 version = "0.1.0"
 edition = "2024"
 "#,
@@ -82,7 +82,7 @@ fn pub_field_on_pub_crate_struct_is_not_flagged() {
     fs::write(
         temp.path().join("Cargo.toml"),
         r#"[package]
-name = "field_vis_idiom_pub_crate"
+name = "field_visibility_idiom_pub_crate"
 version = "0.1.0"
 edition = "2024"
 "#,
@@ -115,7 +115,7 @@ fn pub_field_on_pub_super_struct_is_not_flagged() {
     fs::write(
         temp.path().join("Cargo.toml"),
         r#"[package]
-name = "field_vis_idiom_pub_super"
+name = "field_visibility_idiom_pub_super"
 version = "0.1.0"
 edition = "2024"
 "#,
@@ -149,7 +149,7 @@ fn opaque_handle_pattern_is_not_flagged() {
     fs::write(
         temp.path().join("Cargo.toml"),
         r#"[package]
-name = "field_vis_opaque"
+name = "field_visibility_opaque"
 version = "0.1.0"
 edition = "2024"
 "#,
@@ -182,7 +182,7 @@ fn private_field_on_any_struct_is_not_flagged() {
     fs::write(
         temp.path().join("Cargo.toml"),
         r#"[package]
-name = "field_vis_private"
+name = "field_visibility_private"
 version = "0.1.0"
 edition = "2024"
 "#,
@@ -214,7 +214,7 @@ fn fix_removes_dead_pub_annotation() {
     fs::write(
         temp.path().join("Cargo.toml"),
         r#"[package]
-name = "field_vis_fix"
+name = "field_visibility_fix"
 version = "0.1.0"
 edition = "2024"
 "#,

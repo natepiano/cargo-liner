@@ -12,8 +12,8 @@
     reason = "test fixtures use raw strings with varying hash counts for readability"
 )]
 
-mod helpers;
-mod types;
+mod mend_json;
+mod report;
 
 pub(super) use std::collections::BTreeSet;
 pub(super) use std::fs;
@@ -23,33 +23,33 @@ use std::process::Command;
 use serde::Deserialize;
 pub(super) use tempfile::tempdir;
 
-pub(super) use self::helpers::fix_support_for;
-pub(super) use self::helpers::mend_command;
-pub(super) use self::helpers::parse_mend_json_output;
-pub(super) use self::types::ExpectedFinding;
-pub(super) use self::types::Report;
+pub(super) use self::mend_json::fix_support_for;
+pub(super) use self::mend_json::mend_command;
+pub(super) use self::mend_json::parse_mend_json_output;
+pub(super) use self::report::ExpectedFinding;
+pub(super) use self::report::Report;
 
 pub(super) fn assert_summary_matches_findings(report: &Report) {
-    helpers::assert_summary_matches_findings(report);
+    mend_json::assert_summary_matches_findings(report);
 }
 
-pub(super) fn cargo_command() -> Command { helpers::cargo_command() }
+pub(super) fn cargo_command() -> Command { mend_json::cargo_command() }
 
 pub(super) fn expected_summary_from_findings(
     expected_findings: &[ExpectedFinding],
-) -> self::types::Summary {
-    helpers::expected_summary_from_findings(expected_findings)
+) -> self::report::Summary {
+    mend_json::expected_summary_from_findings(expected_findings)
 }
 
 pub(super) fn expected_summary_text(report: &Report) -> String {
-    helpers::expected_summary_text(report)
+    mend_json::expected_summary_text(report)
 }
 
 pub(super) fn run_mend_json(manifest_path: &Path) -> Report {
-    helpers::run_mend_json(manifest_path)
+    mend_json::run_mend_json(manifest_path)
 }
 
-pub(super) fn strip_ansi(input: &str) -> String { helpers::strip_ansi(input) }
+pub(super) fn strip_ansi(input: &str) -> String { mend_json::strip_ansi(input) }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
 #[serde(rename_all = "snake_case")]

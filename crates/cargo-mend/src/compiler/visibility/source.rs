@@ -90,8 +90,8 @@ pub(super) fn build_line_finding(
     })
 }
 
-pub(super) fn highlight_span(vis_span: Span, ident_span: Option<Span>) -> Span {
-    ident_span.map_or(vis_span, |ident_span| vis_span.to(ident_span))
+pub(super) fn highlight_span(visibility_span: Span, ident_span: Option<Span>) -> Span {
+    ident_span.map_or(visibility_span, |ident_span| visibility_span.to(ident_span))
 }
 
 pub(super) fn impl_self_type_name_from_tcx(
@@ -165,16 +165,18 @@ pub(super) fn use_item_contains_glob(tcx: TyCtxt<'_>, span: Span) -> Result<bool
     Ok(snippet.contains('*'))
 }
 
-pub(super) fn visibility_text(tcx: TyCtxt<'_>, vis_span: Span) -> Result<Option<String>> {
-    if vis_span.is_dummy() {
+pub(super) fn visibility_text(tcx: TyCtxt<'_>, visibility_span: Span) -> Result<Option<String>> {
+    if visibility_span.is_dummy() {
         return Ok(None);
     }
     Ok(Some(
         tcx.sess
             .source_map()
-            .span_to_snippet(vis_span)
+            .span_to_snippet(visibility_span)
             .map_err(|err| {
-                anyhow!("failed to extract visibility snippet for span {vis_span:?}: {err:?}")
+                anyhow!(
+                    "failed to extract visibility snippet for span {visibility_span:?}: {err:?}"
+                )
             })?
             .trim()
             .to_string(),

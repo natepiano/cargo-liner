@@ -1,4 +1,4 @@
-use crate::common::*;
+use crate::support::*;
 
 #[test]
 fn basic_function_import_rewrite() {

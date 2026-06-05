@@ -1,4 +1,4 @@
-use crate::common::*;
+use crate::support::*;
 
 #[test]
 fn pub_item_used_only_inside_module_subtree_is_flagged() {

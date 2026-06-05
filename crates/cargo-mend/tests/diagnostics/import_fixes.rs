@@ -1,4 +1,4 @@
-use crate::common::*;
+use crate::support::*;
 
 #[test]
 fn fix_rewrites_local_crate_import() {

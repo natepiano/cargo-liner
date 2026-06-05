@@ -1,4 +1,4 @@
-use crate::common::*;
+use crate::support::*;
 
 #[test]
 fn pub_in_private_top_level_module_is_flagged() {

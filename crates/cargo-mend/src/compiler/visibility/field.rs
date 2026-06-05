@@ -75,15 +75,15 @@ fn check_field(
     let Some(file_path) = source::real_file_path(ctx.tcx, field.vis_span) else {
         return Ok(());
     };
-    let Some(field_vis_text) = source::visibility_text(ctx.tcx, field.vis_span)? else {
+    let Some(field_visibility_text) = source::visibility_text(ctx.tcx, field.vis_span)? else {
         return Ok(());
     };
     // A field with no `pub` annotation is private; nothing to narrow.
-    if field_vis_text.is_empty() {
+    if field_visibility_text.is_empty() {
         return Ok(());
     }
 
-    let Some(type_vis_text) = type_visibility_text(ctx, type_def_id)? else {
+    let Some(type_visibility_annotation_text) = type_visibility_text(ctx, type_def_id)? else {
         return Ok(());
     };
     // Only fire on truly-dead cases: the containing type has no `pub`
@@ -93,7 +93,7 @@ fn check_field(
     // it would push users toward a non-idiomatic style. We only flag when
     // the field's `pub` cannot grant any access at all because the type
     // itself is private.
-    if !type_vis_text.is_empty() {
+    if !type_visibility_annotation_text.is_empty() {
         return Ok(());
     }
 
@@ -121,8 +121,11 @@ fn check_field(
             severity:                Severity::Warning,
             diagnostic_code:         DiagnosticCode::FieldVisibilityWiderThanType,
             item:                    Some(format!("field {field_name}")),
-            message:                 format_message(&field_vis_text, &type_vis_text),
-            suggestion:              Some(suggested_replacement(&type_vis_text)),
+            message:                 format_message(
+                &field_visibility_text,
+                &type_visibility_annotation_text,
+            ),
+            suggestion:              Some(suggested_replacement(&type_visibility_annotation_text)),
             fix_support:             FixSupport::FieldVisibility,
             related:                 None,
             item_def_path:           None,
@@ -167,33 +170,33 @@ fn type_visibility_text(
 }
 
 /// Span for highlighting the field's vis annotation. Falls back to the
-/// field's overall span when the `vis_span` is empty (no annotation).
+/// field's overall span when the `visibility_span` is empty (no annotation).
 fn field_highlight_span(field: &FieldDef<'_>) -> Span {
-    let vis_span = field.vis_span;
-    if vis_span.is_empty() {
+    let visibility_span = field.vis_span;
+    if visibility_span.is_empty() {
         field.span
     } else {
-        vis_span.with_hi(field.ident.span.hi())
+        visibility_span.with_hi(field.ident.span.hi())
     }
 }
 
-fn format_message(field_vis_text: &str, type_vis_text: &str) -> String {
-    let type_label = if type_vis_text.is_empty() {
+fn format_message(field_visibility_text: &str, type_visibility_annotation_text: &str) -> String {
+    let type_label = if type_visibility_annotation_text.is_empty() {
         "private (no `pub` annotation)".to_string()
     } else {
-        format!("`{type_vis_text}`")
+        format!("`{type_visibility_annotation_text}`")
     };
     format!(
-        "field is declared `{field_vis_text}` but the containing type is \
+        "field is declared `{field_visibility_text}` but the containing type is \
          {type_label}; the wider field annotation is dead because the \
          type's visibility caps it"
     )
 }
 
-fn suggested_replacement(type_vis_text: &str) -> String {
-    if type_vis_text.is_empty() {
+fn suggested_replacement(type_visibility_annotation_text: &str) -> String {
+    if type_visibility_annotation_text.is_empty() {
         "remove the field's visibility annotation".to_string()
     } else {
-        format!("consider using: `{type_vis_text}`")
+        format!("consider using: `{type_visibility_annotation_text}`")
     }
 }

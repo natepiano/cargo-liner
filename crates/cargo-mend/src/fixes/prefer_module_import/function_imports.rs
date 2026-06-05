@@ -113,8 +113,8 @@ fn analyze_function_import(
     let replacement_use = if import_target == ImportTarget::ParentModule {
         String::new()
     } else {
-        let vis_prefix = support::extract_visibility_prefix(node);
-        format!("{vis_prefix}use {module_path};")
+        let visibility_prefix = support::extract_visibility_prefix(node);
+        format!("{visibility_prefix}use {module_path};")
     };
     let span = node.span();
     let absolute_module = absolute_segments[..absolute_segments.len() - 1].to_vec();

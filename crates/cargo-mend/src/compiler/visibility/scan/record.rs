@@ -38,7 +38,7 @@ pub(super) fn record_visibility_findings(
     record_review_pub_mod(ctx, item, &finding_context, sink)?;
     maybe_record_unused_pub(ctx, item, &finding_context, sink)?;
 
-    if item.vis_text == "pub"
+    if item.visibility_text == "pub"
         && finding_context.parent_visibility == ParentVisibility::Private
         && policy::is_top_level_module_file(ctx.source_root, ctx.root_module, item.file_path)
         && policy::allow_pub_crate_by_policy(
@@ -50,7 +50,7 @@ pub(super) fn record_visibility_findings(
         maybe_record_narrow_to_pub_crate(ctx, item, sink)?;
     }
 
-    if item.vis_text == "pub"
+    if item.visibility_text == "pub"
         && finding_context.parent_visibility == ParentVisibility::Private
         && !policy::is_top_level_module_file(ctx.source_root, ctx.root_module, item.file_path)
         && finding_context.crate_kind != CrateKind::IntegrationTest
@@ -58,7 +58,7 @@ pub(super) fn record_visibility_findings(
         maybe_record_narrow_to_pub_crate_nested(ctx, item, sink)?;
     }
 
-    if item.vis_text == "pub"
+    if item.visibility_text == "pub"
         && !policy::is_boundary_file(ctx.source_root, ctx.root_module, item.file_path)
     {
         maybe_record_suspicious_pub(
@@ -86,7 +86,7 @@ fn maybe_record_unused_pub(
     finding_context: &VisibilityFindingContext,
     sink: &mut FindingsSink,
 ) -> Result<()> {
-    if item.vis_text != "pub" || item.category == ItemCategory::Module {
+    if item.visibility_text != "pub" || item.category == ItemCategory::Module {
         return Ok(());
     }
     let (Some(name), Some(kind_label)) = (item.name, item.kind_label) else {
@@ -165,7 +165,7 @@ fn record_forbidden_pub_crate(
     finding_context: &VisibilityFindingContext,
     sink: &mut FindingsSink,
 ) -> Result<()> {
-    if !matches!(item.vis_text, "pub(crate)") {
+    if !matches!(item.visibility_text, "pub(crate)") {
         return Ok(());
     }
     if policy::allow_pub_crate_by_policy(
@@ -210,7 +210,7 @@ fn record_forbidden_pub_in_crate(
     item: &ItemInfo<'_>,
     sink: &mut FindingsSink,
 ) -> Result<()> {
-    if !item.vis_text.starts_with("pub(in crate::") {
+    if !item.visibility_text.starts_with("pub(in crate::") {
         return Ok(());
     }
     sink.findings.push(source::build_finding(
@@ -239,7 +239,7 @@ fn record_review_pub_mod(
     finding_context: &VisibilityFindingContext,
     sink: &mut FindingsSink,
 ) -> Result<()> {
-    if item.category != ItemCategory::Module || !item.vis_text.starts_with("pub") {
+    if item.category != ItemCategory::Module || !item.visibility_text.starts_with("pub") {
         return Ok(());
     }
     let allowlisted = finding_context

@@ -9,9 +9,9 @@ use super::DiagnosticCode;
 use super::FixSummaryBucket;
 use super::FixSupport;
 use super::diagnostic_spec;
-use super::types::ExpectedFinding;
-use super::types::Report;
-use super::types::Summary;
+use super::report::ExpectedFinding;
+use super::report::Report;
+use super::report::Summary;
 
 fn clear_wrappers(command: &mut Command) -> &mut Command {
     command
@@ -221,7 +221,7 @@ pub fn parse_mend_json_output(stdout: &[u8]) -> Report {
     report
 }
 
-fn finding_from_compiler_message(message: &Value) -> super::types::Finding {
+fn finding_from_compiler_message(message: &Value) -> super::report::Finding {
     let diagnostic = message
         .get("message")
         .unwrap_or_else(|| panic!("compiler-message missing message: {message}"));
@@ -242,7 +242,7 @@ fn finding_from_compiler_message(message: &Value) -> super::types::Finding {
                 .or_else(|| spans.first())
         });
 
-    super::types::Finding {
+    super::report::Finding {
         code,
         path: span
             .and_then(|span| span.get("file_name"))

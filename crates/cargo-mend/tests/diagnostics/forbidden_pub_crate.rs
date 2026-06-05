@@ -1,4 +1,4 @@
-use crate::common::*;
+use crate::support::*;
 
 // Depth boundary for the shallow-private policy: depth 1 and depth 2
 // are shallow (pub(crate) allowed), depth 3+ is nested (pub(crate) forbidden

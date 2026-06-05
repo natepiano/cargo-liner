@@ -27,13 +27,13 @@ pub(super) fn visit_item(
     let Some(file_path) = source::real_file_path(ctx.tcx, item.vis_span) else {
         return Ok(());
     };
-    let Some(vis_text) = source::visibility_text(ctx.tcx, item.vis_span)? else {
+    let Some(visibility_text) = source::visibility_text(ctx.tcx, item.vis_span)? else {
         return Ok(());
     };
 
     let name = item.kind.ident().as_ref().map(ToString::to_string);
 
-    if vis_text == "pub"
+    if visibility_text == "pub"
         && policy::is_boundary_file(ctx.source_root, ctx.root_module, &file_path)
         && matches!(item.kind, ItemKind::Use(..))
         && source::use_item_contains_glob(ctx.tcx, item.span)?
@@ -59,21 +59,21 @@ pub(super) fn visit_item(
     record::record_visibility_findings(
         ctx,
         &ItemInfo {
-            def_id:         item.owner_id.def_id,
-            file_path:      &file_path,
-            vis_text:       &vis_text,
-            kind_label:     source::item_kind_label(item.kind),
-            name:           name.as_deref(),
-            highlight_span: source::highlight_span(
+            def_id:          item.owner_id.def_id,
+            file_path:       &file_path,
+            visibility_text: &visibility_text,
+            kind_label:      source::item_kind_label(item.kind),
+            name:            name.as_deref(),
+            highlight_span:  source::highlight_span(
                 item.vis_span,
                 item.kind.ident().map(|ident| ident.span),
             ),
-            category:       if matches!(item.kind, ItemKind::Mod(..)) {
+            category:        if matches!(item.kind, ItemKind::Mod(..)) {
                 ItemCategory::Module
             } else {
                 ItemCategory::NonModule
             },
-            impl_self_name: None,
+            impl_self_name:  None,
         },
         sink,
     )
@@ -84,16 +84,16 @@ pub(super) fn visit_impl_item(
     item: &ImplItem<'_>,
     sink: &mut FindingsSink,
 ) -> Result<()> {
-    let Some(vis_span) = item.vis_span() else {
+    let Some(visibility_span) = item.vis_span() else {
         return Ok(());
     };
-    if item.span.from_expansion() || vis_span.from_expansion() {
+    if item.span.from_expansion() || visibility_span.from_expansion() {
         return Ok(());
     }
-    let Some(file_path) = source::real_file_path(ctx.tcx, vis_span) else {
+    let Some(file_path) = source::real_file_path(ctx.tcx, visibility_span) else {
         return Ok(());
     };
-    let Some(vis_text) = source::visibility_text(ctx.tcx, vis_span)? else {
+    let Some(visibility_text) = source::visibility_text(ctx.tcx, visibility_span)? else {
         return Ok(());
     };
 
@@ -105,10 +105,10 @@ pub(super) fn visit_impl_item(
         &ItemInfo {
             def_id: item.owner_id.def_id,
             file_path: &file_path,
-            vis_text: &vis_text,
+            visibility_text: &visibility_text,
             kind_label: Some(source::impl_item_kind_label(item.kind)),
             name: Some(name.as_str()),
-            highlight_span: source::highlight_span(vis_span, Some(item.ident.span)),
+            highlight_span: source::highlight_span(visibility_span, Some(item.ident.span)),
             category: ItemCategory::NonModule,
             impl_self_name,
         },
@@ -127,7 +127,7 @@ pub(super) fn visit_foreign_item(
     let Some(file_path) = source::real_file_path(ctx.tcx, item.vis_span) else {
         return Ok(());
     };
-    let Some(vis_text) = source::visibility_text(ctx.tcx, item.vis_span)? else {
+    let Some(visibility_text) = source::visibility_text(ctx.tcx, item.vis_span)? else {
         return Ok(());
     };
 
@@ -136,14 +136,14 @@ pub(super) fn visit_foreign_item(
     record::record_visibility_findings(
         ctx,
         &ItemInfo {
-            def_id:         item.owner_id.def_id,
-            file_path:      &file_path,
-            vis_text:       &vis_text,
-            kind_label:     Some(source::foreign_item_kind_label(item.kind)),
-            name:           Some(name.as_str()),
-            highlight_span: source::highlight_span(item.vis_span, Some(item.ident.span)),
-            category:       ItemCategory::NonModule,
-            impl_self_name: None,
+            def_id:          item.owner_id.def_id,
+            file_path:       &file_path,
+            visibility_text: &visibility_text,
+            kind_label:      Some(source::foreign_item_kind_label(item.kind)),
+            name:            Some(name.as_str()),
+            highlight_span:  source::highlight_span(item.vis_span, Some(item.ident.span)),
+            category:        ItemCategory::NonModule,
+            impl_self_name:  None,
         },
         sink,
     )

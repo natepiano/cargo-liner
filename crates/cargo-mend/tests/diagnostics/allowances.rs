@@ -1,4 +1,4 @@
-use crate::common::*;
+use crate::support::*;
 
 #[test]
 fn pub_use_fix_does_not_trigger_when_child_type_is_exposed_by_other_crate_visible_signature() {
