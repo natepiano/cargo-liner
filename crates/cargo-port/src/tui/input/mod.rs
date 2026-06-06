@@ -1,6 +1,8 @@
 mod editor_terminal;
 
+use std::process::Command;
 use std::rc::Rc;
+use std::sync::PoisonError;
 use std::time::Instant;
 
 use crossterm::event::Event;
@@ -89,6 +91,37 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
     }
 }
 
+#[derive(Clone, Copy)]
+enum KeyDispatchLayer {
+    FrameworkOverlay,
+    AppSurface(AppSurfaceKey),
+}
+
+#[derive(Clone, Copy)]
+struct AppSurfaceKey {
+    focused: FocusedPane<AppPaneId>,
+}
+
+impl KeyDispatchLayer {
+    const fn current(app: &App) -> Self {
+        if app.framework.overlay().is_some() {
+            Self::FrameworkOverlay
+        } else {
+            Self::AppSurface(AppSurfaceKey {
+                focused: *app.framework.focused(),
+            })
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum OutputCancelPreflight {
+    ExitVisualSelection,
+    StopRunningExample,
+    CloseVisibleOutput,
+    Pass,
+}
+
 fn handle_key_event(app: &mut App, raw: &KeyEvent) {
     app.mouse_pos = None;
     // Drop stale focus on a bottom-row pane the current layout hides so
@@ -96,83 +129,54 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
     app.reconcile_bottom_row_focus();
 
     let normalized = normalize_nav(app, raw);
-    let code = raw.code;
-
     let bind = key_bind_from_event(raw);
-    let is_output_cancel = !focused_text_input_mode(app)
-        && app.framework_keymap.is_key_bound_to_toml_key(
-            OutputPane::APP_PANE_ID,
-            OutputAction::Cancel.toml_key(),
-            &bind,
-        );
-    // Esc first leaves vim visual-line mode (collapsing back to the
-    // single cursor row) without killing a streaming run; then it stops a
-    // running process; then it closes the pane. There is no deselect step
-    // — the cursor row is always a one-line selection.
-    if is_output_cancel && app.focus_is(PaneId::Output) && app.panes.output.selection().is_visual()
-    {
-        app.pending_nav_chord.clear();
-        app.panes.output.exit_visual();
-        return;
+
+    match KeyDispatchLayer::current(app) {
+        KeyDispatchLayer::FrameworkOverlay => {
+            dispatch_framework_overlay_key(app, &bind, &normalized);
+            app.pending_nav_chord.clear();
+        },
+        KeyDispatchLayer::AppSurface(surface) => {
+            handle_app_surface_key(app, surface, raw, &bind);
+        },
     }
-    // Stop a running example. Checked by raw code (modifiers irrelevant)
-    // so any focus can stop it; only reached once no selection consumed
-    // the key above.
-    if code == KeyCode::Esc && app.inflight.example_running().is_some() {
-        let pid_holder = app.inflight.example_child();
-        let pid = *pid_holder
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(pid) = pid {
-            let _ = std::process::Command::new("kill")
-                .arg(pid.to_string())
-                .output();
-        }
-        app.inflight.mark_run_killed();
-        app.scan.mark_terminal_dirty();
-        return;
-    }
-    if is_output_cancel && !app.inflight.example_output().is_empty() {
+}
+
+fn handle_app_surface_key(app: &mut App, surface: AppSurfaceKey, raw: &KeyEvent, bind: &KeyBind) {
+    let code = raw.code;
+    let output_preflight = classify_output_cancel_preflight(app, code, bind);
+    if dispatch_output_cancel_preflight(app, output_preflight) {
         app.pending_nav_chord.clear();
-        let was_on_output = app.focus_is(PaneId::Output);
-        app.inflight.example_output_mut().clear();
-        if was_on_output {
-            app.set_focus(FocusedPane::App(AppPaneId::Targets));
-        }
         return;
     }
     if handle_confirm_key(app, code) {
         app.pending_nav_chord.clear();
         return;
     }
-    if dispatch_framework_overlay(app, &bind, &normalized) {
+    if dispatch_finder_overlay(app, bind) {
         app.pending_nav_chord.clear();
         return;
     }
-    if dispatch_finder_overlay(app, &bind) {
+    if sccache::dispatch_sccache_overlay(app, bind) {
         app.pending_nav_chord.clear();
         return;
     }
-    if sccache::dispatch_sccache_overlay(app, &bind) {
-        app.pending_nav_chord.clear();
-        return;
-    }
-    let focused = *app.framework.focused();
+    let focused = surface.focused;
     let focused_on_toasts = matches!(focused, FocusedPane::Framework(FrameworkFocusId::Toasts));
-    if focused_on_toasts && tui_pane::dispatch_focused_toasts(app, &bind) {
+    if focused_on_toasts && tui_pane::dispatch_focused_toasts(app, bind) {
         app.pending_nav_chord.clear();
         return;
     }
-    if dispatch_framework_global(app, &bind) {
+    if dispatch_framework_global(app, bind) {
         app.pending_nav_chord.clear();
         return;
     }
-    if dispatch_app_global(app, &bind) {
+    if dispatch_app_global(app, bind) {
         app.pending_nav_chord.clear();
         return;
     }
     if let FocusedPane::App(id) = focused
-        && dispatch_focused_app_pane(app, id, &bind)
+        && dispatch_focused_app_pane(app, id, bind)
     {
         app.pending_nav_chord.clear();
         return;
@@ -184,7 +188,66 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
         app.pending_nav_chord.clear();
         return;
     }
-    let _ = dispatch_navigation(app, focused, &bind);
+    let _ = dispatch_navigation(app, focused, bind);
+}
+
+fn classify_output_cancel_preflight(
+    app: &App,
+    code: KeyCode,
+    bind: &KeyBind,
+) -> OutputCancelPreflight {
+    let is_output_cancel = !focused_text_input_mode(app)
+        && app.framework_keymap.is_key_bound_to_toml_key(
+            OutputPane::APP_PANE_ID,
+            OutputAction::Cancel.toml_key(),
+            bind,
+        );
+    let output_visual = is_output_cancel
+        && app.focus_is(PaneId::Output)
+        && app.panes.output.selection().is_visual();
+    let running_example = code == KeyCode::Esc && app.inflight.example_running().is_some();
+    let visible_output = is_output_cancel && !app.inflight.example_output().is_empty();
+
+    match (output_visual, running_example, visible_output) {
+        (true, _, _) => OutputCancelPreflight::ExitVisualSelection,
+        (false, true, _) => OutputCancelPreflight::StopRunningExample,
+        (false, false, true) => OutputCancelPreflight::CloseVisibleOutput,
+        (false, false, false) => OutputCancelPreflight::Pass,
+    }
+}
+
+fn dispatch_output_cancel_preflight(app: &mut App, preflight: OutputCancelPreflight) -> bool {
+    match preflight {
+        OutputCancelPreflight::ExitVisualSelection => {
+            app.panes.output.exit_visual();
+            true
+        },
+        OutputCancelPreflight::StopRunningExample => {
+            let pid_holder = app.inflight.example_child();
+            let pid = *pid_holder.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(pid) = pid {
+                let _ = Command::new("kill").arg(pid.to_string()).output();
+            }
+            app.inflight.mark_run_killed();
+            app.scan.mark_terminal_dirty();
+            true
+        },
+        OutputCancelPreflight::CloseVisibleOutput => {
+            let was_on_output = app.focus_is(PaneId::Output);
+            app.inflight.example_output_mut().clear();
+            if was_on_output {
+                app.set_focus(FocusedPane::App(AppPaneId::Targets));
+            }
+            true
+        },
+        OutputCancelPreflight::Pass => false,
+    }
+}
+
+fn dispatch_framework_overlay_key(app: &mut App, bind: &KeyBind, normalized: &KeyEvent) {
+    if !dispatch_framework_overlay(app, bind, normalized) {
+        let _ = dispatch_framework_global(app, bind);
+    }
 }
 
 /// Output-pane selection gestures, built in and not rebindable:

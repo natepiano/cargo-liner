@@ -24,6 +24,7 @@ use tui_pane::AppContext;
 use tui_pane::BarPalette;
 use tui_pane::FocusedPane;
 use tui_pane::FrameworkFocusId;
+use tui_pane::FrameworkOverlayId;
 use tui_pane::GlobalAction as FrameworkGlobalAction;
 use tui_pane::KeyBind;
 use tui_pane::Mode;
@@ -1480,6 +1481,41 @@ fn settings_text_input_esc_wins_over_output_cancel_preflight() {
         !app.framework.settings_pane.is_editing(),
         "Esc must still leave settings edit mode",
     );
+}
+
+#[test]
+fn framework_overlay_esc_wins_over_output_cancel_preflight() {
+    let overlays = [
+        (
+            FrameworkGlobalAction::OpenSettings,
+            FrameworkOverlayId::Settings,
+        ),
+        (
+            FrameworkGlobalAction::OpenKeymap,
+            FrameworkOverlayId::Keymap,
+        ),
+        (
+            FrameworkGlobalAction::OpenGlobalShortcuts,
+            FrameworkOverlayId::GlobalShortcuts,
+        ),
+    ];
+
+    for (action, overlay) in overlays {
+        let project = super::make_project(Some("demo"), "~/demo");
+        let mut app = make_app(&[project]);
+        app.inflight.example_output_mut().push("line".to_string());
+        open_framework_overlay(&mut app, action);
+        assert_eq!(app.framework.overlay(), Some(overlay));
+
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+
+        assert_eq!(app.framework.overlay(), None);
+        assert_eq!(app.inflight.example_output().len(), 1);
+        assert_eq!(
+            app.inflight.example_output().first().map(String::as_str),
+            Some("line"),
+        );
+    }
 }
 
 // ── Overlay input/render ownership ────────────────────────────────

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Fix Esc handling so framework overlays close before the output pane when both are visible
+
 ## [0.1.1] - 2026-06-06
 
 ### Fixed
