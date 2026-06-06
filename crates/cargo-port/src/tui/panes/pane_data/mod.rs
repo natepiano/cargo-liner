@@ -1,3 +1,4 @@
+mod constants;
 mod formatting;
 
 use std::cmp::Ordering;
@@ -21,7 +22,15 @@ use tui_pane::CopyLabel;
 use tui_pane::CopyPayload;
 use tui_pane::CopySelectionResult;
 
+use self::constants::PROJECT_LIBS_LABEL;
+use self::constants::PROJECT_PROC_MACROS_LABEL;
+use self::constants::PROJECT_WORKSPACES_LABEL;
+use self::constants::TESTS_DOC_LABEL;
+use self::constants::TESTS_INTEGRATION_LABEL;
+use self::constants::TESTS_UNIT_LABEL;
 use super::EmptyDescriptionBehavior;
+use super::constants::TESTS_IGNORED_LABEL;
+use super::constants::TESTS_TOTAL_LABEL;
 use super::git;
 use super::package;
 use crate::ci;
@@ -67,6 +76,9 @@ use crate::project::WorkspaceMetadata;
 use crate::project::WorktreeStatus;
 use crate::tui::app::App;
 use crate::tui::app::AvailabilityStatus;
+use crate::tui::constants::TARGET_KIND_BENCH_LABEL;
+use crate::tui::constants::TARGET_KIND_BIN_LABEL;
+use crate::tui::constants::TARGET_KIND_EXAMPLE_LABEL;
 use crate::tui::project_list::ProjectList;
 use crate::tui::render;
 use crate::tui::state::ServiceStatus;
@@ -107,37 +119,26 @@ impl ProjectCounts {
     fn to_rows(&self) -> Vec<(&'static str, usize)> {
         let mut rows = Vec::new();
         if self.workspaces > 0 {
-            rows.push(("ws", self.workspaces));
+            rows.push((PROJECT_WORKSPACES_LABEL, self.workspaces));
         }
         if self.libs > 0 {
-            rows.push(("lib", self.libs));
+            rows.push((PROJECT_LIBS_LABEL, self.libs));
         }
         if self.bins > 0 {
-            rows.push(("bin", self.bins));
+            rows.push((TARGET_KIND_BIN_LABEL, self.bins));
         }
         if self.proc_macros > 0 {
-            rows.push(("proc-macro", self.proc_macros));
+            rows.push((PROJECT_PROC_MACROS_LABEL, self.proc_macros));
         }
         if self.examples > 0 {
-            rows.push(("example", self.examples));
+            rows.push((TARGET_KIND_EXAMPLE_LABEL, self.examples));
         }
         if self.benches > 0 {
-            rows.push(("bench", self.benches));
+            rows.push((TARGET_KIND_BENCH_LABEL, self.benches));
         }
         rows
     }
 }
-
-/// Label of the `(ignored)` annotation row in the Tests section. Shared
-/// with the renderer, which dims this row's value (the count is a
-/// registered-but-skipped doctest tally, not a runnable test).
-pub(super) const TESTS_IGNORED_LABEL: &str = "(ignored)";
-
-/// Label of the runnable-total row in the Tests section — intentionally
-/// blank. The Languages pane shows its grand total as an unlabelled bold
-/// bottom value; the Tests total matches, so the renderer keys off this
-/// empty label to render the value in bold accent color.
-pub(super) const TESTS_TOTAL_LABEL: &str = "";
 
 /// Build the Tests-section rows from accumulated test counts. Lists the
 /// non-zero `unit` / `integration` / `doc` buckets, an `(ignored)`
@@ -149,13 +150,13 @@ pub(super) const TESTS_TOTAL_LABEL: &str = "";
 fn test_rows_from_counts(counts: TestCounts) -> Vec<(&'static str, usize)> {
     let mut rows = Vec::new();
     if counts.unit > 0 {
-        rows.push(("unit", counts.unit));
+        rows.push((TESTS_UNIT_LABEL, counts.unit));
     }
     if counts.integration > 0 {
-        rows.push(("integration", counts.integration));
+        rows.push((TESTS_INTEGRATION_LABEL, counts.integration));
     }
     if counts.doc > 0 {
-        rows.push(("doc", counts.doc));
+        rows.push((TESTS_DOC_LABEL, counts.doc));
     }
     if counts.doc_ignored > 0 {
         rows.push((TESTS_IGNORED_LABEL, counts.doc_ignored));
@@ -187,16 +188,20 @@ impl RunTargetKind {
 
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Binary => "bin",
-            Self::Example => "example",
-            Self::Bench => "bench",
+            Self::Binary => TARGET_KIND_BIN_LABEL,
+            Self::Example => TARGET_KIND_EXAMPLE_LABEL,
+            Self::Bench => TARGET_KIND_BENCH_LABEL,
         }
     }
 
     /// Longest label width across all variants, plus 1 for trailing pad.
     pub const fn padded_label_width() -> usize {
         let mut max = 0;
-        let labels: [&str; 3] = ["bin", "example", "bench"];
+        let labels: [&str; 3] = [
+            TARGET_KIND_BIN_LABEL,
+            TARGET_KIND_EXAMPLE_LABEL,
+            TARGET_KIND_BENCH_LABEL,
+        ];
         let mut i = 0;
         while i < labels.len() {
             if labels[i].len() > max {

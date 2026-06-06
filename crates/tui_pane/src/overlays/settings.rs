@@ -144,7 +144,8 @@ impl SettingsPane {
     /// `EditState` accordingly: `StartEdit` enters `EditState::Editing`
     /// from `Browse`; `Cancel` returns to `Browse`. Per-setting buffer
     /// mutation lives on this pane; [`Self::handle_text_input`] returns
-    /// the command the binary applies after the framework borrow ends.
+    /// the command the embedding application applies after the framework
+    /// borrow ends.
     pub fn handle_key(&mut self, bind: &KeyBind) -> KeyOutcome {
         if let Some(action) = Self::defaults().into_scope_map().action_for(bind) {
             match action {

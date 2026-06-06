@@ -39,6 +39,7 @@ pub(crate) const LINTS_CACHE_DIR: &str = "lint-runs";
 
 // ── Cargo / git paths ─────────────────────────────────────────────────
 
+pub(crate) const CARGO_COMMAND_NAME: &str = "cargo";
 pub(crate) const CARGO_CONFIG: &str = "config";
 pub(crate) const CARGO_CONFIG_TOML: &str = "config.toml";
 pub(crate) const CARGO_LOCK: &str = "Cargo.lock";
@@ -105,5 +106,9 @@ pub(crate) const STALE_TIMEOUT: Duration = Duration::from_mins(30);
 // ── Config constants ──────────────────────────────────────────────────
 
 pub(crate) const APP_NAME: &str = "cargo-port";
+pub(crate) const CLIPPY_LINT_COMMAND_NAME: &str = "clippy";
 pub(crate) const CONFIG_FILE: &str = "config.toml";
+pub(crate) const DEFAULT_CLIPPY_LINT_COMMAND: &str = "cargo clippy --workspace --all-targets \
+                                                      --all-features --manifest-path \
+                                                      \"$MANIFEST_PATH\" -- -D warnings";
 pub(crate) const KEYMAP_FILE: &str = "keymap.toml";

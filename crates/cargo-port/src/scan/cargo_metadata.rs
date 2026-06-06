@@ -14,6 +14,7 @@ use tokio::sync::Semaphore;
 use walkdir::WalkDir;
 
 use super::BackgroundMsg;
+use super::constants::CARGO_OFFLINE_FLAG;
 use super::discovery;
 use super::disk_usage;
 use super::language_stats;
@@ -388,7 +389,7 @@ fn execute_cargo_metadata(manifest_path: &Path) -> Result<Metadata, CargoMetadat
     // `MetadataCommand::exec` itself has no timeout knob.
     let mut cmd = cargo_metadata::MetadataCommand::new();
     cmd.manifest_path(manifest_path).no_deps();
-    cmd.other_options(vec!["--offline".to_string()]);
+    cmd.other_options(vec![CARGO_OFFLINE_FLAG.to_string()]);
     cmd.exec()
         .map_err(|err| CargoMetadataError::Other(format_cargo_metadata_error(&err)))
 }

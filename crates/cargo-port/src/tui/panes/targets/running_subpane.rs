@@ -33,6 +33,7 @@ use tui_pane::success_color;
 use tui_pane::text_default;
 use unicode_width::UnicodeWidthStr;
 
+use crate::constants::CARGO_COMMAND_NAME;
 use crate::project::DisplayPath;
 use crate::tui::render;
 use crate::tui::running_targets::RunProfile;
@@ -620,7 +621,7 @@ fn cargo_header_line(cargo_group: CargoGroup, count: usize) -> Line<'static> {
     };
     Line::from(vec![
         Span::styled(format!(" {glyph} "), Style::default().fg(label_color())),
-        Span::styled("cargo", Style::default().fg(success_color())),
+        Span::styled(CARGO_COMMAND_NAME, Style::default().fg(success_color())),
         Span::styled(format!(" ({count})"), Style::default().fg(label_color())),
     ])
 }

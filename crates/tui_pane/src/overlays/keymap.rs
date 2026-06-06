@@ -96,8 +96,8 @@ impl KeymapPane {
     /// `EditState` accordingly: `StartEdit` enters
     /// `EditState::Awaiting` from `Browse`; `Cancel` returns to
     /// `Browse` from any state. Capture-conflict resolution
-    /// (`Awaiting → Conflict`) is driven by the binary's collision
-    /// check.
+    /// (`Awaiting → Conflict`) is driven by the embedding application's
+    /// collision check.
     pub fn handle_key(&mut self, bind: &KeyBind) -> KeyOutcome {
         if let Some(action) = Self::defaults().into_scope_map().action_for(bind) {
             match action {
@@ -197,8 +197,8 @@ impl KeymapPane {
 
     /// File path of the binding being edited, if any. Drives the
     /// framework's [`editor_target_path`](crate::Framework::editor_target_path)
-    /// surface so the binary's status line can show the active TOML
-    /// file. Returns `None` outside `EditState::Awaiting` /
+    /// surface so the embedding application's status line can show the
+    /// active TOML file. Returns `None` outside `EditState::Awaiting` /
     /// `EditState::Conflict`.
     #[must_use]
     pub fn editor_target(&self) -> Option<&Path> { self.editor_target.as_deref() }

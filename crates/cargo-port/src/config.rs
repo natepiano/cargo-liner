@@ -13,7 +13,10 @@ use toml::Table;
 use toml::Value;
 
 use super::constants::APP_NAME;
+use super::constants::CARGO_COMMAND_NAME;
+use super::constants::CLIPPY_LINT_COMMAND_NAME;
 use super::constants::CONFIG_FILE;
+use super::constants::DEFAULT_CLIPPY_LINT_COMMAND;
 use crate::project::AbsolutePath;
 
 /// Whether non-Rust projects (git repos without `Cargo.toml`) are included in scans.
@@ -222,16 +225,14 @@ impl LintConfig {
 
 pub(crate) fn default_clippy_lint_command() -> LintCommandConfig {
     LintCommandConfig {
-        name:    "clippy".to_string(),
-        command:
-            "cargo clippy --workspace --all-targets --all-features --manifest-path \"$MANIFEST_PATH\" -- -D warnings"
-                .to_string(),
+        name:    CLIPPY_LINT_COMMAND_NAME.to_string(),
+        command: DEFAULT_CLIPPY_LINT_COMMAND.to_string(),
     }
 }
 
 pub(crate) fn builtin_lint_command(name: &str) -> Option<LintCommandConfig> {
     match name.trim().to_ascii_lowercase().as_str() {
-        "clippy" => Some(default_clippy_lint_command()),
+        CLIPPY_LINT_COMMAND_NAME => Some(default_clippy_lint_command()),
         _ => None,
     }
 }
@@ -242,13 +243,13 @@ pub(crate) fn infer_lint_command_name(command: &str) -> String {
         return String::new();
     };
 
-    if first == "cargo" {
+    if first == CARGO_COMMAND_NAME {
         if let Some(second) = parts.next()
             && !second.starts_with('-')
         {
             return second.to_string();
         }
-        return "cargo".to_string();
+        return CARGO_COMMAND_NAME.to_string();
     }
 
     Path::new(first)

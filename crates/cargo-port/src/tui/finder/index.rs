@@ -18,6 +18,9 @@ use crate::project::RustProject;
 use crate::project::VendoredPackage;
 use crate::project::Visibility;
 use crate::project::Workspace;
+use crate::tui::constants::TARGET_KIND_BENCH_LABEL;
+use crate::tui::constants::TARGET_KIND_BIN_LABEL;
+use crate::tui::constants::TARGET_KIND_EXAMPLE_LABEL;
 use crate::tui::panes::RunTargetKind;
 use crate::tui::project_list::ProjectList;
 
@@ -62,9 +65,9 @@ impl FinderKind {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Project => "project",
-            Self::Binary => "bin",
-            Self::Example => "example",
-            Self::Bench => "bench",
+            Self::Binary => TARGET_KIND_BIN_LABEL,
+            Self::Example => TARGET_KIND_EXAMPLE_LABEL,
+            Self::Bench => TARGET_KIND_BENCH_LABEL,
             Self::PullRequest => "pr",
         }
     }

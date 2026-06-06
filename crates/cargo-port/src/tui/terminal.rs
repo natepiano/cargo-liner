@@ -37,6 +37,15 @@ use tui_pane::TrackedItemKey;
 use super::app::App;
 use super::app::PendingClean;
 use super::app::PollBackgroundStats;
+use super::constants::CARGO_BENCH_FLAG;
+use super::constants::CARGO_BENCH_SUBCOMMAND;
+use super::constants::CARGO_CLEAN_SUBCOMMAND;
+use super::constants::CARGO_COLOR_ALWAYS_FLAG;
+use super::constants::CARGO_EXAMPLE_FLAG;
+use super::constants::CARGO_FEATURES_FLAG;
+use super::constants::CARGO_PACKAGE_FLAG;
+use super::constants::CARGO_RELEASE_FLAG;
+use super::constants::CARGO_RUN_SUBCOMMAND;
 use super::constants::PERF_LOG_FILE;
 use super::constants::PREVIOUS_PERF_LOG_FILE;
 use super::input;
@@ -53,6 +62,7 @@ use crate::channel::Sender;
 use crate::channel::TryRecvError;
 use crate::ci;
 use crate::config;
+use crate::constants::CARGO_COMMAND_NAME;
 use crate::http::HttpClient;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
@@ -547,32 +557,37 @@ fn log_slow_frame(app: &App, bg_stats: &PollBackgroundStats, metrics: &FrameMetr
 }
 
 fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
-    let mut cmd = std::process::Command::new("cargo");
+    let mut cmd = std::process::Command::new(CARGO_COMMAND_NAME);
     match run.kind {
         RunTargetKind::Binary => {
-            cmd.arg("run");
+            cmd.arg(CARGO_RUN_SUBCOMMAND);
         },
         RunTargetKind::Example => {
-            cmd.arg("run").arg("--example").arg(&run.target_name);
+            cmd.arg(CARGO_RUN_SUBCOMMAND)
+                .arg(CARGO_EXAMPLE_FLAG)
+                .arg(&run.target_name);
         },
         RunTargetKind::Bench => {
-            cmd.arg("bench").arg("--bench").arg(&run.target_name);
+            cmd.arg(CARGO_BENCH_SUBCOMMAND)
+                .arg(CARGO_BENCH_FLAG)
+                .arg(&run.target_name);
         },
     }
     if run.build_mode.is_release() {
-        cmd.arg("--release");
+        cmd.arg(CARGO_RELEASE_FLAG);
     }
     if let Some(pkg) = &run.package_name {
-        cmd.arg("-p").arg(pkg);
+        cmd.arg(CARGO_PACKAGE_FLAG).arg(pkg);
     }
     // Cargo does not auto-enable a target's `required-features`, so a
     // feature-gated target (e.g. an example with `required-features`)
     // errors out unless we pass them ourselves.
     if !run.required_features.is_empty() {
-        cmd.arg("--features").arg(run.required_features.join(","));
+        cmd.arg(CARGO_FEATURES_FLAG)
+            .arg(run.required_features.join(","));
     }
     cmd.current_dir(&run.abs_path)
-        .arg("--color=always")
+        .arg(CARGO_COLOR_ALWAYS_FLAG)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -665,8 +680,8 @@ fn read_with_progress(tx: &Sender<ExampleMsg>, stream: impl io::Read) {
 }
 
 fn spawn_clean_process(app: &mut App, pending: &PendingClean) {
-    let mut cmd = std::process::Command::new("cargo");
-    cmd.arg("clean")
+    let mut cmd = std::process::Command::new(CARGO_COMMAND_NAME);
+    cmd.arg(CARGO_CLEAN_SUBCOMMAND)
         .current_dir(&pending.abs_path)
         .stdout(Stdio::null())
         .stderr(Stdio::null());

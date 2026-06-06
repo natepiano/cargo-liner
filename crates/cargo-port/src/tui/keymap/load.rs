@@ -23,6 +23,14 @@ use super::actions::LintsAction;
 use super::actions::PackageAction;
 use super::actions::ProjectListAction;
 use super::actions::TargetsAction;
+use super::constants::CLEAN_ACTION_KEY;
+use super::constants::CPU_SCOPE_KEY;
+use super::constants::GIT_SCOPE_KEY;
+use super::constants::GLOBAL_SCOPE_KEY;
+use super::constants::LANG_SCOPE_KEY;
+use super::constants::PACKAGE_SCOPE_KEY;
+use super::constants::PROJECT_LIST_SCOPE_KEY;
+use super::constants::TARGETS_SCOPE_KEY;
 use super::resolved::ResolvedKeymap;
 use crate::config::NavigationKeys;
 use crate::constants::APP_NAME;
@@ -36,7 +44,14 @@ const REMOVED_PROJECT_LIST_GLOBAL_ACTIONS: [(&str, &str); 2] =
 /// action moved to `[global].clean`; on migration the first scope in
 /// this list to define `clean` wins, matching the historical
 /// registration order.
-const LEGACY_CLEAN_SCOPES: [&str; 6] = ["project_list", "package", "git", "targets", "lang", "cpu"];
+const LEGACY_CLEAN_SCOPES: [&str; 6] = [
+    PROJECT_LIST_SCOPE_KEY,
+    PACKAGE_SCOPE_KEY,
+    GIT_SCOPE_KEY,
+    TARGETS_SCOPE_KEY,
+    LANG_SCOPE_KEY,
+    CPU_SCOPE_KEY,
+];
 
 pub struct KeymapLoadResult {
     pub(crate) keymap:          ResolvedKeymap,
@@ -340,7 +355,7 @@ fn migrate_removed_action_keys(table: &mut Table) -> bool {
 }
 
 fn migrate_project_list_globals(table: &mut Table) -> bool {
-    if matches!(table.get("global"), Some(value) if !value.is_table()) {
+    if matches!(table.get(GLOBAL_SCOPE_KEY), Some(value) if !value.is_table()) {
         return false;
     }
 
@@ -361,10 +376,13 @@ fn migrate_project_list_globals(table: &mut Table) -> bool {
         return false;
     }
 
-    if !table.contains_key("global") {
-        table.insert("global".to_string(), Value::Table(Table::new()));
+    if !table.contains_key(GLOBAL_SCOPE_KEY) {
+        table.insert(GLOBAL_SCOPE_KEY.to_string(), Value::Table(Table::new()));
     }
-    let Some(global) = table.get_mut("global").and_then(toml::Value::as_table_mut) else {
+    let Some(global) = table
+        .get_mut(GLOBAL_SCOPE_KEY)
+        .and_then(toml::Value::as_table_mut)
+    else {
         return false;
     };
     for (global_key, value) in removed {
@@ -422,25 +440,27 @@ fn migrate_clean_to_global(table: &mut Table) -> bool {
         let Some(scope_table) = table.get_mut(scope).and_then(toml::Value::as_table_mut) else {
             continue;
         };
-        if let Some(value) = scope_table.remove("clean") {
+        if let Some(value) = scope_table.remove(CLEAN_ACTION_KEY) {
             changed = true;
             if migrated_value.is_none() {
                 migrated_value = Some(value);
             }
         }
-        if matches!(scope, "lang" | "cpu") && scope_table.is_empty() {
+        if matches!(scope, LANG_SCOPE_KEY | CPU_SCOPE_KEY) && scope_table.is_empty() {
             table.remove(scope);
         }
     }
 
     if let Some(value) = migrated_value {
-        if !table.contains_key("global") {
-            table.insert("global".to_string(), Value::Table(Table::new()));
+        if !table.contains_key(GLOBAL_SCOPE_KEY) {
+            table.insert(GLOBAL_SCOPE_KEY.to_string(), Value::Table(Table::new()));
         }
-        if let Some(global) = table.get_mut("global").and_then(toml::Value::as_table_mut)
-            && !global.contains_key("clean")
+        if let Some(global) = table
+            .get_mut(GLOBAL_SCOPE_KEY)
+            .and_then(toml::Value::as_table_mut)
+            && !global.contains_key(CLEAN_ACTION_KEY)
         {
-            global.insert("clean".to_string(), value);
+            global.insert(CLEAN_ACTION_KEY.to_string(), value);
         }
     }
 

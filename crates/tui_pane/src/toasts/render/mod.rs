@@ -237,8 +237,8 @@ mod tests {
         let mut toasts = Toasts::<TestApp>::with_settings(settings.clone());
         let task_id = toasts.start_task("Checks", "");
         let items = [
-            TrackedItem::new("~/work/example-api-fix", "example-api-fix"),
-            TrackedItem::new("~/work/example-ui", "example-ui"),
+            TrackedItem::new("~/work/service-api", "service-api"),
+            TrackedItem::new("~/work/service-ui", "service-ui"),
         ];
         assert!(toasts.set_tracked_items(task_id, &items));
 

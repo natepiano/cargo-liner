@@ -10,6 +10,22 @@ pub(super) const CI_TIMESTAMP_WIDTH: u16 = 16;
 
 pub(super) const MAX_FINDER_RESULTS: usize = 50;
 
+// cargo process commands
+pub(super) const CARGO_BENCH_FLAG: &str = "--bench";
+pub(super) const CARGO_BENCH_SUBCOMMAND: &str = "bench";
+pub(super) const CARGO_CLEAN_SUBCOMMAND: &str = "clean";
+pub(super) const CARGO_COLOR_ALWAYS_FLAG: &str = "--color=always";
+pub(super) const CARGO_EXAMPLE_FLAG: &str = "--example";
+pub(super) const CARGO_FEATURES_FLAG: &str = "--features";
+pub(super) const CARGO_PACKAGE_FLAG: &str = "-p";
+pub(super) const CARGO_RELEASE_FLAG: &str = "--release";
+pub(super) const CARGO_RUN_SUBCOMMAND: &str = "run";
+
+// cargo target labels
+pub(super) const TARGET_KIND_BENCH_LABEL: &str = "bench";
+pub(super) const TARGET_KIND_BIN_LABEL: &str = "bin";
+pub(super) const TARGET_KIND_EXAMPLE_LABEL: &str = "example";
+
 // perf log
 pub(super) const PERF_LOG_FILE: &str = "cargo-port-tui-perf.log";
 pub(super) const PREVIOUS_PERF_LOG_FILE: &str = "cargo-port-tui-perf.prev.log";

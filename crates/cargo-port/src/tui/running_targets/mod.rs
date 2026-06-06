@@ -6,6 +6,7 @@
 //! the exe as a bin / example / bench of that workspace.
 
 mod app_tick;
+mod constants;
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -27,7 +28,9 @@ use sysinfo::System;
 use sysinfo::UpdateKind;
 use tui_pane::RollingMean;
 
+use self::constants::CARGO_BIN_DIR;
 use super::panes::RunTargetKind;
+use crate::constants::CARGO_COMMAND_NAME;
 use crate::project::AbsolutePath;
 
 /// Ceiling on the ancestor walk, against parent-link cycles from PID reuse.
@@ -139,7 +142,7 @@ impl RunProfile {
         match self {
             Self::Debug => "debug",
             Self::Release => "release",
-            Self::Installed => "cargo",
+            Self::Installed => CARGO_COMMAND_NAME,
         }
     }
 
@@ -731,7 +734,7 @@ fn cargo_install_bin_dir() -> Option<AbsolutePath> {
         .map(PathBuf::from)
         .or_else(|| env::var_os("CARGO_HOME").map(PathBuf::from))
         .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")))?;
-    let bin = base.join("bin");
+    let bin = base.join(CARGO_BIN_DIR);
     let canonical = bin.canonicalize().unwrap_or(bin);
     Some(AbsolutePath::from(canonical))
 }

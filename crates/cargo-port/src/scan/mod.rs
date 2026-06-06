@@ -14,6 +14,7 @@ use crate::project::WorkspaceMetadata;
 
 mod cargo_metadata;
 mod ci_cache;
+mod constants;
 mod discovery;
 mod disk_usage;
 mod language_stats;
