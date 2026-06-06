@@ -216,7 +216,7 @@ mod tests {
             name:              name.to_string(),
             display_name:      name.to_string(),
             kind:              RunTargetKind::Example,
-            source:            TargetSource::Member("bevy_diegetic".to_string()),
+            source:            TargetSource::member("bevy_diegetic".to_string()),
             project_path:      path(project_path),
             package_name:      "bevy_diegetic".to_string(),
             src_path:          path(&format!("{member_path}/examples/{name}.rs")),

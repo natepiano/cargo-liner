@@ -16,7 +16,6 @@ use ratatui::Frame;
 use ratatui::layout::Alignment;
 use ratatui::layout::Constraint;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
@@ -41,12 +40,10 @@ use tui_pane::Placed;
 use tui_pane::Region;
 use tui_pane::Size;
 use tui_pane::ViewportOverflow;
-use tui_pane::accent_color;
 use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
 
 use super::TargetEntry;
-use super::TargetSource;
 use super::TargetsData;
 use super::package::RenderStyles;
 use super::pane_impls::TargetsPane;
@@ -454,7 +451,7 @@ fn target_row(entry: &TargetEntry, name_cell: Cell<'static>, layout: &Layout) ->
         render::truncate_with_ellipsis(entry.source.label(), layout.source, "\u{2026}");
     Row::new(vec![
         name_cell,
-        Cell::from(source_label).style(Style::default().fg(source_color(&entry.source))),
+        Cell::from(source_label).style(Style::default().fg(label_color())),
         Cell::from(Line::from(format!("{} ", entry.kind.label())).alignment(Alignment::Right))
             .style(Style::default().fg(entry.kind.color())),
     ])
@@ -522,13 +519,6 @@ fn source_col_width_from(entries: &[TargetEntry]) -> usize {
     max_entry_width.max(columns::display_width(SOURCE_HEADER))
 }
 
-fn source_color(source: &TargetSource) -> Color {
-    match source {
-        TargetSource::Workspace => accent_color(),
-        TargetSource::Member(_) | TargetSource::Worktree(_) => label_color(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use ratatui::layout::Rect;
@@ -554,7 +544,7 @@ mod tests {
             name:              display_name.to_string(),
             display_name:      display_name.to_string(),
             kind:              RunTargetKind::Example,
-            source:            TargetSource::Worktree(source_label.to_string()),
+            source:            TargetSource::worktree(source_label.to_string()),
             project_path:      AbsolutePath::from("/tmp/demo"),
             package_name:      "demo".to_string(),
             src_path:          AbsolutePath::from(format!("/tmp/demo/examples/{display_name}.rs")),

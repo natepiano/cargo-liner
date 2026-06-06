@@ -375,7 +375,7 @@ fn targets_copy_returns_source_path_for_any_target_row() {
             name:              "demo".to_string(),
             display_name:      "demo".to_string(),
             kind:              RunTargetKind::Binary,
-            source:            TargetSource::Workspace,
+            source:            TargetSource::workspace_root("demo".into()),
             project_path:      AbsolutePath::from("/ws"),
             package_name:      "demo".to_string(),
             src_path:          AbsolutePath::from("/ws/src/main.rs"),
@@ -385,7 +385,7 @@ fn targets_copy_returns_source_path_for_any_target_row() {
             name:              "demo_example".to_string(),
             display_name:      "demo_example".to_string(),
             kind:              RunTargetKind::Example,
-            source:            TargetSource::Workspace,
+            source:            TargetSource::workspace_root("demo".into()),
             project_path:      AbsolutePath::from("/ws"),
             package_name:      "demo".to_string(),
             src_path:          AbsolutePath::from("/ws/examples/demo_example.rs"),
@@ -989,7 +989,7 @@ mod targets_from_metadata {
         assert_eq!(data.binaries.len(), 1);
         assert_eq!(
             data.binaries[0].source,
-            TargetSource::Member("bevy_liminal".into()),
+            TargetSource::member("bevy_liminal".into()),
             "standalone package must not borrow the misleading `workspace` label"
         );
     }
@@ -1104,18 +1104,22 @@ mod targets_from_metadata {
         let data = TargetsData::from_workspace_metadata(&metadata, &path("/ws"));
 
         let binary_sources: Vec<&TargetSource> = data.binaries.iter().map(|e| &e.source).collect();
-        assert!(binary_sources.contains(&&TargetSource::Workspace));
-        assert!(binary_sources.contains(&&TargetSource::Member("core".into())));
+        assert!(binary_sources.contains(&&TargetSource::workspace_root("ws-root".into())));
+        assert!(binary_sources.contains(&&TargetSource::member("core".into())));
         assert_eq!(data.binaries.len(), 2);
 
-        // Workspace bucket sorts before members.
-        assert_eq!(data.examples[0].source, TargetSource::Workspace);
+        // Workspace root package sorts before members while displaying its package name.
+        assert_eq!(
+            data.examples[0].source,
+            TargetSource::workspace_root("ws-root".into())
+        );
+        assert_eq!(data.examples[0].source.label(), "ws-root");
         assert_eq!(data.examples[0].name, "root-ex");
         // Members alphabetical: core before engine.
-        assert_eq!(data.examples[1].source, TargetSource::Member("core".into()));
+        assert_eq!(data.examples[1].source, TargetSource::member("core".into()));
         assert_eq!(
             data.examples[2].source,
-            TargetSource::Member("engine".into())
+            TargetSource::member("engine".into())
         );
     }
 
@@ -1130,13 +1134,13 @@ mod targets_from_metadata {
 
         assert_eq!(data.binaries.len(), 1, "only core's bin shows");
         assert_eq!(data.binaries[0].name, "core");
-        assert_eq!(data.binaries[0].source, TargetSource::Member("core".into()));
+        assert_eq!(data.binaries[0].source, TargetSource::member("core".into()));
         assert_eq!(data.examples.len(), 1);
         assert_eq!(data.examples[0].name, "core-ex");
         assert!(
             data.examples
                 .iter()
-                .all(|e| matches!(&e.source, TargetSource::Member(name) if name == "core")),
+                .all(|e| e.source.is_member_named("core")),
             "no entry from sibling members or the workspace root"
         );
     }
@@ -1158,7 +1162,7 @@ mod targets_from_metadata {
     fn virtual_workspace_has_no_workspace_source() {
         // No root package — only members. Selecting the workspace
         // root still aggregates both members, but no entry maps to
-        // `TargetSource::Workspace`.
+        // No entry uses the workspace-root source kind.
         let m1 = record(
             "m1",
             "/ws/crates/m1/Cargo.toml",
@@ -1181,9 +1185,7 @@ mod targets_from_metadata {
             TargetsData::from_workspace_metadata(&workspace("/ws", vec![m1, m2]), &path("/ws"));
 
         assert!(
-            data.examples
-                .iter()
-                .all(|e| !matches!(e.source, TargetSource::Workspace)),
+            data.examples.iter().all(|e| !e.source.is_workspace_root()),
             "no entry maps to Workspace when there's no root package"
         );
         assert_eq!(data.examples.len(), 2);

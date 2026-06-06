@@ -208,34 +208,66 @@ impl RunTargetKind {
     }
 }
 
-/// Where a target lives within a workspace. `Workspace` is the root
-/// package (its manifest sits at `workspace_root/Cargo.toml`); `Member`
-/// is any other workspace member, tagged with its cargo `[package].name`
-/// so the UI can show it and downstream `cargo` invocations can pass
-/// `--package <name>`.
+/// Where a target appears in the Source column.
+///
+/// The label is always explicit: root-package targets and member targets
+/// both display their cargo `[package].name`. `TargetSourceKind` only
+/// controls ordering.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum TargetSource {
-    Workspace,
-    Member(String),
-    Worktree(String),
+pub struct TargetSource {
+    label: String,
+    kind:  TargetSourceKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TargetSourceKind {
+    WorkspaceRoot,
+    Member,
+    Worktree,
 }
 
 impl TargetSource {
-    pub const fn label(&self) -> &str {
-        match self {
-            Self::Workspace => "workspace",
-            Self::Member(name) => name.as_str(),
-            Self::Worktree(label) => label.as_str(),
+    pub const fn workspace_root(package_name: String) -> Self {
+        Self {
+            label: package_name,
+            kind:  TargetSourceKind::WorkspaceRoot,
         }
     }
 
+    pub const fn member(package_name: String) -> Self {
+        Self {
+            label: package_name,
+            kind:  TargetSourceKind::Member,
+        }
+    }
+
+    pub const fn worktree(label: String) -> Self {
+        Self {
+            label,
+            kind: TargetSourceKind::Worktree,
+        }
+    }
+
+    pub const fn label(&self) -> &str { self.label.as_str() }
+
     /// Sort key: workspace root first, then members, then worktree labels.
     const fn sort_key(&self) -> (u8, &str) {
-        match self {
-            Self::Workspace => (0, ""),
-            Self::Member(name) => (1, name.as_str()),
-            Self::Worktree(label) => (2, label.as_str()),
-        }
+        let order = match self.kind {
+            TargetSourceKind::WorkspaceRoot => 0,
+            TargetSourceKind::Member => 1,
+            TargetSourceKind::Worktree => 2,
+        };
+        (order, self.label())
+    }
+
+    #[cfg(test)]
+    pub const fn is_workspace_root(&self) -> bool {
+        matches!(self.kind, TargetSourceKind::WorkspaceRoot)
+    }
+
+    #[cfg(test)]
+    pub fn is_member_named(&self, package_name: &str) -> bool {
+        matches!(self.kind, TargetSourceKind::Member) && self.label == package_name
     }
 }
 
@@ -1360,7 +1392,7 @@ impl TargetsData {
             .chain(self.benches.iter_mut())
         {
             entry.source =
-                TargetSource::Worktree(format!("{checkout_name}/{}", entry.package_name));
+                TargetSource::worktree(format!("{checkout_name}/{}", entry.package_name));
         }
     }
 
@@ -1408,9 +1440,9 @@ impl TargetsData {
                 continue;
             }
             let source = if is_real_workspace && manifest_dir == Some(workspace_root) {
-                TargetSource::Workspace
+                TargetSource::workspace_root(record.name.clone())
             } else {
-                TargetSource::Member(record.name.clone())
+                TargetSource::member(record.name.clone())
             };
 
             for target in &record.targets {
@@ -1575,7 +1607,7 @@ mod target_list_tests {
             name: name.into(),
             display_name: name.into(),
             kind,
-            source: TargetSource::Workspace,
+            source: TargetSource::workspace_root("demo".into()),
             project_path: AbsolutePath::from("/tmp"),
             package_name: "demo".into(),
             src_path: AbsolutePath::from(format!("/tmp/{name}.rs")),

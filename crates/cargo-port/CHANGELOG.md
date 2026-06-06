@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Fix Targets pane Source and Kind column alignment so Kind sits against the pane edge
+- Fix workspace-root target Source labels to show package names instead of `workspace`
 
 ## [0.1.0] - 2026-06-05
 

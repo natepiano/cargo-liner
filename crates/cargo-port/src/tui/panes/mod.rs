@@ -76,6 +76,7 @@ pub(super) use pane_data::PullRequestSectionState;
 pub(super) use pane_data::RemoteRow;
 pub(super) use pane_data::RunTargetKind;
 pub(super) use pane_data::TargetEntry;
+#[cfg(test)]
 pub(super) use pane_data::TargetSource;
 pub(super) use pane_data::TargetsData;
 pub(super) use pane_data::WorktreeInfo;

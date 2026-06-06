@@ -1494,7 +1494,7 @@ fn arrow_keys_expand_and_collapse_the_running_cargo_group() {
             name:              "demo".to_string(),
             display_name:      "demo".to_string(),
             kind:              panes::RunTargetKind::Binary,
-            source:            panes::TargetSource::Workspace,
+            source:            panes::TargetSource::workspace_root("demo".into()),
             project_path:      AbsolutePath::from("/tmp/demo"),
             package_name:      "demo".to_string(),
             src_path:          AbsolutePath::from("/tmp/demo/src/main.rs"),
