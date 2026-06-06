@@ -430,11 +430,10 @@ fn build_targets_title(
 fn compute_layout(entries: &[TargetEntry], content_width: u16) -> Layout {
     let kind = panes::RunTargetKind::padded_label_width();
     let source = source_col_width_from(entries);
-    let target = target_col_width_from(entries);
     let gaps = usize::from(TARGET_TABLE_COLUMN_SPACING) * TARGET_TABLE_GAP_COUNT;
     let text_budget = usize::from(content_width).saturating_sub(kind + gaps);
     let source = source.min(text_budget);
-    let target = target.min(text_budget.saturating_sub(source));
+    let target = text_budget.saturating_sub(source);
     Layout {
         target,
         kind,
@@ -502,6 +501,7 @@ fn build_header_row() -> Row<'static> {
 
 /// Width of the Target column: the longest visible target label plus the
 /// leading pad, or the header if it is wider.
+#[cfg(test)]
 fn target_col_width_from(entries: &[TargetEntry]) -> usize {
     let max_entry_width = entries
         .iter()
@@ -572,16 +572,25 @@ mod tests {
     }
 
     #[test]
-    fn target_table_keeps_target_column_to_content_width_when_roomy() {
+    fn target_table_anchors_source_and_kind_to_right_edge_when_roomy() {
         let entries = vec![
             entry("cascade", "bevy_hana/bevy_diegetic"),
             entry("two_window_panels", "bevy_hana/bevy_lagrange"),
         ];
+        let content_width = 80;
+        let kind = RunTargetKind::padded_label_width();
+        let gaps = usize::from(TARGET_TABLE_COLUMN_SPACING) * TARGET_TABLE_GAP_COUNT;
+        let source = source_col_width_from(&entries);
 
-        let layout = compute_layout(&entries, 80);
+        let layout = compute_layout(&entries, content_width);
 
-        assert_eq!(layout.target, target_col_width_from(&entries));
-        assert_eq!(layout.source, source_col_width_from(&entries));
+        assert!(layout.target > target_col_width_from(&entries));
+        assert_eq!(layout.source, source);
+        assert_eq!(
+            layout.target + layout.source + layout.kind + gaps,
+            usize::from(content_width)
+        );
+        assert_eq!(layout.kind, kind);
         assert_eq!(
             layout.name_max,
             layout.target.saturating_sub(TARGET_LEADING_PAD)
