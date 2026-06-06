@@ -18,19 +18,19 @@ clipboard = ["crossterm/osc52"]
 default   = ["clipboard"]
 
 [dependencies]
-crossbeam-channel  = "0.5"
-crossterm          = "0.29.0"
-dark-light         = "2"
-dirs               = "6.0.0"
-ratatui            = "0.30.0"
-serde              = { version = "1", features = ["derive"] }
-sysinfo            = "0.38.4"
-thiserror          = "2"
-tokio              = { version = "1", features = ["macros", "rt", "time"] }
-toml               = "1.1.2"
-tracing            = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-unicode-width      = "0.2.2"
+crossbeam-channel  = { workspace = true }
+crossterm          = { workspace = true }
+dark-light         = { workspace = true }
+dirs               = { workspace = true }
+ratatui            = { workspace = true }
+serde              = { workspace = true, features = ["derive"] }
+sysinfo            = { workspace = true }
+thiserror          = { workspace = true }
+tokio              = { workspace = true, features = ["macros", "rt", "time"] }
+toml               = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+unicode-width      = { workspace = true }
 
 # Already in the tree via sysinfo with these exact features, so the direct
 # dependency adds no compile units; used for the IOKit GPU sampler.
