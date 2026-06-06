@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add cargo metadata-backed package and target details, workspace target aggregation, running-target markers, and richer clean-plan confirmation
 - Add GitHub rate-limit and service-recovery status in the Git pane, including persistent recovery toasts and automatic refetch after service recovery
 - Add richer worktree, submodule, and vendored-package handling, including submodule Git state and vendored workspace member rows
+- Add Git pane branch relation labels, bisect progress, aligned remote/worktree sync columns, and clearer `gh` status handling
+- Add Package detail test counts, rustdoc doctest counts, and crates.io version, prerelease, and download stats
+- Add output-pane line selection, yank, vim visual selection, mouse drag selection, and sanitized copied output
+- Add a collapsible Running sub-pane with per-process CPU/memory, process outlines, PID-specific kill controls, and CPU/GPU smoothing
+- Add a consolidated startup progress panel and first-run Include dirs hint
+- Add cache root editing in Settings and clearer CPU utilization threshold names
 
 ### Changed
 - Convert the app into a Cargo workspace and extract reusable TUI framework code into the new `tui_pane` crate
@@ -22,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replace hand-parsed Cargo target and package fallbacks with `cargo_metadata`-driven records
 - Improve app responsiveness with cached scroll hot paths, event-driven rendering, background diagnostics polling, and higher scan concurrency
 - Improve clean behavior with target-directory indexing, async re-fingerprinting, affected-sibling confirmation, and target vs non-target disk breakdowns
+- Improve startup responsiveness by loading lint history off-thread and persisting archived run sizes
+- Resize top-row panes from rendered content so middle-row panes get more usable space
 
 ### Fixed
 - Fix lint runtime reliability across interrupted runs, deleted worktrees, Windows execution, Linux file-read events, cache pruning, and cloned runtime handles
@@ -29,6 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fix finder and keymap behavior for visible-entry indexing, path separator matching, TOML override preservation, keymap popup height, and app-global shortcut registration
 - Fix toast lifecycle bugs for cargo clean completion, task countdowns, startup disk scans, duplicate CI toasts, char-boundary panics, and elapsed-time display noise
 - Fix live project and worktree state for refreshed worktree groups, deleted project cleanup, inline dirs, newly discovered project metadata, and member vendored details
+- Fix CI branch/all filtering, CI header alignment, and vendored/member rows inheriting worktree git deltas
+- Fix worktree-group target display, fitted target columns, and launched targets disappearing from the Running pane
+- Fix startup crates.io fetch tracking and prevent standalone network toasts from leaking during startup
+- Fix detail-pane overflow pagination, keymap popup sizing, language table colors, and terminal-control leakage in target output
 
 ## [0.0.3] - 2026-04-16
 
