@@ -1,7 +1,7 @@
 # tui_pane
 
-Reusable `ratatui` pane framework embedded by the `cargo-port` binary in this
-workspace.
+Reusable `ratatui` pane framework, extracted from and embedded by the
+[`cargo-port`](https://crates.io/crates/cargo-port) binary.
 
 `tui_pane` owns the generic terminal-UI mechanics that should be reusable across
 apps:
@@ -27,4 +27,5 @@ Public API is exported from the crate root. Prefer `tui_pane::Keymap`,
 `tui_pane::SettingsStore`, `tui_pane::Toasts`, and similar root paths rather
 than importing through internal modules.
 
-This crate is not separately published today.
+Extracted from cargo-port and published alongside it. The API is young and
+tracks cargo-port's needs first; expect breaking changes in 0.x minor versions.
