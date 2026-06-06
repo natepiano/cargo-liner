@@ -231,7 +231,7 @@ impl<'a> MendRunner<'a> {
         let compiler_fixable = planned.compiler_fixable;
         match planned.operation_mode.intent {
             OperationIntent::ReadOnly => Ok(ExecutionOutcome {
-                compiler_warning_facts: planned.report.facts.compiler_warnings,
+                compiler_warning_facts: planned.report.facts.compiler_warning_facts,
                 report: planned.report,
                 notice: None,
                 check_duration,
@@ -246,7 +246,7 @@ impl<'a> MendRunner<'a> {
                     planned.fix_scans(),
                 );
                 Ok(ExecutionOutcome {
-                    compiler_warning_facts: planned.report.facts.compiler_warnings,
+                    compiler_warning_facts: planned.report.facts.compiler_warning_facts,
                     report: planned.report,
                     notice,
                     check_duration,
@@ -272,7 +272,7 @@ impl<'a> MendRunner<'a> {
                 Some(&planned.report),
                 fix_scans,
             );
-            let warning_facts = planned.report.facts.compiler_warnings;
+            let warning_facts = planned.report.facts.compiler_warning_facts;
             return Ok(ExecutionOutcome {
                 report: planned.report,
                 notice,
@@ -299,7 +299,7 @@ impl<'a> MendRunner<'a> {
                     Some(&validation.report),
                     fix_scans,
                 );
-                let warning_facts = validation.report.facts.compiler_warnings;
+                let warning_facts = validation.report.facts.compiler_warning_facts;
                 Ok(ExecutionOutcome {
                     report: validation.report,
                     notice,

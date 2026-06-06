@@ -14,7 +14,7 @@ use rustc_driver::Compilation;
 use rustc_interface::interface::Compiler;
 use rustc_middle::ty::TyCtxt;
 
-use super::build::RUSTC_BIN;
+use super::constants::RUSTC_BIN;
 use super::settings::DriverSettings;
 use super::visibility;
 use crate::reporting::EXIT_CODE_ERROR;

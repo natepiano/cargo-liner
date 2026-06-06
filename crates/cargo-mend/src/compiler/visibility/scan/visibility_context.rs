@@ -137,16 +137,16 @@ pub fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) ->
     }
 
     let report = StoredReport {
-        version:              FINDINGS_SCHEMA_VERSION,
-        analysis_fingerprint: settings.analysis_fingerprint.clone(),
-        scope_fingerprint:    settings.scope_fingerprint.clone(),
-        package_root:         settings.package_root.to_string_lossy().into_owned(),
-        crate_root_file:      stored_crate_root.to_string_lossy().into_owned(),
-        config_fingerprint:   settings.config_fingerprint.clone(),
-        findings:             sink.findings,
-        pub_use_fix_facts:    sink.pub_use_fix_facts,
-        compiler_warnings:    CompilerWarningFacts::None,
-        use_sites:            sink.use_sites,
+        version:                FINDINGS_SCHEMA_VERSION,
+        analysis_fingerprint:   settings.analysis_fingerprint.clone(),
+        scope_fingerprint:      settings.scope_fingerprint.clone(),
+        package_root:           settings.package_root.to_string_lossy().into_owned(),
+        crate_root_file:        stored_crate_root.to_string_lossy().into_owned(),
+        config_fingerprint:     settings.config_fingerprint.clone(),
+        findings:               sink.findings,
+        pub_use_fix_facts:      sink.pub_use_fix_facts,
+        compiler_warning_facts: CompilerWarningFacts::None,
+        use_sites:              sink.use_sites,
     };
     fs::write(&output_path, to_vec_pretty(&report)?)
         .with_context(|| format!("failed to write findings file {}", output_path.display()))?;

@@ -26,12 +26,34 @@ use anyhow::Result;
 use anyhow::bail;
 use serde_json::to_string;
 
+use super::constants::CARGO_BIN;
+use super::constants::CARGO_FLAG_ALL_TARGETS;
+use super::constants::CARGO_FLAG_ALLOW_DIRTY;
+use super::constants::CARGO_FLAG_ALLOW_STAGED;
+use super::constants::CARGO_FLAG_TESTS;
+use super::constants::CARGO_PROGRESS_PREFIX_BLOCKING;
+use super::constants::CARGO_PROGRESS_PREFIX_BUILDING;
+use super::constants::CARGO_PROGRESS_PREFIX_CHECKING;
+use super::constants::CARGO_PROGRESS_PREFIX_COMPILING;
+use super::constants::CARGO_PROGRESS_PREFIX_FINISHED;
+use super::constants::CARGO_PROGRESS_PREFIX_FRESH;
+use super::constants::CARGO_SUBCOMMAND_CHECK;
+use super::constants::CARGO_SUBCOMMAND_FIX;
+use super::constants::CARGO_UNUSED_IMPORT_WARNING;
+use super::constants::CARGO_UNUSED_IMPORTS_WARNING;
+use super::constants::CARGO_WARNING_SUMMARY_PREFIX;
+use super::constants::CARGO_WARNING_SUMMARY_TOKEN_GENERATED;
+use super::constants::CARGO_WARNING_SUMMARY_TOKEN_TO_APPLY;
 use super::constants::CONFIG_FINGERPRINT_ENV;
 use super::constants::CONFIG_JSON_ENV;
 use super::constants::CONFIG_ROOT_ENV;
+use super::constants::DIAGNOSTIC_SEVERITY_ERROR_PREFIX;
+use super::constants::DIAGNOSTIC_SEVERITY_WARNING_PREFIX;
 use super::constants::DRIVER_ENV;
 use super::constants::DRIVER_ENV_ENABLED;
 use super::constants::FINDINGS_DIR_ENV;
+use super::constants::PROGRESS_FRAMES;
+use super::constants::PROGRESS_INTERVAL;
 use super::constants::RUSTC_WORKSPACE_WRAPPER_ENV;
 use super::constants::SCOPE_FINGERPRINT_ENV;
 use super::persistence;
@@ -47,47 +69,8 @@ use crate::reporting::Report;
 use crate::selection::CargoCheckPlan;
 use crate::selection::Selection;
 
-// binary names
-pub(crate) const CARGO_BIN: &str = "cargo";
-pub(crate) const RUSTC_BIN: &str = "rustc";
-
-// cargo cli flags
-pub(crate) const CARGO_FLAG_ALL_TARGETS: &str = "--all-targets";
-pub(crate) const CARGO_FLAG_ALLOW_DIRTY: &str = "--allow-dirty";
-pub(crate) const CARGO_FLAG_ALLOW_STAGED: &str = "--allow-staged";
-pub(crate) const CARGO_FLAG_EXCLUDE: &str = "--exclude";
-pub(crate) const CARGO_FLAG_MANIFEST_PATH: &str = "--manifest-path";
-pub(crate) const CARGO_FLAG_PACKAGE: &str = "--package";
-pub(crate) const CARGO_FLAG_TESTS: &str = "--tests";
-pub(crate) const CARGO_FLAG_WORKSPACE: &str = "--workspace";
-
 // cargo manifest filename
 pub(crate) const CARGO_MANIFEST_FILE: &str = "Cargo.toml";
-
-// cargo output protocol
-pub(crate) const CARGO_PROGRESS_PREFIX_BLOCKING: &str = "Blocking waiting for file lock";
-pub(crate) const CARGO_PROGRESS_PREFIX_BUILDING: &str = "Building ";
-pub(crate) const CARGO_PROGRESS_PREFIX_CHECKING: &str = "Checking ";
-pub(crate) const CARGO_PROGRESS_PREFIX_COMPILING: &str = "Compiling ";
-pub(crate) const CARGO_PROGRESS_PREFIX_FINISHED: &str = "Finished ";
-pub(crate) const CARGO_PROGRESS_PREFIX_FRESH: &str = "Fresh ";
-pub(crate) const CARGO_UNUSED_IMPORTS_WARNING: &str = "warning: unused imports:";
-pub(crate) const CARGO_UNUSED_IMPORT_WARNING: &str = "warning: unused import:";
-pub(crate) const CARGO_WARNING_SUMMARY_PREFIX: &str = "warning: `";
-pub(crate) const CARGO_WARNING_SUMMARY_TOKEN_GENERATED: &str = " generated ";
-pub(crate) const CARGO_WARNING_SUMMARY_TOKEN_TO_APPLY: &str = "to apply ";
-
-// cargo subcommands
-pub(crate) const CARGO_SUBCOMMAND_CHECK: &str = "check";
-pub(crate) const CARGO_SUBCOMMAND_FIX: &str = "fix";
-pub(crate) const CARGO_SUBCOMMAND_MEND: &str = "mend";
-
-// diagnostic severity prefixes
-pub(crate) const DIAGNOSTIC_SEVERITY_ERROR_PREFIX: &str = "error:";
-pub(crate) const DIAGNOSTIC_SEVERITY_WARNING_PREFIX: &str = "warning:";
-
-const PROGRESS_INTERVAL: Duration = Duration::from_millis(120);
-const PROGRESS_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BuildOutputMode {
@@ -166,7 +149,7 @@ pub(crate) fn run_selection(
         })?;
 
     let mut report = report;
-    report.facts.compiler_warnings = command_outcome.compiler_warning_facts;
+    report.facts.compiler_warning_facts = command_outcome.compiler_warning_facts;
     Ok(SelectionResult {
         report,
         check_duration: command_outcome.duration,

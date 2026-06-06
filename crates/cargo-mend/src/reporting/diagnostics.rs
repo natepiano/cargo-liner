@@ -249,9 +249,10 @@ pub(crate) struct ReportSummary {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct ReportFacts {
     #[serde(default)]
-    pub pub_use:           PubUseFixFacts,
-    #[serde(default)]
-    pub compiler_warnings: CompilerWarningFacts,
+    #[serde(rename = "pub_use")]
+    pub pub_use_fix_facts:      PubUseFixFacts,
+    #[serde(default, rename = "compiler_warnings")]
+    pub compiler_warning_facts: CompilerWarningFacts,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

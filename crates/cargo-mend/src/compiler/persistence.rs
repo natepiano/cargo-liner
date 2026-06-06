@@ -31,22 +31,22 @@ use crate::selection::Selection;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct StoredReport {
-    pub version:              u32,
+    pub version:                u32,
     #[serde(default)]
-    pub analysis_fingerprint: String,
+    pub analysis_fingerprint:   String,
     #[serde(default)]
-    pub scope_fingerprint:    String,
-    pub package_root:         String,
+    pub scope_fingerprint:      String,
+    pub package_root:           String,
     #[serde(default)]
-    pub crate_root_file:      String,
-    pub config_fingerprint:   String,
-    pub findings:             Vec<StoredFinding>,
+    pub crate_root_file:        String,
+    pub config_fingerprint:     String,
+    pub findings:               Vec<StoredFinding>,
     #[serde(default)]
-    pub pub_use_fix_facts:    Vec<StoredPubUseFixFact>,
+    pub pub_use_fix_facts:      Vec<StoredPubUseFixFact>,
+    #[serde(default, rename = "compiler_warnings")]
+    pub compiler_warning_facts: CompilerWarningFacts,
     #[serde(default)]
-    pub compiler_warnings:    CompilerWarningFacts,
-    #[serde(default)]
-    pub use_sites:            Vec<UseSite>,
+    pub use_sites:              Vec<UseSite>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -232,8 +232,8 @@ pub(super) fn load_report(
         summary: ReportSummary::default(),
         findings,
         facts: ReportFacts {
-            pub_use:           pub_use_fix_facts.into(),
-            compiler_warnings: CompilerWarningFacts::None,
+            pub_use_fix_facts:      pub_use_fix_facts.into(),
+            compiler_warning_facts: CompilerWarningFacts::None,
         },
     })
 }

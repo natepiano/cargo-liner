@@ -93,7 +93,7 @@ pub(crate) fn scan_selection(selection: &Selection, report: &Report) -> Result<P
 
 fn collect_pub_use_fix_facts(selection: &Selection, report: &Report) -> Vec<PubUseFixFact> {
     let mut facts = Vec::new();
-    for fact in report.facts.pub_use.iter() {
+    for fact in report.facts.pub_use_fix_facts.iter() {
         let child_rel = normalize_rel_path(&fact.child_path);
         let parent_rel = normalize_rel_path(&fact.parent_path);
         facts.push(PubUseFixFact {
