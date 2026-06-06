@@ -1,0 +1,4 @@
+# cargo-port depends on its sibling lib tui_pane, so the two crates must
+# publish together in dependency order. `cargo publish --workspace` handles
+# the ordering and verification (cargo >= 1.90).
+workspace_publish = true
