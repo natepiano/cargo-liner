@@ -513,7 +513,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-port"
-version = "0.0.4-dev"
+version = "0.1.0"
 dependencies = [
  "ansi-to-tui",
  "anyhow",
@@ -4229,7 +4229,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "tui_pane"
-version = "0.0.4-dev"
+version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
  "crossterm",
