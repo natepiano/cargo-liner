@@ -11,7 +11,7 @@ keywords   = ["cargo", "inspect", "project", "rust", "tui"]
 license    = "MIT OR Apache-2.0"
 name       = "cargo-port"
 repository = "https://github.com/natepiano/cargo-port"
-version    = "0.2.0-dev"
+version    = "0.1.1"
 
 [workspace]
 members  = ["tui_pane"]
@@ -84,7 +84,7 @@ unicode-width        = { workspace = true }
 walkdir              = { workspace = true }
 
 # tui_pane provides the framework used by the binary.
-tui_pane = { path = "tui_pane", version = "0.2.0-dev" }
+tui_pane = { path = "tui_pane", version = "0.1.1" }
 
 [dev-dependencies]
 tempfile = { workspace = true }
