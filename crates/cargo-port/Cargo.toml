@@ -5,13 +5,13 @@ description = "A TUI for inspecting and managing Rust projects"
 edition     = "2024"
 # README screenshots live on GitHub; crates.io rewrites the relative image
 # links against `repository`, so the crate itself doesn't need to ship them.
-exclude     = ["assets/"]
-homepage    = "https://github.com/natepiano/cargo-port"
-keywords    = ["cargo", "inspect", "project", "rust", "tui"]
-license     = "MIT OR Apache-2.0"
-name        = "cargo-port"
-repository  = "https://github.com/natepiano/cargo-port"
-version     = "0.2.0-dev"
+exclude    = ["assets/"]
+homepage   = "https://github.com/natepiano/cargo-port"
+keywords   = ["cargo", "inspect", "project", "rust", "tui"]
+license    = "MIT OR Apache-2.0"
+name       = "cargo-port"
+repository = "https://github.com/natepiano/cargo-port"
+version    = "0.2.0-dev"
 
 [workspace]
 members  = ["tui_pane"]
