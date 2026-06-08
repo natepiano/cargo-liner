@@ -15,7 +15,7 @@ impl App {
         // already-seen name un-marks it, so the row cannot read done
         // while this fetch is in flight. Once the panel has closed, the
         // fetch only drives the steady-state toast.
-        if self.startup.complete_at.is_none() {
+        if self.startup.is_collecting() {
             self.startup.crates_io.expected.insert(name.clone());
             self.startup.crates_io.seen.remove(&name);
             // The name is now expected-but-unseen, so any earlier row
@@ -23,8 +23,7 @@ impl App {
             self.startup.crates_io.complete_at = None;
         }
         self.net
-            .crates_io
-            .running_mut()
+            .crates_io_running_mut()
             .insert(name, Instant::now());
         self.sync_running_crates_io_toast();
     }
@@ -33,7 +32,7 @@ impl App {
     /// the tracker drains. Also advances the startup panel's crates.io row
     /// (`seen` marked here, denominator seeded upfront at startup).
     pub(super) fn handle_crates_io_fetch_complete(&mut self, name: &str) {
-        self.net.crates_io.running_mut().remove(name);
+        self.net.crates_io_running_mut().remove(name);
         self.startup.crates_io.seen.insert(name.to_string());
         self.maybe_log_startup_phase_completions();
         self.sync_running_crates_io_toast();

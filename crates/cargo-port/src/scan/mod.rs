@@ -60,6 +60,7 @@ use tui_pane::Appearance;
 use crate::ci::CiRun;
 use crate::ci::OwnerRepo;
 use crate::lint::CacheUsage;
+use crate::lint::CachedLintStatus;
 use crate::lint::LintRun;
 use crate::lint::LintStatus;
 use crate::project::LanguageStats;
@@ -114,6 +115,10 @@ pub(crate) enum BackgroundMsg {
         path:         AbsolutePath,
         first_commit: Option<String>,
     },
+    /// A project-detail worker has declared all startup follow-up work it can
+    /// enqueue for this path. Used by startup readiness to wait for dynamic
+    /// declarations such as submodule crates.io fetches.
+    ProjectDetailsDeclared { path: AbsolutePath },
     /// Crates.io version and download count fetched for a project.
     CratesIoVersion {
         path:       AbsolutePath,
@@ -139,6 +144,10 @@ pub(crate) enum BackgroundMsg {
         repo: OwnerRepo,
         data: ProjectPrData,
     },
+    /// File paths that will contribute startup progress for language stats.
+    LanguageStatsProgressPlan { entries: Vec<AbsolutePath> },
+    /// File paths visited by the language-stats worker for startup progress.
+    LanguageStatsProgressBatch { entries: Vec<AbsolutePath> },
     /// A background poll for one PR's `checks` state has stopped.
     PullRequestCheckPollStopped { repo: OwnerRepo, number: u32 },
     /// A previously-open PR disappeared from the open-PR list and was
@@ -171,13 +180,13 @@ pub(crate) enum BackgroundMsg {
         path:   AbsolutePath,
         status: LintStatus,
     },
-    /// Startup lint cache check result. Sent once per registered project
-    /// when the lint runtime reads cached lint results from disk during
-    /// initialization. Distinct from `LintStatus` so the app can track
-    /// when all startup cache checks are complete.
+    /// Startup lint cache check result. Sent once per registered project when
+    /// the lint runtime reads terminal cached results from disk during
+    /// initialization. Distinct from `LintStatus` so startup/cache hydration
+    /// cannot represent live running lint work.
     LintStartupStatus {
         path:   AbsolutePath,
-        status: LintStatus,
+        status: CachedLintStatus,
     },
     /// Lint cache pruned — old runs evicted to stay within the configured
     /// cache size limit.
@@ -302,6 +311,9 @@ impl BackgroundMsg {
             // Batch arrivals are aggregated and the handler bumps
             // generation explicitly (see `handle_disk_usage_batch_msg`).
             | Self::DiskUsageBatch { .. }
+            // File-level language progress only feeds the startup panel.
+            | Self::LanguageStatsProgressPlan { .. }
+            | Self::LanguageStatsProgressBatch { .. }
             // Language stats live in `RustInfo`, not in the detail set.
             | Self::LanguageStatsBatch { .. }
             // Test counts feed the detail set's Tests section, but as a
@@ -318,6 +330,7 @@ impl BackgroundMsg {
             | Self::PullRequestDisappeared { .. }
             | Self::CratesIoFetchQueued { .. }
             | Self::CratesIoFetchComplete { .. }
+            | Self::ProjectDetailsDeclared { .. }
             // Live lint statuses resolve the lint-owning project before
             // invalidating detail panes; doing it in the handler keeps
             // owner remaps and toast state tied to the same model update.

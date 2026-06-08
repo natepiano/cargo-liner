@@ -1,6 +1,5 @@
 mod editor_terminal;
 
-use std::process::Command;
 use std::rc::Rc;
 use std::sync::PoisonError;
 use std::time::Instant;
@@ -226,10 +225,9 @@ fn dispatch_output_cancel_preflight(app: &mut App, preflight: OutputCancelPrefli
             let pid_holder = app.inflight.example_child();
             let pid = *pid_holder.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(pid) = pid {
-                let _ = Command::new("kill").arg(pid.to_string()).output();
+                terminal::stop_example_process(pid);
             }
             app.inflight.mark_run_killed();
-            app.scan.mark_terminal_dirty();
             true
         },
         OutputCancelPreflight::CloseVisibleOutput => {

@@ -523,6 +523,7 @@ dependencies = [
  "crossbeam-channel",
  "crossterm",
  "dirs",
+ "ignore",
  "indexmap",
  "itertools 0.14.0",
  "notify",

@@ -2,6 +2,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use crossterm::event::KeyCode;
+use ratatui::style::Color;
 
 use super::toast::ToastDismissal;
 use super::toast::ToastLifetime;
@@ -51,6 +52,28 @@ fn persistent_toast_survives_prune() {
     toasts.prune(Instant::now() + Duration::from_secs(61));
 
     assert!(toasts.is_alive(id));
+}
+
+#[test]
+fn colored_countdown_uses_timed_lifetime_not_task_linger() {
+    let mut toasts = toasts();
+    let id = toasts.push_colored_persistent(
+        "Startup",
+        vec!["Disk usage 100%".to_string()],
+        vec![Color::Green],
+    );
+
+    assert!(toasts.update_colored(id, vec!["Disk usage 100%".to_string()], vec![Color::Green],));
+    assert!(toasts.start_colored_countdown(id, Duration::from_secs(5)));
+
+    let view = toasts
+        .active_now()
+        .into_iter()
+        .find(|toast| toast.title() == "Startup")
+        .unwrap_or_else(|| std::process::abort());
+    assert_eq!(view.linger_progress(), None);
+    assert!(view.remaining_secs().is_some());
+    assert_eq!(view.body_line_colors(), Some(&[Color::Green][..]));
 }
 
 #[test]

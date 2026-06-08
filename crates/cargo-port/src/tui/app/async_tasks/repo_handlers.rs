@@ -350,24 +350,21 @@ impl App {
         // Grow the repo denominator for as long as the startup panel is open,
         // so a fetch queued after local-git completes (and the denominator
         // stabilized) still feeds the GitHub row and holds the panel until it
-        // finishes — without this the panel reached 100% and closed while
-        // late fetches were still running. Once the panel has closed, the
-        // fetch only drives the steady-state "Retrieving GitHub repo details"
-        // toast.
-        if self.startup.complete_at.is_none() {
-            let newly_tracked = self.startup.repo.expected.insert(repo.clone());
-            if newly_tracked && self.startup.repo.complete_at.is_some() {
-                // A late repo reopens the row (and so the panel gate) that it
-                // had already satisfied.
-                self.startup.repo.complete_at = None;
-            }
+        // finishes. A re-fetch of an already-seen repo un-marks it, so the
+        // row cannot read done while this fetch is in flight. Once the panel
+        // has closed, the fetch only drives the steady-state "Retrieving
+        // GitHub repo details" toast.
+        if self.startup.is_collecting() {
+            self.startup.repo.expected.insert(repo.clone());
+            self.startup.repo.seen.remove(&repo);
+            self.startup.repo.complete_at = None;
         }
-        self.net.github.running_mut().insert(repo, Instant::now());
+        self.net.github_running_mut().insert(repo, Instant::now());
         self.sync_running_repo_fetch_toast();
     }
     pub(super) fn handle_repo_fetch_complete(&mut self, repo: OwnerRepo) {
         self.net.github.repo_fetch_in_flight_mut().remove(&repo);
-        self.net.github.running_mut().remove(&repo);
+        self.net.github_running_mut().remove(&repo);
         self.mark_sync_eligible_for(&repo);
         self.startup.repo.seen.insert(repo);
         self.maybe_log_startup_phase_completions();

@@ -146,7 +146,6 @@ impl App {
         // Process exit resumes following the tail so the final output is
         // visible — unless a selection is holding the view.
         self.panes.output.on_process_exit();
-        self.scan.mark_terminal_dirty();
     }
     pub(super) fn poll_clean_msgs(&mut self) {
         while let Ok(msg) = self.background.clean_rx().try_recv() {
@@ -197,6 +196,7 @@ pub(super) const fn record_background_msg_kind(
         | BackgroundMsg::CratesIoFetchQueued { .. }
         | BackgroundMsg::CratesIoFetchComplete { .. }
         | BackgroundMsg::RepoMeta { .. }
+        | BackgroundMsg::ProjectDetailsDeclared { .. }
         | BackgroundMsg::Submodules { .. }
         | BackgroundMsg::ScanResult { .. }
         | BackgroundMsg::ProjectDiscovered { .. }
@@ -208,6 +208,8 @@ pub(super) const fn record_background_msg_kind(
         | BackgroundMsg::ServiceUnreachable { .. }
         | BackgroundMsg::ServiceUnreachableConfirmed { .. }
         | BackgroundMsg::ServiceRateLimited { .. }
+        | BackgroundMsg::LanguageStatsProgressPlan { .. }
+        | BackgroundMsg::LanguageStatsProgressBatch { .. }
         | BackgroundMsg::LanguageStatsBatch { .. }
         | BackgroundMsg::TestCountsBatch { .. }
         | BackgroundMsg::SccacheStats { .. }

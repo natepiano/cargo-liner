@@ -1075,6 +1075,27 @@ fn output_cancel_bindings_clear_output_and_handle_focus() {
     }
 }
 
+#[test]
+fn output_stop_consumes_esc_even_if_global_quit_is_esc() {
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app_with_keymap_toml(&[project], "[global]\nquit = \"Esc\"\n");
+    app.inflight
+        .set_example_output(vec!["line one".to_string()]);
+    app.inflight.set_example_running(Some("demo".to_string()));
+
+    press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+
+    assert!(
+        !app.framework.quit_requested(),
+        "stopping output must not also request cargo-port quit",
+    );
+    assert!(app.inflight.example_running().is_none());
+    assert_eq!(
+        app.inflight.example_output().last().map(String::as_str),
+        Some("── killed ──"),
+    );
+}
+
 // ── Keymap UI backed by framework keymap ──────────────────────────
 
 #[test]

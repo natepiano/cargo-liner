@@ -64,9 +64,6 @@ impl App {
         self.mutate_tree().replace_all(ProjectList::new(projects));
         self.prune_inactive_project_state();
         let lint_registered = self.register_lint_for_root_items();
-        self.startup.lint_count.expected = Some(lint_registered);
-        self.startup.lint_count.seen = 0;
-        self.startup.lint_count.complete_at = None;
         self.refresh_lint_runs_from_disk();
         self.scan.bump_generation();
 
@@ -87,20 +84,7 @@ impl App {
 
         // Mark scan complete and initialize startup tracking.
         self.scan.state.phase = ScanPhase::Complete;
-        self.initialize_startup_phase_tracker();
-        // When nothing will ever increment `seen` (lint runtime disabled or
-        // no eligible projects), no later message drives completion — finish
-        // the phase here. This must run *after*
-        // `initialize_startup_phase_tracker` creates the Startup toast:
-        // completing it earlier marks `lint_count.complete_at` while the
-        // toast (and its "Lint history" item) does not yet exist, so the
-        // item is created already-pending and `complete_once` never fires
-        // again — leaving the Startup toast spinning forever.
-        if lint_registered == 0 {
-            self.maybe_complete_startup_lint_cache();
-        }
-        self.schedule_startup_project_details();
-        self.schedule_git_first_commit_refreshes();
+        self.begin_startup_phase(lint_registered);
     }
     /// Handle a single `BackgroundMsg`. Returns `true` if the tree
     /// needs rebuilding. The match is a 1:1 mapping from variant to
@@ -155,6 +139,9 @@ impl App {
             },
             BackgroundMsg::GitFirstCommit { path, first_commit } => {
                 self.handle_git_first_commit(path.as_path(), first_commit.as_deref());
+            },
+            BackgroundMsg::ProjectDetailsDeclared { path } => {
+                self.mark_startup_project_details_declared(path);
             },
             BackgroundMsg::Submodules { path, submodules } => {
                 self.handle_submodules_msg(path.as_path(), submodules);
@@ -211,6 +198,12 @@ impl App {
             },
             BackgroundMsg::ServiceRateLimited { service } => {
                 self.apply_service_signal(ServiceSignal::RateLimited(service));
+            },
+            BackgroundMsg::LanguageStatsProgressPlan { entries } => {
+                self.mark_startup_languages_expected(&entries);
+            },
+            BackgroundMsg::LanguageStatsProgressBatch { entries } => {
+                self.mark_startup_languages_progress(&entries);
             },
             BackgroundMsg::LanguageStatsBatch { entries } => {
                 self.mark_startup_languages_seen(&entries);

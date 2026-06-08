@@ -135,13 +135,15 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     // singular `BackgroundMsg::DiskUsage` is the only writer for it.
     if !submodules.is_empty() {
         let _ = tx.send(BackgroundMsg::Submodules {
-            path:       abs,
+            path:       abs.clone(),
             submodules: submodules.clone(),
         });
         for sub in &submodules {
             enrichment::enrich(sub, tx, fetch_context);
         }
     }
+
+    let _ = tx.send(BackgroundMsg::ProjectDetailsDeclared { path: abs });
 
     // Disk usage for the top-level project itself is computed by the
     // initial batch scan (`spawn_initial_disk_usage` →

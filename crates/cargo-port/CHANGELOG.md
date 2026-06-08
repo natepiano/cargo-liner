@@ -7,7 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Add Rust language-pane child rows for code, unit tests, integration tests, examples, and benches, with distinct subtotal coloring
+
 ### Fixed
+- Isolate launched examples so stopping them from the Output pane does not also quit cargo-port
+- Avoid rerunning lint commands during rescan; startup now hydrates terminal-only cached lint status instead of feeding the running Lints toast
+- Prevent Startup from entering its close countdown until startup-owned GitHub and crates.io work is terminal
+- Show incremental Languages startup progress while language stats scan files
+- Keep the completed Startup panel green during its close countdown instead of sending it through the task-toast fade path
+- Avoid a full terminal clear when stopping a running example from the Output pane
 - Fix Esc handling so framework overlays close before the output pane when both are visible
 
 ## [0.1.1] - 2026-06-06

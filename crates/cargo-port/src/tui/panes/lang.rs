@@ -120,15 +120,33 @@ fn lang_footer_row(stats: &LanguageStats) -> Row<'static> {
     ])
 }
 
-fn lang_entry_row(entry: &LangEntry, name_width: usize) -> Row<'static> {
-    let icon = language_icon(&entry.language);
-    let name = render::truncate_with_ellipsis(&entry.language, name_width, "\u{2026}");
+fn lang_entry_row(entry: &LangEntry, name_width: usize, indent: usize) -> Row<'static> {
+    let icon = if indent == 0 {
+        format!(" {}", language_icon(&entry.language))
+    } else {
+        String::new()
+    };
+    let label = format!("{}{}", " ".repeat(indent), entry.language);
+    let name = render::truncate_with_ellipsis(&label, name_width, "\u{2026}");
     let total = entry.code + entry.comments + entry.blanks;
-    let num_style = Style::default().fg(title_color());
-    let dim_style = Style::default().fg(label_color());
-    let data_style = Style::default().fg(text_default());
+    let is_subtotal = indent > 0;
+    let num_style = if is_subtotal {
+        Style::default().fg(theme_roles::language_subtotal_color())
+    } else {
+        Style::default().fg(title_color())
+    };
+    let dim_style = if is_subtotal {
+        Style::default().fg(theme_roles::language_subtotal_color())
+    } else {
+        Style::default().fg(label_color())
+    };
+    let data_style = if is_subtotal {
+        num_style
+    } else {
+        Style::default().fg(text_default())
+    };
     Row::new(vec![
-        Cell::from(format!(" {icon}")),
+        Cell::from(icon),
         Cell::from(name).style(dim_style),
         Cell::from(ratatui::text::Line::from(entry.files.to_string()).alignment(Alignment::Right))
             .style(num_style),
@@ -145,18 +163,34 @@ fn lang_entry_row(entry: &LangEntry, name_width: usize) -> Row<'static> {
     ])
 }
 
+struct LangRenderEntry<'a> {
+    entry:  &'a LangEntry,
+    indent: usize,
+}
+
+fn flatten_lang_entries(stats: &LanguageStats) -> Vec<LangRenderEntry<'_>> {
+    let mut rows = Vec::new();
+    for entry in &stats.entries {
+        rows.push(LangRenderEntry { entry, indent: 0 });
+        rows.extend(entry.children.iter().map(|child| LangRenderEntry {
+            entry:  child,
+            indent: 2,
+        }));
+    }
+    rows
+}
+
 fn build_lang_rows(
     viewport: &Viewport,
-    stats: &LanguageStats,
+    entries: &[LangRenderEntry<'_>],
     name_width: usize,
     focus: PaneFocusState,
 ) -> Vec<Row<'static>> {
-    stats
-        .entries
+    entries
         .iter()
         .enumerate()
-        .map(|(row_index, entry)| {
-            lang_entry_row(entry, name_width)
+        .map(|(row_index, render_entry)| {
+            lang_entry_row(render_entry.entry, name_width, render_entry.indent)
                 .style(tui_pane::selection_state(viewport, row_index, focus).overlay_style())
         })
         .collect()
@@ -201,7 +235,9 @@ pub(super) fn render_lang_pane_body(
         .and_then(|p| p.language_stats.as_ref())
         .cloned();
 
-    let lang_count = lang_stats.as_ref().map_or(0, |s| s.entries.len());
+    let lang_count = lang_stats
+        .as_ref()
+        .map_or(0, |s| flatten_lang_entries(s).len());
     let cursor = matches!(focus_state, PaneFocusState::Active).then(|| pane.viewport.pos());
     let title = tui_pane::pane_title(
         "Languages",
@@ -232,7 +268,8 @@ pub(super) fn render_lang_pane_body(
     }
 
     let widths = lang_table_widths();
-    let entry_count = stats.entries.len();
+    let entries = flatten_lang_entries(&stats);
+    let entry_count = entries.len();
 
     let fixed_cols = 3 + 5 * usize::from(LANG_NUM_COL) + 6;
     let name_width = usize::from(inner.width).saturating_sub(fixed_cols);
@@ -247,7 +284,7 @@ pub(super) fn render_lang_pane_body(
     let rows_needed = u16::try_from(entry_count + 1).unwrap_or(u16::MAX);
     let pin_footer = rows_needed > content_below_header;
 
-    let mut rows = build_lang_rows(&pane.viewport, &stats, name_width, focus_state);
+    let mut rows = build_lang_rows(&pane.viewport, &entries, name_width, focus_state);
 
     if pin_footer {
         let footer_y = inner.y + inner.height.saturating_sub(1);

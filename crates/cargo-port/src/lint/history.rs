@@ -136,8 +136,11 @@ pub fn read_history(project_root: &Path) -> Vec<LintRun> {
 }
 
 pub(super) fn read_history_under(cache_root: &Path, project_root: &Path) -> Vec<LintRun> {
-    let mut runs =
-        read_write::read_history_file(&paths::history_path_under(cache_root, project_root));
+    let mut runs: Vec<LintRun> =
+        read_write::read_history_file(&paths::history_path_under(cache_root, project_root))
+            .into_iter()
+            .filter(|run| !matches!(run.status, LintRunStatus::Running))
+            .collect();
     let latest = read_write::read_latest_file(&paths::latest_path_under(cache_root, project_root))
         .filter(|run| !matches!(run.status, LintRunStatus::Running));
 

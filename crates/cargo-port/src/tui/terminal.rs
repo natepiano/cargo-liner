@@ -6,6 +6,7 @@ use std::io::Stdout;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::Path;
+use std::process::Command;
 use std::process::ExitCode;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -20,14 +21,22 @@ use crossterm::event::EnableFocusChange;
 use crossterm::event::EnableMouseCapture;
 use crossterm::event::Event;
 use crossterm::execute;
-use crossterm::terminal::Clear;
-use crossterm::terminal::ClearType;
 use crossterm::terminal::EnterAlternateScreen;
 use crossterm::terminal::LeaveAlternateScreen;
 use crossterm::terminal::disable_raw_mode;
 use crossterm::terminal::enable_raw_mode;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+#[cfg(not(unix))]
+use sysinfo::Pid;
+#[cfg(not(unix))]
+use sysinfo::ProcessRefreshKind;
+#[cfg(not(unix))]
+use sysinfo::ProcessesToUpdate;
+#[cfg(not(unix))]
+use sysinfo::Signal;
+#[cfg(not(unix))]
+use sysinfo::System;
 use terminal_colorsaurus::QueryOptions;
 use terminal_colorsaurus::ThemeMode;
 use tui_pane::Appearance;
@@ -347,7 +356,6 @@ fn event_loop(
         let cpu_elapsed = measure(|| app.panes.cpu_tick());
         let run_targets_elapsed = measure(|| app.running_targets_tick(tick_now));
         app.scan.prune_shimmers(tick_now);
-        clear_terminal_if_dirty(terminal, app)?;
 
         let rows_elapsed = measure(|| app.ensure_visible_rows_cached());
         let disk_elapsed = measure(|| app.ensure_disk_cache());
@@ -476,18 +484,6 @@ fn poll_background_frame(app: &mut App) -> (PollBackgroundStats, Duration) {
     (stats, started.elapsed())
 }
 
-fn clear_terminal_if_dirty(
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    app: &mut App,
-) -> io::Result<()> {
-    if app.scan.terminal_is_dirty() {
-        app.scan.clear_terminal_dirty();
-        execute!(terminal.backend_mut(), Clear(ClearType::All))?;
-        terminal.clear()?;
-    }
-    Ok(())
-}
-
 fn measure(action: impl FnOnce()) -> Duration {
     let started = Instant::now();
     action();
@@ -557,7 +553,7 @@ fn log_slow_frame(app: &App, bg_stats: &PollBackgroundStats, metrics: &FrameMetr
 }
 
 fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
-    let mut cmd = std::process::Command::new(CARGO_COMMAND_NAME);
+    let mut cmd = Command::new(CARGO_COMMAND_NAME);
     match run.kind {
         RunTargetKind::Binary => {
             cmd.arg(CARGO_RUN_SUBCOMMAND);
@@ -591,6 +587,7 @@ fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    isolate_example_process(&mut cmd);
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
@@ -602,7 +599,9 @@ fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
         },
     };
 
-    // Store PID so we can kill from the main thread
+    // On Unix, `isolate_example_process` makes the cargo child PID the
+    // process-group id too. `stop_example_process` uses it from the main
+    // thread to terminate the whole launched run without signaling cargo-port.
     let pid = child.id();
     *app.inflight
         .example_child()
@@ -646,6 +645,40 @@ fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
 
         let _ = tx.send(ExampleMsg::Finished);
     });
+}
+
+#[cfg(unix)]
+fn isolate_example_process(cmd: &mut Command) { cmd.process_group(0); }
+
+#[cfg(not(unix))]
+fn isolate_example_process(_cmd: &mut Command) {}
+
+#[cfg(unix)]
+pub(super) fn stop_example_process(pid: u32) -> bool {
+    signal_with_kill("-TERM", format!("-{pid}")) || signal_with_kill("-TERM", pid.to_string())
+}
+
+#[cfg(unix)]
+fn signal_with_kill(signal: &str, target: String) -> bool {
+    Command::new("kill")
+        .arg(signal)
+        .arg(target)
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(not(unix))]
+pub(super) fn stop_example_process(pid: u32) -> bool {
+    let mut system = System::new();
+    let pid = Pid::from_u32(pid);
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        true,
+        ProcessRefreshKind::nothing(),
+    );
+    system
+        .process(pid)
+        .is_some_and(|process| process.kill_with(Signal::Term).unwrap_or(false))
 }
 
 /// Read a stream byte-by-byte, splitting on `\n` (new line) and `\r` (progress update).

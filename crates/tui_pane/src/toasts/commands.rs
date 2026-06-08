@@ -3,6 +3,7 @@ use std::time::Instant;
 
 use ratatui::style::Color;
 
+use super::ColoredToastId;
 use super::Toast;
 use super::ToastBody;
 use super::ToastId;
@@ -128,35 +129,6 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         self.push_task(title, body, 1)
     }
 
-    /// Start a task-backed toast whose body lines each carry their own
-    /// foreground color (the multi-row startup panel). `lines` and `colors`
-    /// are zipped per row; a missing color falls back to the body style.
-    pub fn start_colored_task(
-        &mut self,
-        title: impl Into<String>,
-        lines: Vec<String>,
-        colors: Vec<Color>,
-    ) -> ToastTaskId {
-        let id = ToastTaskId(self.next_id);
-        let now = Instant::now();
-        self.push_entry(
-            ToastSpec {
-                title:              title.into(),
-                body:               ToastBody::Colored { lines, colors },
-                style:              ToastStyle::Normal,
-                lifetime:           ToastLifetime::Task {
-                    task_id: id,
-                    status:  ToastTaskStatus::Running,
-                },
-                action:             None,
-                min_interior_lines: 1,
-                item_linger:        Duration::ZERO,
-            },
-            now,
-        );
-        id
-    }
-
     /// Push a persistent toast with explicit style, action, and body height.
     pub fn push_persistent(
         &mut self,
@@ -190,6 +162,30 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         min_interior_lines: usize,
     ) -> ToastId {
         self.push_persistent(title, body, style, action, min_interior_lines)
+    }
+
+    /// Push a persistent colored toast whose body lines each carry their own
+    /// foreground color. `lines` and `colors` are zipped per row; a missing
+    /// color falls back to the body style.
+    pub fn push_colored_persistent(
+        &mut self,
+        title: impl Into<String>,
+        lines: Vec<String>,
+        colors: Vec<Color>,
+    ) -> ColoredToastId {
+        let id = self.push_entry(
+            ToastSpec {
+                title:              title.into(),
+                body:               ToastBody::Colored { lines, colors },
+                style:              ToastStyle::Normal,
+                lifetime:           ToastLifetime::Persistent,
+                action:             None,
+                min_interior_lines: 1,
+                item_linger:        Duration::ZERO,
+            },
+            Instant::now(),
+        );
+        ColoredToastId::new(id)
     }
 
     /// Start dismissing the toast with `id`.

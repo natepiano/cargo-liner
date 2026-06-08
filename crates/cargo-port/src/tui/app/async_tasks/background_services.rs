@@ -41,7 +41,9 @@ impl App {
             "register_background_services_for_tree"
         );
     }
-    pub(super) fn schedule_startup_project_details(&mut self) {
+    /// Dispatch the startup project-detail workers and the crates.io fetch
+    /// plan that was already installed into the startup ledger.
+    pub(super) fn schedule_startup_project_details(&self, crates_io_plan: CratesIoFetchPlan) {
         let tx = self.background.background_sender();
         let fetch_context = std::sync::Arc::new(FetchContext {
             client: self.net.http_client(),
@@ -71,23 +73,7 @@ impl App {
                 scan::fetch_project_details(&request);
             });
         });
-        self.seed_and_dispatch_startup_crates_io_fetches();
-    }
-    /// Build the startup crates.io fetch plan, seed the startup panel's
-    /// crates.io row from it, and hand the same plan to the dispatcher.
-    /// One value drives both, so the row's "done" and the queries the
-    /// dispatcher issues cannot diverge. An empty plan leaves the row
-    /// omitted (the `reset_unknown` installed by
-    /// `reset_startup_phase_state`).
-    fn seed_and_dispatch_startup_crates_io_fetches(&mut self) {
-        let plan = self.collect_crates_io_fetch_plan();
-        if !plan.is_empty() {
-            self.startup.crates_io.reset_with_expected(plan.names());
-            // `reset_with_expected` clears `first_seen`; restore the
-            // minimum-visible floor stamped at panel creation.
-            self.startup.crates_io.stamp_first_seen(Instant::now());
-        }
-        self.dispatch_crates_io_fetches(plan);
+        self.dispatch_crates_io_fetches(crates_io_plan);
     }
     /// Walk every project root and collect the crates.io fetch plan:
     /// each publishable crate name mapped to every project path that
@@ -95,7 +81,7 @@ impl App {
     /// vendored crates all land in one plan; a worktree copy of a
     /// workspace contributes the same names under different paths — one
     /// query each, fanned out to every path.
-    fn collect_crates_io_fetch_plan(&self) -> CratesIoFetchPlan {
+    pub(super) fn collect_crates_io_fetch_plan(&self) -> CratesIoFetchPlan {
         let mut plan = CratesIoFetchPlan::default();
         for entry in &self.project_list {
             collect_plan_children(&entry.item, &mut plan);
@@ -195,7 +181,7 @@ impl App {
 /// has completed. Worktree copies of a workspace land as extra paths
 /// under one name — one query, fanned out to every path.
 #[derive(Default)]
-struct CratesIoFetchPlan {
+pub(super) struct CratesIoFetchPlan {
     by_name: BTreeMap<String, Vec<AbsolutePath>>,
 }
 
@@ -208,9 +194,7 @@ impl CratesIoFetchPlan {
     }
 
     /// The deduplicated name set — the startup row's denominator.
-    fn names(&self) -> HashSet<String> { self.by_name.keys().cloned().collect() }
-
-    fn is_empty(&self) -> bool { self.by_name.is_empty() }
+    pub(super) fn names(&self) -> HashSet<String> { self.by_name.keys().cloned().collect() }
 
     /// Drop every path failing `keep`, then every name left with no
     /// paths. The recovery refetch uses this to re-dispatch only the

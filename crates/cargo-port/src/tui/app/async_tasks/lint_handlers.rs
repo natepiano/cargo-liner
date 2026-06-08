@@ -2,6 +2,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use crate::lint;
+use crate::lint::CachedLintStatus;
 use crate::lint::LintStatus;
 use crate::project::AbsolutePath;
 use crate::tui::app::App;
@@ -11,11 +12,12 @@ impl App {
     pub(super) fn handle_lint_startup_status_msg(
         &mut self,
         path: &AbsolutePath,
-        status: LintStatus,
+        status: CachedLintStatus,
     ) {
-        // Apply the cached status to the project (same as a live status).
-        if let Some(lr) = self.project_list.lint_at_path_mut(path) {
-            lr.set_status(status);
+        if let Some(lr) = self.project_list.lint_at_path_mut(path)
+            && !matches!(lr.status(), LintStatus::Running(_))
+        {
+            lr.set_status(status.into_lint_status());
         }
         self.startup.lint_count.seen += 1;
         self.maybe_complete_startup_lint_cache();

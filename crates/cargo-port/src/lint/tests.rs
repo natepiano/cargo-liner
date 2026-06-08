@@ -137,7 +137,7 @@ fn cache_latest_path_does_not_live_under_project_dir() {
 }
 
 #[test]
-fn history_reads_newest_first_and_excludes_running_latest() {
+fn history_reads_newest_first_and_excludes_running_records() {
     let cache_dir = tempfile::tempdir().expect("tempdir");
     let project_dir = tempfile::tempdir().expect("tempdir");
     let completed = LintRun {
@@ -161,6 +161,8 @@ fn history_reads_newest_first_and_excludes_running_latest() {
 
     history::append_history_under(cache_dir.path(), project_dir.path(), &completed, None)
         .expect("append history");
+    history::append_history_under(cache_dir.path(), project_dir.path(), &running, None)
+        .expect("append running history");
     read_write::write_latest_under(cache_dir.path(), project_dir.path(), &running)
         .expect("write latest");
 
@@ -212,7 +214,10 @@ fn hydration_clears_stranded_running_and_falls_back_to_history() {
 
     let status = runtime::read_status_from_disk(cache_dir.path(), project_dir.path());
 
-    assert!(matches!(status, LintStatus::Failed(_)), "history fallback");
+    assert!(
+        matches!(status, CachedLintStatus::Failed(_)),
+        "history fallback"
+    );
     assert!(
         !latest_path_under(cache_dir.path(), project_dir.path()).exists(),
         "a dead app's running marker should be cleared from disk on hydration"

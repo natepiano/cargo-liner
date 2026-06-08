@@ -2,15 +2,14 @@
 //!
 //! Owns every "talks-to-the-network" field: the shared
 //! [`HttpClient`], the GitHub sub-state (availability, repo-fetch
-//! cache, in-flight set, running tracker + toast), and the
-//! crates.io sub-state (availability). App orchestration reaches
-//! in via the public [`Net::github`] and [`Net::crates_io`] fields.
+//! cache, in-flight set), the crates.io sub-state (availability), and
+//! the network progress stage.
 //!
 //! The standalone GitHub / crates.io running toasts are gated by
-//! [`NetworkToastStage`]: their toast slots live only in
-//! [`NetworkToastStage::SteadyState`], so while a scan's "Startup" panel owns
-//! those rows there is no slot to populate and the standalone toast cannot
-//! fire.
+//! [`NetworkToastStage`]: `StartupOwned` owns the running trackers with no
+//! toast slots, while `SteadyState` owns the same trackers next to the slots.
+//! That makes it unrepresentable to have startup-owned running work and a
+//! steady-state standalone slot at the same time.
 //!
 //! Cross-subsystem orchestration that touches Net plus other
 //! subsystems (toast push/dismiss, background spawn, scan reset)
@@ -27,8 +26,14 @@ use std::collections::HashSet;
 
 use tui_pane::RunningTracker;
 use tui_pane::ToastId;
-use tui_pane::ToastTaskId;
 
+use super::NetworkRunningToasts;
+use super::StartupNetworkPending;
+use super::StartupNetworkReadiness;
+use super::StartupNetworkReady;
+use super::network_stage::NetworkRunningTrackers;
+use super::network_stage::StartupServiceExit;
+use super::network_stage::SteadyStateNetworkToasts;
 use crate::ci::OwnerRepo;
 use crate::http::GitHubRateLimit;
 use crate::http::HttpClient;
@@ -196,9 +201,6 @@ pub struct Github {
     pub fetch_cache:      RepoCache,
     repo_fetch_in_flight: HashSet<OwnerRepo>,
     pr_check_polls:       HashSet<(OwnerRepo, u32)>,
-    /// Live cache-missed repo fetches plus the single sticky
-    /// "Retrieving GitHub repo details" toast slot.
-    running:              RunningTracker<OwnerRepo>,
 }
 
 impl Github {
@@ -208,7 +210,6 @@ impl Github {
             fetch_cache:          scan::new_repo_cache(),
             repo_fetch_in_flight: HashSet::new(),
             pr_check_polls:       HashSet::new(),
-            running:              RunningTracker::new(),
         }
     }
 
@@ -248,10 +249,6 @@ impl Github {
         before != self.pr_check_polls.len()
     }
 
-    pub const fn running(&self) -> &RunningTracker<OwnerRepo> { &self.running }
-
-    pub const fn running_mut(&mut self) -> &mut RunningTracker<OwnerRepo> { &mut self.running }
-
     /// Reset every GitHub field to its post-construction state.
     /// Called by `Net::clear_for_tree_change` on rescan; replaces
     /// the four inline field writes that used to live in
@@ -260,43 +257,19 @@ impl Github {
         self.fetch_cache = scan::new_repo_cache();
         self.repo_fetch_in_flight.clear();
         self.pr_check_polls.clear();
-        self.running.clear();
     }
 }
 
 pub struct CratesIo {
     pub availability: ServiceAvailability,
-    /// Live in-flight crates.io fetches keyed by crate name, paired
-    /// with the single sticky "Fetching crates.io info" toast slot.
-    /// Synced each tick by `App::sync_running_crates_io_toast`. Mirrors
-    /// the GitHub repo-fetch tracker.
-    running:          RunningTracker<String>,
 }
 
 impl CratesIo {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             availability: ServiceAvailability::new(),
-            running:      RunningTracker::new(),
         }
     }
-
-    pub const fn running(&self) -> &RunningTracker<String> { &self.running }
-
-    pub const fn running_mut(&mut self) -> &mut RunningTracker<String> { &mut self.running }
-}
-
-/// The standalone GitHub / crates.io running-toast slots. One sticky toast
-/// per service, created only in steady state. This value exists exclusively
-/// inside [`NetworkToastStage::SteadyState`]: during startup the consolidated
-/// panel owns those rows, so there is no slot here to populate and the
-/// standalone toast cannot be created.
-#[derive(Default)]
-pub struct NetworkRunningToasts {
-    /// "Fetching crates.io info" toast slot.
-    pub crates_io: Option<ToastTaskId>,
-    /// "Retrieving GitHub repo details" toast slot.
-    pub github:    Option<ToastTaskId>,
 }
 
 /// Lifecycle of the GitHub + crates.io progress surface.
@@ -308,11 +281,12 @@ pub struct NetworkRunningToasts {
 /// per-service slots. A rescan returns the stage to `StartupOwned`. Making the
 /// slot absent during startup is what prevents the standalone crates.io /
 /// GitHub toast from firing while the panel owns the row.
-pub enum NetworkToastStage {
-    /// Pre-startup and while the panel is open. No standalone-toast slot.
-    StartupOwned,
-    /// Steady state: standalone running toasts emit from these slots.
-    SteadyState(NetworkRunningToasts),
+enum NetworkToastStage {
+    /// Pre-startup and while the panel is open. Running trackers live here
+    /// with no standalone-toast slot.
+    StartupOwned(NetworkRunningTrackers),
+    /// Steady state: running trackers live with the standalone-toast slots.
+    SteadyState(SteadyStateNetworkToasts),
 }
 
 pub struct Net {
@@ -331,7 +305,7 @@ impl Net {
             http_client,
             github: Github::new(),
             crates_io: CratesIo::new(),
-            toast_stage: NetworkToastStage::StartupOwned,
+            toast_stage: NetworkToastStage::StartupOwned(NetworkRunningTrackers::default()),
         }
     }
 
@@ -341,8 +315,8 @@ impl Net {
     /// so they no-op.
     pub const fn network_toasts(&self) -> Option<&NetworkRunningToasts> {
         match &self.toast_stage {
-            NetworkToastStage::SteadyState(toasts) => Some(toasts),
-            NetworkToastStage::StartupOwned => None,
+            NetworkToastStage::SteadyState(stage) => Some(&stage.toasts),
+            NetworkToastStage::StartupOwned(_) => None,
         }
     }
 
@@ -350,22 +324,123 @@ impl Net {
     /// startup owns the rows.
     pub const fn network_toasts_mut(&mut self) -> Option<&mut NetworkRunningToasts> {
         match &mut self.toast_stage {
-            NetworkToastStage::SteadyState(toasts) => Some(toasts),
-            NetworkToastStage::StartupOwned => None,
+            NetworkToastStage::SteadyState(stage) => Some(&mut stage.toasts),
+            NetworkToastStage::StartupOwned(_) => None,
         }
     }
 
-    /// Enter steady state: the panel has closed, so standalone GitHub /
-    /// crates.io running toasts may now be created. Installs the (empty) slots.
-    pub fn begin_steady_state_network_toasts(&mut self) {
-        self.toast_stage = NetworkToastStage::SteadyState(NetworkRunningToasts::default());
+    pub const fn github_running(&self) -> &RunningTracker<OwnerRepo> {
+        match &self.toast_stage {
+            NetworkToastStage::StartupOwned(trackers) => &trackers.github,
+            NetworkToastStage::SteadyState(stage) => &stage.running.github,
+        }
+    }
+
+    pub const fn github_running_mut(&mut self) -> &mut RunningTracker<OwnerRepo> {
+        match &mut self.toast_stage {
+            NetworkToastStage::StartupOwned(trackers) => &mut trackers.github,
+            NetworkToastStage::SteadyState(stage) => &mut stage.running.github,
+        }
+    }
+
+    pub const fn crates_io_running(&self) -> &RunningTracker<String> {
+        match &self.toast_stage {
+            NetworkToastStage::StartupOwned(trackers) => &trackers.crates_io,
+            NetworkToastStage::SteadyState(stage) => &stage.running.crates_io,
+        }
+    }
+
+    pub const fn crates_io_running_mut(&mut self) -> &mut RunningTracker<String> {
+        match &mut self.toast_stage {
+            NetworkToastStage::StartupOwned(trackers) => &mut trackers.crates_io,
+            NetworkToastStage::SteadyState(stage) => &mut stage.running.crates_io,
+        }
+    }
+
+    pub fn startup_github_running_repos(&self) -> Vec<OwnerRepo> {
+        match &self.toast_stage {
+            NetworkToastStage::StartupOwned(trackers) => {
+                trackers.github.running.keys().cloned().collect()
+            },
+            NetworkToastStage::SteadyState(_) => Vec::new(),
+        }
+    }
+
+    pub fn startup_crates_io_running_names(&self) -> Vec<String> {
+        match &self.toast_stage {
+            NetworkToastStage::StartupOwned(trackers) => {
+                trackers.crates_io.running.keys().cloned().collect()
+            },
+            NetworkToastStage::SteadyState(_) => Vec::new(),
+        }
+    }
+
+    /// Check whether startup-owned network work is terminal. This only
+    /// produces `StartupNetworkReady` after both service trackers have drained
+    /// or their startup rows have failed and are allowed to abandon work.
+    pub fn startup_network_readiness(
+        &self,
+        github_failed: bool,
+        crates_io_failed: bool,
+    ) -> StartupNetworkReadiness {
+        let NetworkToastStage::StartupOwned(trackers) = &self.toast_stage else {
+            return StartupNetworkReadiness::Ready(StartupNetworkReady {
+                github:    StartupServiceExit::Drained,
+                crates_io: StartupServiceExit::Drained,
+            });
+        };
+        let exits = match (
+            service_exit(trackers.github.running.len(), github_failed),
+            service_exit(trackers.crates_io.running.len(), crates_io_failed),
+        ) {
+            (Ok(github), Ok(crates_io)) => (github, crates_io),
+            (github, crates_io) => {
+                return StartupNetworkReadiness::Pending(StartupNetworkPending {
+                    github:    github.err().unwrap_or_default(),
+                    crates_io: crates_io.err().unwrap_or_default(),
+                });
+            },
+        };
+
+        StartupNetworkReadiness::Ready(StartupNetworkReady {
+            github:    exits.0,
+            crates_io: exits.1,
+        })
+    }
+
+    /// Enter steady state. The `StartupNetworkReady` proof is only produced
+    /// after startup-owned network work has reached a terminal outcome, so
+    /// this transition cannot be called from plain row-completion checks.
+    pub fn begin_steady_state_network_toasts(&mut self, ready: &StartupNetworkReady) {
+        let NetworkToastStage::StartupOwned(trackers) = &mut self.toast_stage else {
+            return;
+        };
+
+        if matches!(ready.github, StartupServiceExit::Abandoned) {
+            trackers.github.clear();
+        }
+        if matches!(ready.crates_io, StartupServiceExit::Abandoned) {
+            trackers.crates_io.clear();
+        }
+        let running = std::mem::take(trackers);
+        self.toast_stage = NetworkToastStage::SteadyState(SteadyStateNetworkToasts {
+            running,
+            toasts: NetworkRunningToasts::default(),
+        });
     }
 
     /// Return the stage to `StartupOwned`, discarding the slots. The caller is
     /// responsible for finishing any live toasts first — once the slots are
     /// gone their ids are unrecoverable.
-    pub const fn set_network_toasts_startup_owned(&mut self) {
-        self.toast_stage = NetworkToastStage::StartupOwned;
+    pub fn set_network_toasts_startup_owned(&mut self) {
+        let trackers = match std::mem::replace(
+            &mut self.toast_stage,
+            NetworkToastStage::StartupOwned(NetworkRunningTrackers::default()),
+        ) {
+            NetworkToastStage::StartupOwned(trackers) => trackers,
+            NetworkToastStage::SteadyState(stage) => stage.running,
+        };
+        self.toast_stage = NetworkToastStage::StartupOwned(trackers);
     }
 
     pub fn http_client(&self) -> HttpClient { self.http_client.clone() }
@@ -382,7 +457,10 @@ impl Net {
     /// cache, the in-flight set, and the running tracker (running
     /// fetches map + toast slot). Crates.io and the `HttpClient`
     /// keep their state across rescans.
-    pub fn clear_for_tree_change(&mut self) { self.github.clear_for_tree_change(); }
+    pub fn clear_for_tree_change(&mut self) {
+        self.github.clear_for_tree_change();
+        self.github_running_mut().clear();
+    }
 
     pub const fn availability_for(&mut self, service: ServiceKind) -> &mut ServiceAvailability {
         match service {
@@ -406,6 +484,14 @@ impl Net {
                 tracing::info!("rate_limit_prime_failed");
             }
         });
+    }
+}
+
+const fn service_exit(running: usize, failed: bool) -> Result<StartupServiceExit, usize> {
+    match (running, failed) {
+        (0, _) => Ok(StartupServiceExit::Drained),
+        (_, true) => Ok(StartupServiceExit::Abandoned),
+        (running, false) => Err(running),
     }
 }
 

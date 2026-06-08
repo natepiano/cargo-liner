@@ -36,8 +36,7 @@ impl App {
         };
         let (_, items) = self
             .net
-            .github
-            .running()
+            .github_running()
             .items_for_toast(ToString::to_string, integration::owner_repo_key);
         let next = self.sync_running_toast(toast_slot, "Retrieving GitHub repo details", &items);
         if let Some(toasts) = self.net.network_toasts_mut() {
@@ -54,8 +53,7 @@ impl App {
         };
         let (_, items) = self
             .net
-            .crates_io
-            .running()
+            .crates_io_running()
             .items_for_toast(String::clone, |name| TrackedItemKey::from(name.as_str()));
         let next = self.sync_running_toast(toast_slot, "Fetching crates.io info", &items);
         if let Some(toasts) = self.net.network_toasts_mut() {

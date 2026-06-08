@@ -146,7 +146,6 @@ use tui_pane::SystemClipboard;
 use tui_pane::ToastTaskId;
 pub(super) use types::CiRunDisplayMode;
 pub(crate) use types::ConfirmAction;
-pub(super) use types::DirtyState;
 pub(super) use types::DiscoveryRowKind;
 pub(super) use types::DiscoveryShimmer;
 pub(super) use types::FinderState;
@@ -339,9 +338,8 @@ pub(super) struct App {
     pub(super) scan:               Scan,
     /// Startup-phase orchestrator. Owns the per-phase trackers
     /// (`disk`, `git`, `repo`, `metadata`, `lint_phase`,
-    /// `lint_count`) plus the `scan_complete_at`, `toast`, and
-    /// `complete_at` slots that drive the umbrella "Startup" toast
-    /// and its detail toasts.
+    /// `lint_count`) plus the phase state that decides when the
+    /// umbrella "Startup" toast may enter its close countdown.
     pub(super) startup:            Startup,
     pub(super) visited_panes:      HashSet<AppPaneId>,
     /// Overlays subsystem. Owns the overlay-mode enums
@@ -550,15 +548,6 @@ impl App {
 
     pub(super) fn finish_task_toast(&mut self, task_id: ToastTaskId) {
         self.framework.toasts.finish_task(task_id);
-        self.prune_toasts();
-    }
-
-    /// Finish a task toast that renders its own body (no tracked items),
-    /// keeping it visible for the standard finished-task linger so it shows
-    /// the "Closing in N" countdown instead of vanishing at once.
-    pub(super) fn finish_body_toast_with_countdown(&mut self, task_id: ToastTaskId) {
-        let linger = self.framework.toast_settings().finished_task_visible.get();
-        self.framework.toasts.finish_task_lingering(task_id, linger);
         self.prune_toasts();
     }
 

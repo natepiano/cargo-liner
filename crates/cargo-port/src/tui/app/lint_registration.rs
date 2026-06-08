@@ -9,38 +9,37 @@ impl App {
         let Some(runtime) = self.lint.runtime() else {
             return 0;
         };
-        let mut count = 0;
+        let mut projects = Vec::new();
         for entry in &self.project_list {
             match &entry.item {
                 RootItem::Rust(RustProject::Workspace(ws)) => {
-                    runtime.register_project(RegisterProjectRequest {
+                    projects.push(RegisterProjectRequest {
                         project_label: ws.display_path().into_string(),
                         abs_path:      ws.path().clone(),
                         is_rust:       true,
                     });
-                    count += 1;
                 },
                 RootItem::Rust(RustProject::Package(pkg)) => {
-                    runtime.register_project(RegisterProjectRequest {
+                    projects.push(RegisterProjectRequest {
                         project_label: pkg.display_path().into_string(),
                         abs_path:      pkg.path().clone(),
                         is_rust:       true,
                     });
-                    count += 1;
                 },
                 RootItem::Worktrees(group) => {
                     for entry in group.iter_entries() {
-                        runtime.register_project(RegisterProjectRequest {
+                        projects.push(RegisterProjectRequest {
                             project_label: entry.display_path().into_string(),
                             abs_path:      entry.path().clone(),
                             is_rust:       true,
                         });
-                        count += 1;
                     }
                 },
                 RootItem::NonRust(_) => {},
             }
         }
+        let count = projects.len();
+        runtime.sync_projects(projects);
         tracing::info!(count, "lint_register_root_items");
         count
     }

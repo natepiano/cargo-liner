@@ -27,6 +27,7 @@ pub use action::ToastsAction;
 pub use body::ToastBody;
 pub use body::toast_body_width;
 pub use format::format_toast_items;
+pub use ids::ColoredToastId;
 pub use ids::ToastId;
 pub use ids::ToastTaskId;
 pub use item::TrackedItem;

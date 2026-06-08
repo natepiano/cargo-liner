@@ -3,6 +3,9 @@ use std::time::Instant;
 
 use ratatui::style::Color;
 
+use super::orchestrator::StartupPlan;
+use super::orchestrator::StartupReadiness;
+use super::orchestrator::StartupToast;
 use super::toast_bodies;
 use crate::project;
 use crate::project::AbsolutePath;
@@ -32,6 +35,8 @@ impl Startup {
             disk_expected = self.disk.expected_len(),
             git_expected = self.git.expected_len(),
             repo_expected = self.repo.expected_len(),
+            crates_io_expected = self.crates_io.expected_len(),
+            detail_declaration_expected = self.details_declared.expected_len(),
             lint_expected = self.lint_phase.expected_len(),
             metadata_expected = self.metadata.expected_len(),
             "startup_phase_plan"
@@ -129,13 +134,26 @@ impl Startup {
     }
 }
 impl App {
-    pub fn initialize_startup_phase_tracker(&mut self) {
-        self.reset_startup_phase_state();
-        self.start_startup_toast();
-        self.startup.log_phase_plan();
-        self.maybe_log_startup_phase_completions();
+    pub(super) fn begin_startup_phase_tracker(&mut self, lint_registered: usize) {
+        let crates_io_plan = self.collect_crates_io_fetch_plan();
+        let startup_plan = self.build_startup_plan(lint_registered, crates_io_plan.names());
+        self.initialize_startup_phase_tracker_with_plan(&startup_plan);
+        // When nothing will ever increment `seen` (lint runtime disabled or
+        // no eligible projects), no later message drives completion. This runs
+        // after plan installation, so every startup obligation has already
+        // been declared before readiness can be considered.
+        if lint_registered == 0 {
+            self.maybe_complete_startup_lint_cache();
+        }
+        self.schedule_startup_project_details(crates_io_plan);
+        self.schedule_git_first_commit_refreshes();
     }
-    pub(super) fn reset_startup_phase_state(&mut self) {
+
+    fn build_startup_plan(
+        &self,
+        lint_registered: usize,
+        crates_io_expected: HashSet<String>,
+    ) -> StartupPlan {
         let disk_expected = startup::initial_disk_roots(&self.project_list);
         let git_expected = self
             .project_list
@@ -149,47 +167,46 @@ impl App {
             .filter_map(|entry| entry.item.git_directory())
             .collect::<HashSet<_>>();
         let metadata_expected = startup::initial_metadata_roots(&self.project_list);
+        let lint_history = self.lint_history_project_paths();
+        let mut detail_expected = HashSet::new();
+        self.project_list.for_each_leaf_path(|path, _| {
+            detail_expected.insert(AbsolutePath::from(path));
+        });
+        StartupPlan {
+            disk_expected,
+            git_expected,
+            git_seen,
+            metadata_expected,
+            lint_history,
+            lint_count_expected: lint_registered,
+            crates_io_expected,
+            detail_expected,
+            github_running: self.net.startup_github_running_repos(),
+            crates_io_running: self.net.startup_crates_io_running_names(),
+        }
+    }
+
+    fn initialize_startup_phase_tracker_with_plan(&mut self, startup_plan: &StartupPlan) {
+        self.reset_startup_phase_state(startup_plan);
+        self.start_startup_toast();
+        self.startup.log_phase_plan();
+        self.maybe_log_startup_phase_completions();
+    }
+
+    #[cfg(test)]
+    pub fn initialize_startup_phase_tracker(&mut self) {
+        let crates_io_plan = self.collect_crates_io_fetch_plan();
+        let mut startup_plan = self.build_startup_plan(0, crates_io_plan.names());
+        startup_plan.detail_expected.clear();
+        self.initialize_startup_phase_tracker_with_plan(&startup_plan);
+    }
+    pub(super) fn reset_startup_phase_state(&mut self, startup_plan: &StartupPlan) {
+        self.startup.reset();
         self.startup.scan_complete_at = Some(Instant::now());
         self.startup.toast = None;
-        self.startup.complete_at = None;
-        // Languages (tokei) and test counts scan the same project roots as
-        // disk usage and emit one batch entry per root, so they share disk's
-        // denominator. Seed them before any batch can arrive.
-        self.startup
-            .languages
-            .reset_with_expected(disk_expected.clone());
-        self.startup
-            .tests
-            .reset_with_expected(disk_expected.clone());
-        self.startup.disk.reset_with_expected(disk_expected);
-        self.startup.git.reset_with_expected(git_expected);
-        self.startup.git.seen = git_seen;
-        // Repo's GitHub set accrues as git remotes resolve; it renders
-        // `Waiting` until git completes and the denominator stabilizes.
-        self.startup.repo.reset_growing();
-        // crates.io is seeded and dispatched together by
-        // `schedule_startup_project_details`: one fetch plan both seeds
-        // the row's denominator and drives the dispatcher, so the row
-        // cannot read done while a planned query is still pending. Until
-        // that runs the row stays omitted; fetches queued outside the
-        // plan (submodules, the priority fetch) join the denominator in
-        // `handle_crates_io_fetch_queued`.
-        self.startup.crates_io.reset_unknown();
-        // The "Lint history" row tracks the off-thread history load: seed it
-        // with every Rust project whose history will be read from disk — the
-        // same set `refresh_lint_runs_from_disk` reports back via
-        // `LintHistoryLoaded` — so `seen` always catches up and the row can
-        // never strand the panel on a live lint run. An empty set omits the
-        // row.
-        let lint_history_expected = self.lint_history_project_paths();
-        if lint_history_expected.is_empty() {
-            self.startup.lint_phase.reset_unknown();
-        } else {
-            self.startup
-                .lint_phase
-                .reset_with_expected(lint_history_expected);
+        if let Some(planning) = self.startup.take_planning() {
+            planning.install(&mut self.startup, startup_plan);
         }
-        self.startup.metadata.reset_with_expected(metadata_expected);
     }
     pub(super) fn start_startup_toast(&mut self) {
         let now = Instant::now();
@@ -204,11 +221,11 @@ impl App {
         self.startup.languages.stamp_first_seen(now);
         self.startup.tests.stamp_first_seen(now);
         let (lines, colors) = self.startup_panel_lines(now);
-        let task_id = self
+        let toast_id = self
             .framework
             .toasts
-            .start_colored_task("Startup", lines, colors);
-        self.startup.toast = Some(task_id);
+            .push_colored_persistent("Startup", lines, colors);
+        self.startup.toast = Some(StartupToast::new(toast_id));
     }
     /// Build the panel's per-line text and matching per-line colors from the
     /// current phase states and the live in-flight network fetches.
@@ -227,8 +244,7 @@ impl App {
     /// "currently working on" detail.
     fn in_flight_github_label(&self) -> Option<String> {
         self.net
-            .github
-            .running()
+            .github_running()
             .running
             .iter()
             .min_by_key(|(_, started)| **started)
@@ -237,8 +253,7 @@ impl App {
     /// The crates.io fetch in flight (one at a time) — the row's detail.
     fn in_flight_crates_io_label(&self) -> Option<String> {
         self.net
-            .crates_io
-            .running()
+            .crates_io_running()
             .running
             .iter()
             .min_by_key(|(_, started)| **started)
@@ -251,7 +266,7 @@ impl App {
         // Once the panel has closed, a late phase result must not re-run
         // the gate or touch the (taken) panel toast. The per-phase `seen`
         // bookkeeping in the handlers is idempotent and harmless.
-        if self.startup.complete_at.is_some() {
+        if !self.startup.is_collecting() {
             return;
         }
         let now = Instant::now();
@@ -266,6 +281,7 @@ impl App {
         self.startup.crates_io.complete_once(now);
         self.startup.languages.complete_once(now);
         self.startup.tests.complete_once(now);
+        self.startup.details_declared.complete_once(now);
         self.refresh_startup_panel(now);
         self.maybe_complete_startup_ready(now, scan_complete_at);
     }
@@ -278,13 +294,13 @@ impl App {
         let (lines, colors) = self.startup_panel_lines(now);
         self.framework
             .toasts
-            .update_task_colored(toast, lines, colors);
+            .update_colored(toast.id(), lines, colors);
     }
     /// Re-evaluate the panel each frame so the minimum-visible floor and
     /// the per-row timeout can close it even when no new `BackgroundMsg`
     /// arrives.
     pub fn tick_startup_panel(&mut self) {
-        if self.startup.complete_at.is_some() {
+        if !self.startup.is_collecting() {
             return;
         }
         let Some(scan_complete_at) = self.startup.scan_complete_at else {
@@ -348,7 +364,7 @@ impl App {
     /// has completed or the repo row is already terminal; the accompanying
     /// service-unavailable toast already names the reason.
     pub fn fail_startup_repo_phase(&mut self, reason: FailureReason) {
-        if self.startup.complete_at.is_some() {
+        if !self.startup.is_collecting() {
             return;
         }
         let repo = &mut self.startup.repo;
@@ -358,8 +374,29 @@ impl App {
         repo.failure = Some(reason);
         self.maybe_log_startup_phase_completions();
     }
-    /// Mark the languages row's `seen` from a `LanguageStatsBatch`. Runs
-    /// alongside the `ProjectList` handler, which owns the actual stats.
+    /// Add file-level language scan tokens to the startup row. The final
+    /// stats still arrive as project-root batches; these tokens only make the
+    /// row's progress reflect work inside a large root.
+    pub fn mark_startup_languages_expected(&mut self, entries: &[AbsolutePath]) {
+        let mut inserted = false;
+        for path in entries {
+            inserted |= self.startup.languages.expected.insert(path.clone());
+        }
+        if inserted {
+            self.startup.languages.complete_at = None;
+        }
+        self.maybe_log_startup_phase_completions();
+    }
+    /// Mark file-level language scan progress. Final stats batches mark the
+    /// project-root tokens.
+    pub fn mark_startup_languages_progress(&mut self, entries: &[AbsolutePath]) {
+        for path in entries {
+            self.startup.languages.seen.insert(path.clone());
+        }
+        self.maybe_log_startup_phase_completions();
+    }
+    /// Mark the project-root language tokens from a `LanguageStatsBatch`.
+    /// Runs alongside the `ProjectList` handler, which owns the actual stats.
     pub fn mark_startup_languages_seen(&mut self, entries: &[(AbsolutePath, LanguageStats)]) {
         for (path, _) in entries {
             self.startup.languages.seen.insert(path.clone());
@@ -372,6 +409,10 @@ impl App {
         for (path, _) in entries {
             self.startup.tests.seen.insert(path.clone());
         }
+        self.maybe_log_startup_phase_completions();
+    }
+    pub fn mark_startup_project_details_declared(&mut self, path: AbsolutePath) {
+        self.startup.details_declared.seen.insert(path);
         self.maybe_log_startup_phase_completions();
     }
     pub fn maybe_complete_startup_disk(&mut self, now: Instant, scan_complete_at: Instant) {
@@ -411,10 +452,11 @@ impl App {
         if !self.startup.git.is_terminal() {
             return;
         }
-        // Git is terminal, so every GitHub remote that will be queued has
+        // Git is terminal, so every GitHub remote discovered by local-git has
         // resolved (or git gave up): freeze the denominator so the row
-        // switches from `Waiting` to a determinate bar. Idempotent; a late
-        // `RepoFetchQueued` is dropped in `handle_repo_fetch_queued`.
+        // switches from `Waiting` to a determinate bar. Idempotent; a later
+        // `RepoFetchQueued` still joins the stable denominator and reopens the
+        // row while startup is open.
         self.startup.repo.expected.stabilize();
         if !self.startup.repo.complete_once(now) {
             return;
@@ -469,28 +511,56 @@ impl App {
     pub fn maybe_complete_startup_ready(&mut self, now: Instant, scan_complete_at: Instant) {
         let lint_seen = self.startup.lint_phase.seen.len();
         let lint_expected = self.startup.lint_phase.expected_len();
-        if self.startup.complete_at.is_some() {
+        if !self.startup.is_collecting() {
             return;
         }
-        if !self.startup.all_rows_gate_satisfied(now) {
+        let network = self.net.startup_network_readiness(
+            self.startup.repo.failure.is_some(),
+            self.startup.crates_io.failure.is_some(),
+        );
+        let Some(collecting) = self.startup.take_collecting() else {
             return;
-        }
-        self.startup.complete_at = Some(now);
-        // Paint the final all-complete panel, then close it explicitly —
-        // the body-string panel has no tracked-items auto-finish, so it
-        // lingers for the standard finished-task window with a "Closing in
-        // N" countdown like every other toast.
+        };
+        let ready = match collecting.try_ready(&self.startup, now, scan_complete_at, network) {
+            StartupReadiness::Ready(ready) => ready,
+            StartupReadiness::RowsPending(collecting)
+            | StartupReadiness::DeclarationsPending(collecting) => {
+                collecting.restore(&mut self.startup);
+                return;
+            },
+            StartupReadiness::NetworkPending {
+                pending,
+                collecting,
+            } => {
+                tracing::debug!(
+                    github_running = pending.github,
+                    crates_io_running = pending.crates_io,
+                    "startup_waiting_for_network_work"
+                );
+                collecting.restore(&mut self.startup);
+                return;
+            },
+        };
         self.refresh_startup_panel(now);
-        if let Some(toast) = self.startup.toast.take() {
-            self.finish_body_toast_with_countdown(toast);
+        let closing = ready.begin_closing(&mut self.startup);
+        self.net.begin_steady_state_network_toasts(&closing.network);
+        // Paint the final all-complete panel, then switch only the Startup
+        // toast into a timed countdown. Startup owns colored rows, not task
+        // items, so it must not enter the task linger fade path.
+        if let Some(toast) = closing.toast {
+            self.finish_startup_toast_with_countdown(toast);
         }
         // The panel no longer owns the network rows: install the steady-state
-        // toast slots, then surface any GitHub / crates.io fetch still in
-        // flight as its own standalone toast (a no-op when none are running).
-        self.net.begin_steady_state_network_toasts();
+        // toast slots only after the startup-owned trackers have been drained
+        // or explicitly abandoned after a failed startup row.
         self.sync_running_crates_io_toast();
         self.sync_running_repo_fetch_toast();
-        let since_scan_ms = tui_pane::perf_log_ms(now.duration_since(scan_complete_at).as_millis());
+        let since_scan_ms = tui_pane::perf_log_ms(
+            closing
+                .completed_at
+                .duration_since(closing.scan_complete_at)
+                .as_millis(),
+        );
         tracing::info!(
             since_scan_complete_ms = since_scan_ms,
             disk_seen = self.startup.disk.seen.len(),
@@ -506,6 +576,14 @@ impl App {
             "startup_complete"
         );
         tracing::info!(since_scan_complete_ms = since_scan_ms, "steady_state_begin");
+    }
+
+    fn finish_startup_toast_with_countdown(&mut self, toast: StartupToast) {
+        let linger = self.framework.toast_settings().finished_task_visible.get();
+        self.framework
+            .toasts
+            .start_colored_countdown(toast.id(), linger);
+        self.prune_toasts();
     }
 }
 

@@ -28,6 +28,7 @@ use super::paths;
 use super::read_write;
 use super::status;
 use super::trigger::LintTriggerEvent;
+use super::types::CachedLintStatus;
 use super::types::LintCommand;
 use super::types::LintCommandStatus;
 use super::types::LintRun;
@@ -160,28 +161,32 @@ fn supervisor_loop(
 ) {
     let mut workers: HashMap<AbsolutePath, ProjectWorker> = HashMap::new();
     // Lazy hydration: the cache starts empty and `cached_status_for_project`
-    // reads disk on miss, treating any leftover `Running` latest.json as
-    // stale (a previous app died mid-lint) and falling through to history.
-    // The next real lint run for that project naturally overwrites the
-    // stale file. The previous eager scan walked every cache subdirectory
-    // (~8000 stale project keys after a few months of use), blocking the
-    // supervisor for ~2s before it could process a single registration.
-    let status_cache: Arc<Mutex<HashMap<String, LintStatus>>> =
+    // reads disk on miss. Disk hydration is terminal-only: leftover
+    // `Running` files from a dead process are cleared and do not enter this
+    // cache. The previous eager scan walked every cache subdirectory (~8000
+    // stale project keys after a few months of use), blocking the supervisor
+    // for ~2s before it could process a single registration.
+    let status_cache: Arc<Mutex<HashMap<String, CachedLintStatus>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let worker_config = WorkerConfig {
         cache_root: cache_root.clone(),
         commands: lint.resolved_commands(),
         cache_size_bytes,
-        on_discovery: lint.on_discovery,
         status_cache: Arc::clone(&status_cache),
     };
 
     loop {
         match rx.recv() {
             Ok(SupervisorMsg::SyncProjects { projects }) => {
-                let desired = desired_projects(&lint, projects);
-                emit_current_statuses(&desired, &status_cache, &cache_root, &background_tx);
-                reconcile_workers(&mut workers, desired, &worker_config, &background_tx);
+                emit_current_statuses(&projects, &status_cache, &cache_root, &background_tx);
+                let desired = desired_projects(&lint, &projects);
+                reconcile_workers(
+                    &mut workers,
+                    desired,
+                    &worker_config,
+                    WorkerStart::for_sync(lint.on_discovery),
+                    &background_tx,
+                );
             },
             Ok(SupervisorMsg::RegisterProject { project }) => {
                 let abs_path = project.abs_path.clone();
@@ -199,6 +204,7 @@ fn supervisor_loop(
                             project.project_label.clone(),
                             abs_path.clone(),
                             &worker_config,
+                            WorkerStart::for_discovery(lint.on_discovery),
                             background_tx.clone(),
                         )
                     });
@@ -249,12 +255,12 @@ fn supervisor_loop(
 }
 
 fn emit_current_statuses(
-    desired: &HashMap<AbsolutePath, RegisterProjectRequest>,
-    status_cache: &Arc<Mutex<HashMap<String, LintStatus>>>,
+    projects: &[RegisterProjectRequest],
+    status_cache: &Arc<Mutex<HashMap<String, CachedLintStatus>>>,
     cache_root: &Path,
     background_tx: &Sender<BackgroundMsg>,
 ) {
-    for request in desired.values() {
+    for request in projects {
         let _ = background_tx.send(BackgroundMsg::LintStartupStatus {
             path:   request.abs_path.clone(),
             status: cached_status_for_project(status_cache, cache_root, &request.abs_path),
@@ -263,10 +269,10 @@ fn emit_current_statuses(
 }
 
 fn cached_status_for_project(
-    status_cache: &Arc<Mutex<HashMap<String, LintStatus>>>,
+    status_cache: &Arc<Mutex<HashMap<String, CachedLintStatus>>>,
     cache_root: &Path,
     project_root: &Path,
-) -> LintStatus {
+) -> CachedLintStatus {
     let key = paths::project_key(project_root);
     if let Ok(statuses) = status_cache.lock()
         && let Some(status) = statuses.get(&key)
@@ -287,7 +293,7 @@ fn cached_status_for_project(
 /// cleared from disk and the history fallback fires. Clearing — rather than
 /// only ignoring it in memory — stops external readers (the `/clippy` cache
 /// check) from waiting on a run a dead app left behind.
-pub(super) fn read_status_from_disk(cache_root: &Path, project_root: &Path) -> LintStatus {
+pub(super) fn read_status_from_disk(cache_root: &Path, project_root: &Path) -> CachedLintStatus {
     let project_dir = paths::project_dir_under(cache_root, project_root);
     let terminal_latest = match read_write::read_latest_file(&project_dir.join(LINTS_LATEST_JSON)) {
         Some(run) if matches!(run.status, LintRunStatus::Running) => {
@@ -302,16 +308,18 @@ pub(super) fn read_status_from_disk(cache_root: &Path, project_root: &Path) -> L
             .rev()
             .find(|r| !matches!(r.status, LintRunStatus::Running))
     });
-    run.map_or(LintStatus::NoLog, |run| status::parse_run(&run))
+    run.and_then(|run| CachedLintStatus::from_lint_status(&status::parse_run(&run)))
+        .unwrap_or_default()
 }
 
 fn desired_projects(
     lint: &LintConfig,
-    projects: Vec<RegisterProjectRequest>,
+    projects: &[RegisterProjectRequest],
 ) -> HashMap<AbsolutePath, RegisterProjectRequest> {
     projects
-        .into_iter()
+        .iter()
         .filter(|request| should_watch_project(lint, request))
+        .cloned()
         .map(|request| (request.abs_path.clone(), request))
         .collect()
 }
@@ -321,14 +329,54 @@ struct WorkerConfig {
     cache_root:       AbsolutePath,
     commands:         Vec<LintCommandConfig>,
     cache_size_bytes: Option<u64>,
-    on_discovery:     DiscoveryLint,
-    status_cache:     Arc<Mutex<HashMap<String, LintStatus>>>,
+    status_cache:     Arc<Mutex<HashMap<String, CachedLintStatus>>>,
+}
+
+#[derive(Clone, Copy)]
+enum WorkerStart {
+    Idle,
+    RunNow,
+    RunWhenUncached,
+}
+
+impl WorkerStart {
+    const fn for_sync(discovery_lint: DiscoveryLint) -> Self {
+        match discovery_lint {
+            DiscoveryLint::Immediate => Self::RunWhenUncached,
+            DiscoveryLint::Deferred => Self::Idle,
+        }
+    }
+
+    const fn for_discovery(discovery_lint: DiscoveryLint) -> Self {
+        match discovery_lint {
+            DiscoveryLint::Immediate => Self::RunNow,
+            DiscoveryLint::Deferred => Self::Idle,
+        }
+    }
+
+    fn resolve(self, config: &WorkerConfig, project_root: &Path) -> Self {
+        match self {
+            Self::RunWhenUncached
+                if cached_status_for_project(
+                    &config.status_cache,
+                    config.cache_root.as_path(),
+                    project_root,
+                )
+                .should_run_on_sync() =>
+            {
+                Self::RunNow
+            },
+            Self::RunWhenUncached | Self::Idle => Self::Idle,
+            Self::RunNow => Self::RunNow,
+        }
+    }
 }
 
 fn reconcile_workers(
     workers: &mut HashMap<AbsolutePath, ProjectWorker>,
     desired: HashMap<AbsolutePath, RegisterProjectRequest>,
     config: &WorkerConfig,
+    start: WorkerStart,
     background_tx: &Sender<BackgroundMsg>,
 ) {
     let stale: Vec<AbsolutePath> = workers
@@ -346,11 +394,13 @@ fn reconcile_workers(
         }
     }
     for (path, request) in desired {
+        let start = start.resolve(config, path.as_path());
         workers.entry(path).or_insert_with(|| {
             spawn_project_worker(
                 request.project_label,
                 request.abs_path,
                 config,
+                start,
                 background_tx.clone(),
             )
         });
@@ -373,6 +423,7 @@ fn spawn_project_worker(
     project_label: String,
     project_root: AbsolutePath,
     config: &WorkerConfig,
+    start: WorkerStart,
     background_tx: Sender<BackgroundMsg>,
 ) -> ProjectWorker {
     let stop = Arc::new(AtomicBool::new(false));
@@ -385,7 +436,7 @@ fn spawn_project_worker(
     let commands = config.commands.clone();
     let cache_size_bytes = config.cache_size_bytes;
     let status_cache = Arc::clone(&config.status_cache);
-    let run_immediately = matches!(config.on_discovery, DiscoveryLint::Immediate);
+    let run_immediately = matches!(start, WorkerStart::RunNow);
     let handle = thread::spawn(move || {
         let mut next_run_at = run_immediately.then(Instant::now);
         loop {
@@ -533,7 +584,7 @@ struct CommandExecution {
 pub(super) struct RunFinalizeGuard<'a> {
     pub(super) cache_root:    &'a Path,
     pub(super) project_root:  &'a Path,
-    pub(super) status_cache:  &'a Arc<Mutex<HashMap<String, LintStatus>>>,
+    pub(super) status_cache:  &'a Arc<Mutex<HashMap<String, CachedLintStatus>>>,
     pub(super) background_tx: &'a Sender<BackgroundMsg>,
 }
 
@@ -548,7 +599,7 @@ impl Drop for RunFinalizeGuard<'_> {
             publish_status(
                 self.status_cache,
                 self.project_root,
-                read_status_from_disk(self.cache_root, self.project_root),
+                read_status_from_disk(self.cache_root, self.project_root).into_lint_status(),
                 self.background_tx,
             );
         }
@@ -593,7 +644,7 @@ fn run_commands_for_project(
     project_root: &Path,
     project_label: &str,
     config: &RunCommandsConfig<'_>,
-    status_cache: &Arc<Mutex<HashMap<String, LintStatus>>>,
+    status_cache: &Arc<Mutex<HashMap<String, CachedLintStatus>>>,
     background_tx: &Sender<BackgroundMsg>,
     child_slot: &ChildSlot,
 ) -> io::Result<()> {
@@ -765,17 +816,15 @@ fn execute_commands(
 }
 
 fn publish_status(
-    status_cache: &Arc<Mutex<HashMap<String, LintStatus>>>,
+    status_cache: &Arc<Mutex<HashMap<String, CachedLintStatus>>>,
     project_root: &Path,
     status: LintStatus,
     background_tx: &Sender<BackgroundMsg>,
 ) {
     if let Ok(mut statuses) = status_cache.lock() {
         let key = paths::project_key(project_root);
-        if matches!(status, LintStatus::NoLog) {
-            statuses.remove(&key);
-        } else {
-            statuses.insert(key, status.clone());
+        if let Some(cached_status) = CachedLintStatus::from_lint_status(&status) {
+            statuses.insert(key, cached_status);
         }
     }
     let _ = background_tx.send(BackgroundMsg::LintStatus {
@@ -1103,7 +1152,7 @@ mod tests {
 
         let desired = desired_projects(
             &lint,
-            vec![
+            &[
                 request("~/rust/demo", project_dir.path(), true),
                 request("~/rust/demo/excluded", project_dir.path(), true),
                 request("~/rust/not-rust", project_dir.path(), false),
@@ -1175,6 +1224,164 @@ mod tests {
     }
 
     #[test]
+    fn sync_projects_hydrates_terminal_cache_without_running_discovery_lint() {
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            project_dir.path().join("Cargo.toml"),
+            "[package]\nname='demo'\nversion='0.1.0'\n",
+        )
+        .expect("write manifest");
+        let cache_dir = tempfile::tempdir().expect("tempdir");
+        let mut cfg = CargoPortConfig::default();
+        cfg.cache.root = cache_dir.path().to_string_lossy().to_string();
+        cfg.lint.enabled = true;
+        cfg.lint.include = vec![project_dir.path().to_string_lossy().to_string()];
+        cfg.lint.on_discovery = DiscoveryLint::Immediate;
+        cfg.lint.commands = vec![LintCommandConfig {
+            name:    "echo".to_string(),
+            command: "echo lint ok".to_string(),
+        }];
+        let cache_root = cache_paths::lint_runs_root_for(&cfg);
+        let finished_at = Local::now().to_rfc3339();
+        let cached_run = LintRun {
+            run_id:        paths::sanitize_run_id(&finished_at),
+            started_at:    finished_at.clone(),
+            finished_at:   Some(finished_at),
+            duration_ms:   Some(1),
+            status:        LintRunStatus::Passed,
+            commands:      Vec::new(),
+            archive_bytes: 0,
+        };
+        read_write::write_latest_under(cache_root.as_path(), project_dir.path(), &cached_run)
+            .expect("write cached latest");
+
+        let (background_tx, background_rx) = channel::unbounded();
+        let spawn = spawn(&cfg, background_tx);
+        let runtime = spawn.handle.expect("runtime handle");
+        runtime.sync_projects(vec![request("~/rust/demo", project_dir.path(), true)]);
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let mut saw_cached_passed = false;
+        while Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match background_rx.recv_timeout(remaining) {
+                Ok(BackgroundMsg::LintStartupStatus { path, status })
+                    if path.as_path() == project_dir.path()
+                        && matches!(status, CachedLintStatus::Passed(_)) =>
+                {
+                    saw_cached_passed = true;
+                },
+                Ok(BackgroundMsg::LintStatus { path, status })
+                    if path.as_path() == project_dir.path() =>
+                {
+                    panic!("sync should not run lint command, got {status:?}");
+                },
+                Ok(_) => {},
+                Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => break,
+            }
+        }
+
+        assert!(
+            saw_cached_passed,
+            "sync should publish the cached terminal startup lint status"
+        );
+    }
+
+    #[test]
+    fn sync_projects_runs_immediate_discovery_lint_without_cache() {
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            project_dir.path().join("Cargo.toml"),
+            "[package]\nname='demo'\nversion='0.1.0'\n",
+        )
+        .expect("write manifest");
+        let cache_dir = tempfile::tempdir().expect("tempdir");
+        let mut cfg = CargoPortConfig::default();
+        cfg.cache.root = cache_dir.path().to_string_lossy().to_string();
+        cfg.lint.enabled = true;
+        cfg.lint.include = vec![project_dir.path().to_string_lossy().to_string()];
+        cfg.lint.on_discovery = DiscoveryLint::Immediate;
+        cfg.lint.commands = vec![LintCommandConfig {
+            name:    "echo".to_string(),
+            command: "echo lint ok".to_string(),
+        }];
+
+        let (background_tx, background_rx) = channel::unbounded();
+        let spawn = spawn(&cfg, background_tx);
+        let runtime = spawn.handle.expect("runtime handle");
+        runtime.sync_projects(vec![request("~/rust/demo", project_dir.path(), true)]);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut saw_passed = false;
+        while Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match background_rx.recv_timeout(remaining) {
+                Ok(BackgroundMsg::LintStatus { path, status })
+                    if path.as_path() == project_dir.path()
+                        && matches!(status, LintStatus::Passed(_)) =>
+                {
+                    saw_passed = true;
+                    break;
+                },
+                Ok(_) => {},
+                Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => break,
+            }
+        }
+
+        assert!(
+            saw_passed,
+            "immediate startup sync should run when no terminal cache exists"
+        );
+    }
+
+    #[test]
+    fn register_project_honors_immediate_discovery_lint() {
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            project_dir.path().join("Cargo.toml"),
+            "[package]\nname='demo'\nversion='0.1.0'\n",
+        )
+        .expect("write manifest");
+        let cache_dir = tempfile::tempdir().expect("tempdir");
+        let mut cfg = CargoPortConfig::default();
+        cfg.cache.root = cache_dir.path().to_string_lossy().to_string();
+        cfg.lint.enabled = true;
+        cfg.lint.include = vec![project_dir.path().to_string_lossy().to_string()];
+        cfg.lint.on_discovery = DiscoveryLint::Immediate;
+        cfg.lint.commands = vec![LintCommandConfig {
+            name:    "echo".to_string(),
+            command: "echo lint ok".to_string(),
+        }];
+
+        let (background_tx, background_rx) = channel::unbounded();
+        let spawn = spawn(&cfg, background_tx);
+        let runtime = spawn.handle.expect("runtime handle");
+        runtime.register_project(request("~/rust/demo", project_dir.path(), true));
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut saw_passed = false;
+        while Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match background_rx.recv_timeout(remaining) {
+                Ok(BackgroundMsg::LintStatus { path, status })
+                    if path.as_path() == project_dir.path()
+                        && matches!(status, LintStatus::Passed(_)) =>
+                {
+                    saw_passed = true;
+                    break;
+                },
+                Ok(_) => {},
+                Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => break,
+            }
+        }
+
+        assert!(
+            saw_passed,
+            "new project discovery should still honor immediate lint runs"
+        );
+    }
+
+    #[test]
     fn run_commands_skips_non_projects_before_writing_status() {
         let cache_dir = tempfile::tempdir().expect("tempdir");
         let project_dir = tempfile::tempdir().expect("tempdir");
@@ -1237,7 +1444,7 @@ mod tests {
         ));
         assert!(matches!(
             read_status_from_disk(cache_dir.path(), project_dir.path()),
-            LintStatus::NoLog
+            CachedLintStatus::NoLog
         ));
     }
 
@@ -1252,11 +1459,16 @@ mod tests {
             cache_root:       "/tmp/cache".into(),
             commands:         Vec::new(),
             cache_size_bytes: None,
-            on_discovery:     DiscoveryLint::Deferred,
             status_cache:     Arc::new(Mutex::new(HashMap::new())),
         };
 
-        reconcile_workers(&mut workers, HashMap::new(), &config, &background_tx);
+        reconcile_workers(
+            &mut workers,
+            HashMap::new(),
+            &config,
+            WorkerStart::Idle,
+            &background_tx,
+        );
 
         assert!(workers.is_empty());
         assert!(exited.load(Ordering::Relaxed));
@@ -1270,7 +1482,7 @@ mod tests {
     }
 
     #[test]
-    fn later_syncs_mark_new_workers_for_immediate_run() {
+    fn run_now_worker_start_creates_worker() {
         let project_dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(
             project_dir.path().join("Cargo.toml"),
@@ -1286,10 +1498,15 @@ mod tests {
             cache_root:       "/tmp/cache".into(),
             commands:         Vec::new(),
             cache_size_bytes: None,
-            on_discovery:     DiscoveryLint::Immediate,
             status_cache:     Arc::new(Mutex::new(HashMap::new())),
         };
-        reconcile_workers(&mut workers, desired, &config, &background_tx);
+        reconcile_workers(
+            &mut workers,
+            desired,
+            &config,
+            WorkerStart::RunNow,
+            &background_tx,
+        );
 
         assert_eq!(workers.len(), 1);
         for (_, worker) in workers.drain() {

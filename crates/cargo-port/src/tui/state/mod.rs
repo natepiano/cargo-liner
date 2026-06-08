@@ -5,6 +5,7 @@ mod inflight;
 mod keymap;
 mod lint;
 mod net;
+mod network_stage;
 mod scan;
 mod sync;
 
@@ -23,6 +24,10 @@ pub(super) use net::AvailabilityStatus;
 pub(super) use net::Net;
 pub(super) use net::RecoveryOutcome;
 pub(super) use net::ServiceStatus;
+pub(super) use network_stage::NetworkRunningToasts;
+pub(super) use network_stage::StartupNetworkPending;
+pub(super) use network_stage::StartupNetworkReadiness;
+pub(super) use network_stage::StartupNetworkReady;
 pub(crate) use scan::Scan;
 pub(super) use sync::SyncTracker;
 pub(super) use sync::format_transition as format_sync_transition;

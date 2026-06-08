@@ -10,14 +10,16 @@ const DISCOVERY_SHIMMER: &str = "cargo-port.discovery.shimmer";
 const GIT_IGNORED: &str = "cargo-port.git.ignored";
 const GIT_MODIFIED: &str = "cargo-port.git.modified";
 const GIT_UNTRACKED: &str = "cargo-port.git.untracked";
+const LANGUAGE_SUBTOTAL: &str = "cargo-port.language.subtotal";
 const TARGET_BENCH: &str = "cargo-port.target.bench";
 
-const ROLE_KEYS: [&str; 6] = [
+const ROLE_KEYS: [&str; 7] = [
     COLUMN_HEADER,
     DISCOVERY_SHIMMER,
     GIT_IGNORED,
     GIT_MODIFIED,
     GIT_UNTRACKED,
+    LANGUAGE_SUBTOTAL,
     TARGET_BENCH,
 ];
 
@@ -58,6 +60,8 @@ pub(crate) fn git_ignored_color() -> Color { role_color(GIT_IGNORED) }
 pub(crate) fn git_modified_color() -> Color { role_color(GIT_MODIFIED) }
 
 pub(crate) fn git_untracked_color() -> Color { role_color(GIT_UNTRACKED) }
+
+pub(crate) fn language_subtotal_color() -> Color { role_color(LANGUAGE_SUBTOTAL) }
 
 pub(crate) fn target_bench_color() -> Color { role_color(TARGET_BENCH) }
 
@@ -110,6 +114,18 @@ fn default_role(role: &str, palette: RolePalette) -> StyleSpec {
         (GIT_UNTRACKED, RolePalette::DefaultLight) => StyleSpec::from_color(Color::Rgb(0, 120, 0)),
         (GIT_UNTRACKED, RolePalette::HighContrastDark) => StyleSpec::bold(Color::LightGreen),
         (GIT_UNTRACKED, RolePalette::HighContrastLight) => StyleSpec::bold(Color::Rgb(0, 100, 0)),
+        (LANGUAGE_SUBTOTAL, RolePalette::DefaultDark) => {
+            StyleSpec::from_color(Color::Rgb(120, 190, 210))
+        },
+        (LANGUAGE_SUBTOTAL, RolePalette::DefaultLight) => {
+            StyleSpec::from_color(Color::Rgb(35, 110, 130))
+        },
+        (LANGUAGE_SUBTOTAL, RolePalette::HighContrastDark) => {
+            StyleSpec::from_color(Color::LightCyan)
+        },
+        (LANGUAGE_SUBTOTAL, RolePalette::HighContrastLight) => {
+            StyleSpec::bold(Color::Rgb(0, 85, 120))
+        },
         (TARGET_BENCH, RolePalette::DefaultDark) => StyleSpec::from_color(Color::Magenta),
         (TARGET_BENCH, RolePalette::DefaultLight) => StyleSpec::from_color(Color::Rgb(140, 0, 140)),
         (TARGET_BENCH, RolePalette::HighContrastDark) => StyleSpec::bold(Color::LightMagenta),

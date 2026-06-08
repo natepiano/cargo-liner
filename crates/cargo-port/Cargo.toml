@@ -27,6 +27,7 @@ crossbeam-channel     = "0.5"
 crossterm             = "0.29.0"
 dark-light            = "2"
 dirs                  = "6.0.0"
+ignore                = "0.4"
 indexmap              = "2"
 itertools             = "0.14"
 notify                = "9.0.0-rc.2"
@@ -62,6 +63,7 @@ confique             = { workspace = true, features = ["toml"] }
 crossbeam-channel    = { workspace = true }
 crossterm            = { workspace = true }
 dirs                 = { workspace = true }
+ignore               = { workspace = true }
 indexmap             = { workspace = true }
 itertools            = { workspace = true }
 notify               = { workspace = true }

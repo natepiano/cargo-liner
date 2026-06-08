@@ -216,6 +216,8 @@ pub(crate) struct LangEntry {
     pub code:     usize,
     pub comments: usize,
     pub blanks:   usize,
+    /// Optional child rows rendered underneath this language.
+    pub children: Vec<Self>,
 }
 
 /// Per-project language statistics collected by tokei.

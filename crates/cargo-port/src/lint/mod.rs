@@ -57,6 +57,7 @@ pub(crate) use trigger::CargoMetadataTriggerKind;
 pub(crate) use trigger::classify_cargo_metadata_basename;
 pub(crate) use trigger::classify_cargo_metadata_event_path;
 pub(crate) use trigger::classify_event_path;
+pub use types::CachedLintStatus;
 #[cfg(test)]
 pub use types::LintCommand;
 #[cfg(test)]

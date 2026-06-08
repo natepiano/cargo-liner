@@ -77,6 +77,40 @@ impl LintStatus {
     }
 }
 
+/// Lint status loaded from cache during startup/sync.
+///
+/// This deliberately cannot represent `Running`: cache hydration is historical
+/// state, while `LintStatus::Running` is reserved for a live worker in this
+/// process.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum CachedLintStatus {
+    Passed(DateTime<FixedOffset>),
+    Failed(DateTime<FixedOffset>),
+    #[default]
+    NoLog,
+}
+
+impl CachedLintStatus {
+    pub const fn from_lint_status(status: &LintStatus) -> Option<Self> {
+        match status {
+            LintStatus::Passed(timestamp) => Some(Self::Passed(*timestamp)),
+            LintStatus::Failed(timestamp) => Some(Self::Failed(*timestamp)),
+            LintStatus::NoLog => Some(Self::NoLog),
+            LintStatus::Running(_) | LintStatus::Stale => None,
+        }
+    }
+
+    pub const fn into_lint_status(self) -> LintStatus {
+        match self {
+            Self::Passed(timestamp) => LintStatus::Passed(timestamp),
+            Self::Failed(timestamp) => LintStatus::Failed(timestamp),
+            Self::NoLog => LintStatus::NoLog,
+        }
+    }
+
+    pub const fn should_run_on_sync(&self) -> bool { matches!(self, Self::NoLog) }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum LintRunStatus {

@@ -12,6 +12,7 @@ use super::*;
 use crate::config;
 use crate::constants::IN_SYNC;
 use crate::constants::NO_REMOTE_SYNC;
+use crate::lint::CachedLintStatus;
 use crate::lint::LintRun;
 use crate::lint::LintRunStatus;
 use crate::project::AbsolutePath;
@@ -38,6 +39,7 @@ use crate::tui::constants::STARTUP_ROW_MIN_VISIBLE;
 use crate::tui::keymap::CiRunsAction;
 use crate::tui::keymap::LintsAction;
 use crate::tui::panes;
+use crate::tui::state::StartupNetworkReadiness;
 use crate::tui::terminal::CleanMsg;
 
 fn test_pull_request_info(number: u32, title: &str) -> PullRequestInfo {
@@ -944,6 +946,33 @@ fn lint_toast_prunes_entries_that_are_not_running_in_project_state() {
 }
 
 #[test]
+fn startup_lint_status_does_not_overwrite_live_running_lint() {
+    let project = make_project(Some("a"), "~/a");
+    let project_path = project.path().clone();
+    let mut app = make_app(&[project]);
+    app.config.current_mut().lint.enabled = true;
+    app.scan.state.phase = ScanPhase::Complete;
+
+    app.handle_bg_msg(BackgroundMsg::LintStatus {
+        path:   project_path.clone(),
+        status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
+    });
+    let first_toast = app.lint.running_toast_id();
+
+    app.handle_bg_msg(BackgroundMsg::LintStartupStatus {
+        path:   project_path.clone(),
+        status: CachedLintStatus::NoLog,
+    });
+
+    assert!(matches!(
+        crate::tui::state::Lint::status_for_root(&app.project_list[0].item),
+        LintStatus::Running(_)
+    ));
+    assert_eq!(app.lint.running_toast_id(), first_toast);
+    assert!(app.lint.running_toast_contains_path(project_path.as_path()));
+}
+
+#[test]
 fn live_lint_status_updates_project_model_and_detail_cache() {
     let project = make_project(Some("a"), "~/a");
     let project_path = project.path().clone();
@@ -1099,6 +1128,7 @@ fn member_vendored_path_receives_project_info_updates() {
                 code:     7,
                 comments: 0,
                 blanks:   0,
+                children: Vec::new(),
             }],
         },
     )]);
@@ -2940,9 +2970,9 @@ fn clean_finished_message_finishes_running_clean() {
     );
 }
 
-/// The metadata phase gates `startup_complete_at`: with disk, git, repo
+/// The metadata phase gates startup readiness: with disk, git, repo
 /// phases all resolved but metadata still pending, startup must not be
-/// marked complete. Once metadata arrives, `startup_complete_at` is set.
+/// marked complete. Once metadata arrives, the startup phase can close.
 #[test]
 fn startup_ready_waits_on_metadata_phase() {
     let project_a = make_project(Some("a"), "~/never-real/a");
@@ -2954,10 +2984,11 @@ fn startup_ready_waits_on_metadata_phase() {
     let scan_started = app.startup.scan_complete_at.expect("scan complete at");
 
     // Force every phase except metadata complete (empty denominators
-    // complete immediately) so only metadata gates startup_complete_at.
+    // complete immediately) so only metadata gates startup readiness.
     app.startup.disk.expected = Denominator::Stable(HashSet::new());
     app.startup.git.expected = Denominator::Stable(HashSet::new());
     app.startup.repo.expected = Denominator::Stable(HashSet::new());
+    app.startup.crates_io.expected = Denominator::Stable(HashSet::new());
     app.startup.languages.expected = Denominator::Stable(HashSet::new());
     app.startup.tests.expected = Denominator::Stable(HashSet::new());
     app.startup.lint_phase.expected = Denominator::Stable(HashSet::new());
@@ -2977,7 +3008,7 @@ fn startup_ready_waits_on_metadata_phase() {
     );
     app.maybe_complete_startup_ready(now, scan_started);
     assert!(
-        app.startup.complete_at.is_none(),
+        app.startup.is_collecting(),
         "startup doesn't complete while metadata is still pending"
     );
 
@@ -3004,13 +3035,14 @@ fn startup_ready_waits_on_metadata_phase() {
     // its minimum-visible floor elapses; advance past it and re-check.
     app.maybe_complete_startup_ready(now + STARTUP_ROW_MIN_VISIBLE * 2, scan_started);
     assert!(
-        app.startup.complete_at.is_some(),
+        !app.startup.is_collecting(),
         "startup is ready once every phase has resolved and the floor elapses"
     );
 }
 
-/// The languages and test-count rows seed their denominator from the
-/// project-root set at scan start and mark `seen` as each batch applies.
+/// The languages row starts with project-root completion tokens, can add
+/// file-level progress tokens, and marks `seen` as progress and final stats
+/// batches apply. The test-count row stays keyed on project roots.
 #[test]
 fn startup_languages_and_tests_rows_track_their_batches() {
     let project_a = make_project(Some("a"), "~/never-real/a");
@@ -3037,6 +3069,27 @@ fn startup_languages_and_tests_rows_track_their_batches() {
     );
     assert!(app.startup.languages.seen.is_empty());
     assert!(app.startup.tests.seen.is_empty());
+
+    let language_file: AbsolutePath = root.join("src").join("lib.rs").into();
+    app.handle_bg_msg(BackgroundMsg::LanguageStatsProgressPlan {
+        entries: vec![language_file.clone()],
+    });
+    assert!(
+        app.startup
+            .languages
+            .expected
+            .keys()
+            .is_some_and(|expected| expected.contains(language_file.as_path())),
+        "language progress plans add file-level tokens to the row denominator"
+    );
+
+    app.handle_bg_msg(BackgroundMsg::LanguageStatsProgressBatch {
+        entries: vec![language_file.clone()],
+    });
+    assert!(
+        app.startup.languages.seen.contains(language_file.as_path()),
+        "language progress batches mark file-level tokens seen"
+    );
 
     app.handle_bg_msg(BackgroundMsg::LanguageStatsBatch {
         entries: vec![(
@@ -3085,7 +3138,7 @@ fn startup_crates_io_row_gates_until_fetches_complete() {
 
     app.maybe_complete_startup_ready(now + STARTUP_ROW_MIN_VISIBLE * 2, scan_started);
     assert!(
-        app.startup.complete_at.is_none(),
+        app.startup.is_collecting(),
         "panel stays open while a crates.io fetch is still pending"
     );
 
@@ -3099,8 +3152,96 @@ fn startup_crates_io_row_gates_until_fetches_complete() {
 
     app.maybe_complete_startup_ready(now + STARTUP_ROW_MIN_VISIBLE * 2, scan_started);
     assert!(
-        app.startup.complete_at.is_some(),
+        !app.startup.is_collecting(),
         "panel closes once the crates.io row finishes and the floor elapses"
+    );
+}
+
+/// Regression for startup completing before the startup crates.io plan had
+/// been installed: zero-lint completion can fire immediately after startup
+/// begins, but the planned crates.io denominator must already be present.
+#[test]
+fn startup_plan_installs_crates_io_before_zero_lint_completion_can_close() {
+    let project_a = make_project(Some("demo"), "~/never-real/demo");
+    let mut app = make_app(std::slice::from_ref(&project_a));
+    app.scan.state.phase = ScanPhase::Complete;
+    app.initialize_startup_phase_tracker();
+
+    assert!(
+        app.startup
+            .crates_io
+            .expected
+            .keys()
+            .is_some_and(|expected| expected.contains("demo")),
+        "startup plan seeds the crates.io row before completion checks can run"
+    );
+
+    let now = std::time::Instant::now();
+    let scan_started = app.startup.scan_complete_at.expect("scan complete at");
+    app.startup.disk.expected = Denominator::Stable(HashSet::new());
+    app.startup.git.expected = Denominator::Stable(HashSet::new());
+    app.startup.repo.expected = Denominator::Stable(HashSet::new());
+    app.startup.metadata.expected = Denominator::Stable(HashSet::new());
+    app.startup.languages.expected = Denominator::Stable(HashSet::new());
+    app.startup.tests.expected = Denominator::Stable(HashSet::new());
+    app.startup.lint_phase.expected = Denominator::Stable(HashSet::new());
+    app.startup.details_declared.expected = Denominator::Stable(HashSet::new());
+    app.handle_bg_msg(BackgroundMsg::LintStartupStatus {
+        path:   project_a.path().clone(),
+        status: CachedLintStatus::NoLog,
+    });
+    app.maybe_complete_startup_ready(now + STARTUP_ROW_MIN_VISIBLE * 2, scan_started);
+
+    assert!(
+        app.startup.is_collecting(),
+        "zero-lint completion cannot close Startup while planned crates.io work is pending"
+    );
+
+    app.handle_bg_msg(BackgroundMsg::CratesIoFetchComplete {
+        name: "demo".to_string(),
+    });
+    app.maybe_complete_startup_ready(now + STARTUP_ROW_MIN_VISIBLE * 2, scan_started);
+    assert!(
+        !app.startup.is_collecting(),
+        "Startup can close after the planned crates.io fetch completes"
+    );
+}
+
+#[test]
+fn startup_readiness_waits_for_project_detail_declarations() {
+    let project_a = make_project(Some("demo"), "~/never-real/demo");
+    let mut app = make_app(std::slice::from_ref(&project_a));
+    app.scan.state.phase = ScanPhase::Complete;
+    app.initialize_startup_phase_tracker();
+
+    let now = std::time::Instant::now();
+    let scan_started = app.startup.scan_complete_at.expect("scan complete at");
+    let detail_path = AbsolutePath::from(project_a.path().as_path().to_path_buf());
+
+    app.startup.disk.expected = Denominator::Stable(HashSet::new());
+    app.startup.git.expected = Denominator::Stable(HashSet::new());
+    app.startup.repo.expected = Denominator::Stable(HashSet::new());
+    app.startup.crates_io.expected = Denominator::Stable(HashSet::new());
+    app.startup.metadata.expected = Denominator::Stable(HashSet::new());
+    app.startup.languages.expected = Denominator::Stable(HashSet::new());
+    app.startup.tests.expected = Denominator::Stable(HashSet::new());
+    app.startup.lint_phase.expected = Denominator::Stable(HashSet::new());
+    app.startup.details_declared.expected =
+        Denominator::Stable(HashSet::from([detail_path.clone()]));
+    app.startup.details_declared.complete_at = None;
+    app.maybe_log_startup_phase_completions();
+    app.maybe_complete_startup_ready(now + STARTUP_ROW_MIN_VISIBLE * 2, scan_started);
+
+    assert!(
+        app.startup.is_collecting(),
+        "Startup cannot close before planned detail workers declare follow-up work"
+    );
+
+    app.handle_bg_msg(BackgroundMsg::ProjectDetailsDeclared { path: detail_path });
+    app.maybe_complete_startup_ready(now + STARTUP_ROW_MIN_VISIBLE * 2, scan_started);
+    assert!(
+        !app.startup.is_collecting(),
+        "Startup can close after detail declarations are complete"
     );
 }
 
@@ -3146,6 +3287,40 @@ fn startup_late_repo_fetch_reopens_github_row() {
     assert!(
         app.startup.repo.seen.contains(&repo) && app.startup.repo.complete_at.is_some(),
         "completing the late fetch marks it seen and re-completes the row"
+    );
+}
+
+/// A re-fetch of an already-seen repo un-marks it and reopens the GitHub row,
+/// so the panel cannot close while the live tracker still contains that repo.
+#[test]
+fn startup_repo_refetch_reopens_completed_github_row() {
+    let project_a = make_project(Some("a"), "~/never-real/a");
+    let mut app = make_app(std::slice::from_ref(&project_a));
+    app.scan.state.phase = ScanPhase::Complete;
+    app.initialize_startup_phase_tracker();
+
+    let now = std::time::Instant::now();
+    let scan_started = app.startup.scan_complete_at.expect("scan complete at");
+    let repo = crate::ci::OwnerRepo::new("pcwalton", "glTF-IBL-Sampler");
+
+    app.startup.git.expected = Denominator::Stable(HashSet::new());
+    app.maybe_complete_startup_git(now, scan_started);
+    app.startup.repo.expected = Denominator::Stable(HashSet::from([repo.clone()]));
+    app.startup.repo.seen.insert(repo.clone());
+    app.maybe_complete_startup_repo(now, scan_started);
+    assert!(
+        app.startup.repo.complete_at.is_some(),
+        "the seeded repo row starts complete"
+    );
+
+    app.handle_bg_msg(BackgroundMsg::RepoFetchQueued { repo: repo.clone() });
+    assert!(
+        !app.startup.repo.seen.contains(&repo),
+        "a queued re-fetch un-marks the repo"
+    );
+    assert!(
+        app.startup.repo.complete_at.is_none(),
+        "a queued re-fetch reopens the completed GitHub row"
     );
 }
 
@@ -3225,7 +3400,7 @@ fn network_toast_stage_round_trips_startup_owned_and_steady() {
         app.net.network_toasts().is_none(),
         "construction starts in the startup-owned stage — no standalone slot"
     );
-    app.net.begin_steady_state_network_toasts();
+    begin_steady_state_network_toasts_for_test(&mut app);
     assert!(
         app.net.network_toasts().is_some(),
         "entering steady state installs the standalone-toast slots"
@@ -3258,7 +3433,7 @@ fn startup_owned_stage_suppresses_crates_io_standalone_toast() {
     });
 
     assert!(
-        app.net.crates_io.running().running.contains_key("serde"),
+        app.net.crates_io_running().running.contains_key("serde"),
         "the queued fetch is still tracked in flight for the panel's detail row"
     );
     assert!(
@@ -3267,10 +3442,75 @@ fn startup_owned_stage_suppresses_crates_io_standalone_toast() {
     );
 }
 
-/// The reported leak: a crates.io fetch processed before the scan completes —
-/// and so before `initialize_startup_phase_tracker` creates the panel — must
-/// not pop a standalone toast. The stage begins `StartupOwned` at
-/// construction, so the slot is absent in this pre-panel window too.
+/// While the startup panel owns the network rows, a queued GitHub fetch is
+/// tracked for the panel detail line but cannot create the standalone
+/// "Retrieving GitHub repo details" toast.
+#[test]
+fn startup_owned_stage_suppresses_github_standalone_toast() {
+    let project_a = make_project(Some("a"), "~/never-real/a");
+    let mut app = make_app(std::slice::from_ref(&project_a));
+    app.scan.state.phase = ScanPhase::Complete;
+    app.initialize_startup_phase_tracker();
+
+    assert!(
+        app.net.network_toasts().is_none(),
+        "the open startup panel owns the network rows"
+    );
+
+    let repo = crate::ci::OwnerRepo::new("pcwalton", "glTF-IBL-Sampler");
+    app.handle_bg_msg(BackgroundMsg::RepoFetchQueued { repo: repo.clone() });
+
+    assert!(
+        app.net.github_running().running.contains_key(&repo),
+        "the queued fetch is tracked in flight for the panel's detail row"
+    );
+    assert!(
+        app.net.network_toasts().is_none(),
+        "no standalone GitHub toast slot is created while startup owns the row"
+    );
+}
+
+/// Even if row bookkeeping regresses and every visible startup row looks
+/// gate-satisfied, startup readiness is not constructible while a
+/// startup-owned GitHub tracker still has running work.
+#[test]
+fn startup_readiness_waits_for_running_github_tracker() {
+    let project_a = make_project(Some("a"), "~/never-real/a");
+    let mut app = make_app(std::slice::from_ref(&project_a));
+    app.scan.state.phase = ScanPhase::Complete;
+    app.initialize_startup_phase_tracker();
+
+    let now = std::time::Instant::now();
+    let scan_started = app.startup.scan_complete_at.expect("scan complete at");
+    let repo = crate::ci::OwnerRepo::new("pcwalton", "glTF-IBL-Sampler");
+
+    app.startup.disk.expected = Denominator::Stable(HashSet::new());
+    app.startup.git.expected = Denominator::Stable(HashSet::new());
+    app.startup.repo.expected = Denominator::Stable(HashSet::new());
+    app.startup.crates_io.expected = Denominator::Stable(HashSet::new());
+    app.startup.metadata.expected = Denominator::Stable(HashSet::new());
+    app.startup.languages.expected = Denominator::Stable(HashSet::new());
+    app.startup.tests.expected = Denominator::Stable(HashSet::new());
+    app.startup.lint_phase.expected = Denominator::Stable(HashSet::new());
+    app.maybe_log_startup_phase_completions();
+    app.net
+        .github_running_mut()
+        .insert(repo, std::time::Instant::now());
+
+    app.maybe_complete_startup_ready(now + STARTUP_ROW_MIN_VISIBLE * 2, scan_started);
+    assert!(
+        app.startup.is_collecting(),
+        "startup cannot close while startup-owned GitHub work is still running"
+    );
+    assert!(
+        app.net.network_toasts().is_none(),
+        "the failed handoff does not install standalone network-toast slots"
+    );
+}
+
+/// The reported leak: a crates.io fetch processed before the scan completes
+/// must not pop a standalone toast, and initializing the startup tracker must
+/// seed the row from that already-running startup-owned tracker.
 #[test]
 fn crates_io_fetch_before_startup_panel_is_suppressed() {
     let project_a = make_project(Some("a"), "~/never-real/a");
@@ -3287,12 +3527,60 @@ fn crates_io_fetch_before_startup_panel_is_suppressed() {
     });
 
     assert!(
-        app.net.crates_io.running().running.contains_key("serde"),
+        app.net.crates_io_running().running.contains_key("serde"),
         "the fetch is tracked in flight even before the panel opens"
     );
     assert!(
         app.net.network_toasts().is_none(),
         "a fetch processed before the panel exists cannot leak a standalone toast"
+    );
+
+    app.scan.state.phase = ScanPhase::Complete;
+    app.initialize_startup_phase_tracker();
+    assert!(
+        app.startup
+            .crates_io
+            .expected
+            .keys()
+            .is_some_and(|expected| expected.contains("serde")),
+        "startup initialization preserves the pre-panel crates.io obligation"
+    );
+}
+
+/// Same pre-panel leak guard for GitHub: a repo queued before the Startup
+/// panel exists is owned by the startup network stage and seeds the GitHub row
+/// when the tracker initializes.
+#[test]
+fn github_fetch_before_startup_panel_seeds_startup_row() {
+    let project_a = make_project(Some("a"), "~/never-real/a");
+    let mut app = make_app(std::slice::from_ref(&project_a));
+    let repo = crate::ci::OwnerRepo::new("pcwalton", "glTF-IBL-Sampler");
+
+    assert!(
+        app.net.network_toasts().is_none(),
+        "the network-toast stage starts `StartupOwned` before any panel exists"
+    );
+
+    app.handle_bg_msg(BackgroundMsg::RepoFetchQueued { repo: repo.clone() });
+
+    assert!(
+        app.net.github_running().running.contains_key(&repo),
+        "the fetch is tracked in flight before the panel opens"
+    );
+    assert!(
+        app.net.network_toasts().is_none(),
+        "a pre-panel GitHub fetch cannot create a standalone toast"
+    );
+
+    app.scan.state.phase = ScanPhase::Complete;
+    app.initialize_startup_phase_tracker();
+    assert!(
+        app.startup
+            .repo
+            .expected
+            .keys()
+            .is_some_and(|expected| expected.contains(&repo)),
+        "startup initialization preserves the pre-panel GitHub obligation"
     );
 }
 
@@ -3328,7 +3616,7 @@ fn startup_completion_enters_steady_state_and_emits_crates_io_toast() {
 
     app.maybe_complete_startup_ready(now + STARTUP_ROW_MIN_VISIBLE * 2, scan_started);
     assert!(
-        app.startup.complete_at.is_some(),
+        !app.startup.is_collecting(),
         "the panel closes once every row is complete past its floor"
     );
     assert!(
@@ -3336,6 +3624,22 @@ fn startup_completion_enters_steady_state_and_emits_crates_io_toast() {
             .network_toasts()
             .is_some_and(|toasts| toasts.crates_io.is_none()),
         "panel close enters steady state with empty slots — no fetch has run yet"
+    );
+    let startup_toast = app
+        .framework
+        .toasts
+        .active_now()
+        .into_iter()
+        .find(|toast| toast.title() == "Startup")
+        .expect("Startup countdown toast should still be visible");
+    assert_eq!(
+        startup_toast.linger_progress(),
+        None,
+        "Startup countdown must not use task linger fade"
+    );
+    assert!(
+        startup_toast.remaining_secs().is_some(),
+        "Startup countdown should still show Closing in N"
     );
 
     app.handle_bg_msg(BackgroundMsg::CratesIoFetchQueued {
@@ -3355,9 +3659,7 @@ fn startup_completion_enters_steady_state_and_emits_crates_io_toast() {
 fn steady_state_repo_fetch_emits_github_toast() {
     let project_a = make_project(Some("a"), "~/never-real/a");
     let mut app = make_app(std::slice::from_ref(&project_a));
-    // Enter steady state directly: the panel has closed.
-    app.startup.complete_at = Some(std::time::Instant::now());
-    app.net.begin_steady_state_network_toasts();
+    finish_startup_for_test(&mut app);
 
     let repo = crate::ci::OwnerRepo::new("natepiano", "cargo-port");
     app.handle_bg_msg(BackgroundMsg::RepoFetchQueued { repo });
@@ -3367,6 +3669,36 @@ fn steady_state_repo_fetch_emits_github_toast() {
             .network_toasts()
             .is_some_and(|toasts| toasts.github.is_some()),
         "a steady-state repo fetch creates the standalone GitHub toast"
+    );
+}
+
+fn begin_steady_state_network_toasts_for_test(app: &mut App) {
+    let StartupNetworkReadiness::Ready(ready) = app.net.startup_network_readiness(false, false)
+    else {
+        panic!("startup network should be ready");
+    };
+    app.net.begin_steady_state_network_toasts(&ready);
+}
+
+fn finish_startup_for_test(app: &mut App) {
+    app.scan.state.phase = ScanPhase::Complete;
+    app.initialize_startup_phase_tracker();
+
+    let now = std::time::Instant::now();
+    let scan_started = app.startup.scan_complete_at.expect("scan complete at");
+    app.startup.disk.expected = Denominator::Stable(HashSet::new());
+    app.startup.git.expected = Denominator::Stable(HashSet::new());
+    app.startup.repo.expected = Denominator::Stable(HashSet::new());
+    app.startup.crates_io.expected = Denominator::Stable(HashSet::new());
+    app.startup.metadata.expected = Denominator::Stable(HashSet::new());
+    app.startup.languages.expected = Denominator::Stable(HashSet::new());
+    app.startup.tests.expected = Denominator::Stable(HashSet::new());
+    app.startup.lint_phase.expected = Denominator::Stable(HashSet::new());
+    app.maybe_log_startup_phase_completions();
+    app.maybe_complete_startup_ready(now + STARTUP_ROW_MIN_VISIBLE * 2, scan_started);
+    assert!(
+        !app.startup.is_collecting(),
+        "test setup should close startup"
     );
 }
 

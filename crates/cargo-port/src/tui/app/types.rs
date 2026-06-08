@@ -87,21 +87,6 @@ impl DiscoveryRowKind {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Dirtiness {
-    #[default]
-    Clean,
-    Dirty,
-}
-
-impl Dirtiness {
-    pub const fn is_dirty(self) -> bool { matches!(self, Self::Dirty) }
-
-    pub const fn mark_dirty(&mut self) { *self = Self::Dirty; }
-
-    pub const fn mark_clean(&mut self) { *self = Self::Clean; }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ScanPhase {
     #[default]
     Running,
@@ -134,19 +119,6 @@ pub enum RetrySpawnMode {
 #[cfg(test)]
 impl RetrySpawnMode {
     pub const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
-}
-
-#[derive(Debug)]
-pub struct DirtyState {
-    pub terminal: Dirtiness,
-}
-
-impl DirtyState {
-    pub const fn initial() -> Self {
-        Self {
-            terminal: Dirtiness::Clean,
-        }
-    }
 }
 
 #[derive(Debug)]

@@ -1,7 +1,7 @@
 //! The `Scan` subsystem.
 //!
 //! Owns the scan-cluster fields: project list and tree, scan state
-//! machine, dirtiness tracker, per-tick data generation counter,
+//! machine, per-tick data generation counter,
 //! discovery shimmer animations, pending first-commit strings,
 //! cargo-metadata store, workspace-target-dir index, priority-fetch
 //! path, the workspace root awaiting Clean confirm, and (in test
@@ -20,7 +20,6 @@ use std::time::Instant;
 use crate::project::AbsolutePath;
 use crate::project::ManifestFingerprint;
 use crate::project::WorkspaceMetadataStore;
-use crate::tui::app::DirtyState;
 use crate::tui::app::DiscoveryShimmer;
 #[cfg(test)]
 use crate::tui::app::RetrySpawnMode;
@@ -29,7 +28,6 @@ use crate::tui::app::TargetDirIndex;
 
 pub(crate) struct Scan {
     pub(crate) state:            ScanState,
-    dirty:                       DirtyState,
     data_generation:             u64,
     discovery_shimmers:          HashMap<AbsolutePath, DiscoveryShimmer>,
     pending_git_first_commit:    HashMap<AbsolutePath, String>,
@@ -45,7 +43,6 @@ impl Scan {
     pub fn new(state: ScanState, metadata_store: Arc<Mutex<WorkspaceMetadataStore>>) -> Self {
         Self {
             state,
-            dirty: DirtyState::initial(),
             data_generation: 0,
             discovery_shimmers: HashMap::new(),
             pending_git_first_commit: HashMap::new(),
@@ -67,14 +64,6 @@ impl Scan {
     /// still fading. Mirrors the render-time scan spinner and the
     /// discovery-shimmer fade in `tui::columns`.
     pub fn needs_animation(&self) -> bool { !self.is_complete() || self.has_active_shimmers() }
-
-    // ── dirty tracker ───────────────────────────────────────────────
-
-    pub const fn terminal_is_dirty(&self) -> bool { self.dirty.terminal.is_dirty() }
-
-    pub const fn mark_terminal_dirty(&mut self) { self.dirty.terminal.mark_dirty(); }
-
-    pub const fn clear_terminal_dirty(&mut self) { self.dirty.terminal.mark_clean(); }
 
     // ── data generation ─────────────────────────────────────────────
 
