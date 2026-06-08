@@ -24,6 +24,9 @@ pub enum LintTriggerKind {
     Manifest,
     Lockfile,
     RustSource,
+    /// Synthetic trigger fired by the app's post-startup staleness check
+    /// (see `App::kick_off_startup_lints`), not produced by a watcher event.
+    Startup,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

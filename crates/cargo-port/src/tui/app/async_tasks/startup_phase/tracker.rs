@@ -458,6 +458,18 @@ impl App {
         // `RepoFetchQueued` still joins the stable denominator and reopens the
         // row while startup is open.
         self.startup.repo.expected.stabilize();
+        // Hold the row open while a repo-fetch worker is spawned but has not
+        // yet reported. The worker joins this row's denominator only when it
+        // sends `RepoFetchQueued`; in the window between spawn and that
+        // message the row would otherwise read complete and let the
+        // startup→steady-state network handoff fire, stranding the fetch's
+        // standalone "Retrieving GitHub repo details" toast outside the panel
+        // that is supposed to own it. `RepoInfo` arrives before the
+        // `CheckoutInfo` that marks git terminal (same channel, FIFO), so every
+        // repo's first fetch is already in `repo_fetch_in_flight` here.
+        if self.net.github.has_repo_fetch_in_flight() {
+            return;
+        }
         if !self.startup.repo.complete_once(now) {
             return;
         }
@@ -555,6 +567,11 @@ impl App {
         // or explicitly abandoned after a failed startup row.
         self.sync_running_crates_io_toast();
         self.sync_running_repo_fetch_toast();
+        // Startup is fully closed: every disk walk has reported, so each
+        // project's newest source mtime is in `Startup::source_mtimes`. Now
+        // lint the projects that changed since their last run without
+        // contending with the startup window.
+        self.kick_off_startup_lints();
         let since_scan_ms = tui_pane::perf_log_ms(
             closing
                 .completed_at

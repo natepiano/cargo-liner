@@ -12,8 +12,10 @@
 //! framework toasts, and tracing, and have no single subsystem they
 //! belong to.
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::time::Instant;
+use std::time::SystemTime;
 
 use tui_pane::ColoredToastId;
 
@@ -31,6 +33,12 @@ pub struct Startup {
     pub scan_complete_at: Option<Instant>,
     pub(super) toast:     Option<StartupToast>,
     phase:                StartupPhase,
+
+    /// Newest lint-relevant source mtime per project, collected from the disk
+    /// walk (`BackgroundMsg::DiskUsageBatch`). Consumed once when the startup
+    /// phase closes by `App::kick_off_startup_lints` to decide which projects
+    /// changed since their last lint.
+    pub source_mtimes: HashMap<AbsolutePath, SystemTime>,
 
     pub disk:      KeyedPhase<AbsolutePath>,
     pub git:       KeyedPhase<AbsolutePath>,

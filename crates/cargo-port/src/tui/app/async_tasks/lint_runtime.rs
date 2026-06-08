@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use crate::lint;
+use crate::lint::CachedLintStatus;
 use crate::lint::LintRun;
 use crate::lint::RegisterProjectRequest;
 use crate::project;
@@ -187,5 +188,59 @@ impl App {
         if let Some(item) = self.project_list.iter().find(|i| i.path() == path) {
             self.register_lint_project_if_eligible(item);
         }
+    }
+
+    /// As the startup phase closes, lint every eligible project whose source
+    /// changed since its last run — or that was never linted, when discovery
+    /// linting is enabled. Deferred to here rather than run during sync so
+    /// these lints never contend with startup work. The newest source mtime
+    /// per project comes from the disk walk (`Startup::source_mtimes`); the
+    /// last run's start time comes from the loaded history. Surfaces the batch
+    /// in a one-shot toast naming the projects.
+    pub(super) fn kick_off_startup_lints(&mut self) {
+        let Some(runtime) = self.lint.runtime().cloned() else {
+            return;
+        };
+        let on_discovery = self.config.current().lint.on_discovery;
+
+        let mut pending: Vec<AbsolutePath> = Vec::new();
+        for request in self.lint_runtime_projects() {
+            if !lint::project_is_eligible(
+                &self.config.current().lint,
+                &request.project_label,
+                request.abs_path.as_path(),
+                request.is_rust,
+            ) {
+                continue;
+            }
+            let Some(runs) = self.project_list.lint_at_path(request.abs_path.as_path()) else {
+                continue;
+            };
+            // `from_lint_status` is `None` for a live `Running`/`Stale` status:
+            // never re-trigger a project that is already linting.
+            let Some(cached) = CachedLintStatus::from_lint_status(runs.status()) else {
+                continue;
+            };
+            let last_started_at = runs.last_started_at();
+            let max_source_mtime = self.startup.source_mtimes.get(&request.abs_path).copied();
+            if cached.should_lint_on_startup(last_started_at, max_source_mtime, on_discovery) {
+                pending.push(request.abs_path);
+            }
+        }
+
+        self.startup.source_mtimes.clear();
+        if pending.is_empty() {
+            return;
+        }
+
+        // Title the single running-lint toast as a catch-up batch so it reads
+        // distinctly from an edit-triggered run. That toast already names each
+        // project and tracks elapsed/completion, so no separate one-shot toast
+        // is needed.
+        self.lint.queue_catch_up_lints();
+        for path in &pending {
+            runtime.request_startup_lint(path.clone());
+        }
+        tracing::info!(count = pending.len(), "startup_lints_kicked_off");
     }
 }

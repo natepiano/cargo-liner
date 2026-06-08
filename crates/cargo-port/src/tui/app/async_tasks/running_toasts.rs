@@ -22,7 +22,8 @@ impl App {
     }
     pub(super) fn sync_running_lint_toast(&mut self) {
         let (toast_slot, items) = self.lint.toast_items_from_project_model(&self.project_list);
-        let next = self.sync_running_toast(toast_slot, "Lints", &items);
+        let title = self.lint.running_lint_toast_title(!items.is_empty());
+        let next = self.sync_running_toast(toast_slot, title, &items);
         self.lint.set_running_toast(next);
     }
     /// Keep a single "Retrieving GitHub repo details" toast in sync with the

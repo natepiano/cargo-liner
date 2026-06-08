@@ -1,9 +1,12 @@
 use std::cmp::Ordering;
+use std::time::SystemTime;
 
 use chrono::DateTime;
 use chrono::FixedOffset;
 use serde::Deserialize;
 use serde::Serialize;
+
+use crate::config::DiscoveryLint;
 
 /// Display-agnostic discriminant of [`LintStatus`]. The TUI integration
 /// layer (`crate::tui::integration::lint_display`) maps this to the
@@ -108,7 +111,38 @@ impl CachedLintStatus {
         }
     }
 
-    pub const fn should_run_on_sync(&self) -> bool { matches!(self, Self::NoLog) }
+    /// Should this project be linted as the startup phase closes?
+    ///
+    /// - `NoLog` (never linted) is the discovery case, gated by `on_discovery` so turning discovery
+    ///   linting off does not lint every project on the first launch.
+    /// - A terminal result (`Passed`/`Failed`) re-lints only when a source file changed since that
+    ///   run began — `max_source_mtime` newer than `last_started_at`. This staleness check is
+    ///   independent of `on_discovery`: an edited project always re-lints.
+    pub fn should_lint_on_startup(
+        &self,
+        last_started_at: Option<DateTime<FixedOffset>>,
+        max_source_mtime: Option<SystemTime>,
+        on_discovery: DiscoveryLint,
+    ) -> bool {
+        match self {
+            Self::NoLog => on_discovery.is_immediate(),
+            Self::Passed(_) | Self::Failed(_) => match (last_started_at, max_source_mtime) {
+                (Some(started), Some(mtime)) => source_is_newer(mtime, started),
+                _ => false,
+            },
+        }
+    }
+}
+
+/// True when `mtime` is at least one whole second newer than `last_started_at`.
+/// Comparing at second granularity keeps sub-second mtime / RFC3339 rounding
+/// noise from re-triggering a lint that already covered the change.
+fn source_is_newer(mtime: SystemTime, last_started_at: DateTime<FixedOffset>) -> bool {
+    let Ok(since_epoch) = mtime.duration_since(SystemTime::UNIX_EPOCH) else {
+        return false;
+    };
+    let mtime_secs = i64::try_from(since_epoch.as_secs()).unwrap_or(i64::MAX);
+    mtime_secs > last_started_at.timestamp()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

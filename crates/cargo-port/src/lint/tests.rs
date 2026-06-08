@@ -2,8 +2,11 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
+use std::time::SystemTime;
 
 use chrono::DateTime;
+use chrono::FixedOffset;
 use chrono::Utc;
 
 use super::history;
@@ -17,6 +20,7 @@ use super::types::LintCommand;
 use super::types::LintCommandStatus;
 use super::*;
 use crate::channel;
+use crate::config::DiscoveryLint;
 
 fn run(status: LintRunStatus) -> LintRun {
     LintRun {
@@ -738,4 +742,41 @@ fn reclaim_project_cache_is_noop_when_directory_missing() {
     assert!(cache_dir.path().is_dir());
     let project_cache = paths::project_dir_under(cache_dir.path(), project_dir.path());
     assert!(!project_cache.as_path().exists());
+}
+
+// ── should_lint_on_startup ──────────────────────────────────────
+
+#[test]
+fn should_lint_on_startup_gates_nolog_by_discovery_and_relints_stale_terminal() {
+    // NoLog (never linted) is the discovery case — gated by config, and
+    // independent of any source mtime.
+    assert!(CachedLintStatus::NoLog.should_lint_on_startup(None, None, DiscoveryLint::Immediate));
+    assert!(!CachedLintStatus::NoLog.should_lint_on_startup(None, None, DiscoveryLint::Deferred));
+
+    // A terminal result re-lints only when a source mtime post-dates the run
+    // start, regardless of discovery config.
+    let started: DateTime<FixedOffset> =
+        DateTime::parse_from_rfc3339("2026-03-30T14:22:01-05:00").expect("parse start");
+    let run_epoch = SystemTime::UNIX_EPOCH
+        + Duration::from_secs(u64::try_from(started.timestamp()).expect("non-negative epoch"));
+    let passed = CachedLintStatus::Passed(started);
+
+    assert!(passed.should_lint_on_startup(
+        Some(started),
+        Some(run_epoch + Duration::from_secs(5)),
+        DiscoveryLint::Deferred,
+    ));
+    assert!(!passed.should_lint_on_startup(
+        Some(started),
+        Some(run_epoch - Duration::from_secs(5)),
+        DiscoveryLint::Deferred,
+    ));
+    // Same whole second is not "newer" — the second-granularity guard.
+    assert!(!passed.should_lint_on_startup(
+        Some(started),
+        Some(run_epoch),
+        DiscoveryLint::Immediate,
+    ));
+    // No source mtime collected → a terminal result cannot be stale.
+    assert!(!passed.should_lint_on_startup(Some(started), None, DiscoveryLint::Immediate));
 }

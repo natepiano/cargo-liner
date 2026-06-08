@@ -13,7 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Isolate launched examples so stopping them from the Output pane does not also quit cargo-port
 - Avoid rerunning lint commands during rescan; startup now hydrates terminal-only cached lint status instead of feeding the running Lints toast
+- Re-lint projects whose source changed since their last run once startup finishes, so a stale lint status is no longer shown as current; never-linted projects still respect the discovery-lint setting
 - Prevent Startup from entering its close countdown until startup-owned GitHub and crates.io work is terminal
+- Hold the Startup GitHub row open until every spawned repo-fetch worker reports, so a fetch that queues just as startup finishes stays inside the panel instead of leaking a standalone "Retrieving GitHub repo details" toast
 - Show incremental Languages startup progress while language stats scan files
 - Keep the completed Startup panel green during its close countdown instead of sending it through the task-toast fade path
 - Avoid a full terminal clear when stopping a running example from the Output pane

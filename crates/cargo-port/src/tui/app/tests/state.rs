@@ -946,6 +946,37 @@ fn lint_toast_prunes_entries_that_are_not_running_in_project_state() {
 }
 
 #[test]
+fn startup_catch_up_batch_titles_running_toast_distinctly() {
+    let project = make_project(Some("a"), "~/a");
+    let mut app = make_app(std::slice::from_ref(&project));
+
+    // The startup kickoff queues the catch-up batch; the first running status
+    // then creates the single running-lint toast. It must read "Catch-up
+    // lints" — no separate one-shot toast and no plain "Lints" toast.
+    app.lint.queue_catch_up_lints();
+    app.handle_bg_msg(BackgroundMsg::LintStatus {
+        path:   test_path("~/a"),
+        status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
+    });
+
+    let titles: Vec<String> = app
+        .framework
+        .toasts
+        .active_now()
+        .iter()
+        .map(|toast| toast.title().to_string())
+        .collect();
+    assert!(
+        titles.iter().any(|title| title == "Catch-up lints"),
+        "the catch-up batch titles the running toast distinctly: {titles:?}"
+    );
+    assert!(
+        !titles.iter().any(|title| title == "Lints"),
+        "no separate plain Lints toast is created for the catch-up batch: {titles:?}"
+    );
+}
+
+#[test]
 fn startup_lint_status_does_not_overwrite_live_running_lint() {
     let project = make_project(Some("a"), "~/a");
     let project_path = project.path().clone();
@@ -3505,6 +3536,52 @@ fn startup_readiness_waits_for_running_github_tracker() {
     assert!(
         app.net.network_toasts().is_none(),
         "the failed handoff does not install standalone network-toast slots"
+    );
+}
+
+/// The spawn→queue window: a repo-fetch worker is registered in
+/// `repo_fetch_in_flight` at spawn but only reaches the `github_running`
+/// tracker once it sends `RepoFetchQueued`. Startup must not hand off to
+/// steady state in that window, or the queue message lands after the panel
+/// closes and leaks a standalone "Retrieving GitHub repo details" toast.
+#[test]
+fn startup_readiness_waits_for_spawned_but_unqueued_repo_fetch() {
+    let project_a = make_project(Some("a"), "~/never-real/a");
+    let mut app = make_app(std::slice::from_ref(&project_a));
+    app.scan.state.phase = ScanPhase::Complete;
+    app.initialize_startup_phase_tracker();
+
+    let now = std::time::Instant::now();
+    let scan_started = app.startup.scan_complete_at.expect("scan complete at");
+    let repo = crate::ci::OwnerRepo::new("pcwalton", "glTF-IBL-Sampler");
+
+    app.startup.disk.expected = Denominator::Stable(HashSet::new());
+    app.startup.git.expected = Denominator::Stable(HashSet::new());
+    app.startup.repo.expected = Denominator::Stable(HashSet::new());
+    app.startup.crates_io.expected = Denominator::Stable(HashSet::new());
+    app.startup.metadata.expected = Denominator::Stable(HashSet::new());
+    app.startup.languages.expected = Denominator::Stable(HashSet::new());
+    app.startup.tests.expected = Denominator::Stable(HashSet::new());
+    app.startup.lint_phase.expected = Denominator::Stable(HashSet::new());
+
+    // The worker thread is spawned (registered in flight) but has not yet sent
+    // `RepoFetchQueued`, so the `github_running` tracker stays empty — the row
+    // and the network gate would both read drained without this guard. In the
+    // real flow `RepoInfo` registers the fetch before the `CheckoutInfo` that
+    // marks git terminal, so the row never completes first; clear the row's
+    // init-time completion to model that ordering.
+    app.net.github.repo_fetch_in_flight_mut().insert(repo);
+    app.startup.repo.complete_at = None;
+    app.maybe_log_startup_phase_completions();
+
+    app.maybe_complete_startup_ready(now + STARTUP_ROW_MIN_VISIBLE * 2, scan_started);
+    assert!(
+        app.startup.is_collecting(),
+        "startup cannot close while a repo fetch is spawned but not yet queued"
+    );
+    assert!(
+        app.net.network_toasts().is_none(),
+        "the panel keeps owning the network rows until the spawned fetch drains"
     );
 }
 

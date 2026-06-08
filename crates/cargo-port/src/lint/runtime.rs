@@ -27,7 +27,9 @@ use super::history;
 use super::paths;
 use super::read_write;
 use super::status;
+use super::trigger::LintEventKind;
 use super::trigger::LintTriggerEvent;
+use super::trigger::LintTriggerKind;
 use super::types::CachedLintStatus;
 use super::types::LintCommand;
 use super::types::LintCommandStatus;
@@ -91,6 +93,21 @@ impl RuntimeHandle {
 
     pub fn lint_trigger(&self, event: LintTriggerEvent) {
         let _ = self.tx.send(SupervisorMsg::LintTriggered { event });
+    }
+
+    /// Schedule a lint run for a project the app's post-startup staleness
+    /// check flagged (source newer than the last run, or never linted under
+    /// immediate discovery). Routed through the same `LintTriggered` path as
+    /// watcher events so the worker debounces and coalesces it normally.
+    pub fn request_startup_lint(&self, project_root: AbsolutePath) {
+        let _ = self.tx.send(SupervisorMsg::LintTriggered {
+            event: LintTriggerEvent {
+                project_root,
+                trigger: LintTriggerKind::Startup,
+                event_kind: LintEventKind::CreateOrModify,
+                removal: false,
+            },
+        });
     }
 }
 
@@ -184,7 +201,7 @@ fn supervisor_loop(
                     &mut workers,
                     desired,
                     &worker_config,
-                    WorkerStart::for_sync(lint.on_discovery),
+                    WorkerStart::Idle,
                     &background_tx,
                 );
             },
@@ -332,42 +349,23 @@ struct WorkerConfig {
     status_cache:     Arc<Mutex<HashMap<String, CachedLintStatus>>>,
 }
 
+/// Whether a freshly spawned worker runs a lint immediately or waits idle for
+/// a trigger. Startup sync always spawns workers `Idle` — the app drives any
+/// startup lints after the startup phase completes (see
+/// `App::kick_off_startup_lints`), so the supervisor never adds lint work to
+/// the startup window. Only live post-startup discovery (`for_discovery`) runs
+/// immediately, and only when discovery linting is enabled.
 #[derive(Clone, Copy)]
 enum WorkerStart {
     Idle,
     RunNow,
-    RunWhenUncached,
 }
 
 impl WorkerStart {
-    const fn for_sync(discovery_lint: DiscoveryLint) -> Self {
-        match discovery_lint {
-            DiscoveryLint::Immediate => Self::RunWhenUncached,
-            DiscoveryLint::Deferred => Self::Idle,
-        }
-    }
-
     const fn for_discovery(discovery_lint: DiscoveryLint) -> Self {
         match discovery_lint {
             DiscoveryLint::Immediate => Self::RunNow,
             DiscoveryLint::Deferred => Self::Idle,
-        }
-    }
-
-    fn resolve(self, config: &WorkerConfig, project_root: &Path) -> Self {
-        match self {
-            Self::RunWhenUncached
-                if cached_status_for_project(
-                    &config.status_cache,
-                    config.cache_root.as_path(),
-                    project_root,
-                )
-                .should_run_on_sync() =>
-            {
-                Self::RunNow
-            },
-            Self::RunWhenUncached | Self::Idle => Self::Idle,
-            Self::RunNow => Self::RunNow,
         }
     }
 }
@@ -394,7 +392,6 @@ fn reconcile_workers(
         }
     }
     for (path, request) in desired {
-        let start = start.resolve(config, path.as_path());
         workers.entry(path).or_insert_with(|| {
             spawn_project_worker(
                 request.project_label,
@@ -1288,7 +1285,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_projects_runs_immediate_discovery_lint_without_cache() {
+    fn sync_projects_defers_lint_even_when_immediate_and_uncached() {
         let project_dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(
             project_dir.path().join("Cargo.toml"),
@@ -1311,17 +1308,25 @@ mod tests {
         let runtime = spawn.handle.expect("runtime handle");
         runtime.sync_projects(vec![request("~/rust/demo", project_dir.path(), true)]);
 
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut saw_passed = false;
+        // The supervisor no longer runs lints on sync — the app drives any
+        // startup lints after startup completes. Sync only hydrates the
+        // cached startup status (`NoLog` here). The `echo` command would
+        // resolve in well under this window if sync still ran it.
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let mut saw_nolog = false;
         while Instant::now() < deadline {
             let remaining = deadline.saturating_duration_since(Instant::now());
             match background_rx.recv_timeout(remaining) {
-                Ok(BackgroundMsg::LintStatus { path, status })
+                Ok(BackgroundMsg::LintStartupStatus { path, status })
                     if path.as_path() == project_dir.path()
-                        && matches!(status, LintStatus::Passed(_)) =>
+                        && matches!(status, CachedLintStatus::NoLog) =>
                 {
-                    saw_passed = true;
-                    break;
+                    saw_nolog = true;
+                },
+                Ok(BackgroundMsg::LintStatus { path, status })
+                    if path.as_path() == project_dir.path() =>
+                {
+                    panic!("sync must not run lint under deferred startup, got {status:?}");
                 },
                 Ok(_) => {},
                 Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => break,
@@ -1329,8 +1334,8 @@ mod tests {
         }
 
         assert!(
-            saw_passed,
-            "immediate startup sync should run when no terminal cache exists"
+            saw_nolog,
+            "sync should hydrate the uncached startup status as NoLog"
         );
     }
 

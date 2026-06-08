@@ -17,7 +17,7 @@ impl App {
     /// Apply a [`DirSizes`] breakdown to the matching project. Shares
     /// the post-set logic with `apply_disk_usage` (visibility /
     /// lint-runtime registration) by reusing that helper for the
-    /// total — the new breakdown fields just ride alongside.
+    /// total — the breakdown fields are stored alongside.
     pub(super) fn apply_disk_usage_breakdown(&mut self, path: &Path, sizes: DirSizes) {
         if let Some(project) = self.project_list.at_path_mut(path) {
             project.in_project_target = Some(sizes.in_project_target);
@@ -75,9 +75,12 @@ impl App {
         // pending in the panel row forever; marking all of them is
         // a no-op for keys that aren't tracked.
         self.startup.disk.seen.insert(root_path.clone());
-        for (path, _) in &entries {
+        for (path, sizes) in &entries {
             if path != root_path {
                 self.startup.disk.seen.insert(path.clone());
+            }
+            if let Some(mtime) = sizes.max_source_mtime {
+                self.startup.source_mtimes.insert(path.clone(), mtime);
             }
         }
         self.handle_disk_usage_batch(entries);

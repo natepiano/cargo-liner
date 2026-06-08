@@ -1,7 +1,11 @@
 use std::collections::HashMap;
 
+use chrono::DateTime;
+use chrono::FixedOffset;
+
 use super::status;
 use super::types::LintRun;
+use super::types::LintRunStatus;
 use super::types::LintStatus;
 
 /// Per-project lint state: run history and current status.
@@ -21,6 +25,18 @@ impl LintRuns {
     pub fn runs(&self) -> &[LintRun] { &self.runs }
 
     pub const fn status(&self) -> &LintStatus { &self.status }
+
+    /// `started_at` of the most recent terminal run (newest run that is not
+    /// `Running`), parsed to a timestamp. `None` when there is no such run or
+    /// it fails to parse. The startup staleness check compares this against
+    /// the newest source-file mtime to decide whether an edit post-dates the
+    /// last lint.
+    pub fn last_started_at(&self) -> Option<DateTime<FixedOffset>> {
+        self.runs
+            .iter()
+            .find(|run| !matches!(run.status, LintRunStatus::Running))
+            .and_then(|run| status::parse_timestamp(&run.started_at))
+    }
 
     /// Archive byte size for a single run. `None` means we have no entry
     /// for this `run_id` (run not yet seen by `set_runs`); `Some(0)` means
@@ -126,5 +142,36 @@ mod tests {
 
         assert!(!lr.has_archive_entry("a"), "old run's entry should be gone");
         assert!(lr.has_archive_entry("b"));
+    }
+
+    #[test]
+    fn last_started_at_skips_running_and_parses_newest_terminal() {
+        fn run_at(run_id: &str, started_at: &str, status: LintRunStatus) -> LintRun {
+            LintRun {
+                run_id: run_id.to_string(),
+                started_at: started_at.to_string(),
+                finished_at: Some(started_at.to_string()),
+                duration_ms: Some(1),
+                status,
+                commands: Vec::new(),
+                archive_bytes: 0,
+            }
+        }
+
+        let mut lr = LintRuns::default();
+        assert_eq!(lr.last_started_at(), None);
+
+        // Stored newest-first: the leading Running run is skipped; the next
+        // terminal run supplies the start timestamp.
+        lr.set_runs(vec![
+            run_at("c", "2026-04-24T12:00:05Z", LintRunStatus::Running),
+            run_at("b", "2026-04-24T12:00:03Z", LintRunStatus::Passed),
+            run_at("a", "2026-04-24T12:00:00Z", LintRunStatus::Failed),
+        ]);
+
+        let expected = DateTime::parse_from_rfc3339("2026-04-24T12:00:03Z")
+            .ok()
+            .map(|ts| ts.timestamp());
+        assert_eq!(lr.last_started_at().map(|ts| ts.timestamp()), expected);
     }
 }

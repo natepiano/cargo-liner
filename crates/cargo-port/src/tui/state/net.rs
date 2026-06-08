@@ -221,6 +221,15 @@ impl Github {
         self.repo_fetch_in_flight.contains(repo)
     }
 
+    /// `true` while any repo-fetch worker is spawned but not yet complete. A
+    /// fetch joins this set in `spawn_repo_fetch_for_git_info` before its
+    /// thread starts and leaves it on `RepoFetchComplete` — earlier than the
+    /// `github_running` tracker, which a fetch reaches only once it sends
+    /// `RepoFetchQueued` from the worker thread. The startup GitHub row gates
+    /// completion on this so the panel cannot hand off to steady state in the
+    /// spawn→queue window.
+    pub fn has_repo_fetch_in_flight(&self) -> bool { !self.repo_fetch_in_flight.is_empty() }
+
     pub fn insert_pr_check_poll(&mut self, repo: OwnerRepo, number: u32) -> bool {
         self.pr_check_polls.insert((repo, number))
     }

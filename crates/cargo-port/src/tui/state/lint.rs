@@ -73,6 +73,26 @@ pub enum LintDisplay {
     },
 }
 
+/// Title for the running-lint toast during normal, edit-triggered runs.
+const RUNNING_LINT_TOAST_TITLE: &str = "Lints";
+/// Title while the startup catch-up batch runs — projects re-linted once
+/// startup finishes because their sources are newer than their last run.
+const CATCH_UP_LINT_TOAST_TITLE: &str = "Catch-up lints";
+
+/// Lifecycle of the startup catch-up lint batch. Tracked only to title the
+/// single running-lint toast: while the batch is queued or active the toast
+/// reads "Catch-up lints"; later edit-triggered runs read "Lints". `Queued`
+/// is promoted to `Active` by the first running status and back to `Idle`
+/// once the batch drains, so a status sync that finds nothing running before
+/// the batch starts cannot retitle a later edit-triggered run.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum CatchUpLints {
+    #[default]
+    Idle,
+    Queued,
+    Active,
+}
+
 /// The `Lint` subsystem. Owns the lint runtime, in-flight
 /// paths, running-toast slot, and the disk cache stat counter.
 pub struct Lint {
@@ -86,6 +106,9 @@ pub struct Lint {
     /// `Self::toast_items_from_project_model`; this tracker must not become a
     /// second source of truth for lint status.
     running:         RunningTracker<AbsolutePath>,
+    /// Lifecycle of the startup catch-up batch, used to title the running
+    /// toast (see [`CatchUpLints`]).
+    catch_up:        CatchUpLints,
     /// Bytes used by the on-disk lint-log cache (`~/.cache/cargo-port/lints/`).
     /// Refreshed by `App::refresh_lint_cache_usage_from_disk`,
     /// displayed in the Settings popup.
@@ -107,6 +130,7 @@ impl Lint {
         Self {
             runtime,
             running: RunningTracker::new(),
+            catch_up: CatchUpLints::Idle,
             cache_usage: CacheUsage::default(),
             viewport: Viewport::new(),
             focus: RenderFocus::inactive(),
@@ -160,6 +184,29 @@ impl Lint {
 
     pub const fn set_running_toast(&mut self, toast: Option<ToastTaskId>) {
         self.running.toast = toast;
+    }
+
+    /// Mark the startup catch-up batch queued so the next running-lint toast
+    /// is titled to explain it is re-linting projects whose sources changed
+    /// since their last run. Called by `App::kick_off_startup_lints`.
+    pub const fn queue_catch_up_lints(&mut self) { self.catch_up = CatchUpLints::Queued; }
+
+    /// Advance the catch-up lifecycle from the live running set, then return
+    /// the title for the running-lint toast. `Queued` becomes `Active` once
+    /// the batch is running and `Active` returns to `Idle` once it drains, so
+    /// the catch-up title holds for the whole batch and reverts to "Lints"
+    /// for later edit-triggered runs. A new toast only takes a fresh title on
+    /// creation, so the in-flight toast keeps its title across reconciles.
+    pub const fn running_lint_toast_title(&mut self, has_running: bool) -> &'static str {
+        self.catch_up = match (self.catch_up, has_running) {
+            (CatchUpLints::Queued, true) => CatchUpLints::Active,
+            (CatchUpLints::Active, false) => CatchUpLints::Idle,
+            (state, _) => state,
+        };
+        match self.catch_up {
+            CatchUpLints::Idle => RUNNING_LINT_TOAST_TITLE,
+            CatchUpLints::Queued | CatchUpLints::Active => CATCH_UP_LINT_TOAST_TITLE,
+        }
     }
 
     #[cfg(test)]
@@ -319,6 +366,45 @@ mod tests {
         assert_eq!(lint.running_toast_id(), Some(tui_pane::ToastTaskId(7)));
         lint.set_running_toast(None);
         assert!(lint.running_toast_id().is_none());
+    }
+
+    #[test]
+    fn running_lint_toast_title_tracks_catch_up_batch() {
+        let mut lint = Lint::new(None);
+        // Default and edit-triggered runs read the plain title.
+        assert_eq!(
+            lint.running_lint_toast_title(false),
+            RUNNING_LINT_TOAST_TITLE
+        );
+        assert_eq!(
+            lint.running_lint_toast_title(true),
+            RUNNING_LINT_TOAST_TITLE
+        );
+
+        // Queued but not yet running: stays catch-up, does not clear early.
+        lint.queue_catch_up_lints();
+        assert_eq!(
+            lint.running_lint_toast_title(false),
+            CATCH_UP_LINT_TOAST_TITLE
+        );
+        // The batch starts running, then keeps the catch-up title.
+        assert_eq!(
+            lint.running_lint_toast_title(true),
+            CATCH_UP_LINT_TOAST_TITLE
+        );
+        assert_eq!(
+            lint.running_lint_toast_title(true),
+            CATCH_UP_LINT_TOAST_TITLE
+        );
+        // Draining the batch reverts later edit-triggered runs to "Lints".
+        assert_eq!(
+            lint.running_lint_toast_title(false),
+            RUNNING_LINT_TOAST_TITLE
+        );
+        assert_eq!(
+            lint.running_lint_toast_title(true),
+            RUNNING_LINT_TOAST_TITLE
+        );
     }
 
     #[test]

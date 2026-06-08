@@ -1859,6 +1859,7 @@ fn package_pane_renders_target_and_non_target_disk_breakdown() {
         total:                 12 * 1024 * 1024,
         in_project_target:     10 * 1024 * 1024,
         in_project_non_target: 2 * 1024 * 1024,
+        max_source_mtime:      None,
     };
     app.handle_bg_msg(BackgroundMsg::DiskUsageBatch {
         root_path: abs_path.clone(),

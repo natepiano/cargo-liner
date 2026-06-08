@@ -1,11 +1,15 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use walkdir::WalkDir;
 
 use super::BackgroundMsg;
 use super::cargo_metadata::StreamingScanContext;
+use crate::constants::CARGO_LOCK;
+use crate::constants::CARGO_TOML;
+use crate::constants::GIT_DIR;
 use crate::constants::TARGET_DIR;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
@@ -109,21 +113,56 @@ pub(crate) struct DirSizes {
     pub total:                 u64,
     pub in_project_target:     u64,
     pub in_project_non_target: u64,
+    /// Newest mtime among lint-relevant source files (`*.rs`, `Cargo.toml`,
+    /// `Cargo.lock`) outside `target/` and `.git/`. Collected from the same
+    /// `Metadata` the size walk already reads, so it costs no extra syscalls.
+    /// The startup staleness check (`App::kick_off_startup_lints`) compares it
+    /// against the last lint's start time. `None` when the tree holds no such
+    /// file.
+    pub max_source_mtime:      Option<SystemTime>,
 }
 
 impl DirSizes {
-    fn add_file(&mut self, bytes: u64, file_path: &Path) {
+    fn add_file(&mut self, bytes: u64, file_path: &Path, modified: Option<SystemTime>) {
         self.total += bytes;
         if file_lives_under_target(file_path) {
             self.in_project_target += bytes;
         } else {
             self.in_project_non_target += bytes;
         }
+        if let Some(modified) = modified
+            && is_lint_source(file_path)
+            && !file_in_excluded_dir(file_path)
+        {
+            self.max_source_mtime = Some(
+                self.max_source_mtime
+                    .map_or(modified, |current| current.max(modified)),
+            );
+        }
     }
 }
 
 fn file_lives_under_target(path: &Path) -> bool {
     path.components().any(|c| c.as_os_str() == TARGET_DIR)
+}
+
+/// Skip `target/` and `.git/` when collecting the newest source mtime — build
+/// artifacts and git internals churn on every build/commit and would falsely
+/// mark a project stale. Matches the watcher's lint-trigger exclusions.
+fn file_in_excluded_dir(path: &Path) -> bool {
+    path.components().any(|c| {
+        let part = c.as_os_str();
+        part == TARGET_DIR || part == GIT_DIR
+    })
+}
+
+/// The file set whose mtime feeds the startup staleness check — the same set
+/// the watcher re-lints on: Rust sources plus the manifest and lockfile.
+fn is_lint_source(path: &Path) -> bool {
+    match path.file_name().and_then(|name| name.to_str()) {
+        Some(CARGO_TOML | CARGO_LOCK) => true,
+        _ => path.extension().is_some_and(|ext| ext == "rs"),
+    }
 }
 
 fn dir_sizes_for_tree(tree: &DiskUsageTree) -> Vec<(AbsolutePath, DirSizes)> {
@@ -141,11 +180,12 @@ fn dir_sizes_for_tree(tree: &DiskUsageTree) -> Vec<(AbsolutePath, DirSizes)> {
             continue;
         };
         let bytes = metadata.len();
+        let modified = metadata.modified().ok();
         let file_path = entry.path();
         let mut current = file_path.parent();
         while let Some(dir) = current {
             if let Some(sizes) = totals.get_mut(dir) {
-                sizes.add_file(bytes, file_path);
+                sizes.add_file(bytes, file_path, modified);
             }
             if dir == tree.root_abs_path.as_path() {
                 break;
@@ -262,6 +302,49 @@ mod tests {
             entry.in_project_target + entry.in_project_non_target,
             entry.total,
             "breakdown always sums to total"
+        );
+    }
+
+    #[test]
+    fn dir_sizes_for_tree_captures_newest_source_mtime_excluding_build_artifacts() {
+        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let root: AbsolutePath = tmp.path().join("proj").into();
+        let src = root.join("src");
+        let target_debug = root.join("target").join("debug");
+        std::fs::create_dir_all(&src).unwrap_or_else(|_| std::process::abort());
+        std::fs::create_dir_all(&target_debug).unwrap_or_else(|_| std::process::abort());
+
+        let base = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let older = base;
+        let newer = base + std::time::Duration::from_secs(45);
+        let newest = base + std::time::Duration::from_secs(90);
+
+        let touch = |path: &Path, mtime: SystemTime| {
+            std::fs::write(path, b"x").unwrap_or_else(|_| std::process::abort());
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(path)
+                .unwrap_or_else(|_| std::process::abort());
+            file.set_modified(mtime)
+                .unwrap_or_else(|_| std::process::abort());
+        };
+
+        touch(&root.join("Cargo.toml"), older);
+        touch(&src.join("lib.rs"), newer);
+        // Excluded from the source mtime even though they are newest: a build
+        // artifact under `target/` and a non-source file.
+        touch(&target_debug.join("proj"), newest);
+        touch(&root.join("README.md"), newest);
+
+        let sizes = dir_sizes_for_tree(&DiskUsageTree {
+            root_abs_path: root.clone(),
+            entries:       vec![root],
+        });
+        let (_, dir) = &sizes[0];
+        assert_eq!(
+            dir.max_source_mtime,
+            Some(newer),
+            "newest source mtime ignores target/ and non-source files"
         );
     }
 }
