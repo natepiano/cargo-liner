@@ -1,180 +1,15 @@
 use std::fmt::Write as _;
-use std::time::Duration;
 
-use super::constants::ANSI_BOLD;
-use super::constants::ANSI_BOLD_BLUE;
-use super::constants::ANSI_BOLD_GREEN;
-use super::constants::ANSI_BOLD_RED;
-use super::constants::ANSI_BOLD_YELLOW;
-use super::constants::ANSI_DIM;
-use super::constants::CARGO_MEND_FIX;
-use super::constants::CARGO_MEND_FIX_ALL;
-use super::constants::CARGO_MEND_FIX_COMPILER;
-use super::constants::CARGO_MEND_FIX_PUB_USE;
-use super::constants::SUMMARY_LABEL;
-use super::diagnostics;
-use super::diagnostics::Finding;
-use super::diagnostics::Report;
-use super::diagnostics::Severity;
-use crate::compiler::DIAGNOSTIC_SEVERITY_ERROR_PREFIX;
-use crate::compiler::DIAGNOSTIC_SEVERITY_WARNING_PREFIX;
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum ColorMode {
-    Enabled,
-    Disabled,
-}
-
-impl ColorMode {
-    pub(crate) const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OutputFormat {
-    Human,
-    Json,
-}
-
-pub(crate) struct CompilerStats {
-    pub warnings: usize,
-    pub fixable:  usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Findings {
-    None,
-    CompilerOnly,
-    MendOnly,
-    Both,
-}
-
-impl Findings {
-    const fn classify(report: &Report, compiler_stats: &CompilerStats) -> Self {
-        let has_mend = !report.findings.is_empty();
-        let has_compiler = compiler_stats.warnings > 0;
-        match (has_mend, has_compiler) {
-            (false, false) => Self::None,
-            (false, true) => Self::CompilerOnly,
-            (true, false) => Self::MendOnly,
-            (true, true) => Self::Both,
-        }
-    }
-}
-
-pub(crate) fn render_human_report(
-    report: &Report,
-    compiler_stats: &CompilerStats,
-    color_mode: ColorMode,
-) -> String {
-    let findings = Findings::classify(report, compiler_stats);
-    if findings == Findings::None {
-        return "No findings.\n".to_string();
-    }
-
-    let mut output = String::new();
-    if matches!(findings, Findings::MendOnly | Findings::Both) {
-        for finding in &report.findings {
-            render_finding(&mut output, finding, color_mode);
-        }
-    }
-
-    if let Some(errors_block) = errors_block(report, color_mode) {
-        output.push_str(&errors_block);
-        output.push('\n');
-    }
-    output.push_str(&summary_line(report, compiler_stats, color_mode));
-    output.push('\n');
-    output
-}
-
-pub(crate) fn render_timing(
-    total: Duration,
-    check: Duration,
-    mend: Duration,
-    color_mode: ColorMode,
-) -> String {
-    format!(
-        "    {} in {:.2}s (check: {:.2}s, mend: {:.2}s)",
-        paint("Finished", ANSI_BOLD_GREEN, color_mode),
-        total.as_secs_f64(),
-        check.as_secs_f64(),
-        mend.as_secs_f64(),
-    )
-}
-
-fn render_finding(output: &mut String, finding: &Finding, color_mode: ColorMode) {
-    let severity = severity_label(finding.severity, color_mode);
-    let headline = diagnostics::finding_headline(finding);
-    let line_label = finding.line.to_string();
-    let gutter_width = line_label.len();
-    let gutter_pad = " ".repeat(gutter_width + 1);
-    let arrow_pad = " ".repeat(gutter_width);
-    let _ = writeln!(output, "{severity} {headline}");
-    let _ = writeln!(
-        output,
-        "{arrow_pad}{} {}:{}:{}",
-        blue_bold("-->", color_mode),
-        finding.path,
-        finding.line,
-        finding.column
-    );
-    let _ = writeln!(output, "{gutter_pad}{}", blue_bold("|", color_mode));
-    let _ = writeln!(
-        output,
-        "{:>width$} {} {}",
-        blue_bold(&line_label, color_mode),
-        blue_bold("|", color_mode),
-        finding.source_line,
-        width = gutter_width
-    );
-    let _ = writeln!(
-        output,
-        "{gutter_pad}{} {}",
-        blue_bold("|", color_mode),
-        severity_marker(
-            finding.severity,
-            finding.column,
-            finding.highlight_len,
-            color_mode
-        )
-    );
-    if let Some(inline_help) = diagnostics::custom_inline_help_text(finding)
-        .or_else(|| diagnostics::inline_help_text(finding))
-    {
-        let _ = writeln!(output, "{gutter_pad}{}", blue_bold("|", color_mode));
-        let _ = writeln!(
-            output,
-            "{gutter_pad}{} {}",
-            blue_bold("|", color_mode),
-            blue_bold(&format!("help: {inline_help}"), color_mode)
-        );
-    }
-
-    let reasons = diagnostics::detail_reasons(finding);
-    if diagnostics::custom_inline_help_text(finding).is_some()
-        || diagnostics::inline_help_text(finding).is_some()
-        || !reasons.is_empty()
-    {
-        let _ = writeln!(output, "{gutter_pad}{}", blue_bold("|", color_mode));
-    }
-    if !reasons.is_empty() {
-        for reason in reasons {
-            let _ = writeln!(
-                output,
-                "{gutter_pad}{} {}",
-                diagnostic_label("note", color_mode),
-                reason
-            );
-        }
-    }
-    let help_url = diagnostics::finding_help_url(finding);
-    let _ = writeln!(
-        output,
-        "{gutter_pad}{} for further information visit {help_url}",
-        diagnostic_label("help", color_mode)
-    );
-    let _ = writeln!(output);
-}
+use super::ColorMode;
+use super::CompilerStats;
+use super::color;
+use crate::reporting::constants::ANSI_BOLD_RED;
+use crate::reporting::constants::CARGO_MEND_FIX;
+use crate::reporting::constants::CARGO_MEND_FIX_ALL;
+use crate::reporting::constants::CARGO_MEND_FIX_COMPILER;
+use crate::reporting::constants::CARGO_MEND_FIX_PUB_USE;
+use crate::reporting::constants::SUMMARY_LABEL;
+use crate::reporting::diagnostics::Report;
 
 const fn pluralize<'a>(count: usize, singular: &'a str, plural: &'a str) -> &'a str {
     if count == 1 { singular } else { plural }
@@ -193,7 +28,7 @@ struct SummaryFixable {
     command: &'static str,
 }
 
-fn errors_block(report: &Report, color_mode: ColorMode) -> Option<String> {
+pub(super) fn errors_block(report: &Report, color_mode: ColorMode) -> Option<String> {
     if report.summary.errors == 0 {
         return None;
     }
@@ -201,7 +36,7 @@ fn errors_block(report: &Report, color_mode: ColorMode) -> Option<String> {
     let label = pluralize(n, "mend error", "mend errors");
     Some(format!(
         "{} {n} {label} (not auto-fixable; fix manually)",
-        paint("errors:", ANSI_BOLD_RED, color_mode)
+        color::paint("errors:", ANSI_BOLD_RED, color_mode)
     ))
 }
 
@@ -220,7 +55,11 @@ const fn fixable_category_count(report: &Report, compiler_stats: &CompilerStats)
     n
 }
 
-fn summary_line(report: &Report, compiler_stats: &CompilerStats, color_mode: ColorMode) -> String {
+pub(super) fn summary_line(
+    report: &Report,
+    compiler_stats: &CompilerStats,
+    color_mode: ColorMode,
+) -> String {
     let mut rows = Vec::new();
     let categories = fixable_category_count(report, compiler_stats);
     let total_fixable = report.summary.fixable_with_fix
@@ -265,7 +104,7 @@ fn summary_line(report: &Report, compiler_stats: &CompilerStats, color_mode: Col
     }
 
     if rows.is_empty() {
-        return format!("{} no issues found", dim(SUMMARY_LABEL, color_mode));
+        return format!("{} no issues found", color::dim(SUMMARY_LABEL, color_mode));
     }
 
     // When fixables span multiple flag categories, append a `--fix-all` entry
@@ -292,7 +131,7 @@ fn render_summary_rows(rows: &[SummaryRow], color_mode: ColorMode) -> String {
         .map(|f| digit_count(f.count))
         .max()
         .unwrap_or(0);
-    let prefix = dim(SUMMARY_LABEL, color_mode);
+    let prefix = color::dim(SUMMARY_LABEL, color_mode);
     let indent = " ".repeat(SUMMARY_LABEL.len());
     // Continuation indent fills the count + description columns so the dash
     // aligns with the inline fixable on the parent row.
@@ -336,70 +175,21 @@ fn render_summary_rows(rows: &[SummaryRow], color_mode: ColorMode) -> String {
 
 fn digit_count(n: usize) -> usize { n.to_string().len() }
 
-fn severity_label(severity: Severity, color_mode: ColorMode) -> String {
-    match severity {
-        Severity::Error => paint(DIAGNOSTIC_SEVERITY_ERROR_PREFIX, ANSI_BOLD_RED, color_mode),
-        Severity::Warning => paint(
-            DIAGNOSTIC_SEVERITY_WARNING_PREFIX,
-            ANSI_BOLD_YELLOW,
-            color_mode,
-        ),
-    }
-}
-
-fn dim(text: &str, color_mode: ColorMode) -> String { paint(text, ANSI_DIM, color_mode) }
-
-fn blue_bold(text: &str, color_mode: ColorMode) -> String {
-    paint(text, ANSI_BOLD_BLUE, color_mode)
-}
-
-fn severity_marker(
-    severity: Severity,
-    column: usize,
-    highlight_len: usize,
-    color_mode: ColorMode,
-) -> String {
-    let indent = " ".repeat(column.saturating_sub(1));
-    let carets = "^".repeat(highlight_len.max(1));
-    let code = match severity {
-        Severity::Error => ANSI_BOLD_RED,
-        Severity::Warning => ANSI_BOLD_YELLOW,
-    };
-    format!("{indent}{}", paint(&carets, code, color_mode))
-}
-
-fn diagnostic_label(kind: &str, color_mode: ColorMode) -> String {
-    let prefix = blue_bold("=", color_mode);
-    let label = match kind {
-        "help" => paint("help", ANSI_BOLD, color_mode),
-        "note" => paint("note", ANSI_BOLD, color_mode),
-        other => other.to_string(),
-    };
-    format!("{prefix} {label}:")
-}
-
-fn paint(text: &str, code: &str, color_mode: ColorMode) -> String {
-    match color_mode {
-        ColorMode::Enabled => format!("\x1b[{code}m{text}\x1b[0m"),
-        ColorMode::Disabled => text.to_string(),
-    }
-}
-
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
-    use super::CARGO_MEND_FIX;
-    use super::CARGO_MEND_FIX_ALL;
-    use super::CARGO_MEND_FIX_COMPILER;
-    use super::CARGO_MEND_FIX_PUB_USE;
-    use super::ColorMode;
-    use super::CompilerStats;
-    use super::SUMMARY_LABEL;
-    use super::render_human_report;
     use crate::config::DiagnosticCode;
+    use crate::reporting;
+    use crate::reporting::ColorMode;
+    use crate::reporting::CompilerStats;
+    use crate::reporting::constants::CARGO_MEND_FIX;
+    use crate::reporting::constants::CARGO_MEND_FIX_ALL;
+    use crate::reporting::constants::CARGO_MEND_FIX_COMPILER;
+    use crate::reporting::constants::CARGO_MEND_FIX_PUB_USE;
+    use crate::reporting::constants::SUMMARY_LABEL;
     use crate::reporting::diagnostics::Finding;
     use crate::reporting::diagnostics::FixSupport;
     use crate::reporting::diagnostics::Report;
@@ -438,7 +228,7 @@ mod tests {
 
     #[test]
     fn render_human_report_prints_no_findings_when_empty() {
-        let output = render_human_report(
+        let output = reporting::render_human_report(
             &Report::default(),
             &compiler_stats(0, 0),
             ColorMode::Disabled,
@@ -449,7 +239,7 @@ mod tests {
 
     #[test]
     fn render_human_report_shows_summary_for_compiler_only_output() {
-        let output = render_human_report(
+        let output = reporting::render_human_report(
             &Report::default(),
             &compiler_stats(3, 1),
             ColorMode::Disabled,
@@ -461,7 +251,7 @@ mod tests {
 
     #[test]
     fn render_human_report_shows_mend_summary_without_compiler_row() {
-        let output = render_human_report(
+        let output = reporting::render_human_report(
             &mend_warning_report(),
             &compiler_stats(0, 0),
             ColorMode::Disabled,
@@ -474,7 +264,7 @@ mod tests {
 
     #[test]
     fn render_human_report_shows_combined_summary_for_mend_and_compiler_findings() {
-        let output = render_human_report(
+        let output = reporting::render_human_report(
             &mend_warning_report(),
             &compiler_stats(3, 1),
             ColorMode::Disabled,
@@ -490,7 +280,7 @@ mod tests {
 
     #[test]
     fn render_human_report_aligns_summary_count_column_across_rows() {
-        let output = render_human_report(
+        let output = reporting::render_human_report(
             &mend_warning_report(),
             &compiler_stats(3, 1),
             ColorMode::Disabled,
@@ -582,7 +372,7 @@ mod tests {
 
     #[test]
     fn summary_never_emits_combined_fix_pub_use_string() {
-        // Both mend and pub-use have fixables — should list each flag on its
+        // Both mend and pub-use have fixables; each flag should render on its
         // own line plus `--fix-all`, never `cargo mend --fix --fix-pub-use`.
         let report = Report {
             summary: ReportSummary {
@@ -597,7 +387,8 @@ mod tests {
             ],
             ..Report::default()
         };
-        let output = render_human_report(&report, &compiler_stats(0, 0), ColorMode::Disabled);
+        let output =
+            reporting::render_human_report(&report, &compiler_stats(0, 0), ColorMode::Disabled);
 
         assert!(
             !output.contains("--fix --fix-pub-use"),
@@ -634,7 +425,8 @@ mod tests {
             ],
             ..Report::default()
         };
-        let output = render_human_report(&report, &compiler_stats(0, 0), ColorMode::Disabled);
+        let output =
+            reporting::render_human_report(&report, &compiler_stats(0, 0), ColorMode::Disabled);
 
         let fix_idx = output
             .find(&format!("1 fixable with `{CARGO_MEND_FIX}`"))
@@ -647,26 +439,26 @@ mod tests {
             .expect("missing --fix-all aggregate line");
         assert!(
             fix_idx < pub_use_idx && pub_use_idx < fix_all_idx,
-            "expected order --fix → --fix-pub-use → --fix-all:\n{output}"
+            "expected order --fix -> --fix-pub-use -> --fix-all:\n{output}"
         );
     }
 
     #[test]
     fn summary_suggests_pub_use_alone_when_only_pub_use_is_fixable() {
-        let output = render_human_report(
+        let output = reporting::render_human_report(
             &pub_use_warning_report(),
             &compiler_stats(0, 0),
             ColorMode::Disabled,
         );
 
         assert!(output.contains(&format!("`{CARGO_MEND_FIX_PUB_USE}`")));
-        // Single category → no --fix-all line.
+        // Single category means no `--fix-all` line.
         assert!(!output.contains("--fix-all"));
     }
 
     #[test]
     fn summary_emits_per_flag_lines_when_compiler_and_mend_are_fixable() {
-        let output = render_human_report(
+        let output = reporting::render_human_report(
             &mend_warning_report(),
             &compiler_stats(2, 2),
             ColorMode::Disabled,
@@ -688,7 +480,7 @@ mod tests {
 
     #[test]
     fn errors_render_in_their_own_block_above_summary() {
-        let output = render_human_report(
+        let output = reporting::render_human_report(
             &errors_only_report(),
             &compiler_stats(0, 0),
             ColorMode::Disabled,
@@ -706,13 +498,13 @@ mod tests {
             output.contains("not auto-fixable"),
             "errors block must say errors are not auto-fixable:\n{output}"
         );
-        // Errors must NEVER show up in the "X fixable" summary count.
+        // Errors must never show up in the "X fixable" summary count.
         assert!(!output.contains("mend errors -"));
     }
 
     #[test]
     fn errors_block_omitted_when_no_errors_present() {
-        let output = render_human_report(
+        let output = reporting::render_human_report(
             &mend_warning_report(),
             &compiler_stats(0, 0),
             ColorMode::Disabled,

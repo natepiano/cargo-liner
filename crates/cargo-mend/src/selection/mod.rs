@@ -12,6 +12,8 @@ pub(crate) use display_filter::DisplayFilter;
 pub(crate) use metadata::CargoCheckPlan;
 pub(crate) use metadata::PackageMetadata;
 pub(crate) use metadata::Selection;
+#[cfg(test)]
+pub(crate) use metadata::SelectionScope;
 pub(crate) use metadata::TargetMetadata;
 pub(crate) use metadata::TargetSupport;
 pub(crate) use metadata::build_cargo_check_plan;
