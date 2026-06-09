@@ -44,6 +44,7 @@ use super::integration::FinderPane;
 use super::integration::NavAction;
 use super::integration::OutputPane;
 use super::interaction;
+use super::interaction::ClickMode;
 use super::keymap;
 use super::keymap::OutputAction;
 use super::keymap::ProjectListAction;
@@ -68,7 +69,7 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
             let _ = terminal::rearm_input_modes();
             if let Some((column, row)) = tui_pane::last_mouse_pos() {
                 app.mouse_pos = Some(Position::new(column, row));
-                handle_mouse_click(app, column, row);
+                handle_mouse_click(app, column, row, ClickMode::FocusOnly);
             }
         },
         _ => {},
@@ -576,7 +577,9 @@ fn handle_mouse_event(app: &mut App, kind: MouseEventKind, column: u16, row: u16
     match kind {
         MouseEventKind::ScrollUp => scroll_pane_at(app, column, row, true),
         MouseEventKind::ScrollDown => scroll_pane_at(app, column, row, false),
-        MouseEventKind::Down(MouseButton::Left) => handle_mouse_click(app, column, row),
+        MouseEventKind::Down(MouseButton::Left) => {
+            handle_mouse_click(app, column, row, ClickMode::Dispatch);
+        },
         MouseEventKind::Drag(MouseButton::Left) => handle_output_drag(app, column, row),
         _ => {},
     }
@@ -708,7 +711,7 @@ const fn pane_label(pane: PaneId) -> &'static str {
     }
 }
 
-fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
+fn handle_mouse_click(app: &mut App, column: u16, row: u16, mode: ClickMode) {
     let pos = Position::new(column, row);
 
     if app.confirm().is_some() {
@@ -719,7 +722,8 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
     // selection back to the single clicked line, so release-then-click
     // starts over instead of extending from the old anchor. Handled here
     // because the generic hit-test only moves the cursor.
-    if let Some(hovered) = interaction::hovered_pane_row_at(app, pos)
+    if matches!(mode, interaction::ClickMode::Dispatch)
+        && let Some(hovered) = interaction::hovered_pane_row_at(app, pos)
         && hovered.pane == PaneId::Output
     {
         app.set_focus(FocusedPane::App(AppPaneId::Output));
@@ -728,7 +732,7 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
         return;
     }
 
-    if interaction::handle_click(app, pos) {
+    if interaction::handle_click(app, pos, mode) {
         return;
     }
 

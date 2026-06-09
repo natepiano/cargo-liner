@@ -17,6 +17,12 @@ use super::pane::HoverTarget;
 use super::panes;
 use super::panes::PaneId;
 
+#[derive(Clone, Copy)]
+pub(super) enum ClickMode {
+    FocusOnly,
+    Dispatch,
+}
+
 fn toggle_selected_project_expansion(app: &mut App) -> bool {
     let selected = app.project_list.cursor();
     let Some(row) = app.visible_rows().get(selected).copied() else {
@@ -27,7 +33,7 @@ fn toggle_selected_project_expansion(app: &mut App) -> bool {
         .toggle_expand_for_row(row, include_non_rust)
 }
 
-pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
+pub(super) fn handle_click(app: &mut App, pos: Position, mode: ClickMode) -> bool {
     let Some(hit) = hit_test_at(app, pos) else {
         return false;
     };
@@ -36,7 +42,9 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
             app.set_focus_to_pane(pane);
             if pane == PaneId::ProjectList {
                 app.project_list.set_cursor(row);
-                toggle_selected_project_expansion(app);
+                if matches!(mode, ClickMode::Dispatch) {
+                    toggle_selected_project_expansion(app);
+                }
             } else {
                 set_pane_pos(app, pane, row);
             }
@@ -44,11 +52,16 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
                 // A click is a user-driven cursor move: re-derive the
                 // Running-box PID anchor from the clicked row.
                 panes::sync_running_targets_cursor(app);
-                panes::toggle_targets_tree_row(app);
+                if matches!(mode, ClickMode::Dispatch) {
+                    panes::toggle_targets_tree_row(app);
+                }
             }
             true
         },
         HoverTarget::Dismiss(target) => {
+            if matches!(mode, ClickMode::FocusOnly) {
+                return true;
+            }
             app.dismiss(target);
             true
         },

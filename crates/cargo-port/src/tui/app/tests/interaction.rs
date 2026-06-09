@@ -749,6 +749,47 @@ fn expandable_project_row_click_toggles_children() {
     assert_eq!(app.visible_rows().len(), 1);
 }
 
+#[test]
+fn focus_gained_on_project_row_selects_without_toggling_children() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let root_dir = tmp.path().join("demo");
+    let sub_dir = root_dir.join("vendor").join("dep");
+    std::fs::create_dir_all(&sub_dir).unwrap_or_else(|_| std::process::abort());
+
+    let root = make_package("demo", &root_dir);
+    let mut app = make_app(&[root]);
+    app.project_list
+        .at_path_mut(&root_dir)
+        .unwrap_or_else(|| std::process::abort())
+        .submodules
+        .push(Submodule {
+            name:          "vendor/dep".to_string(),
+            path:          AbsolutePath::from(sub_dir),
+            relative_path: "vendor/dep".to_string(),
+            url:           None,
+            branch:        None,
+            commit:        None,
+            info:          crate::project::ProjectInfo::default(),
+            git_repo:      None,
+        });
+    render_ui(&mut app);
+
+    app.set_focus(FocusedPane::App(AppPaneId::Package));
+    let (x, y) = pane_row_hit_point(&app, PaneId::ProjectList, 0);
+    input::set_last_mouse_pos_for_test(Some((x, y)));
+    focus_gained(&mut app);
+
+    assert_eq!(app.focused_pane_id(), PaneId::ProjectList);
+    assert_eq!(app.project_list.cursor(), 0);
+    assert_eq!(app.visible_rows().len(), 1);
+
+    render_ui(&mut app);
+    let (x, y) = pane_row_hit_point(&app, PaneId::ProjectList, 0);
+    click(&mut app, x, y);
+
+    assert_eq!(app.visible_rows().len(), 2);
+}
+
 // The "overlay surface beats content surface" priority is now
 // encoded by the order of `HITTABLE_Z_ORDER` in
 // `panes::dispatch`. The strum-backed
@@ -1556,6 +1597,41 @@ fn running_outline_parent_click_toggles_children() {
 
     assert_eq!(app.panes.targets.viewport.pos(), 0);
     assert!(!app.panes.targets.expanded_parents().contains(&10));
+}
+
+#[test]
+fn focus_gained_on_running_outline_selects_without_toggling_children() {
+    let mut app = make_app(&[make_package("demo", Path::new("/tmp/demo"))]);
+    let key = RunningKey {
+        target_dir: AbsolutePath::from("/tmp/demo/target"),
+        kind:       RunTargetKind::Binary,
+        name:       "demo".into(),
+    };
+    app.panes
+        .running_targets
+        .set_snapshot_for_test(RunningTargets::from_pairs(vec![(
+            key,
+            vec![
+                RunningInstance::for_test(10, RunProfile::Debug),
+                RunningInstance::for_test(20, RunProfile::Debug).with_parent(10),
+            ],
+        )]));
+    render_ui(&mut app);
+
+    app.set_focus(FocusedPane::App(AppPaneId::ProjectList));
+    let (x, y) = pane_row_hit_point(&app, PaneId::Targets, 0);
+    input::set_last_mouse_pos_for_test(Some((x, y)));
+    focus_gained(&mut app);
+
+    assert_eq!(app.focused_pane_id(), PaneId::Targets);
+    assert_eq!(app.panes.targets.viewport.pos(), 0);
+    assert!(!app.panes.targets.expanded_parents().contains(&10));
+
+    render_ui(&mut app);
+    let (x, y) = pane_row_hit_point(&app, PaneId::Targets, 0);
+    click(&mut app, x, y);
+
+    assert!(app.panes.targets.expanded_parents().contains(&10));
 }
 
 /// `Right`/`Left` expand and collapse the Running list's `cargo` group —
