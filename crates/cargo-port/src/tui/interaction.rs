@@ -17,6 +17,16 @@ use super::pane::HoverTarget;
 use super::panes;
 use super::panes::PaneId;
 
+fn toggle_selected_project_expansion(app: &mut App) -> bool {
+    let selected = app.project_list.cursor();
+    let Some(row) = app.visible_rows().get(selected).copied() else {
+        return false;
+    };
+    let include_non_rust = app.config.include_non_rust().includes_non_rust();
+    app.project_list
+        .toggle_expand_for_row(row, include_non_rust)
+}
+
 pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
     let Some(hit) = hit_test_at(app, pos) else {
         return false;
@@ -26,6 +36,7 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
             app.set_focus_to_pane(pane);
             if pane == PaneId::ProjectList {
                 app.project_list.set_cursor(row);
+                toggle_selected_project_expansion(app);
             } else {
                 set_pane_pos(app, pane, row);
             }
@@ -33,6 +44,7 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
                 // A click is a user-driven cursor move: re-derive the
                 // Running-box PID anchor from the clicked row.
                 panes::sync_running_targets_cursor(app);
+                panes::toggle_targets_tree_row(app);
             }
             true
         },

@@ -230,6 +230,10 @@ fn toggle_running_parent(app: &mut App) -> bool {
     true
 }
 
+pub(super) fn toggle_targets_tree_row(app: &mut App) -> bool {
+    toggle_cargo_group(app) || toggle_running_parent(app)
+}
+
 /// `Right` on a collapsed outline parent expands its subtree — the same
 /// key the project list's rows expand with. Returns whether it consumed
 /// the move.

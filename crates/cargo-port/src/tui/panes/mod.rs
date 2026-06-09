@@ -171,6 +171,10 @@ pub(super) fn execute_target_kill(app: &mut App, pid: u32, create_time: u64) {
 
 pub(super) fn sync_running_targets_cursor(app: &mut App) { actions::sync_running_cursor_pid(app); }
 
+pub(super) fn toggle_targets_tree_row(app: &mut App) -> bool {
+    actions::toggle_targets_tree_row(app)
+}
+
 pub(super) fn dispatch_lints_action(action: LintsAction, app: &mut App) {
     actions::dispatch_lints_action(action, app);
 }

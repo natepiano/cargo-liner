@@ -1435,6 +1435,18 @@ impl ProjectList {
         }
     }
 
+    pub(super) fn toggle_expand_for_row(
+        &mut self,
+        row: VisibleRow,
+        include_non_rust: bool,
+    ) -> bool {
+        let Some(key) = self.expand_key_for_row(row) else {
+            return false;
+        };
+        self.mutate(include_non_rust).toggle_expand(key);
+        true
+    }
+
     pub(super) fn try_collapse(&mut self, key: &ExpandKey) -> bool { self.expanded.remove(key) }
 
     pub(super) fn dismiss_target_for_row_inner(&self, row: VisibleRow) -> Option<DismissTarget> {
