@@ -5,6 +5,7 @@ use super::*;
 use crate::channel;
 use crate::project::AbsolutePath;
 use crate::project::ProjectPrData;
+use crate::tui::project_list::ExpandTarget;
 use crate::watcher::WatcherMsg;
 
 #[test]
@@ -96,6 +97,54 @@ fn empty_scan_result_finishes_watcher_registration_batch() {
         messages[0],
         WatcherMsg::InitialRegistrationComplete
     ));
+}
+
+#[test]
+fn scan_result_reapplies_pending_expansion_targets_then_drains_them() {
+    let mut app = make_app(&[]);
+    // Seed the pending targets the way startup-load and rescan both do.
+    app.project_list.paths.pending_expanded = vec![
+        ExpandTarget::Root(test_path("~/ws")),
+        ExpandTarget::WorktreeGroup(test_path("~/ws_feat"), "crates".to_string()),
+    ];
+
+    let primary = make_workspace_raw(
+        None,
+        "~/ws",
+        vec![inline_group(vec![make_member(Some("a"), "~/ws/a")])],
+        None,
+    );
+    let linked = make_workspace_raw(
+        None,
+        "~/ws_feat",
+        vec![named_group(
+            "crates",
+            vec![make_member(Some("a"), "~/ws_feat/a")],
+        )],
+        Some("ws_feat"),
+    );
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::ScanResult {
+            projects:     vec![make_workspace_worktrees_item(primary, vec![linked])],
+            disk_entries: Vec::new(),
+        },
+    );
+
+    assert!(
+        app.project_list.expanded.contains(&ExpandKey::Node(0)),
+        "the root re-expands from its pending target"
+    );
+    assert!(
+        app.project_list
+            .expanded
+            .contains(&ExpandKey::WorktreeGroup(0, 1, 0)),
+        "the linked worktree's named group re-expands at depth"
+    );
+    assert!(
+        app.project_list.paths.pending_expanded.is_empty(),
+        "pending targets are drained once applied, so the next scan starts clean"
+    );
 }
 
 #[test]

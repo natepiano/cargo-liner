@@ -92,7 +92,7 @@ impl App {
     pub(super) fn apply_lint_history_loaded(&mut self, entries: Vec<(AbsolutePath, Vec<LintRun>)>) {
         for (path, runs) in entries {
             if let Some(lr) = self.project_list.lint_at_path_mut(path.as_path()) {
-                lr.set_runs(runs);
+                lr.set_hydrated_runs(runs);
             }
             self.startup.lint_phase.seen.insert(path);
         }

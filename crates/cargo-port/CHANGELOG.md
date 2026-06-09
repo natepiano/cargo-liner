@@ -9,9 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Add Rust language-pane child rows for code, unit tests, integration tests, examples, and benches, with distinct subtotal coloring
+- Persist the project tree's expand/collapse state (at every nesting depth) alongside the selected project, restored on the next launch and preserved across rescans (stored in `tree_state.toml`)
 
 ### Fixed
 - Isolate launched examples so stopping them from the Output pane does not also quit cargo-port
+- Keep the project-list Lint column showing the running spinner when async lint-history hydration lands during an active lint run
 - Avoid rerunning lint commands during rescan; startup now hydrates terminal-only cached lint status instead of feeding the running Lints toast
 - Re-lint projects whose source changed since their last run once startup finishes, so a stale lint status is no longer shown as current; never-linted projects still respect the discovery-lint setting
 - Prevent Startup from entering its close countdown until startup-owned GitHub and crates.io work is terminal

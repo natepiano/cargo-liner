@@ -45,6 +45,11 @@ impl App {
     }
 
     pub fn rescan(&mut self) {
+        // Preserve the open/closed layout across the rebuild: snapshot the live
+        // expansions as restart-stable targets before the tree is cleared, then
+        // hand them back through `pending_expanded` so `handle_scan_result`
+        // re-applies them once the new tree is built.
+        let preserved_expanded = self.project_list.export_expanded();
         self.project_list.clear();
         // disk_usage lives on project items — cleared with projects above
         self.ci.fetch_tracker.clear();
@@ -76,6 +81,7 @@ impl App {
         self.project_list.paths.selected_project = None;
         self.inflight.clear_pending_ci_fetch();
         self.project_list.expanded.clear();
+        self.project_list.paths.pending_expanded = preserved_expanded;
         self.project_list.set_cursor(0);
         self.panes.project_list.viewport.set_scroll_offset(0);
         self.scan.bump_generation();

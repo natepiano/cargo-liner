@@ -61,6 +61,17 @@ impl LintRuns {
         self.runs = runs;
     }
 
+    /// Replace run history from a cache load without replacing a live
+    /// worker's `Running` status.
+    pub fn set_hydrated_runs(&mut self, runs: Vec<LintRun>) {
+        let live_status =
+            matches!(self.status, LintStatus::Running(_)).then(|| self.status.clone());
+        self.set_runs(runs);
+        if let Some(status) = live_status {
+            self.status = status;
+        }
+    }
+
     pub const fn set_status(&mut self, status: LintStatus) { self.status = status; }
 
     pub fn clear_runs(&mut self) {

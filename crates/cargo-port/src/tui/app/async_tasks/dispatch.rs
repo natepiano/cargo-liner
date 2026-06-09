@@ -67,6 +67,13 @@ impl App {
         self.refresh_lint_runs_from_disk();
         self.scan.bump_generation();
 
+        // Restore expansion before selecting, so the cursor lands on the right
+        // row in the expanded layout. The pending set is seeded from disk at
+        // startup and from the live tree on rescan, then drained here.
+        let pending = std::mem::take(&mut self.project_list.paths.pending_expanded);
+        self.project_list.apply_expanded(&pending);
+        self.rebuild_visible_rows_now();
+
         // Restore selection.
         if let Some(path) = selected_path {
             self.project_list.select_project_in_tree(

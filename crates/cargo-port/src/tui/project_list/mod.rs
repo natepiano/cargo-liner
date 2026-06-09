@@ -52,10 +52,12 @@ use crate::project::WorkspaceMetadata;
 use crate::project::WorktreeGroup;
 use crate::project::WorktreeStatus;
 
+mod expand_state;
 mod grouping;
 mod selection;
 mod visible_rows;
 
+pub(super) use expand_state::ExpandTarget;
 use grouping::find_matching_worktree_container;
 use grouping::linked_worktree_identity;
 use grouping::regroup_workspace;
@@ -1938,6 +1940,33 @@ impl ProjectList {
         {
             self.set_cursor(pos);
         }
+    }
+
+    /// Project the live expansion set onto restart-stable [`ExpandTarget`]s for
+    /// persistence. Only currently-expanded containers are emitted, so the
+    /// saved set is exactly what the user has open.
+    pub(super) fn export_expanded(&self) -> Vec<ExpandTarget> {
+        expand_state::collect_expandable_targets(self)
+            .into_iter()
+            .filter(|(key, _)| self.expanded.contains(key))
+            .map(|(_, target)| target)
+            .collect()
+    }
+
+    /// Re-open every container named by `targets` against the current tree.
+    /// Targets whose path or group no longer exists are silently skipped, so a
+    /// persisted set survives projects being added or removed.
+    pub(super) fn apply_expanded(&mut self, targets: &[ExpandTarget]) {
+        if targets.is_empty() {
+            return;
+        }
+        let wanted: HashSet<&ExpandTarget> = targets.iter().collect();
+        let keys: Vec<ExpandKey> = expand_state::collect_expandable_targets(self)
+            .into_iter()
+            .filter(|(_, target)| wanted.contains(target))
+            .map(|(key, _)| key)
+            .collect();
+        self.expanded.extend(keys);
     }
 
     /// Snapshot expansion of every top-level node so a tree rebuild can

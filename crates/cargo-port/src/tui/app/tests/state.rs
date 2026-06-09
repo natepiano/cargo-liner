@@ -1004,6 +1004,43 @@ fn startup_lint_status_does_not_overwrite_live_running_lint() {
 }
 
 #[test]
+fn lint_history_load_does_not_overwrite_live_running_lint() {
+    let project = make_project(Some("a"), "~/a");
+    let project_path = project.path().clone();
+    let mut app = make_app(&[project]);
+    app.config.current_mut().lint.enabled = true;
+    app.scan.state.phase = ScanPhase::Complete;
+
+    app.handle_bg_msg(BackgroundMsg::LintStatus {
+        path:   project_path.clone(),
+        status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
+    });
+    let first_toast = app.lint.running_toast_id();
+
+    app.handle_bg_msg(BackgroundMsg::LintHistoryLoaded {
+        entries: vec![(
+            project_path.clone(),
+            vec![LintRun {
+                run_id:        "previous".to_string(),
+                started_at:    "2026-03-30T13:22:18-05:00".to_string(),
+                finished_at:   Some("2026-03-30T13:23:18-05:00".to_string()),
+                duration_ms:   Some(60_000),
+                status:        LintRunStatus::Passed,
+                commands:      Vec::new(),
+                archive_bytes: 0,
+            }],
+        )],
+    });
+
+    assert!(matches!(
+        crate::tui::state::Lint::status_for_root(&app.project_list[0].item),
+        LintStatus::Running(_)
+    ));
+    assert_eq!(app.lint.running_toast_id(), first_toast);
+    assert!(app.lint.running_toast_contains_path(project_path.as_path()));
+}
+
+#[test]
 fn live_lint_status_updates_project_model_and_detail_cache() {
     let project = make_project(Some("a"), "~/a");
     let project_path = project.path().clone();

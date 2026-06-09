@@ -20,7 +20,7 @@ use crate::project::WorktreeGroup;
 /// User-driven expansion state key. Identifies which of the
 /// nested containers (root nodes, named groups, worktree
 /// entries, worktree groups) the user has toggled open.
-#[derive(Hash, Eq, PartialEq, Clone)]
+#[derive(Hash, Eq, PartialEq, Clone, Debug)]
 pub enum ExpandKey {
     Node(usize),
     Group(usize, usize),

@@ -1,8 +1,11 @@
+use tui_pane::ACTIVITY_SPINNER;
+
 use super::*;
 use crate::constants::CI_PASSED;
 use crate::project::Submodule;
 use crate::tui::columns;
 use crate::tui::panes;
+use crate::tui::project_list::ExpandTarget;
 
 #[test]
 fn submodule_rows_render_disk_usage() {
@@ -122,6 +125,46 @@ fn visible_rows_workspace_with_worktrees() {
     ));
 }
 
+#[test]
+fn running_lint_renders_on_worktree_group_and_entry_rows() {
+    let root = make_package_worktrees_item(
+        make_package_raw(None, "~/ws", None),
+        vec![make_package_raw(None, "~/ws_feat", Some("ws_feat"))],
+    );
+    let mut app = make_app(&[make_project(None, "~/ws")]);
+    app.config.current_mut().lint.enabled = true;
+    apply_items(&mut app, &[root]);
+    app.project_list.expanded.insert(ExpandKey::Node(0));
+
+    app.handle_bg_msg(BackgroundMsg::LintStatus {
+        path:   test_path("~/ws_feat"),
+        status: LintStatus::Running(parse_ts("2026-03-30T16:22:18-05:00")),
+    });
+
+    let rendered = rendered_root_name_cells(&mut app);
+    let frame = ACTIVITY_SPINNER.frame_at(app.animation_started.elapsed());
+    let root_row = rendered
+        .iter()
+        .find(|line| line.contains("ws"))
+        .unwrap_or_else(|| panic!("worktree group row should render: {rendered:?}"));
+    assert!(
+        root_row.contains(frame),
+        "worktree group row should render the running lint spinner: {rendered:?}"
+    );
+    let linked_row = rendered
+        .iter()
+        .find(|line| line.contains("ws_feat"))
+        .unwrap_or_else(|| panic!("linked worktree row should render: {rendered:?}"));
+    assert!(
+        linked_row.contains(frame),
+        "linked worktree row should render the running lint spinner: {rendered:?}"
+    );
+    assert!(
+        app.lint
+            .running_toast_contains_path(test_path("~/ws_feat").as_path())
+    );
+}
+
 /// Fixture for `expand_linked_workspace_worktree_renders_its_members`.
 /// Builds the primary + linked worktree pair separately so the test
 /// body itself stays focused on row-layout assertions.
@@ -142,6 +185,46 @@ fn linked_workspace_worktrees_fixture() -> RootItem {
         Some("ws_feat"),
     );
     make_workspace_worktrees_item(primary, vec![linked])
+}
+
+#[test]
+fn expand_state_round_trips_through_stable_targets() {
+    let mut list = as_entries(vec![linked_workspace_worktrees_fixture()]);
+    // The worktree group node, its primary entry (same path as the node), the
+    // linked entry, and the linked entry's named group.
+    let original: HashSet<ExpandKey> = [
+        ExpandKey::Node(0),
+        ExpandKey::Worktree(0, 0),
+        ExpandKey::Worktree(0, 1),
+        ExpandKey::WorktreeGroup(0, 1, 0),
+    ]
+    .into();
+    list.expanded = original.clone();
+
+    // The primary `Node` and `Worktree(0, 0)` share `~/ws`; the variant tag
+    // keeps them distinct rather than collapsing to a single target.
+    let targets = list.export_expanded();
+    assert_eq!(targets.len(), 4, "got: {targets:?}");
+
+    // A restart drops the positional keys; re-applying the stable targets to a
+    // freshly built (identical) tree restores exactly the same keys.
+    let mut rebuilt = as_entries(vec![linked_workspace_worktrees_fixture()]);
+    rebuilt.apply_expanded(&targets);
+    assert_eq!(rebuilt.expanded, original);
+}
+
+#[test]
+fn expand_state_apply_skips_targets_no_longer_in_the_tree() {
+    // A target whose path is gone (project removed since the last run) is
+    // silently dropped, and the surviving target still applies.
+    let mut list = as_entries(vec![linked_workspace_worktrees_fixture()]);
+    list.expanded = [ExpandKey::Node(0)].into();
+    let mut targets = list.export_expanded();
+    targets.push(ExpandTarget::Root(AbsolutePath::from("/nonexistent/gone")));
+
+    let mut rebuilt = as_entries(vec![linked_workspace_worktrees_fixture()]);
+    rebuilt.apply_expanded(&targets);
+    assert_eq!(rebuilt.expanded, [ExpandKey::Node(0)].into());
 }
 
 #[test]
