@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::fs;
 use std::ops::Range;
 use std::path::Component;
 use std::path::Path;
+use std::path::PathBuf;
 
 use tokei::CodeStats;
 use tokei::Config;
@@ -17,12 +19,40 @@ const INTEGRATION_TESTS_LABEL: &str = "integration tests";
 const EXAMPLES_LABEL: &str = "examples";
 const BENCHES_LABEL: &str = "benches";
 
-pub(super) fn child_entries(root: &Path, language: &Language, config: &Config) -> Vec<LangEntry> {
+#[derive(Default)]
+pub(super) struct RustBreakdownCache {
+    unit_totals: HashMap<PathBuf, Option<LineTotals>>,
+}
+
+impl RustBreakdownCache {
+    fn unit_totals_for_file(
+        &mut self,
+        path: &Path,
+        totals: LineTotals,
+        config: &Config,
+    ) -> Option<LineTotals> {
+        if let Some(cached) = self.unit_totals.get(path) {
+            return *cached;
+        }
+        let unit = unit_totals_for_file(path, totals, config);
+        self.unit_totals.insert(path.to_path_buf(), unit);
+        unit
+    }
+}
+
+pub(super) fn child_entries(
+    root: &Path,
+    language: &Language,
+    config: &Config,
+    cache: &mut RustBreakdownCache,
+) -> Vec<LangEntry> {
     let mut buckets = RustBuckets::default();
     for report in &language.reports {
         let totals = LineTotals::from_report(report);
         match rust_file_bucket(root, report.name.as_path()) {
-            RustBucket::Code => add_code_file_with_unit_split(&mut buckets, report, totals, config),
+            RustBucket::Code => {
+                add_code_file_with_unit_split(&mut buckets, report, totals, config, cache);
+            },
             bucket => buckets.add_file(bucket, totals),
         }
     }
@@ -34,8 +64,9 @@ fn add_code_file_with_unit_split(
     report: &Report,
     totals: LineTotals,
     config: &Config,
+    cache: &mut RustBreakdownCache,
 ) {
-    let Some(unit) = unit_totals_for_file(report.name.as_path(), totals, config) else {
+    let Some(unit) = cache.unit_totals_for_file(report.name.as_path(), totals, config) else {
         buckets.add_file(RustBucket::Code, totals);
         return;
     };

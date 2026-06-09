@@ -23,6 +23,7 @@ use crate::ci::OwnerRepo;
 use crate::project::AbsolutePath;
 use crate::tui::app::CountedPhase;
 use crate::tui::app::KeyedPhase;
+use crate::tui::app::LanguagePhase;
 use crate::tui::app::phase_state::PhaseCompletion;
 use crate::tui::state::StartupNetworkPending;
 use crate::tui::state::StartupNetworkReadiness;
@@ -66,8 +67,9 @@ pub struct Startup {
     pub lint_count: CountedPhase,
 
     /// Tokei language stats. Project-root tokens gate final stats batches;
-    /// file-level tokens provide startup progress inside large roots.
-    pub languages: KeyedPhase<AbsolutePath>,
+    /// counted work tokens provide startup progress inside large roots without
+    /// carrying every path through the UI queue.
+    pub languages: LanguagePhase,
     /// Per-project test counts, keyed on project root; `seen` marked as
     /// each `TestCountsBatch` applies. Same denominator as `disk`.
     pub tests:     KeyedPhase<AbsolutePath>,
@@ -145,7 +147,7 @@ impl StartupPlanning {
     pub(super) fn install(self, startup: &mut Startup, plan: &StartupPlan) {
         startup
             .languages
-            .reset_with_expected(plan.disk_expected.clone());
+            .reset_with_expected_roots(plan.disk_expected.clone());
         startup
             .tests
             .reset_with_expected(plan.disk_expected.clone());

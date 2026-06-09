@@ -3109,8 +3109,8 @@ fn startup_ready_waits_on_metadata_phase() {
 }
 
 /// The languages row starts with project-root completion tokens, can add
-/// file-level progress tokens, and marks `seen` as progress and final stats
-/// batches apply. The test-count row stays keyed on project roots.
+/// counted work tokens, and marks `seen` as final stats batches apply. The
+/// test-count row stays keyed on project roots.
 #[test]
 fn startup_languages_and_tests_rows_track_their_batches() {
     let project_a = make_project(Some("a"), "~/never-real/a");
@@ -3138,25 +3138,10 @@ fn startup_languages_and_tests_rows_track_their_batches() {
     assert!(app.startup.languages.seen.is_empty());
     assert!(app.startup.tests.seen.is_empty());
 
-    let language_file: AbsolutePath = root.join("src").join("lib.rs").into();
-    app.handle_bg_msg(BackgroundMsg::LanguageStatsProgressPlan {
-        entries: vec![language_file.clone()],
-    });
-    assert!(
-        app.startup
-            .languages
-            .expected
-            .keys()
-            .is_some_and(|expected| expected.contains(language_file.as_path())),
-        "language progress plans add file-level tokens to the row denominator"
-    );
-
-    app.handle_bg_msg(BackgroundMsg::LanguageStatsProgressBatch {
-        entries: vec![language_file.clone()],
-    });
-    assert!(
-        app.startup.languages.seen.contains(language_file.as_path()),
-        "language progress batches mark file-level tokens seen"
+    app.handle_bg_msg(BackgroundMsg::LanguageStatsProgressPlan { units: 1 });
+    assert_eq!(
+        app.startup.languages.work_expected, 1,
+        "language progress plans add counted work tokens to the row denominator"
     );
 
     app.handle_bg_msg(BackgroundMsg::LanguageStatsBatch {
@@ -3165,6 +3150,10 @@ fn startup_languages_and_tests_rows_track_their_batches() {
             crate::project::LanguageStats { entries: vec![] },
         )],
     });
+    assert_eq!(
+        app.startup.languages.work_seen, 1,
+        "language stats batches mark counted work tokens seen"
+    );
     app.handle_bg_msg(BackgroundMsg::TestCountsBatch {
         entries: vec![(root.clone(), crate::project::TestCounts::default())],
     });

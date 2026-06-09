@@ -144,10 +144,8 @@ pub(crate) enum BackgroundMsg {
         repo: OwnerRepo,
         data: ProjectPrData,
     },
-    /// File paths that will contribute startup progress for language stats.
-    LanguageStatsProgressPlan { entries: Vec<AbsolutePath> },
-    /// File paths visited by the language-stats worker for startup progress.
-    LanguageStatsProgressBatch { entries: Vec<AbsolutePath> },
+    /// Number of language scan work units that will contribute startup progress.
+    LanguageStatsProgressPlan { units: usize },
     /// A background poll for one PR's `checks` state has stopped.
     PullRequestCheckPollStopped { repo: OwnerRepo, number: u32 },
     /// A previously-open PR disappeared from the open-PR list and was
@@ -311,9 +309,8 @@ impl BackgroundMsg {
             // Batch arrivals are aggregated and the handler bumps
             // generation explicitly (see `handle_disk_usage_batch_msg`).
             | Self::DiskUsageBatch { .. }
-            // File-level language progress only feeds the startup panel.
+            // Counted language progress only feeds the startup panel.
             | Self::LanguageStatsProgressPlan { .. }
-            | Self::LanguageStatsProgressBatch { .. }
             // Language stats live in `RustInfo`, not in the detail set.
             | Self::LanguageStatsBatch { .. }
             // Test counts feed the detail set's Tests section, but as a

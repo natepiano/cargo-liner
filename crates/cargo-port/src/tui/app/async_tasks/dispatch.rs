@@ -206,11 +206,8 @@ impl App {
             BackgroundMsg::ServiceRateLimited { service } => {
                 self.apply_service_signal(ServiceSignal::RateLimited(service));
             },
-            BackgroundMsg::LanguageStatsProgressPlan { entries } => {
-                self.mark_startup_languages_expected(&entries);
-            },
-            BackgroundMsg::LanguageStatsProgressBatch { entries } => {
-                self.mark_startup_languages_progress(&entries);
+            BackgroundMsg::LanguageStatsProgressPlan { units } => {
+                self.mark_startup_languages_expected(units);
             },
             BackgroundMsg::LanguageStatsBatch { entries } => {
                 self.mark_startup_languages_seen(&entries);

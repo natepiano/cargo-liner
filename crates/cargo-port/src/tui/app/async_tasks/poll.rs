@@ -186,6 +186,9 @@ pub(super) const fn record_background_msg_kind(
         | BackgroundMsg::LintHistoryLoaded { .. } => {
             stats.lint_status_msgs += 1;
         },
+        BackgroundMsg::LanguageStatsProgressPlan { .. } => {
+            stats.language_progress_msgs += 1;
+        },
         BackgroundMsg::CiRuns { .. }
         | BackgroundMsg::PullRequests { .. }
         | BackgroundMsg::PullRequestCheckPollStopped { .. }
@@ -208,8 +211,6 @@ pub(super) const fn record_background_msg_kind(
         | BackgroundMsg::ServiceUnreachable { .. }
         | BackgroundMsg::ServiceUnreachableConfirmed { .. }
         | BackgroundMsg::ServiceRateLimited { .. }
-        | BackgroundMsg::LanguageStatsProgressPlan { .. }
-        | BackgroundMsg::LanguageStatsProgressBatch { .. }
         | BackgroundMsg::LanguageStatsBatch { .. }
         | BackgroundMsg::TestCountsBatch { .. }
         | BackgroundMsg::SccacheStats { .. }
@@ -230,6 +231,7 @@ pub(super) fn log_saturated_background_batch(stats: &PollBackgroundStats) {
         disk_usage_msgs = stats.disk_usage_msgs,
         git_info_msgs = stats.git_info_msgs,
         lint_status_msgs = stats.lint_status_msgs,
+        language_progress_msgs = stats.language_progress_msgs,
         "poll_background_saturated"
     );
 }

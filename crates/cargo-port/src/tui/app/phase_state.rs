@@ -3,6 +3,8 @@ use std::hash::Hash;
 use std::time::Duration;
 use std::time::Instant;
 
+use crate::project::AbsolutePath;
+
 /// The expected-key set of a [`KeyedPhase`], modeled so the
 /// "stabilized but unknown" combination is unrepresentable.
 ///
@@ -164,6 +166,87 @@ pub struct CountedPhase {
     pub expected:    Option<usize>,
     pub seen:        usize,
     pub complete_at: Option<Instant>,
+}
+
+/// Startup language scanning has two kinds of work:
+///
+/// - project roots, where identity matters because final stats must land for every startup root;
+///   and
+/// - scan-work progress, where only cardinality matters and storing every path would flood the UI
+///   queue.
+#[derive(Debug)]
+pub struct LanguagePhase {
+    pub expected:      Denominator<AbsolutePath>,
+    pub seen:          HashSet<AbsolutePath>,
+    pub work_expected: usize,
+    pub work_seen:     usize,
+    pub complete_at:   Option<Instant>,
+    pub first_seen:    Option<Instant>,
+    pub failure:       Option<FailureReason>,
+}
+
+impl Default for LanguagePhase {
+    fn default() -> Self {
+        Self {
+            expected:      Denominator::Unknown,
+            seen:          HashSet::new(),
+            work_expected: 0,
+            work_seen:     0,
+            complete_at:   None,
+            first_seen:    None,
+            failure:       None,
+        }
+    }
+}
+
+impl LanguagePhase {
+    pub(super) fn expected_len(&self) -> usize { self.expected.len() + self.work_expected }
+
+    pub(super) fn stamp_first_seen(&mut self, now: Instant) { self.first_seen.get_or_insert(now); }
+
+    pub(super) fn reset_with_expected_roots(&mut self, expected: HashSet<AbsolutePath>) {
+        self.expected = Denominator::Stable(expected);
+        self.seen.clear();
+        self.work_expected = 0;
+        self.work_seen = 0;
+        self.complete_at = None;
+        self.first_seen = None;
+        self.failure = None;
+    }
+
+    pub(super) const fn add_work_expected(&mut self, units: usize) {
+        if units == 0 {
+            return;
+        }
+        self.work_expected = self.work_expected.saturating_add(units);
+        self.complete_at = None;
+    }
+
+    pub(super) const fn add_work_seen(&mut self, units: usize) {
+        self.work_seen = self.work_seen.saturating_add(units);
+    }
+
+    pub(super) fn time_out(&mut self, now: Instant, timeout: Duration) -> Option<Duration> {
+        if self.failure.is_some() || self.complete_at.is_some() || self.expected.is_unknown() {
+            return None;
+        }
+        let elapsed = now.duration_since(self.first_seen?);
+        if elapsed <= timeout {
+            return None;
+        }
+        self.failure = Some(FailureReason::Timeout(elapsed));
+        Some(elapsed)
+    }
+
+    fn root_progress(&self) -> Option<(usize, usize)> {
+        let expected = self.expected.keys()?;
+        let done = expected.iter().filter(|k| self.seen.contains(*k)).count();
+        Some((done, expected.len()))
+    }
+
+    fn work_progress(&self) -> (usize, usize) {
+        (self.work_seen.min(self.work_expected), self.work_expected)
+    }
 }
 
 /// A bar fraction clamped to `0..=100`, computed once from a subset count
@@ -349,6 +432,44 @@ impl PhaseCompletion for CountedPhase {
     fn is_failed(&self) -> bool { false }
 
     fn progress_state(&self, _: Instant, _: Duration) -> Option<ProgressState> { None }
+}
+
+impl PhaseCompletion for LanguagePhase {
+    fn is_complete(&self) -> bool {
+        let roots_complete =
+            matches!(self.expected.keys(), Some(expected) if expected.is_subset(&self.seen));
+        roots_complete && self.work_seen >= self.work_expected
+    }
+
+    fn complete_at(&self) -> Option<Instant> { self.complete_at }
+
+    fn mark_complete_at(&mut self, now: Instant) { self.complete_at = Some(now); }
+
+    fn is_omitted(&self) -> bool { self.expected.is_unknown() && self.work_expected == 0 }
+
+    fn first_seen(&self) -> Option<Instant> { self.first_seen }
+
+    fn is_failed(&self) -> bool { self.failure.is_some() }
+
+    fn progress_state(&self, now: Instant, min_visible: Duration) -> Option<ProgressState> {
+        if self.failure.is_some() {
+            return Some(ProgressState::Failed);
+        }
+        if self.expected.is_unknown() && self.work_expected == 0 {
+            return None;
+        }
+        if self.expected.is_growing() {
+            return Some(ProgressState::Waiting);
+        }
+        let (root_seen, root_expected) = self.root_progress().unwrap_or((0, 0));
+        let (work_seen, work_expected) = self.work_progress();
+        let percentage =
+            Percentage::from_fraction(root_seen + work_seen, root_expected + work_expected);
+        if self.is_complete() && !self.min_visible_elapsed(now, min_visible) {
+            return Some(ProgressState::CompleteHeld);
+        }
+        Some(ProgressState::Progress(percentage))
+    }
 }
 
 #[cfg(test)]

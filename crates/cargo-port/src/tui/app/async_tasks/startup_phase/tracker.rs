@@ -38,6 +38,8 @@ impl Startup {
             crates_io_expected = self.crates_io.expected_len(),
             detail_declaration_expected = self.details_declared.expected_len(),
             lint_expected = self.lint_phase.expected_len(),
+            languages_expected = self.languages.expected_len(),
+            tests_expected = self.tests.expected_len(),
             metadata_expected = self.metadata.expected_len(),
             "startup_phase_plan"
         );
@@ -107,7 +109,6 @@ impl Startup {
                 .map(ToString::to_string)
                 .or_else(|| self.crates_io.pending_sample(Clone::clone)),
             STARTUP_PHASE_METADATA => self.metadata.pending_sample(home),
-            STARTUP_PHASE_LANGUAGES => self.languages.pending_sample(home),
             STARTUP_PHASE_TESTS => self.tests.pending_sample(home),
             _ => None,
         }
@@ -374,34 +375,23 @@ impl App {
         repo.failure = Some(reason);
         self.maybe_log_startup_phase_completions();
     }
-    /// Add file-level language scan tokens to the startup row. The final
-    /// stats still arrive as project-root batches; these tokens only make the
-    /// row's progress reflect work inside a large root.
-    pub fn mark_startup_languages_expected(&mut self, entries: &[AbsolutePath]) {
-        let mut inserted = false;
-        for path in entries {
-            inserted |= self.startup.languages.expected.insert(path.clone());
-        }
-        if inserted {
-            self.startup.languages.complete_at = None;
-        }
-        self.maybe_log_startup_phase_completions();
-    }
-    /// Mark file-level language scan progress. Final stats batches mark the
-    /// project-root tokens.
-    pub fn mark_startup_languages_progress(&mut self, entries: &[AbsolutePath]) {
-        for path in entries {
-            self.startup.languages.seen.insert(path.clone());
-        }
-        self.maybe_log_startup_phase_completions();
+    /// Add counted language scan work to the startup row. The final stats still
+    /// arrive as project-root batches; these counted tokens only make progress
+    /// reflect long scans without flooding the main queue with one path per file.
+    pub const fn mark_startup_languages_expected(&mut self, units: usize) {
+        self.startup.languages.add_work_expected(units);
     }
     /// Mark the project-root language tokens from a `LanguageStatsBatch`.
     /// Runs alongside the `ProjectList` handler, which owns the actual stats.
+    /// Each batch also completes the counted scan work that produced it.
     pub fn mark_startup_languages_seen(&mut self, entries: &[(AbsolutePath, LanguageStats)]) {
+        self.startup.languages.add_work_seen(entries.len());
         for (path, _) in entries {
             self.startup.languages.seen.insert(path.clone());
         }
-        self.maybe_log_startup_phase_completions();
+        if self.startup.languages.is_complete() {
+            self.maybe_log_startup_phase_completions();
+        }
     }
     /// Mark the tests row's `seen` from a `TestCountsBatch`. Runs alongside
     /// the `ProjectList` handler, which owns the actual counts.

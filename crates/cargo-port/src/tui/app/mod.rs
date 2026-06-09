@@ -55,6 +55,7 @@ mod startup;
 
 pub(super) use phase_state::CountedPhase;
 pub(super) use phase_state::KeyedPhase;
+pub(super) use phase_state::LanguagePhase;
 mod target_index;
 mod types;
 

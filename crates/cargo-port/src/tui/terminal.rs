@@ -541,6 +541,7 @@ fn log_slow_frame(app: &App, bg_stats: &PollBackgroundStats, metrics: &FrameMetr
         disk_usage_msgs = bg_stats.disk_usage_msgs,
         git_info_msgs = bg_stats.git_info_msgs,
         lint_status_msgs = bg_stats.lint_status_msgs,
+        language_progress_msgs = bg_stats.language_progress_msgs,
         ci_msgs = bg_stats.ci_msgs,
         example_msgs = bg_stats.example_msgs,
         tree_results = bg_stats.tree_results,
