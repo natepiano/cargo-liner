@@ -2655,6 +2655,30 @@ fn output_title_shows_visual_hint_even_while_running() {
 }
 
 #[test]
+fn output_title_keeps_target_path_after_run_finishes() {
+    let project = make_package("demo", Path::new("/tmp/demo"));
+    let mut app = make_app(&[project]);
+    open_output(&mut app, &["alpha"]);
+    app.inflight
+        .set_example_title(Some("workspace/member/smoke".to_string()));
+    app.inflight
+        .set_example_running(Some("workspace/member/smoke (dev)".to_string()));
+
+    let running = buffer_text_sized(&mut app, 120, 40);
+    assert!(
+        running.contains("Running: workspace/member/smoke"),
+        "running title includes target path",
+    );
+
+    app.inflight.set_example_running(None);
+    let finished = buffer_text_sized(&mut app, 120, 40);
+    assert!(
+        finished.contains("Output: workspace/member/smoke"),
+        "finished output title keeps target path",
+    );
+}
+
+#[test]
 fn output_yank_strips_ansi_from_selection() {
     let project = make_package("demo", Path::new("/tmp/demo"));
     let mut app = make_app(&[project]);

@@ -146,6 +146,13 @@ fn output_title(pane: &OutputPane, ctx: &PaneRenderCtx<'_>) -> String {
     if let Some(name) = ctx.inflight.example_running() {
         return format!(" Running: {name} (Esc to stop) ");
     }
+    if let Some(name) = ctx.inflight.example_title() {
+        return if focused {
+            format!(" Output: {name} (y copy · Esc close) ")
+        } else {
+            format!(" Output: {name} (Esc close) ")
+        };
+    }
     if focused {
         " Output (y copy · Esc close) ".to_string()
     } else {

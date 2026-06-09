@@ -20,6 +20,8 @@ use crate::constants::WORKTREE;
 use crate::lint::LintRuns;
 use crate::lint::LintStatus;
 
+const WORKTREE_BADGE_SEPARATOR: &str = ":";
+
 /// The top-level enum for the project list — 3 variants.
 #[derive(Clone)]
 pub(crate) enum RootItem {
@@ -86,7 +88,8 @@ impl RootItem {
             Self::Worktrees(g) if g.renders_as_group() => g.visible_entry_count(),
             _ => 0,
         };
-        (visible_worktrees > 0).then(|| format!(" {WORKTREE}:{visible_worktrees}"))
+        (visible_worktrees > 0)
+            .then(|| format!(" {WORKTREE}{WORKTREE_BADGE_SEPARATOR}{visible_worktrees}"))
     }
 
     /// Whether this item has expandable children.
@@ -484,6 +487,22 @@ impl RootItem {
     }
 }
 
+pub(crate) fn strip_worktree_badge_suffix(label: &str) -> &str {
+    let Some((prefix, suffix)) = label.rsplit_once(' ') else {
+        return label;
+    };
+    let Some(count) = suffix
+        .strip_prefix(WORKTREE)
+        .and_then(|rest| rest.strip_prefix(WORKTREE_BADGE_SEPARATOR))
+    else {
+        return label;
+    };
+    if count.is_empty() || !count.chars().all(|ch| ch.is_ascii_digit()) {
+        return label;
+    }
+    prefix
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────
 
 /// Mutable access to a submodule's `ProjectInfo` by path.
@@ -539,3 +558,28 @@ fn sum_disk(primary: Option<u64>, linked: impl Iterator<Item = Option<u64>>) -> 
 
 use super::cargo::RustInfo;
 use super::git;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_worktree_badge_suffix_removes_project_list_badge_only() {
+        assert_eq!(
+            strip_worktree_badge_suffix(&format!("bevy_hana {WORKTREE}:4")),
+            "bevy_hana"
+        );
+        assert_eq!(
+            strip_worktree_badge_suffix(&format!("bevy_hana [~/rust/bevy_hana] {WORKTREE}:4")),
+            "bevy_hana [~/rust/bevy_hana]"
+        );
+        assert_eq!(
+            strip_worktree_badge_suffix(&format!("bevy_hana {WORKTREE}:abc")),
+            format!("bevy_hana {WORKTREE}:abc")
+        );
+        assert_eq!(
+            strip_worktree_badge_suffix(&format!("bevy_hana {WORKTREE}:4 extra")),
+            format!("bevy_hana {WORKTREE}:4 extra")
+        );
+    }
+}

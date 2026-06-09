@@ -604,9 +604,11 @@ fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
+            app.inflight
+                .set_example_title(Some(run.display_path.clone()));
             app.set_example_output(vec![format!("Failed to start: {e}")]);
             app.inflight
-                .set_example_running(Some(run.target_name.clone()));
+                .set_example_running(Some(run.display_path.clone()));
             return;
         },
     };
@@ -620,11 +622,13 @@ fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pid);
 
-    let name = run.target_name.clone();
+    let display_path = run.display_path.clone();
+    let target_name = run.target_name.clone();
     let mode = run.build_mode.label();
-    app.set_example_output(vec![format!("Building {name}{mode}...")]);
+    app.inflight.set_example_title(Some(display_path.clone()));
+    app.set_example_output(vec![format!("Building {target_name}{mode}...")]);
     app.inflight
-        .set_example_running(Some(format!("{name}{mode}")));
+        .set_example_running(Some(format!("{display_path}{mode}")));
 
     // Take ownership of pipes before moving child to thread
     let stderr = child.stderr.take();

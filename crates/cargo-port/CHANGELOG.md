@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Show workspace members, vendored crates, and submodules in the Detail pane Structure counts
 
+### Fixed
+- Show launched target Project List paths in the Output pane title
+
 ## [0.1.3] - 2026-06-09
 
 ### Added

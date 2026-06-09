@@ -234,7 +234,7 @@ fn dispatch_output_cancel_preflight(app: &mut App, preflight: OutputCancelPrefli
         },
         OutputCancelPreflight::CloseVisibleOutput => {
             let was_on_output = app.focus_is(PaneId::Output);
-            app.inflight.example_output_mut().clear();
+            app.inflight.clear_example_output();
             if was_on_output {
                 app.set_focus(FocusedPane::App(AppPaneId::Targets));
             }
@@ -792,7 +792,7 @@ pub(super) fn dispatch_output_action(action: OutputAction, app: &mut App) {
         },
         OutputAction::Cancel => {
             if !app.inflight.example_output().is_empty() {
-                app.inflight.example_output_mut().clear();
+                app.inflight.clear_example_output();
                 app.set_focus(FocusedPane::App(AppPaneId::Targets));
             }
         },

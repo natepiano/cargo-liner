@@ -349,6 +349,7 @@ pub fn build_target_list_from_data(data: &TargetsData) -> Vec<TargetEntry> {
 pub struct PendingExampleRun {
     pub abs_path:          String,
     pub target_name:       String,
+    pub display_path:      String,
     pub package_name:      Option<String>,
     pub kind:              RunTargetKind,
     pub build_mode:        BuildMode,

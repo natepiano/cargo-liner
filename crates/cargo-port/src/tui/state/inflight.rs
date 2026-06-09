@@ -30,6 +30,7 @@ pub(crate) struct Inflight {
     pending_ci_fetch:    Option<PendingCiFetch>,
     pending_example_run: Option<PendingExampleRun>,
     example_running:     Option<String>,
+    example_title:       Option<String>,
     example_child:       Arc<Mutex<Option<u32>>>,
     example_output:      Vec<String>,
 }
@@ -42,6 +43,7 @@ impl Inflight {
             pending_ci_fetch:    None,
             pending_example_run: None,
             example_running:     None,
+            example_title:       None,
             example_child:       Arc::new(Mutex::new(None)),
             example_output:      Vec::new(),
         }
@@ -98,13 +100,27 @@ impl Inflight {
         self.example_running = running;
     }
 
+    pub fn example_title(&self) -> Option<&str> { self.example_title.as_deref() }
+
+    pub fn set_example_title(&mut self, title: Option<String>) { self.example_title = title; }
+
     pub fn example_child(&self) -> Arc<Mutex<Option<u32>>> { Arc::clone(&self.example_child) }
 
     pub fn example_output(&self) -> &[String] { &self.example_output }
 
     pub const fn example_output_mut(&mut self) -> &mut Vec<String> { &mut self.example_output }
 
-    pub fn set_example_output(&mut self, output: Vec<String>) { self.example_output = output; }
+    pub fn set_example_output(&mut self, output: Vec<String>) {
+        self.example_output = output;
+        if self.example_output.is_empty() {
+            self.example_title = None;
+        }
+    }
+
+    pub fn clear_example_output(&mut self) {
+        self.example_output.clear();
+        self.example_title = None;
+    }
 
     pub const fn example_output_is_empty(&self) -> bool { self.example_output.is_empty() }
 

@@ -87,4 +87,5 @@ pub(crate) use project_entry::ProjectEntry;
 pub(crate) use project_entry::entry_contains;
 pub(crate) use project_fields::ProjectFields;
 pub(crate) use root_item::RootItem;
+pub(crate) use root_item::strip_worktree_badge_suffix;
 pub(crate) use vendored_package::VendoredPackage;

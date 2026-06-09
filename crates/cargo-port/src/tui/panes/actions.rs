@@ -18,6 +18,7 @@ use super::PaneId;
 use super::PendingCiFetch;
 use super::PendingExampleRun;
 use super::RunningListRow;
+use super::TargetEntry;
 use super::TargetsData;
 use super::build_running_list;
 use super::build_running_rows;
@@ -29,10 +30,13 @@ use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::ProjectCiData;
 use crate::project::ProjectCiInfo;
+use crate::project::RootItem;
+use crate::project::RustProject;
 use crate::scan;
 use crate::tui::app::App;
 use crate::tui::app::CiRunDisplayMode;
 use crate::tui::app::CleanSelection;
+use crate::tui::app::VisibleRow;
 use crate::tui::input;
 use crate::tui::integration;
 use crate::tui::integration::AppPaneId;
@@ -57,12 +61,161 @@ fn handle_target_action(app: &mut App, mode: BuildMode) {
         app.inflight.set_pending_example_run(PendingExampleRun {
             abs_path:          entry.project_path.display().to_string(),
             target_name:       entry.name.clone(),
+            display_path:      target_display_path(app, entry),
             package_name:      Some(entry.package_name.clone()),
             kind:              entry.kind,
             build_mode:        mode,
             required_features: entry.required_features.clone(),
         });
     }
+}
+
+#[derive(Default)]
+struct LaunchPathContext {
+    root_label:          Option<String>,
+    checkout_label:      Option<String>,
+    strip_source_prefix: Option<String>,
+}
+
+fn target_display_path(app: &App, entry: &TargetEntry) -> String {
+    target_display_path_with_context(entry, launch_path_context(app))
+}
+
+fn target_display_path_with_context(entry: &TargetEntry, context: LaunchPathContext) -> String {
+    let mut segments = Vec::new();
+    if let Some(root_label) = context.root_label {
+        push_context_segment(&mut segments, &root_label);
+    }
+    if let Some(checkout_label) = context.checkout_label {
+        push_context_segment(&mut segments, &checkout_label);
+    }
+    for (index, segment) in entry.source.label().split('/').enumerate() {
+        if index == 0 && context.strip_source_prefix.as_deref() == Some(segment) {
+            continue;
+        }
+        push_context_segment(&mut segments, segment);
+    }
+    append_target_leaf(&mut segments, entry);
+    segments.join("/")
+}
+
+fn push_context_segment(segments: &mut Vec<String>, segment: &str) {
+    if segment.is_empty() || segments.last().is_some_and(|last| last == segment) {
+        return;
+    }
+    segments.push(segment.to_string());
+}
+
+fn append_target_leaf(segments: &mut Vec<String>, entry: &TargetEntry) {
+    if matches!(entry.kind, super::RunTargetKind::Binary)
+        && entry.display_name == entry.package_name
+    {
+        return;
+    }
+    segments.extend(
+        entry
+            .display_name
+            .split('/')
+            .filter(|segment| !segment.is_empty())
+            .map(String::from),
+    );
+}
+
+fn launch_path_context(app: &App) -> LaunchPathContext {
+    let Some(row) = app.project_list.selected_row() else {
+        return LaunchPathContext::default();
+    };
+    match row {
+        VisibleRow::Root { node_index } => root_launch_path_context(app, node_index),
+        VisibleRow::GroupHeader { node_index, .. }
+        | VisibleRow::Member { node_index, .. }
+        | VisibleRow::MemberVendored { node_index, .. } => root_label_context(app, node_index),
+        VisibleRow::WorktreeEntry {
+            node_index,
+            worktree_index,
+        }
+        | VisibleRow::WorktreeGroupHeader {
+            node_index,
+            worktree_index,
+            ..
+        }
+        | VisibleRow::WorktreeMember {
+            node_index,
+            worktree_index,
+            ..
+        }
+        | VisibleRow::WorktreeMemberVendored {
+            node_index,
+            worktree_index,
+            ..
+        } => worktree_launch_path_context(app, node_index, worktree_index),
+        VisibleRow::Vendored { .. }
+        | VisibleRow::WorktreeVendored { .. }
+        | VisibleRow::Submodule { .. } => LaunchPathContext::default(),
+    }
+}
+
+fn root_launch_path_context(app: &App, node_index: usize) -> LaunchPathContext {
+    let Some(item) = app.project_list.get(node_index) else {
+        return LaunchPathContext::default();
+    };
+    match &item.item {
+        RootItem::Rust(RustProject::Workspace(_)) => root_label_context(app, node_index),
+        RootItem::Rust(RustProject::Package(_)) | RootItem::NonRust(_) => {
+            LaunchPathContext::default()
+        },
+        RootItem::Worktrees(group) if group.renders_as_group() => {
+            let mut context = root_label_context(app, node_index);
+            context.strip_source_prefix = Some(group.primary.root_directory_name().into_string());
+            context
+        },
+        RootItem::Worktrees(group) => match group.single_live() {
+            Some(RustProject::Workspace(_)) => root_label_context(app, node_index),
+            Some(RustProject::Package(_)) | None => LaunchPathContext::default(),
+        },
+    }
+}
+
+fn root_label_context(app: &App, node_index: usize) -> LaunchPathContext {
+    LaunchPathContext {
+        root_label: root_label(app, node_index),
+        ..LaunchPathContext::default()
+    }
+}
+
+fn worktree_launch_path_context(
+    app: &App,
+    node_index: usize,
+    worktree_index: usize,
+) -> LaunchPathContext {
+    let checkout_label = if worktree_index == 0 {
+        None
+    } else {
+        worktree_label(app, node_index, worktree_index)
+    };
+    LaunchPathContext {
+        root_label: root_label(app, node_index),
+        checkout_label,
+        strip_source_prefix: None,
+    }
+}
+
+fn root_label(app: &App, node_index: usize) -> Option<String> {
+    let include_non_rust = app.config.include_non_rust().includes_non_rust();
+    app.project_list
+        .resolved_root_labels(include_non_rust)
+        .get(node_index)
+        .map(|label| project::strip_worktree_badge_suffix(label).to_string())
+}
+
+fn worktree_label(app: &App, node_index: usize, worktree_index: usize) -> Option<String> {
+    let item = app.project_list.get(node_index)?;
+    let RootItem::Worktrees(group) = &item.item else {
+        return None;
+    };
+    group
+        .entry(worktree_index)
+        .map(|entry| entry.root_directory_name().into_string())
 }
 
 pub(super) fn dispatch_package_action(action: PackageAction, app: &mut App) {
@@ -1005,5 +1158,127 @@ fn open_lint_run_output(app: &App) {
 
     for path in log_paths {
         let _ = input::open_paths_in_editor(app.config.editor(), [path.as_path()]);
+    }
+}
+
+#[cfg(test)]
+mod launch_path_tests {
+    use std::path::PathBuf;
+
+    use super::*;
+    use crate::tui::panes::RunTargetKind;
+    use crate::tui::panes::TargetSource;
+
+    fn entry(
+        source: &str,
+        name: &str,
+        display_name: &str,
+        kind: RunTargetKind,
+        package_name: &str,
+    ) -> TargetEntry {
+        TargetEntry {
+            name: name.to_string(),
+            display_name: display_name.to_string(),
+            kind,
+            source: TargetSource::member(source.to_string()),
+            project_path: AbsolutePath::from(PathBuf::from("/tmp/project")),
+            package_name: package_name.to_string(),
+            src_path: AbsolutePath::from(PathBuf::from("/tmp/project/examples/demo.rs")),
+            required_features: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn package_example_title_uses_package_and_target() {
+        let target = entry(
+            "demo_pkg",
+            "smoke",
+            "smoke",
+            RunTargetKind::Example,
+            "demo_pkg",
+        );
+
+        assert_eq!(
+            target_display_path_with_context(&target, LaunchPathContext::default()),
+            "demo_pkg/smoke"
+        );
+    }
+
+    #[test]
+    fn workspace_example_title_prefixes_workspace_root() {
+        let target = entry(
+            "demo_core",
+            "smoke",
+            "smoke",
+            RunTargetKind::Example,
+            "demo_core",
+        );
+        let context = LaunchPathContext {
+            root_label: Some("demo_ws".to_string()),
+            ..LaunchPathContext::default()
+        };
+
+        assert_eq!(
+            target_display_path_with_context(&target, context),
+            "demo_ws/demo_core/smoke"
+        );
+    }
+
+    #[test]
+    fn worktree_group_primary_title_skips_checkout_segment() {
+        let target = entry(
+            "cargo-port/tui_pane",
+            "smoke",
+            "smoke",
+            RunTargetKind::Example,
+            "tui_pane",
+        );
+        let context = LaunchPathContext {
+            root_label: Some("cargo-port".to_string()),
+            strip_source_prefix: Some("cargo-port".to_string()),
+            ..LaunchPathContext::default()
+        };
+
+        assert_eq!(
+            target_display_path_with_context(&target, context),
+            "cargo-port/tui_pane/smoke"
+        );
+    }
+
+    #[test]
+    fn worktree_group_linked_title_keeps_checkout_segment() {
+        let target = entry(
+            "feature-checkout/tui_pane",
+            "smoke",
+            "smoke",
+            RunTargetKind::Example,
+            "tui_pane",
+        );
+        let context = LaunchPathContext {
+            root_label: Some("cargo-port".to_string()),
+            strip_source_prefix: Some("cargo-port".to_string()),
+            ..LaunchPathContext::default()
+        };
+
+        assert_eq!(
+            target_display_path_with_context(&target, context),
+            "cargo-port/feature-checkout/tui_pane/smoke"
+        );
+    }
+
+    #[test]
+    fn default_binary_title_does_not_repeat_package_name() {
+        let target = entry(
+            "demo_pkg",
+            "demo_pkg",
+            "demo_pkg",
+            RunTargetKind::Binary,
+            "demo_pkg",
+        );
+
+        assert_eq!(
+            target_display_path_with_context(&target, LaunchPathContext::default()),
+            "demo_pkg"
+        );
     }
 }
