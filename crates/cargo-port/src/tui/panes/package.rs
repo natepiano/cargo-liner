@@ -115,8 +115,8 @@ const METADATA_BOX: usize = 1;
 const MIN_METADATA_WIDTH: u16 = 20;
 
 /// Floor on the stats-column label field, so a project with only short
-/// labels keeps the same column width it had before the Tests section
-/// existed (the widest Structure label, `proc-macro`, is 10 wide).
+/// labels keeps the same column width. The widest default Structure labels
+/// (`proc-macro` / `submodules`) are 10 wide.
 const MIN_STATS_LABEL_WIDTH: u16 = 10;
 
 /// Title of the Tests sub-section rule in the stats column.

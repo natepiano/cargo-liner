@@ -216,7 +216,7 @@ Below, we're showing a Worktree Group as an example as the rest will be self-exp
 1. Title shows what kind of detail pane is shown - in this case it's a WorktreeGroup for the bevy_window_manager project.  The description from Cargo.toml is shown if there is one.
 2. Summary of how many worktrees, the aggregate lint status across all checkouts, and the CI status from GitHub. The numbers show local cached run metadata and how many runs are there in total on GitHub.
 3. Package location, disk breakdown and metadata from Cargo.toml
-4. Structure indicates what targets are configured - counts of bins, libs, examples, benches, proc-macros.
+4. Structure shows workspace members, vendored crates, submodules, and Cargo target counts such as bins, libs, examples, benches, and proc-macros.
 5. Tests shows counts of unit, integration and doc tests as well as the count of ignored. It doesn't attempt to break it out by feature gates so it may not always match up exactly.
 6. crates.io version info and download count
 

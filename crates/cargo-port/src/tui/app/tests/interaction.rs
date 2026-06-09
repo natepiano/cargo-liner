@@ -159,18 +159,6 @@ fn make_member(name: &str, path: &Path) -> Package {
     }
 }
 
-fn make_member_with_cargo(name: &str, path: &Path, cargo: Cargo) -> Package {
-    Package {
-        path: AbsolutePath::from(path),
-        name: Some(name.to_string()),
-        rust: RustInfo {
-            cargo,
-            ..RustInfo::default()
-        },
-        ..Package::default()
-    }
-}
-
 fn make_workspace_with_members(name: &str, path: &Path, groups: Vec<MemberGroup>) -> RootItem {
     RootItem::Rust(RustProject::Workspace(Workspace {
         path: AbsolutePath::from(path),
@@ -1461,9 +1449,8 @@ fn package_pane_keyboard_navigation_skips_section_rows() {
 #[test]
 fn package_pane_structure_rows_are_clickable_after_metadata_rows() {
     let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
-    let workspace = tmp.path().join("workspace");
-    let member = workspace.join("core");
-    std::fs::create_dir_all(&member).unwrap_or_else(|_| std::process::abort());
+    let project = tmp.path().join("app");
+    std::fs::create_dir_all(&project).unwrap_or_else(|_| std::process::abort());
     let cargo = Cargo {
         types:       vec![ProjectType::Library],
         examples:    vec![ExampleGroup {
@@ -1473,13 +1460,7 @@ fn package_pane_structure_rows_are_clickable_after_metadata_rows() {
         benches:     Vec::new(),
         publishable: true,
     };
-    let root = make_workspace_with_members(
-        "workspace",
-        &workspace,
-        vec![inline_group(vec![make_member_with_cargo(
-            "core", &member, cargo,
-        )])],
-    );
+    let root = make_package_with_cargo("app", &project, cargo);
     let mut app = make_app(&[root]);
     app.set_focus_to_pane(PaneId::Package);
     render_ui(&mut app);

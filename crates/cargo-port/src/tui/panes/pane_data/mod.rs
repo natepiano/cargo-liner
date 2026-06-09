@@ -23,8 +23,10 @@ use tui_pane::CopyPayload;
 use tui_pane::CopySelectionResult;
 
 use self::constants::PROJECT_LIBS_LABEL;
+use self::constants::PROJECT_MEMBERS_LABEL;
 use self::constants::PROJECT_PROC_MACROS_LABEL;
-use self::constants::PROJECT_WORKSPACES_LABEL;
+use self::constants::PROJECT_SUBMODULES_LABEL;
+use self::constants::PROJECT_VENDORED_LABEL;
 use self::constants::TESTS_DOC_LABEL;
 use self::constants::TESTS_INTEGRATION_LABEL;
 use self::constants::TESTS_UNIT_LABEL;
@@ -85,8 +87,10 @@ use crate::tui::state::ServiceStatus;
 use crate::tui::theme_roles;
 
 #[derive(Default)]
-struct ProjectCounts {
-    workspaces:  usize,
+struct StructureCounts {
+    members:     usize,
+    vendored:    usize,
+    submodules:  usize,
     libs:        usize,
     bins:        usize,
     proc_macros: usize,
@@ -94,12 +98,26 @@ struct ProjectCounts {
     benches:     usize,
 }
 
-impl ProjectCounts {
-    fn add_package(&mut self, project: &Package) { self.add_cargo(&project.cargo); }
+impl StructureCounts {
+    fn add_package(&mut self, project: &Package) {
+        self.vendored += project.vendored().len();
+        self.submodules += project.info().submodules.len();
+        self.add_cargo(&project.cargo);
+    }
 
     fn add_workspace(&mut self, ws: &Workspace) {
-        self.workspaces += 1;
+        self.members += ws
+            .groups()
+            .iter()
+            .map(|group| group.members().len())
+            .sum::<usize>();
+        self.vendored += ws.vendored().len();
+        self.submodules += ws.info().submodules.len();
         self.add_cargo(&ws.cargo);
+    }
+
+    fn add_non_rust(&mut self, project: &NonRustProject) {
+        self.submodules += project.info().submodules.len();
     }
 
     fn add_cargo(&mut self, cargo: &Cargo) {
@@ -118,8 +136,14 @@ impl ProjectCounts {
     /// Returns non-zero stats as (label, count) pairs for column display.
     fn to_rows(&self) -> Vec<(&'static str, usize)> {
         let mut rows = Vec::new();
-        if self.workspaces > 0 {
-            rows.push((PROJECT_WORKSPACES_LABEL, self.workspaces));
+        if self.members > 0 {
+            rows.push((PROJECT_MEMBERS_LABEL, self.members));
+        }
+        if self.vendored > 0 {
+            rows.push((PROJECT_VENDORED_LABEL, self.vendored));
+        }
+        if self.submodules > 0 {
+            rows.push((PROJECT_SUBMODULES_LABEL, self.submodules));
         }
         if self.libs > 0 {
             rows.push((PROJECT_LIBS_LABEL, self.libs));
@@ -814,8 +838,9 @@ pub struct PackageData {
     /// reported; the renderer formats `Some` and leaves `None` blank,
     /// matching the `target/` / `other` sub-rows.
     pub disk:                     Option<u64>,
-    /// Structure section of the stats column — cargo target-kind counts
-    /// (`ws` / `lib` / `bin` / `proc-macro` / `example` / `bench`).
+    /// Structure section of the stats column — project-child counts
+    /// (`members` / `vendored` / `submodules`) followed by cargo target-kind
+    /// counts (`lib` / `bin` / `proc-macro` / `example` / `bench`).
     pub stats_rows:               Vec<(&'static str, usize)>,
     /// Tests section of the stats column — `unit` / `integration` /
     /// `doc` test counts from the source scan, plus an `(ignored)`
@@ -2194,7 +2219,7 @@ pub fn build_pane_data_for_vendored(app: &App, vendored: &VendoredPackage) -> De
     let abs_path = vendored.path();
     let cargo = &vendored.cargo;
 
-    let mut counts = ProjectCounts::default();
+    let mut counts = StructureCounts::default();
     counts.add_cargo(cargo);
     let stats_rows = counts.to_rows();
     let test_rows = test_rows_from_counts(vendored.info().test_counts.unwrap_or_default());
@@ -2295,7 +2320,7 @@ fn build_pane_data_for_workspace(
     let abs_path = ws.path();
     let cargo = &ws.cargo;
 
-    let mut counts = ProjectCounts::default();
+    let mut counts = StructureCounts::default();
     let mut test_counts = ws.info().test_counts.unwrap_or_default();
     counts.add_workspace(ws);
     if ws.has_members() {
@@ -2342,7 +2367,7 @@ fn build_pane_data_for_package(
     let abs_path = pkg.path();
     let cargo = &pkg.cargo;
 
-    let mut counts = ProjectCounts::default();
+    let mut counts = StructureCounts::default();
     counts.add_package(pkg);
     let stats_rows = counts.to_rows();
     let test_rows = test_rows_from_counts(pkg.info().test_counts.unwrap_or_default());
@@ -2380,6 +2405,8 @@ fn build_pane_data_non_rust(
 ) -> DetailPaneData {
     let abs_path = nr.path();
     let wt_item_ref = wt_item.filter(|_| is_wt_group);
+    let mut counts = StructureCounts::default();
+    counts.add_non_rust(nr);
 
     build_pane_data_common(
         app,
@@ -2390,7 +2417,7 @@ fn build_pane_data_non_rust(
             has_cargo: false,
             cargo: None,
             wt_item: wt_item_ref,
-            stats_rows: Vec::new(),
+            stats_rows: counts.to_rows(),
             test_rows: Vec::new(),
             primary_section: None,
             fallback_type: None,

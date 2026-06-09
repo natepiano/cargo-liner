@@ -10,10 +10,15 @@ use tui_pane::GlobalAction;
 use super::*;
 use crate::lint::LintRun;
 use crate::lint::LintRunStatus;
+use crate::project::Cargo;
+use crate::project::ExampleGroup;
 use crate::project::FileStamp;
 use crate::project::ManifestFingerprint;
 use crate::project::PackageRecord;
+use crate::project::ProjectInfo;
+use crate::project::ProjectType;
 use crate::project::PublishPolicy;
+use crate::project::Submodule;
 use crate::project::TargetRecord;
 use crate::project::WorkspaceMetadata;
 use crate::project::WorktreeHealth::Normal;
@@ -21,6 +26,19 @@ use crate::tui::app::startup;
 use crate::tui::columns;
 use crate::tui::columns::ProjectRow;
 use crate::tui::input;
+
+fn test_submodule(name: &str, path: &str) -> Submodule {
+    Submodule {
+        name:          name.to_string(),
+        path:          test_path(path),
+        relative_path: name.to_string(),
+        url:           None,
+        branch:        None,
+        commit:        None,
+        info:          ProjectInfo::default(),
+        git_repo:      None,
+    }
+}
 
 fn press(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
     input::handle_event(app, &Event::Key(KeyEvent::new(code, modifiers)));
@@ -84,6 +102,106 @@ fn expand_all_preserves_selected_project_path() {
 fn name_width_with_gutter_reserves_space_before_lint() {
     assert_eq!(crate::tui::panes::name_width_with_gutter(0), 1);
     assert_eq!(crate::tui::panes::name_width_with_gutter(42), 43);
+}
+
+#[test]
+fn workspace_structure_counts_tree_children_and_cargo_targets() {
+    let mut core = make_package_with_vendored(
+        Some("core"),
+        "~/ws/crates/core",
+        vec![make_vendored(
+            Some("helper"),
+            "~/ws/crates/core/vendor/helper",
+        )],
+    );
+    core.rust.cargo = Cargo {
+        types:       vec![ProjectType::Library],
+        examples:    vec![ExampleGroup {
+            category: String::new(),
+            names:    vec!["demo".to_string()],
+        }],
+        benches:     Vec::new(),
+        publishable: false,
+    };
+    let mut cli = make_member(Some("cli"), "~/ws/crates/cli");
+    cli.rust.cargo = Cargo {
+        types:       vec![ProjectType::Binary],
+        examples:    Vec::new(),
+        benches:     Vec::new(),
+        publishable: false,
+    };
+
+    let mut root =
+        make_workspace_with_members(Some("ws"), "~/ws", vec![inline_group(vec![core, cli])]);
+    let RootItem::Rust(RustProject::Workspace(ws)) = &mut root else {
+        std::process::abort();
+    };
+    ws.rust.cargo = Cargo {
+        types:       vec![ProjectType::Workspace],
+        examples:    Vec::new(),
+        benches:     vec!["smoke".to_string()],
+        publishable: false,
+    };
+    ws.rust.vendored = vec![make_vendored(
+        Some("root-helper"),
+        "~/ws/vendor/root-helper",
+    )];
+    ws.rust.info.submodules = vec![
+        test_submodule("native", "~/ws/native"),
+        test_submodule("assets", "~/ws/assets"),
+    ];
+
+    let mut app = make_app(std::slice::from_ref(&root));
+    apply_items(&mut app, &[root]);
+    app.ensure_detail_cached();
+
+    let package = app
+        .panes
+        .package
+        .content()
+        .unwrap_or_else(|| std::process::abort());
+    assert_eq!(
+        package.stats_rows,
+        vec![
+            ("members", 2),
+            ("vendored", 2),
+            ("submodules", 2),
+            ("lib", 1),
+            ("bin", 1),
+            ("example", 1),
+            ("bench", 1),
+        ]
+    );
+}
+
+#[test]
+fn package_structure_counts_direct_vendored_children() {
+    let mut package = make_package_with_vendored(
+        Some("app"),
+        "~/app",
+        vec![
+            make_vendored(Some("helper-a"), "~/app/vendor/helper-a"),
+            make_vendored(Some("helper-b"), "~/app/vendor/helper-b"),
+        ],
+    );
+    package.rust.cargo = Cargo {
+        types:       vec![ProjectType::Binary],
+        examples:    Vec::new(),
+        benches:     Vec::new(),
+        publishable: false,
+    };
+    let root = RootItem::Rust(RustProject::Package(package));
+
+    let mut app = make_app(std::slice::from_ref(&root));
+    apply_items(&mut app, &[root]);
+    app.ensure_detail_cached();
+
+    let package = app
+        .panes
+        .package
+        .content()
+        .unwrap_or_else(|| std::process::abort());
+    assert_eq!(package.stats_rows, vec![("vendored", 2), ("bin", 1)]);
 }
 
 /// Upsert minimal `WorkspaceMetadata` into `app`'s metadata store

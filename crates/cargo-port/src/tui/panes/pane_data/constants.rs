@@ -1,8 +1,10 @@
 // project counts
 
 pub(super) const PROJECT_LIBS_LABEL: &str = "lib";
+pub(super) const PROJECT_MEMBERS_LABEL: &str = "members";
 pub(super) const PROJECT_PROC_MACROS_LABEL: &str = "proc-macro";
-pub(super) const PROJECT_WORKSPACES_LABEL: &str = "ws";
+pub(super) const PROJECT_SUBMODULES_LABEL: &str = "submodules";
+pub(super) const PROJECT_VENDORED_LABEL: &str = "vendored";
 
 // tests
 
