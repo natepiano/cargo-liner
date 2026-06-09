@@ -54,6 +54,8 @@ use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::project::VendoredPackage;
+use crate::project::Visibility;
+use crate::project::WorktreeGroup;
 use crate::project::WorktreeHealth;
 use crate::project::WorktreeHealth::Normal;
 use crate::scan;
@@ -650,12 +652,23 @@ fn worktree_entry_name_and_expandable(
         return (fallback.to_string(), false);
     };
     let entry = group.entry(wi).unwrap_or(&group.primary);
-    let name = entry.root_directory_name().into_string();
+    let mut name = entry.root_directory_name().into_string();
+    if renders_primary_marker(group, wi) {
+        name.push_str(" (p)");
+    }
     let expandable = match entry {
         RustProject::Workspace(ws) => ws.has_members(),
         RustProject::Package(_) => false,
     };
     (name, expandable)
+}
+
+fn renders_primary_marker(group: &WorktreeGroup, wi: usize) -> bool {
+    wi == 0
+        && group.visible_entry_count() > 2
+        && group
+            .entry(wi)
+            .is_some_and(|entry| entry.visibility() == Visibility::Visible)
 }
 
 fn disk_suffix_for_state(

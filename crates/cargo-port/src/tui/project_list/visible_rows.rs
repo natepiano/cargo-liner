@@ -224,10 +224,17 @@ fn emit_worktree_group(
     wtg: &WorktreeGroup,
     expanded: &HashSet<ExpandKey>,
 ) {
-    for (wi, entry) in wtg.iter_entries().enumerate() {
-        if matches!(entry.visibility(), Visibility::Dismissed) {
-            continue;
-        }
+    let mut entries: Vec<_> = wtg
+        .iter_entries()
+        .enumerate()
+        .filter(|(_, entry)| !matches!(entry.visibility(), Visibility::Dismissed))
+        .map(|(wi, entry)| (entry.root_directory_name().into_string(), wi, entry))
+        .collect();
+    entries.sort_by(|(a_name, a_wi, _), (b_name, b_wi, _)| {
+        a_name.cmp(b_name).then_with(|| a_wi.cmp(b_wi))
+    });
+
+    for (_, wi, entry) in entries {
         rows.push(VisibleRow::WorktreeEntry {
             node_index:     ni,
             worktree_index: wi,

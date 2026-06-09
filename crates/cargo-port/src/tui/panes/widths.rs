@@ -43,6 +43,7 @@ use crate::project::RepoInfo;
 use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::project::VendoredPackage;
+use crate::project::Visibility;
 use crate::project::Workspace;
 use crate::project::WorktreeGroup;
 use crate::tui::columns;
@@ -192,10 +193,12 @@ fn observe_typed_vendored_fit_widths(
 fn observe_workspace_worktree_entry_fit_widths(
     widths: &mut ProjectListWidths,
     ws: &Workspace,
+    group: &WorktreeGroup,
+    worktree_index: usize,
     repo_info: Option<&RepoInfo>,
 ) {
     let dw = columns::display_width;
-    let wt_name = ws.root_directory_name().into_string();
+    let wt_name = worktree_entry_label(group, worktree_index);
     let prefix = if ws.has_members() {
         PREFIX_WT_COLLAPSED
     } else {
@@ -212,10 +215,12 @@ fn observe_workspace_worktree_entry_fit_widths(
 fn observe_package_worktree_entry_fit_widths(
     widths: &mut ProjectListWidths,
     pkg: &Package,
+    group: &WorktreeGroup,
+    worktree_index: usize,
     repo_info: Option<&RepoInfo>,
 ) {
     let dw = columns::display_width;
-    let wt_name = pkg.root_directory_name().into_string();
+    let wt_name = worktree_entry_label(group, worktree_index);
     observe_name_width(widths, dw(PREFIX_WT_FLAT) + dw(&wt_name));
     widths.observe(COL_DISK, dw(&formatted_disk(pkg.disk_usage_bytes())));
     widths.observe(COL_SYNC, dw(&git_sync_label(pkg.git_info(), repo_info)));
@@ -228,16 +233,47 @@ fn observe_worktree_group_fit_widths(
     wtg: &WorktreeGroup,
     repo_info: Option<&RepoInfo>,
 ) {
-    for entry in wtg.iter_entries() {
+    for (worktree_index, entry) in wtg.iter_entries().enumerate() {
         match entry {
             RustProject::Workspace(ws) => {
-                observe_workspace_worktree_entry_fit_widths(widths, ws, repo_info);
+                observe_workspace_worktree_entry_fit_widths(
+                    widths,
+                    ws,
+                    wtg,
+                    worktree_index,
+                    repo_info,
+                );
             },
             RustProject::Package(pkg) => {
-                observe_package_worktree_entry_fit_widths(widths, pkg, repo_info);
+                observe_package_worktree_entry_fit_widths(
+                    widths,
+                    pkg,
+                    wtg,
+                    worktree_index,
+                    repo_info,
+                );
             },
         }
     }
+}
+
+fn worktree_entry_label(group: &WorktreeGroup, worktree_index: usize) -> String {
+    let Some(entry) = group.entry(worktree_index) else {
+        return String::new();
+    };
+    let mut label = entry.root_directory_name().into_string();
+    if renders_primary_marker(group, worktree_index) {
+        label.push_str(" (p)");
+    }
+    label
+}
+
+fn renders_primary_marker(group: &WorktreeGroup, worktree_index: usize) -> bool {
+    worktree_index == 0
+        && group.visible_entry_count() > 2
+        && group
+            .entry(worktree_index)
+            .is_some_and(|entry| entry.visibility() == Visibility::Visible)
 }
 
 fn formatted_disk(bytes: Option<u64>) -> String {

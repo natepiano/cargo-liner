@@ -345,6 +345,148 @@ fn visible_rows_non_workspace_worktrees() {
 }
 
 #[test]
+fn package_worktree_entries_sort_alphabetically() {
+    let root = make_package_worktrees_item(
+        make_package_raw(Some("zeta"), "~/zeta", None),
+        vec![
+            make_package_raw(Some("alpha"), "~/alpha", Some("alpha")),
+            make_package_raw(Some("middle"), "~/middle", Some("middle")),
+        ],
+    );
+
+    let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
+    let rows = super::as_entries(vec![root]).compute_visible_rows(&expanded, true);
+
+    assert_eq!(
+        rows,
+        vec![
+            VisibleRow::Root { node_index: 0 },
+            VisibleRow::WorktreeEntry {
+                node_index:     0,
+                worktree_index: 1,
+            },
+            VisibleRow::WorktreeEntry {
+                node_index:     0,
+                worktree_index: 2,
+            },
+            VisibleRow::WorktreeEntry {
+                node_index:     0,
+                worktree_index: 0,
+            },
+        ]
+    );
+}
+
+#[test]
+fn workspace_worktree_entries_sort_alphabetically() {
+    let root = make_workspace_worktrees_item(
+        make_workspace_raw(Some("zeta"), "~/zeta", Vec::new(), None),
+        vec![
+            make_workspace_raw(Some("alpha"), "~/alpha", Vec::new(), Some("alpha")),
+            make_workspace_raw(Some("middle"), "~/middle", Vec::new(), Some("middle")),
+        ],
+    );
+
+    let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
+    let rows = super::as_entries(vec![root]).compute_visible_rows(&expanded, true);
+
+    assert_eq!(
+        rows,
+        vec![
+            VisibleRow::Root { node_index: 0 },
+            VisibleRow::WorktreeEntry {
+                node_index:     0,
+                worktree_index: 1,
+            },
+            VisibleRow::WorktreeEntry {
+                node_index:     0,
+                worktree_index: 2,
+            },
+            VisibleRow::WorktreeEntry {
+                node_index:     0,
+                worktree_index: 0,
+            },
+        ]
+    );
+}
+
+#[test]
+fn primary_worktree_entry_renders_marker_with_three_visible_checkouts() {
+    let root = make_package_worktrees_item(
+        make_package_raw(Some("zeta"), "~/zeta", None),
+        vec![
+            make_package_raw(Some("alpha"), "~/alpha", Some("alpha")),
+            make_package_raw(Some("middle"), "~/middle", Some("middle")),
+        ],
+    );
+    let mut app = make_app(&[root]);
+    app.project_list.expanded.insert(ExpandKey::Node(0));
+
+    let rendered = rendered_root_name_cells(&mut app);
+
+    assert!(
+        rendered.iter().any(|line| line.contains("zeta (p)")),
+        "primary worktree entry should render the marker: {rendered:?}"
+    );
+    assert!(
+        rendered
+            .iter()
+            .all(|line| { !line.contains("alpha (p)") && !line.contains("middle (p)") }),
+        "linked worktree entries should not render the marker: {rendered:?}"
+    );
+}
+
+#[test]
+fn primary_worktree_entry_omits_marker_with_two_visible_checkouts() {
+    let root = make_package_worktrees_item(
+        make_package_raw(Some("app"), "~/app", None),
+        vec![make_package_raw(
+            Some("app_feat"),
+            "~/app_feat",
+            Some("app_feat"),
+        )],
+    );
+    let mut app = make_app(&[root]);
+    app.project_list.expanded.insert(ExpandKey::Node(0));
+
+    let rendered = rendered_root_name_cells(&mut app);
+
+    assert!(
+        rendered.iter().all(|line| !line.contains("(p)")),
+        "two-checkout groups should not render the marker: {rendered:?}"
+    );
+}
+
+#[test]
+fn primary_worktree_entry_omits_marker_when_deleted_rows_leave_one_visible_checkout() {
+    let root = make_package_worktrees_item(
+        make_package_raw(Some("app"), "~/app", None),
+        vec![make_package_raw(
+            Some("old_app"),
+            "~/old_app",
+            Some("old_app"),
+        )],
+    );
+    let mut app = make_app(&[root]);
+    app.project_list
+        .at_path_mut(test_path("~/old_app").as_path())
+        .expect("linked worktree should exist")
+        .visibility = Deleted;
+    app.project_list.expanded.insert(ExpandKey::Node(0));
+
+    let rendered = rendered_root_name_cells(&mut app);
+
+    assert!(
+        rendered.iter().any(|line| line.contains("old_app")),
+        "deleted linked worktree should still render until dismissed: {rendered:?}"
+    );
+    assert!(
+        rendered.iter().all(|line| !line.contains("(p)")),
+        "single visible checkout plus a deleted row should not render the marker: {rendered:?}"
+    );
+}
+
+#[test]
 fn worktree_section_collapses_when_one_dismissed() {
     let root = make_package_worktrees_item(
         make_package_raw(Some("app"), "~/app", None),
@@ -954,6 +1096,31 @@ fn worktree_fit_widths_use_display_name_for_primary_entry() {
         ),
         "cargo-port",
         "cargo-port_test",
+    );
+}
+
+#[test]
+fn worktree_fit_widths_include_primary_marker_when_visible() {
+    let root = make_package_worktrees_item(
+        make_package_raw(Some("zeta"), "~/zeta", None),
+        vec![
+            make_package_raw(Some("alpha"), "~/alpha", Some("alpha")),
+            make_package_raw(Some("middle"), "~/middle", Some("middle")),
+        ],
+    );
+    let root_label = resolved_root_label(&root);
+    let entries = super::as_entries(vec![root]);
+    let widths =
+        panes::compute_project_list_widths(&entries, std::slice::from_ref(&root_label), true, 0);
+    let root_width = columns::display_width(crate::tui::panes::PREFIX_ROOT_COLLAPSED)
+        + columns::display_width(&root_label);
+    let primary_entry_width = columns::display_width(crate::tui::panes::PREFIX_WT_FLAT)
+        + columns::display_width("zeta (p)");
+
+    assert_eq!(
+        widths.get(crate::tui::columns::COL_NAME),
+        crate::tui::panes::name_width_with_gutter(root_width.max(primary_entry_width)),
+        "fit widths should include the rendered primary marker"
     );
 }
 

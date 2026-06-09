@@ -35,6 +35,10 @@ impl App {
                 // (owner, repo) and shared across sibling worktrees
                 // — left alone here.
                 lint::reclaim_project_cache(path.as_path());
+                if let Some(lint_runs) = self.project_list.lint_at_path_mut(&path) {
+                    lint_runs.clear_runs();
+                }
+                self.lint.clear_running_path(path.as_path());
                 let parent_node_index = self.project_list.worktree_parent_node_index(&path);
                 if let Some(project) = self.project_list.at_path_mut(&path) {
                     project.visibility = Dismissed;

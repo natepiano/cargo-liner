@@ -8,6 +8,8 @@ use crossterm::event::KeyModifiers;
 use tui_pane::GlobalAction;
 
 use super::*;
+use crate::lint::LintRun;
+use crate::lint::LintRunStatus;
 use crate::project::FileStamp;
 use crate::project::ManifestFingerprint;
 use crate::project::PackageRecord;
@@ -654,6 +656,28 @@ fn top_level_deleted_project_can_be_dismissed_and_stops_rendering() {
         Deleted
     );
 
+    app.project_list
+        .lint_at_path_mut(&abs_path)
+        .expect("top-level project should have lint state")
+        .set_runs(vec![LintRun {
+            run_id:        "dismissed-run".to_string(),
+            started_at:    "2026-03-30T14:22:18-05:00".to_string(),
+            finished_at:   Some("2026-03-30T14:23:18-05:00".to_string()),
+            duration_ms:   Some(60_000),
+            status:        LintRunStatus::Passed,
+            commands:      Vec::new(),
+            archive_bytes: 0,
+        }]);
+    app.handle_bg_msg(BackgroundMsg::LintStatus {
+        path:   abs_path.clone(),
+        status: LintStatus::Running(parse_ts("2026-03-30T14:24:18-05:00")),
+        origin: LintRunOrigin::Normal,
+    });
+    assert!(
+        app.lint.running_toast_contains_path(abs_path.as_path()),
+        "deleted project should have a running lint toast before dismiss"
+    );
+
     app.project_list.set_cursor(0);
     let target = app
         .focused_dismiss_target()
@@ -672,5 +696,17 @@ fn top_level_deleted_project_can_be_dismissed_and_stops_rendering() {
             .expect("top-level project should remain in hierarchy after dismiss")
             .visibility,
         Dismissed
+    );
+    let lint_runs = app
+        .project_list
+        .lint_at_path(&abs_path)
+        .expect("dismissed project lint state remains addressable");
+    assert!(
+        lint_runs.runs().is_empty(),
+        "dismiss should clear in-memory lint runs for the deleted project"
+    );
+    assert!(
+        !app.lint.running_toast_contains_path(abs_path.as_path()),
+        "dismiss should clear running lint toast state for the deleted project"
     );
 }

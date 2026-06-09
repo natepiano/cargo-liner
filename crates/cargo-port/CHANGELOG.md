@@ -10,8 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Add click-to-toggle behavior for expandable project tree and Running outline rows
 
+### Changed
+- Mark the primary checkout in expanded worktree groups with `(p)`
+- Sort expanded worktree-group checkouts alphabetically
+
 ### Fixed
 - Keep linked worktree lint status visible in the project list after worktree refreshes
+- Clear lint history when dismissing deleted project rows
 - Let lint include filters match a linked worktree's primary checkout even when the worktree folder has an unrelated name
 
 ## [0.1.2] - 2026-06-08
