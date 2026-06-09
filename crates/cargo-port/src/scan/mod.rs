@@ -4,6 +4,7 @@ use crate::cache_paths;
 use crate::channel::Sender;
 use crate::http::ServiceKind;
 use crate::http::ServiceSignal;
+use crate::lint::LintRunOrigin;
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
 use crate::project::ManifestFingerprint;
@@ -172,11 +173,12 @@ pub(crate) enum BackgroundMsg {
         submodules: Vec<Submodule>,
     },
     /// Live lint status update from the lint runtime (a lint run started,
-    /// passed, failed, etc.). Sent during normal operation when files
-    /// change and the lint runtime re-checks a project.
+    /// passed, failed, etc.). `origin` makes startup catch-up runs distinct
+    /// from later file-triggered runs, so their running toasts cannot merge.
     LintStatus {
         path:   AbsolutePath,
         status: LintStatus,
+        origin: LintRunOrigin,
     },
     /// Startup lint cache check result. Sent once per registered project when
     /// the lint runtime reads terminal cached results from disk during

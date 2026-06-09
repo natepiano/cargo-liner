@@ -40,7 +40,11 @@ impl App {
         }
         let count = projects.len();
         runtime.sync_projects(projects);
-        tracing::info!(count, "lint_register_root_items");
+        tracing::trace!(
+            target: tui_pane::PERF_LOG_TARGET,
+            count,
+            "lint_register_root_items"
+        );
         count
     }
 }

@@ -125,7 +125,8 @@ pub(super) fn register_cargo_home_watch(
         return;
     }
     match watcher.watch(cargo_home.as_path(), RecursiveMode::NonRecursive) {
-        Ok(()) => tracing::info!(
+        Ok(()) => tracing::trace!(
+            target: tui_pane::PERF_LOG_TARGET,
             cargo_home = %cargo_home.display(),
             "watcher_cargo_home_registered"
         ),

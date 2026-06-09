@@ -246,6 +246,7 @@ fn run_finalize_guard_clears_only_unfinished_running() {
         project_root:  project_dir.path(),
         status_cache:  &status_cache,
         background_tx: &background_tx,
+        origin:        LintRunOrigin::Normal,
     });
     assert!(
         !latest_path_under(cache_dir.path(), project_dir.path()).exists(),
@@ -263,6 +264,7 @@ fn run_finalize_guard_clears_only_unfinished_running() {
         project_root:  project_dir.path(),
         status_cache:  &status_cache,
         background_tx: &background_tx,
+        origin:        LintRunOrigin::Normal,
     });
     assert!(
         latest_path_under(cache_dir.path(), project_dir.path()).exists(),

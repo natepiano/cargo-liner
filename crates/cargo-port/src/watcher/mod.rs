@@ -124,7 +124,8 @@ pub(crate) fn spawn_watcher(
             "watcher_root_registration_failed"
         );
     }
-    tracing::info!(
+    tracing::trace!(
+        target: tui_pane::PERF_LOG_TARGET,
         requested = watch_roots.len(),
         registered = registered_roots.dirs().len(),
         failed = failures.len(),

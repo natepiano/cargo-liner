@@ -34,6 +34,7 @@ use super::types::CachedLintStatus;
 use super::types::LintCommand;
 use super::types::LintCommandStatus;
 use super::types::LintRun;
+use super::types::LintRunOrigin;
 use super::types::LintRunStatus;
 use super::types::LintStatus;
 use crate::cache_paths;
@@ -208,7 +209,8 @@ fn supervisor_loop(
             Ok(SupervisorMsg::RegisterProject { project }) => {
                 let abs_path = project.abs_path.clone();
                 let accepted = should_watch_project(&lint, &project);
-                tracing::info!(
+                tracing::trace!(
+                    target: tui_pane::PERF_LOG_TARGET,
                     path = %abs_path.display(),
                     label = %project.project_label,
                     is_rust = project.is_rust,
@@ -237,6 +239,7 @@ fn supervisor_loop(
                     let _ = background_tx.send(BackgroundMsg::LintStatus {
                         path:   abs_path,
                         status: LintStatus::NoLog,
+                        origin: LintRunOrigin::Normal,
                     });
                 }
             },
@@ -370,6 +373,41 @@ impl WorkerStart {
     }
 }
 
+#[derive(Clone, Copy)]
+struct ScheduledLintRun {
+    deadline: Instant,
+    origin:   LintRunOrigin,
+}
+
+impl ScheduledLintRun {
+    fn coalesce(self, deadline: Instant, origin: LintRunOrigin) -> Self {
+        Self {
+            deadline: self.deadline.max(deadline),
+            origin:   self.origin.merged_with(origin),
+        }
+    }
+}
+
+fn schedule_lint_run(
+    scheduled: Option<ScheduledLintRun>,
+    trigger: &LintTriggerEvent,
+) -> ScheduledLintRun {
+    let deadline = Instant::now() + trigger.debounce();
+    let origin = lint_run_origin_for_trigger(trigger);
+    scheduled.map_or(ScheduledLintRun { deadline, origin }, |current| {
+        current.coalesce(deadline, origin)
+    })
+}
+
+const fn lint_run_origin_for_trigger(trigger: &LintTriggerEvent) -> LintRunOrigin {
+    match &trigger.trigger {
+        LintTriggerKind::Startup => LintRunOrigin::CatchUp,
+        LintTriggerKind::Manifest | LintTriggerKind::Lockfile | LintTriggerKind::RustSource => {
+            LintRunOrigin::Normal
+        },
+    }
+}
+
 fn reconcile_workers(
     workers: &mut HashMap<AbsolutePath, ProjectWorker>,
     desired: HashMap<AbsolutePath, RegisterProjectRequest>,
@@ -388,6 +426,7 @@ fn reconcile_workers(
             let _ = background_tx.send(BackgroundMsg::LintStatus {
                 path,
                 status: LintStatus::NoLog,
+                origin: LintRunOrigin::Normal,
             });
         }
     }
@@ -435,14 +474,18 @@ fn spawn_project_worker(
     let status_cache = Arc::clone(&config.status_cache);
     let run_immediately = matches!(start, WorkerStart::RunNow);
     let handle = thread::spawn(move || {
-        let mut next_run_at = run_immediately.then(Instant::now);
+        let mut scheduled_run = run_immediately.then(|| ScheduledLintRun {
+            deadline: Instant::now(),
+            origin:   LintRunOrigin::Normal,
+        });
         loop {
             if stop_flag.load(Ordering::Relaxed) {
                 return;
             }
 
-            let timeout = next_run_at.map_or(STOP_POLL, |deadline: Instant| {
-                deadline
+            let timeout = scheduled_run.map_or(STOP_POLL, |scheduled| {
+                scheduled
+                    .deadline
                     .saturating_duration_since(Instant::now())
                     .min(STOP_POLL)
             });
@@ -455,10 +498,7 @@ fn spawn_project_worker(
                     removal = trigger.removal,
                     "lint_worker_trigger_received"
                 );
-                next_run_at = Some(next_run_at.map_or_else(
-                    || Instant::now() + trigger.debounce(),
-                    |current| current.max(Instant::now() + trigger.debounce()),
-                ));
+                scheduled_run = Some(schedule_lint_run(scheduled_run, &trigger));
             }
 
             match trigger_rx.recv_timeout(timeout) {
@@ -470,21 +510,20 @@ fn spawn_project_worker(
                         removal = trigger.removal,
                         "lint_worker_trigger_received"
                     );
-                    next_run_at = Some(next_run_at.map_or_else(
-                        || Instant::now() + trigger.debounce(),
-                        |current| current.max(Instant::now() + trigger.debounce()),
-                    ));
+                    scheduled_run = Some(schedule_lint_run(scheduled_run, &trigger));
                 },
                 Err(RecvTimeoutError::Timeout) => {},
                 Err(RecvTimeoutError::Disconnected) => return,
             }
 
-            if let Some(deadline) = next_run_at
-                && Instant::now() >= deadline
+            if let Some(scheduled) = scheduled_run
+                && Instant::now() >= scheduled.deadline
             {
                 if !stop_flag.load(Ordering::Relaxed) && project_still_runnable(&project_root) {
-                    tracing::info!(
+                    tracing::trace!(
+                        target: tui_pane::PERF_LOG_TARGET,
                         path = %project_root.display(),
+                        origin = ?scheduled.origin,
                         "lint_worker_run_start"
                     );
                     let run_started = Instant::now();
@@ -499,14 +538,17 @@ fn spawn_project_worker(
                         &status_cache,
                         &background_tx,
                         &child_slot,
+                        scheduled.origin,
                     );
-                    tracing::info!(
+                    tracing::trace!(
+                        target: tui_pane::PERF_LOG_TARGET,
                         path = %project_root.display(),
+                        origin = ?scheduled.origin,
                         duration_ms = tui_pane::perf_log_ms(run_started.elapsed().as_millis()),
                         "lint_worker_run_complete"
                     );
                 }
-                next_run_at = None;
+                scheduled_run = None;
             }
         }
     });
@@ -583,6 +625,7 @@ pub(super) struct RunFinalizeGuard<'a> {
     pub(super) project_root:  &'a Path,
     pub(super) status_cache:  &'a Arc<Mutex<HashMap<String, CachedLintStatus>>>,
     pub(super) background_tx: &'a Sender<BackgroundMsg>,
+    pub(super) origin:        LintRunOrigin,
 }
 
 impl Drop for RunFinalizeGuard<'_> {
@@ -598,6 +641,7 @@ impl Drop for RunFinalizeGuard<'_> {
                 self.project_root,
                 read_status_from_disk(self.cache_root, self.project_root).into_lint_status(),
                 self.background_tx,
+                self.origin,
             );
         }
     }
@@ -644,6 +688,7 @@ fn run_commands_for_project(
     status_cache: &Arc<Mutex<HashMap<String, CachedLintStatus>>>,
     background_tx: &Sender<BackgroundMsg>,
     child_slot: &ChildSlot,
+    origin: LintRunOrigin,
 ) -> io::Result<()> {
     if !project_still_runnable(project_root) {
         return Ok(());
@@ -662,17 +707,21 @@ fn run_commands_for_project(
         project_root,
         status_cache,
         background_tx,
+        origin,
     };
-    tracing::info!(
+    tracing::trace!(
+        target: tui_pane::PERF_LOG_TARGET,
         path = project_label,
         abs_path = %project_root.display(),
-        "startup_lint_started"
+        origin = ?origin,
+        "lint_run_started"
     );
     publish_status(
         status_cache,
         project_root,
         status::read_status_under(cache_root, project_root),
         background_tx,
+        origin,
     );
 
     let result = execute_commands(
@@ -685,7 +734,13 @@ fn run_commands_for_project(
     )?;
     if matches!(result, CommandsResult::ProjectRemoved) {
         let _ = read_write::clear_latest_under(cache_root, project_root);
-        publish_status(status_cache, project_root, LintStatus::NoLog, background_tx);
+        publish_status(
+            status_cache,
+            project_root,
+            LintStatus::NoLog,
+            background_tx,
+            origin,
+        );
         return Ok(());
     }
 
@@ -708,6 +763,7 @@ fn run_commands_for_project(
         project_root,
         status::read_status_under(cache_root, project_root),
         background_tx,
+        origin,
     );
     Ok(())
 }
@@ -781,7 +837,8 @@ fn execute_commands(
             index,
             child_slot,
         )?;
-        tracing::info!(
+        tracing::trace!(
+            target: tui_pane::PERF_LOG_TARGET,
             command = %command.name,
             duration_ms = tui_pane::perf_log_ms(cmd_started.elapsed().as_millis()),
             success = execution.success,
@@ -817,6 +874,7 @@ fn publish_status(
     project_root: &Path,
     status: LintStatus,
     background_tx: &Sender<BackgroundMsg>,
+    origin: LintRunOrigin,
 ) {
     if let Ok(mut statuses) = status_cache.lock() {
         let key = paths::project_key(project_root);
@@ -827,6 +885,7 @@ fn publish_status(
     let _ = background_tx.send(BackgroundMsg::LintStatus {
         path: AbsolutePath::from(project_root),
         status,
+        origin,
     });
 }
 
@@ -1006,6 +1065,7 @@ mod tests {
     use crate::config::CargoPortConfig;
     use crate::lint::trigger::LintEventKind::CreateOrModify;
     use crate::lint::trigger::LintTriggerKind::RustSource;
+    use crate::lint::trigger::LintTriggerKind::Startup;
 
     fn request(path: &str, abs_path: &Path, is_rust: bool) -> RegisterProjectRequest {
         RegisterProjectRequest {
@@ -1013,6 +1073,28 @@ mod tests {
             abs_path: AbsolutePath::from(abs_path),
             is_rust,
         }
+    }
+
+    #[test]
+    fn normal_trigger_overrides_pending_startup_origin() {
+        let project_root = AbsolutePath::from(Path::new("/tmp/demo"));
+        let startup = LintTriggerEvent {
+            project_root: project_root.clone(),
+            trigger:      Startup,
+            event_kind:   CreateOrModify,
+            removal:      false,
+        };
+        let source = LintTriggerEvent {
+            project_root,
+            trigger: RustSource,
+            event_kind: CreateOrModify,
+            removal: false,
+        };
+
+        let scheduled = schedule_lint_run(None, &startup);
+        assert_eq!(scheduled.origin, LintRunOrigin::CatchUp);
+        let scheduled = schedule_lint_run(Some(scheduled), &source);
+        assert_eq!(scheduled.origin, LintRunOrigin::Normal);
     }
 
     #[test]
@@ -1114,6 +1196,7 @@ mod tests {
             &Arc::new(Mutex::new(HashMap::new())),
             &tx,
             &Arc::new(Mutex::new(None)),
+            LintRunOrigin::Normal,
         )
         .expect("run commands");
 
@@ -1200,9 +1283,13 @@ mod tests {
         while Instant::now() < deadline {
             let remaining = deadline.saturating_duration_since(Instant::now());
             match background_rx.recv_timeout(remaining) {
-                Ok(BackgroundMsg::LintStatus { path, status })
-                    if path.as_path() == project_dir.path()
-                        && matches!(status, LintStatus::Passed(_)) =>
+                Ok(BackgroundMsg::LintStatus {
+                    path,
+                    status,
+                    origin,
+                }) if path.as_path() == project_dir.path()
+                    && matches!(status, LintStatus::Passed(_))
+                    && origin == LintRunOrigin::Normal =>
                 {
                     saw_passed = true;
                     break;
@@ -1268,7 +1355,7 @@ mod tests {
                 {
                     saw_cached_passed = true;
                 },
-                Ok(BackgroundMsg::LintStatus { path, status })
+                Ok(BackgroundMsg::LintStatus { path, status, .. })
                     if path.as_path() == project_dir.path() =>
                 {
                     panic!("sync should not run lint command, got {status:?}");
@@ -1323,7 +1410,7 @@ mod tests {
                 {
                     saw_nolog = true;
                 },
-                Ok(BackgroundMsg::LintStatus { path, status })
+                Ok(BackgroundMsg::LintStatus { path, status, .. })
                     if path.as_path() == project_dir.path() =>
                 {
                     panic!("sync must not run lint under deferred startup, got {status:?}");
@@ -1368,9 +1455,13 @@ mod tests {
         while Instant::now() < deadline {
             let remaining = deadline.saturating_duration_since(Instant::now());
             match background_rx.recv_timeout(remaining) {
-                Ok(BackgroundMsg::LintStatus { path, status })
-                    if path.as_path() == project_dir.path()
-                        && matches!(status, LintStatus::Passed(_)) =>
+                Ok(BackgroundMsg::LintStatus {
+                    path,
+                    status,
+                    origin,
+                }) if path.as_path() == project_dir.path()
+                    && matches!(status, LintStatus::Passed(_))
+                    && origin == LintRunOrigin::Normal =>
                 {
                     saw_passed = true;
                     break;
@@ -1407,6 +1498,7 @@ mod tests {
             &Arc::new(Mutex::new(HashMap::new())),
             &tx,
             &Arc::new(Mutex::new(None)),
+            LintRunOrigin::Normal,
         )
         .expect("run commands");
 
@@ -1437,6 +1529,7 @@ mod tests {
                 project_root:  project_dir.path(),
                 status_cache:  &status_cache,
                 background_tx: &background_tx,
+                origin:        LintRunOrigin::CatchUp,
             };
         }
 
@@ -1444,6 +1537,7 @@ mod tests {
             background_rx.try_recv(),
             Ok(BackgroundMsg::LintStatus {
                 status: LintStatus::NoLog,
+                origin: LintRunOrigin::CatchUp,
                 ..
             })
         ));

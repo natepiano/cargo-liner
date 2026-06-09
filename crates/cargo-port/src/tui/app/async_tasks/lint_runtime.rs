@@ -155,7 +155,12 @@ impl App {
     }
     pub(super) fn register_lint_project_if_eligible(&self, item: &RootItem) {
         if !item.is_rust() {
-            tracing::info!(reason = "not_rust", path = %item.display_path(), "lint_register_skip");
+            tracing::trace!(
+                target: tui_pane::PERF_LOG_TARGET,
+                reason = "not_rust",
+                path = %item.display_path(),
+                "lint_register_skip"
+            );
             return;
         }
         let path = item.path();
@@ -170,14 +175,28 @@ impl App {
             }
         });
         if is_member {
-            tracing::info!(reason = "workspace_member", path = %item.display_path(), "lint_register_skip");
+            tracing::trace!(
+                target: tui_pane::PERF_LOG_TARGET,
+                reason = "workspace_member",
+                path = %item.display_path(),
+                "lint_register_skip"
+            );
             return;
         }
         let Some(runtime) = self.lint.runtime() else {
-            tracing::info!(reason = "no_runtime", path = %item.display_path(), "lint_register_skip");
+            tracing::trace!(
+                target: tui_pane::PERF_LOG_TARGET,
+                reason = "no_runtime",
+                path = %item.display_path(),
+                "lint_register_skip"
+            );
             return;
         };
-        tracing::info!(path = %item.display_path(), "lint_register");
+        tracing::trace!(
+            target: tui_pane::PERF_LOG_TARGET,
+            path = %item.display_path(),
+            "lint_register"
+        );
         runtime.register_project(RegisterProjectRequest {
             project_label: item.display_path().into_string(),
             abs_path:      path.clone(),
@@ -233,14 +252,13 @@ impl App {
             return;
         }
 
-        // Title the single running-lint toast as a catch-up batch so it reads
-        // distinctly from an edit-triggered run. That toast already names each
-        // project and tracks elapsed/completion, so no separate one-shot toast
-        // is needed.
-        self.lint.queue_catch_up_lints();
         for path in &pending {
             runtime.request_startup_lint(path.clone());
         }
-        tracing::info!(count = pending.len(), "startup_lints_kicked_off");
+        tracing::trace!(
+            target: tui_pane::PERF_LOG_TARGET,
+            count = pending.len(),
+            "startup_lints_kicked_off"
+        );
     }
 }

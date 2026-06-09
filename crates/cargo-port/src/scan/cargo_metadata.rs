@@ -112,7 +112,8 @@ pub(crate) fn spawn_streaming_scan(
 
         let phase1_started = std::time::Instant::now();
         let phase1 = discovery::phase1_discover(&scan_dirs, non_rust);
-        tracing::info!(
+        tracing::trace!(
+            target: tui_pane::PERF_LOG_TARGET,
             elapsed_ms = tui_pane::perf_log_ms(phase1_started.elapsed().as_millis()),
             scan_dirs = scan_dirs.len(),
             visited_dirs = phase1.stats.visited_dirs,
@@ -125,7 +126,8 @@ pub(crate) fn spawn_streaming_scan(
 
         let tree_started = std::time::Instant::now();
         let projects = tree::build_tree(&phase1.items, &inline_dirs);
-        tracing::info!(
+        tracing::trace!(
+            target: tui_pane::PERF_LOG_TARGET,
             elapsed_ms = tui_pane::perf_log_ms(tree_started.elapsed().as_millis()),
             input_items = phase1.items.len(),
             tree_items = projects.len(),
@@ -370,7 +372,8 @@ fn run_cargo_metadata_for_root(
         )),
         Err(err) => Err(err),
     };
-    tracing::info!(
+    tracing::trace!(
+        target: tui_pane::PERF_LOG_TARGET,
         elapsed_ms = tui_pane::perf_log_ms(started_at.elapsed().as_millis()),
         workspace_root = %workspace_root.display(),
         ok = result.is_ok(),

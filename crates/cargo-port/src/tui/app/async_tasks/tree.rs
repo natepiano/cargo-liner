@@ -67,7 +67,8 @@ impl App {
         self.scan.state.started_at = Instant::now();
         self.scan.state.run_count += 1;
         self.startup.reset();
-        tracing::info!(
+        tracing::trace!(
+            target: tui_pane::PERF_LOG_TARGET,
             kind = "rescan",
             run = self.scan.state.run_count,
             "scan_start"

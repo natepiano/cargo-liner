@@ -652,6 +652,7 @@ impl App {
             if let Some(lr) = self.project_list.lint_at_path_mut(path) {
                 lr.clear_runs();
             }
+            self.lint.clear_running_path(path);
         }
     }
 

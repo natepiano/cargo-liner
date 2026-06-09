@@ -140,7 +140,8 @@ impl App {
     /// `CheckoutInfo` arrival can signal "this repo's state changed";
     /// the dedup set absorbs N attempts for the same `OwnerRepo`.
     pub fn handle_checkout_info(&mut self, path: &Path, info: CheckoutInfo) {
-        tracing::info!(
+        tracing::trace!(
+            target: tui_pane::PERF_LOG_TARGET,
             path = %path.display(),
             git_status = %info.status.label(),
             "checkout_info_applied"

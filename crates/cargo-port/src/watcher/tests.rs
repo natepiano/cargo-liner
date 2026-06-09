@@ -1899,7 +1899,7 @@ fn assert_source_event_schedules_lint_run(
     while Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(Instant::now());
         match background_rx.recv_timeout(remaining) {
-            Ok(BackgroundMsg::LintStatus { path, status })
+            Ok(BackgroundMsg::LintStatus { path, status, .. })
                 if path.as_path() == project_dir.path()
                     && matches!(status, lint::LintStatus::Passed(_)) =>
             {

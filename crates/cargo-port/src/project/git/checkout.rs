@@ -390,7 +390,8 @@ fn get_git_status(project_dir: &Path, repo_root: &Path) -> GitStatus {
             .is_some_and(|status| status.success());
         if ignored {
             let state = GitStatus::Ignored;
-            tracing::info!(
+            tracing::trace!(
+                target: tui_pane::PERF_LOG_TARGET,
                 elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
                 repo_root = %repo_root.display(),
                 project_dir = %project_dir.display(),
@@ -433,7 +434,8 @@ fn get_git_status(project_dir: &Path, repo_root: &Path) -> GitStatus {
     } else {
         GitStatus::Clean
     };
-    tracing::info!(
+    tracing::trace!(
+        target: tui_pane::PERF_LOG_TARGET,
         elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
         repo_root = %repo_root.display(),
         project_dir = %project_dir.display(),

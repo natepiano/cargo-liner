@@ -48,7 +48,8 @@ impl App {
 
         let elapsed = started.elapsed();
         if elapsed.as_millis() >= tui_pane::SLOW_BG_BATCH_MS {
-            tracing::info!(
+            tracing::trace!(
+                target: tui_pane::PERF_LOG_TARGET,
                 elapsed_ms = tui_pane::perf_log_ms(elapsed.as_millis()),
                 bg_msgs = stats.bg_msgs,
                 ci_msgs = stats.ci_msgs,
@@ -226,7 +227,8 @@ pub(super) fn log_saturated_background_batch(stats: &PollBackgroundStats) {
         return;
     }
 
-    tracing::info!(
+    tracing::trace!(
+        target: tui_pane::PERF_LOG_TARGET,
         bg_msgs = stats.bg_msgs,
         disk_usage_msgs = stats.disk_usage_msgs,
         git_info_msgs = stats.git_info_msgs,

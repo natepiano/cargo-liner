@@ -10,6 +10,7 @@ mod constants;
 mod cpu;
 mod perf_log;
 
+pub use constants::PERF_LOG_TARGET;
 pub use cpu::CPU_SMOOTHING_WINDOW_POLLS;
 pub use cpu::CpuBreakdown;
 pub use cpu::CpuCoreUsage;

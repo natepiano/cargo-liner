@@ -156,7 +156,8 @@ pub(super) fn enqueue_git_refresh(
             pending_git.get(&repo_root),
             Some(WatchState::Pending { .. })
         ));
-    tracing::info!(
+    tracing::trace!(
+        target: tui_pane::PERF_LOG_TARGET,
         repo_root = %repo_root.display(),
         immediate,
         cause,
@@ -292,7 +293,8 @@ pub(super) fn emit_root_git_info_refresh(
         return;
     };
     let checkout = CheckoutInfo::get(entry.abs_path.as_path(), repo.local_main_branch.as_deref());
-    tracing::info!(
+    tracing::trace!(
+        target: tui_pane::PERF_LOG_TARGET,
         elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
         path = %entry.project_label,
         git_status = checkout.as_ref().map_or("unknown", |c| c.status.label()),
@@ -384,7 +386,8 @@ pub(super) fn spawn_git_refresh(
         let Ok(_permit) = git_limit.acquire_owned().await else {
             return;
         };
-        tracing::info!(
+        tracing::trace!(
+            target: tui_pane::PERF_LOG_TARGET,
             elapsed_ms = tui_pane::perf_log_ms(queue_started.elapsed().as_millis()),
             refresh_key = %refresh_key.display(),
             affected_rows = affected.len(),
@@ -430,7 +433,8 @@ pub(super) fn spawn_git_refresh(
             }
         }
 
-        tracing::info!(
+        tracing::trace!(
+            target: tui_pane::PERF_LOG_TARGET,
             elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
             refresh_key = %refresh_key.display(),
             "watcher_git_refresh"
@@ -490,7 +494,8 @@ pub(super) fn spawn_disk_update(
         let Ok(_permit) = disk_limit.acquire_owned().await else {
             return;
         };
-        tracing::info!(
+        tracing::trace!(
+            target: tui_pane::PERF_LOG_TARGET,
             elapsed_ms = tui_pane::perf_log_ms(queue_started.elapsed().as_millis()),
             path = %project_label,
             abs_path = %abs_path.display(),
@@ -503,7 +508,8 @@ pub(super) fn spawn_disk_update(
             .await
             .ok()
             .unwrap_or(0);
-        tracing::info!(
+        tracing::trace!(
+            target: tui_pane::PERF_LOG_TARGET,
             elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
             path = %project_label,
             bytes,

@@ -30,7 +30,8 @@ pub(super) fn git_output_logged<const N: usize>(
         .ok()
         .and_then(|out| out.status.code())
         .map_or_else(|| "signal".to_string(), |code| code.to_string());
-    tracing::info!(
+    tracing::trace!(
+        target: tui_pane::PERF_LOG_TARGET,
         elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
         repo_root = %repo_root.display(),
         op,

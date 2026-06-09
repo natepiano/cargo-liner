@@ -2824,7 +2824,8 @@ fn prerelease_label(prerelease: &str) -> &'static str {
 /// helper doesn't log independently — keeping the existing log
 /// format intact for downstream tracing consumers.
 fn log_pane_common_breakdown(abs_path: &Path, runtime: &RuntimeFields, metadata: &MetadataFields) {
-    tracing::info!(
+    tracing::trace!(
+        target: tui_pane::PERF_LOG_TARGET,
         git_detail_ms = runtime.git_detail_ms,
         disk_ms = runtime.disk_ms,
         worktrees_ms = runtime.worktrees_ms,

@@ -312,7 +312,8 @@ pub(super) fn phase1_discover(
                 let Ok(cargo_project) = project::from_cargo_toml(entry.path()) else {
                     continue;
                 };
-                tracing::info!(
+                tracing::trace!(
+                    target: tui_pane::PERF_LOG_TARGET,
                     elapsed_ms = tui_pane::perf_log_ms(manifest_started.elapsed().as_millis()),
                     manifest = %entry.path().display(),
                     "phase1_manifest_parse"
@@ -326,7 +327,8 @@ pub(super) fn phase1_discover(
                 } else {
                     GitRepoPresence::OutsideRepo
                 };
-                tracing::info!(
+                tracing::trace!(
+                    target: tui_pane::PERF_LOG_TARGET,
                     elapsed_ms = tui_pane::perf_log_ms(repo_presence_started.elapsed().as_millis()),
                     path = %abs_path,
                     in_repo = repo_presence.is_in_repo(),

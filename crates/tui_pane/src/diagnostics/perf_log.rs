@@ -1,8 +1,9 @@
 //! Tracing subscriber + slow-threshold constants for the framework's
 //! perf log.
 //!
-//! [`init`] rotates the previous log to `previous_log_path` and
-//! installs a file-based tracing subscriber writing to
+//! [`init`] installs a file-based tracing subscriber only when
+//! `CARGO_PORT_LOG` is set. When enabled, it rotates the previous log
+//! to `previous_log_path` and writes the new session to
 //! `current_log_path`. The `SLOW_*` constants are the thresholds the
 //! framework and app agree on for "this took too long" tracing
 //! events; [`ms`] is a saturating `u128`→`u64` cast for tracing
@@ -30,17 +31,33 @@ pub const SLOW_INPUT_EVENT_MS: u128 = 10;
 #[must_use]
 pub fn ms(millis: u128) -> u64 { u64::try_from(millis).unwrap_or(u64::MAX) }
 
-/// Initialize the perf-log tracing subscriber.
+/// Initialize the perf-log tracing subscriber if `CARGO_PORT_LOG` is set.
 ///
-/// Rotates the file at `current_log_path` to `previous_log_path` if
-/// it exists, then opens `current_log_path` for write-truncate and
-/// installs a file-based tracing subscriber filtered by the
-/// `CARGO_PORT_LOG` env var (default `info`).
+/// When enabled, rotates the file at `current_log_path` to
+/// `previous_log_path` if it exists, then opens `current_log_path`
+/// for write-truncate and installs a file-based tracing subscriber
+/// filtered by the `CARGO_PORT_LOG` env var (default `info` for
+/// invalid values).
 ///
 /// Idempotent at the app level (callers invoke once at startup);
 /// repeated invocations rotate the file again but `set_global_default`
 /// only takes the first subscriber.
 pub fn init(current_log_path: &Path, previous_log_path: &Path) {
+    let Some(filter) = perf_log_filter() else {
+        return;
+    };
+    init_with_filter(current_log_path, previous_log_path, filter);
+}
+
+fn perf_log_filter() -> Option<EnvFilter> {
+    std::env::var_os(PERF_LOG_ENV)?;
+    Some(
+        EnvFilter::try_from_env(PERF_LOG_ENV)
+            .unwrap_or_else(|_| EnvFilter::new(DEFAULT_PERF_LOG_FILTER)),
+    )
+}
+
+fn init_with_filter(current_log_path: &Path, previous_log_path: &Path, filter: EnvFilter) {
     if current_log_path.is_file() {
         let _ = std::fs::remove_file(previous_log_path);
         let _ = std::fs::rename(current_log_path, previous_log_path);
@@ -51,9 +68,6 @@ pub fn init(current_log_path: &Path, previous_log_path: &Path) {
         .write(true)
         .truncate(true)
         .open(current_log_path);
-
-    let filter = EnvFilter::try_from_env(PERF_LOG_ENV)
-        .unwrap_or_else(|_| EnvFilter::new(DEFAULT_PERF_LOG_FILTER));
 
     if let Ok(file) = file {
         init_file_subscriber(file, filter);
@@ -77,4 +91,33 @@ fn init_file_subscriber(file: File, filter: EnvFilter) {
     let subscriber = tracing_subscriber::registry().with(filter).with(fmt_layer);
 
     let _ = tracing::subscriber::set_global_default(subscriber);
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disabled_perf_log_does_not_create_current_log() {
+        if std::env::var_os(PERF_LOG_ENV).is_some() {
+            return;
+        }
+        let unique = format!("cargo-port-perf-log-disabled-{}", std::process::id());
+        let dir = std::env::temp_dir().join(unique);
+        let current = dir.join("current.log");
+        let previous = dir.join("previous.log");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+
+        init(&current, &previous);
+
+        assert!(!current.exists());
+        assert!(!previous.exists());
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

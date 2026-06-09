@@ -35,7 +35,8 @@ impl App {
             self.background.register_item_background_services(item);
             count += 1;
         });
-        tracing::info!(
+        tracing::trace!(
+            target: tui_pane::PERF_LOG_TARGET,
             elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
             count,
             "register_background_services_for_tree"
@@ -156,7 +157,8 @@ impl App {
             for (repo_root, paths) in projects_by_repo {
                 let started = Instant::now();
                 let first_commit = project::get_first_commit(&repo_root);
-                tracing::info!(
+                tracing::trace!(
+                    target: tui_pane::PERF_LOG_TARGET,
                     elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
                     repo_root = %repo_root.display(),
                     rows = paths.len(),

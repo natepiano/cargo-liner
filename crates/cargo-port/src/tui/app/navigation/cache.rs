@@ -59,7 +59,8 @@ impl App {
             self.lint.set_content(lints);
             self.panes
                 .set_detail_data(key, data.package, data.git, data.targets);
-            tracing::info!(
+            tracing::trace!(
+                target: tui_pane::PERF_LOG_TARGET,
                 total_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
                 pane_ms,
                 ci_ms,

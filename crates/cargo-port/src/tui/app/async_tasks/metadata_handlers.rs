@@ -143,7 +143,8 @@ impl App {
                 .target_dir_index
                 .upsert(TargetDirMember { project_root }, target_directory.clone());
         }
-        tracing::info!(
+        tracing::trace!(
+            target: tui_pane::PERF_LOG_TARGET,
             workspace_root = %workspace_root.as_path().display(),
             generation,
             "cargo_metadata_applied"

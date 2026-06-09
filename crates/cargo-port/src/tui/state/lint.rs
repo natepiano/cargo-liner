@@ -14,7 +14,6 @@
 //! variants directly, so `PackageData.lint_display` carries
 //! `LintDisplay` rather than a pre-rendered string.
 
-use std::collections::HashSet;
 use std::path::Path;
 use std::time::Duration;
 use std::time::Instant;
@@ -33,7 +32,9 @@ use tui_pane::Viewport;
 use super::Config;
 use crate::constants::LINT_NO_LOG;
 use crate::lint::CacheUsage;
+use crate::lint::LintRunOrigin;
 use crate::lint::LintStatus;
+use crate::lint::LintStatusKind;
 use crate::lint::RuntimeHandle;
 use crate::project;
 use crate::project::AbsolutePath;
@@ -73,25 +74,11 @@ pub enum LintDisplay {
     },
 }
 
-/// Title for the running-lint toast during normal, edit-triggered runs.
-const RUNNING_LINT_TOAST_TITLE: &str = "Lints";
+/// Title for the running-lint toast during normal file-triggered runs.
+const NORMAL_LINT_TOAST_TITLE: &str = "Lints";
 /// Title while the startup catch-up batch runs — projects re-linted once
 /// startup finishes because their sources are newer than their last run.
 const CATCH_UP_LINT_TOAST_TITLE: &str = "Catch-up lints";
-
-/// Lifecycle of the startup catch-up lint batch. Tracked only to title the
-/// single running-lint toast: while the batch is queued or active the toast
-/// reads "Catch-up lints"; later edit-triggered runs read "Lints". `Queued`
-/// is promoted to `Active` by the first running status and back to `Idle`
-/// once the batch drains, so a status sync that finds nothing running before
-/// the batch starts cannot retitle a later edit-triggered run.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum CatchUpLints {
-    #[default]
-    Idle,
-    Queued,
-    Active,
-}
 
 /// The `Lint` subsystem. Owns the lint runtime, in-flight
 /// paths, running-toast slot, and the disk cache stat counter.
@@ -100,26 +87,26 @@ pub struct Lint {
     /// at startup; replaced by [`Self::set_runtime`] when lint
     /// config (`lint.enabled`, `lint.parallel`, `lint.cache_root`)
     /// changes. `None` when lint is disabled.
-    runtime:         Option<RuntimeHandle>,
-    /// Presentation-only state for the single sticky "N lints running" toast.
-    /// The running paths are reconciled from `ProjectList` by
-    /// `Self::toast_items_from_project_model`; this tracker must not become a
-    /// second source of truth for lint status.
-    running:         RunningTracker<AbsolutePath>,
-    /// Lifecycle of the startup catch-up batch, used to title the running
-    /// toast (see [`CatchUpLints`]).
-    catch_up:        CatchUpLints,
+    runtime:          Option<RuntimeHandle>,
+    /// Presentation-only state for the sticky normal "N lints running" toast.
+    /// This tracker is updated only from live `LintStatus` messages whose
+    /// origin is [`LintRunOrigin::Normal`].
+    running:          RunningTracker<AbsolutePath>,
+    /// Presentation-only state for the sticky startup catch-up lint toast.
+    /// Keeping this as a separate slot makes it impossible for a later normal
+    /// lint to append to the catch-up toast.
+    catch_up_running: RunningTracker<AbsolutePath>,
     /// Bytes used by the on-disk lint-log cache (`~/.cache/cargo-port/lints/`).
     /// Refreshed by `App::refresh_lint_cache_usage_from_disk`,
     /// displayed in the Settings popup.
-    pub cache_usage: CacheUsage,
+    pub cache_usage:  CacheUsage,
     /// Per-pane cursor for the Lints pane.
-    pub viewport:    Viewport,
+    pub viewport:     Viewport,
     /// Per-pane focus snapshot stamped before the render loop.
-    pub focus:       RenderFocus,
+    pub focus:        RenderFocus,
     /// Cached Lints table content built per-frame in
     /// `panes::build_lints_data`.
-    content:         Option<LintsData>,
+    content:          Option<LintsData>,
 }
 
 impl Lint {
@@ -130,7 +117,7 @@ impl Lint {
         Self {
             runtime,
             running: RunningTracker::new(),
-            catch_up: CatchUpLints::Idle,
+            catch_up_running: RunningTracker::new(),
             cache_usage: CacheUsage::default(),
             viewport: Viewport::new(),
             focus: RenderFocus::inactive(),
@@ -163,63 +150,111 @@ impl Lint {
 
     // ── running toast projection ────────────────────────────────
 
-    pub fn toast_items_from_project_model(
+    pub fn apply_lint_status(
         &mut self,
-        projects: &ProjectList,
-    ) -> (Option<ToastTaskId>, Vec<TrackedItem>) {
-        let running_paths = projects.running_lint_paths();
-        let running_set: HashSet<AbsolutePath> = running_paths.iter().cloned().collect();
-        self.running
-            .running
-            .retain(|path, _| running_set.contains(path));
-        let now = Instant::now();
-        for path in running_paths {
-            self.running.running.entry(path).or_insert(now);
+        path: AbsolutePath,
+        kind: LintStatusKind,
+        origin: LintRunOrigin,
+    ) {
+        match kind {
+            LintStatusKind::Running => {
+                self.remove_from_other_running_toast(origin, path.as_path());
+                let tracker = self.running_tracker_mut(origin);
+                tracker.running.entry(path).or_insert_with(Instant::now);
+            },
+            LintStatusKind::Passed
+            | LintStatusKind::Failed
+            | LintStatusKind::Stale
+            | LintStatusKind::NoLog => self.clear_running_path(path.as_path()),
         }
-        self.running.items_for_toast(
+    }
+
+    pub fn clear_running_path(&mut self, path: &Path) {
+        self.running.remove(path);
+        self.catch_up_running.remove(path);
+    }
+
+    pub fn toast_items_for_origin(
+        &self,
+        origin: LintRunOrigin,
+    ) -> (Option<ToastTaskId>, Vec<TrackedItem>) {
+        self.running_tracker(origin).items_for_toast(
             |p| project::home_relative_path(p.as_path()),
             integration::path_key,
         )
     }
 
-    pub const fn set_running_toast(&mut self, toast: Option<ToastTaskId>) {
-        self.running.toast = toast;
+    pub const fn running_toast_title(origin: LintRunOrigin) -> &'static str {
+        match origin {
+            LintRunOrigin::CatchUp => CATCH_UP_LINT_TOAST_TITLE,
+            LintRunOrigin::Normal => NORMAL_LINT_TOAST_TITLE,
+        }
     }
 
-    /// Mark the startup catch-up batch queued so the next running-lint toast
-    /// is titled to explain it is re-linting projects whose sources changed
-    /// since their last run. Called by `App::kick_off_startup_lints`.
-    pub const fn queue_catch_up_lints(&mut self) { self.catch_up = CatchUpLints::Queued; }
-
-    /// Advance the catch-up lifecycle from the live running set, then return
-    /// the title for the running-lint toast. `Queued` becomes `Active` once
-    /// the batch is running and `Active` returns to `Idle` once it drains, so
-    /// the catch-up title holds for the whole batch and reverts to "Lints"
-    /// for later edit-triggered runs. A new toast only takes a fresh title on
-    /// creation, so the in-flight toast keeps its title across reconciles.
-    pub const fn running_lint_toast_title(&mut self, has_running: bool) -> &'static str {
-        self.catch_up = match (self.catch_up, has_running) {
-            (CatchUpLints::Queued, true) => CatchUpLints::Active,
-            (CatchUpLints::Active, false) => CatchUpLints::Idle,
-            (state, _) => state,
-        };
-        match self.catch_up {
-            CatchUpLints::Idle => RUNNING_LINT_TOAST_TITLE,
-            CatchUpLints::Queued | CatchUpLints::Active => CATCH_UP_LINT_TOAST_TITLE,
+    pub const fn set_running_toast_for_origin(
+        &mut self,
+        origin: LintRunOrigin,
+        toast: Option<ToastTaskId>,
+    ) {
+        match origin {
+            LintRunOrigin::CatchUp => self.catch_up_running.toast = toast,
+            LintRunOrigin::Normal => self.running.toast = toast,
         }
     }
 
     #[cfg(test)]
-    pub fn running_toast_is_empty(&self) -> bool { self.running.is_empty() }
+    pub fn running_toast_is_empty(&self) -> bool {
+        self.running.is_empty() && self.catch_up_running.is_empty()
+    }
 
     #[cfg(test)]
     pub const fn running_toast_id(&self) -> Option<ToastTaskId> { self.running.toast }
 
-    pub fn running_toast_path_count(&self) -> usize { self.running.running.len() }
+    pub fn running_toast_path_count(&self) -> usize {
+        self.running.running.len() + self.catch_up_running.running.len()
+    }
 
     #[cfg(test)]
     pub fn running_toast_contains_path(&self, path: &Path) -> bool {
+        self.running.running.contains_key(path) || self.catch_up_running.running.contains_key(path)
+    }
+
+    #[cfg(test)]
+    pub fn normal_running_toast_contains_path(&self, path: &Path) -> bool {
         self.running.running.contains_key(path)
+    }
+
+    #[cfg(test)]
+    pub fn catch_up_running_toast_contains_path(&self, path: &Path) -> bool {
+        self.catch_up_running.running.contains_key(path)
+    }
+
+    const fn running_tracker(&self, origin: LintRunOrigin) -> &RunningTracker<AbsolutePath> {
+        match origin {
+            LintRunOrigin::CatchUp => &self.catch_up_running,
+            LintRunOrigin::Normal => &self.running,
+        }
+    }
+
+    const fn running_tracker_mut(
+        &mut self,
+        origin: LintRunOrigin,
+    ) -> &mut RunningTracker<AbsolutePath> {
+        match origin {
+            LintRunOrigin::CatchUp => &mut self.catch_up_running,
+            LintRunOrigin::Normal => &mut self.running,
+        }
+    }
+
+    fn remove_from_other_running_toast(&mut self, origin: LintRunOrigin, path: &Path) {
+        match origin {
+            LintRunOrigin::CatchUp => {
+                self.running.remove(path);
+            },
+            LintRunOrigin::Normal => {
+                self.catch_up_running.remove(path);
+            },
+        }
     }
 
     // ── cache usage ─────────────────────────────────────────────
@@ -362,49 +397,31 @@ mod tests {
     #[test]
     fn running_toast_round_trip() {
         let mut lint = Lint::new(None);
-        lint.set_running_toast(Some(ToastTaskId(7)));
+        lint.set_running_toast_for_origin(LintRunOrigin::Normal, Some(ToastTaskId(7)));
         assert_eq!(lint.running_toast_id(), Some(tui_pane::ToastTaskId(7)));
-        lint.set_running_toast(None);
+        lint.set_running_toast_for_origin(LintRunOrigin::Normal, None);
         assert!(lint.running_toast_id().is_none());
     }
 
     #[test]
-    fn running_lint_toast_title_tracks_catch_up_batch() {
+    fn running_lint_toasts_are_separate_by_origin() {
         let mut lint = Lint::new(None);
-        // Default and edit-triggered runs read the plain title.
-        assert_eq!(
-            lint.running_lint_toast_title(false),
-            RUNNING_LINT_TOAST_TITLE
-        );
-        assert_eq!(
-            lint.running_lint_toast_title(true),
-            RUNNING_LINT_TOAST_TITLE
-        );
+        let path = AbsolutePath::from(Path::new("/abs/a"));
 
-        // Queued but not yet running: stays catch-up, does not clear early.
-        lint.queue_catch_up_lints();
-        assert_eq!(
-            lint.running_lint_toast_title(false),
-            CATCH_UP_LINT_TOAST_TITLE
+        lint.apply_lint_status(
+            path.clone(),
+            LintStatusKind::Running,
+            LintRunOrigin::CatchUp,
         );
-        // The batch starts running, then keeps the catch-up title.
-        assert_eq!(
-            lint.running_lint_toast_title(true),
-            CATCH_UP_LINT_TOAST_TITLE
-        );
-        assert_eq!(
-            lint.running_lint_toast_title(true),
-            CATCH_UP_LINT_TOAST_TITLE
-        );
-        // Draining the batch reverts later edit-triggered runs to "Lints".
-        assert_eq!(
-            lint.running_lint_toast_title(false),
-            RUNNING_LINT_TOAST_TITLE
-        );
-        assert_eq!(
-            lint.running_lint_toast_title(true),
-            RUNNING_LINT_TOAST_TITLE
-        );
+        assert!(lint.catch_up_running_toast_contains_path(path.as_path()));
+        assert!(!lint.normal_running_toast_contains_path(path.as_path()));
+
+        lint.apply_lint_status(path.clone(), LintStatusKind::Running, LintRunOrigin::Normal);
+        assert!(!lint.catch_up_running_toast_contains_path(path.as_path()));
+        assert!(lint.normal_running_toast_contains_path(path.as_path()));
+
+        lint.apply_lint_status(path.clone(), LintStatusKind::Passed, LintRunOrigin::Normal);
+        assert!(!lint.running_toast_contains_path(path.as_path()));
     }
 
     #[test]

@@ -306,7 +306,8 @@ impl App {
         self.prune_inactive_project_state();
         self.register_existing_projects();
         let lint_registered = self.register_lint_for_root_items();
-        tracing::info!(
+        tracing::trace!(
+            target: tui_pane::PERF_LOG_TARGET,
             count = lint_registered,
             "startup_lint_runtime_registered_initial_projects"
         );

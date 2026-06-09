@@ -7,6 +7,7 @@ use tui_pane::TrackedItemKey;
 use tui_pane::format_toast_items;
 use tui_pane::toast_body_width;
 
+use crate::lint::LintRunOrigin;
 use crate::project;
 use crate::tui::app::App;
 use crate::tui::integration;
@@ -21,10 +22,14 @@ impl App {
         self.inflight.clean_mut().toast = next;
     }
     pub(super) fn sync_running_lint_toast(&mut self) {
-        let (toast_slot, items) = self.lint.toast_items_from_project_model(&self.project_list);
-        let title = self.lint.running_lint_toast_title(!items.is_empty());
+        self.sync_running_lint_toast_for_origin(LintRunOrigin::CatchUp);
+        self.sync_running_lint_toast_for_origin(LintRunOrigin::Normal);
+    }
+    fn sync_running_lint_toast_for_origin(&mut self, origin: LintRunOrigin) {
+        let (toast_slot, items) = self.lint.toast_items_for_origin(origin);
+        let title = crate::tui::state::Lint::running_toast_title(origin);
         let next = self.sync_running_toast(toast_slot, title, &items);
-        self.lint.set_running_toast(next);
+        self.lint.set_running_toast_for_origin(origin, next);
     }
     /// Keep a single "Retrieving GitHub repo details" toast in sync with the
     /// live in-flight repo fetches. The toast slot lives only in the

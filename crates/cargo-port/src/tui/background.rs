@@ -128,7 +128,8 @@ impl Background {
             abs_path: abs_path.clone(),
             repo_root,
         }));
-        tracing::info!(
+        tracing::trace!(
+            target: tui_pane::PERF_LOG_TARGET,
             elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
             path = %item.display_path(),
             has_repo_root,

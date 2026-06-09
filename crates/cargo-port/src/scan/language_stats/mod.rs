@@ -53,7 +53,8 @@ fn emit_language_stats_for_tree(tree: &DiskUsageTree, tx: &Sender<BackgroundMsg>
             entry.clone(),
             build_language_stats(entry.as_path(), &languages, &config, &mut rust_cache),
         );
-        tracing::info!(
+        tracing::trace!(
+            target: tui_pane::PERF_LOG_TARGET,
             elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
             abs_path = %tree.root_abs_path.display(),
             rows = tree.entries.len(),
@@ -93,7 +94,8 @@ fn emit_language_stats_for_tree(tree: &DiskUsageTree, tx: &Sender<BackgroundMsg>
         );
     }
 
-    tracing::info!(
+    tracing::trace!(
+        target: tui_pane::PERF_LOG_TARGET,
         elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
         abs_path = %tree.root_abs_path.display(),
         rows = tree.entries.len(),

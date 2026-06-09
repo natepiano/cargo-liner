@@ -377,30 +377,6 @@ impl ProjectList {
         })
     }
 
-    pub(super) fn running_lint_paths(&self) -> Vec<AbsolutePath> {
-        let mut paths = Vec::new();
-        for entry in self.roots.values() {
-            match &entry.item {
-                RootItem::Rust(project) => {
-                    if project_lint_is_running(project) {
-                        paths.push(project.path().clone());
-                    }
-                },
-                RootItem::Worktrees(group) => {
-                    paths.extend(group.iter_entries().filter_map(|project| {
-                        if project_lint_is_running(project) {
-                            Some(project.path().clone())
-                        } else {
-                            None
-                        }
-                    }));
-                },
-                RootItem::NonRust(_) => {},
-            }
-        }
-        paths
-    }
-
     /// Top-level entry whose hierarchy contains `target`. One-shot
     /// replacement for the per-field per-path lookups used elsewhere.
     pub(super) fn entry_containing(&self, target: &Path) -> Option<&ProjectEntry> {

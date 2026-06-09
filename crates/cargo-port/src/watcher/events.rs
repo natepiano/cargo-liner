@@ -37,7 +37,8 @@ pub(super) fn process_notify_events(
 ) {
     let notify_count = notify_events.len();
     if watch_drain.registration_completed {
-        tracing::info!(
+        tracing::trace!(
+            target: tui_pane::PERF_LOG_TARGET,
             tick,
             buffered = state.buffered_events.len(),
             notify_count,
@@ -67,7 +68,8 @@ pub(super) fn process_notify_events(
     }
     if state.initializing {
         if notify_count > 0 {
-            tracing::info!(
+            tracing::trace!(
+                target: tui_pane::PERF_LOG_TARGET,
                 tick,
                 notify_count,
                 buffered_total = state.buffered_events.len() + notify_count,
@@ -77,7 +79,12 @@ pub(super) fn process_notify_events(
         state.buffered_events.extend(notify_events);
     } else {
         if notify_count > 0 {
-            tracing::info!(tick, notify_count, "watcher_loop_processing_events");
+            tracing::trace!(
+                target: tui_pane::PERF_LOG_TARGET,
+                tick,
+                notify_count,
+                "watcher_loop_processing_events"
+            );
         }
         let dispatch = WatcherDispatchContext {
             event:             EventContext {
@@ -195,7 +202,8 @@ pub(super) fn handle_notify_event(
             && let Some(refresh_key) = refresh::git_refresh_key(entry)
         {
             matched_fast_git = true;
-            tracing::info!(
+            tracing::trace!(
+                target: tui_pane::PERF_LOG_TARGET,
                 refresh_key = %refresh_key.display(),
                 event_path = %event_path.display(),
                 "watcher_fast_git_event"
@@ -235,7 +243,8 @@ pub(super) fn handle_notify_event(
             && let Some(kind) =
                 lint::classify_cargo_metadata_event_path(entry.abs_path.as_path(), event_path)
         {
-            tracing::info!(
+            tracing::trace!(
+                target: tui_pane::PERF_LOG_TARGET,
                 workspace_root = %entry.abs_path.display(),
                 event_path = %event_path.display(),
                 ?kind,

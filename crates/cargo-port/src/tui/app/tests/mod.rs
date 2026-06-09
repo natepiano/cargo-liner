@@ -25,6 +25,7 @@ use crate::config::CargoPortConfig;
 use crate::config::NonRustInclusion;
 use crate::config::ScrollDirection;
 use crate::http::ServiceKind;
+use crate::lint::LintRunOrigin;
 use crate::lint::LintStatus;
 use crate::project;
 use crate::project::AbsolutePath;

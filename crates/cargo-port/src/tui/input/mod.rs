@@ -78,7 +78,8 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
 
     let elapsed = started.elapsed();
     if elapsed.as_millis() >= tui_pane::SLOW_INPUT_EVENT_MS {
-        tracing::info!(
+        tracing::trace!(
+            target: tui_pane::PERF_LOG_TARGET,
             elapsed_ms = tui_pane::perf_log_ms(elapsed.as_millis()),
             kind = %tui_pane::event_label(event),
             focus = pane_label(app.focused_pane_id()),

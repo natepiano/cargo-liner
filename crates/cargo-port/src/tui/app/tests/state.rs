@@ -906,6 +906,7 @@ fn lint_toast_reuses_existing_on_restart() {
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   project_path.clone(),
         status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
+        origin: LintRunOrigin::Normal,
     });
     let first_toast = app.lint.running_toast_id();
     assert!(first_toast.is_some());
@@ -913,12 +914,14 @@ fn lint_toast_reuses_existing_on_restart() {
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   project_path.clone(),
         status: LintStatus::Passed(parse_ts("2026-03-30T14:23:18-05:00")),
+        origin: LintRunOrigin::Normal,
     });
     assert_eq!(app.lint.running_toast_id(), first_toast);
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   project_path,
         status: LintStatus::Running(parse_ts("2026-03-30T14:24:18-05:00")),
+        origin: LintRunOrigin::Normal,
     });
     assert_eq!(app.lint.running_toast_id(), first_toast);
 }
@@ -930,6 +933,7 @@ fn lint_toast_prunes_entries_that_are_not_running_in_project_state() {
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   test_path("~/a"),
         status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
+        origin: LintRunOrigin::Normal,
     });
     assert!(
         app.lint
@@ -939,6 +943,7 @@ fn lint_toast_prunes_entries_that_are_not_running_in_project_state() {
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   test_path("~/a"),
         status: LintStatus::NoLog,
+        origin: LintRunOrigin::Normal,
     });
 
     assert!(app.lint.running_toast_is_empty());
@@ -950,13 +955,12 @@ fn startup_catch_up_batch_titles_running_toast_distinctly() {
     let project = make_project(Some("a"), "~/a");
     let mut app = make_app(std::slice::from_ref(&project));
 
-    // The startup kickoff queues the catch-up batch; the first running status
-    // then creates the single running-lint toast. It must read "Catch-up
-    // lints" — no separate one-shot toast and no plain "Lints" toast.
-    app.lint.queue_catch_up_lints();
+    // The runtime marks startup catch-up runs explicitly, so the first
+    // catch-up running status creates the distinct catch-up toast.
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   test_path("~/a"),
         status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
+        origin: LintRunOrigin::CatchUp,
     });
 
     let titles: Vec<String> = app
@@ -977,6 +981,52 @@ fn startup_catch_up_batch_titles_running_toast_distinctly() {
 }
 
 #[test]
+fn normal_lints_do_not_append_to_active_catch_up_lint_toast() {
+    let catch_up = make_project(Some("a"), "~/a");
+    let normal = make_project(Some("b"), "~/b");
+    let mut app = make_app(&[catch_up, normal]);
+
+    app.handle_bg_msg(BackgroundMsg::LintStatus {
+        path:   test_path("~/a"),
+        status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
+        origin: LintRunOrigin::CatchUp,
+    });
+    app.handle_bg_msg(BackgroundMsg::LintStatus {
+        path:   test_path("~/b"),
+        status: LintStatus::Running(parse_ts("2026-03-30T14:22:19-05:00")),
+        origin: LintRunOrigin::Normal,
+    });
+
+    let titles: Vec<String> = app
+        .framework
+        .toasts
+        .active_now()
+        .iter()
+        .map(|toast| toast.title().to_string())
+        .collect();
+    assert!(
+        titles.iter().any(|title| title == "Catch-up lints"),
+        "catch-up run should keep its own toast: {titles:?}"
+    );
+    assert!(
+        titles.iter().any(|title| title == "Lints"),
+        "normal run should create its own toast: {titles:?}"
+    );
+    assert!(
+        app.lint
+            .catch_up_running_toast_contains_path(test_path("~/a").as_path())
+    );
+    assert!(
+        app.lint
+            .normal_running_toast_contains_path(test_path("~/b").as_path())
+    );
+    assert!(
+        !app.lint
+            .catch_up_running_toast_contains_path(test_path("~/b").as_path())
+    );
+}
+
+#[test]
 fn startup_lint_status_does_not_overwrite_live_running_lint() {
     let project = make_project(Some("a"), "~/a");
     let project_path = project.path().clone();
@@ -987,6 +1037,7 @@ fn startup_lint_status_does_not_overwrite_live_running_lint() {
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   project_path.clone(),
         status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
+        origin: LintRunOrigin::Normal,
     });
     let first_toast = app.lint.running_toast_id();
 
@@ -1014,6 +1065,7 @@ fn lint_history_load_does_not_overwrite_live_running_lint() {
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   project_path.clone(),
         status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
+        origin: LintRunOrigin::Normal,
     });
     let first_toast = app.lint.running_toast_id();
 
@@ -1060,6 +1112,7 @@ fn live_lint_status_updates_project_model_and_detail_cache() {
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   project_path.clone(),
         status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
+        origin: LintRunOrigin::Normal,
     });
 
     assert!(
@@ -2453,6 +2506,7 @@ fn worktree_group_detail_lint_rollup_rebuilds_when_linked_worktree_finishes() {
         BackgroundMsg::LintStatus {
             path:   linked_path,
             status: LintStatus::Passed(parse_ts("2026-03-30T16:23:18-05:00")),
+            origin: LintRunOrigin::Normal,
         },
     );
     app.ensure_detail_cached();
@@ -4091,11 +4145,12 @@ fn apply_lint_config_change_fans_out_to_inflight_scan_and_selection() {
     let project_path = project.path().clone();
     let mut app = make_app(&[project]);
 
-    // Projection: seed a real project-model running lint so we can prove the
-    // orchestrator clears project lint state and reconciles the toast from it.
+    // Seed a real project-model running lint so we can prove the orchestrator
+    // clears project lint state and reconciles the toast from it.
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   project_path,
         status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
+        origin: LintRunOrigin::Normal,
     });
     assert!(!app.lint.running_toast_is_empty());
 

@@ -45,7 +45,8 @@ impl App {
             "rescan"
         };
 
-        tracing::info!(
+        tracing::trace!(
+            target: tui_pane::PERF_LOG_TARGET,
             elapsed_ms = tui_pane::perf_log_ms(self.scan.state.started_at.elapsed().as_millis()),
             kind,
             run = self.scan.state.run_count,
@@ -187,8 +188,12 @@ impl App {
             BackgroundMsg::LintHistoryLoaded { entries } => {
                 self.apply_lint_history_loaded(entries);
             },
-            BackgroundMsg::LintStatus { path, status } => {
-                self.handle_lint_status_msg(path.as_path(), status);
+            BackgroundMsg::LintStatus {
+                path,
+                status,
+                origin,
+            } => {
+                self.handle_lint_status_msg(path.as_path(), status, origin);
             },
             BackgroundMsg::LintStartupStatus { path, status } => {
                 self.handle_lint_startup_status_msg(&path, status);

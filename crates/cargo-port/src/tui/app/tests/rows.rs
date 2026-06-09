@@ -139,6 +139,7 @@ fn running_lint_renders_on_worktree_group_and_entry_rows() {
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   test_path("~/ws_feat"),
         status: LintStatus::Running(parse_ts("2026-03-30T16:22:18-05:00")),
+        origin: LintRunOrigin::Normal,
     });
 
     let rendered = rendered_root_name_cells(&mut app);

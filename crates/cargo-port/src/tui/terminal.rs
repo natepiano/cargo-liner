@@ -193,7 +193,12 @@ pub fn run() -> ExitCode {
         return ExitCode::FAILURE;
     };
     let scan_started_at = std::time::Instant::now();
-    tracing::info!(kind = "initial", run = 1, "scan_start");
+    tracing::trace!(
+        target: tui_pane::PERF_LOG_TARGET,
+        kind = "initial",
+        run = 1,
+        "scan_start"
+    );
     let scan_dirs = scan::resolve_include_dirs(&cfg.tui.include_dirs);
     let metadata_store = Arc::new(Mutex::new(WorkspaceMetadataStore::new()));
     let (background_tx, background_rx) = scan::spawn_streaming_scan(
@@ -439,7 +444,11 @@ fn process_input_frame(app: &mut App, input_rx: &Receiver<Event>) -> InputDrain 
         match input_rx.try_recv() {
             Ok(event) => {
                 count += 1;
-                tracing::info!(event = %tui_pane::event_label(&event), "input_event_received");
+                tracing::trace!(
+                    target: tui_pane::PERF_LOG_TARGET,
+                    event = %tui_pane::event_label(&event),
+                    "input_event_received"
+                );
                 input::handle_event(app, &event);
                 if app.framework.quit_requested() || app.framework.restart_requested() {
                     break;
@@ -525,7 +534,8 @@ fn log_slow_frame(app: &App, bg_stats: &PollBackgroundStats, metrics: &FrameMetr
     if metrics.frame_elapsed.as_millis() < SLOW_FRAME_MS {
         return;
     }
-    tracing::info!(
+    tracing::trace!(
+        target: tui_pane::PERF_LOG_TARGET,
         frame_ms = tui_pane::perf_log_ms(metrics.frame_elapsed.as_millis()),
         input_ms = tui_pane::perf_log_ms(metrics.input_elapsed.as_millis()),
         bg_ms = tui_pane::perf_log_ms(metrics.bg_elapsed.as_millis()),

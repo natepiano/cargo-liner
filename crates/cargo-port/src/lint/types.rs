@@ -80,6 +80,26 @@ impl LintStatus {
     }
 }
 
+/// Origin of a live lint run as reported by the runtime.
+///
+/// This is intentionally separate from [`LintStatus`]: cached/project status
+/// only needs `Running` / terminal state, while toast routing must distinguish
+/// startup catch-up work from later file-triggered work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LintRunOrigin {
+    CatchUp,
+    Normal,
+}
+
+impl LintRunOrigin {
+    pub const fn merged_with(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Normal, _) | (_, Self::Normal) => Self::Normal,
+            (Self::CatchUp, Self::CatchUp) => Self::CatchUp,
+        }
+    }
+}
+
 /// Lint status loaded from cache during startup/sync.
 ///
 /// This deliberately cannot represent `Running`: cache hydration is historical
