@@ -54,6 +54,15 @@ impl RustProject {
         }
     }
 
+    pub fn linked_primary_root(&self) -> Option<AbsolutePath> {
+        let status = self.worktree_status();
+        if status.is_linked_worktree() {
+            status.primary_root().cloned()
+        } else {
+            None
+        }
+    }
+
     pub fn root_directory_name(&self) -> RootDirectoryName {
         match self {
             Self::Workspace(ws) => ws.root_directory_name(),

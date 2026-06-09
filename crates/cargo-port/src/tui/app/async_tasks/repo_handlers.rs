@@ -543,8 +543,7 @@ impl App {
         if already_exists {
             return false;
         }
-        self.background.register_item_background_services(&item);
-        self.register_lint_project_if_eligible(&item);
+        let service_item = item.clone();
         // Insert into the hierarchy directly — under a parent workspace if
         // one exists, otherwise as a top-level peer.
         let discovered_path = item.path().to_path_buf();
@@ -559,6 +558,10 @@ impl App {
         self.project_list
             .migrate_legacy_root_expansions(&legacy_expansions);
         self.rebuild_visible_rows_now();
+        self.reload_lint_history(&discovered_path);
+        self.background
+            .register_item_background_services(&service_item);
+        self.register_lint_project_if_eligible(&service_item);
         // Signal that derived state and caches need refresh.
         // The caller batches multiple discoveries before refreshing once.
         true
@@ -590,6 +593,7 @@ impl App {
                     *project = info;
                     project.worktree_health = fresh_worktree_health;
                 }
+                transfer_lint_runs(&old, &mut item, &project_path);
                 // Crates.io version/downloads live on `RustInfo` /
                 // `VendoredPackage`, not `ProjectInfo`, and are never persisted.
                 // Re-fetching on every refresh would repeatedly call crates.io,
@@ -618,6 +622,15 @@ impl App {
             .and_then(|entry| entry.item.git_directory())
     }
 }
+
+fn transfer_lint_runs(old: &RootItem, item: &mut RootItem, path: &AbsolutePath) {
+    if let Some(source) = old.lint_at_path(path.as_path()).cloned()
+        && let Some(target) = item.lint_at_path_mut(path.as_path())
+    {
+        *target = source;
+    }
+}
+
 /// Copy crates.io version/downloads from `old` onto the freshly-scanned
 /// `item` for the node at `path`. The node is either a `RustInfo` (workspace
 /// root, member, or standalone package) or a `VendoredPackage`; both store the

@@ -105,7 +105,7 @@ impl App {
         }
         let runs = lint::read_history(project_path);
         if let Some(lr) = self.project_list.lint_at_path_mut(project_path) {
-            lr.set_runs(runs);
+            lr.set_hydrated_runs(runs);
         }
     }
     /// Spawn the lint-cache-size disk walk on the tokio blocking pool.
@@ -139,11 +139,14 @@ impl App {
         self.project_list
             .lint_runtime_root_entries()
             .into_iter()
-            .filter(|(path, _)| !self.project_list.is_deleted(path))
-            .map(|(abs_path, is_rust)| RegisterProjectRequest {
-                project_label: project::home_relative_path(&abs_path),
-                abs_path,
-                is_rust,
+            .filter(|entry| entry.is_rust && !self.project_list.is_deleted(entry.path.as_path()))
+            .map(|entry| {
+                RegisterProjectRequest::new(
+                    project::home_relative_path(&entry.path),
+                    entry.path,
+                    entry.is_rust,
+                )
+                .with_linked_primary_root(entry.linked_primary_root)
             })
             .collect()
     }
@@ -197,11 +200,19 @@ impl App {
             path = %item.display_path(),
             "lint_register"
         );
-        runtime.register_project(RegisterProjectRequest {
-            project_label: item.display_path().into_string(),
-            abs_path:      path.clone(),
-            is_rust:       true,
-        });
+        if item_is_linked_worktree(item) {
+            self.register_lint_for_root_items();
+            return;
+        }
+        let linked_primary_root = match item {
+            RootItem::Rust(project) => project.linked_primary_root(),
+            RootItem::Worktrees(group) => group.primary.linked_primary_root(),
+            RootItem::NonRust(_) => None,
+        };
+        runtime.register_project(
+            RegisterProjectRequest::new(item.display_path().into_string(), path.clone(), true)
+                .with_linked_primary_root(linked_primary_root),
+        );
     }
     pub(super) fn register_lint_for_path(&self, path: &Path) {
         if let Some(item) = self.project_list.iter().find(|i| i.path() == path) {
@@ -260,5 +271,13 @@ impl App {
             count = pending.len(),
             "startup_lints_kicked_off"
         );
+    }
+}
+
+fn item_is_linked_worktree(item: &RootItem) -> bool {
+    match item {
+        RootItem::Rust(project) => project.worktree_status().is_linked_worktree(),
+        RootItem::Worktrees(group) => group.primary.worktree_status().is_linked_worktree(),
+        RootItem::NonRust(_) => false,
     }
 }

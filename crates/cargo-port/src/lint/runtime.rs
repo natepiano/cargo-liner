@@ -46,6 +46,7 @@ use crate::config::LintConfig;
 use crate::constants::CARGO_TOML;
 use crate::constants::LINTS_HISTORY_JSONL;
 use crate::constants::LINTS_LATEST_JSON;
+use crate::project;
 use crate::project::AbsolutePath;
 use crate::scan::BackgroundMsg;
 
@@ -53,9 +54,26 @@ const STOP_POLL: Duration = Duration::from_millis(250);
 
 #[derive(Clone)]
 pub struct RegisterProjectRequest {
-    pub project_label: String,
-    pub abs_path:      AbsolutePath,
-    pub is_rust:       bool,
+    pub project_label:       String,
+    pub abs_path:            AbsolutePath,
+    pub is_rust:             bool,
+    pub linked_primary_root: Option<AbsolutePath>,
+}
+
+impl RegisterProjectRequest {
+    pub fn new(project_label: impl Into<String>, abs_path: AbsolutePath, is_rust: bool) -> Self {
+        Self {
+            project_label: project_label.into(),
+            abs_path,
+            is_rust,
+            linked_primary_root: None,
+        }
+    }
+
+    pub fn with_linked_primary_root(mut self, primary_root: Option<AbsolutePath>) -> Self {
+        self.linked_primary_root = primary_root;
+        self
+    }
 }
 
 pub fn project_is_eligible(
@@ -66,11 +84,7 @@ pub fn project_is_eligible(
 ) -> bool {
     should_watch_project(
         lint,
-        &RegisterProjectRequest {
-            project_label: project_label.to_string(),
-            abs_path: AbsolutePath::from(abs_path),
-            is_rust,
-        },
+        &RegisterProjectRequest::new(project_label, AbsolutePath::from(abs_path), is_rust),
     )
 }
 
@@ -564,20 +578,26 @@ fn should_watch_project(lint: &LintConfig, request: &RegisterProjectRequest) -> 
     if !request.is_rust || !request.abs_path.join(CARGO_TOML).is_file() {
         return false;
     }
-    if !matches_prefixes(
-        &lint.include,
-        &request.project_label,
-        &request.abs_path,
-        false,
-    ) {
+    if !request_matches_prefixes(&lint.include, request, false) {
         return false;
     }
-    !matches_prefixes(
-        &lint.exclude,
+    !request_matches_prefixes(&lint.exclude, request, false)
+}
+
+fn request_matches_prefixes(
+    prefixes: &[String],
+    request: &RegisterProjectRequest,
+    empty_means_match: bool,
+) -> bool {
+    matches_prefixes(
+        prefixes,
         &request.project_label,
         &request.abs_path,
-        false,
-    )
+        empty_means_match,
+    ) || request.linked_primary_root.as_ref().is_some_and(|root| {
+        let label = project::home_relative_path(root);
+        matches_prefixes(prefixes, &label, root, false)
+    })
 }
 
 fn matches_prefixes(
@@ -1068,11 +1088,7 @@ mod tests {
     use crate::lint::trigger::LintTriggerKind::Startup;
 
     fn request(path: &str, abs_path: &Path, is_rust: bool) -> RegisterProjectRequest {
-        RegisterProjectRequest {
-            project_label: path.to_string(),
-            abs_path: AbsolutePath::from(abs_path),
-            is_rust,
-        }
+        RegisterProjectRequest::new(path, AbsolutePath::from(abs_path), is_rust)
     }
 
     #[test]
@@ -1145,6 +1161,33 @@ mod tests {
 
         assert!(should_watch_project(&lint, &direct));
         assert!(should_watch_project(&lint, &worktree));
+    }
+
+    #[test]
+    fn include_filters_match_linked_worktree_primary_root() {
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            project_dir.path().join("Cargo.toml"),
+            "[workspace]\nmembers=[]\n",
+        )
+        .expect("write manifest");
+        let primary_root = AbsolutePath::from(project_dir.path().join("bevy_hana"));
+
+        let lint = LintConfig {
+            enabled: true,
+            include: vec!["bevy_hana".to_string()],
+            exclude: Vec::new(),
+            commands: Vec::new(),
+            ..LintConfig::default()
+        };
+        let request = RegisterProjectRequest::new(
+            "~/rust/test",
+            AbsolutePath::from(project_dir.path()),
+            true,
+        )
+        .with_linked_primary_root(Some(primary_root));
+
+        assert!(should_watch_project(&lint, &request));
     }
 
     #[test]

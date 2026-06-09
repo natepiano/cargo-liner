@@ -9,6 +9,7 @@ use notify::event::EventKind;
 use notify::event::ModifyKind;
 
 use super::*;
+use crate::config::DiscoveryLint;
 use crate::lint;
 use crate::project::FileStamp;
 use crate::project::ManifestFingerprint;
@@ -567,6 +568,69 @@ fn handle_project_discovered_registers_new_root_with_lint_runtime() {
 }
 
 #[test]
+fn handle_project_discovered_registers_arbitrary_named_worktree_with_primary_lint_filter() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let primary_dir = tmp.path().join("bevy_hana");
+    let linked_dir = tmp.path().join("test");
+    init_git_project(&primary_dir, "bevy_hana", false);
+    add_git_worktree(&primary_dir, &linked_dir, "test/bevy_hana");
+
+    let cache_dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let mut cfg = CargoPortConfig::default();
+    cfg.cache.root = cache_dir.path().to_string_lossy().to_string();
+    cfg.lint.enabled = true;
+    cfg.lint.include = vec!["bevy_hana".to_string()];
+    cfg.lint.on_discovery = DiscoveryLint::Immediate;
+    cfg.lint.commands = vec![crate::config::LintCommandConfig {
+        name:    "echo".to_string(),
+        command: "echo lint ok".to_string(),
+    }];
+    let primary_item = item_from_project_dir(&primary_dir);
+    let mut app = make_app_with_config(&[primary_item], &cfg);
+
+    assert!(app.handle_project_discovered(item_from_project_dir(&linked_dir)));
+    let quiet_deadline = std::time::Instant::now() + std::time::Duration::from_millis(150);
+    while std::time::Instant::now() < quiet_deadline {
+        app.poll_background();
+        assert!(matches!(
+            crate::tui::state::Lint::status_for_path(&app.project_list, &linked_dir),
+            LintStatus::NoLog
+        ));
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    let trigger = lint::classify_event_path(
+        &linked_dir,
+        EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+        &linked_dir.join("src").join("lib.rs"),
+    )
+    .unwrap_or_else(|| std::process::abort());
+    app.lint
+        .runtime()
+        .unwrap_or_else(|| std::process::abort())
+        .lint_trigger(trigger);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut passed = false;
+    while std::time::Instant::now() < deadline {
+        app.poll_background();
+        if matches!(
+            crate::tui::state::Lint::status_for_path(&app.project_list, &linked_dir),
+            LintStatus::Passed(_)
+        ) {
+            passed = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    assert!(
+        passed,
+        "linked worktree should be eligible through the primary checkout lint filter"
+    );
+}
+
+#[test]
 fn handle_project_discovered_creates_worktree_group_from_single_primary() {
     for kind in [WorktreeProjectKind::Package, WorktreeProjectKind::Workspace] {
         expect_synthetic_discovery_creates_group(kind);
@@ -837,6 +901,46 @@ fn refreshed_worktree_metadata_appends_into_existing_group() {
     for kind in [WorktreeProjectKind::Workspace, WorktreeProjectKind::Package] {
         expect_refresh_appends_stale_discovery_into_existing_group(kind);
     }
+}
+
+#[test]
+fn refreshed_linked_worktree_preserves_lint_status() {
+    let primary_path = "~/ws";
+    let linked_path = "~/ws_feat";
+    let root = make_package_worktrees_item(
+        make_package_raw_with_primary(Some("ws"), primary_path, None, Some(primary_path)),
+        vec![make_package_raw_with_primary(
+            Some("ws"),
+            linked_path,
+            Some("ws_feat"),
+            Some(primary_path),
+        )],
+    );
+    let linked_abs = test_path(linked_path);
+    let mut app = make_app(&[root]);
+    app.config.current_mut().lint.enabled = true;
+
+    app.handle_bg_msg(BackgroundMsg::LintStatus {
+        path:   linked_abs,
+        status: LintStatus::Running(parse_ts("2026-03-30T16:22:18-05:00")),
+        origin: LintRunOrigin::Normal,
+    });
+
+    let refreshed = RootItem::Rust(RustProject::Package(make_package_raw_with_primary(
+        Some("ws"),
+        linked_path,
+        Some("ws_feat"),
+        Some(primary_path),
+    )));
+    assert!(app.handle_bg_msg(BackgroundMsg::ProjectRefreshed { item: refreshed }));
+
+    let RootItem::Worktrees(group) = &app.project_list[0].item else {
+        panic!("expected worktree group");
+    };
+    assert!(matches!(
+        group.lint_status_for_worktree(1),
+        LintStatus::Running(_)
+    ));
 }
 
 #[test]

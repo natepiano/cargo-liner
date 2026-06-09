@@ -78,6 +78,12 @@ pub(super) enum SyncResolution {
     Resolved(Option<(usize, usize)>),
 }
 
+pub(super) struct LintRuntimeRootEntry {
+    pub path:                AbsolutePath,
+    pub is_rust:             bool,
+    pub linked_primary_root: Option<AbsolutePath>,
+}
+
 fn project_lint_is_running(project: &RustProject) -> bool {
     project.visibility() == Visibility::Visible
         && matches!(
@@ -2104,21 +2110,34 @@ impl ProjectList {
         }
     }
 
-    /// Collect root project paths and metadata for the lint runtime.
-    pub(super) fn lint_runtime_root_entries(&self) -> Vec<(AbsolutePath, bool)> {
+    /// Collect root project metadata for the lint runtime.
+    pub(super) fn lint_runtime_root_entries(&self) -> Vec<LintRuntimeRootEntry> {
         let mut seen = HashSet::new();
         let mut entries = Vec::new();
         for entry in self {
-            let items: Vec<(&AbsolutePath, bool)> = match &entry.item {
-                RootItem::Worktrees(group) => {
-                    group.iter_entries().map(|p| (p.path(), true)).collect()
-                },
-                _ => vec![(entry.item.path(), entry.item.is_rust())],
+            let items: Vec<LintRuntimeRootEntry> = match &entry.item {
+                RootItem::Worktrees(group) => group
+                    .iter_entries()
+                    .map(|project| LintRuntimeRootEntry {
+                        path:                project.path().clone(),
+                        is_rust:             true,
+                        linked_primary_root: project.linked_primary_root(),
+                    })
+                    .collect(),
+                RootItem::Rust(project) => vec![LintRuntimeRootEntry {
+                    path:                project.path().clone(),
+                    is_rust:             true,
+                    linked_primary_root: project.linked_primary_root(),
+                }],
+                RootItem::NonRust(_) => vec![LintRuntimeRootEntry {
+                    path:                entry.item.path().clone(),
+                    is_rust:             false,
+                    linked_primary_root: None,
+                }],
             };
-            for (path, is_rust) in items {
-                let owned = path.clone();
-                if seen.insert(owned.clone()) {
-                    entries.push((owned, is_rust));
+            for item in items {
+                if seen.insert(item.path.clone()) {
+                    entries.push(item);
                 }
             }
         }

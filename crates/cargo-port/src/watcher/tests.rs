@@ -1853,11 +1853,8 @@ fn assert_source_event_schedules_lint_run(
     let runtime = lint::spawn(&cfg, background_tx.clone())
         .handle
         .expect("runtime handle");
-    let request = RegisterProjectRequest {
-        project_label: "~/rust/demo".to_string(),
-        abs_path:      AbsolutePath::from(project_dir.path()),
-        is_rust:       true,
-    };
+    let request =
+        RegisterProjectRequest::new("~/rust/demo", AbsolutePath::from(project_dir.path()), true);
     runtime.sync_projects(vec![request.clone()]);
     runtime.register_project(request);
 
