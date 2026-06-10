@@ -12,6 +12,7 @@ use syn::FieldValue;
 use syn::FnArg;
 use syn::ImplItemFn;
 use syn::ItemFn;
+use syn::ItemMod;
 use syn::ItemUse;
 use syn::Local;
 use syn::Macro;
@@ -23,16 +24,21 @@ use syn::visit::Visit;
 use super::support;
 
 pub(super) struct BareReference {
-    pub(super) name:       String,
-    pub(super) byte_start: usize,
-    pub(super) byte_end:   usize,
+    pub(super) name:             String,
+    pub(super) byte_start:       usize,
+    pub(super) byte_end:         usize,
+    /// Inline `mod` nesting at the reference site. Each level pushes `super`
+    /// one module further away, so a parent-module rewrite needs
+    /// `inline_mod_depth + 1` `super` segments to reach the file's parent.
+    pub(super) inline_mod_depth: usize,
 }
 
 pub(super) struct ReferenceCollector<'a> {
-    pub(super) offsets:        &'a [usize],
-    pub(super) imported_names: &'a BTreeSet<String>,
-    pub(super) references:     Vec<BareReference>,
-    pub(super) scopes:         Vec<BTreeSet<String>>,
+    pub(super) offsets:          &'a [usize],
+    pub(super) imported_names:   &'a BTreeSet<String>,
+    pub(super) references:       Vec<BareReference>,
+    pub(super) scopes:           Vec<BTreeSet<String>>,
+    pub(super) inline_mod_depth: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +74,7 @@ impl<'a> ReferenceCollector<'a> {
             imported_names,
             references: Vec::new(),
             scopes: vec![BTreeSet::new()],
+            inline_mod_depth: 0,
         }
     }
 
@@ -84,6 +91,16 @@ impl<'a> ReferenceCollector<'a> {
 
 impl Visit<'_> for ReferenceCollector<'_> {
     fn visit_item_use(&mut self, _: &ItemUse) {}
+
+    fn visit_item_mod(&mut self, node: &ItemMod) {
+        if node.content.is_some() {
+            self.inline_mod_depth += 1;
+            visit::visit_item_mod(self, node);
+            self.inline_mod_depth -= 1;
+        } else {
+            visit::visit_item_mod(self, node);
+        }
+    }
 
     fn visit_block(&mut self, block: &Block) {
         self.enter_scope();
@@ -215,6 +232,7 @@ impl Visit<'_> for ReferenceCollector<'_> {
                             name,
                             byte_start: start,
                             byte_end: end,
+                            inline_mod_depth: self.inline_mod_depth,
                         });
                     }
                 }
@@ -228,6 +246,7 @@ impl Visit<'_> for ReferenceCollector<'_> {
             &node.tokens,
             self.offsets,
             self.imported_names,
+            self.inline_mod_depth,
             &mut self.references,
         );
         visit::visit_macro(self, node);
@@ -289,6 +308,7 @@ pub(super) fn collect_bare_refs_from_tokens(
     tokens: &TokenStream,
     offsets: &[usize],
     imported_names: &BTreeSet<String>,
+    inline_mod_depth: usize,
     references: &mut Vec<BareReference>,
 ) {
     let mut previous_token = PreviousToken::Other;
@@ -304,6 +324,7 @@ pub(super) fn collect_bare_refs_from_tokens(
                         name,
                         byte_start: start,
                         byte_end: end,
+                        inline_mod_depth,
                     });
                 }
                 previous_token = PreviousToken::Other;
@@ -316,7 +337,13 @@ pub(super) fn collect_bare_refs_from_tokens(
                 }
             },
             TokenTree::Group(ref group) => {
-                collect_bare_refs_from_tokens(&group.stream(), offsets, imported_names, references);
+                collect_bare_refs_from_tokens(
+                    &group.stream(),
+                    offsets,
+                    imported_names,
+                    inline_mod_depth,
+                    references,
+                );
                 previous_token = previous_token.after_group();
             },
             TokenTree::Literal(_) => {
@@ -348,7 +375,7 @@ mod tests {
         names.insert("do_thing".to_string());
         let tokens: TokenStream = src.parse().expect("parse tokens");
         let mut refs: Vec<BareReference> = Vec::new();
-        collect_bare_refs_from_tokens(&tokens, &offsets, &names, &mut refs);
+        collect_bare_refs_from_tokens(&tokens, &offsets, &names, 0, &mut refs);
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].name, "do_thing");
         assert_eq!(&src[refs[0].byte_start..refs[0].byte_end], "do_thing");
@@ -362,7 +389,7 @@ mod tests {
         names.insert("do_thing".to_string());
         let tokens: TokenStream = src.parse().expect("parse tokens");
         let mut refs: Vec<BareReference> = Vec::new();
-        collect_bare_refs_from_tokens(&tokens, &offsets, &names, &mut refs);
+        collect_bare_refs_from_tokens(&tokens, &offsets, &names, 0, &mut refs);
         assert!(refs.is_empty(), "qualified path should not match");
     }
 
@@ -374,7 +401,7 @@ mod tests {
         names.insert("do_thing".to_string());
         let tokens: TokenStream = src.parse().expect("parse tokens");
         let mut refs: Vec<BareReference> = Vec::new();
-        collect_bare_refs_from_tokens(&tokens, &offsets, &names, &mut refs);
+        collect_bare_refs_from_tokens(&tokens, &offsets, &names, 0, &mut refs);
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].name, "do_thing");
     }

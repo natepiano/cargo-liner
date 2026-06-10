@@ -1914,6 +1914,84 @@ fn second() -> i32 { do_thing() + 1 }
     );
 }
 
+/// A parent-module function import referenced from inside an inline
+/// `#[cfg(test)] mod tests`. There `super` is the file's own module, not the
+/// file's parent, so the rewrite needs `super::super::fn(...)`. A single
+/// `super::` made the fixed code fail to compile on the lib test target
+/// (E0425) and mend rolled everything back.
+#[test]
+fn parent_module_reference_inside_inline_test_mod() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "parent_test_mod_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
+    fs::write(temp.path().join("src/lib.rs"), "mod parent;\n").expect("write lib");
+    fs::write(
+        temp.path().join("src/parent.rs"),
+        "mod source;\npub(crate) use source::do_thing;\nmod child;\n",
+    )
+    .expect("write parent mod");
+    fs::write(
+        temp.path().join("src/parent/source.rs"),
+        "pub fn do_thing() -> i32 { 42 }\n",
+    )
+    .expect("write source");
+    fs::write(
+        temp.path().join("src/parent/child.rs"),
+        r#"use crate::parent::do_thing;
+
+pub(super) fn example() -> i32 { do_thing() }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn calls_through_glob() {
+        assert_eq!(do_thing(), example());
+    }
+}
+"#,
+    )
+    .expect("write child");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let child =
+        fs::read_to_string(temp.path().join("src/parent/child.rs")).expect("read fixed file");
+    assert!(
+        !child.contains("use crate::parent::do_thing"),
+        "function-import line should be deleted, got:\n{child}"
+    );
+    assert!(
+        child.contains("fn example() -> i32 { super::do_thing() }"),
+        "file-level reference should become `super::do_thing()`, got:\n{child}"
+    );
+    assert!(
+        child.contains("super::super::do_thing()"),
+        "reference inside `mod tests` should become `super::super::do_thing()`, got:\n{child}"
+    );
+}
+
 /// Two separate parent-module function imports in the same file. Both `use`
 /// lines must be deleted and every reference rewritten to `super::fn(...)`.
 #[test]

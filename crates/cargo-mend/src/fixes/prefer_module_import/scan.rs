@@ -427,16 +427,19 @@ fn build_reference_fixes(
                     bare_name: function.module_name.clone(),
                     full_path: function.absolute_module.join("::"),
                 });
-            let prefix = if import_target == ImportTarget::ParentModule {
-                "super"
+            let replacement = if import_target == ImportTarget::ParentModule {
+                // Inside an inline `mod` (e.g. `#[cfg(test)] mod tests`) the
+                // file's parent is one `super` further away per nesting level.
+                let supers = "super::".repeat(reference.inline_mod_depth + 1);
+                format!("{supers}{}", reference.name)
             } else {
-                module_name
+                format!("{module_name}::{}", reference.name)
             };
             fixes.push(UseFix {
-                path:         file_context.path.to_path_buf(),
-                start:        reference.byte_start,
-                end:          reference.byte_end,
-                replacement:  format!("{prefix}::{}", reference.name),
+                path: file_context.path.to_path_buf(),
+                start: reference.byte_start,
+                end: reference.byte_end,
+                replacement,
                 import_group: group,
             });
         }
