@@ -1484,8 +1484,8 @@ pub fn lower<t: Bucket>(_b: &t) -> Option<t::Item> {
     None
 }
 
-// Generic on an impl block flows down into method bodies via the impl's
-// generic scope; the method's own signature can add additional generics.
+// `syn::Generics::params` on an impl block remains in scope while visiting
+// `ImplItemFn` bodies; the method's own signature can add generics.
 pub struct Wrap<T>(pub T);
 impl<T: Bucket> Wrap<T> {
     pub fn nested<R: Sink>(_r: R) -> Option<(T::Item, R::Ok, R::Error)> {
@@ -1699,9 +1699,9 @@ fn main() {
     );
 }
 
-/// External-crate paths in argument or return position
-/// (`fn render(&mut self, frame: &mut ratatui::Frame<'_>)`) should be hoisted
-/// to a `use` import the same way intra-crate paths are.
+/// `InlinePathScan` rewrites external-crate paths in argument or return
+/// position (`fn render(&mut self, frame: &mut ratatui::Frame<'_>)`) to a
+/// top-level `use ratatui::Frame;` import the same way intra-crate paths are.
 #[test]
 fn external_crate_path_in_argument_is_rewritten() {
     let temp = tempdir().expect("create temp fixture dir");

@@ -18,7 +18,6 @@ use crate::compiler::CARGO_FLAG_EXCLUDE;
 use crate::compiler::CARGO_FLAG_MANIFEST_PATH;
 use crate::compiler::CARGO_FLAG_PACKAGE;
 use crate::compiler::CARGO_FLAG_WORKSPACE;
-use crate::compiler::CARGO_MANIFEST_FILE;
 use crate::config::CargoCheckCli;
 use crate::config::WorkspaceSelection;
 
@@ -106,7 +105,7 @@ pub(crate) fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> 
         .parent()
         .context("manifest path had no parent directory")?
         .to_path_buf();
-    let workspace_manifest = workspace_root.join(CARGO_MANIFEST_FILE);
+    let workspace_manifest = workspace_root.join("Cargo.toml");
     let manifest_is_workspace_root = manifest_path == workspace_manifest;
     let manifest_matches_package = metadata
         .packages
@@ -259,12 +258,9 @@ fn cargo_metadata_for(manifest_path: &Path) -> Result<Metadata> {
 
 fn normalize_explicit_manifest_path(path: &Path) -> Result<PathBuf> {
     if path.is_dir() {
-        let manifest_path = path.join(CARGO_MANIFEST_FILE);
+        let manifest_path = path.join("Cargo.toml");
         if !manifest_path.is_file() {
-            bail!(
-                "directory {} does not contain {CARGO_MANIFEST_FILE}",
-                path.display()
-            );
+            bail!("directory {} does not contain Cargo.toml", path.display());
         }
 
         return manifest_path
@@ -278,7 +274,7 @@ fn normalize_explicit_manifest_path(path: &Path) -> Result<PathBuf> {
 
 fn find_nearest_manifest(start: &Path) -> Result<PathBuf> {
     for dir in start.ancestors() {
-        let candidate = dir.join(CARGO_MANIFEST_FILE);
+        let candidate = dir.join("Cargo.toml");
         if candidate.is_file() {
             return candidate
                 .canonicalize()
@@ -286,7 +282,7 @@ fn find_nearest_manifest(start: &Path) -> Result<PathBuf> {
         }
     }
 
-    bail!("could not find {CARGO_MANIFEST_FILE} in current directory or any parent")
+    bail!("could not find Cargo.toml in current directory or any parent")
 }
 
 #[cfg(test)]
@@ -311,15 +307,12 @@ mod tests {
     use crate::compiler::CARGO_FLAG_MANIFEST_PATH;
     use crate::compiler::CARGO_FLAG_PACKAGE;
     use crate::compiler::CARGO_FLAG_WORKSPACE;
-    use crate::compiler::CARGO_MANIFEST_FILE;
     use crate::config::CargoCheckCli;
     use crate::config::TargetSelection;
     use crate::config::WorkspaceSelection;
     use crate::selection::CARGO_TARGET_KIND_LIB;
 
-    fn workspace_manifest_path() -> PathBuf {
-        PathBuf::from("/workspace").join(CARGO_MANIFEST_FILE)
-    }
+    fn workspace_manifest_path() -> PathBuf { PathBuf::from("/workspace").join("Cargo.toml") }
 
     fn workspace_manifest_arg() -> String {
         workspace_manifest_path().to_string_lossy().into_owned()
@@ -336,7 +329,7 @@ mod tests {
             package_roots: vec![PathBuf::from("/workspace/member")],
             packages: vec![PackageMetadata {
                 id:            String::from("path+file:///workspace/member#member@0.1.0"),
-                manifest_path: PathBuf::from("/workspace/member").join(CARGO_MANIFEST_FILE),
+                manifest_path: PathBuf::from("/workspace/member").join("Cargo.toml"),
                 root:          PathBuf::from("/workspace/member"),
                 targets:       vec![TargetMetadata {
                     kind:              vec![String::from(CARGO_TARGET_KIND_LIB)],
@@ -502,19 +495,19 @@ mod tests {
         fs::create_dir_all(temp.path().join("member/src"))
             .unwrap_or_else(|error| panic!("create member src dir: {error}"));
         fs::write(
-            temp.path().join(CARGO_MANIFEST_FILE),
+            temp.path().join("Cargo.toml"),
             "[workspace]\nmembers = [\"member\"]\nresolver = \"3\"\n",
         )
         .unwrap_or_else(|error| panic!("write workspace manifest: {error}"));
         fs::write(
-            temp.path().join("member").join(CARGO_MANIFEST_FILE),
+            temp.path().join("member").join("Cargo.toml"),
             "[package]\nname = \"member_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
         )
         .unwrap_or_else(|error| panic!("write member manifest: {error}"));
         fs::write(temp.path().join("member/src/main.rs"), "fn main() {}\n")
             .unwrap_or_else(|error| panic!("write member main: {error}"));
 
-        let selection = resolve_cargo_selection(Some(&temp.path().join(CARGO_MANIFEST_FILE)))
+        let selection = resolve_cargo_selection(Some(&temp.path().join("Cargo.toml")))
             .unwrap_or_else(|error| panic!("resolve workspace selection: {error}"));
 
         assert_eq!(selection.scope, SelectionScope::Workspace);
@@ -533,7 +526,7 @@ mod tests {
         fs::create_dir_all(temp.path().join("src"))
             .unwrap_or_else(|error| panic!("create src dir: {error}"));
         fs::write(
-            temp.path().join(CARGO_MANIFEST_FILE),
+            temp.path().join("Cargo.toml"),
             "[package]\nname = \"dir_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
         )
         .unwrap_or_else(|error| panic!("write manifest: {error}"));
@@ -545,7 +538,7 @@ mod tests {
 
         assert_eq!(
             selection.manifest_path,
-            fs::canonicalize(temp.path().join(CARGO_MANIFEST_FILE))
+            fs::canonicalize(temp.path().join("Cargo.toml"))
                 .unwrap_or_else(|error| panic!("canonicalize manifest: {error}"))
         );
         assert_eq!(selection.scope, SelectionScope::SinglePackage);

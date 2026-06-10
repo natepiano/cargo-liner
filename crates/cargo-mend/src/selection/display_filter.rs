@@ -176,7 +176,6 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
-    use crate::compiler::CARGO_MANIFEST_FILE;
     use crate::config::TargetSelection;
     use crate::selection::CARGO_TARGET_KIND_BIN;
     use crate::selection::CARGO_TARGET_KIND_EXAMPLE;
@@ -202,7 +201,7 @@ mod tests {
     fn package_with_lib_and_example() -> PackageMetadata {
         PackageMetadata {
             id:            "pkg".to_string(),
-            manifest_path: PathBuf::from("/proj").join(CARGO_MANIFEST_FILE),
+            manifest_path: PathBuf::from("/proj").join("Cargo.toml"),
             root:          PathBuf::from("/proj"),
             targets:       vec![
                 target(CARGO_TARGET_KIND_LIB, "pkg", "/proj/src/lib.rs"),
@@ -249,7 +248,7 @@ mod tests {
     fn lib_flag_excludes_src_bin_subdirectory() {
         let pkg = PackageMetadata {
             id:            "pkg".to_string(),
-            manifest_path: PathBuf::from("/proj").join(CARGO_MANIFEST_FILE),
+            manifest_path: PathBuf::from("/proj").join("Cargo.toml"),
             root:          PathBuf::from("/proj"),
             targets:       vec![
                 target(CARGO_TARGET_KIND_LIB, "pkg", "/proj/src/lib.rs"),

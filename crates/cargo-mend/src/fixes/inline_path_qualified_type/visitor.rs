@@ -83,11 +83,10 @@ impl InlinePathVisitor {
         let first = &segments[0];
         let is_intra_crate = first == "crate" || first == "super";
 
-        // For intra-crate paths, require at least 3 segments — `crate::Foo` /
-        // `super::Foo` are already short enough that hoisting them to a `use`
-        // is churn. For external-crate paths (`ratatui::Frame`,
-        // `std::collections::BTreeMap`), 2 segments is the minimum and worth
-        // hoisting.
+        // For intra-crate paths, require at least 3 segments: `crate::Foo` and
+        // `super::Foo` are already short, so adding a `use` would not shorten
+        // the call site. For external-crate paths (`ratatui::Frame`,
+        // `std::collections::BTreeMap`), 2 segments is the minimum rewrite.
         if is_intra_crate && segments.len() < 3 {
             return;
         }

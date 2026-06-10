@@ -46,9 +46,6 @@ use crate::reporting::Report;
 use crate::selection::CargoCheckPlan;
 use crate::selection::Selection;
 
-// cargo manifest filename
-pub(crate) const CARGO_MANIFEST_FILE: &str = "Cargo.toml";
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BuildOutputMode {
     Full,

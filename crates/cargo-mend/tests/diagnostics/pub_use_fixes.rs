@@ -1241,8 +1241,9 @@ fn fix_pub_use_self_heals_unused_imports_left_behind() {
 
     // After `--fix-pub-use` rewrites a re-export, sibling files that imported
     // through the now-defunct facade can be left with `unused import`
-    // warnings. The orchestrator must run `cargo fix` automatically so the
-    // tree is clean in a single invocation.
+    // warnings. The orchestrator must run `cargo fix` automatically so
+    // `CompilerWarningFacts::UnusedImportWarnings` and every fixable category
+    // are empty in a single invocation.
     let temp = tempdir().expect("create temp fixture dir");
 
     fs::write(
@@ -1361,8 +1362,8 @@ edition = "2024"
         String::from_utf8_lossy(&output.stderr)
     );
 
-    // After convergence, a fresh read-only scan must report a clean tree —
-    // no warnings, no errors, no fixables in any category.
+    // After convergence, a fresh read-only scan must report zero warnings,
+    // zero errors, and zero fixables in every JSON report category.
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert_eq!(
         report.summary.errors, 0,

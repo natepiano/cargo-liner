@@ -104,8 +104,9 @@ fn check_field(
     if !visibility_strictly_wider(ctx.tcx, field_declared, type_declared) {
         return Ok(());
     }
-    // Re-export refinement: if the type is `pub use`d to a wider scope, the
-    // wider field annotation is honest, not dead.
+    // Re-export refinement: if the type is reachable through a `pub use`, the
+    // field annotation matches the type's effective visibility and should not
+    // be flagged as unused.
     let type_effective = effective_type_visibility(ctx, type_def_id);
     if type_effective.is_at_least(field_declared, ctx.tcx) {
         return Ok(());

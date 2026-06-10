@@ -9,7 +9,6 @@ mod source_cache;
 mod visibility;
 
 pub(crate) use build::BuildOutputMode;
-pub(crate) use build::CARGO_MANIFEST_FILE;
 pub(crate) use build::SelectionResult;
 pub(crate) use build::run_cargo_fix;
 pub(crate) use build::run_selection;
