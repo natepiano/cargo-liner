@@ -79,6 +79,14 @@ pub(crate) const SERVICE_RETRY_SECS: u64 = 1;
 /// flapping the UI; a real outage surfaces after this delay.
 pub(crate) const SERVICE_UNAVAILABLE_GRACE: Duration = Duration::from_secs(3);
 
+// ── Time constants ───────────────────────────────────────────────────
+
+pub(crate) const MINUTES_PER_DAY: u64 = 1_440;
+pub(crate) const MINUTES_PER_HOUR: u64 = 60;
+pub(crate) const SECONDS_PER_DAY: u64 = 86_400;
+pub(crate) const SECONDS_PER_HOUR: u64 = 3_600;
+pub(crate) const SECONDS_PER_MINUTE: u64 = 60;
+
 // ── Watcher constants ─────────────────────────────────────────────────
 
 /// Wait for build/clean activity to settle before recalculating.
@@ -112,3 +120,4 @@ pub(crate) const DEFAULT_CLIPPY_LINT_COMMAND: &str = "cargo clippy --workspace -
                                                       --all-features --manifest-path \
                                                       \"$MANIFEST_PATH\" -- -D warnings";
 pub(crate) const KEYMAP_FILE: &str = "keymap.toml";
+pub(crate) const MIN_CPU_POLL_MS: u64 = 250;

@@ -22,10 +22,10 @@ pub(super) fn open_sccache_stats_overlay(app: &mut App) {
         Config::NotConfigured => app.overlays.sccache_pane.show_not_configured(),
         Config::Configured { source } => {
             let request_id = app.overlays.sccache_pane.start_loading(source);
-            let tx = app.background.background_sender();
+            let sender = app.background.background_sender();
             std::thread::spawn(move || {
                 let result = sccache::read_stats();
-                let _ = tx.send(BackgroundMsg::SccacheStats { request_id, result });
+                let _ = sender.send(BackgroundMsg::SccacheStats { request_id, result });
             });
         },
     }

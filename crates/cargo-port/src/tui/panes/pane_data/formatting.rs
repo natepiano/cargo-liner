@@ -2,7 +2,12 @@ use std::process::Command;
 use std::sync::OnceLock;
 
 use crate::constants::IN_SYNC;
+use crate::constants::MINUTES_PER_DAY;
+use crate::constants::MINUTES_PER_HOUR;
 use crate::constants::NO_REMOTE_SYNC;
+use crate::constants::SECONDS_PER_DAY;
+use crate::constants::SECONDS_PER_HOUR;
+use crate::constants::SECONDS_PER_MINUTE;
 use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
 use crate::http::RateLimitQuota;
@@ -22,7 +27,10 @@ fn local_utc_offset_secs() -> i64 {
                     let sign: i64 = if value.starts_with('-') { -1 } else { 1 };
                     let hours: i64 = value[1..3].parse().ok()?;
                     let mins: i64 = value[3..5].parse().ok()?;
-                    Some(sign * (hours * 3600 + mins * 60))
+                    Some(
+                        sign * (hours * SECONDS_PER_HOUR.cast_signed()
+                            + mins * SECONDS_PER_MINUTE.cast_signed()),
+                    )
                 } else {
                     None
                 }
@@ -107,14 +115,17 @@ pub fn format_time(iso: &str) -> String {
         local_utc_offset_secs()
     };
 
-    let total_secs = hour * 3600 + minute * 60 + second + offset;
-    let mut adj = total_secs % (24 * 3600);
+    let seconds_per_day = SECONDS_PER_DAY.cast_signed();
+    let seconds_per_hour = SECONDS_PER_HOUR.cast_signed();
+    let seconds_per_minute = SECONDS_PER_MINUTE.cast_signed();
+    let total_secs = hour * seconds_per_hour + minute * seconds_per_minute + second + offset;
+    let mut adj = total_secs % seconds_per_day;
     if adj < 0 {
-        adj += 24 * 3600;
+        adj += seconds_per_day;
     }
-    let h = adj / 3600;
-    let m = (adj % 3600) / 60;
-    let s = adj % 60;
+    let h = adj / seconds_per_hour;
+    let m = (adj % seconds_per_hour) / seconds_per_minute;
+    let s = adj % seconds_per_minute;
     format!("{h:02}:{m:02}:{s:02}")
 }
 
@@ -124,8 +135,8 @@ pub fn format_duration(duration_ms: Option<u64>) -> String {
         return "—".to_string();
     };
     let total_secs = ms / 1000;
-    let minutes = total_secs / 60;
-    let seconds = total_secs % 60;
+    let minutes = total_secs / SECONDS_PER_MINUTE;
+    let seconds = total_secs % SECONDS_PER_MINUTE;
     if minutes > 0 {
         format!("{minutes}m {seconds:02}s")
     } else {
@@ -151,13 +162,17 @@ pub fn format_timestamp(iso: &str) -> String {
                     time_parts[1].parse::<i64>(),
                 )
             {
-                let total_mins = hour * 60 + minute + utc_offset_secs / 60;
+                let seconds_per_minute = SECONDS_PER_MINUTE.cast_signed();
+                let minutes_per_day = MINUTES_PER_DAY.cast_signed();
+                let minutes_per_hour = MINUTES_PER_HOUR.cast_signed();
+                let total_mins =
+                    hour * minutes_per_hour + minute + utc_offset_secs / seconds_per_minute;
                 let mut day = day;
                 let mut month = month;
                 let mut year = y;
-                let mut adj_mins = total_mins % (24 * 60);
+                let mut adj_mins = total_mins % minutes_per_day;
                 if adj_mins < 0 {
-                    adj_mins += 24 * 60;
+                    adj_mins += minutes_per_day;
                     day -= 1;
                     if day < 1 {
                         month -= 1;
@@ -167,8 +182,8 @@ pub fn format_timestamp(iso: &str) -> String {
                         }
                         day = days_in_month(year, month);
                     }
-                } else if adj_mins >= 24 * 60 {
-                    adj_mins -= 24 * 60;
+                } else if adj_mins >= minutes_per_day {
+                    adj_mins -= minutes_per_day;
                     day += 1;
                     if day > days_in_month(year, month) {
                         day = 1;
@@ -179,8 +194,8 @@ pub fn format_timestamp(iso: &str) -> String {
                         }
                     }
                 }
-                let local_h = adj_mins / 60;
-                let local_m = adj_mins % 60;
+                let local_h = adj_mins / minutes_per_hour;
+                let local_m = adj_mins % minutes_per_hour;
                 return format!("{year:04}-{month:02}-{day:02} {local_h:02}:{local_m:02}");
             }
             let short_time = if time.len() >= 5 { &time[..5] } else { time };

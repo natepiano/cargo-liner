@@ -71,7 +71,7 @@ impl CargoMetadataError {
 #[derive(Clone)]
 pub(super) struct StreamingScanContext {
     pub(super) client:         HttpClient,
-    pub(super) tx:             Sender<BackgroundMsg>,
+    pub(super) sender:         Sender<BackgroundMsg>,
     pub(super) disk_limit:     Arc<Semaphore>,
     pub(super) metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
     pub(super) metadata_limit: Arc<Semaphore>,
@@ -97,14 +97,14 @@ pub(crate) fn spawn_streaming_scan(
     client: HttpClient,
     metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
 ) -> (Sender<BackgroundMsg>, Receiver<BackgroundMsg>) {
-    let (tx, rx) = channel::unbounded();
+    let (sender, receiver) = channel::unbounded();
     let inline_dirs = inline_dirs.to_vec();
 
-    let scan_tx = tx.clone();
+    let scan_sender = sender.clone();
     thread::spawn(move || {
         let scan_context = StreamingScanContext {
             client,
-            tx: scan_tx.clone(),
+            sender: scan_sender.clone(),
             disk_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_DISK_CONCURRENCY)),
             metadata_store,
             metadata_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_METADATA_CONCURRENCY)),
@@ -135,7 +135,7 @@ pub(crate) fn spawn_streaming_scan(
         );
 
         let workspace_roots = collect_cargo_metadata_roots(&projects);
-        let _ = scan_tx.send(BackgroundMsg::ScanResult {
+        let _ = scan_sender.send(BackgroundMsg::ScanResult {
             projects,
             disk_entries: phase1.disk_entries.clone(),
         });
@@ -145,7 +145,7 @@ pub(crate) fn spawn_streaming_scan(
         spawn_cargo_metadata_tree(&scan_context, workspace_roots);
     });
 
-    (tx, rx)
+    (sender, receiver)
 }
 
 /// Collect distinct workspace roots that warrant a `cargo metadata`
@@ -181,7 +181,7 @@ fn spawn_cargo_metadata_tree(scan_context: &StreamingScanContext, roots: Vec<Abs
     for workspace_root in roots {
         let dispatch = MetadataDispatchContext {
             handle:         scan_context.client.handle.clone(),
-            tx:             scan_context.tx.clone(),
+            sender:         scan_context.sender.clone(),
             metadata_store: Arc::clone(&scan_context.metadata_store),
             metadata_limit: Arc::clone(&scan_context.metadata_limit),
         };
@@ -196,7 +196,7 @@ fn spawn_cargo_metadata_tree(scan_context: &StreamingScanContext, roots: Vec<Abs
 #[derive(Clone)]
 pub(crate) struct MetadataDispatchContext {
     pub handle:         Handle,
-    pub tx:             Sender<BackgroundMsg>,
+    pub sender:         Sender<BackgroundMsg>,
     pub metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
     pub metadata_limit: Arc<Semaphore>,
 }
@@ -226,7 +226,7 @@ pub(crate) fn spawn_cargo_metadata_refresh(
 ) {
     let MetadataDispatchContext {
         handle,
-        tx,
+        sender,
         metadata_store: store,
         metadata_limit: limit,
     } = dispatch;
@@ -268,7 +268,7 @@ pub(crate) fn spawn_cargo_metadata_refresh(
             fingerprint,
             result,
         } = task_result;
-        let _ = tx.send(BackgroundMsg::CargoMetadata {
+        let _ = sender.send(BackgroundMsg::CargoMetadata {
             workspace_root,
             generation,
             fingerprint,
@@ -290,7 +290,7 @@ struct CargoMetadataTaskOutput {
 /// sharer target size for the detail pane.
 pub(crate) fn spawn_out_of_tree_target_walk(
     handle: &Handle,
-    tx: Sender<BackgroundMsg>,
+    sender: Sender<BackgroundMsg>,
     workspace_root: AbsolutePath,
     target_dir: AbsolutePath,
 ) {
@@ -315,7 +315,7 @@ pub(crate) fn spawn_out_of_tree_target_walk(
             bytes,
             "out_of_tree_target_walk_done"
         );
-        let _ = tx.send(BackgroundMsg::OutOfTreeTargetSize {
+        let _ = sender.send(BackgroundMsg::OutOfTreeTargetSize {
             workspace_root,
             target_dir,
             bytes,

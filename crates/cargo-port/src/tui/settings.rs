@@ -51,6 +51,7 @@ use crate::config::CargoPortConfig;
 use crate::config::LintCommandConfig;
 use crate::constants::APP_NAME;
 use crate::constants::CONFIG_FILE;
+use crate::constants::MIN_CPU_POLL_MS;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SettingOption {
@@ -839,7 +840,9 @@ fn set_cpu_poll_ms(table: &mut Table, value: i64) -> Result<(), SettingsError> {
         table,
         "cpu",
         "poll_ms",
-        i64::try_from(poll_ms.max(250)).unwrap_or(i64::MAX).into(),
+        i64::try_from(poll_ms.max(MIN_CPU_POLL_MS))
+            .unwrap_or(i64::MAX)
+            .into(),
     )
 }
 

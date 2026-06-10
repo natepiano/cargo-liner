@@ -323,25 +323,25 @@ impl App {
             Err(err) => self.record_config_reload_failure(&format!("{path_buf}: {err}")),
         }
     }
-    pub fn apply_config(&mut self, cfg: &CargoPortConfig) {
-        if self.config.current() == cfg {
+    pub fn apply_config(&mut self, cargo_port_config: &CargoPortConfig) {
+        if self.config.current() == cargo_port_config {
             return;
         }
 
-        let appearance_changed = self.config.current().appearance != cfg.appearance;
+        let appearance_changed = self.config.current().appearance != cargo_port_config.appearance;
         let prev_force = self.config.current().debug.force_github_rate_limit;
-        let next_force = cfg.debug.force_github_rate_limit;
+        let next_force = cargo_port_config.debug.force_github_rate_limit;
 
         let actions = integration::collect_reload_actions(
             self.config.current(),
-            cfg,
+            cargo_port_config,
             ReloadContext {
                 scan_complete:       self.scan.is_complete(),
                 has_cached_non_rust: self.project_list.has_cached_non_rust_projects(),
             },
         );
-        config::set_active_config(cfg);
-        *self.config.current_mut() = cfg.clone();
+        config::set_active_config(cargo_port_config);
+        *self.config.current_mut() = cargo_port_config.clone();
         if !self.config.discovery_shimmer_enabled() {
             self.scan.discovery_shimmers_mut().clear();
         }
@@ -364,7 +364,7 @@ impl App {
         }
 
         if actions.refresh_lint_runtime.should_apply() {
-            self.refresh_lint_runtime_from_config(cfg);
+            self.refresh_lint_runtime_from_config(cargo_port_config);
         }
 
         match actions.tree {
@@ -410,9 +410,9 @@ impl App {
     /// orchestrator. See "Recurring patterns" in
     /// `src/tui/app/mod.rs` for the cross-subsystem orchestrator
     /// pattern.
-    pub fn apply_lint_config_change(&mut self, cfg: &CargoPortConfig) {
+    pub fn apply_lint_config_change(&mut self, cargo_port_config: &CargoPortConfig) {
         // Runtime: respawn the lint runtime.
-        let lint_spawn = lint::spawn(cfg, self.background.background_sender());
+        let lint_spawn = lint::spawn(cargo_port_config, self.background.background_sender());
         self.lint.set_runtime(lint_spawn.handle);
         self.sync_lint_runtime_projects();
 
@@ -437,8 +437,8 @@ impl App {
     /// Backwards-compatible shim. Existing callers (rescan, config
     /// reload) still call `refresh_lint_runtime_from_config`; the
     /// real orchestration lives in [`Self::apply_lint_config_change`].
-    pub(super) fn refresh_lint_runtime_from_config(&mut self, cfg: &CargoPortConfig) {
-        self.apply_lint_config_change(cfg);
+    pub(super) fn refresh_lint_runtime_from_config(&mut self, cargo_port_config: &CargoPortConfig) {
+        self.apply_lint_config_change(cargo_port_config);
     }
 }
 

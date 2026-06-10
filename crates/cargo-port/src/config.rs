@@ -17,6 +17,7 @@ use super::constants::CARGO_COMMAND_NAME;
 use super::constants::CLIPPY_LINT_COMMAND_NAME;
 use super::constants::CONFIG_FILE;
 use super::constants::DEFAULT_CLIPPY_LINT_COMMAND;
+use super::constants::MIN_CPU_POLL_MS;
 use crate::project::AbsolutePath;
 
 /// Whether non-Rust projects (git repos without `Cargo.toml`) are included in scans.
@@ -439,7 +440,7 @@ pub(crate) fn parse_cache_size(value: &str) -> Result<ParsedCacheSize, String> {
 pub(crate) fn normalize_config(mut config: CargoPortConfig) -> Result<CargoPortConfig, String> {
     config.lint.commands = normalize_lint_commands(&config.lint.commands);
     config.lint.cache_size = config.lint.normalized_cache_size()?;
-    config.cpu.poll_ms = config.cpu.poll_ms.max(250);
+    config.cpu.poll_ms = config.cpu.poll_ms.max(MIN_CPU_POLL_MS);
     config.cpu.low_utilization_max_percent = config.cpu.low_utilization_max_percent.min(100);
     config.cpu.medium_utilization_max_percent = config
         .cpu

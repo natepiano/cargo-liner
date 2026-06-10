@@ -5,6 +5,7 @@ use std::time::Duration;
 use toml::Table;
 use toml::Value;
 
+use crate::constants::TOAST_ANIMATION_MILLIS;
 use crate::settings_store::SettingsError;
 
 fn invalid(section: &str, key: &str, message: &str) -> SettingsError {
@@ -313,8 +314,8 @@ pub struct ToastAnimationSettings {
 impl Default for ToastAnimationSettings {
     fn default() -> Self {
         Self {
-            entrance_duration: ToastDuration(Duration::from_millis(150)),
-            exit_duration:     ToastDuration(Duration::from_millis(150)),
+            entrance_duration: ToastDuration(Duration::from_millis(TOAST_ANIMATION_MILLIS)),
+            exit_duration:     ToastDuration(Duration::from_millis(TOAST_ANIMATION_MILLIS)),
         }
     }
 }

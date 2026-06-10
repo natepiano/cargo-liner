@@ -376,18 +376,18 @@ pub(super) const fn combine_service_signal(
     }
 }
 
-pub(crate) fn emit_service_signal(tx: &Sender<BackgroundMsg>, signal: Option<ServiceSignal>) {
+pub(crate) fn emit_service_signal(sender: &Sender<BackgroundMsg>, signal: Option<ServiceSignal>) {
     let msg = match signal {
         Some(ServiceSignal::Reachable(service)) => BackgroundMsg::ServiceReachable { service },
         Some(ServiceSignal::Unreachable(service)) => BackgroundMsg::ServiceUnreachable { service },
         Some(ServiceSignal::RateLimited(service)) => BackgroundMsg::ServiceRateLimited { service },
         None => return,
     };
-    let _ = tx.send(msg);
+    let _ = sender.send(msg);
 }
 
-pub(crate) fn emit_service_recovered(tx: &Sender<BackgroundMsg>, service: ServiceKind) {
-    let _ = tx.send(BackgroundMsg::ServiceRecovered { service });
+pub(crate) fn emit_service_recovered(sender: &Sender<BackgroundMsg>, service: ServiceKind) {
+    let _ = sender.send(BackgroundMsg::ServiceRecovered { service });
 }
 
 /// Probe per-repo + per-checkout git state for a single project and
@@ -396,17 +396,17 @@ pub(crate) fn emit_service_recovered(tx: &Sender<BackgroundMsg>, service: Servic
 /// independently. The watcher's refresh path uses a smarter
 /// orchestration that probes `RepoInfo` once per repo and reuses it
 /// across sibling worktrees.
-pub(crate) fn emit_git_info(tx: &Sender<BackgroundMsg>, path: &AbsolutePath) {
+pub(crate) fn emit_git_info(sender: &Sender<BackgroundMsg>, path: &AbsolutePath) {
     let Some(repo) = RepoInfo::get(path.as_path()) else {
         return;
     };
     let checkout = CheckoutInfo::get(path.as_path(), repo.local_main_branch.as_deref());
-    let _ = tx.send(BackgroundMsg::RepoInfo {
+    let _ = sender.send(BackgroundMsg::RepoInfo {
         path: path.clone(),
         info: repo,
     });
     if let Some(checkout) = checkout {
-        let _ = tx.send(BackgroundMsg::CheckoutInfo {
+        let _ = sender.send(BackgroundMsg::CheckoutInfo {
             path: path.clone(),
             info: checkout,
         });

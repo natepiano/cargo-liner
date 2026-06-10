@@ -73,15 +73,15 @@ use crate::watcher::WatcherMsg;
 /// reference are cloned at the entry point so the builder can outlive
 /// its caller's stack frame).
 pub(super) struct Inputs {
-    background_tx:   Sender<BackgroundMsg>,
-    background_rx:   Receiver<BackgroundMsg>,
-    cfg:             CargoPortConfig,
-    http_client:     HttpClient,
-    scan_started_at: Instant,
-    metadata_store:  Arc<Mutex<WorkspaceMetadataStore>>,
-    raw_projects:    Vec<RootItem>,
-    settings_store:  SettingsStore,
-    toast_settings:  ToastSettings,
+    background_tx:     Sender<BackgroundMsg>,
+    background_rx:     Receiver<BackgroundMsg>,
+    cargo_port_config: CargoPortConfig,
+    http_client:       HttpClient,
+    scan_started_at:   Instant,
+    metadata_store:    Arc<Mutex<WorkspaceMetadataStore>>,
+    raw_projects:      Vec<RootItem>,
+    settings_store:    SettingsStore,
+    toast_settings:    ToastSettings,
 }
 
 /// `Inputs` plus the three internal channel pairs (example, CI
@@ -126,7 +126,7 @@ impl AppBuilder<Inputs> {
             state: Inputs {
                 background_tx,
                 background_rx,
-                cfg: startup_settings.config,
+                cargo_port_config: startup_settings.config,
                 http_client,
                 scan_started_at,
                 metadata_store,
@@ -158,7 +158,7 @@ impl AppBuilder<Inputs> {
 impl AppBuilder<Channeled> {
     pub(super) fn run_startup(self) -> AppBuilder<Started> {
         let inputs = &self.state.inputs;
-        config::set_active_config(&inputs.cfg);
+        config::set_active_config(&inputs.cargo_port_config);
         let mut registry =
             tui_pane::ThemeRegistry::from_dir_with_builtins(themes::themes_dir().as_deref());
         theme_roles::apply_role_defaults_to_registry(&mut registry);
@@ -168,28 +168,31 @@ impl AppBuilder<Channeled> {
         // machinery is not yet wired this early in startup, and
         // surface for the miss arrives in Phase 4's settings UI badge.
         let resolved = registry.resolve_active(
-            &inputs.cfg.appearance.mode,
-            &inputs.cfg.appearance.light_theme,
-            &inputs.cfg.appearance.dark_theme,
+            &inputs.cargo_port_config.appearance.mode,
+            &inputs.cargo_port_config.appearance.light_theme,
+            &inputs.cargo_port_config.appearance.dark_theme,
             None,
         );
         let mut initial_theme = (*resolved.theme).clone();
         theme_roles::apply_role_defaults_to_theme(&mut initial_theme, None, resolved.appearance);
         tui_pane::install_theme_state(tui_pane::ThemeState::with_registry(registry, initial_theme));
-        tui_pane::set_focused_pane_tint(inputs.cfg.appearance.focused_pane_tint);
+        tui_pane::set_focused_pane_tint(inputs.cargo_port_config.appearance.focused_pane_tint);
         let config_path = config::config_path();
-        let lint_spawn = lint::spawn(&inputs.cfg, inputs.background_tx.clone());
-        let watch_roots = scan::resolve_include_dirs(&inputs.cfg.tui.include_dirs);
+        let lint_spawn = lint::spawn(&inputs.cargo_port_config, inputs.background_tx.clone());
+        let watch_roots = scan::resolve_include_dirs(&inputs.cargo_port_config.tui.include_dirs);
         let watch_tx = watcher::spawn_watcher(
             &watch_roots,
             inputs.background_tx.clone(),
-            inputs.cfg.tui.ci_run_count,
-            inputs.cfg.tui.include_non_rust,
+            inputs.cargo_port_config.tui.ci_run_count,
+            inputs.cargo_port_config.tui.include_non_rust,
             inputs.http_client.clone(),
             lint_spawn.handle.clone(),
             Arc::clone(&inputs.metadata_store),
         );
-        let built = scan::build_tree(&inputs.raw_projects, &inputs.cfg.tui.inline_dirs);
+        let built = scan::build_tree(
+            &inputs.raw_projects,
+            &inputs.cargo_port_config.tui.inline_dirs,
+        );
         let projects = ProjectList::new(built);
         AppBuilder {
             state: Started {
@@ -209,9 +212,9 @@ impl AppBuilder<Started> {
         let started = self.state;
         let channeled = started.channeled;
         let inputs = channeled.inputs;
-        let panes = Panes::new(&inputs.cfg.cpu);
+        let panes = Panes::new(&inputs.cargo_port_config.cpu);
         let mut projects = started.projects;
-        projects.init_runtime_state(inputs.cfg.lint.enabled);
+        projects.init_runtime_state(inputs.cargo_port_config.lint.enabled);
         let background = Background::new(BackgroundChannels {
             background: (inputs.background_tx, inputs.background_rx),
             ci_fetch:   (channeled.ci_fetch_tx, channeled.ci_fetch_rx),
@@ -225,7 +228,7 @@ impl AppBuilder<Started> {
             .config_path
             .as_ref()
             .map(|p| p.as_path().to_path_buf());
-        let config = Config::new(config_path_buf, inputs.cfg);
+        let config = Config::new(config_path_buf, inputs.cargo_port_config);
         let keymap_path_buf = keymap::keymap_path()
             .as_ref()
             .map(|p| p.as_path().to_path_buf());

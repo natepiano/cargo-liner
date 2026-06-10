@@ -8,6 +8,8 @@ use super::constants::CI_CANCELLED;
 use super::constants::CI_FAILED;
 use super::constants::CI_PASSED;
 use super::constants::CI_SKIPPED;
+use super::constants::SECONDS_PER_HOUR;
+use super::constants::SECONDS_PER_MINUTE;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) struct OwnerRepo {
@@ -218,12 +220,16 @@ fn compute_duration_secs(
 }
 
 pub(crate) fn format_secs(secs: u64) -> String {
-    if secs >= 3600 {
-        let h = secs / 3600;
-        let m = (secs % 3600) / 60;
+    if secs >= SECONDS_PER_HOUR {
+        let h = secs / SECONDS_PER_HOUR;
+        let m = (secs % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE;
         format!("{h}h {m:>2}m")
-    } else if secs >= 60 {
-        format!("{:>2}m {:>2}s", secs / 60, secs % 60)
+    } else if secs >= SECONDS_PER_MINUTE {
+        format!(
+            "{:>2}m {:>2}s",
+            secs / SECONDS_PER_MINUTE,
+            secs % SECONDS_PER_MINUTE
+        )
     } else {
         format!("{secs:>2}s")
     }

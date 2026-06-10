@@ -44,6 +44,7 @@ use self::constants::CRATES_IO_CRATE_KEY;
 use self::constants::CRATES_IO_DOWNLOADS_KEY;
 use self::constants::CRATES_IO_MAX_STABLE_VERSION_KEY;
 use self::constants::CRATES_IO_MAX_VERSION_KEY;
+use self::constants::GITHUB_CORE_RATE_LIMIT_CAP;
 use self::constants::GITHUB_GRAPHQL_DATA_KEY;
 use self::constants::GITHUB_GRAPHQL_DESCRIPTION_KEY;
 use self::constants::GITHUB_GRAPHQL_REPO_KEY;
@@ -522,8 +523,8 @@ impl HttpClient {
     fn synthetic_core_quota(&self) -> RateLimitQuota {
         let reset_at = self.force_reset_at.load(Ordering::Relaxed);
         RateLimitQuota {
-            limit:     5000,
-            used:      5000,
+            limit:     GITHUB_CORE_RATE_LIMIT_CAP,
+            used:      GITHUB_CORE_RATE_LIMIT_CAP,
             remaining: 0,
             reset_at:  if reset_at == 0 { None } else { Some(reset_at) },
         }
@@ -709,8 +710,10 @@ impl HttpClient {
             "repo: repository(owner: \"{owner}\", name: \"{repo}\") {{ stargazerCount description }}"
         );
 
-        let run_fragment = "checkSuite { checkRuns(first: 50) { nodes { \
-                            name conclusion startedAt completedAt } } }";
+        let run_fragment = format!(
+            "checkSuite {{ checkRuns(first: {GITHUB_PR_PAGE_SIZE}) {{ nodes {{ \
+             name conclusion startedAt completedAt }} }} }}"
+        );
 
         let mut parts = vec![repo_fragment];
         for (i, run) in runs.iter().enumerate() {

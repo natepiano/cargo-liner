@@ -13,6 +13,7 @@ pub(super) const GITHUB_GRAPHQL_STARGAZER_COUNT_KEY: &str = "stargazerCount";
 
 // GitHub rate limits
 pub(super) const GITHUB_CORE_BUCKET: &str = "core";
+pub(super) const GITHUB_CORE_RATE_LIMIT_CAP: u64 = 5000;
 pub(super) const GITHUB_GRAPHQL_BUCKET: &str = "graphql";
 pub(super) const GITHUB_PR_PAGE_CAP: usize = 20;
 pub(super) const GITHUB_PR_PAGE_SIZE: usize = 50;

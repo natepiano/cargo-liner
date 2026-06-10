@@ -1,7 +1,7 @@
 //! The `Background` subsystem.
 //!
 //! Owns the four channel pairs plus the watcher sender:
-//! - `background_tx` / `background_rx` (replaced wholesale on every rescan — see
+//! - background `sender` / `receiver` (replaced wholesale on every rescan — see
 //!   [`Background::swap_background_channel`])
 //! - `ci_fetch_tx` / `ci_fetch_rx`
 //! - `clean_tx` / `clean_rx`
@@ -40,8 +40,8 @@ pub struct BackgroundChannels {
 /// Owns every long-lived I/O channel App holds. App holds a single
 /// `background: Background` field.
 pub(super) struct Background {
-    tx:          Sender<BackgroundMsg>,
-    rx:          Receiver<BackgroundMsg>,
+    sender:      Sender<BackgroundMsg>,
+    receiver:    Receiver<BackgroundMsg>,
     ci_fetch_tx: Sender<CiFetchMsg>,
     ci_fetch_rx: Receiver<CiFetchMsg>,
     clean_tx:    Sender<CleanMsg>,
@@ -61,8 +61,8 @@ impl Background {
             watch_tx,
         } = channels;
         Self {
-            tx: background_tx,
-            rx: background_rx,
+            sender: background_tx,
+            receiver: background_rx,
             ci_fetch_tx,
             ci_fetch_rx,
             clean_tx,
@@ -75,7 +75,7 @@ impl Background {
 
     // ── Senders (cloned by spawn paths) ──────────────────────────────
 
-    pub(super) fn background_sender(&self) -> Sender<BackgroundMsg> { self.tx.clone() }
+    pub(super) fn background_sender(&self) -> Sender<BackgroundMsg> { self.sender.clone() }
 
     pub(super) fn ci_fetch_sender(&self) -> Sender<CiFetchMsg> { self.ci_fetch_tx.clone() }
 
@@ -85,7 +85,7 @@ impl Background {
 
     // ── Receiver access ──────────────────────────────────────────────
 
-    pub(super) const fn background_receiver(&self) -> &Receiver<BackgroundMsg> { &self.rx }
+    pub(super) const fn background_receiver(&self) -> &Receiver<BackgroundMsg> { &self.receiver }
 
     pub(super) const fn ci_fetch_rx(&self) -> &Receiver<CiFetchMsg> { &self.ci_fetch_rx }
 
@@ -107,16 +107,18 @@ impl Background {
     /// rescan caveat").
     pub(super) fn swap_background_channel(
         &mut self,
-        tx: Sender<BackgroundMsg>,
-        rx: Receiver<BackgroundMsg>,
+        sender: Sender<BackgroundMsg>,
+        receiver: Receiver<BackgroundMsg>,
     ) {
-        self.tx = tx;
-        self.rx = rx;
+        self.sender = sender;
+        self.receiver = receiver;
     }
 
     /// Replace the watcher sender, used by `App::respawn_watcher`
     /// after a config reload changes the watch roots.
-    pub(super) fn replace_watcher_sender(&mut self, tx: Sender<WatcherMsg>) { self.watch_tx = tx; }
+    pub(super) fn replace_watcher_sender(&mut self, watcher_sender: Sender<WatcherMsg>) {
+        self.watch_tx = watcher_sender;
+    }
 
     pub(super) fn register_item_background_services(&self, item: &RootItem) {
         let started = std::time::Instant::now();

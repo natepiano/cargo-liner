@@ -5,6 +5,10 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 
+use crate::constants::SECONDS_PER_MINUTE;
+use crate::constants::TOAST_ELAPSED_MINUTE_MILLIS;
+use crate::constants::TOAST_ELAPSED_SECONDS_MILLIS;
+
 pub(super) fn fade_to_style(progress: f64) -> Style {
     let p = progress.clamp(0.0, 1.0);
     let curve = p * p * p;
@@ -66,10 +70,14 @@ pub(super) fn truncate_with_ellipsis(text: &str, width: usize) -> String {
 
 pub(super) fn format_elapsed(elapsed: Duration) -> String {
     let ms = elapsed.as_millis();
-    if ms >= 60_000 {
+    if ms >= TOAST_ELAPSED_MINUTE_MILLIS {
         let secs = elapsed.as_secs();
-        format!("{}m {:02}s", secs / 60, secs % 60)
-    } else if ms >= 10_000 {
+        format!(
+            "{}m {:02}s",
+            secs / SECONDS_PER_MINUTE,
+            secs % SECONDS_PER_MINUTE
+        )
+    } else if ms >= TOAST_ELAPSED_SECONDS_MILLIS {
         format!("{}s", elapsed.as_secs())
     } else if ms >= 1 {
         format!("{ms}ms")

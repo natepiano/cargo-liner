@@ -43,7 +43,7 @@ pub(super) fn spawn_initial_test_counts(
 
 fn spawn_test_counts_tree(scan_context: &StreamingScanContext, tree: DiskUsageTree) {
     let handle = scan_context.client.handle.clone();
-    let tx = scan_context.tx.clone();
+    let sender = scan_context.sender.clone();
 
     handle.spawn(async move {
         let Ok(results) =
@@ -52,7 +52,7 @@ fn spawn_test_counts_tree(scan_context: &StreamingScanContext, tree: DiskUsageTr
             return;
         };
         if !results.is_empty() {
-            let _ = tx.send(BackgroundMsg::TestCountsBatch { entries: results });
+            let _ = sender.send(BackgroundMsg::TestCountsBatch { entries: results });
         }
     });
 }

@@ -115,14 +115,14 @@ pub(super) fn probe_new_projects(
                     NEW_PROJECT_DEBOUNCE,
                 );
             }
-            let tx = background_tx.clone();
+            let sender = background_tx.clone();
             let fetch_context = FetchContext {
                 client: client.clone(),
             };
             enrichment::spawn_language_scan(abs_path.clone(), background_tx.clone());
             rayon::spawn(move || {
                 let request = ProjectDetailRequest {
-                    tx: &tx,
+                    sender: &sender,
                     fetch_context: &fetch_context,
                     _project_path: display_path.as_str(),
                     abs_path: &abs_path,

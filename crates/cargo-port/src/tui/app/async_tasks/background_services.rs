@@ -45,7 +45,7 @@ impl App {
     /// Dispatch the startup project-detail workers and the crates.io fetch
     /// plan that was already installed into the startup ledger.
     pub(super) fn schedule_startup_project_details(&self, crates_io_plan: CratesIoFetchPlan) {
-        let tx = self.background.background_sender();
+        let sender = self.background.background_sender();
         let fetch_context = std::sync::Arc::new(FetchContext {
             client: self.net.http_client(),
         });
@@ -57,11 +57,11 @@ impl App {
             } else {
                 GitRepoPresence::OutsideRepo
             };
-            let tx = tx.clone();
+            let sender = sender.clone();
             let fetch_context = std::sync::Arc::clone(&fetch_context);
             rayon::spawn(move || {
                 let request = ProjectDetailRequest {
-                    tx: &tx,
+                    sender: &sender,
                     fetch_context: fetch_context.as_ref(),
                     _project_path: display_path.as_str(),
                     abs_path: &abs_path,
@@ -118,16 +118,16 @@ impl App {
     /// interleaving. An empty plan spawns nothing.
     fn dispatch_crates_io_fetches(&self, plan: CratesIoFetchPlan) {
         for bucket in plan.into_worker_buckets(CRATES_IO_FETCH_WORKERS) {
-            let tx = self.background.background_sender();
+            let sender = self.background.background_sender();
             let client = self.net.http_client();
             rayon::spawn(move || {
                 for (name, paths) in bucket {
-                    let _ = tx.send(BackgroundMsg::CratesIoFetchQueued { name: name.clone() });
+                    let _ = sender.send(BackgroundMsg::CratesIoFetchQueued { name: name.clone() });
                     let (info, signal) = client.fetch_crates_io_info(&name);
-                    scan::emit_service_signal(&tx, signal);
+                    scan::emit_service_signal(&sender, signal);
                     if let Some(info) = info {
                         for path in paths {
-                            let _ = tx.send(BackgroundMsg::CratesIoVersion {
+                            let _ = sender.send(BackgroundMsg::CratesIoVersion {
                                 path,
                                 version: info.version.clone(),
                                 prerelease: info.prerelease.clone(),
@@ -135,13 +135,13 @@ impl App {
                             });
                         }
                     }
-                    let _ = tx.send(BackgroundMsg::CratesIoFetchComplete { name });
+                    let _ = sender.send(BackgroundMsg::CratesIoFetchComplete { name });
                 }
             });
         }
     }
     pub(super) fn schedule_git_first_commit_refreshes(&self) {
-        let tx = self.background.background_sender();
+        let sender = self.background.background_sender();
         let mut projects_by_repo: HashMap<AbsolutePath, Vec<AbsolutePath>> = HashMap::new();
         self.project_list.for_each_leaf_path(|path, _| {
             let abs_path = AbsolutePath::from(path);
@@ -166,7 +166,7 @@ impl App {
                     "git_first_commit_fetch"
                 );
                 for path in paths {
-                    let _ = tx.send(BackgroundMsg::GitFirstCommit {
+                    let _ = sender.send(BackgroundMsg::GitFirstCommit {
                         path,
                         first_commit: first_commit.clone(),
                     });

@@ -178,8 +178,8 @@ pub fn run() -> ExitCode {
             return ExitCode::FAILURE;
         },
     };
-    let cfg = startup_settings.config.clone();
-    config::set_active_config(&cfg);
+    let cargo_port_config = startup_settings.config.clone();
+    config::set_active_config(&cargo_port_config);
     let perf_log_path = std::env::temp_dir().join(PERF_LOG_FILE);
     let previous_perf_log_path = std::env::temp_dir().join(PREVIOUS_PERF_LOG_FILE);
     tui_pane::init_perf_log(&perf_log_path, &previous_perf_log_path);
@@ -199,12 +199,12 @@ pub fn run() -> ExitCode {
         run = 1,
         "scan_start"
     );
-    let scan_dirs = scan::resolve_include_dirs(&cfg.tui.include_dirs);
+    let scan_dirs = scan::resolve_include_dirs(&cargo_port_config.tui.include_dirs);
     let metadata_store = Arc::new(Mutex::new(WorkspaceMetadataStore::new()));
     let (background_tx, background_rx) = scan::spawn_streaming_scan(
         scan_dirs,
-        &cfg.tui.inline_dirs,
-        cfg.tui.include_non_rust,
+        &cargo_port_config.tui.inline_dirs,
+        cargo_port_config.tui.include_non_rust,
         http_client.clone(),
         Arc::clone(&metadata_store),
     );
@@ -305,15 +305,15 @@ fn restart_self() {
 }
 
 fn spawn_input_thread() -> Receiver<Event> {
-    let (tx, rx) = channel::unbounded();
+    let (event_sender, event_receiver) = channel::unbounded();
     thread::spawn(move || {
         while let Ok(event) = crossterm::event::read() {
-            if tx.send(event).is_err() {
+            if event_sender.send(event).is_err() {
                 break;
             }
         }
     });
-    rx
+    event_receiver
 }
 
 /// Outcome of draining the input channel for one frame.
@@ -635,15 +635,15 @@ fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
     let stdout = child.stdout.take();
 
     let pid_holder = app.inflight.example_child();
-    let tx = app.background.example_sender();
+    let example_sender = app.background.example_sender();
     thread::spawn(move || {
         let stderr_reader = stderr.map(|stream| {
-            let tx = tx.clone();
-            thread::spawn(move || read_with_progress(&tx, stream))
+            let example_sender = example_sender.clone();
+            thread::spawn(move || read_with_progress(&example_sender, stream))
         });
         let stdout_reader = stdout.map(|stream| {
-            let tx = tx.clone();
-            thread::spawn(move || read_with_progress(&tx, stream))
+            let example_sender = example_sender.clone();
+            thread::spawn(move || read_with_progress(&example_sender, stream))
         });
 
         // Wait for the child to finish and clear the PID.
@@ -659,7 +659,7 @@ fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
 
-        let _ = tx.send(ExampleMsg::Finished);
+        let _ = example_sender.send(ExampleMsg::Finished);
     });
 }
 
@@ -699,7 +699,7 @@ pub(super) fn stop_example_process(pid: u32) -> bool {
 
 /// Read a stream byte-by-byte, splitting on `\n` (new line) and `\r` (progress update).
 /// `\r`-terminated chunks are sent as `Progress` so the UI replaces the last line.
-fn read_with_progress(tx: &Sender<ExampleMsg>, stream: impl io::Read) {
+fn read_with_progress(example_sender: &Sender<ExampleMsg>, stream: impl io::Read) {
     let mut reader = BufReader::new(stream);
     let mut buf = Vec::new();
     let mut byte = [0u8; 1];
@@ -708,13 +708,13 @@ fn read_with_progress(tx: &Sender<ExampleMsg>, stream: impl io::Read) {
         match byte[0] {
             b'\n' => {
                 let line = String::from_utf8_lossy(&buf).to_string();
-                let _ = tx.send(ExampleMsg::Output(line));
+                let _ = example_sender.send(ExampleMsg::Output(line));
                 buf.clear();
             },
             b'\r' => {
                 if !buf.is_empty() {
                     let line = String::from_utf8_lossy(&buf).to_string();
-                    let _ = tx.send(ExampleMsg::Progress(line));
+                    let _ = example_sender.send(ExampleMsg::Progress(line));
                     buf.clear();
                 }
             },
@@ -724,7 +724,7 @@ fn read_with_progress(tx: &Sender<ExampleMsg>, stream: impl io::Read) {
     // Flush any remaining data
     if !buf.is_empty() {
         let line = String::from_utf8_lossy(&buf).to_string();
-        let _ = tx.send(ExampleMsg::Output(line));
+        let _ = example_sender.send(ExampleMsg::Output(line));
     }
 }
 
@@ -743,11 +743,11 @@ fn spawn_clean_process(app: &mut App, pending: &PendingClean) {
             return;
         },
     };
-    let tx = app.background.clean_sender();
+    let clean_sender = app.background.clean_sender();
     let abs_path = pending.abs_path.clone();
     thread::spawn(move || {
         let _ = child.wait();
-        let _ = tx.send(CleanMsg::Finished(abs_path));
+        let _ = clean_sender.send(CleanMsg::Finished(abs_path));
     });
 }
 
@@ -762,7 +762,7 @@ fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) -> bool {
         return false;
     };
 
-    let tx = app.background.ci_fetch_sender();
+    let ci_fetch_sender = app.background.ci_fetch_sender();
     let background_tx = app.background.background_sender();
     let client = app.net.http_client();
     let project_path = fetch.project_path.clone();
@@ -798,7 +798,7 @@ fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) -> bool {
             },
         };
         scan::emit_service_signal(&background_tx, network);
-        let _ = tx.send(CiFetchMsg::Complete {
+        let _ = ci_fetch_sender.send(CiFetchMsg::Complete {
             path: project_path,
             result,
             kind,
@@ -901,34 +901,34 @@ fn decode_expand_target(token: &str) -> Option<ExpandTarget> {
 
 /// Spawn a background thread to fetch details for a single project ahead of the main scan.
 pub(super) fn spawn_priority_fetch(app: &App, _path: &str, abs_path: &str, name: Option<&String>) {
-    let tx = app.background.background_sender();
+    let sender = app.background.background_sender();
     let client = app.net.http_client();
     let abs = AbsolutePath::from(abs_path);
     let project_name = name.cloned();
 
     thread::spawn(move || {
         let path: AbsolutePath = abs.clone();
-        scan::emit_git_info(&tx, &abs);
+        scan::emit_git_info(&sender, &abs);
 
         let bytes = scan::dir_size(&abs);
-        let _ = tx.send(BackgroundMsg::DiskUsage {
+        let _ = sender.send(BackgroundMsg::DiskUsage {
             path: path.clone(),
             bytes,
         });
 
         if let Some(name) = project_name.as_ref() {
-            let _ = tx.send(BackgroundMsg::CratesIoFetchQueued { name: name.clone() });
+            let _ = sender.send(BackgroundMsg::CratesIoFetchQueued { name: name.clone() });
             let (info, signal) = client.fetch_crates_io_info(name);
-            scan::emit_service_signal(&tx, signal);
+            scan::emit_service_signal(&sender, signal);
             if let Some(info) = info {
-                let _ = tx.send(BackgroundMsg::CratesIoVersion {
+                let _ = sender.send(BackgroundMsg::CratesIoVersion {
                     path,
                     version: info.version,
                     prerelease: info.prerelease,
                     downloads: info.downloads,
                 });
             }
-            let _ = tx.send(BackgroundMsg::CratesIoFetchComplete { name: name.clone() });
+            let _ = sender.send(BackgroundMsg::CratesIoFetchComplete { name: name.clone() });
         }
     });
 }

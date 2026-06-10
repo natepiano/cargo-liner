@@ -60,7 +60,7 @@ pub(super) fn group_disk_usage_trees(
 
 fn spawn_disk_usage_tree(scan_context: &StreamingScanContext, tree: DiskUsageTree) {
     let handle = scan_context.client.handle.clone();
-    let tx = scan_context.tx.clone();
+    let sender = scan_context.sender.clone();
     let disk_limit = Arc::clone(&scan_context.disk_limit);
 
     handle.spawn(async move {
@@ -90,7 +90,7 @@ fn spawn_disk_usage_tree(scan_context: &StreamingScanContext, tree: DiskUsageTre
             rows = tree.entries.len(),
             "tokio_disk_usage"
         );
-        let _ = tx.send(BackgroundMsg::DiskUsageBatch {
+        let _ = sender.send(BackgroundMsg::DiskUsageBatch {
             root_path: tree.root_abs_path,
             entries:   results,
         });

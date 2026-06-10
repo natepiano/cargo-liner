@@ -135,7 +135,7 @@ pub(crate) fn spawn_watcher(
     register_cargo_home_watch(&mut watcher, &registered_roots);
     let metadata_dispatch = MetadataDispatchContext {
         handle: client.handle.clone(),
-        tx: background_tx.clone(),
+        sender: background_tx.clone(),
         metadata_store,
         metadata_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_METADATA_CONCURRENCY)),
     };

@@ -172,18 +172,18 @@ impl App {
             return;
         }
 
-        let tx = self.background.background_sender();
+        let sender = self.background.background_sender();
         let client = self.net.http_client();
         thread::spawn(move || {
             thread::sleep(SERVICE_UNAVAILABLE_GRACE);
             if client.probe_service(service) {
-                scan::emit_service_recovered(&tx, service);
+                scan::emit_service_recovered(&sender, service);
                 return;
             }
-            let _ = tx.send(BackgroundMsg::ServiceUnreachableConfirmed { service });
+            let _ = sender.send(BackgroundMsg::ServiceUnreachableConfirmed { service });
             loop {
                 if client.probe_service(service) {
-                    scan::emit_service_recovered(&tx, service);
+                    scan::emit_service_recovered(&sender, service);
                     break;
                 }
                 thread::sleep(Duration::from_secs(SERVICE_RETRY_SECS));

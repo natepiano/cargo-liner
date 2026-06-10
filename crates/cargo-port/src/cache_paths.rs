@@ -14,26 +14,26 @@ pub(crate) fn default_app_cache_root() -> AbsolutePath {
 }
 
 /// Resolve the configured cache root for a given `CargoPortConfig`.
-fn configured_app_cache_root_for(cfg: &CargoPortConfig) -> AbsolutePath {
-    if cfg.cache.root.is_empty() {
+fn configured_app_cache_root_for(cargo_port_config: &CargoPortConfig) -> AbsolutePath {
+    if cargo_port_config.cache.root.is_empty() {
         return default_app_cache_root();
     }
 
-    AbsolutePath::resolve_no_canonicalize(&cfg.cache.root, &default_app_cache_root())
+    AbsolutePath::resolve_no_canonicalize(&cargo_port_config.cache.root, &default_app_cache_root())
 }
 
 /// Resolve the active app cache root from the process' last good config.
 pub(crate) fn app_cache_root() -> AbsolutePath {
-    let cfg = config::active_config();
-    configured_app_cache_root_for(&cfg)
+    let cargo_port_config = config::active_config();
+    configured_app_cache_root_for(&cargo_port_config)
 }
 
 /// Cache root for repo-keyed CI data.
 pub(crate) fn ci_cache_root() -> AbsolutePath { app_cache_root().join(CI_CACHE_DIR).into() }
 
 /// Cache root for project-keyed lint runs under a specific config.
-pub(crate) fn lint_runs_root_for(cfg: &CargoPortConfig) -> AbsolutePath {
-    configured_app_cache_root_for(cfg)
+pub(crate) fn lint_runs_root_for(cargo_port_config: &CargoPortConfig) -> AbsolutePath {
+    configured_app_cache_root_for(cargo_port_config)
         .join(LINTS_CACHE_DIR)
         .into()
 }

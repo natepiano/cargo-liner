@@ -159,7 +159,7 @@ impl Panes {
 
     /// Reset the CPU pane after a config reload changes CPU poll
     /// behavior. Delegates to `CpuPane::reset`.
-    pub fn reset_cpu(&mut self, cfg: &CpuConfig) { self.cpu.reset(cfg); }
+    pub fn reset_cpu(&mut self, cpu_config: &CpuConfig) { self.cpu.reset(cpu_config); }
 
     /// Seed the CPU pane's content with the current poller's
     /// placeholder `CpuUsage`. Delegates to

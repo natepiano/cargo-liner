@@ -63,7 +63,7 @@ pub(crate) struct FetchContext {
 }
 
 pub(crate) struct ProjectDetailRequest<'a> {
-    pub tx:            &'a Sender<BackgroundMsg>,
+    pub sender:        &'a Sender<BackgroundMsg>,
     pub fetch_context: &'a FetchContext,
     pub _project_path: &'a str,
     pub abs_path:      &'a Path,
@@ -74,7 +74,7 @@ pub(crate) struct ProjectDetailRequest<'a> {
 /// Fetch local project details for a single project and send results through
 /// the provided channel. Used by both the main scan and project discovery paths.
 pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
-    let tx = req.tx;
+    let sender = req.sender;
     let fetch_context = req.fetch_context;
     let abs_path = req.abs_path;
     let abs: AbsolutePath = abs_path.to_path_buf().into();
@@ -85,7 +85,7 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     // which is handled separately by
     // `schedule_git_first_commit_refreshes` (batched by repo root).
     if repo_presence.is_in_repo() {
-        emit_git_info(tx, &abs);
+        emit_git_info(sender, &abs);
     }
 
     // Submodules are read up front (local, fast — .gitmodules + one git
@@ -102,7 +102,7 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     };
     for sub in &submodules {
         if let Some(name) = sub.crates_io_name() {
-            let _ = tx.send(BackgroundMsg::CratesIoFetchQueued {
+            let _ = sender.send(BackgroundMsg::CratesIoFetchQueued {
                 name: name.to_string(),
             });
         }
@@ -110,20 +110,20 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
 
     // Crates.io version + downloads (network)
     if let Some(name) = project_name {
-        let _ = tx.send(BackgroundMsg::CratesIoFetchQueued {
+        let _ = sender.send(BackgroundMsg::CratesIoFetchQueued {
             name: name.to_string(),
         });
         let (info, signal) = client.fetch_crates_io_info(name);
-        emit_service_signal(tx, signal);
+        emit_service_signal(sender, signal);
         if let Some(info) = info {
-            let _ = tx.send(BackgroundMsg::CratesIoVersion {
+            let _ = sender.send(BackgroundMsg::CratesIoVersion {
                 path:       abs.clone(),
                 version:    info.version,
                 prerelease: info.prerelease,
                 downloads:  info.downloads,
             });
         }
-        let _ = tx.send(BackgroundMsg::CratesIoFetchComplete {
+        let _ = sender.send(BackgroundMsg::CratesIoFetchComplete {
             name: name.to_string(),
         });
     }
@@ -134,16 +134,16 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     // path is *not* covered by the initial batch scan, so the per-submodule
     // singular `BackgroundMsg::DiskUsage` is the only writer for it.
     if !submodules.is_empty() {
-        let _ = tx.send(BackgroundMsg::Submodules {
+        let _ = sender.send(BackgroundMsg::Submodules {
             path:       abs.clone(),
             submodules: submodules.clone(),
         });
         for sub in &submodules {
-            enrichment::enrich(sub, tx, fetch_context);
+            enrichment::enrich(sub, sender, fetch_context);
         }
     }
 
-    let _ = tx.send(BackgroundMsg::ProjectDetailsDeclared { path: abs });
+    let _ = sender.send(BackgroundMsg::ProjectDetailsDeclared { path: abs });
 
     // Disk usage for the top-level project itself is computed by the
     // initial batch scan (`spawn_initial_disk_usage` →

@@ -107,10 +107,10 @@ pub(crate) fn parse_rate_limit_response(value: &Value) -> GitHubRateLimit {
 /// `X-RateLimit-Remaining: 0` (the secondary-rate-limit / abuse-detection
 /// form). A bare 403 is auth-related and not rate-limit.
 pub(crate) fn github_is_rate_limited(status: StatusCode, headers: &HeaderMap) -> bool {
-    if status.as_u16() == 429 {
+    if status == StatusCode::TOO_MANY_REQUESTS {
         return true;
     }
-    if status.as_u16() == 403 {
+    if status == StatusCode::FORBIDDEN {
         return headers
             .get(RATE_LIMIT_REMAINING_HEADER)
             .and_then(|value| value.to_str().ok())

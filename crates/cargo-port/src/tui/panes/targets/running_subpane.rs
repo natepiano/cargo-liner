@@ -34,6 +34,9 @@ use tui_pane::text_default;
 use unicode_width::UnicodeWidthStr;
 
 use crate::constants::CARGO_COMMAND_NAME;
+use crate::constants::SECONDS_PER_DAY;
+use crate::constants::SECONDS_PER_HOUR;
+use crate::constants::SECONDS_PER_MINUTE;
 use crate::project::DisplayPath;
 use crate::tui::render;
 use crate::tui::running_targets::RunProfile;
@@ -375,14 +378,14 @@ pub fn resolve_kill_request(
 /// second.
 pub fn format_start_age(create_time: u64, now_epoch: u64) -> String {
     let secs = now_epoch.saturating_sub(create_time);
-    let age = if secs < 60 {
+    let age = if secs < SECONDS_PER_MINUTE {
         format!("{secs}s")
-    } else if secs < 3600 {
-        format!("{}m", secs / 60)
-    } else if secs < 86_400 {
-        format!("{}h", secs / 3600)
+    } else if secs < SECONDS_PER_HOUR {
+        format!("{}m", secs / SECONDS_PER_MINUTE)
+    } else if secs < SECONDS_PER_DAY {
+        format!("{}h", secs / SECONDS_PER_HOUR)
     } else {
-        format!("{}d", secs / 86_400)
+        format!("{}d", secs / SECONDS_PER_DAY)
     };
     format!("started {age} ago")
 }

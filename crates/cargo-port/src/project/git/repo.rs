@@ -39,6 +39,9 @@ use super::discovery;
 use crate::config;
 use crate::config::CargoPortConfig;
 use crate::constants::GIT_REMOTE_SUFFIX;
+use crate::constants::SECONDS_PER_DAY;
+use crate::constants::SECONDS_PER_HOUR;
+use crate::constants::SECONDS_PER_MINUTE;
 
 /// Whether a project is a plain clone or a fork (has an "upstream" remote).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -419,7 +422,7 @@ fn resolve_tracked_ref(
     current_upstream: Option<&str>,
     default_branch: Option<&str>,
     current_branch: Option<&str>,
-    cfg: &CargoPortConfig,
+    cargo_port_config: &CargoPortConfig,
 ) -> Option<String> {
     let prefix = format!("{remote_name}/");
     if let Some(us) = current_upstream
@@ -451,8 +454,14 @@ fn resolve_tracked_ref(
     {
         return Some(format!("{remote_name}/{cb}"));
     }
-    std::iter::once(cfg.tui.main_branch.as_str())
-        .chain(cfg.tui.other_primary_branches.iter().map(String::as_str))
+    std::iter::once(cargo_port_config.tui.main_branch.as_str())
+        .chain(
+            cargo_port_config
+                .tui
+                .other_primary_branches
+                .iter()
+                .map(String::as_str),
+        )
         .find(|b| remote_ref_exists(repo_root, remote_name, b))
         .map(|b| format!("{remote_name}/{b}"))
 }
@@ -472,9 +481,15 @@ fn remote_ref_exists(repo_root: &Path, remote_name: &str, branch: &str) -> bool 
 }
 
 fn resolve_local_main_branch(project_dir: &Path) -> Option<String> {
-    let cfg = config::active_config();
-    std::iter::once(cfg.tui.main_branch.as_str())
-        .chain(cfg.tui.other_primary_branches.iter().map(String::as_str))
+    let cargo_port_config = config::active_config();
+    std::iter::once(cargo_port_config.tui.main_branch.as_str())
+        .chain(
+            cargo_port_config
+                .tui
+                .other_primary_branches
+                .iter()
+                .map(String::as_str),
+        )
         .find(|branch| local_branch_exists(project_dir, branch))
         .map(str::to_string)
 }
@@ -549,11 +564,14 @@ fn system_time_to_iso8601_utc(t: SystemTime) -> Option<String> {
             .as_secs(),
     )
     .ok()?;
-    let days = secs.div_euclid(86_400);
-    let time_of_day = secs.rem_euclid(86_400);
-    let hour = time_of_day / 3_600;
-    let min = (time_of_day % 3_600) / 60;
-    let sec = time_of_day % 60;
+    let seconds_per_day = SECONDS_PER_DAY.cast_signed();
+    let seconds_per_hour = SECONDS_PER_HOUR.cast_signed();
+    let seconds_per_minute = SECONDS_PER_MINUTE.cast_signed();
+    let days = secs.div_euclid(seconds_per_day);
+    let time_of_day = secs.rem_euclid(seconds_per_day);
+    let hour = time_of_day / seconds_per_hour;
+    let min = (time_of_day % seconds_per_hour) / seconds_per_minute;
+    let sec = time_of_day % seconds_per_minute;
     let (year, month, day) = civil_from_days(days);
     Some(format!(
         "{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}Z"

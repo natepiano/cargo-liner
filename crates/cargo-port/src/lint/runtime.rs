@@ -90,24 +90,32 @@ pub fn project_is_eligible(
 
 #[derive(Clone)]
 pub struct RuntimeHandle {
-    tx: StdSender<SupervisorMsg>,
+    supervisor_sender: StdSender<SupervisorMsg>,
 }
 
 impl RuntimeHandle {
     pub fn sync_projects(&self, projects: Vec<RegisterProjectRequest>) {
-        let _ = self.tx.send(SupervisorMsg::SyncProjects { projects });
+        let _ = self
+            .supervisor_sender
+            .send(SupervisorMsg::SyncProjects { projects });
     }
 
     pub fn register_project(&self, project: RegisterProjectRequest) {
-        let _ = self.tx.send(SupervisorMsg::RegisterProject { project });
+        let _ = self
+            .supervisor_sender
+            .send(SupervisorMsg::RegisterProject { project });
     }
 
     pub fn unregister_project(&self, abs_path: AbsolutePath) {
-        let _ = self.tx.send(SupervisorMsg::UnregisterProject { abs_path });
+        let _ = self
+            .supervisor_sender
+            .send(SupervisorMsg::UnregisterProject { abs_path });
     }
 
     pub fn lint_trigger(&self, event: LintTriggerEvent) {
-        let _ = self.tx.send(SupervisorMsg::LintTriggered { event });
+        let _ = self
+            .supervisor_sender
+            .send(SupervisorMsg::LintTriggered { event });
     }
 
     /// Schedule a lint run for a project the app's post-startup staleness
@@ -115,7 +123,7 @@ impl RuntimeHandle {
     /// immediate discovery). Routed through the same `LintTriggered` path as
     /// watcher events so the worker debounces and coalesces it normally.
     pub fn request_startup_lint(&self, project_root: AbsolutePath) {
-        let _ = self.tx.send(SupervisorMsg::LintTriggered {
+        let _ = self.supervisor_sender.send(SupervisorMsg::LintTriggered {
             event: LintTriggerEvent {
                 project_root,
                 trigger: LintTriggerKind::Startup,
@@ -172,10 +180,18 @@ pub fn spawn(config: &CargoPortConfig, background_tx: Sender<BackgroundMsg>) -> 
     let cache_root = cache_paths::lint_runs_root_for(config);
     let cache_size_bytes = config.lint.cache_size_bytes().unwrap_or(None);
     let lint = config.lint.clone();
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || supervisor_loop(rx, cache_root, lint, cache_size_bytes, background_tx));
+    let (supervisor_sender, supervisor_receiver) = mpsc::channel();
+    thread::spawn(move || {
+        supervisor_loop(
+            supervisor_receiver,
+            cache_root,
+            lint,
+            cache_size_bytes,
+            background_tx,
+        );
+    });
     SpawnResult {
-        handle:  Some(RuntimeHandle { tx }),
+        handle:  Some(RuntimeHandle { supervisor_sender }),
         warning: None,
     }
 }
@@ -185,7 +201,7 @@ pub fn spawn(config: &CargoPortConfig, background_tx: Sender<BackgroundMsg>) -> 
     reason = "supervisor owns its queue and worker map for the lifetime of the runtime"
 )]
 fn supervisor_loop(
-    rx: StdReceiver<SupervisorMsg>,
+    supervisor_receiver: StdReceiver<SupervisorMsg>,
     cache_root: AbsolutePath,
     lint: LintConfig,
     cache_size_bytes: Option<u64>,
@@ -208,7 +224,7 @@ fn supervisor_loop(
     };
 
     loop {
-        match rx.recv() {
+        match supervisor_receiver.recv() {
             Ok(SupervisorMsg::SyncProjects { projects }) => {
                 emit_current_statuses(&projects, &status_cache, &cache_root, &background_tx);
                 let desired = desired_projects(&lint, &projects);

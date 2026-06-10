@@ -50,7 +50,7 @@ impl App {
         {
             return;
         }
-        let tx = self.background.background_sender();
+        let sender = self.background.background_sender();
         let client = self.net.http_client();
         let repo_cache = self.net.github.fetch_cache.clone();
         let path: AbsolutePath = AbsolutePath::from(path);
@@ -59,7 +59,7 @@ impl App {
         thread::spawn(move || {
             let mut data =
                 scan::load_cached_repo_data(&repo_cache, &owner_repo).unwrap_or_else(|| {
-                    let _ = tx.send(BackgroundMsg::RepoFetchQueued {
+                    let _ = sender.send(BackgroundMsg::RepoFetchQueued {
                         repo: owner_repo.clone(),
                     });
                     let (result, meta, signal) = scan::fetch_ci_runs_cached(
@@ -69,7 +69,7 @@ impl App {
                         owner_repo.repo(),
                         ci_run_count,
                     );
-                    scan::emit_service_signal(&tx, signal);
+                    scan::emit_service_signal(&sender, signal);
                     let (runs, github_total) = match result {
                         CiFetchResult::Loaded { runs, github_total } => (runs, github_total),
                         CiFetchResult::CacheOnly(runs) => (runs, 0),
@@ -84,16 +84,16 @@ impl App {
                     data
                 });
             if data.pr_data.needs_fetch() {
-                let _ = tx.send(BackgroundMsg::RepoFetchQueued {
+                let _ = sender.send(BackgroundMsg::RepoFetchQueued {
                     repo: owner_repo.clone(),
                 });
                 let stale = data.pr_data.info().cloned();
-                let _ = tx.send(BackgroundMsg::PullRequests {
+                let _ = sender.send(BackgroundMsg::PullRequests {
                     repo: owner_repo.clone(),
                     data: ProjectPrData::Loading(stale.clone()),
                 });
                 let (pr_fetch, signal) = client.fetch_open_pull_requests(owner_repo.clone());
-                scan::emit_service_signal(&tx, signal);
+                scan::emit_service_signal(&sender, signal);
                 data.pr_data = match pr_fetch {
                     Some(PullRequestFetch::Loaded(info)) => ProjectPrData::Loaded(info),
                     Some(PullRequestFetch::Unavailable(reason)) => {
@@ -111,17 +111,17 @@ impl App {
                 };
                 scan::store_cached_repo_data(&repo_cache, &owner_repo, data.clone());
             }
-            let _ = tx.send(BackgroundMsg::CiRuns {
+            let _ = sender.send(BackgroundMsg::CiRuns {
                 path:         path.clone(),
                 runs:         data.runs,
                 github_total: data.github_total,
             });
-            let _ = tx.send(BackgroundMsg::PullRequests {
+            let _ = sender.send(BackgroundMsg::PullRequests {
                 repo: owner_repo.clone(),
                 data: data.pr_data,
             });
             if let Some(meta) = data.meta {
-                let _ = tx.send(BackgroundMsg::RepoMeta {
+                let _ = sender.send(BackgroundMsg::RepoMeta {
                     path,
                     stars: meta.stars,
                     description: meta.description,
@@ -130,7 +130,7 @@ impl App {
             // Fire `RepoFetchComplete` from the always-runs tail so the
             // dedup set clears on cache hits too. The startup toast
             // handler is a no-op for repos that were never queued.
-            let _ = tx.send(BackgroundMsg::RepoFetchComplete { repo: owner_repo });
+            let _ = sender.send(BackgroundMsg::RepoFetchComplete { repo: owner_repo });
         });
     }
     /// Handle a per-checkout git state update. Writes to the
@@ -439,7 +439,7 @@ impl App {
         if !self.net.github.insert_pr_check_poll(repo.clone(), number) {
             return;
         }
-        let tx = self.background.background_sender();
+        let sender = self.background.background_sender();
         let client = self.net.http_client();
         let repo_cache = self.net.github.fetch_cache.clone();
         let repo = repo.clone();
@@ -448,12 +448,12 @@ impl App {
                 thread::sleep(Duration::from_secs(PR_CHECK_POLL_SECS));
                 let (data, signal) =
                     fetch_pull_requests_for_check_poll(&client, &repo_cache, &repo);
-                scan::emit_service_signal(&tx, signal);
+                scan::emit_service_signal(&sender, signal);
                 let Some(data) = data else {
                     continue;
                 };
                 let still_checking = pull_request_still_checking(&data, number);
-                let _ = tx.send(BackgroundMsg::PullRequests {
+                let _ = sender.send(BackgroundMsg::PullRequests {
                     repo: repo.clone(),
                     data,
                 });
@@ -461,7 +461,7 @@ impl App {
                     break;
                 }
             }
-            let _ = tx.send(BackgroundMsg::PullRequestCheckPollStopped { repo, number });
+            let _ = sender.send(BackgroundMsg::PullRequestCheckPollStopped { repo, number });
         });
     }
     fn maybe_toast_deleted_pull_requests(
@@ -481,14 +481,14 @@ impl App {
         repo: OwnerRepo,
         pull_requests: Vec<PullRequestInfo>,
     ) {
-        let tx = self.background.background_sender();
+        let sender = self.background.background_sender();
         let client = self.net.http_client();
         thread::spawn(move || {
             for pull_request in pull_requests {
                 let (reason, signal) =
                     client.fetch_pull_request_gone_reason(repo.clone(), pull_request.number);
-                scan::emit_service_signal(&tx, signal);
-                let _ = tx.send(BackgroundMsg::PullRequestDisappeared {
+                scan::emit_service_signal(&sender, signal);
+                let _ = sender.send(BackgroundMsg::PullRequestDisappeared {
                     repo: repo.clone(),
                     pull_request,
                     reason: reason.unwrap_or(PullRequestGoneReason::Unknown),

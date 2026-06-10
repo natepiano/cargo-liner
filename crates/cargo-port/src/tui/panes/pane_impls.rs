@@ -158,12 +158,12 @@ pub struct CpuPane {
 }
 
 impl CpuPane {
-    pub fn new(cfg: &CpuConfig) -> Self {
+    pub fn new(cpu_config: &CpuConfig) -> Self {
         let mut pane = Self {
             viewport:  Viewport::new(),
             focus:     RenderFocus::inactive(),
             content:   None,
-            monitor:   CpuMonitor::new(cfg.poll_ms),
+            monitor:   CpuMonitor::new(cpu_config.poll_ms),
             row_rects: Vec::new(),
         };
         pane.install_placeholder();
@@ -188,8 +188,8 @@ impl CpuPane {
     /// ready and busy-spin the loop).
     pub const fn is_sampling(&self) -> bool { self.monitor.is_sampling() }
 
-    pub fn reset(&mut self, cfg: &CpuConfig) {
-        self.monitor = CpuMonitor::new(cfg.poll_ms);
+    pub fn reset(&mut self, cpu_config: &CpuConfig) {
+        self.monitor = CpuMonitor::new(cpu_config.poll_ms);
         self.install_placeholder();
     }
 

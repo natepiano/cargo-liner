@@ -67,7 +67,7 @@ impl App {
     /// [`Self::apply_lint_history_loaded`].
     pub fn refresh_lint_runs_from_disk(&self) {
         let paths: Vec<AbsolutePath> = self.lint_history_project_paths().into_iter().collect();
-        let tx = self.background.background_sender();
+        let sender = self.background.background_sender();
         let handle = self.net.http_client().handle;
         handle.spawn(async move {
             let entries = tokio::task::spawn_blocking(move || {
@@ -81,7 +81,7 @@ impl App {
             })
             .await
             .unwrap_or_default();
-            let _ = tx.send(BackgroundMsg::LintHistoryLoaded { entries });
+            let _ = sender.send(BackgroundMsg::LintHistoryLoaded { entries });
         });
         self.refresh_lint_cache_usage_from_disk();
     }
@@ -122,14 +122,14 @@ impl App {
             .lint
             .cache_size_bytes()
             .unwrap_or(None);
-        let tx = self.background.background_sender();
+        let sender = self.background.background_sender();
         let handle = self.net.http_client().handle;
         handle.spawn(async move {
             let usage =
                 tokio::task::spawn_blocking(move || lint::retained_cache_usage(cache_size_bytes))
                     .await
                     .unwrap_or_default();
-            let _ = tx.send(BackgroundMsg::LintCacheUsage { usage });
+            let _ = sender.send(BackgroundMsg::LintCacheUsage { usage });
         });
     }
     pub fn lint_runtime_projects(&self) -> Vec<RegisterProjectRequest> {

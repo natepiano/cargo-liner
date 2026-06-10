@@ -40,10 +40,10 @@ use crate::scan;
 use crate::test_support;
 
 fn test_metadata_dispatch(client: &HttpClient) -> MetadataDispatchContext {
-    let (tx, _rx) = channel::unbounded();
+    let (sender, _receiver) = channel::unbounded();
     MetadataDispatchContext {
         handle: client.handle.clone(),
-        tx,
+        sender,
         metadata_store: Arc::new(std::sync::Mutex::new(WorkspaceMetadataStore::new())),
         metadata_limit: Arc::new(tokio::sync::Semaphore::new(1)),
     }
@@ -504,10 +504,10 @@ fn out_of_tree_cargo_config_refresh_fans_out_to_descendant_projects() {
         discovered:      &discovered,
     };
 
-    let (tx, rx) = channel::unbounded();
+    let (sender, receiver) = channel::unbounded();
     let dispatch = MetadataDispatchContext {
         handle: test_support::test_runtime().handle().clone(),
-        tx,
+        sender,
         metadata_store: Arc::new(std::sync::Mutex::new(WorkspaceMetadataStore::new())),
         metadata_limit: Arc::new(tokio::sync::Semaphore::new(1)),
     };
@@ -515,7 +515,7 @@ fn out_of_tree_cargo_config_refresh_fans_out_to_descendant_projects() {
     refresh::try_dispatch_out_of_tree_cargo_config_refresh(&event_path, &ctx, Some(&dispatch));
 
     let mut refreshed: Vec<AbsolutePath> = Vec::new();
-    while let Ok(msg) = rx.recv_timeout(Duration::from_millis(200)) {
+    while let Ok(msg) = receiver.recv_timeout(Duration::from_millis(200)) {
         if let BackgroundMsg::CargoMetadata { workspace_root, .. } = msg {
             refreshed.push(workspace_root);
         }

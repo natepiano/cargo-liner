@@ -30,26 +30,27 @@ pub(super) fn spawn_initial_language_stats(
 
 fn spawn_language_stats_tree(scan_context: &StreamingScanContext, tree: DiskUsageTree) {
     let handle = scan_context.client.handle.clone();
-    let tx = scan_context.tx.clone();
+    let sender = scan_context.sender.clone();
 
     handle.spawn(async move {
-        let _ = tokio::task::spawn_blocking(move || emit_language_stats_for_tree(&tree, &tx)).await;
+        let _ =
+            tokio::task::spawn_blocking(move || emit_language_stats_for_tree(&tree, &sender)).await;
     });
 }
 
-fn emit_language_stats_for_tree(tree: &DiskUsageTree, tx: &Sender<BackgroundMsg>) {
+fn emit_language_stats_for_tree(tree: &DiskUsageTree, sender: &Sender<BackgroundMsg>) {
     let started = std::time::Instant::now();
     let config = Config {
         hidden: Some(false),
         ..tokei::Config::default()
     };
     let mut rust_cache = RustBreakdownCache::default();
-    send_language_progress_plan(tx, tree.entries.len());
+    send_language_progress_plan(sender, tree.entries.len());
     let languages = collect_path_languages(&tree.root_abs_path, &config);
     if tree.entries.len() == 1 {
         let entry = tree.entries[0].clone();
         send_language_stats_entry(
-            tx,
+            sender,
             entry.clone(),
             build_language_stats(entry.as_path(), &languages, &config, &mut rust_cache),
         );
@@ -69,7 +70,7 @@ fn emit_language_stats_for_tree(tree: &DiskUsageTree, tx: &Sender<BackgroundMsg>
             root_entry = Some(entry.clone());
         } else {
             send_language_stats_entry(
-                tx,
+                sender,
                 entry.clone(),
                 build_language_stats_for_root(
                     entry.as_path(),
@@ -83,7 +84,7 @@ fn emit_language_stats_for_tree(tree: &DiskUsageTree, tx: &Sender<BackgroundMsg>
 
     if let Some(entry) = root_entry {
         send_language_stats_entry(
-            tx,
+            sender,
             entry,
             build_language_stats(
                 tree.root_abs_path.as_path(),
@@ -118,15 +119,19 @@ fn collect_path_languages(root: &AbsolutePath, config: &Config) -> Languages {
     languages
 }
 
-fn send_language_progress_plan(tx: &Sender<BackgroundMsg>, units: usize) {
+fn send_language_progress_plan(sender: &Sender<BackgroundMsg>, units: usize) {
     if units == 0 {
         return;
     }
-    let _ = tx.send(BackgroundMsg::LanguageStatsProgressPlan { units });
+    let _ = sender.send(BackgroundMsg::LanguageStatsProgressPlan { units });
 }
 
-fn send_language_stats_entry(tx: &Sender<BackgroundMsg>, path: AbsolutePath, stats: LanguageStats) {
-    let _ = tx.send(BackgroundMsg::LanguageStatsBatch {
+fn send_language_stats_entry(
+    sender: &Sender<BackgroundMsg>,
+    path: AbsolutePath,
+    stats: LanguageStats,
+) {
+    let _ = sender.send(BackgroundMsg::LanguageStatsBatch {
         entries: vec![(path, stats)],
     });
 }

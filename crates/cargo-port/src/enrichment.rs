@@ -27,61 +27,70 @@ use crate::scan::FetchContext;
 ///
 /// Emits git info, disk usage, language stats, and crates.io metadata
 /// according to the entry's capability methods.
-pub(crate) fn enrich(entry: &dyn ProjectFields, tx: &Sender<BackgroundMsg>, ctx: &FetchContext) {
+pub(crate) fn enrich(
+    entry: &dyn ProjectFields,
+    sender: &Sender<BackgroundMsg>,
+    ctx: &FetchContext,
+) {
     let path: AbsolutePath = entry.path().clone();
 
-    scan::emit_git_info(tx, &path);
-    emit_disk(&path, tx);
-    spawn_language_scan(path.clone(), tx.clone());
-    spawn_test_count_scan(path.clone(), tx.clone());
+    scan::emit_git_info(sender, &path);
+    emit_disk(&path, sender);
+    spawn_language_scan(path.clone(), sender.clone());
+    spawn_test_count_scan(path.clone(), sender.clone());
     if let Some(name) = entry.crates_io_name() {
-        emit_crates_io(name, &path, tx, ctx);
+        emit_crates_io(name, &path, sender, ctx);
     }
 }
 
-fn emit_disk(path: &AbsolutePath, tx: &Sender<BackgroundMsg>) {
+fn emit_disk(path: &AbsolutePath, sender: &Sender<BackgroundMsg>) {
     let bytes = scan::dir_size(path.as_path());
-    let _ = tx.send(BackgroundMsg::DiskUsage {
+    let _ = sender.send(BackgroundMsg::DiskUsage {
         path: path.clone(),
         bytes,
     });
 }
 
-pub(crate) fn spawn_language_scan(path: AbsolutePath, tx: Sender<BackgroundMsg>) {
+pub(crate) fn spawn_language_scan(path: AbsolutePath, sender: Sender<BackgroundMsg>) {
     rayon::spawn(move || {
         let stats = scan::collect_language_stats_single(path.as_path());
         if !stats.entries.is_empty() {
-            let _ = tx.send(BackgroundMsg::LanguageStatsBatch {
+            let _ = sender.send(BackgroundMsg::LanguageStatsBatch {
                 entries: vec![(path, stats)],
             });
         }
     });
 }
 
-pub(crate) fn spawn_test_count_scan(path: AbsolutePath, tx: Sender<BackgroundMsg>) {
+pub(crate) fn spawn_test_count_scan(path: AbsolutePath, sender: Sender<BackgroundMsg>) {
     rayon::spawn(move || {
         let counts = scan::collect_test_counts_single(path.as_path());
-        let _ = tx.send(BackgroundMsg::TestCountsBatch {
+        let _ = sender.send(BackgroundMsg::TestCountsBatch {
             entries: vec![(path, counts)],
         });
     });
 }
 
-fn emit_crates_io(name: &str, path: &AbsolutePath, tx: &Sender<BackgroundMsg>, ctx: &FetchContext) {
-    let _ = tx.send(BackgroundMsg::CratesIoFetchQueued {
+fn emit_crates_io(
+    name: &str,
+    path: &AbsolutePath,
+    sender: &Sender<BackgroundMsg>,
+    ctx: &FetchContext,
+) {
+    let _ = sender.send(BackgroundMsg::CratesIoFetchQueued {
         name: name.to_string(),
     });
     let (info, signal) = ctx.client.fetch_crates_io_info(name);
-    scan::emit_service_signal(tx, signal);
+    scan::emit_service_signal(sender, signal);
     if let Some(info) = info {
-        let _ = tx.send(BackgroundMsg::CratesIoVersion {
+        let _ = sender.send(BackgroundMsg::CratesIoVersion {
             path:       path.clone(),
             version:    info.version,
             prerelease: info.prerelease,
             downloads:  info.downloads,
         });
     }
-    let _ = tx.send(BackgroundMsg::CratesIoFetchComplete {
+    let _ = sender.send(BackgroundMsg::CratesIoFetchComplete {
         name: name.to_string(),
     });
 }

@@ -46,6 +46,7 @@
 
 mod async_tasks;
 mod ci;
+mod constants;
 mod construct;
 mod dismiss;
 mod lint_registration;
@@ -474,9 +475,8 @@ impl App {
     /// while the screen is otherwise idle.
     pub(super) fn animation_timeout(&self) -> Duration {
         const IDLE_HEARTBEAT: Duration = Duration::from_secs(1);
-        const ANIMATION_TICK: Duration = Duration::from_millis(80);
         if self.is_animating() {
-            ANIMATION_TICK
+            constants::ANIMATION_TICK
         } else {
             IDLE_HEARTBEAT
         }
@@ -809,7 +809,7 @@ impl App {
     pub(super) fn metadata_dispatch(&self) -> MetadataDispatchContext {
         MetadataDispatchContext {
             handle:         self.net.http_client.handle.clone(),
-            tx:             self.background.background_sender(),
+            sender:         self.background.background_sender(),
             metadata_store: Arc::clone(self.scan.metadata_store()),
             // Bound by the scan-concurrency cap so these refreshes can't
             // monopolize the metadata blocking pool.
