@@ -10,12 +10,14 @@
 //! hitboxes into a global vec. Render dispatch goes through
 //! [`tui_pane::Renderable`] — impls live alongside each pane struct.
 
+mod constants;
 use std::path::Path;
 use std::time::Duration;
 
 use strum::EnumIter;
 use tui_pane::ToastId;
 
+pub use self::constants::HITTABLE_Z_ORDER;
 use super::panes::PaneId;
 use super::panes::SyncedDescriptionHeight;
 use super::project_list::ProjectList;
@@ -112,20 +114,6 @@ pub enum HittableId {
     CiRuns,
     Output,
 }
-
-/// Stacking order used for tiled-pane hit-test dispatch: top of stack
-/// first. Overlays and toasts are not here — see [`HittableId`].
-pub const HITTABLE_Z_ORDER: [HittableId; 9] = [
-    HittableId::ProjectList,
-    HittableId::Package,
-    HittableId::Lang,
-    HittableId::Cpu,
-    HittableId::Git,
-    HittableId::Targets,
-    HittableId::Lints,
-    HittableId::CiRuns,
-    HittableId::Output,
-];
 
 #[cfg(test)]
 mod hit_test_tests {

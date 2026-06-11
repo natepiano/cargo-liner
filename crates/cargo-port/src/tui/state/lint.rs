@@ -30,6 +30,8 @@ use tui_pane::TrackedItem;
 use tui_pane::Viewport;
 
 use super::Config;
+use super::constants::CATCH_UP_LINT_TOAST_TITLE;
+use super::constants::NORMAL_LINT_TOAST_TITLE;
 use crate::constants::LINT_NO_LOG;
 use crate::lint::CacheUsage;
 use crate::lint::LintRunOrigin;
@@ -73,12 +75,6 @@ pub enum LintDisplay {
         status: LintStatus,
     },
 }
-
-/// Title for the running-lint toast during normal file-triggered runs.
-const NORMAL_LINT_TOAST_TITLE: &str = "Lints";
-/// Title while the startup catch-up batch runs — projects re-linted once
-/// startup finishes because their sources are newer than their last run.
-const CATCH_UP_LINT_TOAST_TITLE: &str = "Catch-up lints";
 
 /// The `Lint` subsystem. Owns the lint runtime, in-flight
 /// paths, running-toast slot, and the disk cache stat counter.

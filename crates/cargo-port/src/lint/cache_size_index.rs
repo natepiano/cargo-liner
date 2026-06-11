@@ -18,9 +18,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-/// Hidden filename at the cache root holding the byte count as plain
-/// text decimal (one line, no trailing newline required).
-const INDEX_FILENAME: &str = ".cache_size";
+use super::constants::INDEX_FILENAME;
 
 /// Serializes [`adjust`] calls within the process. Two lint workers running
 /// in parallel for different projects both call adjust, and without this

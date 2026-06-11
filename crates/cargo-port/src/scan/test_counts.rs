@@ -11,24 +11,11 @@ use walkdir::WalkDir;
 
 use super::BackgroundMsg;
 use super::cargo_metadata::StreamingScanContext;
+use super::constants::TEST_ATTRIBUTES;
 use super::disk_usage;
 use super::disk_usage::DiskUsageTree;
 use crate::project::AbsolutePath;
 use crate::project::TestCounts;
-
-/// `#[test]`-family attribute paths counted as test functions. Each entry
-/// is the path as written between `#[` and the following `]` or `(`, so
-/// `#[tokio::test]` matches `tokio::test` and `#[test_case(...)]` matches
-/// `test_case`. `#[cfg(test)]` is deliberately absent — its attribute
-/// path is `cfg`, not `test`, so it never matches.
-const TEST_ATTRIBUTES: [&str; 6] = [
-    "test",
-    "tokio::test",
-    "async_std::test",
-    "rstest",
-    "test_case",
-    "googletest::test",
-];
 
 /// Spawn the initial bulk test-count scan, batched per disk-usage tree to
 /// mirror the language-stats fan-out.

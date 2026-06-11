@@ -18,6 +18,7 @@
 //!    [`Framework::focused_pane_mode`](crate::Framework::focused_pane_mode).
 //! 3. Concatenate the per-region span vectors into one [`StatusBar`].
 
+mod constants;
 mod global_region;
 mod nav_region;
 mod palette;

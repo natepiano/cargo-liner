@@ -22,6 +22,7 @@ use tui_pane::CopyLabel;
 use tui_pane::CopyPayload;
 use tui_pane::CopySelectionResult;
 
+pub(super) use self::constants::CRATES_IO_UNREACHABLE;
 use self::constants::PROJECT_LIBS_LABEL;
 use self::constants::PROJECT_MEMBERS_LABEL;
 use self::constants::PROJECT_PROC_MACROS_LABEL;
@@ -2801,12 +2802,6 @@ const fn derive_crates_io_status(crates_io: &CratesIoFields, app: &App) -> Crate
     };
     CratesIoStatus { publish, service }
 }
-
-/// Value shown in the crates.io `version` row when the project is
-/// publishable but a confirmed crates.io outage means no data has landed
-/// — the title already says "crates.io", so the cell only needs to say
-/// the service is unreachable.
-pub(super) const CRATES_IO_UNREACHABLE: &str = "unreachable";
 
 /// Build the crates.io stats-section rows from the resolved fields plus
 /// the live availability state. Empty for non-publishable projects.

@@ -5,6 +5,8 @@ use std::time::Duration;
 use notify::Event;
 use notify::event::EventKind;
 
+use super::constants::DELETE_LINT_DEBOUNCE;
+use super::constants::LINT_DEBOUNCE;
 use crate::constants::CARGO_CONFIG;
 use crate::constants::CARGO_CONFIG_TOML;
 use crate::constants::CARGO_LOCK;
@@ -15,9 +17,6 @@ use crate::constants::RUST_TOOLCHAIN;
 use crate::constants::RUST_TOOLCHAIN_TOML;
 use crate::constants::TARGET_DIR;
 use crate::project::AbsolutePath;
-
-const LINT_DEBOUNCE: Duration = Duration::from_millis(750);
-const DELETE_LINT_DEBOUNCE: Duration = Duration::from_millis(1500);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LintTriggerKind {

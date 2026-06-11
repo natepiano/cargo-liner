@@ -42,7 +42,14 @@ use super::LintDisplay;
 use super::PackageData;
 use super::PackageRow;
 use super::SyncedDescriptionHeight;
+use super::constants::CRATES_IO_TITLE;
+use super::constants::DESCRIPTION_BOX;
+use super::constants::METADATA_BOX;
+use super::constants::MIN_METADATA_WIDTH;
+use super::constants::MIN_STATS_LABEL_WIDTH;
+use super::constants::STATS_TITLE;
 use super::constants::TESTS_IGNORED_LABEL;
+use super::constants::TESTS_TITLE;
 use super::constants::TESTS_TOTAL_LABEL;
 use super::pane_data::CRATES_IO_UNREACHABLE;
 use super::pane_data::PackageSection;
@@ -104,26 +111,6 @@ struct StatsColumnRender<'a> {
 }
 
 type FieldWrapFn = fn(&str, usize) -> Vec<String>;
-
-/// Leaf index of the description box in the package tree.
-const DESCRIPTION_BOX: usize = 0;
-
-/// Leaf index of the metadata column in the package tree.
-const METADATA_BOX: usize = 1;
-
-/// Floor on the metadata column's width when the stats column is present.
-const MIN_METADATA_WIDTH: u16 = 20;
-
-/// Floor on the stats-column label field, so a project with only short
-/// labels keeps the same column width. The widest default Structure labels
-/// (`proc-macro` / `submodules`) are 10 wide.
-const MIN_STATS_LABEL_WIDTH: u16 = 10;
-
-/// Title of the Tests sub-section rule in the stats column.
-const TESTS_TITLE: &str = "Tests";
-
-/// Title of the crates.io sub-section rule in the stats column.
-const CRATES_IO_TITLE: &str = "crates.io";
 
 /// Leaf indices of the stats-column sections in the package tree's
 /// flattened-leaf order. The description and metadata boxes are always
@@ -598,8 +585,6 @@ fn visible_row_rects(
         })
         .collect()
 }
-
-const STATS_TITLE: &str = "Structure";
 
 struct ProjectPanelRender<'a> {
     pkg_data:                  &'a PackageData,

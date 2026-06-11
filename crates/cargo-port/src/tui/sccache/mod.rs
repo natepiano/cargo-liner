@@ -1,3 +1,4 @@
+mod constants;
 mod pane;
 mod render;
 mod stats;

@@ -2,7 +2,7 @@
 //! perf log.
 //!
 //! [`init`] installs a file-based tracing subscriber only when
-//! `CARGO_PORT_LOG` is set. When enabled, it rotates the previous log
+//! `TUI_PANE_LOG` is set. When enabled, it rotates the previous log
 //! to `previous_log_path` and writes the new session to
 //! `current_log_path`. The `SLOW_*` constants are the thresholds the
 //! framework and app agree on for "this took too long" tracing
@@ -19,24 +19,20 @@ use tracing_subscriber::prelude::*;
 
 use super::constants::DEFAULT_PERF_LOG_FILTER;
 use super::constants::PERF_LOG_ENV;
-
-/// Frame paint exceeding this is logged as a slow frame (ms).
-pub const SLOW_FRAME_MS: u128 = 30;
-/// Background-message batch processing exceeding this is logged (ms).
-pub const SLOW_BG_BATCH_MS: u128 = 50;
-/// Per-input-event handling exceeding this is logged (ms).
-pub const SLOW_INPUT_EVENT_MS: u128 = 10;
+pub use super::constants::SLOW_BG_BATCH_MS;
+pub use super::constants::SLOW_FRAME_MS;
+pub use super::constants::SLOW_INPUT_EVENT_MS;
 
 /// Saturating conversion from `u128` milliseconds to `u64` for tracing fields.
 #[must_use]
 pub fn ms(millis: u128) -> u64 { u64::try_from(millis).unwrap_or(u64::MAX) }
 
-/// Initialize the perf-log tracing subscriber if `CARGO_PORT_LOG` is set.
+/// Initialize the perf-log tracing subscriber if `TUI_PANE_LOG` is set.
 ///
 /// When enabled, rotates the file at `current_log_path` to
 /// `previous_log_path` if it exists, then opens `current_log_path`
 /// for write-truncate and installs a file-based tracing subscriber
-/// filtered by the `CARGO_PORT_LOG` env var (default `info` for
+/// filtered by the `TUI_PANE_LOG` env var (default `info` for
 /// invalid values).
 ///
 /// Idempotent at the app level (callers invoke once at startup);
@@ -106,7 +102,7 @@ mod tests {
         if std::env::var_os(PERF_LOG_ENV).is_some() {
             return;
         }
-        let unique = format!("cargo-port-perf-log-disabled-{}", std::process::id());
+        let unique = format!("tui-pane-perf-log-disabled-{}", std::process::id());
         let dir = std::env::temp_dir().join(unique);
         let current = dir.join("current.log");
         let previous = dir.join("previous.log");

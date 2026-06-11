@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use tui_pane::TrackedItem;
 
+use super::constants::PR_CHECK_POLL_SECS;
 use crate::ci;
 use crate::ci::OwnerRepo;
 use crate::http::HttpClient;
@@ -32,7 +33,7 @@ use crate::scan::RepoCache;
 use crate::tui::app::App;
 use crate::tui::project_list::SyncResolution;
 use crate::tui::state;
-const PR_CHECK_POLL_SECS: u64 = 10;
+
 impl App {
     pub(super) fn spawn_repo_fetch_for_git_info(&mut self, path: &Path, repo_url: &str) {
         let Some(owner_repo) = ci::parse_owner_repo(repo_url) else {

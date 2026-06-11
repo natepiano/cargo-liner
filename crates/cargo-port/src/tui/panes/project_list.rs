@@ -24,6 +24,7 @@ use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
 use tui_pane::text_default;
 
+use super::constants::DISMISS_SUFFIX;
 use super::constants::PREFIX_GROUP_COLLAPSED;
 use super::constants::PREFIX_GROUP_EXPANDED;
 use super::constants::PREFIX_MEMBER_INLINE;
@@ -45,6 +46,7 @@ use super::constants::PREFIX_WT_MEMBER_NAMED;
 use super::constants::PREFIX_WT_MEMBER_VENDORED_INLINE;
 use super::constants::PREFIX_WT_MEMBER_VENDORED_NAMED;
 use super::constants::PREFIX_WT_VENDORED;
+use super::constants::TITLE_ELLIPSIS;
 use super::lang;
 use super::pane_impls::ProjectListPane;
 use crate::project;
@@ -74,8 +76,6 @@ use crate::tui::render;
 use crate::tui::state;
 use crate::tui::state::Lint;
 use crate::tui::theme_roles;
-
-const TITLE_ELLIPSIS: &str = "\u{2026}";
 
 /// Compute the percentile rank of `bytes` within `sorted_values` (0.0 to 1.0).
 #[allow(
@@ -268,8 +268,6 @@ pub fn render_project_list_pane_body(
         Style::default().fg(label_color()),
     );
 }
-
-const DISMISS_SUFFIX: &str = " [x]";
 
 fn set_project_list_dismiss_actions(
     pane: &mut ProjectListPane,

@@ -1,7 +1,8 @@
+use super::constants::CONFIG_HANDLERS;
 use crate::config::CargoPortConfig;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ConfigKey {
+pub(super) enum ConfigKey {
     CpuPollMs,
     CpuLowUtilizationMax,
     CpuMediumUtilizationMax,
@@ -68,83 +69,12 @@ pub struct ReloadContext {
 }
 
 #[derive(Clone, Copy)]
-struct ConfigHandler {
-    key:  ConfigKey,
-    mark: fn(&mut ReloadActions, &CargoPortConfig, &CargoPortConfig, ReloadContext),
+pub(super) struct ConfigHandler {
+    pub(super) key:  ConfigKey,
+    pub(super) mark: fn(&mut ReloadActions, &CargoPortConfig, &CargoPortConfig, ReloadContext),
 }
 
-const CONFIG_HANDLERS: &[ConfigHandler] = &[
-    ConfigHandler {
-        key:  ConfigKey::CpuPollMs,
-        mark: mark_refresh_cpu,
-    },
-    ConfigHandler {
-        key:  ConfigKey::CpuLowUtilizationMax,
-        mark: mark_refresh_cpu,
-    },
-    ConfigHandler {
-        key:  ConfigKey::CpuMediumUtilizationMax,
-        mark: mark_refresh_cpu,
-    },
-    ConfigHandler {
-        key:  ConfigKey::InlineDirs,
-        mark: mark_regroup_members,
-    },
-    ConfigHandler {
-        key:  ConfigKey::IncludeNonRust,
-        mark: mark_include_non_rust,
-    },
-    ConfigHandler {
-        key:  ConfigKey::CiRunCount,
-        mark: mark_full_rescan,
-    },
-    ConfigHandler {
-        key:  ConfigKey::MainBranch,
-        mark: mark_full_rescan,
-    },
-    ConfigHandler {
-        key:  ConfigKey::OtherPrimaryBranches,
-        mark: mark_full_rescan,
-    },
-    ConfigHandler {
-        key:  ConfigKey::IncludeDirs,
-        mark: mark_full_rescan,
-    },
-    ConfigHandler {
-        key:  ConfigKey::CacheRoot,
-        mark: mark_full_rescan,
-    },
-    ConfigHandler {
-        key:  ConfigKey::CacheRoot,
-        mark: mark_refresh_lint_runtime,
-    },
-    ConfigHandler {
-        key:  ConfigKey::LintEnabled,
-        mark: mark_refresh_lint_runtime,
-    },
-    ConfigHandler {
-        key:  ConfigKey::LintInclude,
-        mark: mark_refresh_lint_runtime,
-    },
-    ConfigHandler {
-        key:  ConfigKey::LintExclude,
-        mark: mark_refresh_lint_runtime,
-    },
-    ConfigHandler {
-        key:  ConfigKey::LintCommands,
-        mark: mark_refresh_lint_runtime,
-    },
-    ConfigHandler {
-        key:  ConfigKey::LintCacheSize,
-        mark: mark_refresh_lint_runtime,
-    },
-    ConfigHandler {
-        key:  ConfigKey::LintOnDiscovery,
-        mark: mark_refresh_lint_runtime,
-    },
-];
-
-const fn mark_regroup_members(
+pub(super) const fn mark_regroup_members(
     actions: &mut ReloadActions,
     _old: &CargoPortConfig,
     _new: &CargoPortConfig,
@@ -153,7 +83,7 @@ const fn mark_regroup_members(
     actions.tree.escalate(TreeReaction::RegroupMembers);
 }
 
-const fn mark_full_rescan(
+pub(super) const fn mark_full_rescan(
     actions: &mut ReloadActions,
     _old: &CargoPortConfig,
     _new: &CargoPortConfig,
@@ -162,7 +92,7 @@ const fn mark_full_rescan(
     actions.tree.escalate(TreeReaction::FullRescan);
 }
 
-const fn mark_refresh_lint_runtime(
+pub(super) const fn mark_refresh_lint_runtime(
     actions: &mut ReloadActions,
     _old: &CargoPortConfig,
     _new: &CargoPortConfig,
@@ -171,7 +101,7 @@ const fn mark_refresh_lint_runtime(
     actions.refresh_lint_runtime = ReloadDecision::Apply;
 }
 
-const fn mark_refresh_cpu(
+pub(super) const fn mark_refresh_cpu(
     actions: &mut ReloadActions,
     _old: &CargoPortConfig,
     _new: &CargoPortConfig,
@@ -180,7 +110,7 @@ const fn mark_refresh_cpu(
     actions.refresh_cpu = ReloadDecision::Apply;
 }
 
-const fn mark_include_non_rust(
+pub(super) const fn mark_include_non_rust(
     actions: &mut ReloadActions,
     old: &CargoPortConfig,
     new: &CargoPortConfig,

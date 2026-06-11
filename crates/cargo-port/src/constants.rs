@@ -121,3 +121,20 @@ pub(crate) const DEFAULT_CLIPPY_LINT_COMMAND: &str = "cargo clippy --workspace -
                                                       \"$MANIFEST_PATH\" -- -D warnings";
 pub(crate) const KEYMAP_FILE: &str = "keymap.toml";
 pub(crate) const MIN_CPU_POLL_MS: u64 = 250;
+
+// src config
+pub(crate) const BYTES_PER_GIB: u64 = BYTES_PER_MIB * 1024;
+pub(crate) const BYTES_PER_KIB: u64 = 1024;
+pub(crate) const BYTES_PER_MIB: u64 = BYTES_PER_KIB * 1024;
+pub(crate) const DEFAULT_CACHE_SIZE: &str = "512 MiB";
+
+// src sccache
+pub(crate) const SCCACHE_BINARY: &str = "sccache";
+pub(crate) const SCCACHE_BINARY_WINDOWS: &str = "sccache.exe";
+pub(crate) const SCCACHE_STATS_ARG: &str = "--show-stats";
+pub(crate) const WRAPPER_ENV_KEYS: &[&str] = &[
+    "RUSTC_WRAPPER",
+    "RUSTC_WORKSPACE_WRAPPER",
+    "CARGO_BUILD_RUSTC_WRAPPER",
+    "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
+];

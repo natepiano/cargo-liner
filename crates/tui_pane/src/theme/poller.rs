@@ -17,10 +17,9 @@ use tokio::time::Interval;
 use tokio::time::MissedTickBehavior;
 
 use super::Appearance;
-
-const POLL_INTERVAL: Duration = Duration::from_millis(1500);
-const BACKOFF_INTERVAL: Duration = Duration::from_secs(30);
-const BACKOFF_THRESHOLD: u32 = 10;
+use super::constants::BACKOFF_INTERVAL;
+use super::constants::BACKOFF_THRESHOLD;
+use super::constants::POLL_INTERVAL;
 
 /// Spawn the OS appearance background task.
 ///

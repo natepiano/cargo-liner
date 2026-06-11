@@ -27,15 +27,9 @@ use ratatui::widgets::Paragraph;
 use tui_pane::PaneSelectionState;
 use tui_pane::label_color;
 
+use super::constants::NO_DESCRIPTION_AVAILABLE;
 use super::package;
 use crate::tui::render;
-
-/// "No description available" placeholder rendered by the Package pane
-/// when the source description is empty. Lives here so [`DescriptionBlock`]
-/// owns both the placeholder text and the row wrapping that consumes it —
-/// no caller can substitute a different placeholder and break the sync
-/// invariant.
-const NO_DESCRIPTION_AVAILABLE: &str = "No description available";
 
 /// What the block renders when the source description is empty.
 #[derive(Clone, Copy)]

@@ -8,16 +8,15 @@ use std::time::Instant;
 use cargo_metadata::TargetKind;
 
 use super::ProjectTargetSlice;
+use super::constants::BENCHES_DIR;
+use super::constants::EXAMPLES_DIR;
+use super::constants::SOURCE_DIR;
 use crate::project::AbsolutePath;
 use crate::project::WorkspaceMetadata;
 use crate::tui::app::App;
 use crate::tui::panes;
 use crate::tui::panes::RunTargetKind;
 use crate::tui::panes::TargetEntry;
-
-const SOURCE_DIR: &str = "src";
-const EXAMPLES_DIR: &str = "examples";
-const BENCHES_DIR: &str = "benches";
 
 /// One owned slice entry per known workspace. Lives across the tick call
 /// so `ProjectTargetSlice<'_>` views can borrow from its fields.

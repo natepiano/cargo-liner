@@ -14,6 +14,9 @@ use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
+use super::constants::GLOBAL_SHORTCUTS_POPUP_MAX_HEIGHT;
+use super::constants::GLOBAL_SHORTCUTS_POPUP_MIN_WIDTH;
+use super::constants::SHORTCUT_DESCRIPTION_WIDTH;
 use crate::AppContext;
 use crate::BarRegion;
 use crate::BarSlot;
@@ -32,10 +35,6 @@ use crate::label_color;
 use crate::render_overflow_affordance;
 use crate::text_default;
 use crate::title_color;
-
-const GLOBAL_SHORTCUTS_POPUP_MAX_HEIGHT: u16 = 22;
-const GLOBAL_SHORTCUTS_POPUP_MIN_WIDTH: u16 = 48;
-const SHORTCUT_DESCRIPTION_WIDTH: usize = 28;
 
 struct RenderInputs {
     lines:         Vec<Line<'static>>,

@@ -8,6 +8,7 @@
 //! capped at [`RUNNING_CAP_PERCENT`] of the inner height that is
 //! present only while anything runs).
 
+mod constants;
 mod running_subpane;
 
 use std::collections::HashSet;
@@ -43,6 +44,18 @@ use tui_pane::ViewportOverflow;
 use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
 
+use self::constants::MIN_TABLE_ROWS;
+use self::constants::RUNNING_BOX;
+use self::constants::RUNNING_CAP_PERCENT;
+use self::constants::RUNNING_CHROME;
+use self::constants::SOURCE_HEADER;
+use self::constants::TABLE_BOX;
+use self::constants::TABLE_CHROME;
+use self::constants::TABLE_FOOTER;
+use self::constants::TARGET_HEADER;
+use self::constants::TARGET_LEADING_PAD;
+use self::constants::TARGET_TABLE_COLUMN_SPACING;
+use self::constants::TARGET_TABLE_GAP_COUNT;
 use super::TargetEntry;
 use super::TargetsData;
 use super::package::RenderStyles;
@@ -52,39 +65,6 @@ use crate::tui::pane::PaneRenderCtx;
 use crate::tui::panes;
 use crate::tui::render;
 use crate::tui::theme_roles;
-
-/// Header text for the Target column, excluding the row's leading pad.
-const TARGET_HEADER: &str = "Target";
-/// Header text for the Source column — also defines the column's
-/// minimum width so the header never gets truncated.
-const SOURCE_HEADER: &str = "Source";
-/// Target rows render one leading space before the target name.
-const TARGET_LEADING_PAD: usize = 1;
-/// Number of 1-column gaps between Target/Source/Kind.
-const TARGET_TABLE_GAP_COUNT: usize = 2;
-/// Inter-column gap used by the `ratatui` table.
-const TARGET_TABLE_COLUMN_SPACING: u16 = 1;
-
-/// Leaf index of the targets table box in the pane's tree.
-const TABLE_BOX: usize = 0;
-/// Leaf index of the Running box; its `Placed` entry exists only while
-/// anything runs.
-const RUNNING_BOX: usize = 1;
-/// Ceiling on the Running box: it grows upward to at most this percent of
-/// the pane's inner height, so the table keeps the rest.
-const RUNNING_CAP_PERCENT: u16 = 80;
-/// Chrome rows the Running box reserves: the divider rule plus the column
-/// header.
-const RUNNING_CHROME: u16 = 2;
-/// Chrome rows the table box reserves: the ratatui `Table` header row.
-const TABLE_CHROME: u16 = 1;
-/// Footer row the table box reserves while the Running box sits below:
-/// blank when every table row is visible, the table's pager rule when it
-/// scrolls.
-const TABLE_FOOTER: u16 = 1;
-/// Floor on the table's data rows in degenerate heights: the Running
-/// box's rendered window shrinks before the table drops below this.
-const MIN_TABLE_ROWS: u16 = 3;
 
 pub fn render_targets_pane_body(
     frame: &mut Frame,

@@ -1,11 +1,9 @@
 use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
-const ELLIPSIS: &str = "…";
-const ELLIPSIS_WIDTH: usize = 1;
-/// All items included in the body — the toast renderer truncates based on
-/// allocated space and shows (+N more) as needed.
-const MAX_VISIBLE_ITEMS: usize = usize::MAX;
+use super::constants::ELLIPSIS;
+use super::constants::ELLIPSIS_WIDTH;
+use super::constants::MAX_VISIBLE_ITEMS;
 
 /// Format a list of items for toast display within `max_width` columns.
 ///

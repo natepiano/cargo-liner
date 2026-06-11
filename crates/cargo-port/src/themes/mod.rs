@@ -4,13 +4,13 @@
 //! watch, the resolver, and the OS appearance poller. The app owns
 //! the on-disk location: `dirs::config_dir() / "cargo-port" / "themes"`.
 
+mod constants;
 #[cfg(test)]
 use std::cell::RefCell;
 use std::path::PathBuf;
 
+use self::constants::THEMES_DIRNAME;
 use crate::constants::APP_NAME;
-
-const THEMES_DIRNAME: &str = "themes";
 
 /// Compute the per-user themes directory:
 /// `dirs::config_dir() / "cargo-port" / "themes"`.

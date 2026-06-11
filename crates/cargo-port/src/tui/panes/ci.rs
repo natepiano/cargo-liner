@@ -19,6 +19,14 @@ use tui_pane::render_overflow_affordance;
 use unicode_width::UnicodeWidthStr;
 
 use super::CiData;
+use super::constants::CI_BRANCH_LONG_MIN_WIDTH;
+use super::constants::CI_BRANCH_MIN_WIDTH;
+use super::constants::CI_COMMIT_LONG_MIN_WIDTH;
+use super::constants::CI_COMMIT_MIN_WIDTH;
+use super::constants::CI_JOB_LABEL_MAX_WIDTH;
+use super::constants::CI_JOB_LABEL_MIN_WIDTH;
+use super::constants::CI_STATUS_GAP_WIDTH;
+use super::constants::OTHER_JOBS_HEADER;
 use crate::ci;
 use crate::ci::CiJob;
 use crate::ci::CiRun;
@@ -160,15 +168,6 @@ fn build_ci_header_row(cols: &[CiDisplayColumn], widths: &[Constraint]) -> Row<'
         .push(Cell::from(Line::from("Total").alignment(Alignment::Right)).style(right_aligned));
     Row::new(header_cells).bottom_margin(0)
 }
-
-const CI_COMMIT_MIN_WIDTH: usize = 7;
-const CI_BRANCH_MIN_WIDTH: usize = 6;
-const CI_COMMIT_LONG_MIN_WIDTH: usize = 22;
-const CI_BRANCH_LONG_MIN_WIDTH: usize = 16;
-const CI_JOB_LABEL_MIN_WIDTH: usize = 8;
-const CI_JOB_LABEL_MAX_WIDTH: usize = 16;
-const CI_STATUS_GAP_WIDTH: usize = 1;
-const OTHER_JOBS_HEADER: &str = "Other";
 
 fn build_ci_data_row(
     ci_run: &CiRun,

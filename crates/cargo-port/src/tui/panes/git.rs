@@ -37,8 +37,20 @@ use super::PullRequestSectionState;
 use super::RemoteRow;
 use super::SyncedDescriptionHeight;
 use super::WorktreeInfo;
+use super::constants::BRANCH_HEADER;
 use super::constants::FIT_TEXT_ELLIPSIS;
+use super::constants::MIN_FLEX_COL;
+use super::constants::PULL_REQUEST_BRANCH_HEADER;
 use super::constants::PULL_REQUEST_MIN_TITLE_WIDTH;
+use super::constants::PULL_REQUEST_NUMBER_HEADER;
+use super::constants::PULL_REQUEST_STATUS_HEADER;
+use super::constants::PULL_REQUEST_TITLE_HEADER;
+use super::constants::REMOTE_ICON_COL;
+use super::constants::REMOTES_NAME_HEADER;
+use super::constants::REMOTES_URL_HEADER;
+use super::constants::SYNC_HEADER;
+use super::constants::TRACKED_HEADER;
+use super::constants::WORKTREES_NAME_HEADER;
 use super::format_ahead_behind;
 use super::github_stars_is_unreachable_placeholder;
 use super::package;
@@ -369,11 +381,6 @@ struct PullRequestColWidths {
     branch: usize,
     title:  usize,
 }
-
-const PULL_REQUEST_NUMBER_HEADER: &str = "#";
-const PULL_REQUEST_STATUS_HEADER: &str = "Status";
-const PULL_REQUEST_BRANCH_HEADER: &str = "Branch";
-const PULL_REQUEST_TITLE_HEADER: &str = "Title";
 
 fn pull_request_col_widths(
     rows: &[PullRequestRow],
@@ -793,18 +800,8 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
 
 // ── Remotes table ────────────────────────────────────────────────────
 
-/// The icon column pads to this display width. Emoji render as 2 cells on
-/// most terminals; we append a trailing space for separation, giving 3.
-const REMOTE_ICON_COL: usize = 3;
-const REMOTES_NAME_HEADER: &str = "Remote";
-const REMOTES_URL_HEADER: &str = "URL";
-const WORKTREES_NAME_HEADER: &str = "Name";
-
 // The trailing Branch/Tracked/Sync trio is shared by both tables so the
 // columns line up vertically across the Remotes and Worktrees sections.
-const BRANCH_HEADER: &str = "Branch";
-const TRACKED_HEADER: &str = "Tracked";
-const SYNC_HEADER: &str = "Sync";
 
 /// Column layout shared between the Remotes and Worktrees tables. The
 /// leading columns differ (Remote/URL vs Name), but the trailing
@@ -829,12 +826,6 @@ fn worktree_branch_text(wt: &WorktreeInfo) -> &str { wt.branch.as_deref().unwrap
 fn worktree_tracked_text(wt: &WorktreeInfo) -> &str {
     wt.tracked.as_deref().unwrap_or(NO_REMOTE_SYNC)
 }
-
-/// Floor for the flexible columns (Remotes URL, Worktrees Name). When the
-/// pane is too narrow they truncate with an ellipsis down to this width,
-/// then stop — past here there's nothing useful left to shrink, so the
-/// line is allowed to clip at the pane edge rather than squeeze further.
-const MIN_FLEX_COL: usize = 8;
 
 fn sync_col_layout(
     remotes: &[RemoteRow],

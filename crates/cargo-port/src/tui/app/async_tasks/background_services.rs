@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::time::Instant;
 
+use super::constants::CRATES_IO_FETCH_WORKERS;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::GitRepoPresence;
@@ -16,14 +17,6 @@ use crate::scan::BackgroundMsg;
 use crate::scan::FetchContext;
 use crate::scan::ProjectDetailRequest;
 use crate::tui::app::App;
-
-/// Number of parallel crates.io fetch workers. Each worker runs its share
-/// of the plan sequentially, so peak request concurrency against crates.io
-/// is capped at this count while the fetch wall-clock drops to roughly
-/// 1/N of the serial chain. A tripped limiter surfaces as a 429 →
-/// `ServiceSignal::RateLimited` and the recovery path refetches the
-/// misses.
-const CRATES_IO_FETCH_WORKERS: usize = 10;
 
 impl App {
     /// Register file-system watchers for every item in the tree after a

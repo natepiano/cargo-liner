@@ -1,5 +1,6 @@
 //! Reads per-project lint state from cache-rooted JSON artifacts.
 
+mod constants;
 use std::path::Path;
 
 mod cache_size_index;

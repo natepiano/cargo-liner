@@ -42,7 +42,9 @@ use unicode_width::UnicodeWidthStr;
 use super::app::App;
 use super::app::ConfirmAction;
 use super::app::OverlayRenderInputs;
+use super::constants::AFFECTED_EXTRAS_VISIBLE_CAP;
 use super::constants::CONFIRM_DIALOG_HEIGHT;
+use super::constants::STRIP_SLOT_COUNT;
 use super::integration::AppGlobalAction;
 use super::interaction;
 use super::overlays::PopupFrame;
@@ -247,11 +249,6 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
 
     sync_hovered_pane_row(app);
 }
-
-/// Maximum affected-checkout paths shown explicitly in the confirm
-/// dialog before collapsing the tail into a `+N more` line (design
-/// plan → "Confirm dialog → uniform rule").
-const AFFECTED_EXTRAS_VISIBLE_CAP: usize = 5;
 
 /// Body lines shown below the `Run cargo clean?` prompt — everything
 /// from the resolved target dir to the "Also affected" list and the
@@ -612,8 +609,6 @@ pub(super) fn cargo_port_bar_palette() -> BarPalette {
         separator_style: Style::default(),
     }
 }
-
-const STRIP_SLOT_COUNT: usize = 1;
 
 const fn cargo_port_status_line_globals(
     _app: &App,

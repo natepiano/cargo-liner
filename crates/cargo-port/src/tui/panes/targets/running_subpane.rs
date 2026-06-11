@@ -33,6 +33,15 @@ use tui_pane::success_color;
 use tui_pane::text_default;
 use unicode_width::UnicodeWidthStr;
 
+use super::constants::CPU_COL_WIDTH;
+use super::constants::MEM_COL_WIDTH;
+use super::constants::OUTLINE_DEPTH_INDENT_WIDTH;
+use super::constants::OUTLINE_PARENT_PREFIX_WIDTH;
+use super::constants::OUTLINE_SINGLE_DIGIT_SUFFIX_WIDTH;
+use super::constants::PID_COL_WIDTH;
+use super::constants::PROFILE_COL_WIDTH;
+use super::constants::TARGET_COL_MAX;
+use super::constants::TARGET_HEADER;
 use crate::constants::CARGO_COMMAND_NAME;
 use crate::constants::SECONDS_PER_DAY;
 use crate::constants::SECONDS_PER_HOUR;
@@ -42,27 +51,6 @@ use crate::tui::render;
 use crate::tui::running_targets::RunProfile;
 use crate::tui::running_targets::RunningTargets;
 use crate::tui::theme_roles;
-
-/// Cap on the Target column width so a single long target name can't
-/// crowd out the metric columns. Overflow truncates with an ellipsis.
-const TARGET_COL_MAX: usize = 24;
-/// Header text for the Target column — also its minimum width.
-const TARGET_HEADER: &str = "Target";
-/// Width consumed by one outline depth: two leading spaces.
-const OUTLINE_DEPTH_INDENT_WIDTH: usize = 2;
-/// Width consumed by an outline glyph plus its following gap.
-const OUTLINE_PARENT_PREFIX_WIDTH: usize = 2;
-/// Width consumed by a one-digit child-count suffix, such as ` (9)`.
-const OUTLINE_SINGLE_DIGIT_SUFFIX_WIDTH: usize = 4;
-/// Width of the Profile column: the widest profile label (`release`).
-const PROFILE_COL_WIDTH: usize = 7;
-/// Width of the PID column: Linux PIDs reach seven digits.
-const PID_COL_WIDTH: usize = 7;
-/// Width of the CPU column: `476%` — a busy multi-threaded process can
-/// exceed 100.
-const CPU_COL_WIDTH: usize = 4;
-/// Width of the MEM column: `999.9 MiB`.
-const MEM_COL_WIDTH: usize = 9;
 
 /// One process in the Running list: a tracked target instance or an
 /// untracked process one spawned. `parent_pid`/`depth` place the row in

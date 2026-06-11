@@ -4,6 +4,8 @@ use std::path::Path;
 use ratatui::style::Color;
 use tui_pane::title_color;
 
+pub use super::constants::FINDER_COLUMN_COUNT;
+pub use super::constants::FINDER_HEADERS;
 use crate::ci;
 use crate::ci::OwnerRepo;
 use crate::project::AbsolutePath;
@@ -81,12 +83,6 @@ impl FinderKind {
         }
     }
 }
-
-/// Column width metrics cached at index build time so the popup renders at a
-/// stable size regardless of the current query results.
-pub const FINDER_COLUMN_COUNT: usize = 5;
-pub const FINDER_HEADERS: [&str; FINDER_COLUMN_COUNT] =
-    ["Name", "Project", "Branch", "Dir", "Type"];
 
 /// Build a flat index of all searchable items from the project list.
 /// Uses the tree structure so workspace members inherit the branch

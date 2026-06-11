@@ -3,15 +3,10 @@ use std::path::Path;
 use std::process::Command;
 use std::process::Output;
 
-const SCCACHE_BINARY: &str = "sccache";
-const SCCACHE_BINARY_WINDOWS: &str = "sccache.exe";
-const SCCACHE_STATS_ARG: &str = "--show-stats";
-const WRAPPER_ENV_KEYS: &[&str] = &[
-    "RUSTC_WRAPPER",
-    "RUSTC_WORKSPACE_WRAPPER",
-    "CARGO_BUILD_RUSTC_WRAPPER",
-    "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
-];
+use crate::constants::SCCACHE_BINARY;
+use crate::constants::SCCACHE_BINARY_WINDOWS;
+use crate::constants::SCCACHE_STATS_ARG;
+use crate::constants::WRAPPER_ENV_KEYS;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Config {

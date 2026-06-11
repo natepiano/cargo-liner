@@ -28,14 +28,11 @@ use sysinfo::System;
 use sysinfo::UpdateKind;
 use tui_pane::RollingMean;
 
+use self::constants::ANCESTOR_WALK_CAP;
 use self::constants::CARGO_BIN_DIR;
 use super::panes::RunTargetKind;
 use crate::constants::CARGO_COMMAND_NAME;
 use crate::project::AbsolutePath;
-
-/// Ceiling on the ancestor walk, against parent-link cycles from PID reuse.
-/// Real process trees are nowhere near this deep.
-const ANCESTOR_WALK_CAP: usize = 32;
 
 pub(crate) struct RunningTargetsPoller {
     system:          System,

@@ -23,6 +23,7 @@ use super::constants::RATE_LIMIT_RESOURCE_HEADER;
 use super::constants::RATE_LIMIT_RESOURCES_KEY;
 use super::constants::RATE_LIMIT_USED_HEADER;
 use super::constants::RATE_LIMIT_USED_KEY;
+pub(super) use super::constants::SYNTHETIC_RATE_LIMIT_SECS;
 
 /// Which GitHub rate-limit bucket a response belongs to. The REST and
 /// GraphQL APIs share `api.github.com` but track their quotas
@@ -142,11 +143,6 @@ pub(super) fn classify_network_error(service: ServiceKind, error: &Error) -> Opt
         None
     }
 }
-
-/// Lead time for the synthetic force-rate-limit countdown. `3599`
-/// rather than `3600` so the first displayed value is `00:59:59`
-/// instead of briefly flashing `01:00:00`.
-pub(super) const SYNTHETIC_RATE_LIMIT_SECS: u64 = 3599;
 
 pub(super) fn now_epoch_secs() -> u64 {
     SystemTime::now()

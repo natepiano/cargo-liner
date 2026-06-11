@@ -13,6 +13,11 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 
+use super::constants::BASE_POPUP_WIDTH;
+use super::constants::KEYMAP_POPUP_HEIGHT_PERCENT;
+pub use super::constants::KEYMAP_POPUP_MAX_HEIGHT;
+use super::constants::PERCENT_DENOMINATOR;
+use super::constants::POPUP_BORDER_HEIGHT;
 use crate::AppContext;
 use crate::FrameworkOverlayId;
 use crate::Keymap;
@@ -60,12 +65,6 @@ pub trait KeymapUiContext: AppContext {
     /// overlay (the framework / nav / overlay sections still render).
     fn keymap_pane_display_order(&self) -> &[<Self as AppContext>::AppPaneId];
 }
-
-/// Compatibility constant for the old fixed-height keymap popup.
-///
-/// The current keymap popup height is percentage-based; this constant remains
-/// exported so existing callers do not break.
-pub const KEYMAP_POPUP_MAX_HEIGHT: u16 = 43;
 
 /// Lines + per-line target table built for the keymap overlay.
 struct KeymapLines {
@@ -170,11 +169,6 @@ impl KeymapPane {
         );
     }
 }
-
-const BASE_POPUP_WIDTH: u16 = 52;
-const KEYMAP_POPUP_HEIGHT_PERCENT: u16 = 80;
-const POPUP_BORDER_HEIGHT: u16 = 2;
-const PERCENT_DENOMINATOR: u32 = 100;
 
 /// Sort action rows within each section. Headers are anchors; rows
 /// between two headers are sorted by `ctx.keymap_pane_sort_priority`

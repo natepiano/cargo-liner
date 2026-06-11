@@ -25,33 +25,15 @@ use super::actions::ProjectListAction;
 use super::actions::TargetsAction;
 use super::constants::CLEAN_ACTION_KEY;
 use super::constants::CPU_SCOPE_KEY;
-use super::constants::GIT_SCOPE_KEY;
 use super::constants::GLOBAL_SCOPE_KEY;
 use super::constants::LANG_SCOPE_KEY;
-use super::constants::PACKAGE_SCOPE_KEY;
-use super::constants::PROJECT_LIST_SCOPE_KEY;
-use super::constants::TARGETS_SCOPE_KEY;
+use super::constants::LEGACY_CLEAN_SCOPES;
+use super::constants::REMOVED_PROJECT_LIST_GLOBAL_ACTIONS;
 use super::resolved::ResolvedKeymap;
 use crate::config::NavigationKeys;
 use crate::constants::APP_NAME;
 use crate::constants::KEYMAP_FILE;
 use crate::project::AbsolutePath;
-
-const REMOVED_PROJECT_LIST_GLOBAL_ACTIONS: [(&str, &str); 2] =
-    [("open_editor", "open_editor"), ("rescan", "rescan")];
-
-/// Per-pane scopes that used to hold their own `clean` binding. The
-/// action moved to `[global].clean`; on migration the first scope in
-/// this list to define `clean` wins, matching the historical
-/// registration order.
-const LEGACY_CLEAN_SCOPES: [&str; 6] = [
-    PROJECT_LIST_SCOPE_KEY,
-    PACKAGE_SCOPE_KEY,
-    GIT_SCOPE_KEY,
-    TARGETS_SCOPE_KEY,
-    LANG_SCOPE_KEY,
-    CPU_SCOPE_KEY,
-];
 
 pub struct KeymapLoadResult {
     pub(crate) keymap:          ResolvedKeymap,

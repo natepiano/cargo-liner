@@ -8,11 +8,11 @@
 //! `handle_input`-style methods that need cross-subsystem access
 //! remain free functions taking `&mut App`.
 
-use std::time::Duration;
 use std::time::Instant;
 
 use tui_pane::ResolvedPaneLayout;
 
+use super::constants::RUNNING_TARGETS_POLL_INTERVAL;
 use super::data::PaneDataStore;
 use super::pane_impls::CpuPane;
 use super::pane_impls::GitPane;
@@ -25,10 +25,6 @@ use crate::config::CpuConfig;
 use crate::tui::app::HoveredPaneRow;
 use crate::tui::running_targets::ProjectTargetSlice;
 use crate::tui::running_targets::RunningTargetsPoller;
-
-/// Cadence for the running-targets poller. Hardcoded for v1; moves to
-/// config alongside `CpuConfig` once the feature stabilizes.
-const RUNNING_TARGETS_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Owns every pane-related piece of state. App holds a single `panes:
 /// Panes` field.

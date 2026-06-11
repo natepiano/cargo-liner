@@ -5,23 +5,14 @@ use tui_pane::Theme;
 use tui_pane::ThemeId;
 use tui_pane::ThemeRegistry;
 
-const COLUMN_HEADER: &str = "cargo-port.column.header";
-const DISCOVERY_SHIMMER: &str = "cargo-port.discovery.shimmer";
-const GIT_IGNORED: &str = "cargo-port.git.ignored";
-const GIT_MODIFIED: &str = "cargo-port.git.modified";
-const GIT_UNTRACKED: &str = "cargo-port.git.untracked";
-const LANGUAGE_SUBTOTAL: &str = "cargo-port.language.subtotal";
-const TARGET_BENCH: &str = "cargo-port.target.bench";
-
-const ROLE_KEYS: [&str; 7] = [
-    COLUMN_HEADER,
-    DISCOVERY_SHIMMER,
-    GIT_IGNORED,
-    GIT_MODIFIED,
-    GIT_UNTRACKED,
-    LANGUAGE_SUBTOTAL,
-    TARGET_BENCH,
-];
+use super::constants::COLUMN_HEADER;
+use super::constants::DISCOVERY_SHIMMER;
+use super::constants::GIT_IGNORED;
+use super::constants::GIT_MODIFIED;
+use super::constants::GIT_UNTRACKED;
+use super::constants::LANGUAGE_SUBTOTAL;
+use super::constants::ROLE_KEYS;
+use super::constants::TARGET_BENCH;
 
 #[derive(Clone, Copy)]
 enum RolePalette {

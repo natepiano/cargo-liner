@@ -59,6 +59,19 @@ use sysinfo::CpuRefreshKind;
 use sysinfo::RefreshKind;
 use sysinfo::System;
 
+pub use super::constants::CPU_SMOOTHING_WINDOW_POLLS;
+#[cfg(target_os = "windows")]
+use super::constants::GPU_COUNTER_PATH;
+#[cfg(target_os = "macos")]
+use super::constants::KERN_SUCCESS;
+#[cfg(target_os = "windows")]
+use super::constants::PDH_CSTATUS_NEW_DATA;
+#[cfg(target_os = "windows")]
+use super::constants::PDH_FMT_DOUBLE;
+#[cfg(target_os = "windows")]
+use super::constants::PDH_MORE_DATA;
+#[cfg(target_os = "windows")]
+use super::constants::PDH_SUCCESS;
 use crate::theme;
 
 /// Per-core CPU usage sample.
@@ -134,13 +147,6 @@ impl CpuSeverity {
         }
     }
 }
-
-/// How many poll samples a [`RollingMean`] window averages.
-///
-/// A workload running in ~1 s bursts aliases against a 1 s poll cadence
-/// — the instantaneous sample swings wildly with phase alignment. At the
-/// 1 s cadence this window reads as the average over the last 5 s.
-pub const CPU_SMOOTHING_WINDOW_POLLS: usize = 5;
 
 /// Bounded rolling-mean window for utilization samples.
 ///
@@ -458,10 +464,6 @@ fn read_cpu_breakdown_raw() -> CpuBreakdownRaw { windows_cpu_breakdown_raw() }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn read_cpu_breakdown_raw() -> CpuBreakdownRaw { CpuBreakdownRaw::default() }
-
-/// `kern_return_t` success code shared by the mach and `IOKit` calls below.
-#[cfg(target_os = "macos")]
-const KERN_SUCCESS: i32 = 0;
 
 /// Query the I/O Registry directly for the first `IOAccelerator` service
 /// whose `PerformanceStatistics` dictionary reports a device utilization
@@ -870,25 +872,6 @@ fn windows_cpu_breakdown_raw() -> CpuBreakdownRaw {
         idle,
     }
 }
-
-/// Wildcard PDH counter path summing 3-D engine utilization across
-/// every GPU engine instance. Uses the English (non-localized) counter
-/// names so the query resolves regardless of the system language.
-#[cfg(target_os = "windows")]
-const GPU_COUNTER_PATH: &str = "\\GPU Engine(*engtype_3D)\\Utilization Percentage";
-
-/// `ERROR_SUCCESS` / `PDH_CSTATUS_VALID_DATA`.
-#[cfg(target_os = "windows")]
-const PDH_SUCCESS: u32 = 0x0000_0000;
-/// A per-item `CStatus` indicating a freshly cooked sample.
-#[cfg(target_os = "windows")]
-const PDH_CSTATUS_NEW_DATA: u32 = 0x0000_0001;
-/// `PdhGetFormattedCounterArrayW` needs a larger buffer (sizing pass).
-#[cfg(target_os = "windows")]
-const PDH_MORE_DATA: u32 = 0x8000_07D2;
-/// Request cooked counter values formatted as `f64`.
-#[cfg(target_os = "windows")]
-const PDH_FMT_DOUBLE: u32 = 0x0000_0200;
 
 /// Rust mirror of `PDH_FMT_COUNTERVALUE` (the `double` union arm). The
 /// 8-byte alignment of `f64` reproduces the 4-byte pad C inserts after

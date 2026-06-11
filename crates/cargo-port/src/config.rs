@@ -18,6 +18,10 @@ use super::constants::CLIPPY_LINT_COMMAND_NAME;
 use super::constants::CONFIG_FILE;
 use super::constants::DEFAULT_CLIPPY_LINT_COMMAND;
 use super::constants::MIN_CPU_POLL_MS;
+use crate::constants::BYTES_PER_GIB;
+use crate::constants::BYTES_PER_KIB;
+use crate::constants::BYTES_PER_MIB;
+use crate::constants::DEFAULT_CACHE_SIZE;
 use crate::project::AbsolutePath;
 
 /// Whether non-Rust projects (git repos without `Cargo.toml`) are included in scans.
@@ -281,11 +285,6 @@ fn normalize_lint_command(command: &LintCommandConfig) -> Option<LintCommandConf
 pub(crate) fn normalize_lint_commands(commands: &[LintCommandConfig]) -> Vec<LintCommandConfig> {
     commands.iter().filter_map(normalize_lint_command).collect()
 }
-
-const BYTES_PER_KIB: u64 = 1024;
-const BYTES_PER_MIB: u64 = BYTES_PER_KIB * 1024;
-const BYTES_PER_GIB: u64 = BYTES_PER_MIB * 1024;
-const DEFAULT_CACHE_SIZE: &str = "512 MiB";
 
 pub(crate) struct ParsedCacheSize {
     pub bytes:      Option<u64>,

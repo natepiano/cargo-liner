@@ -17,6 +17,7 @@ use tui_pane::render_overflow_affordance;
 use tui_pane::text_default;
 use tui_pane::title_color;
 
+use super::constants::LANG_NUM_COL;
 use super::package::RenderStyles;
 use super::pane_impls::LangPane;
 use crate::project::LangEntry;
@@ -57,9 +58,6 @@ pub(super) fn language_icon(language: &str) -> &'static str {
         _ => "  ",
     }
 }
-
-/// Fixed numeric column width for language stats.
-const LANG_NUM_COL: u16 = 8;
 
 /// Column constraints for the language stats table.
 const fn lang_table_widths() -> [Constraint; 7] {

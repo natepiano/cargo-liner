@@ -1,4 +1,5 @@
 mod cargo;
+mod constants;
 mod git;
 mod info;
 mod member_group;

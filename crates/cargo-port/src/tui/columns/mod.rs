@@ -1,3 +1,4 @@
+mod constants;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
@@ -11,6 +12,15 @@ use tui_pane::text_default;
 use tui_pane::title_color;
 use unicode_width::UnicodeWidthStr;
 
+pub(super) use self::constants::COL_CI;
+pub(super) use self::constants::COL_DISK;
+pub(super) use self::constants::COL_GIT_PATH;
+pub(super) use self::constants::COL_LANG;
+pub(super) use self::constants::COL_LINT;
+pub(super) use self::constants::COL_MAIN;
+pub(super) use self::constants::COL_NAME;
+pub(super) use self::constants::COL_SYNC;
+pub(super) use self::constants::NUM_COLS;
 use super::render;
 use super::theme_roles;
 use crate::ci::CiStatus;
@@ -20,15 +30,6 @@ use crate::project::WorktreeHealth;
 use crate::project::WorktreeHealth::Normal;
 
 // ── Column indices ──────────────────────────────────────────────────
-pub(super) const COL_NAME: usize = 0;
-pub(super) const COL_LINT: usize = 1;
-pub(super) const COL_CI: usize = 2;
-pub(super) const COL_LANG: usize = 3;
-pub(super) const COL_GIT_PATH: usize = 4;
-pub(super) const COL_SYNC: usize = 5;
-pub(super) const COL_MAIN: usize = 6;
-pub(super) const COL_DISK: usize = 7;
-pub(super) const NUM_COLS: usize = 8;
 
 // ── Column definition types ─────────────────────────────────────────
 

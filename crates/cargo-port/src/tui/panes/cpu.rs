@@ -20,31 +20,20 @@ use tui_pane::render_overflow_affordance;
 use tui_pane::text_default;
 use tui_pane::warning_color;
 
+use super::constants::CPU_BAR_WIDTH;
+use super::constants::CPU_BREAKDOWN_ROWS;
+#[cfg(test)]
+pub(super) use super::constants::CPU_CONTENT_WIDTH;
+use super::constants::CPU_GPU_ROWS;
+pub use super::constants::CPU_PANE_WIDTH;
+use super::constants::CPU_PINNED_HEAD_ROWS;
+use super::constants::CPU_STATIC_INNER_HEIGHT;
+use super::constants::GPU_UNAVAILABLE_TEXT;
 use super::package::RenderStyles;
 use super::pane_impls::CpuPane;
 use crate::config::CpuConfig;
 use crate::tui::pane::PaneRenderCtx;
 use crate::tui::theme_roles;
-
-const CPU_BAR_WIDTH: usize = 10;
-/// Shown in the GPU row when the OS exposes no GPU utilization (e.g. the
-/// Apple `asahi` driver on Linux). Kept within `CPU_CONTENT_WIDTH` so it
-/// never widens the pane.
-const GPU_UNAVAILABLE_TEXT: &str = "unavailable";
-pub(super) const CPU_CONTENT_WIDTH: u16 = 17;
-pub const CPU_PANE_WIDTH: u16 = CPU_CONTENT_WIDTH + 2;
-/// Pixel height of every inner row except the scrolling cores band: the
-/// aggregate row, the two separator rules, the three breakdown rows, and the
-/// one GPU row. The cores band gets `inner.height - CPU_STATIC_INNER_HEIGHT`.
-const CPU_STATIC_INNER_HEIGHT: u16 = 7;
-/// Pinned head rows above the scrolling cores band: the aggregate line.
-const CPU_PINNED_HEAD_ROWS: usize = 1;
-/// Breakdown rows pinned below the cores band: System, User, Idle.
-const CPU_BREAKDOWN_ROWS: usize = 3;
-/// GPU rows pinned below the breakdown. A single aggregate row; multi-GPU is
-/// deferred (see `docs/subpane-scrolling.md` → Related, separate work), so
-/// growing the pinned tail for more GPUs changes only this count.
-const CPU_GPU_ROWS: usize = 1;
 
 /// Pinned tail rows below the scrolling cores band: breakdown rows plus GPU.
 const fn cpu_pinned_tail_rows() -> usize { CPU_BREAKDOWN_ROWS + CPU_GPU_ROWS }

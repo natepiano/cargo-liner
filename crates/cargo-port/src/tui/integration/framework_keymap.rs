@@ -49,6 +49,16 @@ use tui_pane::TrackedItemKey;
 use tui_pane::VimMode;
 use tui_pane::Visibility;
 
+use super::constants::CI_RUNS_TAB_ORDER;
+use super::constants::CPU_TAB_ORDER;
+use super::constants::GIT_TAB_ORDER;
+use super::constants::KEYMAP_OVERLAY_PANE_ORDER;
+use super::constants::LANG_TAB_ORDER;
+use super::constants::LINTS_TAB_ORDER;
+use super::constants::OUTPUT_TAB_ORDER;
+use super::constants::PACKAGE_TAB_ORDER;
+use super::constants::PROJECT_LIST_TAB_ORDER;
+use super::constants::TARGETS_TAB_ORDER;
 use crate::ci::OwnerRepo;
 use crate::config::NavigationKeys;
 use crate::project::AbsolutePath;
@@ -93,16 +103,6 @@ pub const fn vim_mode_from_config(navigation_keys: NavigationKeys) -> VimMode {
         NavigationKeys::ArrowsAndVim => VimMode::Enabled,
     }
 }
-
-const PROJECT_LIST_TAB_ORDER: i16 = 0;
-const PACKAGE_TAB_ORDER: i16 = 1;
-const GIT_TAB_ORDER: i16 = 2;
-const LANG_TAB_ORDER: i16 = 3;
-const CPU_TAB_ORDER: i16 = 4;
-const TARGETS_TAB_ORDER: i16 = 5;
-const LINTS_TAB_ORDER: i16 = 6;
-const CI_RUNS_TAB_ORDER: i16 = 7;
-const OUTPUT_TAB_ORDER: i16 = 8;
 
 impl AppPaneId {
     /// Translation to the legacy [`PaneId`] enum so the framework's
@@ -199,21 +199,6 @@ impl AppContext for App {
         }
     }
 }
-
-/// Display ordering for the keymap-help overlay's per-pane sections.
-/// Mirrors the prior `push_app_pane_rows` hardcoded order so the
-/// overlay still surfaces sections in the cargo-port-preferred
-/// sequence.
-const KEYMAP_OVERLAY_PANE_ORDER: &[AppPaneId] = &[
-    AppPaneId::ProjectList,
-    AppPaneId::Package,
-    AppPaneId::Git,
-    AppPaneId::Targets,
-    AppPaneId::Lints,
-    AppPaneId::CiRuns,
-    AppPaneId::Output,
-    AppPaneId::Finder,
-];
 
 impl KeymapUiContext for App {
     fn keymap_inline_error(&self) -> Option<&str> {

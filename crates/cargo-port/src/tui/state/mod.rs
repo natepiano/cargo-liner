@@ -1,5 +1,6 @@
 mod ci;
 mod config;
+mod constants;
 mod git_status;
 mod inflight;
 mod keymap;

@@ -2,6 +2,10 @@
 //! system (`theme::accessors` + per-role functions re-exported at
 //! crate root) so they can be swapped at runtime.
 
+use std::time::Duration;
+
+use crate::activity::FrameCycle;
+
 /// Bytes per kibibyte.
 pub const BYTES_PER_KIB: u64 = 1024;
 /// Bytes per mebibyte.
@@ -29,3 +33,12 @@ pub(crate) const TOAST_ELAPSED_SECONDS_MILLIS: u128 = 10_000;
 pub const SECTION_HEADER_INDENT: &str = "  ";
 /// Four-space indent for popup section items.
 pub const SECTION_ITEM_INDENT: &str = "    ";
+
+// tui_pane src activity
+/// Default framework activity-spinner cycle.
+pub const ACTIVITY_SPINNER: FrameCycle =
+    FrameCycle::new(ACTIVITY_SPINNER_FRAMES, Duration::from_millis(1200));
+/// Default framework activity-spinner frames.
+pub(crate) const ACTIVITY_SPINNER_FRAMES: &[&str] = &[
+    "⠉⠉", "⠈⠙", "⠀⠹", "⠀⢸", "⠀⣰", "⢀⣠", "⣀⣀", "⣄⡀", "⣆⠀", "⡇⠀", "⠏⠀", "⠋⠁",
+];

@@ -20,8 +20,6 @@ use crate::constants::WORKTREE;
 use crate::lint::LintRuns;
 use crate::lint::LintStatus;
 
-const WORKTREE_BADGE_SEPARATOR: &str = ":";
-
 /// The top-level enum for the project list — 3 variants.
 #[derive(Clone)]
 pub(crate) enum RootItem {
@@ -557,6 +555,7 @@ fn sum_disk(primary: Option<u64>, linked: impl Iterator<Item = Option<u64>>) -> 
 }
 
 use super::cargo::RustInfo;
+use super::constants::WORKTREE_BADGE_SEPARATOR;
 use super::git;
 
 #[cfg(test)]

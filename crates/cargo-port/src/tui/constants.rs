@@ -56,3 +56,28 @@ pub(super) const STARTUP_PHASE_LANGUAGES: &str = "Languages";
 pub(super) const STARTUP_PHASE_LINT: &str = "Lint history";
 pub(super) const STARTUP_PHASE_METADATA: &str = "Cargo metadata";
 pub(super) const STARTUP_PHASE_TESTS: &str = "Test counts";
+
+// src tui render
+/// Maximum affected-checkout paths shown explicitly in the confirm
+/// dialog before collapsing the tail into a `+N more` line (design
+/// plan → "Confirm dialog → uniform rule").
+pub(super) const AFFECTED_EXTRAS_VISIBLE_CAP: usize = 5;
+pub(super) const STRIP_SLOT_COUNT: usize = 1;
+
+// src tui theme_roles
+pub(super) const COLUMN_HEADER: &str = "cargo-port.column.header";
+pub(super) const DISCOVERY_SHIMMER: &str = "cargo-port.discovery.shimmer";
+pub(super) const GIT_IGNORED: &str = "cargo-port.git.ignored";
+pub(super) const GIT_MODIFIED: &str = "cargo-port.git.modified";
+pub(super) const GIT_UNTRACKED: &str = "cargo-port.git.untracked";
+pub(super) const LANGUAGE_SUBTOTAL: &str = "cargo-port.language.subtotal";
+pub(super) const ROLE_KEYS: [&str; 7] = [
+    COLUMN_HEADER,
+    DISCOVERY_SHIMMER,
+    GIT_IGNORED,
+    GIT_MODIFIED,
+    GIT_UNTRACKED,
+    LANGUAGE_SUBTOTAL,
+    TARGET_BENCH,
+];
+pub(super) const TARGET_BENCH: &str = "cargo-port.target.bench";

@@ -20,16 +20,16 @@ pub(super) const GITHUB_PR_PAGE_SIZE: usize = 50;
 pub(super) const GRAPHQL_RATE_LIMITED_ERROR_TYPE: &str = "RATE_LIMITED";
 pub(super) const GRAPHQL_RESPONSE_ERRORS_KEY: &str = "errors";
 pub(super) const GRAPHQL_RESPONSE_TYPE_KEY: &str = "type";
-pub(super) const RATE_LIMIT_LIMIT_KEY: &str = "limit";
 pub(super) const RATE_LIMIT_LIMIT_HEADER: &str = "x-ratelimit-limit";
-pub(super) const RATE_LIMIT_REMAINING_KEY: &str = "remaining";
+pub(super) const RATE_LIMIT_LIMIT_KEY: &str = "limit";
 pub(super) const RATE_LIMIT_REMAINING_HEADER: &str = "x-ratelimit-remaining";
-pub(super) const RATE_LIMIT_RESET_KEY: &str = "reset";
+pub(super) const RATE_LIMIT_REMAINING_KEY: &str = "remaining";
 pub(super) const RATE_LIMIT_RESET_HEADER: &str = "x-ratelimit-reset";
+pub(super) const RATE_LIMIT_RESET_KEY: &str = "reset";
 pub(super) const RATE_LIMIT_RESOURCES_KEY: &str = "resources";
 pub(super) const RATE_LIMIT_RESOURCE_HEADER: &str = "x-ratelimit-resource";
-pub(super) const RATE_LIMIT_USED_KEY: &str = "used";
 pub(super) const RATE_LIMIT_USED_HEADER: &str = "x-ratelimit-used";
+pub(super) const RATE_LIMIT_USED_KEY: &str = "used";
 
 // http headers
 pub(super) const ACCEPT_HEADER: &str = "Accept";
@@ -40,3 +40,9 @@ pub(super) const USER_AGENT_HEADER: &str = "User-Agent";
 // media types
 pub(super) const GITHUB_JSON_MEDIA_TYPE: &str = "application/vnd.github+json";
 pub(super) const JSON_MEDIA_TYPE: &str = "application/json";
+
+// src http rate_limit
+/// Lead time for the synthetic force-rate-limit countdown. `3599`
+/// rather than `3600` so the first displayed value is `00:59:59`
+/// instead of briefly flashing `01:00:00`.
+pub(super) const SYNTHETIC_RATE_LIMIT_SECS: u64 = 3599;

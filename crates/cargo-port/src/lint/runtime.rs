@@ -17,12 +17,12 @@ use std::sync::mpsc::RecvTimeoutError;
 use std::sync::mpsc::Sender as StdSender;
 use std::thread;
 use std::thread::JoinHandle;
-use std::time::Duration;
 use std::time::Instant;
 
 use chrono::Local;
 
 use super::cache_size_index;
+use super::constants::STOP_POLL;
 use super::history;
 use super::paths;
 use super::read_write;
@@ -49,8 +49,6 @@ use crate::constants::LINTS_LATEST_JSON;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::scan::BackgroundMsg;
-
-const STOP_POLL: Duration = Duration::from_millis(250);
 
 #[derive(Clone)]
 pub struct RegisterProjectRequest {
@@ -1094,6 +1092,8 @@ fn sanitize_name(name: &str) -> String {
 )]
 #[allow(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests {
+    use std::time::Duration;
+
     use crossbeam_channel::RecvTimeoutError;
 
     use super::*;

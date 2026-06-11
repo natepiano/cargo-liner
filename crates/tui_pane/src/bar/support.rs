@@ -17,12 +17,10 @@
 use ratatui::text::Span;
 
 use super::BarPalette;
+use super::constants::SEPARATOR;
 use crate::KeySequence;
 use crate::ShortcutState;
 use crate::keymap::RenderedSlot;
-
-/// Inter-slot separator inside one region.
-const SEPARATOR: &str = "  ";
 
 /// Render `slot` into the running `spans` vector. Pushes the
 /// separator first when `spans` already contains slots for this

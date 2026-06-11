@@ -12,6 +12,7 @@
 
 mod accessors;
 mod builtins;
+mod constants;
 mod loader;
 mod poller;
 mod registry;

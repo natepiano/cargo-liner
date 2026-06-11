@@ -17,6 +17,11 @@ use tui_pane::text_default;
 use tui_pane::title_color;
 use unicode_width::UnicodeWidthStr;
 
+use super::constants::CONTENT_WIDTH_PADDING;
+use super::constants::POPUP_BORDER_HEIGHT;
+use super::constants::POPUP_HORIZONTAL_MARGIN;
+use super::constants::POPUP_MIN_WIDTH;
+use super::constants::POPUP_VERTICAL_MARGIN;
 use super::pane::SccachePane;
 use super::pane::SccacheStatus;
 use super::pane::SccacheTarget;
@@ -25,12 +30,6 @@ use super::stats::ParsedStatLine;
 use super::stats::ValueAlignment;
 use crate::tui::app::App;
 use crate::tui::overlays::PopupFrame;
-
-const POPUP_MIN_WIDTH: u16 = 56;
-const POPUP_HORIZONTAL_MARGIN: u16 = 4;
-const POPUP_VERTICAL_MARGIN: u16 = 4;
-const POPUP_BORDER_HEIGHT: u16 = 2;
-const CONTENT_WIDTH_PADDING: usize = 2;
 
 struct SccacheLines {
     lines:             Vec<Line<'static>>,

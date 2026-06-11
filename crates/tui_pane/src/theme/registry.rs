@@ -16,15 +16,10 @@ use std::sync::Arc;
 use super::Appearance;
 use super::Theme;
 use super::builtins;
-
-/// Name of the built-in dark variant. Stable identifier used by config.
-pub const BUILTIN_DARK_NAME: &str = "Default Dark";
-/// Name of the built-in light variant. Stable identifier used by config.
-pub const BUILTIN_LIGHT_NAME: &str = "Default Light";
-/// Name of the built-in high-contrast dark variant.
-pub const BUILTIN_HC_DARK_NAME: &str = "High Contrast Dark";
-/// Name of the built-in high-contrast light variant.
-pub const BUILTIN_HC_LIGHT_NAME: &str = "High Contrast Light";
+pub use super::constants::BUILTIN_DARK_NAME;
+pub use super::constants::BUILTIN_HC_DARK_NAME;
+pub use super::constants::BUILTIN_HC_LIGHT_NAME;
+pub use super::constants::BUILTIN_LIGHT_NAME;
 
 /// Cheaply cloneable identifier for a theme variant. Backed by an
 /// `Arc<str>` so the registry, config, and runtime references share

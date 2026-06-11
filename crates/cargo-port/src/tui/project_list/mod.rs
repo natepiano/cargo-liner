@@ -844,7 +844,7 @@ impl ProjectList {
             .unwrap_or(self.roots.len());
         let key = item.path().clone();
         self.roots
-            .shift_insert(insert_index, key, ProjectEntry::new(item));
+            .shift_insert(insert_index, key, ProjectEntry::with_repo(item, None));
         false
     }
 

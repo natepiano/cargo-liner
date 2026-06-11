@@ -2,6 +2,8 @@
 
 use std::time::Duration;
 
+pub use crate::constants::ACTIVITY_SPINNER;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Cycle {
     period: Duration,
@@ -73,15 +75,6 @@ impl Icon {
         }
     }
 }
-
-/// Default framework activity-spinner frames.
-pub(crate) const ACTIVITY_SPINNER_FRAMES: &[&str] = &[
-    "⠉⠉", "⠈⠙", "⠀⠹", "⠀⢸", "⠀⣰", "⢀⣠", "⣀⣀", "⣄⡀", "⣆⠀", "⡇⠀", "⠏⠀", "⠋⠁",
-];
-
-/// Default framework activity-spinner cycle.
-pub const ACTIVITY_SPINNER: FrameCycle =
-    FrameCycle::new(ACTIVITY_SPINNER_FRAMES, Duration::from_millis(1200));
 
 #[cfg(test)]
 mod tests {

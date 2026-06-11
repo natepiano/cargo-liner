@@ -8,6 +8,7 @@ use tui_pane::PanePlacement;
 use tui_pane::ResolvedPane;
 use tui_pane::ResolvedPaneLayout;
 
+use super::constants::PANE_BORDER_HEIGHT;
 use super::cpu;
 use super::cpu::CPU_PANE_WIDTH;
 use super::spec::PaneId;
@@ -224,10 +225,6 @@ fn tiled_row_constraints(
 }
 
 const fn cpu_column_width() -> u16 { CPU_PANE_WIDTH }
-
-/// Rows a bordered pane spends on its top and bottom border. Outer pane height
-/// is inner content height plus this.
-const PANE_BORDER_HEIGHT: u16 = 2;
 
 /// Outer widths of the two top-row panes (Details and Git) for the given outer
 /// area and project-list column width. The cross-project top-row height

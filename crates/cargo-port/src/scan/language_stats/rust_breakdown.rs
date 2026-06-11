@@ -11,13 +11,12 @@ use tokei::Language;
 use tokei::LanguageType;
 use tokei::Report;
 
+use super::constants::BENCHES_LABEL;
+use super::constants::CODE_LABEL;
+use super::constants::EXAMPLES_LABEL;
+use super::constants::INTEGRATION_TESTS_LABEL;
+use super::constants::UNIT_TESTS_LABEL;
 use crate::project::LangEntry;
-
-const CODE_LABEL: &str = "code";
-const UNIT_TESTS_LABEL: &str = "unit tests";
-const INTEGRATION_TESTS_LABEL: &str = "integration tests";
-const EXAMPLES_LABEL: &str = "examples";
-const BENCHES_LABEL: &str = "benches";
 
 #[derive(Default)]
 pub(super) struct RustBreakdownCache {
