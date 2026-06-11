@@ -9,7 +9,7 @@ use super::diagnostic_status::DiagnosticStatus;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct DiagnosticsConfig {
     #[serde(flatten)]
-    rules: BTreeMap<DiagnosticCode, bool>,
+    rules: BTreeMap<DiagnosticCode, DiagnosticStatus>,
 }
 
 impl DiagnosticsConfig {
@@ -17,7 +17,7 @@ impl DiagnosticsConfig {
         self.rules
             .get(&code)
             .copied()
-            .map_or(DiagnosticStatus::Enabled, DiagnosticStatus::from)
+            .unwrap_or(DiagnosticStatus::Enabled)
     }
 
     pub(crate) fn entries(&self) -> Vec<(DiagnosticCode, DiagnosticStatus)> {
@@ -49,9 +49,10 @@ mod tests {
             diagnostics_config.is_enabled(DiagnosticCode::PreferModuleImport),
             DiagnosticStatus::Enabled
         );
-        diagnostics_config
-            .rules
-            .insert(DiagnosticCode::PreferModuleImport, false);
+        diagnostics_config.rules.insert(
+            DiagnosticCode::PreferModuleImport,
+            DiagnosticStatus::Disabled,
+        );
         assert_eq!(
             diagnostics_config.is_enabled(DiagnosticCode::PreferModuleImport),
             DiagnosticStatus::Disabled
@@ -70,15 +71,19 @@ mod tests {
     #[test]
     fn merge_project_overrides_global() {
         let mut global = DiagnosticsConfig::default();
-        global
-            .rules
-            .insert(DiagnosticCode::PreferModuleImport, false);
+        global.rules.insert(
+            DiagnosticCode::PreferModuleImport,
+            DiagnosticStatus::Disabled,
+        );
 
         let mut project = DiagnosticsConfig::default();
+        project.rules.insert(
+            DiagnosticCode::PreferModuleImport,
+            DiagnosticStatus::Enabled,
+        );
         project
             .rules
-            .insert(DiagnosticCode::PreferModuleImport, true);
-        project.rules.insert(DiagnosticCode::SuspiciousPub, false);
+            .insert(DiagnosticCode::SuspiciousPub, DiagnosticStatus::Disabled);
 
         let merged = global.merge_project(&project);
         assert_eq!(
