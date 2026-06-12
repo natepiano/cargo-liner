@@ -5,8 +5,8 @@ use crate::tui::app::VisibleRow;
 /// match — neither changing means the built detail is still accurate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DetailCacheKey {
-    pub row:        VisibleRow,
-    pub generation: u64,
+    pub visible_row: VisibleRow,
+    pub generation:  u64,
 }
 
 /// Tracks the detail-set coherency stamp. Per-pane content

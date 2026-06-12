@@ -38,7 +38,7 @@ pub fn open_in_editor(app: &mut App) {
     let abs_path = app
         .project_list
         .iter()
-        .find_map(|item| match &item.item {
+        .find_map(|item| match &item.root_item {
             RootItem::Rust(RustProject::Workspace(ws))
                 if ws.groups().iter().any(|g| {
                     g.members()

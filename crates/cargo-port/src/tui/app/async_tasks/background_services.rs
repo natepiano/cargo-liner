@@ -78,7 +78,7 @@ impl App {
     pub(super) fn collect_crates_io_fetch_plan(&self) -> CratesIoFetchPlan {
         let mut plan = CratesIoFetchPlan::default();
         for entry in &self.project_list {
-            collect_plan_children(&entry.item, &mut plan);
+            collect_plan_children(&entry.root_item, &mut plan);
         }
         plan
     }

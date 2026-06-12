@@ -44,7 +44,7 @@ pub enum ExpandTarget {
 pub(super) fn collect_expandable_targets(list: &ProjectList) -> Vec<(ExpandKey, ExpandTarget)> {
     let mut out = Vec::new();
     for (ni, entry) in list.iter().enumerate() {
-        let item = &entry.item;
+        let item = &entry.root_item;
         if entry.has_children() {
             out.push((ExpandKey::Node(ni), ExpandTarget::Root(item.path().clone())));
         }

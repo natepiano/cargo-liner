@@ -306,9 +306,9 @@ impl Lint {
         let path = abs.as_path();
         let (status, count) = if is_worktree_group {
             let group_item = projects.iter().find(|entry| {
-                entry.item.path() == abs && matches!(&entry.item, RootItem::Worktrees(_))
+                entry.root_item.path() == abs && matches!(&entry.root_item, RootItem::Worktrees(_))
             });
-            match group_item.map(|entry| &entry.item) {
+            match group_item.map(|entry| &entry.root_item) {
                 Some(item @ RootItem::Worktrees(group)) => {
                     let status = Self::status_for_root(item);
                     let count: usize = group

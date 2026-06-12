@@ -7,9 +7,10 @@ impl App {
     /// Returns the `RootItem` when a root row is selected.
     pub fn selected_item(&self) -> Option<&RootItem> {
         match self.project_list.selected_row()? {
-            VisibleRow::Root { node_index } => {
-                self.project_list.get(node_index).map(|entry| &entry.item)
-            },
+            VisibleRow::Root { node_index } => self
+                .project_list
+                .get(node_index)
+                .map(|entry| &entry.root_item),
             _ => None,
         }
     }

@@ -30,7 +30,7 @@ fn submodule_rows_render_disk_usage() {
         url:           None,
         branch:        None,
         commit:        None,
-        info:          crate::project::ProjectInfo::default(),
+        project_info:  crate::project::ProjectInfo::default(),
         git_repo:      None,
     });
 
@@ -575,7 +575,7 @@ fn dismissing_deleted_linked_worktree_promotes_primary_back_to_root() {
         "dismissing the deleted worktree should collapse the group to the root row"
     );
     assert_eq!(
-        match &app.project_list[0].item {
+        match &app.project_list[0].root_item {
             RootItem::Worktrees(wtg) if matches!(&wtg.primary, RustProject::Package(_)) => {
                 assert_eq!(wtg.live_entry_count(), 1);
                 usize::from(wtg.renders_as_group())
@@ -658,7 +658,7 @@ fn dismissing_deleted_linked_workspace_worktree_promotes_primary_back_to_root() 
         "dismissing the deleted workspace worktree should collapse to the root row"
     );
     assert_eq!(
-        match &app.project_list[0].item {
+        match &app.project_list[0].root_item {
             RootItem::Worktrees(wtg) if matches!(&wtg.primary, RustProject::Workspace(_)) => {
                 assert_eq!(wtg.live_entry_count(), 1);
                 usize::from(wtg.renders_as_group())

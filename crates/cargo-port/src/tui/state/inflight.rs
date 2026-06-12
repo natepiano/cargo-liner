@@ -219,7 +219,7 @@ mod tests {
                 project_path:      "/tmp/proj".into(),
                 ci_run_count:      5,
                 oldest_created_at: None,
-                kind:              CiFetchKind::Sync,
+                ci_fetch_kind:     CiFetchKind::Sync,
             }
         }
 

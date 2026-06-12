@@ -610,7 +610,7 @@ pub(super) fn render_package_pane_body(
     styles: &RenderStyles,
     ctx: &PaneRenderCtx<'_>,
 ) {
-    let focus_state = pane.focus.state;
+    let pane_focus_state = pane.focus.pane_focus_state;
     let PaneRenderCtx {
         animation_elapsed,
         config,
@@ -626,7 +626,7 @@ pub(super) fn render_package_pane_body(
 
     let rows = panes::package_rows_from_data(&pkg_data);
     sync_package_viewport(pane, &pkg_data, &rows, *synced_description_height);
-    let border_style = if matches!(focus_state, PaneFocusState::Active) {
+    let border_style = if matches!(pane_focus_state, PaneFocusState::Active) {
         styles.chrome.active_border
     } else {
         styles.chrome.inactive_border
@@ -635,7 +635,7 @@ pub(super) fn render_package_pane_body(
     let project_block = styles
         .chrome
         .with_inactive_border(border_style)
-        .block(title, matches!(focus_state, PaneFocusState::Active));
+        .block(title, matches!(pane_focus_state, PaneFocusState::Active));
     let project_inner = project_block.inner(area);
     frame.render_widget(project_block, area);
 
@@ -648,7 +648,7 @@ pub(super) fn render_package_pane_body(
         pkg_data: &pkg_data,
         rows: &rows,
         pane: &pane.viewport,
-        focus: focus_state,
+        focus: pane_focus_state,
         styles,
         border_style,
         synced_description_height: *synced_description_height,
@@ -676,7 +676,7 @@ pub(super) fn render_package_pane_body(
         data: &pkg_data,
         rows: &rows,
         pane: &pane.viewport,
-        focus: focus_state,
+        focus: pane_focus_state,
         styles,
         animation_elapsed: *animation_elapsed,
         lint_enabled,
@@ -693,12 +693,12 @@ pub(super) fn render_package_pane_body(
             data: &pkg_data,
             rows: &rows,
             pane: &pane.viewport,
-            focus: focus_state,
+            focus: pane_focus_state,
             value_width,
             border_style,
             title_style: styles
                 .chrome
-                .title_style(matches!(focus_state, PaneFocusState::Active)),
+                .title_style(matches!(pane_focus_state, PaneFocusState::Active)),
             tests_cursor,
         },
         &placed,

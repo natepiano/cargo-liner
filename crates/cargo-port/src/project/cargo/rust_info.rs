@@ -19,7 +19,7 @@ use crate::project::vendored_package::VendoredPackage;
 /// Derefs to `ProjectInfo` for uniform metadata access.
 #[derive(Clone, Default)]
 pub(crate) struct RustInfo {
-    pub info:              ProjectInfo,
+    pub project_info:      ProjectInfo,
     pub cargo:             Cargo,
     pub vendored:          Vec<VendoredPackage>,
     pub lint_runs:         LintRuns,
@@ -49,11 +49,11 @@ impl RustInfo {
 impl Deref for RustInfo {
     type Target = ProjectInfo;
 
-    fn deref(&self) -> &ProjectInfo { &self.info }
+    fn deref(&self) -> &ProjectInfo { &self.project_info }
 }
 
 impl DerefMut for RustInfo {
-    fn deref_mut(&mut self) -> &mut ProjectInfo { &mut self.info }
+    fn deref_mut(&mut self) -> &mut ProjectInfo { &mut self.project_info }
 }
 
 /// Shared Cargo fields populated from the `cargo metadata`

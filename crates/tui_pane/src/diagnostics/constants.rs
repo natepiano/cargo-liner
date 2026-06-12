@@ -33,6 +33,7 @@ pub(super) const PDH_MORE_DATA: u32 = 0x8000_07D2;
 /// `ERROR_SUCCESS` / `PDH_CSTATUS_VALID_DATA`.
 #[cfg(target_os = "windows")]
 pub(super) const PDH_SUCCESS: u32 = 0x0000_0000;
+pub(super) const PERCENT_PER_CELL: usize = 10;
 
 // tui_pane src diagnostics perf_log
 /// Background-message batch processing exceeding this is logged (ms).

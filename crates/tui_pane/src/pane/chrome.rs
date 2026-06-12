@@ -4,6 +4,15 @@ use ratatui::style::Style;
 use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
 
+use super::constants::FOCUSED_PANE_TINT_BRIGHTNESS_MIDPOINT;
+use super::constants::FOCUSED_PANE_TINT_DARK_BG;
+use super::constants::FOCUSED_PANE_TINT_DARK_BLUE_DELTA;
+use super::constants::FOCUSED_PANE_TINT_DARK_GREEN_DELTA;
+use super::constants::FOCUSED_PANE_TINT_DARK_RED_DELTA;
+use super::constants::FOCUSED_PANE_TINT_LIGHT_BG;
+use super::constants::FOCUSED_PANE_TINT_LIGHT_BLUE_DELTA;
+use super::constants::FOCUSED_PANE_TINT_LIGHT_GREEN_DELTA;
+use super::constants::FOCUSED_PANE_TINT_LIGHT_RED_DELTA;
 use crate::active_border_color;
 use crate::focused_pane_tint_enabled;
 use crate::inactive_border_color;
@@ -93,21 +102,21 @@ pub fn default_pane_chrome() -> PaneChrome {
 /// this is a solid RGB nudge — see `docs/themes.md`.
 fn focused_pane_tint() -> Color {
     match theme().text.bg_focus.color {
-        Color::Black => Color::Rgb(28, 28, 32),
-        Color::White => Color::Rgb(240, 240, 245),
+        Color::Black => FOCUSED_PANE_TINT_DARK_BG,
+        Color::White => FOCUSED_PANE_TINT_LIGHT_BG,
         Color::Rgb(r, g, b) => {
             let avg = (u16::from(r) + u16::from(g) + u16::from(b)) / 3;
-            if avg < 128 {
+            if avg < FOCUSED_PANE_TINT_BRIGHTNESS_MIDPOINT {
                 Color::Rgb(
-                    r.saturating_add(18),
-                    g.saturating_add(18),
-                    b.saturating_add(22),
+                    r.saturating_add(FOCUSED_PANE_TINT_DARK_RED_DELTA),
+                    g.saturating_add(FOCUSED_PANE_TINT_DARK_GREEN_DELTA),
+                    b.saturating_add(FOCUSED_PANE_TINT_DARK_BLUE_DELTA),
                 )
             } else {
                 Color::Rgb(
-                    r.saturating_sub(14),
-                    g.saturating_sub(14),
-                    b.saturating_sub(10),
+                    r.saturating_sub(FOCUSED_PANE_TINT_LIGHT_RED_DELTA),
+                    g.saturating_sub(FOCUSED_PANE_TINT_LIGHT_GREEN_DELTA),
+                    b.saturating_sub(FOCUSED_PANE_TINT_LIGHT_BLUE_DELTA),
                 )
             }
         },

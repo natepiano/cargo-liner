@@ -118,7 +118,7 @@ pub(super) fn find_matching_worktree_container(
         if index == linked_index {
             return None;
         }
-        (item_worktree_identity(&entry.item) == Some(identity)).then_some(index)
+        (item_worktree_identity(&entry.root_item) == Some(identity)).then_some(index)
     })
 }
 

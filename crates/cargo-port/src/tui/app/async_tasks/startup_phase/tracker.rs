@@ -165,8 +165,8 @@ impl App {
         let git_seen = self
             .project_list
             .iter()
-            .filter(|entry| entry.item.git_info().is_some())
-            .filter_map(|entry| entry.item.git_directory())
+            .filter(|entry| entry.root_item.git_info().is_some())
+            .filter_map(|entry| entry.root_item.git_directory())
             .collect::<HashSet<_>>();
         let metadata_expected = startup::initial_metadata_roots(&self.project_list);
         let lint_history = self.lint_history_project_paths();

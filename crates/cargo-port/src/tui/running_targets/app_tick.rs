@@ -25,7 +25,7 @@ struct OwnedSlice {
     workspace_root: AbsolutePath,
     bench_names:    HashSet<String>,
     bin_names:      HashSet<String>,
-    /// Manifest dir of the workspace member that owns each `(kind, name)`
+    /// Manifest dir of the workspace member that owns each `(run_target_kind, name)`
     /// target, so a running instance's Path column shows the member, not
     /// the shared workspace root.
     member_dirs:    HashMap<(RunTargetKind, String), AbsolutePath>,
@@ -136,7 +136,7 @@ impl App {
         let mut bin_names = HashSet::new();
         let mut member_dirs = HashMap::new();
         for entry in entries {
-            match entry.kind {
+            match entry.run_target_kind {
                 RunTargetKind::Bench => {
                     bench_names.insert(entry.name.clone());
                 },
@@ -146,7 +146,7 @@ impl App {
                 RunTargetKind::Example => {},
             }
             let member_dir = member_dir_for_target_entry(&entry);
-            member_dirs.insert((entry.kind, entry.name), member_dir);
+            member_dirs.insert((entry.run_target_kind, entry.name), member_dir);
         }
         Some(OwnedSlice {
             target_dir: canonicalize_path(&target_dir),
@@ -183,7 +183,7 @@ fn workspace_for_target_entry(
 }
 
 fn member_dir_for_target_entry(entry: &TargetEntry) -> AbsolutePath {
-    let dir_name = match entry.kind {
+    let dir_name = match entry.run_target_kind {
         RunTargetKind::Binary => SOURCE_DIR,
         RunTargetKind::Example => EXAMPLES_DIR,
         RunTargetKind::Bench => BENCHES_DIR,
@@ -214,7 +214,7 @@ mod tests {
         TargetEntry {
             name:              name.to_string(),
             display_name:      name.to_string(),
-            kind:              RunTargetKind::Example,
+            run_target_kind:   RunTargetKind::Example,
             source:            TargetSource::member("bevy_diegetic".to_string()),
             project_path:      path(project_path),
             package_name:      "bevy_diegetic".to_string(),

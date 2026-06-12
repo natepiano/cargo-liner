@@ -403,7 +403,7 @@ fn extract_vendored_new(items: &mut Vec<RootItem>) {
                 path:              p.path.clone(),
                 name:              p.name.clone(),
                 worktree_status:   p.worktree_status.clone(),
-                info:              p.rust.info.clone(),
+                project_info:      p.rust.project_info.clone(),
                 cargo:             p.rust.cargo.clone(),
                 crates_version:    p.rust.crates_version.clone(),
                 crates_prerelease: p.rust.crates_prerelease.clone(),

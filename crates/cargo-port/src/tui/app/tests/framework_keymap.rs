@@ -397,7 +397,7 @@ fn targets_data_with_binary() -> TargetsData {
         binaries: vec![crate::tui::panes::TargetEntry {
             name:              "demo".to_string(),
             display_name:      "demo".to_string(),
-            kind:              crate::tui::panes::RunTargetKind::Binary,
+            run_target_kind:   crate::tui::panes::RunTargetKind::Binary,
             source:            crate::tui::panes::TargetSource::workspace_root("demo".into()),
             project_path:      crate::project::AbsolutePath::from("/tmp/demo"),
             package_name:      "demo".to_string(),
@@ -1003,7 +1003,7 @@ fn project_list_action_expand_row_rebound_to_tab_expands() {
         url:           None,
         branch:        None,
         commit:        None,
-        info:          crate::project::ProjectInfo::default(),
+        project_info:  crate::project::ProjectInfo::default(),
         git_repo:      None,
     });
     app.ensure_visible_rows_cached();

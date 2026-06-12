@@ -32,44 +32,50 @@ pub(crate) struct GitRepo {
 /// non-Rust project outside any repo, or an uninitialized directory).
 #[derive(Clone)]
 pub(crate) struct ProjectEntry {
-    pub item:     RootItem,
-    pub git_repo: Option<GitRepo>,
+    pub root_item: RootItem,
+    pub git_repo:  Option<GitRepo>,
 }
 
 impl ProjectEntry {
     /// Wrap a `RootItem`, auto-computing whether it lives inside a git
     /// repo. The detection here matches the same `git_repo_root`
     /// probe used elsewhere in the tree.
-    pub(crate) fn new(item: RootItem) -> Self {
-        let git_repo = git_repo_for(&item);
-        Self { item, git_repo }
+    pub(crate) fn new(root_item: RootItem) -> Self {
+        let git_repo = git_repo_for(&root_item);
+        Self {
+            root_item,
+            git_repo,
+        }
     }
 
     /// Construct with explicit repo data — used when a caller has just
     /// computed `git_repo` (e.g. preserving across refresh).
-    pub(crate) const fn with_repo(item: RootItem, git_repo: Option<GitRepo>) -> Self {
-        Self { item, git_repo }
+    pub(crate) const fn with_repo(root_item: RootItem, git_repo: Option<GitRepo>) -> Self {
+        Self {
+            root_item,
+            git_repo,
+        }
     }
 
     #[cfg(test)]
     #[expect(dead_code, reason = "Reserved for later-stage test helpers")]
-    pub(crate) fn for_tests(item: RootItem) -> Self { Self::new(item) }
+    pub(crate) fn for_tests(root_item: RootItem) -> Self { Self::new(root_item) }
 }
 
 /// `ProjectEntry` derefs transparently to its contained `RootItem` so
 /// call sites that only need tree-structure data (paths, names, visibility,
-/// ...) don't have to rewrite `entry.foo()` as `entry.item.foo()`.
-/// Pattern-matching on variants still needs explicit `&entry.item`
+/// ...) don't have to rewrite `entry.foo()` as `entry.root_item.foo()`.
+/// Pattern-matching on variants still needs explicit `&entry.root_item`
 /// because Deref coercion doesn't apply there — that's fine, those
 /// sites already read the tree's structural data.
 impl Deref for ProjectEntry {
     type Target = RootItem;
 
-    fn deref(&self) -> &RootItem { &self.item }
+    fn deref(&self) -> &RootItem { &self.root_item }
 }
 
 impl DerefMut for ProjectEntry {
-    fn deref_mut(&mut self) -> &mut RootItem { &mut self.item }
+    fn deref_mut(&mut self) -> &mut RootItem { &mut self.root_item }
 }
 
 fn git_repo_for(item: &RootItem) -> Option<GitRepo> {
@@ -80,9 +86,9 @@ fn git_repo_for(item: &RootItem) -> Option<GitRepo> {
 /// the contained `RootItem`'s paths via `at_path` — the same lookup the
 /// read-side accessors already use.
 pub(crate) fn entry_contains(entry: &ProjectEntry, target: &Path) -> bool {
-    entry.item.at_path(target).is_some()
+    entry.root_item.at_path(target).is_some()
         || entry
-            .item
+            .root_item
             .submodules()
             .iter()
             .any(|s| s.path.as_path() == target)

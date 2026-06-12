@@ -168,9 +168,12 @@ fn build_project_list_render_ctx_for_test<'a>(
               ProjectList pane's focus snapshot before invoking render_tree_items"
 )]
 fn sync_project_list_focus_for_test(app: &mut App) {
-    let state = app.pane_focus_state(PaneId::ProjectList);
+    let pane_focus_state = app.pane_focus_state(PaneId::ProjectList);
     let is_focused = app.focus_is(PaneId::ProjectList);
-    app.panes.project_list.focus = RenderFocus { state, is_focused };
+    app.panes.project_list.focus = RenderFocus {
+        pane_focus_state,
+        is_focused,
+    };
 }
 
 fn rendered_root_name_cells(app: &mut App) -> Vec<String> {
@@ -640,7 +643,7 @@ impl WorktreeProjectKind {
 
     fn assert_group_layout(self, app: &App, linked_len: usize, context: &str) {
         assert_eq!(app.project_list.len(), 1, "{context}");
-        let RootItem::Worktrees(group) = &app.project_list[0].item else {
+        let RootItem::Worktrees(group) = &app.project_list[0].root_item else {
             panic!("expected worktree group: {context}");
         };
         match (self, &group.primary) {
@@ -744,7 +747,7 @@ fn expect_synthetic_discovery_creates_group(kind: WorktreeProjectKind) {
             assert!(app.handle_project_discovered(linked));
             assert_eq!(app.project_list.len(), 1);
 
-            let RootItem::Worktrees(group) = &app.project_list[0].item else {
+            let RootItem::Worktrees(group) = &app.project_list[0].root_item else {
                 panic!("expected discovered worktree to create a package worktree group");
             };
             assert!(matches!(&group.primary, RustProject::Package(_)));
@@ -780,7 +783,7 @@ fn expect_synthetic_discovery_creates_group(kind: WorktreeProjectKind) {
             assert!(app.handle_project_discovered(linked));
             assert_eq!(app.project_list.len(), 1);
 
-            let RootItem::Worktrees(group) = &app.project_list[0].item else {
+            let RootItem::Worktrees(group) = &app.project_list[0].root_item else {
                 panic!("expected discovered workspace worktree to create a worktree group");
             };
             assert!(matches!(&group.primary, RustProject::Workspace(_)));
@@ -828,7 +831,7 @@ fn expect_synthetic_discovery_appends_existing_group(kind: WorktreeProjectKind) 
             assert!(app.handle_project_discovered(new_linked));
             assert_eq!(app.project_list.len(), 1);
 
-            let RootItem::Worktrees(group) = &app.project_list[0].item else {
+            let RootItem::Worktrees(group) = &app.project_list[0].root_item else {
                 panic!("expected existing root to remain a package worktree group");
             };
             assert!(matches!(&group.primary, RustProject::Package(_)));
@@ -871,7 +874,7 @@ fn expect_synthetic_discovery_appends_existing_group(kind: WorktreeProjectKind) 
             assert!(app.handle_project_discovered(new_linked));
             assert_eq!(app.project_list.len(), 1);
 
-            let RootItem::Worktrees(group) = &app.project_list[0].item else {
+            let RootItem::Worktrees(group) = &app.project_list[0].root_item else {
                 panic!("expected existing root to remain a workspace worktree group");
             };
             assert!(matches!(&group.primary, RustProject::Workspace(_)));
@@ -932,7 +935,7 @@ fn expect_refresh_regroups_stale_top_level_discovery(kind: WorktreeProjectKind) 
         1,
         "refreshing the stale top-level row should regroup it under the primary worktree container",
     );
-    let RootItem::Worktrees(group) = &app.project_list[0].item else {
+    let RootItem::Worktrees(group) = &app.project_list[0].root_item else {
         unreachable!();
     };
     let _ = kind;
@@ -994,7 +997,7 @@ fn expect_refresh_appends_stale_discovery_into_existing_group(kind: WorktreeProj
         2,
         "refresh should fold the stale row into the existing worktree group",
     );
-    let RootItem::Worktrees(group) = &app.project_list[0].item else {
+    let RootItem::Worktrees(group) = &app.project_list[0].root_item else {
         unreachable!();
     };
     let _ = kind;

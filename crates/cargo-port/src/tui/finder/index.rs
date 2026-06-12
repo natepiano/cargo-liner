@@ -98,10 +98,10 @@ pub fn build_finder_index(
     let mut seen_pull_requests = HashSet::new();
 
     for entry in entries {
-        if entry.item.visibility() != Visibility::Visible {
+        if entry.root_item.visibility() != Visibility::Visible {
             continue;
         }
-        match &entry.item {
+        match &entry.root_item {
             RootItem::Rust(RustProject::Workspace(ws)) => {
                 add_workspace_items(&mut items, ws);
             },
@@ -168,7 +168,7 @@ fn add_pull_request_items(
     seen: &mut HashSet<(OwnerRepo, u32)>,
     entry: &ProjectEntry,
 ) {
-    let Some(url) = entries.fetch_url_for(entry.item.path()) else {
+    let Some(url) = entries.fetch_url_for(entry.root_item.path()) else {
         return;
     };
     if ci::parse_owner_repo(&url).is_none() {
@@ -177,8 +177,8 @@ fn add_pull_request_items(
     let Some(info) = entry.git_repo.as_ref().and_then(|repo| repo.pr_data.info()) else {
         return;
     };
-    let project_label = entry.item.root_directory_name().into_string();
-    let dir = entry.item.display_path().into_string();
+    let project_label = entry.root_item.root_directory_name().into_string();
+    let dir = entry.root_item.display_path().into_string();
     for pull_request in &info.open {
         if !seen.insert((info.owner_repo.clone(), pull_request.number)) {
             continue;
@@ -204,7 +204,7 @@ fn add_pull_request_items(
             ]),
             display_name,
             kind: FinderKind::PullRequest,
-            project_path: entry.item.path().clone(),
+            project_path: entry.root_item.path().clone(),
             target_name: None,
             parent_label: project_label.clone(),
             branch,

@@ -566,7 +566,7 @@ fn log_slow_frame(app: &App, bg_stats: &PollBackgroundStats, metrics: &FrameMetr
 
 fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
     let mut cmd = Command::new(CARGO_COMMAND_NAME);
-    match run.kind {
+    match run.run_target_kind {
         RunTargetKind::Binary => {
             cmd.arg(CARGO_RUN_SUBCOMMAND);
         },
@@ -768,11 +768,11 @@ fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) -> bool {
     let project_path = fetch.project_path.clone();
     let ci_run_count = fetch.ci_run_count;
     let oldest_created_at = fetch.oldest_created_at.clone();
-    let kind = fetch.kind;
+    let ci_fetch_kind = fetch.ci_fetch_kind;
     let url = repo_url;
 
     thread::spawn(move || {
-        let (result, network) = match kind {
+        let (result, network) = match ci_fetch_kind {
             CiFetchKind::FetchOlder => {
                 let oldest = oldest_created_at
                     .as_deref()
@@ -801,7 +801,7 @@ fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) -> bool {
         let _ = ci_fetch_sender.send(CiFetchMsg::Complete {
             path: project_path,
             result,
-            kind,
+            kind: ci_fetch_kind,
         });
     });
     true

@@ -279,7 +279,7 @@ fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
     assert!(
         app.project_list
             .iter()
-            .any(|entry| entry.item.path() == test_path("~/js").as_path())
+            .any(|entry| entry.root_item.path() == test_path("~/js").as_path())
     );
 }
 

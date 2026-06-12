@@ -4,3 +4,4 @@
 pub const FINDER_COLUMN_COUNT: usize = 5;
 pub const FINDER_HEADERS: [&str; FINDER_COLUMN_COUNT] =
     ["Name", "Project", "Branch", "Dir", "Type"];
+pub(super) const MIN_POPUP_WIDTH: u16 = 60;

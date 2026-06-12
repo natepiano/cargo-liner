@@ -38,11 +38,11 @@ pub enum StatusLineGlobalAction<A: Action> {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct StatusLineGlobal<A: Action> {
     /// The framework or app action this slot represents.
-    pub action:     StatusLineGlobalAction<A>,
+    pub action:         StatusLineGlobalAction<A>,
     /// Whether the slot renders enabled or disabled.
-    pub state:      ShortcutState,
+    pub shortcut_state: ShortcutState,
     /// Whether the slot renders at all.
-    pub visibility: Visibility,
+    pub visibility:     Visibility,
 }
 
 impl<A: Action> StatusLineGlobal<A> {
@@ -50,9 +50,9 @@ impl<A: Action> StatusLineGlobal<A> {
     #[must_use]
     pub const fn framework(action: GlobalAction) -> Self {
         Self {
-            action:     StatusLineGlobalAction::Framework(action),
-            state:      ShortcutState::Enabled,
-            visibility: Visibility::Visible,
+            action:         StatusLineGlobalAction::Framework(action),
+            shortcut_state: ShortcutState::Enabled,
+            visibility:     Visibility::Visible,
         }
     }
 
@@ -67,16 +67,16 @@ impl<A: Action> StatusLineGlobal<A> {
     #[must_use]
     pub const fn app(action: A) -> Self {
         Self {
-            action:     StatusLineGlobalAction::App(action),
-            state:      ShortcutState::Enabled,
-            visibility: Visibility::Visible,
+            action:         StatusLineGlobalAction::App(action),
+            shortcut_state: ShortcutState::Enabled,
+            visibility:     Visibility::Visible,
         }
     }
 
     /// Copy of this slot with a different enabled / disabled state.
     #[must_use]
-    pub const fn with_state(mut self, state: ShortcutState) -> Self {
-        self.state = state;
+    pub const fn with_state(mut self, shortcut_state: ShortcutState) -> Self {
+        self.shortcut_state = shortcut_state;
         self
     }
 
@@ -177,7 +177,7 @@ where
                     region: BarRegion::Global,
                     label: action.bar_label(),
                     key,
-                    state: global.state,
+                    shortcut_state: global.shortcut_state,
                     visibility: global.visibility,
                     secondary_key: None,
                 }
@@ -193,7 +193,7 @@ where
                     region: BarRegion::Global,
                     label: action.bar_label(),
                     key,
-                    state: global.state,
+                    shortcut_state: global.shortcut_state,
                     visibility: global.visibility,
                     secondary_key: None,
                 }

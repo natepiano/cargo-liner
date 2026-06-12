@@ -764,9 +764,9 @@ mod tests {
 
     fn key(dir: &str, name: &str) -> RunningKey {
         RunningKey {
-            target_dir: AbsolutePath::from(PathBuf::from(dir)),
-            kind:       RunTargetKind::Binary,
-            name:       name.into(),
+            target_dir:      AbsolutePath::from(PathBuf::from(dir)),
+            run_target_kind: RunTargetKind::Binary,
+            name:            name.into(),
         }
     }
 

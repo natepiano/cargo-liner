@@ -142,7 +142,7 @@ fn render_overlay_slots<A: Action>(
                     region,
                     label: action.bar_label(),
                     key,
-                    state: ShortcutStateAlias::Enabled,
+                    shortcut_state: ShortcutStateAlias::Enabled,
                     visibility: VisibilityAlias::Visible,
                     secondary_key: None,
                 })
@@ -154,7 +154,7 @@ fn render_overlay_slots<A: Action>(
                     region,
                     label,
                     key,
-                    state: ShortcutStateAlias::Enabled,
+                    shortcut_state: ShortcutStateAlias::Enabled,
                     visibility: VisibilityAlias::Visible,
                     secondary_key: Some(secondary_key),
                 })

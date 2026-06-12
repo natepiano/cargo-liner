@@ -217,7 +217,7 @@ mod tests {
             name: Some("gone".to_string()),
             ..Package::default()
         };
-        deleted.rust.info.visibility = Visibility::Deleted;
+        deleted.rust.project_info.visibility = Visibility::Deleted;
 
         let list = crate::tui::project_list::ProjectList::new(vec![
             RootItem::Rust(RustProject::Package(visible)),

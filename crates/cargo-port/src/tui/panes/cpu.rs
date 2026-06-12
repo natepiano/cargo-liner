@@ -450,6 +450,59 @@ const fn sync_cpu_pane_state(
     viewport.set_scroll_offset(band_offset);
 }
 
+fn render_cpu_metric_rows(
+    frame: &mut Frame,
+    viewport: &Viewport,
+    row_rects: &mut Vec<(Rect, usize)>,
+    cpu_cfg: &CpuConfig,
+    usage: &CpuUsage,
+    layout: &CpuPanelLayout,
+    focus: PaneFocusState,
+) {
+    render_aggregate_row(frame, viewport, row_rects, usage, layout, focus);
+    render_core_rows(frame, viewport, row_rects, cpu_cfg, usage, layout, focus);
+    render_breakdown_row(
+        frame,
+        viewport,
+        row_rects,
+        focus,
+        BreakdownRowSpec {
+            area:        layout.system,
+            logical_row: CpuSelectableRow::System.logical_index(layout.core_count),
+            label:       "System",
+            percent:     usage.breakdown.system,
+            color:       error_color(),
+        },
+    );
+    render_breakdown_row(
+        frame,
+        viewport,
+        row_rects,
+        focus,
+        BreakdownRowSpec {
+            area:        layout.user,
+            logical_row: CpuSelectableRow::User.logical_index(layout.core_count),
+            label:       "User",
+            percent:     usage.breakdown.user,
+            color:       accent_color(),
+        },
+    );
+    render_breakdown_row(
+        frame,
+        viewport,
+        row_rects,
+        focus,
+        BreakdownRowSpec {
+            area:        layout.idle,
+            logical_row: CpuSelectableRow::Idle.logical_index(layout.core_count),
+            label:       "Idle",
+            percent:     usage.breakdown.idle,
+            color:       text_default(),
+        },
+    );
+    render_gpu_row(frame, viewport, row_rects, cpu_cfg, usage, layout, focus);
+}
+
 /// Body of `CpuPane::render`. Lives here (next to its helpers)
 /// rather than inline in `pane_impls.rs` because the helpers
 /// belong with the per-pane render code; only the trait method
@@ -461,8 +514,8 @@ pub(super) fn render_cpu_pane_body(
     styles: &RenderStyles,
     ctx: &PaneRenderCtx<'_>,
 ) {
-    let focus = pane.focus.state;
-    let cursor = matches!(focus, PaneFocusState::Active).then(|| pane.viewport.pos());
+    let pane_focus_state = pane.focus.pane_focus_state;
+    let cursor = matches!(pane_focus_state, PaneFocusState::Active).then(|| pane.viewport.pos());
     let title = pane.content().map_or_else(
         || " CPU ".to_string(),
         |usage| cpu_panel_title(usage.cores.len(), cursor),
@@ -489,7 +542,7 @@ pub(super) fn render_cpu_pane_body(
         pane.viewport.scroll_offset(),
     );
 
-    let border_style = if matches!(focus, PaneFocusState::Active) {
+    let border_style = if matches!(pane_focus_state, PaneFocusState::Active) {
         styles.chrome.active_border
     } else {
         styles.chrome.inactive_border
@@ -499,63 +552,14 @@ pub(super) fn render_cpu_pane_body(
     let cpu_cfg = &ctx.config.current().cpu;
     let mut row_rects: Vec<(Rect, usize)> = Vec::new();
     let viewport = &pane.viewport;
-    render_aggregate_row(frame, viewport, &mut row_rects, &usage, &layout, focus);
-    render_core_rows(
+    render_cpu_metric_rows(
         frame,
         viewport,
         &mut row_rects,
         cpu_cfg,
         &usage,
         &layout,
-        focus,
-    );
-    render_breakdown_row(
-        frame,
-        viewport,
-        &mut row_rects,
-        focus,
-        BreakdownRowSpec {
-            area:        layout.system,
-            logical_row: CpuSelectableRow::System.logical_index(layout.core_count),
-            label:       "System",
-            percent:     usage.breakdown.system,
-            color:       error_color(),
-        },
-    );
-    render_breakdown_row(
-        frame,
-        viewport,
-        &mut row_rects,
-        focus,
-        BreakdownRowSpec {
-            area:        layout.user,
-            logical_row: CpuSelectableRow::User.logical_index(layout.core_count),
-            label:       "User",
-            percent:     usage.breakdown.user,
-            color:       accent_color(),
-        },
-    );
-    render_breakdown_row(
-        frame,
-        viewport,
-        &mut row_rects,
-        focus,
-        BreakdownRowSpec {
-            area:        layout.idle,
-            logical_row: CpuSelectableRow::Idle.logical_index(layout.core_count),
-            label:       "Idle",
-            percent:     usage.breakdown.idle,
-            color:       text_default(),
-        },
-    );
-    render_gpu_row(
-        frame,
-        viewport,
-        &mut row_rects,
-        cpu_cfg,
-        &usage,
-        &layout,
-        focus,
+        pane_focus_state,
     );
     render_cores_affordance(frame, &layout, cursor_pos);
     sync_cpu_pane_state(

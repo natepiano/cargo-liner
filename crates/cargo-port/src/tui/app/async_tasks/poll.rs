@@ -5,6 +5,7 @@ use std::time::Instant;
 use tui_pane::TrackedItem;
 use tui_pane::TrackedItemKey;
 
+use super::constants::MAX_MSGS_PER_FRAME;
 use crate::scan::BackgroundMsg;
 use crate::tui::app::App;
 use crate::tui::app::types::PollBackgroundStats;
@@ -16,7 +17,6 @@ use crate::tui::terminal::ExampleMsg;
 
 impl App {
     pub fn poll_background(&mut self) -> PollBackgroundStats {
-        const MAX_MSGS_PER_FRAME: usize = 50;
         let mut needs_rebuild = false;
         let mut msg_count = 0;
         let started = Instant::now();
@@ -93,7 +93,7 @@ impl App {
                                 project_path:      path.clone(),
                                 ci_run_count:      self.config.ci_run_count(),
                                 oldest_created_at: Some(oldest_created_at),
-                                kind:              CiFetchKind::FetchOlder,
+                                ci_fetch_kind:     CiFetchKind::FetchOlder,
                             });
                             count += 1;
                             continue;
@@ -222,7 +222,6 @@ pub(super) const fn record_background_msg_kind(
 }
 
 pub(super) fn log_saturated_background_batch(stats: &PollBackgroundStats) {
-    const MAX_MSGS_PER_FRAME: usize = 50;
     if stats.bg_msgs != MAX_MSGS_PER_FRAME {
         return;
     }

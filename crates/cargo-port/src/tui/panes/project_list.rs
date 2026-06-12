@@ -179,7 +179,7 @@ pub fn render_project_list_pane_body(
         let total_str = render::format_bytes(
             projects
                 .iter()
-                .filter_map(|entry| entry.item.disk_usage_bytes())
+                .filter_map(|entry| entry.root_item.disk_usage_bytes())
                 .sum(),
         );
         let header = columns::header_line(widths, "  Projects");
@@ -396,7 +396,7 @@ fn render_root_item(
     let ds = disk_color(disk_percentile(disk_bytes, root_sorted));
     let ci = ctx
         .project_list
-        .ci_status_for_root_item_using_lookup(&item.item, ctx.ci_status_lookup);
+        .ci_status_for_root_item_using_lookup(&item.root_item, ctx.ci_status_lookup);
     let lang = if item.is_rust() {
         item.lang_icon()
     } else {
@@ -407,7 +407,7 @@ fn render_root_item(
             .map_or("  ", |e| lang::language_icon(&e.language))
     };
     let lint_cell = state::lint_cell_for(
-        &Lint::status_for_root(&item.item),
+        &Lint::status_for_root(&item.root_item),
         ctx.config,
         ctx.animation_elapsed,
     );
@@ -599,7 +599,7 @@ fn render_worktree_entry<'a>(
     let ds = disk_color(disk_percentile(disk_bytes, sorted));
     let lang = item.lang_icon();
     let lint_cell = state::lint_cell_for(
-        &Lint::status_for_worktree(&item.item, wi),
+        &Lint::status_for_worktree(&item.root_item, wi),
         ctx.config,
         ctx.animation_elapsed,
     );
@@ -708,7 +708,7 @@ fn render_wt_group_header<'a>(
     widths: &ProjectListWidths,
 ) -> ListItem<'a> {
     let item = &ctx.project_list[ni];
-    let (group_name, member_count) = match &item.item {
+    let (group_name, member_count) = match &item.root_item {
         RootItem::Worktrees(group) => match group.entry(wi).unwrap_or(&group.primary) {
             RustProject::Workspace(ws) => {
                 let g = &ws.groups()[gi];
@@ -745,7 +745,7 @@ fn render_wt_member<'a>(
     let empty = Vec::new();
     let sorted = child_sorted.get(&ni).unwrap_or(&empty);
 
-    let (member, member_name, is_named_group) = match &item.item {
+    let (member, member_name, is_named_group) = match &item.root_item {
         RootItem::Worktrees(group) => match group.entry(wi).unwrap_or(&group.primary) {
             RustProject::Workspace(ws) => {
                 let g = &ws.groups()[gi];
@@ -767,7 +767,7 @@ fn render_wt_member<'a>(
             ListItem::new(columns::row_to_line(&row, widths))
         },
         |m| {
-            let inherited_deleted = match &item.item {
+            let inherited_deleted = match &item.root_item {
                 RootItem::Worktrees(group) => ctx
                     .project_list
                     .is_deleted(group.entry(wi).unwrap_or(&group.primary).path()),
@@ -797,7 +797,7 @@ fn render_member_item(
     let item = &ctx.project_list[node_index];
     let empty = Vec::new();
     let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
-    let (member, member_name, is_named) = match &item.item {
+    let (member, member_name, is_named) = match &item.root_item {
         RootItem::Rust(RustProject::Workspace(ws)) => {
             let group = &ws.groups()[group_index];
             let m = &group.members()[member_index];
@@ -853,7 +853,7 @@ fn render_member_vendored_item(
     let item = &ctx.project_list[node_index];
     let empty = Vec::new();
     let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
-    let (vendored, is_named) = match &item.item {
+    let (vendored, is_named) = match &item.root_item {
         RootItem::Rust(RustProject::Workspace(ws)) => {
             let group = &ws.groups()[group_index];
             let member = &group.members()[member_index];
@@ -887,7 +887,7 @@ fn render_vendored_item(
     let item = &ctx.project_list[node_index];
     let empty = Vec::new();
     let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
-    let (vendored, vendored_display_name) = match &item.item {
+    let (vendored, vendored_display_name) = match &item.root_item {
         RootItem::Rust(RustProject::Workspace(ws)) => {
             let v = &ws.vendored()[vendored_index];
             (Some(v), v.package_name().into_string())
@@ -1034,7 +1034,7 @@ fn render_wt_vendored_item(
     let item = &ctx.project_list[node_index];
     let empty = Vec::new();
     let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
-    let vendored_pkg = match &item.item {
+    let vendored_pkg = match &item.root_item {
         RootItem::Worktrees(group) => group
             .entry(worktree_index)
             .unwrap_or(&group.primary)
@@ -1052,7 +1052,7 @@ fn render_wt_vendored_item(
             ListItem::new(columns::row_to_line(&row, widths))
         },
         |v| {
-            let inherited_deleted = match &item.item {
+            let inherited_deleted = match &item.root_item {
                 RootItem::Worktrees(group) => ctx
                     .project_list
                     .is_deleted(group.entry(worktree_index).unwrap_or(&group.primary).path()),
@@ -1087,7 +1087,7 @@ fn render_wt_member_vendored_item(
     let item = &ctx.project_list[node];
     let empty = Vec::new();
     let sorted = child_sorted.get(&node).unwrap_or(&empty);
-    let (vendored, is_named, inherited_deleted_path) = match &item.item {
+    let (vendored, is_named, inherited_deleted_path) = match &item.root_item {
         RootItem::Worktrees(wtg) => {
             let entry = wtg.entry(worktree).unwrap_or(&wtg.primary);
             let RustProject::Workspace(ws) = entry else {
@@ -1138,7 +1138,7 @@ pub fn render_tree_items(
     let root_labels = ctx
         .project_list
         .resolved_root_labels(ctx.config.include_non_rust().includes_non_rust());
-    let focus = pane.focus.state;
+    let pane_focus_state = pane.focus.pane_focus_state;
     let cursor = ctx.project_list.cursor();
 
     let rows = ctx.project_list.visible_rows();
@@ -1147,7 +1147,8 @@ pub fn render_tree_items(
         .map(|(row_index, row)| {
             let item = render_tree_item(ctx, row, &root_labels, root_sorted, child_sorted, widths);
             item.style(
-                tui_pane::selection_state_for(viewport, cursor, row_index, focus).overlay_style(),
+                tui_pane::selection_state_for(viewport, cursor, row_index, pane_focus_state)
+                    .overlay_style(),
             )
         })
         .collect()
@@ -1266,7 +1267,7 @@ fn render_group_header(
     widths: &ProjectListWidths,
 ) -> ListItem<'static> {
     let item = &ctx.project_list[node_index];
-    let (group_name, member_count) = match &item.item {
+    let (group_name, member_count) = match &item.root_item {
         RootItem::Rust(RustProject::Workspace(ws)) => {
             let group = &ws.groups()[group_index];
             (group.group_name().to_string(), group.members().len())
@@ -1294,7 +1295,7 @@ fn render_group_header(
 pub fn compute_disk_cache(entries: &ProjectList) -> (Vec<u64>, HashMap<usize, Vec<u64>>) {
     let mut root_sorted = Vec::new();
     for entry in entries {
-        if let Some(bytes) = entry.item.disk_usage_bytes() {
+        if let Some(bytes) = entry.root_item.disk_usage_bytes() {
             root_sorted.push(bytes);
         }
     }
@@ -1303,7 +1304,7 @@ pub fn compute_disk_cache(entries: &ProjectList) -> (Vec<u64>, HashMap<usize, Ve
     let mut child_sorted = HashMap::new();
     for (ni, entry) in entries.iter().enumerate() {
         let mut values = Vec::new();
-        collect_child_disk_values(&entry.item, &mut values);
+        collect_child_disk_values(&entry.root_item, &mut values);
         if !values.is_empty() {
             values.sort_unstable();
             child_sorted.insert(ni, values);

@@ -220,7 +220,7 @@ pub(super) fn render_lang_pane_body(
     styles: &RenderStyles,
     ctx: &PaneRenderCtx<'_>,
 ) {
-    let focus_state = pane.focus.state;
+    let pane_focus_state = pane.focus.pane_focus_state;
     let is_focused = pane.focus.is_focused;
     let PaneRenderCtx {
         project_list: projects,
@@ -236,7 +236,7 @@ pub(super) fn render_lang_pane_body(
     let lang_count = lang_stats
         .as_ref()
         .map_or(0, |s| flatten_lang_entries(s).len());
-    let cursor = matches!(focus_state, PaneFocusState::Active).then(|| pane.viewport.pos());
+    let cursor = matches!(pane_focus_state, PaneFocusState::Active).then(|| pane.viewport.pos());
     let title = tui_pane::pane_title(
         "Languages",
         &PaneTitleCount::Single {
@@ -282,7 +282,7 @@ pub(super) fn render_lang_pane_body(
     let rows_needed = u16::try_from(entry_count + 1).unwrap_or(u16::MAX);
     let pin_footer = rows_needed > content_below_header;
 
-    let mut rows = build_lang_rows(&pane.viewport, &entries, name_width, focus_state);
+    let mut rows = build_lang_rows(&pane.viewport, &entries, name_width, pane_focus_state);
 
     if pin_footer {
         let footer_y = inner.y + inner.height.saturating_sub(1);

@@ -1071,15 +1071,15 @@ pub(super) fn render_git_pane_body(
         description_rows > 0,
         git_lower_content_height(&git_data, flat_fields.len()),
     ));
-    let focus = pane.focus.state;
-    let border_style = if matches!(focus, PaneFocusState::Active) {
+    let pane_focus_state = pane.focus.pane_focus_state;
+    let border_style = if matches!(pane_focus_state, PaneFocusState::Active) {
         styles.chrome.active_border
     } else {
         styles.chrome.inactive_border
     };
     let git_block = styles.chrome.block(
         git_panel_title(&git_data),
-        matches!(focus, PaneFocusState::Active),
+        matches!(pane_focus_state, PaneFocusState::Active),
     );
     let git_inner = git_block.inner(area);
     frame.render_widget(git_block, area);
@@ -1095,7 +1095,7 @@ pub(super) fn render_git_pane_body(
             border_style,
             synced_description_height: ctx.synced_description_height,
             pane: &pane.viewport,
-            focus,
+            focus: pane_focus_state,
         },
     );
 
@@ -1110,7 +1110,7 @@ pub(super) fn render_git_pane_body(
         data: &git_data,
         fields: &flat_fields,
         pane: &pane.viewport,
-        focus,
+        focus: pane_focus_state,
         styles,
         row_offset: description_rows,
         animation_elapsed: ctx.animation_elapsed,

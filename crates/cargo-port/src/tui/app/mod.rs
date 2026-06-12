@@ -196,8 +196,8 @@ use crate::scan::MetadataDispatchContext;
 /// disjoint from the registry's. Single source of truth for "what
 /// each frame's render loop needs."
 pub(super) struct RenderBorrows<'a> {
-    pub registry: RenderRegistry<'a>,
-    pub ctx:      PaneRenderCtx<'a>,
+    pub registry:        RenderRegistry<'a>,
+    pub pane_render_ctx: PaneRenderCtx<'a>,
 }
 
 /// Optional precomputed render inputs for framework overlays.
@@ -715,7 +715,10 @@ impl App {
             synced_description_height,
             running_targets,
         };
-        RenderBorrows { registry, ctx }
+        RenderBorrows {
+            registry,
+            pane_render_ctx: ctx,
+        }
     }
 
     /// Split-borrow accessor for the app-modal Finder overlay

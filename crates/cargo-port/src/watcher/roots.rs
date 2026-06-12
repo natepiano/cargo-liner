@@ -16,12 +16,15 @@ use crate::project::AbsolutePath;
 /// `&RegisteredRoots` instead of a `&[AbsolutePath]` so the
 /// previously-representable state where the watcher loop runs but
 /// silently dropped a watch root is no longer constructible.
+#[derive(Clone)]
 pub(super) struct RegisteredRoots {
     dirs: Vec<AbsolutePath>,
 }
 
 impl RegisteredRoots {
     pub(super) fn dirs(&self) -> &[AbsolutePath] { &self.dirs }
+
+    pub(super) fn add_registered_dir(&mut self, dir: AbsolutePath) { self.dirs.push(dir); }
 
     #[cfg(test)]
     pub(super) const fn from_dirs(dirs: Vec<AbsolutePath>) -> Self { Self { dirs } }

@@ -19,6 +19,7 @@ use super::status;
 use super::types::LintCommand;
 use super::types::LintCommandStatus;
 use super::*;
+use crate::cache_paths;
 use crate::channel;
 use crate::config::DiscoveryLint;
 
@@ -98,46 +99,72 @@ fn aggregate_keeps_latest_timestamp_within_variant() {
 
 // ── read_status (end-to-end) ────────────────────────────────────
 
-fn write_latest(root: &Path, run: &LintRun) {
-    read_write::write_latest_under(&cache_root(), root, run).expect("write latest");
+fn write_latest(cache_root: &Path, project_root: &Path, run: &LintRun) {
+    read_write::write_latest_under(cache_root, project_root, run).expect("write latest");
 }
 
 #[test]
 fn read_status_reads_latest_and_reports_missing_log() {
+    let cache_dir = tempfile::tempdir().expect("tempdir");
     let dir = tempfile::tempdir().expect("tempdir");
-    write_latest(dir.path(), &run(LintRunStatus::Passed));
+    write_latest(cache_dir.path(), dir.path(), &run(LintRunStatus::Passed));
     assert!(matches!(
-        status::read_status(dir.path()),
+        status::read_status_under(cache_dir.path(), dir.path()),
         LintStatus::Passed(_)
     ));
 
     let missing = tempfile::tempdir().expect("tempdir");
     assert!(matches!(
-        status::read_status(missing.path()),
+        status::read_status_under(cache_dir.path(), missing.path()),
         LintStatus::NoLog
     ));
 }
 
 #[test]
 fn read_status_uses_latest_over_history() {
+    let cache_dir = tempfile::tempdir().expect("tempdir");
     let dir = tempfile::tempdir().expect("tempdir");
-    history::append_history_under(&cache_root(), dir.path(), &run(LintRunStatus::Failed), None)
-        .expect("append history");
-    write_latest(dir.path(), &run(LintRunStatus::Passed));
+    history::append_history_under(
+        cache_dir.path(),
+        dir.path(),
+        &run(LintRunStatus::Failed),
+        None,
+    )
+    .expect("append history");
+    write_latest(cache_dir.path(), dir.path(), &run(LintRunStatus::Passed));
     assert!(
-        matches!(status::read_status(dir.path()), LintStatus::Passed(_)),
+        matches!(
+            status::read_status_under(cache_dir.path(), dir.path()),
+            LintStatus::Passed(_)
+        ),
         "should read latest.json, not older history"
     );
 }
 
 #[test]
 fn cache_latest_path_does_not_live_under_project_dir() {
+    let cache_dir = tempfile::tempdir().expect("tempdir");
     let dir = tempfile::tempdir().expect("tempdir");
-    let path = latest_path_under(&cache_root(), dir.path());
+    let path = latest_path_under(cache_dir.path(), dir.path());
     assert!(
         !path.starts_with(dir.path()),
         "cache latest path should not recreate project directories"
     );
+}
+
+#[test]
+#[should_panic(expected = "tests must write lint artifacts under a temp cache root")]
+fn test_lint_writes_reject_default_user_cache_root() {
+    let project_dir = tempfile::tempdir().expect("tempdir");
+    let default_lint_root =
+        cache_paths::default_app_cache_root().join(crate::constants::LINTS_CACHE_DIR);
+
+    read_write::write_latest_under(
+        default_lint_root.as_path(),
+        project_dir.path(),
+        &run(LintRunStatus::Passed),
+    )
+    .expect("guard should panic before write_latest returns");
 }
 
 #[test]

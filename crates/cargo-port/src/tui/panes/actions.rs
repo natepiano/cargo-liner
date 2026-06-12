@@ -63,7 +63,7 @@ fn handle_target_action(app: &mut App, mode: BuildMode) {
             target_name:       entry.name.clone(),
             display_path:      target_display_path(app, entry),
             package_name:      Some(entry.package_name.clone()),
-            kind:              entry.kind,
+            run_target_kind:   entry.run_target_kind,
             build_mode:        mode,
             required_features: entry.required_features.clone(),
         });
@@ -107,7 +107,7 @@ fn push_context_segment(segments: &mut Vec<String>, segment: &str) {
 }
 
 fn append_target_leaf(segments: &mut Vec<String>, entry: &TargetEntry) {
-    if matches!(entry.kind, super::RunTargetKind::Binary)
+    if matches!(entry.run_target_kind, super::RunTargetKind::Binary)
         && entry.display_name == entry.package_name
     {
         return;
@@ -159,7 +159,7 @@ fn root_launch_path_context(app: &App, node_index: usize) -> LaunchPathContext {
     let Some(item) = app.project_list.get(node_index) else {
         return LaunchPathContext::default();
     };
-    match &item.item {
+    match &item.root_item {
         RootItem::Rust(RustProject::Workspace(_)) => root_label_context(app, node_index),
         RootItem::Rust(RustProject::Package(_)) | RootItem::NonRust(_) => {
             LaunchPathContext::default()
@@ -210,7 +210,7 @@ fn root_label(app: &App, node_index: usize) -> Option<String> {
 
 fn worktree_label(app: &App, node_index: usize, worktree_index: usize) -> Option<String> {
     let item = app.project_list.get(node_index)?;
-    let RootItem::Worktrees(group) = &item.item else {
+    let RootItem::Worktrees(group) = &item.root_item else {
         return None;
     };
     group
@@ -1001,7 +1001,7 @@ fn handle_ci_fetch_more(app: &mut App) {
         project_path:      ci_path.display().to_string(),
         ci_run_count:      app.config.ci_run_count(),
         oldest_created_at: None,
-        kind:              CiFetchKind::Sync,
+        ci_fetch_kind:     CiFetchKind::Sync,
     });
     let task_id = app
         .framework
@@ -1173,13 +1173,13 @@ mod launch_path_tests {
         source: &str,
         name: &str,
         display_name: &str,
-        kind: RunTargetKind,
+        run_target_kind: RunTargetKind,
         package_name: &str,
     ) -> TargetEntry {
         TargetEntry {
             name: name.to_string(),
             display_name: display_name.to_string(),
-            kind,
+            run_target_kind,
             source: TargetSource::member(source.to_string()),
             project_path: AbsolutePath::from(PathBuf::from("/tmp/project")),
             package_name: package_name.to_string(),

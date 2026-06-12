@@ -66,6 +66,9 @@ pub(super) fn archive_run_output(
     project_root: &Path,
     run: &LintRun,
 ) -> io::Result<LintRun> {
+    #[cfg(test)]
+    paths::assert_not_default_user_cache_root(cache_root);
+
     let project_dir = paths::project_dir_under(cache_root, project_root);
     let output_dir = paths::output_dir_under(cache_root, project_root);
     let run_dir = output_dir.join("runs").join(&run.run_id);
@@ -108,6 +111,9 @@ pub fn append_history_under(
     run: &LintRun,
     cache_size_bytes: Option<u64>,
 ) -> io::Result<PruneStats> {
+    #[cfg(test)]
+    paths::assert_not_default_user_cache_root(cache_root);
+
     let path = paths::history_path_under(cache_root, project_root);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;

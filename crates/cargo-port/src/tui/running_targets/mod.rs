@@ -30,6 +30,7 @@ use tui_pane::RollingMean;
 
 use self::constants::ANCESTOR_WALK_CAP;
 use self::constants::CARGO_BIN_DIR;
+use self::constants::MIN_HEX_HASH_LEN;
 use super::panes::RunTargetKind;
 use crate::constants::CARGO_COMMAND_NAME;
 use crate::project::AbsolutePath;
@@ -148,13 +149,13 @@ impl RunProfile {
     pub(super) const fn is_installed(self) -> bool { matches!(self, Self::Installed) }
 }
 
-/// Key identifying a running target. Matched against `(target_dir, kind, name)`
+/// Key identifying a running target. Matched against `(target_dir, run_target_kind, name)`
 /// derived from the project's metadata at render time.
 #[derive(Hash, Eq, PartialEq, Clone, Debug)]
 pub(crate) struct RunningKey {
-    pub target_dir: AbsolutePath,
-    pub kind:       RunTargetKind,
-    pub name:       String,
+    pub target_dir:      AbsolutePath,
+    pub run_target_kind: RunTargetKind,
+    pub name:            String,
 }
 
 /// One workspace's slice fed to the poller per tick. `target_dir` is the
@@ -162,7 +163,7 @@ pub(crate) struct RunningKey {
 /// target names (the safety net for classifying `deps/<name>-<hash>`
 /// exes); `bin_names` is the union of bin target names (used to match
 /// `cargo install`ed binaries in the cargo bin directory); `member_dirs`
-/// maps each `(kind, name)` target to the manifest dir of the workspace
+/// maps each `(run_target_kind, name)` target to the manifest dir of the workspace
 /// member that owns it, with `workspace_root` as the fallback for exes
 /// whose target the metadata no longer declares.
 pub(crate) struct ProjectTargetSlice<'a> {
@@ -174,12 +175,12 @@ pub(crate) struct ProjectTargetSlice<'a> {
 }
 
 impl ProjectTargetSlice<'_> {
-    /// Manifest dir of the member that owns `(kind, name)`, falling back to
+    /// Manifest dir of the member that owns `(run_target_kind, name)`, falling back to
     /// the workspace root when the metadata no longer declares the target
     /// (a stale build artifact).
-    fn member_dir(&self, kind: RunTargetKind, name: &str) -> AbsolutePath {
+    fn member_dir(&self, run_target_kind: RunTargetKind, name: &str) -> AbsolutePath {
         self.member_dirs
-            .get(&(kind, name.to_string()))
+            .get(&(run_target_kind, name.to_string()))
             .unwrap_or(self.workspace_root)
             .clone()
     }
@@ -638,12 +639,12 @@ fn classify_exe(
 ) -> Option<(RunningKey, RunProfile, AbsolutePath)> {
     for slice in projects {
         if let Ok(rest) = exe.strip_prefix(slice.target_dir.as_path())
-            && let Some((kind, name, profile)) = classify_tail(rest, slice.bench_names)
+            && let Some((run_target_kind, name, profile)) = classify_tail(rest, slice.bench_names)
         {
-            let member_dir = slice.member_dir(kind, &name);
+            let member_dir = slice.member_dir(run_target_kind, &name);
             let key = RunningKey {
                 target_dir: slice.target_dir.clone(),
-                kind,
+                run_target_kind,
                 name,
             };
             return Some((key, profile, member_dir));
@@ -678,9 +679,9 @@ fn installed_bin_keys(
         .map(|slice| {
             (
                 RunningKey {
-                    target_dir: slice.target_dir.clone(),
-                    kind:       RunTargetKind::Binary,
-                    name:       stem.to_string(),
+                    target_dir:      slice.target_dir.clone(),
+                    run_target_kind: RunTargetKind::Binary,
+                    name:            stem.to_string(),
                 },
                 slice.member_dir(RunTargetKind::Binary, stem),
             )
@@ -737,7 +738,7 @@ fn cargo_install_bin_dir() -> Option<AbsolutePath> {
 }
 
 /// Parse a `target/<profile>/deps/<basename>` entry as a bench. The basename
-/// is `<name>-<hash>` where `<hash>` is 16+ lowercase hex chars. The longest
+/// is `<name>-<hash>` where `<hash>` is [`MIN_HEX_HASH_LEN`]+ lowercase hex chars. The longest
 /// `<name>` that is a declared bench wins (so `my-bench-...` with both `my`
 /// and `my-bench` declared resolves to `my-bench`).
 fn parse_bench_basename(basename: &str, bench_names: &HashSet<String>) -> Option<String> {
@@ -762,7 +763,7 @@ fn parse_bench_basename(basename: &str, bench_names: &HashSet<String>) -> Option
 }
 
 fn is_hex_hash(s: &str) -> bool {
-    s.len() >= 16
+    s.len() >= MIN_HEX_HASH_LEN
         && s.bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
@@ -804,10 +805,10 @@ mod tests {
 
     fn names(names: &[&str]) -> HashSet<String> { names.iter().map(|s| (*s).to_string()).collect() }
 
-    fn running_key(target_dir: &str, kind: RunTargetKind, name: &str) -> RunningKey {
+    fn running_key(target_dir: &str, run_target_kind: RunTargetKind, name: &str) -> RunningKey {
         RunningKey {
             target_dir: AbsolutePath::from(PathBuf::from(target_dir)),
-            kind,
+            run_target_kind,
             name: name.to_string(),
         }
     }
@@ -820,7 +821,7 @@ mod tests {
         let exe = exe_path("/tmp/ws/target/debug/foo");
         let (key, profile, _member) =
             classify_exe(&exe, std::slice::from_ref(&s)).expect("matches");
-        assert!(matches!(key.kind, RunTargetKind::Binary));
+        assert!(matches!(key.run_target_kind, RunTargetKind::Binary));
         assert_eq!(key.name, "foo");
         assert_eq!(key.target_dir, dir);
         assert_eq!(profile, RunProfile::Debug);
@@ -834,7 +835,7 @@ mod tests {
         let exe = exe_path("/tmp/ws/target/release/examples/bar");
         let (key, profile, _member) =
             classify_exe(&exe, std::slice::from_ref(&s)).expect("matches");
-        assert!(matches!(key.kind, RunTargetKind::Example));
+        assert!(matches!(key.run_target_kind, RunTargetKind::Example));
         assert_eq!(key.name, "bar");
         assert_eq!(profile, RunProfile::Release);
     }
@@ -846,7 +847,7 @@ mod tests {
         let s = slice(&dir, &benches, &bins, &members);
         let exe = exe_path("/tmp/ws/target/debug/deps/baz-0123456789abcdef");
         let (key, _, _) = classify_exe(&exe, std::slice::from_ref(&s)).expect("matches");
-        assert!(matches!(key.kind, RunTargetKind::Bench));
+        assert!(matches!(key.run_target_kind, RunTargetKind::Bench));
         assert_eq!(key.name, "baz");
     }
 
@@ -875,7 +876,7 @@ mod tests {
         let s = slice(&dir, &benches, &bins, &members);
         let exe = exe_path("/tmp/ws/target/debug/deps/my-bench-0123456789abcdef");
         let (key, _, _) = classify_exe(&exe, std::slice::from_ref(&s)).expect("matches");
-        assert!(matches!(key.kind, RunTargetKind::Bench));
+        assert!(matches!(key.run_target_kind, RunTargetKind::Bench));
         assert_eq!(key.name, "my-bench");
     }
 
@@ -907,7 +908,7 @@ mod tests {
         let keys = installed_bin_keys(&exe, std::slice::from_ref(&s), Some(&bin_dir));
         assert_eq!(keys.len(), 1);
         let (key, member_dir) = &keys[0];
-        assert!(matches!(key.kind, RunTargetKind::Binary));
+        assert!(matches!(key.run_target_kind, RunTargetKind::Binary));
         assert_eq!(key.name, "cargo-port");
         assert_eq!(key.target_dir, dir);
         // No member-dir entry: attribution falls back to the slice's

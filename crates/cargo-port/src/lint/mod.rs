@@ -45,8 +45,6 @@ pub use history::read_history;
 pub use history::retained_cache_usage;
 pub use lint_runs::LintRuns;
 #[cfg(test)]
-pub use paths::cache_root;
-#[cfg(test)]
 pub use paths::latest_path_under;
 pub use paths::project_dir;
 pub use runtime::RegisterProjectRequest;

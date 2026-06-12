@@ -29,6 +29,7 @@ use tui_pane::render_overflow_affordance;
 use tui_pane::text_default;
 use tui_pane::title_color;
 
+use super::constants::MIN_POPUP_WIDTH;
 use super::index::FINDER_COLUMN_COUNT;
 use super::index::FINDER_HEADERS;
 use super::index::FinderItem;
@@ -222,7 +223,7 @@ fn repopulate_selected_detail_panes(app: &mut App) {
         .project_list
         .selected_project_path()
         .and_then(|path| app.project_list.entry_containing(path))
-        .map(|entry| panes::build_pane_data(app, &entry.item))
+        .map(|entry| panes::build_pane_data(app, &entry.root_item))
     {
         app.panes.package.set_content(data.package);
         app.panes.git.set_content(data.git);
@@ -253,7 +254,8 @@ fn navigate_to_target(app: &mut App, item: &FinderItem) {
     let target_name = item.target_name.as_deref().unwrap_or("");
     for (i, entry) in entries.iter().enumerate() {
         if entry.name == target_name
-            && std::mem::discriminant(&entry.kind) == std::mem::discriminant(&target_kind)
+            && std::mem::discriminant(&entry.run_target_kind)
+                == std::mem::discriminant(&target_kind)
         {
             app.panes.targets.viewport.set_pos(i);
             return;
@@ -308,11 +310,10 @@ pub fn render_finder_pane_body(
 
     // Size popup to fit all columns + spacing (4 gaps) + borders (2), capped at terminal width
     let natural_width: usize = col_widths.iter().sum::<usize>() + 4 + 2;
-    let min_popup_width: u16 = 60;
     let max_popup_width = frame.area().width;
     let popup_width = u16::try_from(natural_width)
         .unwrap_or(u16::MAX)
-        .clamp(min_popup_width, max_popup_width);
+        .clamp(MIN_POPUP_WIDTH, max_popup_width);
 
     let title = if ctx.project_list.finder.query.is_empty() {
         " Find Anything ".to_string()
@@ -515,7 +516,7 @@ fn render_finder_results(
                 )),
             ])
             .style(
-                tui_pane::selection_state(&pane.viewport, row_index, pane.focus.state)
+                tui_pane::selection_state(&pane.viewport, row_index, pane.focus.pane_focus_state)
                     .overlay_style(),
             )
         })

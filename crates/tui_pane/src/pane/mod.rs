@@ -8,6 +8,7 @@
 //! `Pane<Ctx>` alone.
 
 mod chrome;
+mod constants;
 mod id;
 mod popup;
 mod rules;

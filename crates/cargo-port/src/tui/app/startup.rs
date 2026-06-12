@@ -16,7 +16,7 @@ use crate::tui::project_list::ProjectList;
 pub(super) fn initial_metadata_roots(projects: &ProjectList) -> HashSet<AbsolutePath> {
     let mut roots = HashSet::new();
     projects.for_each_leaf(|entry| {
-        if let RootItem::Rust(rust) = &entry.item {
+        if let RootItem::Rust(rust) = &entry.root_item {
             roots.insert(rust.path().clone());
         }
     });
@@ -27,8 +27,10 @@ pub(super) fn initial_metadata_roots(projects: &ProjectList) -> HashSet<Absolute
 /// projects are folded under their nearest ancestor so the
 /// background scanner doesn't double-walk a tree.
 pub(super) fn initial_disk_roots(projects: &ProjectList) -> HashSet<AbsolutePath> {
-    let mut abs_paths: Vec<&AbsolutePath> =
-        projects.iter().map(|entry| entry.item.path()).collect();
+    let mut abs_paths: Vec<&AbsolutePath> = projects
+        .iter()
+        .map(|entry| entry.root_item.path())
+        .collect();
     abs_paths.sort_by(|left, right| {
         left.components()
             .count()

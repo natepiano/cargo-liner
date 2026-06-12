@@ -168,13 +168,13 @@ pub fn render_lints_pane_body(
     }
 
     let viewport_clone = pane.viewport.clone();
-    let focus = pane.focus.state;
+    let pane_focus_state = pane.focus.pane_focus_state;
     let rows = build_lint_rows(
         &lints_data.runs,
         &lints_data.sizes,
         ctx.animation_elapsed,
         &viewport_clone,
-        focus,
+        pane_focus_state,
     );
     pane.viewport.set_len(rows.len());
 

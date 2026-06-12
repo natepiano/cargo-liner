@@ -84,7 +84,7 @@ fn observe_name_width(widths: &mut ProjectListWidths, content_width: usize) {
 
 fn observe_item_fit_widths(widths: &mut ProjectListWidths, entry: &ProjectEntry, root_label: &str) {
     let dw = columns::display_width;
-    let item = &entry.item;
+    let item = &entry.root_item;
     let repo_info = entry
         .git_repo
         .as_ref()

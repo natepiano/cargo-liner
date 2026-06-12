@@ -127,7 +127,7 @@ impl ProjectList {
                 .into_iter()
                 .map(|item| {
                     let entry = ProjectEntry::new(item);
-                    (entry.item.path().clone(), entry)
+                    (entry.root_item.path().clone(), entry)
                 })
                 .collect(),
             ..Self::default()
@@ -188,19 +188,19 @@ impl ProjectList {
         let mut labels: Vec<String> = self
             .roots
             .values()
-            .map(|entry| entry.item.root_directory_name().into_string())
+            .map(|entry| entry.root_item.root_directory_name().into_string())
             .collect();
         let mut collision_sets: HashMap<String, Vec<usize>> = HashMap::new();
 
         for (index, entry) in self.roots.values().enumerate() {
-            if matches!(entry.item.visibility(), Visibility::Dismissed) {
+            if matches!(entry.root_item.visibility(), Visibility::Dismissed) {
                 continue;
             }
-            if !include_non_rust && !entry.item.is_rust() {
+            if !include_non_rust && !entry.root_item.is_rust() {
                 continue;
             }
             collision_sets
-                .entry(entry.item.root_directory_name().into_string())
+                .entry(entry.root_item.root_directory_name().into_string())
                 .or_default()
                 .push(index);
         }
@@ -212,7 +212,7 @@ impl ProjectList {
             let suffixes = shortest_unique_suffixes(
                 &indices
                     .iter()
-                    .map(|&index| self.roots[index].item.display_path().into_string())
+                    .map(|&index| self.roots[index].root_item.display_path().into_string())
                     .collect::<Vec<_>>(),
             );
             for (index, suffix) in indices.into_iter().zip(suffixes) {
@@ -221,7 +221,7 @@ impl ProjectList {
         }
 
         for (label, entry) in labels.iter_mut().zip(self.roots.values()) {
-            if let Some(suffix) = entry.item.worktree_badge_suffix() {
+            if let Some(suffix) = entry.root_item.worktree_badge_suffix() {
                 label.push_str(&suffix);
             }
         }
@@ -232,7 +232,7 @@ impl ProjectList {
     pub(super) fn git_directories(&self) -> Vec<AbsolutePath> {
         self.roots
             .values()
-            .filter_map(|entry| entry.item.git_directory())
+            .filter_map(|entry| entry.root_item.git_directory())
             .collect()
     }
 
@@ -247,7 +247,7 @@ impl ProjectList {
     /// `git_repo` via clone so each leaf sees the same repo-level data.
     pub(super) fn for_each_leaf(&self, mut f: impl FnMut(&ProjectEntry)) {
         for entry in self.roots.values() {
-            match &entry.item {
+            match &entry.root_item {
                 RootItem::Worktrees(group) => {
                     for project in group.iter_entries() {
                         f(&ProjectEntry::with_repo(
@@ -265,7 +265,7 @@ impl ProjectList {
     /// every leaf project without cloning any `RootItem`.
     pub(super) fn for_each_leaf_path(&self, mut f: impl FnMut(&Path, bool)) {
         for entry in self.roots.values() {
-            match &entry.item {
+            match &entry.root_item {
                 RootItem::Worktrees(group) => {
                     for project in group.iter_entries() {
                         f(project.path(), true);
@@ -278,11 +278,11 @@ impl ProjectList {
 
     pub(super) fn at_path(&self, target: &Path) -> Option<&ProjectInfo> {
         if let Some(entry) = self.roots.get(target) {
-            return entry.item.at_path(target);
+            return entry.root_item.at_path(target);
         }
         self.roots
             .values()
-            .find_map(|entry| entry.item.at_path(target))
+            .find_map(|entry| entry.root_item.at_path(target))
     }
 
     pub(super) fn at_path_mut(&mut self, target: &Path) -> Option<&mut ProjectInfo> {
@@ -293,11 +293,11 @@ impl ProjectList {
             return self
                 .roots
                 .get_mut(target)
-                .and_then(|entry| entry.item.at_path_mut(target));
+                .and_then(|entry| entry.root_item.at_path_mut(target));
         }
         self.roots
             .values_mut()
-            .find_map(|entry| entry.item.at_path_mut(target))
+            .find_map(|entry| entry.root_item.at_path_mut(target))
     }
 
     /// Whether `target` is the path of a submodule under any root entry.
@@ -307,7 +307,7 @@ impl ProjectList {
     pub(super) fn is_submodule_path(&self, target: &Path) -> bool {
         self.roots.values().any(|entry| {
             entry
-                .item
+                .root_item
                 .submodules()
                 .iter()
                 .any(|s| s.path.as_path() == target)
@@ -317,25 +317,25 @@ impl ProjectList {
     pub(super) fn rust_info_at_path(&self, target: &Path) -> Option<&RustInfo> {
         self.roots
             .values()
-            .find_map(|entry| entry.item.rust_info_at_path(target))
+            .find_map(|entry| entry.root_item.rust_info_at_path(target))
     }
 
     pub(super) fn rust_info_at_path_mut(&mut self, target: &Path) -> Option<&mut RustInfo> {
         self.roots
             .values_mut()
-            .find_map(|entry| entry.item.rust_info_at_path_mut(target))
+            .find_map(|entry| entry.root_item.rust_info_at_path_mut(target))
     }
 
     pub(super) fn vendored_at_path(&self, target: &Path) -> Option<&VendoredPackage> {
         self.roots
             .values()
-            .find_map(|entry| entry.item.vendored_at_path(target))
+            .find_map(|entry| entry.root_item.vendored_at_path(target))
     }
 
     pub(super) fn vendored_at_path_mut(&mut self, target: &Path) -> Option<&mut VendoredPackage> {
         self.roots
             .values_mut()
-            .find_map(|entry| entry.item.vendored_at_path_mut(target))
+            .find_map(|entry| entry.root_item.vendored_at_path_mut(target))
     }
 
     /// For a vendored crate path, return the owning root's `LintRuns`.
@@ -346,37 +346,37 @@ impl ProjectList {
     pub(super) fn vendored_owner_lint(&self, target: &Path) -> Option<&LintRuns> {
         self.roots
             .values()
-            .find_map(|entry| entry.item.vendored_owner_lint(target))
+            .find_map(|entry| entry.root_item.vendored_owner_lint(target))
     }
 
     pub(super) fn lint_at_path(&self, target: &Path) -> Option<&LintRuns> {
         self.roots
             .values()
-            .find_map(|entry| entry.item.lint_at_path(target))
+            .find_map(|entry| entry.root_item.lint_at_path(target))
     }
 
     pub(super) fn lint_at_path_mut(&mut self, target: &Path) -> Option<&mut LintRuns> {
         self.roots
             .values_mut()
-            .find_map(|entry| entry.item.lint_at_path_mut(target))
+            .find_map(|entry| entry.root_item.lint_at_path_mut(target))
     }
 
     pub(super) fn lint_owner_path(&self, target: &Path) -> Option<AbsolutePath> {
         self.roots
             .values()
-            .find_map(|entry| entry.item.lint_owner_path(target))
+            .find_map(|entry| entry.root_item.lint_owner_path(target))
             .cloned()
     }
 
     pub(super) fn checkout_root_for(&self, target: &Path) -> Option<AbsolutePath> {
         self.roots
             .values()
-            .find_map(|entry| entry.item.checkout_root_for(target))
+            .find_map(|entry| entry.root_item.checkout_root_for(target))
             .cloned()
     }
 
     pub(super) fn has_running_lints(&self) -> bool {
-        self.roots.values().any(|entry| match &entry.item {
+        self.roots.values().any(|entry| match &entry.root_item {
             RootItem::Rust(project) => project_lint_is_running(project),
             RootItem::Worktrees(group) => group.iter_entries().any(project_lint_is_running),
             RootItem::NonRust(_) => false,
@@ -392,7 +392,9 @@ impl ProjectList {
     }
 
     pub(super) fn worktree_status_for(&self, path: &Path) -> Option<&WorktreeStatus> {
-        self.entry_containing(path)?.item.worktree_status_at(path)
+        self.entry_containing(path)?
+            .root_item
+            .worktree_status_at(path)
     }
 
     pub(super) fn entry_containing_mut(&mut self, target: &Path) -> Option<&mut ProjectEntry> {
@@ -420,9 +422,9 @@ impl ProjectList {
             .roots
             .values()
             .filter_map(|entry| {
-                let url = self.fetch_url_for(entry.item.path())?;
+                let url = self.fetch_url_for(entry.root_item.path())?;
                 (ci::parse_owner_repo(&url).as_ref() == Some(owner_repo))
-                    .then(|| entry.item.path().clone())
+                    .then(|| entry.root_item.path().clone())
             })
             .collect();
         for path in targets {
@@ -434,7 +436,7 @@ impl ProjectList {
 
     pub(super) fn pr_info_for_repo(&self, owner_repo: &OwnerRepo) -> Option<&ProjectPrInfo> {
         self.roots.values().find_map(|entry| {
-            let url = self.fetch_url_for(entry.item.path())?;
+            let url = self.fetch_url_for(entry.root_item.path())?;
             (ci::parse_owner_repo(&url).as_ref() == Some(owner_repo))
                 .then(|| entry.git_repo.as_ref()?.pr_data.info())
                 .flatten()
@@ -465,12 +467,12 @@ impl ProjectList {
     /// 3. Containing-entry fallback (path is inside an entry's hierarchy).
     pub(super) fn git_repo_for(&self, path: &Path) -> Option<&GitRepo> {
         for entry in self.roots.values() {
-            if entry.item.path() == path {
+            if entry.root_item.path() == path {
                 return entry.git_repo.as_ref();
             }
         }
         for entry in self.roots.values() {
-            if let Some(submodule) = entry.item.find_submodule(path) {
+            if let Some(submodule) = entry.root_item.find_submodule(path) {
                 return submodule.git_repo.as_ref();
             }
         }
@@ -486,7 +488,7 @@ impl ProjectList {
             GitRepoLookup::Submodule { entry, submodule } => self
                 .roots
                 .get_mut(&entry)?
-                .item
+                .root_item
                 .find_submodule_mut(submodule.as_path())?
                 .git_repo
                 .as_mut(),
@@ -509,7 +511,7 @@ impl ProjectList {
             GitRepoLookup::Submodule { entry, submodule } => Some(
                 self.roots
                     .get_mut(&entry)?
-                    .item
+                    .root_item
                     .find_submodule_mut(submodule.as_path())?
                     .git_repo
                     .get_or_insert_with(Default::default),
@@ -690,11 +692,11 @@ impl ProjectList {
 
     pub(super) fn is_vendored_path(&self, path: &Path) -> bool {
         self.iter()
-            .any(|item| item.item.vendored_at_path(path).is_some())
+            .any(|item| item.root_item.vendored_at_path(path).is_some())
     }
 
     pub(super) fn is_workspace_member_path(&self, path: &Path) -> bool {
-        self.iter().any(|item| match &item.item {
+        self.iter().any(|item| match &item.root_item {
             RootItem::Rust(RustProject::Workspace(ws)) => ws
                 .groups()
                 .iter()
@@ -746,7 +748,7 @@ impl ProjectList {
         mut replacement: RootItem,
     ) -> Option<RootItem> {
         for entry in self.roots.values_mut() {
-            match &mut entry.item {
+            match &mut entry.root_item {
                 item @ (RootItem::Rust(_) | RootItem::NonRust(_)) => {
                     if item.path() == path {
                         debug_assert_eq!(
@@ -798,7 +800,7 @@ impl ProjectList {
             path,
             "promoted group primary must retain the same root path"
         );
-        entry.item = RootItem::Worktrees(group);
+        entry.root_item = RootItem::Worktrees(group);
         true
     }
 
@@ -811,11 +813,11 @@ impl ProjectList {
     pub(super) fn insert_into_hierarchy(&mut self, item: RootItem) -> bool {
         let item_path = item.path().to_path_buf();
         for entry in self.roots.values_mut() {
-            if try_attach_worktree(&mut entry.item, &item) {
+            if try_attach_worktree(&mut entry.root_item, &item) {
                 return false;
             }
 
-            let inserted = match &mut entry.item {
+            let inserted = match &mut entry.root_item {
                 RootItem::Rust(RustProject::Workspace(ws)) => {
                     try_insert_member(ws, &item_path, &item)
                 },
@@ -855,7 +857,7 @@ impl ProjectList {
     /// members into `Named` / `Inline` groups.
     pub(super) fn regroup_members(&mut self, inline_dirs: &[String]) {
         for entry in self.roots.values_mut() {
-            match &mut entry.item {
+            match &mut entry.root_item {
                 RootItem::Rust(RustProject::Workspace(ws)) => {
                     regroup_workspace(ws, inline_dirs);
                 },
@@ -875,7 +877,8 @@ impl ProjectList {
     pub(super) fn regroup_top_level_worktrees(&mut self) {
         let mut index = 0;
         while index < self.roots.len() {
-            let Some(identity) = linked_worktree_identity(&self.roots[index].item).cloned() else {
+            let Some(identity) = linked_worktree_identity(&self.roots[index].root_item).cloned()
+            else {
                 index += 1;
                 continue;
             };
@@ -893,8 +896,10 @@ impl ProjectList {
             if target_index > index {
                 target_index -= 1;
             }
-            let attached =
-                try_attach_worktree(&mut self.roots[target_index].item, &linked_entry.item);
+            let attached = try_attach_worktree(
+                &mut self.roots[target_index].root_item,
+                &linked_entry.root_item,
+            );
             debug_assert!(
                 attached,
                 "linked worktree regroup should attach after container match"
@@ -1118,7 +1123,7 @@ impl ProjectList {
         let VisibleRow::Root { node_index } = self.selected_row()? else {
             return None;
         };
-        let RootItem::Worktrees(group) = &self.get(node_index)?.item else {
+        let RootItem::Worktrees(group) = &self.get(node_index)?.root_item else {
             return None;
         };
         if !group.renders_as_group() {
@@ -1144,7 +1149,7 @@ impl ProjectList {
                 member_index,
             } => self
                 .get(node_index)?
-                .item
+                .root_item
                 .member_path_ref(group_index, member_index),
             VisibleRow::MemberVendored {
                 node_index,
@@ -1153,13 +1158,16 @@ impl ProjectList {
                 vendored_index,
             } => self
                 .get(node_index)?
-                .item
+                .root_item
                 .resolve_member_vendored(group_index, member_index, vendored_index)
                 .map(|vendored| vendored.path().as_path()),
             VisibleRow::Vendored {
                 node_index,
                 vendored_index,
-            } => self.get(node_index)?.item.vendored_path_ref(vendored_index),
+            } => self
+                .get(node_index)?
+                .root_item
+                .vendored_path_ref(vendored_index),
             VisibleRow::WorktreeEntry {
                 node_index,
                 worktree_index,
@@ -1168,7 +1176,7 @@ impl ProjectList {
                 node_index,
                 worktree_index,
                 ..
-            } => match &self.get(node_index)?.item {
+            } => match &self.get(node_index)?.root_item {
                 RootItem::Worktrees(wtg) => wtg.worktree_path_ref(worktree_index),
                 _ => None,
             },
@@ -1177,7 +1185,7 @@ impl ProjectList {
                 worktree_index,
                 group_index,
                 member_index,
-            } => match &self.get(node_index)?.item {
+            } => match &self.get(node_index)?.root_item {
                 RootItem::Worktrees(wtg) => {
                     wtg.worktree_member_path_ref(worktree_index, group_index, member_index)
                 },
@@ -1189,7 +1197,7 @@ impl ProjectList {
                 group_index,
                 member_index,
                 vendored_index,
-            } => match &self.get(node_index)?.item {
+            } => match &self.get(node_index)?.root_item {
                 RootItem::Worktrees(wtg) => wtg
                     .member_vendored_ref(worktree_index, group_index, member_index, vendored_index)
                     .map(|vendored| vendored.path().as_path()),
@@ -1199,7 +1207,7 @@ impl ProjectList {
                 node_index,
                 worktree_index,
                 vendored_index,
-            } => match &self.get(node_index)?.item {
+            } => match &self.get(node_index)?.root_item {
                 RootItem::Worktrees(wtg) => {
                     wtg.worktree_vendored_path_ref(worktree_index, vendored_index)
                 },
@@ -1228,7 +1236,7 @@ impl ProjectList {
                 member_index,
             } => self
                 .get(node_index)?
-                .item
+                .root_item
                 .resolve_member(group_index, member_index)
                 .map(ProjectFields::display_path),
             VisibleRow::MemberVendored {
@@ -1238,7 +1246,7 @@ impl ProjectList {
                 vendored_index,
             } => self
                 .get(node_index)?
-                .item
+                .root_item
                 .resolve_member_vendored(group_index, member_index, vendored_index)
                 .map(ProjectFields::display_path),
             VisibleRow::Vendored {
@@ -1246,7 +1254,7 @@ impl ProjectList {
                 vendored_index,
             } => self
                 .get(node_index)?
-                .item
+                .root_item
                 .resolve_vendored(vendored_index)
                 .map(ProjectFields::display_path),
             VisibleRow::WorktreeEntry {
@@ -1257,7 +1265,7 @@ impl ProjectList {
                 node_index,
                 worktree_index,
                 ..
-            } => match &self.get(node_index)?.item {
+            } => match &self.get(node_index)?.root_item {
                 RootItem::Worktrees(wtg) => wtg.worktree_display_path(worktree_index),
                 _ => None,
             },
@@ -1266,7 +1274,7 @@ impl ProjectList {
                 worktree_index,
                 group_index,
                 member_index,
-            } => match &self.get(node_index)?.item {
+            } => match &self.get(node_index)?.root_item {
                 RootItem::Worktrees(wtg) => {
                     wtg.worktree_member_display_path(worktree_index, group_index, member_index)
                 },
@@ -1278,7 +1286,7 @@ impl ProjectList {
                 group_index,
                 member_index,
                 vendored_index,
-            } => match &self.get(node_index)?.item {
+            } => match &self.get(node_index)?.root_item {
                 RootItem::Worktrees(wtg) => wtg
                     .member_vendored_ref(worktree_index, group_index, member_index, vendored_index)
                     .map(ProjectFields::display_path),
@@ -1288,7 +1296,7 @@ impl ProjectList {
                 node_index,
                 worktree_index,
                 vendored_index,
-            } => match &self.get(node_index)?.item {
+            } => match &self.get(node_index)?.root_item {
                 RootItem::Worktrees(wtg) => {
                     wtg.worktree_vendored_display_path(worktree_index, vendored_index)
                 },
@@ -1319,7 +1327,7 @@ impl ProjectList {
                 member_index,
             } => self
                 .get(node_index)?
-                .item
+                .root_item
                 .resolve_member(group_index, member_index)
                 .map(|p| p.path().clone()),
             VisibleRow::MemberVendored {
@@ -1329,7 +1337,7 @@ impl ProjectList {
                 vendored_index,
             } => self
                 .get(node_index)?
-                .item
+                .root_item
                 .resolve_member_vendored(group_index, member_index, vendored_index)
                 .map(|p| p.path().clone()),
             VisibleRow::Vendored {
@@ -1337,7 +1345,7 @@ impl ProjectList {
                 vendored_index,
             } => self
                 .get(node_index)?
-                .item
+                .root_item
                 .resolve_vendored(vendored_index)
                 .map(|p| p.path().clone()),
             VisibleRow::WorktreeEntry {
@@ -1348,7 +1356,7 @@ impl ProjectList {
                 node_index,
                 worktree_index,
                 ..
-            } => match &self.get(node_index)?.item {
+            } => match &self.get(node_index)?.root_item {
                 RootItem::Worktrees(wtg) => wtg.worktree_abs_path(worktree_index),
                 _ => None,
             },
@@ -1357,7 +1365,7 @@ impl ProjectList {
                 worktree_index,
                 group_index,
                 member_index,
-            } => match &self.get(node_index)?.item {
+            } => match &self.get(node_index)?.root_item {
                 RootItem::Worktrees(wtg) => {
                     wtg.worktree_member_abs_path(worktree_index, group_index, member_index)
                 },
@@ -1369,7 +1377,7 @@ impl ProjectList {
                 group_index,
                 member_index,
                 vendored_index,
-            } => match &self.get(node_index)?.item {
+            } => match &self.get(node_index)?.root_item {
                 RootItem::Worktrees(wtg) => wtg
                     .member_vendored_ref(worktree_index, group_index, member_index, vendored_index)
                     .map(|p| p.path().clone()),
@@ -1379,7 +1387,7 @@ impl ProjectList {
                 node_index,
                 worktree_index,
                 vendored_index,
-            } => match &self.get(node_index)?.item {
+            } => match &self.get(node_index)?.root_item {
                 RootItem::Worktrees(wtg) => {
                     wtg.worktree_vendored_abs_path(worktree_index, vendored_index)
                 },
@@ -1412,7 +1420,7 @@ impl ProjectList {
                 worktree_index,
             } => {
                 let item = self.get(node_index)?;
-                match &item.item {
+                match &item.root_item {
                     RootItem::Worktrees(group) => match group.entry(worktree_index)? {
                         RustProject::Workspace(ws) => ws
                             .has_members()
@@ -1489,7 +1497,7 @@ impl ProjectList {
                 node_index,
                 worktree_index,
                 ..
-            } => match &self.get(node_index)?.item {
+            } => match &self.get(node_index)?.root_item {
                 RootItem::Worktrees(group) => group.entry(worktree_index).map(|p| p.path().clone()),
                 _ => None,
             },
@@ -1505,7 +1513,7 @@ impl ProjectList {
     pub(super) fn worktree_parent_node_index(&self, path: &Path) -> Option<usize> {
         self.iter()
             .enumerate()
-            .find_map(|(ni, item)| match &item.item {
+            .find_map(|(ni, item)| match &item.root_item {
                 RootItem::Worktrees(group) => {
                     group.iter_entries().any(|p| p.path() == path).then_some(ni)
                 },
@@ -1549,7 +1557,7 @@ impl ProjectList {
     }
 
     pub(super) fn owner_repo_for_path_inner(&self, path: &Path) -> Option<OwnerRepo> {
-        let entry_path = self.entry_containing(path)?.item.path().clone();
+        let entry_path = self.entry_containing(path)?.root_item.path().clone();
         self.fetch_url_for(entry_path.as_path())
             .as_deref()
             .and_then(ci::parse_owner_repo)
@@ -1567,10 +1575,10 @@ impl ProjectList {
         self.paths.collapsed_anchor = None;
         let (roots, expanded) = self.iter_with_expanded_mut();
         for (ni, entry) in roots.enumerate() {
-            if entry.item.has_children() {
+            if entry.root_item.has_children() {
                 expanded.insert(ExpandKey::Node(ni));
             }
-            match &entry.item {
+            match &entry.root_item {
                 RootItem::Rust(RustProject::Workspace(ws)) => {
                     for (gi, group) in ws.groups().iter().enumerate() {
                         if group.is_named() {
@@ -1625,7 +1633,7 @@ impl ProjectList {
     pub(super) fn expand_path_in_tree(&mut self, target_path: &Path) {
         let (roots, expanded) = self.iter_with_expanded_mut();
         for (ni, entry) in roots.enumerate() {
-            match &entry.item {
+            match &entry.root_item {
                 RootItem::Rust(RustProject::Workspace(ws)) => {
                     for (gi, group) in ws.groups().iter().enumerate() {
                         for member in group.members() {
@@ -1870,7 +1878,7 @@ impl ProjectList {
         let Some(item) = self.get(ni) else {
             return true;
         };
-        match &item.item {
+        match &item.root_item {
             RootItem::Rust(RustProject::Workspace(ws)) => {
                 ws.groups().get(gi).is_some_and(|g| !g.is_named())
             },
@@ -1883,7 +1891,7 @@ impl ProjectList {
         let Some(item) = self.get(ni) else {
             return true;
         };
-        match &item.item {
+        match &item.root_item {
             RootItem::Worktrees(group) => match group.entry(wi) {
                 Some(RustProject::Workspace(ws)) => {
                     ws.groups().get(gi).is_some_and(|g| !g.is_named())
@@ -1901,7 +1909,7 @@ impl ProjectList {
         match row {
             VisibleRow::Root { node_index } => {
                 let entry = self.get(node_index)?;
-                match &entry.item {
+                match &entry.root_item {
                     RootItem::Rust(rust) => Some(CleanSelection::Project {
                         root: rust.path().clone(),
                     }),
@@ -1912,7 +1920,7 @@ impl ProjectList {
             VisibleRow::WorktreeEntry {
                 node_index,
                 worktree_index,
-            } => match &self.get(node_index)?.item {
+            } => match &self.get(node_index)?.root_item {
                 RootItem::Worktrees(wtg) => {
                     wtg.worktree_path_ref(worktree_index)
                         .map(|path| CleanSelection::Project {
@@ -1972,7 +1980,7 @@ impl ProjectList {
                 if !self.expanded.contains(&ExpandKey::Node(ni)) {
                     return None;
                 }
-                match &entry.item {
+                match &entry.root_item {
                     RootItem::Rust(RustProject::Workspace(ws)) => Some(LegacyRootExpansion {
                         root_path:      ws.path().clone(),
                         old_node_index: ni,
@@ -2008,7 +2016,7 @@ impl ProjectList {
         let (roots, expanded) = self.iter_with_expanded_mut();
         let entries: Vec<(usize, &RootItem)> = roots
             .enumerate()
-            .map(|(idx, entry)| (idx, &entry.item))
+            .map(|(idx, entry)| (idx, &entry.root_item))
             .collect();
         for legacy_root in legacy {
             let Some((current_index, item)) = entries
@@ -2115,7 +2123,7 @@ impl ProjectList {
         let mut seen = HashSet::new();
         let mut entries = Vec::new();
         for entry in self {
-            let items: Vec<LintRuntimeRootEntry> = match &entry.item {
+            let items: Vec<LintRuntimeRootEntry> = match &entry.root_item {
                 RootItem::Worktrees(group) => group
                     .iter_entries()
                     .map(|project| LintRuntimeRootEntry {
@@ -2130,7 +2138,7 @@ impl ProjectList {
                     linked_primary_root: project.linked_primary_root(),
                 }],
                 RootItem::NonRust(_) => vec![LintRuntimeRootEntry {
-                    path:                entry.item.path().clone(),
+                    path:                entry.root_item.path().clone(),
                     is_rust:             false,
                     linked_primary_root: None,
                 }],
@@ -2166,7 +2174,7 @@ impl ProjectList {
     pub(super) fn selected_ci_path(&self) -> Option<AbsolutePath> {
         let path = self.selected_project_path()?;
         let entry = self.entry_containing(path)?;
-        Some(entry.item.path().clone())
+        Some(entry.root_item.path().clone())
     }
 
     /// CI runs at `path`, with display-mode resolved against `ci`.
@@ -2216,12 +2224,12 @@ enum GitRepoLookup {
 impl GitRepoLookup {
     fn find(list: &ProjectList, path: &Path) -> Option<Self> {
         for (key, entry) in &list.roots {
-            if entry.item.path() == path {
+            if entry.root_item.path() == path {
                 return Some(Self::Direct(key.clone()));
             }
         }
         for (key, entry) in &list.roots {
-            if let Some(submodule) = entry.item.find_submodule(path) {
+            if let Some(submodule) = entry.root_item.find_submodule(path) {
                 return Some(Self::Submodule {
                     entry:     key.clone(),
                     submodule: submodule.path.clone(),

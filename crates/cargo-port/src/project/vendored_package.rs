@@ -22,7 +22,7 @@ pub(crate) struct VendoredPackage {
     pub(crate) path:              AbsolutePath,
     pub(crate) name:              Option<String>,
     pub(crate) worktree_status:   WorktreeStatus,
-    pub(crate) info:              ProjectInfo,
+    pub(crate) project_info:      ProjectInfo,
     pub(crate) cargo:             Cargo,
     pub(crate) crates_version:    Option<String>,
     pub(crate) crates_prerelease: Option<String>,
@@ -60,15 +60,15 @@ impl ProjectFields for VendoredPackage {
 
     fn name(&self) -> Option<&str> { self.name.as_deref() }
 
-    fn visibility(&self) -> Visibility { self.info.visibility }
+    fn visibility(&self) -> Visibility { self.project_info.visibility }
 
-    fn worktree_health(&self) -> WorktreeHealth { self.info.worktree_health }
+    fn worktree_health(&self) -> WorktreeHealth { self.project_info.worktree_health }
 
-    fn disk_usage_bytes(&self) -> Option<u64> { self.info.disk_usage_bytes }
+    fn disk_usage_bytes(&self) -> Option<u64> { self.project_info.disk_usage_bytes }
 
-    fn git_info(&self) -> Option<&CheckoutInfo> { self.info.local_git_state.info() }
+    fn git_info(&self) -> Option<&CheckoutInfo> { self.project_info.local_git_state.info() }
 
-    fn info(&self) -> &ProjectInfo { &self.info }
+    fn info(&self) -> &ProjectInfo { &self.project_info }
 
     fn display_path(&self) -> DisplayPath { self.path.display_path() }
 

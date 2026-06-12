@@ -255,7 +255,7 @@ impl App {
                 git_repo.repo_info = Some(info);
             }
         } else if let Some(entry) = self.project_list.entry_containing_mut(path) {
-            if entry.item.path().as_path() != path {
+            if entry.root_item.path().as_path() != path {
                 // Non-primary write — discard per the policy above.
                 return;
             }
@@ -570,6 +570,7 @@ impl App {
     pub fn handle_project_refreshed(&mut self, item: RootItem) -> bool {
         let legacy_expansions = self.project_list.capture_legacy_root_expansions();
         let path = item.path().to_path_buf();
+        let service_item = item.clone();
         // Replace the leaf in project_list_items, transferring runtime data
         // from the old item to the incoming one. `worktree_health` is
         // filesystem-detected at refresh time and must survive the info copy.
@@ -613,14 +614,17 @@ impl App {
         self.ci.clear_content();
         self.lint.clear_content();
         self.panes.clear_detail_data(None);
+        self.background
+            .register_item_background_services(&service_item);
+        self.register_lint_project_if_eligible(&service_item);
         // Signal that derived state needs refresh (batched by caller).
         true
     }
     fn startup_git_directory_for_path(&self, path: &Path) -> Option<AbsolutePath> {
         self.project_list
             .iter()
-            .find(|entry| entry.item.at_path(path).is_some())
-            .and_then(|entry| entry.item.git_directory())
+            .find(|entry| entry.root_item.at_path(path).is_some())
+            .and_then(|entry| entry.root_item.git_directory())
     }
 }
 

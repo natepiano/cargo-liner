@@ -290,8 +290,8 @@ fn render_lints_panel(app: &mut App, runs: &[LintRun]) {
     let backend = TestBackend::new(120, 20);
     let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
     let focus = RenderFocus {
-        state:      app.pane_focus_state(PaneId::Lints),
-        is_focused: app.focus_is(PaneId::Lints),
+        pane_focus_state: app.pane_focus_state(PaneId::Lints),
+        is_focused:       app.focus_is(PaneId::Lints),
     };
     app.lint.focus = focus;
     let animation_elapsed = app.animation_started.elapsed();
@@ -309,7 +309,7 @@ fn render_lints_panel(app: &mut App, runs: &[LintRun]) {
                 OverlayRenderInputs::none(),
                 SyncedDescriptionHeight::default(),
             );
-            tui_pane::Renderable::render(split.registry.lint, frame, area, &split.ctx);
+            tui_pane::Renderable::render(split.registry.lint, frame, area, &split.pane_render_ctx);
         })
         .unwrap_or_else(|_| std::process::abort());
 }
@@ -320,8 +320,8 @@ fn render_ci_panel(app: &mut App, runs: &[CiRun]) {
     let backend = TestBackend::new(120, 20);
     let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
     let focus = RenderFocus {
-        state:      app.pane_focus_state(PaneId::CiRuns),
-        is_focused: app.focus_is(PaneId::CiRuns),
+        pane_focus_state: app.pane_focus_state(PaneId::CiRuns),
+        is_focused:       app.focus_is(PaneId::CiRuns),
     };
     app.ci.focus = focus;
     let animation_elapsed = app.animation_started.elapsed();
@@ -339,7 +339,7 @@ fn render_ci_panel(app: &mut App, runs: &[CiRun]) {
                 OverlayRenderInputs::none(),
                 SyncedDescriptionHeight::default(),
             );
-            tui_pane::Renderable::render(split.registry.ci, frame, area, &split.ctx);
+            tui_pane::Renderable::render(split.registry.ci, frame, area, &split.pane_render_ctx);
         })
         .unwrap_or_else(|_| std::process::abort());
 }
@@ -717,7 +717,7 @@ fn expandable_project_row_click_toggles_children() {
             url:           None,
             branch:        None,
             commit:        None,
-            info:          crate::project::ProjectInfo::default(),
+            project_info:  crate::project::ProjectInfo::default(),
             git_repo:      None,
         });
     render_ui(&mut app);
@@ -757,7 +757,7 @@ fn focus_gained_on_project_row_selects_without_toggling_children() {
             url:           None,
             branch:        None,
             commit:        None,
-            info:          crate::project::ProjectInfo::default(),
+            project_info:  crate::project::ProjectInfo::default(),
             git_repo:      None,
         });
     render_ui(&mut app);
@@ -1550,9 +1550,9 @@ fn targets_pane_row_click_selects_target() {
 fn running_outline_parent_click_toggles_children() {
     let mut app = make_app(&[make_package("demo", Path::new("/tmp/demo"))]);
     let key = RunningKey {
-        target_dir: AbsolutePath::from("/tmp/demo/target"),
-        kind:       RunTargetKind::Binary,
-        name:       "demo".into(),
+        target_dir:      AbsolutePath::from("/tmp/demo/target"),
+        run_target_kind: RunTargetKind::Binary,
+        name:            "demo".into(),
     };
     app.panes
         .running_targets
@@ -1584,9 +1584,9 @@ fn running_outline_parent_click_toggles_children() {
 fn focus_gained_on_running_outline_selects_without_toggling_children() {
     let mut app = make_app(&[make_package("demo", Path::new("/tmp/demo"))]);
     let key = RunningKey {
-        target_dir: AbsolutePath::from("/tmp/demo/target"),
-        kind:       RunTargetKind::Binary,
-        name:       "demo".into(),
+        target_dir:      AbsolutePath::from("/tmp/demo/target"),
+        run_target_kind: RunTargetKind::Binary,
+        name:            "demo".into(),
     };
     app.panes
         .running_targets
@@ -1625,7 +1625,7 @@ fn arrow_keys_expand_and_collapse_the_running_cargo_group() {
         binaries: vec![panes::TargetEntry {
             name:              "demo".to_string(),
             display_name:      "demo".to_string(),
-            kind:              panes::RunTargetKind::Binary,
+            run_target_kind:   panes::RunTargetKind::Binary,
             source:            panes::TargetSource::workspace_root("demo".into()),
             project_path:      AbsolutePath::from("/tmp/demo"),
             package_name:      "demo".to_string(),
@@ -1636,9 +1636,9 @@ fn arrow_keys_expand_and_collapse_the_running_cargo_group() {
         benches:  Vec::new(),
     });
     let key = |name: &str| RunningKey {
-        target_dir: AbsolutePath::from(format!("/tmp/{name}/target")),
-        kind:       RunTargetKind::Binary,
-        name:       name.into(),
+        target_dir:      AbsolutePath::from(format!("/tmp/{name}/target")),
+        run_target_kind: RunTargetKind::Binary,
+        name:            name.into(),
     };
     app.panes
         .running_targets

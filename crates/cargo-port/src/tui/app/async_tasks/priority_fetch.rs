@@ -33,7 +33,7 @@ impl App {
         let Some(entry) = self.project_list.get(node_index) else {
             return false;
         };
-        let RootItem::Worktrees(group) = &entry.item else {
+        let RootItem::Worktrees(group) = &entry.root_item else {
             return false;
         };
         group

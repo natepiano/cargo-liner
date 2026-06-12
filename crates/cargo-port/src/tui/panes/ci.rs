@@ -620,7 +620,7 @@ pub fn render_ci_pane_body(frame: &mut Frame, area: Rect, pane: &mut Ci, ctx: &P
     }
 
     let ci_focused = pane.focus.is_focused;
-    let ci_focus = pane.focus.state;
+    let ci_pane_focus_state = pane.focus.pane_focus_state;
     let focused_pos = ci_focused.then(|| pane.viewport.pos());
     let title = ci_panel_title(&ci_data, focused_pos);
 
@@ -652,7 +652,7 @@ pub fn render_ci_pane_body(frame: &mut Frame, area: Rect, pane: &mut Ci, ctx: &P
                 show_durations,
                 commit_width,
                 branch_width,
-                tui_pane::selection_state(viewport_ref, row_index, ci_focus),
+                tui_pane::selection_state(viewport_ref, row_index, ci_pane_focus_state),
             )
         })
         .collect();

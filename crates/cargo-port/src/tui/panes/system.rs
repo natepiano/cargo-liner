@@ -203,8 +203,8 @@ mod detail_set_tests {
         let panes = fresh();
         assert!(panes.pane_data.detail_is_current(None));
         assert!(!panes.pane_data.detail_is_current(Some(DetailCacheKey {
-            row:        any_row(),
-            generation: 0,
+            visible_row: any_row(),
+            generation:  0,
         })));
     }
 
@@ -212,8 +212,8 @@ mod detail_set_tests {
     fn set_detail_data_writes_all_panes_and_stamps() {
         let mut panes = fresh();
         let key = DetailCacheKey {
-            row:        any_row(),
-            generation: 3,
+            visible_row: any_row(),
+            generation:  3,
         };
         let (pkg, git, targets) = empty_detail();
         panes.set_detail_data(key, pkg, git, targets);
@@ -226,12 +226,12 @@ mod detail_set_tests {
         // Different stamps don't match.
         assert!(!panes.pane_data.detail_is_current(None));
         assert!(!panes.pane_data.detail_is_current(Some(DetailCacheKey {
-            row:        any_row(),
-            generation: 4,
+            visible_row: any_row(),
+            generation:  4,
         })));
         assert!(!panes.pane_data.detail_is_current(Some(DetailCacheKey {
-            row:        other_row(),
-            generation: 3,
+            visible_row: other_row(),
+            generation:  3,
         })));
     }
 
@@ -239,15 +239,15 @@ mod detail_set_tests {
     fn clear_detail_data_clears_all_panes_and_records_stamp() {
         let mut panes = fresh();
         let key = DetailCacheKey {
-            row:        any_row(),
-            generation: 7,
+            visible_row: any_row(),
+            generation:  7,
         };
         let (pkg, git, targets) = empty_detail();
         panes.set_detail_data(key, pkg, git, targets);
 
         let clear_key = DetailCacheKey {
-            row:        other_row(),
-            generation: 7,
+            visible_row: other_row(),
+            generation:  7,
         };
         panes.clear_detail_data(Some(clear_key));
         assert!(panes.pane_data.detail_is_current(Some(clear_key)));

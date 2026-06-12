@@ -58,12 +58,12 @@ pub(super) fn render<Ctx: AppContext + 'static>(
     // forward key only ("Tab pane") even though Shift+Tab also works.
     if let Some(next) = keymap.framework_globals().key_for(GlobalAction::NextPane) {
         let slot = RenderedSlot {
-            region:        BarRegion::Nav,
-            label:         "pane",
-            key:           next.clone(),
-            state:         ShortcutState::Enabled,
-            visibility:    Visibility::Visible,
-            secondary_key: None,
+            region:         BarRegion::Nav,
+            label:          "pane",
+            key:            next.clone(),
+            shortcut_state: ShortcutState::Enabled,
+            visibility:     Visibility::Visible,
+            secondary_key:  None,
         };
         support::push_slot(&mut spans, &slot, palette);
     }

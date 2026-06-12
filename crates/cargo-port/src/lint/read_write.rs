@@ -11,6 +11,9 @@ use super::types::LintRun;
 use super::types::LintRunStatus;
 
 pub fn write_latest_under(cache_root: &Path, project_root: &Path, run: &LintRun) -> io::Result<()> {
+    #[cfg(test)]
+    paths::assert_not_default_user_cache_root(cache_root);
+
     let path = paths::latest_path_under(cache_root, project_root);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -27,6 +30,9 @@ pub fn write_latest_under(cache_root: &Path, project_root: &Path, run: &LintRun)
 }
 
 pub fn clear_latest_under(cache_root: &Path, project_root: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    paths::assert_not_default_user_cache_root(cache_root);
+
     let path = paths::latest_path_under(cache_root, project_root);
     let old_size = cache_size_index::file_size_or_zero(&path);
     match std::fs::remove_file(&path) {

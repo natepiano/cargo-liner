@@ -1,15 +1,17 @@
 //! Watches the scan root recursively for filesystem changes and maps
 //! events to discovered projects for disk-usage and git-sync updates.
 //!
-//! A single `notify` subscription covers the entire scan root. Events are
-//! matched to projects by prefix, debounced, and result in both
+//! Recursive `notify` subscriptions cover the configured scan roots, plus
+//! discovered project roots that are not already covered by a scan root. Events
+//! are matched to projects by prefix, debounced, and result in both
 //! `BackgroundMsg::DiskUsage` and `BackgroundMsg::CheckoutInfo` / `BackgroundMsg::RepoInfo`
 //! updates. New project directories are detected automatically; removed directories trigger a
 //! zero-byte update so the app can mark them as deleted.
 //!
-//! On macOS (`FSEvents`) this is a small fixed set of kernel subscriptions
-//! regardless of tree size: one for the scan roots. Linux / Windows may want
-//! a different approach in the future to avoid inotify watch limits.
+//! On macOS (`FSEvents`) this stays a small set of kernel subscriptions: scan
+//! roots cover normal discovery, and late per-project roots are added only
+//! when no recursive root already covers the path. Linux / Windows may want a
+//! different approach in the future to avoid inotify watch limits.
 
 mod events;
 mod probe;
@@ -33,6 +35,7 @@ use notify::Config;
 use notify::Event;
 use notify::EventKindMask;
 use notify::RecommendedWatcher;
+use notify::RecursiveMode;
 use notify::Watcher;
 use probe::probe_new_projects;
 use refresh::fire_disk_updates;
@@ -254,14 +257,15 @@ fn watcher_loop<W: Watcher + Send + 'static>(
     mut watcher: W,
 ) {
     let WatcherLoopContext {
-        watch_roots,
         background_tx,
         ci_run_count,
         non_rust,
         client,
         lint_runtime: _,
         metadata_dispatch,
+        ..
     } = ctx;
+    let mut registered_roots = ctx.watch_roots.clone();
     let mut state = WatcherLoopState::new();
     let (disk_done_tx, disk_done_rx) = mpsc::channel::<String>();
     let (git_done_tx, git_done_rx) = mpsc::channel::<AbsolutePath>();
@@ -271,7 +275,8 @@ fn watcher_loop<W: Watcher + Send + 'static>(
     let mut tick: u64 = 0;
     loop {
         tick += 1;
-        let watch_drain = drain_watch_messages(watch_rx, &mut state, &mut watcher);
+        let watch_drain =
+            drain_watch_messages(watch_rx, &mut state, &mut watcher, &mut registered_roots);
         if watch_drain.disconnected {
             tracing::info!(tick, "watcher_loop_exit_disconnected");
             return;
@@ -282,7 +287,7 @@ fn watcher_loop<W: Watcher + Send + 'static>(
             tick,
             &watch_drain,
             notify_events,
-            watch_roots.dirs(),
+            registered_roots.dirs(),
             &WatcherBackgroundSinks {
                 background_tx,
                 lint_runtime: ctx.lint_runtime.as_ref(),
@@ -339,7 +344,8 @@ pub(super) struct WatchDrainResult {
 fn drain_watch_messages(
     watch_rx: &Receiver<WatcherMsg>,
     state: &mut WatcherLoopState,
-    _watcher: &mut impl Watcher,
+    watcher: &mut impl Watcher,
+    registered_roots: &mut RegisteredRoots,
 ) -> WatchDrainResult {
     let mut result = WatchDrainResult {
         disconnected:           false,
@@ -348,7 +354,7 @@ fn drain_watch_messages(
     loop {
         match watch_rx.try_recv() {
             Ok(WatcherMsg::Register(req)) => {
-                apply_watch_request(req, state);
+                apply_watch_request(req, state, watcher, registered_roots);
             },
             Ok(WatcherMsg::InitialRegistrationComplete) => {
                 state.initializing = false;
@@ -363,7 +369,13 @@ fn drain_watch_messages(
     }
 }
 
-fn apply_watch_request(req: WatchRequest, state: &mut WatcherLoopState) {
+fn apply_watch_request(
+    req: WatchRequest,
+    state: &mut WatcherLoopState,
+    watcher: &mut impl Watcher,
+    registered_roots: &mut RegisteredRoots,
+) {
+    register_project_watch_if_needed(&req, watcher, registered_roots);
     if let Some(parent) = req.abs_path.parent() {
         state.project_parents.insert(AbsolutePath::from(parent));
     }
@@ -382,6 +394,45 @@ fn apply_watch_request(req: WatchRequest, state: &mut WatcherLoopState) {
             common_git_dir,
         },
     );
+}
+
+fn register_project_watch_if_needed(
+    req: &WatchRequest,
+    watcher: &mut impl Watcher,
+    registered_roots: &mut RegisteredRoots,
+) {
+    if registered_roots.covers(req.abs_path.as_path()) {
+        tracing::trace!(
+            target: tui_pane::PERF_LOG_TARGET,
+            path = %req.abs_path.display(),
+            "watcher_dynamic_root_covered"
+        );
+        return;
+    }
+    if !req.abs_path.is_dir() {
+        tracing::warn!(
+            path = %req.abs_path.display(),
+            "watcher_dynamic_root_missing"
+        );
+        return;
+    }
+    match watcher.watch(&req.abs_path, RecursiveMode::Recursive) {
+        Ok(()) => {
+            registered_roots.add_registered_dir(req.abs_path.clone());
+            tracing::trace!(
+                target: tui_pane::PERF_LOG_TARGET,
+                path = %req.abs_path.display(),
+                "watcher_dynamic_root_registered"
+            );
+        },
+        Err(err) => {
+            tracing::error!(
+                path = %req.abs_path.display(),
+                error = %err,
+                "watcher_dynamic_root_registration_failed"
+            );
+        },
+    }
 }
 
 /// Background sinks the watcher fans events out to. Bundled so

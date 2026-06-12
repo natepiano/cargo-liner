@@ -35,7 +35,7 @@ fn test_submodule(name: &str, path: &str) -> Submodule {
         url:           None,
         branch:        None,
         commit:        None,
-        info:          ProjectInfo::default(),
+        project_info:  ProjectInfo::default(),
         git_repo:      None,
     }
 }
@@ -146,7 +146,7 @@ fn workspace_structure_counts_tree_children_and_cargo_targets() {
         Some("root-helper"),
         "~/ws/vendor/root-helper",
     )];
-    ws.rust.info.submodules = vec![
+    ws.rust.project_info.submodules = vec![
         test_submodule("native", "~/ws/native"),
         test_submodule("assets", "~/ws/assets"),
     ];
@@ -696,7 +696,7 @@ fn top_level_deleted_project_enters_deleted_state_and_renders_as_deleted() {
         "deleted top-level project should expose dismiss affordance"
     );
 
-    let item = &app.project_list[0].item;
+    let item = &app.project_list[0].root_item;
     let row = columns::build_row_cells(ProjectRow {
         prefix:            crate::tui::panes::PREFIX_ROOT_LEAF,
         name:              &item.root_directory_name().into_string(),

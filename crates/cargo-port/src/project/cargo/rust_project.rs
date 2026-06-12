@@ -225,23 +225,23 @@ impl ProjectFields for RustProject {
 
 pub(super) fn info_in_workspace<'a>(ws: &'a Workspace, path: &Path) -> Option<&'a ProjectInfo> {
     if ws.path() == path {
-        return Some(&ws.rust.info);
+        return Some(&ws.rust.project_info);
     }
     for group in ws.groups() {
         for member in group.members() {
             if member.path() == path {
-                return Some(&member.rust.info);
+                return Some(&member.rust.project_info);
             }
             for vendored in member.vendored() {
                 if vendored.path() == path {
-                    return Some(&vendored.info);
+                    return Some(&vendored.project_info);
                 }
             }
         }
     }
     for vendored in ws.vendored() {
         if vendored.path() == path {
-            return Some(&vendored.info);
+            return Some(&vendored.project_info);
         }
     }
     None
@@ -249,11 +249,11 @@ pub(super) fn info_in_workspace<'a>(ws: &'a Workspace, path: &Path) -> Option<&'
 
 pub(super) fn info_in_package<'a>(pkg: &'a Package, path: &Path) -> Option<&'a ProjectInfo> {
     if pkg.path() == path {
-        return Some(&pkg.rust.info);
+        return Some(&pkg.rust.project_info);
     }
     for vendored in pkg.vendored() {
         if vendored.path() == path {
-            return Some(&vendored.info);
+            return Some(&vendored.project_info);
         }
     }
     None
@@ -264,7 +264,7 @@ pub(super) fn info_in_workspace_mut<'a>(
     path: &Path,
 ) -> Option<&'a mut ProjectInfo> {
     if ws.path() == path {
-        return Some(&mut ws.rust.info);
+        return Some(&mut ws.rust.project_info);
     }
     match workspace_info_target(ws, path)? {
         WorkspaceInfoTarget::Member {
@@ -273,7 +273,7 @@ pub(super) fn info_in_workspace_mut<'a>(
         } => Some(
             &mut ws.groups_mut()[group_index].members_mut()[member_index]
                 .rust
-                .info,
+                .project_info,
         ),
         WorkspaceInfoTarget::MemberVendored {
             group_index,
@@ -282,10 +282,10 @@ pub(super) fn info_in_workspace_mut<'a>(
         } => Some(
             &mut ws.groups_mut()[group_index].members_mut()[member_index].vendored_mut()
                 [vendored_index]
-                .info,
+                .project_info,
         ),
         WorkspaceInfoTarget::RootVendored { vendored_index } => {
-            Some(&mut ws.vendored_mut()[vendored_index].info)
+            Some(&mut ws.vendored_mut()[vendored_index].project_info)
         },
     }
 }
@@ -338,11 +338,11 @@ pub(super) fn info_in_package_mut<'a>(
     path: &Path,
 ) -> Option<&'a mut ProjectInfo> {
     if pkg.path() == path {
-        return Some(&mut pkg.rust.info);
+        return Some(&mut pkg.rust.project_info);
     }
     for vendored in pkg.vendored_mut() {
         if vendored.path() == path {
-            return Some(&mut vendored.info);
+            return Some(&mut vendored.project_info);
         }
     }
     None
@@ -545,23 +545,23 @@ pub(super) fn lint_in_package_mut<'a>(
 }
 
 fn collect_project_info_from_workspace(ws: &Workspace, out: &mut Vec<(AbsolutePath, ProjectInfo)>) {
-    out.push((ws.path().clone(), ws.rust.info.clone()));
+    out.push((ws.path().clone(), ws.rust.project_info.clone()));
     for group in ws.groups() {
         for member in group.members() {
-            out.push((member.path().clone(), member.rust.info.clone()));
+            out.push((member.path().clone(), member.rust.project_info.clone()));
             for vendored in member.vendored() {
-                out.push((vendored.path().clone(), vendored.info.clone()));
+                out.push((vendored.path().clone(), vendored.project_info.clone()));
             }
         }
     }
     for vendored in ws.vendored() {
-        out.push((vendored.path().clone(), vendored.info.clone()));
+        out.push((vendored.path().clone(), vendored.project_info.clone()));
     }
 }
 
 fn collect_project_info_from_package(pkg: &Package, out: &mut Vec<(AbsolutePath, ProjectInfo)>) {
-    out.push((pkg.path().clone(), pkg.rust.info.clone()));
+    out.push((pkg.path().clone(), pkg.rust.project_info.clone()));
     for vendored in pkg.vendored() {
-        out.push((vendored.path().clone(), vendored.info.clone()));
+        out.push((vendored.path().clone(), vendored.project_info.clone()));
     }
 }

@@ -3,12 +3,25 @@ use std::path::Path;
 use sha2::Digest as _;
 
 use crate::cache_paths;
+#[cfg(test)]
+use crate::constants::LINTS_CACHE_DIR;
 use crate::constants::LINTS_HISTORY_JSONL;
 use crate::constants::LINTS_LATEST_JSON;
 use crate::project::AbsolutePath;
 
 /// Canonical cache directory for all per-project lint status files.
 pub fn cache_root() -> AbsolutePath { cache_paths::lint_runs_root() }
+
+#[cfg(test)]
+pub(super) fn assert_not_default_user_cache_root(cache_root: &Path) {
+    let default_lint_root = cache_paths::default_app_cache_root().join(LINTS_CACHE_DIR);
+    assert_ne!(
+        cache_root,
+        default_lint_root.as_path(),
+        "tests must write lint artifacts under a temp cache root, not {}",
+        default_lint_root.display(),
+    );
+}
 
 /// Stable per-project cache key: `{name}-{sha256_prefix}` where name is the
 /// last path component and the suffix is the first 16 hex chars of the SHA-256

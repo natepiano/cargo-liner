@@ -5,6 +5,8 @@ use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
 use thiserror::Error;
 
+use super::constants::MAX_FUNCTION_KEY;
+
 /// A single keystroke: a [`KeyCode`] plus its [`KeyModifiers`] flags.
 ///
 /// `KeyBind` is the dispatch-time type — what the keymap stores and looks up.
@@ -266,7 +268,7 @@ fn parse_keycode(s: &str) -> Result<KeyCode, KeyParseError> {
             if let Some(rest) = s.strip_prefix('F').or_else(|| s.strip_prefix('f'))
                 && let Ok(n) = rest.parse::<u8>()
             {
-                if (1..=12).contains(&n) {
+                if (1..=MAX_FUNCTION_KEY).contains(&n) {
                     return Ok(KeyCode::F(n));
                 }
                 return Err(KeyParseError::UnknownKey(s.to_string()));

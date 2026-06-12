@@ -170,9 +170,11 @@ impl App {
         // Skip workspace members — the workspace root's watcher covers them.
         let mut is_member = false;
         self.project_list.for_each_leaf(|existing| {
-            if matches!(&existing.item, RootItem::Rust(RustProject::Workspace(_)))
-                && existing.item.path() != path
-                && path.starts_with(existing.item.path())
+            if matches!(
+                &existing.root_item,
+                RootItem::Rust(RustProject::Workspace(_))
+            ) && existing.root_item.path() != path
+                && path.starts_with(existing.root_item.path())
             {
                 is_member = true;
             }

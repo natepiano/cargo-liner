@@ -96,7 +96,7 @@ pub(crate) fn from_cargo_toml(
     let worktree_health = git::get_worktree_health(project_dir);
 
     let rust = RustInfo {
-        info: ProjectInfo {
+        project_info: ProjectInfo {
             worktree_health,
             ..ProjectInfo::default()
         },
@@ -129,7 +129,7 @@ pub(crate) fn from_git_dir(project_dir: &Path) -> NonRustProject {
         .map(|n| n.to_string_lossy().to_string());
 
     let mut project = NonRustProject::new(AbsolutePath::from(project_dir), name);
-    project.info.worktree_health = git::get_worktree_health(project_dir);
+    project.project_info.worktree_health = git::get_worktree_health(project_dir);
     project.worktree_status = git::get_worktree_status(project_dir);
     project
 }

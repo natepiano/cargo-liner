@@ -72,6 +72,7 @@ use super::constants::PDH_FMT_DOUBLE;
 use super::constants::PDH_MORE_DATA;
 #[cfg(target_os = "windows")]
 use super::constants::PDH_SUCCESS;
+use super::constants::PERCENT_PER_CELL;
 use crate::theme;
 
 /// Per-core CPU usage sample.
@@ -367,12 +368,11 @@ fn cpu_poll_loop(
     }
 }
 
-/// Number of filled 10%-bucket cells for a given percentage,
-/// rounding up.
+/// Number of filled 10%-bucket cells for a given percentage, rounding up.
 #[must_use]
 pub fn filled_cells(percent: u8) -> usize {
     let clamped = if percent > 100 { 100 } else { percent };
-    usize::from(clamped).div_ceil(10)
+    usize::from(clamped).div_ceil(PERCENT_PER_CELL)
 }
 
 /// Map a percentage to a [`CpuSeverity`] using caller-supplied thresholds.

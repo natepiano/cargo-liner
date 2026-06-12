@@ -51,15 +51,15 @@ impl ProjectFields for Workspace {
 
     fn name(&self) -> Option<&str> { self.name.as_deref() }
 
-    fn visibility(&self) -> Visibility { self.rust.info.visibility }
+    fn visibility(&self) -> Visibility { self.rust.project_info.visibility }
 
-    fn worktree_health(&self) -> WorktreeHealth { self.rust.info.worktree_health }
+    fn worktree_health(&self) -> WorktreeHealth { self.rust.project_info.worktree_health }
 
-    fn disk_usage_bytes(&self) -> Option<u64> { self.rust.info.disk_usage_bytes }
+    fn disk_usage_bytes(&self) -> Option<u64> { self.rust.project_info.disk_usage_bytes }
 
-    fn git_info(&self) -> Option<&CheckoutInfo> { self.rust.info.local_git_state.info() }
+    fn git_info(&self) -> Option<&CheckoutInfo> { self.rust.project_info.local_git_state.info() }
 
-    fn info(&self) -> &ProjectInfo { &self.rust.info }
+    fn info(&self) -> &ProjectInfo { &self.rust.project_info }
 
     fn display_path(&self) -> DisplayPath { self.path.display_path() }
 

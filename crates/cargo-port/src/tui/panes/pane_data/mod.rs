@@ -305,7 +305,7 @@ impl TargetSource {
 pub struct TargetEntry {
     pub name:              String,
     pub display_name:      String,
-    pub kind:              RunTargetKind,
+    pub run_target_kind:   RunTargetKind,
     pub source:            TargetSource,
     pub project_path:      AbsolutePath,
     pub package_name:      String,
@@ -352,7 +352,7 @@ pub struct PendingExampleRun {
     pub target_name:       String,
     pub display_path:      String,
     pub package_name:      Option<String>,
-    pub kind:              RunTargetKind,
+    pub run_target_kind:   RunTargetKind,
     pub build_mode:        BuildMode,
     pub required_features: Vec<String>,
 }
@@ -371,7 +371,7 @@ pub struct PendingCiFetch {
     pub project_path:      String,
     pub ci_run_count:      u32,
     pub oldest_created_at: Option<String>,
-    pub kind:              CiFetchKind,
+    pub ci_fetch_kind:     CiFetchKind,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1482,7 +1482,7 @@ impl TargetsData {
                     binaries.push(TargetEntry {
                         name:              target.name.clone(),
                         display_name:      target.name.clone(),
-                        kind:              RunTargetKind::Binary,
+                        run_target_kind:   RunTargetKind::Binary,
                         source:            source.clone(),
                         project_path:      project_path.clone(),
                         package_name:      record.name.clone(),
@@ -1501,7 +1501,7 @@ impl TargetsData {
                     examples.push(TargetEntry {
                         name: target.name.clone(),
                         display_name,
-                        kind: RunTargetKind::Example,
+                        run_target_kind: RunTargetKind::Example,
                         source: source.clone(),
                         project_path: project_path.clone(),
                         package_name: record.name.clone(),
@@ -1513,7 +1513,7 @@ impl TargetsData {
                     benches.push(TargetEntry {
                         name:              target.name.clone(),
                         display_name:      target.name.clone(),
-                        kind:              RunTargetKind::Bench,
+                        run_target_kind:   RunTargetKind::Bench,
                         source:            source.clone(),
                         project_path:      project_path.clone(),
                         package_name:      record.name.clone(),
@@ -1634,11 +1634,11 @@ mod test_row_tests {
 mod target_list_tests {
     use super::*;
 
-    fn entry(name: &str, kind: RunTargetKind) -> TargetEntry {
+    fn entry(name: &str, run_target_kind: RunTargetKind) -> TargetEntry {
         TargetEntry {
             name: name.into(),
             display_name: name.into(),
-            kind,
+            run_target_kind,
             source: TargetSource::workspace_root("demo".into()),
             project_path: AbsolutePath::from("/tmp"),
             package_name: "demo".into(),
@@ -2122,7 +2122,7 @@ fn worktrees_from_item(app: &App, item: &RootItem) -> Vec<WorktreeInfo> {
 pub fn max_top_pane_inner_height(app: &App, package_width: u16, git_width: u16) -> u16 {
     app.project_list
         .iter()
-        .map(|entry| project_top_inner_height(app, &entry.item, package_width, git_width))
+        .map(|entry| project_top_inner_height(app, &entry.root_item, package_width, git_width))
         .max()
         .unwrap_or(0)
 }
@@ -2272,7 +2272,7 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
             description:              submodule.url.clone(),
             crates_io_rows:           Vec::new(),
             types:                    None,
-            disk:                     submodule.info.disk_usage_bytes,
+            disk:                     submodule.project_info.disk_usage_bytes,
             stats_rows:               Vec::new(),
             test_rows:                Vec::new(),
             has_package:              false,

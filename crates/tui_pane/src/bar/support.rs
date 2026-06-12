@@ -9,7 +9,7 @@
 //!
 //! Per-span styling: every emitted span is styled via the supplied
 //! [`BarPalette`]. Enabled vs disabled styles are selected from
-//! [`RenderedSlot::state`](crate::keymap::RenderedSlot). The
+//! [`RenderedSlot::shortcut_state`](crate::keymap::RenderedSlot). The
 //! framework's [`BarPalette::default`] is theme-neutral
 //! ([`Style::default`](ratatui::style::Style::default) for every
 //! field) so the binary supplies its own palette to get any color.
@@ -35,7 +35,7 @@ pub(super) fn push_slot(spans: &mut Vec<Span<'static>>, slot: &RenderedSlot, pal
     }
     let key = slot.key.display_short();
     let label = slot.label;
-    let (key_style, label_style) = match slot.state {
+    let (key_style, label_style) = match slot.shortcut_state {
         ShortcutState::Enabled => (palette.enabled_key_style, palette.enabled_label_style),
         ShortcutState::Disabled => (palette.disabled_key_style, palette.disabled_label_style),
     };
@@ -94,7 +94,7 @@ mod tests {
             region: BarRegion::PaneAction,
             label,
             key: key.into(),
-            state: ShortcutState::Enabled,
+            shortcut_state: ShortcutState::Enabled,
             visibility: Visibility::Visible,
             secondary_key: None,
         }

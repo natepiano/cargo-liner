@@ -1047,7 +1047,7 @@ fn startup_lint_status_does_not_overwrite_live_running_lint() {
     });
 
     assert!(matches!(
-        crate::tui::state::Lint::status_for_root(&app.project_list[0].item),
+        crate::tui::state::Lint::status_for_root(&app.project_list[0].root_item),
         LintStatus::Running(_)
     ));
     assert_eq!(app.lint.running_toast_id(), first_toast);
@@ -1085,7 +1085,7 @@ fn lint_history_load_does_not_overwrite_live_running_lint() {
     });
 
     assert!(matches!(
-        crate::tui::state::Lint::status_for_root(&app.project_list[0].item),
+        crate::tui::state::Lint::status_for_root(&app.project_list[0].root_item),
         LintStatus::Running(_)
     ));
     assert_eq!(app.lint.running_toast_id(), first_toast);
@@ -1120,7 +1120,7 @@ fn live_lint_status_updates_project_model_and_detail_cache() {
         "live lint status must invalidate cached detail panes"
     );
     assert!(matches!(
-        crate::tui::state::Lint::status_for_root(&app.project_list[0].item),
+        crate::tui::state::Lint::status_for_root(&app.project_list[0].root_item),
         LintStatus::Running(_)
     ));
     assert!(app.lint.running_toast_contains_path(project_path.as_path()));
@@ -1264,10 +1264,10 @@ fn member_vendored_path_receives_project_info_updates() {
         .project_list
         .vendored_at_path(vendored_path.as_path())
         .expect("member-owned vendored package should be addressable by path");
-    assert_eq!(vendored.info.disk_usage_bytes, Some(4097));
+    assert_eq!(vendored.project_info.disk_usage_bytes, Some(4097));
     assert_eq!(
         vendored
-            .info
+            .project_info
             .language_stats
             .as_ref()
             .map(|s| s.entries.len()),
@@ -2031,7 +2031,7 @@ fn lint_rollups_distinguish_root_from_primary_worktree() {
     let root_status = app.project_list.first().unwrap().lint_rollup_status();
     assert!(matches!(root_status, LintStatus::Failed(_)));
 
-    let RootItem::Worktrees(g) = &app.project_list.first().unwrap().item else {
+    let RootItem::Worktrees(g) = &app.project_list.first().unwrap().root_item else {
         panic!("expected Worktrees");
     };
     assert!(matches!(
@@ -2086,7 +2086,7 @@ fn lint_rollup_prefers_running_worktree_over_failed_root_history() {
     let root_status = app.project_list.first().unwrap().lint_rollup_status();
     assert!(matches!(root_status, LintStatus::Running(_)));
 
-    let RootItem::Worktrees(g) = &app.project_list.first().unwrap().item else {
+    let RootItem::Worktrees(g) = &app.project_list.first().unwrap().root_item else {
         panic!("expected Worktrees");
     };
     assert!(matches!(
@@ -2677,7 +2677,7 @@ fn fetch_more_uses_sync_when_no_cached_runs() {
         .pending_ci_fetch_ref()
         .expect("fetch should be set");
     assert!(
-        matches!(fetch.kind, CiFetchKind::Sync),
+        matches!(fetch.ci_fetch_kind, CiFetchKind::Sync),
         "should use Sync when no cached runs exist"
     );
 }

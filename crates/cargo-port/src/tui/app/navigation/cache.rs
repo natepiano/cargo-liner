@@ -38,8 +38,8 @@ impl App {
     /// stored detail is still correct.
     pub fn ensure_detail_cached(&mut self) {
         let desired = self.project_list.selected_row().map(|row| DetailCacheKey {
-            row,
-            generation: self.scan.generation(),
+            visible_row: row,
+            generation:  self.scan.generation(),
         });
         if self.panes.pane_data.detail_is_current(desired) {
             return;

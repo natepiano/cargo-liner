@@ -27,9 +27,9 @@ pub enum PaneFocusState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RenderFocus {
     /// Cached [`PaneFocusState`] for this pane.
-    pub state:      PaneFocusState,
+    pub pane_focus_state: PaneFocusState,
     /// Cached `is_focused` flag for this pane.
-    pub is_focused: bool,
+    pub is_focused:       bool,
 }
 
 impl RenderFocus {
@@ -39,8 +39,8 @@ impl RenderFocus {
     #[must_use]
     pub const fn inactive() -> Self {
         Self {
-            state:      PaneFocusState::Inactive,
-            is_focused: false,
+            pane_focus_state: PaneFocusState::Inactive,
+            is_focused:       false,
         }
     }
 }

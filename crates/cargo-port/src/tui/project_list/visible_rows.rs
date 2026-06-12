@@ -108,7 +108,7 @@ impl ProjectList {
     ) -> Vec<VisibleRow> {
         let mut rows = Vec::new();
         for (ni, entry) in self.iter().enumerate() {
-            let item = &entry.item;
+            let item = &entry.root_item;
             if matches!(item.visibility(), Visibility::Dismissed) {
                 continue;
             }

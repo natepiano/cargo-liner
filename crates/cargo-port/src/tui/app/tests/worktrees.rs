@@ -448,7 +448,7 @@ fn disk_rollup_deduplicates_primary_worktree_path() {
 
     assert_eq!(app.project_list[0].disk_usage_bytes(), Some(36));
     assert_eq!(
-        panes::formatted_disk_for_item(&app.project_list[0].item),
+        panes::formatted_disk_for_item(&app.project_list[0].root_item),
         crate::tui::render::format_bytes(36)
     );
 }
@@ -495,7 +495,7 @@ fn handle_project_discovered_inserts_new_root_in_sorted_position() {
     let actual: Vec<_> = app
         .project_list
         .iter()
-        .map(|entry| entry.item.path())
+        .map(|entry| entry.root_item.path())
         .collect();
     assert_eq!(
         actual,
@@ -631,6 +631,67 @@ fn handle_project_discovered_registers_arbitrary_named_worktree_with_primary_lin
 }
 
 #[test]
+fn refreshed_linked_worktree_registers_lint_after_stale_discovery() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let primary_dir = tmp.path().join("bevy_hana");
+    let linked_dir = tmp.path().join("test");
+    init_git_project(&primary_dir, "bevy_hana", false);
+    add_git_worktree(&primary_dir, &linked_dir, "test/bevy_hana");
+
+    let cache_dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let mut cfg = CargoPortConfig::default();
+    cfg.cache.root = cache_dir.path().to_string_lossy().to_string();
+    cfg.lint.enabled = true;
+    cfg.lint.include = vec!["bevy_hana".to_string()];
+    cfg.lint.commands = vec![crate::config::LintCommandConfig {
+        name:    "echo".to_string(),
+        command: "echo lint ok".to_string(),
+    }];
+    let primary_item = item_from_project_dir(&primary_dir);
+    let mut app = make_app_with_config(&[primary_item], &cfg);
+
+    let linked_path = linked_dir.to_string_lossy().to_string();
+    let stale_discovery = RootItem::Rust(RustProject::Package(make_package_raw(
+        Some("test"),
+        &linked_path,
+        None,
+    )));
+    assert!(app.handle_project_discovered(stale_discovery));
+    assert!(app.handle_project_refreshed(item_from_project_dir(&linked_dir)));
+
+    let trigger = lint::classify_event_path(
+        &linked_dir,
+        EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+        &linked_dir.join("src").join("lib.rs"),
+    )
+    .unwrap_or_else(|| std::process::abort());
+
+    app.lint
+        .runtime()
+        .unwrap_or_else(|| std::process::abort())
+        .lint_trigger(trigger);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut passed = false;
+    while std::time::Instant::now() < deadline {
+        app.poll_background();
+        if matches!(
+            crate::tui::state::Lint::status_for_path(&app.project_list, &linked_dir),
+            LintStatus::Passed(_)
+        ) {
+            passed = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+
+    assert!(
+        passed,
+        "refreshed linked worktree should register a lint worker for later edits"
+    );
+}
+
+#[test]
 fn handle_project_discovered_creates_worktree_group_from_single_primary() {
     for kind in [WorktreeProjectKind::Package, WorktreeProjectKind::Workspace] {
         expect_synthetic_discovery_creates_group(kind);
@@ -669,7 +730,7 @@ fn discovered_workspace_worktree_with_members_expands_as_worktree_then_workspace
         "discovery should request a derived-state rebuild"
     );
 
-    let RootItem::Worktrees(group) = &app.project_list[0].item else {
+    let RootItem::Worktrees(group) = &app.project_list[0].root_item else {
         panic!("expected discovered workspace worktree to form a worktree group");
     };
     assert_eq!(group.linked.len(), 1);
@@ -934,7 +995,7 @@ fn refreshed_linked_worktree_preserves_lint_status() {
     )));
     assert!(app.handle_bg_msg(BackgroundMsg::ProjectRefreshed { item: refreshed }));
 
-    let RootItem::Worktrees(group) = &app.project_list[0].item else {
+    let RootItem::Worktrees(group) = &app.project_list[0].root_item else {
         panic!("expected worktree group");
     };
     assert!(matches!(

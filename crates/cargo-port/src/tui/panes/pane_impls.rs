@@ -530,22 +530,22 @@ enum SelectionMode {
 /// While the selection follows the tail it stays `None` and render/yank
 /// read the live buffer.
 pub struct OutputSelection {
-    anchor:   usize,
-    mode:     SelectionMode,
-    snapshot: Option<Rc<[String]>>,
+    anchor:         usize,
+    selection_mode: SelectionMode,
+    snapshot:       Option<Rc<[String]>>,
 }
 
 impl OutputSelection {
     const fn new() -> Self {
         Self {
-            anchor:   0,
-            mode:     SelectionMode::Normal,
-            snapshot: None,
+            anchor:         0,
+            selection_mode: SelectionMode::Normal,
+            snapshot:       None,
         }
     }
 
     /// Whether the vim visual-line sub-mode is active.
-    pub const fn is_visual(&self) -> bool { matches!(self.mode, SelectionMode::Visual) }
+    pub const fn is_visual(&self) -> bool { matches!(self.selection_mode, SelectionMode::Visual) }
 
     /// The frozen buffer snapshot, present once the selection has stopped
     /// following the live tail.
@@ -574,7 +574,7 @@ impl OutputPane {
     /// not in visual mode and the cursor on the last row. Following means
     /// render and yank track the live tail.
     pub const fn is_following(&self) -> bool {
-        matches!(self.selection.mode, SelectionMode::Normal)
+        matches!(self.selection.selection_mode, SelectionMode::Normal)
             && self.viewport.pos() >= self.viewport.len().saturating_sub(1)
     }
 
@@ -606,8 +606,8 @@ impl OutputPane {
     /// the one place it is set, so it can never drift from a plain cursor
     /// move.
     fn enter_visual(&mut self, live: &[String]) {
-        if matches!(self.selection.mode, SelectionMode::Normal) {
-            self.selection.mode = SelectionMode::Visual;
+        if matches!(self.selection.selection_mode, SelectionMode::Normal) {
+            self.selection.selection_mode = SelectionMode::Visual;
             self.selection.anchor = self.viewport.pos();
             self.freeze(live);
         }
@@ -617,7 +617,7 @@ impl OutputPane {
     /// and freezes `live`; leaving collapses the selection back to the
     /// single cursor row. Vim-mode only — bound to `V`.
     pub fn toggle_visual(&mut self, live: &[String]) {
-        match self.selection.mode {
+        match self.selection.selection_mode {
             SelectionMode::Visual => self.exit_visual(),
             SelectionMode::Normal => self.enter_visual(live),
         }
@@ -626,14 +626,14 @@ impl OutputPane {
     /// Leave visual mode, collapsing the selection back to the single
     /// cursor row. A no-op when not in visual mode. Bound to `Esc` while a
     /// visual selection is active.
-    pub const fn exit_visual(&mut self) { self.selection.mode = SelectionMode::Normal; }
+    pub const fn exit_visual(&mut self) { self.selection.selection_mode = SelectionMode::Normal; }
 
     /// Select every line: anchor on the first row, cursor on the last, so
     /// the range spans the whole buffer. Freezes `live` first. Bound to
     /// Ctrl-A.
     pub fn select_all(&mut self, live: &[String]) {
         self.freeze(live);
-        self.selection.mode = SelectionMode::Visual;
+        self.selection.selection_mode = SelectionMode::Visual;
         self.selection.anchor = 0;
         let last = self.source(live).len().saturating_sub(1);
         self.viewport.set_pos(last);
@@ -645,7 +645,7 @@ impl OutputPane {
     /// or freezes `live` when it parks off the tail.
     pub fn navigate(&mut self, live: &[String], motion: impl FnOnce(&mut Viewport)) {
         motion(&mut self.viewport);
-        match self.selection.mode {
+        match self.selection.selection_mode {
             SelectionMode::Visual => self.freeze(live),
             SelectionMode::Normal => {
                 if self.viewport.pos() >= self.viewport.len().saturating_sub(1) {
@@ -693,7 +693,7 @@ impl OutputPane {
     /// selection rather than extending the old one. Re-follows the tail
     /// when `row` is the last line, freezes `live` otherwise.
     pub fn click_select_row(&mut self, live: &[String], row: usize) {
-        self.selection.mode = SelectionMode::Normal;
+        self.selection.selection_mode = SelectionMode::Normal;
         self.viewport.set_pos(row);
         self.selection.anchor = row;
         if self.viewport.pos() >= self.viewport.len().saturating_sub(1) {
@@ -735,7 +735,7 @@ impl OutputPane {
     pub fn selected_range(&self, live: &[String]) -> Option<(usize, usize)> {
         let last = self.source(live).len().checked_sub(1)?;
         let cursor = self.viewport.pos().min(last);
-        match self.selection.mode {
+        match self.selection.selection_mode {
             SelectionMode::Visual => {
                 let anchor = self.selection.anchor.min(last);
                 Some((anchor.min(cursor), anchor.max(cursor)))
@@ -758,7 +758,7 @@ impl OutputPane {
     /// the at-rest state, whether following or just scrolled — snaps to the
     /// new tail so the final output shows.
     pub fn on_process_exit(&mut self) {
-        if matches!(self.selection.mode, SelectionMode::Normal) {
+        if matches!(self.selection.selection_mode, SelectionMode::Normal) {
             self.selection.snapshot = None;
             self.viewport.end();
         }

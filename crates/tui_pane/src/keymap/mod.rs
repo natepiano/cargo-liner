@@ -3,6 +3,7 @@
 mod action_enum;
 mod bindings;
 mod builder;
+mod constants;
 mod global_action;
 mod globals;
 mod key_bind;

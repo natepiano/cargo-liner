@@ -19,6 +19,8 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use super::constants::INDEX_FILENAME;
+#[cfg(test)]
+use super::paths;
 
 /// Serializes [`adjust`] calls within the process. Two lint workers running
 /// in parallel for different projects both call adjust, and without this
@@ -35,6 +37,9 @@ pub(super) fn read(cache_root: &Path) -> Option<u64> {
 }
 
 pub(super) fn write(cache_root: &Path, bytes: u64) -> io::Result<()> {
+    #[cfg(test)]
+    paths::assert_not_default_user_cache_root(cache_root);
+
     fs::create_dir_all(cache_root)?;
     let final_path = index_path(cache_root);
     let tmp_path = final_path.with_extension("tmp");
@@ -70,6 +75,9 @@ pub(super) fn apply_write_delta(cache_root: &Path, old_size: u64, new_size: u64)
 /// `delta` saturates at `u64::MIN`/`u64::MAX`. Serialized through
 /// [`ADJUST_LOCK`] so concurrent lint workers can't lose updates.
 pub(super) fn adjust(cache_root: &Path, delta: i64) {
+    #[cfg(test)]
+    paths::assert_not_default_user_cache_root(cache_root);
+
     let _guard = ADJUST_LOCK.lock();
     let Some(current) = read(cache_root) else {
         return;

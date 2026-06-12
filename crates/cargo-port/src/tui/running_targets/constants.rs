@@ -11,3 +11,4 @@ pub(super) const SOURCE_DIR: &str = "src";
 /// Ceiling on the ancestor walk, against parent-link cycles from PID reuse.
 /// Real process trees are nowhere near this deep.
 pub(super) const ANCESTOR_WALK_CAP: usize = 32;
+pub(super) const MIN_HEX_HASH_LEN: usize = 16;

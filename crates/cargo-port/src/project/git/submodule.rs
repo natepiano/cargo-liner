@@ -37,7 +37,7 @@ pub(crate) struct Submodule {
     pub commit:        Option<String>,
     /// Shared metadata (git info, disk usage, etc.) — populated by
     /// background messages through the standard `at_path_mut` lookup.
-    pub info:          ProjectInfo,
+    pub project_info:  ProjectInfo,
     /// Per-repo data for the submodule's own git repo. `None` when the
     /// submodule's working directory is missing or uninitialized, or
     /// before `RepoInfo::get` has been invoked for this path.
@@ -49,15 +49,15 @@ impl ProjectFields for Submodule {
 
     fn name(&self) -> Option<&str> { Some(&self.name) }
 
-    fn visibility(&self) -> Visibility { self.info.visibility }
+    fn visibility(&self) -> Visibility { self.project_info.visibility }
 
-    fn worktree_health(&self) -> WorktreeHealth { self.info.worktree_health }
+    fn worktree_health(&self) -> WorktreeHealth { self.project_info.worktree_health }
 
-    fn disk_usage_bytes(&self) -> Option<u64> { self.info.disk_usage_bytes }
+    fn disk_usage_bytes(&self) -> Option<u64> { self.project_info.disk_usage_bytes }
 
-    fn git_info(&self) -> Option<&CheckoutInfo> { self.info.local_git_state.info() }
+    fn git_info(&self) -> Option<&CheckoutInfo> { self.project_info.local_git_state.info() }
 
-    fn info(&self) -> &ProjectInfo { &self.info }
+    fn info(&self) -> &ProjectInfo { &self.project_info }
 
     fn display_path(&self) -> DisplayPath { self.path.display_path() }
 
@@ -117,7 +117,7 @@ fn parse_gitmodules(content: &str) -> Vec<Submodule> {
                 url:           None,
                 branch:        None,
                 commit:        None,
-                info:          ProjectInfo::default(),
+                project_info:  ProjectInfo::default(),
                 git_repo:      None,
             });
         } else if let Some(ref mut entry) = current

@@ -568,12 +568,13 @@ fn initial_registration_complete_transitions_watcher_out_of_initializing() {
     let (watch_tx, watch_rx) = channel::unbounded();
     let mut state = WatcherLoopState::new();
     let mut watcher = NoopWatcher;
+    let mut registered_roots = RegisteredRoots::default();
 
     watch_tx
         .send(WatcherMsg::InitialRegistrationComplete)
         .expect("send registration complete");
 
-    let drained = drain_watch_messages(&watch_rx, &mut state, &mut watcher);
+    let drained = drain_watch_messages(&watch_rx, &mut state, &mut watcher, &mut registered_roots);
 
     assert!(drained.registration_completed);
     assert!(!state.initializing);
@@ -600,7 +601,9 @@ fn registration_batch_completes_without_metadata_watch_calls() {
     let watch_thread = std::thread::spawn(move || {
         let mut state = WatcherLoopState::new();
         let mut watcher = NoopWatcher;
-        let drained = drain_watch_messages(&watch_rx, &mut state, &mut watcher);
+        let mut registered_roots = RegisteredRoots::default();
+        let drained =
+            drain_watch_messages(&watch_rx, &mut state, &mut watcher, &mut registered_roots);
         let _ = result_tx.send((drained, state.initializing));
     });
 
@@ -611,6 +614,76 @@ fn registration_batch_completes_without_metadata_watch_calls() {
 
     assert!(drained.registration_completed);
     assert!(!initializing);
+}
+
+#[test]
+fn registering_uncovered_project_adds_recursive_watch_root() {
+    let (watch_tx, watch_rx) = channel::unbounded();
+    let project_dir = tempfile::tempdir().expect("tempdir");
+    init_git_repo(project_dir.path());
+    watch_tx
+        .send(WatcherMsg::Register(WatchRequest {
+            project_label: project_dir.path().display().to_string(),
+            abs_path:      AbsolutePath::from(project_dir.path()),
+            repo_root:     Some(AbsolutePath::from(project_dir.path())),
+        }))
+        .expect("send register");
+    let mut state = WatcherLoopState::new();
+    let mut watcher = RecordingWatcher::new_for_test();
+    let watched_handle = Arc::clone(&watcher.watched);
+    let mut registered_roots = RegisteredRoots::default();
+
+    let _ = drain_watch_messages(&watch_rx, &mut state, &mut watcher, &mut registered_roots);
+
+    let recorded = watched_handle
+        .lock()
+        .expect("recording watcher lock")
+        .clone();
+    assert_eq!(
+        recorded,
+        vec![(project_dir.path().to_path_buf(), RecursiveMode::Recursive)]
+    );
+    assert!(registered_roots.covers(project_dir.path()));
+    assert!(
+        state
+            .projects
+            .contains_key(&AbsolutePath::from(project_dir.path()))
+    );
+}
+
+#[test]
+fn registering_covered_project_skips_extra_watch_root() {
+    let (watch_tx, watch_rx) = channel::unbounded();
+    let root_dir = tempfile::tempdir().expect("tempdir");
+    let project_dir = root_dir.path().join("project");
+    std::fs::create_dir_all(&project_dir).expect("mkdir project");
+    init_git_repo(&project_dir);
+    watch_tx
+        .send(WatcherMsg::Register(WatchRequest {
+            project_label: project_dir.display().to_string(),
+            abs_path:      AbsolutePath::from(project_dir.as_path()),
+            repo_root:     Some(AbsolutePath::from(project_dir.as_path())),
+        }))
+        .expect("send register");
+    let mut state = WatcherLoopState::new();
+    let mut watcher = RecordingWatcher::new_for_test();
+    let watched_handle = Arc::clone(&watcher.watched);
+    let mut registered_roots =
+        RegisteredRoots::from_dirs(vec![AbsolutePath::from(root_dir.path())]);
+
+    let _ = drain_watch_messages(&watch_rx, &mut state, &mut watcher, &mut registered_roots);
+
+    let recorded = watched_handle
+        .lock()
+        .expect("recording watcher lock")
+        .clone();
+    assert!(recorded.is_empty());
+    assert!(registered_roots.covers(&project_dir));
+    assert!(
+        state
+            .projects
+            .contains_key(&AbsolutePath::from(project_dir.as_path()))
+    );
 }
 
 #[test]
@@ -1732,10 +1805,11 @@ fn buffered_worktree_common_git_event_replays_after_registration_complete() {
 #[test]
 fn cache_lint_event_is_ignored_by_project_watcher() {
     let project_root = tempfile::tempdir().expect("tempdir");
+    let cache_dir = tempfile::tempdir().expect("tempdir");
     let project_path = "~/rust/demo";
     let mut projects = HashMap::new();
     let (key, entry) = make_project_entry(project_path, project_root.path());
-    let latest_path = lint::latest_path_under(&lint::cache_root(), project_root.path());
+    let latest_path = lint::latest_path_under(cache_dir.path(), project_root.path());
     projects.insert(key, entry);
 
     std::fs::create_dir_all(latest_path.parent().expect("latest file has parent"))
@@ -1778,11 +1852,12 @@ fn cache_lint_event_is_ignored_by_project_watcher() {
 #[test]
 fn cache_lint_child_event_is_ignored_by_project_watcher() {
     let project_root = tempfile::tempdir().expect("tempdir");
+    let cache_dir = tempfile::tempdir().expect("tempdir");
     let project_path = "~/rust/demo";
     let mut projects = HashMap::new();
     let (key, entry) = make_project_entry(project_path, project_root.path());
-    let lint_cache_dir = lint::project_dir(project_root.path());
-    let latest_path = lint::latest_path_under(&lint::cache_root(), project_root.path());
+    let latest_path = lint::latest_path_under(cache_dir.path(), project_root.path());
+    let lint_cache_dir = latest_path.parent().expect("latest file has parent");
     let child_path = lint_cache_dir.join("clippy-latest.log");
     projects.insert(key, entry);
 
@@ -1932,6 +2007,111 @@ fn source_events_schedule_lint_run_through_main_runtime() {
     ] {
         assert_source_event_schedules_lint_run(event_kind, timeout, assertion);
     }
+}
+
+#[test]
+fn registered_linked_worktree_source_event_schedules_lint_run() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let primary_dir = tmp.path().join("cargo-port");
+    let linked_dir = tmp.path().join("style-fix");
+    for dir in [&primary_dir, &linked_dir] {
+        std::fs::create_dir_all(dir.join("src")).expect("create src");
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname='demo'\nversion='0.1.0'\n",
+        )
+        .expect("write manifest");
+    }
+    let source_path = linked_dir.join("src/lib.rs");
+    std::fs::write(&source_path, "pub fn demo() {}\n").expect("write source");
+
+    let cache_dir = tempfile::tempdir().expect("tempdir");
+    let mut cfg = crate::config::CargoPortConfig::default();
+    cfg.cache.root = cache_dir.path().to_string_lossy().to_string();
+    cfg.lint.enabled = true;
+    cfg.lint.include = vec!["cargo-port".to_string()];
+    cfg.lint.commands = vec![crate::config::LintCommandConfig {
+        name:    "echo".to_string(),
+        command: "echo lint ok".to_string(),
+    }];
+
+    let (background_tx, background_rx) = channel::unbounded();
+    let runtime = lint::spawn(&cfg, background_tx.clone())
+        .handle
+        .expect("runtime handle");
+    let request = RegisterProjectRequest::new(
+        "~/rust/style-fix",
+        AbsolutePath::from(linked_dir.as_path()),
+        true,
+    )
+    .with_linked_primary_root(Some(AbsolutePath::from(primary_dir.as_path())));
+    runtime.sync_projects(vec![request.clone()]);
+    runtime.register_project(request);
+
+    let (watch_tx, watch_rx) = channel::unbounded();
+    watch_tx
+        .send(WatcherMsg::Register(WatchRequest {
+            project_label: linked_dir.display().to_string(),
+            abs_path:      AbsolutePath::from(linked_dir.as_path()),
+            repo_root:     Some(AbsolutePath::from(linked_dir.as_path())),
+        }))
+        .expect("send register");
+    let mut state = WatcherLoopState::new();
+    let mut watcher = NoopWatcher;
+    let mut registered_roots = RegisteredRoots::from_dirs(vec![AbsolutePath::from(tmp.path())]);
+    let _ = drain_watch_messages(&watch_rx, &mut state, &mut watcher, &mut registered_roots);
+    let project_parents = state.project_parents.clone();
+    let discovered = state.discovered.clone();
+    let ctx = EventContext {
+        watch_roots:     registered_roots.dirs(),
+        projects:        &state.projects,
+        project_parents: &project_parents,
+        discovered:      &discovered,
+    };
+    let mut pending_disk = HashMap::new();
+    let mut pending_git = HashMap::new();
+    let mut pending_new = HashMap::new();
+    let event = Event {
+        kind:  EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+        paths: vec![source_path.clone()],
+        attrs: notify::event::EventAttributes::default(),
+    };
+
+    events::handle_notify_event(
+        &source_path,
+        Some(&event),
+        &ctx,
+        &background_tx,
+        Some(&runtime),
+        None,
+        &mut pending_disk,
+        &mut pending_git,
+        &mut pending_new,
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut saw_passed = false;
+    while Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match background_rx.recv_timeout(remaining) {
+            Ok(BackgroundMsg::LintStatus { path, status, .. })
+                if path.as_path() == linked_dir.as_path()
+                    && matches!(status, lint::LintStatus::Passed(_)) =>
+            {
+                saw_passed = true;
+                break;
+            },
+            Ok(_) => {},
+            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    assert!(
+        saw_passed,
+        "linked worktree source event should run lint through the registered watcher state"
+    );
+    assert!(!pending_git.is_empty());
+    assert!(pending_new.is_empty());
 }
 
 #[test]

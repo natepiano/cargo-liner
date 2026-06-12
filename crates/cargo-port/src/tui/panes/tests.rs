@@ -374,7 +374,7 @@ fn targets_copy_returns_source_path_for_any_target_row() {
         binaries: vec![TargetEntry {
             name:              "demo".to_string(),
             display_name:      "demo".to_string(),
-            kind:              RunTargetKind::Binary,
+            run_target_kind:   RunTargetKind::Binary,
             source:            TargetSource::workspace_root("demo".into()),
             project_path:      AbsolutePath::from("/ws"),
             package_name:      "demo".to_string(),
@@ -384,7 +384,7 @@ fn targets_copy_returns_source_path_for_any_target_row() {
         examples: vec![TargetEntry {
             name:              "demo_example".to_string(),
             display_name:      "demo_example".to_string(),
-            kind:              RunTargetKind::Example,
+            run_target_kind:   RunTargetKind::Example,
             source:            TargetSource::workspace_root("demo".into()),
             project_path:      AbsolutePath::from("/ws"),
             package_name:      "demo".to_string(),

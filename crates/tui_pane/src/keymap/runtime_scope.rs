@@ -84,21 +84,21 @@ pub(crate) trait RuntimeScope<Ctx: AppContext>: 'static {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct RenderedSlot {
     /// Which bar region this slot belongs to.
-    pub region:        BarRegion,
+    pub region:         BarRegion,
     /// The action's bar label (e.g. `"activate"`).
-    pub label:         &'static str,
+    pub label:          &'static str,
     /// The currently bound key.
-    pub key:           KeySequence,
+    pub key:            KeySequence,
     /// Active vs greyed-out.
-    pub state:         ShortcutState,
+    pub shortcut_state: ShortcutState,
     /// Always [`Visibility::Visible`] in the returned `Vec` (hidden
     /// slots are dropped); kept on the struct for renderer
     /// uniformity.
-    pub visibility:    Visibility,
+    pub visibility:     Visibility,
     /// Secondary key for paired bar rows. `None` means this is a
     /// normal single-key slot; `Some` means render `{key}/{secondary}`
     /// with the slot's shared `label`.
-    pub secondary_key: Option<KeySequence>,
+    pub secondary_key:  Option<KeySequence>,
 }
 
 /// One row in the framework-owned global shortcut help overlay.
@@ -187,7 +187,7 @@ impl<Ctx: AppContext + 'static, P: Shortcuts<Ctx>> RuntimeScope<Ctx> for PaneSco
                         region,
                         label: self.pane.bar_label(action, ctx),
                         key,
-                        state: self.pane.state(action, ctx),
+                        shortcut_state: self.pane.state(action, ctx),
                         visibility,
                         secondary_key: None,
                     })
@@ -206,7 +206,7 @@ impl<Ctx: AppContext + 'static, P: Shortcuts<Ctx>> RuntimeScope<Ctx> for PaneSco
                         region,
                         label,
                         key,
-                        state: self.pane.state(primary, ctx),
+                        shortcut_state: self.pane.state(primary, ctx),
                         visibility: primary_visibility,
                         secondary_key: Some(secondary_key),
                     })
@@ -274,7 +274,7 @@ pub(super) fn slots_from_scope<A: Action>(
                 region,
                 label: action.bar_label(),
                 key,
-                state: ShortcutState::Enabled,
+                shortcut_state: ShortcutState::Enabled,
                 visibility: Visibility::Visible,
                 secondary_key: None,
             })
@@ -513,23 +513,23 @@ mod tests {
         assert_eq!(
             slots[0],
             RenderedSlot {
-                region:        BarRegion::PaneAction,
-                label:         "go",
-                key:           KeyBind::from(KeyCode::Enter).into(),
-                state:         ShortcutState::Enabled,
-                visibility:    Visibility::Visible,
-                secondary_key: None,
+                region:         BarRegion::PaneAction,
+                label:          "go",
+                key:            KeyBind::from(KeyCode::Enter).into(),
+                shortcut_state: ShortcutState::Enabled,
+                visibility:     Visibility::Visible,
+                secondary_key:  None,
             },
         );
         assert_eq!(
             slots[1],
             RenderedSlot {
-                region:        BarRegion::PaneAction,
-                label:         "clean",
-                key:           KeyBind::from('c').into(),
-                state:         ShortcutState::Enabled,
-                visibility:    Visibility::Visible,
-                secondary_key: None,
+                region:         BarRegion::PaneAction,
+                label:          "clean",
+                key:            KeyBind::from('c').into(),
+                shortcut_state: ShortcutState::Enabled,
+                visibility:     Visibility::Visible,
+                secondary_key:  None,
             },
         );
     }

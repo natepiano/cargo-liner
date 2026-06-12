@@ -179,7 +179,7 @@ fn render_targets_with_data(
     running_rows: &[RunningRow],
     styles: &RenderStyles,
 ) {
-    let focus = pane.focus.state;
+    let pane_focus_state = pane.focus.pane_focus_state;
     let entries = panes::build_target_list_from_data(data);
     // Drop expanded-outline state for PIDs that left the list, so a
     // reused PID starts collapsed.
@@ -196,10 +196,11 @@ fn render_targets_with_data(
     // The title's section counter tracks the table's target rows; a
     // highlight in the Running box leaves it uncounted.
     let cursor_entry = (cursor < table_len).then_some(cursor);
-    let targets_title = build_targets_title(focus, cursor_entry, data);
-    let targets_block = styles
-        .chrome
-        .block(targets_title, matches!(focus, PaneFocusState::Active));
+    let targets_title = build_targets_title(pane_focus_state, cursor_entry, data);
+    let targets_block = styles.chrome.block(
+        targets_title,
+        matches!(pane_focus_state, PaneFocusState::Active),
+    );
     let content_inner = targets_block.inner(area);
     frame.render_widget(targets_block, area);
 
@@ -226,16 +227,16 @@ fn render_targets_with_data(
                 cargo_group: pane.cargo_group(),
                 expanded_parents: pane.expanded_parents(),
                 viewport: &pane.viewport,
-                focus,
+                focus: pane_focus_state,
                 table_len,
-                border_style: if matches!(focus, PaneFocusState::Active) {
+                border_style: if matches!(pane_focus_state, PaneFocusState::Active) {
                     styles.chrome.active_border
                 } else {
                     styles.chrome.inactive_border
                 },
                 title_style: styles
                     .chrome
-                    .title_style(matches!(focus, PaneFocusState::Active)),
+                    .title_style(matches!(pane_focus_state, PaneFocusState::Active)),
             },
             placed[RUNNING_BOX],
             area,
@@ -258,13 +259,13 @@ fn render_targets_table(
     pane_area: Rect,
     styles: &RenderStyles,
 ) -> Vec<(Rect, usize)> {
-    let focus = pane.focus.state;
+    let pane_focus_state = pane.focus.pane_focus_state;
     let cursor = pane.viewport.pos();
     let table_len = entries.len();
     let table_area = table_box.chrome.union(table_box.content);
 
     let layout = compute_layout(entries, table_area.width);
-    let rows = build_rows(entries, pane, focus, &layout);
+    let rows = build_rows(entries, pane, pane_focus_state, &layout);
     let widths = build_widths(&layout);
     let table = Table::new(rows, widths)
         .column_spacing(TARGET_TABLE_COLUMN_SPACING)
@@ -342,7 +343,7 @@ fn render_table_footer(
         width:  pane_area.width,
         height: 1,
     };
-    let active = matches!(pane.focus.state, PaneFocusState::Active);
+    let active = matches!(pane.focus.pane_focus_state, PaneFocusState::Active);
     tui_pane::render_horizontal_rule(
         frame,
         rule_area,
@@ -432,8 +433,10 @@ fn target_row(entry: &TargetEntry, name_cell: Cell<'static>, layout: &Layout) ->
     Row::new(vec![
         name_cell,
         Cell::from(source_label).style(Style::default().fg(label_color())),
-        Cell::from(Line::from(format!("{} ", entry.kind.label())).alignment(Alignment::Right))
-            .style(Style::default().fg(entry.kind.color())),
+        Cell::from(
+            Line::from(format!("{} ", entry.run_target_kind.label())).alignment(Alignment::Right),
+        )
+        .style(Style::default().fg(entry.run_target_kind.color())),
     ])
 }
 
@@ -523,7 +526,7 @@ mod tests {
         TargetEntry {
             name:              display_name.to_string(),
             display_name:      display_name.to_string(),
-            kind:              RunTargetKind::Example,
+            run_target_kind:   RunTargetKind::Example,
             source:            TargetSource::worktree(source_label.to_string()),
             project_path:      AbsolutePath::from("/tmp/demo"),
             package_name:      "demo".to_string(),

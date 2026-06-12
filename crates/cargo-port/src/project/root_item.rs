@@ -124,19 +124,19 @@ impl RootItem {
     /// Git submodules for this item's primary project info.
     pub(crate) fn submodules(&self) -> &[Submodule] {
         match self {
-            Self::Rust(RustProject::Workspace(ws)) => &ws.info.submodules,
-            Self::Rust(RustProject::Package(pkg)) => &pkg.info.submodules,
-            Self::NonRust(p) => &p.info.submodules,
-            Self::Worktrees(g) => &g.primary.rust_info().info.submodules,
+            Self::Rust(RustProject::Workspace(ws)) => &ws.project_info.submodules,
+            Self::Rust(RustProject::Package(pkg)) => &pkg.project_info.submodules,
+            Self::NonRust(p) => &p.project_info.submodules,
+            Self::Worktrees(g) => &g.primary.rust_info().project_info.submodules,
         }
     }
 
     pub(crate) fn submodules_mut(&mut self) -> &mut Vec<Submodule> {
         match self {
-            Self::Rust(RustProject::Workspace(ws)) => &mut ws.info.submodules,
-            Self::Rust(RustProject::Package(pkg)) => &mut pkg.info.submodules,
-            Self::NonRust(p) => &mut p.info.submodules,
-            Self::Worktrees(g) => &mut g.primary.rust_info_mut().info.submodules,
+            Self::Rust(RustProject::Workspace(ws)) => &mut ws.project_info.submodules,
+            Self::Rust(RustProject::Package(pkg)) => &mut pkg.project_info.submodules,
+            Self::NonRust(p) => &mut p.project_info.submodules,
+            Self::Worktrees(g) => &mut g.primary.rust_info_mut().project_info.submodules,
         }
     }
 
@@ -180,14 +180,14 @@ impl RootItem {
     pub(crate) fn at_path(&self, path: &Path) -> Option<&ProjectInfo> {
         let result = match self {
             Self::Rust(p) => p.at_path(path),
-            Self::NonRust(p) => (p.path() == path).then_some(&p.info),
+            Self::NonRust(p) => (p.path() == path).then_some(&p.project_info),
             Self::Worktrees(g) => g.iter_entries().find_map(|p| p.at_path(path)),
         };
         result.or_else(|| {
             self.submodules()
                 .iter()
                 .find(|s| s.path.as_path() == path)
-                .map(|s| &s.info)
+                .map(|s| &s.project_info)
         })
     }
 
@@ -238,7 +238,7 @@ impl RootItem {
         }
         match self {
             Self::Rust(p) => p.at_path_mut(path),
-            Self::NonRust(p) => (p.path() == path).then_some(&mut p.info),
+            Self::NonRust(p) => (p.path() == path).then_some(&mut p.project_info),
             Self::Worktrees(g) => find_in_group_mut(g, path, RustProject::at_path_mut),
         }
     }
@@ -331,7 +331,7 @@ impl RootItem {
         match self {
             Self::Rust(p) => p.collect_project_info(&mut out),
             Self::NonRust(p) => {
-                out.push((p.path().clone(), p.info.clone()));
+                out.push((p.path().clone(), p.project_info.clone()));
             },
             Self::Worktrees(g) => {
                 for entry in g.iter_entries() {
@@ -509,15 +509,15 @@ pub(crate) fn strip_worktree_badge_suffix(label: &str) -> &str {
 /// the caller has already borrowed `self` immutably for the submodule check.
 fn submodule_info_mut<'a>(item: &'a mut RootItem, path: &Path) -> Option<&'a mut ProjectInfo> {
     let submodules = match item {
-        RootItem::Rust(RustProject::Workspace(ws)) => &mut ws.info.submodules,
-        RootItem::Rust(RustProject::Package(pkg)) => &mut pkg.info.submodules,
-        RootItem::NonRust(nr) => &mut nr.info.submodules,
-        RootItem::Worktrees(g) => &mut g.primary.rust_info_mut().info.submodules,
+        RootItem::Rust(RustProject::Workspace(ws)) => &mut ws.project_info.submodules,
+        RootItem::Rust(RustProject::Package(pkg)) => &mut pkg.project_info.submodules,
+        RootItem::NonRust(nr) => &mut nr.project_info.submodules,
+        RootItem::Worktrees(g) => &mut g.primary.rust_info_mut().project_info.submodules,
     };
     submodules
         .iter_mut()
         .find(|s| s.path.as_path() == path)
-        .map(|s| &mut s.info)
+        .map(|s| &mut s.project_info)
 }
 
 /// Apply a per-entry mutable accessor across primary + linked, returning the

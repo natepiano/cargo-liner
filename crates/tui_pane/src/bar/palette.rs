@@ -2,7 +2,7 @@
 //! renderer.
 //!
 //! The framework owns the per-slot styling pass — it knows
-//! `RenderedSlot::state` at the moment
+//! `RenderedSlot::shortcut_state` at the moment
 //! a span is emitted, and the binary does not — but it ships no
 //! colors of its own. The default constructor is theme-neutral: every
 //! field is [`Style::default()`]. Binaries supply a populated
@@ -16,7 +16,7 @@ use ratatui::style::Style;
 /// Five fields select between enabled / disabled `key` and `label`
 /// styling; the fifth styles the inter-slot separator.
 /// [`render_status_bar`](super::render) reads
-/// `RenderedSlot::state` and chooses
+/// `RenderedSlot::shortcut_state` and chooses
 /// `enabled_*` vs `disabled_*` per slot at emit time.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BarPalette {
@@ -29,15 +29,15 @@ pub struct BarPalette {
     /// Style applied to status values such as the uptime duration.
     pub status_value_style:    Style,
     /// Style applied to the key span (e.g. `" Enter"`) when the slot's
-    /// state is [`ShortcutState::Enabled`](super::ShortcutState).
+    /// shortcut state is [`ShortcutState::Enabled`](super::ShortcutState).
     pub enabled_key_style:     Style,
     /// Style applied to the label span (e.g. `" activate"`) when the
-    /// slot's state is [`ShortcutState::Enabled`](super::ShortcutState).
+    /// slot's shortcut state is [`ShortcutState::Enabled`](super::ShortcutState).
     pub enabled_label_style:   Style,
-    /// Style applied to the key span when the slot's state is
+    /// Style applied to the key span when the slot's shortcut state is
     /// [`ShortcutState::Disabled`](super::ShortcutState).
     pub disabled_key_style:    Style,
-    /// Style applied to the label span when the slot's state is
+    /// Style applied to the label span when the slot's shortcut state is
     /// [`ShortcutState::Disabled`](super::ShortcutState).
     pub disabled_label_style:  Style,
     /// Style applied to the inter-slot separator (`"  "`).
