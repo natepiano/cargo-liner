@@ -19,6 +19,7 @@ use crate::fixes::imports::UseFix;
 use crate::reporting::Finding;
 use crate::reporting::FixSupport;
 use crate::reporting::Severity;
+use crate::rust_syntax::PathAnchor;
 
 pub(super) struct InlineCallCandidate {
     pub(super) function_name:   String,
@@ -196,8 +197,8 @@ fn analyze_inline_call(
         return None;
     }
 
-    let first = segments.first()?;
-    if first != "crate" && first != "super" {
+    let path_anchor = PathAnchor::first(&segments)?;
+    if !path_anchor.is_crate_relative() {
         return None;
     }
 
@@ -220,7 +221,7 @@ fn analyze_inline_call(
     }
 
     let module_name = segments[segments.len() - 2].clone();
-    if module_name == "super" || module_name == "crate" {
+    if PathAnchor::from(module_name.as_str()).is_crate_relative() {
         return None;
     }
     if !support::is_snake_case_module_name(&module_name) {
@@ -232,10 +233,11 @@ fn analyze_inline_call(
 
     let module_segments = &segments[..segments.len() - 1];
     let shortened = support::shorten_module_path(current_module_path, module_segments);
-    let import_target = if shortened.as_slice() == ["super"] {
-        ImportTarget::ParentModule
-    } else {
-        ImportTarget::OtherModule
+    let import_target = match shortened.as_slice() {
+        [segment] if PathAnchor::from(segment.as_str()) == PathAnchor::Super => {
+            ImportTarget::ParentModule
+        },
+        _ => ImportTarget::OtherModule,
     };
     let module_path = shortened.join("::");
 

@@ -2,6 +2,8 @@ use proc_macro2::LineColumn;
 use syn::UseTree;
 
 use crate::config::DiagnosticCode;
+use crate::rust_syntax;
+use crate::rust_syntax::PathAnchor;
 
 pub(super) struct ImportCandidate {
     pub(super) original:        String,
@@ -15,8 +17,11 @@ pub(super) fn analyze_use_tree(
     tree: &UseTree,
 ) -> Option<ImportCandidate> {
     let import = flatten_use_tree(tree)?;
-    if import.segments.first()? != "crate" {
-        return None;
+    match PathAnchor::first(&import.segments)? {
+        PathAnchor::Crate => {},
+        PathAnchor::Super | PathAnchor::SelfMod | PathAnchor::SelfType | PathAnchor::Name => {
+            return None;
+        },
     }
 
     let target_segments = &import.segments[1..];
@@ -54,7 +59,7 @@ pub(super) fn analyze_deep_super(
     tree: &UseTree,
 ) -> Option<ImportCandidate> {
     let import = flatten_use_tree(tree)?;
-    let super_count = import.segments.iter().take_while(|s| *s == "super").count();
+    let super_count = rust_syntax::leading_super_count(&import.segments);
     if super_count < 2 {
         return None;
     }

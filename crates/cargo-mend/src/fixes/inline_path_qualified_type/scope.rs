@@ -7,6 +7,7 @@ use syn::spanned::Spanned;
 
 use super::offsets;
 use super::visitor;
+use crate::rust_syntax::PathAnchor;
 
 pub(super) struct ScopeInfo {
     pub(super) span_start:              usize,
@@ -142,7 +143,7 @@ pub(super) fn canonicalize_inserted_use_path(scope: &ScopeInfo, full_path: &str)
     let segments: Vec<&str> = full_path.split("::").collect();
     let super_count = segments
         .iter()
-        .take_while(|segment| **segment == "super")
+        .take_while(|segment| PathAnchor::from(**segment) == PathAnchor::Super)
         .count();
     if super_count < 2 || super_count > scope.module_path.len() {
         return full_path.to_string();

@@ -43,6 +43,7 @@ use rustc_middle::ty::TyCtxt;
 use rustc_middle::ty::Visibility;
 
 use crate::compiler::persistence::UseSite;
+use crate::rust_syntax::PathAnchor;
 
 /// Walk the entire crate's HIR and append every resolved
 /// expression/type/pattern path reference to `out`. The caller module is
@@ -399,7 +400,7 @@ pub(super) fn parent_module_path_segments(tcx: TyCtxt<'_>, def_id: LocalDefId) -
         .filter(|segment| !segment.is_empty())
         .map(String::from)
         .collect::<Vec<_>>();
-    if segments.first().is_some_and(|segment| segment == "crate") {
+    if PathAnchor::first(&segments) == Some(PathAnchor::Crate) {
         segments.remove(0);
     }
     segments

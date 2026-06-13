@@ -18,6 +18,8 @@ use syn::spanned::Spanned;
 
 use super::validated_plan;
 use crate::fixes::imports::UseFix;
+use crate::rust_syntax;
+use crate::rust_syntax::PathAnchor;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct ParentBoundaryKey {
@@ -128,11 +130,7 @@ fn parent_pub_use_exports_item_with_prefix(
             parent_pub_use_exports_item_with_prefix(next, &path.tree, child_module_name, item_name)
         },
         UseTree::Name(name) => {
-            let normalized = if prefix.first().is_some_and(|segment| segment == "self") {
-                &prefix[1..]
-            } else {
-                &prefix[..]
-            };
+            let normalized = rust_syntax::trim_leading_self(&prefix);
             normalized.len() == 1 && normalized[0] == child_module_name && name.ident == item_name
         },
         UseTree::Group(group) => group.items.iter().any(|item| {
@@ -165,11 +163,16 @@ fn rewrite_parent_pub_use_item_for_exports(
 fn facade_use_prefix(vis: &Visibility) -> Option<&'static str> {
     match vis {
         Visibility::Public(_) => Some("pub use"),
-        Visibility::Restricted(restricted)
-            if restricted.path.segments.len() == 1
-                && restricted.path.segments[0].ident == "super" =>
-        {
-            Some("pub(super) use")
+        Visibility::Restricted(restricted) if restricted.path.segments.len() == 1 => {
+            let path_anchor =
+                PathAnchor::from(restricted.path.segments[0].ident.to_string().as_str());
+            match path_anchor {
+                PathAnchor::Super => Some("pub(super) use"),
+                PathAnchor::Crate
+                | PathAnchor::SelfMod
+                | PathAnchor::SelfType
+                | PathAnchor::Name => None,
+            }
         },
         _ => None,
     }
@@ -192,11 +195,7 @@ fn remove_exports_from_use_tree(
             }))
         },
         UseTree::Name(name) => {
-            let normalized = if prefix.first().is_some_and(|segment| segment == "self") {
-                &prefix[1..]
-            } else {
-                &prefix[..]
-            };
+            let normalized = rust_syntax::trim_leading_self(&prefix);
             if normalized.len() == 1
                 && exports.iter().any(|(child_module_name, item_name)| {
                     normalized[0] == *child_module_name && name.ident == item_name

@@ -19,6 +19,7 @@ use super::parent_boundary::ParentBoundaryKey;
 use crate::compiler::SOURCE_DIR_SRC;
 use crate::fixes::imports::UseFix;
 use crate::rust_syntax;
+use crate::rust_syntax::PathAnchor;
 use crate::selection::Selection;
 
 pub(super) struct ValidatedPubUsePlan {
@@ -344,20 +345,22 @@ fn rewrite_leaf_under_base(
 }
 
 fn absolute_use_path(current_module_path: &[String], segments: &[String]) -> Option<Vec<String>> {
-    let first = segments.first()?.as_str();
-    match first {
-        "crate" => Some(segments[1..].to_vec()),
-        "self" => Some(
+    match PathAnchor::first(segments)? {
+        PathAnchor::Crate => Some(segments[1..].to_vec()),
+        PathAnchor::SelfMod => Some(
             current_module_path
                 .iter()
                 .cloned()
                 .chain(segments[1..].iter().cloned())
                 .collect(),
         ),
-        "super" => {
+        PathAnchor::Super => {
             let mut module = current_module_path.to_vec();
             let mut index = 0usize;
-            while segments.get(index).is_some_and(|seg| seg == "super") {
+            while segments
+                .get(index)
+                .is_some_and(|seg| PathAnchor::from(seg.as_str()) == PathAnchor::Super)
+            {
                 module.pop()?;
                 index += 1;
             }
@@ -368,7 +371,7 @@ fn absolute_use_path(current_module_path: &[String], segments: &[String]) -> Opt
                     .collect(),
             )
         },
-        _ => Some(
+        PathAnchor::SelfType | PathAnchor::Name => Some(
             current_module_path
                 .iter()
                 .cloned()

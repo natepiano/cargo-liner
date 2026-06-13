@@ -62,10 +62,8 @@ impl MendRunner<'_> {
                 })
             },
             Err(err) => {
-                let rollback_status = match imports::restore_files(&snapshots) {
-                    Ok(()) => RollbackStatus::Restored,
-                    Err(_) => RollbackStatus::RestoreFailed,
-                };
+                let rollback_status = imports::restore_files(&snapshots)
+                    .map_or(RollbackStatus::RestoreFailed, |()| RollbackStatus::Restored);
                 let cause = match err {
                     MendFailure::Analysis(a) => a.cause,
                     MendFailure::Unexpected(e) => CompilerFailureCause::Unexpected(e),

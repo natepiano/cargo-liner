@@ -1,6 +1,55 @@
 use std::ffi::OsStr;
 use std::path::Path;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PathAnchor {
+    Crate,
+    Super,
+    SelfMod,
+    SelfType,
+    Name,
+}
+
+impl From<&str> for PathAnchor {
+    fn from(segment: &str) -> Self {
+        match segment {
+            "crate" => Self::Crate,
+            "super" => Self::Super,
+            "self" => Self::SelfMod,
+            "Self" => Self::SelfType,
+            _ => Self::Name,
+        }
+    }
+}
+
+impl PathAnchor {
+    pub(crate) fn first(segments: &[String]) -> Option<Self> {
+        segments.first().map(|segment| Self::from(segment.as_str()))
+    }
+
+    pub(crate) const fn is_crate_relative(self) -> bool {
+        matches!(self, Self::Crate | Self::Super)
+    }
+
+    pub(crate) const fn is_explicit_self(self) -> bool {
+        matches!(self, Self::SelfMod | Self::SelfType)
+    }
+}
+
+pub(crate) fn leading_super_count(segments: &[String]) -> usize {
+    segments
+        .iter()
+        .take_while(|segment| PathAnchor::from(segment.as_str()) == PathAnchor::Super)
+        .count()
+}
+
+pub(crate) fn trim_leading_self(segments: &[String]) -> &[String] {
+    match PathAnchor::first(segments) {
+        Some(PathAnchor::SelfMod) => &segments[1..],
+        _ => segments,
+    }
+}
+
 pub(crate) fn file_module_path(source_root: &Path, path: &Path) -> Option<Vec<String>> {
     let relative = path.strip_prefix(source_root).ok()?;
     let mut result: Vec<String> = relative

@@ -6,6 +6,9 @@ use syn::ItemUse;
 use syn::UseTree;
 use syn::Visibility;
 
+use crate::rust_syntax;
+use crate::rust_syntax::PathAnchor;
+
 pub(super) struct FlattenedImport {
     pub(super) segments: Vec<String>,
     pub(super) rename:   Option<String>,
@@ -15,22 +18,19 @@ pub(super) fn resolve_to_absolute(
     segments: &[String],
     current_module_path: &[String],
 ) -> Option<Vec<String>> {
-    let first = segments.first()?;
-    if first == "crate" {
-        Some(segments[1..].to_vec())
-    } else if first == "super" {
-        let super_count = segments
-            .iter()
-            .take_while(|segment| *segment == "super")
-            .count();
-        if super_count > current_module_path.len() {
-            return None;
-        }
-        let mut absolute = current_module_path[..current_module_path.len() - super_count].to_vec();
-        absolute.extend(segments[super_count..].iter().cloned());
-        Some(absolute)
-    } else {
-        None
+    match PathAnchor::first(segments)? {
+        PathAnchor::Crate => Some(segments[1..].to_vec()),
+        PathAnchor::Super => {
+            let super_count = rust_syntax::leading_super_count(segments);
+            if super_count > current_module_path.len() {
+                return None;
+            }
+            let mut absolute =
+                current_module_path[..current_module_path.len() - super_count].to_vec();
+            absolute.extend(segments[super_count..].iter().cloned());
+            Some(absolute)
+        },
+        PathAnchor::SelfMod | PathAnchor::SelfType | PathAnchor::Name => None,
     }
 }
 
@@ -55,18 +55,12 @@ pub(super) fn shorten_module_path(
     current_module_path: &[String],
     module_segments: &[String],
 ) -> Vec<String> {
-    if module_segments
-        .first()
-        .is_some_and(|segment| segment == "super")
-    {
-        return module_segments.to_vec();
-    }
-
-    let Some(first) = module_segments.first() else {
-        return module_segments.to_vec();
-    };
-    if first != "crate" {
-        return module_segments.to_vec();
+    match PathAnchor::first(module_segments) {
+        Some(PathAnchor::Super) | None => return module_segments.to_vec(),
+        Some(PathAnchor::Crate) => {},
+        Some(PathAnchor::SelfMod | PathAnchor::SelfType | PathAnchor::Name) => {
+            return module_segments.to_vec();
+        },
     }
 
     let target = &module_segments[1..];

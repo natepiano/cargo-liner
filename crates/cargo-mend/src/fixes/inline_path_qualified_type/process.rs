@@ -12,6 +12,7 @@ use crate::fixes::imports::UseFix;
 use crate::reporting::Finding;
 use crate::reporting::FixSupport;
 use crate::reporting::Severity;
+use crate::rust_syntax::PathAnchor;
 
 pub(super) struct OccurrenceContext<'a> {
     pub(super) path:            &'a Path,
@@ -168,8 +169,11 @@ fn absolutize_import_path(import_path: &str, existing_imports: &BTreeSet<String>
     let Some((leading, rest)) = import_path.split_once("::") else {
         return import_path.to_string();
     };
-    if leading == "crate" || leading == "super" || leading == "self" {
-        return import_path.to_string();
+    match PathAnchor::from(leading) {
+        PathAnchor::Crate | PathAnchor::Super | PathAnchor::SelfMod => {
+            return import_path.to_string();
+        },
+        PathAnchor::SelfType | PathAnchor::Name => {},
     }
     // Look for an existing `use a::b::<leading>;` (i.e. an import whose final
     // segment matches `leading` and which has at least one parent segment).

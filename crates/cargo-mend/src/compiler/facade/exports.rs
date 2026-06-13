@@ -18,6 +18,7 @@ use crate::compiler::settings::DriverSettings;
 use crate::compiler::source_cache;
 use crate::compiler::source_cache::SourceCache;
 use crate::rust_syntax;
+use crate::rust_syntax::PathAnchor;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ParentFacadeFixSupport {
@@ -184,11 +185,7 @@ fn parent_boundary_has_matching_pub_use_glob(file: &File, child_module_name: &st
         let mut paths = Vec::new();
         source_cache::flatten_use_tree(Vec::new(), &item_use.tree, &mut paths);
         paths.into_iter().any(|path| {
-            let normalized = if path.first().is_some_and(|segment| segment == "self") {
-                &path[1..]
-            } else {
-                &path[..]
-            };
+            let normalized = rust_syntax::trim_leading_self(&path);
             normalized.len() == 2 && normalized[0] == child_module_name && normalized[1] == "*"
         })
     })
@@ -231,11 +228,7 @@ fn collect_matching_pub_use_exports(
     source_cache::flatten_use_tree(Vec::new(), &item_use.tree, &mut paths);
     let mut matched = false;
     for path in paths {
-        let normalized = if path.first().is_some_and(|segment| segment == "self") {
-            &path[1..]
-        } else {
-            &path[..]
-        };
+        let normalized = rust_syntax::trim_leading_self(&path);
         if normalized.len() >= 2
             && normalized[0] == child_module_name
             && normalized[1..].iter().any(|segment| segment == item_name)
@@ -283,11 +276,7 @@ fn pub_use_is_fix_supported_with_prefix(
             pub_use_is_fix_supported_with_prefix(next, &path.tree, child_module_name, item_name)
         },
         UseTree::Name(name) => {
-            let normalized = if prefix.first().is_some_and(|segment| segment == "self") {
-                &prefix[1..]
-            } else {
-                &prefix[..]
-            };
+            let normalized = rust_syntax::trim_leading_self(&prefix);
             normalized.len() == 1 && normalized[0] == child_module_name && name.ident == item_name
         },
         UseTree::Group(group) => group.items.iter().any(|item| {
@@ -300,17 +289,14 @@ fn pub_use_is_fix_supported_with_prefix(
 pub(super) fn parent_facade_visibility(vis: &Visibility) -> Option<ParentFacadeVisibility> {
     match vis {
         Visibility::Public(_) => Some(ParentFacadeVisibility::Public),
-        Visibility::Restricted(restricted)
-            if restricted.path.segments.len() == 1
-                && restricted.path.segments[0].ident == "super" =>
-        {
-            Some(ParentFacadeVisibility::Super)
-        },
-        Visibility::Restricted(restricted)
-            if restricted.path.segments.len() == 1
-                && restricted.path.segments[0].ident == "crate" =>
-        {
-            Some(ParentFacadeVisibility::Crate)
+        Visibility::Restricted(restricted) if restricted.path.segments.len() == 1 => {
+            let path_anchor =
+                PathAnchor::from(restricted.path.segments[0].ident.to_string().as_str());
+            match path_anchor {
+                PathAnchor::Super => Some(ParentFacadeVisibility::Super),
+                PathAnchor::Crate => Some(ParentFacadeVisibility::Crate),
+                PathAnchor::SelfMod | PathAnchor::SelfType | PathAnchor::Name => None,
+            }
         },
         _ => None,
     }

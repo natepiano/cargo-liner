@@ -25,6 +25,8 @@ use syn::UseTree;
 use syn::visit;
 use syn::visit::Visit;
 
+use crate::rust_syntax::PathAnchor;
+
 pub(super) struct InlinePathOccurrence {
     /// The original fully-qualified path as written (e.g.
     /// `crate::project::RustProject::Package`).
@@ -81,7 +83,8 @@ impl InlinePathVisitor {
         }
 
         let first = &segments[0];
-        let is_intra_crate = first == "crate" || first == "super";
+        let path_anchor = PathAnchor::from(first.as_str());
+        let is_intra_crate = path_anchor.is_crate_relative();
 
         // For intra-crate paths, require at least 3 segments: `crate::Foo` and
         // `super::Foo` are already short, so adding a `use` would not shorten
@@ -93,7 +96,7 @@ impl InlinePathVisitor {
 
         // Filter obvious non-crate roots. `self::` is a same-module reference,
         // not a candidate for a `use`.
-        if first == "self" || first == "Self" {
+        if path_anchor.is_explicit_self() {
             return;
         }
 

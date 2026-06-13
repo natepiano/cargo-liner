@@ -18,6 +18,7 @@ use super::constants::SOURCE_DIR_BENCHES;
 use super::constants::SOURCE_DIR_EXAMPLES;
 use super::constants::SOURCE_DIR_SRC;
 use super::constants::SOURCE_DIR_TESTS;
+use crate::rust_syntax::PathAnchor;
 use crate::selection::CARGO_TARGET_KIND_LIB;
 use crate::selection::CARGO_TARGET_KIND_MAIN;
 
@@ -233,10 +234,10 @@ fn collect_rust_source_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()>
 }
 
 pub(super) fn path_origin(raw: &[String]) -> PathOrigin {
-    if raw.first().map(String::as_str) == Some("crate") {
-        PathOrigin::Crate
-    } else {
-        PathOrigin::Relative
+    match PathAnchor::first(raw) {
+        Some(PathAnchor::Crate) => PathOrigin::Crate,
+        Some(PathAnchor::Super | PathAnchor::SelfMod | PathAnchor::SelfType | PathAnchor::Name)
+        | None => PathOrigin::Relative,
     }
 }
 

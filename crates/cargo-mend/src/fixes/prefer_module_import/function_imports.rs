@@ -9,6 +9,7 @@ use syn::visit::Visit;
 use syn::visit::visit_item_mod;
 
 use super::support;
+use crate::rust_syntax::PathAnchor;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ImportTarget {
@@ -71,8 +72,8 @@ fn analyze_function_import(
         return None;
     }
 
-    let first = flat.segments.first()?;
-    if first != "crate" && first != "super" {
+    let path_anchor = PathAnchor::first(&flat.segments)?;
+    if !path_anchor.is_crate_relative() {
         return None;
     }
 
@@ -92,7 +93,7 @@ fn analyze_function_import(
 
     let module_segments = &flat.segments[..flat.segments.len() - 1];
     let module_name = flat.segments[flat.segments.len() - 2].clone();
-    if module_name == "super" || module_name == "crate" {
+    if PathAnchor::from(module_name.as_str()).is_crate_relative() {
         return None;
     }
     if !support::is_snake_case_module_name(&module_name) {
@@ -104,10 +105,11 @@ fn analyze_function_import(
 
     let shortened_module_segments =
         support::shorten_module_path(current_module_path, module_segments);
-    let import_target = if shortened_module_segments.as_slice() == ["super"] {
-        ImportTarget::ParentModule
-    } else {
-        ImportTarget::OtherModule
+    let import_target = match shortened_module_segments.as_slice() {
+        [segment] if PathAnchor::from(segment.as_str()) == PathAnchor::Super => {
+            ImportTarget::ParentModule
+        },
+        _ => ImportTarget::OtherModule,
     };
     let module_path = shortened_module_segments.join("::");
     let replacement_use = if import_target == ImportTarget::ParentModule {

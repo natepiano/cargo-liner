@@ -93,10 +93,10 @@ pub(crate) struct TargetMetadata {
 }
 
 pub(crate) fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> Result<Selection> {
-    let manifest_path = match explicit_manifest_path {
-        Some(path) => normalize_explicit_manifest_path(path)?,
-        None => find_nearest_manifest(&env::current_dir()?)?,
-    };
+    let manifest_path = explicit_manifest_path.map_or_else(
+        || find_nearest_manifest(&env::current_dir()?),
+        normalize_explicit_manifest_path,
+    )?;
 
     let metadata = cargo_metadata_for(&manifest_path)?;
     let workspace_root = metadata.workspace_root.clone().into_std_path_buf();

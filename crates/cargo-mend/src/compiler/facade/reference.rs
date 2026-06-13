@@ -13,6 +13,7 @@ use crate::compiler::source_cache::ExtractedPaths;
 use crate::compiler::source_cache::PathOrigin;
 use crate::compiler::source_cache::SourceCache;
 use crate::compiler::source_cache::UseRename;
+use crate::rust_syntax::PathAnchor;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParentFacadeUsage {
@@ -241,30 +242,38 @@ pub(super) fn resolve_module_relative_paths(
         return Vec::new();
     }
 
-    if raw.first().map(String::as_str) == Some("crate") {
-        return vec![raw[1..].to_vec()];
-    }
-
-    if raw.first().map(String::as_str) == Some("self") {
-        let mut resolved = current_module_path.to_vec();
-        resolved.extend(raw[1..].iter().cloned());
-        return vec![resolved];
-    }
-
-    if raw.first().map(String::as_str) == Some("super") {
-        let mut index = 0usize;
-        let mut resolved = current_module_path.to_vec();
-        while raw.get(index).is_some_and(|segment| segment == "super") {
-            if resolved.pop().is_none() {
-                return Vec::new();
+    let Some(path_anchor) = PathAnchor::first(raw) else {
+        return Vec::new();
+    };
+    match path_anchor {
+        PathAnchor::Crate => return vec![raw[1..].to_vec()],
+        PathAnchor::SelfMod => {
+            let mut resolved = current_module_path.to_vec();
+            resolved.extend(raw[1..].iter().cloned());
+            return vec![resolved];
+        },
+        PathAnchor::Super => {
+            let mut index = 0usize;
+            let mut resolved = current_module_path.to_vec();
+            while raw
+                .get(index)
+                .is_some_and(|segment| PathAnchor::from(segment.as_str()) == PathAnchor::Super)
+            {
+                if resolved.pop().is_none() {
+                    return Vec::new();
+                }
+                index += 1;
             }
-            index += 1;
-        }
-        if raw.get(index).is_some_and(|segment| segment == "self") {
-            index += 1;
-        }
-        resolved.extend(raw[index..].iter().cloned());
-        return vec![resolved];
+            if raw
+                .get(index)
+                .is_some_and(|segment| PathAnchor::from(segment.as_str()) == PathAnchor::SelfMod)
+            {
+                index += 1;
+            }
+            resolved.extend(raw[index..].iter().cloned());
+            return vec![resolved];
+        },
+        PathAnchor::SelfType | PathAnchor::Name => {},
     }
 
     (0..=current_module_path.len())
@@ -458,20 +467,20 @@ fn relative_tail_mentions_child_item(
     child_module_path: &[String],
     item_name: &str,
 ) -> bool {
-    if path.first().map(String::as_str) == Some("crate") || child_module_path.is_empty() {
+    if PathAnchor::first(path) == Some(PathAnchor::Crate) || child_module_path.is_empty() {
         return false;
     }
 
     let mut tail_start = 0usize;
     while path
         .get(tail_start)
-        .is_some_and(|segment| segment == "super")
+        .is_some_and(|segment| PathAnchor::from(segment.as_str()) == PathAnchor::Super)
     {
         tail_start += 1;
     }
     if path
         .get(tail_start)
-        .is_some_and(|segment| segment == "self")
+        .is_some_and(|segment| PathAnchor::from(segment.as_str()) == PathAnchor::SelfMod)
     {
         tail_start += 1;
     }
