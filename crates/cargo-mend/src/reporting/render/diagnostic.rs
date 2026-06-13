@@ -7,6 +7,8 @@ use crate::compiler::DIAGNOSTIC_SEVERITY_WARNING_PREFIX;
 use crate::reporting::constants::ANSI_BOLD;
 use crate::reporting::constants::ANSI_BOLD_RED;
 use crate::reporting::constants::ANSI_BOLD_YELLOW;
+use crate::reporting::constants::RUSTC_LEVEL_HELP;
+use crate::reporting::constants::RUSTC_LEVEL_NOTE;
 use crate::reporting::diagnostics;
 use crate::reporting::diagnostics::Finding;
 use crate::reporting::diagnostics::Severity;
@@ -71,7 +73,7 @@ pub(super) fn render_finding(output: &mut String, finding: &Finding, color_mode:
             let _ = writeln!(
                 output,
                 "{gutter_pad}{} {}",
-                diagnostic_label("note", color_mode),
+                diagnostic_label(RUSTC_LEVEL_NOTE, color_mode),
                 reason
             );
         }
@@ -80,7 +82,7 @@ pub(super) fn render_finding(output: &mut String, finding: &Finding, color_mode:
     let _ = writeln!(
         output,
         "{gutter_pad}{} for further information visit {help_url}",
-        diagnostic_label("help", color_mode)
+        diagnostic_label(RUSTC_LEVEL_HELP, color_mode)
     );
     let _ = writeln!(output);
 }
@@ -116,8 +118,8 @@ fn severity_marker(
 fn diagnostic_label(kind: &str, color_mode: ColorMode) -> String {
     let prefix = color::blue_bold("=", color_mode);
     let label = match kind {
-        "help" => color::paint("help", ANSI_BOLD, color_mode),
-        "note" => color::paint("note", ANSI_BOLD, color_mode),
+        RUSTC_LEVEL_HELP => color::paint(RUSTC_LEVEL_HELP, ANSI_BOLD, color_mode),
+        RUSTC_LEVEL_NOTE => color::paint(RUSTC_LEVEL_NOTE, ANSI_BOLD, color_mode),
         other => other.to_string(),
     };
     format!("{prefix} {label}:")

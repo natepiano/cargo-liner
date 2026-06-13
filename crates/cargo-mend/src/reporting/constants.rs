@@ -36,5 +36,12 @@ pub(super) const HINT_FIXABLE_WITH_FIX: &str =
 pub(super) const HINT_FIXABLE_WITH_FIX_PUB_USE: &str =
     "this warning is auto-fixable with `cargo mend --fix-pub-use`";
 
+// rustc/cargo json protocol
+pub(super) const CARGO_MESSAGE_TYPE_DIAGNOSTIC: &str = "diagnostic";
+pub(super) const CARGO_REASON_BUILD_FINISHED: &str = "build-finished";
+pub(super) const CARGO_REASON_COMPILER_MESSAGE: &str = "compiler-message";
+pub(super) const RUSTC_LEVEL_HELP: &str = "help";
+pub(super) const RUSTC_LEVEL_NOTE: &str = "note";
+
 // summary block
 pub(super) const SUMMARY_LABEL: &str = "summary:";

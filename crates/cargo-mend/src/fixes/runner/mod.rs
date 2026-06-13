@@ -1,10 +1,10 @@
 mod apply;
 mod combine;
 mod execute;
+mod mend_runner;
 mod notices;
 mod plan;
-mod types;
 
-use types::FixScans;
-pub(crate) use types::MendRunner;
-use types::RunPlan;
+use mend_runner::FixScans;
+pub(crate) use mend_runner::MendRunner;
+use mend_runner::RunPlan;

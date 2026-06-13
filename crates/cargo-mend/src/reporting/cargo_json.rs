@@ -8,6 +8,11 @@ use serde::Serialize;
 use serde_json::Value;
 use serde_json::to_string;
 
+use super::constants::CARGO_MESSAGE_TYPE_DIAGNOSTIC;
+use super::constants::CARGO_REASON_BUILD_FINISHED;
+use super::constants::CARGO_REASON_COMPILER_MESSAGE;
+use super::constants::RUSTC_LEVEL_HELP;
+use super::constants::RUSTC_LEVEL_NOTE;
 use super::diagnostics;
 use super::diagnostics::BuildOutcome;
 use super::diagnostics::Finding;
@@ -29,7 +34,7 @@ pub(crate) fn render_report(report: &Report, selection: &Selection) -> Result<St
         output.push('\n');
     }
     output.push_str(&to_string(&BuildFinished {
-        reason:  "build-finished",
+        reason:  CARGO_REASON_BUILD_FINISHED,
         success: report.outcome(),
     })?);
     output.push('\n');
@@ -130,7 +135,7 @@ fn compiler_message<'a>(
     let message = rustc_diagnostic(finding, span);
 
     Ok(CompilerMessage {
-        reason: "compiler-message",
+        reason: CARGO_REASON_COMPILER_MESSAGE,
         package_id: &package.id,
         manifest_path: package.manifest_path.display().to_string(),
         target: cargo_target(target),
@@ -141,25 +146,33 @@ fn compiler_message<'a>(
 fn rustc_diagnostic(finding: &Finding, span: RustcSpan) -> RustcDiagnostic {
     let mut children = Vec::new();
     if !finding.message.is_empty() {
-        children.push(child("note", finding.message.clone(), Vec::new()));
+        children.push(child(RUSTC_LEVEL_NOTE, finding.message.clone(), Vec::new()));
     }
     if let Some(related) = &finding.related {
-        children.push(child("note", related.clone(), Vec::new()));
+        children.push(child(RUSTC_LEVEL_NOTE, related.clone(), Vec::new()));
     }
     if let Some(help) = diagnostics::inline_help_text(finding) {
-        children.push(child("help", help.to_string(), vec![span.clone()]));
+        children.push(child(
+            RUSTC_LEVEL_HELP,
+            help.to_string(),
+            vec![span.clone()],
+        ));
     }
     if let Some(help) = diagnostics::custom_inline_help_text(finding) {
-        children.push(child("help", help.to_string(), vec![span.clone()]));
+        children.push(child(
+            RUSTC_LEVEL_HELP,
+            help.to_string(),
+            vec![span.clone()],
+        ));
     }
     if let Some(note) = diagnostics::effective_fixability(finding).note() {
-        children.push(child("help", note.to_string(), Vec::new()));
+        children.push(child(RUSTC_LEVEL_HELP, note.to_string(), Vec::new()));
     }
 
     let level = severity_level(finding.severity);
     RustcDiagnostic {
         rendered: render_diagnostic(finding, &span, level),
-        message_type: "diagnostic",
+        message_type: CARGO_MESSAGE_TYPE_DIAGNOSTIC,
         children,
         level,
         message: diagnostics::finding_headline(finding),
