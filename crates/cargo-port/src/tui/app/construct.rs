@@ -29,7 +29,7 @@ use tui_pane::ToastSettings;
 
 use super::App;
 use super::async_tasks::Startup;
-use super::types::ScanState;
+use super::scan_state::ScanState;
 use crate::channel;
 use crate::channel::Receiver;
 use crate::channel::Sender;

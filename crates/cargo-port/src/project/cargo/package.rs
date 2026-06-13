@@ -2,6 +2,7 @@ use std::ops::Deref;
 use std::ops::DerefMut;
 
 use super::rust_info::RustInfo;
+use crate::project::fields::ProjectFields;
 use crate::project::git::CheckoutInfo;
 use crate::project::git::WorktreeStatus;
 use crate::project::info::ProjectInfo;
@@ -12,7 +13,6 @@ use crate::project::paths::AbsolutePath;
 use crate::project::paths::DisplayPath;
 use crate::project::paths::PackageName;
 use crate::project::paths::RootDirectoryName;
-use crate::project::project_fields::ProjectFields;
 
 /// A standalone Rust package project. Derefs to `RustInfo` for uniform access.
 ///

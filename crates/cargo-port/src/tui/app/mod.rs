@@ -46,19 +46,26 @@
 
 mod async_tasks;
 mod ci;
+mod confirm_action;
 mod constants;
 mod construct;
+mod discovery;
 mod dismiss;
+mod finder_state;
+mod hovered_pane_row;
 mod lint_registration;
 mod navigation;
+mod pending_clean;
 mod phase_state;
+mod poll_background_stats;
+mod scan_state;
+mod selection_paths;
 mod startup;
 
 pub(super) use phase_state::CountedPhase;
 pub(super) use phase_state::KeyedPhase;
 pub(super) use phase_state::LanguagePhase;
 mod target_index;
-mod types;
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -133,6 +140,19 @@ mod tests;
 
 use anyhow::Error;
 use async_tasks::Startup;
+pub(super) use ci::CiRunDisplayMode;
+pub(crate) use confirm_action::ConfirmAction;
+pub(super) use discovery::DiscoveryRowKind;
+pub(super) use discovery::DiscoveryShimmer;
+pub(super) use finder_state::FinderState;
+pub(super) use hovered_pane_row::HoveredPaneRow;
+pub(crate) use pending_clean::PendingClean;
+pub(super) use poll_background_stats::PollBackgroundStats;
+#[cfg(test)]
+pub(super) use scan_state::RetrySpawnMode;
+pub(super) use scan_state::ScanState;
+pub(super) use selection_paths::SelectionPaths;
+pub(super) use selection_paths::SelectionSync;
 pub(crate) use target_index::CleanSelection;
 pub(crate) use target_index::TargetDirIndex;
 use tui_pane::AppContext;
@@ -147,19 +167,6 @@ use tui_pane::PaneRegistry;
 use tui_pane::SettingsPane;
 use tui_pane::SystemClipboard;
 use tui_pane::ToastTaskId;
-pub(super) use types::CiRunDisplayMode;
-pub(crate) use types::ConfirmAction;
-pub(super) use types::DiscoveryRowKind;
-pub(super) use types::DiscoveryShimmer;
-pub(super) use types::FinderState;
-pub(super) use types::HoveredPaneRow;
-pub(crate) use types::PendingClean;
-pub(super) use types::PollBackgroundStats;
-#[cfg(test)]
-pub(super) use types::RetrySpawnMode;
-pub(super) use types::ScanState;
-pub(super) use types::SelectionPaths;
-pub(super) use types::SelectionSync;
 
 use super::columns;
 pub(super) use super::columns::ProjectListWidths;
@@ -593,7 +600,7 @@ impl App {
             return;
         }
         let shimmer =
-            types::DiscoveryShimmer::new(Instant::now(), self.config.discovery_shimmer_duration());
+            DiscoveryShimmer::new(Instant::now(), self.config.discovery_shimmer_duration());
         self.scan
             .discovery_shimmers_mut()
             .insert(AbsolutePath::from(path), shimmer);

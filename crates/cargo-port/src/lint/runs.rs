@@ -3,10 +3,10 @@ use std::collections::HashMap;
 use chrono::DateTime;
 use chrono::FixedOffset;
 
+use super::run::LintRun;
+use super::run::LintRunStatus;
 use super::status;
-use super::types::LintRun;
-use super::types::LintRunStatus;
-use super::types::LintStatus;
+use super::status::LintStatus;
 
 /// Per-project lint state: run history and current status.
 ///
@@ -93,7 +93,7 @@ impl LintRuns {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lint::types::LintRunStatus;
+    use crate::lint::LintRunStatus;
 
     fn make_run(run_id: &str) -> LintRun {
         LintRun {

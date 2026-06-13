@@ -10,8 +10,6 @@ use ratatui::widgets::Clear;
 
 use crate::title_color;
 
-fn title_style() -> Style { Style::new().fg(title_color()).add_modifier(Modifier::BOLD) }
-
 /// Shared chrome for popup overlays.
 ///
 /// Handles centering, background clearing, and a bordered frame with
@@ -61,6 +59,8 @@ impl PopupFrame {
         PopupAreas { outer: area, inner }
     }
 }
+
+fn title_style() -> Style { Style::new().fg(title_color()).add_modifier(Modifier::BOLD) }
 
 /// Center a `width × height` rect inside `area`.
 #[must_use]

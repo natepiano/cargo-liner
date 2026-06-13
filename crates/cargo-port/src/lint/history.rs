@@ -13,9 +13,9 @@ use walkdir::WalkDir;
 use super::cache_size_index;
 use super::paths;
 use super::read_write;
+use super::run::LintRun;
+use super::run::LintRunStatus;
 use super::status;
-use super::types::LintRun;
-use super::types::LintRunStatus;
 use crate::constants::LINTS_HISTORY_JSONL;
 use crate::project::AbsolutePath;
 

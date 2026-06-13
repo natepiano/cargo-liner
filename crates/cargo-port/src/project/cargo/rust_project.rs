@@ -4,6 +4,7 @@ use super::package::Package;
 use super::rust_info::RustInfo;
 use super::workspace::Workspace;
 use crate::lint::LintRuns;
+use crate::project::fields::ProjectFields;
 use crate::project::git::CheckoutInfo;
 use crate::project::git::WorktreeStatus;
 use crate::project::info::ProjectInfo;
@@ -12,7 +13,6 @@ use crate::project::info::WorktreeHealth;
 use crate::project::paths::AbsolutePath;
 use crate::project::paths::DisplayPath;
 use crate::project::paths::RootDirectoryName;
-use crate::project::project_fields::ProjectFields;
 use crate::project::vendored_package::VendoredPackage;
 
 /// A Rust project — either a workspace or a standalone package.

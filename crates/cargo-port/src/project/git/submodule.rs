@@ -11,6 +11,7 @@ use super::constants::GIT_SUBMODULE_URL_KEY;
 use super::constants::GIT_TREE_SUBMODULE_MODE;
 use super::discovery::WorktreeStatus;
 use crate::project::GitRepo;
+use crate::project::fields::ProjectFields;
 use crate::project::info::ProjectInfo;
 use crate::project::info::Visibility;
 use crate::project::info::WorktreeHealth;
@@ -18,7 +19,6 @@ use crate::project::paths;
 use crate::project::paths::AbsolutePath;
 use crate::project::paths::DisplayPath;
 use crate::project::paths::RootDirectoryName;
-use crate::project::project_fields::ProjectFields;
 
 /// A git submodule that participates as a concrete project-list node.
 #[derive(Clone)]

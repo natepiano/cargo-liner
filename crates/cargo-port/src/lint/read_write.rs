@@ -7,8 +7,8 @@ use std::path::Path;
 
 use super::cache_size_index;
 use super::paths;
-use super::types::LintRun;
-use super::types::LintRunStatus;
+use super::run::LintRun;
+use super::run::LintRunStatus;
 
 pub fn write_latest_under(cache_root: &Path, project_root: &Path, run: &LintRun) -> io::Result<()> {
     #[cfg(test)]

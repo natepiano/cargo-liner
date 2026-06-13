@@ -23,7 +23,6 @@ use crate::Keymap;
 use crate::ShortcutState;
 use crate::Visibility;
 use crate::keymap::RenderedSlot;
-use crate::util;
 
 /// Which keymap scope a status-line global slot reads from.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -137,7 +136,7 @@ pub fn render<Ctx, G>(
     }
     left_spans.push(Span::styled(" Uptime: ", palette.status_label_style));
     left_spans.push(Span::styled(
-        format!("{} ", util::format_progressive(status.uptime_secs)),
+        format!("{} ", crate::format_progressive(status.uptime_secs)),
         palette.status_value_style,
     ));
     left_spans.extend(bar.nav);

@@ -1,6 +1,7 @@
 use std::ops::Deref;
 use std::ops::DerefMut;
 
+use super::fields::ProjectFields;
 use super::git::CheckoutInfo;
 use super::git::WorktreeStatus;
 use super::info::ProjectInfo;
@@ -10,7 +11,6 @@ use super::paths;
 use super::paths::AbsolutePath;
 use super::paths::DisplayPath;
 use super::paths::RootDirectoryName;
-use super::project_fields::ProjectFields;
 
 /// A non-Rust project (git repo without `Cargo.toml`).
 /// Derefs to `ProjectInfo` for uniform metadata access.

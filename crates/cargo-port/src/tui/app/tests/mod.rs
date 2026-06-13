@@ -17,7 +17,10 @@ use tui_pane::PaneFocusState;
 use tui_pane::RenderFocus;
 
 pub(super) use super::App;
-use super::types::*;
+use super::CiRunDisplayMode;
+use super::DiscoveryRowKind;
+use super::DiscoveryShimmer;
+use super::scan_state::ScanPhase;
 use crate::ci::CiRun;
 use crate::ci::CiStatus;
 use crate::ci::FetchStatus;

@@ -2,6 +2,7 @@ use std::path::Path;
 
 use super::cargo::Package;
 use super::cargo::RustProject;
+use super::fields::ProjectFields;
 use super::git::CheckoutInfo;
 use super::git::Submodule;
 use super::git::WorktreeGroup;
@@ -13,7 +14,6 @@ use super::non_rust::NonRustProject;
 use super::paths::AbsolutePath;
 use super::paths::DisplayPath;
 use super::paths::RootDirectoryName;
-use super::project_fields::ProjectFields;
 use super::vendored_package::VendoredPackage;
 use crate::ci::CiStatus;
 use crate::constants::WORKTREE;

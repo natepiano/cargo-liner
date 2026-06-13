@@ -8,14 +8,6 @@ use toml::Value;
 use crate::constants::TOAST_ANIMATION_MILLIS;
 use crate::settings_store::SettingsError;
 
-fn invalid(section: &str, key: &str, message: &str) -> SettingsError {
-    SettingsError::Invalid {
-        section: section.to_string(),
-        key:     key.to_string(),
-        message: message.to_string(),
-    }
-}
-
 /// Framework-owned toast settings.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToastSettings {
@@ -317,6 +309,14 @@ impl Default for ToastAnimationSettings {
             entrance_duration: ToastDuration(Duration::from_millis(TOAST_ANIMATION_MILLIS)),
             exit_duration:     ToastDuration(Duration::from_millis(TOAST_ANIMATION_MILLIS)),
         }
+    }
+}
+
+fn invalid(section: &str, key: &str, message: &str) -> SettingsError {
+    SettingsError::Invalid {
+        section: section.to_string(),
+        key:     key.to_string(),
+        message: message.to_string(),
     }
 }
 

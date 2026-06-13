@@ -2,12 +2,6 @@ use ratatui::style::Color;
 
 use crate::ToastSettings;
 
-/// Interior body width available inside toast cards for the current settings.
-#[must_use]
-pub fn toast_body_width(settings: &ToastSettings) -> usize {
-    usize::from(settings.width.get().saturating_sub(2))
-}
-
 /// Structured toast body text.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ToastBody {
@@ -64,4 +58,10 @@ impl From<String> for ToastBody {
 
 impl From<&str> for ToastBody {
     fn from(value: &str) -> Self { Self::from(value.to_owned()) }
+}
+
+/// Interior body width available inside toast cards for the current settings.
+#[must_use]
+pub fn toast_body_width(settings: &ToastSettings) -> usize {
+    usize::from(settings.width.get().saturating_sub(2))
 }

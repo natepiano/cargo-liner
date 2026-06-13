@@ -5,13 +5,13 @@ use std::path::Path;
 
 mod cache_size_index;
 mod history;
-mod lint_runs;
 mod paths;
 mod read_write;
+mod run;
+mod runs;
 mod runtime;
 mod status;
 mod trigger;
-mod types;
 
 /// Reclaim a project's lint cache directory. Best-effort: silent
 /// on missing or locked paths. Called from the dismiss flow when
@@ -43,27 +43,27 @@ mod tests;
 pub use history::CacheUsage;
 pub use history::read_history;
 pub use history::retained_cache_usage;
-pub use lint_runs::LintRuns;
 #[cfg(test)]
 pub use paths::latest_path_under;
 pub use paths::project_dir;
+#[cfg(test)]
+pub use run::LintCommand;
+#[cfg(test)]
+pub use run::LintCommandStatus;
+pub use run::LintRun;
+pub use run::LintRunOrigin;
+pub use run::LintRunStatus;
+pub use runs::LintRuns;
 pub use runtime::ProjectLanguage;
 pub use runtime::RegisterProjectRequest;
 pub use runtime::RuntimeHandle;
 pub use runtime::project_is_eligible;
 pub use runtime::spawn;
+pub use status::CachedLintStatus;
+pub use status::LintStatus;
+pub use status::LintStatusKind;
 pub(crate) use status::parse_timestamp;
 pub(crate) use trigger::CargoMetadataTriggerKind;
 pub(crate) use trigger::classify_cargo_metadata_basename;
 pub(crate) use trigger::classify_cargo_metadata_event_path;
 pub(crate) use trigger::classify_event_path;
-pub use types::CachedLintStatus;
-#[cfg(test)]
-pub use types::LintCommand;
-#[cfg(test)]
-pub use types::LintCommandStatus;
-pub use types::LintRun;
-pub use types::LintRunOrigin;
-pub use types::LintRunStatus;
-pub use types::LintStatus;
-pub use types::LintStatusKind;

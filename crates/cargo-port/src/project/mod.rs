@@ -1,12 +1,12 @@
 mod cargo;
 mod constants;
+mod entry;
+mod fields;
 mod git;
 mod info;
 mod member_group;
 mod non_rust;
 mod paths;
-mod project_entry;
-mod project_fields;
 mod root_item;
 mod vendored_package;
 
@@ -33,6 +33,10 @@ pub(crate) use cargo::WorkspaceMetadata;
 pub(crate) use cargo::WorkspaceMetadataStore;
 pub(crate) use cargo::from_cargo_toml;
 pub(crate) use cargo::from_git_dir;
+pub(crate) use entry::GitRepo;
+pub(crate) use entry::ProjectEntry;
+pub(crate) use entry::entry_contains;
+pub(crate) use fields::ProjectFields;
 // ── Git types and functions ──────────────────────────────────────────
 pub(crate) use git::BisectProgress;
 pub(crate) use git::CheckoutInfo;
@@ -86,10 +90,6 @@ pub(crate) use paths::DisplayPath;
 pub(crate) use paths::home_relative_path;
 #[cfg(test)]
 pub(crate) use paths::normalize_test_path;
-pub(crate) use project_entry::GitRepo;
-pub(crate) use project_entry::ProjectEntry;
-pub(crate) use project_entry::entry_contains;
-pub(crate) use project_fields::ProjectFields;
 pub(crate) use root_item::RootItem;
 pub(crate) use root_item::strip_worktree_badge_suffix;
 pub(crate) use vendored_package::VendoredPackage;

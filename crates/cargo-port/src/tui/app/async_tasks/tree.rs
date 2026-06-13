@@ -5,7 +5,7 @@ use crate::lint::CacheUsage;
 use crate::project::AbsolutePath;
 use crate::scan;
 use crate::tui::app::App;
-use crate::tui::app::types::ScanPhase;
+use crate::tui::app::scan_state::ScanPhase;
 use crate::tui::panes::PaneId;
 #[cfg(test)]
 use crate::tui::project_list::ProjectList;

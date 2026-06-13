@@ -3,7 +3,6 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use super::App;
-use super::types::CiRunDisplayMode;
 use crate::ci;
 use crate::ci::CiRun;
 use crate::project::AbsolutePath;
@@ -15,6 +14,13 @@ use crate::scan;
 use crate::scan::CachedRepoData;
 use crate::scan::CiFetchResult;
 use crate::tui::panes::CiFetchKind;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CiRunDisplayMode {
+    #[default]
+    BranchOnly,
+    All,
+}
 
 impl App {
     /// Insert CI runs from the initial scan for the entry containing `path`.

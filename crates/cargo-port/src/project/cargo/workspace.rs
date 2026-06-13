@@ -2,6 +2,7 @@ use std::ops::Deref;
 use std::ops::DerefMut;
 
 use super::rust_info::RustInfo;
+use crate::project::fields::ProjectFields;
 use crate::project::git::CheckoutInfo;
 use crate::project::git::WorktreeStatus;
 use crate::project::info::ProjectInfo;
@@ -13,7 +14,6 @@ use crate::project::paths::AbsolutePath;
 use crate::project::paths::DisplayPath;
 use crate::project::paths::PackageName;
 use crate::project::paths::RootDirectoryName;
-use crate::project::project_fields::ProjectFields;
 
 /// A Rust workspace project. Contains member groups in addition to the
 /// shared `RustInfo` data. Implements `Deref<Target = RustInfo>` for uniform
