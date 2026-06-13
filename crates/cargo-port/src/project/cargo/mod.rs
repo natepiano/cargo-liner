@@ -19,6 +19,8 @@ pub(crate) use parse::ProjectType;
 pub(crate) use parse::from_cargo_toml;
 pub(crate) use parse::from_git_dir;
 pub(crate) use rust_info::Cargo;
+#[cfg(test)]
+pub(crate) use rust_info::PublishStatus;
 pub(crate) use rust_info::RustInfo;
 pub(crate) use rust_project::RustProject;
 pub(crate) use workspace::Workspace;

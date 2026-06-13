@@ -16,7 +16,9 @@ use crate::project::AbsolutePath;
 use crate::tui::app::App;
 use crate::tui::app::CargoPortToastAction;
 use crate::tui::integration;
+use crate::tui::integration::NonRustCacheState;
 use crate::tui::integration::ReloadContext;
+use crate::tui::integration::ScanState;
 use crate::tui::integration::TreeReaction;
 use crate::tui::keymap;
 use crate::tui::keymap::KeymapError;
@@ -336,8 +338,16 @@ impl App {
             self.config.current(),
             cargo_port_config,
             ReloadContext {
-                scan_complete:       self.scan.is_complete(),
-                has_cached_non_rust: self.project_list.has_cached_non_rust_projects(),
+                scan:           if self.scan.is_complete() {
+                    ScanState::Complete
+                } else {
+                    ScanState::Pending
+                },
+                non_rust_cache: if self.project_list.has_cached_non_rust_projects() {
+                    NonRustCacheState::Present
+                } else {
+                    NonRustCacheState::Missing
+                },
             },
         );
         config::set_active_config(cargo_port_config);

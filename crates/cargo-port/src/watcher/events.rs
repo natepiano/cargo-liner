@@ -36,13 +36,13 @@ pub(super) fn process_notify_events(
     state: &mut WatcherLoopState,
 ) {
     let notify_count = notify_events.len();
-    if watch_drain.registration_completed {
+    if watch_drain.registration_progress.is_completed() {
         tracing::trace!(
             target: tui_pane::PERF_LOG_TARGET,
             tick,
             buffered = state.buffered_events.len(),
             notify_count,
-            initializing = state.initializing,
+            initializing = state.registration.is_initializing(),
             projects = state.projects.len(),
             "watcher_loop_registration_completed"
         );
@@ -66,7 +66,7 @@ pub(super) fn process_notify_events(
         );
         state.buffered_events.clear();
     }
-    if state.initializing {
+    if state.registration.is_initializing() {
         if notify_count > 0 {
             tracing::trace!(
                 target: tui_pane::PERF_LOG_TARGET,
@@ -233,7 +233,7 @@ pub(super) fn handle_notify_event(
                 event_path = %event_path.display(),
                 trigger = ?lint_trigger.trigger,
                 event_kind = ?lint_trigger.event_kind,
-                removal = lint_trigger.removal,
+                removal = lint_trigger.is_removal(),
                 "watcher_lint_trigger"
             );
             lint_runtime.lint_trigger(lint_trigger);

@@ -34,7 +34,7 @@ use crate::tui::theme_roles;
 
 fn lints_panel_title(data: &LintsData, focused: bool, cursor: usize) -> String {
     if data.runs.is_empty() {
-        let msg = if data.is_rust {
+        let msg = if data.project_kind.is_rust() {
             "No lint runs"
         } else {
             "No lint runs — not a Rust project"

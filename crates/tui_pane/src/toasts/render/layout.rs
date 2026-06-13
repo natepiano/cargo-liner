@@ -7,10 +7,28 @@ use crate::toasts::ToastId;
 use crate::toasts::ToastView;
 
 #[derive(Clone, Copy)]
+pub(super) enum ToastPaneFocus {
+    Focused,
+    Unfocused,
+}
+
+impl ToastPaneFocus {
+    pub(super) const fn from_focused(pane_focused: bool) -> Self {
+        if pane_focused {
+            Self::Focused
+        } else {
+            Self::Unfocused
+        }
+    }
+
+    const fn is_focused(self) -> bool { matches!(self, Self::Focused) }
+}
+
+#[derive(Clone, Copy)]
 pub(super) struct StackLayout {
     pub(super) width:            u16,
     pub(super) gap:              u16,
-    pub(super) pane_focused:     bool,
+    pub(super) pane_focus:       ToastPaneFocus,
     pub(super) focused_toast_id: Option<ToastId>,
 }
 
@@ -45,7 +63,7 @@ pub(super) fn render_top_down(
             area,
             card,
             toast,
-            layout.pane_focused,
+            layout.pane_focus.is_focused(),
             layout.focused_toast_id,
         );
         hitboxes.push(ToastHitbox {
@@ -91,7 +109,7 @@ pub(super) fn render_bottom_up(
             area,
             card,
             toast,
-            layout.pane_focused,
+            layout.pane_focus.is_focused(),
             layout.focused_toast_id,
         );
         hitboxes.push(ToastHitbox {

@@ -30,6 +30,7 @@ use crate::lint::LintStatus;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
+use crate::project::CiPagination;
 use crate::project::GitStatus;
 use crate::project::HeadState;
 use crate::project::MemberGroup;
@@ -123,7 +124,7 @@ fn set_loaded_ci(app: &mut App, path: &Path, runs: Vec<CiRun>, exhausted: bool, 
     repo.ci_data = ProjectCiData::Loaded(ProjectCiInfo {
         runs,
         github_total,
-        exhausted,
+        ci_pagination: CiPagination::from_exhausted(exhausted),
     });
 }
 

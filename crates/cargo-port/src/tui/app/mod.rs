@@ -98,6 +98,7 @@ use super::state::SyncTracker;
 use crate::channel::Receiver;
 use crate::channel::Sender;
 use crate::ci::OwnerRepo;
+use crate::config::NonRustInclusion;
 use crate::constants::SCAN_METADATA_CONCURRENCY;
 use crate::constants::TARGET_DIR;
 use crate::http::HttpClient;
@@ -845,12 +846,7 @@ impl App {
     /// Mutation guard (RAII) — fan-out flavor. See "Recurring
     /// patterns" in this module.
     pub(super) const fn mutate_tree(&mut self) -> TreeMutation<'_> {
-        let include_non_rust = self
-            .config
-            .current()
-            .tui
-            .include_non_rust
-            .includes_non_rust();
+        let non_rust = self.config.current().tui.include_non_rust;
         let Self {
             project_list: projects,
             panes,
@@ -859,7 +855,7 @@ impl App {
         TreeMutation {
             projects,
             panes,
-            include_non_rust,
+            non_rust,
         }
     }
 
@@ -1138,9 +1134,9 @@ impl App {
 /// Mutation guard (RAII), fan-out flavor. See "Recurring patterns"
 /// in [`crate::tui::app`] for the pattern.
 pub(super) struct TreeMutation<'a> {
-    projects:         &'a mut ProjectList,
-    panes:            &'a mut Panes,
-    include_non_rust: bool,
+    projects: &'a mut ProjectList,
+    panes:    &'a mut Panes,
+    non_rust: NonRustInclusion,
 }
 
 impl TreeMutation<'_> {
@@ -1206,7 +1202,8 @@ impl Drop for TreeMutation<'_> {
     ///    tree.
     fn drop(&mut self) {
         self.panes.clear_for_tree_change();
-        self.projects.recompute_visibility(self.include_non_rust);
+        self.projects
+            .recompute_visibility(self.non_rust.includes_non_rust());
     }
 }
 

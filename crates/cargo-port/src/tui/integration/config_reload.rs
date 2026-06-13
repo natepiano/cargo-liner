@@ -63,9 +63,31 @@ pub struct ReloadActions {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScanState {
+    Complete,
+    #[default]
+    Pending,
+}
+
+impl ScanState {
+    const fn is_complete(self) -> bool { matches!(self, Self::Complete) }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NonRustCacheState {
+    Present,
+    #[default]
+    Missing,
+}
+
+impl NonRustCacheState {
+    const fn is_present(self) -> bool { matches!(self, Self::Present) }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ReloadContext {
-    pub scan_complete:       bool,
-    pub has_cached_non_rust: bool,
+    pub scan:           ScanState,
+    pub non_rust_cache: NonRustCacheState,
 }
 
 #[derive(Clone, Copy)]
@@ -116,14 +138,14 @@ pub(super) const fn mark_include_non_rust(
     new: &CargoPortConfig,
     context: ReloadContext,
 ) {
-    if !context.scan_complete {
+    if !context.scan.is_complete() {
         actions.tree.escalate(TreeReaction::FullRescan);
         return;
     }
 
     let enabling_non_rust = !old.tui.include_non_rust.includes_non_rust()
         && new.tui.include_non_rust.includes_non_rust();
-    if enabling_non_rust && !context.has_cached_non_rust {
+    if enabling_non_rust && !context.non_rust_cache.is_present() {
         actions.tree.escalate(TreeReaction::FullRescan);
     } else {
         actions.tree.escalate(TreeReaction::RegroupMembers);
@@ -265,8 +287,8 @@ mod tests {
                 &old,
                 &new,
                 ReloadContext {
-                    scan_complete:       true,
-                    has_cached_non_rust: true,
+                    scan:           ScanState::Complete,
+                    non_rust_cache: NonRustCacheState::Present,
                 },
             ),
             ReloadActions {
@@ -287,8 +309,8 @@ mod tests {
                 &CargoPortConfig::default(),
                 &new,
                 ReloadContext {
-                    scan_complete:       true,
-                    has_cached_non_rust: false,
+                    scan:           ScanState::Complete,
+                    non_rust_cache: NonRustCacheState::Missing,
                 },
             ),
             ReloadActions {

@@ -240,6 +240,42 @@ impl LintCell {
 }
 
 #[derive(Clone)]
+pub(super) enum RowLifecycle {
+    Present,
+    Deleted,
+}
+
+impl RowLifecycle {
+    pub(super) const fn from_deleted(deleted: bool) -> Self {
+        if deleted {
+            Self::Deleted
+        } else {
+            Self::Present
+        }
+    }
+
+    pub(super) const fn is_deleted(&self) -> bool { matches!(self, Self::Deleted) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LintColumnStatus {
+    Enabled,
+    Hidden,
+}
+
+impl LintColumnStatus {
+    const fn from_enabled(lint_enabled: bool) -> Self {
+        if lint_enabled {
+            Self::Enabled
+        } else {
+            Self::Hidden
+        }
+    }
+
+    const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
+}
+
+#[derive(Clone)]
 pub(super) struct ProjectRow<'a> {
     pub prefix:            &'a str,
     pub name:              &'a str,
@@ -254,14 +290,14 @@ pub(super) struct ProjectRow<'a> {
     pub git_origin_sync:   &'a str,
     pub git_main:          &'a str,
     pub ci:                Option<CiStatus>,
-    pub deleted:           bool,
+    pub lifecycle:         RowLifecycle,
     pub worktree_health:   WorktreeHealth,
 }
 
 pub(super) struct RowCells {
     pub cells:           [CellContent; NUM_COLS],
     pub prefix:          String,
-    pub deleted:         bool,
+    pub lifecycle:       RowLifecycle,
     pub worktree_health: WorktreeHealth,
 }
 
@@ -274,7 +310,7 @@ pub(super) struct RowCells {
 /// from `column_defs`.
 pub(super) struct ProjectListWidths {
     inner:          ColumnWidths,
-    lint_enabled:   bool,
+    lint_column:    LintColumnStatus,
     pub generation: u64,
 }
 
@@ -287,9 +323,9 @@ impl ProjectListWidths {
     /// Fit columns get their minimum.
     pub(super) fn new(lint_enabled: bool) -> Self {
         Self {
-            inner: ColumnWidths::new(project_list_specs(lint_enabled)),
-            lint_enabled,
-            generation: u64::MAX,
+            inner:       ColumnWidths::new(project_list_specs(lint_enabled)),
+            lint_column: LintColumnStatus::from_enabled(lint_enabled),
+            generation:  u64::MAX,
         }
     }
 
@@ -304,7 +340,7 @@ impl ProjectListWidths {
 
     /// Total display width of all columns including gaps.
     pub(super) fn total_width(&self) -> usize {
-        let defs = column_defs(self.lint_enabled);
+        let defs = column_defs(self.lint_column.is_enabled());
         let mut total = 0;
         for (i, def) in defs.iter().enumerate() {
             total += def.gap + self.get(i);
@@ -312,7 +348,7 @@ impl ProjectListWidths {
         total
     }
 
-    pub const fn lint_enabled(&self) -> bool { self.lint_enabled }
+    pub const fn lint_enabled(&self) -> bool { self.lint_column.is_enabled() }
 }
 
 /// Map the project-list `column_defs` into [`ColumnSpec`]s for
@@ -430,7 +466,7 @@ pub(super) fn row_to_line(row: &RowCells, widths: &ProjectListWidths) -> Line<'s
         spans.push(Span::styled(content, cell.style));
     }
 
-    if row.deleted {
+    if row.lifecycle.is_deleted() {
         let strike = Style::default()
             .fg(label_color())
             .add_modifier(Modifier::CROSSED_OUT);
@@ -602,7 +638,7 @@ pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
     RowCells {
         cells,
         prefix: String::from(row.prefix),
-        deleted: row.deleted,
+        lifecycle: row.lifecycle,
         worktree_health: row.worktree_health,
     }
 }
@@ -692,7 +728,7 @@ pub(super) fn build_group_header_cells(prefix: &str, label: &str) -> RowCells {
     RowCells {
         cells,
         prefix: String::from(prefix),
-        deleted: false,
+        lifecycle: RowLifecycle::Present,
         worktree_health: Normal,
     }
 }
@@ -735,7 +771,7 @@ pub(super) fn build_summary_cells(widths: &ProjectListWidths, disk: &str) -> Row
     RowCells {
         cells,
         prefix: " ".repeat(widths.get(COL_NAME)),
-        deleted: false,
+        lifecycle: RowLifecycle::Present,
         worktree_health: Normal,
     }
 }
@@ -909,7 +945,7 @@ mod tests {
             git_origin_sync:   "↑2",
             git_main:          "",
             ci:                Some(CiStatus::Passed),
-            deleted:           false,
+            lifecycle:         RowLifecycle::Present,
             worktree_health:   WorktreeHealth::Normal,
         });
         let row_ascii = build_row_cells(ProjectRow {
@@ -926,7 +962,7 @@ mod tests {
             git_origin_sync:   "↑2",
             git_main:          "",
             ci:                Some(CiStatus::Passed),
-            deleted:           false,
+            lifecycle:         RowLifecycle::Present,
             worktree_health:   WorktreeHealth::Normal,
         });
 
@@ -1013,7 +1049,7 @@ mod tests {
             git_origin_sync:   "↑2",
             git_main:          "",
             ci:                Some(CiStatus::Passed),
-            deleted:           false,
+            lifecycle:         RowLifecycle::Present,
             worktree_health:   WorktreeHealth::Normal,
         });
         let line = row_to_line(&row, &widths);
@@ -1042,7 +1078,7 @@ mod tests {
             git_origin_sync:   "",
             git_main:          "",
             ci:                None,
-            deleted:           false,
+            lifecycle:         RowLifecycle::Present,
             worktree_health:   WorktreeHealth::Normal,
         });
         assert_eq!(
@@ -1068,7 +1104,7 @@ mod tests {
             git_origin_sync:   "",
             git_main:          "",
             ci:                None,
-            deleted:           false,
+            lifecycle:         RowLifecycle::Present,
             worktree_health:   WorktreeHealth::Normal,
         });
         assert_eq!(
@@ -1094,7 +1130,7 @@ mod tests {
             git_origin_sync:   "",
             git_main:          "",
             ci:                None,
-            deleted:           false,
+            lifecycle:         RowLifecycle::Present,
             worktree_health:   WorktreeHealth::Normal,
         });
         assert_eq!(
@@ -1116,7 +1152,7 @@ mod tests {
             git_origin_sync:   "",
             git_main:          "",
             ci:                None,
-            deleted:           false,
+            lifecycle:         RowLifecycle::Present,
             worktree_health:   WorktreeHealth::Normal,
         });
         assert_eq!(

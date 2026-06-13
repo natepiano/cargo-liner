@@ -50,23 +50,43 @@ use crate::project;
 use crate::project::AbsolutePath;
 use crate::scan::BackgroundMsg;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProjectLanguage {
+    Rust,
+    NonRust,
+}
+
+impl From<bool> for ProjectLanguage {
+    fn from(is_rust: bool) -> Self { if is_rust { Self::Rust } else { Self::NonRust } }
+}
+
+impl ProjectLanguage {
+    pub const fn is_rust(self) -> bool { matches!(self, Self::Rust) }
+}
+
 #[derive(Clone)]
 pub struct RegisterProjectRequest {
     pub project_label:       String,
     pub abs_path:            AbsolutePath,
-    pub is_rust:             bool,
+    pub project_language:    ProjectLanguage,
     pub linked_primary_root: Option<AbsolutePath>,
 }
 
 impl RegisterProjectRequest {
-    pub fn new(project_label: impl Into<String>, abs_path: AbsolutePath, is_rust: bool) -> Self {
+    pub fn new(
+        project_label: impl Into<String>,
+        abs_path: AbsolutePath,
+        project_language: impl Into<ProjectLanguage>,
+    ) -> Self {
         Self {
             project_label: project_label.into(),
             abs_path,
-            is_rust,
+            project_language: project_language.into(),
             linked_primary_root: None,
         }
     }
+
+    pub const fn is_rust(&self) -> bool { self.project_language.is_rust() }
 
     pub fn with_linked_primary_root(mut self, primary_root: Option<AbsolutePath>) -> Self {
         self.linked_primary_root = primary_root;
@@ -126,7 +146,6 @@ impl RuntimeHandle {
                 project_root,
                 trigger: LintTriggerKind::Startup,
                 event_kind: LintEventKind::CreateOrModify,
-                removal: false,
             },
         });
     }
@@ -241,7 +260,7 @@ fn supervisor_loop(
                     target: tui_pane::PERF_LOG_TARGET,
                     path = %abs_path.display(),
                     label = %project.project_label,
-                    is_rust = project.is_rust,
+                    is_rust = project.is_rust(),
                     accepted,
                     "lint_supervisor_register_project"
                 );
@@ -277,7 +296,7 @@ fn supervisor_loop(
                         project_root = %event.project_root.display(),
                         trigger = ?event.trigger,
                         event_kind = ?event.event_kind,
-                        removal = event.removal,
+                        removal = event.is_removal(),
                         "lint_supervisor_trigger_dispatch"
                     );
                     let _ = worker.trigger_tx.send(event);
@@ -286,7 +305,7 @@ fn supervisor_loop(
                         project_root = %event.project_root.display(),
                         trigger = ?event.trigger,
                         event_kind = ?event.event_kind,
-                        removal = event.removal,
+                        removal = event.is_removal(),
                         workers = workers.len(),
                         "lint_supervisor_trigger_dropped_no_worker"
                     );
@@ -523,7 +542,7 @@ fn spawn_project_worker(
                     path = %project_root.display(),
                     trigger = ?trigger.trigger,
                     event_kind = ?trigger.event_kind,
-                    removal = trigger.removal,
+                    removal = trigger.is_removal(),
                     "lint_worker_trigger_received"
                 );
                 scheduled_run = Some(schedule_lint_run(scheduled_run, &trigger));
@@ -535,7 +554,7 @@ fn spawn_project_worker(
                         path = %project_root.display(),
                         trigger = ?trigger.trigger,
                         event_kind = ?trigger.event_kind,
-                        removal = trigger.removal,
+                        removal = trigger.is_removal(),
                         "lint_worker_trigger_received"
                     );
                     scheduled_run = Some(schedule_lint_run(scheduled_run, &trigger));
@@ -589,7 +608,7 @@ fn spawn_project_worker(
 }
 
 fn should_watch_project(lint: &LintConfig, request: &RegisterProjectRequest) -> bool {
-    if !request.is_rust || !request.abs_path.join(CARGO_TOML).is_file() {
+    if !request.is_rust() || !request.abs_path.join(CARGO_TOML).is_file() {
         return false;
     }
     if !request_matches_prefixes(&lint.include, request, false) {
@@ -641,8 +660,22 @@ fn project_still_runnable(project_root: &Path) -> bool {
     project_root.is_dir() && project_root.join(CARGO_TOML).is_file()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CommandOutcome {
+    Passed,
+    Failed,
+}
+
+impl CommandOutcome {
+    const fn from_success(success: bool) -> Self {
+        if success { Self::Passed } else { Self::Failed }
+    }
+
+    const fn succeeded(self) -> bool { matches!(self, Self::Passed) }
+}
+
 struct CommandExecution {
-    success:     bool,
+    outcome:     CommandOutcome,
     exit_code:   Option<i32>,
     duration_ms: u64,
 }
@@ -875,12 +908,12 @@ fn execute_commands(
             target: tui_pane::PERF_LOG_TARGET,
             command = %command.name,
             duration_ms = tui_pane::perf_log_ms(cmd_started.elapsed().as_millis()),
-            success = execution.success,
+            success = execution.outcome.succeeded(),
             path = %project_root.display(),
             "lint_command_finished"
         );
         if let Some(command_run) = run.commands.get_mut(index) {
-            command_run.status = if execution.success {
+            command_run.status = if execution.outcome.succeeded() {
                 LintCommandStatus::Passed
             } else {
                 LintCommandStatus::Failed
@@ -889,7 +922,7 @@ fn execute_commands(
             command_run.exit_code = execution.exit_code;
         }
         read_write::write_latest_under(cache_root, project_root, run)?;
-        if !execution.success {
+        if !execution.outcome.succeeded() {
             failed = true;
         }
     }
@@ -1051,7 +1084,7 @@ fn run_command(
     let new_size = cache_size_index::file_size_or_zero(&log_path);
     cache_size_index::apply_write_delta(cache_root, old_size, new_size);
     Ok(CommandExecution {
-        success,
+        outcome: CommandOutcome::from_success(success),
         exit_code,
         duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
     })
@@ -1114,13 +1147,11 @@ mod tests {
             project_root: project_root.clone(),
             trigger:      Startup,
             event_kind:   CreateOrModify,
-            removal:      false,
         };
         let source = LintTriggerEvent {
             project_root,
             trigger: RustSource,
             event_kind: CreateOrModify,
-            removal: false,
         };
 
         let scheduled = schedule_lint_run(None, &startup);
@@ -1334,7 +1365,6 @@ mod tests {
             project_root: AbsolutePath::from(project_dir.path()),
             trigger:      RustSource,
             event_kind:   CreateOrModify,
-            removal:      false,
         });
 
         let deadline = Instant::now() + Duration::from_secs(5);

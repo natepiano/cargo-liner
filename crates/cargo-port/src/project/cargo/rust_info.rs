@@ -56,31 +56,43 @@ impl DerefMut for RustInfo {
     fn deref_mut(&mut self) -> &mut ProjectInfo { &mut self.project_info }
 }
 
+/// Whether Cargo metadata says the package can be published.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum PublishStatus {
+    #[default]
+    Publishable,
+    NotPublishable,
+}
+
+impl PublishStatus {
+    const fn is_publishable(self) -> bool { matches!(self, Self::Publishable) }
+}
+
 /// Shared Cargo fields populated from the `cargo metadata`
 /// [`WorkspaceMetadata`](super::metadata_store::WorkspaceMetadata).
 ///
 /// Step 3b full retirement: these fields are no longer hand-parsed out
 /// of `Cargo.toml`. `types` / `examples` / `benches` stay
 /// empty until the metadata lands and gets stamped in via
-/// `Cargo::apply_package_record`; `publishable` defaults to `true` so
+/// `Cargo::apply_package_record`; `publish_status` defaults to publishable so
 /// the crates.io scheduler continues firing for named packages
 /// pre-metadata (matches pre-retirement behavior; the metadata later
-/// flips it to `false` when `publish = false`).
+/// marks it not publishable when `publish = false`).
 #[derive(Clone, Debug)]
 pub(crate) struct Cargo {
-    pub types:       Vec<ProjectType>,
-    pub examples:    Vec<ExampleGroup>,
-    pub benches:     Vec<String>,
-    pub publishable: bool,
+    pub types:          Vec<ProjectType>,
+    pub examples:       Vec<ExampleGroup>,
+    pub benches:        Vec<String>,
+    pub publish_status: PublishStatus,
 }
 
 impl Default for Cargo {
     fn default() -> Self {
         Self {
-            types:       Vec::new(),
-            examples:    Vec::new(),
-            benches:     Vec::new(),
-            publishable: true,
+            types:          Vec::new(),
+            examples:       Vec::new(),
+            benches:        Vec::new(),
+            publish_status: PublishStatus::Publishable,
         }
     }
 }
@@ -103,7 +115,7 @@ impl Cargo {
         self.types.iter().any(|t| matches!(t, ProjectType::Binary))
     }
 
-    pub const fn publishable(&self) -> bool { self.publishable }
+    pub const fn publishable(&self) -> bool { self.publish_status.is_publishable() }
 
     /// Derive a `Cargo` from the authoritative [`PackageRecord`] returned
     /// by `cargo metadata`. Called on every metadata arrival (and on
@@ -173,13 +185,17 @@ impl Cargo {
         });
         benches.sort();
 
-        let publishable = !matches!(record.publish, PublishPolicy::Never);
+        let publish_status = if matches!(record.publish, PublishPolicy::Never) {
+            PublishStatus::NotPublishable
+        } else {
+            PublishStatus::Publishable
+        };
 
         Self {
             types,
             examples,
             benches,
-            publishable,
+            publish_status,
         }
     }
 }

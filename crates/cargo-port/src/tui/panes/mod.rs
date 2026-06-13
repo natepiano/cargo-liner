@@ -64,12 +64,18 @@ pub(super) use pane_data::DetailPaneData;
 pub(super) use pane_data::GitData;
 pub(super) use pane_data::GitRow;
 pub(super) use pane_data::LintsData;
+#[cfg(test)]
+pub(super) use pane_data::LintsProjectKind;
 pub(super) use pane_data::PackageData;
+#[cfg(test)]
+pub(super) use pane_data::PackagePresence;
 pub(super) use pane_data::PackageRow;
 #[cfg(test)]
 pub(super) use pane_data::PackageSection;
 pub(super) use pane_data::PendingCiFetch;
 pub(super) use pane_data::PendingExampleRun;
+#[cfg(test)]
+pub(super) use pane_data::PullRequestPolling;
 pub(super) use pane_data::PullRequestRow;
 pub(super) use pane_data::PullRequestSection;
 pub(super) use pane_data::PullRequestSectionState;

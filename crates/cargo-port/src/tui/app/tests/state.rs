@@ -2552,7 +2552,7 @@ fn sync_does_not_mark_exhausted_when_no_new_runs() {
 
     let state = loaded_ci(&app, project.path());
     assert!(
-        !state.exhausted,
+        !state.ci_pagination.is_exhausted(),
         "Sync should not mark exhausted when no new runs found"
     );
 }
@@ -2583,7 +2583,7 @@ fn fetch_older_marks_exhausted_when_no_new_runs() {
 
     let state = loaded_ci(&app, project.path());
     assert!(
-        state.exhausted,
+        state.ci_pagination.is_exhausted(),
         "FetchOlder should mark exhausted when no new runs found"
     );
 }
@@ -2645,7 +2645,7 @@ fn sync_clears_exhaustion_when_new_runs_found() {
 
     let state = loaded_ci(&app, project.path());
     assert!(
-        !state.exhausted,
+        !state.ci_pagination.is_exhausted(),
         "Sync should clear exhaustion when new runs found"
     );
     assert_eq!(state.runs.len(), 2);

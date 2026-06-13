@@ -10,7 +10,10 @@ use super::DetailField;
 use super::EmptyDescriptionBehavior;
 use super::GitData;
 use super::LintsData;
+use super::LintsProjectKind;
 use super::PackageData;
+use super::PackagePresence;
+use super::PullRequestPolling;
 use super::PullRequestRow;
 use super::PullRequestSection;
 use super::PullRequestSectionState;
@@ -55,7 +58,7 @@ fn package_data(is_rust_project: bool) -> PackageData {
         disk:                     Some(38_989_922_304),
         stats_rows:               Vec::new(),
         test_rows:                Vec::new(),
-        has_package:              true,
+        package_presence:         PackagePresence::Present,
         edition:                  None,
         license:                  None,
         homepage:                 None,
@@ -309,7 +312,7 @@ fn git_copy_pull_request_uses_url_and_routes_before_remotes() {
             title:       "Show vendored workspace member packages".to_string(),
             url:         "https://github.com/natepiano/cargo-port/pull/128".to_string(),
             state_label: "draft",
-            is_polling:  false,
+            polling:     PullRequestPolling::Idle,
             branch:      "feature/member-vendored".to_string(),
             base:        "main".to_string(),
         }],
@@ -420,7 +423,7 @@ fn targets_copy_returns_source_path_for_any_target_row() {
 fn lints_copy_returns_selected_run_log_path() {
     let project_root = AbsolutePath::from("/Users/natemccoy/rust/demo");
     let data = LintsData {
-        runs:        vec![LintRun {
+        runs:         vec![LintRun {
             run_id:        "run-1".to_string(),
             started_at:    "2026-05-19T10:00:00-04:00".to_string(),
             finished_at:   Some("2026-05-19T10:01:00-04:00".to_string()),
@@ -436,10 +439,10 @@ fn lints_copy_returns_selected_run_log_path() {
             }],
             archive_bytes: 0,
         }],
-        sizes:       vec![Some(1024)],
-        owner_paths: vec![project_root.clone()],
-        owner_of:    vec![0],
-        is_rust:     true,
+        sizes:        vec![Some(1024)],
+        owner_paths:  vec![project_root.clone()],
+        owner_of:     vec![0],
+        project_kind: LintsProjectKind::Rust,
     };
 
     let expected = lint::project_dir(project_root.as_path())

@@ -28,6 +28,7 @@ use super::resolve_kill_request;
 use crate::lint;
 use crate::project;
 use crate::project::AbsolutePath;
+use crate::project::CiPagination;
 use crate::project::ProjectCiData;
 use crate::project::ProjectCiInfo;
 use crate::project::RootItem;
@@ -1055,9 +1056,9 @@ fn clear_ci_cache(app: &mut App, abs: &Path) {
     app.project_list.replace_ci_data_for_path(
         abs,
         ProjectCiData::Loaded(ProjectCiInfo {
-            runs:         Vec::new(),
-            github_total: prev_total,
-            exhausted:    false,
+            runs:          Vec::new(),
+            github_total:  prev_total,
+            ci_pagination: CiPagination::HasMore,
         }),
     );
     app.ci.fetch_tracker.complete(abs);

@@ -23,6 +23,8 @@ pub(crate) use cargo::Package;
 pub(crate) use cargo::PackageRecord;
 pub(crate) use cargo::ProjectType;
 pub(crate) use cargo::PublishPolicy;
+#[cfg(test)]
+pub(crate) use cargo::PublishStatus;
 pub(crate) use cargo::RustInfo;
 pub(crate) use cargo::RustProject;
 pub(crate) use cargo::TargetRecord;
@@ -57,6 +59,7 @@ pub(crate) use git::git_repo_root;
 pub(crate) use git::resolve_common_git_dir;
 pub(crate) use git::resolve_git_dir;
 pub(crate) use git::worktree_ahead_behind_primary;
+pub(crate) use info::CiPagination;
 // ── Info types ───────────────────────────────────────────────────────
 pub(crate) use info::GitHubInfo;
 pub(crate) use info::LangEntry;

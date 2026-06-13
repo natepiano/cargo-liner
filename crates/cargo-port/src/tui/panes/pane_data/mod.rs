@@ -648,7 +648,7 @@ pub fn package_fields_from_data(data: &PackageData) -> Vec<DetailField> {
     fields.push(DetailField::Targets);
     fields.push(DetailField::Lint);
     fields.push(DetailField::Ci);
-    if data.has_package {
+    if data.has_package() {
         fields.push(DetailField::Version);
     }
     // crates.io version / prerelease / downloads now render in their own
@@ -656,7 +656,7 @@ pub fn package_fields_from_data(data: &PackageData) -> Vec<DetailField> {
     // Step 4 fields: show unconditionally on Rust packages so that
     // unset values render as `—` and the UI surface matches the
     // manifest faithfully even before metadata arrives.
-    if data.has_package {
+    if data.has_package() {
         fields.push(DetailField::Edition);
         fields.push(DetailField::License);
         fields.push(DetailField::Homepage);
@@ -804,6 +804,25 @@ impl PublishStatus {
     const fn is_publishable(self) -> bool { matches!(self, Self::Publishable) }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PackagePresence {
+    Present,
+    #[default]
+    Missing,
+}
+
+impl PackagePresence {
+    const fn from_has_package(has_package: bool) -> Self {
+        if has_package {
+            Self::Present
+        } else {
+            Self::Missing
+        }
+    }
+
+    const fn has_package(self) -> bool { matches!(self, Self::Present) }
+}
+
 /// Per-pane data for the Package detail panel.
 #[derive(Clone, Default)]
 /// Per-project pane data the Package pane renders. The "value"
@@ -850,7 +869,7 @@ pub struct PackageData {
     /// until the scan lands (or when the project has no tests); an empty
     /// vec hides the section.
     pub test_rows:                Vec<(&'static str, usize)>,
-    pub has_package:              bool,
+    pub package_presence:         PackagePresence,
     /// Cargo edition ("2021", "2024", …) from the workspace metadata.
     /// `None` until metadata has landed or for non-Rust projects.
     pub edition:                  Option<String>,
@@ -879,6 +898,10 @@ pub struct PackageData {
     /// cached walk reports back; `None` for in-tree targets or before
     /// the walk lands.
     pub out_of_tree_target_bytes: Option<u64>,
+}
+
+impl PackageData {
+    pub const fn has_package(&self) -> bool { self.package_presence.has_package() }
 }
 
 /// Resolve (version, description) for the detail pane from the
@@ -1010,12 +1033,26 @@ pub enum PullRequestSectionState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PullRequestPolling {
+    Active,
+    Idle,
+}
+
+impl PullRequestPolling {
+    const fn from_polling(is_polling: bool) -> Self {
+        if is_polling { Self::Active } else { Self::Idle }
+    }
+
+    pub const fn is_polling(&self) -> bool { matches!(self, Self::Active) }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PullRequestRow {
     pub number:      u32,
     pub title:       String,
     pub url:         String,
     pub state_label: &'static str,
-    pub is_polling:  bool,
+    pub polling:     PullRequestPolling,
     pub branch:      String,
     pub base:        String,
 }
@@ -1729,27 +1766,42 @@ impl CiData {
     pub const fn has_runs(&self) -> bool { !self.runs.is_empty() }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LintsProjectKind {
+    Rust,
+    #[default]
+    NonRust,
+}
+
+impl LintsProjectKind {
+    const fn from_is_rust(is_rust: bool) -> Self {
+        if is_rust { Self::Rust } else { Self::NonRust }
+    }
+
+    pub const fn is_rust(self) -> bool { matches!(self, Self::Rust) }
+}
+
 #[derive(Clone, Default)]
 pub struct LintsData {
-    pub runs:        Vec<LintRun>,
+    pub runs:         Vec<LintRun>,
     /// Archive-directory size in bytes for each run, aligned by index with
     /// `runs`.
     /// Per-run archive size aligned with `runs`. `None` means the run has
     /// no archive entry yet; `Some(0)` means the archive exists and is
     /// empty. The renderer renders `None` as "—" and `Some(_)` as a byte
     /// count, distinguishing missing data from known-empty.
-    pub sizes:       Vec<Option<u64>>,
+    pub sizes:        Vec<Option<u64>>,
     /// The checkout(s) the runs belong to: one path for a single project,
     /// one per visible checkout when a worktree-group parent row aggregates
     /// every checkout's history. `owner_of` indexes into this, so the
     /// per-run cost is a plain index — the paths are stored once, not
     /// cloned per run.
-    pub owner_paths: Vec<AbsolutePath>,
+    pub owner_paths:  Vec<AbsolutePath>,
     /// Per-run index into `owner_paths`, aligned with `runs`. Identifies
     /// which checkout each run came from so `open_lint_run_output` resolves
     /// its logs against the right cache directory.
-    pub owner_of:    Vec<usize>,
-    pub is_rust:     bool,
+    pub owner_of:     Vec<usize>,
+    pub project_kind: LintsProjectKind,
 }
 
 impl LintsData {
@@ -1974,13 +2026,13 @@ fn pull_request_row(
     is_polling: bool,
 ) -> PullRequestRow {
     PullRequestRow {
-        number: info.number,
-        title: info.title.clone(),
-        url: info.url.clone(),
+        number:      info.number,
+        title:       info.title.clone(),
+        url:         info.url.clone(),
         state_label: info.state.label(),
-        is_polling,
-        branch: info.branch_label(default_branch),
-        base: info.base.clone(),
+        polling:     PullRequestPolling::from_polling(is_polling),
+        branch:      info.branch_label(default_branch),
+        base:        info.base.clone(),
     }
 }
 
@@ -2232,7 +2284,7 @@ pub fn build_pane_data_for_vendored(app: &App, vendored: &VendoredPackage) -> De
             abs_path,
             display_path: &display_path,
             title_name: vendored.package_name().into_string(),
-            has_cargo: true,
+            package_presence: PackagePresence::Present,
             cargo: Some(cargo),
             wt_item: None,
             stats_rows,
@@ -2275,7 +2327,7 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
             disk:                     submodule.project_info.disk_usage_bytes,
             stats_rows:               Vec::new(),
             test_rows:                Vec::new(),
-            has_package:              false,
+            package_presence:         PackagePresence::Missing,
             edition:                  None,
             license:                  None,
             homepage:                 None,
@@ -2347,7 +2399,7 @@ fn build_pane_data_for_workspace(
             abs_path,
             display_path,
             title_name: ws.package_name().into_string(),
-            has_cargo: ws.name().is_some(),
+            package_presence: PackagePresence::from_has_package(ws.name().is_some()),
             cargo: Some(cargo),
             wt_item: wt_item_ref,
             stats_rows,
@@ -2386,7 +2438,7 @@ fn build_pane_data_for_package(
             abs_path,
             display_path,
             title_name: pkg.package_name().into_string(),
-            has_cargo: true,
+            package_presence: PackagePresence::Present,
             cargo: Some(cargo),
             wt_item: wt_item_ref,
             stats_rows,
@@ -2416,7 +2468,7 @@ fn build_pane_data_non_rust(
             abs_path,
             display_path,
             title_name: nr.root_directory_name().into_string(),
-            has_cargo: false,
+            package_presence: PackagePresence::Missing,
             cargo: None,
             wt_item: wt_item_ref,
             stats_rows: counts.to_rows(),
@@ -2429,37 +2481,42 @@ fn build_pane_data_non_rust(
 }
 
 struct PaneDataSource<'a> {
-    abs_path:        &'a Path,
-    display_path:    &'a str,
-    title_name:      String,
-    has_cargo:       bool,
-    cargo:           Option<&'a Cargo>,
-    wt_item:         Option<&'a RootItem>,
-    stats_rows:      Vec<(&'static str, usize)>,
-    test_rows:       Vec<(&'static str, usize)>,
-    primary_section: Option<PackageSection>,
-    fallback_type:   Option<ProjectType>,
-    package_title:   String,
+    abs_path:         &'a Path,
+    display_path:     &'a str,
+    title_name:       String,
+    package_presence: PackagePresence,
+    cargo:            Option<&'a Cargo>,
+    wt_item:          Option<&'a RootItem>,
+    stats_rows:       Vec<(&'static str, usize)>,
+    test_rows:        Vec<(&'static str, usize)>,
+    primary_section:  Option<PackageSection>,
+    fallback_type:    Option<ProjectType>,
+    package_title:    String,
 }
 
 /// Crates-io fields pulled from either a Rust info or vendored entry.
 struct CratesIoFields {
-    version:     Option<String>,
-    prerelease:  Option<String>,
-    downloads:   Option<u64>,
-    /// True iff this project would have fired a crates.io fetch — i.e.
-    /// a publishable package. Used to keep the crates.io section's
+    version:    Option<String>,
+    prerelease: Option<String>,
+    downloads:  Option<u64>,
+    /// Whether this project would have fired a crates.io fetch — i.e.
+    /// whether it is a publishable package. Used to keep the crates.io section's
     /// placeholder row visible during a crates.io outage even before any
     /// version landed; non-publishable rows (where no fetch ever runs)
     /// never show the section.
-    publishable: bool,
+    publish:    PublishStatus,
 }
 
 fn resolve_crates_io_fields(app: &App, abs_path: &Path) -> CratesIoFields {
     let rust_info = app.project_list.rust_info_at_path(abs_path);
     let vendored = app.project_list.vendored_at_path(abs_path);
-    let publishable = rust_info.is_some_and(|r| r.cargo.publishable())
-        || vendored.is_some_and(|v| v.cargo.publishable() && v.name.is_some());
+    let publish = if rust_info.is_some_and(|r| r.cargo.publishable())
+        || vendored.is_some_and(|v| v.cargo.publishable() && v.name.is_some())
+    {
+        PublishStatus::Publishable
+    } else {
+        PublishStatus::NotPublishable
+    };
     CratesIoFields {
         version: rust_info
             .and_then(|r| r.crates_version().map(String::from))
@@ -2470,7 +2527,7 @@ fn resolve_crates_io_fields(app: &App, abs_path: &Path) -> CratesIoFields {
         downloads: rust_info
             .and_then(RustInfo::crates_downloads)
             .or_else(|| vendored.and_then(VendoredPackage::crates_downloads)),
-        publishable,
+        publish,
     }
 }
 
@@ -2515,7 +2572,7 @@ struct BuildPackageDataArgs {
     display_path:             String,
     stats_rows:               Vec<(&'static str, usize)>,
     test_rows:                Vec<(&'static str, usize)>,
-    has_cargo:                bool,
+    package_presence:         PackagePresence,
     manifest:                 ManifestFields,
     crates_io_rows:           Vec<(&'static str, String)>,
     types:                    Option<Vec<ProjectType>>,
@@ -2552,7 +2609,7 @@ fn build_package_data(args: BuildPackageDataArgs) -> PackageData {
         disk: args.disk,
         stats_rows: args.stats_rows,
         test_rows: args.test_rows,
-        has_package: args.has_cargo,
+        package_presence: args.package_presence,
         edition,
         license,
         homepage,
@@ -2649,7 +2706,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
         test_rows: src.test_rows,
         worktree_group_summary: runtime.worktree_group_summary,
         primary_section: src.primary_section,
-        has_cargo: src.has_cargo,
+        package_presence: src.package_presence,
         manifest: metadata.manifest,
         crates_io_rows: build_crates_io_rows(&runtime.crates_io, &crates_io_status),
         types: metadata.types,
@@ -2790,17 +2847,15 @@ fn collect_metadata_fields(
 /// availability state into the two enums that gate the
 /// `PackageData` rendering.
 const fn derive_crates_io_status(crates_io: &CratesIoFields, app: &App) -> CratesIoStatus {
-    let publish = if crates_io.publishable {
-        PublishStatus::Publishable
-    } else {
-        PublishStatus::NotPublishable
-    };
     let service = if app.net.crates_io.availability.toast_id().is_some() {
         ServiceStatus::Unreachable
     } else {
         ServiceStatus::Available
     };
-    CratesIoStatus { publish, service }
+    CratesIoStatus {
+        publish: crates_io.publish,
+        service,
+    }
 }
 
 /// Build the crates.io stats-section rows from the resolved fields plus
@@ -3064,7 +3119,7 @@ pub fn build_lints_data(app: &App) -> LintsData {
         sizes,
         owner_paths,
         owner_of,
-        is_rust,
+        project_kind: LintsProjectKind::from_is_rust(is_rust),
     }
 }
 
@@ -3101,7 +3156,7 @@ fn aggregate_group_lints(app: &App, paths: Vec<AbsolutePath>, is_rust: bool) -> 
         sizes,
         owner_paths: paths,
         owner_of,
-        is_rust,
+        project_kind: LintsProjectKind::from_is_rust(is_rust),
     }
 }
 
@@ -3157,10 +3212,10 @@ mod tests {
     #[test]
     fn crates_io_rows_show_stable_and_prerelease_when_both_present() {
         let fields = CratesIoFields {
-            version:     Some("0.20.2".to_string()),
-            prerelease:  Some("0.21.0-rc.2".to_string()),
-            downloads:   Some(663),
-            publishable: true,
+            version:    Some("0.20.2".to_string()),
+            prerelease: Some("0.21.0-rc.2".to_string()),
+            downloads:  Some(663),
+            publish:    PublishStatus::Publishable,
         };
         assert_eq!(
             build_crates_io_rows(&fields, &publishable_available()),
@@ -3175,10 +3230,10 @@ mod tests {
     #[test]
     fn crates_io_rows_omit_prerelease_row_when_only_stable() {
         let fields = CratesIoFields {
-            version:     Some("1.0.0".to_string()),
-            prerelease:  None,
-            downloads:   Some(10),
-            publishable: true,
+            version:    Some("1.0.0".to_string()),
+            prerelease: None,
+            downloads:  Some(10),
+            publish:    PublishStatus::Publishable,
         };
         assert_eq!(
             build_crates_io_rows(&fields, &publishable_available()),
@@ -3192,10 +3247,10 @@ mod tests {
     #[test]
     fn crates_io_rows_empty_for_non_publishable() {
         let fields = CratesIoFields {
-            version:     None,
-            prerelease:  None,
-            downloads:   None,
-            publishable: false,
+            version:    None,
+            prerelease: None,
+            downloads:  None,
+            publish:    PublishStatus::NotPublishable,
         };
         let status = CratesIoStatus {
             publish: PublishStatus::NotPublishable,
@@ -3207,10 +3262,10 @@ mod tests {
     #[test]
     fn crates_io_rows_show_unreachable_placeholder_during_outage() {
         let fields = CratesIoFields {
-            version:     None,
-            prerelease:  None,
-            downloads:   None,
-            publishable: true,
+            version:    None,
+            prerelease: None,
+            downloads:  None,
+            publish:    PublishStatus::Publishable,
         };
         let status = CratesIoStatus {
             publish: PublishStatus::Publishable,

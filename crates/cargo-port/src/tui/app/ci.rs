@@ -7,6 +7,7 @@ use super::types::CiRunDisplayMode;
 use crate::ci;
 use crate::ci::CiRun;
 use crate::project::AbsolutePath;
+use crate::project::CiPagination;
 use crate::project::ProjectCiData;
 use crate::project::ProjectCiInfo;
 use crate::project::ProjectPrData;
@@ -18,17 +19,20 @@ use crate::tui::panes::CiFetchKind;
 impl App {
     /// Insert CI runs from the initial scan for the entry containing `path`.
     pub(super) fn insert_ci_runs(&mut self, path: &Path, runs: Vec<CiRun>, github_total: u32) {
-        let exhausted = self
-            .project_list
-            .primary_url_for(path)
-            .and_then(ci::parse_owner_repo)
-            .is_some_and(|owner_repo| scan::is_exhausted(owner_repo.owner(), owner_repo.repo()));
+        let ci_pagination = CiPagination::from_exhausted(
+            self.project_list
+                .primary_url_for(path)
+                .and_then(ci::parse_owner_repo)
+                .is_some_and(|owner_repo| {
+                    scan::is_exhausted(owner_repo.owner(), owner_repo.repo())
+                }),
+        );
         if let Some(entry) = self.project_list.entry_containing_mut(path) {
             let repo = entry.git_repo.get_or_insert_with(Default::default);
             repo.ci_data = ProjectCiData::Loaded(ProjectCiInfo {
                 runs,
                 github_total,
-                exhausted,
+                ci_pagination,
             });
         } else {
             self.ci.fetch_tracker.complete(path);
@@ -49,7 +53,7 @@ impl App {
 
         let prev_info = self.project_list.ci_info_for(abs.as_path());
         let prev_count = prev_info.map_or(0, |info| info.runs.len());
-        let prev_exhausted = prev_info.is_some_and(|info| info.exhausted);
+        let prev_pagination = prev_info.map_or(CiPagination::HasMore, |info| info.ci_pagination);
         let prev_github_total = prev_info.map_or(0, |info| info.github_total);
 
         // Only Sync returns an unfiltered total_count from GitHub.
@@ -86,7 +90,7 @@ impl App {
         // Only FetchOlder marks/clears exhaustion.  Sync clears it when
         // new runs appear but never marks it — we don't want a routine
         // refresh to block future FetchOlder requests.
-        let exhausted = match kind {
+        let ci_pagination = match kind {
             CiFetchKind::Sync => {
                 if found_new {
                     if let Some(url) = self.project_list.primary_url_for(&abs)
@@ -94,7 +98,7 @@ impl App {
                     {
                         scan::clear_exhausted(owner_repo.owner(), owner_repo.repo());
                     }
-                    false
+                    CiPagination::HasMore
                 } else {
                     // Skip the status flash when chaining; the chained
                     // FetchOlder will produce its own outcome message.
@@ -105,7 +109,7 @@ impl App {
                         );
                     }
                     // Preserve current exhaustion state.
-                    prev_exhausted
+                    prev_pagination
                 }
             },
             CiFetchKind::FetchOlder => {
@@ -115,7 +119,7 @@ impl App {
                     {
                         scan::clear_exhausted(owner_repo.owner(), owner_repo.repo());
                     }
-                    false
+                    CiPagination::HasMore
                 } else {
                     if let Some(url) = self.project_list.primary_url_for(&abs)
                         && let Some(owner_repo) = ci::parse_owner_repo(url)
@@ -126,7 +130,7 @@ impl App {
                         "no older runs found".to_string(),
                         std::time::Instant::now(),
                     );
-                    true
+                    CiPagination::Exhausted
                 }
             },
         };
@@ -153,7 +157,7 @@ impl App {
             repo.ci_data = ProjectCiData::Loaded(ProjectCiInfo {
                 runs: merged,
                 github_total,
-                exhausted,
+                ci_pagination,
             });
         }
         self.scan.bump_generation();

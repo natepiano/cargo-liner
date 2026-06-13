@@ -100,6 +100,9 @@ impl App {
         self.maybe_log_startup_phase_completions();
     }
     pub(super) fn reload_lint_history(&mut self, project_path: &Path) {
+        if !self.config.lint_enabled() {
+            return;
+        }
         if !self.project_list.is_rust_at_path(project_path) {
             return;
         }
@@ -139,12 +142,15 @@ impl App {
         self.project_list
             .lint_runtime_root_entries()
             .into_iter()
-            .filter(|entry| entry.is_rust && !self.project_list.is_deleted(entry.path.as_path()))
+            .filter(|entry| {
+                entry.project_language.is_rust()
+                    && !self.project_list.is_deleted(entry.path.as_path())
+            })
             .map(|entry| {
                 RegisterProjectRequest::new(
                     project::home_relative_path(&entry.path),
                     entry.path,
-                    entry.is_rust,
+                    entry.project_language,
                 )
                 .with_linked_primary_root(entry.linked_primary_root)
             })
@@ -167,6 +173,15 @@ impl App {
             return;
         }
         let path = item.path();
+        let Some(runtime) = self.lint.runtime() else {
+            tracing::trace!(
+                target: tui_pane::PERF_LOG_TARGET,
+                reason = "no_runtime",
+                path = %item.display_path(),
+                "lint_register_skip"
+            );
+            return;
+        };
         // Skip workspace members — the workspace root's watcher covers them.
         let mut is_member = false;
         self.project_list.for_each_leaf(|existing| {
@@ -188,15 +203,6 @@ impl App {
             );
             return;
         }
-        let Some(runtime) = self.lint.runtime() else {
-            tracing::trace!(
-                target: tui_pane::PERF_LOG_TARGET,
-                reason = "no_runtime",
-                path = %item.display_path(),
-                "lint_register_skip"
-            );
-            return;
-        };
         tracing::trace!(
             target: tui_pane::PERF_LOG_TARGET,
             path = %item.display_path(),
@@ -241,7 +247,7 @@ impl App {
                 &self.config.current().lint,
                 &request.project_label,
                 request.abs_path.as_path(),
-                request.is_rust,
+                request.is_rust(),
             ) {
                 continue;
             }

@@ -5,6 +5,24 @@ use super::ToastId;
 use super::ToastStyle;
 use super::TrackedItemView;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ToastActionState {
+    Available,
+    None,
+}
+
+impl ToastActionState {
+    pub(super) const fn from_has_action(has_action: bool) -> Self {
+        if has_action {
+            Self::Available
+        } else {
+            Self::None
+        }
+    }
+
+    const fn has_action(self) -> bool { matches!(self, Self::Available) }
+}
+
 /// Render-ready view of a toast.
 #[derive(Clone, Debug)]
 pub struct ToastView {
@@ -16,7 +34,7 @@ pub struct ToastView {
     /// style.
     pub(super) body_line_colors: Option<Vec<Color>>,
     pub(super) style:            ToastStyle,
-    pub(super) has_action:       bool,
+    pub(super) action_state:     ToastActionState,
     pub(super) linger_progress:  Option<f32>,
     pub(super) remaining_secs:   Option<u64>,
     pub(super) tracked_items:    Vec<TrackedItemView>,
@@ -47,7 +65,7 @@ impl ToastView {
 
     /// Return whether Enter can activate an action for this toast.
     #[must_use]
-    pub const fn has_action(&self) -> bool { self.has_action }
+    pub const fn has_action(&self) -> bool { self.action_state.has_action() }
 
     /// Return task linger progress from 0.0 to 1.0, if finished.
     #[must_use]

@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use super::ExpandKey;
 use super::ProjectList;
+use crate::config::NonRustInclusion;
 use crate::tui::app::FinderState;
 
 /// RAII guard for visibility-changing [`ProjectList`] mutations.
@@ -13,8 +14,8 @@ use crate::tui::app::FinderState;
               while call sites still use the direct accessors"
 )]
 pub struct SelectionMutation<'a> {
-    pub(super) project_list:     &'a mut ProjectList,
-    pub(super) include_non_rust: bool,
+    pub(super) project_list: &'a mut ProjectList,
+    pub(super) non_rust:     NonRustInclusion,
 }
 
 #[allow(
@@ -63,6 +64,6 @@ impl SelectionMutation<'_> {
 impl Drop for SelectionMutation<'_> {
     fn drop(&mut self) {
         self.project_list
-            .recompute_visibility(self.include_non_rust);
+            .recompute_visibility(self.non_rust.includes_non_rust());
     }
 }

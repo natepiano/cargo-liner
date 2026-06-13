@@ -39,12 +39,13 @@ pub struct LintTriggerEvent {
     pub project_root: AbsolutePath,
     pub trigger:      LintTriggerKind,
     pub event_kind:   LintEventKind,
-    pub removal:      bool,
 }
 
 impl LintTriggerEvent {
+    pub const fn is_removal(&self) -> bool { matches!(self.event_kind, LintEventKind::Remove) }
+
     pub const fn debounce(&self) -> Duration {
-        if self.removal {
+        if self.is_removal() {
             DELETE_LINT_DEBOUNCE
         } else {
             LINT_DEBOUNCE
@@ -169,7 +170,6 @@ pub(crate) fn classify_event_path(
         project_root: AbsolutePath::from(project_root),
         trigger,
         event_kind,
-        removal,
     })
 }
 

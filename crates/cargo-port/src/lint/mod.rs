@@ -47,6 +47,7 @@ pub use lint_runs::LintRuns;
 #[cfg(test)]
 pub use paths::latest_path_under;
 pub use paths::project_dir;
+pub use runtime::ProjectLanguage;
 pub use runtime::RegisterProjectRequest;
 pub use runtime::RuntimeHandle;
 pub use runtime::project_is_eligible;

@@ -38,12 +38,33 @@ pub(crate) struct GitHubInfo {
     pub description: Option<String>,
 }
 
+/// Whether the cached CI run list may have older pages available.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum CiPagination {
+    #[default]
+    HasMore,
+    Exhausted,
+}
+
+impl CiPagination {
+    pub(crate) const fn from_exhausted(exhausted: bool) -> Self {
+        if exhausted {
+            Self::Exhausted
+        } else {
+            Self::HasMore
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn is_exhausted(self) -> bool { matches!(self, Self::Exhausted) }
+}
+
 /// Persisted CI metadata for a single project hierarchy node.
 #[derive(Clone)]
 pub(crate) struct ProjectCiInfo {
-    pub runs:         Vec<CiRun>,
-    pub github_total: u32,
-    pub exhausted:    bool,
+    pub runs:          Vec<CiRun>,
+    pub github_total:  u32,
+    pub ci_pagination: CiPagination,
 }
 
 /// Hierarchy-backed CI ownership. `Unfetched` means we have not resolved CI

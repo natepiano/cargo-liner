@@ -56,6 +56,7 @@ use crate::project::Package;
 use crate::project::PackageRecord;
 use crate::project::ProjectType;
 use crate::project::PublishPolicy;
+use crate::project::PublishStatus;
 use crate::project::RemoteInfo;
 use crate::project::RemoteKind;
 use crate::project::RepoInfo;
@@ -86,6 +87,7 @@ use crate::tui::pane::DismissTarget;
 use crate::tui::pane::HoverTarget;
 use crate::tui::panes;
 use crate::tui::panes::LintsData;
+use crate::tui::panes::LintsProjectKind;
 use crate::tui::panes::PaneId;
 use crate::tui::panes::RunTargetKind;
 use crate::tui::panes::SyncedDescriptionHeight;
@@ -281,11 +283,11 @@ fn render_ui(app: &mut App) {
 fn render_lints_panel(app: &mut App, runs: &[LintRun]) {
     app.ensure_detail_cached();
     app.lint.set_content(LintsData {
-        runs:        runs.to_vec(),
-        sizes:       vec![Some(0); runs.len()],
-        owner_paths: Vec::new(),
-        owner_of:    Vec::new(),
-        is_rust:     true,
+        runs:         runs.to_vec(),
+        sizes:        vec![Some(0); runs.len()],
+        owner_paths:  Vec::new(),
+        owner_of:     Vec::new(),
+        project_kind: LintsProjectKind::Rust,
     });
     let backend = TestBackend::new(120, 20);
     let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
@@ -1452,13 +1454,13 @@ fn package_pane_structure_rows_are_clickable_after_metadata_rows() {
     let project = tmp.path().join("app");
     std::fs::create_dir_all(&project).unwrap_or_else(|_| std::process::abort());
     let cargo = Cargo {
-        types:       vec![ProjectType::Library],
-        examples:    vec![ExampleGroup {
+        types:          vec![ProjectType::Library],
+        examples:       vec![ExampleGroup {
             category: String::new(),
             names:    vec!["demo".to_string()],
         }],
-        benches:     Vec::new(),
-        publishable: true,
+        benches:        Vec::new(),
+        publish_status: PublishStatus::Publishable,
     };
     let root = make_package_with_cargo("app", &project, cargo);
     let mut app = make_app(&[root]);

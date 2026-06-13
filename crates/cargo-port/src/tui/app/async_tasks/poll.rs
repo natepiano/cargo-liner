@@ -9,6 +9,7 @@ use super::constants::MAX_MSGS_PER_FRAME;
 use crate::scan::BackgroundMsg;
 use crate::tui::app::App;
 use crate::tui::app::types::PollBackgroundStats;
+use crate::tui::app::types::RebuildStatus;
 use crate::tui::panes::CiFetchKind;
 use crate::tui::panes::PendingCiFetch;
 use crate::tui::terminal::CiFetchMsg;
@@ -17,7 +18,7 @@ use crate::tui::terminal::ExampleMsg;
 
 impl App {
     pub fn poll_background(&mut self) -> PollBackgroundStats {
-        let mut needs_rebuild = false;
+        let mut rebuild_status = RebuildStatus::NotNeeded;
         let mut msg_count = 0;
         let started = Instant::now();
         let mut stats = PollBackgroundStats::default();
@@ -28,7 +29,7 @@ impl App {
             };
             record_background_msg_kind(&mut stats, &msg);
             msg_count += 1;
-            needs_rebuild |= self.handle_bg_msg(msg);
+            rebuild_status.merge_needed(self.handle_bg_msg(msg));
         }
         stats.bg_msgs = msg_count;
         log_saturated_background_batch(&stats);
@@ -40,11 +41,11 @@ impl App {
         stats.fit_results = 0;
         stats.disk_results = 0;
 
-        if needs_rebuild {
+        if rebuild_status.needs_rebuild() {
             self.scan.bump_generation();
             self.maybe_priority_fetch();
         }
-        stats.needs_rebuild = needs_rebuild;
+        stats.rebuild_status = rebuild_status;
 
         let elapsed = started.elapsed();
         if elapsed.as_millis() >= tui_pane::SLOW_BG_BATCH_MS {
@@ -57,7 +58,7 @@ impl App {
                 tree_results = stats.tree_results,
                 fit_results = stats.fit_results,
                 disk_results = stats.disk_results,
-                needs_rebuild = stats.needs_rebuild,
+                needs_rebuild = stats.rebuild_status.needs_rebuild(),
                 items = self.project_list.len(),
                 "poll_background"
             );

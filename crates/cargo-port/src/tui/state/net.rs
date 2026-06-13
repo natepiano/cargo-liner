@@ -105,9 +105,26 @@ pub enum ServiceStatus {
     Unreachable,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum RetryStatus {
+    Active,
+    #[default]
+    Inactive,
+}
+
+impl RetryStatus {
+    const fn is_active(self) -> bool { matches!(self, Self::Active) }
+
+    const fn activate(&mut self) -> bool {
+        let newly_active = !self.is_active();
+        *self = Self::Active;
+        newly_active
+    }
+}
+
 pub struct ServiceAvailability {
     status:            AvailabilityStatus,
-    retry_active:      bool,
+    retry_status:      RetryStatus,
     unavailable_toast: Option<ToastId>,
 }
 
@@ -115,7 +132,7 @@ impl ServiceAvailability {
     pub const fn new() -> Self {
         Self {
             status:            AvailabilityStatus::Reachable,
-            retry_active:      false,
+            retry_status:      RetryStatus::Inactive,
             unavailable_toast: None,
         }
     }
@@ -137,7 +154,7 @@ impl ServiceAvailability {
         if !was_unavailable {
             return RecoveryOutcome::NoTransition;
         }
-        self.retry_active = false;
+        self.retry_status = RetryStatus::Inactive;
         match self.unavailable_toast.take() {
             Some(id) => RecoveryOutcome::WithToast(id),
             None => RecoveryOutcome::Silent,
@@ -145,26 +162,22 @@ impl ServiceAvailability {
     }
 
     /// Marks the service unreachable (network failure). Returns `true`
-    /// iff `retry_active` transitioned from false to true — caller
+    /// iff retry status transitioned from inactive to active — caller
     /// spawns the retry loop. Subsequent `Unreachable`/`RateLimited`
     /// signals while a retry is already running return `false` so the
     /// loop is not respawned. `Reachable` signals during flip-flopping
-    /// bursts leave `retry_active` and the toast slot untouched — only
+    /// bursts leave retry status and the toast slot untouched — only
     /// `mark_recovered` clears them.
     pub const fn mark_unreachable(&mut self) -> bool {
         self.status = AvailabilityStatus::Unreachable;
-        let newly_active = !self.retry_active;
-        self.retry_active = true;
-        newly_active
+        self.retry_status.activate()
     }
 
     /// Marks the service rate-limited. Same retry-spawn semantics as
     /// `mark_unreachable`.
     pub const fn mark_rate_limited(&mut self) -> bool {
         self.status = AvailabilityStatus::RateLimited;
-        let newly_active = !self.retry_active;
-        self.retry_active = true;
-        newly_active
+        self.retry_status.activate()
     }
 
     /// Marks the service unauthenticated (no `gh` token at startup).

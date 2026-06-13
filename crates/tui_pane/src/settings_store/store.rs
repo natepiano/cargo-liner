@@ -79,11 +79,22 @@ impl Default for SettingsFileSpec {
 
 /// Framework settings store loaded before app construction.
 pub struct SettingsStore {
-    spec:     SettingsFileSpec,
-    path:     Option<PathBuf>,
-    registry: SettingsRegistry,
-    table:    Table,
-    dirty:    bool,
+    spec:       SettingsFileSpec,
+    path:       Option<PathBuf>,
+    registry:   SettingsRegistry,
+    table:      Table,
+    save_state: SettingsSaveState,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum SettingsSaveState {
+    Dirty,
+    #[default]
+    Clean,
+}
+
+impl SettingsSaveState {
+    const fn is_dirty(self) -> bool { matches!(self, Self::Dirty) }
 }
 
 /// Settings produced by [`SettingsStore::load_for_startup`].
@@ -119,7 +130,7 @@ impl SettingsStore {
             path,
             registry,
             table,
-            dirty: false,
+            save_state: SettingsSaveState::Clean,
         };
         Ok(LoadedSettings {
             store,
@@ -132,11 +143,11 @@ impl SettingsStore {
     #[must_use]
     pub fn empty() -> Self {
         Self {
-            spec:     SettingsFileSpec::default(),
-            path:     None,
-            registry: SettingsRegistry::new(),
-            table:    Table::new(),
-            dirty:    false,
+            spec:       SettingsFileSpec::default(),
+            path:       None,
+            registry:   SettingsRegistry::new(),
+            table:      Table::new(),
+            save_state: SettingsSaveState::Clean,
         }
     }
 
@@ -158,14 +169,14 @@ impl SettingsStore {
 
     /// Mutably borrow the in-memory settings TOML table and mark it dirty.
     pub const fn table_mut(&mut self) -> &mut Table {
-        self.dirty = true;
+        self.save_state = SettingsSaveState::Dirty;
         &mut self.table
     }
 
     /// Replace the in-memory settings TOML table.
     pub fn replace_table(&mut self, table: Table) {
         self.table = table;
-        self.dirty = true;
+        self.save_state = SettingsSaveState::Dirty;
     }
 
     /// Reload app and framework settings from the store's configured path.
@@ -178,7 +189,7 @@ impl SettingsStore {
         let table = read_settings_table(self.path.as_deref())?;
         let toast_settings = ToastSettings::from_table(&table)?;
         self.table = table;
-        self.dirty = false;
+        self.save_state = SettingsSaveState::Clean;
         Ok(ReloadedSettings { toast_settings })
     }
 
@@ -199,16 +210,16 @@ impl SettingsStore {
         self.spec.path = Some(path.clone());
         self.path = Some(path);
         self.table = table;
-        self.dirty = false;
+        self.save_state = SettingsSaveState::Clean;
         Ok(ReloadedSettings { toast_settings })
     }
 
     /// Whether settings have unsaved in-memory changes.
     #[must_use]
-    pub const fn is_dirty(&self) -> bool { self.dirty }
+    pub const fn is_dirty(&self) -> bool { self.save_state.is_dirty() }
 
     /// Mark the store dirty after a framework-owned setting changes.
-    pub const fn mark_dirty(&mut self) { self.dirty = true; }
+    pub const fn mark_dirty(&mut self) { self.save_state = SettingsSaveState::Dirty; }
 
     /// Save the in-memory settings TOML table to disk.
     ///
@@ -218,7 +229,7 @@ impl SettingsStore {
     pub fn save(&mut self) -> Result<(), SettingsError> {
         toasts::remove_legacy_toast_keys(&mut self.table);
         let Some(path) = &self.path else {
-            self.dirty = false;
+            self.save_state = SettingsSaveState::Clean;
             return Ok(());
         };
         if let Some(parent) = path.parent() {
@@ -226,7 +237,7 @@ impl SettingsStore {
         }
         let text = toml::to_string_pretty(&self.table)?;
         fs::write(path, text)?;
-        self.dirty = false;
+        self.save_state = SettingsSaveState::Clean;
         Ok(())
     }
 }

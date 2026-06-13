@@ -55,15 +55,33 @@ impl SyncedDescriptionHeight {
 
 /// Pre-wrapped description block for one detail pane. Owns the wrapped
 /// row strings and the layout dimensions needed to render them; both
-/// [`Self::natural_sync_height`] and [`Self::render`] read from the same
+/// [`DescriptionBlock::natural_sync_height`] and [`DescriptionBlock::render`] read from the same
 /// private `rows` field.
+#[derive(Clone)]
+enum DescriptionContentState {
+    Real,
+    PlaceholderOrEmpty,
+}
+
+impl DescriptionContentState {
+    const fn from_trimmed(trimmed: Option<&str>) -> Self {
+        if trimmed.is_some() {
+            Self::Real
+        } else {
+            Self::PlaceholderOrEmpty
+        }
+    }
+
+    const fn has_real_content(&self) -> bool { matches!(self, Self::Real) }
+}
+
 #[derive(Clone)]
 pub struct DescriptionBlock {
     rows:             Vec<String>,
     style:            Style,
     column_width:     u16,
     padding:          u16,
-    has_real_content: bool,
+    content_state:    DescriptionContentState,
     inner_height_cap: u16,
 }
 
@@ -82,7 +100,7 @@ impl DescriptionBlock {
         let column_width = inner_width.saturating_sub(padding.saturating_mul(2));
 
         let trimmed = text.map(str::trim).filter(|s| !s.is_empty());
-        let has_real_content = trimmed.is_some();
+        let content_state = DescriptionContentState::from_trimmed(trimmed);
 
         let (body, style) = match (trimmed, empty_behavior) {
             (Some(real), _) => (Some(real), Style::default()),
@@ -103,7 +121,7 @@ impl DescriptionBlock {
             style,
             column_width,
             padding,
-            has_real_content,
+            content_state,
             inner_height_cap: inner_height,
         }
     }
@@ -114,7 +132,7 @@ impl DescriptionBlock {
     /// trigger sync, matching the previous free-function behavior: only
     /// when *both* panes have real content do they align their bottoms.
     pub fn natural_sync_height(&self) -> u16 {
-        if self.has_real_content {
+        if self.content_state.has_real_content() {
             u16::try_from(self.rows.len())
                 .unwrap_or(u16::MAX)
                 .min(self.inner_height_cap)

@@ -52,15 +52,22 @@ use crate::pane::ModeQuery;
 
 type CopyResolver<Ctx> = fn(&Ctx) -> CopySelectionResult;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum LifecycleRequest {
+    #[default]
+    None,
+    Quit,
+    Restart,
+}
+
 /// The framework aggregator owned by every binary that uses
 /// `tui_pane`.
 ///
 /// Tracks the currently focused pane, the open framework overlay (if
-/// any), and the lifecycle flags (`quit_requested`, `restart_requested`)
-/// that the framework's own dispatch flips when
+/// any), and the lifecycle request that the framework's own dispatch sets when
 /// [`GlobalAction::Quit`](crate::GlobalAction::Quit) or
 /// [`GlobalAction::Restart`](crate::GlobalAction::Restart) fires. The
-/// binary's main loop polls those flags every tick and tears down
+/// binary's main loop polls that request every tick and tears down
 /// accordingly.
 ///
 /// The overlay layer ([`Self::overlay`]) and the focus layer
@@ -71,8 +78,7 @@ type CopyResolver<Ctx> = fn(&Ctx) -> CopySelectionResult;
 /// level.
 pub struct Framework<Ctx: AppContext> {
     focused:                   FocusedPane<Ctx::AppPaneId>,
-    quit_requested:            bool,
-    restart_requested:         bool,
+    lifecycle_request:         LifecycleRequest,
     mode_queries:              HashMap<Ctx::AppPaneId, ModeQuery<Ctx>>,
     copy_resolvers:            HashMap<Ctx::AppPaneId, CopyResolver<Ctx>>,
     pane_order:                Vec<Ctx::AppPaneId>,
@@ -104,8 +110,7 @@ impl<Ctx: AppContext> Framework<Ctx> {
     pub fn new(initial_focus: FocusedPane<Ctx::AppPaneId>) -> Self {
         Self {
             focused:               initial_focus,
-            quit_requested:        false,
-            restart_requested:     false,
+            lifecycle_request:     LifecycleRequest::None,
             mode_queries:          HashMap::new(),
             copy_resolvers:        HashMap::new(),
             pane_order:            Vec::new(),
@@ -177,7 +182,9 @@ impl<Ctx: AppContext> Framework<Ctx> {
     /// [`GlobalAction::Quit`](crate::GlobalAction::Quit) fires; the
     /// binary's main loop polls this and tears down accordingly.
     #[must_use]
-    pub const fn quit_requested(&self) -> bool { self.quit_requested }
+    pub const fn quit_requested(&self) -> bool {
+        matches!(self.lifecycle_request, LifecycleRequest::Quit)
+    }
 
     /// Whether the user has requested the application restart.
     ///
@@ -185,16 +192,20 @@ impl<Ctx: AppContext> Framework<Ctx> {
     /// [`GlobalAction::Restart`](crate::GlobalAction::Restart) fires;
     /// the binary's main loop polls this and tears down accordingly.
     #[must_use]
-    pub const fn restart_requested(&self) -> bool { self.restart_requested }
+    pub const fn restart_requested(&self) -> bool {
+        matches!(self.lifecycle_request, LifecycleRequest::Restart)
+    }
 
-    /// Flip `quit_requested` to `true`. `pub(super)` because only the
+    /// Set the lifecycle request to quit. `pub(super)` because only the
     /// framework's built-in [`GlobalAction::Quit`](crate::GlobalAction::Quit)
     /// dispatcher (sibling: `framework/global_action.rs`) calls it.
-    pub(super) const fn request_quit(&mut self) { self.quit_requested = true; }
+    pub(super) const fn request_quit(&mut self) { self.lifecycle_request = LifecycleRequest::Quit; }
 
-    /// Flip `restart_requested` to `true`. `pub(super)` for the same
+    /// Set the lifecycle request to restart. `pub(super)` for the same
     /// reason as [`Self::request_quit`].
-    pub(super) const fn request_restart(&mut self) { self.restart_requested = true; }
+    pub(super) const fn request_restart(&mut self) {
+        self.lifecycle_request = LifecycleRequest::Restart;
+    }
 
     /// Register an app-pane id with the framework. Called once per
     /// `P: Pane<Ctx>` from

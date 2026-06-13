@@ -317,16 +317,27 @@ fn spawn_input_thread() -> Receiver<Event> {
 }
 
 /// Outcome of draining the input channel for one frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum InputChannelState {
+    #[default]
+    Connected,
+    Disconnected,
+}
+
+impl InputChannelState {
+    const fn is_disconnected(self) -> bool { matches!(self, Self::Disconnected) }
+}
+
 struct InputDrain {
-    count:        usize,
-    elapsed:      Duration,
+    count:         usize,
+    elapsed:       Duration,
     /// The input thread dropped its sender (a crossterm read error ended
     /// `spawn_input_thread`). A TUI that can no longer read input is
     /// dead, so the loop exits. The event-driven design relies on
     /// detecting this: `Select` reports a *disconnected* crossbeam
     /// receiver as permanently ready, so without this guard the loop
     /// would busy-spin at 100% CPU on the dead input channel (PD8).
-    disconnected: bool,
+    channel_state: InputChannelState,
 }
 
 /// Event-driven render loop.
@@ -353,7 +364,7 @@ fn event_loop(
         let frame_started = Instant::now();
 
         let input = process_input_frame(app, input_rx);
-        if input.disconnected {
+        if input.channel_state.is_disconnected() {
             tracing::error!("input channel disconnected; exiting event loop");
             return Ok(());
         }
@@ -439,7 +450,7 @@ fn wait_for_event(app: &App, input_rx: &Receiver<Event>) {
 fn process_input_frame(app: &mut App, input_rx: &Receiver<Event>) -> InputDrain {
     let started = Instant::now();
     let mut count = 0usize;
-    let mut disconnected = false;
+    let mut channel_state = InputChannelState::Connected;
     loop {
         match input_rx.try_recv() {
             Ok(event) => {
@@ -456,7 +467,7 @@ fn process_input_frame(app: &mut App, input_rx: &Receiver<Event>) -> InputDrain 
             },
             Err(TryRecvError::Empty) => break,
             Err(TryRecvError::Disconnected) => {
-                disconnected = true;
+                channel_state = InputChannelState::Disconnected;
                 break;
             },
         }
@@ -467,7 +478,7 @@ fn process_input_frame(app: &mut App, input_rx: &Receiver<Event>) -> InputDrain 
     InputDrain {
         count,
         elapsed: started.elapsed(),
-        disconnected,
+        channel_state,
     }
 }
 
@@ -557,7 +568,7 @@ fn log_slow_frame(app: &App, bg_stats: &PollBackgroundStats, metrics: &FrameMetr
         tree_results = bg_stats.tree_results,
         fit_results = bg_stats.fit_results,
         disk_results = bg_stats.disk_results,
-        needs_rebuild = bg_stats.needs_rebuild,
+        needs_rebuild = bg_stats.rebuild_status.needs_rebuild(),
         items = app.project_list.len(),
         scan_complete = app.scan.is_complete(),
         "slow_frame"

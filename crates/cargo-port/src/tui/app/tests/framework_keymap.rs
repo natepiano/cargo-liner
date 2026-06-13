@@ -70,7 +70,9 @@ use crate::tui::panes::CiData;
 use crate::tui::panes::CiEmptyState;
 use crate::tui::panes::GitData;
 use crate::tui::panes::LintsData;
+use crate::tui::panes::LintsProjectKind;
 use crate::tui::panes::PackageData;
+use crate::tui::panes::PackagePresence;
 use crate::tui::panes::PaneId;
 use crate::tui::panes::RemoteRow;
 use crate::tui::panes::TargetsData;
@@ -180,7 +182,7 @@ fn package_data_no_version() -> PackageData {
         disk:                     Some(1_048_576),
         stats_rows:               Vec::new(),
         test_rows:                Vec::new(),
-        has_package:              true,
+        package_presence:         PackagePresence::Present,
         edition:                  None,
         license:                  None,
         homepage:                 None,
@@ -388,7 +390,7 @@ fn lints_data_with_runs(count: usize) -> LintsData {
         sizes: Vec::new(),
         owner_paths: Vec::new(),
         owner_of: Vec::new(),
-        is_rust: true,
+        project_kind: LintsProjectKind::Rust,
     }
 }
 

@@ -188,11 +188,11 @@ impl RepoInfo {
         let local_main_branch = resolve_local_main_branch(&repo_root);
 
         let remote_names = list_remote_names(&repo_root);
-        let has_upstream = remote_names.iter().any(|n| n == GIT_REMOTE_UPSTREAM);
+        let upstream_remote = UpstreamRemote::from_remote_names(&remote_names);
         let pushurls = list_remote_pushurls(&repo_root);
         let remote_context = RemoteResolveContext {
             repo_root: &repo_root,
-            has_upstream,
+            upstream_remote,
             current_upstream: current_upstream.as_deref(),
             default_branch: default_branch.as_deref(),
             current_branch: branch.as_deref(),
@@ -281,9 +281,27 @@ fn list_remote_names(repo_root: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UpstreamRemote {
+    Present,
+    Missing,
+}
+
+impl UpstreamRemote {
+    fn from_remote_names(remote_names: &[String]) -> Self {
+        if remote_names.iter().any(|name| name == GIT_REMOTE_UPSTREAM) {
+            Self::Present
+        } else {
+            Self::Missing
+        }
+    }
+
+    const fn is_present(self) -> bool { matches!(self, Self::Present) }
+}
+
 struct RemoteResolveContext<'a> {
     repo_root:        &'a Path,
-    has_upstream:     bool,
+    upstream_remote:  UpstreamRemote,
     current_upstream: Option<&'a str>,
     default_branch:   Option<&'a str>,
     current_branch:   Option<&'a str>,
@@ -311,7 +329,7 @@ fn build_remote_info(
             &format!("tracked_{name}"),
         )
     });
-    let kind = if name == GIT_REMOTE_ORIGIN && context.has_upstream {
+    let kind = if name == GIT_REMOTE_ORIGIN && context.upstream_remote.is_present() {
         RemoteKind::Fork
     } else {
         RemoteKind::Clone

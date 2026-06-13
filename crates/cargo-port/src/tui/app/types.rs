@@ -172,6 +172,23 @@ pub struct FinderState {
     pub col_widths: [usize; FINDER_COLUMN_COUNT],
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RebuildStatus {
+    Needed,
+    #[default]
+    NotNeeded,
+}
+
+impl RebuildStatus {
+    pub const fn needs_rebuild(self) -> bool { matches!(self, Self::Needed) }
+
+    pub const fn merge_needed(&mut self, needs_rebuild: bool) {
+        if needs_rebuild {
+            *self = Self::Needed;
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct PollBackgroundStats {
     pub bg_msgs:                usize,
@@ -184,7 +201,7 @@ pub struct PollBackgroundStats {
     pub tree_results:           usize,
     pub fit_results:            usize,
     pub disk_results:           usize,
-    pub needs_rebuild:          bool,
+    pub rebuild_status:         RebuildStatus,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

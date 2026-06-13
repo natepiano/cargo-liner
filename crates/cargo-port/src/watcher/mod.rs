@@ -231,8 +231,19 @@ struct WatcherLoopState {
     pending_git:     HashMap<AbsolutePath, WatchState>,
     pending_new:     HashMap<AbsolutePath, Instant>,
     discovered:      HashSet<AbsolutePath>,
-    initializing:    bool,
+    registration:    WatcherRegistrationPhase,
     buffered_events: Vec<Event>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum WatcherRegistrationPhase {
+    #[default]
+    Initializing,
+    Ready,
+}
+
+impl WatcherRegistrationPhase {
+    pub(super) const fn is_initializing(self) -> bool { matches!(self, Self::Initializing) }
 }
 
 impl WatcherLoopState {
@@ -244,7 +255,7 @@ impl WatcherLoopState {
             pending_git:     HashMap::new(),
             pending_new:     HashMap::new(),
             discovered:      HashSet::new(),
-            initializing:    true,
+            registration:    WatcherRegistrationPhase::Initializing,
             buffered_events: Vec::new(),
         }
     }
@@ -277,7 +288,7 @@ fn watcher_loop<W: Watcher + Send + 'static>(
         tick += 1;
         let watch_drain =
             drain_watch_messages(watch_rx, &mut state, &mut watcher, &mut registered_roots);
-        if watch_drain.disconnected {
+        if watch_drain.channel_state.is_disconnected() {
             tracing::info!(tick, "watcher_loop_exit_disconnected");
             return;
         }
@@ -337,8 +348,30 @@ fn watcher_loop<W: Watcher + Send + 'static>(
 }
 
 pub(super) struct WatchDrainResult {
-    pub(super) disconnected:           bool,
-    pub(super) registration_completed: bool,
+    pub(super) channel_state:         WatchChannelState,
+    pub(super) registration_progress: WatchRegistrationProgress,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum WatchChannelState {
+    #[default]
+    Connected,
+    Disconnected,
+}
+
+impl WatchChannelState {
+    pub(super) const fn is_disconnected(self) -> bool { matches!(self, Self::Disconnected) }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum WatchRegistrationProgress {
+    Completed,
+    #[default]
+    Pending,
+}
+
+impl WatchRegistrationProgress {
+    pub(super) const fn is_completed(self) -> bool { matches!(self, Self::Completed) }
 }
 
 fn drain_watch_messages(
@@ -348,8 +381,8 @@ fn drain_watch_messages(
     registered_roots: &mut RegisteredRoots,
 ) -> WatchDrainResult {
     let mut result = WatchDrainResult {
-        disconnected:           false,
-        registration_completed: false,
+        channel_state:         WatchChannelState::Connected,
+        registration_progress: WatchRegistrationProgress::Pending,
     };
     loop {
         match watch_rx.try_recv() {
@@ -357,12 +390,12 @@ fn drain_watch_messages(
                 apply_watch_request(req, state, watcher, registered_roots);
             },
             Ok(WatcherMsg::InitialRegistrationComplete) => {
-                state.initializing = false;
-                result.registration_completed = true;
+                state.registration = WatcherRegistrationPhase::Ready;
+                result.registration_progress = WatchRegistrationProgress::Completed;
             },
             Err(TryRecvError::Empty) => return result,
             Err(TryRecvError::Disconnected) => {
-                result.disconnected = true;
+                result.channel_state = WatchChannelState::Disconnected;
                 return result;
             },
         }

@@ -31,6 +31,8 @@ use super::DescriptionBlock;
 use super::DetailField;
 use super::EmptyDescriptionBehavior;
 use super::GitData;
+#[cfg(test)]
+use super::PullRequestPolling;
 use super::PullRequestRow;
 use super::PullRequestSection;
 use super::PullRequestSectionState;
@@ -119,10 +121,28 @@ pub fn git_label_width(fields: &[DetailField]) -> usize {
 
 /// A section separator to render as an overlay rule after the paragraph
 /// (so its `├`/`┤` endcaps can overlap the outer pane's vertical borders).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SectionFocus {
+    Focused,
+    Unfocused,
+}
+
+impl SectionFocus {
+    const fn from_focused(focused: bool) -> Self {
+        if focused {
+            Self::Focused
+        } else {
+            Self::Unfocused
+        }
+    }
+
+    const fn is_focused(self) -> bool { matches!(self, Self::Focused) }
+}
+
 struct SectionRule {
-    inner_y: usize,
-    title:   String,
-    focused: bool,
+    inner_y:       usize,
+    title:         String,
+    section_focus: SectionFocus,
 }
 
 /// Result of building the Git pane paragraph, used to register row
@@ -260,7 +280,7 @@ fn append_remotes_section(
     accum.section_rules.push(SectionRule {
         inner_y: accum.lines.len(),
         title,
-        focused,
+        section_focus: SectionFocus::from_focused(focused),
     });
     accum.lines.push(Line::from(Span::raw(String::new())));
     render_remote_header(accum.lines, layout, focused);
@@ -308,7 +328,7 @@ fn append_pull_requests_section(
     accum.section_rules.push(SectionRule {
         inner_y: accum.lines.len(),
         title,
-        focused,
+        section_focus: SectionFocus::from_focused(focused),
     });
     accum.lines.push(Line::from(Span::raw(String::new())));
 
@@ -468,7 +488,7 @@ fn pull_request_row_line(
     animation_elapsed: Duration,
 ) -> Line<'static> {
     let style = selection.patch(Style::default().fg(inactive_title_color()));
-    if !row.is_polling {
+    if !row.polling.is_polling() {
         let state = pull_request_state_text(row, animation_elapsed);
         let text = format!(
             " {:<number$}  {:<status$}  {:<branch$}  {}",
@@ -515,7 +535,7 @@ fn pull_request_row_line(
 }
 
 fn pull_request_state_text(row: &PullRequestRow, animation_elapsed: Duration) -> String {
-    if row.is_polling {
+    if row.polling.is_polling() {
         format!(
             "{} {}",
             row.state_label,
@@ -567,7 +587,7 @@ fn append_worktrees_section(
     accum.section_rules.push(SectionRule {
         inner_y: accum.lines.len(),
         title,
-        focused,
+        section_focus: SectionFocus::from_focused(focused),
     });
     accum.lines.push(Line::from(Span::raw(String::new())));
     render_worktree_header(accum.lines, layout, focused);
@@ -616,13 +636,13 @@ fn render_section_overlays(
         if abs_y < inner_area.y || abs_y >= inner_area.y.saturating_add(inner_area.height) {
             continue;
         }
-        let title_color = if rule.focused {
+        let title_color = if rule.section_focus.is_focused() {
             title_color()
         } else {
             inactive_title_color()
         };
         let mut title_style = Style::default().fg(title_color);
-        if rule.focused {
+        if rule.section_focus.is_focused() {
             title_style = title_style.add_modifier(Modifier::BOLD);
         }
         tui_pane::render_horizontal_rule(
@@ -1358,7 +1378,7 @@ mod tests {
             title:       "feat: show open pull requests".to_string(),
             url:         String::new(),
             state_label: "ready",
-            is_polling:  false,
+            polling:     PullRequestPolling::Idle,
             branch:      "natepiano:feat/open-prs".to_string(),
             base:        "main".to_string(),
         };
@@ -1379,7 +1399,7 @@ mod tests {
             title:       "feat: show open pull requests".to_string(),
             url:         String::new(),
             state_label: "ready",
-            is_polling:  false,
+            polling:     PullRequestPolling::Idle,
             branch:      "natepiano:feat/open-prs".to_string(),
             base:        "main".to_string(),
         };
@@ -1404,7 +1424,7 @@ mod tests {
             title:       "feat: show open pull requests".to_string(),
             url:         String::new(),
             state_label: "checks",
-            is_polling:  true,
+            polling:     PullRequestPolling::Active,
             branch:      "natepiano:feat/open-prs".to_string(),
             base:        "main".to_string(),
         };

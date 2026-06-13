@@ -33,8 +33,8 @@ pub(super) fn finalize<Ctx: AppContext + 'static, State>(
         builder.toml_table.as_ref(),
         &builder.registered_scopes,
         builder
-            .ignore_unknown
-            .then_some(&mut builder.unknown_warnings),
+            .unknown_entry_policy
+            .warnings(&mut builder.unknown_warnings),
     )?;
 
     let mut keymap = Keymap::<Ctx>::new(builder.config_path);
@@ -74,8 +74,8 @@ pub(super) fn finalize<Ctx: AppContext + 'static, State>(
         builder.toml_table.as_ref(),
         builder.globals_action_keys.as_ref(),
         builder
-            .ignore_unknown
-            .then_some(&mut builder.unknown_warnings),
+            .unknown_entry_policy
+            .warnings(&mut builder.unknown_warnings),
         false,
     )?;
     registration::check_reserved_vim_navigation_keys(

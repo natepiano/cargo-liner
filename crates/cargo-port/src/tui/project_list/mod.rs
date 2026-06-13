@@ -20,11 +20,13 @@ use crate::ci;
 use crate::ci::CiRun;
 use crate::ci::CiStatus;
 use crate::ci::OwnerRepo;
+use crate::config::NonRustInclusion;
 use crate::constants::IN_SYNC;
 use crate::constants::NO_REMOTE_SYNC;
 use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
 use crate::lint::LintRuns;
+use crate::lint::ProjectLanguage;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::Cargo;
@@ -67,6 +69,7 @@ use grouping::try_insert_member;
 pub(super) use selection::SelectionMutation;
 pub(super) use visible_rows::ExpandKey;
 pub(super) use visible_rows::LegacyRootExpansion;
+use visible_rows::LegacyRootExpansionKind;
 pub(super) use visible_rows::VisibleRow;
 use visible_rows::worst_git_status;
 
@@ -80,7 +83,7 @@ pub(super) enum SyncResolution {
 
 pub(super) struct LintRuntimeRootEntry {
     pub path:                AbsolutePath,
-    pub is_rust:             bool,
+    pub project_language:    ProjectLanguage,
     pub linked_primary_root: Option<AbsolutePath>,
 }
 
@@ -1091,7 +1094,11 @@ impl ProjectList {
     pub(super) const fn mutate(&mut self, include_non_rust: bool) -> SelectionMutation<'_> {
         SelectionMutation {
             project_list: self,
-            include_non_rust,
+            non_rust:     if include_non_rust {
+                NonRustInclusion::Include
+            } else {
+                NonRustInclusion::Exclude
+            },
         }
     }
 }
@@ -1974,6 +1981,9 @@ impl ProjectList {
     /// Snapshot expansion of every top-level node so a tree rebuild can
     /// re-apply the same logical expansions to a re-indexed layout.
     pub(super) fn capture_legacy_root_expansions(&self) -> Vec<LegacyRootExpansion> {
+        if self.expanded.is_empty() {
+            return Vec::new();
+        }
         self.iter()
             .enumerate()
             .filter_map(|(ni, entry)| {
@@ -1984,7 +1994,9 @@ impl ProjectList {
                     RootItem::Rust(RustProject::Workspace(ws)) => Some(LegacyRootExpansion {
                         root_path:      ws.path().clone(),
                         old_node_index: ni,
-                        had_children:   ws.has_members() || !ws.vendored().is_empty(),
+                        expansion_kind: LegacyRootExpansionKind::from_had_children(
+                            ws.has_members() || !ws.vendored().is_empty(),
+                        ),
                         named_groups:   ws
                             .groups()
                             .iter()
@@ -2001,7 +2013,9 @@ impl ProjectList {
                     RootItem::Rust(RustProject::Package(pkg)) => Some(LegacyRootExpansion {
                         root_path:      pkg.path().clone(),
                         old_node_index: ni,
-                        had_children:   !pkg.vendored().is_empty(),
+                        expansion_kind: LegacyRootExpansionKind::from_had_children(
+                            !pkg.vendored().is_empty(),
+                        ),
                         named_groups:   Vec::new(),
                     }),
                     _ => None,
@@ -2013,6 +2027,9 @@ impl ProjectList {
     /// Re-apply expansions captured by `capture_legacy_root_expansions`,
     /// adapting old node indices to the post-rebuild layout.
     pub(super) fn migrate_legacy_root_expansions(&mut self, legacy: &[LegacyRootExpansion]) {
+        if legacy.is_empty() {
+            return;
+        }
         let (roots, expanded) = self.iter_with_expanded_mut();
         let entries: Vec<(usize, &RootItem)> = roots
             .enumerate()
@@ -2029,7 +2046,7 @@ impl ProjectList {
             match item {
                 RootItem::Worktrees(group) if group.renders_as_group() => {
                     expanded.insert(ExpandKey::Node(current_index));
-                    if legacy_root.had_children {
+                    if legacy_root.expansion_kind.had_children() {
                         expanded.insert(ExpandKey::Worktree(current_index, 0));
                     }
                     if let RustProject::Workspace(ws) = &group.primary {
@@ -2128,18 +2145,18 @@ impl ProjectList {
                     .iter_entries()
                     .map(|project| LintRuntimeRootEntry {
                         path:                project.path().clone(),
-                        is_rust:             true,
+                        project_language:    ProjectLanguage::Rust,
                         linked_primary_root: project.linked_primary_root(),
                     })
                     .collect(),
                 RootItem::Rust(project) => vec![LintRuntimeRootEntry {
                     path:                project.path().clone(),
-                    is_rust:             true,
+                    project_language:    ProjectLanguage::Rust,
                     linked_primary_root: project.linked_primary_root(),
                 }],
                 RootItem::NonRust(_) => vec![LintRuntimeRootEntry {
                     path:                entry.root_item.path().clone(),
-                    is_rust:             false,
+                    project_language:    ProjectLanguage::NonRust,
                     linked_primary_root: None,
                 }],
             };

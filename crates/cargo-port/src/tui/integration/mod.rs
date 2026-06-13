@@ -3,7 +3,9 @@ mod constants;
 mod framework_keymap;
 mod lint_icon;
 
+pub(super) use config_reload::NonRustCacheState;
 pub(super) use config_reload::ReloadContext;
+pub(super) use config_reload::ScanState;
 pub(super) use config_reload::TreeReaction;
 pub(super) use config_reload::collect_reload_actions;
 pub(super) use framework_keymap::AppGlobalAction;

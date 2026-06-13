@@ -69,6 +69,7 @@ use crate::tui::app::VisibleRow;
 use crate::tui::columns;
 use crate::tui::columns::LintCell;
 use crate::tui::columns::ProjectRow;
+use crate::tui::columns::RowLifecycle;
 use crate::tui::pane::DismissTarget;
 use crate::tui::pane::PaneRenderCtx;
 use crate::tui::project_list::ProjectList;
@@ -453,7 +454,7 @@ fn render_root_item(
         git_origin_sync: &origin_sync,
         git_main: &main_sync,
         ci,
-        deleted,
+        lifecycle: RowLifecycle::from_deleted(deleted),
         worktree_health: wt_health,
     });
     ListItem::new(columns::row_to_line(&row, widths))
@@ -548,7 +549,7 @@ fn render_child_item<P: project::ProjectFields>(
         git_origin_sync: &origin_sync,
         git_main: &main_sync,
         ci,
-        deleted,
+        lifecycle: RowLifecycle::from_deleted(deleted),
         worktree_health: project.worktree_health(),
     });
     ListItem::new(columns::row_to_line(&row, widths))
@@ -635,7 +636,7 @@ fn render_worktree_entry<'a>(
         git_origin_sync: &origin_sync,
         git_main: &main_sync,
         ci,
-        deleted,
+        lifecycle: RowLifecycle::from_deleted(deleted),
         worktree_health: wt_health,
     });
     ListItem::new(columns::row_to_line(&row, widths))
@@ -1017,7 +1018,7 @@ fn render_path_only_entry(
         git_origin_sync: "",
         git_main: "",
         ci: None,
-        deleted,
+        lifecycle: RowLifecycle::from_deleted(deleted),
         worktree_health: entry.info().worktree_health,
     });
     ListItem::new(columns::row_to_line(&row, widths))

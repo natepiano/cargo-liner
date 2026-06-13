@@ -576,8 +576,8 @@ fn initial_registration_complete_transitions_watcher_out_of_initializing() {
 
     let drained = drain_watch_messages(&watch_rx, &mut state, &mut watcher, &mut registered_roots);
 
-    assert!(drained.registration_completed);
-    assert!(!state.initializing);
+    assert!(drained.registration_progress.is_completed());
+    assert!(!state.registration.is_initializing());
 }
 
 #[test]
@@ -604,7 +604,7 @@ fn registration_batch_completes_without_metadata_watch_calls() {
         let mut registered_roots = RegisteredRoots::default();
         let drained =
             drain_watch_messages(&watch_rx, &mut state, &mut watcher, &mut registered_roots);
-        let _ = result_tx.send((drained, state.initializing));
+        let _ = result_tx.send((drained, state.registration.is_initializing()));
     });
 
     let (drained, initializing) = result_rx
@@ -612,7 +612,7 @@ fn registration_batch_completes_without_metadata_watch_calls() {
         .expect("drain result without blocking");
     watch_thread.join().expect("watch thread join");
 
-    assert!(drained.registration_completed);
+    assert!(drained.registration_progress.is_completed());
     assert!(!initializing);
 }
 

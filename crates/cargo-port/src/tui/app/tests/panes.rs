@@ -18,6 +18,7 @@ use crate::project::PackageRecord;
 use crate::project::ProjectInfo;
 use crate::project::ProjectType;
 use crate::project::PublishPolicy;
+use crate::project::PublishStatus;
 use crate::project::Submodule;
 use crate::project::TargetRecord;
 use crate::project::WorkspaceMetadata;
@@ -25,6 +26,7 @@ use crate::project::WorktreeHealth::Normal;
 use crate::tui::app::startup;
 use crate::tui::columns;
 use crate::tui::columns::ProjectRow;
+use crate::tui::columns::RowLifecycle;
 use crate::tui::input;
 
 fn test_submodule(name: &str, path: &str) -> Submodule {
@@ -115,20 +117,20 @@ fn workspace_structure_counts_tree_children_and_cargo_targets() {
         )],
     );
     core.rust.cargo = Cargo {
-        types:       vec![ProjectType::Library],
-        examples:    vec![ExampleGroup {
+        types:          vec![ProjectType::Library],
+        examples:       vec![ExampleGroup {
             category: String::new(),
             names:    vec!["demo".to_string()],
         }],
-        benches:     Vec::new(),
-        publishable: false,
+        benches:        Vec::new(),
+        publish_status: PublishStatus::NotPublishable,
     };
     let mut cli = make_member(Some("cli"), "~/ws/crates/cli");
     cli.rust.cargo = Cargo {
-        types:       vec![ProjectType::Binary],
-        examples:    Vec::new(),
-        benches:     Vec::new(),
-        publishable: false,
+        types:          vec![ProjectType::Binary],
+        examples:       Vec::new(),
+        benches:        Vec::new(),
+        publish_status: PublishStatus::NotPublishable,
     };
 
     let mut root =
@@ -137,10 +139,10 @@ fn workspace_structure_counts_tree_children_and_cargo_targets() {
         std::process::abort();
     };
     ws.rust.cargo = Cargo {
-        types:       vec![ProjectType::Workspace],
-        examples:    Vec::new(),
-        benches:     vec!["smoke".to_string()],
-        publishable: false,
+        types:          vec![ProjectType::Workspace],
+        examples:       Vec::new(),
+        benches:        vec!["smoke".to_string()],
+        publish_status: PublishStatus::NotPublishable,
     };
     ws.rust.vendored = vec![make_vendored(
         Some("root-helper"),
@@ -185,10 +187,10 @@ fn package_structure_counts_direct_vendored_children() {
         ],
     );
     package.rust.cargo = Cargo {
-        types:       vec![ProjectType::Binary],
-        examples:    Vec::new(),
-        benches:     Vec::new(),
-        publishable: false,
+        types:          vec![ProjectType::Binary],
+        examples:       Vec::new(),
+        benches:        Vec::new(),
+        publish_status: PublishStatus::NotPublishable,
     };
     let root = RootItem::Rust(RustProject::Package(package));
 
@@ -713,7 +715,7 @@ fn top_level_deleted_project_enters_deleted_state_and_renders_as_deleted() {
         ci:                app
             .project_list
             .ci_status_for_root_item_using_lookup(item, &app.ci.status_lookup()),
-        deleted:           true,
+        lifecycle:         RowLifecycle::Deleted,
         worktree_health:   Normal,
     });
     let widths = crate::tui::columns::ProjectListWidths::new(true);

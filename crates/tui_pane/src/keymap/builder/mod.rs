@@ -157,12 +157,28 @@ pub struct KeymapBuilder<Ctx: AppContext + 'static, State = Configuring> {
     /// When set, unknown actions / scopes in the loaded TOML are
     /// skipped and recorded in [`Self::unknown_warnings`] instead of
     /// failing the build. See [`Self::ignore_unknown_entries`].
-    ignore_unknown:           bool,
+    unknown_entry_policy:     UnknownEntryPolicy,
     /// Human-readable warnings for each TOML entry skipped because
-    /// [`Self::ignore_unknown`] is set. Moved onto the finalized
+    /// [`Self::unknown_entry_policy`] is lenient. Moved onto the finalized
     /// [`Keymap`] so the binary can surface them.
     unknown_warnings:         Vec<String>,
     _state:                   PhantomData<State>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum UnknownEntryPolicy {
+    #[default]
+    Strict,
+    Ignore,
+}
+
+impl UnknownEntryPolicy {
+    pub(super) const fn warnings(self, warnings: &mut Vec<String>) -> Option<&mut Vec<String>> {
+        match self {
+            Self::Strict => None,
+            Self::Ignore => Some(warnings),
+        }
+    }
 }
 
 impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
@@ -195,7 +211,7 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
             overlay_scope:            None,
             vim_reserved_keys:        Vec::new(),
             deferred_error:           None,
-            ignore_unknown:           false,
+            unknown_entry_policy:     UnknownEntryPolicy::Strict,
             unknown_warnings:         Vec::new(),
             _state:                   PhantomData,
         }
@@ -215,7 +231,7 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
     /// reserved-key conflicts stay fatal.
     #[must_use]
     pub const fn ignore_unknown_entries(mut self) -> Self {
-        self.ignore_unknown = true;
+        self.unknown_entry_policy = UnknownEntryPolicy::Ignore;
         self
     }
 
@@ -308,7 +324,8 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
             nav_action::default_bindings(),
             self.toml_table.as_ref(),
             None,
-            self.ignore_unknown.then_some(&mut self.unknown_warnings),
+            self.unknown_entry_policy
+                .warnings(&mut self.unknown_warnings),
             true,
         )?;
         if matches!(self.vim_mode, VimMode::Enabled) {
@@ -344,7 +361,8 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
             defaults,
             self.toml_table.as_ref(),
             peer_keys,
-            self.ignore_unknown.then_some(&mut self.unknown_warnings),
+            self.unknown_entry_policy
+                .warnings(&mut self.unknown_warnings),
             false,
         )?;
         check_reserved_vim_navigation_keys(scope_name, &bindings, &self.vim_reserved_keys)?;
@@ -378,7 +396,8 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
             "overlay",
             SettingsPane::defaults(),
             self.toml_table.as_ref(),
-            self.ignore_unknown.then_some(&mut self.unknown_warnings),
+            self.unknown_entry_policy
+                .warnings(&mut self.unknown_warnings),
         )?;
         self.overlay_scope = Some(bindings.into_scope_map());
         self.registered_scopes.insert("overlay");
@@ -509,7 +528,8 @@ impl<Ctx: AppContext + 'static, State> KeymapBuilder<Ctx, State> {
         let bindings = match build_pane_bindings::<Ctx, P>(
             self.toml_table.as_ref(),
             self.vim_mode,
-            self.ignore_unknown.then_some(&mut self.unknown_warnings),
+            self.unknown_entry_policy
+                .warnings(&mut self.unknown_warnings),
         ) {
             Ok(b) => b,
             Err(err) => {
@@ -578,7 +598,7 @@ fn transition<Ctx: AppContext + 'static>(
         overlay_scope:            src.overlay_scope,
         vim_reserved_keys:        src.vim_reserved_keys,
         deferred_error:           src.deferred_error,
-        ignore_unknown:           src.ignore_unknown,
+        unknown_entry_policy:     src.unknown_entry_policy,
         unknown_warnings:         src.unknown_warnings,
         _state:                   PhantomData,
     }

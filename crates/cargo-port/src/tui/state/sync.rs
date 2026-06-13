@@ -1,7 +1,7 @@
 //! Per-project sync-state tracking for the "Sync changes" task toast.
 //!
 //! Two pieces of per-project state:
-//! 1. `eligible`: flipped true once the first GitHub fetch for the project's repo completes. Until
+//! 1. `toast_readiness`: set once the first GitHub fetch for the project's repo completes. Until
 //!    then, sync-state changes are treated as startup noise and never surface as a toast.
 //! 2. `last_seen`: the most recent `(ahead, behind)` value observed for the project's primary
 //!    remote. [`Baseline`] makes the three states explicit: `Unseen`, `Seen(None)` (remote-less),
@@ -29,8 +29,19 @@ pub struct SyncTracker {
 
 #[derive(Default)]
 struct SyncEntry {
-    eligible:  bool,
-    last_seen: Baseline,
+    toast_readiness: SyncToastReadiness,
+    last_seen:       Baseline,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum SyncToastReadiness {
+    Ready,
+    #[default]
+    Waiting,
+}
+
+impl SyncToastReadiness {
+    const fn is_ready(self) -> bool { matches!(self, Self::Ready) }
 }
 
 /// Three-state baseline for the per-project ahead/behind value.
@@ -60,7 +71,7 @@ impl SyncTracker {
     /// recording a premature "no remote" baseline that a later
     /// `CheckoutInfo` would flip to "in sync".
     pub fn mark_eligible(&mut self, path: AbsolutePath) {
-        self.entries.entry(path).or_default().eligible = true;
+        self.entries.entry(path).or_default().toast_readiness = SyncToastReadiness::Ready;
     }
 
     /// Seed a project's baseline from a fully-resolved ahead/behind value,
@@ -84,7 +95,7 @@ impl SyncTracker {
         let entry = self.entries.entry(path).or_default();
         let previous = entry.last_seen;
         entry.last_seen = Baseline::Seen(current);
-        match (entry.eligible, previous) {
+        match (entry.toast_readiness.is_ready(), previous) {
             (true, Baseline::Seen(prev)) if prev != current => Some(SyncTransition {
                 previous: prev,
                 current,

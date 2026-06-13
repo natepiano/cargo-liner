@@ -338,10 +338,28 @@ pub(super) fn worst_git_status(
 /// reorders node indices. Used to re-apply the same logical expansions
 /// to the new layout.
 #[derive(Clone)]
+pub enum LegacyRootExpansionKind {
+    HadChildren,
+    Leaf,
+}
+
+impl LegacyRootExpansionKind {
+    pub(super) const fn from_had_children(had_children: bool) -> Self {
+        if had_children {
+            Self::HadChildren
+        } else {
+            Self::Leaf
+        }
+    }
+
+    pub(super) const fn had_children(&self) -> bool { matches!(self, Self::HadChildren) }
+}
+
+#[derive(Clone)]
 pub struct LegacyRootExpansion {
     pub(super) root_path:      AbsolutePath,
     pub(super) old_node_index: usize,
-    pub(super) had_children:   bool,
+    pub(super) expansion_kind: LegacyRootExpansionKind,
     pub(super) named_groups:   Vec<usize>,
 }
 

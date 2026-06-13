@@ -556,9 +556,11 @@ impl App {
             tree.regroup_members(&inline_dirs);
         }
         self.register_discovery_shimmer(discovered_path.as_path());
-        self.project_list
-            .migrate_legacy_root_expansions(&legacy_expansions);
-        self.rebuild_visible_rows_now();
+        if !legacy_expansions.is_empty() {
+            self.project_list
+                .migrate_legacy_root_expansions(&legacy_expansions);
+            self.rebuild_visible_rows_now();
+        }
         self.reload_lint_history(&discovered_path);
         self.background
             .register_item_background_services(&service_item);
@@ -608,9 +610,11 @@ impl App {
             tree.regroup_top_level_worktrees();
         }
         self.reload_lint_history(&path);
-        self.project_list
-            .migrate_legacy_root_expansions(&legacy_expansions);
-        self.rebuild_visible_rows_now();
+        if !legacy_expansions.is_empty() {
+            self.project_list
+                .migrate_legacy_root_expansions(&legacy_expansions);
+            self.rebuild_visible_rows_now();
+        }
         self.ci.clear_content();
         self.lint.clear_content();
         self.panes.clear_detail_data(None);

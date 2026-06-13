@@ -67,6 +67,24 @@ pub struct RenderStyles {
     pub chrome:         PaneChrome,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LintRenderMode {
+    Enabled,
+    Disabled,
+}
+
+impl LintRenderMode {
+    const fn from_enabled(lint_enabled: bool) -> Self {
+        if lint_enabled {
+            Self::Enabled
+        } else {
+            Self::Disabled
+        }
+    }
+
+    const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
+}
+
 struct PackageRenderCtx<'a> {
     data:              &'a PackageData,
     rows:              &'a [PackageRow],
@@ -77,7 +95,7 @@ struct PackageRenderCtx<'a> {
     /// render time (the typed `LintDisplay` carries an unframed
     /// `LintStatus`).
     animation_elapsed: Duration,
-    lint_enabled:      bool,
+    lint_mode:         LintRenderMode,
 }
 
 struct PackageRenderLayout {
@@ -480,11 +498,9 @@ fn package_field_render(
 
 fn package_field_value(ctx: &PackageRenderCtx<'_>, field: DetailField) -> String {
     match field {
-        DetailField::Lint => lint_display_to_string(
-            &ctx.data.lint_display,
-            ctx.animation_elapsed,
-            ctx.lint_enabled,
-        ),
+        DetailField::Lint => {
+            lint_display_to_string(&ctx.data.lint_display, ctx.animation_elapsed, ctx.lint_mode)
+        },
         DetailField::Ci => ci_display_to_string(&ctx.data.ci_display),
         _ => field.package_value(ctx.data),
     }
@@ -617,7 +633,7 @@ pub(super) fn render_package_pane_body(
         synced_description_height,
         ..
     } = ctx;
-    let lint_enabled = config.current().lint.enabled;
+    let lint_mode = LintRenderMode::from_enabled(config.current().lint.enabled);
 
     let Some(pkg_data) = pane.content().cloned() else {
         render_no_project_selected(frame, area, pane);
@@ -679,7 +695,7 @@ pub(super) fn render_package_pane_body(
         focus: pane_focus_state,
         styles,
         animation_elapsed: *animation_elapsed,
-        lint_enabled,
+        lint_mode,
     };
     let layout = render_column_inner(frame, &col_ctx, placed[METADATA_BOX].content);
     let mut row_rects = layout.row_rects;
@@ -1157,13 +1173,13 @@ fn lint_display_style(display: &super::LintDisplay) -> Style {
 fn lint_display_to_string(
     display: &super::LintDisplay,
     animation_elapsed: Duration,
-    lint_enabled: bool,
+    lint_mode: LintRenderMode,
 ) -> String {
     match display {
         LintDisplay::NotRust => "No lint runs — not a Rust project".to_string(),
         LintDisplay::NoRuns => "No lint runs".to_string(),
         LintDisplay::Runs { count, status } => {
-            let icon = if lint_enabled {
+            let icon = if lint_mode.is_enabled() {
                 integration::lint_icon_for(status.kind()).frame_at(animation_elapsed)
             } else {
                 LINT_NO_LOG
@@ -1410,7 +1426,7 @@ mod tests {
         };
 
         assert_eq!(
-            lint_display_to_string(&display, elapsed, true),
+            lint_display_to_string(&display, elapsed, super::LintRenderMode::Enabled),
             format!("{} 3", ACTIVITY_SPINNER.frame_at(elapsed))
         );
     }
@@ -1427,7 +1443,7 @@ mod tests {
         };
 
         assert_eq!(
-            lint_display_to_string(&display, elapsed, true),
+            lint_display_to_string(&display, elapsed, super::LintRenderMode::Enabled),
             ACTIVITY_SPINNER.frame_at(elapsed).to_string()
         );
     }

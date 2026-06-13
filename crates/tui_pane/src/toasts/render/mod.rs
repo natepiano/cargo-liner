@@ -9,6 +9,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Color;
 
 use self::layout::StackLayout;
+use self::layout::ToastPaneFocus;
 use self::layout::allocate_toast_heights;
 use self::layout::render_bottom_up;
 use self::layout::render_top_down;
@@ -83,7 +84,7 @@ fn render_toasts(
     let layout = StackLayout {
         width,
         gap,
-        pane_focused,
+        pane_focus: ToastPaneFocus::from_focused(pane_focused),
         focused_toast_id,
     };
     let hitboxes = match settings.placement {
