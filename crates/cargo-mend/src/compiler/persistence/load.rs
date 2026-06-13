@@ -254,8 +254,6 @@ fn relativize_path(path: &str, analysis_root: &Path) -> String {
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
-    clippy::panic,
-    clippy::unwrap_used,
     reason = "tests should panic on unexpected values"
 )]
 mod tests {

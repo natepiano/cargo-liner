@@ -45,12 +45,6 @@ fn def_path_is_descendant(caller_path: &str, narrower_scope: &str) -> bool {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    clippy::panic,
-    clippy::unwrap_used,
-    reason = "tests should panic on unexpected values"
-)]
 mod tests {
     use std::path::Path;
 
