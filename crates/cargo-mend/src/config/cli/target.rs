@@ -31,7 +31,7 @@ pub(crate) struct CargoCheckCli {
 pub(crate) enum WorkspaceSelection {
     #[default]
     Auto,
-    Workspace,
+    All,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -177,7 +177,7 @@ impl From<RawCargoCheckCli> for CargoCheckCli {
 
         Self {
             workspace_selection: if raw.workspace.workspace {
-                WorkspaceSelection::Workspace
+                WorkspaceSelection::All
             } else {
                 WorkspaceSelection::Auto
             },

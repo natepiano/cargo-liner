@@ -57,12 +57,12 @@ edition = "2024"
     fs::create_dir_all(temp.path().join("src")).expect("create src");
     fs::write(
         temp.path().join("src/lib.rs"),
-        "mod helpers;\npub use helpers::exported_fn;\n",
+        "mod helpers;\npub use helpers::exported_fn;\n\npub fn entry() { helpers::internal_fn(); }\n",
     )
     .expect("write lib");
     fs::write(
         temp.path().join("src/helpers.rs"),
-        "pub fn exported_fn() {}\n",
+        "pub fn exported_fn() {}\npub fn internal_fn() {}\n",
     )
     .expect("write helpers");
 
@@ -72,10 +72,21 @@ edition = "2024"
         .iter()
         .filter(|f| f.code == DiagnosticCode::NarrowToPubCrate)
         .collect();
+    let exported_flagged: Vec<_> = narrow_findings
+        .iter()
+        .filter(|f| f.item.as_deref() == Some("fn exported_fn"))
+        .collect();
     assert!(
-        narrow_findings.is_empty(),
-        "re-exported item should not be flagged: {narrow_findings:?}"
+        exported_flagged.is_empty(),
+        "re-exported item should not be flagged: {exported_flagged:?}"
     );
+    assert!(
+        narrow_findings
+            .iter()
+            .any(|f| f.item.as_deref() == Some("fn internal_fn")),
+        "non-exported sibling should still be flagged: {narrow_findings:?}"
+    );
+    assert_summary_matches_findings(&report);
 }
 
 #[test]
@@ -306,7 +317,7 @@ edition = "2024"
     fs::create_dir_all(temp.path().join("src")).expect("create src");
     fs::write(
         temp.path().join("src/lib.rs"),
-        "mod types;\npub use types::MyWidget;\n",
+        "mod types;\npub use types::MyWidget;\n\npub fn entry() -> i32 {\n    let helper = types::InternalHelper;\n    helper.do_work()\n}\n",
     )
     .expect("write lib");
     fs::write(
@@ -316,6 +327,12 @@ edition = "2024"
 impl MyWidget {
     pub fn exported_method() -> Self { Self }
     pub fn another_method(&self) -> i32 { 42 }
+}
+
+pub struct InternalHelper;
+
+impl InternalHelper {
+    pub fn do_work(&self) -> i32 { 7 }
 }
 "#,
     )
@@ -327,10 +344,32 @@ impl MyWidget {
         .iter()
         .filter(|f| f.code == DiagnosticCode::NarrowToPubCrate)
         .collect();
+    let re_exported_type_flagged: Vec<_> = narrow_findings
+        .iter()
+        .filter(|f| {
+            matches!(
+                f.item.as_deref(),
+                Some("struct MyWidget" | "fn exported_method" | "fn another_method")
+            )
+        })
+        .collect();
     assert!(
-        narrow_findings.is_empty(),
-        "methods on re-exported type should not be flagged: {narrow_findings:?}"
+        re_exported_type_flagged.is_empty(),
+        "methods on re-exported type should not be flagged: {re_exported_type_flagged:?}"
     );
+    assert!(
+        narrow_findings
+            .iter()
+            .any(|f| f.item.as_deref() == Some("struct InternalHelper")),
+        "non-exported sibling type should still be flagged: {narrow_findings:?}"
+    );
+    assert!(
+        narrow_findings
+            .iter()
+            .any(|f| f.item.as_deref() == Some("fn do_work")),
+        "non-exported sibling method should still be flagged: {narrow_findings:?}"
+    );
+    assert_summary_matches_findings(&report);
 }
 
 #[test]
@@ -349,7 +388,7 @@ edition = "2024"
     fs::create_dir_all(temp.path().join("src")).expect("create src");
     fs::write(
         temp.path().join("src/lib.rs"),
-        "mod constants;\nmod types;\npub use constants::DEFAULT_FRAME;\npub use types::Icon;\n",
+        "mod constants;\nmod types;\npub use constants::DEFAULT_FRAME;\npub use types::Icon;\n\npub fn entry() -> &'static str {\n    let frame = types::InternalFrame;\n    frame.label()\n}\n",
     )
     .expect("write lib");
     fs::write(
@@ -380,6 +419,12 @@ pub enum Icon {
     Static(&'static str),
     Animated(FrameCycle),
 }
+
+pub struct InternalFrame;
+
+impl InternalFrame {
+    pub fn label(&self) -> &'static str { "internal" }
+}
 "#,
     )
     .expect("write types");
@@ -402,6 +447,19 @@ pub enum Icon {
          `Icon::Animated` variant and the `DEFAULT_FRAME` const, so they must not be flagged \
          for narrowing: {frame_cycle_flagged:?}"
     );
+    assert!(
+        narrow_findings
+            .iter()
+            .any(|f| f.item.as_deref() == Some("struct InternalFrame")),
+        "non-exported sibling type should still be flagged: {narrow_findings:?}"
+    );
+    assert!(
+        narrow_findings
+            .iter()
+            .any(|f| f.item.as_deref() == Some("fn label")),
+        "non-exported sibling method should still be flagged: {narrow_findings:?}"
+    );
+    assert_summary_matches_findings(&report);
 }
 
 #[test]
@@ -701,7 +759,7 @@ edition = "2024"
     .expect("write tui/mod");
     fs::write(
         temp.path().join("src/tui/panes/mod.rs"),
-        "mod cpu;\npub use cpu::cpu_required_pane_height;\n\npub fn entry() { let _ = cpu::compute(0); }\n",
+        "mod cpu;\npub use cpu::cpu_required_pane_height;\npub(crate) use cpu::compute;\n\npub(crate) fn use_compute() { let _ = compute(0); }\n",
     )
     .expect("write panes/mod");
     fs::write(
@@ -725,13 +783,29 @@ edition = "2024"
                 && f.path.contains("panes/cpu.rs")
                 && f.item.as_deref() == Some("fn cpu_required_pane_height"))
                 || (f.code == DiagnosticCode::InternalParentPubUseFacade
-                    && f.path.contains("panes/mod.rs"))
+                    && f.path.contains("panes/mod.rs")
+                    && f.item.as_deref() == Some("pub use cpu_required_pane_height"))
         })
         .collect();
     assert!(
         bad_findings.is_empty(),
         "items reachable only from #[cfg(test)] callers must not be flagged for narrowing or pub-use removal; got: {bad_findings:#?}",
     );
+    let compute_flagged = report.findings.iter().any(|f| {
+        (matches!(
+            f.code,
+            DiagnosticCode::NarrowToPubCrate | DiagnosticCode::SuspiciousPub
+        ) && f.path.contains("panes/cpu.rs")
+            && f.item.as_deref() == Some("fn compute"))
+            || (f.code == DiagnosticCode::InternalParentPubUseFacade
+                && f.path.contains("panes/mod.rs")
+                && f.item.as_deref() == Some("pub use compute"))
+    });
+    assert!(
+        compute_flagged,
+        "`compute` should still be reported inside the fixture: {report:#?}",
+    );
+    assert_summary_matches_findings(&report);
 }
 
 #[test]
@@ -755,17 +829,17 @@ edition = "2024"
     fs::create_dir_all(temp.path().join("src/tui/panes")).expect("create dirs");
     fs::write(
         temp.path().join("src/main.rs"),
-        "mod tui;\nfn main() { tui::panes::entry() }\n",
+        "mod tui;\nfn main() { tui::entry() }\n",
     )
     .expect("write main");
     fs::write(
         temp.path().join("src/tui/mod.rs"),
-        "pub mod panes;\nmod render;\n",
+        "mod panes;\nmod render;\npub(super) fn entry() { panes::entry(); }\n",
     )
     .expect("write tui/mod");
     fs::write(
         temp.path().join("src/tui/panes/mod.rs"),
-        "mod cpu;\n#[cfg(test)]\npub(super) use cpu::cpu_required_pane_height;\n\npub fn entry() { let _ = cpu::compute(0); }\n",
+        "mod cpu;\n#[cfg(test)]\npub(super) use cpu::cpu_required_pane_height;\npub(crate) use cpu::compute;\n\npub(super) fn entry() { let _ = compute(0); }\n",
     )
     .expect("write panes/mod");
     fs::write(
@@ -789,13 +863,29 @@ edition = "2024"
                 && f.path.contains("panes/cpu.rs")
                 && f.item.as_deref() == Some("fn cpu_required_pane_height"))
                 || (f.code == DiagnosticCode::InternalParentPubUseFacade
-                    && f.path.contains("panes/mod.rs"))
+                    && f.path.contains("panes/mod.rs")
+                    && f.item.as_deref() == Some("pub use cpu_required_pane_height"))
         })
         .collect();
     assert!(
         bad_findings.is_empty(),
         "items reachable only from #[cfg(test)] callers must not be flagged for narrowing or pub-use removal; got: {bad_findings:#?}",
     );
+    let compute_flagged = report.findings.iter().any(|f| {
+        (matches!(
+            f.code,
+            DiagnosticCode::NarrowToPubCrate | DiagnosticCode::SuspiciousPub
+        ) && f.path.contains("panes/cpu.rs")
+            && f.item.as_deref() == Some("fn compute"))
+            || (f.code == DiagnosticCode::InternalParentPubUseFacade
+                && f.path.contains("panes/mod.rs")
+                && f.item.as_deref() == Some("pub use compute"))
+    });
+    assert!(
+        compute_flagged,
+        "`compute` should still be reported inside the fixture: {report:#?}",
+    );
+    assert_summary_matches_findings(&report);
 }
 
 #[test]
@@ -829,7 +919,7 @@ edition = "2024"
     .expect("write tui/mod");
     fs::write(
         temp.path().join("src/tui/panes/mod.rs"),
-        "mod cpu;\n#[cfg(test)]\npub(super) use cpu::cpu_required_pane_height;\n\npub fn entry() { let _ = cpu::compute(0); }\n",
+        "mod cpu;\n#[cfg(test)]\npub(super) use cpu::cpu_required_pane_height;\npub(crate) use cpu::compute;\n\npub(crate) fn use_compute() { let _ = compute(0); }\n",
     )
     .expect("write panes/mod");
     fs::write(
@@ -855,11 +945,27 @@ edition = "2024"
                 && f.path.contains("panes/cpu.rs")
                 && f.item.as_deref() == Some("fn cpu_required_pane_height"))
                 || (f.code == DiagnosticCode::InternalParentPubUseFacade
-                    && f.path.contains("panes/mod.rs"))
+                    && f.path.contains("panes/mod.rs")
+                    && f.item.as_deref() == Some("pub use cpu_required_pane_height"))
         })
         .collect();
     assert!(
         bad_findings.is_empty(),
         "items reachable only via a macro-wrapped #[cfg(test)] caller must not be flagged for narrowing or pub-use removal; got: {bad_findings:#?}",
     );
+    let compute_flagged = report.findings.iter().any(|f| {
+        (matches!(
+            f.code,
+            DiagnosticCode::NarrowToPubCrate | DiagnosticCode::SuspiciousPub
+        ) && f.path.contains("panes/cpu.rs")
+            && f.item.as_deref() == Some("fn compute"))
+            || (f.code == DiagnosticCode::InternalParentPubUseFacade
+                && f.path.contains("panes/mod.rs")
+                && f.item.as_deref() == Some("pub use compute"))
+    });
+    assert!(
+        compute_flagged,
+        "`compute` should still be reported inside the fixture: {report:#?}",
+    );
+    assert_summary_matches_findings(&report);
 }

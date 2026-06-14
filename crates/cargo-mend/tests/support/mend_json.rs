@@ -69,7 +69,7 @@ fn expected_summary(report: &Report) -> Summary {
             finding.fix_support
         };
         match fix_support.summary_bucket() {
-            Some(FixSummaryBucket::Fix) => summary.fixable_with_fix += 1,
+            Some(FixSummaryBucket::Standard) => summary.fixable_with_fix += 1,
             Some(FixSummaryBucket::PubUse) => summary.fixable_with_fix_pub_use += 1,
             None => {},
         }
@@ -114,7 +114,7 @@ pub(super) fn expected_summary_from_findings(expected_findings: &[ExpectedFindin
         let fix_support = fix_support_for(finding.code, finding.fix_support);
 
         match fix_support.summary_bucket() {
-            Some(FixSummaryBucket::Fix) => summary.fixable_with_fix += 1,
+            Some(FixSummaryBucket::Standard) => summary.fixable_with_fix += 1,
             Some(FixSummaryBucket::PubUse) => summary.fixable_with_fix_pub_use += 1,
             None => {},
         }

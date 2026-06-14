@@ -178,7 +178,7 @@ pub(crate) fn build_cargo_check_plan(
     let default_workspace = selection.scope == SelectionScope::Workspace
         && cargo_cli.package.is_empty()
         && cargo_cli.exclude.is_empty();
-    let use_workspace = matches!(cargo_cli.workspace_selection, WorkspaceSelection::Workspace)
+    let use_workspace = matches!(cargo_cli.workspace_selection, WorkspaceSelection::All)
         || !cargo_cli.exclude.is_empty()
         || default_workspace;
     if use_workspace {
@@ -400,7 +400,7 @@ mod tests {
         // not duplicate the always-on `--all-targets`.
         let selection = fixture_selection(SelectionScope::Workspace);
         let cargo_cli = CargoCheckCli {
-            workspace_selection: WorkspaceSelection::Workspace,
+            workspace_selection: WorkspaceSelection::All,
             target_selections: BTreeSet::from([TargetSelection::All]),
             ..CargoCheckCli::default()
         };

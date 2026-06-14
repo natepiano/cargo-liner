@@ -31,7 +31,7 @@ pub(crate) enum FixSupport {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FixSummaryBucket {
-    Fix,
+    Standard,
     PubUse,
 }
 
@@ -59,7 +59,7 @@ impl FixSupport {
             | Self::UnusedPub
             | Self::NarrowToPubCrate
             | Self::FieldVisibility
-            | Self::ImportsAtTop => Some(FixSummaryBucket::Fix),
+            | Self::ImportsAtTop => Some(FixSummaryBucket::Standard),
             Self::PubUse => Some(FixSummaryBucket::PubUse),
         }
     }
@@ -332,7 +332,9 @@ impl Report {
             fixable_with_fix:         self
                 .findings
                 .iter()
-                .filter(|f| effective_fixability(f).summary_bucket() == Some(FixSummaryBucket::Fix))
+                .filter(|f| {
+                    effective_fixability(f).summary_bucket() == Some(FixSummaryBucket::Standard)
+                })
                 .count(),
             fixable_with_fix_pub_use: self
                 .findings
