@@ -1,15 +1,8 @@
-//! `ProjectList` pane render bodies.
-//!
-//! `render_project_list` and its tree-row helpers live alongside
-//! `ProjectListPane`. The renderer is a free function (no `Pane`
-//! trait impl).
-
 use std::collections::HashMap;
 use std::path::Path;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::List;
@@ -24,34 +17,9 @@ use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
 use tui_pane::text_default;
 
-use super::constants::DISMISS_SUFFIX;
-use super::constants::PREFIX_GROUP_COLLAPSED;
-use super::constants::PREFIX_GROUP_EXPANDED;
-use super::constants::PREFIX_MEMBER_INLINE;
-use super::constants::PREFIX_MEMBER_NAMED;
-use super::constants::PREFIX_MEMBER_VENDORED_INLINE;
-use super::constants::PREFIX_MEMBER_VENDORED_NAMED;
-use super::constants::PREFIX_ROOT_COLLAPSED;
-use super::constants::PREFIX_ROOT_EXPANDED;
-use super::constants::PREFIX_ROOT_LEAF;
-use super::constants::PREFIX_SUBMODULE;
-use super::constants::PREFIX_VENDORED;
-use super::constants::PREFIX_WT_COLLAPSED;
-use super::constants::PREFIX_WT_EXPANDED;
-use super::constants::PREFIX_WT_FLAT;
-use super::constants::PREFIX_WT_GROUP_COLLAPSED;
-use super::constants::PREFIX_WT_GROUP_EXPANDED;
-use super::constants::PREFIX_WT_MEMBER_INLINE;
-use super::constants::PREFIX_WT_MEMBER_NAMED;
-use super::constants::PREFIX_WT_MEMBER_VENDORED_INLINE;
-use super::constants::PREFIX_WT_MEMBER_VENDORED_NAMED;
-use super::constants::PREFIX_WT_VENDORED;
-use super::constants::TITLE_ELLIPSIS;
-use super::lang;
-use super::pane_impls::ProjectListPane;
+use super::disk;
 use crate::project;
 use crate::project::GitStatus;
-use crate::project::MemberGroup;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::RustProject;
@@ -72,101 +40,36 @@ use crate::tui::columns::ProjectRow;
 use crate::tui::columns::RowLifecycle;
 use crate::tui::pane::DismissTarget;
 use crate::tui::pane::PaneRenderCtx;
-use crate::tui::project_list::ProjectList;
+use crate::tui::panes::constants::DISMISS_SUFFIX;
+use crate::tui::panes::constants::PREFIX_GROUP_COLLAPSED;
+use crate::tui::panes::constants::PREFIX_GROUP_EXPANDED;
+use crate::tui::panes::constants::PREFIX_MEMBER_INLINE;
+use crate::tui::panes::constants::PREFIX_MEMBER_NAMED;
+use crate::tui::panes::constants::PREFIX_MEMBER_VENDORED_INLINE;
+use crate::tui::panes::constants::PREFIX_MEMBER_VENDORED_NAMED;
+use crate::tui::panes::constants::PREFIX_ROOT_COLLAPSED;
+use crate::tui::panes::constants::PREFIX_ROOT_EXPANDED;
+use crate::tui::panes::constants::PREFIX_ROOT_LEAF;
+use crate::tui::panes::constants::PREFIX_SUBMODULE;
+use crate::tui::panes::constants::PREFIX_VENDORED;
+use crate::tui::panes::constants::PREFIX_WT_COLLAPSED;
+use crate::tui::panes::constants::PREFIX_WT_EXPANDED;
+use crate::tui::panes::constants::PREFIX_WT_FLAT;
+use crate::tui::panes::constants::PREFIX_WT_GROUP_COLLAPSED;
+use crate::tui::panes::constants::PREFIX_WT_GROUP_EXPANDED;
+use crate::tui::panes::constants::PREFIX_WT_MEMBER_INLINE;
+use crate::tui::panes::constants::PREFIX_WT_MEMBER_NAMED;
+use crate::tui::panes::constants::PREFIX_WT_MEMBER_VENDORED_INLINE;
+use crate::tui::panes::constants::PREFIX_WT_MEMBER_VENDORED_NAMED;
+use crate::tui::panes::constants::PREFIX_WT_VENDORED;
+use crate::tui::panes::constants::TITLE_ELLIPSIS;
+use crate::tui::panes::lang;
+use crate::tui::panes::pane_impls::ProjectListPane;
 use crate::tui::render;
 use crate::tui::state;
 use crate::tui::state::Lint;
 use crate::tui::theme_roles;
 
-/// Compute the percentile rank of `bytes` within `sorted_values` (0.0 to 1.0).
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "display-only — index-to-float ratio for color interpolation"
-)]
-fn disk_percentile(bytes: Option<u64>, sorted_values: &[u64]) -> Option<f64> {
-    let bytes = bytes?;
-    if sorted_values.len() <= 1 {
-        return None;
-    }
-    let rank = sorted_values
-        .iter()
-        .position(|&v| v >= bytes)
-        .unwrap_or(sorted_values.len() - 1);
-    Some(rank as f64 / (sorted_values.len() - 1) as f64)
-}
-
-/// Compute a color for a disk value by interpolating the active
-/// theme's three `disk_usage` stops: low (smallest) → mid → high
-/// (largest). Modifiers on the theme stops are ignored.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "values are clamped to 0.0..=255.0 before cast"
-)]
-fn disk_color(percentile: Option<f64>) -> Style {
-    let Some(pos) = percentile else {
-        return Style::default().fg(label_color());
-    };
-
-    let theme = tui_pane::theme();
-    let stops = &theme.disk_usage;
-    let (start, end, t) = if pos < 0.5 {
-        (stops.low.color, stops.mid.color, pos * 2.0)
-    } else {
-        (stops.mid.color, stops.high.color, (pos - 0.5) * 2.0)
-    };
-    let (sr, sg, sb) = rgb_channels(start);
-    let (er, eg, eb) = rgb_channels(end);
-    let lerp = |a: u8, b: u8| -> u8 {
-        let af = f64::from(a);
-        let bf = f64::from(b);
-        (bf - af).mul_add(t, af).clamp(0.0, 255.0) as u8
-    };
-
-    Style::default().fg(Color::Rgb(lerp(sr, er), lerp(sg, eg), lerp(sb, eb)))
-}
-
-/// Extract RGB channels from a [`Color`], converting named/indexed
-/// colors into their nearest ANSI 24-bit equivalents. Used by
-/// [`disk_color`] so a theme can supply a named color (e.g. `Green`)
-/// as a gradient stop and still interpolate smoothly.
-const fn rgb_channels(color: Color) -> (u8, u8, u8) {
-    match color {
-        Color::Rgb(r, g, b) => (r, g, b),
-        Color::Reset | Color::Black => (0, 0, 0),
-        Color::Red => (170, 0, 0),
-        Color::Green => (0, 170, 0),
-        Color::Yellow => (170, 85, 0),
-        Color::Blue => (0, 0, 170),
-        Color::Magenta => (170, 0, 170),
-        Color::Cyan => (0, 170, 170),
-        Color::Gray | Color::Indexed(_) => (170, 170, 170),
-        Color::DarkGray => (85, 85, 85),
-        Color::LightRed => (255, 85, 85),
-        Color::LightGreen => (85, 255, 85),
-        Color::LightYellow => (255, 255, 85),
-        Color::LightBlue => (85, 85, 255),
-        Color::LightMagenta => (255, 85, 255),
-        Color::LightCyan => (85, 255, 255),
-        Color::White => (255, 255, 255),
-    }
-}
-
-fn formatted_disk(projects: &ProjectList, path: &Path) -> String {
-    let bytes = projects
-        .at_path(path)
-        .and_then(|project| project.disk_usage_bytes)
-        .unwrap_or(0);
-    render::format_bytes(bytes)
-}
-
-pub fn formatted_disk_for_item(item: &RootItem) -> String {
-    item.disk_usage_bytes()
-        .map_or_else(|| render::format_bytes(0), render::format_bytes)
-}
-
-/// Body of `ProjectListPane::render`. Same pattern as the
-/// other Phase-4 absorptions: typed parameters through `ctx`.
 pub fn render_project_list_pane_body(
     frame: &mut Frame,
     area: Rect,
@@ -367,7 +270,7 @@ fn project_panel_title_with_counts(
 /// counts, or the first-run placeholder), padded with one space each side
 /// and truncated with an ellipsis when it overflows `max_width`. No label
 /// prefix — the home-relative paths read as directories on their own.
-fn project_roots_title(body: &str, max_width: usize) -> String {
+pub(super) fn project_roots_title(body: &str, max_width: usize) -> String {
     let full = format!(" {body} ");
     if full.len() <= max_width + 2 {
         return full;
@@ -379,7 +282,11 @@ fn project_roots_title(body: &str, max_width: usize) -> String {
     )
 }
 
-fn should_pin_project_summary(project_rows: usize, has_summary: bool, inner_height: u16) -> bool {
+pub(super) fn should_pin_project_summary(
+    project_rows: usize,
+    has_summary: bool,
+    inner_height: u16,
+) -> bool {
     has_summary && project_rows.saturating_add(1) > usize::from(inner_height)
 }
 
@@ -392,9 +299,9 @@ fn render_root_item(
 ) -> ListItem<'static> {
     let item = &ctx.project_list[node_index];
     let name = &root_labels[node_index];
-    let disk = formatted_disk_for_item(item);
+    let disk = disk::formatted_disk_for_item(item);
     let disk_bytes = item.disk_usage_bytes();
-    let ds = disk_color(disk_percentile(disk_bytes, root_sorted));
+    let ds = disk::disk_color(disk::disk_percentile(disk_bytes, root_sorted));
     let ci = ctx
         .project_list
         .ci_status_for_root_item_using_lookup(&item.root_item, ctx.ci_status_lookup);
@@ -472,9 +379,9 @@ fn render_child_item<P: project::ProjectFields>(
     widths: &ProjectListWidths,
 ) -> ListItem<'static> {
     let path = project.path();
-    let disk = formatted_disk(ctx.project_list, path);
+    let disk = disk::formatted_disk(ctx.project_list, path);
     let disk_bytes = project.disk_usage_bytes();
-    let ds = disk_color(disk_percentile(disk_bytes, child_sorted));
+    let ds = disk::disk_color(disk::disk_percentile(disk_bytes, child_sorted));
     let lang = project::Package::lang_icon();
     let is_workspace_member = ctx.project_list.is_workspace_member_path(path);
     let is_vendored = ctx.project_list.is_vendored_path(path);
@@ -595,9 +502,9 @@ fn render_worktree_entry<'a>(
         PREFIX_WT_FLAT
     };
     let wt_abs = abs_path.as_deref().unwrap_or_else(|| Path::new(""));
-    let disk = formatted_disk(ctx.project_list, wt_abs);
+    let disk = disk::formatted_disk(ctx.project_list, wt_abs);
     let disk_bytes = item.disk_usage_bytes();
-    let ds = disk_color(disk_percentile(disk_bytes, sorted));
+    let ds = disk::disk_color(disk::disk_percentile(disk_bytes, sorted));
     let lang = item.lang_icon();
     let lint_cell = state::lint_cell_for(
         &Lint::status_for_worktree(&item.root_item, wi),
@@ -989,8 +896,8 @@ fn render_path_only_entry(
     widths: &ProjectListWidths,
 ) -> ListItem<'static> {
     let path = entry.path().as_path();
-    let disk = formatted_disk(ctx.project_list, path);
-    let ds = disk_color(disk_percentile(entry.info().disk_usage_bytes, sorted));
+    let disk = disk::formatted_disk(ctx.project_list, path);
+    let ds = disk::disk_color(disk::disk_percentile(entry.info().disk_usage_bytes, sorted));
     let git_status = ctx.project_list.git_status_for(path);
     let deleted =
         ctx.project_list.is_deleted(inherited_deleted_path) || ctx.project_list.is_deleted(path);
@@ -1128,7 +1035,7 @@ struct WorktreeMemberVendoredRow {
     vendored: usize,
 }
 
-pub fn render_tree_items(
+pub(super) fn render_tree_items(
     ctx: &PaneRenderCtx<'_>,
     pane: &ProjectListPane,
     viewport: &Viewport,
@@ -1287,87 +1194,6 @@ fn render_group_header(
     let label = format!("{group_name} ({member_count})");
     let row = columns::build_group_header_cells(prefix, &label);
     ListItem::new(columns::row_to_line(&row, widths))
-}
-// ── Disk-cache ───────────────────────────────────────────────────────
-//
-// Builds the per-row sorted disk-usage values that `disk_color` /
-// `disk_percentile` consume to color the disk column.
-
-pub fn compute_disk_cache(entries: &ProjectList) -> (Vec<u64>, HashMap<usize, Vec<u64>>) {
-    let mut root_sorted = Vec::new();
-    for entry in entries {
-        if let Some(bytes) = entry.root_item.disk_usage_bytes() {
-            root_sorted.push(bytes);
-        }
-    }
-    root_sorted.sort_unstable();
-
-    let mut child_sorted = HashMap::new();
-    for (ni, entry) in entries.iter().enumerate() {
-        let mut values = Vec::new();
-        collect_child_disk_values(&entry.root_item, &mut values);
-        if !values.is_empty() {
-            values.sort_unstable();
-            child_sorted.insert(ni, values);
-        }
-    }
-
-    (root_sorted, child_sorted)
-}
-
-fn collect_child_disk_values(item: &RootItem, values: &mut Vec<u64>) {
-    match item {
-        RootItem::Rust(RustProject::Workspace(ws)) => {
-            collect_member_group_disk(ws.groups(), values);
-            collect_vendored_disk(ws.vendored(), values);
-        },
-        RootItem::Rust(RustProject::Package(pkg)) => {
-            collect_vendored_disk(pkg.vendored(), values);
-        },
-        RootItem::NonRust(_) => {},
-        RootItem::Worktrees(group) => {
-            for entry in group.iter_entries() {
-                if let Some(bytes) = entry.disk_usage_bytes() {
-                    values.push(bytes);
-                }
-                if let RustProject::Workspace(ws) = entry {
-                    collect_member_group_disk(ws.groups(), values);
-                }
-                collect_vendored_disk(entry.rust_info().vendored(), values);
-            }
-        },
-    }
-    collect_project_list_entry_disk(item.submodules(), values);
-}
-
-fn collect_member_group_disk(groups: &[MemberGroup], values: &mut Vec<u64>) {
-    for group in groups {
-        for member in group.members() {
-            if let Some(bytes) = member.disk_usage_bytes() {
-                values.push(bytes);
-            }
-            collect_vendored_disk(member.vendored(), values);
-        }
-    }
-}
-
-fn collect_vendored_disk(vendored: &[VendoredPackage], values: &mut Vec<u64>) {
-    for project in vendored {
-        if let Some(bytes) = project.disk_usage_bytes() {
-            values.push(bytes);
-        }
-    }
-}
-
-fn collect_project_list_entry_disk(
-    entries: &[impl crate::project::ProjectFields],
-    values: &mut Vec<u64>,
-) {
-    for entry in entries {
-        if let Some(bytes) = entry.info().disk_usage_bytes {
-            values.push(bytes);
-        }
-    }
 }
 
 #[cfg(test)]

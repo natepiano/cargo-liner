@@ -21,6 +21,8 @@ mod widths;
 #[cfg(test)]
 mod tests;
 
+use std::collections::HashMap;
+
 #[cfg(test)]
 pub(super) use actions::handle_ci_runs_key;
 pub(super) use ci::render_ci_pane_body;
@@ -125,11 +127,8 @@ pub(super) use pane_impls::PackagePane;
 pub(super) use pane_impls::ProjectListPane;
 pub(super) use pane_impls::TargetsPane;
 pub(super) use pane_impls::hit_test_table_row;
-pub(super) use project_list::compute_disk_cache;
 #[cfg(test)]
-pub(super) use project_list::formatted_disk_for_item;
-#[cfg(test)]
-pub(super) use project_list::render_tree_items;
+use ratatui::widgets::ListItem;
 pub(super) use spec::PaneBehavior;
 pub(super) use spec::PaneId;
 pub(super) use spec::behavior;
@@ -143,11 +142,15 @@ pub(super) use targets::format_start_age;
 pub(super) use targets::outline_subtree_len;
 pub(super) use targets::resolve_kill_request;
 use tui_pane::FocusedPane;
+#[cfg(test)]
+use tui_pane::Viewport;
 pub(super) use widths::compute_project_list_widths;
 #[cfg(test)]
 pub(super) use widths::name_width_with_gutter;
 
 use super::app::App;
+#[cfg(test)]
+use super::app::ProjectListWidths;
 use super::integration::AppPaneId;
 use super::integration::NavAction;
 use super::keymap::CiRunsAction;
@@ -155,9 +158,14 @@ use super::keymap::GitAction;
 use super::keymap::LintsAction;
 use super::keymap::PackageAction;
 use super::keymap::TargetsAction;
+#[cfg(test)]
+use super::pane::PaneRenderCtx;
+use super::project_list::ProjectList;
 pub(super) use super::state::CiDisplay;
 pub(super) use super::state::Lint;
 pub(super) use super::state::LintDisplay;
+#[cfg(test)]
+use crate::project::RootItem;
 
 pub(super) fn dispatch_package_action(action: PackageAction, app: &mut App) {
     actions::dispatch_package_action(action, app);
@@ -176,6 +184,25 @@ pub(super) fn execute_target_kill(app: &mut App, pid: u32, create_time: u64) {
 }
 
 pub(super) fn sync_running_targets_cursor(app: &mut App) { actions::sync_running_cursor_pid(app); }
+
+pub(super) fn compute_disk_cache(entries: &ProjectList) -> (Vec<u64>, HashMap<usize, Vec<u64>>) {
+    project_list::compute_disk_cache(entries)
+}
+
+#[cfg(test)]
+pub(super) fn formatted_disk_for_item(item: &RootItem) -> String {
+    project_list::formatted_disk_for_item(item)
+}
+
+#[cfg(test)]
+pub(super) fn render_tree_items(
+    ctx: &PaneRenderCtx<'_>,
+    pane: &ProjectListPane,
+    viewport: &Viewport,
+    widths: &ProjectListWidths,
+) -> Vec<ListItem<'static>> {
+    project_list::render_tree_items(ctx, pane, viewport, widths)
+}
 
 pub(super) fn toggle_targets_tree_row(app: &mut App) -> bool {
     actions::toggle_targets_tree_row(app)

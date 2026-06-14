@@ -8,6 +8,7 @@ mod integration;
 mod interaction;
 mod keymap;
 mod keymap_ui;
+mod messages;
 mod overlays;
 mod pane;
 mod panes;

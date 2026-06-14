@@ -1,476 +1,38 @@
-//! Sysinfo-backed CPU/GPU sampler plus severity buckets keyed to the
-//! framework's theme colors.
-//!
-//! [`CpuMonitor`] owns a background worker thread that runs a
-//! [`CpuPoller`] on a fixed cadence and forwards each sampled
-//! [`CpuUsage`] over a channel. The render thread only performs a
-//! non-blocking [`latest`](CpuMonitor::latest) drain, so frame paints
-//! never block on the sysinfo / `GetSystemTimes` / PDH syscalls the
-//! poll performs. [`severity`] maps a percentage to a [`CpuSeverity`]
-//! bucket using caller-supplied thresholds; [`CpuSeverity::color`]
-//! resolves to the framework's success / title / error theme colors.
+use super::CFDictionary;
+use super::CFNumber;
+use super::CFRetained;
+use super::CFString;
+use super::CFType;
+use super::CpuBreakdownRaw;
+use super::IOIteratorNext;
+use super::IOObjectRelease;
+use super::IORegistryEntryCreateCFProperty;
+use super::IOServiceGetMatchingServices;
+use super::IOServiceMatching;
+use super::KERN_SUCCESS;
+use super::bounded_percent_u8;
+use super::from_ref;
+use super::io_iterator_t;
+use super::kCFAllocatorDefault;
+use super::kIOMainPortDefault;
+
+pub(super) fn read_cpu_breakdown_raw() -> CpuBreakdownRaw { macos_cpu_breakdown_raw() }
 
 #[cfg(target_os = "linux")]
-use std::collections::HashMap;
-#[cfg(target_os = "linux")]
-use std::collections::HashSet;
-use std::collections::VecDeque;
-#[cfg(target_os = "linux")]
-use std::process::Command;
-#[cfg(target_os = "macos")]
-use std::ptr::from_ref;
-use std::thread;
-use std::thread::JoinHandle;
-use std::time::Duration;
-#[cfg(target_os = "linux")]
-use std::time::Instant;
-
-use crossbeam_channel::Receiver;
-use crossbeam_channel::RecvTimeoutError;
-use crossbeam_channel::Sender;
-#[cfg(target_os = "macos")]
-use objc2_core_foundation::CFDictionary;
-#[cfg(target_os = "macos")]
-use objc2_core_foundation::CFNumber;
-#[cfg(target_os = "macos")]
-use objc2_core_foundation::CFRetained;
-#[cfg(target_os = "macos")]
-use objc2_core_foundation::CFString;
-#[cfg(target_os = "macos")]
-use objc2_core_foundation::CFType;
-#[cfg(target_os = "macos")]
-use objc2_core_foundation::kCFAllocatorDefault;
-#[cfg(target_os = "macos")]
-use objc2_io_kit::IOIteratorNext;
-#[cfg(target_os = "macos")]
-use objc2_io_kit::IOObjectRelease;
-#[cfg(target_os = "macos")]
-use objc2_io_kit::IORegistryEntryCreateCFProperty;
-#[cfg(target_os = "macos")]
-use objc2_io_kit::IOServiceGetMatchingServices;
-#[cfg(target_os = "macos")]
-use objc2_io_kit::IOServiceMatching;
-#[cfg(target_os = "macos")]
-use objc2_io_kit::io_iterator_t;
-#[cfg(target_os = "macos")]
-use objc2_io_kit::kIOMainPortDefault;
-use ratatui::style::Color;
-use sysinfo::CpuRefreshKind;
-use sysinfo::RefreshKind;
-use sysinfo::System;
-
-pub use super::constants::CPU_SMOOTHING_WINDOW_POLLS;
-#[cfg(target_os = "windows")]
-use super::constants::GPU_COUNTER_PATH;
-#[cfg(target_os = "macos")]
-use super::constants::KERN_SUCCESS;
-#[cfg(target_os = "windows")]
-use super::constants::PDH_CSTATUS_NEW_DATA;
-#[cfg(target_os = "windows")]
-use super::constants::PDH_FMT_DOUBLE;
-#[cfg(target_os = "windows")]
-use super::constants::PDH_MORE_DATA;
-#[cfg(target_os = "windows")]
-use super::constants::PDH_SUCCESS;
-use super::constants::PERCENT_PER_CELL;
-use crate::theme;
-
-/// Per-core CPU usage sample.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CpuCoreUsage {
-    /// Display label for the core (typically "CPU N").
-    pub label:   String,
-    /// Utilization percentage rounded to a `u8` in `0..=100`.
-    pub percent: u8,
-}
-
-/// Aggregate CPU/GPU sample produced by [`CpuPoller::poll`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CpuUsage {
-    /// Aggregate CPU utilization across all cores, in `0..=100`.
-    pub total_percent: u8,
-    /// Per-core breakdown.
-    pub cores:         Vec<CpuCoreUsage>,
-    /// System/user/idle percentage breakdown computed from raw ticks.
-    pub breakdown:     CpuBreakdown,
-    /// Latest GPU utilization, when available on this OS.
-    pub gpu_percent:   Option<u8>,
-}
-
-impl CpuUsage {
-    /// Build a zero-filled snapshot with `core_count` placeholder cores.
-    #[must_use]
-    pub fn placeholder(core_count: usize) -> Self {
-        Self {
-            total_percent: 0,
-            cores:         (0..core_count)
-                .map(|index| CpuCoreUsage {
-                    label:   format!("CPU {}", index + 1),
-                    percent: 0,
-                })
-                .collect(),
-            breakdown:     CpuBreakdown::default(),
-            gpu_percent:   None,
-        }
-    }
-}
-
-/// System / user / idle CPU-time percentage breakdown.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct CpuBreakdown {
-    /// Percentage of CPU time spent in kernel mode.
-    pub system: u8,
-    /// Percentage of CPU time spent in user mode.
-    pub user:   u8,
-    /// Percentage of CPU time spent idle.
-    pub idle:   u8,
-}
-
-/// Severity bucket for a CPU utilization percentage.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CpuSeverity {
-    /// At or below the low-utilization threshold.
-    Low,
-    /// Above low utilization and at or below the medium-utilization threshold.
-    Medium,
-    /// Above the medium-utilization threshold.
-    High,
-}
-
-impl CpuSeverity {
-    /// Resolve this severity to its framework theme color.
-    #[must_use]
-    pub fn color(self) -> Color {
-        match self {
-            Self::Low => theme::success_color(),
-            Self::Medium => theme::title_color(),
-            Self::High => theme::error_color(),
-        }
-    }
-}
-
-/// Bounded rolling-mean window for utilization samples.
-///
-/// Damps single-poll spikes and the transient zeros the macOS GPU
-/// counter publishes mid-update. Used for the GPU row here and for the
-/// per-process CPU column in consumers' process lists.
-#[derive(Clone, Debug, Default)]
-pub struct RollingMean {
-    window: VecDeque<f32>,
-}
-
-impl RollingMean {
-    /// Fold `sample` into the window and return the new mean. The first
-    /// sample is the mean of one — no zero dilution.
-    pub fn push(&mut self, sample: f32) -> f32 {
-        self.window.push_back(sample);
-        if self.window.len() > CPU_SMOOTHING_WINDOW_POLLS {
-            self.window.pop_front();
-        }
-        let len = u16::try_from(self.window.len()).unwrap_or(u16::MAX);
-        self.window.iter().sum::<f32>() / f32::from(len)
-    }
-}
-
-/// Sysinfo-backed CPU/GPU sampler.
-///
-/// Each [`poll`](Self::poll) refreshes the sysinfo [`System`], computes
-/// the system/user/idle breakdown from raw ticks, and samples GPU
-/// utilization. The sampler does not gate its own cadence — that is
-/// owned by [`CpuMonitor`], which drives a poller on a worker thread.
-#[derive(Debug)]
-pub struct CpuPoller {
-    system:             System,
-    last_breakdown_raw: CpuBreakdownRaw,
-    /// Rolling window over GPU samples; an unavailable poll leaves it
-    /// untouched rather than diluting the mean.
-    gpu_smoothing:      RollingMean,
-    /// Persistent PDH query for GPU utilization (Windows only).
-    #[cfg(target_os = "windows")]
-    gpu_query:          Option<GpuQuery>,
-    /// DRM `fdinfo` engine-utilization sampler (Linux fallback).
-    #[cfg(target_os = "linux")]
-    fdinfo_gpu:         FdinfoGpuSampler,
-}
-
-impl Default for CpuPoller {
-    fn default() -> Self { Self::new() }
-}
-
-impl CpuPoller {
-    /// Construct a poller, priming the sysinfo and breakdown baselines
-    /// so the first [`poll`](Self::poll) reports a real delta.
-    #[must_use]
-    pub fn new() -> Self {
-        let mut system = System::new_with_specifics(
-            RefreshKind::nothing().with_cpu(CpuRefreshKind::everything()),
-        );
-        system.refresh_cpu_all();
-        Self {
-            system,
-            last_breakdown_raw: read_cpu_breakdown_raw(),
-            gpu_smoothing: RollingMean::default(),
-            #[cfg(target_os = "windows")]
-            gpu_query: GpuQuery::new(),
-            #[cfg(target_os = "linux")]
-            fdinfo_gpu: FdinfoGpuSampler::new(),
-        }
-    }
-
-    /// Number of CPU cores reported by the underlying [`System`], floored at 1.
-    #[must_use]
-    pub fn core_count(&self) -> usize { self.system.cpus().len().max(1) }
-
-    /// Sample CPU and GPU utilization now, relative to the previous poll.
-    pub fn poll(&mut self) -> CpuUsage {
-        self.system.refresh_cpu_all();
-
-        let cores = self
-            .system
-            .cpus()
-            .iter()
-            .enumerate()
-            .map(|(index, cpu)| CpuCoreUsage {
-                label:   normalize_cpu_label(cpu.name(), index),
-                percent: cpu_percent(cpu.cpu_usage()),
-            })
-            .collect::<Vec<_>>();
-
-        let total_percent = cpu_percent(self.system.global_cpu_usage());
-        let breakdown = cpu_breakdown(&mut self.last_breakdown_raw);
-        #[cfg(target_os = "windows")]
-        let gpu_percent = self.gpu_query.as_ref().and_then(GpuQuery::sample);
-        #[cfg(target_os = "linux")]
-        let gpu_percent = read_gpu_percent().or_else(|| self.fdinfo_gpu.sample());
-        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-        let gpu_percent = read_gpu_percent();
-        let gpu_percent =
-            gpu_percent.map(|percent| cpu_percent(self.gpu_smoothing.push(f32::from(percent))));
-
-        CpuUsage {
-            total_percent,
-            cores,
-            breakdown,
-            gpu_percent,
-        }
-    }
-}
-
-/// Background CPU/GPU sampler.
-///
-/// Spawns a worker thread that runs a [`CpuPoller`] on a fixed cadence
-/// and forwards each [`CpuUsage`] over a channel. The render thread
-/// calls [`latest`](Self::latest) — a non-blocking drain — so it never
-/// blocks on the syscalls a poll performs. Dropping the monitor stops
-/// the worker and joins it.
-#[derive(Debug)]
-pub struct CpuMonitor {
-    samples:     Receiver<CpuUsage>,
-    stop_sender: Sender<()>,
-    handle:      Option<JoinHandle<()>>,
-    core_count:  usize,
-}
-
-impl CpuMonitor {
-    /// Spawn the worker thread, sampling at most every
-    /// `poll_interval_ms` milliseconds (floored at 1ms).
-    ///
-    /// The poller is primed on the calling thread so [`core_count`]
-    /// is available immediately; the first sample arrives one interval
-    /// later, by which point the worker has a real delta window.
-    ///
-    /// [`core_count`]: Self::core_count
-    #[must_use]
-    pub fn new(poll_interval_ms: u64) -> Self {
-        let mut poller = CpuPoller::new();
-        let core_count = poller.core_count();
-        let interval = Duration::from_millis(poll_interval_ms.max(1));
-        let (sample_sender, samples) = crossbeam_channel::unbounded();
-        let (stop_sender, stop_receiver) = crossbeam_channel::unbounded();
-        let handle = thread::Builder::new()
-            .name("cpu-monitor".to_string())
-            .spawn(move || cpu_poll_loop(&mut poller, &sample_sender, &stop_receiver, interval))
-            .ok();
-        Self {
-            samples,
-            stop_sender,
-            handle,
-            core_count,
-        }
-    }
-
-    /// Number of CPU cores, captured when the worker was spawned.
-    #[must_use]
-    pub const fn core_count(&self) -> usize { self.core_count }
-
-    /// Whether the worker thread spawned successfully and is producing
-    /// samples. When `false` (the `thread::Builder::spawn` failed and
-    /// the sample `Sender` was dropped with the unrun closure), the
-    /// [`receiver`](Self::receiver) is permanently disconnected — the
-    /// event loop must not register it in a `Select`, or the loop would
-    /// busy-spin on a perpetually-ready dead channel.
-    #[must_use]
-    pub const fn is_sampling(&self) -> bool { self.handle.is_some() }
-
-    /// The sample channel receiver, for registering in a render-loop
-    /// `crossbeam_channel::Select` so a new sample wakes the loop.
-    ///
-    /// Register only — draining is exclusive to [`latest`](Self::latest),
-    /// which the render thread calls each frame. Registering does not
-    /// consume; the `Select` merely signals readiness. Gate registration
-    /// on [`is_sampling`](Self::is_sampling).
-    #[must_use]
-    pub const fn receiver(&self) -> &Receiver<CpuUsage> { &self.samples }
-
-    /// Zero-filled [`CpuUsage`] sized to the current core count.
-    #[must_use]
-    pub fn placeholder_cpu_usage(&self) -> CpuUsage { CpuUsage::placeholder(self.core_count) }
-
-    /// Drain the channel, returning the most recent sample if any
-    /// arrived since the last call. Never blocks.
-    #[must_use]
-    pub fn latest(&self) -> Option<CpuUsage> {
-        let mut newest = None;
-        while let Ok(usage) = self.samples.try_recv() {
-            newest = Some(usage);
-        }
-        newest
-    }
-}
-
-impl Drop for CpuMonitor {
-    fn drop(&mut self) {
-        // Wake the worker out of its timed wait so the join is prompt;
-        // a closed channel (worker already exited) is fine to ignore.
-        let _ = self.stop_sender.send(());
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
-    }
-}
-
-/// Worker loop: wait up to `interval` for a stop signal; on timeout,
-/// sample and forward. Exits when stop is signaled, when the monitor
-/// is dropped (stop channel disconnects), or when the sample channel
-/// is closed.
-fn cpu_poll_loop(
-    poller: &mut CpuPoller,
-    samples: &Sender<CpuUsage>,
-    stop: &Receiver<()>,
-    interval: Duration,
-) {
-    // `recv_timeout` returns `Timeout` each interval (sample and forward);
-    // `Ok`/`Disconnected` means stop was signaled or the monitor dropped.
-    while stop.recv_timeout(interval) == Err(RecvTimeoutError::Timeout) {
-        if samples.send(poller.poll()).is_err() {
-            break;
-        }
-    }
-}
-
-/// Number of filled 10%-bucket cells for a given percentage, rounding up.
-#[must_use]
-pub fn filled_cells(percent: u8) -> usize {
-    let clamped = if percent > 100 { 100 } else { percent };
-    usize::from(clamped).div_ceil(PERCENT_PER_CELL)
-}
-
-/// Map a percentage to a [`CpuSeverity`] using caller-supplied thresholds.
-#[must_use]
-pub const fn severity(
-    percent: u8,
-    low_utilization_max_percent: u8,
-    medium_utilization_max_percent: u8,
-) -> CpuSeverity {
-    if percent <= low_utilization_max_percent {
-        CpuSeverity::Low
-    } else if percent <= medium_utilization_max_percent {
-        CpuSeverity::Medium
-    } else {
-        CpuSeverity::High
-    }
-}
-
-/// Color used to render the empty (unfilled) cells of a CPU bar.
-#[must_use]
-pub fn blank_bar_color() -> Color { theme::inactive_border_color() }
-
-fn cpu_percent(value: f32) -> u8 { rounded_percent(f64::from(value)) }
-
-fn normalize_cpu_label(name: &str, index: usize) -> String {
-    let trimmed = name.trim();
-    if trimmed.is_empty() {
-        format!("CPU {}", index + 1)
-    } else {
-        trimmed.to_string()
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct CpuBreakdownRaw {
-    system: u64,
-    user:   u64,
-    idle:   u64,
-}
-
-fn cpu_breakdown(previous: &mut CpuBreakdownRaw) -> CpuBreakdown {
-    let current = read_cpu_breakdown_raw();
-    let delta_system = current.system.saturating_sub(previous.system);
-    let delta_user = current.user.saturating_sub(previous.user);
-    let delta_idle = current.idle.saturating_sub(previous.idle);
-    let delta_total = delta_system
-        .saturating_add(delta_user)
-        .saturating_add(delta_idle);
-    *previous = current;
-
-    if delta_total == 0 {
-        return CpuBreakdown::default();
-    }
-
-    CpuBreakdown {
-        system: percent_from_parts(delta_system, delta_total),
-        user:   percent_from_parts(delta_user, delta_total),
-        idle:   percent_from_parts(delta_idle, delta_total),
-    }
-}
-
-fn percent_from_parts(value: u64, total: u64) -> u8 {
-    if total == 0 {
-        return 0;
-    }
-    let rounded = value.saturating_mul(100).saturating_add(total / 2) / total;
-    bounded_percent_u8(rounded)
-}
-
-fn rounded_percent(value: f64) -> u8 {
-    let clamped = value.clamp(0.0, 100.0);
-    let mut percent = 0u8;
-    while percent < 100 && f64::from(percent) + 0.5 <= clamped {
-        percent += 1;
-    }
-    percent
-}
-
-fn bounded_percent_u8(value: u64) -> u8 { u8::try_from(value.min(100)).unwrap_or(100) }
-
-#[cfg(target_os = "macos")]
-fn read_cpu_breakdown_raw() -> CpuBreakdownRaw { macos_cpu_breakdown_raw() }
-
-#[cfg(target_os = "linux")]
-fn read_cpu_breakdown_raw() -> CpuBreakdownRaw { linux_cpu_breakdown_raw() }
+pub(super) fn read_cpu_breakdown_raw() -> CpuBreakdownRaw { linux_cpu_breakdown_raw() }
 
 #[cfg(target_os = "windows")]
-fn read_cpu_breakdown_raw() -> CpuBreakdownRaw { windows_cpu_breakdown_raw() }
+pub(super) fn read_cpu_breakdown_raw() -> CpuBreakdownRaw { windows_cpu_breakdown_raw() }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-fn read_cpu_breakdown_raw() -> CpuBreakdownRaw { CpuBreakdownRaw::default() }
+pub(super) fn read_cpu_breakdown_raw() -> CpuBreakdownRaw { CpuBreakdownRaw::default() }
 
 /// Query the I/O Registry directly for the first `IOAccelerator` service
 /// whose `PerformanceStatistics` dictionary reports a device utilization
 /// percentage. Replaces spawning `ioreg` on every poll.
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code, reason = "IOKit FFI replaces the per-poll ioreg spawn")]
-fn read_gpu_percent() -> Option<u8> {
+pub(super) fn read_gpu_percent() -> Option<u8> {
     // SAFETY: the argument is a valid NUL-terminated C string the call
     // copies into the returned matching dictionary.
     let matching = unsafe { IOServiceMatching(c"IOAccelerator".as_ptr()) }?;
@@ -519,10 +81,12 @@ fn read_gpu_percent() -> Option<u8> {
 
 #[cfg(not(target_os = "macos"))]
 #[cfg(target_os = "linux")]
-fn read_gpu_percent() -> Option<u8> { linux_sysfs_gpu_percent().or_else(linux_nvidia_gpu_percent) }
+pub(super) fn read_gpu_percent() -> Option<u8> {
+    linux_sysfs_gpu_percent().or_else(linux_nvidia_gpu_percent)
+}
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-fn read_gpu_percent() -> Option<u8> { None }
+pub(super) fn read_gpu_percent() -> Option<u8> { None }
 
 #[cfg(target_os = "macos")]
 #[allow(
@@ -550,7 +114,7 @@ fn device_utilization_percent(statistics: &CFDictionary) -> Option<u8> {
     unsafe_code,
     reason = "mach host_statistics FFI for the system/user/idle tick split"
 )]
-fn macos_cpu_breakdown_raw() -> CpuBreakdownRaw {
+pub(super) fn macos_cpu_breakdown_raw() -> CpuBreakdownRaw {
     type Integer = i32;
     type Natural = u32;
     type MachPort = u32;
@@ -613,7 +177,7 @@ fn macos_cpu_breakdown_raw() -> CpuBreakdownRaw {
 }
 
 #[cfg(target_os = "linux")]
-fn linux_cpu_breakdown_raw() -> CpuBreakdownRaw {
+pub(super) fn linux_cpu_breakdown_raw() -> CpuBreakdownRaw {
     let contents = std::fs::read_to_string("/proc/stat").unwrap_or_default();
     let Some(line) = contents.lines().find(|line| line.starts_with("cpu ")) else {
         return CpuBreakdownRaw::default();
@@ -819,7 +383,7 @@ fn engine_busy_percent(busy_ns: u64, elapsed_ns: u128) -> Option<u8> {
     unsafe_code,
     reason = "Win32 GetSystemTimes FFI for the system/user/idle tick split"
 )]
-fn windows_cpu_breakdown_raw() -> CpuBreakdownRaw {
+pub(super) fn windows_cpu_breakdown_raw() -> CpuBreakdownRaw {
     #[repr(C)]
     #[derive(Clone, Copy)]
     struct FileTime {
@@ -1027,90 +591,5 @@ impl Drop for GpuQuery {
     fn drop(&mut self) {
         // SAFETY: `self.query` was opened by PdhOpenQueryW and is closed once.
         unsafe { PdhCloseQuery(self.query) };
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rolling_mean_first_sample_is_undiluted() {
-        let mut mean = RollingMean::default();
-        assert!((mean.push(20.0) - 20.0).abs() < f32::EPSILON);
-        assert!((mean.push(10.0) - 15.0).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn rolling_mean_evicts_the_oldest_sample() {
-        let mut mean = RollingMean::default();
-        // Fill the window with zeros, then push spikes: once the window
-        // holds only the spikes, the zeros no longer drag the mean down.
-        for _ in 0..CPU_SMOOTHING_WINDOW_POLLS {
-            mean.push(0.0);
-        }
-        let mut value = 0.0;
-        for _ in 0..CPU_SMOOTHING_WINDOW_POLLS {
-            value = mean.push(50.0);
-        }
-        assert!((value - 50.0).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn filled_cells_rounds_up_per_ten_percent_bucket() {
-        assert_eq!(filled_cells(0), 0);
-        assert_eq!(filled_cells(1), 1);
-        assert_eq!(filled_cells(10), 1);
-        assert_eq!(filled_cells(11), 2);
-        assert_eq!(filled_cells(100), 10);
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn parse_drm_fdinfo_reads_engine_busy_ns_and_skips_capacity() {
-        let input = "drm-driver:\tamdgpu\n\
-                     drm-client-id:\t42\n\
-                     drm-engine-gfx:\t1500 ns\n\
-                     drm-engine-capacity-gfx:\t2\n\
-                     drm-engine-compute:\t250 ns\n";
-        assert_eq!(
-            parse_drm_fdinfo(input),
-            Some(DrmClientSample {
-                client_id:      Some(42),
-                engine_busy_ns: vec![("gfx".to_string(), 1500), ("compute".to_string(), 250),],
-            })
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn parse_drm_fdinfo_returns_none_without_engine_lines() {
-        // A render-node fd on a driver that emits no engine utilization
-        // (the Apple `asahi` driver looks exactly like this).
-        let input = "pos:\t0\nflags:\t02400002\nmnt_id:\t39\nino:\t460\n";
-        assert_eq!(parse_drm_fdinfo(input), None);
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn engine_busy_percent_is_busy_over_window() {
-        assert_eq!(engine_busy_percent(500_000_000, 1_000_000_000), Some(50));
-        assert_eq!(engine_busy_percent(2_000_000_000, 1_000_000_000), Some(100));
-        assert_eq!(engine_busy_percent(0, 1_000_000_000), Some(0));
-        assert_eq!(engine_busy_percent(10, 0), None);
-    }
-
-    #[test]
-    fn spawned_monitor_reports_sampling_with_a_connected_receiver() {
-        // The event loop gates `Select` registration on `is_sampling()`.
-        // A spawned worker holds the sample sender for the monitor's life,
-        // so the receiver is connected (try_recv is Empty, not
-        // Disconnected) and registering it will not busy-spin.
-        let monitor = CpuMonitor::new(1000);
-        assert!(monitor.is_sampling());
-        assert!(matches!(
-            monitor.receiver().try_recv(),
-            Err(crossbeam_channel::TryRecvError::Empty)
-        ));
     }
 }

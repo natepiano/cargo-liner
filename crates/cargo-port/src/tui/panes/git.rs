@@ -57,6 +57,7 @@ use super::format_ahead_behind;
 use super::github_stars_is_unreachable_placeholder;
 use super::package;
 use super::package::RenderStyles;
+use super::pane_impls;
 use super::pane_impls::GitPane;
 use crate::constants::GIT_LOCAL;
 use crate::constants::IN_SYNC;
@@ -1137,7 +1138,8 @@ pub(super) fn render_git_pane_body(
     };
     let layout = render_git_column_inner(frame, &git_ctx, area, about_layout.content_area);
     pane.viewport.set_scroll_offset(layout.scroll_offset);
-    pane.set_row_layout(
+    pane_impls::set_git_row_layout(
+        pane,
         about_layout.description_rect,
         about_layout.content_area,
         description_rows,

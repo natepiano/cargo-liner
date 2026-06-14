@@ -1,0 +1,76 @@
+use super::AbsolutePath;
+use super::Arc;
+use super::Child;
+use super::LintEventKind;
+use super::LintTriggerEvent;
+use super::LintTriggerKind;
+use super::Mutex;
+use super::RegisterProjectRequest;
+use super::StdSender;
+
+#[derive(Clone)]
+pub struct RuntimeHandle {
+    pub(super) supervisor_sender: StdSender<SupervisorMsg>,
+}
+
+impl RuntimeHandle {
+    pub fn sync_projects(&self, projects: Vec<RegisterProjectRequest>) {
+        let _ = self
+            .supervisor_sender
+            .send(SupervisorMsg::SyncProjects { projects });
+    }
+
+    pub fn register_project(&self, project: RegisterProjectRequest) {
+        let _ = self
+            .supervisor_sender
+            .send(SupervisorMsg::RegisterProject { project });
+    }
+
+    pub fn unregister_project(&self, abs_path: AbsolutePath) {
+        let _ = self
+            .supervisor_sender
+            .send(SupervisorMsg::UnregisterProject { abs_path });
+    }
+
+    pub fn lint_trigger(&self, event: LintTriggerEvent) {
+        let _ = self
+            .supervisor_sender
+            .send(SupervisorMsg::LintTriggered { event });
+    }
+
+    /// Schedule a lint run for a project the app's post-startup staleness
+    /// check flagged (source newer than the last run, or never linted under
+    /// immediate discovery). Routed through the same `LintTriggered` path as
+    /// watcher events so the worker debounces and coalesces it normally.
+    pub fn request_startup_lint(&self, project_root: AbsolutePath) {
+        let _ = self.supervisor_sender.send(SupervisorMsg::LintTriggered {
+            event: LintTriggerEvent {
+                project_root,
+                trigger: LintTriggerKind::Startup,
+                event_kind: LintEventKind::CreateOrModify,
+            },
+        });
+    }
+}
+
+pub struct SpawnResult {
+    pub handle:  Option<RuntimeHandle>,
+    pub warning: Option<String>,
+}
+
+pub(super) enum SupervisorMsg {
+    SyncProjects {
+        projects: Vec<RegisterProjectRequest>,
+    },
+    RegisterProject {
+        project: RegisterProjectRequest,
+    },
+    UnregisterProject {
+        abs_path: AbsolutePath,
+    },
+    LintTriggered {
+        event: LintTriggerEvent,
+    },
+}
+
+pub(super) type ChildSlot = Arc<Mutex<Option<Child>>>;

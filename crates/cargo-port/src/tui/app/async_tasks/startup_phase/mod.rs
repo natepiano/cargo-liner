@@ -1,4 +1,5 @@
 mod orchestrator;
+mod start;
 mod toast_bodies;
 mod tracker;
 
@@ -8,6 +9,6 @@ use crate::tui::app::App;
 
 impl App {
     pub(super) fn begin_startup_phase_from_scan(&mut self, lint_registered: usize) {
-        self.begin_startup_phase_tracker(lint_registered);
+        start::begin_startup_phase_from_scan(self, lint_registered);
     }
 }
