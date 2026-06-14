@@ -116,15 +116,7 @@ pub(super) use pane_data::format_timestamp;
 pub(super) use pane_data::git_fields_from_data;
 pub(super) use pane_data::git_has_description_row;
 pub(super) use pane_data::git_row_at;
-pub(super) use pane_data::github_stars_is_unreachable_placeholder;
 pub(super) use pane_data::max_top_pane_inner_height;
-pub(super) use pane_data::package_first_selectable_row;
-pub(super) use pane_data::package_last_selectable_row;
-pub(super) use pane_data::package_nearest_selectable_row;
-pub(super) use pane_data::package_row_is_selectable;
-pub(super) use pane_data::package_rows_from_data;
-pub(super) use pane_data::package_selectable_row_at_or_after;
-pub(super) use pane_data::package_selectable_row_at_or_before;
 pub(super) use project_list::ProjectListPane;
 #[cfg(test)]
 use ratatui::widgets::ListItem;
@@ -162,10 +154,44 @@ use super::project_list::ProjectList;
 #[cfg(test)]
 use super::render_context::PaneRenderCtx;
 pub(super) use super::state::CiDisplay;
-pub(super) use super::state::Lint;
 pub(super) use super::state::LintDisplay;
 #[cfg(test)]
 use crate::project::RootItem;
+
+pub(super) const fn github_stars_is_unreachable_placeholder(data: &GitData) -> bool {
+    pane_data::github_stars_is_unreachable_placeholder(data)
+}
+
+pub(super) fn package_rows_from_data(data: &PackageData) -> Vec<PackageRow> {
+    pane_data::package_rows_from_data(data)
+}
+
+pub(super) const fn package_row_is_selectable(row: &PackageRow) -> bool {
+    pane_data::package_row_is_selectable(row)
+}
+
+pub(super) fn package_first_selectable_row(rows: &[PackageRow]) -> Option<usize> {
+    pane_data::package_first_selectable_row(rows)
+}
+
+pub(super) fn package_last_selectable_row(rows: &[PackageRow]) -> Option<usize> {
+    pane_data::package_last_selectable_row(rows)
+}
+
+pub(super) fn package_selectable_row_at_or_after(rows: &[PackageRow], pos: usize) -> Option<usize> {
+    pane_data::package_selectable_row_at_or_after(rows, pos)
+}
+
+pub(super) fn package_selectable_row_at_or_before(
+    rows: &[PackageRow],
+    pos: usize,
+) -> Option<usize> {
+    pane_data::package_selectable_row_at_or_before(rows, pos)
+}
+
+pub(super) fn package_nearest_selectable_row(rows: &[PackageRow], pos: usize) -> Option<usize> {
+    pane_data::package_nearest_selectable_row(rows, pos)
+}
 
 pub(super) fn dispatch_package_action(action: PackageAction, app: &mut App) {
     actions::dispatch_package_action(action, app);
