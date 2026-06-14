@@ -12,7 +12,10 @@ pub(crate) const fn canonical_code(code: KeyCode) -> KeyCode {
     }
 }
 
-pub(crate) fn canonical_event_code_and_mods(code: KeyCode, mods: KeyModifiers) -> (KeyCode, KeyModifiers) {
+pub(crate) fn canonical_event_code_and_mods(
+    code: KeyCode,
+    mods: KeyModifiers,
+) -> (KeyCode, KeyModifiers) {
     let code = canonical_code(code);
     let mods = if matches!(code, KeyCode::Char('=' | '+')) {
         mods - KeyModifiers::SHIFT

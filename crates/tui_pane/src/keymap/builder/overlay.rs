@@ -6,10 +6,10 @@ use crossterm::event::KeyModifiers;
 use toml::Table;
 use toml::Value;
 
-use crate::KeyBind;
 use crate::Action;
 use crate::Bindings;
 use crate::GlobalAction;
+use crate::KeyBind;
 use crate::KeyParseError;
 use crate::KeySequence;
 use crate::KeymapError;
@@ -119,13 +119,14 @@ fn parse_toml_value(
             if s.is_empty() {
                 return Ok(Vec::new());
             }
-            let bind = canonicalize_toml_bind_sequence(
-                &KeySequence::parse(s).map_err(|source| KeymapError::InvalidBinding {
-                    scope: scope.to_string(),
-                    action: action.to_string(),
-                    source,
-                })?,
-            );
+            let bind =
+                canonicalize_toml_bind_sequence(&KeySequence::parse(s).map_err(|source| {
+                    KeymapError::InvalidBinding {
+                        scope: scope.to_string(),
+                        action: action.to_string(),
+                        source,
+                    }
+                })?);
             Ok(vec![bind])
         },
         Value::Array(items) => {
