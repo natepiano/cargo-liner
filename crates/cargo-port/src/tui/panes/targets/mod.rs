@@ -9,11 +9,20 @@
 //! present only while anything runs).
 
 mod constants;
+mod data;
 mod pane;
 mod running_subpane;
 
 use std::collections::HashSet;
 
+pub use data::BuildMode;
+pub use data::RunTargetKind;
+pub use data::TargetEntry;
+#[cfg(test)]
+pub use data::TargetSource;
+pub use data::TargetsData;
+pub use data::build_target_list_from_data;
+pub use data::lookup_targets_data;
 pub use pane::TargetsPane;
 use ratatui::Frame;
 use ratatui::layout::Alignment;
@@ -58,9 +67,7 @@ use self::constants::TARGET_HEADER;
 use self::constants::TARGET_LEADING_PAD;
 use self::constants::TARGET_TABLE_COLUMN_SPACING;
 use self::constants::TARGET_TABLE_GAP_COUNT;
-use super::TargetEntry;
-use super::TargetsData;
-use super::package::RenderStyles;
+use super::RenderStyles;
 use crate::tui::columns;
 use crate::tui::panes;
 use crate::tui::render;

@@ -19,14 +19,6 @@ use tui_pane::render_overflow_affordance;
 use unicode_width::UnicodeWidthStr;
 
 use super::CiData;
-use super::constants::CI_BRANCH_LONG_MIN_WIDTH;
-use super::constants::CI_BRANCH_MIN_WIDTH;
-use super::constants::CI_COMMIT_LONG_MIN_WIDTH;
-use super::constants::CI_COMMIT_MIN_WIDTH;
-use super::constants::CI_JOB_LABEL_MAX_WIDTH;
-use super::constants::CI_JOB_LABEL_MIN_WIDTH;
-use super::constants::CI_STATUS_GAP_WIDTH;
-use super::constants::OTHER_JOBS_HEADER;
 use crate::ci;
 use crate::ci::CiJob;
 use crate::ci::CiRun;
@@ -34,6 +26,15 @@ use crate::ci::CiStatus;
 use crate::tui::columns::ColumnSpec;
 use crate::tui::columns::ColumnWidths;
 use crate::tui::constants::CI_TIMESTAMP_WIDTH;
+use crate::tui::panes::constants::CI_BRANCH_LONG_MIN_WIDTH;
+use crate::tui::panes::constants::CI_BRANCH_MIN_WIDTH;
+use crate::tui::panes::constants::CI_COMMIT_LONG_MIN_WIDTH;
+use crate::tui::panes::constants::CI_COMMIT_MIN_WIDTH;
+use crate::tui::panes::constants::CI_JOB_LABEL_MAX_WIDTH;
+use crate::tui::panes::constants::CI_JOB_LABEL_MIN_WIDTH;
+use crate::tui::panes::constants::CI_STATUS_GAP_WIDTH;
+use crate::tui::panes::constants::OTHER_JOBS_HEADER;
+use crate::tui::panes::pane_data;
 use crate::tui::render;
 use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::state::Ci;
@@ -177,7 +178,7 @@ fn build_ci_data_row(
     branch_width: usize,
     selection: PaneSelectionState,
 ) -> Row<'static> {
-    let timestamp = super::format_timestamp(&ci_run.created_at);
+    let timestamp = pane_data::format_timestamp(&ci_run.created_at);
     let total_dur = ci_run
         .wall_clock_secs
         .map_or_else(|| "—".to_string(), ci::format_secs);

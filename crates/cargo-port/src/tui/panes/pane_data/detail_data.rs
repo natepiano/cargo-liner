@@ -16,6 +16,7 @@ use super::RustInfo;
 use super::RustProject;
 use super::ServiceStatus;
 use super::Submodule;
+use super::TargetsData;
 use super::VendoredPackage;
 use super::Visibility;
 use super::Workspace;
@@ -33,9 +34,9 @@ use super::package_data::PublishStatus;
 use super::package_data::StructureCounts;
 use super::package_data::WorktreeGroupSummary;
 use super::project;
-use super::targets::TargetsData;
 use crate::project::ProjectFields;
 use crate::tui::panes::DescriptionBlock;
+use crate::tui::panes::targets;
 use crate::tui::state::CiDisplay;
 use crate::tui::state::Lint;
 use crate::tui::state::LintDisplay;
@@ -648,7 +649,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
         ci_display,
     });
 
-    let targets = lookup_targets_data(app, &abs_path_owned, src.wt_item);
+    let targets = targets::lookup_targets_data(app, &abs_path_owned, src.wt_item);
     assemble_detail_pane_data(package, runtime.git_detail, runtime.worktrees, targets)
 }
 
@@ -850,57 +851,6 @@ fn log_pane_common_breakdown(abs_path: &Path, runtime: &RuntimeFields, metadata:
         path = %abs_path.display(),
         "pane_common_breakdown"
     );
-}
-
-/// Look up the workspace that covers `abs_path` and aggregate its
-/// runnable targets. Returns `TargetsData::default()` when no
-/// metadata covers the path yet — callers render an empty pane in
-/// that case so we don't surface a hand-parsed view that disagrees
-/// with cargo's discovery rules.
-pub(super) fn lookup_targets_data(
-    app: &App,
-    abs_path: &AbsolutePath,
-    wt_item: Option<&RootItem>,
-) -> TargetsData {
-    if let Some(data) = lookup_worktree_group_targets(app, wt_item) {
-        return data;
-    }
-    lookup_targets_data_for_path(app, abs_path)
-}
-
-fn lookup_worktree_group_targets(app: &App, wt_item: Option<&RootItem>) -> Option<TargetsData> {
-    let RootItem::Worktrees(group) = wt_item? else {
-        return None;
-    };
-    if !group.renders_as_group() {
-        return None;
-    }
-
-    let mut merged = TargetsData::default();
-    for entry in group
-        .iter_entries()
-        .filter(|entry| entry.visibility() == Visibility::Visible)
-    {
-        let mut targets = lookup_targets_data_for_path(app, entry.path());
-        targets.relabel_as_worktree(&entry.root_directory_name().into_string());
-        merged.append(targets);
-    }
-    merged.sort_entries();
-    Some(merged)
-}
-
-fn lookup_targets_data_for_path(app: &App, abs_path: &AbsolutePath) -> TargetsData {
-    let handle = app.scan.metadata_store_handle();
-    let Ok(store) = handle.lock() else {
-        return TargetsData::default();
-    };
-    let Some(root) = store.containing_workspace_root(abs_path) else {
-        return TargetsData::default();
-    };
-    let Some(metadata) = store.get(root) else {
-        return TargetsData::default();
-    };
-    TargetsData::from_workspace_metadata(metadata, abs_path)
 }
 
 /// Assemble `DetailPaneData` from already-resolved inputs.

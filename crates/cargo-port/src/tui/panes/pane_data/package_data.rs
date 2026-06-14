@@ -452,3 +452,54 @@ pub(super) fn or_dash(value: Option<&str>) -> String {
         .filter(|s| !s.is_empty())
         .map_or_else(|| "—".to_string(), String::from)
 }
+
+#[cfg(test)]
+mod test_row_tests {
+    use super::*;
+    use crate::tui::panes::constants::TESTS_IGNORED_LABEL;
+    use crate::tui::panes::constants::TESTS_TOTAL_LABEL;
+
+    fn counts(unit: usize, integration: usize, doc: usize, doc_ignored: usize) -> TestCounts {
+        TestCounts {
+            unit,
+            integration,
+            doc,
+            doc_ignored,
+        }
+    }
+
+    #[test]
+    fn single_bucket_has_no_total_row() {
+        assert_eq!(test_rows_from_counts(counts(5, 0, 0, 0)), vec![("unit", 5)]);
+    }
+
+    #[test]
+    fn multiple_buckets_append_runnable_total() {
+        assert_eq!(
+            test_rows_from_counts(counts(117, 48, 1185, 0)),
+            vec![
+                ("unit", 117),
+                ("integration", 48),
+                ("doc", 1185),
+                (TESTS_TOTAL_LABEL, 1350),
+            ]
+        );
+    }
+
+    #[test]
+    fn ignored_is_shown_but_excluded_from_total() {
+        assert_eq!(
+            test_rows_from_counts(counts(0, 0, 1185, 152)),
+            vec![
+                ("doc", 1185),
+                (TESTS_IGNORED_LABEL, 152),
+                (TESTS_TOTAL_LABEL, 1185),
+            ]
+        );
+    }
+
+    #[test]
+    fn all_zero_counts_hide_the_section() {
+        assert!(test_rows_from_counts(counts(0, 0, 0, 0)).is_empty());
+    }
+}

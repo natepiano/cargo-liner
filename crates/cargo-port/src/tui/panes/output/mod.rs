@@ -18,6 +18,7 @@ use tui_pane::finder_match_bg;
 use tui_pane::label_color;
 
 mod pane;
+mod selection;
 
 pub use pane::OutputPane;
 

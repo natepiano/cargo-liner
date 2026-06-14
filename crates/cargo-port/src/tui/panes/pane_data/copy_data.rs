@@ -11,10 +11,10 @@ use super::LintsData;
 use super::PackageData;
 use super::PackageRow;
 use super::TargetsData;
-use super::build_target_list_from_data;
 use super::git_row_at;
-use super::lint;
 use super::package_rows_from_data;
+use crate::lint;
+use crate::tui::panes;
 
 fn copyable_text(text: impl Into<String>) -> Option<String> {
     let text = text.into();
@@ -257,7 +257,7 @@ fn consume_escape(ch: char) -> EscapeStripState {
 const fn is_csi_final(ch: char) -> bool { matches!(ch, '\u{40}'..='\u{7e}') }
 
 pub fn copy_payload_for_targets(data: &TargetsData, pos: usize) -> CopySelectionResult {
-    let entries = build_target_list_from_data(data);
+    let entries = panes::build_target_list_from_data(data);
     let Some(entry) = entries.get(pos) else {
         return CopySelectionResult::Nothing;
     };

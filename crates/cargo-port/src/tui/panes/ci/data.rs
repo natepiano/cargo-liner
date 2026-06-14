@@ -1,7 +1,7 @@
-use super::App;
-use super::CiRun;
-use super::GitOrigin;
-use super::ci;
+use crate::ci;
+use crate::ci::CiRun;
+use crate::project::GitOrigin;
+use crate::tui::app::App;
 
 #[derive(Clone)]
 pub enum CiEmptyState {

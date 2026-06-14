@@ -1,14 +1,19 @@
-use super::AbsolutePath;
-use super::Color;
-use super::Component;
-use super::Ordering;
-use super::Path;
-use super::TARGET_KIND_BENCH_LABEL;
-use super::TARGET_KIND_BIN_LABEL;
-use super::TARGET_KIND_EXAMPLE_LABEL;
-use super::TargetKind;
-use super::WorkspaceMetadata;
-use super::theme_roles;
+use std::cmp::Ordering;
+use std::path::Component;
+use std::path::Path;
+
+use cargo_metadata::TargetKind;
+use ratatui::style::Color;
+
+use crate::project::AbsolutePath;
+use crate::project::RootItem;
+use crate::project::Visibility;
+use crate::project::WorkspaceMetadata;
+use crate::tui::app::App;
+use crate::tui::constants::TARGET_KIND_BENCH_LABEL;
+use crate::tui::constants::TARGET_KIND_BIN_LABEL;
+use crate::tui::constants::TARGET_KIND_EXAMPLE_LABEL;
+use crate::tui::theme_roles;
 
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
 pub enum RunTargetKind {
@@ -185,13 +190,13 @@ impl TargetsData {
         self.binaries.len() + self.examples.len() + self.benches.len()
     }
 
-    pub(super) fn append(&mut self, mut other: Self) {
+    fn append(&mut self, mut other: Self) {
         self.binaries.append(&mut other.binaries);
         self.examples.append(&mut other.examples);
         self.benches.append(&mut other.benches);
     }
 
-    pub(super) fn relabel_as_worktree(&mut self, checkout_name: &str) {
+    fn relabel_as_worktree(&mut self, checkout_name: &str) {
         for entry in self
             .binaries
             .iter_mut()
@@ -203,7 +208,7 @@ impl TargetsData {
         }
     }
 
-    pub(super) fn sort_entries(&mut self) {
+    fn sort_entries(&mut self) {
         self.binaries.sort_by(compare_target_name);
         self.examples.sort_by(compare_example_name);
         self.benches.sort_by(compare_target_name);
@@ -309,6 +314,57 @@ impl TargetsData {
     }
 }
 
+/// Look up the workspace that covers `abs_path` and aggregate its
+/// runnable targets. Returns `TargetsData::default()` when no
+/// metadata covers the path yet, so callers render an empty pane
+/// instead of a hand-parsed view that disagrees with cargo's discovery
+/// rules.
+pub fn lookup_targets_data(
+    app: &App,
+    abs_path: &AbsolutePath,
+    wt_item: Option<&RootItem>,
+) -> TargetsData {
+    if let Some(data) = lookup_worktree_group_targets(app, wt_item) {
+        return data;
+    }
+    lookup_targets_data_for_path(app, abs_path)
+}
+
+fn lookup_worktree_group_targets(app: &App, wt_item: Option<&RootItem>) -> Option<TargetsData> {
+    let RootItem::Worktrees(group) = wt_item? else {
+        return None;
+    };
+    if !group.renders_as_group() {
+        return None;
+    }
+
+    let mut merged = TargetsData::default();
+    for entry in group
+        .iter_entries()
+        .filter(|entry| entry.visibility() == Visibility::Visible)
+    {
+        let mut targets = lookup_targets_data_for_path(app, entry.path());
+        targets.relabel_as_worktree(&entry.root_directory_name().into_string());
+        merged.append(targets);
+    }
+    merged.sort_entries();
+    Some(merged)
+}
+
+fn lookup_targets_data_for_path(app: &App, abs_path: &AbsolutePath) -> TargetsData {
+    let handle = app.scan.metadata_store_handle();
+    let Ok(store) = handle.lock() else {
+        return TargetsData::default();
+    };
+    let Some(root) = store.containing_workspace_root(abs_path) else {
+        return TargetsData::default();
+    };
+    let Some(metadata) = store.get(root) else {
+        return TargetsData::default();
+    };
+    TargetsData::from_workspace_metadata(metadata, abs_path)
+}
+
 fn compare_target_name(a: &TargetEntry, b: &TargetEntry) -> Ordering {
     a.source
         .sort_key()
@@ -352,58 +408,17 @@ fn example_category(manifest_dir: Option<&Path>, src_path: &Path, target_name: &
         .unwrap_or_default()
 }
 
-#[cfg(test)]
-mod test_row_tests {
-    use crate::tui::panes::pane_data::TESTS_IGNORED_LABEL;
-    use crate::tui::panes::pane_data::TESTS_TOTAL_LABEL;
-    use crate::tui::panes::pane_data::TestCounts;
-    use crate::tui::panes::pane_data::package_data;
-
-    fn counts(unit: usize, integration: usize, doc: usize, doc_ignored: usize) -> TestCounts {
-        TestCounts {
-            unit,
-            integration,
-            doc,
-            doc_ignored,
-        }
-    }
-
-    #[test]
-    fn single_bucket_has_no_total_row() {
-        assert_eq!(
-            package_data::test_rows_from_counts(counts(5, 0, 0, 0)),
-            vec![("unit", 5)]
-        );
-    }
-
-    #[test]
-    fn multiple_buckets_append_runnable_total() {
-        assert_eq!(
-            package_data::test_rows_from_counts(counts(117, 48, 1185, 0)),
-            vec![
-                ("unit", 117),
-                ("integration", 48),
-                ("doc", 1185),
-                (TESTS_TOTAL_LABEL, 1350),
-            ]
-        );
-    }
-
-    #[test]
-    fn ignored_is_shown_but_excluded_from_total() {
-        assert_eq!(
-            package_data::test_rows_from_counts(counts(0, 0, 1185, 152)),
-            vec![
-                ("doc", 1185),
-                (TESTS_IGNORED_LABEL, 152),
-                (TESTS_TOTAL_LABEL, 1185),
-            ]
-        );
-    }
-
-    #[test]
-    fn all_zero_counts_hide_the_section() {
-        assert!(package_data::test_rows_from_counts(counts(0, 0, 0, 0)).is_empty());
+/// Within an examples section, sort root-level (no `/`) before
+/// categorized, then alphabetically by display name. Matches the
+/// Bevy-style listing convention preserved across the workspace
+/// aggregation.
+fn example_display_order(a: &str, b: &str) -> Ordering {
+    let a_root = !a.contains('/');
+    let b_root = !b.contains('/');
+    match (a_root, b_root) {
+        (true, false) => Ordering::Less,
+        (false, true) => Ordering::Greater,
+        _ => a.cmp(b),
     }
 }
 
@@ -460,19 +475,5 @@ mod target_list_tests {
             data.target_count(),
             build_target_list_from_data(&data).len()
         );
-    }
-}
-
-/// Within an examples section, sort root-level (no `/`) before
-/// categorized, then alphabetically by display name. Matches the
-/// Bevy-style listing convention preserved across the workspace
-/// aggregation.
-fn example_display_order(a: &str, b: &str) -> Ordering {
-    let a_root = !a.contains('/');
-    let b_root = !b.contains('/');
-    match (a_root, b_root) {
-        (true, false) => Ordering::Less,
-        (false, true) => Ordering::Greater,
-        _ => a.cmp(b),
     }
 }

@@ -1,8 +1,9 @@
-use super::AbsolutePath;
-use super::App;
-use super::Itertools;
-use super::LintRun;
-use super::lint;
+use itertools::Itertools;
+
+use crate::lint;
+use crate::lint::LintRun;
+use crate::project::AbsolutePath;
+use crate::tui::app::App;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LintsProjectKind {

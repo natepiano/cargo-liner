@@ -8,8 +8,8 @@ use tui_pane::Viewport;
 
 use crate::tui::hit_test::HoverTarget;
 use crate::tui::panes::PaneId;
+use crate::tui::panes::RenderStyles;
 use crate::tui::panes::lang;
-use crate::tui::panes::package::RenderStyles;
 use crate::tui::render_context::PaneRenderCtx;
 
 // ── Lang ────────────────────────────────────────────────────────

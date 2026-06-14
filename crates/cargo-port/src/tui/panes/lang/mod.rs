@@ -21,8 +21,8 @@ mod pane;
 
 pub use pane::LangPane;
 
+use super::RenderStyles;
 use super::constants::LANG_NUM_COL;
-use super::package::RenderStyles;
 use crate::project::LangEntry;
 use crate::project::LanguageStats;
 use crate::tui::render;

@@ -10,14 +10,14 @@ use tui_pane::RenderFocus;
 use tui_pane::Renderable;
 use tui_pane::Viewport;
 
-use super::GitVisualRowSpan;
+use super::render::GitVisualRowSpan;
 use crate::project::AbsolutePath;
 use crate::tui::hit_test::HoverTarget;
 use crate::tui::panes::GitData;
 use crate::tui::panes::PaneId;
+use crate::tui::panes::RenderStyles;
 use crate::tui::panes::WorktreeInfo;
 use crate::tui::panes::git;
-use crate::tui::panes::package::RenderStyles;
 use crate::tui::render_context::PaneRenderCtx;
 
 // ── Git ─────────────────────────────────────────────────────────

@@ -28,7 +28,7 @@ use tui_pane::PaneSelectionState;
 use tui_pane::label_color;
 
 use super::constants::NO_DESCRIPTION_AVAILABLE;
-use super::package;
+use super::support;
 use crate::tui::render;
 
 /// What the block renders when the source description is empty.
@@ -112,7 +112,7 @@ impl DescriptionBlock {
         };
 
         let rows = match body {
-            Some(text) if column_width > 0 => package::word_wrap(text, usize::from(column_width)),
+            Some(text) if column_width > 0 => support::word_wrap(text, usize::from(column_width)),
             _ => Vec::new(),
         };
 

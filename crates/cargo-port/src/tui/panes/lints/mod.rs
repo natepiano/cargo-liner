@@ -1,5 +1,11 @@
+mod data;
+
 use std::time::Duration;
 
+pub use data::LintsData;
+#[cfg(test)]
+pub use data::LintsProjectKind;
+pub use data::build_lints_data;
 use ratatui::Frame;
 use ratatui::layout::Alignment;
 use ratatui::layout::Constraint;
@@ -24,7 +30,6 @@ use tui_pane::render_overflow_affordance;
 use tui_pane::success_color;
 use tui_pane::title_color;
 
-use super::LintsData;
 use crate::lint::LintRun;
 use crate::lint::LintRunStatus;
 use crate::tui::render;

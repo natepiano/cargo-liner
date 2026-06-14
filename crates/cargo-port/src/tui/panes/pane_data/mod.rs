@@ -1,24 +1,14 @@
-mod ci_data;
 mod constants;
 mod copy_data;
 mod detail_data;
 mod formatting;
 mod git_data;
-mod lint_data;
 mod package_data;
 mod pending;
-mod targets;
 
-use std::cmp::Ordering;
 use std::collections::HashSet;
-use std::path::Component;
 use std::path::Path;
 
-use cargo_metadata::TargetKind;
-pub use ci_data::CiData;
-#[cfg(test)]
-pub use ci_data::CiEmptyState;
-pub use ci_data::build_ci_data;
 pub use copy_data::copy_payload_for_ci;
 pub use copy_data::copy_payload_for_git;
 pub use copy_data::copy_payload_for_lints;
@@ -53,11 +43,6 @@ pub use git_data::WorktreeInfo;
 pub use git_data::git_fields_from_data;
 pub use git_data::git_has_description_row;
 pub use git_data::git_row_at;
-use itertools::Itertools;
-pub use lint_data::LintsData;
-#[cfg(test)]
-pub use lint_data::LintsProjectKind;
-pub use lint_data::build_lints_data;
 pub use package_data::PackageData;
 #[cfg(test)]
 pub use package_data::PackagePresence;
@@ -68,14 +53,6 @@ pub use pending::CiFetchKind;
 pub use pending::PendingCiFetch;
 pub use pending::PendingExampleRun;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
-pub use targets::BuildMode;
-pub use targets::RunTargetKind;
-pub use targets::TargetEntry;
-#[cfg(test)]
-pub use targets::TargetSource;
-pub use targets::TargetsData;
-pub use targets::build_target_list_from_data;
 use tui_pane::CopyLabel;
 use tui_pane::CopyPayload;
 use tui_pane::CopySelectionResult;
@@ -90,25 +67,33 @@ use self::constants::TESTS_DOC_LABEL;
 use self::constants::TESTS_INTEGRATION_LABEL;
 use self::constants::TESTS_UNIT_LABEL;
 use super::EmptyDescriptionBehavior;
+pub use super::ci::CiData;
+#[cfg(test)]
+pub use super::ci::CiEmptyState;
 use super::constants::TESTS_IGNORED_LABEL;
 use super::constants::TESTS_TOTAL_LABEL;
 use super::git;
+pub use super::lints::LintsData;
+#[cfg(test)]
+pub use super::lints::LintsProjectKind;
 use super::package;
+pub use super::targets::BuildMode;
+pub use super::targets::RunTargetKind;
+pub use super::targets::TargetEntry;
+#[cfg(test)]
+pub use super::targets::TargetSource;
+pub use super::targets::TargetsData;
 use crate::ci;
-use crate::ci::CiRun;
 use crate::ci::CiStatus;
 use crate::constants::GIT_CLONE;
 use crate::constants::GIT_DIR;
 use crate::constants::GIT_FORK;
 use crate::constants::NO_REMOTE_SYNC;
 use crate::http::RateLimitQuota;
-use crate::lint;
-use crate::lint::LintRun;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::BisectProgress;
 use crate::project::Cargo;
-use crate::project::GitOrigin;
 use crate::project::GitStatus;
 use crate::project::HeadState;
 use crate::project::NonRustProject;
@@ -132,7 +117,6 @@ use crate::project::TestCounts;
 use crate::project::VendoredPackage;
 use crate::project::Visibility;
 use crate::project::Workspace;
-use crate::project::WorkspaceMetadata;
 use crate::project::WorktreeStatus;
 use crate::tui::app::App;
 use crate::tui::app::AvailabilityStatus;
@@ -142,7 +126,6 @@ use crate::tui::constants::TARGET_KIND_EXAMPLE_LABEL;
 use crate::tui::project_list::ProjectList;
 use crate::tui::render;
 use crate::tui::state::ServiceStatus;
-use crate::tui::theme_roles;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DetailField {
