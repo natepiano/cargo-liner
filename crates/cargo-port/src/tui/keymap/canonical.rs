@@ -1,4 +1,5 @@
 use crossterm::event::KeyCode;
+use crossterm::event::KeyModifiers;
 
 /// Cargo-port's [`tui_pane::KeyBind::canonicalize_code`] hook: collapses
 /// `+` and `=` so a user binding to either key matches presses of
@@ -9,4 +10,14 @@ pub(crate) const fn canonical_code(code: KeyCode) -> KeyCode {
         KeyCode::Char('+') => KeyCode::Char('='),
         other => other,
     }
+}
+
+pub(crate) fn canonical_event_code_and_mods(code: KeyCode, mods: KeyModifiers) -> (KeyCode, KeyModifiers) {
+    let code = canonical_code(code);
+    let mods = if matches!(code, KeyCode::Char('=' | '+')) {
+        mods - KeyModifiers::SHIFT
+    } else {
+        mods
+    };
+    (code, mods)
 }

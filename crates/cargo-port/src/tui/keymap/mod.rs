@@ -14,6 +14,7 @@ pub(crate) use actions::PackageAction;
 pub(crate) use actions::ProjectListAction;
 pub(crate) use actions::TargetsAction;
 pub(crate) use canonical::canonical_code;
+pub(crate) use canonical::canonical_event_code_and_mods;
 pub(crate) use load::KeymapError;
 pub(crate) use load::KeymapErrorReason;
 pub(crate) use load::keymap_path;

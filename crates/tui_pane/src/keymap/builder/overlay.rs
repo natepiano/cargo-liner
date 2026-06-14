@@ -1,9 +1,12 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+use crossterm::event::KeyCode;
+use crossterm::event::KeyModifiers;
 use toml::Table;
 use toml::Value;
 
+use crate::KeyBind;
 use crate::Action;
 use crate::Bindings;
 use crate::GlobalAction;
@@ -116,11 +119,13 @@ fn parse_toml_value(
             if s.is_empty() {
                 return Ok(Vec::new());
             }
-            let bind = KeySequence::parse(s).map_err(|source| KeymapError::InvalidBinding {
-                scope: scope.to_string(),
-                action: action.to_string(),
-                source,
-            })?;
+            let bind = canonicalize_toml_bind_sequence(
+                &KeySequence::parse(s).map_err(|source| KeymapError::InvalidBinding {
+                    scope: scope.to_string(),
+                    action: action.to_string(),
+                    source,
+                })?,
+            );
             Ok(vec![bind])
         },
         Value::Array(items) => {
@@ -136,6 +141,7 @@ fn parse_toml_value(
                     action: action.to_string(),
                     source,
                 })?;
+                let bind = canonicalize_toml_bind_sequence(&bind);
                 out.push(bind);
             }
             Ok(out)
@@ -146,6 +152,28 @@ fn parse_toml_value(
             source: KeyParseError::Empty,
         }),
     }
+}
+
+fn canonicalize_toml_bind_sequence(sequence: &KeySequence) -> KeySequence {
+    KeySequence::new(
+        sequence
+            .keys()
+            .iter()
+            .copied()
+            .map(canonicalize_toml_bind)
+            .collect(),
+    )
+}
+
+fn canonicalize_toml_bind(mut key_bind: KeyBind) -> KeyBind {
+    key_bind.code = match key_bind.code {
+        KeyCode::Char('+') => KeyCode::Char('='),
+        other => other,
+    };
+    if matches!(key_bind.code, KeyCode::Char('=')) {
+        key_bind.mods &= !KeyModifiers::SHIFT;
+    }
+    key_bind
 }
 
 /// Reject duplicate keys inside a single TOML array. Surfaces

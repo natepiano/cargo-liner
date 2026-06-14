@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Show launched target Project List paths in the Output pane title
+- Fix Project List `Expand All` shortcuts so `+` and `=` are treated as equivalent for expansion in cargo-port
 
 ## [0.1.3] - 2026-06-09
 

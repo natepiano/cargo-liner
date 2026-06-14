@@ -9,3 +9,6 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Changed
 - Rename `StatusLineGlobal.state` and `RenderedSlot.state` to `shortcut_state`, and `RenderFocus.state` to `pane_focus_state`.
+
+### Fixed
+- Normalize framework keymap parsing so `+` and `=` can resolve the same bound action key
