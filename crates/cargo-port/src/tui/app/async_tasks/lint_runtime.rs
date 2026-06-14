@@ -142,17 +142,10 @@ impl App {
         self.project_list
             .lint_runtime_root_entries()
             .into_iter()
-            .filter(|entry| {
-                entry.project_language.is_rust()
-                    && !self.project_list.is_deleted(entry.path.as_path())
-            })
+            .filter(|entry| !self.project_list.is_deleted(entry.path.as_path()))
             .map(|entry| {
-                RegisterProjectRequest::new(
-                    project::home_relative_path(&entry.path),
-                    entry.path,
-                    entry.project_language,
-                )
-                .with_linked_primary_root(entry.linked_primary_root)
+                RegisterProjectRequest::new(project::home_relative_path(&entry.path), entry.path)
+                    .with_linked_primary_root(entry.linked_primary_root)
             })
             .collect()
     }
@@ -218,7 +211,7 @@ impl App {
             RootItem::NonRust(_) => None,
         };
         runtime.register_project(
-            RegisterProjectRequest::new(item.display_path().into_string(), path.clone(), true)
+            RegisterProjectRequest::new(item.display_path().into_string(), path.clone())
                 .with_linked_primary_root(linked_primary_root),
         );
     }
@@ -247,7 +240,7 @@ impl App {
                 &self.config.current().lint,
                 &request.project_label,
                 request.abs_path.as_path(),
-                request.is_rust(),
+                true,
             ) {
                 continue;
             }

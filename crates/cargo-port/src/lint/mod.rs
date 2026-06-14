@@ -45,7 +45,6 @@ pub use run::LintRun;
 pub use run::LintRunOrigin;
 pub use run::LintRunStatus;
 pub use runs::LintRuns;
-pub use runtime::ProjectLanguage;
 pub use runtime::RegisterProjectRequest;
 pub use runtime::RuntimeHandle;
 pub use runtime::project_is_eligible;

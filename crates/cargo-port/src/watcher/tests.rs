@@ -1929,7 +1929,7 @@ fn assert_source_event_schedules_lint_run(
         .handle
         .expect("runtime handle");
     let request =
-        RegisterProjectRequest::new("~/rust/demo", AbsolutePath::from(project_dir.path()), true);
+        RegisterProjectRequest::new("~/rust/demo", AbsolutePath::from(project_dir.path()));
     runtime.sync_projects(vec![request.clone()]);
     runtime.register_project(request);
 
@@ -2039,12 +2039,9 @@ fn registered_linked_worktree_source_event_schedules_lint_run() {
     let runtime = lint::spawn(&cfg, background_tx.clone())
         .handle
         .expect("runtime handle");
-    let request = RegisterProjectRequest::new(
-        "~/rust/style-fix",
-        AbsolutePath::from(linked_dir.as_path()),
-        true,
-    )
-    .with_linked_primary_root(Some(AbsolutePath::from(primary_dir.as_path())));
+    let request =
+        RegisterProjectRequest::new("~/rust/style-fix", AbsolutePath::from(linked_dir.as_path()))
+            .with_linked_primary_root(Some(AbsolutePath::from(primary_dir.as_path())));
     runtime.sync_projects(vec![request.clone()]);
     runtime.register_project(request);
 

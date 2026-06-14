@@ -122,7 +122,6 @@ fn supervisor_loop(
                     target: tui_pane::PERF_LOG_TARGET,
                     path = %abs_path.display(),
                     label = %project.project_label,
-                    is_rust = project.is_rust(),
                     accepted,
                     "lint_supervisor_register_project"
                 );
@@ -470,7 +469,7 @@ fn spawn_project_worker(
 }
 
 pub(super) fn should_watch_project(lint: &LintConfig, request: &RegisterProjectRequest) -> bool {
-    if !request.is_rust() || !request.abs_path.join(CARGO_TOML).is_file() {
+    if !request.abs_path.join(CARGO_TOML).is_file() {
         return false;
     }
     if !request_matches_prefixes(&lint.include, request, false) {

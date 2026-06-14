@@ -9,16 +9,9 @@ impl App {
         };
         let mut projects = Vec::new();
         for entry in self.project_list.lint_runtime_root_entries() {
-            if !entry.project_language.is_rust() {
-                continue;
-            }
             projects.push(
-                RegisterProjectRequest::new(
-                    project::home_relative_path(&entry.path),
-                    entry.path,
-                    entry.project_language,
-                )
-                .with_linked_primary_root(entry.linked_primary_root),
+                RegisterProjectRequest::new(project::home_relative_path(&entry.path), entry.path)
+                    .with_linked_primary_root(entry.linked_primary_root),
             );
         }
         let count = projects.len();

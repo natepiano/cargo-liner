@@ -52,7 +52,6 @@ use crate::scan::BackgroundMsg;
 
 mod command;
 mod handle;
-mod language;
 mod request;
 mod supervisor;
 
@@ -65,7 +64,6 @@ use command::run_commands_for_project;
 use handle::ChildSlot;
 pub use handle::RuntimeHandle;
 use handle::SupervisorMsg;
-pub use language::ProjectLanguage;
 pub use request::RegisterProjectRequest;
 pub use request::project_is_eligible;
 #[cfg(test)]
@@ -106,8 +104,8 @@ mod tests {
     use crate::lint::trigger::LintTriggerKind::RustSource;
     use crate::lint::trigger::LintTriggerKind::Startup;
 
-    fn request(path: &str, abs_path: &Path, is_rust: bool) -> RegisterProjectRequest {
-        RegisterProjectRequest::new(path, AbsolutePath::from(abs_path), is_rust)
+    fn request(path: &str, abs_path: &Path) -> RegisterProjectRequest {
+        RegisterProjectRequest::new(path, AbsolutePath::from(abs_path))
     }
 
     #[test]
@@ -146,7 +144,7 @@ mod tests {
             ..LintConfig::default()
         };
 
-        let req = request("~/rust/demo", project_dir.path(), true);
+        let req = request("~/rust/demo", project_dir.path());
         assert!(!should_watch_project(&lint, &req));
 
         let lint = LintConfig {
@@ -173,8 +171,8 @@ mod tests {
             ..LintConfig::default()
         };
 
-        let direct = request("~/rust/bevy_lagrange", project_dir.path(), true);
-        let worktree = request("~/rust/bevy_lagrange_style_fix", project_dir.path(), true);
+        let direct = request("~/rust/bevy_lagrange", project_dir.path());
+        let worktree = request("~/rust/bevy_lagrange_style_fix", project_dir.path());
 
         assert!(should_watch_project(&lint, &direct));
         assert!(should_watch_project(&lint, &worktree));
@@ -197,12 +195,9 @@ mod tests {
             commands: Vec::new(),
             ..LintConfig::default()
         };
-        let request = RegisterProjectRequest::new(
-            "~/rust/test",
-            AbsolutePath::from(project_dir.path()),
-            true,
-        )
-        .with_linked_primary_root(Some(primary_root));
+        let request =
+            RegisterProjectRequest::new("~/rust/test", AbsolutePath::from(project_dir.path()))
+                .with_linked_primary_root(Some(primary_root));
 
         assert!(should_watch_project(&lint, &request));
     }
@@ -210,8 +205,12 @@ mod tests {
     #[test]
     fn non_rust_projects_are_never_watched() {
         let project_dir = tempfile::tempdir().expect("tempdir");
-        let req = request("~/rust/not-rust", project_dir.path(), false);
-        assert!(!should_watch_project(&LintConfig::default(), &req));
+        assert!(!project_is_eligible(
+            &LintConfig::default(),
+            "~/rust/not-rust",
+            project_dir.path(),
+            false
+        ));
     }
 
     #[test]
@@ -222,7 +221,7 @@ mod tests {
             "[package]\nname='demo'\nversion='0.1.0'\n",
         )
         .expect("write manifest");
-        let req = request("~/rust/demo", project_dir.path(), true);
+        let req = request("~/rust/demo", project_dir.path());
         assert!(!should_watch_project(&LintConfig::default(), &req));
     }
 
@@ -293,9 +292,9 @@ mod tests {
         let desired = desired_projects(
             &lint,
             &[
-                request("~/rust/demo", project_dir.path(), true),
-                request("~/rust/demo/excluded", project_dir.path(), true),
-                request("~/rust/not-rust", project_dir.path(), false),
+                request("~/rust/demo", project_dir.path()),
+                request("~/rust/demo/excluded", project_dir.path()),
+                request("~/rust/not-rust", project_dir.path()),
             ],
         );
 
@@ -328,7 +327,7 @@ mod tests {
         let (background_tx, background_rx) = channel::unbounded();
         let spawn = spawn(&cfg, background_tx);
         let runtime = spawn.handle.expect("runtime handle");
-        let request = request("~/rust/demo", project_dir.path(), true);
+        let request = request("~/rust/demo", project_dir.path());
         runtime.sync_projects(vec![request.clone()]);
         runtime.register_project(request);
         runtime.lint_trigger(LintTriggerEvent {
@@ -401,7 +400,7 @@ mod tests {
         let (background_tx, background_rx) = channel::unbounded();
         let spawn = spawn(&cfg, background_tx);
         let runtime = spawn.handle.expect("runtime handle");
-        runtime.sync_projects(vec![request("~/rust/demo", project_dir.path(), true)]);
+        runtime.sync_projects(vec![request("~/rust/demo", project_dir.path())]);
 
         let deadline = Instant::now() + Duration::from_secs(1);
         let mut saw_cached_passed = false;
@@ -452,7 +451,7 @@ mod tests {
         let (background_tx, background_rx) = channel::unbounded();
         let spawn = spawn(&cfg, background_tx);
         let runtime = spawn.handle.expect("runtime handle");
-        runtime.sync_projects(vec![request("~/rust/demo", project_dir.path(), true)]);
+        runtime.sync_projects(vec![request("~/rust/demo", project_dir.path())]);
 
         // The supervisor no longer runs lints on sync — the app drives any
         // startup lints after startup completes. Sync only hydrates the
@@ -507,7 +506,7 @@ mod tests {
         let (background_tx, background_rx) = channel::unbounded();
         let spawn = spawn(&cfg, background_tx);
         let runtime = spawn.handle.expect("runtime handle");
-        runtime.register_project(request("~/rust/demo", project_dir.path(), true));
+        runtime.register_project(request("~/rust/demo", project_dir.path()));
 
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut saw_passed = false;
@@ -647,7 +646,7 @@ mod tests {
             "[package]\nname='demo'\nversion='0.1.0'\n",
         )
         .expect("write manifest");
-        let request = request("~/rust/demo", project_dir.path(), true);
+        let request = request("~/rust/demo", project_dir.path());
         let desired = HashMap::from([(AbsolutePath::from(project_dir.path()), request)]);
 
         let mut workers = HashMap::new();

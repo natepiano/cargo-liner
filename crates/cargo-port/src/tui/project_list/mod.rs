@@ -26,7 +26,6 @@ use crate::constants::NO_REMOTE_SYNC;
 use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
 use crate::lint::LintRuns;
-use crate::lint::ProjectLanguage;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::Cargo;
@@ -83,7 +82,6 @@ pub(super) enum SyncResolution {
 
 pub(super) struct LintRuntimeRootEntry {
     pub path:                AbsolutePath,
-    pub project_language:    ProjectLanguage,
     pub linked_primary_root: Option<AbsolutePath>,
 }
 
@@ -2145,20 +2143,14 @@ impl ProjectList {
                     .iter_entries()
                     .map(|project| LintRuntimeRootEntry {
                         path:                project.path().clone(),
-                        project_language:    ProjectLanguage::Rust,
                         linked_primary_root: project.linked_primary_root(),
                     })
                     .collect(),
                 RootItem::Rust(project) => vec![LintRuntimeRootEntry {
                     path:                project.path().clone(),
-                    project_language:    ProjectLanguage::Rust,
                     linked_primary_root: project.linked_primary_root(),
                 }],
-                RootItem::NonRust(_) => vec![LintRuntimeRootEntry {
-                    path:                entry.root_item.path().clone(),
-                    project_language:    ProjectLanguage::NonRust,
-                    linked_primary_root: None,
-                }],
+                RootItem::NonRust(_) => Vec::new(),
             };
             for item in items {
                 if seen.insert(item.path.clone()) {
