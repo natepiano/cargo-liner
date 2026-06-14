@@ -3,7 +3,7 @@ use tui_pane::Viewport;
 
 // ── Helpers ─────────────────────────────────────────────────────
 
-/// Hit-test a table-shaped pane (Lints, CI, Finder) where the
+/// Hit-test a table pane (Lints, CI, Finder) where the
 /// first line of the inner area is a column header and rows start
 /// at `inner.y + 1`. `viewport.content_area` is the full inner
 /// rect (including the header); `viewport.scroll_offset` is the

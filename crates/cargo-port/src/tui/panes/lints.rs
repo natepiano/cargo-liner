@@ -27,8 +27,8 @@ use tui_pane::title_color;
 use super::LintsData;
 use crate::lint::LintRun;
 use crate::lint::LintRunStatus;
-use crate::tui::pane::PaneRenderCtx;
 use crate::tui::render;
+use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::state::Lint;
 use crate::tui::theme_roles;
 

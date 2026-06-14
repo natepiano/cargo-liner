@@ -1,6 +1,6 @@
 //! Output pane render body.
 //!
-//! Entry: `OutputPane::render` in `pane_impls.rs` calls
+//! Entry: `OutputPane::render` in `pane.rs` calls
 //! `render_output_pane_body`. The body reads in-flight example
 //! state from `PaneRenderCtx::inflight` and the pane's own cursor /
 //! selection / follow state from `OutputPane`.
@@ -17,11 +17,14 @@ use ratatui::widgets::Paragraph;
 use tui_pane::finder_match_bg;
 use tui_pane::label_color;
 
-use super::pane_data;
-use super::pane_impls::OutputPane;
-use crate::tui::pane::PaneRenderCtx;
+mod pane;
 
-pub fn render_output_pane_body(
+pub use pane::OutputPane;
+
+use super::pane_data;
+use crate::tui::render_context::PaneRenderCtx;
+
+fn render_output_pane_body(
     frame: &mut Frame,
     area: Rect,
     pane: &mut OutputPane,

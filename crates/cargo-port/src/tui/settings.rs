@@ -43,8 +43,8 @@ use super::app::App;
 use super::constants::SETTINGS_POPUP_WIDTH;
 use super::keymap_ui;
 use super::overlays::PopupFrame;
-use super::pane::PaneRenderCtx;
 use super::render;
+use super::render_context::PaneRenderCtx;
 use crate::cache_paths;
 use crate::config;
 use crate::config::CargoPortConfig;
@@ -1305,7 +1305,7 @@ fn toggle_vim_mode(app: &mut App) {
 /// Precomputed render inputs for the Settings overlay. Built in
 /// [`prepare_settings_render_inputs`] before `App::split_for_render`
 /// runs; consumed by `SettingsPane`'s [`tui_pane::Renderable`] impl
-/// via [`crate::tui::pane::PaneRenderCtx`].
+/// via [`crate::tui::render_context::PaneRenderCtx`].
 pub(crate) struct SettingsRenderInputs {
     pub lines:            Vec<Line<'static>>,
     pub line_count:       usize,

@@ -1,7 +1,7 @@
 use super::App;
 use crate::lint;
 use crate::project::Visibility::Dismissed;
-use crate::tui::pane::DismissTarget;
+use crate::tui::dismiss_target::DismissTarget;
 use crate::tui::panes::PaneId;
 
 // ── Resolution + dispatch ───────────────────────────────────────

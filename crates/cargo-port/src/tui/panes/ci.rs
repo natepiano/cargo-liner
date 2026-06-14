@@ -34,8 +34,8 @@ use crate::ci::CiStatus;
 use crate::tui::columns::ColumnSpec;
 use crate::tui::columns::ColumnWidths;
 use crate::tui::constants::CI_TIMESTAMP_WIDTH;
-use crate::tui::pane::PaneRenderCtx;
 use crate::tui::render;
+use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::state::Ci;
 use crate::tui::theme_roles;
 

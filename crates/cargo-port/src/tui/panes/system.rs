@@ -1,7 +1,7 @@
 //! The `Panes` subsystem.
 //!
 //! Owns the pane-related state cluster (`pane_data`, `visited_panes`,
-//! `hovered_pane_row`, plus the per-pane structs in `pane_impls`).
+//! `hovered_pane_row`, plus the per-pane structs in their owning pane modules).
 //! Exposes a facade so App's impl-files and the `panes/` siblings
 //! don't reach into App's private guts directly.
 //!
@@ -12,15 +12,15 @@ use std::time::Instant;
 
 use tui_pane::ResolvedPaneLayout;
 
+use super::CpuPane;
+use super::GitPane;
+use super::LangPane;
+use super::OutputPane;
+use super::PackagePane;
+use super::ProjectListPane;
+use super::TargetsPane;
 use super::constants::RUNNING_TARGETS_POLL_INTERVAL;
 use super::data::PaneDataStore;
-use super::pane_impls::CpuPane;
-use super::pane_impls::GitPane;
-use super::pane_impls::LangPane;
-use super::pane_impls::OutputPane;
-use super::pane_impls::PackagePane;
-use super::pane_impls::ProjectListPane;
-use super::pane_impls::TargetsPane;
 use crate::config::CpuConfig;
 use crate::tui::app::HoveredPaneRow;
 use crate::tui::running_targets::ProjectTargetSlice;

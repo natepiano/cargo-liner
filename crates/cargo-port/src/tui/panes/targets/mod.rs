@@ -1,6 +1,6 @@
 //! Targets pane render body.
 //!
-//! Entry: `TargetsPane::render` in `pane_impls.rs` calls
+//! Entry: `TargetsPane::render` in `pane.rs` calls
 //! `render_targets_pane_body`, which delegates to the data /
 //! empty branches below. The pane is two boxes: the targets table
 //! (one row per target, a `Fill` box) above the Running sub-pane
@@ -9,10 +9,12 @@
 //! present only while anything runs).
 
 mod constants;
+mod pane;
 mod running_subpane;
 
 use std::collections::HashSet;
 
+pub use pane::TargetsPane;
 use ratatui::Frame;
 use ratatui::layout::Alignment;
 use ratatui::layout::Constraint;
@@ -59,14 +61,13 @@ use self::constants::TARGET_TABLE_GAP_COUNT;
 use super::TargetEntry;
 use super::TargetsData;
 use super::package::RenderStyles;
-use super::pane_impls::TargetsPane;
 use crate::tui::columns;
-use crate::tui::pane::PaneRenderCtx;
 use crate::tui::panes;
 use crate::tui::render;
+use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::theme_roles;
 
-pub fn render_targets_pane_body(
+fn render_targets_pane_body(
     frame: &mut Frame,
     area: Rect,
     pane: &mut TargetsPane,

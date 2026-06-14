@@ -6,12 +6,12 @@ use tui_pane::RenderFocus;
 use tui_pane::Renderable;
 use tui_pane::Viewport;
 
-use crate::tui::pane::HoverTarget;
-use crate::tui::pane::PaneRenderCtx;
+use super::RenderStyles;
+use crate::tui::hit_test::HoverTarget;
 use crate::tui::panes::PackageData;
 use crate::tui::panes::PaneId;
 use crate::tui::panes::package;
-use crate::tui::panes::package::RenderStyles;
+use crate::tui::render_context::PaneRenderCtx;
 
 // ── Package ─────────────────────────────────────────────────────
 pub struct PackagePane {

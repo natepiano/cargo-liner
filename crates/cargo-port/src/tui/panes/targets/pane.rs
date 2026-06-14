@@ -8,13 +8,12 @@ use tui_pane::RenderFocus;
 use tui_pane::Renderable;
 use tui_pane::Viewport;
 
-use crate::tui::pane::HoverTarget;
-use crate::tui::pane::PaneRenderCtx;
+use super::CargoGroup;
+use crate::tui::hit_test::HoverTarget;
 use crate::tui::panes::PaneId;
 use crate::tui::panes::TargetsData;
 use crate::tui::panes::package::RenderStyles;
-use crate::tui::panes::targets;
-use crate::tui::panes::targets::CargoGroup;
+use crate::tui::render_context::PaneRenderCtx;
 
 // ── Targets ─────────────────────────────────────────────────────
 pub struct TargetsPane {
@@ -113,6 +112,6 @@ impl Renderable<PaneRenderCtx<'_>> for TargetsPane {
             readonly_label: ratatui::style::Style::default().fg(tui_pane::label_color()),
             chrome:         tui_pane::default_pane_chrome(),
         };
-        targets::render_targets_pane_body(frame, area, self, &styles, ctx);
+        super::render_targets_pane_body(frame, area, self, &styles, ctx);
     }
 }

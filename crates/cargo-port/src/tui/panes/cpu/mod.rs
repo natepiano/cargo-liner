@@ -20,6 +20,10 @@ use tui_pane::render_overflow_affordance;
 use tui_pane::text_default;
 use tui_pane::warning_color;
 
+mod pane;
+
+pub use pane::CpuPane;
+
 use super::constants::CPU_BAR_WIDTH;
 use super::constants::CPU_BREAKDOWN_ROWS;
 #[cfg(test)]
@@ -30,9 +34,8 @@ use super::constants::CPU_PINNED_HEAD_ROWS;
 use super::constants::CPU_STATIC_INNER_HEIGHT;
 use super::constants::GPU_UNAVAILABLE_TEXT;
 use super::package::RenderStyles;
-use super::pane_impls::CpuPane;
 use crate::config::CpuConfig;
-use crate::tui::pane::PaneRenderCtx;
+use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::theme_roles;
 
 /// Pinned tail rows below the scrolling cores band: breakdown rows plus GPU.
@@ -504,9 +507,9 @@ fn render_cpu_metric_rows(
 }
 
 /// Body of `CpuPane::render`. Lives here (next to its helpers)
-/// rather than inline in `pane_impls.rs` because the helpers
+/// rather than inline in `pane.rs` because the helpers
 /// belong with the per-pane render code; only the trait method
-/// itself sits in `pane_impls.rs` and delegates here.
+/// itself sits in `pane.rs` and delegates here.
 pub(super) fn render_cpu_pane_body(
     frame: &mut Frame,
     area: Rect,

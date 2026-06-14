@@ -1,4 +1,3 @@
-// src tui panes targets mod
 /// Floor on the table's data rows in degenerate heights: the Running
 /// box's rendered window shrinks before the table drops below this.
 pub(super) const MIN_TABLE_ROWS: u16 = 3;
@@ -31,7 +30,6 @@ pub(super) const TARGET_TABLE_COLUMN_SPACING: u16 = 1;
 /// Number of 1-column gaps between Target/Source/Kind.
 pub(super) const TARGET_TABLE_GAP_COUNT: usize = 2;
 
-// src tui panes targets running_subpane
 /// Width of the CPU column: `476%` — a busy multi-threaded process can
 /// exceed 100.
 pub(super) const CPU_COL_WIDTH: usize = 4;

@@ -10,11 +10,11 @@ use tui_pane::Viewport;
 
 use crate::channel::Receiver;
 use crate::config::CpuConfig;
-use crate::tui::pane::HoverTarget;
-use crate::tui::pane::PaneRenderCtx;
+use crate::tui::hit_test::HoverTarget;
 use crate::tui::panes::PaneId;
 use crate::tui::panes::cpu;
 use crate::tui::panes::package::RenderStyles;
+use crate::tui::render_context::PaneRenderCtx;
 
 // ── Cpu ─────────────────────────────────────────────────────────
 pub struct CpuPane {

@@ -37,11 +37,11 @@ use crate::project::CheckoutInfo;
 use crate::project::ProjectCiInfo;
 use crate::project::RepoInfo;
 use crate::tui::app::CiRunDisplayMode;
-use crate::tui::pane::HoverTarget;
-use crate::tui::pane::PaneRenderCtx;
+use crate::tui::hit_test::HoverTarget;
 use crate::tui::panes;
 use crate::tui::panes::CiData;
 use crate::tui::panes::PaneId;
+use crate::tui::render_context::PaneRenderCtx;
 
 /// Display value for the Ci row in the Package detail pane.
 ///

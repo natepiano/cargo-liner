@@ -17,13 +17,16 @@ use tui_pane::render_overflow_affordance;
 use tui_pane::text_default;
 use tui_pane::title_color;
 
+mod pane;
+
+pub use pane::LangPane;
+
 use super::constants::LANG_NUM_COL;
 use super::package::RenderStyles;
-use super::pane_impls::LangPane;
 use crate::project::LangEntry;
 use crate::project::LanguageStats;
-use crate::tui::pane::PaneRenderCtx;
 use crate::tui::render;
+use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::theme_roles;
 
 /// Map a tokei language name to a 2-char icon for the Lang column.

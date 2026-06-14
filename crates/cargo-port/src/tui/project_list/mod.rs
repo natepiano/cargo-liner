@@ -13,7 +13,7 @@ use super::app::FinderState;
 use super::app::SelectionPaths;
 use super::app::SelectionSync;
 use super::columns::ProjectListWidths;
-use super::pane::DismissTarget;
+use super::dismiss_target::DismissTarget;
 use super::state::Ci;
 use super::state::CiStatusLookup;
 use crate::ci;

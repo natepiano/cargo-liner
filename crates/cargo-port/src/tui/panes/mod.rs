@@ -5,13 +5,13 @@ mod cpu;
 mod data;
 mod description;
 mod git;
+mod hit_test;
 mod lang;
 mod layout;
 mod lints;
 mod output;
 mod package;
 mod pane_data;
-mod pane_impls;
 mod project_list;
 mod spec;
 mod system;
@@ -34,6 +34,7 @@ pub(super) use constants::PREFIX_ROOT_LEAF;
 pub(super) use constants::PREFIX_WT_FLAT;
 #[cfg(test)]
 pub(super) use cpu::CPU_PANE_WIDTH;
+pub(super) use cpu::CpuPane;
 #[cfg(test)]
 pub(super) use cpu::cpu_required_pane_height;
 pub(super) use data::DetailCacheKey;
@@ -43,13 +44,18 @@ pub(super) use description::SyncedDescriptionHeight;
 #[cfg(test)]
 pub(super) use description::placeholder_text;
 pub(super) use description::sync_floor;
+pub(super) use git::GitPane;
 #[cfg(test)]
 pub(super) use git::git_label_width;
+pub(super) use hit_test::hit_test_table_row;
+pub(super) use lang::LangPane;
 pub(super) use layout::BottomRow;
 pub(super) use layout::resolve_layout;
 pub(super) use layout::tab_order;
 pub(super) use layout::top_pane_widths;
 pub(super) use lints::render_lints_pane_body;
+pub(super) use output::OutputPane;
+pub(super) use package::PackagePane;
 #[cfg(test)]
 pub(super) use package::detail_column_scroll_offset;
 #[cfg(test)]
@@ -119,14 +125,7 @@ pub(super) use pane_data::package_row_is_selectable;
 pub(super) use pane_data::package_rows_from_data;
 pub(super) use pane_data::package_selectable_row_at_or_after;
 pub(super) use pane_data::package_selectable_row_at_or_before;
-pub(super) use pane_impls::CpuPane;
-pub(super) use pane_impls::GitPane;
-pub(super) use pane_impls::LangPane;
-pub(super) use pane_impls::OutputPane;
-pub(super) use pane_impls::PackagePane;
-pub(super) use pane_impls::ProjectListPane;
-pub(super) use pane_impls::TargetsPane;
-pub(super) use pane_impls::hit_test_table_row;
+pub(super) use project_list::ProjectListPane;
 #[cfg(test)]
 use ratatui::widgets::ListItem;
 pub(super) use spec::PaneBehavior;
@@ -136,6 +135,7 @@ pub(super) use spec::size_spec;
 pub(super) use system::Panes;
 pub(super) use targets::CargoGroup;
 pub(super) use targets::RunningListRow;
+pub(super) use targets::TargetsPane;
 pub(super) use targets::build_running_list;
 pub(super) use targets::build_running_rows;
 pub(super) use targets::format_start_age;
@@ -158,9 +158,9 @@ use super::keymap::GitAction;
 use super::keymap::LintsAction;
 use super::keymap::PackageAction;
 use super::keymap::TargetsAction;
-#[cfg(test)]
-use super::pane::PaneRenderCtx;
 use super::project_list::ProjectList;
+#[cfg(test)]
+use super::render_context::PaneRenderCtx;
 pub(super) use super::state::CiDisplay;
 pub(super) use super::state::Lint;
 pub(super) use super::state::LintDisplay;

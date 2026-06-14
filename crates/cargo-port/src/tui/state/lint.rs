@@ -43,13 +43,13 @@ use crate::project::AbsolutePath;
 use crate::project::RootItem;
 use crate::project::Visibility;
 use crate::tui::columns::LintCell;
+use crate::tui::hit_test::HoverTarget;
 use crate::tui::integration;
-use crate::tui::pane::HoverTarget;
-use crate::tui::pane::PaneRenderCtx;
 use crate::tui::panes;
 use crate::tui::panes::LintsData;
 use crate::tui::panes::PaneId;
 use crate::tui::project_list::ProjectList;
+use crate::tui::render_context::PaneRenderCtx;
 
 /// Display value for the Lint row in the Package detail pane.
 ///

@@ -10,10 +10,10 @@ use tui_pane::Viewport;
 
 use super::app::App;
 use super::app::HoveredPaneRow;
-use super::pane::DismissTarget;
-use super::pane::HITTABLE_Z_ORDER;
-use super::pane::HittableId;
-use super::pane::HoverTarget;
+use super::dismiss_target::DismissTarget;
+use super::hit_test::HITTABLE_Z_ORDER;
+use super::hit_test::HittableId;
+use super::hit_test::HoverTarget;
 use super::panes;
 use super::panes::PaneId;
 

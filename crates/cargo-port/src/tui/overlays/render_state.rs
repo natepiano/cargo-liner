@@ -6,7 +6,7 @@
 //!
 //! Render is a no-op (the popup body lives in `finder.rs`); this
 //! struct exists so the Finder viewport has a typed home that impls
-//! `Pane` and `Hittable`. The impls live in `pane_impls.rs`.
+//! `Pane` and `Hittable`. The impls live in `pane.rs`.
 
 use tui_pane::RenderFocus;
 use tui_pane::Viewport;

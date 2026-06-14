@@ -34,6 +34,10 @@ use tui_pane::warning_color;
 use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
+mod pane;
+
+pub use pane::PackagePane;
+
 use super::CiDisplay;
 use super::DescriptionBlock;
 use super::DetailField;
@@ -53,13 +57,12 @@ use super::constants::TESTS_TITLE;
 use super::constants::TESTS_TOTAL_LABEL;
 use super::pane_data::CRATES_IO_UNREACHABLE;
 use super::pane_data::PackageSection;
-use super::pane_impls::PackagePane;
 use crate::constants::LINT_NO_LOG;
 use crate::lint::LintStatus;
 use crate::tui::integration;
-use crate::tui::pane::PaneRenderCtx;
 use crate::tui::panes;
 use crate::tui::render;
+use crate::tui::render_context::PaneRenderCtx;
 
 /// Shared style constants for pane rendering.
 pub struct RenderStyles {

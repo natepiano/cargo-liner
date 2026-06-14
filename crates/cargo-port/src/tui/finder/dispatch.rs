@@ -42,10 +42,10 @@ use crate::tui::integration::AppPaneId;
 use crate::tui::keymap::FinderAction;
 use crate::tui::overlays::FinderPane;
 use crate::tui::overlays::PopupFrame;
-use crate::tui::pane::PaneRenderCtx;
 use crate::tui::panes;
 use crate::tui::panes::GitRow;
 use crate::tui::panes::RunTargetKind;
+use crate::tui::render_context::PaneRenderCtx;
 
 /// "bench diegetic" and "diegetic bench" produce the same results.
 pub fn search_finder(index: &[FinderItem], query: &str, max_results: usize) -> (Vec<usize>, usize) {

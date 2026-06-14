@@ -27,6 +27,10 @@ use tui_pane::warning_color;
 use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
+mod pane;
+
+pub use pane::GitPane;
+
 use super::DescriptionBlock;
 use super::DetailField;
 use super::EmptyDescriptionBehavior;
@@ -57,16 +61,14 @@ use super::format_ahead_behind;
 use super::github_stars_is_unreachable_placeholder;
 use super::package;
 use super::package::RenderStyles;
-use super::pane_impls;
-use super::pane_impls::GitPane;
 use crate::constants::GIT_LOCAL;
 use crate::constants::IN_SYNC;
 use crate::constants::NO_REMOTE_SYNC;
 use crate::project::HeadState;
 use crate::project::PullRequestCompleteness;
 use crate::tui::app::AvailabilityStatus;
-use crate::tui::pane::PaneRenderCtx;
 use crate::tui::panes;
+use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::theme_roles;
 
 struct GitRenderCtx<'a> {
@@ -1138,8 +1140,7 @@ pub(super) fn render_git_pane_body(
     };
     let layout = render_git_column_inner(frame, &git_ctx, area, about_layout.content_area);
     pane.viewport.set_scroll_offset(layout.scroll_offset);
-    pane_impls::set_git_row_layout(
-        pane,
+    pane.set_row_layout(
         about_layout.description_rect,
         about_layout.content_area,
         description_rows,

@@ -59,13 +59,13 @@ use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::CiFetchResult;
 use crate::tui::columns::ProjectListWidths;
-use crate::tui::pane::DismissTarget;
-use crate::tui::pane::PaneRenderCtx;
+use crate::tui::dismiss_target::DismissTarget;
 use crate::tui::panes::CiFetchKind;
 use crate::tui::panes::PaneId;
 pub(super) use crate::tui::project_list::ExpandKey;
 use crate::tui::project_list::ProjectList;
 pub(super) use crate::tui::project_list::VisibleRow;
+use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::state::CiStatusLookup;
 use crate::tui::test_support as tui_test_support;
 

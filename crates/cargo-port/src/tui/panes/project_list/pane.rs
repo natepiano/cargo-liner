@@ -6,11 +6,11 @@ use tui_pane::RenderFocus;
 use tui_pane::Renderable;
 use tui_pane::Viewport;
 
-use crate::tui::pane::DismissTarget;
-use crate::tui::pane::HoverTarget;
-use crate::tui::pane::PaneRenderCtx;
+use super::tree_render;
+use crate::tui::dismiss_target::DismissTarget;
+use crate::tui::hit_test::HoverTarget;
 use crate::tui::panes::PaneId;
-use crate::tui::panes::project_list;
+use crate::tui::render_context::PaneRenderCtx;
 
 // ── ProjectList ─────────────────────────────────────────────────
 pub struct ProjectListPane {
@@ -42,7 +42,7 @@ impl ProjectListPane {
 
 impl Renderable<PaneRenderCtx<'_>> for ProjectListPane {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
-        project_list::render_project_list_pane_body(frame, area, self, ctx);
+        tree_render::render_project_list_pane_body(frame, area, self, ctx);
     }
 }
 

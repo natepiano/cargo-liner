@@ -20,10 +20,10 @@ use tui_pane::SettingsPane;
 
 use super::FinderPane;
 use crate::tui::finder;
-use crate::tui::pane::HoverTarget;
-use crate::tui::pane::PaneRenderCtx;
+use crate::tui::hit_test::HoverTarget;
 use crate::tui::panes;
 use crate::tui::panes::PaneId;
+use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::settings;
 
 impl Renderable<PaneRenderCtx<'_>> for SettingsPane {

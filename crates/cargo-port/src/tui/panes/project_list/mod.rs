@@ -2,25 +2,21 @@
 
 use std::collections::HashMap;
 
-#[cfg(test)]
 use ratatui::widgets::ListItem;
-#[cfg(test)]
 use tui_pane::Viewport;
 
 #[cfg(test)]
-use super::pane_impls::ProjectListPane;
-#[cfg(test)]
 use crate::project::RootItem;
-#[cfg(test)]
 use crate::tui::app::ProjectListWidths;
-#[cfg(test)]
-use crate::tui::pane::PaneRenderCtx;
 use crate::tui::project_list::ProjectList;
+use crate::tui::render_context::PaneRenderCtx;
 
 mod disk;
+mod pane;
 mod tree_render;
+mod tree_rows;
 
-pub use tree_render::render_project_list_pane_body;
+pub use pane::ProjectListPane;
 
 pub(super) fn compute_disk_cache(entries: &ProjectList) -> (Vec<u64>, HashMap<usize, Vec<u64>>) {
     disk::compute_disk_cache(entries)
@@ -31,12 +27,11 @@ pub(super) fn formatted_disk_for_item(item: &RootItem) -> String {
     disk::formatted_disk_for_item(item)
 }
 
-#[cfg(test)]
 pub(super) fn render_tree_items(
     ctx: &PaneRenderCtx<'_>,
     pane: &ProjectListPane,
     viewport: &Viewport,
     widths: &ProjectListWidths,
 ) -> Vec<ListItem<'static>> {
-    tree_render::render_tree_items(ctx, pane, viewport, widths)
+    tree_rows::render_tree_items(ctx, pane, viewport, widths)
 }

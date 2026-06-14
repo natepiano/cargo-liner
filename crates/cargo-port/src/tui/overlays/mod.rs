@@ -11,7 +11,7 @@
 //! - `mod.rs` (this file) — Finder mode state, inline-error / status-flash, plus the `Overlays`
 //!   struct that owns all of the above.
 //! - `render_state.rs` — the Finder pane render-state type.
-//! - `pane_impls.rs` — `Pane` and `Hittable` impls for Finder and the framework panes.
+//! - `pane.rs` — `Pane` and `Hittable` impls for Finder and the framework panes.
 
 mod pane_impls;
 mod render_state;

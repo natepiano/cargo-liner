@@ -4,7 +4,7 @@ use tui_pane::Hittable;
 use tui_pane::Viewport;
 
 use crate::sccache::StatsResult;
-use crate::tui::pane::HoverTarget;
+use crate::tui::hit_test::HoverTarget;
 use crate::tui::panes::PaneId;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
