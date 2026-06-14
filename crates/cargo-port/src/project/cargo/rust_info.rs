@@ -11,9 +11,9 @@ use super::metadata_store::PackageRecord;
 use super::metadata_store::PublishPolicy;
 use super::parse::ExampleGroup;
 use super::parse::ProjectType;
+use super::vendored_package::VendoredPackage;
 use crate::lint::LintRuns;
 use crate::project::info::ProjectInfo;
-use crate::project::vendored_package::VendoredPackage;
 
 /// Rust-specific project data shared by both `Workspace` and `Package`.
 /// Derefs to `ProjectInfo` for uniform metadata access.

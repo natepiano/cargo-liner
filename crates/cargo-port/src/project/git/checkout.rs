@@ -4,6 +4,7 @@ use std::path::Path;
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::branches;
 use super::command;
 use super::constants::GIT_BISECT_BAD_REF;
 use super::constants::GIT_BISECT_GOOD_REF_PREFIX;
@@ -33,7 +34,6 @@ use super::constants::GIT_STATUS_PORCELAIN_V1_ARG;
 use super::constants::GIT_STATUS_UNTRACKED_ALL_ARG;
 use super::constants::GIT_UNTRACKED_STATUS_CODE;
 use super::discovery;
-use super::repo;
 use super::repo::RemoteInfo;
 use super::repo::RepoInfo;
 use crate::constants::GIT_STATUS_CLEAN;
@@ -150,7 +150,7 @@ impl CheckoutInfo {
         let repo_root = discovery::git_repo_root(probe_path)?;
 
         let head = resolve_head_state(&repo_root);
-        let current_upstream = repo::get_upstream_branch(&repo_root);
+        let current_upstream = branches::get_upstream_branch(&repo_root);
         let ahead_behind_local = local_main_branch
             .filter(|branch_name| head.branch_name() != Some(*branch_name))
             .and_then(|branch_name| {
@@ -270,7 +270,7 @@ fn parse_bisect_vars(stdout: &str) -> Option<BisectProgress> {
 /// - For detached, run `rev-parse --short=8 HEAD` to fetch the SHA.
 /// - For an unborn or otherwise-unresolvable HEAD, return `Unborn`.
 fn resolve_head_state(repo_root: &Path) -> HeadState {
-    let abbrev = repo::get_current_branch(repo_root);
+    let abbrev = branches::get_current_branch(repo_root);
     match abbrev.as_deref() {
         None => HeadState::Unborn,
         Some(GIT_HEAD) => command::git_output_logged(

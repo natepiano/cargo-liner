@@ -1,6 +1,7 @@
 use std::ops::Deref;
 use std::ops::DerefMut;
 
+use super::member_group::MemberGroup;
 use super::rust_info::RustInfo;
 use crate::project::fields::ProjectFields;
 use crate::project::git::CheckoutInfo;
@@ -8,7 +9,6 @@ use crate::project::git::WorktreeStatus;
 use crate::project::info::ProjectInfo;
 use crate::project::info::Visibility;
 use crate::project::info::WorktreeHealth;
-use crate::project::member_group::MemberGroup;
 use crate::project::paths;
 use crate::project::paths::AbsolutePath;
 use crate::project::paths::DisplayPath;

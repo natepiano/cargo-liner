@@ -1,14 +1,11 @@
 mod cargo;
-mod constants;
 mod entry;
 mod fields;
 mod git;
 mod info;
-mod member_group;
 mod non_rust;
 mod paths;
 mod root_item;
-mod vendored_package;
 
 // ── Cargo parsing ────────────────────────────────────────────────────
 // ── Rust info ────────────────────────────────────────────────────────
@@ -18,6 +15,7 @@ pub(crate) use cargo::ExampleGroup;
 // ── Cargo metadata cache ─────────────────────────────────────────────
 pub(crate) use cargo::FileStamp;
 pub(crate) use cargo::ManifestFingerprint;
+pub(crate) use cargo::MemberGroup;
 // ── Project types ────────────────────────────────────────────────────
 pub(crate) use cargo::Package;
 pub(crate) use cargo::PackageRecord;
@@ -28,6 +26,7 @@ pub(crate) use cargo::PublishStatus;
 pub(crate) use cargo::RustInfo;
 pub(crate) use cargo::RustProject;
 pub(crate) use cargo::TargetRecord;
+pub(crate) use cargo::VendoredPackage;
 pub(crate) use cargo::Workspace;
 pub(crate) use cargo::WorkspaceMetadata;
 pub(crate) use cargo::WorkspaceMetadataStore;
@@ -82,7 +81,6 @@ pub(crate) use info::PullRequestUnavailableReason;
 pub(crate) use info::TestCounts;
 pub(crate) use info::Visibility;
 pub(crate) use info::WorktreeHealth;
-pub(crate) use member_group::MemberGroup;
 pub(crate) use non_rust::NonRustProject;
 // ── Path types ───────────────────────────────────────────────────────
 pub(crate) use paths::AbsolutePath;
@@ -92,4 +90,3 @@ pub(crate) use paths::home_relative_path;
 pub(crate) use paths::normalize_test_path;
 pub(crate) use root_item::RootItem;
 pub(crate) use root_item::strip_worktree_badge_suffix;
-pub(crate) use vendored_package::VendoredPackage;

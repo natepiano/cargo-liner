@@ -1,54 +1,49 @@
-use super::cargo::Cargo;
-use super::fields::ProjectFields;
-use super::git::CheckoutInfo;
-use super::git::WorktreeStatus;
-use super::info::ProjectInfo;
-use super::info::Visibility;
-use super::info::WorktreeHealth;
-use super::paths;
-use super::paths::AbsolutePath;
-use super::paths::DisplayPath;
-use super::paths::PackageName;
-use super::paths::RootDirectoryName;
+use super::rust_info::Cargo;
+use crate::project::fields::ProjectFields;
+use crate::project::git::CheckoutInfo;
+use crate::project::git::WorktreeStatus;
+use crate::project::info::ProjectInfo;
+use crate::project::info::Visibility;
+use crate::project::info::WorktreeHealth;
+use crate::project::paths;
+use crate::project::paths::AbsolutePath;
+use crate::project::paths::DisplayPath;
+use crate::project::paths::PackageName;
+use crate::project::paths::RootDirectoryName;
 
 /// A crate vendored under a parent Rust project.
 ///
-/// Distinct from [`Package`](super::cargo::Package) because vendored crates do
+/// Distinct from [`Package`](super::package::Package) because vendored crates do
 /// not own lint state and cannot themselves have nested vendored children.
 /// Keeping this as its own type makes those invariants structural rather than
 /// relying on convention.
 #[derive(Clone, Default)]
 pub(crate) struct VendoredPackage {
-    pub(crate) path:              AbsolutePath,
-    pub(crate) name:              Option<String>,
-    pub(crate) worktree_status:   WorktreeStatus,
-    pub(crate) project_info:      ProjectInfo,
-    pub(crate) cargo:             Cargo,
-    pub(crate) crates_version:    Option<String>,
-    pub(crate) crates_prerelease: Option<String>,
-    pub(crate) crates_downloads:  Option<u64>,
+    pub path:              AbsolutePath,
+    pub name:              Option<String>,
+    pub worktree_status:   WorktreeStatus,
+    pub project_info:      ProjectInfo,
+    pub cargo:             Cargo,
+    pub crates_version:    Option<String>,
+    pub crates_prerelease: Option<String>,
+    pub crates_downloads:  Option<u64>,
 }
 
 impl VendoredPackage {
-    pub(crate) fn package_name(&self) -> PackageName {
+    pub fn package_name(&self) -> PackageName {
         PackageName(self.name.as_deref().map_or_else(
             || paths::directory_leaf(self.path.as_path()),
             str::to_string,
         ))
     }
 
-    pub(crate) fn crates_version(&self) -> Option<&str> { self.crates_version.as_deref() }
+    pub fn crates_version(&self) -> Option<&str> { self.crates_version.as_deref() }
 
-    pub(crate) fn crates_prerelease(&self) -> Option<&str> { self.crates_prerelease.as_deref() }
+    pub fn crates_prerelease(&self) -> Option<&str> { self.crates_prerelease.as_deref() }
 
-    pub(crate) const fn crates_downloads(&self) -> Option<u64> { self.crates_downloads }
+    pub const fn crates_downloads(&self) -> Option<u64> { self.crates_downloads }
 
-    pub(crate) fn set_crates_io(
-        &mut self,
-        version: String,
-        prerelease: Option<String>,
-        downloads: u64,
-    ) {
+    pub fn set_crates_io(&mut self, version: String, prerelease: Option<String>, downloads: u64) {
         self.crates_version = Some(version);
         self.crates_prerelease = prerelease;
         self.crates_downloads = Some(downloads);

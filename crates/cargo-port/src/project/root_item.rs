@@ -1,8 +1,11 @@
 use std::path::Path;
 
 use super::cargo::Package;
+use super::cargo::RustInfo;
 use super::cargo::RustProject;
+use super::cargo::VendoredPackage;
 use super::fields::ProjectFields;
+use super::git;
 use super::git::CheckoutInfo;
 use super::git::Submodule;
 use super::git::WorktreeGroup;
@@ -14,11 +17,12 @@ use super::non_rust::NonRustProject;
 use super::paths::AbsolutePath;
 use super::paths::DisplayPath;
 use super::paths::RootDirectoryName;
-use super::vendored_package::VendoredPackage;
 use crate::ci::CiStatus;
 use crate::constants::WORKTREE;
 use crate::lint::LintRuns;
 use crate::lint::LintStatus;
+
+const WORKTREE_BADGE_SEPARATOR: &str = ":";
 
 /// The top-level enum for the project list — 3 variants.
 #[derive(Clone)]
@@ -553,10 +557,6 @@ fn sum_disk(primary: Option<u64>, linked: impl Iterator<Item = Option<u64>>) -> 
     }
     any.then_some(total)
 }
-
-use super::cargo::RustInfo;
-use super::constants::WORKTREE_BADGE_SEPARATOR;
-use super::git;
 
 #[cfg(test)]
 mod tests {

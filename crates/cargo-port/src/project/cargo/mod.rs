@@ -1,10 +1,13 @@
+mod member_group;
 mod metadata_store;
 mod package;
 mod parse;
 mod rust_info;
 mod rust_project;
+mod vendored_package;
 mod workspace;
 
+pub(crate) use member_group::MemberGroup;
 pub(crate) use metadata_store::FileStamp;
 pub(crate) use metadata_store::ManifestFingerprint;
 pub(crate) use metadata_store::PackageRecord;
@@ -23,4 +26,5 @@ pub(crate) use rust_info::Cargo;
 pub(crate) use rust_info::PublishStatus;
 pub(crate) use rust_info::RustInfo;
 pub(crate) use rust_project::RustProject;
+pub(crate) use vendored_package::VendoredPackage;
 pub(crate) use workspace::Workspace;

@@ -3,13 +3,13 @@ use std::path::Path;
 use crate::lint::LintStatus;
 use crate::project::cargo::Package;
 use crate::project::cargo::RustProject;
+use crate::project::cargo::VendoredPackage;
 use crate::project::cargo::Workspace;
 use crate::project::fields::ProjectFields;
 use crate::project::info::Visibility;
 use crate::project::info::WorktreeHealth;
 use crate::project::paths::AbsolutePath;
 use crate::project::paths::DisplayPath;
-use crate::project::vendored_package::VendoredPackage;
 
 /// A worktree group: primary checkout + linked worktree checkouts.
 ///

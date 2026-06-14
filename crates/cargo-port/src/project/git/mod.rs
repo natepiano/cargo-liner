@@ -1,3 +1,4 @@
+mod branches;
 mod checkout;
 mod command;
 mod constants;
