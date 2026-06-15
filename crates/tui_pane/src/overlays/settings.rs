@@ -415,7 +415,7 @@ impl SettingsPane {
     ///   [`Self::handle_text_input`] directly and uses this mode only as a suppression signal for
     ///   global dispatch.
     #[must_use]
-    pub fn mode<Ctx: AppContext>(&self, _ctx: &Ctx) -> Mode<Ctx> {
+    pub fn mode<Ctx: AppContext>(&self, _: &Ctx) -> Mode<Ctx> {
         match self.edit_state {
             EditState::Editing => Mode::TextInput(settings_edit_keys::<Ctx>),
             EditState::Browse => Mode::Navigable,
@@ -466,7 +466,7 @@ impl SettingsPane {
 
 /// Inert handler used only to mark settings editing as text-input
 /// mode. The real mutation path is [`SettingsPane::handle_text_input`].
-const fn settings_edit_keys<Ctx: AppContext>(_bind: KeyBind, _ctx: &mut Ctx) {}
+const fn settings_edit_keys<Ctx: AppContext>(_: KeyBind, _: &mut Ctx) {}
 
 fn prev_char_boundary(s: &str, cursor: usize) -> usize {
     s[..cursor.min(s.len())]

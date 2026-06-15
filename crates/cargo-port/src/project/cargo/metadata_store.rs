@@ -474,7 +474,7 @@ mod tests {
         let root = AbsolutePath::from(PathBuf::from("/ws"));
         let gen_a = store.next_generation(&root);
         assert!(store.is_current_generation(&root, gen_a));
-        let _gen_b = store.next_generation(&root);
+        let _ = store.next_generation(&root);
         assert!(
             !store.is_current_generation(&root, gen_a),
             "older generation no longer current after a new dispatch"

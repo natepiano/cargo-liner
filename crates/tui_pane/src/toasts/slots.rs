@@ -18,7 +18,8 @@ use crate::keymap::Action;
 
 impl<Ctx: AppContext> Toasts<Ctx> {
     /// Return the Toasts pane mode.
-    pub const fn mode(&self, _ctx: &Ctx) -> Mode<Ctx> { Mode::Navigable }
+    #[must_use]
+    pub const fn mode(&self, _: &Ctx) -> Mode<Ctx> { Mode::Navigable }
 
     /// Return default Toasts-pane bindings.
     #[must_use]
@@ -29,7 +30,8 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     }
 
     /// Return status-bar slots for the Toasts pane.
-    pub fn bar_slots(&self, _ctx: &Ctx) -> Vec<(BarRegion, BarSlot<ToastsAction>)> {
+    #[must_use]
+    pub fn bar_slots(&self, _: &Ctx) -> Vec<(BarRegion, BarSlot<ToastsAction>)> {
         ToastsAction::ALL
             .iter()
             .copied()

@@ -60,7 +60,7 @@ pub(super) fn probe_new_projects(
     background_tx: &Sender<BackgroundMsg>,
     pending_new: &mut HashMap<AbsolutePath, Instant>,
     discovered: &mut HashSet<AbsolutePath>,
-    _ci_run_count: u32,
+    _: u32,
     non_rust: NonRustInclusion,
     client: &HttpClient,
 ) {
@@ -91,7 +91,6 @@ pub(super) fn probe_new_projects(
         if let Some(item) = probe_project(&dir, non_rust) {
             discovered.insert(dir.clone());
             let abs_path = AbsolutePath::from(item.path().to_path_buf());
-            let display_path = item.display_path();
             let project_name = item.name().map(str::to_string);
             let repo_presence = if project::git_repo_root(&abs_path).is_some() {
                 GitRepoPresence::InRepo
@@ -124,7 +123,6 @@ pub(super) fn probe_new_projects(
                 let request = ProjectDetailRequest {
                     sender: &sender,
                     fetch_context: &fetch_context,
-                    _project_path: display_path.as_str(),
                     abs_path: &abs_path,
                     project_name: project_name.as_deref(),
                     repo_presence,

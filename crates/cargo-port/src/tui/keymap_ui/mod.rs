@@ -387,7 +387,7 @@ fn is_navigation_generated_vim_extra(action_key: &str, bind: &KeySequence) -> bo
     )
 }
 
-const fn keymap_scope_name(_app: &App, app_pane_id: AppPaneId) -> Option<&'static str> {
+const fn keymap_scope_name(_: &App, app_pane_id: AppPaneId) -> Option<&'static str> {
     Some(match app_pane_id {
         AppPaneId::ProjectList => <ProjectListPane as Shortcuts<App>>::SCOPE_NAME,
         AppPaneId::Package => <PackagePane as Shortcuts<App>>::SCOPE_NAME,

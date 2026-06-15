@@ -147,7 +147,6 @@ mod tests {
     use super::*;
     use crate::ACTIVITY_SPINNER;
     use crate::AppContext;
-    use crate::FocusedPane;
     use crate::Framework;
     use crate::NoToastAction;
     use crate::Toasts;
@@ -185,9 +184,6 @@ mod tests {
         let _ = toasts.push("one", "body");
         let _ = toasts.push("two", "body");
         let views = toasts.active_views(Instant::now());
-        let _app = TestApp {
-            framework: Framework::new(FocusedPane::App(())),
-        };
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
         let mut result = None;

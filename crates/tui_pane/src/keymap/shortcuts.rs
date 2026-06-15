@@ -50,26 +50,26 @@ pub trait Shortcuts<Ctx: AppContext>: Pane<Ctx> {
     /// `Activate` returning [`Visibility::Hidden`] when no row is
     /// selected. Distinct from [`Self::state`], which keeps the slot
     /// in the bar but grays it out.
-    fn visibility(&self, _action: Self::Actions, _ctx: &Ctx) -> Visibility { Visibility::Visible }
+    fn visibility(&self, _: Self::Actions, _: &Ctx) -> Visibility { Visibility::Visible }
 
     /// Per-action enabled / disabled status. Default
     /// [`ShortcutState::Enabled`]. Override when the action is visible
     /// but inert (e.g. an action grayed out when no target exists).
-    fn state(&self, _action: Self::Actions, _ctx: &Ctx) -> ShortcutState { ShortcutState::Enabled }
+    fn state(&self, _: Self::Actions, _: &Ctx) -> ShortcutState { ShortcutState::Enabled }
 
     /// Bar label for `action`. Default delegates to the action's static
     /// [`Action::bar_label`]. Override when the label depends on pane
     /// state — e.g. a cancel key that reads `deselect` / `stop` /
     /// `close` depending on what the next press will do, so the bar
     /// matches the pane's own status text.
-    fn bar_label(&self, action: Self::Actions, _ctx: &Ctx) -> &'static str { action.bar_label() }
+    fn bar_label(&self, action: Self::Actions, _: &Ctx) -> &'static str { action.bar_label() }
 
     /// Bar slot layout. Default: one
     /// `(BarRegion::PaneAction, BarSlot::Single(action))` per
     /// [`Action::ALL`] in declaration order. Override to introduce
     /// `Paired` slots, route into [`BarRegion::Nav`], or omit
     /// data-dependent slots.
-    fn bar_slots(&self, _ctx: &Ctx) -> Vec<(BarRegion, BarSlot<Self::Actions>)> {
+    fn bar_slots(&self, _: &Ctx) -> Vec<(BarRegion, BarSlot<Self::Actions>)> {
         Self::Actions::ALL
             .iter()
             .copied()
@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     fn text_input_mode_carries_handler() {
-        fn no_op(_key: crate::KeyBind, _ctx: &mut TestApp) {}
+        fn no_op(_: crate::KeyBind, _: &mut TestApp) {}
         let mode: Mode<TestApp> = Mode::TextInput(no_op);
         assert!(matches!(mode, Mode::TextInput(_)));
     }

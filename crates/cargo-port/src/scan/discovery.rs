@@ -65,7 +65,6 @@ pub(crate) struct FetchContext {
 pub(crate) struct ProjectDetailRequest<'a> {
     pub sender:        &'a Sender<BackgroundMsg>,
     pub fetch_context: &'a FetchContext,
-    pub _project_path: &'a str,
     pub abs_path:      &'a Path,
     pub project_name:  Option<&'a str>,
     pub repo_presence: GitRepoPresence,

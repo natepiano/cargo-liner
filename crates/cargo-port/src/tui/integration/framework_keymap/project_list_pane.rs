@@ -42,7 +42,7 @@ impl Shortcuts<App> for ProjectListPane {
         }
     }
 
-    fn bar_slots(&self, _ctx: &App) -> Vec<(BarRegion, BarSlot<Self::Actions>)> {
+    fn bar_slots(&self, _: &App) -> Vec<(BarRegion, BarSlot<Self::Actions>)> {
         vec![(
             BarRegion::Nav,
             BarSlot::Paired(

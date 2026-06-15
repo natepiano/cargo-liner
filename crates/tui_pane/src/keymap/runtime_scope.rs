@@ -379,7 +379,7 @@ pub(crate) fn keymap_help_rows_for_app_globals<Ctx: AppContext + 'static, G: Glo
 /// it currently has a binding. The action set is framework-owned, so
 /// this is not parameterized by the app's `Navigation` impl.
 pub(crate) fn navigation_toml_action_keys<Ctx: AppContext + 'static>(
-    _keymap: &Keymap<Ctx>,
+    _: &Keymap<Ctx>,
 ) -> Vec<&'static str> {
     NavAction::ALL.iter().map(|a| a.toml_key()).collect()
 }
@@ -387,7 +387,7 @@ pub(crate) fn navigation_toml_action_keys<Ctx: AppContext + 'static>(
 /// `G`-monomorphized TOML-action-keys collector for the app-globals
 /// scope. Mirror of [`navigation_toml_action_keys`].
 pub(crate) fn app_globals_toml_action_keys<Ctx: AppContext + 'static, G: Globals<Ctx>>(
-    _keymap: &Keymap<Ctx>,
+    _: &Keymap<Ctx>,
 ) -> Vec<&'static str> {
     G::Actions::ALL.iter().map(|a| a.toml_key()).collect()
 }
@@ -545,7 +545,7 @@ mod tests {
             const SCOPE_NAME: &'static str = "hides";
             fn defaults() -> Bindings<Self::Actions> { FooPane::defaults() }
             fn dispatcher() -> fn(Self::Actions, &mut TestApp) { FooPane::dispatcher() }
-            fn visibility(&self, action: Self::Actions, _ctx: &TestApp) -> Visibility {
+            fn visibility(&self, action: Self::Actions, _: &TestApp) -> Visibility {
                 match action {
                     FooAction::Activate => Visibility::Hidden,
                     FooAction::Clean => Visibility::Visible,
@@ -574,7 +574,7 @@ mod tests {
             const SCOPE_NAME: &'static str = "paired";
             fn defaults() -> Bindings<Self::Actions> { FooPane::defaults() }
             fn dispatcher() -> fn(Self::Actions, &mut TestApp) { FooPane::dispatcher() }
-            fn bar_slots(&self, _ctx: &TestApp) -> Vec<(BarRegion, BarSlot<Self::Actions>)> {
+            fn bar_slots(&self, _: &TestApp) -> Vec<(BarRegion, BarSlot<Self::Actions>)> {
                 vec![(
                     BarRegion::PaneAction,
                     BarSlot::Paired(FooAction::Activate, FooAction::Clean, "/"),

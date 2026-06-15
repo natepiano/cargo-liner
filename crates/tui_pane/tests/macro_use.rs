@@ -171,7 +171,7 @@ fn framework_skeleton_reachable_from_outside_crate() {
     );
 }
 
-const fn no_op_text_input(_key: KeyBind, _ctx: &mut CrossCrateApp) {}
+const fn no_op_text_input(_: KeyBind, _: &mut CrossCrateApp) {}
 
 #[test]
 fn bar_primitives_reachable_from_outside_crate() {

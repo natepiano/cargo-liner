@@ -44,7 +44,6 @@ impl App {
         });
         self.project_list.for_each_leaf(|item| {
             let abs_path = item.path().to_path_buf();
-            let display_path = item.display_path().into_string();
             let repo_presence = if project::git_repo_root(&abs_path).is_some() {
                 GitRepoPresence::InRepo
             } else {
@@ -56,7 +55,6 @@ impl App {
                 let request = ProjectDetailRequest {
                     sender: &sender,
                     fetch_context: fetch_context.as_ref(),
-                    _project_path: display_path.as_str(),
                     abs_path: &abs_path,
                     // Startup crates.io fetches flow through the fetch
                     // plan below, not the per-leaf detail task; only the

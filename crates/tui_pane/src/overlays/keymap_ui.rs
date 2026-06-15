@@ -58,7 +58,7 @@ pub trait KeymapUiContext: AppContext {
     /// Sort priority within a section. Lower values render earlier;
     /// the default returns `255` (alphabetical fallback). Override
     /// when a section needs a custom order beyond description sort.
-    fn keymap_pane_sort_priority(&self, _scope: &str, _toml_key: &str) -> u8 { u8::MAX }
+    fn keymap_pane_sort_priority(&self, _: &str, _: &str) -> u8 { u8::MAX }
 
     /// The app-pane id ordering the keymap-help overlay walks. Apps
     /// returning an empty slice get no app-pane sections in the

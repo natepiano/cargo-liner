@@ -81,7 +81,6 @@ mod platform;
 mod poller;
 mod rolling_mean;
 mod severity;
-mod types;
 
 pub use monitor::CpuMonitor;
 use percent::CpuBreakdownRaw;
@@ -91,15 +90,15 @@ use percent::cpu_percent;
 use percent::normalize_cpu_label;
 use platform::read_cpu_breakdown_raw;
 use platform::read_gpu_percent;
+pub use poller::CpuBreakdown;
+pub use poller::CpuCoreUsage;
 pub use poller::CpuPoller;
+pub use poller::CpuUsage;
 pub use rolling_mean::RollingMean;
 pub use severity::CpuSeverity;
 pub use severity::blank_bar_color;
 pub use severity::filled_cells;
 pub use severity::severity;
-pub use types::CpuBreakdown;
-pub use types::CpuCoreUsage;
-pub use types::CpuUsage;
 
 #[cfg(test)]
 mod tests {

@@ -163,7 +163,7 @@ fn write_system_clipboard(text: &str) -> Result<(), ClipboardError> {
 }
 
 #[cfg(not(feature = "clipboard"))]
-fn write_system_clipboard(_text: &str) -> Result<(), ClipboardError> {
+fn write_system_clipboard(_: &str) -> Result<(), ClipboardError> {
     Err(ClipboardError::Unavailable)
 }
 

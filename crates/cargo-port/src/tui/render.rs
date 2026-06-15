@@ -611,7 +611,7 @@ pub(super) fn cargo_port_bar_palette() -> BarPalette {
 }
 
 const fn cargo_port_status_line_globals(
-    _app: &App,
+    _: &App,
 ) -> [StatusLineGlobal<AppGlobalAction>; STRIP_SLOT_COUNT] {
     [StatusLineGlobal::global_shortcuts_help()]
 }

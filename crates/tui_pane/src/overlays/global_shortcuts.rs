@@ -131,7 +131,7 @@ impl GlobalShortcutsPane {
 
     /// Current input mode for the overlay.
     #[must_use]
-    pub const fn mode<Ctx: AppContext>(&self, _ctx: &Ctx) -> Mode<Ctx> { Mode::Navigable }
+    pub const fn mode<Ctx: AppContext>(&self, _: &Ctx) -> Mode<Ctx> { Mode::Navigable }
 
     /// Bar slots for the overlay's local actions.
     #[must_use]

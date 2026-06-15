@@ -187,7 +187,7 @@ impl KeymapPane {
     /// - `EditState::Conflict` → [`Mode::Static`] so the conflict bar actions remain visible. The
     ///   input path still calls [`Self::handle_capture_key`] directly for both capture states.
     #[must_use]
-    pub fn mode<Ctx: AppContext>(&self, _ctx: &Ctx) -> Mode<Ctx> {
+    pub fn mode<Ctx: AppContext>(&self, _: &Ctx) -> Mode<Ctx> {
         match self.edit_state {
             EditState::Awaiting => Mode::TextInput(keymap_capture_keys::<Ctx>),
             EditState::Conflict => Mode::Static,
@@ -251,7 +251,7 @@ impl KeymapPane {
 
 /// Inert handler used only to mark key capture as text-input mode.
 /// The input path calls [`KeymapPane::handle_capture_key`] directly.
-const fn keymap_capture_keys<Ctx: AppContext>(_bind: KeyBind, _ctx: &mut Ctx) {}
+const fn keymap_capture_keys<Ctx: AppContext>(_: KeyBind, _: &mut Ctx) {}
 
 #[cfg(test)]
 #[allow(

@@ -98,36 +98,36 @@ pub(super) struct ConfigHandler {
 
 pub(super) const fn mark_regroup_members(
     actions: &mut ReloadActions,
-    _old: &CargoPortConfig,
-    _new: &CargoPortConfig,
-    _context: ReloadContext,
+    _: &CargoPortConfig,
+    _: &CargoPortConfig,
+    _: ReloadContext,
 ) {
     actions.tree.escalate(TreeReaction::RegroupMembers);
 }
 
 pub(super) const fn mark_full_rescan(
     actions: &mut ReloadActions,
-    _old: &CargoPortConfig,
-    _new: &CargoPortConfig,
-    _context: ReloadContext,
+    _: &CargoPortConfig,
+    _: &CargoPortConfig,
+    _: ReloadContext,
 ) {
     actions.tree.escalate(TreeReaction::FullRescan);
 }
 
 pub(super) const fn mark_refresh_lint_runtime(
     actions: &mut ReloadActions,
-    _old: &CargoPortConfig,
-    _new: &CargoPortConfig,
-    _context: ReloadContext,
+    _: &CargoPortConfig,
+    _: &CargoPortConfig,
+    _: ReloadContext,
 ) {
     actions.refresh_lint_runtime = ReloadDecision::Apply;
 }
 
 pub(super) const fn mark_refresh_cpu(
     actions: &mut ReloadActions,
-    _old: &CargoPortConfig,
-    _new: &CargoPortConfig,
-    _context: ReloadContext,
+    _: &CargoPortConfig,
+    _: &CargoPortConfig,
+    _: ReloadContext,
 ) {
     actions.refresh_cpu = ReloadDecision::Apply;
 }

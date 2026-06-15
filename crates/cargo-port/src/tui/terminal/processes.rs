@@ -147,7 +147,7 @@ pub(super) fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
 fn isolate_example_process(cmd: &mut Command) { cmd.process_group(0); }
 
 #[cfg(not(unix))]
-fn isolate_example_process(_cmd: &mut Command) {}
+fn isolate_example_process(_: &mut Command) {}
 
 #[cfg(unix)]
 pub(super) fn stop_example_process(pid: u32) -> bool {
@@ -287,7 +287,7 @@ pub(super) fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) -> bool {
     true
 }
 /// Spawn a background thread to fetch details for a single project ahead of the main scan.
-pub(super) fn spawn_priority_fetch(app: &App, _path: &str, abs_path: &str, name: Option<&String>) {
+pub(super) fn spawn_priority_fetch(app: &App, _: &str, abs_path: &str, name: Option<&String>) {
     let sender = app.background.background_sender();
     let client = app.net.http_client();
     let abs = AbsolutePath::from(abs_path);

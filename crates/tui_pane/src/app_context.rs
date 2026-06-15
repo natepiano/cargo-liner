@@ -54,7 +54,7 @@ pub trait AppContext: Sized {
     /// Handle a toast activation payload.
     ///
     /// Default body is a no-op for apps that use [`NoToastAction`].
-    fn handle_toast_action(&mut self, _action: Self::ToastAction) {}
+    fn handle_toast_action(&mut self, _: Self::ToastAction) {}
 }
 
 /// Uninhabited filler for apps that have no toast activation.

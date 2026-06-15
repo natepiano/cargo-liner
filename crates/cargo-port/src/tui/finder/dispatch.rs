@@ -301,7 +301,7 @@ fn navigate_to_pull_request(app: &mut App, item: &FinderItem) {
 /// fires when finder is open).
 pub fn render_finder_pane_body(
     frame: &mut Frame,
-    _area: Rect,
+    _: Rect,
     pane: &mut FinderPane,
     ctx: &PaneRenderCtx<'_>,
 ) {
