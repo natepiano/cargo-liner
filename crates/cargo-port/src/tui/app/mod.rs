@@ -14929,7 +14929,7 @@ mod tests {
         repo.ci_data = ProjectCiData::Loaded(ProjectCiInfo {
             runs,
             github_total,
-            ci_pagination: CiPagination::from_exhausted(exhausted),
+            ci_pagination: CiPagination::from(exhausted),
         });
     }
 

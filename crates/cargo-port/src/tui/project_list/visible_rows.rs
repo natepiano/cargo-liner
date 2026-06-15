@@ -344,15 +344,17 @@ pub enum LegacyRootExpansionKind {
 }
 
 impl LegacyRootExpansionKind {
-    pub(super) const fn from_had_children(had_children: bool) -> Self {
+    pub(super) const fn had_children(&self) -> bool { matches!(self, Self::HadChildren) }
+}
+
+impl From<bool> for LegacyRootExpansionKind {
+    fn from(had_children: bool) -> Self {
         if had_children {
             Self::HadChildren
         } else {
             Self::Leaf
         }
     }
-
-    pub(super) const fn had_children(&self) -> bool { matches!(self, Self::HadChildren) }
 }
 
 #[derive(Clone)]

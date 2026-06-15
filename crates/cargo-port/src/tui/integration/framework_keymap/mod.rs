@@ -123,12 +123,6 @@ pub use project_list_pane::ProjectListPane;
 pub use targets_pane::TargetsPane;
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "tests should panic on unexpected values"
-)]
 mod tests {
     use super::*;
 

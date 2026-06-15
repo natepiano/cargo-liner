@@ -13,15 +13,17 @@ pub(super) enum ToastPaneFocus {
 }
 
 impl ToastPaneFocus {
-    pub(super) const fn from_focused(pane_focused: bool) -> Self {
+    const fn is_focused(self) -> bool { matches!(self, Self::Focused) }
+}
+
+impl From<bool> for ToastPaneFocus {
+    fn from(pane_focused: bool) -> Self {
         if pane_focused {
             Self::Focused
         } else {
             Self::Unfocused
         }
     }
-
-    const fn is_focused(self) -> bool { matches!(self, Self::Focused) }
 }
 
 #[derive(Clone, Copy)]

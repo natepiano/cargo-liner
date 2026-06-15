@@ -147,12 +147,6 @@ macro_rules! action_enum {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "tests should panic on unexpected values"
-)]
 mod tests {
     use super::Action;
 

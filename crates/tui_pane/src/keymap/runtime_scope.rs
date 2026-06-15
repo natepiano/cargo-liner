@@ -393,12 +393,6 @@ pub(crate) fn app_globals_toml_action_keys<Ctx: AppContext + 'static, G: Globals
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "tests should panic on unexpected values"
-)]
 mod tests {
     use core::sync::atomic::AtomicUsize;
     use core::sync::atomic::Ordering;

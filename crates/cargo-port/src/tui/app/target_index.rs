@@ -104,10 +104,6 @@ pub(crate) enum CleanSelection {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    reason = "tests should panic on unexpected values"
-)]
 mod tests {
     use std::path::PathBuf;
 

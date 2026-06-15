@@ -323,15 +323,17 @@ pub enum PackagePresence {
 }
 
 impl PackagePresence {
-    pub(super) const fn from_has_package(has_package: bool) -> Self {
+    const fn has_package(self) -> bool { matches!(self, Self::Present) }
+}
+
+impl From<bool> for PackagePresence {
+    fn from(has_package: bool) -> Self {
         if has_package {
             Self::Present
         } else {
             Self::Missing
         }
     }
-
-    const fn has_package(self) -> bool { matches!(self, Self::Present) }
 }
 
 /// Per-pane data for the Package detail panel.

@@ -177,11 +177,11 @@ pub enum PullRequestPolling {
 }
 
 impl PullRequestPolling {
-    const fn from_polling(is_polling: bool) -> Self {
-        if is_polling { Self::Active } else { Self::Idle }
-    }
-
     pub const fn is_polling(&self) -> bool { matches!(self, Self::Active) }
+}
+
+impl From<bool> for PullRequestPolling {
+    fn from(is_polling: bool) -> Self { if is_polling { Self::Active } else { Self::Idle } }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -450,7 +450,7 @@ fn pull_request_row(
         title:       info.title.clone(),
         url:         info.url.clone(),
         state_label: info.state.label(),
-        polling:     PullRequestPolling::from_polling(is_polling),
+        polling:     PullRequestPolling::from(is_polling),
         branch:      info.branch_label(default_branch),
         base:        info.base.clone(),
     }

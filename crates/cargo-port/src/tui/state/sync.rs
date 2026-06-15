@@ -140,7 +140,6 @@ fn format_sync(value: Option<(usize, usize)>) -> String {
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
-    clippy::unwrap_used,
     reason = "tests should panic on unexpected values"
 )]
 mod tests {

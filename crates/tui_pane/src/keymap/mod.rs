@@ -642,8 +642,6 @@ impl<Ctx: AppContext + 'static> core::fmt::Debug for Keymap<Ctx> {
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
     reason = "tests should panic on unexpected values"
 )]
 mod tests {

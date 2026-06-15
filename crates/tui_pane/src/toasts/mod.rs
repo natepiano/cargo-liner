@@ -138,11 +138,6 @@ impl<Ctx: AppContext> Toasts<Ctx> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    reason = "tests should fail loudly on unexpected values"
-)]
 mod tests {
     use std::time::Duration;
     use std::time::Instant;

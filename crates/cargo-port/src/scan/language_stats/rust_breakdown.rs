@@ -47,7 +47,7 @@ pub(super) fn child_entries(
 ) -> Vec<LangEntry> {
     let mut buckets = RustBuckets::default();
     for report in &language.reports {
-        let totals = LineTotals::from_report(report);
+        let totals = LineTotals::from(report);
         match rust_file_bucket(root, report.name.as_path()) {
             RustBucket::Code => {
                 add_code_file_with_unit_split(&mut buckets, report, totals, config, cache);
@@ -86,9 +86,7 @@ fn unit_totals_for_file(path: &Path, totals: LineTotals, config: &Config) -> Opt
     let unit = ranges
         .iter()
         .map(|range| {
-            LineTotals::from_code_stats(
-                &LanguageType::Rust.parse_from_str(&source[range.clone()], config),
-            )
+            LineTotals::from(&LanguageType::Rust.parse_from_str(&source[range.clone()], config))
         })
         .fold(LineTotals::default(), |mut acc, totals| {
             acc.add(totals);
@@ -174,10 +172,12 @@ struct LineTotals {
     blanks:   usize,
 }
 
-impl LineTotals {
-    fn from_report(report: &Report) -> Self { Self::from_code_stats(&report.stats) }
+impl From<&Report> for LineTotals {
+    fn from(report: &Report) -> Self { Self::from(&report.stats) }
+}
 
-    fn from_code_stats(stats: &CodeStats) -> Self {
+impl From<&CodeStats> for LineTotals {
+    fn from(stats: &CodeStats) -> Self {
         let stats = stats.summarise();
         Self {
             code:     stats.code,
@@ -185,7 +185,9 @@ impl LineTotals {
             blanks:   stats.blanks,
         }
     }
+}
 
+impl LineTotals {
     const fn is_empty(self) -> bool { self.code == 0 && self.comments == 0 && self.blanks == 0 }
 
     const fn add(&mut self, other: Self) {

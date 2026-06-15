@@ -97,12 +97,6 @@ fn non_empty_lines(lines: Vec<String>, fallback: String) -> Vec<String> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "tests should panic on unexpected values"
-)]
 mod tests {
     use super::*;
 

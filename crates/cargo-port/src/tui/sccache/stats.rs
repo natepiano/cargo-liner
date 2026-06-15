@@ -194,12 +194,6 @@ fn split_aligned_stat(text: &str) -> Option<(&str, &str)> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "tests should panic on unexpected values"
-)]
 mod tests {
     use super::*;
 

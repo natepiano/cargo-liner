@@ -423,10 +423,6 @@ fn example_display_order(a: &str, b: &str) -> Ordering {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "tests should panic on unexpected values"
-)]
 mod target_list_tests {
     use super::AbsolutePath;
     use super::RunTargetKind;

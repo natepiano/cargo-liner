@@ -68,15 +68,17 @@ enum LintRenderMode {
 }
 
 impl LintRenderMode {
-    const fn from_enabled(lint_enabled: bool) -> Self {
+    const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
+}
+
+impl From<bool> for LintRenderMode {
+    fn from(lint_enabled: bool) -> Self {
         if lint_enabled {
             Self::Enabled
         } else {
             Self::Disabled
         }
     }
-
-    const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
 }
 
 struct PackageRenderCtx<'a> {
@@ -627,7 +629,7 @@ pub(super) fn render_package_pane_body(
         synced_description_height,
         ..
     } = ctx;
-    let lint_mode = LintRenderMode::from_enabled(config.current().lint.enabled);
+    let lint_mode = LintRenderMode::from(config.current().lint.enabled);
 
     let Some(pkg_data) = pane.content().cloned() else {
         render_no_project_selected(frame, area, pane);

@@ -127,15 +127,17 @@ enum SectionFocus {
 }
 
 impl SectionFocus {
-    const fn from_focused(focused: bool) -> Self {
+    const fn is_focused(self) -> bool { matches!(self, Self::Focused) }
+}
+
+impl From<bool> for SectionFocus {
+    fn from(focused: bool) -> Self {
         if focused {
             Self::Focused
         } else {
             Self::Unfocused
         }
     }
-
-    const fn is_focused(self) -> bool { matches!(self, Self::Focused) }
 }
 
 struct SectionRule {
@@ -279,7 +281,7 @@ fn append_remotes_section(
     accum.section_rules.push(SectionRule {
         inner_y: accum.lines.len(),
         title,
-        section_focus: SectionFocus::from_focused(focused),
+        section_focus: SectionFocus::from(focused),
     });
     accum.lines.push(Line::from(Span::raw(String::new())));
     render_remote_header(accum.lines, layout, focused);
@@ -327,7 +329,7 @@ fn append_pull_requests_section(
     accum.section_rules.push(SectionRule {
         inner_y: accum.lines.len(),
         title,
-        section_focus: SectionFocus::from_focused(focused),
+        section_focus: SectionFocus::from(focused),
     });
     accum.lines.push(Line::from(Span::raw(String::new())));
 
@@ -586,7 +588,7 @@ fn append_worktrees_section(
     accum.section_rules.push(SectionRule {
         inner_y: accum.lines.len(),
         title,
-        section_focus: SectionFocus::from_focused(focused),
+        section_focus: SectionFocus::from(focused),
     });
     accum.lines.push(Line::from(Span::raw(String::new())));
     render_worktree_header(accum.lines, layout, focused);

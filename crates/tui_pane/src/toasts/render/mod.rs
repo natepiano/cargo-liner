@@ -84,7 +84,7 @@ fn render_toasts(
     let layout = StackLayout {
         width,
         gap,
-        pane_focus: ToastPaneFocus::from_focused(pane_focused),
+        pane_focus: ToastPaneFocus::from(pane_focused),
         focused_toast_id,
     };
     let hitboxes = match settings.placement {

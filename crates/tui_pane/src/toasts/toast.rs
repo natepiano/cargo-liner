@@ -186,7 +186,7 @@ impl<Ctx: AppContext> Toast<Ctx> {
             body: self.body.as_text(),
             body_line_colors: self.body.line_colors(),
             style: self.style,
-            action_state: ToastActionState::from_has_action(self.action.is_some()),
+            action_state: ToastActionState::from(self.action.is_some()),
             linger_progress: self.linger_progress(now),
             remaining_secs: self.remaining_secs(now),
             tracked_items: self

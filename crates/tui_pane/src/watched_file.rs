@@ -84,7 +84,6 @@ fn read_stamp(path: &Path) -> Option<Stamp> {
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
-    clippy::unwrap_used,
     reason = "tests should panic on unexpected values"
 )]
 mod tests {

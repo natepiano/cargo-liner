@@ -47,16 +47,18 @@ pub(crate) enum CiPagination {
 }
 
 impl CiPagination {
-    pub(crate) const fn from_exhausted(exhausted: bool) -> Self {
+    #[cfg(test)]
+    pub(crate) const fn is_exhausted(self) -> bool { matches!(self, Self::Exhausted) }
+}
+
+impl From<bool> for CiPagination {
+    fn from(exhausted: bool) -> Self {
         if exhausted {
             Self::Exhausted
         } else {
             Self::HasMore
         }
     }
-
-    #[cfg(test)]
-    pub(crate) const fn is_exhausted(self) -> bool { matches!(self, Self::Exhausted) }
 }
 
 /// Persisted CI metadata for a single project hierarchy node.

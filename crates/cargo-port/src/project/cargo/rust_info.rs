@@ -116,7 +116,9 @@ impl Cargo {
     }
 
     pub const fn publishable(&self) -> bool { self.publish_status.is_publishable() }
+}
 
+impl From<&PackageRecord> for Cargo {
     /// Derive a `Cargo` from the authoritative [`PackageRecord`] returned
     /// by `cargo metadata`. Called on every metadata arrival (and on
     /// vendored / workspace-member fan-out) to replace the defaults that
@@ -124,7 +126,7 @@ impl Cargo {
     ///
     /// `ProjectType::Workspace` is not derived here — that's a property
     /// of the `[workspace]` table presence, owned by the parse path.
-    pub fn from_package_record(record: &PackageRecord) -> Self {
+    fn from(record: &PackageRecord) -> Self {
         let manifest_dir = record.manifest_path.as_path().parent();
         let mut has_lib = false;
         let mut has_bin = false;

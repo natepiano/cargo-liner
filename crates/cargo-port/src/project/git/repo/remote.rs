@@ -57,15 +57,17 @@ pub(super) enum UpstreamRemote {
 }
 
 impl UpstreamRemote {
-    pub(super) fn from_remote_names(remote_names: &[String]) -> Self {
+    pub(super) const fn is_present(self) -> bool { matches!(self, Self::Present) }
+}
+
+impl From<&[String]> for UpstreamRemote {
+    fn from(remote_names: &[String]) -> Self {
         if remote_names.iter().any(|name| name == GIT_REMOTE_UPSTREAM) {
             Self::Present
         } else {
             Self::Missing
         }
     }
-
-    pub(super) const fn is_present(self) -> bool { matches!(self, Self::Present) }
 }
 
 pub(super) struct RemoteResolveContext<'a> {

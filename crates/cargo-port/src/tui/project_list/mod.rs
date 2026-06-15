@@ -1992,7 +1992,7 @@ impl ProjectList {
                     RootItem::Rust(RustProject::Workspace(ws)) => Some(LegacyRootExpansion {
                         root_path:      ws.path().clone(),
                         old_node_index: ni,
-                        expansion_kind: LegacyRootExpansionKind::from_had_children(
+                        expansion_kind: LegacyRootExpansionKind::from(
                             ws.has_members() || !ws.vendored().is_empty(),
                         ),
                         named_groups:   ws
@@ -2011,9 +2011,7 @@ impl ProjectList {
                     RootItem::Rust(RustProject::Package(pkg)) => Some(LegacyRootExpansion {
                         root_path:      pkg.path().clone(),
                         old_node_index: ni,
-                        expansion_kind: LegacyRootExpansionKind::from_had_children(
-                            !pkg.vendored().is_empty(),
-                        ),
+                        expansion_kind: LegacyRootExpansionKind::from(!pkg.vendored().is_empty()),
                         named_groups:   Vec::new(),
                     }),
                     _ => None,
@@ -2076,7 +2074,7 @@ impl ProjectList {
             let Some(manifest_dir) = record.manifest_path.as_path().parent() else {
                 continue;
             };
-            let cargo = Cargo::from_package_record(record);
+            let cargo = Cargo::from(record);
             if let Some(rust_info) = self.rust_info_at_path_mut(manifest_dir) {
                 rust_info.cargo = cargo.clone();
             }

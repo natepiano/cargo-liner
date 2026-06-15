@@ -67,11 +67,6 @@ impl Keymap {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    reason = "tests should panic on unexpected values"
-)]
 mod tests {
     use super::*;
 

@@ -42,11 +42,11 @@ enum CommandOutcome {
 }
 
 impl CommandOutcome {
-    const fn from_success(success: bool) -> Self {
-        if success { Self::Passed } else { Self::Failed }
-    }
-
     const fn succeeded(self) -> bool { matches!(self, Self::Passed) }
+}
+
+impl From<bool> for CommandOutcome {
+    fn from(success: bool) -> Self { if success { Self::Passed } else { Self::Failed } }
 }
 
 struct CommandExecution {
@@ -459,7 +459,7 @@ fn run_command(
     let new_size = cache_size_index::file_size_or_zero(&log_path);
     cache_size_index::apply_write_delta(cache_root, old_size, new_size);
     Ok(CommandExecution {
-        outcome: CommandOutcome::from_success(success),
+        outcome: CommandOutcome::from(success),
         exit_code,
         duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
     })

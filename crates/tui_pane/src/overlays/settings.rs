@@ -742,12 +742,6 @@ fn render_editor_text(buf: &str, cursor: usize) -> String {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "tests should panic on unexpected values"
-)]
 mod tests {
     use crossterm::event::KeyCode;
     use ratatui::style::Color;

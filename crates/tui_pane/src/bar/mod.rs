@@ -166,8 +166,6 @@ fn render_overlay_slots<A: Action>(
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
     reason = "tests should panic on unexpected values"
 )]
 mod tests {

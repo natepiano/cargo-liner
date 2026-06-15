@@ -338,7 +338,7 @@ fn build_pane_data_for_workspace(
             abs_path,
             display_path,
             title_name: ws.package_name().into_string(),
-            package_presence: PackagePresence::from_has_package(ws.name().is_some()),
+            package_presence: PackagePresence::from(ws.name().is_some()),
             cargo: Some(cargo),
             wt_item: wt_item_ref,
             stats_rows,

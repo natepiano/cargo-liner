@@ -25,7 +25,7 @@ pub enum CiRunDisplayMode {
 impl App {
     /// Insert CI runs from the initial scan for the entry containing `path`.
     pub(super) fn insert_ci_runs(&mut self, path: &Path, runs: Vec<CiRun>, github_total: u32) {
-        let ci_pagination = CiPagination::from_exhausted(
+        let ci_pagination = CiPagination::from(
             self.project_list
                 .primary_url_for(path)
                 .and_then(ci::parse_owner_repo)

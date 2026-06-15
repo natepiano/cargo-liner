@@ -246,15 +246,17 @@ pub(super) enum RowLifecycle {
 }
 
 impl RowLifecycle {
-    pub(super) const fn from_deleted(deleted: bool) -> Self {
+    pub(super) const fn is_deleted(&self) -> bool { matches!(self, Self::Deleted) }
+}
+
+impl From<bool> for RowLifecycle {
+    fn from(deleted: bool) -> Self {
         if deleted {
             Self::Deleted
         } else {
             Self::Present
         }
     }
-
-    pub(super) const fn is_deleted(&self) -> bool { matches!(self, Self::Deleted) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -264,15 +266,17 @@ enum LintColumnStatus {
 }
 
 impl LintColumnStatus {
-    const fn from_enabled(lint_enabled: bool) -> Self {
+    const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
+}
+
+impl From<bool> for LintColumnStatus {
+    fn from(lint_enabled: bool) -> Self {
         if lint_enabled {
             Self::Enabled
         } else {
             Self::Hidden
         }
     }
-
-    const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
 }
 
 #[derive(Clone)]
@@ -324,7 +328,7 @@ impl ProjectListWidths {
     pub(super) fn new(lint_enabled: bool) -> Self {
         Self {
             inner:       ColumnWidths::new(project_list_specs(lint_enabled)),
-            lint_column: LintColumnStatus::from_enabled(lint_enabled),
+            lint_column: LintColumnStatus::from(lint_enabled),
             generation:  u64::MAX,
         }
     }

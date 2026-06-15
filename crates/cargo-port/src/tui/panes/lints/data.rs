@@ -13,11 +13,11 @@ pub enum LintsProjectKind {
 }
 
 impl LintsProjectKind {
-    const fn from_is_rust(is_rust: bool) -> Self {
-        if is_rust { Self::Rust } else { Self::NonRust }
-    }
-
     pub const fn is_rust(self) -> bool { matches!(self, Self::Rust) }
+}
+
+impl From<bool> for LintsProjectKind {
+    fn from(is_rust: bool) -> Self { if is_rust { Self::Rust } else { Self::NonRust } }
 }
 
 #[derive(Clone, Default)]
@@ -91,7 +91,7 @@ pub fn build_lints_data(app: &App) -> LintsData {
         sizes,
         owner_paths,
         owner_of,
-        project_kind: LintsProjectKind::from_is_rust(is_rust),
+        project_kind: LintsProjectKind::from(is_rust),
     }
 }
 
@@ -128,6 +128,6 @@ fn aggregate_group_lints(app: &App, paths: Vec<AbsolutePath>, is_rust: bool) -> 
         sizes,
         owner_paths: paths,
         owner_of,
-        project_kind: LintsProjectKind::from_is_rust(is_rust),
+        project_kind: LintsProjectKind::from(is_rust),
     }
 }

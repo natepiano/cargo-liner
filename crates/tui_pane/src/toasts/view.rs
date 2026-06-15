@@ -12,15 +12,17 @@ pub(super) enum ToastActionState {
 }
 
 impl ToastActionState {
-    pub(super) const fn from_has_action(has_action: bool) -> Self {
+    const fn has_action(self) -> bool { matches!(self, Self::Available) }
+}
+
+impl From<bool> for ToastActionState {
+    fn from(has_action: bool) -> Self {
         if has_action {
             Self::Available
         } else {
             Self::None
         }
     }
-
-    const fn has_action(self) -> bool { matches!(self, Self::Available) }
 }
 
 /// Render-ready view of a toast.

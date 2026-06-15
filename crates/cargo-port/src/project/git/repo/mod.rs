@@ -74,7 +74,7 @@ impl RepoInfo {
         let local_main_branch = branches::resolve_local_main_branch(&repo_root);
 
         let remote_names = list_remote_names(&repo_root);
-        let upstream_remote = UpstreamRemote::from_remote_names(&remote_names);
+        let upstream_remote = UpstreamRemote::from(remote_names.as_slice());
         let pushurls = push::list_remote_pushurls(&repo_root);
         let remote_context = RemoteResolveContext {
             repo_root: &repo_root,

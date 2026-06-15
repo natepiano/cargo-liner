@@ -96,7 +96,6 @@ fn scan_themes_dir(dir: &Path) -> (Vec<ThemeFamily>, Vec<FailedFile>) {
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
-    clippy::unwrap_used,
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
