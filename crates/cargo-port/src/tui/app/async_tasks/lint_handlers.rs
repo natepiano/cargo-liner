@@ -1,6 +1,8 @@
 use std::path::Path;
 use std::time::Instant;
 
+use tui_pane::PERF_LOG_TARGET;
+
 use crate::lint;
 use crate::lint::CachedLintStatus;
 use crate::lint::LintRunOrigin;
@@ -36,7 +38,7 @@ impl App {
         self.refresh_lint_cache_usage_from_disk();
         if let Some(scan_complete_at) = self.startup.scan_complete_at {
             tracing::trace!(
-                target: tui_pane::PERF_LOG_TARGET,
+                target: PERF_LOG_TARGET,
                 phase = "lint_startup_applied",
                 since_scan_complete_ms =
                     tui_pane::perf_log_ms(now.duration_since(scan_complete_at).as_millis()),
@@ -107,7 +109,7 @@ impl App {
         }
         self.sync_running_lint_toast();
         tracing::trace!(
-            target: tui_pane::PERF_LOG_TARGET,
+            target: PERF_LOG_TARGET,
             path = %path.display(),
             owner = %owner_abs,
             status = ?status_kind,

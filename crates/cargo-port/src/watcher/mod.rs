@@ -43,6 +43,7 @@ use refresh::fire_git_updates;
 use roots::RegisteredRoots;
 use roots::register_cargo_home_watch;
 use roots::register_watch_roots;
+use tui_pane::PERF_LOG_TARGET;
 
 use super::config::NonRustInclusion;
 use super::constants::DEBOUNCE_DURATION;
@@ -61,6 +62,7 @@ use crate::channel;
 use crate::channel::Receiver;
 use crate::channel::Sender;
 use crate::channel::TryRecvError;
+use crate::constants::CARGO_TOML;
 use crate::constants::SCAN_METADATA_CONCURRENCY;
 use crate::project::AbsolutePath;
 use crate::project::WorkspaceMetadataStore;
@@ -128,7 +130,7 @@ pub(crate) fn spawn_watcher(
         );
     }
     tracing::trace!(
-        target: tui_pane::PERF_LOG_TARGET,
+        target: PERF_LOG_TARGET,
         requested = watch_roots.len(),
         registered = registered_roots.dirs().len(),
         failed = failures.len(),
@@ -197,7 +199,7 @@ impl ProjectEntry {
     /// `rm -rf` of a worktree removes `Cargo.toml` early in its
     /// traversal, so this is the cheapest watcher-side signal that the
     /// project is being torn down.
-    fn is_alive(&self) -> bool { self.abs_path.join(crate::constants::CARGO_TOML).is_file() }
+    fn is_alive(&self) -> bool { self.abs_path.join(CARGO_TOML).is_file() }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -436,7 +438,7 @@ fn register_project_watch_if_needed(
 ) {
     if registered_roots.covers(req.abs_path.as_path()) {
         tracing::trace!(
-            target: tui_pane::PERF_LOG_TARGET,
+            target: PERF_LOG_TARGET,
             path = %req.abs_path.display(),
             "watcher_dynamic_root_covered"
         );
@@ -453,7 +455,7 @@ fn register_project_watch_if_needed(
         Ok(()) => {
             registered_roots.add_registered_dir(req.abs_path.clone());
             tracing::trace!(
-                target: tui_pane::PERF_LOG_TARGET,
+                target: PERF_LOG_TARGET,
                 path = %req.abs_path.display(),
                 "watcher_dynamic_root_registered"
             );

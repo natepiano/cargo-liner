@@ -19,6 +19,7 @@ use crate::project::LanguageStats;
 mod rust_breakdown;
 
 use rust_breakdown::RustBreakdownCache;
+use tui_pane::PERF_LOG_TARGET;
 
 pub(super) fn spawn_initial_language_stats(
     scan_context: &StreamingScanContext,
@@ -56,7 +57,7 @@ fn emit_language_stats_for_tree(tree: &DiskUsageTree, sender: &Sender<Background
             build_language_stats(entry.as_path(), &languages, &config, &mut rust_cache),
         );
         tracing::trace!(
-            target: tui_pane::PERF_LOG_TARGET,
+            target: PERF_LOG_TARGET,
             elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
             abs_path = %tree.root_abs_path.display(),
             rows = tree.entries.len(),
@@ -97,7 +98,7 @@ fn emit_language_stats_for_tree(tree: &DiskUsageTree, sender: &Sender<Background
     }
 
     tracing::trace!(
-        target: tui_pane::PERF_LOG_TARGET,
+        target: PERF_LOG_TARGET,
         elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
         abs_path = %tree.root_abs_path.display(),
         rows = tree.entries.len(),

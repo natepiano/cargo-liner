@@ -1,5 +1,7 @@
 use std::time::Instant;
 
+use tui_pane::PERF_LOG_TARGET;
+
 use crate::lint::CacheUsage;
 #[cfg(test)]
 use crate::project::AbsolutePath;
@@ -68,7 +70,7 @@ impl App {
         self.scan.state.run_count += 1;
         self.startup.reset();
         tracing::trace!(
-            target: tui_pane::PERF_LOG_TARGET,
+            target: PERF_LOG_TARGET,
             kind = "rescan",
             run = self.scan.state.run_count,
             "scan_start"

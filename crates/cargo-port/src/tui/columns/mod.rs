@@ -783,6 +783,10 @@ pub(super) fn build_summary_cells(widths: &ProjectListWidths, disk: &str) -> Row
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::GIT_STATUS_CLEAN;
+    use crate::constants::GIT_STATUS_MODIFIED;
+    use crate::constants::GIT_STATUS_UNTRACKED;
+    use crate::constants::LINT_PASSED;
     use crate::project::WorktreeHealth;
 
     fn seeded_width(index: usize) -> usize { column_defs(true)[index].seed_width() }
@@ -940,7 +944,7 @@ mod tests {
             name:              "bevy_brp 🌲:2",
             name_segments:     None,
             git_status:        Some(GitStatus::Clean),
-            lint:              LintCell::with_icon(crate::constants::LINT_PASSED),
+            lint:              LintCell::with_icon(LINT_PASSED),
             disk:              "36.3 GiB",
             disk_style:        Style::default(),
             disk_suffix:       None,
@@ -957,7 +961,7 @@ mod tests {
             name:              "bevy_mesh_outline_benchmark",
             name_segments:     None,
             git_status:        Some(GitStatus::Clean),
-            lint:              LintCell::with_icon(crate::constants::LINT_PASSED),
+            lint:              LintCell::with_icon(LINT_PASSED),
             disk:              "36.3 GiB",
             disk_style:        Style::default(),
             disk_suffix:       None,
@@ -1044,7 +1048,7 @@ mod tests {
             name:              "demo",
             name_segments:     None,
             git_status:        Some(GitStatus::Clean),
-            lint:              LintCell::with_icon(crate::constants::LINT_PASSED),
+            lint:              LintCell::with_icon(LINT_PASSED),
             disk:              "36.3 GiB",
             disk_style:        Style::default(),
             disk_suffix:       None,
@@ -1089,10 +1093,7 @@ mod tests {
             modified.cells[COL_NAME].style.fg,
             Some(theme_roles::git_modified_color())
         );
-        assert_eq!(
-            modified.cells[COL_GIT_PATH].text,
-            crate::constants::GIT_STATUS_MODIFIED
-        );
+        assert_eq!(modified.cells[COL_GIT_PATH].text, GIT_STATUS_MODIFIED);
 
         let untracked = build_row_cells(ProjectRow {
             prefix:            "  ",
@@ -1115,10 +1116,7 @@ mod tests {
             untracked.cells[COL_NAME].style.fg,
             Some(theme_roles::git_untracked_color())
         );
-        assert_eq!(
-            untracked.cells[COL_GIT_PATH].text,
-            crate::constants::GIT_STATUS_UNTRACKED
-        );
+        assert_eq!(untracked.cells[COL_GIT_PATH].text, GIT_STATUS_UNTRACKED);
 
         let clean = build_row_cells(ProjectRow {
             prefix:            "  ",
@@ -1137,10 +1135,7 @@ mod tests {
             lifecycle:         RowLifecycle::Present,
             worktree_health:   WorktreeHealth::Normal,
         });
-        assert_eq!(
-            clean.cells[COL_GIT_PATH].text,
-            crate::constants::GIT_STATUS_CLEAN
-        );
+        assert_eq!(clean.cells[COL_GIT_PATH].text, GIT_STATUS_CLEAN);
 
         let ignored = build_row_cells(ProjectRow {
             prefix:            "  ",

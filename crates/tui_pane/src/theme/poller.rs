@@ -89,10 +89,9 @@ fn new_ticker(period: Duration) -> Interval {
 }
 
 async fn detect_blocking() -> Result<Mode, Error> {
-    match tokio::task::spawn_blocking(dark_light::detect).await {
-        Ok(result) => result,
-        Err(join_err) => Err(Error::Io(std::io::Error::other(join_err.to_string()))),
-    }
+    tokio::task::spawn_blocking(dark_light::detect)
+        .await
+        .unwrap_or_else(|join_err| Err(Error::Io(std::io::Error::other(join_err.to_string()))))
 }
 
 const fn to_appearance(mode: Mode) -> Option<Appearance> {

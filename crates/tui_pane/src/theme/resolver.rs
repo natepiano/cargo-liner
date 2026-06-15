@@ -106,10 +106,10 @@ impl ThemeRegistry {
         dark_name: &str,
         os: Option<Appearance>,
     ) -> ResolvedTheme {
-        let (mode, mode_error) = match AppearanceMode::parse(mode_string) {
-            Ok(mode) => (mode, None),
-            Err(err) => (AppearanceMode::Pinned(Appearance::Dark), Some(err)),
-        };
+        let (mode, mode_error) = AppearanceMode::parse(mode_string).map_or_else(
+            |err| (AppearanceMode::Pinned(Appearance::Dark), Some(err)),
+            |mode| (mode, None),
+        );
         let appearance = mode.resolve(os);
         let configured_name = match appearance {
             Appearance::Light => light_name,

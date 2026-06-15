@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 use std::path::Path;
 
+use tui_pane::PERF_LOG_TARGET;
+
 use crate::lint;
 use crate::lint::CachedLintStatus;
 use crate::lint::LintRun;
@@ -158,7 +160,7 @@ impl App {
     pub(super) fn register_lint_project_if_eligible(&self, item: &RootItem) {
         if !item.is_rust() {
             tracing::trace!(
-                target: tui_pane::PERF_LOG_TARGET,
+                target: PERF_LOG_TARGET,
                 reason = "not_rust",
                 path = %item.display_path(),
                 "lint_register_skip"
@@ -168,7 +170,7 @@ impl App {
         let path = item.path();
         let Some(runtime) = self.lint.runtime() else {
             tracing::trace!(
-                target: tui_pane::PERF_LOG_TARGET,
+                target: PERF_LOG_TARGET,
                 reason = "no_runtime",
                 path = %item.display_path(),
                 "lint_register_skip"
@@ -189,7 +191,7 @@ impl App {
         });
         if is_member {
             tracing::trace!(
-                target: tui_pane::PERF_LOG_TARGET,
+                target: PERF_LOG_TARGET,
                 reason = "workspace_member",
                 path = %item.display_path(),
                 "lint_register_skip"
@@ -197,7 +199,7 @@ impl App {
             return;
         }
         tracing::trace!(
-            target: tui_pane::PERF_LOG_TARGET,
+            target: PERF_LOG_TARGET,
             path = %item.display_path(),
             "lint_register"
         );
@@ -268,7 +270,7 @@ impl App {
             runtime.request_startup_lint(path.clone());
         }
         tracing::trace!(
-            target: tui_pane::PERF_LOG_TARGET,
+            target: PERF_LOG_TARGET,
             count = pending.len(),
             "startup_lints_kicked_off"
         );

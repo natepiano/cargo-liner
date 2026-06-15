@@ -14,6 +14,8 @@
 //!
 //! [`Inflight`]: super::state::Inflight
 
+use tui_pane::PERF_LOG_TARGET;
+
 use super::terminal::CiFetchMsg;
 use super::terminal::CleanMsg;
 use super::terminal::ExampleMsg;
@@ -131,7 +133,7 @@ impl Background {
             repo_root,
         }));
         tracing::trace!(
-            target: tui_pane::PERF_LOG_TARGET,
+            target: PERF_LOG_TARGET,
             elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
             path = %item.display_path(),
             has_repo_root,

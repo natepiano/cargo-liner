@@ -2,6 +2,8 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::time::Instant;
 
+use tui_pane::PERF_LOG_TARGET;
+use tui_pane::SLOW_BG_BATCH_MS;
 use tui_pane::TrackedItem;
 use tui_pane::TrackedItemKey;
 
@@ -48,9 +50,9 @@ impl App {
         stats.rebuild_status = rebuild_status;
 
         let elapsed = started.elapsed();
-        if elapsed.as_millis() >= tui_pane::SLOW_BG_BATCH_MS {
+        if elapsed.as_millis() >= SLOW_BG_BATCH_MS {
             tracing::trace!(
-                target: tui_pane::PERF_LOG_TARGET,
+                target: PERF_LOG_TARGET,
                 elapsed_ms = tui_pane::perf_log_ms(elapsed.as_millis()),
                 bg_msgs = stats.bg_msgs,
                 ci_msgs = stats.ci_msgs,
@@ -228,7 +230,7 @@ pub(super) fn log_saturated_background_batch(stats: &PollBackgroundStats) {
     }
 
     tracing::trace!(
-        target: tui_pane::PERF_LOG_TARGET,
+        target: PERF_LOG_TARGET,
         bg_msgs = stats.bg_msgs,
         disk_usage_msgs = stats.disk_usage_msgs,
         git_info_msgs = stats.git_info_msgs,

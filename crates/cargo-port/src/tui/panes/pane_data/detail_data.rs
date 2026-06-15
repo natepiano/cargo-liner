@@ -1,3 +1,5 @@
+use tui_pane::PERF_LOG_TARGET;
+
 use super::AbsolutePath;
 use super::App;
 use super::CRATES_IO_UNREACHABLE;
@@ -842,7 +844,7 @@ pub(super) fn prerelease_label(prerelease: &str) -> &'static str {
 /// format intact for downstream tracing consumers.
 fn log_pane_common_breakdown(abs_path: &Path, runtime: &RuntimeFields, metadata: &MetadataFields) {
     tracing::trace!(
-        target: tui_pane::PERF_LOG_TARGET,
+        target: PERF_LOG_TARGET,
         git_detail_ms = runtime.git_detail_ms,
         disk_ms = runtime.disk_ms,
         worktrees_ms = runtime.worktrees_ms,

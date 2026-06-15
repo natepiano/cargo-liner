@@ -1,3 +1,5 @@
+use tui_pane::PERF_LOG_TARGET;
+
 use crate::tui;
 use crate::tui::app::App;
 use crate::tui::app::VisibleRow;
@@ -60,7 +62,7 @@ impl App {
             self.panes
                 .set_detail_data(key, data.package, data.git, data.targets);
             tracing::trace!(
-                target: tui_pane::PERF_LOG_TARGET,
+                target: PERF_LOG_TARGET,
                 total_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
                 pane_ms,
                 ci_ms,

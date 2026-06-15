@@ -665,6 +665,7 @@ mod tests {
 
     use crate::tui::panes;
     use crate::tui::panes::BottomRow;
+    use crate::tui::panes::CPU_PANE_WIDTH;
     use crate::tui::panes::PaneId;
 
     #[test]
@@ -674,8 +675,8 @@ mod tests {
         let wide =
             panes::resolve_layout(Rect::new(0, 0, 150, 30), 30, 12, BottomRow::Diagnostics, 20);
 
-        assert_eq!(narrow.area(PaneId::Cpu).width, super::panes::CPU_PANE_WIDTH);
-        assert_eq!(wide.area(PaneId::Cpu).width, super::panes::CPU_PANE_WIDTH);
+        assert_eq!(narrow.area(PaneId::Cpu).width, CPU_PANE_WIDTH);
+        assert_eq!(wide.area(PaneId::Cpu).width, CPU_PANE_WIDTH);
     }
 
     #[test]

@@ -693,6 +693,7 @@ mod tests {
     use super::CI_BRANCH_LONG_MIN_WIDTH;
     use super::CI_COMMIT_LONG_MIN_WIDTH;
     use super::CI_JOB_LABEL_MIN_WIDTH;
+    use super::CI_STATUS_GAP_WIDTH;
     use super::CiDisplayColumn;
     use super::OTHER_JOBS_HEADER;
     use super::build_ci_widths;
@@ -872,9 +873,8 @@ mod tests {
             CiStatus::Passed,
         )])];
         let cols = vec![CiDisplayColumn::Job("Format Check".to_string())];
-        let expected_min = cols[0].header_min_label().width()
-            + super::CI_STATUS_GAP_WIDTH
-            + ci_status_glyph_width();
+        let expected_min =
+            cols[0].header_min_label().width() + CI_STATUS_GAP_WIDTH + ci_status_glyph_width();
 
         assert_eq!(
             super::ci_duration_width(&runs, &cols[0], true),

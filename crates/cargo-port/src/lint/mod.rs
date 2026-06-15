@@ -81,6 +81,7 @@ mod tests {
     use crate::cache_paths;
     use crate::channel;
     use crate::config::DiscoveryLint;
+    use crate::constants::LINTS_CACHE_DIR;
 
     fn run(status: LintRunStatus) -> LintRun {
         LintRun {
@@ -215,8 +216,7 @@ mod tests {
     #[should_panic(expected = "tests must write lint artifacts under a temp cache root")]
     fn test_lint_writes_reject_default_user_cache_root() {
         let project_dir = tempfile::tempdir().expect("tempdir");
-        let default_lint_root =
-            cache_paths::default_app_cache_root().join(crate::constants::LINTS_CACHE_DIR);
+        let default_lint_root = cache_paths::default_app_cache_root().join(LINTS_CACHE_DIR);
 
         read_write::write_latest_under(
             default_lint_root.as_path(),

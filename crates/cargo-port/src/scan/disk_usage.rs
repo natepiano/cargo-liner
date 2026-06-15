@@ -3,6 +3,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use tui_pane::PERF_LOG_TARGET;
 use walkdir::WalkDir;
 
 use super::BackgroundMsg;
@@ -70,7 +71,7 @@ fn spawn_disk_usage_tree(scan_context: &StreamingScanContext, tree: DiskUsageTre
         };
         let queue_elapsed = queue_started.elapsed();
         tracing::trace!(
-            target: tui_pane::PERF_LOG_TARGET,
+            target: PERF_LOG_TARGET,
             elapsed_ms = tui_pane::perf_log_ms(queue_elapsed.as_millis()),
             abs_path = %tree.root_abs_path.display(),
             rows = tree.entries.len(),
@@ -84,7 +85,7 @@ fn spawn_disk_usage_tree(scan_context: &StreamingScanContext, tree: DiskUsageTre
             return;
         };
         tracing::trace!(
-            target: tui_pane::PERF_LOG_TARGET,
+            target: PERF_LOG_TARGET,
             elapsed_ms = tui_pane::perf_log_ms(run_started.elapsed().as_millis()),
             abs_path = %tree.root_abs_path.display(),
             rows = tree.entries.len(),

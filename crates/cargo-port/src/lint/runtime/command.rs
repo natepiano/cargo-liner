@@ -1,3 +1,5 @@
+use tui_pane::PERF_LOG_TARGET;
+
 use super::AbsolutePath;
 use super::Arc;
 use super::BackgroundMsg;
@@ -152,7 +154,7 @@ pub(super) fn run_commands_for_project(
         origin,
     };
     tracing::trace!(
-        target: tui_pane::PERF_LOG_TARGET,
+        target: PERF_LOG_TARGET,
         path = project_label,
         abs_path = %project_root.display(),
         origin = ?origin,
@@ -280,7 +282,7 @@ fn execute_commands(
             child_slot,
         )?;
         tracing::trace!(
-            target: tui_pane::PERF_LOG_TARGET,
+            target: PERF_LOG_TARGET,
             command = %command.name,
             duration_ms = tui_pane::perf_log_ms(cmd_started.elapsed().as_millis()),
             success = execution.outcome.succeeded(),

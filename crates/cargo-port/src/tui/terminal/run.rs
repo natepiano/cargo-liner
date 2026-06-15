@@ -20,6 +20,7 @@ use ratatui::backend::CrosstermBackend;
 use terminal_colorsaurus::QueryOptions;
 use terminal_colorsaurus::ThemeMode;
 use tui_pane::Appearance;
+use tui_pane::PERF_LOG_TARGET;
 
 use super::event_loop;
 use super::tree_state;
@@ -112,7 +113,7 @@ pub fn run() -> ExitCode {
     };
     let scan_started_at = std::time::Instant::now();
     tracing::trace!(
-        target: tui_pane::PERF_LOG_TARGET,
+        target: PERF_LOG_TARGET,
         kind = "initial",
         run = 1,
         "scan_start"

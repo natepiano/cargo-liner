@@ -1,5 +1,7 @@
 use ratatui::style::Color;
 use tui_pane::Appearance;
+use tui_pane::BUILTIN_HC_DARK_NAME;
+use tui_pane::BUILTIN_HC_LIGHT_NAME;
 use tui_pane::StyleSpec;
 use tui_pane::Theme;
 use tui_pane::ThemeId;
@@ -62,8 +64,8 @@ fn role_color(role: &str) -> Color {
 
 fn palette_for(id: Option<&ThemeId>, appearance: Appearance) -> RolePalette {
     match id.map(ThemeId::as_str) {
-        Some(tui_pane::BUILTIN_HC_DARK_NAME) => RolePalette::HighContrastDark,
-        Some(tui_pane::BUILTIN_HC_LIGHT_NAME) => RolePalette::HighContrastLight,
+        Some(BUILTIN_HC_DARK_NAME) => RolePalette::HighContrastDark,
+        Some(BUILTIN_HC_LIGHT_NAME) => RolePalette::HighContrastLight,
         _ => match appearance {
             Appearance::Dark => RolePalette::DefaultDark,
             Appearance::Light => RolePalette::DefaultLight,

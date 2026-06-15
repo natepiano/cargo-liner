@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::time::Instant;
 
 use ratatui::style::Color;
+use tui_pane::PERF_LOG_TARGET;
 
 use super::orchestrator::StartupPlan;
 use super::orchestrator::StartupReadiness;
@@ -32,7 +33,7 @@ use crate::tui::constants::STARTUP_ROW_TIMEOUT;
 impl Startup {
     pub(super) fn log_phase_plan(&self) {
         tracing::trace!(
-            target: tui_pane::PERF_LOG_TARGET,
+            target: PERF_LOG_TARGET,
             disk_expected = self.disk.expected_len(),
             git_expected = self.git.expected_len(),
             repo_expected = self.repo.expected_len(),
@@ -411,7 +412,7 @@ impl App {
             return;
         }
         tracing::trace!(
-            target: tui_pane::PERF_LOG_TARGET,
+            target: PERF_LOG_TARGET,
             phase = "disk_applied",
             since_scan_complete_ms =
                 tui_pane::perf_log_ms(now.duration_since(scan_complete_at).as_millis()),
@@ -425,7 +426,7 @@ impl App {
             return;
         }
         tracing::trace!(
-            target: tui_pane::PERF_LOG_TARGET,
+            target: PERF_LOG_TARGET,
             phase = "git_local_applied",
             since_scan_complete_ms =
                 tui_pane::perf_log_ms(now.duration_since(scan_complete_at).as_millis()),
@@ -467,7 +468,7 @@ impl App {
             return;
         }
         tracing::trace!(
-            target: tui_pane::PERF_LOG_TARGET,
+            target: PERF_LOG_TARGET,
             phase = "repo_fetch_applied",
             since_scan_complete_ms =
                 tui_pane::perf_log_ms(now.duration_since(scan_complete_at).as_millis()),
@@ -485,7 +486,7 @@ impl App {
             return;
         }
         tracing::trace!(
-            target: tui_pane::PERF_LOG_TARGET,
+            target: PERF_LOG_TARGET,
             phase = "metadata_applied",
             since_scan_complete_ms =
                 tui_pane::perf_log_ms(now.duration_since(scan_complete_at).as_millis()),
@@ -507,7 +508,7 @@ impl App {
             return;
         }
         tracing::trace!(
-            target: tui_pane::PERF_LOG_TARGET,
+            target: PERF_LOG_TARGET,
             phase = "lint_history_applied",
             since_scan_complete_ms =
                 tui_pane::perf_log_ms(now.duration_since(scan_complete_at).as_millis()),
@@ -575,7 +576,7 @@ impl App {
                 .as_millis(),
         );
         tracing::trace!(
-            target: tui_pane::PERF_LOG_TARGET,
+            target: PERF_LOG_TARGET,
             since_scan_complete_ms = since_scan_ms,
             disk_seen = self.startup.disk.seen.len(),
             disk_expected = self.startup.disk.expected_len(),
@@ -590,7 +591,7 @@ impl App {
             "startup_complete"
         );
         tracing::trace!(
-            target: tui_pane::PERF_LOG_TARGET,
+            target: PERF_LOG_TARGET,
             since_scan_complete_ms = since_scan_ms,
             "steady_state_begin"
         );

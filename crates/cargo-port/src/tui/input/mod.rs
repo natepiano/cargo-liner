@@ -28,7 +28,9 @@ use tui_pane::KeyOutcome;
 use tui_pane::KeySequence;
 use tui_pane::Mode;
 use tui_pane::Navigation;
+use tui_pane::PERF_LOG_TARGET;
 use tui_pane::Pane;
+use tui_pane::SLOW_INPUT_EVENT_MS;
 use tui_pane::Viewport;
 #[cfg(test)]
 pub(super) use tui_pane::set_last_mouse_pos_for_test;
@@ -78,9 +80,9 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
     app.sync_selected_project();
 
     let elapsed = started.elapsed();
-    if elapsed.as_millis() >= tui_pane::SLOW_INPUT_EVENT_MS {
+    if elapsed.as_millis() >= SLOW_INPUT_EVENT_MS {
         tracing::trace!(
-            target: tui_pane::PERF_LOG_TARGET,
+            target: PERF_LOG_TARGET,
             elapsed_ms = tui_pane::perf_log_ms(elapsed.as_millis()),
             kind = %tui_pane::event_label(event),
             focus = pane_label(app.focused_pane_id()),

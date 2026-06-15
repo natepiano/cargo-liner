@@ -9,6 +9,7 @@ use std::time::Instant;
 use crossterm::event::Event;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use tui_pane::PERF_LOG_TARGET;
 use tui_pane::SLOW_FRAME_MS;
 use tui_pane::TrackedItemKey;
 
@@ -178,7 +179,7 @@ fn process_input_frame(app: &mut App, input_rx: &Receiver<Event>) -> InputDrain 
             Ok(event) => {
                 count += 1;
                 tracing::trace!(
-                    target: tui_pane::PERF_LOG_TARGET,
+                    target: PERF_LOG_TARGET,
                     event = %tui_pane::event_label(&event),
                     "input_event_received"
                 );
@@ -268,7 +269,7 @@ fn log_slow_frame(app: &App, bg_stats: &PollBackgroundStats, metrics: &FrameMetr
         return;
     }
     tracing::trace!(
-        target: tui_pane::PERF_LOG_TARGET,
+        target: PERF_LOG_TARGET,
         frame_ms = tui_pane::perf_log_ms(metrics.frame_elapsed.as_millis()),
         input_ms = tui_pane::perf_log_ms(metrics.input_elapsed.as_millis()),
         bg_ms = tui_pane::perf_log_ms(metrics.bg_elapsed.as_millis()),

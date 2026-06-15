@@ -28,10 +28,13 @@ pub(crate) fn config_from_env() -> Config {
 }
 
 pub(crate) fn read_stats() -> StatsResult {
-    match Command::new(SCCACHE_BINARY).arg(SCCACHE_STATS_ARG).output() {
-        Ok(output) => stats_from_output(&output),
-        Err(err) => StatsResult::Failed(vec![format!("Unable to run sccache: {err}")]),
-    }
+    Command::new(SCCACHE_BINARY)
+        .arg(SCCACHE_STATS_ARG)
+        .output()
+        .map_or_else(
+            |err| StatsResult::Failed(vec![format!("Unable to run sccache: {err}")]),
+            |output| stats_from_output(&output),
+        )
 }
 
 fn config_from_vars(vars: impl IntoIterator<Item = (&'static str, String)>) -> Config {

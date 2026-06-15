@@ -3,6 +3,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 use serde::Serialize;
+use tui_pane::PERF_LOG_TARGET;
 
 use super::branches;
 use super::command;
@@ -391,7 +392,7 @@ fn get_git_status(project_dir: &Path, repo_root: &Path) -> GitStatus {
         if ignored {
             let state = GitStatus::Ignored;
             tracing::trace!(
-                target: tui_pane::PERF_LOG_TARGET,
+                target: PERF_LOG_TARGET,
                 elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
                 repo_root = %repo_root.display(),
                 project_dir = %project_dir.display(),
@@ -435,7 +436,7 @@ fn get_git_status(project_dir: &Path, repo_root: &Path) -> GitStatus {
         GitStatus::Clean
     };
     tracing::trace!(
-        target: tui_pane::PERF_LOG_TARGET,
+        target: PERF_LOG_TARGET,
         elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
         repo_root = %repo_root.display(),
         project_dir = %project_dir.display(),

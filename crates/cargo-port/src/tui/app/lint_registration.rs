@@ -1,3 +1,5 @@
+use tui_pane::PERF_LOG_TARGET;
+
 use super::App;
 use crate::lint::RegisterProjectRequest;
 use crate::project;
@@ -17,7 +19,7 @@ impl App {
         let count = projects.len();
         runtime.sync_projects(projects);
         tracing::trace!(
-            target: tui_pane::PERF_LOG_TARGET,
+            target: PERF_LOG_TARGET,
             count,
             "lint_register_root_items"
         );

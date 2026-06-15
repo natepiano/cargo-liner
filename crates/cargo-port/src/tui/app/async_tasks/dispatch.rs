@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use tui_pane::Appearance;
+use tui_pane::PERF_LOG_TARGET;
 
 use crate::http::ServiceSignal;
 use crate::project::AbsolutePath;
@@ -46,7 +47,7 @@ impl App {
         };
 
         tracing::trace!(
-            target: tui_pane::PERF_LOG_TARGET,
+            target: PERF_LOG_TARGET,
             elapsed_ms = tui_pane::perf_log_ms(self.scan.state.started_at.elapsed().as_millis()),
             kind,
             run = self.scan.state.run_count,

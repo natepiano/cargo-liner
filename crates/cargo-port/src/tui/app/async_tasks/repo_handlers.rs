@@ -4,6 +4,7 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
+use tui_pane::PERF_LOG_TARGET;
 use tui_pane::TrackedItem;
 
 use super::constants::PR_CHECK_POLL_SECS;
@@ -142,7 +143,7 @@ impl App {
     /// the dedup set absorbs N attempts for the same `OwnerRepo`.
     pub fn handle_checkout_info(&mut self, path: &Path, info: CheckoutInfo) {
         tracing::trace!(
-            target: tui_pane::PERF_LOG_TARGET,
+            target: PERF_LOG_TARGET,
             path = %path.display(),
             git_status = %info.status.label(),
             "checkout_info_applied"

@@ -777,6 +777,8 @@ mod tests {
     use std::path::Path;
     use std::path::PathBuf;
 
+    use tui_pane::CPU_SMOOTHING_WINDOW_POLLS;
+
     use super::*;
 
     /// The shared empty member-dir map for slices whose tests don't exercise
@@ -1123,11 +1125,11 @@ mod tests {
         let mut history = HashMap::new();
         // Fill the window with zeros, then push spikes: once the window
         // holds only the spikes, the zeros no longer drag the mean down.
-        for _ in 0..tui_pane::CPU_SMOOTHING_WINDOW_POLLS {
+        for _ in 0..CPU_SMOOTHING_WINDOW_POLLS {
             smoothed_cpu(&mut history, 7, 0.0);
         }
         let mut mean = 0.0;
-        for _ in 0..tui_pane::CPU_SMOOTHING_WINDOW_POLLS {
+        for _ in 0..CPU_SMOOTHING_WINDOW_POLLS {
             mean = smoothed_cpu(&mut history, 7, 50.0);
         }
         assert!((mean - 50.0).abs() < f32::EPSILON);

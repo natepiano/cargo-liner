@@ -112,6 +112,7 @@ use tui_pane::ToastStyle::Warning;
 use tui_pane::ToastTaskId;
 use tui_pane::TrackedItem;
 
+use self::constants::ANIMATION_TICK;
 use super::background::Background;
 use super::columns;
 #[cfg(test)]
@@ -161,6 +162,8 @@ use crate::channel::Receiver;
 use crate::channel::Sender;
 use crate::ci::OwnerRepo;
 use crate::config::NonRustInclusion;
+#[cfg(test)]
+use crate::constants::LINT_NO_LOG;
 use crate::constants::SCAN_METADATA_CONCURRENCY;
 use crate::constants::TARGET_DIR;
 use crate::http::HttpClient;
@@ -427,10 +430,7 @@ impl App {
     #[cfg(test)]
     pub(super) fn lint_cell(&self, status: &LintStatus) -> LintCell {
         if !self.config.lint_enabled() {
-            return LintCell::from_parts(
-                crate::constants::LINT_NO_LOG,
-                ratatui::style::Style::default(),
-            );
+            return LintCell::from_parts(LINT_NO_LOG, ratatui::style::Style::default());
         }
         let icon =
             integration::lint_icon_for(status.kind()).frame_at(self.animation_started.elapsed());
@@ -466,7 +466,7 @@ impl App {
     pub(super) fn animation_timeout(&self) -> Duration {
         const IDLE_HEARTBEAT: Duration = Duration::from_secs(1);
         if self.is_animating() {
-            constants::ANIMATION_TICK
+            ANIMATION_TICK
         } else {
             IDLE_HEARTBEAT
         }
@@ -1528,6 +1528,7 @@ mod tests {
     use crate::config::CargoPortConfig;
     use crate::config::NonRustInclusion;
     use crate::config::ScrollDirection;
+    use crate::constants::WORKTREE;
     use crate::http::ServiceKind;
     use crate::lint::LintRunOrigin;
     use crate::lint::LintStatus;
@@ -1559,9 +1560,13 @@ mod tests {
     use crate::scan;
     use crate::scan::BackgroundMsg;
     use crate::scan::CiFetchResult;
+    use crate::tui::columns::COL_NAME;
     use crate::tui::columns::ProjectListWidths;
     use crate::tui::dismiss_target::DismissTarget;
     use crate::tui::panes::CiFetchKind;
+    use crate::tui::panes::PREFIX_ROOT_COLLAPSED;
+    use crate::tui::panes::PREFIX_ROOT_LEAF;
+    use crate::tui::panes::PREFIX_WT_FLAT;
     use crate::tui::panes::PaneId;
     pub(super) use crate::tui::project_list::ExpandKey;
     use crate::tui::project_list::ProjectList;
@@ -8047,7 +8052,7 @@ mod tests {
 
             let item = &app.project_list[0].root_item;
             let row = columns::build_row_cells(ProjectRow {
-                prefix:            crate::tui::panes::PREFIX_ROOT_LEAF,
+                prefix:            PREFIX_ROOT_LEAF,
                 name:              &item.root_directory_name().into_string(),
                 name_segments:     None,
                 git_status:        app.project_list.git_status_for(item.path()),
@@ -9234,15 +9239,15 @@ mod tests {
                 true,
                 0,
             );
-            let root_width = columns::display_width(crate::tui::panes::PREFIX_ROOT_COLLAPSED)
-                + columns::display_width(&root_label);
-            let primary_entry_width = columns::display_width(crate::tui::panes::PREFIX_WT_FLAT)
-                + columns::display_width(primary_label);
-            let linked_entry_width = columns::display_width(crate::tui::panes::PREFIX_WT_FLAT)
-                + columns::display_width(linked_label);
+            let root_width =
+                columns::display_width(PREFIX_ROOT_COLLAPSED) + columns::display_width(&root_label);
+            let primary_entry_width =
+                columns::display_width(PREFIX_WT_FLAT) + columns::display_width(primary_label);
+            let linked_entry_width =
+                columns::display_width(PREFIX_WT_FLAT) + columns::display_width(linked_label);
 
             assert_eq!(
-                widths.get(crate::tui::columns::COL_NAME),
+                widths.get(COL_NAME),
                 crate::tui::panes::name_width_with_gutter(
                     root_width.max(primary_entry_width).max(linked_entry_width)
                 ),
@@ -9305,13 +9310,13 @@ mod tests {
                 true,
                 0,
             );
-            let root_width = columns::display_width(crate::tui::panes::PREFIX_ROOT_COLLAPSED)
-                + columns::display_width(&root_label);
-            let primary_entry_width = columns::display_width(crate::tui::panes::PREFIX_WT_FLAT)
-                + columns::display_width("zeta (p)");
+            let root_width =
+                columns::display_width(PREFIX_ROOT_COLLAPSED) + columns::display_width(&root_label);
+            let primary_entry_width =
+                columns::display_width(PREFIX_WT_FLAT) + columns::display_width("zeta (p)");
 
             assert_eq!(
-                widths.get(crate::tui::columns::COL_NAME),
+                widths.get(COL_NAME),
                 crate::tui::panes::name_width_with_gutter(root_width.max(primary_entry_width)),
                 "fit widths should include the rendered primary marker"
             );
@@ -9373,9 +9378,7 @@ mod tests {
                 "root label should prepend parents until the suffix becomes unique: {names:?}"
             );
             assert!(
-                names
-                    .iter()
-                    .any(|name| name.contains(crate::constants::WORKTREE)),
+                names.iter().any(|name| name.contains(WORKTREE)),
                 "worktree root should still render its badge after disambiguation: {names:?}"
             );
             assert_ne!(

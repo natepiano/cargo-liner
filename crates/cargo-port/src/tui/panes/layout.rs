@@ -256,6 +256,7 @@ mod tests {
     use tui_pane::PanePlacement;
 
     use super::BottomRow;
+    use super::PANE_BORDER_HEIGHT;
     use super::derived_layout;
     use super::resolve_layout;
     use crate::tui::panes::PaneId;
@@ -387,7 +388,7 @@ mod tests {
 
         assert_eq!(
             layout.area(PaneId::Package).height,
-            top_inner + super::PANE_BORDER_HEIGHT
+            top_inner + PANE_BORDER_HEIGHT
         );
     }
 

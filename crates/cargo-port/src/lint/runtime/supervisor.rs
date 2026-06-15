@@ -1,3 +1,5 @@
+use tui_pane::PERF_LOG_TARGET;
+
 use super::AbsolutePath;
 use super::Arc;
 use super::AtomicBool;
@@ -119,7 +121,7 @@ fn supervisor_loop(
                 let abs_path = project.abs_path.clone();
                 let accepted = should_watch_project(&lint, &project);
                 tracing::trace!(
-                    target: tui_pane::PERF_LOG_TARGET,
+                    target: PERF_LOG_TARGET,
                     path = %abs_path.display(),
                     label = %project.project_label,
                     accepted,
@@ -429,7 +431,7 @@ fn spawn_project_worker(
             {
                 if !stop_flag.load(Ordering::Relaxed) && project_still_runnable(&project_root) {
                     tracing::trace!(
-                        target: tui_pane::PERF_LOG_TARGET,
+                        target: PERF_LOG_TARGET,
                         path = %project_root.display(),
                         origin = ?scheduled.origin,
                         "lint_worker_run_start"
@@ -449,7 +451,7 @@ fn spawn_project_worker(
                         scheduled.origin,
                     );
                     tracing::trace!(
-                        target: tui_pane::PERF_LOG_TARGET,
+                        target: PERF_LOG_TARGET,
                         path = %project_root.display(),
                         origin = ?scheduled.origin,
                         duration_ms = tui_pane::perf_log_ms(run_started.elapsed().as_millis()),

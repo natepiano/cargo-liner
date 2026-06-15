@@ -1,3 +1,5 @@
+use tui_pane::PERF_LOG_TARGET;
+
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::ManifestFingerprint;
@@ -144,7 +146,7 @@ impl App {
                 .upsert(TargetDirMember { project_root }, target_directory.clone());
         }
         tracing::trace!(
-            target: tui_pane::PERF_LOG_TARGET,
+            target: PERF_LOG_TARGET,
             workspace_root = %workspace_root.as_path().display(),
             generation,
             "cargo_metadata_applied"

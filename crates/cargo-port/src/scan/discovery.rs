@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use tui_pane::PERF_LOG_TARGET;
 use walkdir::WalkDir;
 
 use super::BackgroundMsg;
@@ -312,7 +313,7 @@ pub(super) fn phase1_discover(
                     continue;
                 };
                 tracing::trace!(
-                    target: tui_pane::PERF_LOG_TARGET,
+                    target: PERF_LOG_TARGET,
                     elapsed_ms = tui_pane::perf_log_ms(manifest_started.elapsed().as_millis()),
                     manifest = %entry.path().display(),
                     "phase1_manifest_parse"
@@ -327,7 +328,7 @@ pub(super) fn phase1_discover(
                     GitRepoPresence::OutsideRepo
                 };
                 tracing::trace!(
-                    target: tui_pane::PERF_LOG_TARGET,
+                    target: PERF_LOG_TARGET,
                     elapsed_ms = tui_pane::perf_log_ms(repo_presence_started.elapsed().as_millis()),
                     path = %abs_path,
                     in_repo = repo_presence.is_in_repo(),

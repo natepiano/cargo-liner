@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use notify::Error;
 use notify::RecursiveMode;
 use notify::Watcher;
+use tui_pane::PERF_LOG_TARGET;
 
 use crate::constants::DOT_CARGO_DIR;
 use crate::project::AbsolutePath;
@@ -129,7 +130,7 @@ pub(super) fn register_cargo_home_watch(
     }
     match watcher.watch(cargo_home.as_path(), RecursiveMode::NonRecursive) {
         Ok(()) => tracing::trace!(
-            target: tui_pane::PERF_LOG_TARGET,
+            target: PERF_LOG_TARGET,
             cargo_home = %cargo_home.display(),
             "watcher_cargo_home_registered"
         ),
