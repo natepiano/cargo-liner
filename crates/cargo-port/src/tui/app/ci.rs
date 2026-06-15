@@ -46,9 +46,10 @@ impl App {
     }
 
     /// Process a completed CI fetch: merge runs and detect exhaustion.
-    /// Returns `true` when the caller should chain a `FetchOlder` follow-up
-    /// (Sync surfaced no new runs but a cached cursor exists to look further
-    /// back). The caller preserves the toast across the chained fetch.
+    /// Returns `true` when the caller should chain a `CiFetchKind::Older`
+    /// request (`CiFetchKind::Sync` surfaced no new runs but a cached cursor
+    /// exists to look further back). The caller preserves the toast across
+    /// the chained fetch.
     pub(super) fn handle_ci_fetch_complete(
         &mut self,
         path: &str,
@@ -62,10 +63,10 @@ impl App {
         let prev_pagination = prev_info.map_or(CiPagination::HasMore, |info| info.ci_pagination);
         let prev_github_total = prev_info.map_or(0, |info| info.github_total);
 
-        // Only Sync returns an unfiltered total_count from GitHub.
-        // FetchOlder uses created=<{date} which returns a filtered count,
-        // and CacheOnly means the network failed.  In both cases, keep
-        // the previous total.
+        // Only `CiFetchKind::Sync` returns an unfiltered total_count from
+        // GitHub. `CiFetchKind::Older` uses created=<{date} which returns
+        // a filtered count, and CacheOnly means the network failed. In
+        // both cases, keep the previous total.
         let github_total = match (&result, kind) {
             (CiFetchResult::Loaded { github_total, .. }, CiFetchKind::Sync) => *github_total,
             _ => prev_github_total,
@@ -88,14 +89,16 @@ impl App {
         merged.sort_by_key(|run| Reverse(run.run_id));
 
         let found_new = merged.len() > prev_count;
-        // Chain Sync → FetchOlder when Sync surfaced nothing and we still
-        // have a cached cursor to look further back. The caller schedules
-        // the FetchOlder and preserves the toast across the chained fetch.
+        // Chain `CiFetchKind::Sync` to `CiFetchKind::Older` when
+        // `CiFetchKind::Sync` surfaced nothing and a cached cursor exists.
+        // The caller schedules the `CiFetchKind::Older` request and
+        // preserves the toast across the chained fetch.
         let chain_older =
             matches!(kind, CiFetchKind::Sync) && !found_new && merged.last().is_some();
-        // Only FetchOlder marks/clears exhaustion.  Sync clears it when
-        // new runs appear but never marks it — we don't want a routine
-        // refresh to block future FetchOlder requests.
+        // Only `CiFetchKind::Older` marks/clears exhaustion.
+        // `CiFetchKind::Sync` clears it when new runs appear but never
+        // marks it — we don't want a routine refresh to block future
+        // `CiFetchKind::Older` requests.
         let ci_pagination = match kind {
             CiFetchKind::Sync => {
                 if found_new {
@@ -107,7 +110,8 @@ impl App {
                     CiPagination::HasMore
                 } else {
                     // Skip the status flash when chaining; the chained
-                    // FetchOlder will produce its own outcome message.
+                    // `CiFetchKind::Older` will produce its own outcome
+                    // message.
                     if !chain_older {
                         self.overlays.set_status_flash(
                             "no new runs found".to_string(),
@@ -118,7 +122,7 @@ impl App {
                     prev_pagination
                 }
             },
-            CiFetchKind::FetchOlder => {
+            CiFetchKind::Older => {
                 if found_new {
                     if let Some(url) = self.project_list.primary_url_for(&abs)
                         && let Some(owner_repo) = ci::parse_owner_repo(url)

@@ -253,7 +253,7 @@ pub(super) fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) -> bool {
 
     thread::spawn(move || {
         let (result, network) = match ci_fetch_kind {
-            CiFetchKind::FetchOlder => {
+            CiFetchKind::Older => {
                 let oldest = oldest_created_at
                     .as_deref()
                     .unwrap_or("1970-01-01T00:00:00Z");

@@ -27,7 +27,7 @@ pub(super) fn startup_panel_body(
         // A determinate row shows a fill bar + percent; an indeterminate or
         // failed row shows an empty bar + a short word in the percent column.
         let (bar, suffix) = match row.state {
-            ProgressState::Progress(percentage) => (
+            ProgressState::Active(percentage) => (
                 progress_bar(percentage),
                 format!("{:>3}%", percentage.get()),
             ),
@@ -67,7 +67,7 @@ fn progress_bar(percentage: Percentage) -> String {
 /// waiting, and a muted red on failure.
 fn row_color(state: ProgressState) -> Color {
     match state {
-        ProgressState::Progress(percentage) => {
+        ProgressState::Active(percentage) => {
             let channel = ramp_channel(percentage);
             Color::Rgb(channel, 255, channel)
         },
@@ -117,10 +117,10 @@ mod tests {
     #[test]
     fn panel_body_renders_a_bar_and_percent_per_row() {
         let rows = [
-            row("Disk usage", ProgressState::Progress(Percentage::full())),
+            row("Disk usage", ProgressState::Active(Percentage::full())),
             row(
                 "Cargo metadata",
-                ProgressState::Progress(Percentage::from_fraction(0, 4)),
+                ProgressState::Active(Percentage::from_fraction(0, 4)),
             ),
         ];
         let (lines, colors) = startup_panel_body(&rows, WIDTH);
@@ -142,15 +142,15 @@ mod tests {
     #[test]
     fn ramp_is_linear_white_to_green() {
         assert_eq!(
-            row_color(ProgressState::Progress(Percentage::empty())),
+            row_color(ProgressState::Active(Percentage::empty())),
             Color::Rgb(255, 255, 255)
         );
         assert_eq!(
-            row_color(ProgressState::Progress(Percentage::full())),
+            row_color(ProgressState::Active(Percentage::full())),
             Color::Rgb(0, 255, 0)
         );
         // 50% sits halfway between white and green.
-        let half = row_color(ProgressState::Progress(Percentage::from_fraction(1, 2)));
+        let half = row_color(ProgressState::Active(Percentage::from_fraction(1, 2)));
         assert_eq!(half, Color::Rgb(128, 255, 128));
     }
 
@@ -158,7 +158,7 @@ mod tests {
     fn slow_row_shows_its_current_item_after_the_percent() {
         let mut r = row(
             "crates.io",
-            ProgressState::Progress(Percentage::from_fraction(1, 4)),
+            ProgressState::Active(Percentage::from_fraction(1, 4)),
         );
         r.detail = Some("serde".to_string());
         let (lines, _) = startup_panel_body(std::slice::from_ref(&r), WIDTH);
@@ -183,7 +183,7 @@ mod tests {
     fn overshoot_fraction_clamps_to_a_full_bar() {
         let rows = [row(
             "Disk usage",
-            ProgressState::Progress(Percentage::from_fraction(9, 4)),
+            ProgressState::Active(Percentage::from_fraction(9, 4)),
         )];
         let (lines, _) = startup_panel_body(&rows, WIDTH);
         assert!(lines[0].contains(&full_bar()) && lines[0].ends_with("100%"));

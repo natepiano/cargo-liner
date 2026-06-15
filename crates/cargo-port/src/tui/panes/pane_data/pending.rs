@@ -15,7 +15,7 @@ pub struct PendingExampleRun {
 #[derive(Clone, Copy)]
 pub enum CiFetchKind {
     /// Fetch runs older than the oldest cached run.
-    FetchOlder,
+    Older,
     /// Re-sync the most recent N runs, refreshing stale failures.
     Sync,
 }

@@ -610,8 +610,7 @@ impl App {
 /// `STARTUP_ROW_DETAIL_DELAY` warrants showing the item it is working on; a
 /// fast row reaches 100% before the delay elapses and so never shows it.
 fn row_wants_detail(now: Instant, first_seen: Option<Instant>, state: ProgressState) -> bool {
-    let in_progress =
-        matches!(state, ProgressState::Progress(percentage) if percentage.get() < 100);
+    let in_progress = matches!(state, ProgressState::Active(percentage) if percentage.get() < 100);
     in_progress
         && first_seen.is_some_and(|first| now.duration_since(first) >= STARTUP_ROW_DETAIL_DELAY)
 }

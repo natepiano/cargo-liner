@@ -12112,20 +12112,20 @@ mod tests {
                 10,
             );
 
-            // FetchOlder returns the same run — no new runs found.
+            // `CiFetchKind::Older` returns the same run — no new runs found.
             app.handle_ci_fetch_complete(
                 &path,
                 CiFetchResult::Loaded {
                     runs:         vec![make_ci_run(5, CiStatus::Passed)],
                     github_total: 10,
                 },
-                CiFetchKind::FetchOlder,
+                CiFetchKind::Older,
             );
 
             let state = loaded_ci(&app, project.path());
             assert!(
                 state.ci_pagination.is_exhausted(),
-                "FetchOlder should mark exhausted when no new runs found"
+                "CiFetchKind::Older should mark exhausted when no new runs found"
             );
         }
 

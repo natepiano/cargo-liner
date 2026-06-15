@@ -638,12 +638,7 @@ mod tests {
 
     // ── Helpers ──────────────────────────────────────────────────────────
 
-    trait FrameworkTestHelpers {
-        fn dispatch_global_for_test_open_keymap(&mut self);
-        fn dispatch_global_for_test_open_settings(&mut self);
-    }
-
-    impl FrameworkTestHelpers for Framework<TestApp> {
+    impl Framework<TestApp> {
         fn dispatch_global_for_test_open_keymap(&mut self) {
             self.set_overlay_for_test(FrameworkOverlayId::Keymap);
         }

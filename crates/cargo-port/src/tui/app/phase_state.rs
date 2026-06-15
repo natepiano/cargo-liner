@@ -285,13 +285,13 @@ pub enum FailureReason {
     Timeout(Duration),
 }
 
-/// The render state of one startup row. `Progress` carries a clamped
+/// The render state of one startup row. `Active` carries a clamped
 /// percentage; `CompleteHeld` is 100% held open by the minimum-visible
 /// floor; `Waiting` is an indeterminate denominator; `Failed` is a
 /// terminal stall.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ProgressState {
-    Progress(Percentage),
+    Active(Percentage),
     CompleteHeld,
     Waiting,
     Failed,
@@ -410,7 +410,7 @@ impl<K: Eq + Hash> PhaseCompletion for KeyedPhase<K> {
         if self.is_complete() && !self.min_visible_elapsed(now, min_visible) {
             return Some(ProgressState::CompleteHeld);
         }
-        Some(ProgressState::Progress(percentage))
+        Some(ProgressState::Active(percentage))
     }
 }
 
@@ -468,7 +468,7 @@ impl PhaseCompletion for LanguagePhase {
         if self.is_complete() && !self.min_visible_elapsed(now, min_visible) {
             return Some(ProgressState::CompleteHeld);
         }
-        Some(ProgressState::Progress(percentage))
+        Some(ProgressState::Active(percentage))
     }
 }
 
@@ -627,7 +627,7 @@ mod tests {
         phase.seen.insert(1);
         assert_eq!(
             phase.progress_state(Instant::now(), MIN_VISIBLE),
-            Some(ProgressState::Progress(Percentage::from_fraction(1, 4)))
+            Some(ProgressState::Active(Percentage::from_fraction(1, 4)))
         );
     }
 
@@ -650,7 +650,7 @@ mod tests {
         let after = start + MIN_VISIBLE + Duration::from_millis(1);
         assert_eq!(
             phase.progress_state(after, MIN_VISIBLE),
-            Some(ProgressState::Progress(Percentage::full())),
+            Some(ProgressState::Active(Percentage::full())),
             "past the floor the row renders a full bar"
         );
         assert!(
@@ -697,7 +697,7 @@ mod tests {
             .expect("row");
         assert_eq!(
             state,
-            ProgressState::Progress(Percentage::from_fraction(1, 2)),
+            ProgressState::Active(Percentage::from_fraction(1, 2)),
             "once stable the row renders a determinate bar"
         );
     }

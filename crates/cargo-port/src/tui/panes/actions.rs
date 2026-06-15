@@ -997,7 +997,7 @@ fn handle_ci_fetch_more(app: &mut App) {
         .unwrap_or_else(|| project::home_relative_path(&ci_path));
     // Always start with Sync: pick up runs newer than the cached set. If
     // Sync surfaces nothing, `poll_ci_fetches` automatically chains a
-    // FetchOlder using the cached tail as the cursor.
+    // `CiFetchKind::Older` uses the cached tail as the cursor.
     app.inflight.set_pending_ci_fetch(PendingCiFetch {
         project_path:      ci_path.display().to_string(),
         ci_run_count:      app.config.ci_run_count(),

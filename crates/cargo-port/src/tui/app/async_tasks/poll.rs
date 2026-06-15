@@ -84,9 +84,10 @@ impl App {
                     let new_runs = after.saturating_sub(before);
                     if chain_older {
                         // Sync turned up nothing; schedule the follow-up
-                        // FetchOlder using the (unchanged) cached tail as
-                        // the cursor. Preserve the existing toast so the
-                        // user sees one continuous "Fetching CI" task.
+                        // Schedule `CiFetchKind::Older` using the
+                        // (unchanged) cached tail as the cursor. Preserve
+                        // the existing toast so the user sees one
+                        // continuous "Fetching CI" task.
                         let oldest_created_at = self
                             .project_list
                             .ci_info_for(Path::new(&path))
@@ -96,7 +97,7 @@ impl App {
                                 project_path:      path.clone(),
                                 ci_run_count:      self.config.ci_run_count(),
                                 oldest_created_at: Some(oldest_created_at),
-                                ci_fetch_kind:     CiFetchKind::FetchOlder,
+                                ci_fetch_kind:     CiFetchKind::Older,
                             });
                             count += 1;
                             continue;
@@ -111,7 +112,7 @@ impl App {
                             format!("{new_runs} new runs fetched")
                         } else {
                             match kind {
-                                CiFetchKind::FetchOlder => "no older runs found".to_string(),
+                                CiFetchKind::Older => "no older runs found".to_string(),
                                 CiFetchKind::Sync => "no new runs found".to_string(),
                             }
                         };
