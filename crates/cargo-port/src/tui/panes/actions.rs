@@ -894,7 +894,7 @@ fn handle_detail_enter(app: &mut App) {
                 Some(PackageRow::CratesIo(_))
             )
         {
-            open_url(&format!("https://crates.io/crates/{}", pkg.title_name));
+            open_url(&format!("https://crates.io/crates/{}", pkg.name));
         }
     } else if let Some(git) = app.panes.git.content() {
         let pos = app.panes.git.viewport.pos();

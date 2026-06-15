@@ -297,7 +297,7 @@ pub(super) fn emit_root_git_info_refresh(
     tracing::trace!(
         target: PERF_LOG_TARGET,
         elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
-        path = %entry.project_label,
+        path = %entry.label,
         git_status = checkout.as_ref().map_or("unknown", |c| c.status.label()),
         "watcher_root_git_info_refresh"
     );
@@ -460,7 +460,7 @@ pub(super) fn fire_disk_updates(
         .collect();
 
     for project_label in ready {
-        let Some(entry) = projects.values().find(|e| e.project_label == project_label) else {
+        let Some(entry) = projects.values().find(|e| e.label == project_label) else {
             if let Some(state) = pending_disk.get_mut(&project_label) {
                 *state = WatchState::Idle;
             }

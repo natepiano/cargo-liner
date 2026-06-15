@@ -67,7 +67,7 @@ pub(crate) struct ProjectDetailRequest<'a> {
     pub sender:        &'a Sender<BackgroundMsg>,
     pub fetch_context: &'a FetchContext,
     pub abs_path:      &'a Path,
-    pub project_name:  Option<&'a str>,
+    pub name:          Option<&'a str>,
     pub repo_presence: GitRepoPresence,
 }
 
@@ -78,7 +78,6 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     let fetch_context = req.fetch_context;
     let abs_path = req.abs_path;
     let abs: AbsolutePath = abs_path.to_path_buf().into();
-    let project_name = req.project_name;
     let repo_presence = req.repo_presence;
     let client = &fetch_context.client;
     // Local git info — includes git status but skips first_commit,
@@ -109,7 +108,7 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     }
 
     // Crates.io version + downloads (network)
-    if let Some(name) = project_name {
+    if let Some(name) = req.name {
         let _ = sender.send(BackgroundMsg::CratesIoFetchQueued {
             name: name.to_string(),
         });

@@ -290,7 +290,7 @@ impl Lint {
     /// at the selected project.
     ///
     /// `is_worktree_group` is true when the selected row's
-    /// `package_title` is "Worktree Group" — i.e., the detail
+    /// package title is "Worktree Group" — i.e., the detail
     /// pane is showing a worktree-group rollup. In that case the
     /// status aggregates across the group's checkouts and the run
     /// count sums across them. Otherwise the lookup is per-path.

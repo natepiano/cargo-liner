@@ -524,25 +524,29 @@ pub(super) fn header_line(widths: &ProjectListWidths, name_text: &str) -> Line<'
 
         let content = if i == COL_NAME {
             pad_right(name_text, slot_width)
-        } else if def.header_mode == HeaderMode::BorrowLeft {
-            let header = def.header_for_width(slot_width);
-            match def.align {
-                Align::Left => pad_right(header, slot_width),
-                Align::Right => pad_left(header, slot_width),
-                Align::Center => pad_center(header, slot_width),
-            }
-        } else if def.header_mode == HeaderMode::Hidden {
-            " ".repeat(slot_width)
         } else {
-            let gap = def.gap.min(slot_width);
-            let content_width = slot_width.saturating_sub(gap);
-            let header = def.header_for_width(content_width);
-            let padded = match def.align {
-                Align::Left => pad_right(header, content_width),
-                Align::Right => pad_left(header, content_width),
-                Align::Center => pad_center(header, content_width),
-            };
-            format!("{}{padded}", " ".repeat(gap))
+            match def.header_mode {
+                HeaderMode::Standard => {
+                    let gap = def.gap.min(slot_width);
+                    let content_width = slot_width.saturating_sub(gap);
+                    let header = def.header_for_width(content_width);
+                    let padded = match def.align {
+                        Align::Left => pad_right(header, content_width),
+                        Align::Right => pad_left(header, content_width),
+                        Align::Center => pad_center(header, content_width),
+                    };
+                    format!("{}{padded}", " ".repeat(gap))
+                },
+                HeaderMode::BorrowLeft => {
+                    let header = def.header_for_width(slot_width);
+                    match def.align {
+                        Align::Left => pad_right(header, slot_width),
+                        Align::Right => pad_left(header, slot_width),
+                        Align::Center => pad_center(header, slot_width),
+                    }
+                },
+                HeaderMode::Hidden => " ".repeat(slot_width),
+            }
         };
 
         spans.push(Span::styled(content, header_style));

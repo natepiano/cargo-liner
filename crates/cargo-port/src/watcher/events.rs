@@ -273,7 +273,7 @@ pub(super) fn handle_notify_event(
             entry.abs_path.as_path(),
             resolved_target.as_deref(),
         );
-        refresh::schedule_disk_refresh(pending_disk, &entry.project_label, now);
+        refresh::schedule_disk_refresh(pending_disk, &entry.label, now);
         if !is_target_event && let Some(refresh_key) = refresh::git_refresh_key(entry) {
             refresh::enqueue_git_refresh(pending_git, refresh_key, now, false, "project_event");
         }

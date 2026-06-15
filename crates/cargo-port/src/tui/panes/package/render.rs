@@ -643,7 +643,7 @@ pub(super) fn render_package_pane_body(
     } else {
         styles.chrome.inactive_border
     };
-    let title = format!(" {} - {} ", pkg_data.package_title, pkg_data.title_name);
+    let title = format!(" {} - {} ", pkg_data.title, pkg_data.name);
     let project_block = styles
         .chrome
         .with_inactive_border(border_style)

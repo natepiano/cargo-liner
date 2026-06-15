@@ -183,7 +183,7 @@ pub struct WorktreeGroupSummary {
 /// Primary project fields for the `Package` column.
 /// Non-Rust projects show only name, path, disk, and CI.
 pub(super) fn package_fields_from_data(data: &PackageData) -> Vec<DetailField> {
-    if data.package_title == "Project" {
+    if data.title == "Project" {
         return vec![
             DetailField::Path,
             DetailField::Disk,
@@ -343,8 +343,8 @@ impl From<bool> for PackagePresence {
 /// without `&App` access. Pre-resolving `lint_display` and `ci_display`
 /// lets `PackagePane::render` operate on `&PackageData` alone.
 pub struct PackageData {
-    pub package_title:            String,
-    pub title_name:               String,
+    pub title:                    String,
+    pub name:                     String,
     pub worktree_group_summary:   Option<WorktreeGroupSummary>,
     pub primary_section:          Option<PackageSection>,
     pub path:                     String,

@@ -1103,7 +1103,7 @@ pub(super) fn render_git_pane_body(
         git_panel_title(&git_data),
         matches!(pane_focus_state, PaneFocusState::Active),
     );
-    let git_inner = git_block.inner(area);
+    let inner_area = git_block.inner(area);
     frame.render_widget(git_block, area);
 
     let about_layout = render_git_about_section(
@@ -1113,7 +1113,7 @@ pub(super) fn render_git_pane_body(
             flat_fields: &flat_fields,
             data: &git_data,
             outer_area: area,
-            git_inner,
+            inner_area,
             border_style,
             synced_description_height: ctx.synced_description_height,
             pane: &pane.viewport,
@@ -1161,7 +1161,7 @@ struct GitAboutCtx<'a> {
     flat_fields:               &'a [DetailField],
     data:                      &'a GitData,
     outer_area:                Rect,
-    git_inner:                 Rect,
+    inner_area:                Rect,
     border_style:              Style,
     synced_description_height: SyncedDescriptionHeight,
     pane:                      &'a Viewport,
@@ -1178,13 +1178,13 @@ struct GitAboutLayout {
 /// separated from the rest of the pane by a horizontal rule with `├`/`┤`
 /// endcaps. Returns the area below the separator for the scrolling content.
 fn render_git_about_section(frame: &mut Frame, ctx: &GitAboutCtx<'_>) -> GitAboutLayout {
-    let git_inner = ctx.git_inner;
+    let inner_area = ctx.inner_area;
 
     let lower_content_height = git_lower_content_height(ctx.data, ctx.flat_fields.len());
     let reserved_lower_height = u16::from(lower_content_height > 0);
     let reserved_separator_height =
-        u16::from(git_inner.height > reserved_lower_height.saturating_add(1));
-    let baseline_max = git_inner
+        u16::from(inner_area.height > reserved_lower_height.saturating_add(1));
+    let baseline_max = inner_area
         .height
         .saturating_sub(reserved_lower_height.saturating_add(reserved_separator_height));
 
@@ -1199,32 +1199,32 @@ fn render_git_about_section(frame: &mut Frame, ctx: &GitAboutCtx<'_>) -> GitAbou
     );
     let description_height = block.render_with_selection(
         frame,
-        git_inner,
+        inner_area,
         ctx.synced_description_height,
         baseline_max,
         tui_pane::selection_state(ctx.pane, 0, ctx.focus),
     );
     if description_height == 0 {
         return GitAboutLayout {
-            content_area:     git_inner,
+            content_area:     inner_area,
             description_rect: None,
         };
     }
 
-    let separator_y = git_inner.y.saturating_add(description_height);
-    let has_room_for_separator = separator_y < git_inner.bottom();
+    let separator_y = inner_area.y.saturating_add(description_height);
+    let has_room_for_separator = separator_y < inner_area.bottom();
     if !has_room_for_separator {
         return GitAboutLayout {
             content_area:     Rect {
-                x:      git_inner.x,
+                x:      inner_area.x,
                 y:      separator_y,
-                width:  git_inner.width,
+                width:  inner_area.width,
                 height: 0,
             },
             description_rect: Some(Rect {
-                x:      git_inner.x,
-                y:      git_inner.y,
-                width:  git_inner.width,
+                x:      inner_area.x,
+                y:      inner_area.y,
+                width:  inner_area.width,
                 height: description_height,
             }),
         };
@@ -1247,15 +1247,15 @@ fn render_git_about_section(frame: &mut Frame, ctx: &GitAboutCtx<'_>) -> GitAbou
     let content_y = separator_y.saturating_add(1);
     GitAboutLayout {
         content_area:     Rect {
-            x:      git_inner.x,
+            x:      inner_area.x,
             y:      content_y,
-            width:  git_inner.width,
-            height: git_inner.bottom().saturating_sub(content_y),
+            width:  inner_area.width,
+            height: inner_area.bottom().saturating_sub(content_y),
         },
         description_rect: Some(Rect {
-            x:      git_inner.x,
-            y:      git_inner.y,
-            width:  git_inner.width,
+            x:      inner_area.x,
+            y:      inner_area.y,
+            width:  inner_area.width,
             height: description_height,
         }),
     }

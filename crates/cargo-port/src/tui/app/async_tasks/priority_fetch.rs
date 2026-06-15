@@ -58,7 +58,7 @@ impl App {
             .panes
             .package
             .content()
-            .map(|d| d.title_name.clone())
+            .map(|d| d.name.clone())
             .filter(|n| n != "-");
         if self
             .project_list

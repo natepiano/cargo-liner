@@ -35,11 +35,11 @@ fn copy_payload(text: impl Into<String>, label: CopyLabel) -> CopySelectionResul
 /// The crates.io URL for the project, or `Nothing` when there is no
 /// usable crate name.
 fn crates_io_url_payload(data: &PackageData) -> CopySelectionResult {
-    if data.title_name.trim().is_empty() || data.title_name == "-" {
+    if data.name.trim().is_empty() || data.name == "-" {
         CopySelectionResult::Nothing
     } else {
         copy_payload(
-            format!("https://crates.io/crates/{}", data.title_name),
+            format!("https://crates.io/crates/{}", data.name),
             CopyLabel::Url,
         )
     }

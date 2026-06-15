@@ -124,7 +124,7 @@ pub(super) fn probe_new_projects(
                     sender: &sender,
                     fetch_context: &fetch_context,
                     abs_path: &abs_path,
-                    project_name: project_name.as_deref(),
+                    name: project_name.as_deref(),
                     repo_presence,
                 };
                 scan::fetch_project_details(&request);

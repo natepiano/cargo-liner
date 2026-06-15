@@ -44,49 +44,48 @@ pub(super) fn render_toast(
     frame.render_widget(Clear, clear_rect);
 
     let focused = pane_focused && focused_toast_id == Some(toast.id());
-    let is_error = toast.style() == ToastStyle::Error;
-    let is_warning = toast.style() == ToastStyle::Warning;
+    let toast_style = toast.style();
     // Error and warning toasts keep the safety-pinned palette so they
     // stay legible under any user theme. Plain (info) toasts mirror
     // `default_pane_chrome` so their border and title match the
     // framework pane chrome.
-    let border_style = if is_error {
-        Style::default().fg(palette.error)
-    } else if is_warning {
-        Style::default().fg(palette.warning)
-    } else if focused {
-        Style::default().fg(active_border_color())
-    } else {
-        Style::default().fg(inactive_border_color())
+    let border_style = match toast_style {
+        ToastStyle::Error => Style::default().fg(palette.error),
+        ToastStyle::Warning => Style::default().fg(palette.warning),
+        ToastStyle::Normal => {
+            if focused {
+                Style::default().fg(active_border_color())
+            } else {
+                Style::default().fg(inactive_border_color())
+            }
+        },
     };
-    let text_style = if is_error {
-        Style::default().fg(palette.error)
-    } else if is_warning {
-        Style::default().fg(palette.warning)
-    } else if focused {
-        Style::default()
-            .fg(title_color())
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(inactive_title_color())
+    let text_style = match toast_style {
+        ToastStyle::Error => Style::default().fg(palette.error),
+        ToastStyle::Warning => Style::default().fg(palette.warning),
+        ToastStyle::Normal => {
+            if focused {
+                Style::default()
+                    .fg(title_color())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(inactive_title_color())
+            }
+        },
     };
-    let body_style = if is_error {
-        Style::default().fg(palette.error)
-    } else if is_warning {
-        Style::default().fg(palette.warning)
-    } else {
-        Style::default()
+    let body_style = match toast_style {
+        ToastStyle::Error => Style::default().fg(palette.error),
+        ToastStyle::Warning => Style::default().fg(palette.warning),
+        ToastStyle::Normal => Style::default(),
     };
 
     let close_text = "[x]";
     let close_width = u16::try_from(close_text.len()).unwrap_or(u16::MAX);
     let title_max = usize::from(card.width.saturating_sub(close_width + 4));
-    let raw_title = if is_warning {
-        format!("! {}", toast.title())
-    } else if is_error {
-        format!("x {}", toast.title())
-    } else {
-        toast.title().to_owned()
+    let raw_title = match toast_style {
+        ToastStyle::Error => format!("x {}", toast.title()),
+        ToastStyle::Warning => format!("! {}", toast.title()),
+        ToastStyle::Normal => toast.title().to_owned(),
     };
     let title = format::truncate(&raw_title, title_max);
 

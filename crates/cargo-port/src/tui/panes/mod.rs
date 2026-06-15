@@ -301,12 +301,12 @@ mod tests {
 
     fn package_data(is_rust_project: bool) -> PackageData {
         PackageData {
-            package_title:            if is_rust_project {
+            title:                    if is_rust_project {
                 "Package".to_string()
             } else {
                 "Project".to_string()
             },
-            title_name:               "demo".to_string(),
+            name:                     "demo".to_string(),
             worktree_group_summary:   None,
             primary_section:          None,
             path:                     "~/demo".to_string(),

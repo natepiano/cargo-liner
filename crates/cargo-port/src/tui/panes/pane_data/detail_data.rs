@@ -224,7 +224,7 @@ pub fn build_pane_data_for_vendored(app: &App, vendored: &VendoredPackage) -> De
         PaneDataSource {
             abs_path,
             display_path: &display_path,
-            title_name: vendored.package_name().into_string(),
+            name: vendored.package_name().into_string(),
             package_presence: PackagePresence::Present,
             cargo: Some(cargo),
             wt_item: None,
@@ -232,7 +232,7 @@ pub fn build_pane_data_for_vendored(app: &App, vendored: &VendoredPackage) -> De
             test_rows,
             primary_section: None,
             fallback_type: None,
-            package_title: "Vendored Crate".to_string(),
+            title: "Vendored Crate".to_string(),
         },
     )
 }
@@ -256,8 +256,8 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
 
     DetailPaneData {
         package: PackageData {
-            package_title:            "Submodule".to_string(),
-            title_name:               submodule.name.clone(),
+            title:                    "Submodule".to_string(),
+            name:                     submodule.name.clone(),
             worktree_group_summary:   None,
             primary_section:          None,
             path:                     display_path,
@@ -330,7 +330,7 @@ fn build_pane_data_for_workspace(
     let test_rows = package_data::test_rows_from_counts(test_counts);
 
     let wt_item_ref = wt_item.filter(|_| is_wt_group);
-    let package_title = wt_item_ref.map_or_else(
+    let title = wt_item_ref.map_or_else(
         || "Workspace".to_string(),
         |item| resolve_package_title(app, item),
     );
@@ -339,7 +339,7 @@ fn build_pane_data_for_workspace(
         PaneDataSource {
             abs_path,
             display_path,
-            title_name: ws.package_name().into_string(),
+            name: ws.package_name().into_string(),
             package_presence: PackagePresence::from(ws.name().is_some()),
             cargo: Some(cargo),
             wt_item: wt_item_ref,
@@ -347,7 +347,7 @@ fn build_pane_data_for_workspace(
             test_rows,
             primary_section: Some(PackageSection::PrimaryWorkspace).filter(|_| is_wt_group),
             fallback_type: Some(ProjectType::Workspace),
-            package_title,
+            title,
         },
     )
 }
@@ -368,7 +368,7 @@ fn build_pane_data_for_package(
     let test_rows = package_data::test_rows_from_counts(pkg.info().test_counts.unwrap_or_default());
 
     let wt_item_ref = wt_item.filter(|_| is_wt_group);
-    let package_title = wt_item.map_or_else(
+    let title = wt_item.map_or_else(
         || resolve_package_title_for_package(app, pkg),
         |item| resolve_package_title(app, item),
     );
@@ -378,7 +378,7 @@ fn build_pane_data_for_package(
         PaneDataSource {
             abs_path,
             display_path,
-            title_name: pkg.package_name().into_string(),
+            name: pkg.package_name().into_string(),
             package_presence: PackagePresence::Present,
             cargo: Some(cargo),
             wt_item: wt_item_ref,
@@ -386,7 +386,7 @@ fn build_pane_data_for_package(
             test_rows,
             primary_section: Some(PackageSection::PrimaryPackage).filter(|_| is_wt_group),
             fallback_type: None,
-            package_title,
+            title,
         },
     )
 }
@@ -408,7 +408,7 @@ fn build_pane_data_non_rust(
         PaneDataSource {
             abs_path,
             display_path,
-            title_name: nr.root_directory_name().into_string(),
+            name: nr.root_directory_name().into_string(),
             package_presence: PackagePresence::Missing,
             cargo: None,
             wt_item: wt_item_ref,
@@ -416,7 +416,7 @@ fn build_pane_data_non_rust(
             test_rows: Vec::new(),
             primary_section: None,
             fallback_type: None,
-            package_title: "Project".to_string(),
+            title: "Project".to_string(),
         },
     )
 }
@@ -424,7 +424,7 @@ fn build_pane_data_non_rust(
 pub(super) struct PaneDataSource<'a> {
     abs_path:         &'a Path,
     display_path:     &'a str,
-    title_name:       String,
+    name:             String,
     package_presence: PackagePresence,
     cargo:            Option<&'a Cargo>,
     wt_item:          Option<&'a RootItem>,
@@ -432,7 +432,7 @@ pub(super) struct PaneDataSource<'a> {
     test_rows:        Vec<(&'static str, usize)>,
     primary_section:  Option<PackageSection>,
     fallback_type:    Option<ProjectType>,
-    package_title:    String,
+    title:            String,
 }
 
 /// Crates-io fields pulled from either a Rust info or vendored entry.
@@ -506,8 +506,8 @@ fn manifest_fields_from(package_record: Option<&PackageRecord>) -> ManifestField
 /// `build_pane_data_common` computes once it has `&App` access,
 /// handed off to the pure constructor below.
 pub(super) struct BuildPackageDataArgs {
-    package_title:            String,
-    title_name:               String,
+    title:                    String,
+    name:                     String,
     worktree_group_summary:   Option<WorktreeGroupSummary>,
     primary_section:          Option<PackageSection>,
     display_path:             String,
@@ -538,8 +538,8 @@ pub(super) fn build_package_data(args: BuildPackageDataArgs) -> PackageData {
         description,
     } = args.manifest;
     PackageData {
-        package_title: args.package_title,
-        title_name: args.title_name,
+        title: args.title,
+        name: args.name,
         worktree_group_summary: args.worktree_group_summary,
         primary_section: args.primary_section,
         path: args.display_path,
@@ -597,10 +597,10 @@ fn compute_package_displays(
     app: &App,
     abs_path: &AbsolutePath,
     ci_status: Option<CiStatus>,
-    package_title: &str,
+    title: &str,
 ) -> (LintDisplay, CiDisplay) {
     let pl = &app.project_list;
-    let is_worktree_group = package_title == "Worktree Group";
+    let is_worktree_group = title == "Worktree Group";
     let is_rust = pl.is_rust_at_path(abs_path.as_path());
     let lint_display = Lint::package_display(pl, abs_path, is_worktree_group, is_rust);
     let ci_display = app.ci.package_display(
@@ -629,11 +629,11 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
 
     let crates_io_status = derive_crates_io_status(&runtime.crates_io, app);
     let (lint_display, ci_display) =
-        compute_package_displays(app, &abs_path_owned, runtime.ci, &src.package_title);
+        compute_package_displays(app, &abs_path_owned, runtime.ci, &src.title);
 
     let package = build_package_data(BuildPackageDataArgs {
-        package_title: src.package_title,
-        title_name: src.title_name,
+        title: src.title,
+        name: src.name,
         display_path: src.display_path.to_owned(),
         stats_rows: src.stats_rows,
         test_rows: src.test_rows,

@@ -2845,8 +2845,8 @@ mod tests {
 
         fn package_data_no_version() -> PackageData {
             PackageData {
-                package_title:            "Package".to_string(),
-                title_name:               "demo".to_string(),
+                title:                    "Package".to_string(),
+                name:                     "demo".to_string(),
                 worktree_group_summary:   None,
                 primary_section:          None,
                 path:                     "~/demo".to_string(),
@@ -13885,8 +13885,8 @@ mod tests {
             app.ensure_detail_cached();
 
             let package = app.panes.package.content().unwrap();
-            assert_eq!(package.package_title, "Worktree Group");
-            assert_eq!(package.title_name, "bevy_brp");
+            assert_eq!(package.title, "Worktree Group");
+            assert_eq!(package.name, "bevy_brp");
             assert_eq!(
                 panes::DetailField::Targets.package_value(package),
                 "workspace"
@@ -14002,10 +14002,7 @@ mod tests {
             app.sync_selected_project();
             app.ensure_detail_cached();
             assert_eq!(
-                app.panes
-                    .package
-                    .content()
-                    .map(|p| p.package_title.as_str()),
+                app.panes.package.content().map(|p| p.title.as_str()),
                 Some("Worktree Group")
             );
             assert_eq!(app.panes.git.content().map(|g| g.worktrees.len()), Some(2));
@@ -14024,8 +14021,8 @@ mod tests {
             app.ensure_detail_cached();
 
             let package = app.panes.package.content().unwrap();
-            assert_eq!(package.package_title, "Package");
-            assert_eq!(package.title_name, "cargo-mend");
+            assert_eq!(package.title, "Package");
+            assert_eq!(package.name, "cargo-mend");
             assert!(package.worktree_group_summary.is_none());
             assert_eq!(app.panes.git.content().map(|g| g.worktrees.len()), Some(0));
         }
@@ -14051,7 +14048,7 @@ mod tests {
             app.ensure_detail_cached();
 
             let package = app.panes.package.content().unwrap();
-            assert_eq!(package.package_title, "Worktree Group");
+            assert_eq!(package.title, "Worktree Group");
             assert_eq!(
                 package.worktree_group_summary.as_ref().map(|s| s.worktrees),
                 Some(1)
@@ -14108,10 +14105,7 @@ mod tests {
             let names: Vec<&str> = git.worktrees.iter().map(|wt| wt.name.as_str()).collect();
             assert_eq!(names, vec!["cargo-mend", "cargo-mend_style_fix"]);
             assert_eq!(
-                app.panes
-                    .package
-                    .content()
-                    .map(|p| p.package_title.as_str()),
+                app.panes.package.content().map(|p| p.title.as_str()),
                 Some("Worktree Group")
             );
         }

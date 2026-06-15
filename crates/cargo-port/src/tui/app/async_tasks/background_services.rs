@@ -61,7 +61,7 @@ impl App {
                     // Startup crates.io fetches flow through the fetch
                     // plan below, not the per-leaf detail task; only the
                     // watcher probe path passes a name here.
-                    project_name: None,
+                    name: None,
                     repo_presence,
                 };
                 scan::fetch_project_details(&request);

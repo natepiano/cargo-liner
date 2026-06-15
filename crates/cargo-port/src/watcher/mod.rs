@@ -182,7 +182,7 @@ fn spawn_watcher_thread<W: Watcher + Send + 'static>(
 
 /// Per-project tracking state.
 struct ProjectEntry {
-    project_label:  String,
+    label:          String,
     abs_path:       AbsolutePath,
     repo_root:      Option<AbsolutePath>,
     /// The resolved on-disk git directory. For normal repos this is
@@ -422,7 +422,7 @@ fn apply_watch_request(
     state.projects.insert(
         req.abs_path.clone(),
         ProjectEntry {
-            project_label: req.project_label,
+            label: req.project_label,
             abs_path: req.abs_path.clone(),
             repo_root: req.repo_root,
             git_dir,
@@ -972,7 +972,7 @@ mod tests {
             projects.insert(
                 AbsolutePath::from(path.clone()),
                 ProjectEntry {
-                    project_label:  path.display().to_string(),
+                    label:          path.display().to_string(),
                     abs_path:       AbsolutePath::from(path.clone()),
                     repo_root:      None,
                     git_dir:        None,
@@ -1459,7 +1459,7 @@ mod tests {
         (
             AbsolutePath::from(abs_path),
             ProjectEntry {
-                project_label:  project_label.to_string(),
+                label:          project_label.to_string(),
                 abs_path:       AbsolutePath::from(abs_path),
                 repo_root:      None,
                 git_dir:        None,
@@ -1511,7 +1511,7 @@ mod tests {
         projects.insert(
             AbsolutePath::from(project_dir.clone()),
             ProjectEntry {
-                project_label:  "~/my_project".to_string(),
+                label:          "~/my_project".to_string(),
                 abs_path:       AbsolutePath::from(project_dir.clone()),
                 repo_root:      Some(AbsolutePath::from(project_dir.clone())),
                 git_dir:        Some(AbsolutePath::from(project_dir.join(".git"))),
@@ -1521,7 +1521,7 @@ mod tests {
         projects.insert(
             AbsolutePath::from(member_dir.clone()),
             ProjectEntry {
-                project_label:  "~/my_project/crates/member".to_string(),
+                label:          "~/my_project/crates/member".to_string(),
                 abs_path:       AbsolutePath::from(member_dir.clone()),
                 repo_root:      Some(AbsolutePath::from(project_dir.clone())),
                 git_dir:        Some(AbsolutePath::from(project_dir.join(".git"))),
@@ -1637,7 +1637,7 @@ mod tests {
         projects.insert(
             AbsolutePath::from(wt_root.clone()),
             ProjectEntry {
-                project_label:  "~/main_repo_style_fix".to_string(),
+                label:          "~/main_repo_style_fix".to_string(),
                 abs_path:       AbsolutePath::from(wt_root.clone()),
                 repo_root:      Some(AbsolutePath::from(wt_root.clone())),
                 git_dir:        Some(AbsolutePath::from(wt_git_dir.clone())),
@@ -1878,7 +1878,7 @@ mod tests {
         projects.insert(
             AbsolutePath::from(project_dir.to_path_buf()),
             ProjectEntry {
-                project_label:  "~/demo".to_string(),
+                label:          "~/demo".to_string(),
                 abs_path:       AbsolutePath::from(project_dir.to_path_buf()),
                 repo_root:      Some(AbsolutePath::from(project_dir.to_path_buf())),
                 git_dir:        Some(AbsolutePath::from(project_dir.join(".git"))),
@@ -1912,7 +1912,7 @@ mod tests {
         projects.insert(
             AbsolutePath::from(project_dir.clone()),
             ProjectEntry {
-                project_label:  "~/my_project".to_string(),
+                label:          "~/my_project".to_string(),
                 abs_path:       AbsolutePath::from(project_dir.clone()),
                 repo_root:      Some(AbsolutePath::from(project_dir.clone())),
                 git_dir:        Some(AbsolutePath::from(project_dir.join(".git"))),
@@ -2131,7 +2131,7 @@ mod tests {
         projects.insert(
             AbsolutePath::from(main_root.clone()),
             ProjectEntry {
-                project_label:  "~/main_repo".to_string(),
+                label:          "~/main_repo".to_string(),
                 abs_path:       AbsolutePath::from(main_root.clone()),
                 repo_root:      Some(AbsolutePath::from(main_root)),
                 git_dir:        Some(AbsolutePath::from(common_git_dir.clone())),
@@ -2141,7 +2141,7 @@ mod tests {
         projects.insert(
             AbsolutePath::from(wt_root.clone()),
             ProjectEntry {
-                project_label:  "~/main_repo_style_fix".to_string(),
+                label:          "~/main_repo_style_fix".to_string(),
                 abs_path:       AbsolutePath::from(wt_root.clone()),
                 repo_root:      Some(AbsolutePath::from(wt_root)),
                 git_dir:        Some(AbsolutePath::from(wt_git_dir)),
@@ -2946,7 +2946,7 @@ mod tests {
         projects.insert(
             AbsolutePath::from(project_dir.clone()),
             ProjectEntry {
-                project_label:  label.clone(),
+                label:          label.clone(),
                 abs_path:       AbsolutePath::from(project_dir.clone()),
                 repo_root:      git_metadata
                     .is_tracked()
@@ -3241,7 +3241,7 @@ mod tests {
         projects.insert(
             AbsolutePath::from(linked_dir.clone()),
             ProjectEntry {
-                project_label:  label.clone(),
+                label:          label.clone(),
                 abs_path:       AbsolutePath::from(linked_dir.clone()),
                 repo_root:      None,
                 git_dir:        None,
