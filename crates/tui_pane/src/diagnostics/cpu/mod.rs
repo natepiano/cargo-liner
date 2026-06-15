@@ -10,20 +10,12 @@
 //! bucket using caller-supplied thresholds; [`CpuSeverity::color`]
 //! resolves to the framework's success / title / error theme colors.
 
-#[cfg(target_os = "linux")]
-use std::collections::HashMap;
-#[cfg(target_os = "linux")]
-use std::collections::HashSet;
 use std::collections::VecDeque;
-#[cfg(target_os = "linux")]
-use std::process::Command;
 #[cfg(target_os = "macos")]
 use std::ptr::from_ref;
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
-#[cfg(target_os = "linux")]
-use std::time::Instant;
 
 use crossbeam_channel::Receiver;
 use crossbeam_channel::RecvTimeoutError;
@@ -88,7 +80,20 @@ use percent::bounded_percent_u8;
 use percent::cpu_breakdown;
 use percent::cpu_percent;
 use percent::normalize_cpu_label;
+#[cfg(target_os = "windows")]
+use percent::rounded_percent;
+#[cfg(all(test, target_os = "linux"))]
+use platform::DrmClientSample;
+#[cfg(target_os = "linux")]
+use platform::FdinfoGpuSampler;
+#[cfg(target_os = "windows")]
+use platform::GpuQuery;
+#[cfg(all(test, target_os = "linux"))]
+use platform::engine_busy_percent;
+#[cfg(all(test, target_os = "linux"))]
+use platform::parse_drm_fdinfo;
 use platform::read_cpu_breakdown_raw;
+#[cfg(not(target_os = "windows"))]
 use platform::read_gpu_percent;
 pub use poller::CpuBreakdown;
 pub use poller::CpuCoreUsage;

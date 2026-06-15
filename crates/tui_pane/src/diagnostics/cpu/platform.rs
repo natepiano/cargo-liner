@@ -1,21 +1,58 @@
+#[cfg(target_os = "linux")]
+use std::collections::HashMap;
+#[cfg(target_os = "linux")]
+use std::collections::HashSet;
+#[cfg(target_os = "linux")]
+use std::process::Command;
+#[cfg(target_os = "linux")]
+use std::time::Instant;
+
+#[cfg(target_os = "macos")]
 use super::CFDictionary;
+#[cfg(target_os = "macos")]
 use super::CFNumber;
+#[cfg(target_os = "macos")]
 use super::CFRetained;
+#[cfg(target_os = "macos")]
 use super::CFString;
+#[cfg(target_os = "macos")]
 use super::CFType;
 use super::CpuBreakdownRaw;
+#[cfg(target_os = "windows")]
+use super::GPU_COUNTER_PATH;
+#[cfg(target_os = "macos")]
 use super::IOIteratorNext;
+#[cfg(target_os = "macos")]
 use super::IOObjectRelease;
+#[cfg(target_os = "macos")]
 use super::IORegistryEntryCreateCFProperty;
+#[cfg(target_os = "macos")]
 use super::IOServiceGetMatchingServices;
+#[cfg(target_os = "macos")]
 use super::IOServiceMatching;
+#[cfg(target_os = "macos")]
 use super::KERN_SUCCESS;
+#[cfg(target_os = "windows")]
+use super::PDH_CSTATUS_NEW_DATA;
+#[cfg(target_os = "windows")]
+use super::PDH_FMT_DOUBLE;
+#[cfg(target_os = "windows")]
+use super::PDH_MORE_DATA;
+#[cfg(target_os = "windows")]
+use super::PDH_SUCCESS;
 use super::bounded_percent_u8;
+#[cfg(target_os = "macos")]
 use super::from_ref;
+#[cfg(target_os = "macos")]
 use super::io_iterator_t;
+#[cfg(target_os = "macos")]
 use super::kCFAllocatorDefault;
+#[cfg(target_os = "macos")]
 use super::kIOMainPortDefault;
+#[cfg(target_os = "windows")]
+use super::rounded_percent;
 
+#[cfg(target_os = "macos")]
 pub(super) fn read_cpu_breakdown_raw() -> CpuBreakdownRaw { macos_cpu_breakdown_raw() }
 
 #[cfg(target_os = "linux")]
@@ -238,11 +275,11 @@ fn linux_nvidia_gpu_percent() -> Option<u8> {
 /// Cumulative GPU busy nanoseconds parsed from one DRM `fdinfo` file.
 #[cfg(target_os = "linux")]
 #[derive(Debug, PartialEq, Eq)]
-struct DrmClientSample {
+pub(super) struct DrmClientSample {
     /// `drm-client-id`, used to dedupe a client that holds several fds.
-    client_id:      Option<i64>,
+    pub(super) client_id:      Option<i64>,
     /// `(engine name, cumulative busy ns)` per `drm-engine-<name>` line.
-    engine_busy_ns: Vec<(String, u64)>,
+    pub(super) engine_busy_ns: Vec<(String, u64)>,
 }
 
 /// Parse the `drm-` usage-stats keys from one `/proc/<pid>/fdinfo/<fd>`
@@ -250,7 +287,7 @@ struct DrmClientSample {
 /// non-DRM fds, and DRM drivers that emit no engine utilization (the
 /// Apple `asahi` driver among them).
 #[cfg(target_os = "linux")]
-fn parse_drm_fdinfo(contents: &str) -> Option<DrmClientSample> {
+pub(super) fn parse_drm_fdinfo(contents: &str) -> Option<DrmClientSample> {
     let mut client_id = None;
     let mut engine_busy_ns = Vec::new();
     for line in contents.lines() {
@@ -331,7 +368,7 @@ fn collect_drm_engine_busy_ns() -> HashMap<String, u64> {
 /// `asahi` driver, which implements no `fdinfo` utilization.
 #[cfg(target_os = "linux")]
 #[derive(Debug)]
-struct FdinfoGpuSampler {
+pub(super) struct FdinfoGpuSampler {
     previous_busy_ns:    HashMap<String, u64>,
     previous_sampled_at: Instant,
 }
@@ -339,7 +376,7 @@ struct FdinfoGpuSampler {
 #[cfg(target_os = "linux")]
 impl FdinfoGpuSampler {
     /// Prime the baseline from the current engine totals.
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             previous_busy_ns:    collect_drm_engine_busy_ns(),
             previous_sampled_at: Instant::now(),
@@ -349,7 +386,7 @@ impl FdinfoGpuSampler {
     /// Sample the busiest engine's utilization since the previous poll,
     /// in `0..=100`. Returns `None` when no DRM client exposes engine
     /// stats (this driver provides no `fdinfo` utilization).
-    fn sample(&mut self) -> Option<u8> {
+    pub(super) fn sample(&mut self) -> Option<u8> {
         let current = collect_drm_engine_busy_ns();
         let now = Instant::now();
         let elapsed_ns = now
@@ -370,7 +407,7 @@ impl FdinfoGpuSampler {
 /// Busy nanoseconds over an elapsed-nanoseconds window, as a percentage
 /// in `0..=100`. `None` when the window is zero.
 #[cfg(target_os = "linux")]
-fn engine_busy_percent(busy_ns: u64, elapsed_ns: u128) -> Option<u8> {
+pub(super) fn engine_busy_percent(busy_ns: u64, elapsed_ns: u128) -> Option<u8> {
     if elapsed_ns == 0 {
         return None;
     }
@@ -488,7 +525,7 @@ unsafe extern "system" {
 /// utilization is cooked over the natural poll interval.
 #[cfg(target_os = "windows")]
 #[derive(Debug)]
-struct GpuQuery {
+pub(super) struct GpuQuery {
     query:   isize,
     counter: isize,
 }
@@ -498,7 +535,7 @@ struct GpuQuery {
 impl GpuQuery {
     /// Open the query, add the wildcard counter, and prime the baseline
     /// sample. Returns `None` if PDH or the GPU counter is unavailable.
-    fn new() -> Option<Self> {
+    pub(super) fn new() -> Option<Self> {
         let path: Vec<u16> = GPU_COUNTER_PATH
             .encode_utf16()
             .chain(std::iter::once(0))
@@ -527,7 +564,7 @@ impl GpuQuery {
 
     /// Collect a fresh sample and sum the cooked utilization across all
     /// matching engine instances, clamped to `0..=100`.
-    fn sample(&self) -> Option<u8> {
+    pub(super) fn sample(&self) -> Option<u8> {
         // SAFETY: `self.query` stays valid for the lifetime of `self`.
         if unsafe { PdhCollectQueryData(self.query) } != PDH_SUCCESS {
             return None;

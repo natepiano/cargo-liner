@@ -1,5 +1,9 @@
 use super::CpuBreakdownRaw;
 use super::CpuRefreshKind;
+#[cfg(target_os = "linux")]
+use super::FdinfoGpuSampler;
+#[cfg(target_os = "windows")]
+use super::GpuQuery;
 use super::RefreshKind;
 use super::RollingMean;
 use super::System;
@@ -7,6 +11,7 @@ use super::cpu_breakdown;
 use super::cpu_percent;
 use super::normalize_cpu_label;
 use super::read_cpu_breakdown_raw;
+#[cfg(not(target_os = "windows"))]
 use super::read_gpu_percent;
 
 /// Sysinfo-backed CPU/GPU sampler.
