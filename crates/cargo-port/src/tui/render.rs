@@ -25,6 +25,7 @@ use tui_pane::PaneFocusState;
 use tui_pane::RenderFocus;
 use tui_pane::Renderable;
 use tui_pane::ResolvedPaneLayout;
+use tui_pane::ScanIndicator;
 use tui_pane::StatusLine;
 use tui_pane::StatusLineGlobal;
 use tui_pane::ToastsRenderCtx;
@@ -216,8 +217,12 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     render_status_bar(frame, app, outer_layout[1]);
     let toasts_pane_focused = app.focus_is(PaneId::Toasts);
     let toasts_ctx = ToastsRenderCtx {
-        now:          Instant::now(),
-        pane_focused: toasts_pane_focused,
+        now:              Instant::now(),
+        pane_focus_state: if toasts_pane_focused {
+            PaneFocusState::Active
+        } else {
+            PaneFocusState::Inactive
+        },
     };
     Renderable::render(
         &mut app.framework.toasts,
@@ -645,7 +650,11 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let globals = cargo_port_status_line_globals(app);
     let status = StatusLine::new(
         app.animation_started.elapsed().as_secs(),
-        !app.scan.is_complete(),
+        if app.scan.is_complete() {
+            ScanIndicator::Hidden
+        } else {
+            ScanIndicator::Shown
+        },
         &globals,
     );
     render_framework_status_line::<App, AppGlobalAction>(

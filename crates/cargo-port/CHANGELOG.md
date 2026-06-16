@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Replace public framework `bool` render-state fields with intent enums for keymap rows, status scanning, settings focus, and toast focus
+
 ## [0.1.4] - 2026-06-14
 
 ### Changed

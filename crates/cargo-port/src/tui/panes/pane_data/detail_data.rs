@@ -175,28 +175,66 @@ fn description_natural_rows(
     usize::from(DescriptionBlock::for_pane(text, area, behavior).natural_sync_height())
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorktreeRootDisplay {
+    Grouped,
+    Single,
+}
+
+impl WorktreeRootDisplay {
+    fn from_item(item: &RootItem) -> Self {
+        if git_data::is_worktree_group(item) {
+            Self::Grouped
+        } else {
+            Self::Single
+        }
+    }
+
+    const fn worktree_item(self, item: Option<&RootItem>) -> Option<&RootItem> {
+        match self {
+            Self::Grouped => item,
+            Self::Single => None,
+        }
+    }
+
+    const fn primary_section(self, package_section: PackageSection) -> Option<PackageSection> {
+        match self {
+            Self::Grouped => Some(package_section),
+            Self::Single => None,
+        }
+    }
+}
+
 /// Build pane data for a root `RootItem`.
 pub fn build_pane_data(app: &App, item: &RootItem) -> DetailPaneData {
     let display_path = item.display_path().into_string();
-    let is_wt_group = git_data::is_worktree_group(item);
+    let worktree_root_display = WorktreeRootDisplay::from_item(item);
 
     match item {
         RootItem::Rust(RustProject::Workspace(ws)) => {
-            build_pane_data_for_workspace(app, ws, &display_path, is_wt_group, Some(item))
+            build_pane_data_for_workspace(app, ws, &display_path, worktree_root_display, Some(item))
         },
         RootItem::Rust(RustProject::Package(pkg)) => {
-            build_pane_data_for_package(app, pkg, &display_path, is_wt_group, Some(item))
+            build_pane_data_for_package(app, pkg, &display_path, worktree_root_display, Some(item))
         },
         RootItem::NonRust(nr) => {
-            build_pane_data_non_rust(app, nr, &display_path, is_wt_group, Some(item))
+            build_pane_data_non_rust(app, nr, &display_path, worktree_root_display, Some(item))
         },
         RootItem::Worktrees(group) => match &group.primary {
-            RustProject::Workspace(ws) => {
-                build_pane_data_for_workspace(app, ws, &display_path, is_wt_group, Some(item))
-            },
-            RustProject::Package(pkg) => {
-                build_pane_data_for_package(app, pkg, &display_path, is_wt_group, Some(item))
-            },
+            RustProject::Workspace(ws) => build_pane_data_for_workspace(
+                app,
+                ws,
+                &display_path,
+                worktree_root_display,
+                Some(item),
+            ),
+            RustProject::Package(pkg) => build_pane_data_for_package(
+                app,
+                pkg,
+                &display_path,
+                worktree_root_display,
+                Some(item),
+            ),
         },
     }
 }
@@ -204,7 +242,7 @@ pub fn build_pane_data(app: &App, item: &RootItem) -> DetailPaneData {
 /// Build pane data for a workspace member.
 pub fn build_pane_data_for_member(app: &App, pkg: &Package) -> DetailPaneData {
     let display_path = pkg.display_path().into_string();
-    build_pane_data_for_package(app, pkg, &display_path, false, None)
+    build_pane_data_for_package(app, pkg, &display_path, WorktreeRootDisplay::Single, None)
 }
 
 /// Build pane data for a vendored crate row.
@@ -227,7 +265,7 @@ pub fn build_pane_data_for_vendored(app: &App, vendored: &VendoredPackage) -> De
             name: vendored.package_name().into_string(),
             package_presence: PackagePresence::Present,
             cargo: Some(cargo),
-            wt_item: None,
+            worktree_item: None,
             stats_rows,
             test_rows,
             primary_section: None,
@@ -243,7 +281,7 @@ pub fn build_pane_data_for_workspace_ref(
     ws: &Workspace,
     display_path: &str,
 ) -> DetailPaneData {
-    build_pane_data_for_workspace(app, ws, display_path, false, None)
+    build_pane_data_for_workspace(app, ws, display_path, WorktreeRootDisplay::Single, None)
 }
 
 /// Build pane data for a git submodule nested under a project.
@@ -309,8 +347,8 @@ fn build_pane_data_for_workspace(
     app: &App,
     ws: &Workspace,
     display_path: &str,
-    is_wt_group: bool,
-    wt_item: Option<&RootItem>,
+    worktree_root_display: WorktreeRootDisplay,
+    worktree_item: Option<&RootItem>,
 ) -> DetailPaneData {
     let abs_path = ws.path();
     let cargo = &ws.cargo;
@@ -329,8 +367,8 @@ fn build_pane_data_for_workspace(
     let stats_rows = counts.to_rows();
     let test_rows = package_data::test_rows_from_counts(test_counts);
 
-    let wt_item_ref = wt_item.filter(|_| is_wt_group);
-    let title = wt_item_ref.map_or_else(
+    let worktree_item_ref = worktree_root_display.worktree_item(worktree_item);
+    let title = worktree_item_ref.map_or_else(
         || "Workspace".to_string(),
         |item| resolve_package_title(app, item),
     );
@@ -342,10 +380,11 @@ fn build_pane_data_for_workspace(
             name: ws.package_name().into_string(),
             package_presence: PackagePresence::from(ws.name().is_some()),
             cargo: Some(cargo),
-            wt_item: wt_item_ref,
+            worktree_item: worktree_item_ref,
             stats_rows,
             test_rows,
-            primary_section: Some(PackageSection::PrimaryWorkspace).filter(|_| is_wt_group),
+            primary_section: worktree_root_display
+                .primary_section(PackageSection::PrimaryWorkspace),
             fallback_type: Some(ProjectType::Workspace),
             title,
         },
@@ -356,8 +395,8 @@ fn build_pane_data_for_package(
     app: &App,
     pkg: &Package,
     display_path: &str,
-    is_wt_group: bool,
-    wt_item: Option<&RootItem>,
+    worktree_root_display: WorktreeRootDisplay,
+    worktree_item: Option<&RootItem>,
 ) -> DetailPaneData {
     let abs_path = pkg.path();
     let cargo = &pkg.cargo;
@@ -367,8 +406,8 @@ fn build_pane_data_for_package(
     let stats_rows = counts.to_rows();
     let test_rows = package_data::test_rows_from_counts(pkg.info().test_counts.unwrap_or_default());
 
-    let wt_item_ref = wt_item.filter(|_| is_wt_group);
-    let title = wt_item.map_or_else(
+    let worktree_item_ref = worktree_root_display.worktree_item(worktree_item);
+    let title = worktree_item.map_or_else(
         || resolve_package_title_for_package(app, pkg),
         |item| resolve_package_title(app, item),
     );
@@ -381,10 +420,10 @@ fn build_pane_data_for_package(
             name: pkg.package_name().into_string(),
             package_presence: PackagePresence::Present,
             cargo: Some(cargo),
-            wt_item: wt_item_ref,
+            worktree_item: worktree_item_ref,
             stats_rows,
             test_rows,
-            primary_section: Some(PackageSection::PrimaryPackage).filter(|_| is_wt_group),
+            primary_section: worktree_root_display.primary_section(PackageSection::PrimaryPackage),
             fallback_type: None,
             title,
         },
@@ -395,11 +434,11 @@ fn build_pane_data_non_rust(
     app: &App,
     nr: &NonRustProject,
     display_path: &str,
-    is_wt_group: bool,
-    wt_item: Option<&RootItem>,
+    worktree_root_display: WorktreeRootDisplay,
+    worktree_item: Option<&RootItem>,
 ) -> DetailPaneData {
     let abs_path = nr.path();
-    let wt_item_ref = wt_item.filter(|_| is_wt_group);
+    let worktree_item_ref = worktree_root_display.worktree_item(worktree_item);
     let mut counts = StructureCounts::default();
     counts.add_non_rust(nr);
 
@@ -411,7 +450,7 @@ fn build_pane_data_non_rust(
             name: nr.root_directory_name().into_string(),
             package_presence: PackagePresence::Missing,
             cargo: None,
-            wt_item: wt_item_ref,
+            worktree_item: worktree_item_ref,
             stats_rows: counts.to_rows(),
             test_rows: Vec::new(),
             primary_section: None,
@@ -427,7 +466,7 @@ pub(super) struct PaneDataSource<'a> {
     name:             String,
     package_presence: PackagePresence,
     cargo:            Option<&'a Cargo>,
-    wt_item:          Option<&'a RootItem>,
+    worktree_item:    Option<&'a RootItem>,
     stats_rows:       Vec<(&'static str, usize)>,
     test_rows:        Vec<(&'static str, usize)>,
     primary_section:  Option<PackageSection>,
@@ -582,9 +621,13 @@ fn compute_in_project_bytes(pl: &ProjectList, abs_path: &Path) -> (Option<u64>, 
     })
 }
 
-fn compute_ci_status(app: &App, abs_path: &Path, wt_item: Option<&RootItem>) -> Option<CiStatus> {
+fn compute_ci_status(
+    app: &App,
+    abs_path: &Path,
+    worktree_item: Option<&RootItem>,
+) -> Option<CiStatus> {
     let lookup = app.ci.status_lookup();
-    wt_item.map_or_else(
+    worktree_item.map_or_else(
         || app.project_list.ci_status_using_lookup(abs_path, &lookup),
         |item| {
             app.project_list
@@ -622,7 +665,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
     let abs_path = src.abs_path;
     let abs_path_owned = AbsolutePath::from(abs_path);
 
-    let runtime = collect_runtime_fields(app, abs_path, src.wt_item);
+    let runtime = collect_runtime_fields(app, abs_path, src.worktree_item);
     let metadata =
         collect_metadata_fields(app, abs_path, &abs_path_owned, src.cargo, src.fallback_type);
     log_pane_common_breakdown(abs_path, &runtime, &metadata);
@@ -651,7 +694,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
         ci_display,
     });
 
-    let targets = targets::lookup_targets_data(app, &abs_path_owned, src.wt_item);
+    let targets = targets::lookup_targets_data(app, &abs_path_owned, src.worktree_item);
     assemble_detail_pane_data(package, runtime.git_detail, runtime.worktrees, targets)
 }
 
@@ -682,7 +725,7 @@ pub(super) struct MetadataFields {
     in_project_non_target:    Option<u64>,
     out_of_tree_target_bytes: Option<u64>,
     metadata_ms:              u64,
-    oot_ms:                   u64,
+    out_of_tree_ms:           u64,
 }
 
 /// Phase 3 output — the two enum statuses derived from raw
@@ -700,7 +743,7 @@ pub(super) struct CratesIoStatus {
 pub(super) fn collect_runtime_fields(
     app: &App,
     abs_path: &Path,
-    wt_item: Option<&RootItem>,
+    worktree_item: Option<&RootItem>,
 ) -> RuntimeFields {
     let t_git = std::time::Instant::now();
     let git_detail = git_data::build_git_detail_fields(app, abs_path);
@@ -713,13 +756,13 @@ pub(super) fn collect_runtime_fields(
         .project_list
         .at_path(abs_path)
         .and_then(|project| project.disk_usage_bytes);
-    let worktree_group_summary = wt_item.and_then(worktree_group_summary_for);
-    let ci = compute_ci_status(app, abs_path, wt_item);
+    let worktree_group_summary = worktree_item.and_then(worktree_group_summary_for);
+    let ci = compute_ci_status(app, abs_path, worktree_item);
     let disk_ms = tui_pane::perf_log_ms(t_disk.elapsed().as_millis());
 
-    let t_wt = std::time::Instant::now();
-    let worktrees = git_data::resolve_worktrees(app, wt_item);
-    let worktrees_ms = tui_pane::perf_log_ms(t_wt.elapsed().as_millis());
+    let t_worktrees = std::time::Instant::now();
+    let worktrees = git_data::resolve_worktrees(app, worktree_item);
+    let worktrees_ms = tui_pane::perf_log_ms(t_worktrees.elapsed().as_millis());
 
     RuntimeFields {
         git_detail,
@@ -765,10 +808,10 @@ pub(super) fn collect_metadata_fields(
 
     let (in_project_target, in_project_non_target) =
         compute_in_project_bytes(&app.project_list, abs_path);
-    let t_oot = std::time::Instant::now();
+    let t_out_of_tree = std::time::Instant::now();
     let out_of_tree_target_bytes =
         package_data::lookup_out_of_tree_target_bytes(app, abs_path_owned);
-    let oot_ms = tui_pane::perf_log_ms(t_oot.elapsed().as_millis());
+    let out_of_tree_ms = tui_pane::perf_log_ms(t_out_of_tree.elapsed().as_millis());
 
     MetadataFields {
         types,
@@ -777,7 +820,7 @@ pub(super) fn collect_metadata_fields(
         in_project_non_target,
         out_of_tree_target_bytes,
         metadata_ms,
-        oot_ms,
+        out_of_tree_ms,
     }
 }
 
@@ -849,7 +892,7 @@ fn log_pane_common_breakdown(abs_path: &Path, runtime: &RuntimeFields, metadata:
         disk_ms = runtime.disk_ms,
         worktrees_ms = runtime.worktrees_ms,
         metadata_ms = metadata.metadata_ms,
-        oot_ms = metadata.oot_ms,
+        out_of_tree_ms = metadata.out_of_tree_ms,
         path = %abs_path.display(),
         "pane_common_breakdown"
     );

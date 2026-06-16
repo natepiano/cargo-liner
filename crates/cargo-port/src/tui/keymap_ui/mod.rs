@@ -16,6 +16,7 @@ use tui_pane::KeyBind as FrameworkKeyBind;
 use tui_pane::KeySequence;
 use tui_pane::KeymapCaptureCommand;
 use tui_pane::KeymapHelpRow;
+use tui_pane::KeymapHelpRowKind;
 use tui_pane::KeymapUiContext as _;
 use tui_pane::OverlayAction;
 use tui_pane::Shortcuts;
@@ -90,12 +91,18 @@ fn help_rows(app: &App) -> Vec<KeymapHelpRow> {
 }
 
 fn selectable_row_count(app: &App) -> usize {
-    help_rows(app).iter().filter(|row| !row.is_header).count()
+    help_rows(app)
+        .iter()
+        .filter(|row| row.row_kind != KeymapHelpRowKind::Header)
+        .count()
 }
 
 fn handle_captured_bind(app: &mut App, bind: FrameworkKeyBind) {
     let rows = help_rows(app);
-    let selectable: Vec<&KeymapHelpRow> = rows.iter().filter(|r| !r.is_header).collect();
+    let selectable: Vec<&KeymapHelpRow> = rows
+        .iter()
+        .filter(|r| r.row_kind != KeymapHelpRowKind::Header)
+        .collect();
     let Some(row) = selectable
         .get(app.framework.keymap_pane.viewport().pos())
         .map(|row| (*row).clone())
@@ -201,7 +208,7 @@ fn find_conflict(
     predicate: impl Fn(&KeymapHelpRow) -> bool,
 ) -> Option<String> {
     rows.iter()
-        .filter(|row| !row.is_header)
+        .filter(|row| row.row_kind != KeymapHelpRowKind::Header)
         .filter(|row| predicate(row))
         .filter(|row| row.bind.as_ref().and_then(KeySequence::single_key) == Some(bind))
         .find(|row| row.scope != current.scope || row.action != current.action)
@@ -437,7 +444,7 @@ fn keybind_toml_value(binds: &[KeySequence]) -> String {
 pub(super) fn vim_mode_conflicts(app: &App) -> Vec<String> {
     help_rows(app)
         .into_iter()
-        .filter(|row| !row.is_header)
+        .filter(|row| row.row_kind != KeymapHelpRowKind::Header)
         .filter_map(|row| {
             let bind = row.bind?.single_key()?;
             (bind.mods == KeyModifiers::NONE

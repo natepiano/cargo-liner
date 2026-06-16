@@ -128,10 +128,10 @@ impl ProjectList {
                     emit_vendored_rows(&mut rows, ni, pkg.vendored());
                 },
                 RootItem::NonRust(_) => {},
-                RootItem::Worktrees(wtg) => {
-                    if wtg.renders_as_group() {
-                        emit_worktree_group(&mut rows, ni, wtg, expanded);
-                    } else if let Some(entry) = wtg.single_live() {
+                RootItem::Worktrees(worktree_group) => {
+                    if worktree_group.renders_as_group() {
+                        emit_worktree_group(&mut rows, ni, worktree_group, expanded);
+                    } else if let Some(entry) = worktree_group.single_live() {
                         if let RustProject::Workspace(ws) = entry {
                             emit_groups(&mut rows, ni, ws.groups(), expanded);
                         }
@@ -221,10 +221,10 @@ fn emit_submodule_rows(rows: &mut Vec<VisibleRow>, ni: usize, submodules: &[Subm
 fn emit_worktree_group(
     rows: &mut Vec<VisibleRow>,
     ni: usize,
-    wtg: &WorktreeGroup,
+    worktree_group: &WorktreeGroup,
     expanded: &HashSet<ExpandKey>,
 ) {
-    let mut entries: Vec<_> = wtg
+    let mut entries: Vec<_> = worktree_group
         .iter_entries()
         .enumerate()
         .filter(|(_, entry)| !matches!(entry.visibility(), Visibility::Dismissed))

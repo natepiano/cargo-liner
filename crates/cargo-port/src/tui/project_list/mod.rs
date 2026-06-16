@@ -1182,7 +1182,9 @@ impl ProjectList {
                 worktree_index,
                 ..
             } => match &self.get(node_index)?.root_item {
-                RootItem::Worktrees(wtg) => wtg.worktree_path_ref(worktree_index),
+                RootItem::Worktrees(worktree_group) => {
+                    worktree_group.worktree_path_ref(worktree_index)
+                },
                 _ => None,
             },
             VisibleRow::WorktreeMember {
@@ -1191,9 +1193,11 @@ impl ProjectList {
                 group_index,
                 member_index,
             } => match &self.get(node_index)?.root_item {
-                RootItem::Worktrees(wtg) => {
-                    wtg.worktree_member_path_ref(worktree_index, group_index, member_index)
-                },
+                RootItem::Worktrees(worktree_group) => worktree_group.worktree_member_path_ref(
+                    worktree_index,
+                    group_index,
+                    member_index,
+                ),
                 _ => None,
             },
             VisibleRow::WorktreeMemberVendored {
@@ -1203,7 +1207,7 @@ impl ProjectList {
                 member_index,
                 vendored_index,
             } => match &self.get(node_index)?.root_item {
-                RootItem::Worktrees(wtg) => wtg
+                RootItem::Worktrees(worktree_group) => worktree_group
                     .member_vendored_ref(worktree_index, group_index, member_index, vendored_index)
                     .map(|vendored| vendored.path().as_path()),
                 _ => None,
@@ -1213,8 +1217,8 @@ impl ProjectList {
                 worktree_index,
                 vendored_index,
             } => match &self.get(node_index)?.root_item {
-                RootItem::Worktrees(wtg) => {
-                    wtg.worktree_vendored_path_ref(worktree_index, vendored_index)
+                RootItem::Worktrees(worktree_group) => {
+                    worktree_group.worktree_vendored_path_ref(worktree_index, vendored_index)
                 },
                 _ => None,
             },
@@ -1271,7 +1275,9 @@ impl ProjectList {
                 worktree_index,
                 ..
             } => match &self.get(node_index)?.root_item {
-                RootItem::Worktrees(wtg) => wtg.worktree_display_path(worktree_index),
+                RootItem::Worktrees(worktree_group) => {
+                    worktree_group.worktree_display_path(worktree_index)
+                },
                 _ => None,
             },
             VisibleRow::WorktreeMember {
@@ -1279,11 +1285,12 @@ impl ProjectList {
                 worktree_index,
                 group_index,
                 member_index,
-            } => match &self.get(node_index)?.root_item {
-                RootItem::Worktrees(wtg) => {
-                    wtg.worktree_member_display_path(worktree_index, group_index, member_index)
-                },
-                _ => None,
+            } => {
+                match &self.get(node_index)?.root_item {
+                    RootItem::Worktrees(worktree_group) => worktree_group
+                        .worktree_member_display_path(worktree_index, group_index, member_index),
+                    _ => None,
+                }
             },
             VisibleRow::WorktreeMemberVendored {
                 node_index,
@@ -1292,7 +1299,7 @@ impl ProjectList {
                 member_index,
                 vendored_index,
             } => match &self.get(node_index)?.root_item {
-                RootItem::Worktrees(wtg) => wtg
+                RootItem::Worktrees(worktree_group) => worktree_group
                     .member_vendored_ref(worktree_index, group_index, member_index, vendored_index)
                     .map(ProjectFields::display_path),
                 _ => None,
@@ -1302,8 +1309,8 @@ impl ProjectList {
                 worktree_index,
                 vendored_index,
             } => match &self.get(node_index)?.root_item {
-                RootItem::Worktrees(wtg) => {
-                    wtg.worktree_vendored_display_path(worktree_index, vendored_index)
+                RootItem::Worktrees(worktree_group) => {
+                    worktree_group.worktree_vendored_display_path(worktree_index, vendored_index)
                 },
                 _ => None,
             },
@@ -1362,7 +1369,9 @@ impl ProjectList {
                 worktree_index,
                 ..
             } => match &self.get(node_index)?.root_item {
-                RootItem::Worktrees(wtg) => wtg.worktree_abs_path(worktree_index),
+                RootItem::Worktrees(worktree_group) => {
+                    worktree_group.worktree_abs_path(worktree_index)
+                },
                 _ => None,
             },
             VisibleRow::WorktreeMember {
@@ -1371,9 +1380,11 @@ impl ProjectList {
                 group_index,
                 member_index,
             } => match &self.get(node_index)?.root_item {
-                RootItem::Worktrees(wtg) => {
-                    wtg.worktree_member_abs_path(worktree_index, group_index, member_index)
-                },
+                RootItem::Worktrees(worktree_group) => worktree_group.worktree_member_abs_path(
+                    worktree_index,
+                    group_index,
+                    member_index,
+                ),
                 _ => None,
             },
             VisibleRow::WorktreeMemberVendored {
@@ -1383,7 +1394,7 @@ impl ProjectList {
                 member_index,
                 vendored_index,
             } => match &self.get(node_index)?.root_item {
-                RootItem::Worktrees(wtg) => wtg
+                RootItem::Worktrees(worktree_group) => worktree_group
                     .member_vendored_ref(worktree_index, group_index, member_index, vendored_index)
                     .map(|p| p.path().clone()),
                 _ => None,
@@ -1393,8 +1404,8 @@ impl ProjectList {
                 worktree_index,
                 vendored_index,
             } => match &self.get(node_index)?.root_item {
-                RootItem::Worktrees(wtg) => {
-                    wtg.worktree_vendored_abs_path(worktree_index, vendored_index)
+                RootItem::Worktrees(worktree_group) => {
+                    worktree_group.worktree_vendored_abs_path(worktree_index, vendored_index)
                 },
                 _ => None,
             },
@@ -1926,12 +1937,11 @@ impl ProjectList {
                 node_index,
                 worktree_index,
             } => match &self.get(node_index)?.root_item {
-                RootItem::Worktrees(wtg) => {
-                    wtg.worktree_path_ref(worktree_index)
-                        .map(|path| CleanSelection::Project {
-                            root: AbsolutePath::from(path),
-                        })
-                },
+                RootItem::Worktrees(worktree_group) => worktree_group
+                    .worktree_path_ref(worktree_index)
+                    .map(|path| CleanSelection::Project {
+                        root: AbsolutePath::from(path),
+                    }),
                 _ => None,
             },
             _ => None,

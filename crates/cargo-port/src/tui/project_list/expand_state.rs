@@ -62,15 +62,15 @@ pub(super) fn collect_expandable_targets(list: &ProjectList) -> Vec<(ExpandKey, 
                     }
                 }
             },
-            RootItem::Worktrees(wtg) if wtg.renders_as_group() => {
-                for (wi, wentry) in wtg.iter_entries().enumerate() {
-                    let RustProject::Workspace(ws) = wentry else {
+            RootItem::Worktrees(worktree_group) if worktree_group.renders_as_group() => {
+                for (wi, worktree_entry) in worktree_group.iter_entries().enumerate() {
+                    let RustProject::Workspace(ws) = worktree_entry else {
                         continue;
                     };
                     if ws.has_members() {
                         out.push((
                             ExpandKey::Worktree(ni, wi),
-                            ExpandTarget::Worktree(wentry.path().clone()),
+                            ExpandTarget::Worktree(worktree_entry.path().clone()),
                         ));
                     }
                     for (gi, group) in ws.groups().iter().enumerate() {
@@ -78,7 +78,7 @@ pub(super) fn collect_expandable_targets(list: &ProjectList) -> Vec<(ExpandKey, 
                             out.push((
                                 ExpandKey::WorktreeGroup(ni, wi, gi),
                                 ExpandTarget::WorktreeGroup(
-                                    wentry.path().clone(),
+                                    worktree_entry.path().clone(),
                                     group.group_name().to_string(),
                                 ),
                             ));
@@ -89,8 +89,8 @@ pub(super) fn collect_expandable_targets(list: &ProjectList) -> Vec<(ExpandKey, 
             // A single live worktree renders like a plain workspace — its named
             // groups are keyed `Group`, not `WorktreeGroup` (see
             // `compute_visible_rows`).
-            RootItem::Worktrees(wtg) => {
-                if let Some(RustProject::Workspace(ws)) = wtg.single_live() {
+            RootItem::Worktrees(worktree_group) => {
+                if let Some(RustProject::Workspace(ws)) = worktree_group.single_live() {
                     for (gi, group) in ws.groups().iter().enumerate() {
                         if group.is_named() {
                             out.push((

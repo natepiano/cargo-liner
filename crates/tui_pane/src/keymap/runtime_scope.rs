@@ -113,14 +113,21 @@ pub struct GlobalShortcutRow {
     pub key:         Option<KeySequence>,
 }
 
+/// Kind of row rendered by the keymap help overlay.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum KeymapHelpRowKind {
+    /// Section heading row that precedes a scope's action rows.
+    Header,
+    /// Selectable action row with an optional key binding.
+    Action,
+}
+
 /// One row of the keymap help overlay built from a registered scope.
 ///
-/// Headers carry `is_header == true` and have empty `action` /
-/// `description` / `bind` fields; action rows have `is_header == false`
-/// and their `bind` reflects the current resolved binding (or `None`
-/// when no key is assigned). `scope` is the TOML table name (e.g.
-/// `"project_list"`) and `action` is the TOML action key, both stable
-/// across renames.
+/// Headers have empty `action` / `description` / `bind` fields. Action
+/// rows carry the current resolved binding, or `None` when no key is
+/// assigned. `scope` is the TOML table name (e.g. `"project_list"`) and
+/// `action` is the TOML action key, both stable across renames.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct KeymapHelpRow {
     /// Human-readable section heading (e.g. `"Project List"`).
@@ -135,9 +142,8 @@ pub struct KeymapHelpRow {
     /// Resolved binding for action rows; `None` keeps registered but
     /// unbound actions visible. Always `None` for headers.
     pub bind:        Option<KeySequence>,
-    /// `true` for the section header row that precedes a scope's
-    /// action rows.
-    pub is_header:   bool,
+    /// Whether this row is a section heading or an action row.
+    pub row_kind:    KeymapHelpRowKind,
 }
 
 impl KeymapHelpRow {
@@ -148,7 +154,7 @@ impl KeymapHelpRow {
             action: "",
             description: "",
             bind: None,
-            is_header: true,
+            row_kind: KeymapHelpRowKind::Header,
         }
     }
 }
@@ -243,7 +249,7 @@ impl<Ctx: AppContext + 'static, P: Shortcuts<Ctx>> RuntimeScope<Ctx> for PaneSco
             action:      action.toml_key(),
             description: action.description(),
             bind:        self.bindings.display_keys_for(action).first().cloned(),
-            is_header:   false,
+            row_kind:    KeymapHelpRowKind::Action,
         }));
         rows
     }
@@ -347,7 +353,7 @@ pub(crate) fn keymap_help_rows_for_navigation<Ctx: AppContext + 'static, N: Navi
         action:      action.toml_key(),
         description: action.description(),
         bind:        scope.display_keys_for(action).first().cloned(),
-        is_header:   false,
+        row_kind:    KeymapHelpRowKind::Action,
     }));
     rows
 }
@@ -369,7 +375,7 @@ pub(crate) fn keymap_help_rows_for_app_globals<Ctx: AppContext + 'static, G: Glo
             action:      action.toml_key(),
             description: action.description(),
             bind:        scope.display_keys_for(action).first().cloned(),
-            is_header:   false,
+            row_kind:    KeymapHelpRowKind::Action,
         })
         .collect()
 }

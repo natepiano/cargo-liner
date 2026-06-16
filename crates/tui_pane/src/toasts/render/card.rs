@@ -13,6 +13,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::fallback_toast_palette;
 use super::format;
+use super::layout::ToastPaneFocus;
 use crate::ACTIVITY_SPINNER;
 use crate::active_border_color;
 use crate::inactive_border_color;
@@ -28,7 +29,7 @@ pub(super) fn render_toast(
     area: Rect,
     card: Rect,
     toast: &ToastView,
-    pane_focused: bool,
+    pane_focus: ToastPaneFocus,
     focused_toast_id: Option<ToastId>,
 ) -> Rect {
     let palette = fallback_toast_palette();
@@ -43,7 +44,8 @@ pub(super) fn render_toast(
     };
     frame.render_widget(Clear, clear_rect);
 
-    let focused = pane_focused && focused_toast_id == Some(toast.id());
+    let focused =
+        matches!(pane_focus, ToastPaneFocus::Focused) && focused_toast_id == Some(toast.id());
     let toast_style = toast.style();
     // Error and warning toasts keep the safety-pinned palette so they
     // stay legible under any user theme. Plain (info) toasts mirror

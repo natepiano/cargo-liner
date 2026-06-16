@@ -579,8 +579,8 @@ fn worktrees_from_item(app: &App, item: &RootItem) -> Vec<WorktreeInfo> {
         })
         .collect()
 }
-pub(super) fn resolve_worktrees(app: &App, wt_item: Option<&RootItem>) -> Vec<WorktreeInfo> {
-    wt_item.map_or_else(Vec::new, |item| {
+pub(super) fn resolve_worktrees(app: &App, worktree_item: Option<&RootItem>) -> Vec<WorktreeInfo> {
+    worktree_item.map_or_else(Vec::new, |item| {
         app.panes
             .git
             .worktree_summary_or_compute(item.path().as_path(), || worktrees_from_item(app, item))

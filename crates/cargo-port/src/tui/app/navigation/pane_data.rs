@@ -145,10 +145,10 @@ impl App {
         member_index: usize,
     ) -> Option<DetailPaneData> {
         let item = self.project_list.get(node_index)?;
-        let RootItem::Worktrees(wtg) = &**item else {
+        let RootItem::Worktrees(worktree_group) = &**item else {
             return None;
         };
-        let pkg = wtg.member_ref(worktree_index, group_index, member_index)?;
+        let pkg = worktree_group.member_ref(worktree_index, group_index, member_index)?;
         Some(tui::panes::build_pane_data_for_member(self, pkg))
     }
 
@@ -161,11 +161,15 @@ impl App {
         vendored_index: usize,
     ) -> Option<DetailPaneData> {
         let item = self.project_list.get(node_index)?;
-        let RootItem::Worktrees(wtg) = &**item else {
+        let RootItem::Worktrees(worktree_group) = &**item else {
             return None;
         };
-        let vendored =
-            wtg.member_vendored_ref(worktree_index, group_index, member_index, vendored_index)?;
+        let vendored = worktree_group.member_vendored_ref(
+            worktree_index,
+            group_index,
+            member_index,
+            vendored_index,
+        )?;
         Some(tui::panes::build_pane_data_for_vendored(self, vendored))
     }
 
@@ -176,10 +180,10 @@ impl App {
         vendored_index: usize,
     ) -> Option<DetailPaneData> {
         let item = self.project_list.get(node_index)?;
-        let RootItem::Worktrees(wtg) = &**item else {
+        let RootItem::Worktrees(worktree_group) = &**item else {
             return None;
         };
-        let vendored = wtg.vendored_ref(worktree_index, vendored_index)?;
+        let vendored = worktree_group.vendored_ref(worktree_index, vendored_index)?;
         Some(tui::panes::build_pane_data_for_vendored(self, vendored))
     }
 }

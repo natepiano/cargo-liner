@@ -1324,7 +1324,11 @@ pub(super) fn prepare_settings_render_inputs(
     let content_width = usize::from(SETTINGS_POPUP_WIDTH.saturating_sub(2));
     let framework_rows = framework_settings_rows(app, &rows);
     let render_options = SettingsRenderOptions {
-        active: app.framework.overlay() == Some(FrameworkOverlayId::Settings),
+        focus: if app.framework.overlay() == Some(FrameworkOverlayId::Settings) {
+            PaneFocusState::Active
+        } else {
+            PaneFocusState::Remembered
+        },
         inline_error: app.overlays.inline_error().map(String::as_str),
         content_width,
         section_header_indent: SECTION_HEADER_INDENT,

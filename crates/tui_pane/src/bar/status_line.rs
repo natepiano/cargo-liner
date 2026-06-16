@@ -1,6 +1,6 @@
 //! Full status-line renderer owned by the framework.
 //!
-//! Binaries provide facts and policy (`uptime_secs`, `scanning`, and
+//! Binaries provide facts and policy (`uptime_secs`, scan indicator, and
 //! which global actions belong in the strip). The framework resolves
 //! keys, applies enabled / disabled styling, fills the line, and lays
 //! out nav, pane-action, and global regions.
@@ -87,23 +87,36 @@ impl<A: Action> StatusLineGlobal<A> {
     }
 }
 
+/// Whether the status line shows its framework-owned scan indicator.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ScanIndicator {
+    /// Show the scanning activity segment.
+    Shown,
+    /// Hide the scanning activity segment.
+    Hidden,
+}
+
 /// Dynamic status-line data supplied by the embedding app.
 pub struct StatusLine<'a, A: Action> {
     /// Seconds to show in the framework-owned uptime segment.
-    pub uptime_secs: u64,
-    /// Whether to show the framework-owned scanning indicator.
-    pub scanning:    bool,
+    pub uptime_secs:    u64,
+    /// Framework-owned scanning indicator state.
+    pub scan_indicator: ScanIndicator,
     /// Ordered global slots for the right side of the status line.
-    pub globals:     &'a [StatusLineGlobal<A>],
+    pub globals:        &'a [StatusLineGlobal<A>],
 }
 
 impl<'a, A: Action> StatusLine<'a, A> {
     /// Construct dynamic status-line data.
     #[must_use]
-    pub const fn new(uptime_secs: u64, scanning: bool, globals: &'a [StatusLineGlobal<A>]) -> Self {
+    pub const fn new(
+        uptime_secs: u64,
+        scan_indicator: ScanIndicator,
+        globals: &'a [StatusLineGlobal<A>],
+    ) -> Self {
         Self {
             uptime_secs,
-            scanning,
+            scan_indicator,
             globals,
         }
     }
@@ -131,7 +144,7 @@ pub fn render<Ctx, G>(
     let bar = render_bar_regions(framework.focused(), ctx, keymap, framework, palette);
 
     let mut left_spans = Vec::new();
-    if status.scanning {
+    if matches!(status.scan_indicator, ScanIndicator::Shown) {
         left_spans.push(Span::styled(" ⟳ scanning… ", palette.status_activity_style));
     }
     left_spans.push(Span::styled(" Uptime: ", palette.status_label_style));

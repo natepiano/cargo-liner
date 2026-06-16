@@ -43,6 +43,7 @@ pub use nav_action::NavAction;
 pub use navigation::Navigation;
 pub use runtime_scope::GlobalShortcutRow;
 pub use runtime_scope::KeymapHelpRow;
+pub use runtime_scope::KeymapHelpRowKind;
 pub use runtime_scope::RenderedSlot;
 pub use scope_map::ScopeMap;
 pub use shortcuts::Shortcuts;
@@ -543,7 +544,7 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
                 action:      action.toml_key(),
                 description: action.description(),
                 bind:        self.overlay_scope.display_keys_for(action).first().cloned(),
-                is_header:   false,
+                row_kind:    KeymapHelpRowKind::Action,
             });
         }
 
@@ -626,7 +627,7 @@ fn framework_global_help_row<Ctx: AppContext + 'static>(
         action: action.toml_key(),
         description: action.description(),
         bind: keymap.framework_globals.key_for(action).cloned(),
-        is_header: false,
+        row_kind: KeymapHelpRowKind::Action,
     }
 }
 

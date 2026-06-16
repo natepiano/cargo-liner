@@ -31,7 +31,7 @@ pub(super) use constants::PREFIX_ROOT_COLLAPSED;
 #[cfg(test)]
 pub(super) use constants::PREFIX_ROOT_LEAF;
 #[cfg(test)]
-pub(super) use constants::PREFIX_WT_FLAT;
+pub(super) use constants::PREFIX_WORKTREE_FLAT;
 #[cfg(test)]
 pub(super) use cpu::CPU_PANE_WIDTH;
 pub(super) use cpu::CpuPane;

@@ -322,16 +322,19 @@ impl TargetsData {
 pub fn lookup_targets_data(
     app: &App,
     abs_path: &AbsolutePath,
-    wt_item: Option<&RootItem>,
+    worktree_item: Option<&RootItem>,
 ) -> TargetsData {
-    if let Some(data) = lookup_worktree_group_targets(app, wt_item) {
+    if let Some(data) = lookup_worktree_group_targets(app, worktree_item) {
         return data;
     }
     lookup_targets_data_for_path(app, abs_path)
 }
 
-fn lookup_worktree_group_targets(app: &App, wt_item: Option<&RootItem>) -> Option<TargetsData> {
-    let RootItem::Worktrees(group) = wt_item? else {
+fn lookup_worktree_group_targets(
+    app: &App,
+    worktree_item: Option<&RootItem>,
+) -> Option<TargetsData> {
+    let RootItem::Worktrees(group) = worktree_item? else {
         return None;
     };
     if !group.renders_as_group() {

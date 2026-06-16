@@ -22,6 +22,7 @@ use crate::AppContext;
 use crate::FrameworkOverlayId;
 use crate::Keymap;
 use crate::KeymapHelpRow;
+use crate::KeymapHelpRowKind;
 use crate::KeymapPane;
 use crate::PaneFocusState;
 use crate::PaneSelectionState;
@@ -103,7 +104,10 @@ impl KeymapPane {
             lines,
             line_targets,
         } = build_lines(&rows, ctx, is_capturing);
-        let selectable_len = rows.iter().filter(|r| !r.is_header).count();
+        let selectable_len = rows
+            .iter()
+            .filter(|r| r.row_kind != KeymapHelpRowKind::Header)
+            .count();
         let content_width = ctx.keymap_inline_error().map_or(BASE_POPUP_WIDTH, |msg| {
             // 2 indent + 25 desc + msg len + 2 pad
             let needed = u16::try_from(2 + 25 + msg.len() + 2).unwrap_or(u16::MAX);
@@ -179,12 +183,12 @@ where
 {
     let mut start = 0usize;
     while start < rows.len() {
-        if !rows[start].is_header {
+        if rows[start].row_kind != KeymapHelpRowKind::Header {
             start += 1;
             continue;
         }
         let mut end = start + 1;
-        while end < rows.len() && !rows[end].is_header {
+        while end < rows.len() && rows[end].row_kind != KeymapHelpRowKind::Header {
             end += 1;
         }
         if end - start > 1 {
@@ -258,7 +262,7 @@ where
     let overlay_open = ctx.framework().overlay() == Some(FrameworkOverlayId::Keymap);
 
     for row in rows {
-        if row.is_header {
+        if row.row_kind == KeymapHelpRowKind::Header {
             lines.push(keymap_header_line(row));
             line_targets.push(None);
             continue;

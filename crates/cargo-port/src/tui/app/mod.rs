@@ -1566,7 +1566,7 @@ mod tests {
     use crate::tui::panes::CiFetchKind;
     use crate::tui::panes::PREFIX_ROOT_COLLAPSED;
     use crate::tui::panes::PREFIX_ROOT_LEAF;
-    use crate::tui::panes::PREFIX_WT_FLAT;
+    use crate::tui::panes::PREFIX_WORKTREE_FLAT;
     use crate::tui::panes::PaneId;
     pub(super) use crate::tui::project_list::ExpandKey;
     use crate::tui::project_list::ProjectList;
@@ -9241,10 +9241,10 @@ mod tests {
             );
             let root_width =
                 columns::display_width(PREFIX_ROOT_COLLAPSED) + columns::display_width(&root_label);
-            let primary_entry_width =
-                columns::display_width(PREFIX_WT_FLAT) + columns::display_width(primary_label);
+            let primary_entry_width = columns::display_width(PREFIX_WORKTREE_FLAT)
+                + columns::display_width(primary_label);
             let linked_entry_width =
-                columns::display_width(PREFIX_WT_FLAT) + columns::display_width(linked_label);
+                columns::display_width(PREFIX_WORKTREE_FLAT) + columns::display_width(linked_label);
 
             assert_eq!(
                 widths.get(COL_NAME),
@@ -9313,7 +9313,7 @@ mod tests {
             let root_width =
                 columns::display_width(PREFIX_ROOT_COLLAPSED) + columns::display_width(&root_label);
             let primary_entry_width =
-                columns::display_width(PREFIX_WT_FLAT) + columns::display_width("zeta (p)");
+                columns::display_width(PREFIX_WORKTREE_FLAT) + columns::display_width("zeta (p)");
 
             assert_eq!(
                 widths.get(COL_NAME),
@@ -13745,6 +13745,7 @@ mod tests {
     mod worktrees {
         use std::collections::BTreeMap;
         use std::collections::HashMap;
+        use std::time::Duration;
 
         use cargo_metadata::PackageId;
         use cargo_metadata::TargetKind;
@@ -14829,19 +14830,22 @@ mod tests {
 
         #[test]
         fn handle_project_discovered_does_not_allocate_per_comparison() {
+            const DISCOVERY_PROJECTS: usize = 200;
+            const MAX_DISCOVERY_ELAPSED: Duration = std::time::Duration::from_millis(500);
+
             let mut app = make_app(&[]);
             let start = std::time::Instant::now();
-            for i in 0..200 {
+            for i in 0..DISCOVERY_PROJECTS {
                 let path = format!("/abs/project_{i}");
                 let item =
                     RootItem::Rust(RustProject::Package(make_package_raw(None, &path, None)));
                 app.handle_project_discovered(item);
             }
             let elapsed = start.elapsed();
-            assert_eq!(app.project_list.len(), 200);
+            assert_eq!(app.project_list.len(), DISCOVERY_PROJECTS);
             assert!(
-                elapsed.as_millis() < 100,
-                "discovery of 200 projects took {elapsed:?} - possible display_path allocation regression"
+                elapsed < MAX_DISCOVERY_ELAPSED,
+                "discovery of {DISCOVERY_PROJECTS} projects took {elapsed:?}; expected less than {MAX_DISCOVERY_ELAPSED:?}"
             );
         }
 

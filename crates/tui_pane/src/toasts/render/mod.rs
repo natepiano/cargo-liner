@@ -16,6 +16,7 @@ use self::layout::render_top_down;
 use super::ToastHitbox;
 use super::ToastId;
 use super::ToastView;
+use crate::PaneFocusState;
 use crate::ToastPlacement;
 use crate::ToastSettings;
 
@@ -61,7 +62,7 @@ fn render_toasts(
     area: Rect,
     toasts: &[ToastView],
     settings: &ToastSettings,
-    pane_focused: bool,
+    pane_focus_state: PaneFocusState,
     focused_toast_id: Option<ToastId>,
 ) -> ToastRenderResult {
     if !settings.enabled || toasts.is_empty() {
@@ -84,7 +85,7 @@ fn render_toasts(
     let layout = StackLayout {
         width,
         gap,
-        pane_focus: ToastPaneFocus::from(pane_focused),
+        pane_focus: ToastPaneFocus::from(pane_focus_state),
         focused_toast_id,
     };
     let hitboxes = match settings.placement {
@@ -105,14 +106,13 @@ fn render_toasts(
 /// Built directly by the embedding immediately before rendering.
 /// `ToastSettings` lives on `Toasts` itself, so the render impl
 /// reads it from `self` — the embedding only supplies wall-clock
-/// time and the focused-pane bit.
+/// time and the focused-pane state.
 pub struct ToastsRenderCtx {
     /// Wall-clock timestamp passed to `Toasts::active_views` for
     /// the prune-and-collect pass.
-    pub now:          Instant,
-    /// Whether the embedding's "toasts pane" focus slot is the
-    /// current focus. Drives focused-toast border styling.
-    pub pane_focused: bool,
+    pub now:              Instant,
+    /// Focus state for the embedding's toasts pane slot.
+    pub pane_focus_state: PaneFocusState,
 }
 
 impl<Ctx: crate::AppContext> crate::Renderable<ToastsRenderCtx> for super::Toasts<Ctx> {
@@ -124,7 +124,7 @@ impl<Ctx: crate::AppContext> crate::Renderable<ToastsRenderCtx> for super::Toast
             area,
             &active,
             self.settings(),
-            ctx.pane_focused,
+            ctx.pane_focus_state,
             focused_id,
         );
         self.set_hits(result.hitboxes);
@@ -149,6 +149,7 @@ mod tests {
     use crate::AppContext;
     use crate::Framework;
     use crate::NoToastAction;
+    use crate::PaneFocusState;
     use crate::Toasts;
     use crate::TrackedItem;
     use crate::toasts::TrackedItemView;
@@ -195,7 +196,7 @@ mod tests {
                     frame.area(),
                     &views,
                     &settings,
-                    false,
+                    PaneFocusState::Inactive,
                     None,
                 ));
             })
@@ -251,7 +252,7 @@ mod tests {
                     frame.area(),
                     &views,
                     &settings,
-                    false,
+                    PaneFocusState::Inactive,
                     None,
                 ));
             })

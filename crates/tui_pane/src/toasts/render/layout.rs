@@ -2,6 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 
 use super::card;
+use crate::PaneFocusState;
 use crate::toasts::ToastHitbox;
 use crate::toasts::ToastId;
 use crate::toasts::ToastView;
@@ -12,16 +13,11 @@ pub(super) enum ToastPaneFocus {
     Unfocused,
 }
 
-impl ToastPaneFocus {
-    const fn is_focused(self) -> bool { matches!(self, Self::Focused) }
-}
-
-impl From<bool> for ToastPaneFocus {
-    fn from(pane_focused: bool) -> Self {
-        if pane_focused {
-            Self::Focused
-        } else {
-            Self::Unfocused
+impl From<PaneFocusState> for ToastPaneFocus {
+    fn from(focus: PaneFocusState) -> Self {
+        match focus {
+            PaneFocusState::Active => Self::Focused,
+            PaneFocusState::Remembered | PaneFocusState::Inactive => Self::Unfocused,
         }
     }
 }
@@ -65,7 +61,7 @@ pub(super) fn render_top_down(
             area,
             card,
             toast,
-            layout.pane_focus.is_focused(),
+            layout.pane_focus,
             layout.focused_toast_id,
         );
         hitboxes.push(ToastHitbox {
@@ -111,7 +107,7 @@ pub(super) fn render_bottom_up(
             area,
             card,
             toast,
-            layout.pane_focus.is_focused(),
+            layout.pane_focus,
             layout.focused_toast_id,
         );
         hitboxes.push(ToastHitbox {

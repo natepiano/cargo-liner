@@ -40,16 +40,16 @@ use crate::tui::panes::constants::PREFIX_ROOT_EXPANDED;
 use crate::tui::panes::constants::PREFIX_ROOT_LEAF;
 use crate::tui::panes::constants::PREFIX_SUBMODULE;
 use crate::tui::panes::constants::PREFIX_VENDORED;
-use crate::tui::panes::constants::PREFIX_WT_COLLAPSED;
-use crate::tui::panes::constants::PREFIX_WT_EXPANDED;
-use crate::tui::panes::constants::PREFIX_WT_FLAT;
-use crate::tui::panes::constants::PREFIX_WT_GROUP_COLLAPSED;
-use crate::tui::panes::constants::PREFIX_WT_GROUP_EXPANDED;
-use crate::tui::panes::constants::PREFIX_WT_MEMBER_INLINE;
-use crate::tui::panes::constants::PREFIX_WT_MEMBER_NAMED;
-use crate::tui::panes::constants::PREFIX_WT_MEMBER_VENDORED_INLINE;
-use crate::tui::panes::constants::PREFIX_WT_MEMBER_VENDORED_NAMED;
-use crate::tui::panes::constants::PREFIX_WT_VENDORED;
+use crate::tui::panes::constants::PREFIX_WORKTREE_COLLAPSED;
+use crate::tui::panes::constants::PREFIX_WORKTREE_EXPANDED;
+use crate::tui::panes::constants::PREFIX_WORKTREE_FLAT;
+use crate::tui::panes::constants::PREFIX_WORKTREE_GROUP_COLLAPSED;
+use crate::tui::panes::constants::PREFIX_WORKTREE_GROUP_EXPANDED;
+use crate::tui::panes::constants::PREFIX_WORKTREE_MEMBER_INLINE;
+use crate::tui::panes::constants::PREFIX_WORKTREE_MEMBER_NAMED;
+use crate::tui::panes::constants::PREFIX_WORKTREE_MEMBER_VENDORED_INLINE;
+use crate::tui::panes::constants::PREFIX_WORKTREE_MEMBER_VENDORED_NAMED;
+use crate::tui::panes::constants::PREFIX_WORKTREE_VENDORED;
 use crate::tui::panes::lang;
 use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::state;
@@ -101,9 +101,9 @@ fn render_root_item(
         PREFIX_ROOT_LEAF
     };
     let deleted = ctx.project_list.is_deleted(item.path());
-    let wt_health = item.worktree_health();
+    let worktree_health = item.worktree_health();
     let (disk_text, disk_suffix, disk_suffix_style) =
-        disk_suffix_for_state(&disk, deleted, wt_health);
+        disk_suffix_for_state(&disk, deleted, worktree_health);
     let row = columns::build_row_cells(ProjectRow {
         prefix,
         name,
@@ -127,7 +127,7 @@ fn render_root_item(
         git_main: &main_sync,
         ci,
         lifecycle: RowLifecycle::from(deleted),
-        worktree_health: wt_health,
+        worktree_health,
     });
     ListItem::new(columns::row_to_line(&row, widths))
 }
@@ -251,7 +251,8 @@ fn render_worktree_entry<'a>(
     let empty = Vec::new();
     let sorted = child_sorted.get(&ni).unwrap_or(&empty);
 
-    let (wt_name, has_expandable_children) = worktree_entry_name_and_expandable(item, wi, &dp);
+    let (worktree_name, has_expandable_children) =
+        worktree_entry_name_and_expandable(item, wi, &dp);
 
     let prefix = if has_expandable_children {
         if ctx
@@ -259,15 +260,15 @@ fn render_worktree_entry<'a>(
             .expanded
             .contains(&ExpandKey::Worktree(ni, wi))
         {
-            PREFIX_WT_EXPANDED
+            PREFIX_WORKTREE_EXPANDED
         } else {
-            PREFIX_WT_COLLAPSED
+            PREFIX_WORKTREE_COLLAPSED
         }
     } else {
-        PREFIX_WT_FLAT
+        PREFIX_WORKTREE_FLAT
     };
-    let wt_abs = abs_path.as_deref().unwrap_or_else(|| Path::new(""));
-    let disk = disk::formatted_disk(ctx.project_list, wt_abs);
+    let worktree_path = abs_path.as_deref().unwrap_or_else(|| Path::new(""));
+    let disk = disk::formatted_disk(ctx.project_list, worktree_path);
     let disk_bytes = item.disk_usage_bytes();
     let ds = disk::disk_color(disk::disk_percentile(disk_bytes, sorted));
     let lang = item.lang_icon();
@@ -278,23 +279,23 @@ fn render_worktree_entry<'a>(
     );
     let ci = ctx
         .project_list
-        .ci_status_using_lookup(wt_abs, ctx.ci_status_lookup);
-    let origin_sync = ctx.project_list.git_sync(wt_abs);
-    let main_sync = ctx.project_list.git_main(wt_abs);
-    let deleted = ctx.project_list.is_deleted(wt_abs);
-    let git_status = ctx.project_list.git_status_for(wt_abs);
-    let wt_health = worktree_health_for_entry(item, wi);
+        .ci_status_using_lookup(worktree_path, ctx.ci_status_lookup);
+    let origin_sync = ctx.project_list.git_sync(worktree_path);
+    let main_sync = ctx.project_list.git_main(worktree_path);
+    let deleted = ctx.project_list.is_deleted(worktree_path);
+    let git_status = ctx.project_list.git_status_for(worktree_path);
+    let worktree_health = worktree_health_for_entry(item, wi);
     let (disk_text, disk_suffix, disk_suffix_style) =
-        disk_suffix_for_state(&disk, deleted, wt_health);
+        disk_suffix_for_state(&disk, deleted, worktree_health);
     let row = columns::build_row_cells(ProjectRow {
         prefix,
-        name: &wt_name,
+        name: &worktree_name,
         name_segments: app::discovery_name_segments_for_path_with_refs(
             ctx.scan,
             ctx.config,
             ctx.project_list,
-            wt_abs,
-            &wt_name,
+            worktree_path,
+            &worktree_name,
             git_status,
             DiscoveryRowKind::WorktreeEntry,
         ),
@@ -309,7 +310,7 @@ fn render_worktree_entry<'a>(
         git_main: &main_sync,
         ci,
         lifecycle: RowLifecycle::from(deleted),
-        worktree_health: wt_health,
+        worktree_health,
     });
     ListItem::new(columns::row_to_line(&row, widths))
 }
@@ -396,9 +397,9 @@ fn render_wt_group_header<'a>(
         .expanded
         .contains(&ExpandKey::WorktreeGroup(ni, wi, gi))
     {
-        PREFIX_WT_GROUP_EXPANDED
+        PREFIX_WORKTREE_GROUP_EXPANDED
     } else {
-        PREFIX_WT_GROUP_COLLAPSED
+        PREFIX_WORKTREE_GROUP_COLLAPSED
     };
     let label = format!("{group_name} ({member_count})");
     let row = columns::build_group_header_cells(prefix, &label);
@@ -430,9 +431,9 @@ fn render_wt_member<'a>(
         _ => (None, String::new(), false),
     };
     let indent = if is_named_group {
-        PREFIX_WT_MEMBER_NAMED
+        PREFIX_WORKTREE_MEMBER_NAMED
     } else {
-        PREFIX_WT_MEMBER_INLINE
+        PREFIX_WORKTREE_MEMBER_INLINE
     };
     member.map_or_else(
         || {
@@ -476,8 +477,8 @@ fn render_member_item(
             let m = &group.members()[member_index];
             (Some(m), m.package_name().into_string(), group.is_named())
         },
-        RootItem::Worktrees(wtg) if !wtg.renders_as_group() => {
-            let Some(ws) = wtg.single_live_workspace() else {
+        RootItem::Worktrees(worktree_group) if !worktree_group.renders_as_group() => {
+            let Some(ws) = worktree_group.single_live_workspace() else {
                 return ListItem::new(columns::row_to_line(
                     &columns::build_group_header_cells(PREFIX_MEMBER_INLINE, ""),
                     widths,
@@ -532,8 +533,8 @@ fn render_member_vendored_item(
             let member = &group.members()[member_index];
             (member.vendored().get(vendored_index), group.is_named())
         },
-        RootItem::Worktrees(wtg) if !wtg.renders_as_group() => {
-            let Some(ws) = wtg.single_live_workspace() else {
+        RootItem::Worktrees(worktree_group) if !worktree_group.renders_as_group() => {
+            let Some(ws) = worktree_group.single_live_workspace() else {
                 return render_missing_vendored(PREFIX_MEMBER_VENDORED_INLINE, widths);
             };
             let group = &ws.groups()[group_index];
@@ -569,8 +570,10 @@ fn render_vendored_item(
             let v = &pkg.vendored()[vendored_index];
             (Some(v), v.package_name().into_string())
         },
-        RootItem::Worktrees(wtg) if !wtg.renders_as_group() => {
-            let entry = wtg.single_live().unwrap_or(&wtg.primary);
+        RootItem::Worktrees(worktree_group) if !worktree_group.renders_as_group() => {
+            let entry = worktree_group
+                .single_live()
+                .unwrap_or(&worktree_group.primary);
             let v = &entry.rust_info().vendored()[vendored_index];
             (Some(v), v.package_name().into_string())
         },
@@ -721,7 +724,7 @@ fn render_wt_vendored_item(
     let name = format!("{vendored_display_name} (v)");
     vendored_pkg.map_or_else(
         || {
-            let row = columns::build_group_header_cells(PREFIX_WT_VENDORED, &name);
+            let row = columns::build_group_header_cells(PREFIX_WORKTREE_VENDORED, &name);
             ListItem::new(columns::row_to_line(&row, widths))
         },
         |v| {
@@ -736,7 +739,7 @@ fn render_wt_vendored_item(
                 v,
                 &name,
                 sorted,
-                PREFIX_WT_VENDORED,
+                PREFIX_WORKTREE_VENDORED,
                 inherited_deleted,
                 widths,
             )
@@ -761,10 +764,12 @@ fn render_wt_member_vendored_item(
     let empty = Vec::new();
     let sorted = child_sorted.get(&node).unwrap_or(&empty);
     let (vendored, is_named, inherited_deleted_path) = match &item.root_item {
-        RootItem::Worktrees(wtg) => {
-            let entry = wtg.entry(worktree).unwrap_or(&wtg.primary);
+        RootItem::Worktrees(worktree_group) => {
+            let entry = worktree_group
+                .entry(worktree)
+                .unwrap_or(&worktree_group.primary);
             let RustProject::Workspace(ws) = entry else {
-                return render_missing_vendored(PREFIX_WT_MEMBER_VENDORED_INLINE, widths);
+                return render_missing_vendored(PREFIX_WORKTREE_MEMBER_VENDORED_INLINE, widths);
             };
             let member_group = &ws.groups()[group_index];
             let member = &member_group.members()[member_index];
@@ -777,9 +782,9 @@ fn render_wt_member_vendored_item(
         _ => (None, false, item.path()),
     };
     let prefix = if is_named {
-        PREFIX_WT_MEMBER_VENDORED_NAMED
+        PREFIX_WORKTREE_MEMBER_VENDORED_NAMED
     } else {
-        PREFIX_WT_MEMBER_VENDORED_INLINE
+        PREFIX_WORKTREE_MEMBER_VENDORED_INLINE
     };
     render_vendored_child(
         ctx,

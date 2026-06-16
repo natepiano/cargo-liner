@@ -26,6 +26,7 @@ use crate::KeyBind;
 use crate::KeyOutcome;
 use crate::Mode;
 use crate::OverlayAction;
+use crate::PaneFocusState;
 use crate::SettingsRow;
 use crate::SettingsRowKind;
 use crate::SettingsRowPayload;
@@ -45,8 +46,8 @@ pub enum SettingsCommand {
 /// Styling and layout inputs for [`SettingsPane::render_rows`].
 #[derive(Clone, Copy, Debug)]
 pub struct SettingsRenderOptions<'a> {
-    /// Whether the settings pane has active focus.
-    pub active:                bool,
+    /// Settings pane focus state for selection styling.
+    pub focus:                 PaneFocusState,
     /// Inline error for the selected row.
     pub inline_error:          Option<&'a str>,
     /// Available content width inside the popup.
@@ -277,7 +278,7 @@ impl SettingsPane {
             } else {
                 "  "
             };
-            let selection = self.selection_state(selection_index, options.active);
+            let selection = self.selection_state(selection_index, options.focus);
             let label = format!(
                 "{}{cursor}{:<max_label$}  ",
                 options.section_item_indent, row.label,
@@ -300,8 +301,12 @@ impl SettingsPane {
         }
     }
 
-    fn selection_state(&self, selection_index: usize, active: bool) -> SettingsSelectionState {
-        if selection_index == self.viewport.pos() && active {
+    fn selection_state(
+        &self,
+        selection_index: usize,
+        focus: PaneFocusState,
+    ) -> SettingsSelectionState {
+        if selection_index == self.viewport.pos() && matches!(focus, PaneFocusState::Active) {
             SettingsSelectionState::Active
         } else if self.viewport.hovered() == Some(selection_index) {
             SettingsSelectionState::Hovered
@@ -755,6 +760,7 @@ mod tests {
     use crate::KeyBind;
     use crate::KeyOutcome;
     use crate::Mode;
+    use crate::PaneFocusState;
     use crate::SettingsRow;
 
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -782,7 +788,7 @@ mod tests {
 
     fn render_options() -> SettingsRenderOptions<'static> {
         SettingsRenderOptions {
-            active:                true,
+            focus:                 PaneFocusState::Active,
             inline_error:          None,
             content_width:         24,
             section_header_indent: "",

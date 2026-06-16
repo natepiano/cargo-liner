@@ -20,14 +20,14 @@ use super::constants::PREFIX_MEMBER_VENDORED_NAMED;
 use super::constants::PREFIX_ROOT_COLLAPSED;
 use super::constants::PREFIX_SUBMODULE;
 use super::constants::PREFIX_VENDORED;
-use super::constants::PREFIX_WT_COLLAPSED;
-use super::constants::PREFIX_WT_FLAT;
-use super::constants::PREFIX_WT_GROUP_COLLAPSED;
-use super::constants::PREFIX_WT_MEMBER_INLINE;
-use super::constants::PREFIX_WT_MEMBER_NAMED;
-use super::constants::PREFIX_WT_MEMBER_VENDORED_INLINE;
-use super::constants::PREFIX_WT_MEMBER_VENDORED_NAMED;
-use super::constants::PREFIX_WT_VENDORED;
+use super::constants::PREFIX_WORKTREE_COLLAPSED;
+use super::constants::PREFIX_WORKTREE_FLAT;
+use super::constants::PREFIX_WORKTREE_GROUP_COLLAPSED;
+use super::constants::PREFIX_WORKTREE_MEMBER_INLINE;
+use super::constants::PREFIX_WORKTREE_MEMBER_NAMED;
+use super::constants::PREFIX_WORKTREE_MEMBER_VENDORED_INLINE;
+use super::constants::PREFIX_WORKTREE_MEMBER_VENDORED_NAMED;
+use super::constants::PREFIX_WORKTREE_VENDORED;
 use crate::constants::IN_SYNC;
 use crate::constants::NO_REMOTE_SYNC;
 use crate::constants::SYNC_DOWN;
@@ -104,8 +104,8 @@ fn observe_item_fit_widths(widths: &mut ProjectListWidths, entry: &ProjectEntry,
             observe_typed_vendored_fit_widths(widths, pkg.vendored(), PREFIX_VENDORED);
         },
         RootItem::NonRust(_) => {},
-        RootItem::Worktrees(wtg) => {
-            observe_worktree_group_fit_widths(widths, wtg, repo_info);
+        RootItem::Worktrees(worktree_group) => {
+            observe_worktree_group_fit_widths(widths, worktree_group, repo_info);
         },
     }
     for submodule in item.submodules() {
@@ -140,11 +140,11 @@ fn observe_new_member_group_fit_widths(
             group_prefix,
         ) = if is_worktree {
             (
-                PREFIX_WT_MEMBER_INLINE,
-                PREFIX_WT_MEMBER_NAMED,
-                PREFIX_WT_MEMBER_VENDORED_INLINE,
-                PREFIX_WT_MEMBER_VENDORED_NAMED,
-                PREFIX_WT_GROUP_COLLAPSED,
+                PREFIX_WORKTREE_MEMBER_INLINE,
+                PREFIX_WORKTREE_MEMBER_NAMED,
+                PREFIX_WORKTREE_MEMBER_VENDORED_INLINE,
+                PREFIX_WORKTREE_MEMBER_VENDORED_NAMED,
+                PREFIX_WORKTREE_GROUP_COLLAPSED,
             )
         } else {
             (
@@ -198,18 +198,18 @@ fn observe_workspace_worktree_entry_fit_widths(
     repo_info: Option<&RepoInfo>,
 ) {
     let dw = columns::display_width;
-    let wt_name = worktree_entry_label(group, worktree_index);
+    let worktree_name = worktree_entry_label(group, worktree_index);
     let prefix = if ws.has_members() {
-        PREFIX_WT_COLLAPSED
+        PREFIX_WORKTREE_COLLAPSED
     } else {
-        PREFIX_WT_FLAT
+        PREFIX_WORKTREE_FLAT
     };
-    observe_name_width(widths, dw(prefix) + dw(&wt_name));
+    observe_name_width(widths, dw(prefix) + dw(&worktree_name));
     widths.observe(COL_DISK, dw(&formatted_disk(ws.disk_usage_bytes())));
     widths.observe(COL_SYNC, dw(&git_sync_label(ws.git_info(), repo_info)));
     widths.observe(COL_MAIN, dw(&git_main_sync_label(ws.git_info())));
     observe_new_member_group_fit_widths(widths, ws.groups(), true);
-    observe_typed_vendored_fit_widths(widths, ws.vendored(), PREFIX_WT_VENDORED);
+    observe_typed_vendored_fit_widths(widths, ws.vendored(), PREFIX_WORKTREE_VENDORED);
 }
 
 fn observe_package_worktree_entry_fit_widths(
@@ -220,26 +220,26 @@ fn observe_package_worktree_entry_fit_widths(
     repo_info: Option<&RepoInfo>,
 ) {
     let dw = columns::display_width;
-    let wt_name = worktree_entry_label(group, worktree_index);
-    observe_name_width(widths, dw(PREFIX_WT_FLAT) + dw(&wt_name));
+    let worktree_name = worktree_entry_label(group, worktree_index);
+    observe_name_width(widths, dw(PREFIX_WORKTREE_FLAT) + dw(&worktree_name));
     widths.observe(COL_DISK, dw(&formatted_disk(pkg.disk_usage_bytes())));
     widths.observe(COL_SYNC, dw(&git_sync_label(pkg.git_info(), repo_info)));
     widths.observe(COL_MAIN, dw(&git_main_sync_label(pkg.git_info())));
-    observe_typed_vendored_fit_widths(widths, pkg.vendored(), PREFIX_WT_VENDORED);
+    observe_typed_vendored_fit_widths(widths, pkg.vendored(), PREFIX_WORKTREE_VENDORED);
 }
 
 fn observe_worktree_group_fit_widths(
     widths: &mut ProjectListWidths,
-    wtg: &WorktreeGroup,
+    worktree_group: &WorktreeGroup,
     repo_info: Option<&RepoInfo>,
 ) {
-    for (worktree_index, entry) in wtg.iter_entries().enumerate() {
+    for (worktree_index, entry) in worktree_group.iter_entries().enumerate() {
         match entry {
             RustProject::Workspace(ws) => {
                 observe_workspace_worktree_entry_fit_widths(
                     widths,
                     ws,
-                    wtg,
+                    worktree_group,
                     worktree_index,
                     repo_info,
                 );
@@ -248,7 +248,7 @@ fn observe_worktree_group_fit_widths(
                 observe_package_worktree_entry_fit_widths(
                     widths,
                     pkg,
-                    wtg,
+                    worktree_group,
                     worktree_index,
                     repo_info,
                 );

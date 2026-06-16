@@ -35,6 +35,7 @@ pub use region::BarRegion;
 pub use slot::BarSlot;
 pub use slot::ShortcutState;
 pub use status_bar::StatusBar;
+pub use status_line::ScanIndicator;
 pub use status_line::StatusLine;
 pub use status_line::StatusLineGlobal;
 pub use status_line::render as render_status_line;

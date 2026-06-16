@@ -33,16 +33,16 @@ pub(super) const PREFIX_SUBMODULE: &str = "   ";
 pub(super) const PREFIX_VENDORED: &str = "   ";
 pub(super) const PREFIX_GROUP_EXPANDED: &str = "   ▼";
 pub(super) const PREFIX_GROUP_COLLAPSED: &str = "   ▶";
-pub(super) const PREFIX_WT_EXPANDED: &str = "   ▼";
-pub(super) const PREFIX_WT_COLLAPSED: &str = "   ▶";
-pub const PREFIX_WT_FLAT: &str = "   ";
-pub(super) const PREFIX_WT_GROUP_EXPANDED: &str = "       ▼";
-pub(super) const PREFIX_WT_GROUP_COLLAPSED: &str = "       ▶";
-pub(super) const PREFIX_WT_MEMBER_INLINE: &str = "       ";
-pub(super) const PREFIX_WT_MEMBER_NAMED: &str = "           ";
-pub(super) const PREFIX_WT_MEMBER_VENDORED_INLINE: &str = "           ";
-pub(super) const PREFIX_WT_MEMBER_VENDORED_NAMED: &str = "               ";
-pub(super) const PREFIX_WT_VENDORED: &str = "       ";
+pub(super) const PREFIX_WORKTREE_EXPANDED: &str = "   ▼";
+pub(super) const PREFIX_WORKTREE_COLLAPSED: &str = "   ▶";
+pub const PREFIX_WORKTREE_FLAT: &str = "   ";
+pub(super) const PREFIX_WORKTREE_GROUP_EXPANDED: &str = "       ▼";
+pub(super) const PREFIX_WORKTREE_GROUP_COLLAPSED: &str = "       ▶";
+pub(super) const PREFIX_WORKTREE_MEMBER_INLINE: &str = "       ";
+pub(super) const PREFIX_WORKTREE_MEMBER_NAMED: &str = "           ";
+pub(super) const PREFIX_WORKTREE_MEMBER_VENDORED_INLINE: &str = "           ";
+pub(super) const PREFIX_WORKTREE_MEMBER_VENDORED_NAMED: &str = "               ";
+pub(super) const PREFIX_WORKTREE_VENDORED: &str = "       ";
 
 // tests detail rows
 

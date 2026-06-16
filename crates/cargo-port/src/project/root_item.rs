@@ -355,8 +355,11 @@ impl RootItem {
                 let member = group.members().get(member_index)?;
                 Some(member.path().as_path())
             },
-            Self::Worktrees(wtg) if !wtg.renders_as_group() => {
-                let group = wtg.single_live_workspace()?.groups().get(group_index)?;
+            Self::Worktrees(worktree_group) if !worktree_group.renders_as_group() => {
+                let group = worktree_group
+                    .single_live_workspace()?
+                    .groups()
+                    .get(group_index)?;
                 let member = group.members().get(member_index)?;
                 Some(member.path().as_path())
             },
@@ -375,7 +378,7 @@ impl RootItem {
                 .vendored()
                 .get(vendored_index)
                 .map(|p| p.path().as_path()),
-            Self::Worktrees(wtg) if !wtg.renders_as_group() => wtg
+            Self::Worktrees(worktree_group) if !worktree_group.renders_as_group() => worktree_group
                 .single_live()?
                 .rust_info()
                 .vendored()
@@ -396,7 +399,7 @@ impl RootItem {
             Self::Rust(RustProject::Workspace(ws)) => {
                 ws.groups().get(group_index)?.members().get(member_index)
             },
-            Self::Worktrees(wtg) if !wtg.renders_as_group() => wtg
+            Self::Worktrees(worktree_group) if !worktree_group.renders_as_group() => worktree_group
                 .single_live_workspace()?
                 .groups()
                 .get(group_index)?
@@ -423,7 +426,7 @@ impl RootItem {
         match self {
             Self::Rust(RustProject::Workspace(ws)) => ws.vendored().get(vendored_index),
             Self::Rust(RustProject::Package(pkg)) => pkg.vendored().get(vendored_index),
-            Self::Worktrees(wtg) if !wtg.renders_as_group() => wtg
+            Self::Worktrees(worktree_group) if !worktree_group.renders_as_group() => worktree_group
                 .single_live()?
                 .rust_info()
                 .vendored()
