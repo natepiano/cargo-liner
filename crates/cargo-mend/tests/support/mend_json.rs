@@ -19,6 +19,8 @@ fn clear_wrappers(command: &mut Command) -> &mut Command {
         .env("RUSTC_WRAPPER", "")
         .env("CARGO_BUILD_RUSTC_WRAPPER", "")
         .env_remove("RUSTC_WORKSPACE_WRAPPER")
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET_DIR")
 }
 
 pub(super) fn cargo_command() -> Command {
