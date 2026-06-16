@@ -51,6 +51,7 @@ tokio                 = "1"
 toml                  = "1.1.2"
 tracing               = "0.1.44"
 tracing-subscriber    = "0.3"
+tui_pane              = { path = "tui_pane", version = "0.2.0-dev" }
 unicode-width         = "0.2.2"
 walkdir               = "2"
 
@@ -86,7 +87,7 @@ unicode-width        = { workspace = true }
 walkdir              = { workspace = true }
 
 # tui_pane provides the framework used by the binary.
-tui_pane = { path = "tui_pane", version = "0.2.0-dev" }
+tui_pane = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
