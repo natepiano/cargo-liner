@@ -42,6 +42,12 @@ pub struct ValidatedFixSet {
     fixes: Vec<UseFix>,
 }
 
+impl ValidatedFixSet {
+    pub const fn is_empty(&self) -> bool { self.fixes.is_empty() }
+
+    pub fn iter(&self) -> impl Iterator<Item = &UseFix> { self.fixes.iter() }
+}
+
 impl TryFrom<Vec<UseFix>> for ValidatedFixSet {
     type Error = Error;
 
@@ -98,12 +104,6 @@ impl TryFrom<Vec<UseFix>> for ValidatedFixSet {
 
         Ok(Self { fixes })
     }
-}
-
-impl ValidatedFixSet {
-    pub const fn is_empty(&self) -> bool { self.fixes.is_empty() }
-
-    pub fn iter(&self) -> impl Iterator<Item = &UseFix> { self.fixes.iter() }
 }
 
 #[cfg(test)]

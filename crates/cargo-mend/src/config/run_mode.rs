@@ -21,6 +21,23 @@ pub(crate) struct FixSelection {
     fix_kinds: BTreeSet<FixKind>,
 }
 
+impl FixSelection {
+    fn all_fix_kinds() -> Self {
+        let mut fix_kinds = BTreeSet::new();
+        fix_kinds.insert(FixKind::ShortenImport);
+        fix_kinds.insert(FixKind::PreferModuleImport);
+        fix_kinds.insert(FixKind::InlinePathQualifiedType);
+        fix_kinds.insert(FixKind::UnusedPub);
+        fix_kinds.insert(FixKind::NarrowToPubCrate);
+        fix_kinds.insert(FixKind::FieldVisibility);
+        fix_kinds.insert(FixKind::ImportsAtTop);
+        fix_kinds.insert(FixKind::PubUse);
+        Self { fix_kinds }
+    }
+
+    pub(crate) fn contains(&self, kind: FixKind) -> bool { self.fix_kinds.contains(&kind) }
+}
+
 impl From<&FixCli> for FixSelection {
     fn from(fix_cli: &FixCli) -> Self {
         match fix_cli.execution {
@@ -44,23 +61,6 @@ impl From<&FixCli> for FixSelection {
             },
         }
     }
-}
-
-impl FixSelection {
-    fn all_fix_kinds() -> Self {
-        let mut fix_kinds = BTreeSet::new();
-        fix_kinds.insert(FixKind::ShortenImport);
-        fix_kinds.insert(FixKind::PreferModuleImport);
-        fix_kinds.insert(FixKind::InlinePathQualifiedType);
-        fix_kinds.insert(FixKind::UnusedPub);
-        fix_kinds.insert(FixKind::NarrowToPubCrate);
-        fix_kinds.insert(FixKind::FieldVisibility);
-        fix_kinds.insert(FixKind::ImportsAtTop);
-        fix_kinds.insert(FixKind::PubUse);
-        Self { fix_kinds }
-    }
-
-    pub(crate) fn contains(&self, kind: FixKind) -> bool { self.fix_kinds.contains(&kind) }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

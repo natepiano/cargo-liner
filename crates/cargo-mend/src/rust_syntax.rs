@@ -10,18 +10,6 @@ pub(crate) enum PathAnchor {
     Name,
 }
 
-impl From<&str> for PathAnchor {
-    fn from(segment: &str) -> Self {
-        match segment {
-            "crate" => Self::Crate,
-            "super" => Self::Super,
-            "self" => Self::SelfMod,
-            "Self" => Self::SelfType,
-            _ => Self::Name,
-        }
-    }
-}
-
 impl PathAnchor {
     pub(crate) fn first(segments: &[String]) -> Option<Self> {
         segments.first().map(|segment| Self::from(segment.as_str()))
@@ -33,6 +21,18 @@ impl PathAnchor {
 
     pub(crate) const fn is_explicit_self(self) -> bool {
         matches!(self, Self::SelfMod | Self::SelfType)
+    }
+}
+
+impl From<&str> for PathAnchor {
+    fn from(segment: &str) -> Self {
+        match segment {
+            "crate" => Self::Crate,
+            "super" => Self::Super,
+            "self" => Self::SelfMod,
+            "Self" => Self::SelfType,
+            _ => Self::Name,
+        }
     }
 }
 

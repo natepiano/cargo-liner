@@ -147,14 +147,6 @@ impl From<Error> for MendFailure {
     fn from(value: Error) -> Self { Self::Unexpected(value) }
 }
 
-impl From<NoticeKind> for ExecutionNotice {
-    fn from(kind: NoticeKind) -> Self { Self { kinds: vec![kind] } }
-}
-
-impl From<Vec<NoticeKind>> for ExecutionNotice {
-    fn from(kinds: Vec<NoticeKind>) -> Self { Self { kinds } }
-}
-
 impl ExecutionNotice {
     pub(crate) fn render(&self) -> String {
         let parts = self
@@ -164,6 +156,14 @@ impl ExecutionNotice {
             .collect::<Vec<_>>();
         format!("mend: {}", parts.join("; "))
     }
+}
+
+impl From<NoticeKind> for ExecutionNotice {
+    fn from(kind: NoticeKind) -> Self { Self { kinds: vec![kind] } }
+}
+
+impl From<Vec<NoticeKind>> for ExecutionNotice {
+    fn from(kinds: Vec<NoticeKind>) -> Self { Self { kinds } }
 }
 
 impl NoticeKind {

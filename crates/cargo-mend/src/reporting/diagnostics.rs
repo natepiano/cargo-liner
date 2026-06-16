@@ -271,12 +271,12 @@ pub(crate) struct PubUseFixFacts {
     facts: Vec<PubUseFixFact>,
 }
 
-impl From<Vec<PubUseFixFact>> for PubUseFixFacts {
-    fn from(facts: Vec<PubUseFixFact>) -> Self { Self { facts } }
-}
-
 impl PubUseFixFacts {
     pub(crate) fn iter(&self) -> impl Iterator<Item = &PubUseFixFact> { self.facts.iter() }
+}
+
+impl From<Vec<PubUseFixFact>> for PubUseFixFacts {
+    fn from(facts: Vec<PubUseFixFact>) -> Self { Self { facts } }
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
