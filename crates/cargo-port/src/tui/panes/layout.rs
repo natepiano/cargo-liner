@@ -379,7 +379,7 @@ mod tests {
         // plus the pane border — no taller, so the leftover goes to the middle.
         let top_inner = 8;
         let layout = resolve_layout(
-            Rect::new(0, 0, 120, 40),
+            Rect::new(0, 0, 120, 41),
             30,
             12,
             BottomRow::Diagnostics,

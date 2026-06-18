@@ -79,15 +79,16 @@ pub(super) const CPU_GPU_ROWS: usize = 4;
 #[cfg(not(target_os = "macos"))]
 pub(super) const CPU_GPU_ROWS: usize = 1;
 pub const CPU_PANE_WIDTH: u16 = CPU_CONTENT_WIDTH + 2;
-/// Pinned head rows above the scrolling cores band: the aggregate line.
-pub(super) const CPU_PINNED_HEAD_ROWS: usize = 1;
-/// Pixel height of every inner row except the scrolling cores band: the
-/// aggregate row, the two separator rules, the three breakdown rows, and the
-/// GPU rows. The cores band gets `inner.height - CPU_STATIC_INNER_HEIGHT`.
+/// Pinned head rows above the scrolling cores band: the `Cores` count row and
+/// the `Device` utilization row.
+pub(super) const CPU_PINNED_HEAD_ROWS: usize = 2;
+/// Pixel height of every inner row except the scrolling cores band: the two
+/// pinned head rows, the two separator rules, the three breakdown rows, and
+/// the GPU rows. The cores band gets `inner.height - CPU_STATIC_INNER_HEIGHT`.
 #[cfg(target_os = "macos")]
-pub(super) const CPU_STATIC_INNER_HEIGHT: u16 = 10;
+pub(super) const CPU_STATIC_INNER_HEIGHT: u16 = 11;
 #[cfg(not(target_os = "macos"))]
-pub(super) const CPU_STATIC_INNER_HEIGHT: u16 = 7;
+pub(super) const CPU_STATIC_INNER_HEIGHT: u16 = 8;
 /// Shown in GPU rows when the OS exposes no matching value. Kept within
 /// `CPU_CONTENT_WIDTH` so it never widens the pane. macOS packs four narrow
 /// rows so it uses the compact text; the single-row platforms keep the
