@@ -100,6 +100,7 @@ mod tests {
     use super::*;
     use crate::channel;
     use crate::config::CargoPortConfig;
+    use crate::config::LintIndicator;
     use crate::lint::trigger::LintEventKind::CreateOrModify;
     use crate::lint::trigger::LintTriggerKind::RustSource;
     use crate::lint::trigger::LintTriggerKind::Startup;
@@ -137,7 +138,7 @@ mod tests {
         )
         .expect("write manifest");
         let lint = LintConfig {
-            enabled: true,
+            enabled: LintIndicator::Enabled,
             include: vec!["~/rust/demo".to_string()],
             exclude: vec![project_dir.path().to_string_lossy().to_string()],
             commands: Vec::new(),
@@ -164,7 +165,7 @@ mod tests {
         .expect("write manifest");
 
         let lint = LintConfig {
-            enabled: true,
+            enabled: LintIndicator::Enabled,
             include: vec!["bevy_lagrange".to_string()],
             exclude: Vec::new(),
             commands: Vec::new(),
@@ -189,7 +190,7 @@ mod tests {
         let primary_root = AbsolutePath::from(project_dir.path().join("bevy_hana"));
 
         let lint = LintConfig {
-            enabled: true,
+            enabled: LintIndicator::Enabled,
             include: vec!["bevy_hana".to_string()],
             exclude: Vec::new(),
             commands: Vec::new(),
@@ -282,7 +283,7 @@ mod tests {
         )
         .expect("write manifest");
         let lint = LintConfig {
-            enabled: true,
+            enabled: LintIndicator::Enabled,
             include: vec!["~/rust/demo".to_string()],
             exclude: vec!["~/rust/demo/excluded".to_string()],
             commands: Vec::new(),
@@ -317,7 +318,7 @@ mod tests {
         let cache_dir = tempfile::tempdir().expect("tempdir");
         let mut cfg = CargoPortConfig::default();
         cfg.cache.root = cache_dir.path().to_string_lossy().to_string();
-        cfg.lint.enabled = true;
+        cfg.lint.enabled = LintIndicator::Enabled;
         cfg.lint.include = vec!["~/rust/demo".to_string()];
         cfg.lint.commands = vec![LintCommandConfig {
             name:    "echo".to_string(),
@@ -376,7 +377,7 @@ mod tests {
         let cache_dir = tempfile::tempdir().expect("tempdir");
         let mut cfg = CargoPortConfig::default();
         cfg.cache.root = cache_dir.path().to_string_lossy().to_string();
-        cfg.lint.enabled = true;
+        cfg.lint.enabled = LintIndicator::Enabled;
         cfg.lint.include = vec![project_dir.path().to_string_lossy().to_string()];
         cfg.lint.on_discovery = DiscoveryLint::Immediate;
         cfg.lint.commands = vec![LintCommandConfig {
@@ -440,7 +441,7 @@ mod tests {
         let cache_dir = tempfile::tempdir().expect("tempdir");
         let mut cfg = CargoPortConfig::default();
         cfg.cache.root = cache_dir.path().to_string_lossy().to_string();
-        cfg.lint.enabled = true;
+        cfg.lint.enabled = LintIndicator::Enabled;
         cfg.lint.include = vec![project_dir.path().to_string_lossy().to_string()];
         cfg.lint.on_discovery = DiscoveryLint::Immediate;
         cfg.lint.commands = vec![LintCommandConfig {
@@ -495,7 +496,7 @@ mod tests {
         let cache_dir = tempfile::tempdir().expect("tempdir");
         let mut cfg = CargoPortConfig::default();
         cfg.cache.root = cache_dir.path().to_string_lossy().to_string();
-        cfg.lint.enabled = true;
+        cfg.lint.enabled = LintIndicator::Enabled;
         cfg.lint.include = vec![project_dir.path().to_string_lossy().to_string()];
         cfg.lint.on_discovery = DiscoveryLint::Immediate;
         cfg.lint.commands = vec![LintCommandConfig {

@@ -145,6 +145,81 @@ impl EdgeScroll {
     pub(crate) const fn advances_pane(self) -> bool { matches!(self, Self::AdvancesPane) }
 }
 
+/// Whether lint status indicators render for projects.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "bool", into = "bool")]
+pub(crate) enum LintIndicator {
+    Enabled,
+    #[default]
+    Disabled,
+}
+
+impl From<bool> for LintIndicator {
+    fn from(enabled: bool) -> Self {
+        if enabled {
+            Self::Enabled
+        } else {
+            Self::Disabled
+        }
+    }
+}
+
+impl From<LintIndicator> for bool {
+    fn from(value: LintIndicator) -> Self { matches!(value, LintIndicator::Enabled) }
+}
+
+impl LintIndicator {
+    pub(crate) const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
+}
+
+/// Whether the focused pane receives a background tint.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "bool", into = "bool")]
+pub(crate) enum FocusedPaneTint {
+    #[default]
+    Enabled,
+    Disabled,
+}
+
+impl From<bool> for FocusedPaneTint {
+    fn from(enabled: bool) -> Self {
+        if enabled {
+            Self::Enabled
+        } else {
+            Self::Disabled
+        }
+    }
+}
+
+impl From<FocusedPaneTint> for bool {
+    fn from(value: FocusedPaneTint) -> Self { matches!(value, FocusedPaneTint::Enabled) }
+}
+
+impl FocusedPaneTint {
+    pub(crate) const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
+}
+
+/// Whether GitHub HTTP calls synthesize rate-limit responses.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "bool", into = "bool")]
+pub(crate) enum GitHubRateLimitMode {
+    Forced,
+    #[default]
+    Normal,
+}
+
+impl From<bool> for GitHubRateLimitMode {
+    fn from(forced: bool) -> Self { if forced { Self::Forced } else { Self::Normal } }
+}
+
+impl From<GitHubRateLimitMode> for bool {
+    fn from(value: GitHubRateLimitMode) -> Self { matches!(value, GitHubRateLimitMode::Forced) }
+}
+
+impl GitHubRateLimitMode {
+    pub(crate) const fn is_forced(self) -> bool { matches!(self, Self::Forced) }
+}
+
 /// Cache storage settings shared by CI and lint-history data.
 #[derive(Clone, Debug, Default, PartialEq, Eq, confique::Config, Serialize)]
 pub(crate) struct CacheConfig {
@@ -167,7 +242,7 @@ pub(crate) struct LintConfig {
     /// Show a lint status indicator per project by reading cache-rooted
     /// lint JSON artifacts.
     #[config(default = false)]
-    pub enabled: bool,
+    pub enabled: LintIndicator,
 
     /// Allow-list lint execution to projects whose display or absolute path
     /// starts with one of these prefixes. Empty means no projects are eligible.
@@ -200,7 +275,7 @@ pub(crate) struct LintConfig {
 impl Default for LintConfig {
     fn default() -> Self {
         Self {
-            enabled:      false,
+            enabled:      LintIndicator::Disabled,
             include:      Vec::new(),
             exclude:      Vec::new(),
             commands:     Vec::new(),
@@ -581,12 +656,12 @@ pub(crate) struct AppearanceConfig {
     /// Theme name to use when the resolved appearance is dark.
     #[config(default = "Default Dark")]
     pub dark_theme:        String,
-    /// When true (default), the focused pane gets a subtle background
-    /// tint so it lifts away from neighbouring panes. Set to false to
-    /// keep every pane drawn against the terminal's native background
-    /// (preserves iTerm2 / window-level transparency).
+    /// Controls whether the focused pane gets a subtle background tint so it
+    /// lifts away from neighbouring panes. Disabling it keeps every pane drawn
+    /// against the terminal's native background (preserves iTerm2 /
+    /// window-level transparency).
     #[config(default = true)]
-    pub focused_pane_tint: bool,
+    pub focused_pane_tint: FocusedPaneTint,
 }
 
 impl Default for AppearanceConfig {
@@ -595,7 +670,7 @@ impl Default for AppearanceConfig {
             mode:              "dark".to_string(),
             light_theme:       "Default Light".to_string(),
             dark_theme:        "Default Dark".to_string(),
-            focused_pane_tint: true,
+            focused_pane_tint: FocusedPaneTint::Enabled,
         }
     }
 }
@@ -610,7 +685,7 @@ pub(crate) struct DebugConfig {
     /// rate-limit toast, `/rate_limit` display, and recovery probe be
     /// verified deterministically. Default false.
     #[config(default = false)]
-    pub force_github_rate_limit: bool,
+    pub force_github_rate_limit: GitHubRateLimitMode,
 }
 
 /// CPU meter settings for the TUI host metrics pane.
@@ -825,7 +900,7 @@ mod tests {
         assert_eq!(cfg.tui.navigation_keys, NavigationKeys::ArrowsOnly);
         assert_eq!(cfg.tui.edge_scroll, EdgeScroll::Stops);
         assert_eq!(cfg.mouse.invert_scroll, ScrollDirection::Inverted);
-        assert!(!cfg.lint.enabled);
+        assert_eq!(cfg.lint.enabled, LintIndicator::Disabled);
         assert!(cfg.lint.include.is_empty());
         assert!(cfg.lint.exclude.is_empty());
         assert!(cfg.lint.commands.is_empty());
@@ -951,7 +1026,7 @@ mod tests {
         assert!(reloaded.lint.commands.is_empty());
         assert!(reloaded.lint.include.is_empty());
         assert!(reloaded.lint.exclude.is_empty());
-        assert!(!reloaded.lint.enabled);
+        assert_eq!(reloaded.lint.enabled, LintIndicator::Disabled);
         assert_eq!(reloaded.lint.cache_size, "512 MiB");
     }
 
@@ -980,7 +1055,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(
             &path,
-            "[mouse]\ninvert_scroll = false\n\n[tui]\ninclude_non_rust = true\nnavigation_keys = true\nedge_scroll = true\n",
+            "[mouse]\ninvert_scroll = false\n\n[tui]\ninclude_non_rust = true\nnavigation_keys = true\nedge_scroll = true\n\n[lint]\nenabled = true\n\n[appearance]\nfocused_pane_tint = false\n\n[debug]\nforce_github_rate_limit = true\n",
         )
         .expect("write");
 
@@ -993,6 +1068,12 @@ mod tests {
         assert_eq!(cfg.tui.include_non_rust, NonRustInclusion::Include);
         assert_eq!(cfg.tui.navigation_keys, NavigationKeys::ArrowsAndVim);
         assert_eq!(cfg.tui.edge_scroll, EdgeScroll::AdvancesPane);
+        assert_eq!(cfg.lint.enabled, LintIndicator::Enabled);
+        assert_eq!(cfg.appearance.focused_pane_tint, FocusedPaneTint::Disabled);
+        assert_eq!(
+            cfg.debug.force_github_rate_limit,
+            GitHubRateLimitMode::Forced
+        );
     }
 
     /// Cache root override parses from TOML.
@@ -1007,7 +1088,7 @@ mod tests {
             .load()
             .expect("cache root should parse");
         assert_eq!(cfg.cache.root, "/tmp/cargo-port");
-        assert!(!cfg.lint.enabled);
+        assert_eq!(cfg.lint.enabled, LintIndicator::Disabled);
     }
 
     /// Lint command arrays parse from TOML and preserve ordering.
@@ -1034,7 +1115,7 @@ mod tests {
             .file(&path)
             .load()
             .expect("lint commands should parse");
-        assert!(cfg.lint.enabled);
+        assert_eq!(cfg.lint.enabled, LintIndicator::Enabled);
         assert_eq!(cfg.lint.include, vec!["~/rust/cargo-port_report"]);
         assert_eq!(cfg.lint.exclude, vec!["~/rust/archive"]);
         assert_eq!(cfg.lint.commands.len(), 2);

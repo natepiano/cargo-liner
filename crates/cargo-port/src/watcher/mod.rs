@@ -511,6 +511,7 @@ mod tests {
     use super::*;
     use crate::channel;
     use crate::channel::Receiver;
+    use crate::config::LintIndicator;
     use crate::lint;
     use crate::project;
     use crate::project::GitStatus;
@@ -2406,7 +2407,7 @@ mod tests {
         let cache_dir = tempfile::tempdir().expect("tempdir");
         let mut cfg = crate::config::CargoPortConfig::default();
         cfg.cache.root = cache_dir.path().to_string_lossy().to_string();
-        cfg.lint.enabled = true;
+        cfg.lint.enabled = LintIndicator::Enabled;
         cfg.lint.include = vec!["~/rust/demo".to_string()];
         cfg.lint.commands = vec![crate::config::LintCommandConfig {
             name:    "echo".to_string(),
@@ -2517,7 +2518,7 @@ mod tests {
         let cache_dir = tempfile::tempdir().expect("tempdir");
         let mut cfg = crate::config::CargoPortConfig::default();
         cfg.cache.root = cache_dir.path().to_string_lossy().to_string();
-        cfg.lint.enabled = true;
+        cfg.lint.enabled = LintIndicator::Enabled;
         cfg.lint.include = vec!["cargo-port".to_string()];
         cfg.lint.commands = vec![crate::config::LintCommandConfig {
             name:    "echo".to_string(),

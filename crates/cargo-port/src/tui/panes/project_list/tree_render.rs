@@ -48,7 +48,7 @@ pub(super) fn render_project_list_pane_body(
     let total_project_rows = items.len();
 
     let title = project_panel_title_with_counts(pane, ctx, area.width.saturating_sub(2).into());
-    let block = tui_pane::default_pane_chrome().block(title, pane.focus.is_focused);
+    let block = tui_pane::default_pane_chrome().block(title, pane.focus.is_focused());
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.height == 0 {
@@ -176,7 +176,7 @@ fn project_panel_title_with_counts(
     ctx: &PaneRenderCtx<'_>,
     max_width: usize,
 ) -> String {
-    let focused = pane.focus.is_focused;
+    let focused = pane.focus.is_focused();
     let cursor = ctx.project_list.cursor();
     let roots = scan::resolve_include_dirs(&ctx.config.current().tui.include_dirs);
 

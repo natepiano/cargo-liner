@@ -104,46 +104,6 @@ impl StructureCounts {
     }
 }
 
-/// Build the Tests-section rows from accumulated test counts. Lists the
-/// non-zero `unit` / `integration` / `doc` buckets, an `(ignored)`
-/// annotation when doctests are skipped, and a `total` of the runnable
-/// buckets once two or more rows are present. Returns an empty vec when
-/// nothing runs, which hides the section (matching the pre-scan state
-/// where the counts are `None`). `(ignored)` is excluded from the total —
-/// rustdoc registers those doctests but never runs them.
-pub(super) fn test_rows_from_counts(counts: TestCounts) -> Vec<(&'static str, usize)> {
-    let mut rows = Vec::new();
-    if counts.unit > 0 {
-        rows.push((TESTS_UNIT_LABEL, counts.unit));
-    }
-    if counts.integration > 0 {
-        rows.push((TESTS_INTEGRATION_LABEL, counts.integration));
-    }
-    if counts.doc > 0 {
-        rows.push((TESTS_DOC_LABEL, counts.doc));
-    }
-    if counts.doc_ignored > 0 {
-        rows.push((TESTS_IGNORED_LABEL, counts.doc_ignored));
-    }
-    if rows.len() >= 2 {
-        rows.push((
-            TESTS_TOTAL_LABEL,
-            counts.unit + counts.integration + counts.doc,
-        ));
-    }
-    rows
-}
-/// True iff the Git pane's Stars row should render a "github
-/// unreachable" placeholder in warning color: GitHub is confirmed
-/// down (Unreachable / `RateLimited`) and no stars count has landed
-/// yet. Unauthenticated is excluded: it's not an
-/// outage, and the rate-limit rows already carry the auth hint.
-pub(super) const fn github_stars_is_unreachable_placeholder(data: &GitData) -> bool {
-    data.stars.is_none()
-        && !data.github_status.is_available()
-        && !data.github_status.is_unauthenticated()
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PackageSection {
     WorktreeGroupSummary,
@@ -178,6 +138,160 @@ pub enum PackageRow {
 pub struct WorktreeGroupSummary {
     pub worktrees: usize,
     pub deleted:   usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum PublishStatus {
+    Publishable,
+    #[default]
+    NotPublishable,
+}
+
+impl PublishStatus {
+    pub(super) const fn is_publishable(self) -> bool { matches!(self, Self::Publishable) }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PackagePresence {
+    Present,
+    #[default]
+    Missing,
+}
+
+impl PackagePresence {
+    const fn has_package(self) -> bool { matches!(self, Self::Present) }
+}
+
+impl From<bool> for PackagePresence {
+    fn from(has_package: bool) -> Self {
+        if has_package {
+            Self::Present
+        } else {
+            Self::Missing
+        }
+    }
+}
+
+/// Per-pane data for the Package detail panel.
+#[derive(Clone, Default)]
+/// Per-project pane data the Package pane renders. The "value"
+/// fields are pre-resolved display strings — callers can render
+/// without `&App` access. Pre-resolving `lint_display` and `ci_display`
+/// lets `PackagePane::render` operate on `&PackageData` alone.
+pub struct PackageData {
+    pub title:                    String,
+    pub name:                     String,
+    pub worktree_group_summary:   Option<WorktreeGroupSummary>,
+    pub primary_section:          Option<PackageSection>,
+    pub path:                     String,
+    /// Version string. `None` before metadata lands; the renderer
+    /// maps absence to a placeholder. For submodules this carries the
+    /// pinned commit rather than a semver.
+    pub version:                  Option<String>,
+    pub description:              Option<String>,
+    /// crates.io section of the stats column — `version` (latest stable,
+    /// or the newest prerelease when there is no stable), an optional
+    /// prerelease row (`rc` / `beta` / `alpha`) when a newer prerelease
+    /// exists alongside a stable, and `downloads`. Empty for
+    /// non-publishable projects; a publishable project with no data during
+    /// a confirmed crates.io outage gets a single `version` →
+    /// `unreachable` row so the user knows why it is empty.
+    pub crates_io_rows:           Vec<(&'static str, String)>,
+    /// Resolved cargo target kinds. `None` before `cargo metadata`
+    /// lands and for non-Rust projects; `Some(vec)` once resolved —
+    /// the vec is empty only for the rare crate with no lib/bin/
+    /// proc-macro target, and workspaces fold their `Workspace`
+    /// identity into it. The renderer maps absence to a placeholder
+    /// so a missing value can never render as a blank.
+    pub types:                    Option<Vec<ProjectType>>,
+    /// Bytes under the project root. `None` until the disk walk has
+    /// reported; the renderer formats `Some` and leaves `None` blank,
+    /// matching the `target/` / `other` sub-rows.
+    pub disk:                     Option<u64>,
+    /// Structure section of the stats column — project-child counts
+    /// (`members` / `vendored` / `submodules`) followed by cargo target-kind
+    /// counts (`lib` / `bin` / `proc-macro` / `example` / `bench`).
+    pub stats_rows:               Vec<(&'static str, usize)>,
+    /// Tests section of the stats column — `unit` / `integration` /
+    /// `doc` test counts from the source scan, plus an `(ignored)`
+    /// doctest annotation and a runnable `total` when applicable. Empty
+    /// until the scan lands (or when the project has no tests); an empty
+    /// vec hides the section.
+    pub test_rows:                Vec<(&'static str, usize)>,
+    pub package_presence:         PackagePresence,
+    /// Cargo edition ("2021", "2024", …) from the workspace metadata.
+    /// `None` until metadata has landed or for non-Rust projects.
+    pub edition:                  Option<String>,
+    pub license:                  Option<String>,
+    pub homepage:                 Option<String>,
+    pub repository:               Option<String>,
+    /// Bytes under the project root inside any `target/` subtree.
+    /// `None` until the walker has reported a breakdown.
+    pub in_project_target:        Option<u64>,
+    /// Everything else under the project root (source, docs, .git,
+    /// vendored crates outside target, etc.).
+    pub in_project_non_target:    Option<u64>,
+    /// Typed display value for the Lint field; populated at
+    /// assembly time so render can read it without `&App`. The
+    /// renderer matches on variants and applies
+    /// `animation_elapsed` to `status.icon()` at render time.
+    pub lint_display:             LintDisplay,
+    /// Typed display value for the Ci row in the Package detail
+    /// pane. Renderer matches on variants directly. Domain
+    /// authority lives on [`crate::tui::state::Ci`]; produced
+    /// by `Ci::package_display`.
+    pub ci_display:               CiDisplay,
+    /// Byte size of the workspace's out-of-tree `target_directory`
+    /// (when the resolved target sits outside `workspace_root`). Flows
+    /// from `WorkspaceMetadata::out_of_tree_target_bytes` once the
+    /// cached walk reports back; `None` for in-tree targets or before
+    /// the walk lands.
+    pub out_of_tree_target_bytes: Option<u64>,
+}
+
+impl PackageData {
+    pub const fn has_package(&self) -> bool { self.package_presence.has_package() }
+}
+
+/// Build the Tests-section rows from accumulated test counts. Lists the
+/// non-zero `unit` / `integration` / `doc` buckets, an `(ignored)`
+/// annotation when doctests are skipped, and a `total` of the runnable
+/// buckets once two or more rows are present. Returns an empty vec when
+/// nothing runs, which hides the section (matching the pre-scan state
+/// where the counts are `None`). `(ignored)` is excluded from the total —
+/// rustdoc registers those doctests but never runs them.
+pub(super) fn test_rows_from_counts(counts: TestCounts) -> Vec<(&'static str, usize)> {
+    let mut rows = Vec::new();
+    if counts.unit > 0 {
+        rows.push((TESTS_UNIT_LABEL, counts.unit));
+    }
+    if counts.integration > 0 {
+        rows.push((TESTS_INTEGRATION_LABEL, counts.integration));
+    }
+    if counts.doc > 0 {
+        rows.push((TESTS_DOC_LABEL, counts.doc));
+    }
+    if counts.doc_ignored > 0 {
+        rows.push((TESTS_IGNORED_LABEL, counts.doc_ignored));
+    }
+    if rows.len() >= 2 {
+        rows.push((
+            TESTS_TOTAL_LABEL,
+            counts.unit + counts.integration + counts.doc,
+        ));
+    }
+    rows
+}
+
+/// True iff the Git pane's Stars row should render a "github
+/// unreachable" placeholder in warning color: GitHub is confirmed
+/// down (Unreachable / `RateLimited`) and no stars count has landed
+/// yet. Unauthenticated is excluded: it's not an
+/// outage, and the rate-limit rows already carry the auth hint.
+pub(super) const fn github_stars_is_unreachable_placeholder(data: &GitData) -> bool {
+    data.stars.is_none()
+        && !data.github_status.is_available()
+        && !data.github_status.is_unauthenticated()
 }
 
 /// Primary project fields for the `Package` column.
@@ -302,119 +416,6 @@ pub(super) fn package_selectable_row_at_or_before(
 pub(super) fn package_nearest_selectable_row(rows: &[PackageRow], pos: usize) -> Option<usize> {
     package_selectable_row_at_or_after(rows, pos)
         .or_else(|| package_selectable_row_at_or_before(rows, pos))
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) enum PublishStatus {
-    Publishable,
-    #[default]
-    NotPublishable,
-}
-
-impl PublishStatus {
-    pub(super) const fn is_publishable(self) -> bool { matches!(self, Self::Publishable) }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum PackagePresence {
-    Present,
-    #[default]
-    Missing,
-}
-
-impl PackagePresence {
-    const fn has_package(self) -> bool { matches!(self, Self::Present) }
-}
-
-impl From<bool> for PackagePresence {
-    fn from(has_package: bool) -> Self {
-        if has_package {
-            Self::Present
-        } else {
-            Self::Missing
-        }
-    }
-}
-
-/// Per-pane data for the Package detail panel.
-#[derive(Clone, Default)]
-/// Per-project pane data the Package pane renders. The "value"
-/// fields are pre-resolved display strings — callers can render
-/// without `&App` access. Pre-resolving `lint_display` and `ci_display`
-/// lets `PackagePane::render` operate on `&PackageData` alone.
-pub struct PackageData {
-    pub title:                    String,
-    pub name:                     String,
-    pub worktree_group_summary:   Option<WorktreeGroupSummary>,
-    pub primary_section:          Option<PackageSection>,
-    pub path:                     String,
-    /// Version string. `None` before metadata lands; the renderer
-    /// maps absence to a placeholder. For submodules this carries the
-    /// pinned commit rather than a semver.
-    pub version:                  Option<String>,
-    pub description:              Option<String>,
-    /// crates.io section of the stats column — `version` (latest stable,
-    /// or the newest prerelease when there is no stable), an optional
-    /// prerelease row (`rc` / `beta` / `alpha`) when a newer prerelease
-    /// exists alongside a stable, and `downloads`. Empty for
-    /// non-publishable projects; a publishable project with no data during
-    /// a confirmed crates.io outage gets a single `version` →
-    /// `unreachable` row so the user knows why it is empty.
-    pub crates_io_rows:           Vec<(&'static str, String)>,
-    /// Resolved cargo target kinds. `None` before `cargo metadata`
-    /// lands and for non-Rust projects; `Some(vec)` once resolved —
-    /// the vec is empty only for the rare crate with no lib/bin/
-    /// proc-macro target, and workspaces fold their `Workspace`
-    /// identity into it. The renderer maps absence to a placeholder
-    /// so a missing value can never render as a blank.
-    pub types:                    Option<Vec<ProjectType>>,
-    /// Bytes under the project root. `None` until the disk walk has
-    /// reported; the renderer formats `Some` and leaves `None` blank,
-    /// matching the `target/` / `other` sub-rows.
-    pub disk:                     Option<u64>,
-    /// Structure section of the stats column — project-child counts
-    /// (`members` / `vendored` / `submodules`) followed by cargo target-kind
-    /// counts (`lib` / `bin` / `proc-macro` / `example` / `bench`).
-    pub stats_rows:               Vec<(&'static str, usize)>,
-    /// Tests section of the stats column — `unit` / `integration` /
-    /// `doc` test counts from the source scan, plus an `(ignored)`
-    /// doctest annotation and a runnable `total` when applicable. Empty
-    /// until the scan lands (or when the project has no tests); an empty
-    /// vec hides the section.
-    pub test_rows:                Vec<(&'static str, usize)>,
-    pub package_presence:         PackagePresence,
-    /// Cargo edition ("2021", "2024", …) from the workspace metadata.
-    /// `None` until metadata has landed or for non-Rust projects.
-    pub edition:                  Option<String>,
-    pub license:                  Option<String>,
-    pub homepage:                 Option<String>,
-    pub repository:               Option<String>,
-    /// Bytes under the project root inside any `target/` subtree.
-    /// `None` until the walker has reported a breakdown.
-    pub in_project_target:        Option<u64>,
-    /// Everything else under the project root (source, docs, .git,
-    /// vendored crates outside target, etc.).
-    pub in_project_non_target:    Option<u64>,
-    /// Typed display value for the Lint field; populated at
-    /// assembly time so render can read it without `&App`. The
-    /// renderer matches on variants and applies
-    /// `animation_elapsed` to `status.icon()` at render time.
-    pub lint_display:             LintDisplay,
-    /// Typed display value for the Ci row in the Package detail
-    /// pane. Renderer matches on variants directly. Domain
-    /// authority lives on [`crate::tui::state::Ci`]; produced
-    /// by `Ci::package_display`.
-    pub ci_display:               CiDisplay,
-    /// Byte size of the workspace's out-of-tree `target_directory`
-    /// (when the resolved target sits outside `workspace_root`). Flows
-    /// from `WorkspaceMetadata::out_of_tree_target_bytes` once the
-    /// cached walk reports back; `None` for in-tree targets or before
-    /// the walk lands.
-    pub out_of_tree_target_bytes: Option<u64>,
-}
-
-impl PackageData {
-    pub const fn has_package(&self) -> bool { self.package_presence.has_package() }
 }
 
 /// Resolve (version, description) for the detail pane from the

@@ -620,7 +620,7 @@ pub fn render_ci_pane_body(frame: &mut Frame, area: Rect, pane: &mut Ci, ctx: &P
         return;
     }
 
-    let ci_focused = pane.focus.is_focused;
+    let ci_focused = pane.focus.is_focused();
     let ci_pane_focus_state = pane.focus.pane_focus_state;
     let focused_pos = ci_focused.then(|| pane.viewport.pos());
     let title = ci_panel_title(&ci_data, focused_pos);

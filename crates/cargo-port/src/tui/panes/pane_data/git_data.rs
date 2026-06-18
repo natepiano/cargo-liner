@@ -30,54 +30,6 @@ use super::formatting;
 use super::package_data;
 use super::project;
 
-pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
-    let mut fields = Vec::new();
-    if data.head.is_some() {
-        fields.push(DetailField::Head);
-    }
-    if data.bisect.is_some() {
-        fields.push(DetailField::Bisect);
-    }
-    if let Some(ctx) = data.submodule_ctx.as_ref() {
-        if ctx.tracks.is_some() {
-            fields.push(DetailField::Tracks);
-        }
-        fields.push(DetailField::Pinned);
-    }
-    if data.status.is_some() {
-        fields.push(DetailField::GitStatus);
-    }
-    if data.vs_local.is_some() {
-        fields.push(DetailField::VsLocal);
-    }
-    // Show the Stars row when:
-    //   - the count has landed (real value), OR
-    //   - GitHub is confirmed unreachable / rate-limited (placeholder in warning color, mirrors the
-    //     crates.io unreachable row behavior on the Package pane).
-    if data.stars.is_some() || package_data::github_stars_is_unreachable_placeholder(data) {
-        fields.push(DetailField::Stars);
-    }
-    // Repo description is rendered separately in the About section by
-    // `render_git_about_section`, so it is intentionally not a flat field.
-    if data.inception.is_some() {
-        fields.push(DetailField::Inception);
-    }
-    if data.last_commit.is_some() {
-        fields.push(DetailField::LastCommit);
-    }
-    if data.last_fetched.is_some() {
-        fields.push(DetailField::LastFetched);
-    }
-    // Rate-limit rows are always shown so the section structure stays
-    // stable across fetch state; rendering handles the empty-quota
-    // case.
-    fields.push(DetailField::RateLimitCore);
-    fields.push(DetailField::RateLimitGraphQl);
-    if !data.worktrees.is_empty() {
-        // Worktree count is appended by the render function, not as a field.
-    }
-    fields
-}
 /// How the current `HEAD` relates to the repo, rendered as a qualifier
 /// after the branch name in the Git pane's Branch row (`main · default`,
 /// `feature/x · feature`, `feature/x · worktree`). `None` for detached and
@@ -260,6 +212,55 @@ pub enum GitRow<'a> {
     PullRequest(&'a PullRequestRow),
     Remote(&'a RemoteRow),
     Worktree(&'a WorktreeInfo),
+}
+
+pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
+    let mut fields = Vec::new();
+    if data.head.is_some() {
+        fields.push(DetailField::Head);
+    }
+    if data.bisect.is_some() {
+        fields.push(DetailField::Bisect);
+    }
+    if let Some(ctx) = data.submodule_ctx.as_ref() {
+        if ctx.tracks.is_some() {
+            fields.push(DetailField::Tracks);
+        }
+        fields.push(DetailField::Pinned);
+    }
+    if data.status.is_some() {
+        fields.push(DetailField::GitStatus);
+    }
+    if data.vs_local.is_some() {
+        fields.push(DetailField::VsLocal);
+    }
+    // Show the Stars row when:
+    //   - the count has landed (real value), OR
+    //   - GitHub is confirmed unreachable / rate-limited (placeholder in warning color, mirrors the
+    //     crates.io unreachable row behavior on the Package pane).
+    if data.stars.is_some() || package_data::github_stars_is_unreachable_placeholder(data) {
+        fields.push(DetailField::Stars);
+    }
+    // Repo description is rendered separately in the About section by
+    // `render_git_about_section`, so it is intentionally not a flat field.
+    if data.inception.is_some() {
+        fields.push(DetailField::Inception);
+    }
+    if data.last_commit.is_some() {
+        fields.push(DetailField::LastCommit);
+    }
+    if data.last_fetched.is_some() {
+        fields.push(DetailField::LastFetched);
+    }
+    // Rate-limit rows are always shown so the section structure stays
+    // stable across fetch state; rendering handles the empty-quota
+    // case.
+    fields.push(DetailField::RateLimitCore);
+    fields.push(DetailField::RateLimitGraphQl);
+    if !data.worktrees.is_empty() {
+        // Worktree count is appended by the render function, not as a field.
+    }
+    fields
 }
 
 pub fn git_has_description_row(data: &GitData) -> bool {

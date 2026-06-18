@@ -177,7 +177,13 @@ impl AppBuilder<Channeled> {
         let mut initial_theme = (*resolved.theme).clone();
         theme_roles::apply_role_defaults_to_theme(&mut initial_theme, None, resolved.appearance);
         tui_pane::install_theme_state(tui_pane::ThemeState::with_registry(registry, initial_theme));
-        tui_pane::set_focused_pane_tint(inputs.cargo_port_config.appearance.focused_pane_tint);
+        tui_pane::set_focused_pane_tint(
+            inputs
+                .cargo_port_config
+                .appearance
+                .focused_pane_tint
+                .is_enabled(),
+        );
         let config_path = config::config_path();
         let lint_spawn = lint::spawn(&inputs.cargo_port_config, inputs.background_tx.clone());
         let watch_roots = scan::resolve_include_dirs(&inputs.cargo_port_config.tui.include_dirs);
@@ -215,7 +221,7 @@ impl AppBuilder<Started> {
         let inputs = channeled.inputs;
         let panes = Panes::new(&inputs.cargo_port_config.cpu);
         let mut projects = started.projects;
-        projects.init_runtime_state(inputs.cargo_port_config.lint.enabled);
+        projects.init_runtime_state(inputs.cargo_port_config.lint.enabled.is_enabled());
         let background = Background::new(BackgroundChannels {
             background: (inputs.background_tx, inputs.background_rx),
             ci_fetch:   (channeled.ci_fetch_tx, channeled.ci_fetch_rx),
@@ -319,8 +325,13 @@ impl App {
             self.finish_watcher_registration_batch();
         }
         self.refresh_lint_runs_from_disk();
-        self.net
-            .set_force_github_rate_limit(self.config.current().debug.force_github_rate_limit);
+        self.net.set_force_github_rate_limit(
+            self.config
+                .current()
+                .debug
+                .force_github_rate_limit
+                .is_forced(),
+        );
         self.net.spawn_rate_limit_prime();
         self.warn_if_github_unauthenticated();
     }

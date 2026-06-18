@@ -65,7 +65,7 @@ fn render_toasts(
     pane_focus_state: PaneFocusState,
     focused_toast_id: Option<ToastId>,
 ) -> ToastRenderResult {
-    if !settings.enabled || toasts.is_empty() {
+    if !settings.toasts_enabled() || toasts.is_empty() {
         return ToastRenderResult {
             hitboxes: Vec::new(),
         };

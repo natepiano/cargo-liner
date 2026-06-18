@@ -155,7 +155,7 @@ pub fn render_lints_pane_body(
         return;
     };
 
-    let focused = pane.focus.is_focused;
+    let focused = pane.focus.is_focused();
     let title = lints_panel_title(&lints_data, focused, pane.viewport.pos());
     let block = lints_panel_block(title, focused, !lints_data.runs.is_empty());
 

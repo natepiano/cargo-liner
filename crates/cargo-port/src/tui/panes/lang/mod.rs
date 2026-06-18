@@ -224,7 +224,7 @@ pub(super) fn render_lang_pane_body(
     ctx: &PaneRenderCtx<'_>,
 ) {
     let pane_focus_state = pane.focus.pane_focus_state;
-    let is_focused = pane.focus.is_focused;
+    let is_focused = pane.focus.is_focused();
     let PaneRenderCtx {
         project_list: projects,
         selected_project_path,

@@ -51,7 +51,7 @@ pub(super) struct ProjectWorker {
 }
 
 pub fn spawn(config: &CargoPortConfig, background_tx: Sender<BackgroundMsg>) -> SpawnResult {
-    if !config.lint.enabled {
+    if !config.lint.enabled.is_enabled() {
         return SpawnResult {
             handle:  None,
             warning: None,

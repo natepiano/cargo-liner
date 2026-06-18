@@ -505,10 +505,8 @@ mod tests {
 
     #[test]
     fn new_with_settings_installs_loaded_settings() {
-        let toast_settings = ToastSettings {
-            enabled: false,
-            ..ToastSettings::default()
-        };
+        let mut toast_settings = ToastSettings::default();
+        toast_settings.set_toasts_enabled(false);
 
         let framework = Framework::<TestApp>::new_with_settings(
             FocusedPane::App(TestPaneId::Foo),
@@ -518,7 +516,7 @@ mod tests {
             },
         );
 
-        assert!(!framework.toast_settings().enabled);
+        assert!(!framework.toast_settings().toasts_enabled());
     }
 
     #[test]

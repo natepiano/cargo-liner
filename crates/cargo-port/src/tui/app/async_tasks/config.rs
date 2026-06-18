@@ -267,7 +267,13 @@ impl App {
         let mut active_theme = (*resolved.theme).clone();
         theme_roles::apply_role_defaults_to_theme(&mut active_theme, None, resolved.appearance);
         tui_pane::set_active_theme(Arc::new(active_theme));
-        tui_pane::set_focused_pane_tint(self.config.current().appearance.focused_pane_tint);
+        tui_pane::set_focused_pane_tint(
+            self.config
+                .current()
+                .appearance
+                .focused_pane_tint
+                .is_enabled(),
+        );
 
         // Dismiss the prior miss toast unconditionally; we'll push a
         // fresh one below if this resolve also missed.
@@ -357,13 +363,13 @@ impl App {
         }
 
         if prev_force != next_force {
-            self.net.set_force_github_rate_limit(next_force);
+            self.net.set_force_github_rate_limit(next_force.is_forced());
             // Synthesize a signal so the UI reflects the flag flip
             // immediately instead of waiting for the next natural
             // GitHub request — otherwise toggling the flag would look
             // broken until the next refresh. The force flag simulates a
             // rate-limit (not a network outage), so emit `RateLimited`.
-            if next_force {
+            if next_force.is_forced() {
                 self.apply_service_signal(ServiceSignal::RateLimited(ServiceKind::GitHub));
             } else {
                 self.mark_service_recovered(ServiceKind::GitHub);

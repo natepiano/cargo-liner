@@ -11,8 +11,7 @@ use crate::settings_store::SettingsError;
 /// Framework-owned toast settings.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToastSettings {
-    /// Whether toast rendering is enabled.
-    pub enabled:               bool,
+    rendering:                 ToastRendering,
     /// Toast card width.
     pub width:                 ToastWidth,
     /// Gap between visible toast cards.
@@ -54,9 +53,10 @@ impl ToastSettings {
 
     fn apply_toasts_table(&mut self, table: &Table) -> Result<(), SettingsError> {
         if let Some(value) = table.get("enabled") {
-            self.enabled = value
+            self.rendering = value
                 .as_bool()
-                .ok_or_else(|| invalid("toasts", "enabled", "expected bool"))?;
+                .ok_or_else(|| invalid("toasts", "enabled", "expected bool"))?
+                .into();
         }
         if let Some(value) = table.get("width") {
             self.width = ToastWidth::try_from_i64(
@@ -118,7 +118,7 @@ impl ToastSettings {
     /// Write toast settings into the shared settings TOML table.
     pub fn write_to_table(&self, table: &mut Table) {
         let mut toasts = Table::new();
-        toasts.insert("enabled".to_string(), Value::Boolean(self.enabled));
+        toasts.insert("enabled".to_string(), Value::Boolean(self.toasts_enabled()));
         toasts.insert(
             "width".to_string(),
             Value::Integer(i64::from(self.width.get())),
@@ -147,7 +147,7 @@ impl ToastSettings {
 impl Default for ToastSettings {
     fn default() -> Self {
         Self {
-            enabled:               true,
+            rendering:             ToastRendering::Enabled,
             width:                 ToastWidth::default(),
             gap:                   ToastGap::default(),
             status_toast_visible:  ToastDuration::STATUS_TOAST_VISIBLE,
@@ -157,6 +157,42 @@ impl Default for ToastSettings {
             animation:             ToastAnimationSettings::default(),
         }
     }
+}
+
+/// Whether to render toasts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ToastRendering {
+    /// Keep toast rendering enabled.
+    #[default]
+    Enabled,
+    /// Disable toast rendering.
+    Disabled,
+}
+
+impl From<bool> for ToastRendering {
+    fn from(enabled: bool) -> Self {
+        if enabled {
+            Self::Enabled
+        } else {
+            Self::Disabled
+        }
+    }
+}
+
+impl ToastSettings {
+    /// Whether toast rendering is enabled.
+    #[must_use]
+    pub const fn toasts_enabled(&self) -> bool { self.rendering.is_enabled() }
+
+    /// Update whether toast rendering is enabled.
+    pub fn set_toasts_enabled(&mut self, enabled: bool) {
+        self.rendering = ToastRendering::from(enabled);
+    }
+}
+
+impl ToastRendering {
+    /// Whether toasts are enabled.
+    pub const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
 }
 
 /// Toast width in terminal cells.

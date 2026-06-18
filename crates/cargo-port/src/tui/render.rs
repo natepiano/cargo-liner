@@ -429,7 +429,6 @@ fn dispatch_keymap_overlay(app: &mut App, frame: &mut Frame) {
     // Overlay focus is always `Active` while the popup is open.
     app.framework.keymap_pane.focus = RenderFocus {
         pane_focus_state: PaneFocusState::Active,
-        is_focused:       true,
     };
     let inputs = tui_pane::KeymapPane::prepare_overlay_inputs(app, &app.framework_keymap);
     app.framework
@@ -445,7 +444,6 @@ fn dispatch_keymap_overlay(app: &mut App, frame: &mut Frame) {
 fn dispatch_settings_overlay(app: &mut App, frame: &mut Frame) {
     app.framework.settings_pane.focus = RenderFocus {
         pane_focus_state: PaneFocusState::Active,
-        is_focused:       true,
     };
     let frame_height = frame.area().height;
     let inputs = settings::prepare_settings_render_inputs(app, frame_height);
@@ -473,7 +471,6 @@ fn dispatch_settings_overlay(app: &mut App, frame: &mut Frame) {
 fn dispatch_global_shortcuts_overlay(app: &mut App, frame: &mut Frame) {
     app.framework.global_shortcuts_pane.focus = RenderFocus {
         pane_focus_state: PaneFocusState::Active,
-        is_focused:       true,
     };
     app.framework
         .global_shortcuts_pane
@@ -483,7 +480,6 @@ fn dispatch_global_shortcuts_overlay(app: &mut App, frame: &mut Frame) {
 fn dispatch_finder_render(app: &mut App, frame: &mut Frame) {
     let finder_focus = RenderFocus {
         pane_focus_state: app.pane_focus_state(PaneId::Finder),
-        is_focused:       app.focus_is(PaneId::Finder),
     };
     app.overlays.finder_pane.focus = finder_focus;
     let animation_elapsed = app.animation_started.elapsed();
@@ -528,7 +524,6 @@ fn sync_pane_focus(app: &mut App) {
     for id in ids {
         let focus = RenderFocus {
             pane_focus_state: app.pane_focus_state(id),
-            is_focused:       app.focus_is(id),
         };
         match id {
             PaneId::Package => app.panes.package.focus = focus,

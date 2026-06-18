@@ -629,7 +629,7 @@ pub(super) fn render_package_pane_body(
         synced_description_height,
         ..
     } = ctx;
-    let lint_mode = LintRenderMode::from(config.current().lint.enabled);
+    let lint_mode = LintRenderMode::from(config.current().lint.enabled.is_enabled());
 
     let Some(pkg_data) = pane.content().cloned() else {
         render_no_project_selected(frame, area, pane);

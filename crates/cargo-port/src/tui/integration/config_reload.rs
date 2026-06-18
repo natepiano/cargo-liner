@@ -237,6 +237,7 @@ pub fn collect_reload_actions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::LintIndicator;
     use crate::config::NonRustInclusion;
     use crate::config::ScrollDirection;
 
@@ -324,7 +325,7 @@ mod tests {
     #[test]
     fn reload_actions_coalesce_lint_triggers() {
         let mut new = CargoPortConfig::default();
-        new.lint.enabled = true;
+        new.lint.enabled = LintIndicator::Enabled;
         new.lint.include = vec!["hana".to_string()];
         new.lint.commands = vec![crate::config::default_clippy_lint_command()];
 

@@ -50,7 +50,7 @@ impl Config {
 
     // ── flag accessors ──────────────────────────────────────────────
 
-    pub const fn lint_enabled(&self) -> bool { self.current().lint.enabled }
+    pub const fn lint_enabled(&self) -> bool { self.current().lint.enabled.is_enabled() }
 
     pub const fn invert_scroll(&self) -> ScrollDirection { self.current().mouse.invert_scroll }
 

@@ -4684,7 +4684,6 @@ mod tests {
             let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
             let focus = RenderFocus {
                 pane_focus_state: app.pane_focus_state(PaneId::Lints),
-                is_focused:       app.focus_is(PaneId::Lints),
             };
             app.lint.focus = focus;
             let animation_elapsed = app.animation_started.elapsed();
@@ -4719,7 +4718,6 @@ mod tests {
             let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
             let focus = RenderFocus {
                 pane_focus_state: app.pane_focus_state(PaneId::CiRuns),
-                is_focused:       app.focus_is(PaneId::CiRuns),
             };
             app.ci.focus = focus;
             let animation_elapsed = app.animation_started.elapsed();
@@ -7335,6 +7333,7 @@ mod tests {
         use tui_pane::GlobalAction;
 
         use super::*;
+        use crate::config::LintIndicator;
         use crate::lint::LintRun;
         use crate::lint::LintRunStatus;
         use crate::project::Cargo;
@@ -7951,11 +7950,11 @@ mod tests {
 
             assert!(!app.project_list.cached_fit_widths.lint_enabled());
 
-            cfg.lint.enabled = true;
+            cfg.lint.enabled = LintIndicator::Enabled;
             app.apply_config(&cfg);
             assert!(app.project_list.cached_fit_widths.lint_enabled());
 
-            cfg.lint.enabled = false;
+            cfg.lint.enabled = LintIndicator::Disabled;
             app.apply_config(&cfg);
             assert!(!app.project_list.cached_fit_widths.lint_enabled());
         }
@@ -8171,6 +8170,7 @@ mod tests {
         use tui_pane::ACTIVITY_SPINNER;
 
         use super::*;
+        use crate::config::LintIndicator;
         use crate::constants::CI_PASSED;
         use crate::project::Submodule;
         use crate::tui::columns;
@@ -8302,7 +8302,7 @@ mod tests {
                 vec![make_package_raw(None, "~/ws_feat", Some("ws_feat"))],
             );
             let mut app = make_app(&[make_project(None, "~/ws")]);
-            app.config.current_mut().lint.enabled = true;
+            app.config.current_mut().lint.enabled = LintIndicator::Enabled;
             apply_items(&mut app, &[root]);
             app.project_list.expanded.insert(ExpandKey::Node(0));
 
@@ -9517,6 +9517,7 @@ mod tests {
 
         use super::*;
         use crate::config;
+        use crate::config::LintIndicator;
         use crate::constants::IN_SYNC;
         use crate::constants::NO_REMOTE_SYNC;
         use crate::lint::CachedLintStatus;
@@ -10423,7 +10424,7 @@ mod tests {
             let project = item_from_project_dir(&project_dir);
             let project_path = project.path().clone();
             let mut app = make_app(&[project]);
-            app.config.current_mut().lint.enabled = true;
+            app.config.current_mut().lint.enabled = LintIndicator::Enabled;
             app.config.current_mut().lint.include =
                 vec![project_path.to_string_lossy().to_string()];
             app.scan.state.phase = ScanPhase::Complete;
@@ -10556,7 +10557,7 @@ mod tests {
             let project = make_project(Some("a"), "~/a");
             let project_path = project.path().clone();
             let mut app = make_app(&[project]);
-            app.config.current_mut().lint.enabled = true;
+            app.config.current_mut().lint.enabled = LintIndicator::Enabled;
             app.scan.state.phase = ScanPhase::Complete;
 
             app.handle_bg_msg(BackgroundMsg::LintStatus {
@@ -10584,7 +10585,7 @@ mod tests {
             let project = make_project(Some("a"), "~/a");
             let project_path = project.path().clone();
             let mut app = make_app(&[project]);
-            app.config.current_mut().lint.enabled = true;
+            app.config.current_mut().lint.enabled = LintIndicator::Enabled;
             app.scan.state.phase = ScanPhase::Complete;
 
             app.handle_bg_msg(BackgroundMsg::LintStatus {
@@ -10622,7 +10623,7 @@ mod tests {
             let project = make_project(Some("a"), "~/a");
             let project_path = project.path().clone();
             let mut app = make_app(&[project]);
-            app.config.current_mut().lint.enabled = true;
+            app.config.current_mut().lint.enabled = LintIndicator::Enabled;
             app.scan.state.phase = ScanPhase::Complete;
             app.project_list.set_cursor(0);
             app.sync_selected_project();
@@ -11542,7 +11543,7 @@ mod tests {
             );
 
             let mut app = make_app(&[make_project(None, "~/ws")]);
-            app.config.current_mut().lint.enabled = true;
+            app.config.current_mut().lint.enabled = LintIndicator::Enabled;
             apply_items(&mut app, &[root]);
             app.project_list
                 .lint_at_path_mut(&test_path("~/ws"))
@@ -11578,7 +11579,7 @@ mod tests {
             );
 
             let mut app = make_app(&[make_workspace_project(None, "~/ws")]);
-            app.config.current_mut().lint.enabled = true;
+            app.config.current_mut().lint.enabled = LintIndicator::Enabled;
             apply_items(&mut app, &[root]);
             app.project_list
                 .lint_at_path_mut(&test_path("~/ws"))
@@ -11597,7 +11598,7 @@ mod tests {
             );
 
             let mut app = make_app(&[make_project(None, "~/ws")]);
-            app.config.current_mut().lint.enabled = true;
+            app.config.current_mut().lint.enabled = LintIndicator::Enabled;
             apply_items(&mut app, &[root]);
             app.project_list
                 .lint_at_path_mut(&test_path("~/ws"))
@@ -11628,7 +11629,7 @@ mod tests {
             );
 
             let mut app = make_app(&[make_project(None, "~/ws")]);
-            app.config.current_mut().lint.enabled = true;
+            app.config.current_mut().lint.enabled = LintIndicator::Enabled;
             apply_items(&mut app, &[root]);
             let primary_path = test_path("~/ws");
             let linked_path = test_path("~/ws_feat");
@@ -11688,7 +11689,7 @@ mod tests {
             );
 
             let mut app = make_app(&[make_project(None, "~/ws")]);
-            app.config.current_mut().lint.enabled = true;
+            app.config.current_mut().lint.enabled = LintIndicator::Enabled;
             apply_items(&mut app, &[root]);
             let primary_path = test_path("~/ws");
             let linked_path = test_path("~/ws_feat");
@@ -11745,7 +11746,7 @@ mod tests {
             );
 
             let mut app = make_app(&[make_project(None, "~/ws")]);
-            app.config.current_mut().lint.enabled = true;
+            app.config.current_mut().lint.enabled = LintIndicator::Enabled;
             apply_items(&mut app, &[root]);
             let primary_path = test_path("~/ws");
             let linked_path = test_path("~/ws_feat");
@@ -11811,7 +11812,7 @@ mod tests {
             );
 
             let mut app = make_app(&[make_project(None, "~/ws")]);
-            app.config.current_mut().lint.enabled = true;
+            app.config.current_mut().lint.enabled = LintIndicator::Enabled;
             apply_items(&mut app, &[root]);
             let primary_path = test_path("~/ws");
             let linked_path = test_path("~/ws_feat");
@@ -11868,7 +11869,7 @@ mod tests {
             );
 
             let mut app = make_app(&[make_project(None, "~/ws")]);
-            app.config.current_mut().lint.enabled = true;
+            app.config.current_mut().lint.enabled = LintIndicator::Enabled;
             apply_items(&mut app, &[root]);
             let primary_path = test_path("~/ws");
             let linked_path = test_path("~/ws_feat");
@@ -11995,7 +11996,7 @@ mod tests {
             );
 
             let mut app = make_app(&[make_project(None, "~/ws")]);
-            app.config.current_mut().lint.enabled = true;
+            app.config.current_mut().lint.enabled = LintIndicator::Enabled;
             apply_items(&mut app, &[root]);
             app.project_list.set_cursor(0);
             app.sync_selected_project();
@@ -13740,6 +13741,7 @@ mod tests {
 
         use super::*;
         use crate::config::DiscoveryLint;
+        use crate::config::LintIndicator;
         use crate::lint;
         use crate::project::FileStamp;
         use crate::project::ManifestFingerprint;
@@ -13819,7 +13821,7 @@ mod tests {
             let root = make_workspace_worktrees_item(primary_ws, vec![linked_ws]);
 
             let mut app = make_app(&[make_workspace_project(None, "~/ws")]);
-            app.config.current_mut().lint.enabled = true;
+            app.config.current_mut().lint.enabled = LintIndicator::Enabled;
             apply_items(&mut app, &[root]);
             app.project_list.expanded.insert(ExpandKey::Node(0));
             app.ensure_visible_rows_cached();
@@ -14251,7 +14253,7 @@ mod tests {
             let cache_dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
             let mut cfg = CargoPortConfig::default();
             cfg.cache.root = cache_dir.path().to_string_lossy().to_string();
-            cfg.lint.enabled = true;
+            cfg.lint.enabled = LintIndicator::Enabled;
             cfg.lint.include = vec![project_dir.path().to_string_lossy().to_string()];
             cfg.lint.commands = vec![crate::config::LintCommandConfig {
                 name:    "echo".to_string(),
@@ -14302,7 +14304,7 @@ mod tests {
             let cache_dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
             let mut cfg = CargoPortConfig::default();
             cfg.cache.root = cache_dir.path().to_string_lossy().to_string();
-            cfg.lint.enabled = true;
+            cfg.lint.enabled = LintIndicator::Enabled;
             cfg.lint.include = vec!["bevy_hana".to_string()];
             cfg.lint.on_discovery = DiscoveryLint::Immediate;
             cfg.lint.commands = vec![crate::config::LintCommandConfig {
@@ -14365,7 +14367,7 @@ mod tests {
             let cache_dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
             let mut cfg = CargoPortConfig::default();
             cfg.cache.root = cache_dir.path().to_string_lossy().to_string();
-            cfg.lint.enabled = true;
+            cfg.lint.enabled = LintIndicator::Enabled;
             cfg.lint.include = vec!["bevy_hana".to_string()];
             cfg.lint.commands = vec![crate::config::LintCommandConfig {
                 name:    "echo".to_string(),
@@ -14704,7 +14706,7 @@ mod tests {
             );
             let linked_abs = test_path(linked_path);
             let mut app = make_app(&[root]);
-            app.config.current_mut().lint.enabled = true;
+            app.config.current_mut().lint.enabled = LintIndicator::Enabled;
 
             app.handle_bg_msg(BackgroundMsg::LintStatus {
                 path:   linked_abs,
@@ -14960,11 +14962,7 @@ mod tests {
     )]
     fn sync_project_list_focus_for_test(app: &mut App) {
         let pane_focus_state = app.pane_focus_state(PaneId::ProjectList);
-        let is_focused = app.focus_is(PaneId::ProjectList);
-        app.panes.project_list.focus = RenderFocus {
-            pane_focus_state,
-            is_focused,
-        };
+        app.panes.project_list.focus = RenderFocus { pane_focus_state };
     }
 
     fn rendered_root_name_cells(app: &mut App) -> Vec<String> {

@@ -618,7 +618,7 @@ pub(super) fn render_cpu_pane_body(
     let pane_focus_state = pane.focus.pane_focus_state;
     let block = styles
         .chrome
-        .block(cpu_panel_title().to_string(), pane.focus.is_focused);
+        .block(cpu_panel_title().to_string(), pane.focus.is_focused());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 

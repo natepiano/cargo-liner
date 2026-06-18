@@ -636,7 +636,7 @@ pub(super) fn settings_table_from_config(config: &CargoPortConfig) -> Result<Tab
         &mut table,
         i64::from(config.cpu.medium_utilization_max_percent),
     )?;
-    set_lints_enabled(&mut table, config.lint.enabled)?;
+    set_lints_enabled(&mut table, config.lint.enabled.is_enabled())?;
     set_lint_on_discovery(&mut table, config.lint.on_discovery.is_immediate())?;
     write_string_array(&mut table, "lint", "include", config.lint.include.clone())?;
     write_value(
@@ -649,7 +649,7 @@ pub(super) fn settings_table_from_config(config: &CargoPortConfig) -> Result<Tab
     set_appearance_mode(&mut table, &config.appearance.mode)?;
     set_appearance_light_theme(&mut table, &config.appearance.light_theme)?;
     set_appearance_dark_theme(&mut table, &config.appearance.dark_theme)?;
-    set_focused_pane_tint(&mut table, config.appearance.focused_pane_tint)?;
+    set_focused_pane_tint(&mut table, config.appearance.focused_pane_tint.is_enabled())?;
     Ok(table)
 }
 
@@ -877,7 +877,8 @@ fn set_cpu_medium_utilization_max(table: &mut Table, value: i64) -> Result<(), S
 }
 
 fn get_lints_enabled(table: &Table) -> bool {
-    read_bool(table, "lint", "enabled").unwrap_or_else(|| default_config().lint.enabled)
+    read_bool(table, "lint", "enabled")
+        .unwrap_or_else(|| default_config().lint.enabled.is_enabled())
 }
 
 fn set_lints_enabled(table: &mut Table, value: bool) -> Result<(), SettingsError> {
@@ -1003,7 +1004,7 @@ fn set_appearance_dark_theme(table: &mut Table, value: &str) -> Result<(), Setti
 
 fn get_focused_pane_tint(table: &Table) -> bool {
     read_bool(table, "appearance", "focused_pane_tint")
-        .unwrap_or_else(|| default_config().appearance.focused_pane_tint)
+        .unwrap_or_else(|| default_config().appearance.focused_pane_tint.is_enabled())
 }
 
 fn set_focused_pane_tint(table: &mut Table, value: bool) -> Result<(), SettingsError> {
@@ -1090,7 +1091,7 @@ fn appearance_settings_rows(config: &CargoPortConfig) -> Vec<SettingsUiRow> {
         (
             Some(SettingOption::FocusedPaneTint),
             "Focused pane tint".to_string(),
-            if config.appearance.focused_pane_tint {
+            if config.appearance.focused_pane_tint.is_enabled() {
                 "ON"
             } else {
                 "OFF"
@@ -1570,7 +1571,12 @@ fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<Setti
             if key == KeyCode::Right { 1 } else { -1 },
         ),
         Some(SettingOption::FocusedPaneTint) => {
-            let next = !app.config.current().appearance.focused_pane_tint;
+            let next = !app
+                .config
+                .current()
+                .appearance
+                .focused_pane_tint
+                .is_enabled();
             let _ = save_app_setting_with_toast(app, |table| set_focused_pane_tint(table, next));
         },
         Some(
@@ -1707,7 +1713,12 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
             cycle_appearance_theme_setting(app, Appearance::Dark, 1);
         },
         Some(SettingOption::FocusedPaneTint) => {
-            let next = !app.config.current().appearance.focused_pane_tint;
+            let next = !app
+                .config
+                .current()
+                .appearance
+                .focused_pane_tint
+                .is_enabled();
             let _ = save_app_setting_with_toast(app, |table| set_focused_pane_tint(table, next));
         },
         None => {},
@@ -1896,7 +1907,7 @@ pub(super) fn handle_settings_text_command(app: &mut App, command: SettingsComma
 }
 
 fn toggle_lints(app: &mut App) {
-    let enabled = !app.config.current().lint.enabled;
+    let enabled = !app.config.current().lint.enabled.is_enabled();
     if !save_app_setting(app, |table| set_lints_enabled(table, enabled)) {
         return;
     }
@@ -2028,11 +2039,9 @@ mod tests {
                 .expect("load settings");
         let mut config = CargoPortConfig::default();
         config.tui.ci_run_count = 9;
-        let toast_settings = ToastSettings {
-            status_toast_visible: ToastDuration::try_from_secs("status_toast_visible", 3.0)
-                .expect("toast duration"),
-            ..ToastSettings::default()
-        };
+        let mut toast_settings = ToastSettings::default();
+        toast_settings.status_toast_visible =
+            ToastDuration::try_from_secs("status_toast_visible", 3.0).expect("toast duration");
 
         *loaded.store.table_mut() = settings_table_from_config(&config).expect("settings table");
         toast_settings.write_to_table(loaded.store.table_mut());

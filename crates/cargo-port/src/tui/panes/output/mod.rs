@@ -51,7 +51,7 @@ fn render_output_pane_body(
 
     let scroll_offset = u16::try_from(pane.viewport.scroll_offset()).unwrap_or(u16::MAX);
     let selected_range = pane.selected_range(source);
-    let focused = pane.focus.is_focused;
+    let focused = pane.focus.is_focused();
     let inner_width = usize::from(inner.width);
 
     let block = tui_pane::default_pane_chrome()
@@ -129,7 +129,7 @@ fn output_title(pane: &OutputPane, ctx: &PaneRenderCtx<'_>) -> String {
     let live = ctx.inflight.example_output();
     let count = pane.selection_line_count(live);
     let lines = if count == 1 { "line" } else { "lines" };
-    let focused = pane.focus.is_focused;
+    let focused = pane.focus.is_focused();
 
     // Vim visual-line mode owns the title with the copy hint.
     if pane.selection().is_visual() {
