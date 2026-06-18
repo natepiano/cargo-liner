@@ -25,6 +25,7 @@ use crate::config::CpuConfig;
 use crate::tui::app::HoveredPaneRow;
 use crate::tui::running_targets::ProjectTargetSlice;
 use crate::tui::running_targets::RunningTargetsPoller;
+use crate::tui::startup_services::StartupServices;
 
 /// Owns every pane-related piece of state. App holds a single `panes:
 /// Panes` field.
@@ -63,11 +64,11 @@ struct TopRowHeightCache {
 }
 
 impl Panes {
-    pub fn new(cpu_cfg: &CpuConfig) -> Self {
+    pub fn new(cpu_cfg: &CpuConfig, startup_services: StartupServices) -> Self {
         Self {
             package:      PackagePane::new(),
             lang:         LangPane::new(),
-            cpu:          CpuPane::new(cpu_cfg),
+            cpu:          CpuPane::new(cpu_cfg, startup_services.clone()),
             git:          GitPane::new(),
             output:       OutputPane::new(),
             targets:      TargetsPane::new(),
@@ -76,7 +77,10 @@ impl Panes {
             pane_data:            PaneDataStore::new(),
             tiled_layout:         ResolvedPaneLayout::default(),
             hovered_row:          None,
-            running_targets:      RunningTargetsPoller::new(RUNNING_TARGETS_POLL_INTERVAL),
+            running_targets:      RunningTargetsPoller::new(
+                RUNNING_TARGETS_POLL_INTERVAL,
+                startup_services,
+            ),
             top_row_height_cache: TopRowHeightCache::default(),
         }
     }
@@ -178,7 +182,12 @@ mod detail_set_tests {
     use crate::tui::panes::TargetsData;
     use crate::tui::panes::data::DetailCacheKey;
 
-    fn fresh() -> Panes { Panes::new(&CpuConfig::default()) }
+    fn fresh() -> Panes {
+        Panes::new(
+            &CpuConfig::default(),
+            crate::tui::startup_services::StartupServices::quiet_unit_test(),
+        )
+    }
 
     fn any_row() -> VisibleRow { VisibleRow::Root { node_index: 0 } }
 

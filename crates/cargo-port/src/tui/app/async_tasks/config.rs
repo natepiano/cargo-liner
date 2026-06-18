@@ -7,11 +7,9 @@ use tui_pane::Appearance;
 use tui_pane::ToastStyle::Error;
 use tui_pane::ToastStyle::Warning;
 
-use crate::config;
 use crate::config::CargoPortConfig;
 use crate::http::ServiceKind;
 use crate::http::ServiceSignal;
-use crate::lint;
 use crate::project::AbsolutePath;
 use crate::tui::app::App;
 use crate::tui::app::CargoPortToastAction;
@@ -25,6 +23,7 @@ use crate::tui::keymap::KeymapError;
 use crate::tui::keymap::KeymapErrorReason;
 use crate::tui::keymap::KeymapErrorReason::Parse;
 use crate::tui::keymap_ui;
+use crate::tui::startup_services::StartupEffect;
 use crate::tui::theme_roles;
 
 /// The backdrop color to paint when the resolved theme appearance
@@ -198,12 +197,17 @@ impl App {
         if self.themes.take_change().is_none() {
             return;
         }
+        let effect = self.startup_services.theme_directory_effect();
+        self.startup_services.record_theme_directory(effect);
+        if effect == StartupEffect::Suppressed {
+            return;
+        }
         let mut registry = tui_pane::ThemeRegistry::from_dir_with_builtins(self.themes.dir());
         theme_roles::apply_role_defaults_to_registry(&mut registry);
         let failed = registry.status().failed_files.clone();
         let overridden = registry.status().overridden.clone();
         let total = registry.len();
-        tui_pane::replace_registry(registry);
+        self.startup_services.replace_theme_registry(registry);
 
         if let Some(id) = self.themes.take_diagnostics_id() {
             self.framework.toasts.dismiss(id);
@@ -246,6 +250,12 @@ impl App {
     /// `themes.miss_toast_id` so the next clean resolve dismisses it.
     /// An invalid `mode` string surfaces a timed toast separately.
     pub(super) fn resolve_and_apply_active_theme(&mut self) {
+        let effect = self.startup_services.process_globals_effect();
+        if effect == StartupEffect::Suppressed {
+            self.startup_services.record_process_globals(effect);
+            self.themes.set_frame_background(None);
+            return;
+        }
         let registry = tui_pane::registry();
         let appearance_cfg = &self.config.current().appearance;
         let resolved = registry.resolve_active(
@@ -266,8 +276,8 @@ impl App {
         self.themes.set_frame_background(frame_background);
         let mut active_theme = (*resolved.theme).clone();
         theme_roles::apply_role_defaults_to_theme(&mut active_theme, None, resolved.appearance);
-        tui_pane::set_active_theme(Arc::new(active_theme));
-        tui_pane::set_focused_pane_tint(
+        self.startup_services.publish_active_theme(
+            Arc::new(active_theme),
             self.config
                 .current()
                 .appearance
@@ -356,7 +366,8 @@ impl App {
                 },
             },
         );
-        config::set_active_config(cargo_port_config);
+        self.startup_services
+            .install_active_config(cargo_port_config);
         *self.config.current_mut() = cargo_port_config.clone();
         if !self.config.discovery_shimmer_enabled() {
             self.scan.discovery_shimmers_mut().clear();
@@ -428,7 +439,9 @@ impl App {
     /// pattern.
     pub fn apply_lint_config_change(&mut self, cargo_port_config: &CargoPortConfig) {
         // Runtime: respawn the lint runtime.
-        let lint_spawn = lint::spawn(cargo_port_config, self.background.background_sender());
+        let lint_spawn = self
+            .startup_services
+            .spawn_lint_runtime(cargo_port_config, self.background.background_sender());
         self.lint.set_runtime(lint_spawn.handle);
         self.sync_lint_runtime_projects();
 

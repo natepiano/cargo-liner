@@ -1,5 +1,10 @@
 //! Shared helpers for unit tests.
 
+#![allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+
 use std::sync::OnceLock;
 
 use reqwest::header::HeaderMap;
@@ -17,7 +22,7 @@ pub(crate) fn normalize_line_endings(text: &str) -> String {
 /// test isn't paying for runtime startup.
 pub(crate) fn test_runtime() -> &'static Runtime {
     static TEST_RT: OnceLock<Runtime> = OnceLock::new();
-    TEST_RT.get_or_init(|| tokio::runtime::Runtime::new().unwrap_or_else(|_| std::process::abort()))
+    TEST_RT.get_or_init(|| tokio::runtime::Runtime::new().expect("test runtime starts"))
 }
 
 /// Build a `HeaderMap` from `(name, value)` pairs. Panics on invalid
@@ -25,8 +30,8 @@ pub(crate) fn test_runtime() -> &'static Runtime {
 pub(crate) fn header_map(entries: &[(&str, &str)]) -> HeaderMap {
     let mut headers = HeaderMap::new();
     for (name, value) in entries {
-        let name: HeaderName = (*name).parse().unwrap_or_else(|_| std::process::abort());
-        let value = HeaderValue::from_str(value).unwrap_or_else(|_| std::process::abort());
+        let name: HeaderName = (*name).parse().expect("test header name is valid");
+        let value = HeaderValue::from_str(value).expect("test header value is valid");
         headers.insert(name, value);
     }
     headers

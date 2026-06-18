@@ -1,5 +1,10 @@
 //! Shared TUI test constructors.
 
+#![allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -13,6 +18,8 @@ use super::app::RetrySpawnMode;
 use super::keymap;
 use super::settings;
 use super::settings::StartupSettings;
+use super::startup_services::StartupEnvironment;
+use super::startup_services::StartupServices;
 use crate::channel;
 use crate::config;
 use crate::config::CargoPortConfig;
@@ -24,8 +31,15 @@ use crate::project::WorkspaceMetadataStore;
 use crate::test_support;
 
 pub(super) fn test_http_client() -> HttpClient {
+    let startup_services = StartupServices::quiet_unit_test();
+    test_http_client_with_startup_services(&startup_services)
+}
+
+fn test_http_client_with_startup_services(startup_services: &StartupServices) -> HttpClient {
     let runtime = test_support::test_runtime();
-    HttpClient::new(runtime.handle().clone()).unwrap_or_else(|| std::process::abort())
+    startup_services
+        .test_http_client(runtime.handle().clone())
+        .expect("test HTTP client initializes")
 }
 
 pub(super) fn make_app(projects: &[RootItem]) -> App {
@@ -33,6 +47,28 @@ pub(super) fn make_app(projects: &[RootItem]) -> App {
 }
 
 pub(super) fn make_app_with_config(projects: &[RootItem], config: &CargoPortConfig) -> App {
+    let app = make_app_with_startup_services(projects, config, StartupServices::quiet_unit_test());
+    assert_eq!(
+        app.startup_effect_counts().real_total(),
+        0,
+        "quiet test app should not start host startup effects"
+    );
+    app
+}
+
+pub(super) fn make_app_with_lint_runtime(projects: &[RootItem], config: &CargoPortConfig) -> App {
+    make_app_with_startup_services(
+        projects,
+        config,
+        StartupServices::quiet_unit_test_with_lint_runtime(),
+    )
+}
+
+pub(super) fn make_app_with_startup_services(
+    projects: &[RootItem],
+    config: &CargoPortConfig,
+    startup_services: StartupServices,
+) -> App {
     let mut config = config.clone();
     if config.tui.include_dirs.is_empty() {
         config.tui.include_dirs = vec!["/tmp/test".to_string()];
@@ -51,49 +87,73 @@ pub(super) fn make_app_with_config(projects: &[RootItem], config: &CargoPortConf
     let settings_spec = SettingsFileSpec::new(APP_NAME, CONFIG_FILE).with_path(&config_path);
     let mut loaded_settings =
         SettingsStore::load_for_startup(settings_spec, settings::cargo_port_settings_registry())
-            .unwrap_or_else(|_| std::process::abort());
+            .expect("test settings store loads");
     *loaded_settings.store.table_mut() =
-        settings::settings_table_from_config(&config).unwrap_or_else(|_| std::process::abort());
+        settings::settings_table_from_config(&config).expect("test config becomes settings");
     loaded_settings
         .toast_settings
         .write_to_table(loaded_settings.store.table_mut());
     loaded_settings
         .store
         .save()
-        .unwrap_or_else(|_| std::process::abort());
+        .expect("test settings file is writable");
     let startup_settings = StartupSettings {
         config,
         store: loaded_settings.store,
         toast_settings: loaded_settings.toast_settings,
     };
-    let mut app = App::new(
+    let http_client = test_http_client_with_startup_services(&startup_services);
+    let startup_environment = StartupEnvironment::with_services(
+        http_client,
+        Instant::now(),
+        metadata_store,
+        startup_services,
+    );
+    let mut app = App::new_with_startup_environment(
         projects,
         background_tx,
         background_rx,
         startup_settings,
-        test_http_client(),
-        Instant::now(),
-        metadata_store,
+        startup_environment,
     )
-    .unwrap_or_else(|_| std::process::abort());
+    .expect("test app initializes");
     app.scan.set_retry_spawn_mode(RetrySpawnMode::Disabled);
     app.sync_selected_project();
     app
 }
 
 fn test_config_path() -> PathBuf {
-    let file = tempfile::NamedTempFile::new().unwrap_or_else(|_| std::process::abort());
+    let file = tempfile::NamedTempFile::new().expect("test config path is available");
     file.into_temp_path()
         .keep()
-        .unwrap_or_else(|_| std::process::abort())
+        .expect("test config path persists")
 }
 
 fn test_keymap_path() -> PathBuf {
-    let dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let dir = tempfile::tempdir().expect("test keymap directory is available");
     let path = dir.path().join("keymap.toml");
     // Leak the TempDir so the directory survives long enough for
     // `load_keymap` to write the default TOML at `path`. The OS
     // reclaims `/tmp` entries on its own schedule.
     std::mem::forget(dir);
     path
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_http_client_skips_host_github_auth() {
+        let client = test_http_client();
+
+        assert!(!client.has_github_token());
+    }
+
+    #[test]
+    fn make_app_uses_quiet_startup_by_default() {
+        let app = make_app(&[]);
+
+        assert_eq!(app.startup_effect_counts().real_total(), 0);
+    }
 }

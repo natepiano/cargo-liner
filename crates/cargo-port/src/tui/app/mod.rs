@@ -147,6 +147,10 @@ use super::settings;
 use super::settings::SettingOption;
 use super::settings::SettingsRenderInputs;
 use super::settings::StartupSettings;
+#[cfg(test)]
+use super::startup_services::StartupEffectCounts;
+use super::startup_services::StartupEnvironment;
+use super::startup_services::StartupServices;
 pub(super) use super::state::AvailabilityStatus;
 use super::state::Ci;
 use super::state::CiStatusLookup;
@@ -336,6 +340,7 @@ pub(super) struct App {
     /// `lint_count`) plus the phase state that decides when the
     /// umbrella "Startup" toast may enter its close countdown.
     pub(super) startup:            Startup,
+    pub(super) startup_services:   StartupServices,
     pub(super) visited_panes:      HashSet<AppPaneId>,
     /// Overlays subsystem. Owns the overlay-mode enums
     /// (`FinderMode`, `KeymapMode`),
@@ -380,13 +385,36 @@ impl App {
             background_tx,
             background_rx,
             startup_settings,
-            http_client,
-            scan_started_at,
-            metadata_store,
+            StartupEnvironment::production(http_client, scan_started_at, metadata_store),
         )
         .open_channels()
         .run_startup()
         .build()
+    }
+
+    #[cfg(test)]
+    pub(super) fn new_with_startup_environment(
+        projects: &[RootItem],
+        background_tx: Sender<BackgroundMsg>,
+        background_rx: Receiver<BackgroundMsg>,
+        startup_settings: StartupSettings,
+        startup_environment: StartupEnvironment,
+    ) -> Result<Self, Error> {
+        construct::AppBuilder::new(
+            projects,
+            background_tx,
+            background_rx,
+            startup_settings,
+            startup_environment,
+        )
+        .open_channels()
+        .run_startup()
+        .build()
+    }
+
+    #[cfg(test)]
+    pub(super) fn startup_effect_counts(&self) -> StartupEffectCounts {
+        self.startup_services.counts()
     }
 
     /// Whether the currently selected row is a lint-owning node.
@@ -1680,6 +1708,84 @@ mod tests {
         }
 
         #[test]
+        fn quiet_scan_result_does_not_start_startup_workers_or_wait_for_lint_history() {
+            let mut app = make_app(&[]);
+
+            apply_bg_msg(
+                &mut app,
+                BackgroundMsg::ScanResult {
+                    projects:     vec![make_project(Some("demo"), "~/demo")],
+                    disk_entries: Vec::new(),
+                },
+            );
+
+            assert_eq!(
+                app.startup_effect_counts().real_total(),
+                0,
+                "quiet ScanResult handling must not start real startup effects"
+            );
+            assert_eq!(
+                app.startup.disk.expected_len(),
+                0,
+                "quiet ScanResult has no disk producer"
+            );
+            assert_eq!(
+                app.startup.git.expected_len(),
+                0,
+                "quiet ScanResult has no project-detail git producer"
+            );
+            assert_eq!(
+                app.startup.metadata.expected_len(),
+                0,
+                "quiet ScanResult has no metadata producer"
+            );
+            assert!(
+                app.startup.crates_io.expected.is_unknown(),
+                "quiet ScanResult must not declare crates.io fetches"
+            );
+            assert!(
+                app.startup.lint_phase.expected.is_unknown(),
+                "suppressed lint-history hydration must not leave expected paths"
+            );
+            assert_eq!(
+                app.startup.details_declared.expected_len(),
+                0,
+                "quiet ScanResult must not wait for project-detail declarations"
+            );
+            assert!(
+                app.startup.details_declared.complete_at.is_some(),
+                "empty declaration phase should complete immediately"
+            );
+        }
+
+        #[test]
+        fn quiet_rescan_uses_noop_scan_without_real_startup_effects() {
+            let mut app = make_app(&[make_project(Some("demo"), "~/demo")]);
+
+            app.rescan();
+
+            assert_eq!(
+                app.startup_effect_counts().real_total(),
+                0,
+                "quiet rescan must not start scan, watcher, lint, network, or git work"
+            );
+            assert!(
+                app.project_list.is_empty(),
+                "quiet rescan applies a deterministic empty scan result"
+            );
+            assert_eq!(app.scan.state.phase, ScanPhase::Complete);
+            assert_eq!(
+                app.startup.metadata.expected_len(),
+                0,
+                "quiet rescan must not wait for suppressed metadata work"
+            );
+            assert!(
+                app.startup.lint_phase.expected.is_unknown(),
+                "quiet rescan must not wait for suppressed lint history"
+            );
+        }
+
+        #[test]
         fn scan_result_reapplies_pending_expansion_targets_then_drains_them() {
             let mut app = make_app(&[]);
             // Seed the pending targets the way startup-load and rescan both do.
@@ -1867,7 +1973,8 @@ mod tests {
         }
 
         #[test]
-        fn completed_scan_rescans_when_enabling_non_rust_without_cached_projects() {
+        fn quiet_completed_scan_applies_noop_rescan_when_enabling_non_rust_without_cached_projects()
+        {
             let rust_project = make_project(Some("rust"), "~/rust");
             let mut app = make_app(&[rust_project]);
             app.scan.state.phase = ScanPhase::Complete;
@@ -1877,7 +1984,8 @@ mod tests {
             app.apply_config(&cfg);
 
             assert!(app.project_list.is_empty());
-            assert!(!app.scan.is_complete());
+            assert!(app.scan.is_complete());
+            assert_eq!(app.startup_effect_counts().real_total(), 0);
         }
 
         #[test]
@@ -14259,7 +14367,7 @@ mod tests {
                 name:    "echo".to_string(),
                 command: "echo lint ok".to_string(),
             }];
-            let mut app = make_app_with_config(&[], &cfg);
+            let mut app = make_app_with_lint_runtime(&[], &cfg);
 
             assert!(app.handle_project_discovered(item_from_project_dir(project_dir.path())));
             let trigger = lint::classify_event_path(
@@ -14312,7 +14420,7 @@ mod tests {
                 command: "echo lint ok".to_string(),
             }];
             let primary_item = item_from_project_dir(&primary_dir);
-            let mut app = make_app_with_config(&[primary_item], &cfg);
+            let mut app = make_app_with_lint_runtime(&[primary_item], &cfg);
 
             assert!(app.handle_project_discovered(item_from_project_dir(&linked_dir)));
             let quiet_deadline = std::time::Instant::now() + std::time::Duration::from_millis(150);
@@ -14374,7 +14482,7 @@ mod tests {
                 command: "echo lint ok".to_string(),
             }];
             let primary_item = item_from_project_dir(&primary_dir);
-            let mut app = make_app_with_config(&[primary_item], &cfg);
+            let mut app = make_app_with_lint_runtime(&[primary_item], &cfg);
 
             let linked_path = linked_dir.to_string_lossy().to_string();
             let stale_discovery = RootItem::Rust(RustProject::Package(make_package_raw(
@@ -14899,6 +15007,10 @@ mod tests {
 
     fn make_app_with_config(projects: &[RootItem], cfg: &CargoPortConfig) -> App {
         tui_test_support::make_app_with_config(projects, cfg)
+    }
+
+    fn make_app_with_lint_runtime(projects: &[RootItem], cfg: &CargoPortConfig) -> App {
+        tui_test_support::make_app_with_lint_runtime(projects, cfg)
     }
 
     fn set_loaded_ci(

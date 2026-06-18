@@ -40,6 +40,7 @@ use crate::http::HttpClient;
 use crate::http::ServiceKind;
 use crate::scan;
 use crate::scan::RepoCache;
+use crate::tui::startup_services::StartupServices;
 
 /// Availability for a single service. `Unreachable` means the network
 /// layer can't talk to the service at all; `RateLimited` means the
@@ -496,16 +497,8 @@ impl Net {
     /// is quota-exempt, so this is safe to run even when GitHub is
     /// refusing other calls. Logged via `rate_limit_prime_ok` /
     /// `rate_limit_prime_failed`.
-    pub fn spawn_rate_limit_prime(&self) {
-        let client = self.http_client();
-        std::thread::spawn(move || {
-            let (rate_limit, _signal) = client.fetch_rate_limit();
-            if rate_limit.is_some() {
-                tracing::info!("rate_limit_prime_ok");
-            } else {
-                tracing::info!("rate_limit_prime_failed");
-            }
-        });
+    pub fn spawn_rate_limit_prime(&self, startup_services: &StartupServices) {
+        startup_services.spawn_github_rate_limit_prime(self.http_client());
     }
 }
 

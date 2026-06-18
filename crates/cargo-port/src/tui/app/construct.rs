@@ -13,9 +13,9 @@
 //! end-to-end and is the only `pub(super)` entry point — siblings in `tui/*`
 //! reach construction through that one method.
 
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::time::Instant;
 
 use anyhow::Context;
@@ -36,15 +36,11 @@ use crate::channel::Receiver;
 use crate::channel::Sender;
 use crate::config;
 use crate::config::CargoPortConfig;
-use crate::http::HttpClient;
-use crate::lint;
 use crate::lint::RuntimeHandle;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
-use crate::project::WorkspaceMetadataStore;
 use crate::scan;
 use crate::scan::BackgroundMsg;
-use crate::themes;
 use crate::tui::background::Background;
 use crate::tui::background::BackgroundChannels;
 use crate::tui::integration;
@@ -54,6 +50,8 @@ use crate::tui::overlays::Overlays;
 use crate::tui::panes::Panes;
 use crate::tui::project_list::ProjectList;
 use crate::tui::settings::StartupSettings;
+use crate::tui::startup_services::StartupEnvironment;
+use crate::tui::startup_services::WatcherStartup;
 use crate::tui::state::Ci;
 use crate::tui::state::Config;
 use crate::tui::state::GitStatusTracker;
@@ -67,22 +65,19 @@ use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
 use crate::tui::terminal::ExampleMsg;
 use crate::tui::theme_roles;
-use crate::watcher;
 use crate::watcher::WatcherMsg;
 
 /// Caller's raw arguments. Held by value (the slice and config
 /// reference are cloned at the entry point so the builder can outlive
 /// its caller's stack frame).
 pub(super) struct Inputs {
-    background_tx:     Sender<BackgroundMsg>,
-    background_rx:     Receiver<BackgroundMsg>,
-    cargo_port_config: CargoPortConfig,
-    http_client:       HttpClient,
-    scan_started_at:   Instant,
-    metadata_store:    Arc<Mutex<WorkspaceMetadataStore>>,
-    raw_projects:      Vec<RootItem>,
-    settings_store:    SettingsStore,
-    toast_settings:    ToastSettings,
+    background_tx:       Sender<BackgroundMsg>,
+    background_rx:       Receiver<BackgroundMsg>,
+    cargo_port_config:   CargoPortConfig,
+    raw_projects:        Vec<RootItem>,
+    settings_store:      SettingsStore,
+    toast_settings:      ToastSettings,
+    startup_environment: StartupEnvironment,
 }
 
 /// `Inputs` plus the three internal channel pairs (example, CI
@@ -104,6 +99,7 @@ pub(super) struct Started {
     lint_warning: Option<String>,
     lint_runtime: Option<RuntimeHandle>,
     watch_tx:     Sender<WatcherMsg>,
+    themes_dir:   Option<PathBuf>,
     projects:     ProjectList,
 }
 
@@ -119,21 +115,17 @@ impl AppBuilder<Inputs> {
         background_tx: Sender<BackgroundMsg>,
         background_rx: Receiver<BackgroundMsg>,
         startup_settings: StartupSettings,
-        http_client: HttpClient,
-        scan_started_at: Instant,
-        metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
+        startup_environment: StartupEnvironment,
     ) -> Self {
         Self {
             state: Inputs {
                 background_tx,
                 background_rx,
                 cargo_port_config: startup_settings.config,
-                http_client,
-                scan_started_at,
-                metadata_store,
                 raw_projects: projects.to_vec(),
                 settings_store: startup_settings.store,
                 toast_settings: startup_settings.toast_settings,
+                startup_environment,
             },
         }
     }
@@ -159,9 +151,10 @@ impl AppBuilder<Inputs> {
 impl AppBuilder<Channeled> {
     pub(super) fn run_startup(self) -> AppBuilder<Started> {
         let inputs = &self.state.inputs;
-        config::set_active_config(&inputs.cargo_port_config);
-        let mut registry =
-            tui_pane::ThemeRegistry::from_dir_with_builtins(themes::themes_dir().as_deref());
+        let startup_services = &inputs.startup_environment.startup_services;
+        startup_services.install_active_config(&inputs.cargo_port_config);
+        let themes_dir = startup_services.themes_dir();
+        let mut registry = tui_pane::ThemeRegistry::from_dir_with_builtins(themes_dir.as_deref());
         theme_roles::apply_role_defaults_to_registry(&mut registry);
         // Resolve the initial theme from the loaded `[appearance]`
         // section against the just-built registry. Misses fall back to
@@ -176,8 +169,9 @@ impl AppBuilder<Channeled> {
         );
         let mut initial_theme = (*resolved.theme).clone();
         theme_roles::apply_role_defaults_to_theme(&mut initial_theme, None, resolved.appearance);
-        tui_pane::install_theme_state(tui_pane::ThemeState::with_registry(registry, initial_theme));
-        tui_pane::set_focused_pane_tint(
+        startup_services.install_theme_state(
+            registry,
+            initial_theme,
             inputs
                 .cargo_port_config
                 .appearance
@@ -185,17 +179,18 @@ impl AppBuilder<Channeled> {
                 .is_enabled(),
         );
         let config_path = config::config_path();
-        let lint_spawn = lint::spawn(&inputs.cargo_port_config, inputs.background_tx.clone());
+        let lint_spawn = startup_services
+            .spawn_lint_runtime(&inputs.cargo_port_config, inputs.background_tx.clone());
         let watch_roots = scan::resolve_include_dirs(&inputs.cargo_port_config.tui.include_dirs);
-        let watch_tx = watcher::spawn_watcher(
-            &watch_roots,
-            inputs.background_tx.clone(),
-            inputs.cargo_port_config.tui.ci_run_count,
-            inputs.cargo_port_config.tui.include_non_rust,
-            inputs.http_client.clone(),
-            lint_spawn.handle.clone(),
-            Arc::clone(&inputs.metadata_store),
-        );
+        let watch_tx = startup_services.spawn_watcher(WatcherStartup {
+            watch_roots:    &watch_roots,
+            background_tx:  inputs.background_tx.clone(),
+            ci_run_count:   inputs.cargo_port_config.tui.ci_run_count,
+            non_rust:       inputs.cargo_port_config.tui.include_non_rust,
+            client:         inputs.startup_environment.http_client.clone(),
+            lint_runtime:   lint_spawn.handle.clone(),
+            metadata_store: Arc::clone(&inputs.startup_environment.metadata_store),
+        });
         let built = scan::build_tree(
             &inputs.raw_projects,
             &inputs.cargo_port_config.tui.inline_dirs,
@@ -208,6 +203,7 @@ impl AppBuilder<Channeled> {
                 lint_warning: lint_spawn.warning,
                 lint_runtime: lint_spawn.handle,
                 watch_tx,
+                themes_dir,
                 projects,
             },
         }
@@ -219,7 +215,13 @@ impl AppBuilder<Started> {
         let started = self.state;
         let channeled = started.channeled;
         let inputs = channeled.inputs;
-        let panes = Panes::new(&inputs.cargo_port_config.cpu);
+        let StartupEnvironment {
+            http_client,
+            scan_started_at,
+            metadata_store,
+            startup_services,
+        } = inputs.startup_environment;
+        let panes = Panes::new(&inputs.cargo_port_config.cpu, startup_services.clone());
         let mut projects = started.projects;
         projects.init_runtime_state(inputs.cargo_port_config.lint.enabled.is_enabled());
         let background = Background::new(BackgroundChannels {
@@ -240,11 +242,8 @@ impl AppBuilder<Started> {
             .as_ref()
             .map(|p| p.as_path().to_path_buf());
         let keymap = Keymap::new(keymap_path_buf.clone(), keymap::ResolvedKeymap::defaults());
-        let themes = ThemeRuntime::new(themes::themes_dir());
-        let scan = Scan::new(
-            ScanState::new(inputs.scan_started_at),
-            inputs.metadata_store,
-        );
+        let themes = ThemeRuntime::new(started.themes_dir);
+        let scan = Scan::new(ScanState::new(scan_started_at), metadata_store);
         let mut overlays = Overlays::new();
         if let Some(warning) = started.lint_warning {
             overlays.set_status_flash(warning, Instant::now());
@@ -273,7 +272,7 @@ impl AppBuilder<Started> {
             integration::build_framework_keymap(framework_builder, &mut framework)
                 .with_context(|| "building framework keymap")?;
         let mut app = App {
-            net: Net::new(inputs.http_client),
+            net: Net::new(http_client),
             panes,
             project_list: projects,
             background,
@@ -287,6 +286,7 @@ impl AppBuilder<Started> {
             git_status_tracker: GitStatusTracker::default(),
             scan,
             startup: Startup::new(),
+            startup_services,
             visited_panes: std::iter::once(AppPaneId::ProjectList).collect(),
             overlays,
             confirm: None,
@@ -332,7 +332,7 @@ impl App {
                 .force_github_rate_limit
                 .is_forced(),
         );
-        self.net.spawn_rate_limit_prime();
+        self.net.spawn_rate_limit_prime(&self.startup_services);
         self.warn_if_github_unauthenticated();
     }
 }

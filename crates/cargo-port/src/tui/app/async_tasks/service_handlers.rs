@@ -1,16 +1,9 @@
-use std::thread;
-use std::time::Duration;
-
 use tui_pane::ToastId;
 use tui_pane::ToastStyle::Warning;
 
-use crate::constants::SERVICE_RETRY_SECS;
-use crate::constants::SERVICE_UNAVAILABLE_GRACE;
 use crate::http::GithubAuthGap;
 use crate::http::ServiceKind;
 use crate::http::ServiceSignal;
-use crate::scan;
-use crate::scan::BackgroundMsg;
 use crate::tui::app::App;
 use crate::tui::app::phase_state::FailureReason;
 use crate::tui::state::AvailabilityStatus;
@@ -172,23 +165,11 @@ impl App {
             return;
         }
 
-        let sender = self.background.background_sender();
-        let client = self.net.http_client();
-        thread::spawn(move || {
-            thread::sleep(SERVICE_UNAVAILABLE_GRACE);
-            if client.probe_service(service) {
-                scan::emit_service_recovered(&sender, service);
-                return;
-            }
-            let _ = sender.send(BackgroundMsg::ServiceUnreachableConfirmed { service });
-            loop {
-                if client.probe_service(service) {
-                    scan::emit_service_recovered(&sender, service);
-                    break;
-                }
-                thread::sleep(Duration::from_secs(SERVICE_RETRY_SECS));
-            }
-        });
+        self.startup_services.spawn_service_retry_probe(
+            self.background.background_sender(),
+            self.net.http_client(),
+            service,
+        );
     }
     /// Apply a `ServiceRecovered` message from the retry probe.
     /// Routes through the shared [`Self::apply_recovery_outcome`]

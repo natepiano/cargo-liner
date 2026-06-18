@@ -8,6 +8,7 @@ use tui_pane::RenderFocus;
 use tui_pane::Renderable;
 use tui_pane::Viewport;
 
+use crate::channel;
 use crate::channel::Receiver;
 use crate::config::CpuConfig;
 use crate::tui::hit_test::HoverTarget;
@@ -15,28 +16,79 @@ use crate::tui::panes::PaneId;
 use crate::tui::panes::RenderStyles;
 use crate::tui::panes::cpu;
 use crate::tui::render_context::PaneRenderCtx;
+use crate::tui::startup_services::StartupEffect;
+use crate::tui::startup_services::StartupServices;
+
+enum CpuMonitorSlot {
+    Active(CpuMonitor),
+    Inert(Receiver<CpuUsage>),
+}
+
+impl CpuMonitorSlot {
+    fn new(cpu_config: &CpuConfig, startup_services: &StartupServices) -> Self {
+        let effect = startup_services.cpu_monitor_effect();
+        startup_services.record_cpu_monitor(effect);
+        match effect {
+            StartupEffect::Real => Self::Active(CpuMonitor::new(cpu_config.poll_ms)),
+            StartupEffect::Suppressed => {
+                let (_sample_tx, samples) = channel::unbounded();
+                Self::Inert(samples)
+            },
+        }
+    }
+
+    fn latest(&self) -> Option<CpuUsage> {
+        match self {
+            Self::Active(monitor) => monitor.latest(),
+            Self::Inert(_) => None,
+        }
+    }
+
+    fn placeholder_cpu_usage(&self) -> CpuUsage {
+        match self {
+            Self::Active(monitor) => monitor.placeholder_cpu_usage(),
+            Self::Inert(_) => CpuUsage::placeholder(0),
+        }
+    }
+
+    const fn receiver(&self) -> &Receiver<CpuUsage> {
+        match self {
+            Self::Active(monitor) => monitor.receiver(),
+            Self::Inert(samples) => samples,
+        }
+    }
+
+    const fn is_sampling(&self) -> bool {
+        match self {
+            Self::Active(monitor) => monitor.is_sampling(),
+            Self::Inert(_) => false,
+        }
+    }
+}
 
 // ── Cpu ─────────────────────────────────────────────────────────
 pub struct CpuPane {
-    pub viewport: Viewport,
-    pub focus:    RenderFocus,
-    content:      Option<CpuUsage>,
-    monitor:      CpuMonitor,
+    pub viewport:     Viewport,
+    pub focus:        RenderFocus,
+    content:          Option<CpuUsage>,
+    monitor:          CpuMonitorSlot,
+    startup_services: StartupServices,
     /// Per-rendered-row `(Rect, logical_row)` recorded each frame
     /// so `Hittable::hit_test_at` can map `pos` back to the logical
     /// row. CPU rows are non-uniform (aggregate, per-core,
     /// breakdown, GPU) so a flat `viewport.pos_to_local_row` won't
     /// work.
-    row_rects:    Vec<(Rect, usize)>,
+    row_rects:        Vec<(Rect, usize)>,
 }
 
 impl CpuPane {
-    pub fn new(cpu_config: &CpuConfig) -> Self {
+    pub fn new(cpu_config: &CpuConfig, startup_services: StartupServices) -> Self {
         let mut pane = Self {
-            viewport:  Viewport::new(),
-            focus:     RenderFocus::inactive(),
-            content:   None,
-            monitor:   CpuMonitor::new(cpu_config.poll_ms),
+            viewport: Viewport::new(),
+            focus: RenderFocus::inactive(),
+            content: None,
+            monitor: CpuMonitorSlot::new(cpu_config, &startup_services),
+            startup_services,
             row_rects: Vec::new(),
         };
         pane.install_placeholder();
@@ -62,7 +114,7 @@ impl CpuPane {
     pub const fn is_sampling(&self) -> bool { self.monitor.is_sampling() }
 
     pub fn reset(&mut self, cpu_config: &CpuConfig) {
-        self.monitor = CpuMonitor::new(cpu_config.poll_ms);
+        self.monitor = CpuMonitorSlot::new(cpu_config, &self.startup_services);
         self.install_placeholder();
     }
 

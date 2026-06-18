@@ -14,6 +14,7 @@ use crate::project::LanguageStats;
 use crate::project::TestCounts;
 use crate::tui::app::App;
 use crate::tui::app::Startup;
+use crate::tui::app::async_tasks::background_services::CratesIoFetchPlan;
 use crate::tui::app::phase_state::FailureReason;
 use crate::tui::app::phase_state::PhaseCompletion;
 use crate::tui::app::phase_state::ProgressRow;
@@ -30,6 +31,7 @@ use crate::tui::constants::STARTUP_PHASE_TESTS;
 use crate::tui::constants::STARTUP_ROW_DETAIL_DELAY;
 use crate::tui::constants::STARTUP_ROW_MIN_VISIBLE;
 use crate::tui::constants::STARTUP_ROW_TIMEOUT;
+use crate::tui::startup_services::StartupEffect;
 impl Startup {
     pub(super) fn log_phase_plan(&self) {
         tracing::trace!(
@@ -138,8 +140,13 @@ impl Startup {
 }
 impl App {
     pub(super) fn begin_startup_phase_tracker(&mut self, lint_registered: usize) {
-        let crates_io_plan = self.collect_crates_io_fetch_plan();
-        let startup_plan = self.build_startup_plan(lint_registered, crates_io_plan.names());
+        let plan_effects = StartupPlanEffects::from_startup_services(self);
+        let crates_io_plan = match plan_effects.project_details {
+            StartupEffect::Real => self.collect_crates_io_fetch_plan(),
+            StartupEffect::Suppressed => CratesIoFetchPlan::default(),
+        };
+        let startup_plan =
+            self.build_startup_plan(lint_registered, crates_io_plan.names(), plan_effects);
         self.initialize_startup_phase_tracker_with_plan(&startup_plan);
         // When nothing will ever increment `seen` (lint runtime disabled or
         // no eligible projects), no later message drives completion. This runs
@@ -156,25 +163,43 @@ impl App {
         &self,
         lint_registered: usize,
         crates_io_expected: HashSet<String>,
+        plan_effects: StartupPlanEffects,
     ) -> StartupPlan {
-        let disk_expected = startup::initial_disk_roots(&self.project_list);
-        let git_expected = self
-            .project_list
-            .git_directories()
-            .into_iter()
-            .collect::<HashSet<_>>();
-        let git_seen = self
-            .project_list
-            .iter()
-            .filter(|entry| entry.root_item.git_info().is_some())
-            .filter_map(|entry| entry.root_item.git_directory())
-            .collect::<HashSet<_>>();
-        let metadata_expected = startup::initial_metadata_roots(&self.project_list);
-        let lint_history = self.lint_history_project_paths();
+        let disk_expected = match plan_effects.streaming_scan {
+            StartupEffect::Real => startup::initial_disk_roots(&self.project_list),
+            StartupEffect::Suppressed => HashSet::new(),
+        };
+        let git_expected = match plan_effects.project_details {
+            StartupEffect::Real => self
+                .project_list
+                .git_directories()
+                .into_iter()
+                .collect::<HashSet<_>>(),
+            StartupEffect::Suppressed => HashSet::new(),
+        };
+        let git_seen = match plan_effects.project_details {
+            StartupEffect::Real => self
+                .project_list
+                .iter()
+                .filter(|entry| entry.root_item.git_info().is_some())
+                .filter_map(|entry| entry.root_item.git_directory())
+                .collect::<HashSet<_>>(),
+            StartupEffect::Suppressed => HashSet::new(),
+        };
+        let metadata_expected = match plan_effects.streaming_scan {
+            StartupEffect::Real => startup::initial_metadata_roots(&self.project_list),
+            StartupEffect::Suppressed => HashSet::new(),
+        };
+        let lint_history = match plan_effects.lint_history {
+            StartupEffect::Real => self.lint_history_project_paths(),
+            StartupEffect::Suppressed => HashSet::new(),
+        };
         let mut detail_expected = HashSet::new();
-        self.project_list.for_each_leaf_path(|path, _| {
-            detail_expected.insert(AbsolutePath::from(path));
-        });
+        if plan_effects.project_details == StartupEffect::Real {
+            self.project_list.for_each_leaf_path(|path, _| {
+                detail_expected.insert(AbsolutePath::from(path));
+            });
+        }
         StartupPlan {
             disk_expected,
             git_expected,
@@ -184,8 +209,14 @@ impl App {
             lint_count_expected: lint_registered,
             crates_io_expected,
             detail_expected,
-            github_running: self.net.startup_github_running_repos(),
-            crates_io_running: self.net.startup_crates_io_running_names(),
+            github_running: match plan_effects.project_details {
+                StartupEffect::Real => self.net.startup_github_running_repos(),
+                StartupEffect::Suppressed => Vec::new(),
+            },
+            crates_io_running: match plan_effects.project_details {
+                StartupEffect::Real => self.net.startup_crates_io_running_names(),
+                StartupEffect::Suppressed => Vec::new(),
+            },
         }
     }
 
@@ -199,7 +230,8 @@ impl App {
     #[cfg(test)]
     pub fn initialize_startup_phase_tracker(&mut self) {
         let crates_io_plan = self.collect_crates_io_fetch_plan();
-        let mut startup_plan = self.build_startup_plan(0, crates_io_plan.names());
+        let mut startup_plan =
+            self.build_startup_plan(0, crates_io_plan.names(), StartupPlanEffects::production());
         startup_plan.detail_expected.clear();
         self.initialize_startup_phase_tracker_with_plan(&startup_plan);
     }
@@ -603,6 +635,32 @@ impl App {
             .toasts
             .start_colored_countdown(toast.id(), linger);
         self.prune_toasts();
+    }
+}
+
+#[derive(Clone, Copy)]
+struct StartupPlanEffects {
+    streaming_scan:  StartupEffect,
+    project_details: StartupEffect,
+    lint_history:    StartupEffect,
+}
+
+impl StartupPlanEffects {
+    const fn from_startup_services(app: &App) -> Self {
+        Self {
+            streaming_scan:  app.startup_services.streaming_scan_effect(),
+            project_details: app.startup_services.startup_project_details_effect(),
+            lint_history:    app.startup_services.lint_history_hydration_effect(),
+        }
+    }
+
+    #[cfg(test)]
+    const fn production() -> Self {
+        Self {
+            streaming_scan:  StartupEffect::Real,
+            project_details: StartupEffect::Real,
+            lint_history:    StartupEffect::Real,
+        }
     }
 }
 

@@ -32,28 +32,31 @@ use self::constants::ANCESTOR_WALK_CAP;
 use self::constants::CARGO_BIN_DIR;
 use self::constants::MIN_HEX_HASH_LEN;
 use super::panes::RunTargetKind;
+use super::startup_services::StartupEffect;
+use super::startup_services::StartupServices;
 use crate::constants::CARGO_COMMAND_NAME;
 use crate::project::AbsolutePath;
 
 pub(crate) struct RunningTargetsPoller {
-    system:          System,
-    last_poll:       Option<Instant>,
-    poll_interval:   Duration,
-    snapshot:        RunningTargets,
+    system:           System,
+    last_poll:        Option<Instant>,
+    poll_interval:    Duration,
+    snapshot:         RunningTargets,
+    startup_services: StartupServices,
     /// Canonical cargo install bin directory (`~/.cargo/bin` by default).
     /// Exes living directly here are matched as installed binaries,
     /// surfaced as the `cargo` profile. `None` when it can't be resolved.
-    install_bin_dir: Option<AbsolutePath>,
+    install_bin_dir:  Option<AbsolutePath>,
     /// When each tracked PID was first observed, surviving the per-poll
     /// snapshot rebuild. Drives the Running list's newest-at-bottom
     /// ordering: insert on first sight, retain only live PIDs after each
     /// poll, and evict on [`Self::drop_instances`].
-    first_seen:      HashMap<u32, Instant>,
+    first_seen:       HashMap<u32, Instant>,
     /// Each tracked PID's [`RollingMean`] window over CPU samples;
     /// instances carry the mean. Same lifecycle as `first_seen`: fed during
     /// the poll loop, retained against live PIDs, evicted on
     /// [`Self::drop_instances`].
-    cpu_history:     HashMap<u32, RollingMean>,
+    cpu_history:      HashMap<u32, RollingMean>,
 }
 
 #[derive(Default)]
@@ -187,12 +190,13 @@ impl ProjectTargetSlice<'_> {
 }
 
 impl RunningTargetsPoller {
-    pub(super) fn new(poll_interval: Duration) -> Self {
+    pub(super) fn new(poll_interval: Duration, startup_services: StartupServices) -> Self {
         Self {
             system: System::new(),
             last_poll: None,
             poll_interval,
             snapshot: RunningTargets::default(),
+            startup_services,
             install_bin_dir: cargo_install_bin_dir(),
             first_seen: HashMap::new(),
             cpu_history: HashMap::new(),
@@ -205,12 +209,18 @@ impl RunningTargetsPoller {
         now: Instant,
         projects: &[ProjectTargetSlice<'_>],
     ) -> &RunningTargets {
+        let effect = self.startup_services.running_targets_polling_effect();
+        if effect == StartupEffect::Suppressed {
+            self.startup_services.record_running_targets_polling(effect);
+            return &self.snapshot;
+        }
         if self
             .last_poll
             .is_some_and(|last| now.duration_since(last) < self.poll_interval)
         {
             return &self.snapshot;
         }
+        self.startup_services.record_running_targets_polling(effect);
         self.last_poll = Some(now);
 
         self.system.refresh_processes_specifics(
@@ -962,7 +972,8 @@ mod tests {
 
     #[test]
     fn drop_instances_evicts_the_first_seen_entry() {
-        let mut poller = RunningTargetsPoller::new(Duration::from_secs(1));
+        let mut poller =
+            RunningTargetsPoller::new(Duration::from_secs(1), StartupServices::production());
         poller.first_seen.insert(42, test_instant_at(0));
         poller.first_seen.insert(43, test_instant_at(1));
         poller.drop_instances(&[42]);
@@ -1145,7 +1156,8 @@ mod tests {
 
     #[test]
     fn drop_instances_evicts_the_cpu_history_entry() {
-        let mut poller = RunningTargetsPoller::new(Duration::from_secs(1));
+        let mut poller =
+            RunningTargetsPoller::new(Duration::from_secs(1), StartupServices::production());
         smoothed_cpu(&mut poller.cpu_history, 42, 10.0);
         smoothed_cpu(&mut poller.cpu_history, 43, 10.0);
         poller.drop_instances(&[42]);

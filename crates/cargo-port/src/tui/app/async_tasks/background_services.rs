@@ -19,6 +19,7 @@ use crate::scan::BackgroundMsg;
 use crate::scan::FetchContext;
 use crate::scan::ProjectDetailRequest;
 use crate::tui::app::App;
+use crate::tui::startup_services::StartupEffect;
 
 impl App {
     /// Register file-system watchers for every item in the tree after a
@@ -40,6 +41,12 @@ impl App {
     /// Dispatch the startup project-detail workers and the crates.io fetch
     /// plan that was already installed into the startup ledger.
     pub(super) fn schedule_startup_project_details(&self, crates_io_plan: CratesIoFetchPlan) {
+        let effect = self.startup_services.startup_project_details_effect();
+        self.startup_services.record_startup_project_details(effect);
+        if effect == StartupEffect::Suppressed {
+            return;
+        }
+
         let sender = self.background.background_sender();
         let fetch_context = std::sync::Arc::new(FetchContext {
             client: self.net.http_client(),
@@ -134,6 +141,13 @@ impl App {
         }
     }
     pub(super) fn schedule_git_first_commit_refreshes(&self) {
+        let effect = self.startup_services.startup_git_first_commit_effect();
+        self.startup_services
+            .record_startup_git_first_commit(effect);
+        if effect == StartupEffect::Suppressed {
+            return;
+        }
+
         let sender = self.background.background_sender();
         let mut projects_by_repo: HashMap<AbsolutePath, Vec<AbsolutePath>> = HashMap::new();
         self.project_list.for_each_leaf_path(|path, _| {

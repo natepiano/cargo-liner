@@ -19,6 +19,7 @@ mod render_context;
 mod running_targets;
 mod sccache;
 mod settings;
+mod startup_services;
 mod state;
 mod terminal;
 #[cfg(test)]

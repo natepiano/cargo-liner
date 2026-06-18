@@ -103,6 +103,20 @@ impl HttpClient {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn new_without_github_auth_for_test(handle: Handle) -> Option<Self> {
+        let client = build_client().ok()?;
+        Some(Self {
+            client,
+            github_auth: GithubAuth::Unauthenticated,
+            github_viewer_login: Arc::new(Mutex::new(None)),
+            rate_limit: Arc::new(Mutex::new(GitHubRateLimit::default())),
+            force_github_rate_limit: Arc::new(AtomicBool::new(false)),
+            force_reset_at: Arc::new(AtomicU64::new(0)),
+            handle,
+        })
+    }
+
     /// Whether a GitHub auth token was obtained at construction. When
     /// false, every authenticated REST / GraphQL call short-circuits to
     /// a no-op (see `github_get_async` / `github_graphql_async`), so CI

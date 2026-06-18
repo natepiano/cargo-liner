@@ -11,6 +11,8 @@ use crate::tui::app::scan_state::ScanPhase;
 use crate::tui::panes::PaneId;
 #[cfg(test)]
 use crate::tui::project_list::ProjectList;
+use crate::tui::startup_services::StartupEffect;
+use crate::tui::startup_services::StreamingScanStartup;
 
 impl App {
     #[cfg(test)]
@@ -89,16 +91,23 @@ impl App {
         self.panes.project_list.viewport.set_scroll_offset(0);
         self.scan.bump_generation();
         let scan_dirs = scan::resolve_include_dirs(&self.config.current().tui.include_dirs);
-        let (sender, receiver) = scan::spawn_streaming_scan(
-            scan_dirs,
-            &self.config.current().tui.inline_dirs,
-            self.config.include_non_rust(),
-            self.net.http_client(),
-            self.scan.metadata_store_handle(),
-        );
-        self.background.swap_background_channel(sender, receiver);
+        let scan_start = self
+            .startup_services
+            .spawn_streaming_scan(StreamingScanStartup {
+                scan_dirs,
+                inline_dirs: &self.config.current().tui.inline_dirs,
+                non_rust: self.config.include_non_rust(),
+                client: self.net.http_client(),
+                metadata_store: self.scan.metadata_store_handle(),
+            });
+        let scan_effect = scan_start.effect;
+        self.background
+            .swap_background_channel(scan_start.sender, scan_start.receiver);
         self.respawn_watcher();
         let current_config = self.config.current().clone();
         self.refresh_lint_runtime_from_config(&current_config);
+        if scan_effect == StartupEffect::Suppressed {
+            self.handle_scan_result(Vec::new(), &[]);
+        }
     }
 }

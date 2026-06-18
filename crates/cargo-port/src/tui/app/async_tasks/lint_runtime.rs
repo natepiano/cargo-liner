@@ -14,21 +14,22 @@ use crate::project::RustProject;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::tui::app::App;
-use crate::watcher;
+use crate::tui::startup_services::StartupEffect;
+use crate::tui::startup_services::WatcherStartup;
 use crate::watcher::WatcherMsg;
 
 impl App {
     pub(super) fn respawn_watcher(&mut self) {
         let watch_roots = scan::resolve_include_dirs(&self.config.current().tui.include_dirs);
-        let new_watcher = watcher::spawn_watcher(
-            &watch_roots,
-            self.background.background_sender(),
-            self.config.ci_run_count(),
-            self.config.include_non_rust(),
-            self.net.http_client(),
-            self.lint.runtime_clone(),
-            self.scan.metadata_store_handle(),
-        );
+        let new_watcher = self.startup_services.spawn_watcher(WatcherStartup {
+            watch_roots:    &watch_roots,
+            background_tx:  self.background.background_sender(),
+            ci_run_count:   self.config.ci_run_count(),
+            non_rust:       self.config.include_non_rust(),
+            client:         self.net.http_client(),
+            lint_runtime:   self.lint.runtime_clone(),
+            metadata_store: self.scan.metadata_store_handle(),
+        });
         self.background.replace_watcher_sender(new_watcher);
     }
     pub fn register_existing_projects(&self) {
@@ -68,6 +69,12 @@ impl App {
     /// [`BackgroundMsg::LintHistoryLoaded`], applied by
     /// [`Self::apply_lint_history_loaded`].
     pub fn refresh_lint_runs_from_disk(&self) {
+        let effect = self.startup_services.lint_history_hydration_effect();
+        self.startup_services.record_lint_history_hydration(effect);
+        if effect == StartupEffect::Suppressed {
+            self.refresh_lint_cache_usage_from_disk();
+            return;
+        }
         let paths: Vec<AbsolutePath> = self.lint_history_project_paths().into_iter().collect();
         let sender = self.background.background_sender();
         let handle = self.net.http_client().handle;
@@ -108,6 +115,11 @@ impl App {
         if !self.project_list.is_rust_at_path(project_path) {
             return;
         }
+        let effect = self.startup_services.lint_history_hydration_effect();
+        self.startup_services.record_lint_history_hydration(effect);
+        if effect == StartupEffect::Suppressed {
+            return;
+        }
         let runs = lint::read_history(project_path);
         if let Some(lr) = self.project_list.lint_at_path_mut(project_path) {
             lr.set_hydrated_runs(runs);
@@ -121,6 +133,11 @@ impl App {
     /// of `~/Library/Caches/cargo-port/lint-runs`, which can hold
     /// thousands of archived run files.
     pub fn refresh_lint_cache_usage_from_disk(&self) {
+        let effect = self.startup_services.lint_cache_scan_effect();
+        self.startup_services.record_lint_cache_scan(effect);
+        if effect == StartupEffect::Suppressed {
+            return;
+        }
         let cache_size_bytes = self
             .config
             .current()

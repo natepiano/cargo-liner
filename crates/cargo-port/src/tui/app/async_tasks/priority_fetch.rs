@@ -4,6 +4,7 @@ use crate::project::AbsolutePath;
 use crate::project::RootItem;
 use crate::tui::app::App;
 use crate::tui::project_list::VisibleRow;
+use crate::tui::startup_services::StartupEffect;
 use crate::tui::terminal;
 
 impl App {
@@ -66,6 +67,11 @@ impl App {
             .is_none_or(|p| p.disk_usage_bytes.is_none())
             && self.scan.priority_fetch_path() != Some(&abs_key)
         {
+            let effect = self.startup_services.priority_detail_fetch_effect();
+            self.startup_services.record_priority_detail_fetch(effect);
+            if effect == StartupEffect::Suppressed {
+                return;
+            }
             self.scan.set_priority_fetch_path(Some(abs_key));
             let abs_str = abs_path.display().to_string();
             terminal::spawn_priority_fetch(self, display_path.as_str(), &abs_str, name.as_ref());
