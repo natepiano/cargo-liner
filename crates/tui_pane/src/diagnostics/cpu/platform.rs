@@ -20,6 +20,7 @@ use super::CFType;
 use super::CpuBreakdownRaw;
 #[cfg(target_os = "windows")]
 use super::GPU_COUNTER_PATH;
+use super::GpuUsage;
 #[cfg(target_os = "macos")]
 use super::IOIteratorNext;
 #[cfg(target_os = "macos")]
@@ -65,14 +66,16 @@ pub(super) fn read_cpu_breakdown_raw() -> CpuBreakdownRaw { windows_cpu_breakdow
 pub(super) fn read_cpu_breakdown_raw() -> CpuBreakdownRaw { CpuBreakdownRaw::default() }
 
 /// Query the I/O Registry directly for the first `IOAccelerator` service
-/// whose `PerformanceStatistics` dictionary reports a device utilization
-/// percentage. Replaces spawning `ioreg` on every poll.
+/// whose properties report GPU metrics. Replaces spawning `ioreg` on every
+/// poll.
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code, reason = "IOKit FFI replaces the per-poll ioreg spawn")]
-pub(super) fn read_gpu_percent() -> Option<u8> {
+pub(super) fn read_gpu_usage() -> GpuUsage {
     // SAFETY: the argument is a valid NUL-terminated C string the call
     // copies into the returned matching dictionary.
-    let matching = unsafe { IOServiceMatching(c"IOAccelerator".as_ptr()) }?;
+    let Some(matching) = (unsafe { IOServiceMatching(c"IOAccelerator".as_ptr()) }) else {
+        return GpuUsage::default();
+    };
     // `IOServiceGetMatchingServices` consumes one dictionary reference, so
     // hand it a second retain and let `matching` release the original.
     let matching = CFRetained::<CFDictionary>::from(&*matching);
@@ -84,15 +87,16 @@ pub(super) fn read_gpu_percent() -> Option<u8> {
         IOServiceGetMatchingServices(kIOMainPortDefault, Some(matching), &raw mut services)
     };
     if result != KERN_SUCCESS {
-        return None;
+        return GpuUsage::default();
     }
 
-    let mut gpu_percent = None;
+    let mut gpu_usage = GpuUsage::default();
     loop {
         let accelerator = IOIteratorNext(services);
         if accelerator == 0 {
             break;
         }
+        let core_count = gpu_core_count(accelerator);
         // SAFETY: `accelerator` is a live service handle from
         // `IOIteratorNext`, released right below; the key outlives the call.
         let statistics = unsafe {
@@ -104,34 +108,63 @@ pub(super) fn read_gpu_percent() -> Option<u8> {
             )
         };
         IOObjectRelease(accelerator);
+        let mut usage = GpuUsage {
+            core_count,
+            ..GpuUsage::default()
+        };
         if let Some(statistics) = statistics
             && let Ok(statistics) = statistics.downcast::<CFDictionary>()
-            && let Some(percent) = device_utilization_percent(&statistics)
         {
-            gpu_percent = Some(percent);
+            usage.device_percent = statistics_percent(&statistics, "Device Utilization %");
+            usage.renderer_percent = statistics_percent(&statistics, "Renderer Utilization %");
+            usage.tiler_percent = statistics_percent(&statistics, "Tiler Utilization %");
+        }
+        if usage != GpuUsage::default() {
+            gpu_usage = usage;
             break;
         }
     }
     IOObjectRelease(services);
-    gpu_percent
+    gpu_usage
 }
 
 #[cfg(not(target_os = "macos"))]
 #[cfg(target_os = "linux")]
-pub(super) fn read_gpu_percent() -> Option<u8> {
-    linux_sysfs_gpu_percent().or_else(linux_nvidia_gpu_percent)
+pub(super) fn read_gpu_usage() -> GpuUsage {
+    GpuUsage::from_device_percent(linux_sysfs_gpu_percent().or_else(linux_nvidia_gpu_percent))
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-pub(super) fn read_gpu_percent() -> Option<u8> { None }
+pub(super) fn read_gpu_usage() -> GpuUsage { GpuUsage::default() }
 
 #[cfg(target_os = "macos")]
 #[allow(
     unsafe_code,
     reason = "CoreFoundation dictionary FFI for the GPU statistics lookup"
 )]
-fn device_utilization_percent(statistics: &CFDictionary) -> Option<u8> {
-    let key = CFString::from_static_str("Device Utilization %");
+fn gpu_core_count(accelerator: u32) -> Option<u16> {
+    // SAFETY: `accelerator` is a live service handle from `IOIteratorNext`;
+    // the key outlives the call and the retained result is consumed locally.
+    let value = unsafe {
+        IORegistryEntryCreateCFProperty(
+            accelerator,
+            Some(&CFString::from_static_str("gpu-core-count")),
+            kCFAllocatorDefault,
+            0,
+        )
+    }?;
+    let number = value.downcast::<CFNumber>().ok()?;
+    let count = u64::try_from(number.as_i64()?).ok()?;
+    u16::try_from(count).ok()
+}
+
+#[cfg(target_os = "macos")]
+#[allow(
+    unsafe_code,
+    reason = "CoreFoundation dictionary FFI for the GPU statistics lookup"
+)]
+fn statistics_percent(statistics: &CFDictionary, key: &'static str) -> Option<u8> {
+    let key = CFString::from_static_str(key);
     // SAFETY: the key pointer must target the `CFString` object itself, not
     // the `CFRetained` wrapper — hence the explicit deref target; the
     // returned pointer is borrowed from `statistics`, which outlives it.

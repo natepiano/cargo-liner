@@ -6639,7 +6639,7 @@ mod tests {
         /// syncs to the streaming tail (the realistic open state).
         fn open_output(app: &mut App, lines: &[&str]) {
             app.set_example_output(lines.iter().map(|line| (*line).to_string()).collect());
-            let _ = buffer_text_sized(app, 120, 40);
+            let _ = buffer_text_sized(app, 120, 48);
         }
 
         #[test]

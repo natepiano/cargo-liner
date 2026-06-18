@@ -12,7 +12,7 @@ use super::cpu_percent;
 use super::normalize_cpu_label;
 use super::read_cpu_breakdown_raw;
 #[cfg(not(target_os = "windows"))]
-use super::read_gpu_percent;
+use super::read_gpu_usage;
 
 /// Sysinfo-backed CPU/GPU sampler.
 ///
@@ -22,17 +22,21 @@ use super::read_gpu_percent;
 /// owned by `CpuMonitor`, which drives a poller on a worker thread.
 #[derive(Debug)]
 pub struct CpuPoller {
-    system:             System,
-    last_breakdown_raw: CpuBreakdownRaw,
-    /// Rolling window over GPU samples; an unavailable poll leaves it
+    system:                 System,
+    last_breakdown_raw:     CpuBreakdownRaw,
+    /// Rolling window over GPU device samples; an unavailable poll leaves it
     /// untouched rather than diluting the mean.
-    gpu_smoothing:      RollingMean,
+    gpu_device_smoothing:   RollingMean,
+    /// Rolling window over GPU renderer samples, when the platform exposes it.
+    gpu_renderer_smoothing: RollingMean,
+    /// Rolling window over GPU tiler samples, when the platform exposes it.
+    gpu_tiler_smoothing:    RollingMean,
     /// Persistent PDH query for GPU utilization (Windows only).
     #[cfg(target_os = "windows")]
-    gpu_query:          Option<GpuQuery>,
+    gpu_query:              Option<GpuQuery>,
     /// DRM `fdinfo` engine-utilization sampler (Linux fallback).
     #[cfg(target_os = "linux")]
-    fdinfo_gpu:         FdinfoGpuSampler,
+    fdinfo_gpu:             FdinfoGpuSampler,
 }
 
 impl Default for CpuPoller {
@@ -51,7 +55,9 @@ impl CpuPoller {
         Self {
             system,
             last_breakdown_raw: read_cpu_breakdown_raw(),
-            gpu_smoothing: RollingMean::default(),
+            gpu_device_smoothing: RollingMean::default(),
+            gpu_renderer_smoothing: RollingMean::default(),
+            gpu_tiler_smoothing: RollingMean::default(),
             #[cfg(target_os = "windows")]
             gpu_query: GpuQuery::new(),
             #[cfg(target_os = "linux")]
@@ -81,19 +87,29 @@ impl CpuPoller {
         let total_percent = cpu_percent(self.system.global_cpu_usage());
         let breakdown = cpu_breakdown(&mut self.last_breakdown_raw);
         #[cfg(target_os = "windows")]
-        let gpu_percent = self.gpu_query.as_ref().and_then(GpuQuery::sample);
+        let gpu = GpuUsage::from_device_percent(self.gpu_query.as_ref().and_then(GpuQuery::sample));
         #[cfg(target_os = "linux")]
-        let gpu_percent = read_gpu_percent().or_else(|| self.fdinfo_gpu.sample());
+        let gpu = {
+            let mut usage = read_gpu_usage();
+            if usage.device_percent.is_none() {
+                usage.device_percent = self.fdinfo_gpu.sample();
+            }
+            usage
+        };
         #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-        let gpu_percent = read_gpu_percent();
-        let gpu_percent =
-            gpu_percent.map(|percent| cpu_percent(self.gpu_smoothing.push(f32::from(percent))));
+        let gpu = read_gpu_usage();
+        let gpu = smooth_gpu_usage(
+            gpu,
+            &mut self.gpu_device_smoothing,
+            &mut self.gpu_renderer_smoothing,
+            &mut self.gpu_tiler_smoothing,
+        );
 
         CpuUsage {
             total_percent,
             cores,
             breakdown,
-            gpu_percent,
+            gpu,
         }
     }
 }
@@ -116,8 +132,8 @@ pub struct CpuUsage {
     pub cores:         Vec<CpuCoreUsage>,
     /// System/user/idle percentage breakdown computed from raw ticks.
     pub breakdown:     CpuBreakdown,
-    /// Latest GPU utilization, when available on this OS.
-    pub gpu_percent:   Option<u8>,
+    /// Latest GPU metrics, when available on this OS.
+    pub gpu:           GpuUsage,
 }
 
 impl CpuUsage {
@@ -133,8 +149,51 @@ impl CpuUsage {
                 })
                 .collect(),
             breakdown:     CpuBreakdown::default(),
-            gpu_percent:   None,
+            gpu:           GpuUsage::default(),
         }
+    }
+}
+
+/// GPU metrics sampled by the platform-specific backend.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GpuUsage {
+    /// Number of physical GPU cores, when the OS exposes it.
+    pub core_count:       Option<u16>,
+    /// Aggregate device utilization percentage.
+    pub device_percent:   Option<u8>,
+    /// Renderer utilization percentage, currently exposed on macOS.
+    pub renderer_percent: Option<u8>,
+    /// Tiler utilization percentage, currently exposed on macOS.
+    pub tiler_percent:    Option<u8>,
+}
+
+impl GpuUsage {
+    #[must_use]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    pub(super) const fn from_device_percent(device_percent: Option<u8>) -> Self {
+        Self {
+            core_count: None,
+            device_percent,
+            renderer_percent: None,
+            tiler_percent: None,
+        }
+    }
+}
+
+fn smooth_gpu_usage(
+    usage: GpuUsage,
+    device_smoothing: &mut RollingMean,
+    renderer_smoothing: &mut RollingMean,
+    tiler_smoothing: &mut RollingMean,
+) -> GpuUsage {
+    let smooth = |percent: Option<u8>, smoothing: &mut RollingMean| {
+        percent.map(|percent| cpu_percent(smoothing.push(f32::from(percent))))
+    };
+    GpuUsage {
+        core_count:       usage.core_count,
+        device_percent:   smooth(usage.device_percent, device_smoothing),
+        renderer_percent: smooth(usage.renderer_percent, renderer_smoothing),
+        tiler_percent:    smooth(usage.tiler_percent, tiler_smoothing),
     }
 }
 

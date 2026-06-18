@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Show GPU core count, renderer, and tiler utilization alongside device utilization in the CPU pane on macOS; Linux and Windows keep the single GPU utilization row
+
 ### Changed
 - Replace public framework `bool` render-state fields with intent enums for keymap rows, status scanning, settings focus, and toast focus
 - Shift key-event normalization in `tui_pane::KeyBind` to standard `From<KeyEvent>` conversion, removing the special `KeyBind::from_key_event` entry point so event dispatch now follows the shared conversion path.

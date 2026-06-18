@@ -71,20 +71,30 @@ pub(super) const CPU_BAR_WIDTH: usize = 10;
 /// Breakdown rows pinned below the cores band: System, User, Idle.
 pub(super) const CPU_BREAKDOWN_ROWS: usize = 3;
 pub(super) const CPU_CONTENT_WIDTH: u16 = 17;
-/// GPU rows pinned below the breakdown. A single aggregate row; multi-GPU is
-/// deferred (see `docs/subpane-scrolling.md` → Related, separate work), so
-/// growing the pinned tail for more GPUs changes only this count.
+/// GPU rows pinned below the breakdown. macOS exposes the full set (core
+/// count, device, renderer, tiler); other platforms expose only the single
+/// device row.
+#[cfg(target_os = "macos")]
+pub(super) const CPU_GPU_ROWS: usize = 4;
+#[cfg(not(target_os = "macos"))]
 pub(super) const CPU_GPU_ROWS: usize = 1;
 pub const CPU_PANE_WIDTH: u16 = CPU_CONTENT_WIDTH + 2;
 /// Pinned head rows above the scrolling cores band: the aggregate line.
 pub(super) const CPU_PINNED_HEAD_ROWS: usize = 1;
 /// Pixel height of every inner row except the scrolling cores band: the
 /// aggregate row, the two separator rules, the three breakdown rows, and the
-/// one GPU row. The cores band gets `inner.height - CPU_STATIC_INNER_HEIGHT`.
+/// GPU rows. The cores band gets `inner.height - CPU_STATIC_INNER_HEIGHT`.
+#[cfg(target_os = "macos")]
+pub(super) const CPU_STATIC_INNER_HEIGHT: u16 = 10;
+#[cfg(not(target_os = "macos"))]
 pub(super) const CPU_STATIC_INNER_HEIGHT: u16 = 7;
-/// Shown in the GPU row when the OS exposes no GPU utilization (e.g. the
-/// Apple `asahi` driver on Linux). Kept within `CPU_CONTENT_WIDTH` so it
-/// never widens the pane.
+/// Shown in GPU rows when the OS exposes no matching value. Kept within
+/// `CPU_CONTENT_WIDTH` so it never widens the pane. macOS packs four narrow
+/// rows so it uses the compact text; the single-row platforms keep the
+/// original spelled-out word.
+#[cfg(target_os = "macos")]
+pub(super) const GPU_UNAVAILABLE_TEXT: &str = "n/a";
+#[cfg(not(target_os = "macos"))]
 pub(super) const GPU_UNAVAILABLE_TEXT: &str = "unavailable";
 
 // src tui panes description

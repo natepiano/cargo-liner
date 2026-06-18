@@ -94,11 +94,12 @@ use platform::engine_busy_percent;
 use platform::parse_drm_fdinfo;
 use platform::read_cpu_breakdown_raw;
 #[cfg(not(target_os = "windows"))]
-use platform::read_gpu_percent;
+use platform::read_gpu_usage;
 pub use poller::CpuBreakdown;
 pub use poller::CpuCoreUsage;
 pub use poller::CpuPoller;
 pub use poller::CpuUsage;
+pub use poller::GpuUsage;
 pub use rolling_mean::RollingMean;
 pub use severity::CpuSeverity;
 pub use severity::blank_bar_color;
