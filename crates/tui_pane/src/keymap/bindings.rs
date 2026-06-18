@@ -152,7 +152,7 @@ impl<A: Clone> Clone for Bindings<A> {
 ///     }
 /// }
 ///
-/// let _table = bindings! {
+/// bindings! {
 ///     KeyCode::Up   => NavAction::Up,
 ///     [KeyBind::from('j'), KeyBind::from(KeyCode::Down)] => NavAction::Down,
 /// };
