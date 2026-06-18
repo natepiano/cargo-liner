@@ -13,7 +13,7 @@ use super::constants::MAX_FUNCTION_KEY;
 ///
 /// Construct via `From<KeyCode>` / `From<char>` for the modifier-free case,
 /// [`KeyBind::shift`] / [`KeyBind::ctrl`] when modifiers matter, or
-/// [`KeyBind::from_key_event`] to canonicalize a crossterm event for dispatch.
+/// `From<KeyEvent>` for crossterm event normalization.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct KeyBind {
     /// The key being pressed (letter, named key, function key, etc.).
@@ -40,6 +40,10 @@ impl From<char> for KeyBind {
     }
 }
 
+impl From<KeyEvent> for KeyBind {
+    fn from(event: KeyEvent) -> Self { Self::normalized(event.code, event.modifiers) }
+}
+
 impl KeyBind {
     fn normalized(code: KeyCode, mods: KeyModifiers) -> Self {
         let (code, mods) = match code {
@@ -56,18 +60,8 @@ impl KeyBind {
         Self { code, mods }
     }
 
-    /// Canonicalize a crossterm key event into the keymap dispatch form.
-    ///
-    /// Crossterm can report `BackTab` separately from `Tab + Shift`, and shifted
-    /// ASCII letters as both an uppercase character and a `SHIFT` modifier. The
-    /// keymap stores those as `Tab + Shift` and uppercase `Char` without
-    /// `SHIFT`, respectively. `+` and `=` are kept distinct (no collapse) —
-    /// apps that want them merged use [`Self::canonicalize_code`].
-    #[must_use]
-    pub fn from_key_event(event: KeyEvent) -> Self { Self::normalized(event.code, event.modifiers) }
-
     /// Build a bind from an arbitrary `(code, mods)` pair, applying the
-    /// same normalization rules as [`Self::from_key_event`].
+    /// same normalization rules as crossterm `KeyEvent` conversion.
     ///
     /// Use this when the app already has the `KeyCode` + `KeyModifiers`
     /// in hand (e.g. defaults table construction) and wants the
@@ -82,9 +76,8 @@ impl KeyBind {
     /// distinct by default. An app that wants two keys to dispatch
     /// through the same binding installs a canonicalizer that maps
     /// one to the other, and calls this both after [`Self::parse`]
-    /// (when loading a keymap from TOML) and after
-    /// [`Self::from_key_event`] (when dispatching crossterm input) so
-    /// the storage and lookup paths agree.
+    /// (when loading a keymap from TOML) and after crossterm event conversion
+    /// so the storage and lookup paths agree.
     #[must_use]
     pub fn canonicalize_code(self, canonicalize: fn(KeyCode) -> KeyCode) -> Self {
         Self {
@@ -422,29 +415,25 @@ mod tests {
     }
 
     #[test]
-    fn from_key_event_normalizes_crossterm_backtab() {
+    fn key_event_conversion_normalizes_crossterm_backtab() {
         let event = KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE);
 
-        assert_eq!(KeyBind::from_key_event(event), KeyBind::shift(KeyCode::Tab));
+        assert_eq!(KeyBind::from(event), KeyBind::shift(KeyCode::Tab));
     }
 
     #[test]
-    fn from_key_event_normalizes_shifted_ascii_letters() {
+    fn key_event_conversion_normalizes_shifted_ascii_letters() {
         let upper = KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT);
         let lower_with_shift = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::SHIFT);
 
-        assert_eq!(KeyBind::from_key_event(upper), KeyBind::from('R'));
-        assert_eq!(
-            KeyBind::from_key_event(lower_with_shift),
-            KeyBind::from('R')
-        );
+        assert_eq!(KeyBind::from(upper), KeyBind::from('R'));
+        assert_eq!(KeyBind::from(lower_with_shift), KeyBind::from('R'));
     }
 
     #[test]
-    fn from_key_event_does_not_collapse_plus_and_equals() {
-        let plus = KeyBind::from_key_event(KeyEvent::new(KeyCode::Char('+'), KeyModifiers::SHIFT));
-        let equals =
-            KeyBind::from_key_event(KeyEvent::new(KeyCode::Char('='), KeyModifiers::SHIFT));
+    fn key_event_conversion_does_not_collapse_plus_and_equals() {
+        let plus = KeyBind::from(KeyEvent::new(KeyCode::Char('+'), KeyModifiers::SHIFT));
+        let equals = KeyBind::from(KeyEvent::new(KeyCode::Char('='), KeyModifiers::SHIFT));
 
         assert_eq!(plus.code, KeyCode::Char('+'));
         assert_eq!(equals.code, KeyCode::Char('='));

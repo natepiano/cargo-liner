@@ -944,7 +944,7 @@ pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
     }
 
     // Navigation scope.
-    let dispatch_bind = TuiKeyBind::from_key_event(*event);
+    let dispatch_bind = TuiKeyBind::from(*event);
     if let Some(nav_scope) = app.framework_keymap.navigation()
         && let Some(nav_action) = nav_scope.action_for(&dispatch_bind)
     {

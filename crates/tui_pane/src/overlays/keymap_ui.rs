@@ -273,7 +273,7 @@ where
         } else {
             ctx.keymap_pane_focus_state()
         };
-        let selection = selection_state(pane, selectable_index, focus);
+        let selection = crate::selection_state(pane.viewport(), selectable_index, focus);
         let key_text = if selection != PaneSelectionState::Unselected && is_capturing {
             ctx.keymap_inline_error().map_or_else(
                 || "Press key...".to_string(),
@@ -340,23 +340,6 @@ where
     KeymapLines {
         lines,
         line_targets,
-    }
-}
-
-fn selection_state(
-    pane: &KeymapPane,
-    selection_index: usize,
-    focus: PaneFocusState,
-) -> PaneSelectionState {
-    let viewport = pane.viewport();
-    if selection_index == viewport.pos() && matches!(focus, PaneFocusState::Active) {
-        PaneSelectionState::Active
-    } else if viewport.hovered() == Some(selection_index) {
-        PaneSelectionState::Hovered
-    } else if selection_index == viewport.pos() && matches!(focus, PaneFocusState::Remembered) {
-        PaneSelectionState::Remembered
-    } else {
-        PaneSelectionState::Unselected
     }
 }
 

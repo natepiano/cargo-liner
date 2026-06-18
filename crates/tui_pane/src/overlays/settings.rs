@@ -27,6 +27,7 @@ use crate::KeyOutcome;
 use crate::Mode;
 use crate::OverlayAction;
 use crate::PaneFocusState;
+use crate::PaneSelectionState;
 use crate::SettingsRow;
 use crate::SettingsRowKind;
 use crate::SettingsRowPayload;
@@ -278,7 +279,7 @@ impl SettingsPane {
             } else {
                 "  "
             };
-            let selection = self.selection_state(selection_index, options.focus);
+            let selection = crate::selection_state(&self.viewport, selection_index, options.focus);
             let label = format!(
                 "{}{cursor}{:<max_label$}  ",
                 options.section_item_indent, row.label,
@@ -301,22 +302,6 @@ impl SettingsPane {
         }
     }
 
-    fn selection_state(
-        &self,
-        selection_index: usize,
-        focus: PaneFocusState,
-    ) -> SettingsSelectionState {
-        if selection_index == self.viewport.pos() && matches!(focus, PaneFocusState::Active) {
-            SettingsSelectionState::Active
-        } else if self.viewport.hovered() == Some(selection_index) {
-            SettingsSelectionState::Hovered
-        } else if selection_index == self.viewport.pos() {
-            SettingsSelectionState::Remembered
-        } else {
-            SettingsSelectionState::Unselected
-        }
-    }
-
     fn push_setting_row(
         &self,
         lines: &mut Vec<Line<'static>>,
@@ -330,18 +315,20 @@ impl SettingsPane {
                 line_targets,
                 context,
                 error,
-                context
-                    .selection
-                    .patch(context.options, context.options.inline_error_style),
+                patch_selection(
+                    context.selection,
+                    context.options,
+                    context.options.inline_error_style,
+                ),
             );
-        } else if self.is_editing() && context.selection != SettingsSelectionState::Unselected {
+        } else if self.is_editing() && context.selection != PaneSelectionState::Unselected {
             let edited_text = render_editor_text(self.edited_text(), self.edit_cursor());
             push_wrapped_setting_value(
                 lines,
                 line_targets,
                 context,
                 &edited_text,
-                context.selection.patch(context.options, Style::default()),
+                patch_selection(context.selection, context.options, Style::default()),
             );
         } else {
             match row.kind {
@@ -360,11 +347,13 @@ impl SettingsPane {
                 },
                 SettingsRowKind::Value => {
                     let value_style = if row.value.starts_with("Not configured.") {
-                        context
-                            .selection
-                            .patch(context.options, context.options.inline_error_style)
+                        patch_selection(
+                            context.selection,
+                            context.options,
+                            context.options.inline_error_style,
+                        )
                     } else {
-                        context.selection.patch(context.options, Style::default())
+                        patch_selection(context.selection, context.options, Style::default())
                     };
                     let value = row.suffix.as_ref().map_or_else(
                         || row.value.clone(),
@@ -509,39 +498,36 @@ fn insert_char_at_cursor(buf: &mut String, cursor: &mut usize, c: char) {
     *cursor += c.len_utf8();
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SettingsSelectionState {
-    Active,
-    Hovered,
-    Remembered,
-    Unselected,
+fn selection_overlay_style(
+    selection: PaneSelectionState,
+    options: &SettingsRenderOptions<'_>,
+) -> Style {
+    match selection {
+        PaneSelectionState::Active => options.active_style,
+        PaneSelectionState::Hovered => options.hovered_style,
+        PaneSelectionState::Remembered => options.remembered_style,
+        PaneSelectionState::Unselected => Style::default(),
+    }
 }
 
-impl SettingsSelectionState {
-    fn overlay_style(self, options: &SettingsRenderOptions<'_>) -> Style {
-        match self {
-            Self::Active => options.active_style,
-            Self::Hovered => options.hovered_style,
-            Self::Remembered => options.remembered_style,
-            Self::Unselected => Style::default(),
-        }
-    }
-
-    fn patch(self, options: &SettingsRenderOptions<'_>, style: Style) -> Style {
-        style.patch(self.overlay_style(options))
-    }
+fn patch_selection(
+    selection: PaneSelectionState,
+    options: &SettingsRenderOptions<'_>,
+    style: Style,
+) -> Style {
+    style.patch(selection_overlay_style(selection, options))
 }
 
 struct SettingsLineContext<'a> {
     target:    SettingsRowPayload,
     label:     &'a str,
-    selection: SettingsSelectionState,
+    selection: PaneSelectionState,
     options:   &'a SettingsRenderOptions<'a>,
 }
 
 impl SettingsLineContext<'_> {
     fn selected_inline_error<'a>(&'a self, pane: &SettingsPane) -> Option<&'a str> {
-        if self.selection != SettingsSelectionState::Unselected && !pane.is_editing() {
+        if self.selection != PaneSelectionState::Unselected && !pane.is_editing() {
             self.options.inline_error
         } else {
             None
@@ -578,26 +564,32 @@ fn push_toggle_row(
     } else {
         context.options.error_style.add_modifier(Modifier::BOLD)
     };
-    let row_style = context
-        .selection
-        .patch(context.options, context.options.label_style);
+    let row_style = patch_selection(
+        context.selection,
+        context.options,
+        context.options.label_style,
+    );
     lines.push(Line::from(vec![
         Span::styled(context.label.to_owned(), row_style),
         Span::styled(
             "< ",
-            context
-                .selection
-                .patch(context.options, context.options.muted_style),
+            patch_selection(
+                context.selection,
+                context.options,
+                context.options.muted_style,
+            ),
         ),
         Span::styled(
             value.to_owned(),
-            context.selection.patch(context.options, toggle_style),
+            patch_selection(context.selection, context.options, toggle_style),
         ),
         Span::styled(
             " >",
-            context
-                .selection
-                .patch(context.options, context.options.muted_style),
+            patch_selection(
+                context.selection,
+                context.options,
+                context.options.muted_style,
+            ),
         ),
         Span::styled(suffix.unwrap_or_default().to_owned(), row_style),
     ]));
@@ -613,25 +605,31 @@ fn push_stepper_row(
     lines.push(Line::from(vec![
         Span::styled(
             context.label.to_owned(),
-            context
-                .selection
-                .patch(context.options, context.options.label_style),
+            patch_selection(
+                context.selection,
+                context.options,
+                context.options.label_style,
+            ),
         ),
         Span::styled(
             "< ",
-            context
-                .selection
-                .patch(context.options, context.options.muted_style),
+            patch_selection(
+                context.selection,
+                context.options,
+                context.options.muted_style,
+            ),
         ),
         Span::styled(
             value.to_owned(),
-            context.selection.patch(context.options, Style::default()),
+            patch_selection(context.selection, context.options, Style::default()),
         ),
         Span::styled(
             " >",
-            context
-                .selection
-                .patch(context.options, context.options.muted_style),
+            patch_selection(
+                context.selection,
+                context.options,
+                context.options.muted_style,
+            ),
         ),
     ]));
     line_targets.push(Some(context.target));
@@ -647,9 +645,11 @@ fn push_wrapped_setting_value(
     let row = WrappedValueRow {
         prefix: context.label,
         value,
-        prefix_style: context
-            .selection
-            .patch(context.options, context.options.label_style),
+        prefix_style: patch_selection(
+            context.selection,
+            context.options,
+            context.options.label_style,
+        ),
         value_style,
         content_width: context.options.content_width,
     };

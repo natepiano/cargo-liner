@@ -4921,22 +4921,6 @@ mod tests {
             (x, y, row)
         }
 
-        fn framework_selection_state(
-            pane: &Viewport,
-            row: usize,
-            focus: PaneFocusState,
-        ) -> PaneSelectionState {
-            if row == pane.pos() && matches!(focus, PaneFocusState::Active) {
-                PaneSelectionState::Active
-            } else if pane.hovered() == Some(row) {
-                PaneSelectionState::Hovered
-            } else if row == pane.pos() && matches!(focus, PaneFocusState::Remembered) {
-                PaneSelectionState::Remembered
-            } else {
-                PaneSelectionState::Unselected
-            }
-        }
-
         fn finder_result_point(app: &App, result_index: usize) -> (u16, u16) {
             let area = app.overlays.finder_pane.viewport.content_area();
             (
@@ -5362,7 +5346,7 @@ mod tests {
             render_ui(&mut app);
 
             assert_eq!(
-                framework_selection_state(
+                tui_pane::selection_state(
                     app.framework.settings_pane.viewport(),
                     hovered_row,
                     PaneFocusState::Active,
@@ -5375,7 +5359,7 @@ mod tests {
 
             assert_eq!(app.framework.settings_pane.viewport().pos(), 1);
             assert_eq!(
-                framework_selection_state(
+                tui_pane::selection_state(
                     app.framework.settings_pane.viewport(),
                     hovered_row,
                     PaneFocusState::Active,
@@ -5383,7 +5367,7 @@ mod tests {
                 PaneSelectionState::Unselected,
             );
             assert_eq!(
-                framework_selection_state(
+                tui_pane::selection_state(
                     app.framework.settings_pane.viewport(),
                     1,
                     PaneFocusState::Active,
@@ -5408,7 +5392,7 @@ mod tests {
             render_ui(&mut app);
 
             assert_eq!(
-                framework_selection_state(
+                tui_pane::selection_state(
                     app.framework.settings_pane.viewport(),
                     hovered_row,
                     PaneFocusState::Active,
@@ -5420,7 +5404,7 @@ mod tests {
             render_ui(&mut app);
 
             assert_eq!(
-                framework_selection_state(
+                tui_pane::selection_state(
                     app.framework.settings_pane.viewport(),
                     hovered_row,
                     PaneFocusState::Active,
@@ -5445,7 +5429,7 @@ mod tests {
 
             assert_eq!(app.framework.settings_pane.viewport().pos(), hovered_row);
             assert_eq!(
-                framework_selection_state(
+                tui_pane::selection_state(
                     app.framework.settings_pane.viewport(),
                     hovered_row,
                     PaneFocusState::Active,

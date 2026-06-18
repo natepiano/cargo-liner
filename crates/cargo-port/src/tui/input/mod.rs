@@ -291,7 +291,7 @@ fn dispatch_output_selection_gesture(app: &mut App, raw: &KeyEvent) -> bool {
 }
 
 fn key_bind_from_event(event: &KeyEvent) -> KeyBind {
-    let bind = KeyBind::from_key_event(*event);
+    let bind = KeyBind::from(*event);
     let (code, mods) = keymap::canonical_event_code_and_mods(bind.code, bind.mods);
     KeyBind { code, mods }
 }

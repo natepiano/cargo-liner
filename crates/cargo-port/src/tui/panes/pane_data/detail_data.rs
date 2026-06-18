@@ -181,15 +181,17 @@ enum WorktreeRootDisplay {
     Single,
 }
 
-impl WorktreeRootDisplay {
-    fn from_item(item: &RootItem) -> Self {
+impl From<&RootItem> for WorktreeRootDisplay {
+    fn from(item: &RootItem) -> Self {
         if git_data::is_worktree_group(item) {
             Self::Grouped
         } else {
             Self::Single
         }
     }
+}
 
+impl WorktreeRootDisplay {
     const fn worktree_item(self, item: Option<&RootItem>) -> Option<&RootItem> {
         match self {
             Self::Grouped => item,
@@ -208,7 +210,7 @@ impl WorktreeRootDisplay {
 /// Build pane data for a root `RootItem`.
 pub fn build_pane_data(app: &App, item: &RootItem) -> DetailPaneData {
     let display_path = item.display_path().into_string();
-    let worktree_root_display = WorktreeRootDisplay::from_item(item);
+    let worktree_root_display = WorktreeRootDisplay::from(item);
 
     match item {
         RootItem::Rust(RustProject::Workspace(ws)) => {
