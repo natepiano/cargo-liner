@@ -686,6 +686,7 @@ fn render_empty_ci_block(frame: &mut Frame, title: &str, area: Rect) {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, reason = "tests should fail on invalid fixtures")]
 mod tests {
     use ratatui::layout::Constraint;
     use unicode_width::UnicodeWidthStr;
@@ -811,14 +812,14 @@ mod tests {
         assert_eq!(
             ci_display_columns_for_width(
                 &runs,
-                u16::try_from(width).unwrap_or_else(|_| std::process::abort()),
+                u16::try_from(width).expect("grouped CI table width should fit u16"),
             ),
             expected
         );
         assert!(ci_display_table_shows_durations(
             &runs,
             &expected,
-            u16::try_from(width).unwrap_or_else(|_| std::process::abort()),
+            u16::try_from(width).expect("grouped CI table width should fit u16"),
         ));
     }
 
@@ -857,7 +858,7 @@ mod tests {
             &runs,
             &cols,
             true,
-            u16::try_from(inner_width).unwrap_or_else(|_| std::process::abort()),
+            u16::try_from(inner_width).expect("CI header width fixture should fit u16"),
         );
         let job_width = constraint_width(widths.get(3)).unwrap_or(0);
 
@@ -886,7 +887,7 @@ mod tests {
             &cols,
             true,
             u16::try_from(ci_table_fixed_width(&runs, &cols, true))
-                .unwrap_or_else(|_| std::process::abort()),
+                .expect("CI minimum header fixture width should fit u16"),
         );
         let job_width = constraint_width(widths.get(3)).unwrap_or(0);
 
@@ -905,7 +906,7 @@ mod tests {
             jobs: vec!["fmt".to_string(), "docs".to_string()],
         };
 
-        let data = ci_column_data(&run, &other).unwrap_or_else(|| std::process::abort());
+        let data = ci_column_data(&run, &other).expect("other CI column should summarize jobs");
 
         assert_eq!(data.duration, "30s");
         assert_eq!(data.status, CiStatus::Failed);

@@ -53,8 +53,10 @@ pub(super) struct ProjectWorker {
 pub fn spawn(config: &CargoPortConfig, background_tx: Sender<BackgroundMsg>) -> SpawnResult {
     if !config.lint.enabled.is_enabled() {
         return SpawnResult {
-            handle:  None,
-            warning: None,
+            handle:                  None,
+            warning:                 None,
+            #[cfg(test)]
+            supervisor:              None,
         };
     }
 
@@ -62,7 +64,7 @@ pub fn spawn(config: &CargoPortConfig, background_tx: Sender<BackgroundMsg>) -> 
     let cache_size_bytes = config.lint.cache_size_bytes().unwrap_or(None);
     let lint = config.lint.clone();
     let (supervisor_sender, supervisor_receiver) = mpsc::channel();
-    thread::spawn(move || {
+    let supervisor = thread::spawn(move || {
         supervisor_loop(
             supervisor_receiver,
             cache_root,
@@ -71,9 +73,15 @@ pub fn spawn(config: &CargoPortConfig, background_tx: Sender<BackgroundMsg>) -> 
             background_tx,
         );
     });
+    #[cfg(test)]
+    let supervisor = Some(supervisor);
+    #[cfg(not(test))]
+    drop(supervisor);
     SpawnResult {
-        handle:  Some(RuntimeHandle { supervisor_sender }),
+        handle: Some(RuntimeHandle { supervisor_sender }),
         warning: None,
+        #[cfg(test)]
+        supervisor,
     }
 }
 

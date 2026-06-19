@@ -30,7 +30,7 @@ impl App {
             lint_runtime:   self.lint.runtime_clone(),
             metadata_store: self.scan.metadata_store_handle(),
         });
-        self.background.replace_watcher_sender(new_watcher);
+        self.background.replace_watcher(new_watcher);
     }
     pub fn register_existing_projects(&self) {
         self.project_list.for_each_leaf(|item| {

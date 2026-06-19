@@ -283,7 +283,7 @@ Track startup effects in a table during implementation. Each entry should name t
 - Phase 6 now names the Phase 3 quiet scan/rescan regression filters that should stay in its repetition set.
 - Phase 7 now preserves quiet App fixtures by default and only relies on spawned-work panics when Phase 4's fixture/drain mechanism observes them.
 
-### Phase 4 — Isolate full-startup opt-in tests and persisted side-effect handles  · status: todo
+### Phase 4 — Isolate full-startup opt-in tests and persisted side-effect handles  · status: done (`uncommitted`)
 
 #### Work Order
 
@@ -306,7 +306,7 @@ Define coherent named effect bundles instead of arbitrary partial profiles. `Sta
 
 Process-global state is part of the flake surface. `TestApp` or startup fixtures should own config, keymap, and theme override guards, or App-construction tests should run behind a shared serial lock. Quiet startup acceptance should prove deterministic config/theme/keymap state as well as zero spawned tasks.
 
-Create the reusable `TestApp` shell in this phase. It should wrap `App` plus owned config, keymap, theme, startup-service, and task/runtime resources, and expose `Deref`/`DerefMut<Target = App>` so existing tests stay readable. Phase 5 extends this shell for custom keymap TOML lifetime; do not create a separate incompatible keymap fixture family.
+If this phase creates a broader reusable `TestApp` shell, it must preserve the already-built Phase 5 `KeymapFixture` behavior. Phase 5 now owns custom keymap TOML lifetime in `src/tui/app/mod.rs`; a broader fixture may wrap or reuse that narrow fixture, but must not replace it with a plain `App` helper or reintroduce dropped keymap override guards.
 
 Shared test runtime work is part of the flake surface. Startup tasks created during tests must be owned by a fixture with cancellation and drain semantics. Quiet App construction should not schedule onto the global runtime. Full-startup tests should either use an owned runtime/task tracker or explicitly await/cancel all startup tasks before teardown.
 
@@ -316,6 +316,7 @@ If the current `AppBuilder<Started>` typestate name or docs imply "startup I/O c
 
 **Files:**
 - `src/tui/app/construct.rs` — refine builder state and handle types so disabled/no-op startup is explicit.
+- `src/tui/app/mod.rs` — preserve the existing `framework_keymap::KeymapFixture` behavior while adding broader fixture support; do not replace fixture-returning keymap helpers with plain `App` helpers.
 - `src/tui/startup_services.rs` — define coherent opt-in effect bundles and any tracked handles needed to drain/cancel real startup work.
 - `src/tui/test_support.rs` — add the shared `TestApp` shell plus full-startup/opt-in test fixtures with owned resources, drain/cancel behavior, and any required serialization.
 - `src/tui/app/async_tasks/background_services.rs` — include startup project-detail, crates.io, and git first-commit workers in the full-startup ownership/drain decision.
@@ -327,11 +328,38 @@ If the current `AppBuilder<Started>` typestate name or docs imply "startup I/O c
 - `src/tui/panes/cpu/pane.rs` — ensure CPU monitor reset remains disabled under quiet policy and explicit under full startup.
 - `src/themes/paths.rs` — ensure theme test override lifetime is fixture-owned for full-startup tests.
 
-**Constraints from prior phases:** Phase 2 added `scripts/check-no-test-abort.sh` and protects `src/test_support.rs` plus `src/tui/test_support.rs` as zero-abort helper files. Phase 3 made quiet startup the default for shared unit-test constructors and introduced `StartupServices`, `StartupEnvironment`, `make_app_with_startup_services`, and `make_app_with_lint_runtime`. Phase 3 also gates quiet `rescan()` and scan-result startup scheduling through persisted services. This phase preserves that contract while adding explicit full-startup fixtures and lifetime/teardown discipline.
+**Constraints from prior phases:** Phase 2 added `scripts/check-no-test-abort.sh` and protects `src/test_support.rs` plus `src/tui/test_support.rs` as zero-abort helper files. Phase 3 made quiet startup the default for shared unit-test constructors and introduced `StartupServices`, `StartupEnvironment`, `make_app_with_startup_services`, and `make_app_with_lint_runtime`. Phase 3 also gates quiet `rescan()` and scan-result startup scheduling through persisted services. Phase 5 already created a narrow local `KeymapFixture` in `src/tui/app/mod.rs`; do not replace it with a plain `App` helper or reintroduce keymap lifetime hazards. This phase preserves those contracts while adding explicit full-startup fixtures and lifetime/teardown discipline.
 
 **Acceptance gate:** Tests prove quiet policy persists after construction: reload/reset paths cannot respawn watcher, lint runtime, retry probes, rate-limit priming, lint hydration, host auth, CPU monitor, streaming scan, project-detail workers, git first-commit refreshes, priority fetch, or theme-directory work unless the test opted in. Full-startup fixture tests prove expected effects happen and are drained/cancelled, or are explicitly documented as outside unit-fixture ownership. Run `./scripts/check-no-test-abort.sh` if any helper setup or abort-bearing Rust files changed. Run `cargo +nightly fmt --all` and targeted startup/reload tests.
 
-### Phase 5 — Fix keymap test lifetime hazards  · status: todo
+#### Retrospective
+
+**What worked:**
+- `StartupServices` now persists startup policy on `App`, and `WatcherHandle` makes disabled watcher sends and respawns explicit no-ops.
+- `TestApp` owns fixture config, keymap, theme, and cache paths; lint-runtime opt-ins track test-only supervisor joins before fixture directories drop.
+
+**What deviated from the plan:**
+- Broad production-like full startup was narrowed. The local startup unit fixture enables only fixture-owned theme-directory loading and suppresses unowned watcher, Rayon, Tokio, CPU, process-global, scan, project-detail, and retry-probe work.
+- The final cache-root and supervisor-join fixes were applied directly after two Codex fix passes hit the workflow cap.
+
+**Surprises:**
+- Reload-driven lint-runtime respawns need the fixture cache root from `StartupServices`; rewriting only the construction config was not enough.
+- Process-global theme/config restoration is not safe with the current theme API, so tests suppress those effects instead of trying to restore them.
+
+**Implications for remaining phases:**
+- Phase 6 should repeat the Phase 4 startup fixture regressions alongside the Phase 3 quiet-startup and Phase 5 keymap filters.
+- Phase 7 must preserve `TestApp` ownership semantics, including `make_app_with_lint_runtime(...) -> TestApp`, fixture cache roots across reload, and `App` drop before lint supervisor join before temp-dir cleanup.
+- Later phases should not assume Phase 4 created a broad production-startup fixture; unowned startup effects remain deliberately suppressed in unit fixtures.
+
+#### Phase 4 Review
+
+- Phase 6 now repeats Phase 4's baseline quiet-startup, host-auth, fixture-cache, lint-runtime, local-startup, and disabled-watcher regressions.
+- Phase 6 must update Phase 9 with the exact repetition command it creates so the final validation phase stays dispatch-ready.
+- Phase 7 now lists `src/tui/test_support.rs` and `src/tui/startup_services.rs` as read-only fixture context files.
+- Phase 7 now distinguishes plain quiet helpers that intentionally return `App` with persisted fixture directories from opt-in `TestApp` helpers that own lint supervisor teardown.
+- Phase 7 now states that Phase 4 only drains test lint supervisors, not arbitrary watcher, Rayon, Tokio, or background workers.
+
+### Phase 5 — Fix keymap test lifetime hazards  · status: done (`uncommitted`)
 
 #### Work Order
 
@@ -361,7 +389,31 @@ Keep the fixture narrow. Generic `make_app()` should still return `App`; only cu
 
 **Acceptance gate:** A regression test proves an app produced by the keymap helper can still reload from `app.keymap.path()` after helper return. Run `./scripts/check-no-test-abort.sh`; run `cargo +nightly fmt --all`; run the framework-keymap test module or the originally observed focused test; run the fixed repetition command if available from Phase 6, otherwise repeat the focused test manually enough to exercise late exits.
 
-### Phase 6 — Add flake repetition gates and tighten existing abort inventory  · status: todo
+#### Retrospective
+
+**What worked:**
+- `src/tui/app/mod.rs` now uses a narrow `KeymapFixture` for custom keymap helpers, owning the `App`, keymap override guard, and `TempDir`.
+- `helper_returned_keymap_fixture_reloads_from_app_path` proves a helper-returned app can reload from `app.keymap.path()` after helper return.
+
+**What deviated from the plan:**
+- Phase 5 ran before Phase 4, so it could not extend a shared `TestApp` shell. It added only the minimal local `KeymapFixture` needed for keymap lifetime safety.
+
+**Surprises:**
+- Direct `override_keymap_path_for_test` uses outside the helper-return path were already local to individual tests with live temp directories and guards.
+
+**Implications for remaining phases:**
+- Phase 4 should not replace the working keymap fixture. If Phase 4 introduces a broader `TestApp` shell later, it should either wrap or preserve the existing `KeymapFixture` behavior.
+- Phase 6 should include the new keymap fixture regression test in its focused repetition set.
+- Phase 7's `src/tui/app/mod.rs` abort sweep should keep custom keymap tests on the fixture-returning helpers rather than converting them back to plain `App`.
+
+#### Phase 5 Review
+
+- Phase 4 now names `src/tui/app/mod.rs` and must preserve the existing `KeymapFixture` behavior if it introduces a broader fixture shell.
+- Phase 6 now separates Phase 3 quiet-startup regression filters from the Phase 5 keymap fixture regression filter, and remains sequenced after Phase 4 so Phase 4 can add its filters before repetition gates are delegated.
+- Phase 7 now explicitly preserves fixture-returning keymap helpers, `Deref`/`DerefMut`, no `into_app()` escape hatch, and app-before-guard/tempdir teardown behavior during the app-module abort sweep.
+- Phase 8 and Phase 9 were reviewed and need no Phase 5-specific changes beyond consuming the final abort inventory state.
+
+### Phase 6 — Add flake repetition gates and tighten existing abort inventory  · status: done (`uncommitted`)
 
 #### Work Order
 
@@ -371,6 +423,8 @@ Keep the fixture narrow. Generic `make_app()` should still return `App`; only cu
 Use the Phase 2 `scripts/check-no-test-abort.sh` gate as the executable source of truth. If Phases 3 through 5 removed any abort buckets, update the allowlist in this phase so removed sites cannot reappear silently. The gate must continue to fail on any abort in `src/test_support.rs` or `src/tui/test_support.rs`.
 
 Add a documented repetition command for the original flake trigger and any focused tests changed by Phases 3 through 5. The command must be practical for local use and must fail on the first nonzero nextest run. A simple shell loop is acceptable if the repo does not already have a repeat-test helper.
+
+After choosing the exact repetition command, update Phase 9's validation list in this plan with that exact command so the final validation Work Order can run without rediscovering it.
 
 The original observed trigger was:
 
@@ -385,35 +439,93 @@ Every focused repetition gate must first prove that the filter matches at least 
 - `docs/fix-SIGABRT.md` — record the exact repetition command and any inventory drift discovered during implementation.
 - Add a small helper script only if that is clearer than documenting a command inline.
 
-**Constraints from prior phases:** Phase 1 converted `src/test_support.rs` and `src/tui/test_support.rs` to contextual panics. Phase 2 installed the abort inventory gate. Phase 3 added quiet startup services plus quiet rescan/scan-result gating. Phases 3 through 5 may have removed startup/keymap abort triggers. Do not reintroduce test-helper aborts. New test setup `expect(...)` calls need scoped test-only lint allowances or contextual panic alternatives. If this phase adds or removes any matched abort call line, update `scripts/check-no-test-abort.sh` in the same change set.
+**Constraints from prior phases:** Phase 1 converted `src/test_support.rs` and `src/tui/test_support.rs` to contextual panics. Phase 2 installed the abort inventory gate. Phase 3 added quiet startup services plus quiet rescan/scan-result gating. Phase 4 added `TestApp`, disabled watcher handles, fixture-owned config/keymap/theme/cache paths, and test-owned lint supervisor joins. Phase 5 added the keymap fixture regression. Phases 3 through 5 may have removed startup/keymap abort triggers. Do not reintroduce test-helper aborts. New test setup `expect(...)` calls need scoped test-only lint allowances or contextual panic alternatives. If this phase adds or removes any matched abort call line, update `scripts/check-no-test-abort.sh` in the same change set.
 
 **Acceptance gate:** `./scripts/check-no-test-abort.sh`; the documented repetition command for the original keymap flake with a filter that matches at least one test; `cargo nextest run --workspace --all-features --tests` if the repetition command exposes broader startup coupling.
 
 Phase 3 regression filters to include in the repetition command or documented focused subset:
 
-- `tui::app::tests::quiet_scan_result_does_not_start_startup_workers_or_wait_for_lint_history`
-- `tui::app::tests::quiet_rescan_uses_noop_scan_without_real_startup_effects`
-- `tui::app::tests::quiet_completed_scan_applies_noop_rescan_when_enabling_non_rust_without_cached_projects`
+- `tui::app::tests::background::quiet_scan_result_does_not_start_startup_workers_or_wait_for_lint_history`
+- `tui::app::tests::background::quiet_rescan_uses_noop_scan_without_real_startup_effects`
+- `tui::app::tests::background::quiet_completed_scan_applies_noop_rescan_when_enabling_non_rust_without_cached_projects`
 
-### Phase 7 — Convert remaining test-module abort buckets  · status: todo
+Phase 5/keymap regression filters to repeat, not recreate:
+
+- `tui::app::tests::framework_keymap::helper_returned_keymap_fixture_reloads_from_app_path`
+
+Phase 4/startup fixture regression filters to repeat, not recreate:
+
+- `tui::test_support::tests::test_http_client_skips_host_github_auth`
+- `tui::test_support::tests::make_app_uses_quiet_startup_by_default`
+- `tui::test_support::tests::quiet_startup_persists_through_reload_and_reset_paths`
+- `tui::test_support::tests::lint_runtime_opt_in_enables_only_lint_runtime_startup`
+- `tui::test_support::tests::local_startup_fixture_owns_theme_dir_and_suppresses_unowned_effects`
+- `tui::background::tests::disabled_watcher_handle_ignores_registration_messages`
+
+#### Phase 6 implementation notes
+
+The focused repetition gate is:
+
+```bash
+PHASE6_REPEAT_COUNT=10 ./scripts/repeat-phase6-nextest.sh
+```
+
+`scripts/repeat-phase6-nextest.sh` first runs `cargo nextest list --workspace --all-features --tests --message-format oneline -- <filter> --exact` for every Phase 3, Phase 4, Phase 5, and originally observed keymap filter named above. It exits before the repetition loop if any exact filter matches zero tests. Each repetition then runs the focused set with:
+
+```bash
+cargo nextest run --workspace --all-features --tests --fail-fast -- <filters...> --exact
+```
+
+`set -e` makes the script exit on the first nonzero `cargo nextest run`.
+
+The Phase 6 inventory check found no abort-count drift after Phases 3 through 5: `./scripts/check-no-test-abort.sh` still reports 329 matched abort call lines across the same 9 allowlisted files. The Phase 2 count allowlist in `scripts/check-no-test-abort.sh` therefore stays unchanged for this phase, and the helper zero-abort checks for `src/test_support.rs` and `src/tui/test_support.rs` remain the executable guard.
+
+The three Phase 3 quiet-scan filters from the work order matched zero tests without the `background` module segment. Phase 6 replaced them with the confirmed exact nextest names under `tui::app::tests::background::...`.
+
+#### Retrospective
+
+**What worked:**
+- The repetition helper keeps the long focused filter list in one executable place.
+- Exact `nextest list` checks confirm every focused filter maps to at least one test before any repeated run starts.
+- The abort inventory gate stayed green without changing the Phase 2 allowlist counts.
+
+**What deviated from the plan:**
+- A helper script was clearer than documenting the long shell loop inline.
+
+**Surprises:**
+- None.
+
+**Implications for remaining phases:**
+- Phase 7 and Phase 8 should run `PHASE6_REPEAT_COUNT=10 ./scripts/repeat-phase6-nextest.sh` after changing abort-bearing files.
+- Phase 9 now has the exact repetition command in its validation sequence.
+
+#### Phase 6 Review
+
+- Phase 7 now uses a coordinated multi-agent sweep instead of one monolithic delegate pass.
+- Phase 7 now records that Phase 6 confirmed no abort-count drift and added the repetition gate without tightening the allowlist.
+- Phase 7 and Phase 9 now list `scripts/repeat-phase6-nextest.sh` as validation context.
+- Phase 8 now owns converting the running-toasts production allowance into either no allowance or an exact reviewed production-site allowance.
+- Phase 8 now runs the Phase 6 repetition gate after changing the remaining abort-bearing production file.
+
+### Phase 7 — Convert remaining test-module abort buckets with a multi-agent sweep  · status: done (`uncommitted`)
 
 #### Work Order
 
 **Goal:** All test modules and shared test helpers report contextual panics or unreachable states instead of calling `std::process::abort()`.
 
 **Spec:**
-After shared-helper cleanup, quiet `App` construction, keymap fixture work, and the executable inventory are in place, convert test modules in focused batches so review and rollback stay easy. This order prevents the largest abort sweep from running while the original "test passed, process later aborted" flake surface is still active.
+After shared-helper cleanup, quiet `App` construction, keymap fixture work, the repetition gate, and the executable inventory are in place, convert test modules in focused buckets so review and rollback stay easy. This phase should be run as a coordinated team of agents with disjoint write sets, not as one monolithic delegate pass.
 
-Recommended order:
+Team workstreams:
 
-1. `src/tui/app/mod.rs`
-2. `tui_pane/src/toasts/mod.rs`
-3. `tui_pane/src/toasts/render/mod.rs`
-4. `src/scan/tree/mod.rs`
-5. `src/scan/disk_usage.rs`
-6. `src/project/git/discovery.rs`
-7. `src/tui/panes/ci/render.rs`
-8. `src/tui/running_targets/app_tick.rs`
+1. App-module agent: `src/tui/app/mod.rs`.
+2. Toast agents: `tui_pane/src/toasts/mod.rs` and `tui_pane/src/toasts/render/mod.rs`.
+3. Scan/git agents: `src/scan/tree/mod.rs`, `src/scan/disk_usage.rs`, and `src/project/git/discovery.rs`.
+4. UI-tail agents: `src/tui/panes/ci/render.rs` and `src/tui/running_targets/app_tick.rs`.
+
+The coordinator owns `scripts/check-no-test-abort.sh` updates and final integration. Agents should report the abort lines they removed, any spawned-closure panic observability concerns, and any exact nextest filters they used. The coordinator applies allowlist tightening after each integrated workstream, then runs the shared gates.
+
+Before each focused bucket run, confirm the bucket's targeted nextest filter matches at least one test with `cargo nextest list --workspace --all-features --tests --message-format oneline -- <filter> --exact`. If a bucket has no useful exact filter, document that and rely on `./scripts/check-no-test-abort.sh`, full nextest, and the Phase 6 repetition gate after the bucket.
 
 Mechanical replacements:
 
@@ -442,13 +554,40 @@ For every converted abort inside spawned closures, check whether a panic would b
 - `src/project/git/discovery.rs` — git discovery tests.
 - `src/tui/panes/ci/render.rs` — CI render tests.
 - `src/tui/running_targets/app_tick.rs` — running-target tests.
+- `src/tui/test_support.rs` — read-only fixture context for `TestApp`, `make_app_with_lint_runtime(...)`, `into_quiet_app()`, fixture cache roots, and teardown ordering.
+- `src/tui/startup_services.rs` — read-only fixture context for startup effects, disabled services, fixture cache root retention, and lint supervisor joins.
 - `scripts/check-no-test-abort.sh` — tighten temporary allowlist as buckets are converted.
+- `scripts/repeat-phase6-nextest.sh` — read-only validation context; update it only if a Phase 6 exact-filtered test is renamed or removed by the abort sweep.
 
-**Constraints from prior phases:** Phase 2 provides the executable inventory gate, and Phase 6 tightens its allowlist after startup/keymap stabilization. Phase 3 and Phase 4 ensure `App` tests use deterministic quiet startup unless explicitly opted in. Phase 5 ensures keymap helpers own their backing paths. The `src/tui/app/mod.rs` abort sweep must preserve quiet fixtures by default and must not rely on panics inside spawned work unless Phase 4's fixture/drain mechanism observes them. Each converted abort bucket must update `scripts/check-no-test-abort.sh` in the same change set so the gate records the new remaining count.
+**Constraints from prior phases:** Phase 2 provides the executable inventory gate. Phase 6 confirmed no abort-count drift after startup/keymap stabilization, kept the Phase 2 allowlist unchanged, and added `scripts/repeat-phase6-nextest.sh`. Phase 3 and Phase 4 ensure `App` tests use deterministic quiet startup unless explicitly opted in. Phase 4's `TestApp` owns config/keymap/theme/cache paths and preserves fixture cache roots across lint-runtime respawns; `make_app_with_lint_runtime(...)` returns `TestApp`, not plain `App`, and drops `App` before joining lint supervisors before temp-dir cleanup. Plain quiet helpers such as `make_app()` and `make_app_with_config()` still intentionally return `App` through `into_quiet_app()` after persisting fixture directories; do not convert those helpers to `TestApp` or remove that lifetime contract during the abort sweep. Phase 4 did not add a generic task tracker for watcher, Rayon, Tokio, retry-probe, priority-fetch, scan, or project-detail workers; those effects remain suppressed in unit fixtures unless a later phase adds explicit ownership. Phase 5 ensures keymap helpers own their backing paths through `KeymapFixture`. The `src/tui/app/mod.rs` abort sweep must preserve quiet fixtures and `KeymapFixture` by default, including fixture-returning helpers, `Deref`/`DerefMut`, no `into_app()` escape hatch, and app-before-guard/tempdir teardown behavior. It must not rely on panics inside spawned work unless Phase 4's fixture/drain mechanism observes them. Each converted abort bucket must update `scripts/check-no-test-abort.sh` in the same change set so the gate records the new remaining count.
 
-**Acceptance gate:** `./scripts/check-no-test-abort.sh` reports no test-module or shared-test-helper aborts remain; `cargo +nightly fmt --all`; `cargo nextest run --workspace --all-features --tests`; the fixed repetition command passes.
+**Acceptance gate:** `./scripts/check-no-test-abort.sh` reports no test-module or shared-test-helper aborts remain; `cargo +nightly fmt --all`; `cargo nextest run --workspace --all-features --tests`; `PHASE6_REPEAT_COUNT=10 ./scripts/repeat-phase6-nextest.sh` passes, including the keymap fixture regression.
 
-### Phase 8 — Review and remove or document the remaining production abort  · status: todo
+#### Retrospective
+
+**What worked:**
+- Four disjoint workstreams converted the app, toast, scan/git, and UI-tail abort buckets without overlapping write ownership.
+- `scripts/check-no-test-abort.sh` now allows only the remaining `src/tui/app/async_tasks/running_toasts.rs` production-looking abort.
+
+**What deviated from the plan:**
+- The implementation used a coordinated team of Codex workers instead of one monolithic delegate session.
+- The coordinator applied one integration fix where `ProjectParseError` lacked `Debug`, replacing an invalid `expect(...)` conversion with a contextual panic.
+
+**Surprises:**
+- No converted Phase 7 abort lived inside newly spawned work, so no new join/drain mechanism was needed.
+- Some worker-level exact filter checks were not useful during parallel dirty-state work; final integration relied on the abort inventory, Phase 6 repetition gate, full nextest, clippy, and Mend.
+
+**Implications for remaining phases:**
+- Phase 8 starts from exactly one remaining abort call, the reviewed production-looking `running_toasts` allowance.
+- Phase 9 can treat test/helper abort cleanup as complete and should fail on any inventory drift outside the Phase 8 production decision.
+
+#### Phase 7 Review
+
+- Phase 8 now preserves the current `sync_running_toast` behavior for `Revived`, stale-slot `NotFound`, `DismissedByUser`, and first-toast creation while removing or documenting the final abort.
+- Phase 8 now requires the focused `sync_running_toast_preserves_reactivate_outcomes` regression and exact nextest list/run commands instead of a vague targeted-test gate.
+- Phase 9 now states that test/helper abort cleanup is complete and final inventory must match Phase 8's zero-abort or exact production-site allowance outcome before long validation gates run.
+
+### Phase 8 — Review and remove or document the remaining production abort  · status: done (`uncommitted`)
 
 #### Work Order
 
@@ -461,18 +600,50 @@ The current code uses `std::process::abort()` for an internal invariant in the `
 
 Prefer making the state unrepresentable locally. For example, bind the toast task id in the same branch that can produce `ReactivateOutcome::Revived`, by matching on `toast_slot` first or matching `(toast_slot, outcome)`.
 
+Preserve the current `sync_running_toast` branch behavior while removing the abort:
+
+- `ReactivateOutcome::Revived` may only update an existing task id and must keep returning that task id.
+- `Some(task_id)` plus `ReactivateOutcome::DismissedByUser` must keep returning the original slot without touching the dismissed toast or creating a duplicate.
+- `Some(stale_task_id)` plus `ReactivateOutcome::NotFound` must create a fresh toast and return the new task id.
+- `None` plus running items must continue to create the first fresh toast.
+
+Add a focused regression named `sync_running_toast_preserves_reactivate_outcomes` in `src/tui/app/async_tasks/running_toasts.rs`. The test should construct a quiet test `App`, exercise `Revived`, stale-slot `NotFound`, and `DismissedByUser`, and prove the final branch does not create duplicate toasts or reuse stale ids incorrectly.
+
 Expected outcomes:
 
 - If it stays hard-fail, the reason is documented and `scripts/check-no-test-abort.sh` allowlists the exact reviewed production site. Do not leave the production allowance as path/count only if the abort remains intentional.
 - If it can be made unrepresentable, prefer that over a runtime abort and remove the allowlist entry.
 
 **Files:**
-- `src/tui/app/async_tasks/running_toasts.rs` — restructure or document the `ReactivateOutcome::Revived` invariant.
+- `src/tui/app/async_tasks/running_toasts.rs` — restructure or document the `ReactivateOutcome::Revived` invariant and add the focused `sync_running_toast_preserves_reactivate_outcomes` regression.
 - `scripts/check-no-test-abort.sh` — remove or narrow the production abort allowlist to match the final decision.
+- `scripts/repeat-phase6-nextest.sh` — read-only validation context.
 
-**Constraints from prior phases:** Phase 7 removed test/helper aborts. The inventory script now distinguishes reviewed production invariants from forbidden test aborts.
+**Constraints from prior phases:** Phase 7 removed all test/helper aborts and tightened `scripts/check-no-test-abort.sh` to exactly one remaining allowed abort line: `src/tui/app/async_tasks/running_toasts.rs 1`. Phase 8 owns converting that remaining production allowance into either no allowance or an exact reviewed production-site allowance. No test-module or shared-helper abort may be reintroduced.
 
-**Acceptance gate:** `./scripts/check-no-test-abort.sh`; `cargo +nightly fmt --all`; targeted running-toasts tests if present; `cargo nextest run --workspace --all-features --tests`.
+**Acceptance gate:** `./scripts/check-no-test-abort.sh`; `cargo +nightly fmt --all`; `cargo nextest list --workspace --all-features --tests --message-format oneline -- tui::app::async_tasks::running_toasts::tests::sync_running_toast_preserves_reactivate_outcomes --exact`; `cargo nextest run --workspace --all-features --tests -- tui::app::async_tasks::running_toasts::tests::sync_running_toast_preserves_reactivate_outcomes --exact`; `PHASE6_REPEAT_COUNT=10 ./scripts/repeat-phase6-nextest.sh`; `cargo nextest run --workspace --all-features --tests`.
+
+#### Retrospective
+
+**What worked:**
+- `sync_running_toast` now matches `toast_slot` first, so `ReactivateOutcome::Revived` carries an existing `ToastTaskId` and no longer needs a process abort.
+- `scripts/check-no-test-abort.sh` now expects zero abort calls across Rust source.
+
+**What deviated from the plan:**
+- The implementation removed the production abort entirely instead of documenting a retained hard-fail invariant.
+
+**Surprises:**
+- The dismissed-toast branch already returned before mutation inside `reactivate_task`, so preserving the user-dismissed behavior only required keeping the original task id wired.
+
+**Implications for remaining phases:**
+- Phase 9 can validate against a zero-abort inventory rather than an exact production-site allowance.
+- The final full-suite count is now 1300 tests after adding `sync_running_toast_preserves_reactivate_outcomes`.
+
+#### Phase 8 Review
+
+- Phase 9 now explicitly requires zero abort calls in `scripts/check-no-test-abort.sh`; production abort re-allowlisting is not a valid final state.
+- Phase 9 now requires explicit user authorization before running `validate_and_push`; otherwise it stops after local validation and reports publish/push handoff pending.
+- Phase 9 now records the Phase 8 regression and the expected 1300-test full nextest run so final validation cannot silently narrow the suite.
 
 ### Phase 9 — Final validation and workflow handoff  · status: todo
 
@@ -487,20 +658,27 @@ Validation order:
 
 1. `cargo +nightly fmt --all`
 2. `./scripts/check-no-test-abort.sh`
-3. fixed repetition command for the originally observed keymap test and App-construction-heavy subset
+3. `PHASE6_REPEAT_COUNT=10 ./scripts/repeat-phase6-nextest.sh`
 4. `taplo fmt --check`
 5. `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 6. `cargo mend --workspace --all-targets --fail-on-warn`
 7. `cargo build --release --all-features --workspace --examples`
 8. `cargo nextest run --workspace --all-features --tests`
-9. the existing `validate_and_push` workflow after all phases are complete, if publishing the branch is intended
+9. the existing `validate_and_push` workflow after all phases are complete, only if the user explicitly authorizes publish/push in the Phase 9 invocation
+
+Do not run `validate_and_push` by default from Phase 9. If publish/push is not explicitly authorized, stop after local validation and report that workflow handoff is pending.
+
+The full nextest run is expected to include the new `tui::app::async_tasks::running_toasts::tests::sync_running_toast_preserves_reactivate_outcomes` regression from Phase 8. The current full-suite count after Phase 8 is 1300 tests; do not silently narrow the suite to preserve that count.
 
 The goal is not only that the suite passes, but that any future failure reports a normal panic with useful context rather than `SIGABRT`.
 
+Treat test/helper and production abort cleanup as complete before this phase starts. The final inventory must report zero abort calls. Any abort drift fails before the longer Cargo gates.
+
 **Files:**
 - `docs/fix-SIGABRT.md` — update only if validation changes remaining-phase constraints or records final phase outcome.
-- `scripts/check-no-test-abort.sh` — final gate should allow no test/helper aborts and only reviewed production aborts, if any remain.
+- `scripts/check-no-test-abort.sh` — final gate must require zero abort calls; do not reintroduce a reviewed production-abort allowance.
+- `scripts/repeat-phase6-nextest.sh` — run the exact Phase 6 repetition gate; update only if Phase 7 or Phase 8 deliberately renamed one of its exact-filtered tests.
 
-**Constraints from prior phases:** Phase 8 settled the final production abort. Phase 7 removed test/helper aborts. Quiet startup, keymap fixtures, and full-startup isolation are in place.
+**Constraints from prior phases:** Phase 8 removed the final production abort and `scripts/check-no-test-abort.sh` now expects zero abort calls. Phase 7 removed test/helper aborts. Quiet startup, `TestApp` fixture-owned startup isolation, lint supervisor joins, keymap fixtures, the Phase 6 repetition script, and the final zero-abort inventory are in place. Phase 9 is validation-only unless validation reveals dispatch-critical drift that must be recorded in this plan.
 
-**Acceptance gate:** Full validation sequence above passes. `cargo nextest run --workspace --all-features --tests` passes, and any induced failure in helper/setup paths reports panic context instead of `SIGABRT`.
+**Acceptance gate:** Full local validation sequence above passes. `./scripts/check-no-test-abort.sh` reports zero abort calls. `cargo nextest run --workspace --all-features --tests` passes without silently narrowing the suite and includes `tui::app::async_tasks::running_toasts::tests::sync_running_toast_preserves_reactivate_outcomes`; the expected post-Phase-8 full-suite count is 1300 tests. Any induced failure in helper/setup paths reports panic context instead of `SIGABRT`. `validate_and_push` runs only with explicit user authorization; otherwise report that publish/push handoff is pending.

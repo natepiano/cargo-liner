@@ -138,6 +138,11 @@ impl<Ctx: AppContext> Toasts<Ctx> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unreachable,
+    reason = "tests should panic on unexpected values"
+)]
 mod tests {
     use std::time::Duration;
     use std::time::Instant;
@@ -213,7 +218,7 @@ mod tests {
             .active_now()
             .into_iter()
             .find(|toast| toast.title() == "Startup")
-            .unwrap_or_else(|| std::process::abort());
+            .expect("startup colored toast should be active");
         assert_eq!(view.linger_progress(), None);
         assert!(view.remaining_secs().is_some());
         assert_eq!(view.body_line_colors(), Some(&[Color::Green][..]));
@@ -225,7 +230,7 @@ mod tests {
         let task = toasts.start_task("scan", "running");
         let id = toasts
             .toast_for_task(task)
-            .unwrap_or_else(|| std::process::abort())
+            .expect("start_task should create a task toast")
             .id();
 
         // First dismiss: phase transitions to Exiting with the
@@ -233,11 +238,11 @@ mod tests {
         assert!(toasts.dismiss(id));
         let first_started_at = match toasts
             .toast_for_task(task)
-            .unwrap_or_else(|| std::process::abort())
+            .expect("dismissed task toast should still be tracked")
             .phase
         {
             ToastPhase::Exiting { started_at } => started_at,
-            ToastPhase::Visible => std::process::abort(),
+            ToastPhase::Visible => unreachable!("dismissed toast should enter Exiting phase"),
         };
 
         // Spin a touch to make sure Instant::now() advances, then
@@ -246,11 +251,11 @@ mod tests {
         assert!(toasts.dismiss(id));
         let second_started_at = match toasts
             .toast_for_task(task)
-            .unwrap_or_else(|| std::process::abort())
+            .expect("dismissed task toast should still be tracked")
             .phase
         {
             ToastPhase::Exiting { started_at } => started_at,
-            ToastPhase::Visible => std::process::abort(),
+            ToastPhase::Visible => unreachable!("second dismiss should keep toast Exiting"),
         };
         assert_eq!(first_started_at, second_started_at);
     }
@@ -263,7 +268,7 @@ mod tests {
         // User clicks [x].
         let toast_id = toasts
             .toast_for_task(task)
-            .unwrap_or_else(|| std::process::abort())
+            .expect("start_task should create a task toast")
             .id();
         assert!(toasts.dismiss(toast_id));
 
@@ -276,7 +281,7 @@ mod tests {
         );
         let toast = toasts
             .toast_for_task(task)
-            .unwrap_or_else(|| std::process::abort());
+            .expect("dismissed task toast should remain tracked");
         assert!(matches!(toast.phase, ToastPhase::Exiting { .. }));
         assert_eq!(toast.dismissal, ToastDismissal::ClosedByUser);
     }
@@ -285,7 +290,7 @@ mod tests {
         let mut t = Toasts::<TestApp>::new();
         t.settings_mut().finished_task_visible =
             crate::ToastDuration::try_from_secs("test", linger_secs)
-                .unwrap_or_else(|_| std::process::abort());
+                .expect("test linger duration should be valid");
         t
     }
 
@@ -305,7 +310,7 @@ mod tests {
         );
         let toast = toasts
             .toast_for_task(task)
-            .unwrap_or_else(|| std::process::abort());
+            .expect("revived task toast should remain tracked");
         assert!(matches!(toast.phase, ToastPhase::Visible));
     }
 
@@ -473,7 +478,7 @@ mod tests {
         assert!(toasts.mark_tracked_item_completed(task, "only"));
         let toast = toasts
             .toast_for_task(task)
-            .unwrap_or_else(|| std::process::abort());
+            .expect("completed task toast should remain tracked");
         let ToastLifetime::Task {
             status:
                 ToastTaskStatus::Finished {
@@ -483,7 +488,7 @@ mod tests {
             ..
         } = toast.lifetime
         else {
-            std::process::abort();
+            unreachable!("completed task toast should use task lifetime");
         };
 
         std::thread::sleep(Duration::from_millis(5));
@@ -494,7 +499,7 @@ mod tests {
 
         let toast = toasts
             .toast_for_task(task)
-            .unwrap_or_else(|| std::process::abort());
+            .expect("completed task toast should remain tracked");
         let ToastLifetime::Task {
             status:
                 ToastTaskStatus::Finished {
@@ -504,7 +509,7 @@ mod tests {
             ..
         } = toast.lifetime
         else {
-            std::process::abort();
+            unreachable!("completed task toast should use task lifetime");
         };
         assert_eq!(original_finished_at, later_finished_at);
     }
@@ -540,7 +545,7 @@ mod tests {
         assert!(toasts.mark_tracked_item_completed(task, "first"));
         let toast = toasts
             .toast_for_task(task)
-            .unwrap_or_else(|| std::process::abort());
+            .expect("first completed task toast should remain tracked");
         let ToastLifetime::Task {
             status:
                 ToastTaskStatus::Finished {
@@ -550,7 +555,7 @@ mod tests {
             ..
         } = toast.lifetime
         else {
-            std::process::abort();
+            unreachable!("first completed task toast should use task lifetime");
         };
 
         // Add a second incomplete item, sleep, mark it completed.
@@ -560,7 +565,7 @@ mod tests {
 
         let toast = toasts
             .toast_for_task(task)
-            .unwrap_or_else(|| std::process::abort());
+            .expect("late completed task toast should remain tracked");
         let ToastLifetime::Task {
             status:
                 ToastTaskStatus::Finished {
@@ -570,7 +575,7 @@ mod tests {
             ..
         } = toast.lifetime
         else {
-            std::process::abort();
+            unreachable!("late completed task toast should use task lifetime");
         };
         assert!(
             anchor_after_late > anchor_after_first,

@@ -42,6 +42,11 @@ pub(super) fn merge_worktrees_new(items: &mut Vec<RootItem>) {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unreachable,
+    reason = "tests should panic on unexpected values"
+)]
 mod tests {
     use super::*;
     use crate::project::Workspace;
@@ -96,7 +101,7 @@ mod tests {
 
         assert_eq!(items.len(), 1, "worktree should be merged into primary");
         let RootItem::Worktrees(group) = &items[0] else {
-            std::process::abort()
+            unreachable!("merged workspace should produce a worktree group")
         };
         assert!(
             matches!(&group.primary, RustProject::Workspace(_)),
@@ -114,7 +119,7 @@ mod tests {
 
         assert_eq!(items.len(), 1);
         let RootItem::Worktrees(group) = &items[0] else {
-            std::process::abort()
+            unreachable!("merged named workspace should produce a worktree group")
         };
         assert!(
             matches!(&group.primary, RustProject::Workspace(_)),
@@ -125,18 +130,18 @@ mod tests {
 
     #[test]
     fn build_tree_only_nests_manifest_members() {
-        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let tmp = tempfile::tempdir().expect("create manifest-member test tempdir");
         let workspace_dir = tmp.path().join("hana");
         let included_dir = workspace_dir.join("crates").join("hana");
         let vendored_dir = workspace_dir.join("crates").join("clay-layout");
 
-        std::fs::create_dir_all(&included_dir).unwrap_or_else(|_| std::process::abort());
-        std::fs::create_dir_all(&vendored_dir).unwrap_or_else(|_| std::process::abort());
+        std::fs::create_dir_all(&included_dir).expect("create included workspace member directory");
+        std::fs::create_dir_all(&vendored_dir).expect("create vendored crate directory");
         std::fs::write(
             workspace_dir.join("Cargo.toml"),
             "[workspace]\nmembers = [\"crates/hana\"]\n",
         )
-        .unwrap_or_else(|_| std::process::abort());
+        .expect("write workspace manifest fixture");
 
         let workspace = make_workspace(Some("hana"), &workspace_dir.to_string_lossy(), false, None);
         let included = make_package(
@@ -157,9 +162,9 @@ mod tests {
         let ws_item = items
             .iter()
             .find(|item| item.path() == workspace_dir.as_path())
-            .unwrap_or_else(|| std::process::abort());
+            .expect("find workspace root item");
         let RootItem::Rust(RustProject::Workspace(ws)) = ws_item else {
-            std::process::abort()
+            unreachable!("workspace root item should be a workspace")
         };
         assert_eq!(ws.groups().len(), 1);
         assert_eq!(ws.groups()[0].members().len(), 1);
@@ -177,15 +182,15 @@ mod tests {
 
     #[test]
     fn build_tree_assigns_workspace_path_dependency_to_member() {
-        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let tmp = tempfile::tempdir().expect("create path-dependency test tempdir");
         let workspace_dir = tmp.path().join("bevy_hana");
         let member_dir = workspace_dir.join("crates").join("bevy_diegetic");
         let sibling_dir = workspace_dir.join("crates").join("bevy_lagrange");
         let vendored_dir = workspace_dir.join("vendor").join("clay-layout");
 
-        std::fs::create_dir_all(&member_dir).unwrap_or_else(|_| std::process::abort());
-        std::fs::create_dir_all(&sibling_dir).unwrap_or_else(|_| std::process::abort());
-        std::fs::create_dir_all(&vendored_dir).unwrap_or_else(|_| std::process::abort());
+        std::fs::create_dir_all(&member_dir).expect("create workspace member directory");
+        std::fs::create_dir_all(&sibling_dir).expect("create sibling workspace member directory");
+        std::fs::create_dir_all(&vendored_dir).expect("create vendored dependency directory");
         std::fs::write(
             workspace_dir.join("Cargo.toml"),
             "[workspace]\n\
@@ -195,7 +200,7 @@ mod tests {
              [workspace.dependencies]\n\
              clay-layout = { path = \"vendor/clay-layout\" }\n",
         )
-        .unwrap_or_else(|_| std::process::abort());
+        .expect("write workspace dependency manifest fixture");
         std::fs::write(
             member_dir.join("Cargo.toml"),
             "[package]\n\
@@ -205,12 +210,12 @@ mod tests {
              [dev-dependencies]\n\
              clay-layout = { workspace = true }\n",
         )
-        .unwrap_or_else(|_| std::process::abort());
+        .expect("write member manifest fixture");
         std::fs::write(
             sibling_dir.join("Cargo.toml"),
             "[package]\nname = \"bevy_lagrange\"\nversion = \"0.1.0\"\n",
         )
-        .unwrap_or_else(|_| std::process::abort());
+        .expect("write sibling manifest fixture");
 
         let workspace = make_workspace(
             Some("bevy_hana"),
@@ -243,14 +248,14 @@ mod tests {
         );
 
         let RootItem::Rust(RustProject::Workspace(ws)) = &items[0] else {
-            std::process::abort()
+            unreachable!("tree root should be a workspace")
         };
         assert!(ws.vendored().is_empty());
         let member = ws.groups()[0]
             .members()
             .iter()
             .find(|member| member.path() == member_dir.as_path())
-            .unwrap_or_else(|| std::process::abort());
+            .expect("find workspace member with path dependency");
         assert_eq!(member.vendored().len(), 1);
         assert_eq!(member.vendored()[0].path(), vendored_dir.as_path());
     }
@@ -264,7 +269,7 @@ mod tests {
 
         assert_eq!(items.len(), 1);
         let RootItem::Worktrees(group) = &items[0] else {
-            std::process::abort()
+            unreachable!("merged package should produce a worktree group")
         };
         assert!(
             matches!(&group.primary, RustProject::Package(_)),

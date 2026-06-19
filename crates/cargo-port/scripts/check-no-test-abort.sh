@@ -13,17 +13,7 @@ expected_counts_file="$(mktemp -t cargo-port-abort-expected.XXXXXX)"
 failures_file="$(mktemp -t cargo-port-abort-failures.XXXXXX)"
 trap 'rm -f "${inventory_file}" "${actual_counts_file}" "${expected_counts_file}" "${failures_file}"' EXIT
 
-cat >"${expected_counts_file}" <<'EOF'
-src/project/git/discovery.rs 13
-src/scan/disk_usage.rs 15
-src/scan/tree/mod.rs 18
-src/tui/app/async_tasks/running_toasts.rs 1
-src/tui/app/mod.rs 250
-src/tui/panes/ci/render.rs 5
-src/tui/running_targets/app_tick.rs 1
-tui_pane/src/toasts/mod.rs 18
-tui_pane/src/toasts/render/mod.rs 8
-EOF
+: >"${expected_counts_file}"
 
 while IFS= read -r source_file; do
     while IFS= read -r match; do

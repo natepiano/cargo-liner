@@ -17,6 +17,8 @@ pub(crate) use canonical::canonical_code;
 pub(crate) use canonical::canonical_event_code_and_mods;
 pub(crate) use load::KeymapError;
 pub(crate) use load::KeymapErrorReason;
+#[cfg(test)]
+pub(crate) use load::KeymapPathOverrideGuard;
 pub(crate) use load::keymap_path;
 pub(crate) use load::load_keymap;
 pub(crate) use load::load_keymap_from_str;

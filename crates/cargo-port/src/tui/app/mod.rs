@@ -287,7 +287,7 @@ pub(super) struct App {
     /// impl-files reach pane state through this handle.
     pub(super) panes:              Panes,
     /// Background subsystem. Owns the four mpsc channel pairs plus
-    /// `watch_tx`. The `background_*` pair is replaced wholesale on every
+    /// the watcher handle. The `background_*` pair is replaced wholesale on every
     /// rescan via [`Background::swap_background_channel`]; the others outlive
     /// any single rescan.
     pub(super) background:         Background,
@@ -1602,6 +1602,7 @@ mod tests {
     use crate::tui::render_context::PaneRenderCtx;
     use crate::tui::state::CiStatusLookup;
     use crate::tui::test_support as tui_test_support;
+    use crate::tui::test_support::TestApp;
 
     mod background {
         use scan::CachedRepoData;
@@ -1612,6 +1613,7 @@ mod tests {
         use crate::project::AbsolutePath;
         use crate::project::ProjectPrData;
         use crate::tui::project_list::ExpandTarget;
+        use crate::tui::startup_services::WatcherHandle;
         use crate::watcher::WatcherMsg;
 
         #[test]
@@ -1645,7 +1647,8 @@ mod tests {
             );
             let mut app = make_app(&[]);
             let (watch_tx, watch_rx) = channel::unbounded();
-            app.background.replace_watcher_sender(watch_tx);
+            app.background
+                .replace_watcher(WatcherHandle::active(watch_tx));
 
             apply_bg_msg(
                 &mut app,
@@ -1689,7 +1692,8 @@ mod tests {
         fn empty_scan_result_finishes_watcher_registration_batch() {
             let mut app = make_app(&[]);
             let (watch_tx, watch_rx) = channel::unbounded();
-            app.background.replace_watcher_sender(watch_tx);
+            app.background
+                .replace_watcher(WatcherHandle::active(watch_tx));
 
             apply_bg_msg(
                 &mut app,
@@ -1836,7 +1840,7 @@ mod tests {
         #[test]
         fn external_config_reload_applies_valid_changes() {
             let mut app = make_app(&[]);
-            let dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let dir = tempfile::tempdir().expect("create test tempdir");
             let path = dir.path().join("config.toml");
 
             let mut cfg = CargoPortConfig::default();
@@ -1846,9 +1850,9 @@ mod tests {
             cfg.mouse.invert_scroll = ScrollDirection::Normal;
             std::fs::write(
                 &path,
-                toml::to_string_pretty(&cfg).unwrap_or_else(|_| std::process::abort()),
+                toml::to_string_pretty(&cfg).expect("serialize test config"),
             )
-            .unwrap_or_else(|_| std::process::abort());
+            .expect("write test file");
 
             app.config.force_reload_from(path);
             app.maybe_reload_config_from_disk();
@@ -1868,22 +1872,21 @@ mod tests {
         #[test]
         fn external_config_reload_keeps_last_good_config_on_parse_error() {
             let mut app = make_app(&[]);
-            let dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let dir = tempfile::tempdir().expect("create test tempdir");
             let path = dir.path().join("config.toml");
 
             let mut cfg = CargoPortConfig::default();
             cfg.tui.editor = "zed".to_string();
             std::fs::write(
                 &path,
-                toml::to_string_pretty(&cfg).unwrap_or_else(|_| std::process::abort()),
+                toml::to_string_pretty(&cfg).expect("serialize test config"),
             )
-            .unwrap_or_else(|_| std::process::abort());
+            .expect("write test file");
 
             app.config.force_reload_from(path.clone());
             app.maybe_reload_config_from_disk();
 
-            std::fs::write(&path, "[tui\neditor = \"vim\"\n")
-                .unwrap_or_else(|_| std::process::abort());
+            std::fs::write(&path, "[tui\neditor = \"vim\"\n").expect("write test file");
             app.config.force_reload_from(path);
             app.maybe_reload_config_from_disk();
 
@@ -1898,23 +1901,23 @@ mod tests {
         #[test]
         fn external_config_reload_keeps_last_good_config_on_validation_error() {
             let mut app = make_app(&[]);
-            let dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let dir = tempfile::tempdir().expect("create test tempdir");
             let path = dir.path().join("config.toml");
 
             let mut cfg = CargoPortConfig::default();
             cfg.tui.editor = "zed".to_string();
             std::fs::write(
                 &path,
-                toml::to_string_pretty(&cfg).unwrap_or_else(|_| std::process::abort()),
+                toml::to_string_pretty(&cfg).expect("serialize test config"),
             )
-            .unwrap_or_else(|_| std::process::abort());
+            .expect("write test file");
 
             app.config.force_reload_from(path.clone());
             app.maybe_reload_config_from_disk();
             let last_good_table = app.framework.settings_store().table().clone();
 
             std::fs::write(&path, "[tui]\neditor = \"vim\"\nmain_branch = \"\"\n")
-                .unwrap_or_else(|_| std::process::abort());
+                .expect("write test file");
             app.config.force_reload_from(path);
             app.maybe_reload_config_from_disk();
 
@@ -2791,6 +2794,8 @@ mod tests {
         //!   Git's flat fields and any remote without a URL).
 
         use std::fs;
+        use std::ops::Deref;
+        use std::ops::DerefMut;
         use std::path::Path;
         use std::rc::Rc;
 
@@ -2801,6 +2806,7 @@ mod tests {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
         use ratatui::text::Span;
+        use tempfile::TempDir;
         use toml::Table;
         use tui_pane::Action;
         use tui_pane::AppContext;
@@ -2889,26 +2895,109 @@ mod tests {
             }
         }
 
-        fn make_app_with_keymap_toml(projects: &[RootItem], toml: &str) -> App {
+        struct KeymapFixture<Guard> {
+            app:                        Option<App>,
+            keymap_path_override_guard: Option<Guard>,
+            temp_dir:                   Option<TempDir>,
+        }
+
+        impl<Guard> KeymapFixture<Guard> {
+            fn app(&self) -> &App {
+                self.app
+                    .as_ref()
+                    .expect("keymap fixture app should be live")
+            }
+
+            fn app_mut(&mut self) -> &mut App {
+                self.app
+                    .as_mut()
+                    .expect("keymap fixture app should be live")
+            }
+
+            fn keymap_path(&self) -> &Path {
+                self.app()
+                    .keymap
+                    .path()
+                    .expect("keymap fixture should use an on-disk keymap path")
+            }
+        }
+
+        impl<Guard> Deref for KeymapFixture<Guard> {
+            type Target = App;
+
+            fn deref(&self) -> &Self::Target { self.app() }
+        }
+
+        impl<Guard> DerefMut for KeymapFixture<Guard> {
+            fn deref_mut(&mut self) -> &mut Self::Target { self.app_mut() }
+        }
+
+        impl<Guard> Drop for KeymapFixture<Guard> {
+            fn drop(&mut self) {
+                drop(self.app.take());
+                drop(self.keymap_path_override_guard.take());
+                drop(self.temp_dir.take());
+            }
+        }
+
+        fn keymap_fixture_with_config(
+            projects: &[RootItem],
+            cfg: &CargoPortConfig,
+            toml: &str,
+        ) -> KeymapFixture<impl Sized + use<>> {
             let temp_dir = tempfile::tempdir().expect("tempdir");
             let toml_path = temp_dir.path().join("keymap.toml");
             fs::write(&toml_path, toml).expect("write keymap toml");
-            let _keymap_path = keymap::override_keymap_path_for_test(toml_path);
-            make_app(projects)
+            let keymap_path_override_guard = keymap::override_keymap_path_for_test(toml_path);
+            let app = super::make_app_with_config(projects, cfg);
+            KeymapFixture {
+                app:                        Some(app),
+                keymap_path_override_guard: Some(keymap_path_override_guard),
+                temp_dir:                   Some(temp_dir),
+            }
+        }
+
+        fn make_app_with_keymap_toml(
+            projects: &[RootItem],
+            toml: &str,
+        ) -> KeymapFixture<impl Sized + use<>> {
+            keymap_fixture_with_config(projects, &CargoPortConfig::default(), toml)
         }
 
         fn make_app_with_config_and_keymap_toml(
             projects: &[RootItem],
             cfg: &CargoPortConfig,
             toml: &str,
-        ) -> App {
-            let temp_dir = tempfile::tempdir().expect("tempdir");
-            let toml_path = temp_dir.path().join("keymap.toml");
-            fs::write(&toml_path, toml).expect("write keymap toml");
-            let keymap_path_guard = keymap::override_keymap_path_for_test(toml_path);
-            let app = super::make_app_with_config(projects, cfg);
-            drop(keymap_path_guard);
-            app
+        ) -> KeymapFixture<impl Sized + use<>> {
+            keymap_fixture_with_config(projects, cfg, toml)
+        }
+
+        fn app_returned_from_keymap_helper() -> KeymapFixture<impl Sized + use<>> {
+            let project = super::make_project(Some("demo"), "~/demo");
+            make_app_with_keymap_toml(&[project], "[output]\ncancel = \"Esc\"\n")
+        }
+
+        #[test]
+        fn helper_returned_keymap_fixture_reloads_from_app_path() {
+            let mut app = app_returned_from_keymap_helper();
+            let toml_path = app.keymap_path().to_path_buf();
+
+            assert!(
+                toml_path.exists(),
+                "fixture-owned keymap file should exist after helper return",
+            );
+
+            fs::write(&toml_path, "[output]\ncancel = \"q\"\n").expect("rewrite keymap toml");
+            app.maybe_reload_keymap_from_disk();
+
+            assert_eq!(
+                app.framework_keymap
+                    .key_for_toml_key(AppPaneId::Output, OutputAction::Cancel.toml_key()),
+                Some(tui_pane::KeySequence::from(KeyBind {
+                    code: KeyCode::Char('q'),
+                    mods: KeyModifiers::NONE,
+                })),
+            );
         }
 
         fn press(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
@@ -2925,11 +3014,11 @@ mod tests {
             app.ensure_visible_rows_cached();
             app.ensure_detail_cached();
             let backend = TestBackend::new(width, height);
-            let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
+            let mut terminal = Terminal::new(backend).expect("create test terminal");
             terminal
                 .draw(|frame| render::ui(frame, app))
-                .unwrap_or_else(|_| std::process::abort());
-            let area = terminal.size().unwrap_or_else(|_| std::process::abort());
+                .expect("draw test frame");
+            let area = terminal.size().expect("read test terminal size");
             let buffer = terminal.backend().buffer();
             let mut text = String::new();
             for y in 0..area.height {
@@ -4773,10 +4862,10 @@ mod tests {
             app.ensure_visible_rows_cached();
             app.ensure_detail_cached();
             let backend = TestBackend::new(120, 40);
-            let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
+            let mut terminal = Terminal::new(backend).expect("create test terminal");
             terminal
                 .draw(|frame| render::ui(frame, app))
-                .unwrap_or_else(|_| std::process::abort());
+                .expect("draw test frame");
         }
 
         fn render_lints_panel(app: &mut App, runs: &[LintRun]) {
@@ -4789,7 +4878,7 @@ mod tests {
                 project_kind: LintsProjectKind::Rust,
             });
             let backend = TestBackend::new(120, 20);
-            let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
+            let mut terminal = Terminal::new(backend).expect("create test terminal");
             let focus = RenderFocus {
                 pane_focus_state: app.pane_focus_state(PaneId::Lints),
             };
@@ -4816,14 +4905,14 @@ mod tests {
                         &split.pane_render_ctx,
                     );
                 })
-                .unwrap_or_else(|_| std::process::abort());
+                .expect("draw test frame");
         }
 
         fn render_ci_panel(app: &mut App, runs: &[CiRun]) {
             app.ensure_detail_cached();
             app.ci.override_runs_for_test(runs.to_vec());
             let backend = TestBackend::new(120, 20);
-            let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
+            let mut terminal = Terminal::new(backend).expect("create test terminal");
             let focus = RenderFocus {
                 pane_focus_state: app.pane_focus_state(PaneId::CiRuns),
             };
@@ -4850,7 +4939,7 @@ mod tests {
                         &split.pane_render_ctx,
                     );
                 })
-                .unwrap_or_else(|_| std::process::abort());
+                .expect("draw test frame");
         }
 
         fn click(app: &mut App, column: u16, row: u16) {
@@ -5078,7 +5167,7 @@ mod tests {
                 .find(|h| h.id == toast_id)
                 .map(|h| h.close_rect)
             else {
-                std::process::abort();
+                panic!("toast close hit should be rendered for test toast");
             };
             (
                 rect.x.saturating_add(rect.width.saturating_sub(1) / 2),
@@ -5095,7 +5184,7 @@ mod tests {
                 .find(|h| h.id == toast_id)
                 .map(|h| h.card_rect)
             else {
-                std::process::abort();
+                panic!("toast body hit should be rendered for test toast");
             };
             (
                 rect.x.saturating_add(rect.width.saturating_sub(1) / 2),
@@ -5107,16 +5196,16 @@ mod tests {
             let project = app
                 .project_list
                 .at_path_mut(path)
-                .unwrap_or_else(|| std::process::abort());
+                .expect("test project should exist in project list");
             project.disk_usage_bytes = Some(0);
             project.visibility = Visibility::Deleted;
         }
 
         #[test]
         fn deleted_project_row_mouse_click_dismisses_it() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let deleted_dir = tmp.path().join("deleted");
-            std::fs::create_dir_all(&deleted_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&deleted_dir).expect("create test directory");
 
             let mut app = make_app(&[make_package("deleted", &deleted_dir)]);
             mark_deleted(&mut app, &deleted_dir);
@@ -5134,9 +5223,9 @@ mod tests {
 
         #[test]
         fn mouse_and_keyboard_dismiss_resolve_same_deleted_project_target() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let deleted_dir = tmp.path().join("deleted");
-            std::fs::create_dir_all(&deleted_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&deleted_dir).expect("create test directory");
 
             let mut app = make_app(&[make_package("deleted", &deleted_dir)]);
             mark_deleted(&mut app, &deleted_dir);
@@ -5145,31 +5234,31 @@ mod tests {
 
             let keyboard_target = app
                 .focused_dismiss_target()
-                .unwrap_or_else(|| std::process::abort());
+                .expect("deleted project should have a focused dismiss target");
             let (x, y) = row_dismiss_point(&app, 0);
             let Some(hit) = interaction::hit_test_at(&app, Position::new(x, y)) else {
-                std::process::abort();
+                panic!("deleted row dismiss point should hit a target");
             };
             let HoverTarget::Dismiss(mouse_target) = hit else {
-                std::process::abort();
+                unreachable!("deleted row dismiss point should hit dismiss target");
             };
 
             let DismissTarget::DeletedProject(lhs) = keyboard_target else {
-                std::process::abort();
+                unreachable!("keyboard dismiss target should be deleted project");
             };
             let DismissTarget::DeletedProject(rhs) = mouse_target else {
-                std::process::abort();
+                unreachable!("mouse dismiss target should be deleted project");
             };
             assert_eq!(lhs, rhs);
         }
 
         #[test]
         fn row_body_click_selects_clicked_project() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let first = tmp.path().join("first");
             let second = tmp.path().join("second");
-            std::fs::create_dir_all(&first).unwrap_or_else(|_| std::process::abort());
-            std::fs::create_dir_all(&second).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&first).expect("create test directory");
+            std::fs::create_dir_all(&second).expect("create test directory");
 
             let mut app = make_app(&[
                 make_package("first", &first),
@@ -5192,16 +5281,16 @@ mod tests {
 
         #[test]
         fn expandable_project_row_click_toggles_children() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let root_dir = tmp.path().join("demo");
             let sub_dir = root_dir.join("vendor").join("dep");
-            std::fs::create_dir_all(&sub_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&sub_dir).expect("create test directory");
 
             let root = make_package("demo", &root_dir);
             let mut app = make_app(&[root]);
             app.project_list
                 .at_path_mut(&root_dir)
-                .unwrap_or_else(|| std::process::abort())
+                .expect("test project should exist in project list")
                 .submodules
                 .push(Submodule {
                     name:          "vendor/dep".to_string(),
@@ -5232,16 +5321,16 @@ mod tests {
 
         #[test]
         fn focus_gained_on_project_row_selects_without_toggling_children() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let root_dir = tmp.path().join("demo");
             let sub_dir = root_dir.join("vendor").join("dep");
-            std::fs::create_dir_all(&sub_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&sub_dir).expect("create test directory");
 
             let root = make_package("demo", &root_dir);
             let mut app = make_app(&[root]);
             app.project_list
                 .at_path_mut(&root_dir)
-                .unwrap_or_else(|| std::process::abort())
+                .expect("test project should exist in project list")
                 .submodules
                 .push(Submodule {
                     name:          "vendor/dep".to_string(),
@@ -5279,11 +5368,11 @@ mod tests {
 
         #[test]
         fn hovered_pane_row_resolves_project_list_rows() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let first = tmp.path().join("first");
             let second = tmp.path().join("second");
-            std::fs::create_dir_all(&first).unwrap_or_else(|_| std::process::abort());
-            std::fs::create_dir_all(&second).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&first).expect("create test directory");
+            std::fs::create_dir_all(&second).expect("create test directory");
 
             let mut app = make_app(&[
                 make_package("first", &first),
@@ -5303,11 +5392,11 @@ mod tests {
 
         #[test]
         fn finder_row_click_uses_result_index_not_visual_table_row() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let alpha = tmp.path().join("alpha");
             let beta = tmp.path().join("beta");
-            std::fs::create_dir_all(&alpha).unwrap_or_else(|_| std::process::abort());
-            std::fs::create_dir_all(&beta).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&alpha).expect("create test directory");
+            std::fs::create_dir_all(&beta).expect("create test directory");
 
             let mut app = make_app(&[make_package("alpha", &alpha), make_package("beta", &beta)]);
             let (index, col_widths) = finder::build_finder_index(&app.project_list);
@@ -5334,10 +5423,10 @@ mod tests {
 
         #[test]
         fn git_hover_uses_owner_backed_pane_surface_for_workspace_member() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let workspace = tmp.path().join("ws");
             let member = workspace.join("core");
-            std::fs::create_dir_all(&member).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&member).expect("create test directory");
 
             let root = make_workspace_with_members(
                 "ws",
@@ -5403,11 +5492,11 @@ mod tests {
             overlay_name: &str,
             open_overlay: fn(&mut App),
         ) {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let first = tmp.path().join("first");
             let second = tmp.path().join("second");
-            std::fs::create_dir_all(&first).unwrap_or_else(|_| std::process::abort());
-            std::fs::create_dir_all(&second).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&first).expect("create test directory");
+            std::fs::create_dir_all(&second).expect("create test directory");
             let mut app = make_app(&[
                 make_package("first", &first),
                 make_package("second", &second),
@@ -5546,9 +5635,9 @@ mod tests {
 
         #[test]
         fn lint_row_click_uses_run_index_not_header_row() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let project_dir = tmp.path().join("demo");
-            std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&project_dir).expect("create test directory");
 
             let mut app = make_app(&[make_package("demo", &project_dir)]);
             let runs = vec![
@@ -5569,9 +5658,9 @@ mod tests {
 
         #[test]
         fn ci_row_click_uses_run_index_not_header_row() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let project_dir = tmp.path().join("demo");
-            std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&project_dir).expect("create test directory");
 
             let mut app = make_app(&[make_package_with_cargo(
                 "demo",
@@ -5645,11 +5734,11 @@ mod tests {
 
         #[test]
         fn old_dismiss_click_location_does_not_dismiss_surviving_row_after_rerender() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let deleted_dir = tmp.path().join("deleted");
             let live_dir = tmp.path().join("live");
-            std::fs::create_dir_all(&deleted_dir).unwrap_or_else(|_| std::process::abort());
-            std::fs::create_dir_all(&live_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&deleted_dir).expect("create test directory");
+            std::fs::create_dir_all(&live_dir).expect("create test directory");
 
             let mut app = make_app(&[
                 make_package("deleted", &deleted_dir),
@@ -5662,7 +5751,7 @@ mod tests {
             app.project_list.set_cursor(0);
             let target = app
                 .focused_dismiss_target()
-                .unwrap_or_else(|| std::process::abort());
+                .expect("deleted project should have a focused dismiss target");
             app.dismiss(target);
             render_ui(&mut app);
 
@@ -5715,9 +5804,9 @@ mod tests {
 
         #[test]
         fn toast_body_click_focuses_toast_over_underlying_content() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let project_dir = tmp.path().join("demo");
-            std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&project_dir).expect("create test directory");
 
             let mut app = make_app(&[make_package("demo", &project_dir)]);
             let toast_id = app.framework.toasts.push_persistent(
@@ -5743,9 +5832,9 @@ mod tests {
 
         #[test]
         fn package_pane_row_click_selects_field() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let project_dir = tmp.path().join("demo");
-            std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&project_dir).expect("create test directory");
 
             let mut app = make_app(&[make_package("demo", &project_dir)]);
             render_ui(&mut app);
@@ -5759,9 +5848,9 @@ mod tests {
 
         #[test]
         fn edge_scroll_down_past_bottom_advances_to_next_pane() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let project_dir = tmp.path().join("demo");
-            std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&project_dir).expect("create test directory");
 
             let mut app = make_app(&[make_package("demo", &project_dir)]);
             app.config.current_mut().tui.edge_scroll = EdgeScroll::AdvancesPane;
@@ -5784,9 +5873,9 @@ mod tests {
 
         #[test]
         fn edge_scroll_down_past_last_toast_advances_to_next_pane() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let project_dir = tmp.path().join("demo");
-            std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&project_dir).expect("create test directory");
 
             let mut app = make_app(&[make_package("demo", &project_dir)]);
             app.config.current_mut().tui.edge_scroll = EdgeScroll::AdvancesPane;
@@ -5816,9 +5905,9 @@ mod tests {
 
         #[test]
         fn edge_scroll_off_holds_focus_at_list_edge() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let project_dir = tmp.path().join("demo");
-            std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&project_dir).expect("create test directory");
 
             let mut app = make_app(&[make_package("demo", &project_dir)]);
             render_ui(&mut app);
@@ -5840,9 +5929,9 @@ mod tests {
 
         #[test]
         fn package_pane_description_row_click_selects_first_row() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let project_dir = tmp.path().join("demo");
-            std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&project_dir).expect("create test directory");
 
             let mut app = make_app(&[make_package("demo", &project_dir)]);
             app.panes.package.viewport.set_pos(1);
@@ -5857,11 +5946,11 @@ mod tests {
 
         #[test]
         fn package_pane_section_row_click_is_ignored() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let primary = tmp.path().join("demo");
             let linked = tmp.path().join("demo_fix");
-            std::fs::create_dir_all(&primary).unwrap_or_else(|_| std::process::abort());
-            std::fs::create_dir_all(&linked).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&primary).expect("create test directory");
+            std::fs::create_dir_all(&linked).expect("create test directory");
 
             let mut app = make_app(&[RootItem::Worktrees(WorktreeGroup::new(
                 RustProject::Package(make_package_worktree(
@@ -5900,11 +5989,11 @@ mod tests {
 
         #[test]
         fn package_pane_keyboard_navigation_skips_section_rows() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let primary = tmp.path().join("demo");
             let linked = tmp.path().join("demo_fix");
-            std::fs::create_dir_all(&primary).unwrap_or_else(|_| std::process::abort());
-            std::fs::create_dir_all(&linked).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&primary).expect("create test directory");
+            std::fs::create_dir_all(&linked).expect("create test directory");
 
             let mut app = make_app(&[RootItem::Worktrees(WorktreeGroup::new(
                 RustProject::Package(make_package_worktree(
@@ -5947,9 +6036,9 @@ mod tests {
 
         #[test]
         fn package_pane_structure_rows_are_clickable_after_metadata_rows() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let project = tmp.path().join("app");
-            std::fs::create_dir_all(&project).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&project).expect("create test directory");
             let cargo = Cargo {
                 types:          vec![ProjectType::Library],
                 examples:       vec![ExampleGroup {
@@ -5990,9 +6079,9 @@ mod tests {
             // The Targets pane sources its data from the `cargo metadata`
             // result. Populate two Example targets via a CargoMetadata
             // arrival so the pane has at least two rows to click on.
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let project_dir = tmp.path().join("demo");
-            std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&project_dir).expect("create test directory");
 
             let mut app = make_app(&[make_package("demo", &project_dir)]);
             let make_target = |name: &str| TargetRecord {
@@ -6023,7 +6112,7 @@ mod tests {
             app.scan
                 .metadata_store_handle()
                 .lock()
-                .unwrap_or_else(|_| std::process::abort())
+                .expect("lock test store")
                 .upsert(WorkspaceMetadata {
                     workspace_root: AbsolutePath::from(project_dir.clone()),
                     target_directory: AbsolutePath::from(project_dir.join("target")),
@@ -6197,9 +6286,9 @@ mod tests {
 
         #[test]
         fn git_pane_row_click_selects_field() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let project_dir = tmp.path().join("demo");
-            std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&project_dir).expect("create test directory");
 
             let mut app = make_app(&[make_package("demo", &project_dir)]);
             let (checkout, repo) = make_git_info(Some("https://github.com/natepiano/demo"));
@@ -6216,9 +6305,9 @@ mod tests {
 
         #[test]
         fn git_pane_description_row_click_selects_first_row() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let project_dir = tmp.path().join("demo");
-            std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&project_dir).expect("create test directory");
 
             let mut app = make_app(&[make_package("demo", &project_dir)]);
             let (checkout, repo) = make_git_info(Some("https://github.com/natepiano/demo"));
@@ -6256,11 +6345,11 @@ mod tests {
             app.ensure_visible_rows_cached();
             app.ensure_detail_cached();
             let backend = TestBackend::new(width, height);
-            let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
+            let mut terminal = Terminal::new(backend).expect("create test terminal");
             terminal
                 .draw(|frame| render::ui(frame, app))
-                .unwrap_or_else(|_| std::process::abort());
-            let area = terminal.size().unwrap_or_else(|_| std::process::abort());
+                .expect("draw test frame");
+            let area = terminal.size().expect("read test terminal size");
             let buffer = terminal.backend().buffer();
             let mut text = String::new();
             for y in 0..area.height {
@@ -6277,7 +6366,7 @@ mod tests {
                 .map(|index| {
                     let name = format!("project-{index:02}");
                     let dir = tmp.path().join(&name);
-                    std::fs::create_dir_all(&dir).unwrap_or_else(|_| std::process::abort());
+                    std::fs::create_dir_all(&dir).expect("create test directory");
                     make_package(&name, &dir)
                 })
                 .collect()
@@ -6285,7 +6374,7 @@ mod tests {
 
         #[test]
         fn project_list_renders_framework_overflow_affordance() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let projects = make_many_packages(&tmp, 40);
             let mut app = make_app(&projects);
 
@@ -6299,7 +6388,7 @@ mod tests {
 
         #[test]
         fn finder_results_render_framework_overflow_affordance() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let projects = make_many_packages(&tmp, 40);
             let mut app = make_app(&projects);
             input::open_finder(&mut app);
@@ -6332,16 +6421,16 @@ mod tests {
 
         #[test]
         fn clean_confirm_popup_shows_resolved_out_of_tree_target_dir() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let project_dir = tmp.path().join("demo");
-            std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&project_dir).expect("create test directory");
             let mut app = make_app(&[make_package("demo", &project_dir)]);
 
             let custom_target = tmp.path().join("out-of-tree-target");
             app.scan
                 .metadata_store_handle()
                 .lock()
-                .unwrap_or_else(|_| std::process::abort())
+                .expect("lock test store")
                 .upsert(WorkspaceMetadata {
                     workspace_root:           AbsolutePath::from(project_dir.clone()),
                     target_directory:         AbsolutePath::from(custom_target.clone()),
@@ -6414,15 +6503,15 @@ mod tests {
             app.scan
                 .metadata_store_handle()
                 .lock()
-                .unwrap_or_else(|_| std::process::abort())
+                .expect("lock test store")
                 .upsert(workspace_metadata);
         }
 
         #[test]
         fn package_pane_renders_metadata_edition_license_homepage_repository() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let project_dir = tmp.path().join("demo");
-            std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&project_dir).expect("create test directory");
             let mut app = make_app(&[make_package("demo", &project_dir)]);
             upsert_fake_package_metadata(
                 &app,
@@ -6455,9 +6544,9 @@ mod tests {
 
         #[test]
         fn package_pane_renders_em_dash_for_missing_metadata_fields() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let project_dir = tmp.path().join("demo");
-            std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&project_dir).expect("create test directory");
             let mut app = make_app(&[make_package("demo", &project_dir)]);
             upsert_fake_package_metadata(&app, &project_dir, None, None, None);
             // Taller backend so the full field list fits — see the sibling
@@ -6482,9 +6571,9 @@ mod tests {
             // so the user can see at a glance which half of their disk is
             // build artifact vs source. Uses the bytes reported by
             // handle_bg_msg::DiskUsageBatch.
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let project_dir = tmp.path().join("demo");
-            std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&project_dir).expect("create test directory");
             let mut app = make_app(&[make_package("demo", &project_dir)]);
 
             // Stage a disk-usage batch with a clearly-split breakdown.
@@ -6528,17 +6617,17 @@ mod tests {
             // ancestor .cargo/config.toml), the per-project walker can't
             // reach it. The cached walk fills in the sharer target size,
             // which shows up beneath Disk as `target/ (out of tree)`.
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let project_dir = tmp.path().join("demo");
             let shared_target = tmp.path().join("shared-target");
-            std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&project_dir).expect("create test directory");
             let mut app = make_app(&[make_package("demo", &project_dir)]);
 
             let root = AbsolutePath::from(project_dir);
             let target = AbsolutePath::from(shared_target);
             {
                 let store = app.scan.metadata_store_handle();
-                let mut guard = store.lock().unwrap_or_else(|_| std::process::abort());
+                let mut guard = store.lock().expect("lock test store");
                 guard.upsert(WorkspaceMetadata {
                     workspace_root:           root,
                     target_directory:         target,
@@ -6618,7 +6707,7 @@ mod tests {
                 let store = app.scan.metadata_store_handle();
                 let generation = store
                     .lock()
-                    .unwrap_or_else(|_| std::process::abort())
+                    .expect("lock test store")
                     .next_generation(&root);
                 app.handle_bg_msg(BackgroundMsg::CargoMetadata {
                     workspace_root: root,
@@ -6631,14 +6720,14 @@ mod tests {
 
         #[test]
         fn clean_confirm_popup_lists_affected_siblings_on_shared_target() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let primary_dir = tmp.path().join("main");
             let sibling_dir = tmp.path().join("feat");
             let target_dir = tmp.path().join("shared-target");
             for dir in [&primary_dir, &sibling_dir] {
-                std::fs::create_dir_all(dir).unwrap_or_else(|_| std::process::abort());
+                std::fs::create_dir_all(dir).expect("create test directory");
             }
-            std::fs::create_dir_all(&target_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&target_dir).expect("create test directory");
 
             let mut app = make_app(&[
                 make_package("main", &primary_dir),
@@ -6667,9 +6756,9 @@ mod tests {
 
         #[test]
         fn clean_confirm_popup_falls_back_to_in_tree_target_without_metadata() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let project_dir = tmp.path().join("demo");
-            std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&project_dir).expect("create test directory");
             let mut app = make_app(&[make_package("demo", &project_dir)]);
 
             app.set_confirm(ConfirmAction::Clean(AbsolutePath::from(
@@ -6691,12 +6780,12 @@ mod tests {
             // confirm popup with every checkout listed — the UX regression
             // was that the WorktreeGroup arm was stubbed out so the popup
             // never appeared at all.
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let primary = tmp.path().join("main");
             let linked_a = tmp.path().join("feat-a");
             let linked_b = tmp.path().join("feat-b");
             for dir in [&primary, &linked_a, &linked_b] {
-                std::fs::create_dir_all(dir).unwrap_or_else(|_| std::process::abort());
+                std::fs::create_dir_all(dir).expect("create test directory");
             }
 
             let mut app = make_app(&[]);
@@ -7254,10 +7343,10 @@ mod tests {
             );
 
             let backend = TestBackend::new(120, 40);
-            let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
+            let mut terminal = Terminal::new(backend).expect("create test terminal");
             terminal
                 .draw(|frame| render::ui(frame, &mut app))
-                .unwrap_or_else(|_| std::process::abort());
+                .expect("draw test frame");
             let buffer = terminal.backend().buffer().clone();
             let area = buffer.area;
 
@@ -7297,10 +7386,10 @@ mod tests {
             assert_eq!(app.focused_pane_id(), PaneId::Output);
 
             let backend = TestBackend::new(120, 40);
-            let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
+            let mut terminal = Terminal::new(backend).expect("create test terminal");
             terminal
                 .draw(|frame| render::ui(frame, &mut app))
-                .unwrap_or_else(|_| std::process::abort());
+                .expect("draw test frame");
             let buffer = terminal.backend().buffer().clone();
             let area = buffer.area;
 
@@ -7573,7 +7662,7 @@ mod tests {
                 vec![inline_group(vec![core, cli])],
             );
             let RootItem::Rust(RustProject::Workspace(ws)) = &mut root else {
-                std::process::abort();
+                unreachable!("test root should be a workspace");
             };
             ws.rust.cargo = Cargo {
                 types:          vec![ProjectType::Workspace],
@@ -7598,7 +7687,7 @@ mod tests {
                 .panes
                 .package
                 .content()
-                .unwrap_or_else(|| std::process::abort());
+                .expect("pane should have rendered test content");
             assert_eq!(
                 package.stats_rows,
                 vec![
@@ -7639,7 +7728,7 @@ mod tests {
                 .panes
                 .package
                 .content()
-                .unwrap_or_else(|| std::process::abort());
+                .expect("pane should have rendered test content");
             assert_eq!(package.stats_rows, vec![("vendored", 2), ("bin", 1)]);
         }
 
@@ -7681,7 +7770,7 @@ mod tests {
             app.scan
                 .metadata_store_handle()
                 .lock()
-                .unwrap_or_else(|_| std::process::abort())
+                .expect("lock test store")
                 .upsert(WorkspaceMetadata {
                     workspace_root: project_path.clone(),
                     target_directory: AbsolutePath::from(project_path.as_path().join("target")),
@@ -7760,11 +7849,11 @@ mod tests {
             let cpu_index = expected_without_toasts
                 .iter()
                 .position(|pane| *pane == PaneId::Cpu)
-                .unwrap_or_else(|| std::process::abort());
+                .expect("CPU pane should be tabbable");
             let targets_index = expected_without_toasts
                 .iter()
                 .position(|pane| *pane == PaneId::Targets)
-                .unwrap_or_else(|| std::process::abort());
+                .expect("Targets pane should be tabbable");
             assert!(cpu_index < targets_index);
 
             app.show_timed_toast("Settings", "Updated");
@@ -7886,7 +7975,7 @@ mod tests {
                 .scan
                 .metadata_store_handle()
                 .lock()
-                .unwrap_or_else(|_| std::process::abort())
+                .expect("lock test store")
                 .next_generation(&workspace_root);
             app.handle_bg_msg(BackgroundMsg::CargoMetadata {
                 workspace_root,
@@ -8069,10 +8158,10 @@ mod tests {
 
         #[test]
         fn zero_byte_update_marks_deleted_child_member() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let workspace_dir = tmp.path().join("hana");
             let member_dir = workspace_dir.join("crates").join("clay-layout");
-            std::fs::create_dir_all(&member_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&member_dir).expect("create test directory");
 
             let ws_path = workspace_dir.to_string_lossy().to_string();
             let member_path = member_dir.to_string_lossy().to_string();
@@ -8091,15 +8180,15 @@ mod tests {
             let mut app = make_app(&[workspace, member]);
             apply_items(&mut app, &[root]);
 
-            std::fs::remove_dir_all(&member_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::remove_dir_all(&member_dir).expect("remove test directory");
             app.handle_disk_usage(Path::new(&member_path), 0);
         }
 
         #[test]
         fn top_level_deleted_project_enters_deleted_state_and_renders_as_deleted() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let project_dir = tmp.path().join("demo");
-            std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&project_dir).expect("create test directory");
 
             let project_path = project_dir.to_string_lossy().to_string();
             let project = make_project(Some("demo"), &project_path);
@@ -8112,7 +8201,7 @@ mod tests {
                 "top-level project should render"
             );
 
-            std::fs::remove_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::remove_dir_all(&project_dir).expect("remove test directory");
             app.handle_disk_usage(Path::new(&project_path), 0);
 
             let abs_path = AbsolutePath::from(project_path.clone());
@@ -8188,9 +8277,9 @@ mod tests {
 
         #[test]
         fn top_level_deleted_project_can_be_dismissed_and_stops_rendering() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let project_dir = tmp.path().join("demo");
-            std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&project_dir).expect("create test directory");
 
             let project_path = project_dir.to_string_lossy().to_string();
             let project = make_project(Some("demo"), &project_path);
@@ -8203,7 +8292,7 @@ mod tests {
                 "top-level project should render"
             );
 
-            std::fs::remove_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::remove_dir_all(&project_dir).expect("remove test directory");
             app.handle_disk_usage(Path::new(&project_path), 0);
 
             let abs_path = AbsolutePath::from(project_path.clone());
@@ -8287,10 +8376,10 @@ mod tests {
 
         #[test]
         fn submodule_rows_render_disk_usage() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let root_dir = tmp.path().join("blender");
             let sub_dir = root_dir.join("lib").join("linux_x64");
-            std::fs::create_dir_all(&sub_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&sub_dir).expect("create test directory");
 
             let root_path = root_dir.to_string_lossy().to_string();
             let sub_path = sub_dir.to_string_lossy().to_string();
@@ -8300,7 +8389,7 @@ mod tests {
             let root_info = app
                 .project_list
                 .at_path_mut(Path::new(&root_path))
-                .unwrap_or_else(|| std::process::abort());
+                .expect("test project should exist in project list");
             root_info.submodules.push(Submodule {
                 name:          "lib/linux_x64".to_string(),
                 path:          AbsolutePath::from(sub_path.clone()),
@@ -8803,11 +8892,11 @@ mod tests {
 
         #[test]
         fn dismissing_deleted_linked_worktree_promotes_primary_back_to_root() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let primary_dir = tmp.path().join("app");
             let linked_dir = tmp.path().join("app_feat");
-            std::fs::create_dir_all(&primary_dir).unwrap_or_else(|_| std::process::abort());
-            std::fs::create_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&primary_dir).expect("create test directory");
+            std::fs::create_dir_all(&linked_dir).expect("create test directory");
 
             let primary_path = primary_dir.to_string_lossy().to_string();
             let linked_path = linked_dir.to_string_lossy().to_string();
@@ -8826,7 +8915,7 @@ mod tests {
             app.ensure_visible_rows_cached();
             assert_eq!(app.visible_rows().len(), 3, "root + 2 worktree entries");
 
-            std::fs::remove_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::remove_dir_all(&linked_dir).expect("remove test directory");
             app.handle_disk_usage(Path::new(&linked_path), 0);
 
             let linked_abs = AbsolutePath::from(linked_path.clone());
@@ -8881,11 +8970,11 @@ mod tests {
 
         #[test]
         fn dismissing_deleted_linked_workspace_worktree_promotes_primary_back_to_root() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let primary_dir = tmp.path().join("ws");
             let linked_dir = tmp.path().join("ws_feat");
-            std::fs::create_dir_all(&primary_dir).unwrap_or_else(|_| std::process::abort());
-            std::fs::create_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&primary_dir).expect("create test directory");
+            std::fs::create_dir_all(&linked_dir).expect("create test directory");
 
             let primary_path = primary_dir.to_string_lossy().to_string();
             let linked_path = linked_dir.to_string_lossy().to_string();
@@ -8905,7 +8994,7 @@ mod tests {
             app.ensure_visible_rows_cached();
             assert_eq!(app.visible_rows().len(), 3, "root + 2 worktree entries");
 
-            std::fs::remove_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::remove_dir_all(&linked_dir).expect("remove test directory");
             apply_bg_msg(
                 &mut app,
                 BackgroundMsg::DiskUsage {
@@ -8954,11 +9043,11 @@ mod tests {
 
         #[test]
         fn dismissing_deleted_linked_workspace_worktree_keeps_primary_member_rows_rendered() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let primary_dir = tmp.path().join("bevy_brp");
             let linked_dir = tmp.path().join("bevy_brp_style_fix");
-            std::fs::create_dir_all(&primary_dir).unwrap_or_else(|_| std::process::abort());
-            std::fs::create_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&primary_dir).expect("create test directory");
+            std::fs::create_dir_all(&linked_dir).expect("create test directory");
 
             let primary_path = primary_dir.to_string_lossy().to_string();
             let linked_path = linked_dir.to_string_lossy().to_string();
@@ -8984,7 +9073,7 @@ mod tests {
             assert!(app.expand(), "root worktree group should expand");
             app.ensure_visible_rows_cached();
 
-            std::fs::remove_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::remove_dir_all(&linked_dir).expect("remove test directory");
             apply_bg_msg(
                 &mut app,
                 BackgroundMsg::DiskUsage {
@@ -9022,12 +9111,12 @@ mod tests {
 
         #[test]
         fn dismissing_deleted_linked_workspace_worktree_preserves_primary_member_disk_sizes() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let primary_dir = tmp.path().join("bevy_brp");
             let linked_dir = tmp.path().join("bevy_brp_style_fix");
             let member_dir = primary_dir.join("crates").join("bevy_brp");
-            std::fs::create_dir_all(&member_dir).unwrap_or_else(|_| std::process::abort());
-            std::fs::create_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&member_dir).expect("create test directory");
+            std::fs::create_dir_all(&linked_dir).expect("create test directory");
 
             let primary_path = primary_dir.to_string_lossy().to_string();
             let linked_path = linked_dir.to_string_lossy().to_string();
@@ -9062,7 +9151,7 @@ mod tests {
             );
             app.ensure_visible_rows_cached();
 
-            std::fs::remove_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::remove_dir_all(&linked_dir).expect("remove test directory");
             apply_bg_msg(
                 &mut app,
                 BackgroundMsg::DiskUsage {
@@ -9097,11 +9186,11 @@ mod tests {
 
         #[test]
         fn deleted_linked_workspace_children_render_crossed_out_before_dismiss() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let primary_dir = tmp.path().join("bevy_brp");
             let linked_dir = tmp.path().join("bevy_brp_test");
-            std::fs::create_dir_all(&primary_dir).unwrap_or_else(|_| std::process::abort());
-            std::fs::create_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&primary_dir).expect("create test directory");
+            std::fs::create_dir_all(&linked_dir).expect("create test directory");
 
             let primary_path = primary_dir.to_string_lossy().to_string();
             let linked_path = linked_dir.to_string_lossy().to_string();
@@ -9133,7 +9222,7 @@ mod tests {
             assert!(app.expand(), "linked worktree row should expand");
             app.ensure_visible_rows_cached();
 
-            std::fs::remove_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::remove_dir_all(&linked_dir).expect("remove test directory");
             apply_bg_msg(
                 &mut app,
                 BackgroundMsg::DiskUsage {
@@ -9164,11 +9253,11 @@ mod tests {
 
         #[test]
         fn dismissing_deleted_linked_workspace_member_dismisses_whole_worktree() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let primary_dir = tmp.path().join("bevy_brp");
             let linked_dir = tmp.path().join("bevy_brp_test");
-            std::fs::create_dir_all(&primary_dir).unwrap_or_else(|_| std::process::abort());
-            std::fs::create_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&primary_dir).expect("create test directory");
+            std::fs::create_dir_all(&linked_dir).expect("create test directory");
 
             let primary_path = primary_dir.to_string_lossy().to_string();
             let linked_path = linked_dir.to_string_lossy().to_string();
@@ -9200,7 +9289,7 @@ mod tests {
             assert!(app.expand(), "linked worktree row should expand");
             app.ensure_visible_rows_cached();
 
-            std::fs::remove_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::remove_dir_all(&linked_dir).expect("remove test directory");
             apply_bg_msg(
                 &mut app,
                 BackgroundMsg::DiskUsage {
@@ -10417,21 +10506,18 @@ mod tests {
 
         #[test]
         fn startup_git_expected_uses_top_level_git_directories() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let non_rust_dir = tmp.path().join(".claude");
             let workspace_dir = tmp.path().join("bevy");
             let primary_dir = tmp.path().join("cargo-port");
             let linked_dir = tmp.path().join("cargo-port_feat");
             let member_dir = workspace_dir.join("crates").join("core");
 
-            std::fs::create_dir_all(non_rust_dir.join(".git"))
-                .unwrap_or_else(|_| std::process::abort());
-            std::fs::create_dir_all(workspace_dir.join(".git"))
-                .unwrap_or_else(|_| std::process::abort());
-            std::fs::create_dir_all(primary_dir.join(".git"))
-                .unwrap_or_else(|_| std::process::abort());
-            std::fs::create_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
-            std::fs::create_dir_all(&member_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(non_rust_dir.join(".git")).expect("create test directory");
+            std::fs::create_dir_all(workspace_dir.join(".git")).expect("create test directory");
+            std::fs::create_dir_all(primary_dir.join(".git")).expect("create test directory");
+            std::fs::create_dir_all(&linked_dir).expect("create test directory");
+            std::fs::create_dir_all(&member_dir).expect("create test directory");
 
             let non_rust = RootItem::NonRust(NonRustProject::new(
                 AbsolutePath::from(non_rust_dir.clone()),
@@ -10486,12 +10572,11 @@ mod tests {
 
         #[test]
         fn startup_git_seen_marks_owner_git_directory_for_member_updates() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let workspace_dir = tmp.path().join("bevy");
             let member_dir = workspace_dir.join("crates").join("core");
-            std::fs::create_dir_all(workspace_dir.join(".git"))
-                .unwrap_or_else(|_| std::process::abort());
-            std::fs::create_dir_all(&member_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(workspace_dir.join(".git")).expect("create test directory");
+            std::fs::create_dir_all(&member_dir).expect("create test directory");
 
             let workspace = RootItem::Rust(RustProject::Workspace(Workspace {
                 path: AbsolutePath::from(workspace_dir.clone()),
@@ -11366,7 +11451,7 @@ mod tests {
                 .panes
                 .package
                 .content()
-                .unwrap_or_else(|| std::process::abort())
+                .expect("package pane should have rendered test content")
                 .ci_display;
 
             assert_eq!(display, crate::tui::state::CiDisplay::UnpublishedBranch);
@@ -12025,7 +12110,7 @@ mod tests {
             // Point the app cache root at a tempdir so the real on-disk CI cache is
             // untouched and `remove_dir_all` lands on the success branch (where the
             // run count is reported).
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let mut cfg = CargoPortConfig::default();
             cfg.cache.root = tmp.path().to_string_lossy().into_owned();
             config::set_active_config(&cfg);
@@ -12077,7 +12162,7 @@ mod tests {
             );
             // The repo's cache dir must exist for the clear to reach the success path.
             std::fs::create_dir_all(scan::ci_cache_dir_pub("acme", "demo").as_path())
-                .unwrap_or_else(|_| std::process::abort());
+                .expect("create CI cache directory");
 
             app.project_list.set_cursor(0);
             app.sync_selected_project();
@@ -12529,7 +12614,7 @@ mod tests {
         /// dispatch contract on `CargoMetadataError`.
         #[test]
         fn cargo_metadata_workspace_missing_does_not_raise_toast() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let workspace_root = AbsolutePath::from(tmp.path().join("deleted_workspace"));
             let pkg = RootItem::Rust(RustProject::Package(Package {
                 path: workspace_root.clone(),
@@ -12574,13 +12659,11 @@ mod tests {
         /// filesystem existence check.
         #[test]
         fn start_clean_prefers_resolved_target_dir_over_hardcoded_literal() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let project_path = AbsolutePath::from(tmp.path().join("proj"));
             let custom_target = AbsolutePath::from(tmp.path().join("out-of-tree-target"));
-            std::fs::create_dir_all(project_path.as_path())
-                .unwrap_or_else(|_| std::process::abort());
-            std::fs::create_dir_all(custom_target.as_path())
-                .unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(project_path.as_path()).expect("create test directory");
+            std::fs::create_dir_all(custom_target.as_path()).expect("create test directory");
 
             let pkg = RootItem::Rust(RustProject::Package(Package {
                 path: project_path.clone(),
@@ -12616,16 +12699,15 @@ mod tests {
 
         #[test]
         fn start_clean_reports_already_clean_when_resolved_target_is_missing() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let project_path = AbsolutePath::from(tmp.path().join("proj"));
             let custom_target = AbsolutePath::from(tmp.path().join("out-of-tree-target"));
-            std::fs::create_dir_all(project_path.as_path())
-                .unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(project_path.as_path()).expect("create test directory");
             // Also create the default `<project>/target` — this must NOT make the
             // check pass, because the *resolved* target sits elsewhere and doesn't
             // exist on disk.
             std::fs::create_dir_all(project_path.as_path().join("target"))
-                .unwrap_or_else(|_| std::process::abort());
+                .expect("create test directory");
 
             let pkg = RootItem::Rust(RustProject::Package(Package {
                 path: project_path.clone(),
@@ -12654,10 +12736,10 @@ mod tests {
 
         #[test]
         fn start_clean_falls_back_to_literal_target_when_no_metadata_yet() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let project_path = AbsolutePath::from(tmp.path().join("proj"));
             std::fs::create_dir_all(project_path.as_path().join("target"))
-                .unwrap_or_else(|_| std::process::abort());
+                .expect("create test directory");
 
             let pkg = RootItem::Rust(RustProject::Package(Package {
                 path: project_path.clone(),
@@ -12680,10 +12762,10 @@ mod tests {
 
         #[test]
         fn disk_usage_update_does_not_finish_running_clean() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let project_path = AbsolutePath::from(tmp.path().join("proj"));
             std::fs::create_dir_all(project_path.as_path().join("target"))
-                .unwrap_or_else(|_| std::process::abort());
+                .expect("create test directory");
 
             let pkg = RootItem::Rust(RustProject::Package(Package {
                 path: project_path.clone(),
@@ -12706,10 +12788,10 @@ mod tests {
 
         #[test]
         fn clean_finished_message_finishes_running_clean() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let project_path = AbsolutePath::from(tmp.path().join("proj"));
             std::fs::create_dir_all(project_path.as_path().join("target"))
-                .unwrap_or_else(|_| std::process::abort());
+                .expect("create test directory");
 
             let pkg = RootItem::Rust(RustProject::Package(Package {
                 path: project_path.clone(),
@@ -13599,7 +13681,7 @@ mod tests {
             app.scan
                 .metadata_store_handle()
                 .lock()
-                .unwrap_or_else(|_| std::process::abort())
+                .expect("lock test store")
                 .upsert(fake_metadata(&workspace_root));
 
             app.request_clean_confirm(workspace_root);
@@ -13638,7 +13720,7 @@ mod tests {
                 .scan
                 .metadata_store_handle()
                 .lock()
-                .unwrap_or_else(|_| std::process::abort())
+                .expect("lock test store")
                 .next_generation(&workspace_root);
             app.handle_bg_msg(BackgroundMsg::CargoMetadata {
                 workspace_root: workspace_root.clone(),
@@ -13667,7 +13749,7 @@ mod tests {
             let mut app = make_app(&[pkg]);
             {
                 let store = app.scan.metadata_store_handle();
-                let mut guard = store.lock().unwrap_or_else(|_| std::process::abort());
+                let mut guard = store.lock().expect("lock test metadata store");
                 guard.upsert(WorkspaceMetadata {
                     workspace_root:           workspace_root.clone(),
                     target_directory:         target_dir.clone(),
@@ -13687,7 +13769,7 @@ mod tests {
                 .scan
                 .metadata_store_handle()
                 .lock()
-                .unwrap_or_else(|_| std::process::abort())
+                .expect("lock test store")
                 .get(&workspace_root)
                 .and_then(|s| s.out_of_tree_target_bytes);
             assert_eq!(stamped, Some(1_234_567));
@@ -13757,7 +13839,7 @@ mod tests {
                 .scan
                 .metadata_store_handle()
                 .lock()
-                .unwrap_or_else(|_| std::process::abort())
+                .expect("lock test store")
                 .next_generation(&project_path);
             app.handle_bg_msg(BackgroundMsg::CargoMetadata {
                 workspace_root: project_path.clone(),
@@ -13769,7 +13851,8 @@ mod tests {
             let cargo = app
                 .project_list
                 .rust_info_at_path(project_path.as_path())
-                .map_or_else(|| std::process::abort(), |r| r.cargo.clone());
+                .map(|r| r.cargo.clone())
+                .expect("test project should have Rust info after metadata update");
             assert!(
                 cargo.types().contains(&crate::project::ProjectType::Binary),
                 "Bin TargetKind → ProjectType::Binary stamped from metadata"
@@ -14026,7 +14109,7 @@ mod tests {
             apply_items(&mut app, &[root]);
             {
                 let handle = app.scan.metadata_store_handle();
-                let mut store = handle.lock().unwrap_or_else(|_| std::process::abort());
+                let mut store = handle.lock().expect("lock test store");
                 store.upsert(metadata_with_example(&primary_path, "hana", "showcase"));
                 store.upsert(metadata_with_example(&linked_path, "hana", "showcase"));
             }
@@ -14067,7 +14150,7 @@ mod tests {
             let pending = app
                 .inflight
                 .take_pending_example_run()
-                .unwrap_or_else(|| std::process::abort());
+                .expect("example run should be pending");
             assert_eq!(pending.abs_path, linked_path.display().to_string());
             assert_eq!(pending.package_name.as_deref(), Some("hana"));
             assert!(pending.build_mode.is_release());
@@ -14075,11 +14158,11 @@ mod tests {
 
         #[test]
         fn package_worktree_group_root_reverts_to_package_after_linked_dismissed() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let primary_dir = tmp.path().join("cargo-mend");
             let linked_dir = tmp.path().join("cargo-mend_style_fix");
-            std::fs::create_dir_all(&primary_dir).unwrap_or_else(|_| std::process::abort());
-            std::fs::create_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::create_dir_all(&primary_dir).expect("create test directory");
+            std::fs::create_dir_all(&linked_dir).expect("create test directory");
 
             let primary_path = primary_dir.to_string_lossy().to_string();
             let linked_path = linked_dir.to_string_lossy().to_string();
@@ -14104,7 +14187,7 @@ mod tests {
 
             assert!(app.expand(), "root worktree group should expand");
             app.ensure_visible_rows_cached();
-            std::fs::remove_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+            std::fs::remove_dir_all(&linked_dir).expect("remove test directory");
             app.handle_disk_usage(Path::new(&linked_path), 0);
             app.ensure_visible_rows_cached();
 
@@ -14344,21 +14427,20 @@ mod tests {
 
         #[test]
         fn handle_project_discovered_registers_new_root_with_lint_runtime() {
-            let project_dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
-            std::fs::create_dir_all(project_dir.path().join("src"))
-                .unwrap_or_else(|_| std::process::abort());
+            let project_dir = tempfile::tempdir().expect("create test tempdir");
+            std::fs::create_dir_all(project_dir.path().join("src")).expect("create test directory");
             std::fs::write(
                 project_dir.path().join("Cargo.toml"),
                 manifest_contents("new_worktree", false),
             )
-            .unwrap_or_else(|_| std::process::abort());
+            .expect("write test file");
             std::fs::write(
                 project_dir.path().join("src").join("lib.rs"),
                 "pub fn demo() {}\n",
             )
-            .unwrap_or_else(|_| std::process::abort());
+            .expect("write test file");
 
-            let cache_dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let cache_dir = tempfile::tempdir().expect("create test tempdir");
             let mut cfg = CargoPortConfig::default();
             cfg.cache.root = cache_dir.path().to_string_lossy().to_string();
             cfg.lint.enabled = LintIndicator::Enabled;
@@ -14375,10 +14457,10 @@ mod tests {
                 EventKind::Modify(ModifyKind::Data(DataChange::Any)),
                 &project_dir.path().join("src").join("lib.rs"),
             )
-            .unwrap_or_else(|| std::process::abort());
+            .expect("lint trigger should classify test edit");
             app.lint
                 .runtime()
-                .unwrap_or_else(|| std::process::abort())
+                .expect("lint runtime fixture should own runtime")
                 .lint_trigger(trigger);
 
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -14395,6 +14477,7 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
 
+            drop(app);
             assert!(
                 passed,
                 "newly discovered project should have an active lint worker for later edits"
@@ -14403,13 +14486,13 @@ mod tests {
 
         #[test]
         fn handle_project_discovered_registers_arbitrary_named_worktree_with_primary_lint_filter() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let primary_dir = tmp.path().join("bevy_hana");
             let linked_dir = tmp.path().join("test");
             init_git_project(&primary_dir, "bevy_hana", false);
             add_git_worktree(&primary_dir, &linked_dir, "test/bevy_hana");
 
-            let cache_dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let cache_dir = tempfile::tempdir().expect("create test tempdir");
             let mut cfg = CargoPortConfig::default();
             cfg.cache.root = cache_dir.path().to_string_lossy().to_string();
             cfg.lint.enabled = LintIndicator::Enabled;
@@ -14438,10 +14521,10 @@ mod tests {
                 EventKind::Modify(ModifyKind::Data(DataChange::Any)),
                 &linked_dir.join("src").join("lib.rs"),
             )
-            .unwrap_or_else(|| std::process::abort());
+            .expect("lint trigger should classify test edit");
             app.lint
                 .runtime()
-                .unwrap_or_else(|| std::process::abort())
+                .expect("lint runtime fixture should own runtime")
                 .lint_trigger(trigger);
 
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -14458,6 +14541,7 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
 
+            drop(app);
             assert!(
                 passed,
                 "linked worktree should be eligible through the primary checkout lint filter"
@@ -14466,13 +14550,13 @@ mod tests {
 
         #[test]
         fn refreshed_linked_worktree_registers_lint_after_stale_discovery() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let primary_dir = tmp.path().join("bevy_hana");
             let linked_dir = tmp.path().join("test");
             init_git_project(&primary_dir, "bevy_hana", false);
             add_git_worktree(&primary_dir, &linked_dir, "test/bevy_hana");
 
-            let cache_dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let cache_dir = tempfile::tempdir().expect("create test tempdir");
             let mut cfg = CargoPortConfig::default();
             cfg.cache.root = cache_dir.path().to_string_lossy().to_string();
             cfg.lint.enabled = LintIndicator::Enabled;
@@ -14498,11 +14582,11 @@ mod tests {
                 EventKind::Modify(ModifyKind::Data(DataChange::Any)),
                 &linked_dir.join("src").join("lib.rs"),
             )
-            .unwrap_or_else(|| std::process::abort());
+            .expect("lint trigger should classify test edit");
 
             app.lint
                 .runtime()
-                .unwrap_or_else(|| std::process::abort())
+                .expect("lint runtime fixture should own runtime")
                 .lint_trigger(trigger);
 
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -14519,6 +14603,7 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(25));
             }
 
+            drop(app);
             assert!(
                 passed,
                 "refreshed linked worktree should register a lint worker for later edits"
@@ -14548,7 +14633,7 @@ mod tests {
 
         #[test]
         fn discovered_workspace_worktree_with_members_expands_as_worktree_then_workspace() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let primary_dir = tmp.path().join("bevy_brp");
             let linked_dir = tmp.path().join("bevy_brp_test");
             init_workspace_git_project_with_member(&primary_dir, "bevy_brp", "extras");
@@ -14557,8 +14642,8 @@ mod tests {
             let mut app = make_app(&[primary_item]);
 
             add_git_worktree(&primary_dir, &linked_dir, "test/brp");
-            let linked_item =
-                scan::discover_project_item(&linked_dir).unwrap_or_else(|| std::process::abort());
+            let linked_item = scan::discover_project_item(&linked_dir)
+                .expect("linked worktree should be discoverable");
             assert!(
                 app.handle_bg_msg(BackgroundMsg::ProjectDiscovered { item: linked_item }),
                 "discovery should request a derived-state rebuild"
@@ -14616,7 +14701,7 @@ mod tests {
         #[test]
         fn expanded_workspace_root_discovery_immediately_renders_primary_workspace_and_linked_row()
         {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let primary_dir = tmp.path().join("bevy_brp");
             let linked_dir = tmp.path().join("bevy_brp_test");
             init_workspace_git_project_with_member(&primary_dir, "bevy_brp", "extras");
@@ -14647,8 +14732,8 @@ mod tests {
             );
 
             add_git_worktree(&primary_dir, &linked_dir, "test/brp");
-            let linked_item =
-                scan::discover_project_item(&linked_dir).unwrap_or_else(|| std::process::abort());
+            let linked_item = scan::discover_project_item(&linked_dir)
+                .expect("linked worktree should be discoverable");
             apply_bg_msg(
                 &mut app,
                 BackgroundMsg::ProjectDiscovered { item: linked_item },
@@ -14695,7 +14780,7 @@ mod tests {
 
         #[test]
         fn stale_workspace_regroup_immediately_renders_primary_workspace_and_linked_row() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let primary_dir = tmp.path().join("bevy_brp");
             let linked_dir = tmp.path().join("bevy_brp_test");
             init_workspace_git_project_with_member(&primary_dir, "bevy_brp", "extras");
@@ -14847,7 +14932,7 @@ mod tests {
         }
 
         fn assert_stale_discovery_refresh_then_delete_dismisses_to_root(kind: WorktreeProjectKind) {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let primary_dir = tmp.path().join(kind.primary_name());
             let linked_dir = tmp.path().join(kind.linked_name());
             kind.init_primary_repo(&primary_dir);
@@ -14894,7 +14979,7 @@ mod tests {
 
         #[test]
         fn background_disk_zero_from_real_package_worktree_can_be_dismissed_to_root() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let primary_dir = tmp.path().join("app");
             let linked_dir = tmp.path().join("app_test");
             init_git_project(&primary_dir, "app", false);
@@ -14909,7 +14994,7 @@ mod tests {
 
         #[test]
         fn background_disk_zero_from_real_workspace_worktree_can_be_dismissed_to_root() {
-            let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+            let tmp = tempfile::tempdir().expect("create test tempdir");
             let primary_dir = tmp.path().join("obsidian_knife");
             let linked_dir = tmp.path().join("obsidian_knife_test");
             init_git_project(&primary_dir, "obsidian_knife", true);
@@ -15009,7 +15094,7 @@ mod tests {
         tui_test_support::make_app_with_config(projects, cfg)
     }
 
-    fn make_app_with_lint_runtime(projects: &[RootItem], cfg: &CargoPortConfig) -> App {
+    fn make_app_with_lint_runtime(projects: &[RootItem], cfg: &CargoPortConfig) -> TestApp {
         tui_test_support::make_app_with_lint_runtime(projects, cfg)
     }
 
@@ -15023,7 +15108,7 @@ mod tests {
         let entry = app
             .project_list
             .entry_containing_mut(path)
-            .unwrap_or_else(|| std::process::abort());
+            .expect("test project should exist in project list");
         let repo = entry.git_repo.get_or_insert_with(Default::default);
         repo.ci_data = ProjectCiData::Loaded(ProjectCiInfo {
             runs,
@@ -15037,11 +15122,11 @@ mod tests {
             .project_list
             .entry_containing(path)
             .and_then(|entry| entry.git_repo.as_ref())
-            .unwrap_or_else(|| std::process::abort())
+            .expect("test project should have Git repo data")
             .ci_data
         {
             ProjectCiData::Loaded(info) => info,
-            ProjectCiData::Unfetched => std::process::abort(),
+            ProjectCiData::Unfetched => unreachable!("test project should have loaded CI data"),
         }
     }
 
@@ -15320,84 +15405,82 @@ mod tests {
     }
 
     fn init_git_project(dir: &Path, name: &str, workspace: bool) {
-        std::fs::create_dir_all(dir.join("src")).unwrap_or_else(|_| std::process::abort());
+        std::fs::create_dir_all(dir.join("src")).expect("create test directory");
         std::fs::write(dir.join("Cargo.toml"), manifest_contents(name, workspace))
-            .unwrap_or_else(|_| std::process::abort());
-        std::fs::write(dir.join("src").join("main.rs"), "fn main() {}\n")
-            .unwrap_or_else(|_| std::process::abort());
+            .expect("write test file");
+        std::fs::write(dir.join("src").join("main.rs"), "fn main() {}\n").expect("write test file");
 
         Command::new(git_binary())
             .args(["init"])
             .current_dir(dir)
             .output()
-            .unwrap_or_else(|_| std::process::abort());
+            .expect("run git command in test project");
         Command::new(git_binary())
             .args(["config", "user.name", "cargo-port-tests"])
             .current_dir(dir)
             .output()
-            .unwrap_or_else(|_| std::process::abort());
+            .expect("run git command in test project");
         Command::new(git_binary())
             .args(["config", "user.email", "cargo-port-tests@example.com"])
             .current_dir(dir)
             .output()
-            .unwrap_or_else(|_| std::process::abort());
+            .expect("run git command in test project");
         Command::new(git_binary())
             .args(["add", "."])
             .current_dir(dir)
             .output()
-            .unwrap_or_else(|_| std::process::abort());
+            .expect("run git command in test project");
         Command::new(git_binary())
             .args(["commit", "-m", "init"])
             .current_dir(dir)
             .output()
-            .unwrap_or_else(|_| std::process::abort());
+            .expect("run git command in test project");
     }
 
     fn init_workspace_git_project_with_member(dir: &Path, name: &str, member_name: &str) {
         let member_dir = dir.join(member_name);
-        std::fs::create_dir_all(member_dir.join("src")).unwrap_or_else(|_| std::process::abort());
+        std::fs::create_dir_all(member_dir.join("src")).expect("create test directory");
         std::fs::write(
             dir.join("Cargo.toml"),
             format!(
                 "[workspace]\nmembers = [\"{member_name}\"]\n\n[workspace.package]\nrepository = \"https://example.com/{name}\"\n"
             ),
-        )
-        .unwrap_or_else(|_| std::process::abort());
+        ).expect("write test file");
         std::fs::write(
             member_dir.join("Cargo.toml"),
             format!(
                 "[package]\nname = \"{member_name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"
             ),
         )
-        .unwrap_or_else(|_| std::process::abort());
+        .expect("write test file");
         std::fs::write(member_dir.join("src").join("lib.rs"), "pub fn demo() {}\n")
-            .unwrap_or_else(|_| std::process::abort());
+            .expect("write test file");
 
         Command::new(git_binary())
             .args(["init"])
             .current_dir(dir)
             .output()
-            .unwrap_or_else(|_| std::process::abort());
+            .expect("run git command in test project");
         Command::new(git_binary())
             .args(["config", "user.name", "cargo-port-tests"])
             .current_dir(dir)
             .output()
-            .unwrap_or_else(|_| std::process::abort());
+            .expect("run git command in test project");
         Command::new(git_binary())
             .args(["config", "user.email", "cargo-port-tests@example.com"])
             .current_dir(dir)
             .output()
-            .unwrap_or_else(|_| std::process::abort());
+            .expect("run git command in test project");
         Command::new(git_binary())
             .args(["add", "."])
             .current_dir(dir)
             .output()
-            .unwrap_or_else(|_| std::process::abort());
+            .expect("run git command in test project");
         Command::new(git_binary())
             .args(["commit", "-m", "init"])
             .current_dir(dir)
             .output()
-            .unwrap_or_else(|_| std::process::abort());
+            .expect("run git command in test project");
     }
 
     fn add_git_worktree(primary_dir: &Path, worktree_dir: &Path, branch: &str) {
@@ -15407,20 +15490,20 @@ mod tests {
                 "add",
                 worktree_dir
                     .to_str()
-                    .unwrap_or_else(|| std::process::abort()),
+                    .expect("test path should be valid UTF-8"),
                 "-b",
                 branch,
             ])
             .current_dir(primary_dir)
             .status()
-            .unwrap_or_else(|_| std::process::abort());
+            .expect("run git command in test project");
         assert!(status.success(), "git worktree add should succeed");
     }
 
     fn item_from_project_dir(dir: &Path) -> RootItem {
         let cargo_toml = dir.join("Cargo.toml");
-        let parsed =
-            project::from_cargo_toml(&cargo_toml).unwrap_or_else(|_| std::process::abort());
+        let parsed = project::from_cargo_toml(&cargo_toml)
+            .unwrap_or_else(|_| panic!("parse test Cargo.toml"));
         scan::cargo_project_to_item(parsed)
     }
 
@@ -15437,7 +15520,7 @@ mod tests {
     }
 
     fn parse_ts(ts: &str) -> DateTime<FixedOffset> {
-        DateTime::parse_from_rfc3339(ts).unwrap_or_else(|_| std::process::abort())
+        DateTime::parse_from_rfc3339(ts).expect("parse test timestamp")
     }
 
     fn make_ci_run(run_id: u64, conclusion: CiStatus) -> CiRun {
@@ -15566,7 +15649,7 @@ mod tests {
     }
 
     fn expect_real_discovery_creates_group(kind: WorktreeProjectKind) {
-        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let tmp = tempfile::tempdir().expect("create test tempdir");
         let primary_dir = tmp.path().join(kind.primary_name());
         let linked_dir = tmp.path().join(kind.linked_name());
         kind.init_primary_repo(&primary_dir);
@@ -15598,7 +15681,7 @@ mod tests {
     }
 
     fn expect_real_discovery_appends_existing_group(kind: WorktreeProjectKind) {
-        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let tmp = tempfile::tempdir().expect("create test tempdir");
         let primary_dir = tmp.path().join(kind.primary_name());
         let linked_one_dir = tmp.path().join(kind.feature_name());
         let linked_two_dir = tmp.path().join(kind.linked_name());
@@ -15805,7 +15888,7 @@ mod tests {
     }
 
     fn expect_refresh_regroups_stale_top_level_discovery(kind: WorktreeProjectKind) {
-        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let tmp = tempfile::tempdir().expect("create test tempdir");
         let primary_dir = tmp.path().join(kind.primary_name());
         let linked_dir = tmp.path().join(kind.linked_name());
         kind.init_primary_repo(&primary_dir);
@@ -15853,14 +15936,14 @@ mod tests {
             "refreshing the stale top-level row should regroup it under the primary worktree container",
         );
         let RootItem::Worktrees(group) = &app.project_list[0].root_item else {
-            unreachable!();
+            unreachable!("refresh should regroup stale top-level discovery");
         };
         let _ = kind;
         assert_eq!(group.linked[0].path(), linked_dir.as_path());
     }
 
     fn expect_refresh_appends_stale_discovery_into_existing_group(kind: WorktreeProjectKind) {
-        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let tmp = tempfile::tempdir().expect("create test tempdir");
         let primary_dir = tmp.path().join(kind.primary_name());
         let linked_one_dir = tmp.path().join(kind.feature_name());
         let linked_two_dir = tmp.path().join(kind.linked_name());
@@ -15915,7 +15998,7 @@ mod tests {
             "refresh should fold the stale row into the existing worktree group",
         );
         let RootItem::Worktrees(group) = &app.project_list[0].root_item else {
-            unreachable!();
+            unreachable!("refresh should append stale discovery to worktree group");
         };
         let _ = kind;
         assert!(
@@ -15941,7 +16024,7 @@ mod tests {
         app.ensure_visible_rows_cached();
         assert_eq!(app.visible_rows().len(), 3);
 
-        std::fs::remove_dir_all(linked_dir).unwrap_or_else(|_| std::process::abort());
+        std::fs::remove_dir_all(linked_dir).expect("remove test directory");
         apply_bg_msg(
             app,
             BackgroundMsg::DiskUsage {

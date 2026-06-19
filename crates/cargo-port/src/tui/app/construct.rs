@@ -4,8 +4,8 @@
 //!
 //! 1. [`AppBuilder<Inputs>`] — caller's raw arguments only. No I/O run yet.
 //! 2. [`AppBuilder<Channeled>`] — internal channel pairs created.
-//! 3. [`AppBuilder<Started>`] — startup I/O complete: lint runtime spawned, watcher thread spawned,
-//!    project tree built, config loaded.
+//! 3. [`AppBuilder<Started>`] — startup policy applied: real services have been started and
+//!    disabled services have installed explicit no-op handles.
 //!
 //! Each transition consumes the previous state and produces the next, so the
 //! steps can't be skipped or reordered. `build()` is callable only on
@@ -51,6 +51,7 @@ use crate::tui::panes::Panes;
 use crate::tui::project_list::ProjectList;
 use crate::tui::settings::StartupSettings;
 use crate::tui::startup_services::StartupEnvironment;
+use crate::tui::startup_services::WatcherHandle;
 use crate::tui::startup_services::WatcherStartup;
 use crate::tui::state::Ci;
 use crate::tui::state::Config;
@@ -65,7 +66,6 @@ use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
 use crate::tui::terminal::ExampleMsg;
 use crate::tui::theme_roles;
-use crate::watcher::WatcherMsg;
 
 /// Caller's raw arguments. Held by value (the slice and config
 /// reference are cloned at the entry point so the builder can outlive
@@ -92,13 +92,13 @@ pub(super) struct Channeled {
     clean_rx:    Receiver<CleanMsg>,
 }
 
-/// `Channeled` plus the startup I/O products.
+/// `Channeled` plus the products of applying the selected startup policy.
 pub(super) struct Started {
     channeled:    Channeled,
     config_path:  Option<AbsolutePath>,
     lint_warning: Option<String>,
     lint_runtime: Option<RuntimeHandle>,
-    watch_tx:     Sender<WatcherMsg>,
+    watcher:      WatcherHandle,
     themes_dir:   Option<PathBuf>,
     projects:     ProjectList,
 }
@@ -160,7 +160,7 @@ impl AppBuilder<Channeled> {
         // section against the just-built registry. Misses fall back to
         // the appearance-matched built-in silently here — toast
         // machinery is not yet wired this early in startup, and
-        // surface for the miss arrives in Phase 4's settings UI badge.
+        // surface for the miss arrives through the settings UI badge.
         let resolved = registry.resolve_active(
             &inputs.cargo_port_config.appearance.mode,
             &inputs.cargo_port_config.appearance.light_theme,
@@ -182,7 +182,7 @@ impl AppBuilder<Channeled> {
         let lint_spawn = startup_services
             .spawn_lint_runtime(&inputs.cargo_port_config, inputs.background_tx.clone());
         let watch_roots = scan::resolve_include_dirs(&inputs.cargo_port_config.tui.include_dirs);
-        let watch_tx = startup_services.spawn_watcher(WatcherStartup {
+        let watcher = startup_services.spawn_watcher(WatcherStartup {
             watch_roots:    &watch_roots,
             background_tx:  inputs.background_tx.clone(),
             ci_run_count:   inputs.cargo_port_config.tui.ci_run_count,
@@ -202,7 +202,7 @@ impl AppBuilder<Channeled> {
                 config_path,
                 lint_warning: lint_spawn.warning,
                 lint_runtime: lint_spawn.handle,
-                watch_tx,
+                watcher,
                 themes_dir,
                 projects,
             },
@@ -229,7 +229,7 @@ impl AppBuilder<Started> {
             ci_fetch:   (channeled.ci_fetch_tx, channeled.ci_fetch_rx),
             clean:      (channeled.clean_tx, channeled.clean_rx),
             example:    (channeled.example_tx, channeled.example_rx),
-            watch_tx:   started.watch_tx,
+            watcher:    started.watcher,
         });
         let lint = Lint::new(started.lint_runtime);
         let inflight = Inflight::new();

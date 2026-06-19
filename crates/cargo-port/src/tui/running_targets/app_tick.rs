@@ -198,6 +198,7 @@ fn member_dir_for_target_entry(entry: &TargetEntry) -> AbsolutePath {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, reason = "tests should fail on invalid fixtures")]
 mod tests {
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -271,7 +272,7 @@ mod tests {
         app.scan
             .metadata_store_handle()
             .lock()
-            .unwrap_or_else(|_| std::process::abort())
+            .expect("metadata store lock should be available")
             .upsert(metadata("/tmp/hana", "/tmp/hana/target"));
         app.panes.targets.set_content(TargetsData {
             binaries: Vec::new(),

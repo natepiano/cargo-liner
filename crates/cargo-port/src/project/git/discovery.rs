@@ -173,32 +173,32 @@ mod tests {
 
     #[test]
     fn git_repo_root_finds_ancestor_git_directory() {
-        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let tmp = tempfile::tempdir().expect("create git-root test tempdir");
         let repo_root = tmp.path().join("repo");
         let nested = repo_root.join("crates").join("demo");
-        std::fs::create_dir_all(repo_root.join(".git")).unwrap_or_else(|_| std::process::abort());
-        std::fs::create_dir_all(&nested).unwrap_or_else(|_| std::process::abort());
+        std::fs::create_dir_all(repo_root.join(".git")).expect("create git directory fixture");
+        std::fs::create_dir_all(&nested).expect("create nested project directory");
 
         assert_eq!(git_repo_root(&nested).as_deref(), Some(repo_root.as_path()));
     }
 
     #[test]
     fn git_repo_root_finds_worktree_git_file() {
-        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let tmp = tempfile::tempdir().expect("create worktree gitfile test tempdir");
         let repo_root = tmp.path().join("repo");
         let nested = repo_root.join("crates").join("demo");
-        std::fs::create_dir_all(&nested).unwrap_or_else(|_| std::process::abort());
+        std::fs::create_dir_all(&nested).expect("create nested worktree project directory");
         std::fs::write(repo_root.join(".git"), "gitdir: /tmp/fake\n")
-            .unwrap_or_else(|_| std::process::abort());
+            .expect("write worktree gitfile fixture");
 
         assert_eq!(git_repo_root(&nested).as_deref(), Some(repo_root.as_path()));
     }
 
     #[test]
     fn resolve_git_dir_returns_dot_git_for_normal_repo() {
-        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let tmp = tempfile::tempdir().expect("create normal repo test tempdir");
         let repo = tmp.path().join("repo");
-        std::fs::create_dir_all(repo.join(".git")).unwrap_or_else(|_| std::process::abort());
+        std::fs::create_dir_all(repo.join(".git")).expect("create normal repo git directory");
 
         assert_eq!(
             resolve_git_dir(&repo).as_deref(),
@@ -208,19 +208,19 @@ mod tests {
 
     #[test]
     fn resolve_git_dir_follows_worktree_gitdir_file() {
-        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let tmp = tempfile::tempdir().expect("create worktree resolution test tempdir");
         let main_git = tmp
             .path()
             .join("main")
             .join(".git")
             .join("worktrees")
             .join("wt");
-        std::fs::create_dir_all(&main_git).unwrap_or_else(|_| std::process::abort());
+        std::fs::create_dir_all(&main_git).expect("create worktree gitdir fixture");
 
         let wt = tmp.path().join("wt");
-        std::fs::create_dir_all(&wt).unwrap_or_else(|_| std::process::abort());
+        std::fs::create_dir_all(&wt).expect("create worktree checkout directory");
         std::fs::write(wt.join(".git"), format!("gitdir: {}\n", main_git.display()))
-            .unwrap_or_else(|_| std::process::abort());
+            .expect("write worktree gitdir file fixture");
 
         let resolved = resolve_git_dir(&wt).expect("should resolve");
         assert_eq!(resolved.canonicalize().ok(), main_git.canonicalize().ok());
@@ -228,7 +228,7 @@ mod tests {
 
     #[test]
     fn resolve_git_dir_returns_none_without_git() {
-        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let tmp = tempfile::tempdir().expect("create non-git test tempdir");
         assert_eq!(resolve_git_dir(tmp.path()), None);
     }
 }

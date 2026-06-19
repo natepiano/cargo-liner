@@ -1,6 +1,8 @@
 use super::AbsolutePath;
 use super::Arc;
 use super::Child;
+#[cfg(test)]
+use super::JoinHandle;
 use super::LintEventKind;
 use super::LintTriggerEvent;
 use super::LintTriggerKind;
@@ -54,8 +56,10 @@ impl RuntimeHandle {
 }
 
 pub struct SpawnResult {
-    pub handle:  Option<RuntimeHandle>,
-    pub warning: Option<String>,
+    pub handle:            Option<RuntimeHandle>,
+    pub warning:           Option<String>,
+    #[cfg(test)]
+    pub(crate) supervisor: Option<JoinHandle<()>>,
 }
 
 pub(super) enum SupervisorMsg {

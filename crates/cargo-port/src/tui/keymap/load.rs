@@ -95,7 +95,7 @@ thread_local! {
 }
 
 #[cfg(test)]
-pub struct KeymapPathOverrideGuard {
+pub(crate) struct KeymapPathOverrideGuard {
     previous: Option<PathBuf>,
     active:   bool,
 }

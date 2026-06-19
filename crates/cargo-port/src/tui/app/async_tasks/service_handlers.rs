@@ -86,7 +86,7 @@ impl App {
     /// Record the unavailability transition and spawn the retry
     /// thread. The user-visible toast is **not** pushed here — it's
     /// deferred to the [`Self::confirm_service_unreachable`] handler
-    /// which only fires after the [`SERVICE_UNAVAILABLE_GRACE`]
+    /// which only fires after the [`crate::constants::SERVICE_UNAVAILABLE_GRACE`]
     /// window elapses without recovery. Single transient timeouts
     /// in a sea of successful fetches never reach the UI.
     pub(super) fn apply_unavailability(&mut self, service: ServiceKind, kind: AvailabilityKind) {
@@ -102,9 +102,10 @@ impl App {
         }
     }
     /// Surface the persistent "service unavailable" toast. Called
-    /// from the dispatch path when [`BackgroundMsg::ServiceUnreachableConfirmed`]
+    /// from the dispatch path when
+    /// [`crate::scan::BackgroundMsg::ServiceUnreachableConfirmed`]
     /// arrives — i.e. after the retry thread waited
-    /// [`SERVICE_UNAVAILABLE_GRACE`] and confirmed the service is
+    /// [`crate::constants::SERVICE_UNAVAILABLE_GRACE`] and confirmed the service is
     /// still down. No-op if the state has flipped back to reachable
     /// during the grace window (a real fetch landed) or a live toast
     /// is already showing.
@@ -153,10 +154,10 @@ impl App {
     }
     /// Spawn the retry / grace probe thread.
     ///
-    /// The thread sleeps for [`SERVICE_UNAVAILABLE_GRACE`] before its
+    /// The thread sleeps for [`crate::constants::SERVICE_UNAVAILABLE_GRACE`] before its
     /// first probe. If the service has recovered by then, emit a
     /// silent recovery (no "back online" toast — none was pushed).
-    /// Otherwise emit [`BackgroundMsg::ServiceUnreachableConfirmed`]
+    /// Otherwise emit [`crate::scan::BackgroundMsg::ServiceUnreachableConfirmed`]
     /// to push the user-visible toast, then enter the 1Hz retry loop
     /// until probe succeeds.
     pub(super) fn spawn_service_retry(&self, service: ServiceKind) {

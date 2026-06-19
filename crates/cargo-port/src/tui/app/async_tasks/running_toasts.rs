@@ -109,46 +109,128 @@ impl App {
         let running_keys: HashSet<TrackedItemKey> =
             running_items.iter().map(|item| item.key.clone()).collect();
 
-        let outcome = toast_slot.map_or(ReactivateOutcome::NotFound, |task_id| {
-            self.framework.toasts.reactivate_task(task_id)
-        });
-
-        match outcome {
-            ReactivateOutcome::Revived => {
-                // toast_slot is guaranteed `Some` here — `NotFound`
-                // is the only outcome reachable from `None`.
-                let task_id = toast_slot.unwrap_or_else(|| std::process::abort());
-                self.framework
-                    .toasts
-                    .complete_missing_items(task_id, &running_keys);
-                self.framework
-                    .toasts
-                    .add_new_tracked_items(task_id, running_items);
-                for item in running_items {
-                    if let Some(started) = item.started_at {
-                        self.framework
-                            .toasts
-                            .restart_tracked_item(task_id, &item.key, started);
+        match toast_slot {
+            Some(task_id) => match self.framework.toasts.reactivate_task(task_id) {
+                ReactivateOutcome::Revived => {
+                    self.framework
+                        .toasts
+                        .complete_missing_items(task_id, &running_keys);
+                    self.framework
+                        .toasts
+                        .add_new_tracked_items(task_id, running_items);
+                    for item in running_items {
+                        if let Some(started) = item.started_at {
+                            self.framework
+                                .toasts
+                                .restart_tracked_item(task_id, &item.key, started);
+                        }
                     }
-                }
-                Some(task_id)
+                    Some(task_id)
+                },
+                ReactivateOutcome::DismissedByUser => {
+                    // User closed the toast for this tracker session.
+                    // Keep the slot wired (so we don't create a
+                    // duplicate next frame) but don't touch the toast.
+                    // The underlying tracker keeps running; only the
+                    // UI surface stays gone.
+                    Some(task_id)
+                },
+                ReactivateOutcome::NotFound => Some(self.start_running_toast(title, running_items)),
             },
-            ReactivateOutcome::DismissedByUser => {
-                // User closed the toast for this tracker session.
-                // Keep the slot wired (so we don't create a
-                // duplicate next frame) but don't touch the toast.
-                // The underlying tracker keeps running; only the
-                // UI surface stays gone.
-                toast_slot
-            },
-            ReactivateOutcome::NotFound => {
-                let labels: Vec<&str> = running_items.iter().map(|i| i.label.as_str()).collect();
-                let width = toast_body_width(self.framework.toast_settings());
-                let body = format_toast_items(&labels, width);
-                let task_id = self.framework.toasts.start_task(title, body);
-                self.set_task_tracked_items(task_id, running_items);
-                Some(task_id)
-            },
+            None => Some(self.start_running_toast(title, running_items)),
         }
     }
+
+    fn start_running_toast(&mut self, title: &str, running_items: &[TrackedItem]) -> ToastTaskId {
+        let labels: Vec<&str> = running_items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect();
+        let width = toast_body_width(self.framework.toast_settings());
+        let body = format_toast_items(&labels, width);
+        let task_id = self.framework.toasts.start_task(title, body);
+        self.set_task_tracked_items(task_id, running_items);
+        task_id
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use tui_pane::ToastId;
+
+    use super::*;
+    use crate::tui::test_support;
+
+    const DISMISSED_ITEM: &str = "dismissed";
+    const FIRST_ITEM: &str = "first";
+    const RUNNING_TOAST_TITLE: &str = "Running task";
+    const SECOND_ITEM: &str = "second";
+    const STALE_ITEM: &str = "stale";
+    const STALE_TASK_ID: ToastTaskId = ToastTaskId(u64::MAX);
+
+    #[test]
+    fn sync_running_toast_preserves_reactivate_outcomes() {
+        let mut app = test_support::make_app(&[]);
+        let first_items = [tracked_item(FIRST_ITEM)];
+
+        let first_task_id = app
+            .sync_running_toast(None, RUNNING_TOAST_TITLE, &first_items)
+            .expect("running items should create the first toast");
+        assert_eq!(app.framework.toasts.active().len(), first_items.len());
+        assert_eq!(
+            app.framework.toasts.tracked_item_count(first_task_id),
+            first_items.len()
+        );
+
+        let revived_items = [tracked_item(FIRST_ITEM), tracked_item(SECOND_ITEM)];
+        let revived_task_id = app
+            .sync_running_toast(Some(first_task_id), RUNNING_TOAST_TITLE, &revived_items)
+            .expect("existing toast should reactivate");
+        assert_eq!(revived_task_id, first_task_id);
+        assert_eq!(app.framework.toasts.active().len(), first_items.len());
+        assert_eq!(
+            app.framework.toasts.tracked_item_count(first_task_id),
+            revived_items.len()
+        );
+
+        assert!(app.framework.toasts.dismiss(ToastId(first_task_id.get())));
+        let stored_toasts_after_dismiss = app.framework.toasts.active().len();
+        let dismissed_items = [tracked_item(DISMISSED_ITEM)];
+        let dismissed_task_id = app
+            .sync_running_toast(Some(first_task_id), RUNNING_TOAST_TITLE, &dismissed_items)
+            .expect("dismissed task slot should stay wired");
+        assert_eq!(dismissed_task_id, first_task_id);
+        assert_eq!(
+            app.framework.toasts.active().len(),
+            stored_toasts_after_dismiss
+        );
+        assert_eq!(app.framework.toasts.active_now().len(), 0);
+        assert_eq!(
+            app.framework.toasts.tracked_item_count(first_task_id),
+            revived_items.len()
+        );
+
+        let stale_items = [tracked_item(STALE_ITEM)];
+        let fresh_task_id = app
+            .sync_running_toast(Some(STALE_TASK_ID), RUNNING_TOAST_TITLE, &stale_items)
+            .expect("stale task slot should create a replacement toast");
+        assert_ne!(fresh_task_id, STALE_TASK_ID);
+        assert_ne!(fresh_task_id, first_task_id);
+        assert_eq!(
+            app.framework.toasts.active().len(),
+            stored_toasts_after_dismiss + 1
+        );
+        assert_eq!(app.framework.toasts.active_now().len(), stale_items.len());
+        assert_eq!(app.framework.toasts.tracked_item_count(STALE_TASK_ID), 0);
+        assert_eq!(
+            app.framework.toasts.tracked_item_count(fresh_task_id),
+            stale_items.len()
+        );
+    }
+
+    fn tracked_item(label: &str) -> TrackedItem { TrackedItem::new(label, label) }
 }

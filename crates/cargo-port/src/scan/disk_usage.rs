@@ -220,6 +220,10 @@ pub(crate) fn disk_usage_batch_for_item(item: &RootItem) -> Vec<(AbsolutePath, D
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
 mod tests {
     use super::*;
 
@@ -253,14 +257,14 @@ mod tests {
 
     #[test]
     fn dir_sizes_for_tree_accumulates_root_and_child_sizes_from_one_walk() {
-        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let tmp = tempfile::tempdir().expect("create nested disk-usage test tempdir");
         let root: AbsolutePath = tmp.path().join("bevy").into();
         let child: AbsolutePath = root.join("crates").join("bevy_ecs").into();
-        std::fs::create_dir_all(&*child).unwrap_or_else(|_| std::process::abort());
+        std::fs::create_dir_all(&*child).expect("create nested project directory");
         std::fs::write(root.join("root.txt"), vec![0_u8; 5])
-            .unwrap_or_else(|_| std::process::abort());
+            .expect("write root disk-usage fixture file");
         std::fs::write(child.join("child.txt"), vec![0_u8; 7])
-            .unwrap_or_else(|_| std::process::abort());
+            .expect("write child disk-usage fixture file");
 
         let sizes = dir_sizes_for_tree(&DiskUsageTree {
             root_abs_path: root.clone(),
@@ -279,16 +283,15 @@ mod tests {
         // whether any ancestor path component is named `target`. A file
         // at `<root>/target/debug/foo` is counted as in-target; one at
         // `<root>/src/main.rs` is not.
-        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let tmp = tempfile::tempdir().expect("create target-split test tempdir");
         let root: AbsolutePath = tmp.path().join("proj").into();
         let src = root.join("src");
         let target_debug = root.join("target").join("debug");
-        std::fs::create_dir_all(&src).unwrap_or_else(|_| std::process::abort());
-        std::fs::create_dir_all(&target_debug).unwrap_or_else(|_| std::process::abort());
-        std::fs::write(src.join("main.rs"), vec![0_u8; 3])
-            .unwrap_or_else(|_| std::process::abort());
+        std::fs::create_dir_all(&src).expect("create source directory");
+        std::fs::create_dir_all(&target_debug).expect("create target debug directory");
+        std::fs::write(src.join("main.rs"), vec![0_u8; 3]).expect("write source fixture file");
         std::fs::write(target_debug.join("proj"), vec![0_u8; 17])
-            .unwrap_or_else(|_| std::process::abort());
+            .expect("write target fixture file");
 
         let sizes = dir_sizes_for_tree(&DiskUsageTree {
             root_abs_path: root.clone(),
@@ -310,12 +313,12 @@ mod tests {
 
     #[test]
     fn dir_sizes_for_tree_captures_newest_source_mtime_excluding_build_artifacts() {
-        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let tmp = tempfile::tempdir().expect("create source-mtime test tempdir");
         let root: AbsolutePath = tmp.path().join("proj").into();
         let src = root.join("src");
         let target_debug = root.join("target").join("debug");
-        std::fs::create_dir_all(&src).unwrap_or_else(|_| std::process::abort());
-        std::fs::create_dir_all(&target_debug).unwrap_or_else(|_| std::process::abort());
+        std::fs::create_dir_all(&src).expect("create source directory");
+        std::fs::create_dir_all(&target_debug).expect("create target debug directory");
 
         let base = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
         let older = base;
@@ -323,13 +326,13 @@ mod tests {
         let newest = base + std::time::Duration::from_secs(90);
 
         let touch = |path: &Path, mtime: SystemTime| {
-            std::fs::write(path, b"x").unwrap_or_else(|_| std::process::abort());
+            std::fs::write(path, b"x").expect("write mtime fixture file");
             let file = std::fs::OpenOptions::new()
                 .write(true)
                 .open(path)
-                .unwrap_or_else(|_| std::process::abort());
+                .expect("open mtime fixture file");
             file.set_modified(mtime)
-                .unwrap_or_else(|_| std::process::abort());
+                .expect("set mtime fixture timestamp");
         };
 
         touch(&root.join("Cargo.toml"), older);

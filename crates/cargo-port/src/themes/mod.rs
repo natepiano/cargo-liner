@@ -7,4 +7,8 @@
 mod constants;
 mod paths;
 
+#[cfg(test)]
+pub(crate) use paths::ThemesDirOverrideGuard;
+#[cfg(test)]
+pub(crate) use paths::set_themes_dir_override_for_test;
 pub(crate) use paths::themes_dir;

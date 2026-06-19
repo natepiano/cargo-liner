@@ -4,6 +4,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
+#[cfg(test)]
+use std::thread::JoinHandle;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -15,6 +17,7 @@ use tui_pane::ThemeState;
 
 use crate::channel;
 use crate::channel::Receiver;
+use crate::channel::SendError;
 use crate::channel::Sender;
 use crate::config;
 use crate::config::CargoPortConfig;
@@ -97,6 +100,23 @@ impl StartupEffects {
             ..Self::quiet_unit_test()
         }
     }
+
+    /// Unit fixture policy for startup code that needs fixture-owned paths.
+    ///
+    /// Enables only `theme_directory`, which reads the temp directory installed
+    /// by `FixtureDirs`. `watcher`, `lint_runtime`, `lint_history_hydration`,
+    /// `lint_cache_scan`, `cpu_monitor`, `running_targets_polling`,
+    /// `priority_detail_fetch`, `startup_git_first_commit`,
+    /// `startup_project_details`, `streaming_scan`, and `process_globals` stay
+    /// suppressed because `TestApp` does not own join handles for their worker
+    /// threads, Rayon jobs, Tokio tasks, or process-global theme/config slots.
+    pub(crate) const fn local_startup_unit_test() -> Self {
+        Self {
+            theme_directory: StartupEffect::Real,
+            host_github_auth: StartupEffect::Suppressed,
+            ..Self::quiet_unit_test()
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,8 +131,12 @@ impl StartupEffect {
 
 #[derive(Clone, Debug)]
 pub(crate) struct StartupServices {
-    profile: StartupProfile,
-    counts:  Rc<RefCell<StartupEffectCounts>>,
+    profile:                StartupProfile,
+    counts:                 Rc<RefCell<StartupEffectCounts>>,
+    #[cfg(test)]
+    lint_runtime_shutdowns: Rc<RefCell<Vec<JoinHandle<()>>>>,
+    #[cfg(test)]
+    fixture_cache_root:     Rc<RefCell<Option<PathBuf>>>,
 }
 
 impl StartupServices {
@@ -120,6 +144,10 @@ impl StartupServices {
         Self {
             profile,
             counts: Rc::new(RefCell::new(StartupEffectCounts::default())),
+            #[cfg(test)]
+            lint_runtime_shutdowns: Rc::new(RefCell::new(Vec::new())),
+            #[cfg(test)]
+            fixture_cache_root: Rc::new(RefCell::new(None)),
         }
     }
 
@@ -133,6 +161,13 @@ impl StartupServices {
     pub(crate) fn quiet_unit_test_with_lint_runtime() -> Self {
         Self::new(StartupProfile::QuietUnitTest(
             StartupEffects::quiet_unit_test_with_lint_runtime(),
+        ))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn local_startup_unit_test() -> Self {
+        Self::new(StartupProfile::QuietUnitTest(
+            StartupEffects::local_startup_unit_test(),
         ))
     }
 
@@ -198,9 +233,21 @@ impl StartupServices {
             self.record_suppressed(StartupEffectKind::LintRuntime);
             return LintRuntimeStartup::default();
         }
+        #[cfg(test)]
+        let fixture_config = self.fixture_cache_root.borrow().clone().map(|cache_root| {
+            let mut config = cargo_port_config.clone();
+            config.cache.root = cache_root.display().to_string();
+            config
+        });
+        #[cfg(test)]
+        let cargo_port_config = fixture_config.as_ref().unwrap_or(cargo_port_config);
         let spawn = lint::spawn(cargo_port_config, background_tx);
         if spawn.handle.is_some() {
             self.record_real(StartupEffectKind::LintRuntime);
+        }
+        #[cfg(test)]
+        if let Some(supervisor) = spawn.supervisor {
+            self.lint_runtime_shutdowns.borrow_mut().push(supervisor);
         }
         LintRuntimeStartup {
             handle:  spawn.handle,
@@ -208,10 +255,10 @@ impl StartupServices {
         }
     }
 
-    pub(crate) fn spawn_watcher(&self, startup: WatcherStartup<'_>) -> Sender<WatcherMsg> {
+    pub(crate) fn spawn_watcher(&self, startup: WatcherStartup<'_>) -> WatcherHandle {
         if self.allows(StartupEffectKind::Watcher) {
             self.record_real(StartupEffectKind::Watcher);
-            watcher::spawn_watcher(
+            WatcherHandle::active(watcher::spawn_watcher(
                 startup.watch_roots,
                 startup.background_tx,
                 startup.ci_run_count,
@@ -219,11 +266,10 @@ impl StartupServices {
                 startup.client,
                 startup.lint_runtime,
                 startup.metadata_store,
-            )
+            ))
         } else {
             self.record_suppressed(StartupEffectKind::Watcher);
-            let (watch_tx, _watch_rx) = channel::unbounded();
-            watch_tx
+            WatcherHandle::disabled()
         }
     }
 
@@ -394,6 +440,44 @@ impl StartupServices {
     #[cfg(test)]
     pub(crate) fn counts(&self) -> StartupEffectCounts { *self.counts.borrow() }
 
+    #[cfg(test)]
+    pub(crate) fn lint_runtime_shutdown_count_for_test(&self) -> usize {
+        self.lint_runtime_shutdowns.borrow().len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn join_lint_runtime_shutdowns_for_test(&self) {
+        let supervisors: Vec<_> = self.lint_runtime_shutdowns.borrow_mut().drain(..).collect();
+        for supervisor in supervisors {
+            assert!(
+                supervisor.join().is_ok(),
+                "lint runtime supervisor should exit cleanly"
+            );
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_fixture_cache_root_for_test(&self, cache_root: PathBuf) {
+        *self.fixture_cache_root.borrow_mut() = Some(cache_root);
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn has_production_profile_for_test(&self) -> bool {
+        matches!(self.profile, StartupProfile::Production)
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn requires_fixture_cache_root_for_test(&self) -> bool {
+        self.effect(StartupEffectKind::LintRuntime).runs()
+            || self.effect(StartupEffectKind::LintHistoryHydration).runs()
+            || self.effect(StartupEffectKind::LintCacheScan).runs()
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn serializes_process_globals_for_test(&self) -> bool {
+        self.effect(StartupEffectKind::ProcessGlobals).runs()
+    }
+
     const fn allows(&self, kind: StartupEffectKind) -> bool { self.effect(kind).runs() }
 
     const fn effect(&self, kind: StartupEffectKind) -> StartupEffect {
@@ -453,6 +537,28 @@ impl StartupServices {
     fn record_suppressed(&self, kind: StartupEffectKind) {
         self.counts.borrow_mut().count_for(kind).suppressed += 1;
     }
+}
+
+#[derive(Clone)]
+pub(crate) enum WatcherHandle {
+    Active(Sender<WatcherMsg>),
+    Disabled,
+}
+
+impl WatcherHandle {
+    pub(crate) const fn disabled() -> Self { Self::Disabled }
+
+    pub(crate) const fn active(sender: Sender<WatcherMsg>) -> Self { Self::Active(sender) }
+
+    pub(crate) fn send(&self, msg: WatcherMsg) -> Result<(), SendError<WatcherMsg>> {
+        match self {
+            Self::Active(sender) => sender.send(msg),
+            Self::Disabled => Ok(()),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn is_active(&self) -> bool { matches!(self, Self::Active(_)) }
 }
 
 #[derive(Clone)]
@@ -561,12 +667,57 @@ impl StartupEffectCounts {
             + self.startup_project_details.real
             + self.streaming_scan.real
     }
+
+    #[cfg(test)]
+    pub(crate) const fn watcher(self) -> EffectCount { self.watcher }
+
+    #[cfg(test)]
+    pub(crate) const fn lint_runtime(self) -> EffectCount { self.lint_runtime }
+
+    #[cfg(test)]
+    pub(crate) const fn lint_history_hydration(self) -> EffectCount { self.lint_history_hydration }
+
+    #[cfg(test)]
+    pub(crate) const fn lint_cache_scan(self) -> EffectCount { self.lint_cache_scan }
+
+    #[cfg(test)]
+    pub(crate) const fn github_rate_limit_prime(self) -> EffectCount {
+        self.github_rate_limit_prime
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn service_retry_probes(self) -> EffectCount { self.service_retry_probes }
+
+    #[cfg(test)]
+    pub(crate) const fn cpu_monitor(self) -> EffectCount { self.cpu_monitor }
+
+    #[cfg(test)]
+    pub(crate) const fn theme_directory(self) -> EffectCount { self.theme_directory }
+
+    #[cfg(test)]
+    pub(crate) const fn process_globals(self) -> EffectCount { self.process_globals }
+
+    #[cfg(test)]
+    pub(crate) const fn host_github_auth(self) -> EffectCount { self.host_github_auth }
+
+    #[cfg(test)]
+    pub(crate) const fn startup_project_details(self) -> EffectCount {
+        self.startup_project_details
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct EffectCount {
+pub(crate) struct EffectCount {
     real:       usize,
     suppressed: usize,
+}
+
+impl EffectCount {
+    #[cfg(test)]
+    pub(crate) const fn real(self) -> usize { self.real }
+
+    #[cfg(test)]
+    pub(crate) const fn suppressed(self) -> usize { self.suppressed }
 }
 
 impl StartupEffectCounts {

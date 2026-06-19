@@ -132,6 +132,10 @@ impl<Ctx: crate::AppContext> crate::Renderable<ToastsRenderCtx> for super::Toast
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
 mod tests {
     use std::time::Duration;
     use std::time::Instant;
@@ -178,15 +182,16 @@ mod tests {
     fn configured_toast_gap_does_not_insert_blank_rows_between_cards() {
         let table: Table = "[toasts]\ngap = 1\n"
             .parse()
-            .unwrap_or_else(|_| std::process::abort());
-        let settings = ToastSettings::from_table(&table).unwrap_or_else(|_| std::process::abort());
+            .expect("toast settings TOML should parse");
+        let settings = ToastSettings::from_table(&table).expect("toast settings table should load");
         assert_eq!(settings.gap.get(), 0);
         let mut toasts = Toasts::<TestApp>::with_settings(settings.clone());
         let _ = toasts.push("one", "body");
         let _ = toasts.push("two", "body");
         let views = toasts.active_views(Instant::now());
         let backend = TestBackend::new(80, 20);
-        let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
+        let mut terminal =
+            Terminal::new(backend).expect("toast render test terminal should initialize");
         let mut result = None;
 
         terminal
@@ -200,9 +205,11 @@ mod tests {
                     None,
                 ));
             })
-            .unwrap_or_else(|_| std::process::abort());
+            .expect("toast render test draw should complete");
 
-        let hitboxes = result.unwrap_or_else(|| std::process::abort()).hitboxes;
+        let hitboxes = result
+            .expect("render_toasts should produce render result")
+            .hitboxes;
         assert_eq!(hitboxes.len(), 2);
         assert_eq!(
             hitboxes[0].card_rect.bottom(),
@@ -242,7 +249,8 @@ mod tests {
 
         let views = toasts.active_views(Instant::now() + Duration::from_secs(5));
         let backend = TestBackend::new(90, 20);
-        let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
+        let mut terminal =
+            Terminal::new(backend).expect("toast render test terminal should initialize");
         let mut result = None;
 
         terminal
@@ -256,9 +264,11 @@ mod tests {
                     None,
                 ));
             })
-            .unwrap_or_else(|_| std::process::abort());
+            .expect("toast render test draw should complete");
 
-        let hitboxes = result.unwrap_or_else(|| std::process::abort()).hitboxes;
+        let hitboxes = result
+            .expect("render_toasts should produce render result")
+            .hitboxes;
         assert_eq!(hitboxes.len(), 1);
         assert_eq!(
             hitboxes[0].card_rect.height, 4,
