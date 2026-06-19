@@ -2091,11 +2091,11 @@ mod tests {
                 .toast_id()
                 .expect("confirmed signal pushes a toast");
 
-            // User dismisses the toast and waits long enough for the exit
-            // animation to complete so the toast is evicted from the manager.
+            // User dismisses the toast. Prune at a synthetic future time so
+            // the exit animation has completed without sleeping in the test.
             app.dismiss_toast(toast_id);
-            std::thread::sleep(std::time::Duration::from_millis(1500));
-            app.prune_toasts();
+            let after_exit = std::time::Instant::now() + std::time::Duration::from_secs(1);
+            app.framework.toasts.prune(after_exit);
             assert!(
                 !app.framework.toasts.is_alive(toast_id),
                 "dismissed toast should no longer be alive after exit animation"
