@@ -154,7 +154,7 @@ When a lint is running a "spinner" will show up in the Lint column in the projec
 
 - **Projects**  - this feature is opt-in, it will not lint every project scanned, you have to explicitly specify which ones you wish to lint in a comma-delimited list.
 
-- **Commands** - a comma-delimited list of lint runs. I'm thinking about putting mine into a bash file as it makes this example hard to read...
+- **Lint command(s)** - a comma-delimited list of lint runs. I'm thinking about putting mine into a bash file as it makes this example hard to read...
 
 - **Cache size** - lints don't take up much space. And in practice you rarely need to look at old runs. You can make this as big as you want but a few megabytes will probably be fine. If your workflow would benefit from more or less lint cache space, you're in charge.
 

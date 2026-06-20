@@ -1259,7 +1259,7 @@ fn lint_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsUiRow>
         ),
         (
             Some(SettingOption::LintCommands),
-            "Commands".to_string(),
+            "Lint command(s)".to_string(),
             format_lint_commands(config),
         ),
         (
