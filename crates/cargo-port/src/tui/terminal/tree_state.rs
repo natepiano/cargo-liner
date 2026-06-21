@@ -75,8 +75,10 @@ pub(super) fn encode_expand_target(target: &ExpandTarget) -> String {
     match target {
         ExpandTarget::Root(path) => format!("root\t{path}"),
         ExpandTarget::Group(path, group) => format!("group\t{path}\t{group}"),
+        ExpandTarget::Member(path) => format!("member\t{path}"),
         ExpandTarget::Worktree(path) => format!("worktree\t{path}"),
         ExpandTarget::WorktreeGroup(path, group) => format!("worktreegroup\t{path}\t{group}"),
+        ExpandTarget::WorktreeMember(path) => format!("worktreemember\t{path}"),
     }
 }
 
@@ -90,9 +92,11 @@ pub(super) fn decode_expand_target(token: &str) -> Option<ExpandTarget> {
     let path = AbsolutePath::from(raw);
     match kind {
         "root" => Some(ExpandTarget::Root(path)),
+        "member" => Some(ExpandTarget::Member(path)),
         "worktree" => Some(ExpandTarget::Worktree(path)),
         "group" => Some(ExpandTarget::Group(path, parts.next()?.to_string())),
         "worktreegroup" => Some(ExpandTarget::WorktreeGroup(path, parts.next()?.to_string())),
+        "worktreemember" => Some(ExpandTarget::WorktreeMember(path)),
         _ => None,
     }
 }
@@ -106,8 +110,10 @@ mod tests {
         let targets = [
             ExpandTarget::Root(AbsolutePath::from("/proj")),
             ExpandTarget::Group(AbsolutePath::from("/proj"), "examples".to_string()),
+            ExpandTarget::Member(AbsolutePath::from("/proj/crate")),
             ExpandTarget::Worktree(AbsolutePath::from("/proj-wt")),
             ExpandTarget::WorktreeGroup(AbsolutePath::from("/proj-wt"), "benches".to_string()),
+            ExpandTarget::WorktreeMember(AbsolutePath::from("/proj-wt/crate")),
         ];
         for target in targets {
             let token = encode_expand_target(&target);

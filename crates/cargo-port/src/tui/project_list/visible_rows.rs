@@ -24,8 +24,10 @@ use crate::project::WorktreeGroup;
 pub enum ExpandKey {
     Node(usize),
     Group(usize, usize),
+    Member(usize, usize, usize),
     Worktree(usize, usize),
     WorktreeGroup(usize, usize, usize),
+    WorktreeMember(usize, usize, usize, usize),
 }
 
 /// What a visible row represents.
@@ -160,7 +162,9 @@ fn emit_groups(
                         group_index:  gi,
                         member_index: mi,
                     });
-                    emit_member_vendored_rows(rows, ni, gi, mi, member.vendored());
+                    if expanded.contains(&ExpandKey::Member(ni, gi, mi)) {
+                        emit_member_vendored_rows(rows, ni, gi, mi, member.vendored());
+                    }
                 }
             },
             MemberGroup::Named { members, .. } => {
@@ -175,7 +179,9 @@ fn emit_groups(
                             group_index:  gi,
                             member_index: mi,
                         });
-                        emit_member_vendored_rows(rows, ni, gi, mi, member.vendored());
+                        if expanded.contains(&ExpandKey::Member(ni, gi, mi)) {
+                            emit_member_vendored_rows(rows, ni, gi, mi, member.vendored());
+                        }
                     }
                 }
             },
@@ -239,11 +245,20 @@ fn emit_worktree_group(
             node_index:     ni,
             worktree_index: wi,
         });
-        if let RustProject::Workspace(ws) = entry
-            && ws.has_members()
-            && expanded.contains(&ExpandKey::Worktree(ni, wi))
-        {
-            emit_worktree_children(rows, ni, wi, ws.groups(), ws.vendored(), expanded);
+        match entry {
+            RustProject::Workspace(ws)
+                if (ws.has_members() || !ws.vendored().is_empty())
+                    && expanded.contains(&ExpandKey::Worktree(ni, wi)) =>
+            {
+                emit_worktree_children(rows, ni, wi, ws.groups(), ws.vendored(), expanded);
+            },
+            RustProject::Package(pkg)
+                if !pkg.vendored().is_empty()
+                    && expanded.contains(&ExpandKey::Worktree(ni, wi)) =>
+            {
+                emit_worktree_children(rows, ni, wi, &[], pkg.vendored(), expanded);
+            },
+            RustProject::Workspace(_) | RustProject::Package(_) => {},
         }
     }
 }
@@ -266,7 +281,9 @@ fn emit_worktree_children(
                         group_index:    gi,
                         member_index:   mi,
                     });
-                    emit_worktree_member_vendored_rows(rows, ni, wi, gi, mi, member.vendored());
+                    if expanded.contains(&ExpandKey::WorktreeMember(ni, wi, gi, mi)) {
+                        emit_worktree_member_vendored_rows(rows, ni, wi, gi, mi, member.vendored());
+                    }
                 }
             },
             MemberGroup::Named { members, .. } => {
@@ -283,7 +300,16 @@ fn emit_worktree_children(
                             group_index:    gi,
                             member_index:   mi,
                         });
-                        emit_worktree_member_vendored_rows(rows, ni, wi, gi, mi, member.vendored());
+                        if expanded.contains(&ExpandKey::WorktreeMember(ni, wi, gi, mi)) {
+                            emit_worktree_member_vendored_rows(
+                                rows,
+                                ni,
+                                wi,
+                                gi,
+                                mi,
+                                member.vendored(),
+                            );
+                        }
                     }
                 }
             },
@@ -372,9 +398,18 @@ impl VisibleRow {
         match self {
             Self::GroupHeader { node_index, .. }
             | Self::Member { node_index, .. }
-            | Self::MemberVendored { node_index, .. }
             | Self::Vendored { node_index, .. }
             | Self::Submodule { node_index, .. } => Self::Root { node_index },
+            Self::MemberVendored {
+                node_index,
+                group_index,
+                member_index,
+                ..
+            } => Self::Member {
+                node_index,
+                group_index,
+                member_index,
+            },
             Self::Root { .. } | Self::WorktreeEntry { .. } => self,
             Self::WorktreeGroupHeader {
                 node_index,
@@ -386,11 +421,6 @@ impl VisibleRow {
                 worktree_index,
                 ..
             }
-            | Self::WorktreeMemberVendored {
-                node_index,
-                worktree_index,
-                ..
-            }
             | Self::WorktreeVendored {
                 node_index,
                 worktree_index,
@@ -398,6 +428,18 @@ impl VisibleRow {
             } => Self::WorktreeEntry {
                 node_index,
                 worktree_index,
+            },
+            Self::WorktreeMemberVendored {
+                node_index,
+                worktree_index,
+                group_index,
+                member_index,
+                ..
+            } => Self::WorktreeMember {
+                node_index,
+                worktree_index,
+                group_index,
+                member_index,
             },
         }
     }

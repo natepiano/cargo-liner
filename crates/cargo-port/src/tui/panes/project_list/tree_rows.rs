@@ -29,35 +29,358 @@ use crate::tui::columns;
 use crate::tui::columns::LintCell;
 use crate::tui::columns::ProjectRow;
 use crate::tui::columns::RowLifecycle;
-use crate::tui::panes::constants::PREFIX_GROUP_COLLAPSED;
-use crate::tui::panes::constants::PREFIX_GROUP_EXPANDED;
-use crate::tui::panes::constants::PREFIX_MEMBER_INLINE;
-use crate::tui::panes::constants::PREFIX_MEMBER_NAMED;
-use crate::tui::panes::constants::PREFIX_MEMBER_VENDORED_INLINE;
-use crate::tui::panes::constants::PREFIX_MEMBER_VENDORED_NAMED;
 use crate::tui::panes::constants::PREFIX_ROOT_COLLAPSED;
 use crate::tui::panes::constants::PREFIX_ROOT_EXPANDED;
 use crate::tui::panes::constants::PREFIX_ROOT_LEAF;
-use crate::tui::panes::constants::PREFIX_SUBMODULE;
-use crate::tui::panes::constants::PREFIX_VENDORED;
-use crate::tui::panes::constants::PREFIX_WORKTREE_COLLAPSED;
-use crate::tui::panes::constants::PREFIX_WORKTREE_EXPANDED;
-use crate::tui::panes::constants::PREFIX_WORKTREE_FLAT;
-use crate::tui::panes::constants::PREFIX_WORKTREE_GROUP_COLLAPSED;
-use crate::tui::panes::constants::PREFIX_WORKTREE_GROUP_EXPANDED;
-use crate::tui::panes::constants::PREFIX_WORKTREE_MEMBER_INLINE;
-use crate::tui::panes::constants::PREFIX_WORKTREE_MEMBER_NAMED;
-use crate::tui::panes::constants::PREFIX_WORKTREE_MEMBER_VENDORED_INLINE;
-use crate::tui::panes::constants::PREFIX_WORKTREE_MEMBER_VENDORED_NAMED;
-use crate::tui::panes::constants::PREFIX_WORKTREE_VENDORED;
+use crate::tui::panes::constants::TREE_PREFIX_BLANK;
+use crate::tui::panes::constants::TREE_PREFIX_BRANCH;
+use crate::tui::panes::constants::TREE_PREFIX_COLLAPSED;
+use crate::tui::panes::constants::TREE_PREFIX_CONTINUATION;
+use crate::tui::panes::constants::TREE_PREFIX_EXPANDED;
+use crate::tui::panes::constants::TREE_PREFIX_LAST;
+use crate::tui::panes::constants::TREE_PREFIX_LEAF_EXTENSION;
 use crate::tui::panes::lang;
+use crate::tui::project_list::ProjectList;
 use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::state;
 use crate::tui::state::Lint;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TreeSegment {
+    Root(usize),
+    Group(usize, usize),
+    Member(usize, usize, usize),
+    MemberVendored(usize, usize, usize, usize),
+    Vendored(usize, usize),
+    Worktree(usize, usize),
+    WorktreeGroup(usize, usize, usize),
+    WorktreeMember(usize, usize, usize, usize),
+    WorktreeMemberVendored(usize, usize, usize, usize, usize),
+    WorktreeVendored(usize, usize, usize),
+    Submodule(usize, usize),
+}
+
+type TreeLineage = Vec<TreeSegment>;
+
+fn tree_lineage(project_list: &ProjectList, row: VisibleRow) -> TreeLineage {
+    match row {
+        VisibleRow::Root { node_index } => root_lineage(node_index),
+        VisibleRow::GroupHeader {
+            node_index,
+            group_index,
+        } => group_lineage(node_index, group_index),
+        VisibleRow::Member {
+            node_index,
+            group_index,
+            member_index,
+        } => member_lineage(project_list, node_index, group_index, member_index),
+        VisibleRow::MemberVendored {
+            node_index,
+            group_index,
+            member_index,
+            vendored_index,
+        } => member_vendored_lineage(
+            project_list,
+            MemberVendoredRow {
+                node:     node_index,
+                group:    group_index,
+                member:   member_index,
+                vendored: vendored_index,
+            },
+        ),
+        VisibleRow::Vendored {
+            node_index,
+            vendored_index,
+        } => vendored_lineage(node_index, vendored_index),
+        VisibleRow::WorktreeEntry {
+            node_index,
+            worktree_index,
+        } => worktree_lineage(node_index, worktree_index),
+        VisibleRow::WorktreeGroupHeader {
+            node_index,
+            worktree_index,
+            group_index,
+        } => worktree_group_lineage(node_index, worktree_index, group_index),
+        VisibleRow::WorktreeMember {
+            node_index,
+            worktree_index,
+            group_index,
+            member_index,
+        } => worktree_member_lineage(
+            project_list,
+            node_index,
+            worktree_index,
+            group_index,
+            member_index,
+        ),
+        VisibleRow::WorktreeMemberVendored {
+            node_index,
+            worktree_index,
+            group_index,
+            member_index,
+            vendored_index,
+        } => worktree_member_vendored_lineage(
+            project_list,
+            WorktreeMemberVendoredRow {
+                node:     node_index,
+                worktree: worktree_index,
+                group:    group_index,
+                member:   member_index,
+                vendored: vendored_index,
+            },
+        ),
+        VisibleRow::WorktreeVendored {
+            node_index,
+            worktree_index,
+            vendored_index,
+        } => worktree_vendored_lineage(node_index, worktree_index, vendored_index),
+        VisibleRow::Submodule {
+            node_index,
+            submodule_index,
+        } => submodule_lineage(node_index, submodule_index),
+    }
+}
+
+fn root_lineage(node_index: usize) -> TreeLineage { vec![TreeSegment::Root(node_index)] }
+
+fn group_lineage(node_index: usize, group_index: usize) -> TreeLineage {
+    vec![
+        TreeSegment::Root(node_index),
+        TreeSegment::Group(node_index, group_index),
+    ]
+}
+
+fn vendored_lineage(node_index: usize, vendored_index: usize) -> TreeLineage {
+    vec![
+        TreeSegment::Root(node_index),
+        TreeSegment::Vendored(node_index, vendored_index),
+    ]
+}
+
+fn worktree_lineage(node_index: usize, worktree_index: usize) -> TreeLineage {
+    vec![
+        TreeSegment::Root(node_index),
+        TreeSegment::Worktree(node_index, worktree_index),
+    ]
+}
+
+fn worktree_group_lineage(
+    node_index: usize,
+    worktree_index: usize,
+    group_index: usize,
+) -> TreeLineage {
+    vec![
+        TreeSegment::Root(node_index),
+        TreeSegment::Worktree(node_index, worktree_index),
+        TreeSegment::WorktreeGroup(node_index, worktree_index, group_index),
+    ]
+}
+
+fn worktree_vendored_lineage(
+    node_index: usize,
+    worktree_index: usize,
+    vendored_index: usize,
+) -> TreeLineage {
+    vec![
+        TreeSegment::Root(node_index),
+        TreeSegment::Worktree(node_index, worktree_index),
+        TreeSegment::WorktreeVendored(node_index, worktree_index, vendored_index),
+    ]
+}
+
+fn submodule_lineage(node_index: usize, submodule_index: usize) -> TreeLineage {
+    vec![
+        TreeSegment::Root(node_index),
+        TreeSegment::Submodule(node_index, submodule_index),
+    ]
+}
+
+fn member_vendored_lineage(project_list: &ProjectList, row: MemberVendoredRow) -> TreeLineage {
+    let MemberVendoredRow {
+        node,
+        group,
+        member,
+        vendored,
+    } = row;
+    let mut lineage = member_lineage(project_list, node, group, member);
+    lineage.push(TreeSegment::MemberVendored(node, group, member, vendored));
+    lineage
+}
+
+fn worktree_member_vendored_lineage(
+    project_list: &ProjectList,
+    row: WorktreeMemberVendoredRow,
+) -> TreeLineage {
+    let WorktreeMemberVendoredRow {
+        node,
+        worktree,
+        group,
+        member,
+        vendored,
+    } = row;
+    let mut lineage = worktree_member_lineage(project_list, node, worktree, group, member);
+    lineage.push(TreeSegment::WorktreeMemberVendored(
+        node, worktree, group, member, vendored,
+    ));
+    lineage
+}
+
+fn member_lineage(
+    project_list: &ProjectList,
+    node_index: usize,
+    group_index: usize,
+    member_index: usize,
+) -> TreeLineage {
+    let mut lineage = vec![TreeSegment::Root(node_index)];
+    if !root_group_is_inline(project_list, node_index, group_index) {
+        lineage.push(TreeSegment::Group(node_index, group_index));
+    }
+    lineage.push(TreeSegment::Member(node_index, group_index, member_index));
+    lineage
+}
+
+fn worktree_member_lineage(
+    project_list: &ProjectList,
+    node_index: usize,
+    worktree_index: usize,
+    group_index: usize,
+    member_index: usize,
+) -> TreeLineage {
+    let mut lineage = vec![
+        TreeSegment::Root(node_index),
+        TreeSegment::Worktree(node_index, worktree_index),
+    ];
+    if !worktree_group_is_inline(project_list, node_index, worktree_index, group_index) {
+        lineage.push(TreeSegment::WorktreeGroup(
+            node_index,
+            worktree_index,
+            group_index,
+        ));
+    }
+    lineage.push(TreeSegment::WorktreeMember(
+        node_index,
+        worktree_index,
+        group_index,
+        member_index,
+    ));
+    lineage
+}
+
+fn root_group_is_inline(project_list: &ProjectList, node_index: usize, group_index: usize) -> bool {
+    let Some(item) = project_list.get(node_index) else {
+        return true;
+    };
+    match &item.root_item {
+        RootItem::Rust(RustProject::Workspace(ws)) => ws
+            .groups()
+            .get(group_index)
+            .is_none_or(|group| !group.is_named()),
+        RootItem::Worktrees(worktree_group) if !worktree_group.renders_as_group() => worktree_group
+            .single_live_workspace()
+            .and_then(|ws| ws.groups().get(group_index))
+            .is_none_or(|group| !group.is_named()),
+        _ => true,
+    }
+}
+
+fn worktree_group_is_inline(
+    project_list: &ProjectList,
+    node_index: usize,
+    worktree_index: usize,
+    group_index: usize,
+) -> bool {
+    let Some(item) = project_list.get(node_index) else {
+        return true;
+    };
+    match &item.root_item {
+        RootItem::Worktrees(group) => match group.entry(worktree_index) {
+            Some(RustProject::Workspace(ws)) => ws
+                .groups()
+                .get(group_index)
+                .is_none_or(|group| !group.is_named()),
+            _ => true,
+        },
+        _ => true,
+    }
+}
+
+fn tree_prefix(
+    project_list: &ProjectList,
+    lineages: &[TreeLineage],
+    row_index: usize,
+    row: VisibleRow,
+) -> String {
+    let Some(lineage) = lineages.get(row_index) else {
+        return String::new();
+    };
+    if lineage.len() <= 1 {
+        return root_prefix(project_list, row).to_string();
+    }
+
+    let mut prefix = String::new();
+    for segment_index in 1..lineage.len() - 1 {
+        if has_later_sibling(lineages, row_index, lineage, segment_index) {
+            prefix.push_str(TREE_PREFIX_CONTINUATION);
+        } else {
+            prefix.push_str(TREE_PREFIX_BLANK);
+        }
+    }
+
+    let row_segment_index = lineage.len() - 1;
+    if has_later_sibling(lineages, row_index, lineage, row_segment_index) {
+        prefix.push_str(TREE_PREFIX_BRANCH);
+    } else {
+        prefix.push_str(TREE_PREFIX_LAST);
+    }
+    if let Some(key) = project_list.expand_key_for_row(row) {
+        if project_list.expanded.contains(&key) {
+            prefix.push_str(TREE_PREFIX_EXPANDED);
+        } else {
+            prefix.push_str(TREE_PREFIX_COLLAPSED);
+        }
+    } else {
+        prefix.push_str(TREE_PREFIX_LEAF_EXTENSION);
+    }
+    prefix
+}
+
+fn root_prefix(project_list: &ProjectList, row: VisibleRow) -> &'static str {
+    let VisibleRow::Root { node_index } = row else {
+        return "";
+    };
+    let Some(item) = project_list.get(node_index) else {
+        return PREFIX_ROOT_LEAF;
+    };
+    if !item.has_children() {
+        return PREFIX_ROOT_LEAF;
+    }
+    if project_list.expanded.contains(&ExpandKey::Node(node_index)) {
+        PREFIX_ROOT_EXPANDED
+    } else {
+        PREFIX_ROOT_COLLAPSED
+    }
+}
+
+fn has_later_sibling(
+    lineages: &[TreeLineage],
+    row_index: usize,
+    lineage: &[TreeSegment],
+    segment_index: usize,
+) -> bool {
+    lineages
+        .iter()
+        .skip(row_index.saturating_add(1))
+        .any(|candidate| {
+            candidate.len() > segment_index
+                && candidate[..segment_index] == lineage[..segment_index]
+                && candidate[segment_index] != lineage[segment_index]
+        })
+}
+
 fn render_root_item(
     ctx: &PaneRenderCtx<'_>,
     node_index: usize,
+    prefix: &str,
     root_labels: &[String],
     root_sorted: &[u64],
     widths: &ProjectListWidths,
@@ -87,19 +410,6 @@ fn render_root_item(
     let origin_sync = ctx.project_list.git_sync(item.path());
     let main_sync = ctx.project_list.git_main(item.path());
     let git_status = ctx.project_list.git_status_for_item(item);
-    let prefix = if item.has_children() {
-        if ctx
-            .project_list
-            .expanded
-            .contains(&ExpandKey::Node(node_index))
-        {
-            PREFIX_ROOT_EXPANDED
-        } else {
-            PREFIX_ROOT_COLLAPSED
-        }
-    } else {
-        PREFIX_ROOT_LEAF
-    };
     let deleted = ctx.project_list.is_deleted(item.path());
     let worktree_health = item.worktree_health();
     let (disk_text, disk_suffix, disk_suffix_style) =
@@ -139,7 +449,7 @@ fn render_child_item<P: project::ProjectFields>(
     project: &P,
     name: &str,
     child_sorted: &[u64],
-    prefix: &'static str,
+    prefix: &str,
     inherited_deleted: bool,
     widths: &ProjectListWidths,
 ) -> ListItem<'static> {
@@ -231,6 +541,7 @@ fn render_worktree_entry<'a>(
     ctx: &PaneRenderCtx<'_>,
     ni: usize,
     wi: usize,
+    prefix: &str,
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ProjectListWidths,
 ) -> ListItem<'a> {
@@ -251,22 +562,7 @@ fn render_worktree_entry<'a>(
     let empty = Vec::new();
     let sorted = child_sorted.get(&ni).unwrap_or(&empty);
 
-    let (worktree_name, has_expandable_children) =
-        worktree_entry_name_and_expandable(item, wi, &dp);
-
-    let prefix = if has_expandable_children {
-        if ctx
-            .project_list
-            .expanded
-            .contains(&ExpandKey::Worktree(ni, wi))
-        {
-            PREFIX_WORKTREE_EXPANDED
-        } else {
-            PREFIX_WORKTREE_COLLAPSED
-        }
-    } else {
-        PREFIX_WORKTREE_FLAT
-    };
+    let (worktree_name, _) = worktree_entry_name_and_expandable(item, wi, &dp);
     let worktree_path = abs_path.as_deref().unwrap_or_else(|| Path::new(""));
     let disk = disk::formatted_disk(ctx.project_list, worktree_path);
     let disk_bytes = item.disk_usage_bytes();
@@ -329,8 +625,8 @@ fn worktree_entry_name_and_expandable(
         name.push_str(" (p)");
     }
     let expandable = match entry {
-        RustProject::Workspace(ws) => ws.has_members(),
-        RustProject::Package(_) => false,
+        RustProject::Workspace(ws) => ws.has_members() || !ws.vendored().is_empty(),
+        RustProject::Package(pkg) => !pkg.vendored().is_empty(),
     };
     (name, expandable)
 }
@@ -379,6 +675,7 @@ fn render_wt_group_header<'a>(
     ni: usize,
     wi: usize,
     gi: usize,
+    prefix: &str,
     widths: &ProjectListWidths,
 ) -> ListItem<'a> {
     let item = &ctx.project_list[ni];
@@ -392,15 +689,6 @@ fn render_wt_group_header<'a>(
         },
         _ => (String::new(), 0),
     };
-    let prefix = if ctx
-        .project_list
-        .expanded
-        .contains(&ExpandKey::WorktreeGroup(ni, wi, gi))
-    {
-        PREFIX_WORKTREE_GROUP_EXPANDED
-    } else {
-        PREFIX_WORKTREE_GROUP_COLLAPSED
-    };
     let label = format!("{group_name} ({member_count})");
     let row = columns::build_group_header_cells(prefix, &label);
     ListItem::new(columns::row_to_line(&row, widths))
@@ -408,36 +696,35 @@ fn render_wt_group_header<'a>(
 
 fn render_wt_member<'a>(
     ctx: &PaneRenderCtx<'_>,
-    ni: usize,
-    wi: usize,
-    gi: usize,
-    mi: usize,
+    row: WorktreeMemberRow,
+    prefix: &str,
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ProjectListWidths,
 ) -> ListItem<'a> {
+    let WorktreeMemberRow {
+        node: ni,
+        worktree: wi,
+        group: gi,
+        member: mi,
+    } = row;
     let item = &ctx.project_list[ni];
     let empty = Vec::new();
     let sorted = child_sorted.get(&ni).unwrap_or(&empty);
 
-    let (member, member_name, is_named_group) = match &item.root_item {
+    let (member, member_name) = match &item.root_item {
         RootItem::Worktrees(group) => match group.entry(wi).unwrap_or(&group.primary) {
             RustProject::Workspace(ws) => {
                 let g = &ws.groups()[gi];
                 let m = &g.members()[mi];
-                (Some(m), m.package_name().into_string(), g.is_named())
+                (Some(m), m.package_name().into_string())
             },
-            RustProject::Package(_) => (None, String::new(), false),
+            RustProject::Package(_) => (None, String::new()),
         },
-        _ => (None, String::new(), false),
-    };
-    let indent = if is_named_group {
-        PREFIX_WORKTREE_MEMBER_NAMED
-    } else {
-        PREFIX_WORKTREE_MEMBER_INLINE
+        _ => (None, String::new()),
     };
     member.map_or_else(
         || {
-            let row = columns::build_group_header_cells(indent, &member_name);
+            let row = columns::build_group_header_cells(prefix, &member_name);
             ListItem::new(columns::row_to_line(&row, widths))
         },
         |m| {
@@ -452,7 +739,7 @@ fn render_wt_member<'a>(
                 m,
                 &member_name,
                 sorted,
-                indent,
+                prefix,
                 inherited_deleted,
                 widths,
             )
@@ -465,39 +752,35 @@ fn render_member_item(
     node_index: usize,
     group_index: usize,
     member_index: usize,
+    prefix: &str,
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ProjectListWidths,
 ) -> ListItem<'static> {
     let item = &ctx.project_list[node_index];
     let empty = Vec::new();
     let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
-    let (member, member_name, is_named) = match &item.root_item {
+    let (member, member_name) = match &item.root_item {
         RootItem::Rust(RustProject::Workspace(ws)) => {
             let group = &ws.groups()[group_index];
             let m = &group.members()[member_index];
-            (Some(m), m.package_name().into_string(), group.is_named())
+            (Some(m), m.package_name().into_string())
         },
         RootItem::Worktrees(worktree_group) if !worktree_group.renders_as_group() => {
             let Some(ws) = worktree_group.single_live_workspace() else {
                 return ListItem::new(columns::row_to_line(
-                    &columns::build_group_header_cells(PREFIX_MEMBER_INLINE, ""),
+                    &columns::build_group_header_cells(prefix, ""),
                     widths,
                 ));
             };
             let group = &ws.groups()[group_index];
             let m = &group.members()[member_index];
-            (Some(m), m.package_name().into_string(), group.is_named())
+            (Some(m), m.package_name().into_string())
         },
-        _ => (None, String::new(), false),
-    };
-    let indent = if is_named {
-        PREFIX_MEMBER_NAMED
-    } else {
-        PREFIX_MEMBER_INLINE
+        _ => (None, String::new()),
     };
     member.map_or_else(
         || {
-            let row = columns::build_group_header_cells(indent, &member_name);
+            let row = columns::build_group_header_cells(prefix, &member_name);
             ListItem::new(columns::row_to_line(&row, widths))
         },
         |m| {
@@ -507,7 +790,7 @@ fn render_member_item(
                 m,
                 &member_name,
                 sorted,
-                indent,
+                prefix,
                 inherited_deleted,
                 widths,
             )
@@ -517,36 +800,35 @@ fn render_member_item(
 
 fn render_member_vendored_item(
     ctx: &PaneRenderCtx<'_>,
-    node_index: usize,
-    group_index: usize,
-    member_index: usize,
-    vendored_index: usize,
+    row: MemberVendoredRow,
+    prefix: &str,
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ProjectListWidths,
 ) -> ListItem<'static> {
+    let MemberVendoredRow {
+        node: node_index,
+        group: group_index,
+        member: member_index,
+        vendored: vendored_index,
+    } = row;
     let item = &ctx.project_list[node_index];
     let empty = Vec::new();
     let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
-    let (vendored, is_named) = match &item.root_item {
+    let vendored = match &item.root_item {
         RootItem::Rust(RustProject::Workspace(ws)) => {
             let group = &ws.groups()[group_index];
             let member = &group.members()[member_index];
-            (member.vendored().get(vendored_index), group.is_named())
+            member.vendored().get(vendored_index)
         },
         RootItem::Worktrees(worktree_group) if !worktree_group.renders_as_group() => {
             let Some(ws) = worktree_group.single_live_workspace() else {
-                return render_missing_vendored(PREFIX_MEMBER_VENDORED_INLINE, widths);
+                return render_missing_vendored(prefix, widths);
             };
             let group = &ws.groups()[group_index];
             let member = &group.members()[member_index];
-            (member.vendored().get(vendored_index), group.is_named())
+            member.vendored().get(vendored_index)
         },
-        _ => (None, false),
-    };
-    let prefix = if is_named {
-        PREFIX_MEMBER_VENDORED_NAMED
-    } else {
-        PREFIX_MEMBER_VENDORED_INLINE
+        _ => None,
     };
     render_vendored_child(ctx, item.path(), vendored, prefix, sorted, widths)
 }
@@ -555,6 +837,7 @@ fn render_vendored_item(
     ctx: &PaneRenderCtx<'_>,
     node_index: usize,
     vendored_index: usize,
+    prefix: &str,
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ProjectListWidths,
 ) -> ListItem<'static> {
@@ -582,25 +865,17 @@ fn render_vendored_item(
     let name = format!("{vendored_display_name} (v)");
     vendored.map_or_else(
         || {
-            let row = columns::build_group_header_cells(PREFIX_VENDORED, &name);
+            let row = columns::build_group_header_cells(prefix, &name);
             ListItem::new(columns::row_to_line(&row, widths))
         },
         |v| {
             let inherited_deleted = ctx.project_list.is_deleted(item.path());
-            render_child_item(
-                ctx,
-                v,
-                &name,
-                sorted,
-                PREFIX_VENDORED,
-                inherited_deleted,
-                widths,
-            )
+            render_child_item(ctx, v, &name, sorted, prefix, inherited_deleted, widths)
         },
     )
 }
 
-fn render_missing_vendored(prefix: &'static str, widths: &ProjectListWidths) -> ListItem<'static> {
+fn render_missing_vendored(prefix: &str, widths: &ProjectListWidths) -> ListItem<'static> {
     let row = columns::build_group_header_cells(prefix, "");
     ListItem::new(columns::row_to_line(&row, widths))
 }
@@ -609,7 +884,7 @@ fn render_vendored_child(
     ctx: &PaneRenderCtx<'_>,
     inherited_deleted_path: &Path,
     vendored: Option<&VendoredPackage>,
-    prefix: &'static str,
+    prefix: &str,
     sorted: &[u64],
     widths: &ProjectListWidths,
 ) -> ListItem<'static> {
@@ -633,32 +908,25 @@ fn render_submodule_item(
     ctx: &PaneRenderCtx<'_>,
     node_index: usize,
     submodule_index: usize,
+    prefix: &str,
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ProjectListWidths,
 ) -> ListItem<'static> {
     let item = &ctx.project_list[node_index];
     let Some(submodule) = item.submodules().get(submodule_index) else {
-        let row = columns::build_group_header_cells(PREFIX_SUBMODULE, "");
+        let row = columns::build_group_header_cells(prefix, "");
         return ListItem::new(columns::row_to_line(&row, widths));
     };
     let name = format!("{} (s)", submodule.name);
     let sorted = child_sorted.get(&node_index).map_or(&[][..], Vec::as_slice);
-    render_path_only_entry(
-        ctx,
-        submodule,
-        item.path(),
-        PREFIX_SUBMODULE,
-        &name,
-        sorted,
-        widths,
-    )
+    render_path_only_entry(ctx, submodule, item.path(), prefix, &name, sorted, widths)
 }
 
 fn render_path_only_entry(
     ctx: &PaneRenderCtx<'_>,
     entry: &impl crate::project::ProjectFields,
     inherited_deleted_path: &Path,
-    prefix: &'static str,
+    prefix: &str,
     name: &str,
     sorted: &[u64],
     widths: &ProjectListWidths,
@@ -704,6 +972,7 @@ fn render_wt_vendored_item(
     node_index: usize,
     worktree_index: usize,
     vendored_index: usize,
+    prefix: &str,
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ProjectListWidths,
 ) -> ListItem<'static> {
@@ -724,7 +993,7 @@ fn render_wt_vendored_item(
     let name = format!("{vendored_display_name} (v)");
     vendored_pkg.map_or_else(
         || {
-            let row = columns::build_group_header_cells(PREFIX_WORKTREE_VENDORED, &name);
+            let row = columns::build_group_header_cells(prefix, &name);
             ListItem::new(columns::row_to_line(&row, widths))
         },
         |v| {
@@ -734,15 +1003,7 @@ fn render_wt_vendored_item(
                     .is_deleted(group.entry(worktree_index).unwrap_or(&group.primary).path()),
                 _ => false,
             };
-            render_child_item(
-                ctx,
-                v,
-                &name,
-                sorted,
-                PREFIX_WORKTREE_VENDORED,
-                inherited_deleted,
-                widths,
-            )
+            render_child_item(ctx, v, &name, sorted, prefix, inherited_deleted, widths)
         },
     )
 }
@@ -750,6 +1011,7 @@ fn render_wt_vendored_item(
 fn render_wt_member_vendored_item(
     ctx: &PaneRenderCtx<'_>,
     row: WorktreeMemberVendoredRow,
+    prefix: &str,
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ProjectListWidths,
 ) -> ListItem<'static> {
@@ -763,28 +1025,19 @@ fn render_wt_member_vendored_item(
     let item = &ctx.project_list[node];
     let empty = Vec::new();
     let sorted = child_sorted.get(&node).unwrap_or(&empty);
-    let (vendored, is_named, inherited_deleted_path) = match &item.root_item {
+    let (vendored, inherited_deleted_path) = match &item.root_item {
         RootItem::Worktrees(worktree_group) => {
             let entry = worktree_group
                 .entry(worktree)
                 .unwrap_or(&worktree_group.primary);
             let RustProject::Workspace(ws) = entry else {
-                return render_missing_vendored(PREFIX_WORKTREE_MEMBER_VENDORED_INLINE, widths);
+                return render_missing_vendored(prefix, widths);
             };
             let member_group = &ws.groups()[group_index];
             let member = &member_group.members()[member_index];
-            (
-                member.vendored().get(vendored),
-                member_group.is_named(),
-                entry.path(),
-            )
+            (member.vendored().get(vendored), entry.path())
         },
-        _ => (None, false, item.path()),
-    };
-    let prefix = if is_named {
-        PREFIX_WORKTREE_MEMBER_VENDORED_NAMED
-    } else {
-        PREFIX_WORKTREE_MEMBER_VENDORED_INLINE
+        _ => (None, item.path()),
     };
     render_vendored_child(
         ctx,
@@ -797,12 +1050,193 @@ fn render_wt_member_vendored_item(
 }
 
 #[derive(Clone, Copy)]
+struct MemberVendoredRow {
+    node:     usize,
+    group:    usize,
+    member:   usize,
+    vendored: usize,
+}
+
+#[derive(Clone, Copy)]
+struct WorktreeMemberRow {
+    node:     usize,
+    worktree: usize,
+    group:    usize,
+    member:   usize,
+}
+
+#[derive(Clone, Copy)]
 struct WorktreeMemberVendoredRow {
     node:     usize,
     worktree: usize,
     group:    usize,
     member:   usize,
     vendored: usize,
+}
+
+#[derive(Clone, Copy)]
+enum ProjectTreeRow {
+    Root {
+        node_index: usize,
+    },
+    GroupHeader {
+        node_index:  usize,
+        group_index: usize,
+    },
+    Member {
+        node_index:   usize,
+        group_index:  usize,
+        member_index: usize,
+    },
+    MemberVendored {
+        node_index:     usize,
+        group_index:    usize,
+        member_index:   usize,
+        vendored_index: usize,
+    },
+    Vendored {
+        node_index:     usize,
+        vendored_index: usize,
+    },
+    Submodule {
+        node_index:      usize,
+        submodule_index: usize,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum WorktreeTreeRow {
+    Entry {
+        node_index:     usize,
+        worktree_index: usize,
+    },
+    GroupHeader {
+        node_index:     usize,
+        worktree_index: usize,
+        group_index:    usize,
+    },
+    Member {
+        node_index:     usize,
+        worktree_index: usize,
+        group_index:    usize,
+        member_index:   usize,
+    },
+    MemberVendored {
+        node_index:     usize,
+        worktree_index: usize,
+        group_index:    usize,
+        member_index:   usize,
+        vendored_index: usize,
+    },
+    Vendored {
+        node_index:     usize,
+        worktree_index: usize,
+        vendored_index: usize,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum TreeRenderRow {
+    Project(ProjectTreeRow),
+    Worktree(WorktreeTreeRow),
+}
+
+impl From<VisibleRow> for TreeRenderRow {
+    fn from(row: VisibleRow) -> Self {
+        match row {
+            VisibleRow::Root { node_index } => Self::Project(ProjectTreeRow::Root { node_index }),
+            VisibleRow::GroupHeader {
+                node_index,
+                group_index,
+            } => Self::Project(ProjectTreeRow::GroupHeader {
+                node_index,
+                group_index,
+            }),
+            VisibleRow::Member {
+                node_index,
+                group_index,
+                member_index,
+            } => Self::Project(ProjectTreeRow::Member {
+                node_index,
+                group_index,
+                member_index,
+            }),
+            VisibleRow::MemberVendored {
+                node_index,
+                group_index,
+                member_index,
+                vendored_index,
+            } => Self::Project(ProjectTreeRow::MemberVendored {
+                node_index,
+                group_index,
+                member_index,
+                vendored_index,
+            }),
+            VisibleRow::Vendored {
+                node_index,
+                vendored_index,
+            } => Self::Project(ProjectTreeRow::Vendored {
+                node_index,
+                vendored_index,
+            }),
+            VisibleRow::Submodule {
+                node_index,
+                submodule_index,
+            } => Self::Project(ProjectTreeRow::Submodule {
+                node_index,
+                submodule_index,
+            }),
+            VisibleRow::WorktreeEntry {
+                node_index,
+                worktree_index,
+            } => Self::Worktree(WorktreeTreeRow::Entry {
+                node_index,
+                worktree_index,
+            }),
+            VisibleRow::WorktreeGroupHeader {
+                node_index,
+                worktree_index,
+                group_index,
+            } => Self::Worktree(WorktreeTreeRow::GroupHeader {
+                node_index,
+                worktree_index,
+                group_index,
+            }),
+            VisibleRow::WorktreeMember {
+                node_index,
+                worktree_index,
+                group_index,
+                member_index,
+            } => Self::Worktree(WorktreeTreeRow::Member {
+                node_index,
+                worktree_index,
+                group_index,
+                member_index,
+            }),
+            VisibleRow::WorktreeMemberVendored {
+                node_index,
+                worktree_index,
+                group_index,
+                member_index,
+                vendored_index,
+            } => Self::Worktree(WorktreeTreeRow::MemberVendored {
+                node_index,
+                worktree_index,
+                group_index,
+                member_index,
+                vendored_index,
+            }),
+            VisibleRow::WorktreeVendored {
+                node_index,
+                worktree_index,
+                vendored_index,
+            } => Self::Worktree(WorktreeTreeRow::Vendored {
+                node_index,
+                worktree_index,
+                vendored_index,
+            }),
+        }
+    }
 }
 
 pub(super) fn render_tree_items(
@@ -820,10 +1254,24 @@ pub(super) fn render_tree_items(
     let cursor = ctx.project_list.cursor();
 
     let rows = ctx.project_list.visible_rows();
+    let lineages: Vec<_> = rows
+        .iter()
+        .copied()
+        .map(|row| tree_lineage(ctx.project_list, row))
+        .collect();
     rows.iter()
         .enumerate()
         .map(|(row_index, row)| {
-            let item = render_tree_item(ctx, row, &root_labels, root_sorted, child_sorted, widths);
+            let prefix = tree_prefix(ctx.project_list, &lineages, row_index, *row);
+            let item = render_tree_item(
+                ctx,
+                *row,
+                &prefix,
+                &root_labels,
+                root_sorted,
+                child_sorted,
+                widths,
+            );
             item.style(
                 tui_pane::selection_state_for(viewport, cursor, row_index, pane_focus_state)
                     .overlay_style(),
@@ -834,74 +1282,143 @@ pub(super) fn render_tree_items(
 
 fn render_tree_item(
     ctx: &PaneRenderCtx<'_>,
-    row: &VisibleRow,
+    row: VisibleRow,
+    prefix: &str,
+    root_labels: &[String],
+    root_sorted: &[u64],
+    child_sorted: &HashMap<usize, Vec<u64>>,
+    widths: &ProjectListWidths,
+) -> ListItem<'static> {
+    match TreeRenderRow::from(row) {
+        TreeRenderRow::Project(row) => render_project_tree_item(
+            ctx,
+            row,
+            prefix,
+            root_labels,
+            root_sorted,
+            child_sorted,
+            widths,
+        ),
+        TreeRenderRow::Worktree(row) => {
+            render_worktree_tree_item(ctx, row, prefix, child_sorted, widths)
+        },
+    }
+}
+
+fn render_project_tree_item(
+    ctx: &PaneRenderCtx<'_>,
+    row: ProjectTreeRow,
+    prefix: &str,
     root_labels: &[String],
     root_sorted: &[u64],
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ProjectListWidths,
 ) -> ListItem<'static> {
     match row {
-        VisibleRow::Root { node_index } => {
-            render_root_item(ctx, *node_index, root_labels, root_sorted, widths)
+        ProjectTreeRow::Root { node_index } => {
+            render_root_item(ctx, node_index, prefix, root_labels, root_sorted, widths)
         },
-        VisibleRow::GroupHeader {
+        ProjectTreeRow::GroupHeader {
             node_index,
             group_index,
-        } => render_group_header(ctx, *node_index, *group_index, widths),
-        VisibleRow::Member {
+        } => render_group_header(ctx, node_index, group_index, prefix, widths),
+        ProjectTreeRow::Member {
             node_index,
             group_index,
             member_index,
         } => render_member_item(
             ctx,
-            *node_index,
-            *group_index,
-            *member_index,
+            node_index,
+            group_index,
+            member_index,
+            prefix,
             child_sorted,
             widths,
         ),
-        VisibleRow::MemberVendored {
+        ProjectTreeRow::MemberVendored {
             node_index,
             group_index,
             member_index,
             vendored_index,
         } => render_member_vendored_item(
             ctx,
-            *node_index,
-            *group_index,
-            *member_index,
-            *vendored_index,
+            MemberVendoredRow {
+                node:     node_index,
+                group:    group_index,
+                member:   member_index,
+                vendored: vendored_index,
+            },
+            prefix,
             child_sorted,
             widths,
         ),
-        VisibleRow::Vendored {
+        ProjectTreeRow::Vendored {
             node_index,
             vendored_index,
-        } => render_vendored_item(ctx, *node_index, *vendored_index, child_sorted, widths),
-        VisibleRow::WorktreeEntry {
+        } => render_vendored_item(
+            ctx,
+            node_index,
+            vendored_index,
+            prefix,
+            child_sorted,
+            widths,
+        ),
+        ProjectTreeRow::Submodule {
+            node_index,
+            submodule_index,
+        } => render_submodule_item(
+            ctx,
+            node_index,
+            submodule_index,
+            prefix,
+            child_sorted,
+            widths,
+        ),
+    }
+}
+
+fn render_worktree_tree_item(
+    ctx: &PaneRenderCtx<'_>,
+    row: WorktreeTreeRow,
+    prefix: &str,
+    child_sorted: &HashMap<usize, Vec<u64>>,
+    widths: &ProjectListWidths,
+) -> ListItem<'static> {
+    match row {
+        WorktreeTreeRow::Entry {
             node_index,
             worktree_index,
-        } => render_worktree_entry(ctx, *node_index, *worktree_index, child_sorted, widths),
-        VisibleRow::WorktreeGroupHeader {
+        } => render_worktree_entry(
+            ctx,
+            node_index,
+            worktree_index,
+            prefix,
+            child_sorted,
+            widths,
+        ),
+        WorktreeTreeRow::GroupHeader {
             node_index,
             worktree_index,
             group_index,
-        } => render_wt_group_header(ctx, *node_index, *worktree_index, *group_index, widths),
-        VisibleRow::WorktreeMember {
+        } => render_wt_group_header(ctx, node_index, worktree_index, group_index, prefix, widths),
+        WorktreeTreeRow::Member {
             node_index,
             worktree_index,
             group_index,
             member_index,
         } => render_wt_member(
             ctx,
-            *node_index,
-            *worktree_index,
-            *group_index,
-            *member_index,
+            WorktreeMemberRow {
+                node:     node_index,
+                worktree: worktree_index,
+                group:    group_index,
+                member:   member_index,
+            },
+            prefix,
             child_sorted,
             widths,
         ),
-        VisibleRow::WorktreeMemberVendored {
+        WorktreeTreeRow::MemberVendored {
             node_index,
             worktree_index,
             group_index,
@@ -910,31 +1427,29 @@ fn render_tree_item(
         } => render_wt_member_vendored_item(
             ctx,
             WorktreeMemberVendoredRow {
-                node:     *node_index,
-                worktree: *worktree_index,
-                group:    *group_index,
-                member:   *member_index,
-                vendored: *vendored_index,
+                node:     node_index,
+                worktree: worktree_index,
+                group:    group_index,
+                member:   member_index,
+                vendored: vendored_index,
             },
+            prefix,
             child_sorted,
             widths,
         ),
-        VisibleRow::WorktreeVendored {
+        WorktreeTreeRow::Vendored {
             node_index,
             worktree_index,
             vendored_index,
         } => render_wt_vendored_item(
             ctx,
-            *node_index,
-            *worktree_index,
-            *vendored_index,
+            node_index,
+            worktree_index,
+            vendored_index,
+            prefix,
             child_sorted,
             widths,
         ),
-        VisibleRow::Submodule {
-            node_index,
-            submodule_index,
-        } => render_submodule_item(ctx, *node_index, *submodule_index, child_sorted, widths),
     }
 }
 
@@ -942,6 +1457,7 @@ fn render_group_header(
     ctx: &PaneRenderCtx<'_>,
     node_index: usize,
     group_index: usize,
+    prefix: &str,
     widths: &ProjectListWidths,
 ) -> ListItem<'static> {
     let item = &ctx.project_list[node_index];
@@ -951,15 +1467,6 @@ fn render_group_header(
             (group.group_name().to_string(), group.members().len())
         },
         _ => (String::new(), 0),
-    };
-    let prefix = if ctx
-        .project_list
-        .expanded
-        .contains(&ExpandKey::Group(node_index, group_index))
-    {
-        PREFIX_GROUP_EXPANDED
-    } else {
-        PREFIX_GROUP_COLLAPSED
     };
     let label = format!("{group_name} ({member_count})");
     let row = columns::build_group_header_cells(prefix, &label);

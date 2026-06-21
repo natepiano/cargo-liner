@@ -3,8 +3,9 @@
 //! [`ExpandKey`] is positional — it indexes into the live tree — so it cannot
 //! survive a restart or a rebuild that re-orders projects. [`ExpandTarget`]
 //! projects each expandable container onto a path-based identity that does: a
-//! root by its path, a named group by its owner path plus group name, a
-//! worktree checkout by its path, and a named group under a checkout by both.
+//! root by its path, a named group by its owner path plus group name, a member
+//! with vendored children by the member path, a worktree checkout by its path,
+//! and a named group or member under a checkout by its checkout-local path.
 //! The variant tag keeps a worktree group's primary `Node` distinct from its
 //! primary `Worktree` entry — both resolve to the same `primary_path`, so a
 //! bare path could not tell them apart.
@@ -12,6 +13,7 @@
 use super::ProjectList;
 use super::visible_rows::ExpandKey;
 use crate::project::AbsolutePath;
+use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::RustProject;
 
@@ -25,6 +27,8 @@ pub enum ExpandTarget {
     /// A named member group directly under a top-level workspace, identified by
     /// the owner root's path and the group name.
     Group(AbsolutePath, String),
+    /// A workspace member with vendored children, identified by the member path.
+    Member(AbsolutePath),
     /// A single checkout inside a worktree group, identified by the checkout's
     /// path. The primary shares the root's path, so the distinct variant — not
     /// the path — separates it from [`ExpandTarget::Root`].
@@ -32,6 +36,9 @@ pub enum ExpandTarget {
     /// A named member group under a worktree checkout, identified by the
     /// checkout's path and the group name.
     WorktreeGroup(AbsolutePath, String),
+    /// A worktree workspace member with vendored children, identified by the
+    /// member path.
+    WorktreeMember(AbsolutePath),
 }
 
 /// Every expandable container in the current tree paired with its
@@ -60,28 +67,43 @@ pub(super) fn collect_expandable_targets(list: &ProjectList) -> Vec<(ExpandKey, 
                             ),
                         ));
                     }
+                    for (mi, member) in group.members().iter().enumerate() {
+                        if !member.vendored().is_empty() {
+                            out.push((
+                                ExpandKey::Member(ni, gi, mi),
+                                ExpandTarget::Member(member.path().clone()),
+                            ));
+                        }
+                    }
                 }
             },
             RootItem::Worktrees(worktree_group) if worktree_group.renders_as_group() => {
                 for (wi, worktree_entry) in worktree_group.iter_entries().enumerate() {
-                    let RustProject::Workspace(ws) = worktree_entry else {
-                        continue;
-                    };
-                    if ws.has_members() {
+                    if worktree_entry_has_children(worktree_entry) {
                         out.push((
                             ExpandKey::Worktree(ni, wi),
                             ExpandTarget::Worktree(worktree_entry.path().clone()),
                         ));
                     }
-                    for (gi, group) in ws.groups().iter().enumerate() {
-                        if group.is_named() {
-                            out.push((
-                                ExpandKey::WorktreeGroup(ni, wi, gi),
-                                ExpandTarget::WorktreeGroup(
-                                    worktree_entry.path().clone(),
-                                    group.group_name().to_string(),
-                                ),
-                            ));
+                    if let RustProject::Workspace(ws) = worktree_entry {
+                        for (gi, group) in ws.groups().iter().enumerate() {
+                            if group.is_named() {
+                                out.push((
+                                    ExpandKey::WorktreeGroup(ni, wi, gi),
+                                    ExpandTarget::WorktreeGroup(
+                                        worktree_entry.path().clone(),
+                                        group.group_name().to_string(),
+                                    ),
+                                ));
+                            }
+                            for (mi, member) in group.members().iter().enumerate() {
+                                if !member.vendored().is_empty() {
+                                    out.push((
+                                        ExpandKey::WorktreeMember(ni, wi, gi, mi),
+                                        ExpandTarget::WorktreeMember(member.path().clone()),
+                                    ));
+                                }
+                            }
                         }
                     }
                 }
@@ -101,6 +123,14 @@ pub(super) fn collect_expandable_targets(list: &ProjectList) -> Vec<(ExpandKey, 
                                 ),
                             ));
                         }
+                        for (mi, member) in group.members().iter().enumerate() {
+                            if !member.vendored().is_empty() {
+                                out.push((
+                                    ExpandKey::Member(ni, gi, mi),
+                                    ExpandTarget::Member(member.path().clone()),
+                                ));
+                            }
+                        }
                     }
                 }
             },
@@ -108,4 +138,11 @@ pub(super) fn collect_expandable_targets(list: &ProjectList) -> Vec<(ExpandKey, 
         }
     }
     out
+}
+
+fn worktree_entry_has_children(entry: &RustProject) -> bool {
+    match entry {
+        RustProject::Workspace(ws) => ws.has_members() || !ws.vendored().is_empty(),
+        RustProject::Package(pkg) => !pkg.vendored().is_empty(),
+    }
 }

@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Change project tree child rows to use two-cell box-drawing indentation and show expand/collapse markers for vendored crates.
 - Change framework render-state APIs to use named state enums instead of public boolean fields for keymap rows, scan status, settings focus, and toast focus.
 - Change `tui_pane::KeyBind` to use `From<KeyEvent>` for key-event normalization, replacing the custom `KeyBind::from_key_event` helper.
 - Change `ToastSettings` callers to use `toasts_enabled()` and `set_toasts_enabled()` instead of reading or writing an `enabled` field.

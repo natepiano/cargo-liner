@@ -9632,7 +9632,7 @@ mod tests {
         }
 
         #[test]
-        fn visible_rows_include_member_vendored_children() {
+        fn visible_rows_include_member_vendored_children_when_member_expanded() {
             let ws = Workspace {
                 path: test_path("~/ws"),
                 groups: vec![inline_group(vec![make_package_with_vendored(
@@ -9647,6 +9647,30 @@ mod tests {
             let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
             let rows = super::as_entries(vec![root]).compute_visible_rows(&expanded, true);
 
+            assert_eq!(rows.len(), 2, "got: {rows:?}");
+            assert!(matches!(rows[0], VisibleRow::Root { .. }));
+            assert!(matches!(rows[1], VisibleRow::Member { .. }));
+            assert!(
+                !rows
+                    .iter()
+                    .any(|row| matches!(row, VisibleRow::MemberVendored { .. })),
+                "collapsed member should hide vendored children: {rows:?}"
+            );
+
+            let ws = Workspace {
+                path: test_path("~/ws"),
+                groups: vec![inline_group(vec![make_package_with_vendored(
+                    Some("member"),
+                    "~/ws/member",
+                    vec![super::make_vendored(Some("vendored"), "~/ws/vendor/helper")],
+                )])],
+                ..Workspace::default()
+            };
+            let root = RootItem::Rust(RustProject::Workspace(ws));
+            let expanded: HashSet<ExpandKey> =
+                [ExpandKey::Node(0), ExpandKey::Member(0, 0, 0)].into();
+            let rows = super::as_entries(vec![root]).compute_visible_rows(&expanded, true);
+
             assert_eq!(rows.len(), 3, "got: {rows:?}");
             assert!(matches!(rows[0], VisibleRow::Root { .. }));
             assert!(matches!(rows[1], VisibleRow::Member { .. }));
@@ -9659,6 +9683,96 @@ mod tests {
                     vendored_index: 0,
                 }
             ));
+        }
+
+        #[test]
+        fn member_vendored_rows_render_two_space_indents_and_markers() {
+            let member = make_package_with_vendored(
+                Some("member"),
+                "~/ws/member",
+                vec![super::make_vendored(Some("helper"), "~/ws/vendor/helper")],
+            );
+            let root =
+                make_workspace_with_members(Some("ws"), "~/ws", vec![inline_group(vec![member])]);
+            let mut app = make_app(&[make_workspace_project(Some("ws"), "~/ws")]);
+            apply_items(&mut app, std::slice::from_ref(&root));
+
+            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.recompute_visibility(true);
+            let rendered = rendered_root_name_cells(&mut app);
+            assert!(
+                rendered.iter().any(|line| line.starts_with("└─▶ member")),
+                "member with hidden vendored children should render a collapsed marker: {rendered:?}"
+            );
+            assert!(
+                !rendered.iter().any(|line| line.contains("helper (v)")),
+                "collapsed member should hide vendored child rows: {rendered:?}"
+            );
+
+            app.project_list.expanded.insert(ExpandKey::Member(0, 0, 0));
+            app.project_list.recompute_visibility(true);
+            let rendered = rendered_root_name_cells(&mut app);
+            assert!(
+                rendered.iter().any(|line| line.starts_with("└─▼ member")),
+                "expanded member should render an expanded marker: {rendered:?}"
+            );
+            assert!(
+                rendered
+                    .iter()
+                    .any(|line| line.starts_with("  └── helper (v)")),
+                "vendored child should render two spaces deeper with an extended row marker: {rendered:?}"
+            );
+        }
+
+        #[test]
+        fn member_vendored_rows_render_box_drawing_continuations() {
+            let first = make_package_with_vendored(
+                Some("bevy_diegetic"),
+                "~/ws/bevy_diegetic",
+                vec![super::make_vendored(
+                    Some("clay-layout"),
+                    "~/ws/bevy_diegetic/vendor/clay-layout",
+                )],
+            );
+            let second = make_package_raw(Some("bevy_lagrange"), "~/ws/bevy_lagrange", None);
+            let third = make_package_raw(Some("fairy_dust"), "~/ws/fairy_dust", None);
+            let root = make_workspace_with_members(
+                Some("bevy_hana"),
+                "~/ws",
+                vec![inline_group(vec![first, second, third])],
+            );
+            let mut app = make_app(&[make_workspace_project(Some("bevy_hana"), "~/ws")]);
+            apply_items(&mut app, std::slice::from_ref(&root));
+
+            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.insert(ExpandKey::Member(0, 0, 0));
+            app.project_list.recompute_visibility(true);
+
+            let rendered = rendered_root_name_cells(&mut app);
+            assert!(
+                rendered
+                    .iter()
+                    .any(|line| line.starts_with("├─▼ bevy_diegetic")),
+                "expanded member should render as a non-final branch: {rendered:?}"
+            );
+            assert!(
+                rendered
+                    .iter()
+                    .any(|line| line.starts_with("│ └── clay-layout (v)")),
+                "vendored child should carry the ancestor continuation: {rendered:?}"
+            );
+            assert!(
+                rendered
+                    .iter()
+                    .any(|line| line.starts_with("├── bevy_lagrange")),
+                "middle member should extend the branch through the sibling marker slot: {rendered:?}"
+            );
+            assert!(
+                rendered
+                    .iter()
+                    .any(|line| line.starts_with("└── fairy_dust")),
+                "final member should extend the branch through the sibling marker slot: {rendered:?}"
+            );
         }
 
         #[test]
@@ -9683,6 +9797,8 @@ mod tests {
             );
 
             app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.insert(ExpandKey::Member(0, 0, 0));
+            app.project_list.recompute_visibility(true);
 
             let rendered = rendered_root_name_cells(&mut app);
             assert!(

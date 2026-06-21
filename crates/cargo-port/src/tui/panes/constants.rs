@@ -20,29 +20,34 @@ use std::time::Duration;
 pub(super) const FIT_TEXT_ELLIPSIS: &str = "...";
 pub(super) const PULL_REQUEST_MIN_TITLE_WIDTH: usize = 8;
 
-// Row prefix strings — single source of truth for width calc and render.
+// Tree row prefix strings and segments — single source of truth for width calc
+// and render.
 
 pub(super) const PREFIX_ROOT_EXPANDED: &str = "▼ ";
 pub const PREFIX_ROOT_COLLAPSED: &str = "▶ ";
 pub const PREFIX_ROOT_LEAF: &str = "  ";
-pub(super) const PREFIX_MEMBER_INLINE: &str = "   ";
-pub(super) const PREFIX_MEMBER_NAMED: &str = "       ";
-pub(super) const PREFIX_MEMBER_VENDORED_INLINE: &str = "       ";
-pub(super) const PREFIX_MEMBER_VENDORED_NAMED: &str = "           ";
-pub(super) const PREFIX_SUBMODULE: &str = "   ";
-pub(super) const PREFIX_VENDORED: &str = "   ";
-pub(super) const PREFIX_GROUP_EXPANDED: &str = "   ▼";
-pub(super) const PREFIX_GROUP_COLLAPSED: &str = "   ▶";
-pub(super) const PREFIX_WORKTREE_EXPANDED: &str = "   ▼";
-pub(super) const PREFIX_WORKTREE_COLLAPSED: &str = "   ▶";
-pub const PREFIX_WORKTREE_FLAT: &str = "   ";
-pub(super) const PREFIX_WORKTREE_GROUP_EXPANDED: &str = "       ▼";
-pub(super) const PREFIX_WORKTREE_GROUP_COLLAPSED: &str = "       ▶";
-pub(super) const PREFIX_WORKTREE_MEMBER_INLINE: &str = "       ";
-pub(super) const PREFIX_WORKTREE_MEMBER_NAMED: &str = "           ";
-pub(super) const PREFIX_WORKTREE_MEMBER_VENDORED_INLINE: &str = "           ";
-pub(super) const PREFIX_WORKTREE_MEMBER_VENDORED_NAMED: &str = "               ";
-pub(super) const PREFIX_WORKTREE_VENDORED: &str = "       ";
+pub(super) const TREE_PREFIX_BLANK: &str = "  ";
+pub(super) const TREE_PREFIX_CONTINUATION: &str = "│ ";
+pub(super) const TREE_PREFIX_BRANCH: &str = "├─";
+pub(super) const TREE_PREFIX_LAST: &str = "└─";
+pub(super) const TREE_PREFIX_EXPANDED: &str = "▼ ";
+pub(super) const TREE_PREFIX_COLLAPSED: &str = "▶ ";
+pub(super) const TREE_PREFIX_LEAF_EXTENSION: &str = "─ ";
+pub(super) const PREFIX_MEMBER_INLINE: &str = "└─";
+pub(super) const PREFIX_MEMBER_NAMED: &str = "  └─";
+pub(super) const PREFIX_MEMBER_VENDORED_INLINE: &str = "  └─";
+pub(super) const PREFIX_MEMBER_VENDORED_NAMED: &str = "    └─";
+pub(super) const PREFIX_SUBMODULE: &str = "└─";
+pub(super) const PREFIX_VENDORED: &str = "└─";
+pub(super) const PREFIX_GROUP_COLLAPSED: &str = "└─▶ ";
+pub(super) const PREFIX_WORKTREE_COLLAPSED: &str = "└─▶ ";
+pub const PREFIX_WORKTREE_FLAT: &str = "└─";
+pub(super) const PREFIX_WORKTREE_GROUP_COLLAPSED: &str = "  └─▶ ";
+pub(super) const PREFIX_WORKTREE_MEMBER_INLINE: &str = "  └─";
+pub(super) const PREFIX_WORKTREE_MEMBER_NAMED: &str = "    └─";
+pub(super) const PREFIX_WORKTREE_MEMBER_VENDORED_INLINE: &str = "    └─";
+pub(super) const PREFIX_WORKTREE_MEMBER_VENDORED_NAMED: &str = "      └─";
+pub(super) const PREFIX_WORKTREE_VENDORED: &str = "  └─";
 
 // tests detail rows
 

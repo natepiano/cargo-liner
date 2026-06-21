@@ -1431,6 +1431,21 @@ impl ProjectList {
                 node_index,
                 group_index,
             } => Some(ExpandKey::Group(node_index, group_index)),
+            VisibleRow::Member {
+                node_index,
+                group_index,
+                member_index,
+            } => {
+                let member = self
+                    .get(node_index)?
+                    .root_item
+                    .resolve_member(group_index, member_index)?;
+                (!member.vendored().is_empty()).then_some(ExpandKey::Member(
+                    node_index,
+                    group_index,
+                    member_index,
+                ))
+            },
             VisibleRow::WorktreeEntry {
                 node_index,
                 worktree_index,
@@ -1438,10 +1453,31 @@ impl ProjectList {
                 let item = self.get(node_index)?;
                 match &item.root_item {
                     RootItem::Worktrees(group) => match group.entry(worktree_index)? {
-                        RustProject::Workspace(ws) => ws
-                            .has_members()
+                        RustProject::Workspace(ws) => (ws.has_members()
+                            || !ws.vendored().is_empty())
+                        .then_some(ExpandKey::Worktree(node_index, worktree_index)),
+                        RustProject::Package(pkg) => (!pkg.vendored().is_empty())
                             .then_some(ExpandKey::Worktree(node_index, worktree_index)),
-                        RustProject::Package(_) => None,
+                    },
+                    _ => None,
+                }
+            },
+            VisibleRow::WorktreeMember {
+                node_index,
+                worktree_index,
+                group_index,
+                member_index,
+            } => {
+                let item = self.get(node_index)?;
+                match &item.root_item {
+                    RootItem::Worktrees(group) => {
+                        let member = group.member_ref(worktree_index, group_index, member_index)?;
+                        (!member.vendored().is_empty()).then_some(ExpandKey::WorktreeMember(
+                            node_index,
+                            worktree_index,
+                            group_index,
+                            member_index,
+                        ))
                     },
                     _ => None,
                 }
@@ -1455,11 +1491,9 @@ impl ProjectList {
                 worktree_index,
                 group_index,
             )),
-            VisibleRow::Member { .. }
-            | VisibleRow::MemberVendored { .. }
+            VisibleRow::MemberVendored { .. }
             | VisibleRow::Vendored { .. }
             | VisibleRow::Submodule { .. }
-            | VisibleRow::WorktreeMember { .. }
             | VisibleRow::WorktreeMemberVendored { .. }
             | VisibleRow::WorktreeVendored { .. } => None,
         }
@@ -1600,19 +1634,37 @@ impl ProjectList {
                         if group.is_named() {
                             expanded.insert(ExpandKey::Group(ni, gi));
                         }
+                        for (mi, member) in group.members().iter().enumerate() {
+                            if !member.vendored().is_empty() {
+                                expanded.insert(ExpandKey::Member(ni, gi, mi));
+                            }
+                        }
                     }
                 },
                 RootItem::Worktrees(group) => {
                     for (wi, entry) in group.iter_entries().enumerate() {
-                        if let RustProject::Workspace(ws) = entry {
-                            if ws.has_members() {
-                                expanded.insert(ExpandKey::Worktree(ni, wi));
-                            }
-                            for (gi, g) in ws.groups().iter().enumerate() {
-                                if g.is_named() {
-                                    expanded.insert(ExpandKey::WorktreeGroup(ni, wi, gi));
+                        match entry {
+                            RustProject::Workspace(ws) => {
+                                if ws.has_members() || !ws.vendored().is_empty() {
+                                    expanded.insert(ExpandKey::Worktree(ni, wi));
                                 }
-                            }
+                                for (gi, g) in ws.groups().iter().enumerate() {
+                                    if g.is_named() {
+                                        expanded.insert(ExpandKey::WorktreeGroup(ni, wi, gi));
+                                    }
+                                    for (mi, member) in g.members().iter().enumerate() {
+                                        if !member.vendored().is_empty() {
+                                            expanded
+                                                .insert(ExpandKey::WorktreeMember(ni, wi, gi, mi));
+                                        }
+                                    }
+                                }
+                            },
+                            RustProject::Package(pkg) => {
+                                if !pkg.vendored().is_empty() {
+                                    expanded.insert(ExpandKey::Worktree(ni, wi));
+                                }
+                            },
                         }
                     }
                 },
@@ -1652,7 +1704,7 @@ impl ProjectList {
             match &entry.root_item {
                 RootItem::Rust(RustProject::Workspace(ws)) => {
                     for (gi, group) in ws.groups().iter().enumerate() {
-                        for member in group.members() {
+                        for (member_index, member) in group.members().iter().enumerate() {
                             if member.path() == target_path {
                                 expanded.insert(ExpandKey::Node(ni));
                                 if group.is_named() {
@@ -1665,6 +1717,7 @@ impl ProjectList {
                                 .any(|vendored| vendored.path() == target_path)
                             {
                                 expanded.insert(ExpandKey::Node(ni));
+                                expanded.insert(ExpandKey::Member(ni, gi, member_index));
                                 if group.is_named() {
                                     expanded.insert(ExpandKey::Group(ni, gi));
                                 }
@@ -1692,7 +1745,7 @@ impl ProjectList {
                         }
                         if let RustProject::Workspace(ws) = entry {
                             for (gi, g) in ws.groups().iter().enumerate() {
-                                for member in g.members() {
+                                for (member_index, member) in g.members().iter().enumerate() {
                                     if member.path() == target_path {
                                         expanded.insert(ExpandKey::Node(ni));
                                         expanded.insert(ExpandKey::Worktree(ni, wi));
@@ -1707,6 +1760,12 @@ impl ProjectList {
                                     {
                                         expanded.insert(ExpandKey::Node(ni));
                                         expanded.insert(ExpandKey::Worktree(ni, wi));
+                                        expanded.insert(ExpandKey::WorktreeMember(
+                                            ni,
+                                            wi,
+                                            gi,
+                                            member_index,
+                                        ));
                                         if g.is_named() {
                                             expanded.insert(ExpandKey::WorktreeGroup(ni, wi, gi));
                                         }
@@ -1781,25 +1840,17 @@ impl ProjectList {
             VisibleRow::Member {
                 node_index: ni,
                 group_index: gi,
-                ..
-            }
-            | VisibleRow::MemberVendored {
+                member_index: mi,
+            } => {
+                self.collapse_member_row(ni, gi, mi, include_non_rust);
+            },
+            VisibleRow::MemberVendored {
                 node_index: ni,
                 group_index: gi,
+                member_index: mi,
                 ..
             } => {
-                if self.is_inline_group(ni, gi) {
-                    self.collapse_to_root(ni, include_non_rust);
-                } else {
-                    self.collapse_to(
-                        &ExpandKey::Group(ni, gi),
-                        VisibleRow::GroupHeader {
-                            node_index:  ni,
-                            group_index: gi,
-                        },
-                        include_non_rust,
-                    );
-                }
+                self.collapse_member_vendored_row(ni, gi, mi, include_non_rust);
             },
             VisibleRow::Vendored { node_index: ni, .. }
             | VisibleRow::Submodule { node_index: ni, .. } => {
@@ -1826,27 +1877,18 @@ impl ProjectList {
                 node_index: ni,
                 worktree_index: wi,
                 group_index: gi,
-                ..
-            }
-            | VisibleRow::WorktreeMemberVendored {
+                member_index: mi,
+            } => {
+                self.collapse_worktree_member_row(ni, wi, gi, mi, include_non_rust);
+            },
+            VisibleRow::WorktreeMemberVendored {
                 node_index: ni,
                 worktree_index: wi,
                 group_index: gi,
+                member_index: mi,
                 ..
             } => {
-                if self.is_worktree_inline_group(ni, wi, gi) {
-                    self.collapse_to_worktree_entry(ni, wi, include_non_rust);
-                } else {
-                    self.collapse_to(
-                        &ExpandKey::WorktreeGroup(ni, wi, gi),
-                        VisibleRow::WorktreeGroupHeader {
-                            node_index:     ni,
-                            worktree_index: wi,
-                            group_index:    gi,
-                        },
-                        include_non_rust,
-                    );
-                }
+                self.collapse_worktree_member_vendored_row(ni, wi, gi, mi, include_non_rust);
             },
             VisibleRow::WorktreeVendored {
                 node_index: ni,
@@ -1856,6 +1898,90 @@ impl ProjectList {
                 self.collapse_to_worktree_entry(ni, wi, include_non_rust);
             },
         }
+    }
+
+    fn collapse_member_row(&mut self, ni: usize, gi: usize, mi: usize, include_non_rust: bool) {
+        if self.try_collapse(&ExpandKey::Member(ni, gi, mi)) {
+            self.recompute_visibility(include_non_rust);
+            return;
+        }
+        if self.is_inline_group(ni, gi) {
+            self.collapse_to_root(ni, include_non_rust);
+        } else {
+            self.collapse_to(
+                &ExpandKey::Group(ni, gi),
+                VisibleRow::GroupHeader {
+                    node_index:  ni,
+                    group_index: gi,
+                },
+                include_non_rust,
+            );
+        }
+    }
+
+    fn collapse_member_vendored_row(
+        &mut self,
+        ni: usize,
+        gi: usize,
+        mi: usize,
+        include_non_rust: bool,
+    ) {
+        self.collapse_to(
+            &ExpandKey::Member(ni, gi, mi),
+            VisibleRow::Member {
+                node_index:   ni,
+                group_index:  gi,
+                member_index: mi,
+            },
+            include_non_rust,
+        );
+    }
+
+    fn collapse_worktree_member_row(
+        &mut self,
+        ni: usize,
+        wi: usize,
+        gi: usize,
+        mi: usize,
+        include_non_rust: bool,
+    ) {
+        if self.try_collapse(&ExpandKey::WorktreeMember(ni, wi, gi, mi)) {
+            self.recompute_visibility(include_non_rust);
+            return;
+        }
+        if self.is_worktree_inline_group(ni, wi, gi) {
+            self.collapse_to_worktree_entry(ni, wi, include_non_rust);
+        } else {
+            self.collapse_to(
+                &ExpandKey::WorktreeGroup(ni, wi, gi),
+                VisibleRow::WorktreeGroupHeader {
+                    node_index:     ni,
+                    worktree_index: wi,
+                    group_index:    gi,
+                },
+                include_non_rust,
+            );
+        }
+    }
+
+    fn collapse_worktree_member_vendored_row(
+        &mut self,
+        ni: usize,
+        wi: usize,
+        gi: usize,
+        mi: usize,
+        include_non_rust: bool,
+    ) {
+        self.collapse_to(
+            &ExpandKey::WorktreeMember(ni, wi, gi, mi),
+            VisibleRow::WorktreeMember {
+                node_index:     ni,
+                worktree_index: wi,
+                group_index:    gi,
+                member_index:   mi,
+            },
+            include_non_rust,
+        );
     }
 
     fn collapse_to_root(&mut self, ni: usize, include_non_rust: bool) {
