@@ -375,11 +375,11 @@ impl StartupServices {
     }
 
     pub(crate) const fn startup_git_first_commit_effect(&self) -> StartupEffect {
-        self.effect(StartupEffectKind::StartupGitFirstCommit)
+        self.effect(StartupEffectKind::GitFirstCommit)
     }
 
     pub(crate) const fn startup_project_details_effect(&self) -> StartupEffect {
-        self.effect(StartupEffectKind::StartupProjectDetails)
+        self.effect(StartupEffectKind::ProjectDetails)
     }
 
     pub(crate) const fn streaming_scan_effect(&self) -> StartupEffect {
@@ -415,11 +415,11 @@ impl StartupServices {
     }
 
     pub(crate) fn record_startup_git_first_commit(&self, effect: StartupEffect) {
-        self.record_effect(StartupEffectKind::StartupGitFirstCommit, effect);
+        self.record_effect(StartupEffectKind::GitFirstCommit, effect);
     }
 
     pub(crate) fn record_startup_project_details(&self, effect: StartupEffect) {
-        self.record_effect(StartupEffectKind::StartupProjectDetails, effect);
+        self.record_effect(StartupEffectKind::ProjectDetails, effect);
     }
 
     pub(crate) fn record_streaming_scan(&self, effect: StartupEffect) {
@@ -494,8 +494,8 @@ impl StartupServices {
                 | StartupEffectKind::ProcessGlobals
                 | StartupEffectKind::RunningTargetsPolling
                 | StartupEffectKind::PriorityDetailFetch
-                | StartupEffectKind::StartupGitFirstCommit
-                | StartupEffectKind::StartupProjectDetails
+                | StartupEffectKind::GitFirstCommit
+                | StartupEffectKind::ProjectDetails
                 | StartupEffectKind::StreamingScan => StartupEffect::Real,
                 #[cfg(test)]
                 StartupEffectKind::HostGithubAuth => StartupEffect::Real,
@@ -515,8 +515,8 @@ impl StartupServices {
                 StartupEffectKind::HostGithubAuth => effects.host_github_auth,
                 StartupEffectKind::RunningTargetsPolling => effects.running_targets_polling,
                 StartupEffectKind::PriorityDetailFetch => effects.priority_detail_fetch,
-                StartupEffectKind::StartupGitFirstCommit => effects.startup_git_first_commit,
-                StartupEffectKind::StartupProjectDetails => effects.startup_project_details,
+                StartupEffectKind::GitFirstCommit => effects.startup_git_first_commit,
+                StartupEffectKind::ProjectDetails => effects.startup_project_details,
                 StartupEffectKind::StreamingScan => effects.streaming_scan,
             },
         }
@@ -736,8 +736,8 @@ impl StartupEffectCounts {
             StartupEffectKind::HostGithubAuth => &mut self.host_github_auth,
             StartupEffectKind::RunningTargetsPolling => &mut self.running_targets_polling,
             StartupEffectKind::PriorityDetailFetch => &mut self.priority_detail_fetch,
-            StartupEffectKind::StartupGitFirstCommit => &mut self.startup_git_first_commit,
-            StartupEffectKind::StartupProjectDetails => &mut self.startup_project_details,
+            StartupEffectKind::GitFirstCommit => &mut self.startup_git_first_commit,
+            StartupEffectKind::ProjectDetails => &mut self.startup_project_details,
             StartupEffectKind::StreamingScan => &mut self.streaming_scan,
         }
     }
@@ -758,7 +758,7 @@ enum StartupEffectKind {
     HostGithubAuth,
     RunningTargetsPolling,
     PriorityDetailFetch,
-    StartupGitFirstCommit,
-    StartupProjectDetails,
+    GitFirstCommit,
+    ProjectDetails,
     StreamingScan,
 }

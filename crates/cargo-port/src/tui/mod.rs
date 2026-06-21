@@ -1,4 +1,5 @@
 mod app;
+mod app_render_state;
 mod background;
 mod columns;
 mod constants;
@@ -14,6 +15,7 @@ mod messages;
 mod overlays;
 mod panes;
 mod project_list;
+mod project_list_state;
 mod render;
 mod render_context;
 mod running_targets;

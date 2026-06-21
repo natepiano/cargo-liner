@@ -63,7 +63,7 @@ pub(crate) enum CargoMetadataTriggerKind {
     Manifest,
     Lockfile,
     Toolchain,
-    CargoConfig,
+    Config,
 }
 
 /// Does `path` (under `project_root`) warrant a `cargo metadata` refresh?
@@ -109,7 +109,7 @@ pub(crate) fn classify_cargo_metadata_basename(path: &Path) -> Option<CargoMetad
                 .and_then(|parent| parent.file_name())
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| name == DOT_CARGO_DIR);
-            parent_is_dot_cargo.then_some(CargoMetadataTriggerKind::CargoConfig)
+            parent_is_dot_cargo.then_some(CargoMetadataTriggerKind::Config)
         },
         _ => None,
     }
@@ -240,11 +240,11 @@ mod tests {
         let hits = [
             (
                 Path::new("/home/user/.cargo/config.toml"),
-                CargoMetadataTriggerKind::CargoConfig,
+                CargoMetadataTriggerKind::Config,
             ),
             (
                 Path::new("/home/user/.cargo/config"),
-                CargoMetadataTriggerKind::CargoConfig,
+                CargoMetadataTriggerKind::Config,
             ),
             (
                 Path::new("/opt/proj/Cargo.toml"),
@@ -307,12 +307,9 @@ mod tests {
             ),
             (
                 root.join(".cargo/config.toml"),
-                CargoMetadataTriggerKind::CargoConfig,
+                CargoMetadataTriggerKind::Config,
             ),
-            (
-                root.join(".cargo/config"),
-                CargoMetadataTriggerKind::CargoConfig,
-            ),
+            (root.join(".cargo/config"), CargoMetadataTriggerKind::Config),
             (
                 root.join("nested/member/Cargo.toml"),
                 CargoMetadataTriggerKind::Manifest,

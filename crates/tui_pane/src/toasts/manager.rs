@@ -1,0 +1,584 @@
+use std::time::Duration;
+
+use super::body::ToastBody;
+use super::settings::ToastSettings;
+use super::toast::Toast;
+use super::toast::ToastLifetime;
+use super::toast::ToastStyle;
+use super::view::ToastHitbox;
+use crate::AppContext;
+use crate::Viewport;
+
+/// Result of handling a focused toast key.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ToastCommand<A> {
+    /// No toast action fired.
+    None,
+    /// The focused toast requested its action payload.
+    Activate(A),
+}
+
+pub struct ToastSpec<Ctx: AppContext> {
+    pub(super) title:              String,
+    pub(super) body:               ToastBody,
+    pub(super) style:              ToastStyle,
+    pub(super) lifetime:           ToastLifetime,
+    pub(super) action:             Option<Ctx::ToastAction>,
+    pub(super) min_interior_lines: usize,
+    pub(super) item_linger:        Duration,
+}
+
+/// Outcome of [`Toasts::reactivate_task`].
+///
+/// Replaces a plain `bool` so callers can distinguish "no toast
+/// for this task — create one" from "user dismissed this toast
+/// — leave it alone." `bool` returns conflated those cases and
+/// caused user-dismissed toasts to be re-created on the next
+/// tracker poll.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReactivateOutcome {
+    /// No toast registered for this task id. Caller should
+    /// create a fresh toast for the tracker.
+    NotFound,
+    /// Toast existed and was returned to
+    /// `toast::ToastPhase::Visible` with task status reset to
+    /// `Running`.
+    Revived,
+    /// Toast existed but its dismissal is
+    /// `toast::ToastDismissal::ClosedByUser`. Caller should neither
+    /// touch the toast nor create a replacement — the user
+    /// closed it, and the underlying tracker work continues
+    /// without UI surface.
+    DismissedByUser,
+}
+
+/// Framework-owned toast manager.
+pub struct Toasts<Ctx: AppContext> {
+    pub(super) next_id:  u64,
+    pub(super) entries:  Vec<Toast<Ctx>>,
+    /// Viewport used when focus is on the Toasts framework pane.
+    pub viewport:        Viewport,
+    pub(super) hits:     Vec<ToastHitbox>,
+    pub(super) settings: ToastSettings,
+}
+
+impl<Ctx: AppContext> Default for Toasts<Ctx> {
+    fn default() -> Self { Self::new() }
+}
+
+impl<Ctx: AppContext> Toasts<Ctx> {
+    /// Create an empty toast manager with default settings.
+    #[must_use]
+    pub fn new() -> Self { Self::with_settings(ToastSettings::default()) }
+
+    /// Create an empty toast manager with explicit settings.
+    #[must_use]
+    pub fn with_settings(settings: ToastSettings) -> Self {
+        Self {
+            next_id: 1,
+            entries: Vec::new(),
+            viewport: Viewport::default(),
+            hits: Vec::new(),
+            settings,
+        }
+    }
+
+    /// Borrow the toast settings.
+    #[must_use]
+    pub const fn settings(&self) -> &ToastSettings { &self.settings }
+
+    /// Mutably borrow the toast settings.
+    pub const fn settings_mut(&mut self) -> &mut ToastSettings { &mut self.settings }
+
+    /// Replace the toast settings.
+    pub const fn set_settings(&mut self, settings: ToastSettings) { self.settings = settings; }
+
+    pub(super) fn sync_viewport_len(&mut self) {
+        let len = self.active_now().len();
+        self.viewport.set_len(len);
+        if len == 0 {
+            self.viewport.set_pos(0);
+        } else if self.viewport.pos() >= len {
+            self.viewport.set_pos(len - 1);
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unreachable,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use std::time::Duration;
+    use std::time::Instant;
+
+    use crossterm::event::KeyCode;
+    use ratatui::style::Color;
+
+    use super::*;
+    use crate::FocusedPane;
+    use crate::Framework;
+    use crate::KeyBind;
+    use crate::KeyOutcome;
+    use crate::NoToastAction;
+    use crate::ToastTaskId;
+    use crate::TrackedItem;
+    use crate::TrackedItemKey;
+    use crate::toasts::toast::ToastDismissal;
+    use crate::toasts::toast::ToastLifetime;
+    use crate::toasts::toast::ToastPhase;
+    use crate::toasts::toast::ToastTaskStatus;
+
+    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+    enum TestPaneId {
+        Main,
+    }
+
+    struct TestApp {
+        framework: Framework<Self>,
+    }
+
+    impl AppContext for TestApp {
+        type AppPaneId = TestPaneId;
+        type ToastAction = NoToastAction;
+
+        fn framework(&self) -> &Framework<Self> { &self.framework }
+        fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
+    }
+
+    fn toasts() -> Toasts<TestApp> { Toasts::new() }
+
+    #[test]
+    fn timed_toast_expires_at_timeout() {
+        let mut toasts = toasts();
+        let id = toasts.push_timed("done", "body", Duration::ZERO, 1);
+
+        toasts.prune(Instant::now());
+
+        assert!(!toasts.is_alive(id));
+    }
+
+    #[test]
+    fn persistent_toast_survives_prune() {
+        let mut toasts = toasts();
+        let id = toasts.push_persistent("error", "body", ToastStyle::Error, None, 1);
+
+        toasts.prune(Instant::now() + Duration::from_secs(61));
+
+        assert!(toasts.is_alive(id));
+    }
+
+    #[test]
+    fn colored_countdown_uses_timed_lifetime_not_task_linger() {
+        let mut toasts = toasts();
+        let id = toasts.push_colored_persistent(
+            "Startup",
+            vec!["Disk usage 100%".to_string()],
+            vec![Color::Green],
+        );
+
+        assert!(
+            toasts.update_colored(id, vec!["Disk usage 100%".to_string()], vec![Color::Green],)
+        );
+        assert!(toasts.start_colored_countdown(id, Duration::from_secs(5)));
+
+        let view = toasts
+            .active_now()
+            .into_iter()
+            .find(|toast| toast.title() == "Startup")
+            .expect("startup colored toast should be active");
+        assert_eq!(view.linger_progress(), None);
+        assert!(view.remaining_secs().is_some());
+        assert_eq!(view.body_line_colors(), Some(&[Color::Green][..]));
+    }
+
+    #[test]
+    fn dismiss_does_not_restart_an_already_exiting_animation() {
+        let mut toasts = toasts();
+        let task = toasts.start_task("scan", "running");
+        let id = toasts
+            .toast_for_task(task)
+            .expect("start_task should create a task toast")
+            .id();
+
+        // First dismiss: phase transitions to Exiting with the
+        // initial started_at.
+        assert!(toasts.dismiss(id));
+        let first_started_at = match toasts
+            .toast_for_task(task)
+            .expect("dismissed task toast should still be tracked")
+            .phase
+        {
+            ToastPhase::Exiting { started_at } => started_at,
+            ToastPhase::Visible => unreachable!("dismissed toast should enter Exiting phase"),
+        };
+
+        // Spin a touch to make sure Instant::now() advances, then
+        // dismiss again — the started_at must not reset.
+        std::thread::sleep(Duration::from_millis(2));
+        assert!(toasts.dismiss(id));
+        let second_started_at = match toasts
+            .toast_for_task(task)
+            .expect("dismissed task toast should still be tracked")
+            .phase
+        {
+            ToastPhase::Exiting { started_at } => started_at,
+            ToastPhase::Visible => unreachable!("second dismiss should keep toast Exiting"),
+        };
+        assert_eq!(first_started_at, second_started_at);
+    }
+
+    #[test]
+    fn user_dismissed_task_toast_is_not_revived_by_reactivate() {
+        let mut toasts = toasts();
+        let task = toasts.start_task("scan", "running");
+
+        // User clicks [x].
+        let toast_id = toasts
+            .toast_for_task(task)
+            .expect("start_task should create a task toast")
+            .id();
+        assert!(toasts.dismiss(toast_id));
+
+        // Tracker keeps reporting work; we ask reactivate_task to
+        // re-show the toast. The user-dismissed flag suppresses
+        // reactivation.
+        assert_eq!(
+            toasts.reactivate_task(task),
+            super::super::ReactivateOutcome::DismissedByUser,
+        );
+        let toast = toasts
+            .toast_for_task(task)
+            .expect("dismissed task toast should remain tracked");
+        assert!(matches!(toast.phase, ToastPhase::Exiting { .. }));
+        assert_eq!(toast.dismissal, ToastDismissal::ClosedByUser);
+    }
+
+    fn toasts_with_linger(linger_secs: f64) -> Toasts<TestApp> {
+        let mut t = Toasts::<TestApp>::new();
+        t.settings_mut().finished_task_visible =
+            crate::ToastDuration::try_from_secs("test", linger_secs)
+                .expect("test linger duration should be valid");
+        t
+    }
+
+    #[test]
+    fn reactivate_task_revives_non_dismissed_finished_toast() {
+        // Linger covers an item so finish_task records the toast
+        // as still-finished rather than instantly-zero, which is
+        // what `reactivate_task` is meant to recover from.
+        let mut toasts = toasts_with_linger(30.0);
+        let task = toasts.start_task("scan", "running");
+        assert!(toasts.set_tracked_items(task, &[TrackedItem::new("a", "a")]));
+        assert!(toasts.finish_task(task));
+
+        assert_eq!(
+            toasts.reactivate_task(task),
+            super::super::ReactivateOutcome::Revived,
+        );
+        let toast = toasts
+            .toast_for_task(task)
+            .expect("revived task toast should remain tracked");
+        assert!(matches!(toast.phase, ToastPhase::Visible));
+    }
+
+    #[test]
+    fn reactivate_task_returns_not_found_for_unknown_task() {
+        let mut toasts = toasts();
+        let task = toasts.start_task("scan", "running");
+        // No tracked items → finish_task uses Duration::ZERO.
+        assert!(toasts.finish_task(task));
+        let after_linger = Instant::now() + Duration::from_secs(2);
+        toasts.prune(after_linger);
+
+        let stale_task = ToastTaskId(99);
+        assert_eq!(
+            toasts.reactivate_task(stale_task),
+            super::super::ReactivateOutcome::NotFound,
+        );
+    }
+
+    #[test]
+    fn task_toast_lingers_after_finish_then_prunes() {
+        let mut toasts = toasts_with_linger(1.0);
+        let task = toasts.start_task("scan", "running");
+        // Tracked item is what makes `finish_task` honor the
+        // settings-driven linger.
+        assert!(toasts.set_tracked_items(task, &[TrackedItem::new("a", "a")]));
+
+        assert!(toasts.finish_task(task));
+        toasts.prune(Instant::now());
+        assert!(toasts.is_task_finished(task));
+
+        let after_linger = Instant::now() + Duration::from_secs(2);
+        toasts.prune(after_linger);
+        toasts.prune(after_linger + Duration::from_secs(1));
+
+        assert!(!toasts.is_task_finished(task));
+    }
+
+    #[test]
+    fn tracked_items_prune_after_linger() {
+        let mut toasts = toasts_with_linger(0.0);
+        let task = toasts.start_task("scan", "running");
+        let item = TrackedItem::new("repo", "repo");
+        assert!(toasts.set_tracked_items(task, &[item]));
+        assert_eq!(toasts.tracked_item_count(task), 1);
+
+        assert!(toasts.mark_tracked_item_completed(task, "repo"));
+        toasts.prune_tracked_items(Instant::now() + Duration::from_secs(1));
+
+        assert_eq!(toasts.tracked_item_count(task), 0);
+    }
+
+    #[test]
+    fn focused_toast_command_returns_action_payload() {
+        #[derive(Clone, Debug, Eq, PartialEq)]
+        enum ToastAction {
+            Open,
+        }
+
+        struct ActionApp {
+            framework: Framework<Self>,
+        }
+
+        impl AppContext for ActionApp {
+            type AppPaneId = TestPaneId;
+            type ToastAction = ToastAction;
+
+            fn framework(&self) -> &Framework<Self> { &self.framework }
+            fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
+        }
+
+        let mut toasts = Toasts::<ActionApp>::new();
+        let _ = toasts.push_with_action("open", "path", ToastAction::Open);
+
+        let command = toasts.handle_key_command(&KeyBind::from(KeyCode::Enter));
+
+        assert_eq!(
+            command,
+            (
+                KeyOutcome::Consumed,
+                ToastCommand::Activate(ToastAction::Open)
+            )
+        );
+    }
+
+    #[test]
+    fn new_toasts_do_not_move_existing_focus() {
+        let mut toasts = toasts();
+        let first = toasts.push("first", "body");
+        let _ = toasts.push("second", "body");
+
+        assert_eq!(toasts.focused_id(), Some(first));
+    }
+
+    #[test]
+    fn toasts_can_live_on_framework() {
+        let mut app = TestApp {
+            framework: Framework::new(FocusedPane::App(TestPaneId::Main)),
+        };
+        let _ = app.framework.toasts.push("hello", "body");
+
+        assert!(app.framework.toasts.has_active());
+    }
+
+    #[test]
+    fn marking_last_item_completed_auto_finishes_task_toast() {
+        let mut toasts = toasts_with_linger(5.0);
+        let task = toasts.start_task("phase", "body");
+        assert!(toasts.set_tracked_items(
+            task,
+            &[TrackedItem::new("a", "a"), TrackedItem::new("b", "b")],
+        ));
+
+        assert!(toasts.mark_tracked_item_completed(task, "a"));
+        assert!(
+            !toasts.is_task_finished(task),
+            "auto-finish must not fire while any item is incomplete",
+        );
+
+        assert!(toasts.mark_tracked_item_completed(task, "b"));
+        assert!(
+            toasts.is_task_finished(task),
+            "marking the final item completed must transition the toast to Finished",
+        );
+    }
+
+    #[test]
+    fn auto_finish_does_not_fire_with_pending_items() {
+        let mut toasts = toasts_with_linger(5.0);
+        let task = toasts.start_task("phase", "body");
+        assert!(toasts.set_tracked_items(
+            task,
+            &[
+                TrackedItem::new("a", "a"),
+                TrackedItem::new("b", "b"),
+                TrackedItem::new("c", "c"),
+            ],
+        ));
+
+        assert!(toasts.mark_tracked_item_completed(task, "a"));
+        assert!(toasts.mark_tracked_item_completed(task, "b"));
+        assert!(!toasts.is_task_finished(task));
+    }
+
+    #[test]
+    fn auto_finish_does_not_fire_on_zero_item_task_toast() {
+        let mut toasts = toasts_with_linger(5.0);
+        let task = toasts.start_task("empty", "body");
+
+        // No items were ever added. Auto-finish must not fire on its
+        // own — an empty task toast stays Running until the embedding
+        // calls `finish_task` explicitly.
+        assert!(!toasts.is_task_finished(task));
+
+        assert!(toasts.finish_task(task));
+        assert!(toasts.is_task_finished(task));
+    }
+
+    #[test]
+    fn finish_task_anchors_finished_at_to_last_item_completion() {
+        let mut toasts = toasts_with_linger(5.0);
+        let task = toasts.start_task("phase", "body");
+        assert!(toasts.set_tracked_items(task, &[TrackedItem::new("only", "only")]));
+
+        assert!(toasts.mark_tracked_item_completed(task, "only"));
+        let toast = toasts
+            .toast_for_task(task)
+            .expect("completed task toast should remain tracked");
+        let ToastLifetime::Task {
+            status:
+                ToastTaskStatus::Finished {
+                    finished_at: original_finished_at,
+                    ..
+                },
+            ..
+        } = toast.lifetime
+        else {
+            unreachable!("completed task toast should use task lifetime");
+        };
+
+        std::thread::sleep(Duration::from_millis(5));
+        // Calling finish_task again must not bump `finished_at` forward —
+        // the anchor is `max(item.completed_at)`, which hasn't moved
+        // because no item was re-marked. The countdown stays stable.
+        assert!(toasts.finish_task(task));
+
+        let toast = toasts
+            .toast_for_task(task)
+            .expect("completed task toast should remain tracked");
+        let ToastLifetime::Task {
+            status:
+                ToastTaskStatus::Finished {
+                    finished_at: later_finished_at,
+                    ..
+                },
+            ..
+        } = toast.lifetime
+        else {
+            unreachable!("completed task toast should use task lifetime");
+        };
+        assert_eq!(original_finished_at, later_finished_at);
+    }
+
+    #[test]
+    fn adding_incomplete_item_reverts_finished_toast_to_running() {
+        let mut toasts = toasts_with_linger(5.0);
+        let task = toasts.start_task("phase", "body");
+        assert!(toasts.set_tracked_items(task, &[TrackedItem::new("first", "first")]));
+
+        // Mark the only item completed → toast auto-finishes.
+        assert!(toasts.mark_tracked_item_completed(task, "first"));
+        assert!(toasts.is_task_finished(task));
+
+        // A new incomplete item arrives after auto-finish (e.g. a
+        // tracker queues a late phase). The toast must revert to
+        // Running so the countdown re-anchors when the new item
+        // eventually completes.
+        assert!(toasts.add_new_tracked_items(task, &[TrackedItem::new("late", "late")]));
+        assert!(!toasts.is_task_finished(task));
+
+        // When the late item finally completes, auto-finish re-fires.
+        assert!(toasts.mark_tracked_item_completed(task, "late"));
+        assert!(toasts.is_task_finished(task));
+    }
+
+    #[test]
+    fn late_completion_extends_finished_at_past_original_anchor() {
+        let mut toasts = toasts_with_linger(5.0);
+        let task = toasts.start_task("phase", "body");
+        assert!(toasts.set_tracked_items(task, &[TrackedItem::new("first", "first")]));
+
+        assert!(toasts.mark_tracked_item_completed(task, "first"));
+        let toast = toasts
+            .toast_for_task(task)
+            .expect("first completed task toast should remain tracked");
+        let ToastLifetime::Task {
+            status:
+                ToastTaskStatus::Finished {
+                    finished_at: anchor_after_first,
+                    ..
+                },
+            ..
+        } = toast.lifetime
+        else {
+            unreachable!("first completed task toast should use task lifetime");
+        };
+
+        // Add a second incomplete item, sleep, mark it completed.
+        assert!(toasts.add_new_tracked_items(task, &[TrackedItem::new("late", "late")]));
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(toasts.mark_tracked_item_completed(task, "late"));
+
+        let toast = toasts
+            .toast_for_task(task)
+            .expect("late completed task toast should remain tracked");
+        let ToastLifetime::Task {
+            status:
+                ToastTaskStatus::Finished {
+                    finished_at: anchor_after_late,
+                    ..
+                },
+            ..
+        } = toast.lifetime
+        else {
+            unreachable!("late completed task toast should use task lifetime");
+        };
+        assert!(
+            anchor_after_late > anchor_after_first,
+            "finished_at must move forward when a later item completes",
+        );
+    }
+
+    #[test]
+    fn task_toast_skips_exit_animation_after_countdown() {
+        let mut toasts = toasts_with_linger(0.0);
+        let task = toasts.start_task("phase", "body");
+        assert!(toasts.set_tracked_items(task, &[TrackedItem::new("only", "only")]));
+        assert!(toasts.mark_tracked_item_completed(task, "only"));
+        // finished_at + linger(=0) <= now, so should_exit is true on
+        // the next prune. Task toasts skip the Exiting render phase
+        // entirely: the toast is removed in the same prune pass.
+        toasts.prune(Instant::now());
+        assert!(!toasts.is_task_finished(task));
+        assert!(toasts.toast_for_task(task).is_none());
+    }
+
+    #[test]
+    fn restarting_a_completed_item_reverts_finished_toast_to_running() {
+        let mut toasts = toasts_with_linger(5.0);
+        let task = toasts.start_task("phase", "body");
+        let key = TrackedItemKey::new("a");
+        assert!(toasts.set_tracked_items(task, &[TrackedItem::new("a", key.clone())]));
+        assert!(toasts.mark_tracked_item_completed(task, "a"));
+        assert!(toasts.is_task_finished(task));
+
+        // Restarting clears the item's `completed_at` — the toast
+        // reverts to Running until the item completes again.
+        assert!(toasts.restart_tracked_item(task, &key, Instant::now()));
+        assert!(!toasts.is_task_finished(task));
+    }
+}

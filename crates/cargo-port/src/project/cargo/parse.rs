@@ -45,12 +45,12 @@ pub(crate) struct ExampleGroup {
     pub names:    Vec<String>,
 }
 
-pub enum ProjectParseError {
+pub enum ProjectLoadError {
     Read(io::Error),
     Parse(toml::de::Error),
 }
 
-impl Display for ProjectParseError {
+impl Display for ProjectLoadError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Read(e) => write!(f, "read error: {e}"),
@@ -79,9 +79,9 @@ pub(crate) enum CargoParseResult {
 /// worktree state.
 pub(crate) fn from_cargo_toml(
     cargo_toml_path: &Path,
-) -> Result<CargoParseResult, ProjectParseError> {
-    let contents = std::fs::read_to_string(cargo_toml_path).map_err(ProjectParseError::Read)?;
-    let table: Table = contents.parse().map_err(ProjectParseError::Parse)?;
+) -> Result<CargoParseResult, ProjectLoadError> {
+    let contents = std::fs::read_to_string(cargo_toml_path).map_err(ProjectLoadError::Read)?;
+    let table: Table = contents.parse().map_err(ProjectLoadError::Parse)?;
 
     let project_dir = cargo_toml_path.parent().unwrap_or(cargo_toml_path);
     let abs_path = AbsolutePath::from(project_dir);

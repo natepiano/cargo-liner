@@ -6,6 +6,7 @@ mod builder;
 mod constants;
 mod global_action;
 mod globals;
+mod help_rows;
 mod key_bind;
 mod key_outcome;
 mod key_sequence;
@@ -49,6 +50,7 @@ pub use scope_map::ScopeMap;
 pub use shortcuts::Shortcuts;
 pub use vim::VimMode;
 
+use self::help_rows::framework_global_help_row;
 use self::runtime_scope::RuntimeScope;
 use crate::AppContext;
 use crate::BarRegion;
@@ -610,24 +612,6 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
     /// framework-global hit.
     pub fn dispatch_framework_global(&self, action: GlobalAction, ctx: &mut Ctx) {
         framework::dispatch_global(action, self, ctx);
-    }
-}
-
-/// Build one [`KeymapHelpRow`] for a framework global action. Free
-/// fn so [`Keymap::keymap_help_rows`] can iterate without
-/// monomorphizing.
-fn framework_global_help_row<Ctx: AppContext + 'static>(
-    section: &'static str,
-    action: GlobalAction,
-    keymap: &Keymap<Ctx>,
-) -> KeymapHelpRow {
-    KeymapHelpRow {
-        section,
-        scope: "global",
-        action: action.toml_key(),
-        description: action.description(),
-        bind: keymap.framework_globals.key_for(action).cloned(),
-        row_kind: KeymapHelpRowKind::Action,
     }
 }
 

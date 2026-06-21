@@ -15,15 +15,15 @@ use super::state::Scan;
 /// Every field is uniform across the tile-render pass: every pane in
 /// the loop reads the same context. Per-pane state lives on the pane structs
 /// themselves, set by `App` immediately before `tui_pane::render_panes` runs.
-pub(crate) struct PaneRenderCtx<'a> {
-    pub(crate) animation_elapsed:         Duration,
-    pub(crate) config:                    &'a Config,
-    pub(crate) project_list:              &'a ProjectList,
-    pub(crate) selected_project_path:     Option<&'a Path>,
-    pub(crate) inflight:                  &'a Inflight,
-    pub(crate) scan:                      &'a Scan,
-    pub(crate) ci_status_lookup:          &'a CiStatusLookup,
-    pub(crate) settings_render_inputs:    Option<&'a SettingsRenderInputs>,
-    pub(crate) synced_description_height: SyncedDescriptionHeight,
-    pub(crate) running_targets:           &'a RunningTargets,
+pub(super) struct PaneRenderCtx<'a> {
+    pub(super) animation_elapsed:         Duration,
+    pub(super) config:                    &'a Config,
+    pub(super) project_list:              &'a ProjectList,
+    pub(super) selected_project_path:     Option<&'a Path>,
+    pub(super) inflight:                  &'a Inflight,
+    pub(super) scan:                      &'a Scan,
+    pub(super) ci_status_lookup:          &'a CiStatusLookup,
+    pub(super) settings_render_inputs:    Option<&'a SettingsRenderInputs>,
+    pub(super) synced_description_height: SyncedDescriptionHeight,
+    pub(super) running_targets:           &'a RunningTargets,
 }

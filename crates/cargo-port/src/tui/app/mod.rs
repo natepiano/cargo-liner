@@ -19,9 +19,9 @@
 //!   and rebuilds [`crate::tui::project_list::ProjectList::recompute_visibility`].
 //!   `App::mutate_tree` constructs the guard via destructuring so the two subsystem borrows are
 //!   disjoint.
-//! - **Self-only flavor** — see [`crate::tui::project_list::SelectionMutation`].
-//!   Visibility-changing mutations on `ProjectList` (`toggle_expand`, `apply_finder`) are only
-//!   callable through the guard; `Drop` recomputes `cached_visible_rows`.
+//! - **Self-only flavor** — see `SelectionMutation` in the project-list module. Visibility-changing
+//!   mutations on `ProjectList` (`toggle_expand`, `apply_finder`) are only callable through the
+//!   guard; `Drop` recomputes `cached_visible_rows`.
 //!
 //! ## Cross-subsystem orchestrator on App
 //! Operations that touch multiple subsystems and have no single
@@ -50,6 +50,7 @@ mod confirm_action;
 mod constants;
 mod construct;
 mod discovery;
+mod discovery_shimmer;
 mod dismiss;
 mod finder_state;
 mod hovered_pane_row;
@@ -58,14 +59,13 @@ mod navigation;
 mod pending_clean;
 mod phase_state;
 mod poll_background_stats;
+mod render_registry;
 mod scan_state;
 mod selection_paths;
 mod startup;
-
-pub(super) use phase_state::CountedPhase;
-pub(super) use phase_state::KeyedPhase;
-pub(super) use phase_state::LanguagePhase;
 mod target_index;
+mod toast_action;
+mod tree_mutation;
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -81,9 +81,13 @@ pub(super) use ci::CiRunDisplayMode;
 pub(crate) use confirm_action::ConfirmAction;
 pub(super) use discovery::DiscoveryRowKind;
 pub(super) use discovery::DiscoveryShimmer;
+pub(super) use discovery_shimmer::discovery_name_segments_for_path_with_refs;
 pub(super) use finder_state::FinderState;
 pub(super) use hovered_pane_row::HoveredPaneRow;
 pub(crate) use pending_clean::PendingClean;
+pub(super) use phase_state::CountedPhase;
+pub(super) use phase_state::KeyedPhase;
+pub(super) use phase_state::LanguagePhase;
 pub(super) use poll_background_stats::PollBackgroundStats;
 use ratatui::layout::Position;
 #[cfg(test)]
@@ -93,6 +97,8 @@ pub(super) use selection_paths::SelectionPaths;
 pub(super) use selection_paths::SelectionSync;
 pub(crate) use target_index::CleanSelection;
 pub(crate) use target_index::TargetDirIndex;
+pub(super) use toast_action::CargoPortToastAction;
+pub(super) use tree_mutation::TreeMutation;
 use tui_pane::AppContext;
 use tui_pane::ClipboardBackend;
 use tui_pane::CopyOutcome;
@@ -103,8 +109,6 @@ use tui_pane::GlobalAction;
 use tui_pane::KeyBind;
 use tui_pane::Keymap as FrameworkKeymap;
 use tui_pane::PaneFocusState;
-use tui_pane::PaneRegistry;
-use tui_pane::SettingsPane;
 use tui_pane::SystemClipboard;
 use tui_pane::ThemeRuntime;
 use tui_pane::ToastId;
@@ -113,39 +117,33 @@ use tui_pane::ToastTaskId;
 use tui_pane::TrackedItem;
 
 use self::constants::ANIMATION_TICK;
+pub(super) use super::app_render_state::FinderSplit;
+pub(super) use super::app_render_state::OverlayRenderInputs;
+pub(super) use super::app_render_state::RenderBorrows;
+pub(super) use super::app_render_state::RenderRegistry;
 use super::background::Background;
-use super::columns;
 #[cfg(test)]
 use super::columns::LintCell;
 pub(super) use super::columns::ProjectListWidths;
+#[cfg(test)]
 use super::columns::StyledSegment;
 use super::integration;
 use super::integration::AppPaneId;
 use super::interaction;
 use super::keymap;
-use super::overlays::FinderPane;
 use super::overlays::Overlays;
 use super::panes;
 use super::panes::BottomRow;
-use super::panes::CpuPane;
-use super::panes::GitPane;
-use super::panes::LangPane;
-use super::panes::OutputPane;
-use super::panes::PackagePane;
 use super::panes::PaneBehavior;
 use super::panes::PaneId;
 use super::panes::Panes;
-use super::panes::ProjectListPane;
 use super::panes::SyncedDescriptionHeight;
-use super::panes::TargetsPane;
 pub(super) use super::project_list::ExpandKey;
 use super::project_list::ProjectList;
 pub(super) use super::project_list::VisibleRow;
 use super::render_context::PaneRenderCtx;
-use super::running_targets::RunningTargets;
 use super::settings;
 use super::settings::SettingOption;
-use super::settings::SettingsRenderInputs;
 use super::settings::StartupSettings;
 #[cfg(test)]
 use super::startup_services::StartupEffectCounts;
@@ -165,7 +163,6 @@ use super::state::SyncTracker;
 use crate::channel::Receiver;
 use crate::channel::Sender;
 use crate::ci::OwnerRepo;
-use crate::config::NonRustInclusion;
 #[cfg(test)]
 use crate::constants::LINT_NO_LOG;
 use crate::constants::SCAN_METADATA_CONCURRENCY;
@@ -176,103 +173,13 @@ use crate::lint::LintRuns;
 use crate::lint::LintStatus;
 use crate::project;
 use crate::project::AbsolutePath;
+#[cfg(test)]
 use crate::project::GitStatus;
-use crate::project::Package;
-use crate::project::ProjectFields;
 use crate::project::RootItem;
-use crate::project::RustProject;
-use crate::project::Workspace;
 use crate::project::WorkspaceMetadataStore;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::MetadataDispatchContext;
-
-/// Render-time borrows of `App`. Holds disjoint `&mut` references to
-/// every renderable pane (organized for [`tui_pane::PaneRegistry`])
-/// alongside a fully-built [`PaneRenderCtx`] whose borrows are
-/// disjoint from the registry's. Single source of truth for "what
-/// each frame's render loop needs."
-pub(super) struct RenderBorrows<'a> {
-    pub registry:        RenderRegistry<'a>,
-    pub pane_render_ctx: PaneRenderCtx<'a>,
-}
-
-/// Optional precomputed render inputs for framework overlays.
-#[derive(Clone, Copy)]
-pub(super) struct OverlayRenderInputs<'a> {
-    settings: Option<&'a SettingsRenderInputs>,
-}
-
-impl<'a> OverlayRenderInputs<'a> {
-    pub(super) const fn none() -> Self { Self { settings: None } }
-
-    pub(super) const fn settings(inputs: &'a SettingsRenderInputs) -> Self {
-        Self {
-            settings: Some(inputs),
-        }
-    }
-}
-
-/// Disjoint `&mut` borrows of every renderable pane on `App`.
-/// Cargo-port's [`tui_pane::PaneRegistry`] impl lives on this type;
-/// the embedding-side match in [`tui_pane::render_panes`]'s loop
-/// hands out each entry as a `&mut dyn Renderable`.
-pub(super) struct RenderRegistry<'a> {
-    pub package:       &'a mut PackagePane,
-    pub lang:          &'a mut LangPane,
-    pub cpu:           &'a mut CpuPane,
-    pub git:           &'a mut GitPane,
-    pub targets:       &'a mut TargetsPane,
-    pub project_list:  &'a mut ProjectListPane,
-    pub output:        &'a mut OutputPane,
-    pub lint:          &'a mut Lint,
-    pub ci:            &'a mut Ci,
-    pub settings_pane: &'a mut SettingsPane,
-}
-
-impl PaneRegistry for RenderRegistry<'_> {
-    type Ctx<'ctx> = PaneRenderCtx<'ctx>;
-    type PaneId = PaneId;
-
-    fn pane_mut(
-        &mut self,
-        id: Self::PaneId,
-    ) -> Option<&mut dyn for<'ctx> tui_pane::Renderable<Self::Ctx<'ctx>>> {
-        let pane: &mut dyn for<'ctx> tui_pane::Renderable<Self::Ctx<'ctx>> = match id {
-            PaneId::Package => self.package,
-            PaneId::Lang => self.lang,
-            PaneId::Cpu => self.cpu,
-            PaneId::Git => self.git,
-            PaneId::Targets => self.targets,
-            PaneId::ProjectList => self.project_list,
-            PaneId::Output => self.output,
-            PaneId::Lints => self.lint,
-            PaneId::CiRuns => self.ci,
-            PaneId::Settings => self.settings_pane,
-            PaneId::Keymap | PaneId::Toasts | PaneId::Finder | PaneId::Sccache => return None,
-        };
-        Some(pane)
-    }
-}
-
-/// Result of `App::split_finder_for_render`.
-pub(super) struct FinderSplit<'a> {
-    pub finder_pane:     &'a mut FinderPane,
-    pub config:          &'a Config,
-    pub project_list:    &'a ProjectList,
-    pub inflight:        &'a Inflight,
-    pub scan:            &'a Scan,
-    pub running_targets: &'a RunningTargets,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum CargoPortToastAction {
-    OpenPath(AbsolutePath),
-}
-
-impl From<AbsolutePath> for CargoPortToastAction {
-    fn from(path: AbsolutePath) -> Self { Self::OpenPath(path) }
-}
 
 pub(super) struct App {
     /// Net subsystem. Owns the shared `HttpClient`, the GitHub
@@ -1135,381 +1042,6 @@ impl App {
             self.maybe_priority_fetch();
         }
     }
-}
-
-/// RAII guard for structural mutations of the project tree.
-/// Obtained via [`App::mutate_tree`]; dropped at end of scope (or
-/// earlier via `drop`), at which point all tree-derived caches are
-/// invalidated.
-///
-/// **Type-level invariant:** the guard borrows `&mut ProjectList +
-/// &mut Panes` simultaneously. New tree-mutation paths added here
-/// force the cache-clear to fire on `Drop` — there is no way to
-/// forget invalidation. `Drop` runs on every exit path, including
-/// panics and early returns.
-///
-/// Mutation guard (RAII), fan-out flavor. See "Recurring patterns"
-/// in [`crate::tui::app`] for the pattern.
-pub(super) struct TreeMutation<'a> {
-    projects: &'a mut ProjectList,
-    panes:    &'a mut Panes,
-    non_rust: NonRustInclusion,
-}
-
-impl TreeMutation<'_> {
-    /// Replace the entire project list (used by tree-build paths).
-    pub(super) fn replace_all(&mut self, projects: ProjectList) {
-        self.projects.replace_roots_from(projects);
-    }
-
-    /// Insert a discovered project into the existing tree, returning
-    /// `true` if the insertion changed the tree. Requires the dispatch
-    /// context and schedules a `cargo metadata` refresh for the item's
-    /// Rust roots — insertion and dispatch are one step, so a project
-    /// can never land in the list with unscheduled metadata.
-    pub(super) fn insert_into_hierarchy(
-        &mut self,
-        item: RootItem,
-        dispatch: &MetadataDispatchContext,
-    ) -> bool {
-        let roots = scan::cargo_metadata_roots_for_item(&item);
-        let changed = self.projects.insert_into_hierarchy(item);
-        for root in roots {
-            scan::spawn_cargo_metadata_refresh(dispatch.clone(), root);
-        }
-        changed
-    }
-
-    /// Replace a single leaf at `path` with `item`. Returns the previous
-    /// item if one was found. Like `insert_into_hierarchy`, the dispatch
-    /// context is required and the item's Rust roots get a fresh
-    /// `cargo metadata` — a probed replacement arrives with a default
-    /// `Cargo`, so without this its Type/edition/targets would blank out.
-    pub(super) fn replace_leaf_by_path(
-        &mut self,
-        path: &Path,
-        item: RootItem,
-        dispatch: &MetadataDispatchContext,
-    ) -> Option<RootItem> {
-        let roots = scan::cargo_metadata_roots_for_item(&item);
-        let previous = self.projects.replace_leaf_by_path(path, item);
-        for root in roots {
-            scan::spawn_cargo_metadata_refresh(dispatch.clone(), root);
-        }
-        previous
-    }
-
-    /// Re-bucket workspace members under inline-dir groups.
-    pub(super) fn regroup_members(&mut self, inline_dirs: &[String]) {
-        self.projects.regroup_members(inline_dirs);
-    }
-
-    /// Re-detect worktree groupings at the top level after a structural
-    /// change (insert / replace / remove).
-    pub(super) fn regroup_top_level_worktrees(&mut self) {
-        self.projects.regroup_top_level_worktrees();
-    }
-}
-
-impl Drop for TreeMutation<'_> {
-    /// Fan out across the two subsystems whose derived state depends
-    /// on tree structure:
-    /// 1. [`Panes::clear_for_tree_change`] drops `worktree_summary_cache`.
-    /// 2. [`ProjectList::recompute_visibility`] rebuilds `cached_visible_rows` against the new
-    ///    tree.
-    fn drop(&mut self) {
-        self.panes.clear_for_tree_change();
-        self.projects
-            .recompute_visibility(self.non_rust.includes_non_rust());
-    }
-}
-
-// ── Discovery shimmer helpers ──
-
-/// Free-fn equivalent of `App::discovery_name_segments_for_path`.
-/// Used by `ProjectListPane::render` and re-used by the App
-/// method as a thin delegator.
-pub(super) fn discovery_name_segments_for_path_with_refs(
-    scan: &Scan,
-    config: &Config,
-    project_list: &ProjectList,
-    row_path: &Path,
-    name: &str,
-    git_status: Option<GitStatus>,
-    row_kind: DiscoveryRowKind,
-) -> Option<Vec<StyledSegment>> {
-    if !config.discovery_shimmer_enabled() {
-        return None;
-    }
-    let now = Instant::now();
-    let (session_path, shimmer) =
-        discovery_shimmer_session_for_path(scan, project_list, row_path, now, row_kind)?;
-    let char_count = name.chars().count();
-    if char_count == 0 {
-        return None;
-    }
-
-    let base_style = columns::project_name_style(git_status);
-    let accent_style = columns::project_name_shimmer_style(git_status);
-    let window = discovery_shimmer_window_len(char_count);
-    let elapsed_ms =
-        usize::try_from(now.duration_since(shimmer.started_at).as_millis()).unwrap_or(usize::MAX);
-    let step = elapsed_ms / discovery_shimmer_step_millis();
-    let head = (step
-        + discovery_shimmer_phase_offset(session_path.as_path(), row_path, row_kind, char_count))
-        % char_count;
-
-    Some(columns::build_shimmer_segments(
-        name,
-        base_style,
-        accent_style,
-        head,
-        window,
-    ))
-}
-
-fn discovery_shimmer_session_for_path(
-    scan: &Scan,
-    project_list: &ProjectList,
-    row_path: &Path,
-    now: Instant,
-    row_kind: DiscoveryRowKind,
-) -> Option<(AbsolutePath, DiscoveryShimmer)> {
-    scan.discovery_shimmers()
-        .iter()
-        .filter(|(session_path, shimmer)| {
-            shimmer.is_active_at(now)
-                && discovery_shimmer_session_matches(
-                    project_list,
-                    session_path.as_path(),
-                    row_path,
-                    row_kind,
-                )
-        })
-        .max_by_key(|(_, shimmer)| shimmer.started_at)
-        .map(|(session_path, shimmer)| (session_path.clone(), *shimmer))
-}
-
-fn discovery_shimmer_session_matches(
-    project_list: &ProjectList,
-    session_path: &Path,
-    row_path: &Path,
-    row_kind: DiscoveryRowKind,
-) -> bool {
-    discovery_scope_contains(project_list, session_path, row_path)
-        || discovery_parent_row(project_list, session_path).is_some_and(|parent| {
-            parent.path.as_path() == row_path && row_kind.allows_parent_kind(parent.kind)
-        })
-}
-
-fn discovery_scope_contains(
-    project_list: &ProjectList,
-    session_path: &Path,
-    row_path: &Path,
-) -> bool {
-    project_list
-        .iter()
-        .any(|item| root_item_scope_contains(item, session_path, row_path))
-}
-
-fn discovery_parent_row(
-    project_list: &ProjectList,
-    session_path: &Path,
-) -> Option<DiscoveryParentRow> {
-    project_list
-        .iter()
-        .find_map(|item| root_item_parent_row(item, session_path))
-}
-
-const fn discovery_shimmer_window_len(char_count: usize) -> usize {
-    match char_count {
-        0 => 0,
-        1..=2 => 1,
-        3..=5 => 2,
-        6..=8 => 3,
-        _ => 4,
-    }
-}
-
-const fn discovery_shimmer_step_millis() -> usize { 85 }
-
-fn discovery_shimmer_phase_offset(
-    session_path: &Path,
-    row_path: &Path,
-    row_kind: DiscoveryRowKind,
-    char_count: usize,
-) -> usize {
-    if char_count == 0 {
-        return 0;
-    }
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    let key = format!(
-        "{}|{}|{}",
-        session_path.to_string_lossy(),
-        row_path.to_string_lossy(),
-        row_kind.discriminant()
-    );
-    for byte in key.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0100_0000_01b3);
-    }
-    usize::try_from(hash % u64::try_from(char_count).unwrap_or(1)).unwrap_or(0)
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct DiscoveryParentRow {
-    path: AbsolutePath,
-    kind: DiscoveryRowKind,
-}
-
-fn package_contains_path(pkg: &Package, row_path: &Path) -> bool {
-    pkg.path() == row_path
-        || pkg
-            .vendored()
-            .iter()
-            .any(|vendored| vendored.path() == row_path)
-}
-
-fn workspace_contains_path(ws: &Workspace, row_path: &Path) -> bool {
-    ws.path() == row_path
-        || ws.groups().iter().any(|group| {
-            group
-                .members()
-                .iter()
-                .any(|member| package_contains_path(member, row_path))
-        })
-        || ws
-            .vendored()
-            .iter()
-            .any(|vendored| vendored.path() == row_path)
-}
-
-fn root_item_scope_contains(item: &RootItem, session_path: &Path, row_path: &Path) -> bool {
-    match item {
-        RootItem::Rust(RustProject::Workspace(ws)) => {
-            workspace_scope_contains(ws, session_path, row_path)
-        },
-        RootItem::Rust(RustProject::Package(pkg)) => {
-            package_scope_contains(pkg, session_path, row_path)
-        },
-        RootItem::NonRust(project) => project.path() == session_path && project.path() == row_path,
-        RootItem::Worktrees(group) => group.iter_entries().any(|entry| match entry {
-            RustProject::Workspace(ws) => workspace_scope_contains(ws, session_path, row_path),
-            RustProject::Package(pkg) => package_scope_contains(pkg, session_path, row_path),
-        }),
-    }
-}
-
-fn workspace_scope_contains(ws: &Workspace, session_path: &Path, row_path: &Path) -> bool {
-    if ws.path() == session_path {
-        return workspace_contains_path(ws, row_path);
-    }
-    if ws
-        .vendored()
-        .iter()
-        .any(|vendored| vendored.path() == session_path && vendored.path() == row_path)
-    {
-        return true;
-    }
-    ws.groups().iter().any(|group| {
-        group
-            .members()
-            .iter()
-            .any(|member| package_scope_contains(member, session_path, row_path))
-    })
-}
-
-fn package_scope_contains(pkg: &Package, session_path: &Path, row_path: &Path) -> bool {
-    if pkg.path() == session_path {
-        return package_contains_path(pkg, row_path);
-    }
-    pkg.vendored()
-        .iter()
-        .any(|vendored| vendored.path() == session_path && vendored.path() == row_path)
-}
-
-fn root_item_parent_row(item: &RootItem, session_path: &Path) -> Option<DiscoveryParentRow> {
-    match item {
-        RootItem::Rust(RustProject::Workspace(ws)) => {
-            workspace_parent_row(ws, session_path, DiscoveryRowKind::Root)
-        },
-        RootItem::Rust(RustProject::Package(pkg)) => {
-            package_parent_row(pkg, session_path, DiscoveryRowKind::Root)
-        },
-        RootItem::NonRust(_) => None,
-        RootItem::Worktrees(group) => {
-            if group.primary.path() == session_path {
-                return None;
-            }
-            if group.linked.iter().any(|l| l.path() == session_path) {
-                return Some(DiscoveryParentRow {
-                    path: group.primary.path().clone(),
-                    kind: DiscoveryRowKind::Root,
-                });
-            }
-            group.iter_entries().find_map(|entry| match entry {
-                RustProject::Workspace(ws) => {
-                    workspace_parent_row(ws, session_path, DiscoveryRowKind::WorktreeEntry)
-                },
-                RustProject::Package(pkg) => {
-                    package_parent_row(pkg, session_path, DiscoveryRowKind::WorktreeEntry)
-                },
-            })
-        },
-    }
-}
-
-fn workspace_parent_row(
-    ws: &Workspace,
-    session_path: &Path,
-    parent_kind: DiscoveryRowKind,
-) -> Option<DiscoveryParentRow> {
-    if ws.path() == session_path {
-        return None;
-    }
-    if ws
-        .vendored()
-        .iter()
-        .any(|vendored| vendored.path() == session_path)
-    {
-        return Some(DiscoveryParentRow {
-            path: ws.path().clone(),
-            kind: parent_kind,
-        });
-    }
-    for group in ws.groups() {
-        for member in group.members() {
-            if member.path() == session_path {
-                return Some(DiscoveryParentRow {
-                    path: ws.path().clone(),
-                    kind: parent_kind,
-                });
-            }
-            if let Some(parent) =
-                package_parent_row(member, session_path, DiscoveryRowKind::PathOnly)
-            {
-                return Some(parent);
-            }
-        }
-    }
-    None
-}
-
-fn package_parent_row(
-    pkg: &Package,
-    session_path: &Path,
-    parent_kind: DiscoveryRowKind,
-) -> Option<DiscoveryParentRow> {
-    if pkg.path() == session_path {
-        return None;
-    }
-    pkg.vendored()
-        .iter()
-        .any(|vendored| vendored.path() == session_path)
-        .then(|| DiscoveryParentRow {
-            path: pkg.path().clone(),
-            kind: parent_kind,
-        })
 }
 
 #[cfg(test)]

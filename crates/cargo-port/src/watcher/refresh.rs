@@ -230,7 +230,7 @@ pub(super) fn try_dispatch_out_of_tree_cargo_config_refresh(
     };
     if !matches!(
         lint::classify_cargo_metadata_basename(event_path),
-        Some(lint::CargoMetadataTriggerKind::CargoConfig)
+        Some(lint::CargoMetadataTriggerKind::Config)
     ) {
         return;
     }
