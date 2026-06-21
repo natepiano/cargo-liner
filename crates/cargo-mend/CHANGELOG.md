@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.16.0] - 2026-06-20
 
 ### Added
 - A crate-root `pub mod prelude;` is now exempt from `review_pub_mod` by default, so a prelude module no longer needs an `allow_pub_mod` override. Nested `pub mod prelude;` and other crate-root `pub mod` declarations are still reviewed. Set `allow_prelude_pub_mod = false` under `[visibility]` in the global config to review crate-root preludes too.
