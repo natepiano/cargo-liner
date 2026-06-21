@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- A crate-root `pub mod prelude;` is now exempt from `review_pub_mod` by default, so a prelude module no longer needs an `allow_pub_mod` override. Nested `pub mod prelude;` and other crate-root `pub mod` declarations are still reviewed. Set `allow_prelude_pub_mod = false` under `[visibility]` in the global config to review crate-root preludes too.
+- The global config is now reconciled on every run: any missing diagnostic or visibility keys are added (comments and explicit values preserved), so existing configs gain new options automatically.
+
 ## [0.15.5] - 2026-06-10
 
 ### Fixed

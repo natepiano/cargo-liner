@@ -20,6 +20,7 @@ mod imports_at_top;
 mod inline_path_fixes;
 mod narrow_pub_crate;
 mod prefer_module_import;
+mod prelude_pub_mod;
 mod pub_use_fixes;
 mod rendering;
 #[path = "../support/mod.rs"]

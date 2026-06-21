@@ -14,6 +14,8 @@ use toml::from_str;
 
 use super::constants::CONFIG_FILE_NAME;
 use super::diagnostics_config::DiagnosticsConfig;
+use super::global::GlobalConfig;
+use super::prelude_pub_mod::PreludePubMod;
 
 #[derive(Debug, Default, Deserialize)]
 struct ConfigFile {
@@ -29,6 +31,8 @@ pub(crate) struct VisibilityConfig {
     pub(crate) allow_pub_mod:   Vec<String>,
     #[serde(default)]
     pub(crate) allow_pub_items: Vec<String>,
+    #[serde(default, rename = "allow_prelude_pub_mod")]
+    pub(crate) prelude_pub_mod: PreludePubMod,
 }
 
 #[derive(Debug)]
@@ -43,7 +47,7 @@ pub(crate) fn load_config(
     manifest_dir: &Path,
     workspace_root: &Path,
     explicit: Option<&Path>,
-    global_diagnostics: &DiagnosticsConfig,
+    global: &GlobalConfig,
 ) -> Result<LoadedConfig> {
     let candidates = explicit.map_or_else(
         || {
@@ -70,23 +74,32 @@ pub(crate) fn load_config(
                     format!("failed to canonicalize config root for {}", path.display())
                 })?;
             let diagnostics_config = config_file.diagnostics_config.map_or_else(
-                || global_diagnostics.clone(),
-                |project| global_diagnostics.merge_project(&project),
+                || global.diagnostics.clone(),
+                |project| global.diagnostics.merge_project(&project),
             );
+            // The prelude exemption is a global-only switch; stamp it onto the
+            // resolved visibility config before fingerprinting so the cache
+            // invalidates when the global toggle changes.
+            let mut visibility_config = config_file.visibility_config;
+            visibility_config.prelude_pub_mod = global.prelude_pub_mod;
             return Ok(LoadedConfig {
-                fingerprint: fingerprint_for(&root, &config_file.visibility_config)?,
-                visibility_config: config_file.visibility_config,
+                fingerprint: fingerprint_for(&root, &visibility_config)?,
+                visibility_config,
                 diagnostics_config,
                 root,
             });
         }
     }
 
+    let visibility_config = VisibilityConfig {
+        prelude_pub_mod: global.prelude_pub_mod,
+        ..VisibilityConfig::default()
+    };
     Ok(LoadedConfig {
-        fingerprint:        fingerprint_for(manifest_dir, &VisibilityConfig::default())?,
-        visibility_config:  VisibilityConfig::default(),
-        diagnostics_config: global_diagnostics.clone(),
-        root:               manifest_dir.to_path_buf(),
+        fingerprint: fingerprint_for(manifest_dir, &visibility_config)?,
+        visibility_config,
+        diagnostics_config: global.diagnostics.clone(),
+        root: manifest_dir.to_path_buf(),
     })
 }
 

@@ -23,6 +23,7 @@ use crate::compiler::visibility::policy;
 use crate::compiler::visibility::source;
 use crate::compiler::visibility::use_sites;
 use crate::config::DiagnosticCode;
+use crate::config::PreludePubMod;
 use crate::reporting::FixSupport;
 use crate::reporting::Severity;
 
@@ -240,6 +241,15 @@ fn record_review_pub_mod(
     sink: &mut FindingsSink,
 ) -> Result<()> {
     if item.category != ItemCategory::Module || !item.visibility_text.starts_with("pub") {
+        return Ok(());
+    }
+    // A crate-root `pub mod prelude;` is exempt by default (global `allow_prelude_pub_mod`).
+    if matches!(
+        ctx.settings.visibility_config.prelude_pub_mod,
+        PreludePubMod::Allowed
+    ) && item.name == Some("prelude")
+        && finding_context.module_location == ModuleLocation::CrateRoot
+    {
         return Ok(());
     }
     let allowlisted = finding_context

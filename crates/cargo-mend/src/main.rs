@@ -102,8 +102,8 @@ const fn total_fixables(outcome: &ExecutionOutcome) -> usize {
 }
 
 fn run() -> Result<ExitCode, MendFailure> {
-    let global_diagnostics = config::load_global_diagnostics();
-    let after_help = build_diagnostics_help(&global_diagnostics);
+    let global = config::load_global_config();
+    let after_help = build_diagnostics_help(&global.diagnostics);
     let cli = config::parse(&after_help);
     if cli.build_info == BuildInfoMode::Show {
         println!("{}", build_info_text());
@@ -116,7 +116,7 @@ fn run() -> Result<ExitCode, MendFailure> {
         selection.manifest_dir.as_path(),
         selection.workspace_root.as_path(),
         cli.manifest.config.as_deref(),
-        &global_diagnostics,
+        &global,
     )
     .map_err(MendFailure::Unexpected)?;
     let operation_mode = OperationMode::from(&cli.fix);

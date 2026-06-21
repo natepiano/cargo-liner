@@ -78,6 +78,31 @@ allow_pub_items = [
 Use the allowlists sparingly. The default assumption should be that the code structure is wrong before
 the policy is wrong.
 
+A crate-root `pub mod prelude;` is exempt from `review_pub_mod` by default — a prelude is an
+intentional public surface, so it does not need an `allow_pub_mod` entry. Nested `pub mod prelude;`
+and any other crate-root `pub mod` are still reviewed. The switch lives in the global config (see
+below); set `allow_prelude_pub_mod = false` to review crate-root preludes too.
+
+### Global config
+
+On first run, cargo-mend writes a global config to your platform config directory
+(`~/.config/cargo-mend/config.toml` on Linux/macOS). It records the on/off default for every
+diagnostic plus the prelude switch:
+
+```toml
+[diagnostics]
+review_pub_mod = true
+# ... one line per diagnostic
+
+[visibility]
+# default-on; set false to review crate-root prelude modules too
+allow_prelude_pub_mod = true
+```
+
+Per-project `mend.toml` `[diagnostics]` entries override these defaults. On every run, cargo-mend
+adds any keys missing from an existing global config (preserving your comments and values), so the
+file stays complete as new options are introduced.
+
 ## Installation
 
 `cargo-mend` uses `#![feature(rustc_private)]` to access compiler internals for visibility
