@@ -37,6 +37,8 @@ use crate::project::GitHubInfo;
 use crate::project::GitRepo;
 use crate::project::GitStatus;
 use crate::project::LanguageStats;
+use crate::project::Package;
+use crate::project::PackageRecord;
 use crate::project::ProjectCiData;
 use crate::project::ProjectCiInfo;
 use crate::project::ProjectEntry;
@@ -51,6 +53,7 @@ use crate::project::RustProject;
 use crate::project::TestCounts;
 use crate::project::VendoredPackage;
 use crate::project::Visibility;
+use crate::project::Workspace;
 use crate::project::WorkspaceMetadata;
 use crate::project::WorktreeGroup;
 use crate::project::WorktreeStatus;
@@ -2122,7 +2125,7 @@ impl ProjectList {
         }
     }
 
-    /// Stamp each [`PackageRecord`](crate::project::PackageRecord)'s derived [`Cargo`] fields onto
+    /// Stamp each [`PackageRecord`]'s derived [`Cargo`] fields onto
     /// the matching package / workspace member / vendored package.
     pub fn apply_cargo_fields_from_workspace_metadata(&mut self, metadata: &WorkspaceMetadata) {
         for record in metadata.packages.values() {
@@ -2137,6 +2140,21 @@ impl ProjectList {
                 vendored.cargo = cargo;
             }
         }
+    }
+
+    /// Synchronize workspace member rows from fresh `cargo metadata`.
+    pub fn sync_workspace_members_from_metadata(
+        &mut self,
+        metadata: &WorkspaceMetadata,
+        inline_dirs: &[String],
+    ) -> bool {
+        let mut changed = false;
+        for entry in self.roots.values_mut() {
+            if sync_root_item_members_from_metadata(&mut entry.root_item, metadata, inline_dirs) {
+                changed = true;
+            }
+        }
+        changed
     }
 
     /// Apply a batch of `LanguageStats` to matching projects.
@@ -2257,6 +2275,123 @@ impl ProjectList {
             .cloned()
             .collect()
     }
+}
+
+fn sync_root_item_members_from_metadata(
+    item: &mut RootItem,
+    metadata: &WorkspaceMetadata,
+    inline_dirs: &[String],
+) -> bool {
+    match item {
+        RootItem::Rust(RustProject::Workspace(ws)) => {
+            sync_workspace_members_from_metadata(ws, metadata, inline_dirs)
+        },
+        RootItem::Worktrees(group) => {
+            let mut changed = false;
+            for ws in std::iter::once(&mut group.primary)
+                .chain(group.linked.iter_mut())
+                .filter_map(|entry| match entry {
+                    RustProject::Workspace(ws) => Some(ws),
+                    RustProject::Package(_) => None,
+                })
+            {
+                if sync_workspace_members_from_metadata(ws, metadata, inline_dirs) {
+                    changed = true;
+                }
+            }
+            changed
+        },
+        RootItem::Rust(RustProject::Package(_)) | RootItem::NonRust(_) => false,
+    }
+}
+
+fn sync_workspace_members_from_metadata(
+    ws: &mut Workspace,
+    metadata: &WorkspaceMetadata,
+    inline_dirs: &[String],
+) -> bool {
+    if ws.path() != &metadata.workspace_root {
+        return false;
+    }
+
+    let current = workspace_member_signature(ws);
+    let members = metadata_member_packages(ws, metadata);
+    let incoming = package_signature(&members);
+    if current == incoming {
+        return false;
+    }
+
+    grouping::replace_workspace_members(ws, members, inline_dirs);
+    true
+}
+
+fn metadata_member_packages(ws: &Workspace, metadata: &WorkspaceMetadata) -> Vec<Package> {
+    let existing = ws
+        .groups()
+        .iter()
+        .flat_map(|group| group.members().iter().cloned())
+        .map(|member| (member.path().clone(), member))
+        .collect::<HashMap<_, _>>();
+
+    metadata
+        .packages
+        .values()
+        .filter_map(|record| metadata_member_package(ws, record, &existing))
+        .collect()
+}
+
+fn metadata_member_package(
+    ws: &Workspace,
+    record: &PackageRecord,
+    existing: &HashMap<AbsolutePath, Package>,
+) -> Option<Package> {
+    let manifest_dir = record.manifest_path.as_path().parent()?;
+    if manifest_dir == ws.path().as_path() || !manifest_dir.starts_with(ws.path().as_path()) {
+        return None;
+    }
+
+    let path = AbsolutePath::from(manifest_dir.to_path_buf());
+    let mut member = existing.get(&path).cloned().unwrap_or_else(|| Package {
+        path: path.clone(),
+        name: Some(record.name.clone()),
+        ..Package::default()
+    });
+    member.name = Some(record.name.clone());
+    member.rust.cargo = Cargo::from(record);
+    Some(member)
+}
+
+fn workspace_member_signature(ws: &Workspace) -> Vec<(AbsolutePath, Option<String>)> {
+    let mut signature = ws
+        .groups()
+        .iter()
+        .flat_map(|group| {
+            group
+                .members()
+                .iter()
+                .map(|member| (member.path().clone(), member.name.clone()))
+        })
+        .collect::<Vec<_>>();
+    sort_package_signature(&mut signature);
+    signature
+}
+
+fn package_signature(members: &[Package]) -> Vec<(AbsolutePath, Option<String>)> {
+    let mut signature = members
+        .iter()
+        .map(|member| (member.path().clone(), member.name.clone()))
+        .collect::<Vec<_>>();
+    sort_package_signature(&mut signature);
+    signature
+}
+
+fn sort_package_signature(signature: &mut [(AbsolutePath, Option<String>)]) {
+    signature.sort_by(|left, right| {
+        left.0
+            .as_path()
+            .cmp(right.0.as_path())
+            .then_with(|| left.1.cmp(&right.1))
+    });
 }
 
 /// Classification of how a path resolves against `ProjectList.roots`, used

@@ -130,6 +130,16 @@ pub(super) fn regroup_workspace(ws: &mut Workspace, inline_dirs: &[String]) {
         .flat_map(MemberGroup::into_members)
         .collect();
 
+    replace_workspace_members(ws, members, inline_dirs);
+}
+
+pub(super) fn replace_workspace_members(
+    ws: &mut Workspace,
+    mut members: Vec<Package>,
+    inline_dirs: &[String],
+) {
+    members.sort_by(|a, b| a.package_name().as_str().cmp(b.package_name().as_str()));
+
     // Re-sort into groups based on subdirectory and inline_dirs.
     let mut group_map: HashMap<String, Vec<Package>> = std::collections::HashMap::new();
     for member in members {

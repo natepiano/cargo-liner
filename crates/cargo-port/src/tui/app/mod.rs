@@ -13676,6 +13676,181 @@ mod tests {
             }
         }
 
+        fn metadata_with_member_packages(
+            workspace_root: &AbsolutePath,
+            members: &[(&str, &AbsolutePath)],
+        ) -> WorkspaceMetadata {
+            let packages = members
+                .iter()
+                .map(|(name, member_root)| {
+                    let example_name = format!("{name}_example");
+                    let package = PackageRecord {
+                        name:          (*name).to_string(),
+                        version:       Version::new(0, 1, 0),
+                        edition:       "2021".to_string(),
+                        description:   None,
+                        license:       None,
+                        homepage:      None,
+                        repository:    None,
+                        manifest_path: AbsolutePath::from(member_root.as_path().join("Cargo.toml")),
+                        targets:       vec![TargetRecord {
+                            name:              example_name.clone(),
+                            kinds:             vec![TargetKind::Example],
+                            src_path:          AbsolutePath::from(
+                                member_root
+                                    .as_path()
+                                    .join("examples")
+                                    .join(format!("{example_name}.rs")),
+                            ),
+                            required_features: Vec::new(),
+                        }],
+                        publish:       PublishPolicy::Any,
+                    };
+                    (
+                        PackageId {
+                            repr: format!("{name}-{}", member_root.display()),
+                        },
+                        package,
+                    )
+                })
+                .collect();
+
+            WorkspaceMetadata {
+                workspace_root: workspace_root.clone(),
+                target_directory: AbsolutePath::from(workspace_root.as_path().join("target")),
+                packages,
+                fingerprint: ManifestFingerprint {
+                    manifest:       FileStamp {
+                        content_hash: [0_u8; 32],
+                    },
+                    lockfile:       None,
+                    rust_toolchain: None,
+                    configs:        BTreeMap::new(),
+                },
+                out_of_tree_target_bytes: None,
+            }
+        }
+
+        fn deliver_metadata(app: &mut App, metadata: WorkspaceMetadata) {
+            let workspace_root = metadata.workspace_root.clone();
+            let generation = app
+                .scan
+                .metadata_store_handle()
+                .lock()
+                .expect("lock metadata store")
+                .next_generation(&workspace_root);
+            app.handle_bg_msg(BackgroundMsg::CargoMetadata {
+                workspace_root,
+                generation,
+                fingerprint: metadata.fingerprint.clone(),
+                result: Ok(metadata),
+            });
+        }
+
+        #[test]
+        fn cargo_metadata_arrival_adds_new_workspace_member_row() {
+            let workspace_root = test_path("/__cargo_port_never_real/hana");
+            let existing_member = test_path("/__cargo_port_never_real/hana/crates/hana");
+            let new_member = test_path("/__cargo_port_never_real/hana/demos/wasm_node_demo");
+            let root = make_workspace_with_members(
+                Some("hana"),
+                "/__cargo_port_never_real/hana",
+                vec![inline_group(vec![make_member(
+                    Some("hana"),
+                    "/__cargo_port_never_real/hana/crates/hana",
+                )])],
+            );
+            let mut app = make_app(&[root]);
+            app.project_list.expanded.insert(ExpandKey::Node(0));
+
+            deliver_metadata(
+                &mut app,
+                metadata_with_member_packages(
+                    &workspace_root,
+                    &[("hana", &existing_member), ("wasm_node_demo", &new_member)],
+                ),
+            );
+
+            assert!(
+                app.project_list
+                    .is_workspace_member_path(new_member.as_path()),
+                "new metadata member should be part of the workspace tree"
+            );
+            let info = app
+                .project_list
+                .rust_info_at_path(new_member.as_path())
+                .expect("new member should have Rust info");
+            assert_eq!(
+                info.cargo.example_count(),
+                1,
+                "new member should get example targets from the same metadata payload"
+            );
+            let rendered = rendered_root_name_cells(&mut app);
+            assert!(
+                rendered.iter().any(|line| line.contains("demos (1)")),
+                "new member should render under its grouped folder without manual refresh: {rendered:?}"
+            );
+        }
+
+        #[test]
+        fn cargo_metadata_arrival_adds_new_linked_workspace_member_row() {
+            let primary = make_workspace_raw(
+                Some("hana"),
+                "/__cargo_port_never_real/hana",
+                vec![inline_group(vec![make_member(
+                    Some("hana"),
+                    "/__cargo_port_never_real/hana/crates/hana",
+                )])],
+                None,
+            );
+            let linked = make_workspace_raw_with_primary(
+                Some("hana"),
+                "/__cargo_port_never_real/hana_feature",
+                vec![inline_group(vec![make_member(
+                    Some("hana"),
+                    "/__cargo_port_never_real/hana_feature/crates/hana",
+                )])],
+                Some("hana_feature"),
+                Some("/__cargo_port_never_real/hana"),
+            );
+            let root = make_workspace_worktrees_item(primary, vec![linked]);
+            let linked_root = test_path("/__cargo_port_never_real/hana_feature");
+            let existing_member = test_path("/__cargo_port_never_real/hana_feature/crates/hana");
+            let new_member =
+                test_path("/__cargo_port_never_real/hana_feature/demos/wasm_node_demo");
+            let mut app = make_app(&[root]);
+            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.insert(ExpandKey::Worktree(0, 1));
+
+            deliver_metadata(
+                &mut app,
+                metadata_with_member_packages(
+                    &linked_root,
+                    &[("hana", &existing_member), ("wasm_node_demo", &new_member)],
+                ),
+            );
+
+            assert!(
+                app.project_list
+                    .is_workspace_member_path(new_member.as_path()),
+                "new metadata member should be part of the linked workspace tree"
+            );
+            let info = app
+                .project_list
+                .rust_info_at_path(new_member.as_path())
+                .expect("new linked member should have Rust info");
+            assert_eq!(
+                info.cargo.example_count(),
+                1,
+                "new linked member should get example targets from the same metadata payload"
+            );
+            let rendered = rendered_root_name_cells(&mut app);
+            assert!(
+                rendered.iter().any(|line| line.contains("demos (1)")),
+                "linked workspace should render the new member group without manual refresh: {rendered:?}"
+            );
+        }
+
         #[test]
         fn detail_cache_separates_root_and_worktree_rows_with_same_path() {
             let primary_ws = make_workspace_raw(

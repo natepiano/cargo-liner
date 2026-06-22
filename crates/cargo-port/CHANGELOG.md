@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Change `RenderFocus` callers to set `pane_focus_state` and read `is_focused()` instead of storing a separate `is_focused` field.
 
 ### Fixed
+- Fix newly added workspace members appearing in the Project List only after a manual refresh.
 - Fix Project List title counts and cursor positions so expanded child rows stay under their top-level project.
 - Fix workspace member group headers showing `(0)` instead of the folder name and member count.
 

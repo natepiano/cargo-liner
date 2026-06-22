@@ -116,12 +116,31 @@ impl App {
         let needs_out_of_tree_walk = !target_directory
             .as_path()
             .starts_with(workspace_root.as_path());
+        let inline_dirs = self.config.current().tui.inline_dirs.clone();
+        let selected_path = self
+            .project_list
+            .selected_project_path()
+            .map(AbsolutePath::from);
+        let tree_changed = self
+            .project_list
+            .sync_workspace_members_from_metadata(&workspace_metadata, &inline_dirs);
         // Stamp Cargo fields (types / examples / benches /
         // publishable) from each PackageRecord onto the matching
         // Package / Workspace / VendoredPackage in the project list.
         // The workspace metadata is authoritative.
         self.project_list
             .apply_cargo_fields_from_workspace_metadata(&workspace_metadata);
+        if tree_changed {
+            self.panes.clear_for_tree_change();
+            self.rebuild_visible_rows_now();
+            if let Some(path) = selected_path {
+                self.project_list.select_project_in_tree(
+                    path.as_path(),
+                    self.config.include_non_rust().includes_non_rust(),
+                );
+            }
+            self.sync_selected_project();
+        }
         if let Ok(mut store) = self.scan.metadata_store().lock() {
             store.upsert(workspace_metadata);
         }
