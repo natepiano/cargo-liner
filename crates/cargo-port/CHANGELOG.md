@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Change `ToastSettings` callers to use `toasts_enabled()` and `set_toasts_enabled()` instead of reading or writing an `enabled` field.
 - Change `RenderFocus` callers to set `pane_focus_state` and read `is_focused()` instead of storing a separate `is_focused` field.
 
+### Fixed
+- Fix workspace member group headers showing `(0)` instead of the folder name and member count.
+
 ## [0.1.4] - 2026-06-14
 
 ### Changed

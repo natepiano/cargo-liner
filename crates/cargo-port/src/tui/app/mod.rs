@@ -8065,6 +8065,39 @@ mod tests {
             );
         }
 
+        #[test]
+        fn single_live_worktree_workspace_renders_named_group_header() {
+            let primary = make_workspace_raw(
+                Some("hana"),
+                "~/hana",
+                vec![named_group(
+                    "demos",
+                    vec![
+                        make_member(Some("wasm_node_demo"), "~/hana/demos/wasm_node_demo"),
+                        make_member(
+                            Some("wasm_node_simple"),
+                            "~/hana/demos/wasm_node_demo/wasm_nodes/wasm_node_simple",
+                        ),
+                    ],
+                )],
+                None,
+            );
+            let root = make_workspace_worktrees_item(primary, Vec::new());
+            let mut app = make_app(&[root]);
+            app.project_list.expanded.insert(ExpandKey::Node(0));
+
+            let rendered = rendered_root_name_cells(&mut app);
+
+            assert!(
+                rendered.iter().any(|line| line.contains("demos (2)")),
+                "single-live worktree workspace should render the named group label: {rendered:?}"
+            );
+            assert!(
+                !rendered.iter().any(|line| line.contains("(0)")),
+                "single-live worktree workspace should not render the fallback group label: {rendered:?}"
+            );
+        }
+
         /// Fixture for `expand_linked_workspace_worktree_renders_its_members`.
         /// Builds the primary + linked worktree pair separately so the test
         /// body itself stays focused on row-layout assertions.

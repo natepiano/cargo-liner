@@ -1466,6 +1466,16 @@ fn render_group_header(
             let group = &ws.groups()[group_index];
             (group.group_name().to_string(), group.members().len())
         },
+        RootItem::Worktrees(worktree_group) if !worktree_group.renders_as_group() => {
+            let Some(ws) = worktree_group.single_live_workspace() else {
+                return ListItem::new(columns::row_to_line(
+                    &columns::build_group_header_cells(prefix, ""),
+                    widths,
+                ));
+            };
+            let group = &ws.groups()[group_index];
+            (group.group_name().to_string(), group.members().len())
+        },
         _ => (String::new(), 0),
     };
     let label = format!("{group_name} ({member_count})");
