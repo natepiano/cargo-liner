@@ -5,7 +5,13 @@ All notable changes to this crate will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.5] - 2026-06-22
+
+### Changed
+- Change key bindings to use `From<KeyEvent>` for key-event normalization.
+- Change framework render-state APIs to use named state enums for keymap rows, settings focus, toast focus, and pane focus.
+- Change toast settings callers to use `toasts_enabled()` and `set_toasts_enabled()`.
+- Split status bar rendering, toast management, theme state, settings-store errors, and layout grid code into focused modules.
 
 ## [0.1.4] - 2026-06-14
 

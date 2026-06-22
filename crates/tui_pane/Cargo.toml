@@ -8,7 +8,7 @@ license     = "MIT OR Apache-2.0"
 name        = "tui_pane"
 readme      = "README.md"
 repository  = "https://github.com/natepiano/cargo-port"
-version     = "0.2.0-dev"
+version     = "0.1.5"
 
 [lints]
 workspace = true
