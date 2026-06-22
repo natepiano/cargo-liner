@@ -13,11 +13,14 @@ use tui_pane::render_overflow_affordance;
 
 use super::ProjectListPane;
 use crate::project;
+use crate::project::AbsolutePath;
 use crate::scan;
 use crate::tui::columns;
 use crate::tui::dismiss_target::DismissTarget;
 use crate::tui::panes::constants::DISMISS_SUFFIX;
 use crate::tui::panes::constants::TITLE_ELLIPSIS;
+use crate::tui::project_list::ProjectList;
+use crate::tui::project_list::VisibleRow;
 use crate::tui::render;
 use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::theme_roles;
@@ -177,7 +180,6 @@ fn project_panel_title_with_counts(
     max_width: usize,
 ) -> String {
     let focused = pane.focus.is_focused();
-    let cursor = ctx.project_list.cursor();
     let roots = scan::resolve_include_dirs(&ctx.config.current().tui.include_dirs);
 
     // No directories configured (first run): point the user at Settings,
@@ -186,36 +188,76 @@ fn project_panel_title_with_counts(
         return project_roots_title("Configure Include dirs in Settings", max_width);
     }
 
-    // Count visible rows per root directory and determine which root the
-    // cursor is in.
-    let mut root_counts: Vec<(String, usize, usize)> = Vec::new(); // (name, count, start_row)
-    for root_path in &roots {
-        let name = project::home_relative_path(root_path.as_path());
-        let count = ctx
-            .project_list
-            .iter()
-            .filter(|item| item.path().starts_with(root_path.as_path()))
-            .count();
-        let start_row = root_counts
-            .last()
-            .map_or(0, |(_, prev_count, prev_start)| prev_start + prev_count);
-        root_counts.push((name, count, start_row));
-    }
-
-    let groups = root_counts
-        .iter()
-        .map(|(name, count, start)| PaneTitleGroup {
-            label:  name.clone().into(),
-            len:    *count,
-            cursor: focused
-                .then_some(cursor)
-                .filter(|cursor| *cursor >= *start && *cursor < *start + *count)
-                .map(|cursor| cursor - *start),
-        })
-        .collect();
+    let include_non_rust = ctx.config.include_non_rust().includes_non_rust();
+    let selected_root = focused
+        .then(|| selected_top_level_node_index(ctx.project_list))
+        .flatten();
+    let groups = project_title_groups(ctx.project_list, &roots, include_non_rust, selected_root);
 
     let body = PaneTitleCount::Grouped(groups).body();
     project_roots_title(&body, max_width)
+}
+
+fn selected_top_level_node_index(project_list: &ProjectList) -> Option<usize> {
+    let row = project_list
+        .visible_rows()
+        .get(project_list.cursor())
+        .copied()?;
+    Some(top_level_node_index(row))
+}
+
+const fn top_level_node_index(row: VisibleRow) -> usize {
+    match row {
+        VisibleRow::Root { node_index }
+        | VisibleRow::GroupHeader { node_index, .. }
+        | VisibleRow::Member { node_index, .. }
+        | VisibleRow::MemberVendored { node_index, .. }
+        | VisibleRow::Vendored { node_index, .. }
+        | VisibleRow::Submodule { node_index, .. }
+        | VisibleRow::WorktreeEntry { node_index, .. }
+        | VisibleRow::WorktreeGroupHeader { node_index, .. }
+        | VisibleRow::WorktreeMember { node_index, .. }
+        | VisibleRow::WorktreeMemberVendored { node_index, .. }
+        | VisibleRow::WorktreeVendored { node_index, .. } => node_index,
+    }
+}
+
+fn project_title_groups(
+    project_list: &ProjectList,
+    roots: &[AbsolutePath],
+    include_non_rust: bool,
+    selected_root: Option<usize>,
+) -> Vec<PaneTitleGroup<'static>> {
+    let mut groups = Vec::new();
+    for root_path in roots {
+        let name = project::home_relative_path(root_path.as_path());
+        let mut count = 0;
+        let mut cursor = None;
+
+        for (node_index, item) in project_list.iter().enumerate() {
+            if matches!(item.visibility(), project::Visibility::Dismissed) {
+                continue;
+            }
+            if !include_non_rust && !item.is_rust() {
+                continue;
+            }
+            if !item.path().starts_with(root_path.as_path()) {
+                continue;
+            }
+            if selected_root == Some(node_index) {
+                cursor = Some(count);
+            }
+            count += 1;
+        }
+
+        groups.push(PaneTitleGroup {
+            label: name.into(),
+            len: count,
+            cursor,
+        });
+    }
+
+    groups
 }
 
 /// Build the project-list pane title from `body` (the directory list with
@@ -244,8 +286,25 @@ pub(super) fn should_pin_project_summary(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
+    use tui_pane::PaneTitleCount;
+
     use super::project_roots_title;
+    use super::project_title_groups;
+    use super::selected_top_level_node_index;
     use super::should_pin_project_summary;
+    use crate::project::AbsolutePath;
+    use crate::project::MemberGroup;
+    use crate::project::NonRustProject;
+    use crate::project::Package;
+    use crate::project::RootItem;
+    use crate::project::RustProject;
+    use crate::project::Visibility;
+    use crate::project::Workspace;
+    use crate::project::WorktreeGroup;
+    use crate::tui::project_list::ExpandKey;
+    use crate::tui::project_list::ProjectList;
 
     #[test]
     fn project_roots_title_adds_ellipsis_when_roots_overflow() {
@@ -269,6 +328,63 @@ mod tests {
     }
 
     #[test]
+    fn project_title_cursor_tracks_parent_root_for_expanded_child_rows() {
+        let rust_root = path("/workspace/rust");
+        let mut list = ProjectList::new(vec![
+            package("/workspace/rust/alpha"),
+            workspace_worktree_group("/workspace/rust/bravo", "/workspace/rust/bravo_feature"),
+            package("/workspace/rust/charlie"),
+        ]);
+        list.expanded = HashSet::from([ExpandKey::Node(1), ExpandKey::Worktree(1, 0)]);
+        list.recompute_visibility(true);
+        list.set_cursor(3);
+
+        assert_eq!(
+            PaneTitleCount::Grouped(project_title_groups(
+                &list,
+                &[rust_root],
+                true,
+                selected_top_level_node_index(&list),
+            ))
+            .body(),
+            "/workspace/rust (2 of 3)"
+        );
+    }
+
+    #[test]
+    fn project_title_counts_rendered_top_level_roots() {
+        let rust_root = path("/workspace/rust");
+        let mut hidden = Package {
+            path: self::path("/workspace/rust/hidden"),
+            ..Package::default()
+        };
+        hidden.rust.project_info.visibility = Visibility::Dismissed;
+        let hidden = RootItem::Rust(RustProject::Package(hidden));
+
+        let list = ProjectList::new(vec![
+            package("/workspace/rust/alpha"),
+            workspace_worktree_group("/workspace/rust/bravo", "/workspace/rust/bravo_feature"),
+            non_rust("/workspace/rust/docs"),
+            hidden,
+        ]);
+
+        assert_eq!(
+            PaneTitleCount::Grouped(project_title_groups(
+                &list,
+                std::slice::from_ref(&rust_root),
+                true,
+                None
+            ))
+            .body(),
+            "/workspace/rust (3)"
+        );
+        assert_eq!(
+            PaneTitleCount::Grouped(project_title_groups(&list, &[rust_root], false, None)).body(),
+            "/workspace/rust (2)"
+        );
+    }
+
+    #[test]
     fn project_summary_stays_inline_when_everything_fits() {
         assert!(!should_pin_project_summary(5, true, 6));
     }
@@ -282,4 +398,36 @@ mod tests {
     fn project_summary_does_not_pin_without_summary_content() {
         assert!(!should_pin_project_summary(100, false, 6));
     }
+
+    fn package(path: &str) -> RootItem {
+        RootItem::Rust(RustProject::Package(Package {
+            path: self::path(path),
+            ..Package::default()
+        }))
+    }
+
+    fn non_rust(path: &str) -> RootItem {
+        RootItem::NonRust(NonRustProject::new(self::path(path), None))
+    }
+
+    fn workspace_worktree_group(primary: &str, linked: &str) -> RootItem {
+        RootItem::Worktrees(WorktreeGroup::new(
+            RustProject::Workspace(Workspace {
+                path: self::path(primary),
+                groups: vec![MemberGroup::Inline {
+                    members: vec![Package {
+                        path: self::path(&format!("{primary}/member")),
+                        ..Package::default()
+                    }],
+                }],
+                ..Workspace::default()
+            }),
+            vec![RustProject::Workspace(Workspace {
+                path: self::path(linked),
+                ..Workspace::default()
+            })],
+        ))
+    }
+
+    fn path(path: &str) -> AbsolutePath { AbsolutePath::from(path) }
 }
