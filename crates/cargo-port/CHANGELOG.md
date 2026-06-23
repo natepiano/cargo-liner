@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] - 2026-06-23
 
 ### Added
 - Add a lint pause toggle (Space): pausing asks for confirmation, kills running lint jobs, holds new runs, and shows a sticky warning toast; killed runs display as stale (outcome unknown) rather than their prior result. Resuming is immediate, clears the warning, flashes a green toast, and re-runs every lint that was killed or skipped while paused.
