@@ -40,6 +40,15 @@ impl RuntimeHandle {
             .send(SupervisorMsg::LintTriggered { event });
     }
 
+    /// Pause all lint work: kill every in-flight run and hold new runs until
+    /// [`Self::resume`]. Projects whose runs are killed or whose triggers
+    /// arrive while paused are remembered and re-linted on resume.
+    pub fn pause(&self) { let _ = self.supervisor_sender.send(SupervisorMsg::Pause); }
+
+    /// Resume lint work and re-dispatch the catch-up runs accumulated while
+    /// paused (same `CatchUp` origin as the startup staleness sweep).
+    pub fn resume(&self) { let _ = self.supervisor_sender.send(SupervisorMsg::Resume); }
+
     /// Schedule a lint run for a project the app's post-startup staleness
     /// check flagged (source newer than the last run, or never linted under
     /// immediate discovery). Routed through the same `LintTriggered` path as
@@ -75,6 +84,8 @@ pub(super) enum SupervisorMsg {
     LintTriggered {
         event: LintTriggerEvent,
     },
+    Pause,
+    Resume,
 }
 
 pub(super) type ChildSlot = Arc<Mutex<Option<Child>>>;

@@ -112,11 +112,17 @@ use tui_pane::PaneFocusState;
 use tui_pane::SystemClipboard;
 use tui_pane::ThemeRuntime;
 use tui_pane::ToastId;
+use tui_pane::ToastStyle::Success;
 use tui_pane::ToastStyle::Warning;
 use tui_pane::ToastTaskId;
 use tui_pane::TrackedItem;
 
 use self::constants::ANIMATION_TICK;
+use self::constants::LINT_CANCELLED_TOAST_TITLE;
+use self::constants::LINT_PAUSED_TOAST_BODY;
+use self::constants::LINT_PAUSED_TOAST_TITLE;
+use self::constants::LINT_RESUMED_TOAST_BODY;
+use self::constants::LINT_RESUMED_TOAST_TITLE;
 pub(super) use super::app_render_state::FinderSplit;
 pub(super) use super::app_render_state::OverlayRenderInputs;
 pub(super) use super::app_render_state::RenderBorrows;
@@ -727,6 +733,78 @@ impl App {
             pid,
             create_time,
         });
+    }
+
+    /// Toggle the lint pause state (bound to Space). Pausing opens a confirm
+    /// dialog (like Clean); resuming is immediate. A no-op when lint is
+    /// disabled — there is nothing to pause.
+    pub fn toggle_lint_pause(&mut self) {
+        if self.lint.runtime().is_none() {
+            return;
+        }
+        if self.lint.is_paused() {
+            self.resume_lints();
+        } else {
+            self.confirm = Some(ConfirmAction::PauseLint);
+        }
+    }
+
+    /// Pause all lint operations: kill in-flight runs and hold new runs in the
+    /// runtime. Surfaces a sticky warning toast that stays until resume.
+    /// Invoked from the `PauseLint` confirm on `y`.
+    pub(super) fn pause_lints(&mut self) {
+        let Some(runtime) = self.lint.runtime() else {
+            return;
+        };
+        runtime.pause();
+        // Count the runs being killed before their terminal statuses drain the
+        // running-lint toast, so the cancellation notice can name how many.
+        let cancelled = self.lint.running_toast_path_count();
+        let id = self.framework.toasts.push_styled(
+            LINT_PAUSED_TOAST_TITLE,
+            LINT_PAUSED_TOAST_BODY,
+            Warning,
+        );
+        self.lint.set_pause_toast(id);
+        if cancelled > 0 {
+            let plural = if cancelled == 1 { "lint" } else { "lints" };
+            self.framework.toasts.push_status(
+                LINT_CANCELLED_TOAST_TITLE,
+                format!("Stopped {cancelled} running {plural}."),
+            );
+        }
+    }
+
+    /// Resume lint operations: dismiss the sticky warning toast, tell the
+    /// runtime to re-dispatch the catch-up runs accumulated while paused, and
+    /// flash a green confirmation toast.
+    pub(super) fn resume_lints(&mut self) {
+        if let Some(runtime) = self.lint.runtime() {
+            runtime.resume();
+        }
+        if let Some(id) = self.lint.take_pause_toast() {
+            self.framework.toasts.dismiss(id);
+        }
+        self.framework.toasts.push_status_styled(
+            LINT_RESUMED_TOAST_TITLE,
+            LINT_RESUMED_TOAST_BODY,
+            Success,
+        );
+    }
+
+    /// Re-apply the pause state to a freshly spawned runtime after a lint
+    /// config change. The new runtime starts unpaused, so a paused session
+    /// re-pauses it; if lint became disabled, the sticky toast is cleared
+    /// because a missing runtime can't be paused.
+    pub(super) fn reapply_lint_pause_after_runtime_swap(&mut self) {
+        if !self.lint.is_paused() {
+            return;
+        }
+        if let Some(runtime) = self.lint.runtime() {
+            runtime.pause();
+        } else if let Some(id) = self.lint.take_pause_toast() {
+            self.framework.toasts.dismiss(id);
+        }
     }
 
     /// A `MetadataDispatchContext` built from the current App state.

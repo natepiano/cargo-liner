@@ -53,6 +53,7 @@ pub(super) fn render_toast(
     // framework pane chrome.
     let border_style = match toast_style {
         ToastStyle::Error => Style::default().fg(palette.error),
+        ToastStyle::Success => Style::default().fg(palette.success),
         ToastStyle::Warning => Style::default().fg(palette.warning),
         ToastStyle::Normal => {
             if focused {
@@ -64,6 +65,7 @@ pub(super) fn render_toast(
     };
     let text_style = match toast_style {
         ToastStyle::Error => Style::default().fg(palette.error),
+        ToastStyle::Success => Style::default().fg(palette.success),
         ToastStyle::Warning => Style::default().fg(palette.warning),
         ToastStyle::Normal => {
             if focused {
@@ -77,6 +79,7 @@ pub(super) fn render_toast(
     };
     let body_style = match toast_style {
         ToastStyle::Error => Style::default().fg(palette.error),
+        ToastStyle::Success => Style::default().fg(palette.success),
         ToastStyle::Warning => Style::default().fg(palette.warning),
         ToastStyle::Normal => Style::default(),
     };
@@ -87,6 +90,7 @@ pub(super) fn render_toast(
     let raw_title = match toast_style {
         ToastStyle::Error => format!("x {}", toast.title()),
         ToastStyle::Warning => format!("! {}", toast.title()),
+        ToastStyle::Success => format!("\u{2713} {}", toast.title()),
         ToastStyle::Normal => toast.title().to_owned(),
     };
     let title = format::truncate(&raw_title, title_max);

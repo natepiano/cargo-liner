@@ -1,7 +1,10 @@
+use std::os::unix::process::CommandExt;
+
 use tui_pane::PERF_LOG_TARGET;
 
 use super::AbsolutePath;
 use super::Arc;
+use super::AtomicBool;
 use super::BackgroundMsg;
 use super::CARGO_TOML;
 use super::CachedLintStatus;
@@ -18,6 +21,7 @@ use super::LintRunStatus;
 use super::LintStatus;
 use super::Local;
 use super::Mutex;
+use super::Ordering;
 use super::Path;
 use super::Read;
 use super::Sender;
@@ -36,6 +40,9 @@ pub(super) struct RunCommandsConfig<'a> {
     pub(super) cache_root:       &'a Path,
     pub(super) commands:         &'a [LintCommandConfig],
     pub(super) cache_size_bytes: Option<u64>,
+    /// Set while lint is paused. Checked between commands so a pause kills the
+    /// run mid-flight and leaves no terminal record.
+    pub(super) paused:           &'a AtomicBool,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CommandOutcome {
@@ -175,6 +182,7 @@ pub(super) fn run_commands_for_project(
         &output_dir,
         &mut run,
         child_slot,
+        config.paused,
     )?;
     if matches!(result, CommandsResult::ProjectRemoved) {
         let _ = read_write::clear_latest_under(cache_root, project_root);
@@ -187,12 +195,31 @@ pub(super) fn run_commands_for_project(
         );
         return Ok(());
     }
+    if matches!(result, CommandsResult::Interrupted) {
+        // A pause killed this run mid-flight. The run was triggered by a source
+        // change and never finished, so its outcome is unknown — do not fall
+        // back to the prior (now-stale) terminal status. Clear the on-disk
+        // `Running` marker ourselves so the `RunFinalizeGuard` drop is a no-op,
+        // then publish `Stale`. Resume re-lints the project (the supervisor
+        // remembers it in its catch-up set).
+        let _ = read_write::clear_latest_under(cache_root, project_root);
+        publish_status(
+            status_cache,
+            project_root,
+            LintStatus::Stale,
+            background_tx,
+            origin,
+        );
+        return Ok(());
+    }
 
     run.finished_at = Some(Local::now().to_rfc3339());
     run.duration_ms = Some(u64::try_from(run_started.elapsed().as_millis()).unwrap_or(u64::MAX));
     run.status = match result {
         CommandsResult::AllPassed => LintRunStatus::Passed,
-        CommandsResult::SomeFailed | CommandsResult::ProjectRemoved => LintRunStatus::Failed,
+        CommandsResult::SomeFailed
+        | CommandsResult::ProjectRemoved
+        | CommandsResult::Interrupted => LintRunStatus::Failed,
     };
 
     write_terminal_run(
@@ -255,6 +282,9 @@ enum CommandsResult {
     AllPassed,
     SomeFailed,
     ProjectRemoved,
+    /// Lint was paused mid-run; the child was killed. The caller leaves no
+    /// terminal record so the project reverts to its prior status.
+    Interrupted,
 }
 
 fn execute_commands(
@@ -264,12 +294,16 @@ fn execute_commands(
     output_dir: &Path,
     run: &mut LintRun,
     child_slot: &ChildSlot,
+    paused: &AtomicBool,
 ) -> io::Result<CommandsResult> {
     let manifest_path = project_root.join(CARGO_TOML);
     let mut failed = false;
     for (index, command) in commands.iter().enumerate() {
         if !project_still_runnable(project_root) {
             return Ok(CommandsResult::ProjectRemoved);
+        }
+        if paused.load(Ordering::Relaxed) {
+            return Ok(CommandsResult::Interrupted);
         }
         let cmd_started = Instant::now();
         let execution = run_command(
@@ -305,6 +339,9 @@ fn execute_commands(
     }
     if !project_still_runnable(project_root) {
         return Ok(CommandsResult::ProjectRemoved);
+    }
+    if paused.load(Ordering::Relaxed) {
+        return Ok(CommandsResult::Interrupted);
     }
     if failed {
         Ok(CommandsResult::SomeFailed)
@@ -378,6 +415,16 @@ fn lint_shell(command_line: &str) -> Command {
     shell
 }
 
+/// Make the lint command its own process-group leader (group id == child pid)
+/// so a pause can signal the whole group. Mirrors the example runner's
+/// `isolate_example_process`. No-op on non-Unix, where group kill is
+/// unavailable and a plain `Child::kill` is the fallback.
+#[cfg(unix)]
+fn isolate_lint_process(command: &mut Command) { command.process_group(0); }
+
+#[cfg(not(unix))]
+fn isolate_lint_process(_: &mut Command) {}
+
 fn run_command(
     project_root: &Path,
     manifest_path: &Path,
@@ -394,15 +441,20 @@ fn run_command(
     let started = Instant::now();
     let expanded =
         expand_lint_placeholders(&command.command, project_root, manifest_path, output_dir);
-    let spawn_result = lint_shell(&expanded)
+    let mut shell = lint_shell(&expanded);
+    shell
         .current_dir(project_root)
         .env("PROJECT_DIR", project_root)
         .env("MANIFEST_PATH", manifest_path)
         .env("LINT_OUTPUT_DIR", output_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn();
+        .stderr(Stdio::piped());
+    // Own a process group so a pause can kill the whole tree (`/bin/sh` plus
+    // the `cargo`/`rustc` descendants). A plain `Child::kill` would only signal
+    // the shell, leaving cargo running and the run effectively un-cancelled.
+    isolate_lint_process(&mut shell);
+    let spawn_result = shell.spawn();
 
     let (success, exit_code, bytes) = match spawn_result {
         Ok(mut child) => {

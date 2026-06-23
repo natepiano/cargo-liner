@@ -561,6 +561,7 @@ fn handle_confirm_key(app: &mut App, key: KeyCode) -> bool {
             } => {
                 panes::execute_target_kill(app, pid, create_time);
             },
+            ConfirmAction::PauseLint => app.pause_lints(),
         }
     }
     true

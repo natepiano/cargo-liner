@@ -25,6 +25,7 @@ use tui_pane::Hittable;
 use tui_pane::RenderFocus;
 use tui_pane::Renderable;
 use tui_pane::RunningTracker;
+use tui_pane::ToastId;
 use tui_pane::ToastTaskId;
 use tui_pane::TrackedItem;
 use tui_pane::Viewport;
@@ -92,6 +93,10 @@ pub struct Lint {
     /// Keeping this as a separate slot makes it impossible for a later normal
     /// lint to append to the catch-up toast.
     catch_up_running: RunningTracker<AbsolutePath>,
+    /// The sticky "Lints paused" warning toast's id while lint is paused;
+    /// `None` when running. Paused state is exactly "we hold this toast", so
+    /// the toast cannot get out of sync with whether lint is paused.
+    pause_toast:      Option<ToastId>,
     /// Bytes used by the on-disk lint-log cache (`~/.cache/cargo-port/lints/`).
     /// Refreshed by `App::refresh_lint_cache_usage_from_disk`,
     /// displayed in the Settings popup.
@@ -114,6 +119,7 @@ impl Lint {
             runtime,
             running: RunningTracker::new(),
             catch_up_running: RunningTracker::new(),
+            pause_toast: None,
             cache_usage: CacheUsage::default(),
             viewport: Viewport::new(),
             focus: RenderFocus::inactive(),
@@ -143,6 +149,18 @@ impl Lint {
     /// Replace the runtime handle. Called by the config-reload
     /// path when lint settings change.
     pub fn set_runtime(&mut self, handle: Option<RuntimeHandle>) { self.runtime = handle; }
+
+    // ── pause ───────────────────────────────────────────────────
+
+    /// Whether lint is paused. Paused exactly when the sticky warning toast
+    /// is held.
+    pub const fn is_paused(&self) -> bool { self.pause_toast.is_some() }
+
+    /// Record the sticky "paused" warning toast and enter the paused state.
+    pub const fn set_pause_toast(&mut self, id: ToastId) { self.pause_toast = Some(id); }
+
+    /// Leave the paused state, returning the sticky toast id to dismiss.
+    pub const fn take_pause_toast(&mut self) -> Option<ToastId> { self.pause_toast.take() }
 
     // ── running toast projection ────────────────────────────────
 

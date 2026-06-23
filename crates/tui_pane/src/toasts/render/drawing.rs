@@ -26,6 +26,8 @@ pub struct FallbackToastPalette {
     pub accent:  Color,
     /// Border + text color for error toasts.
     pub error:   Color,
+    /// Border + text color for success toasts.
+    pub success: Color,
     /// Border + text color for warning toasts.
     pub warning: Color,
     /// Countdown text, italic action hint, overflow rows.
@@ -38,6 +40,7 @@ pub const fn fallback_toast_palette() -> FallbackToastPalette {
     FallbackToastPalette {
         accent:  Color::Cyan,
         error:   Color::Red,
+        success: Color::Green,
         warning: Color::Yellow,
         label:   Color::Rgb(150, 190, 180),
         title:   Color::Yellow,
@@ -278,6 +281,7 @@ mod tests {
         let p = fallback_toast_palette();
         assert_eq!(p.accent, Color::Cyan);
         assert_eq!(p.error, Color::Red);
+        assert_eq!(p.success, Color::Green);
         assert_eq!(p.warning, Color::Yellow);
         assert_eq!(p.label, Color::Rgb(150, 190, 180));
         assert_eq!(p.title, Color::Yellow);

@@ -61,11 +61,14 @@ impl LintRuns {
         self.runs = runs;
     }
 
-    /// Replace run history from a cache load without replacing a live
-    /// worker's `Running` status.
+    /// Replace run history from a cache load without replacing a live status
+    /// that the on-disk history can't represent: a worker's `Running` run, or
+    /// the `Stale` marker a paused/killed run leaves pending re-lint. Both are
+    /// in-memory states, not terminal runs, so a history hydrate must not
+    /// overwrite them with the prior terminal result.
     pub fn set_hydrated_runs(&mut self, runs: Vec<LintRun>) {
-        let live_status =
-            matches!(self.status, LintStatus::Running(_)).then(|| self.status.clone());
+        let live_status = matches!(self.status, LintStatus::Running(_) | LintStatus::Stale)
+            .then(|| self.status.clone());
         self.set_runs(runs);
         if let Some(status) = live_status {
             self.status = status;
@@ -153,6 +156,17 @@ mod tests {
 
         assert!(!lr.has_archive_entry("a"), "old run's entry should be gone");
         assert!(lr.has_archive_entry("b"));
+    }
+
+    #[test]
+    fn set_hydrated_runs_preserves_live_stale_over_prior_terminal() {
+        // A paused/killed run publishes `Stale`; the subsequent history hydrate
+        // must not overwrite it with the prior passed run, or the killed lint
+        // would read as settled-green instead of pending re-lint.
+        let mut lr = LintRuns::default();
+        lr.set_status(LintStatus::Stale);
+        lr.set_hydrated_runs(vec![make_run("prior-pass")]);
+        assert_eq!(lr.status(), &LintStatus::Stale);
     }
 
     #[test]

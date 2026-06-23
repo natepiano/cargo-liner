@@ -21,4 +21,7 @@ pub(crate) enum ConfirmAction {
         pid:         u32,
         create_time: u64,
     },
+    /// Pause all lint operations: kill in-flight runs and hold new runs until
+    /// the user toggles back. Resuming needs no confirmation.
+    PauseLint,
 }

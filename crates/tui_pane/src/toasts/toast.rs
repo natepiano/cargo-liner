@@ -17,6 +17,8 @@ use crate::ToastSettings;
 pub enum ToastStyle {
     /// Default informational toast style.
     Normal,
+    /// Success toast style — green, for a completed positive action.
+    Success,
     /// Warning toast style.
     Warning,
     /// Error toast style.

@@ -40,6 +40,7 @@ impl Globals<App> for AppGlobalAction {
             KeyBind::ctrl('r')   => Self::Rescan,
             'c'                  => Self::Clean,
             'S'                  => Self::SccacheStats,
+            ' '                  => Self::PauseLint,
         }
     }
 
@@ -55,5 +56,6 @@ pub(super) fn dispatch_app_global(action: AppGlobalAction, app: &mut App) {
         AppGlobalAction::Rescan => app.rescan(),
         AppGlobalAction::Clean => panes::request_clean(app),
         AppGlobalAction::SccacheStats => sccache::open_sccache_stats_overlay(app),
+        AppGlobalAction::PauseLint => app.toggle_lint_pause(),
     }
 }

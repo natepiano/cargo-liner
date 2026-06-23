@@ -7,15 +7,18 @@ use super::BackgroundMsg;
 use super::CARGO_TOML;
 use super::CachedLintStatus;
 use super::CargoPortConfig;
+use super::Child;
 use super::ChildSlot;
 use super::DiscoveryLint;
 use super::HashMap;
+use super::HashSet;
 use super::Instant;
 use super::JoinHandle;
 use super::LINTS_HISTORY_JSONL;
 use super::LINTS_LATEST_JSON;
 use super::LintCommandConfig;
 use super::LintConfig;
+use super::LintEventKind;
 use super::LintRunOrigin;
 use super::LintRunStatus;
 use super::LintStatus;
@@ -105,11 +108,15 @@ fn supervisor_loop(
     // for ~2s before it could process a single registration.
     let status_cache: Arc<Mutex<HashMap<String, CachedLintStatus>>> =
         Arc::new(Mutex::new(HashMap::new()));
+    let paused = Arc::new(AtomicBool::new(false));
+    let catch_up: Arc<Mutex<HashSet<AbsolutePath>>> = Arc::new(Mutex::new(HashSet::new()));
     let worker_config = WorkerConfig {
         cache_root: cache_root.clone(),
         commands: lint.resolved_commands(),
         cache_size_bytes,
         status_cache: Arc::clone(&status_cache),
+        paused: Arc::clone(&paused),
+        catch_up: Arc::clone(&catch_up),
     };
 
     loop {
@@ -182,6 +189,8 @@ fn supervisor_loop(
                     );
                 }
             },
+            Ok(SupervisorMsg::Pause) => pause_workers(&paused, &workers),
+            Ok(SupervisorMsg::Resume) => resume_workers(&paused, &catch_up, &workers),
             Err(_) => {
                 for (_, worker) in workers.drain() {
                     stop_worker(worker);
@@ -268,6 +277,12 @@ pub(super) struct WorkerConfig {
     pub(super) commands:         Vec<LintCommandConfig>,
     pub(super) cache_size_bytes: Option<u64>,
     pub(super) status_cache:     Arc<Mutex<HashMap<String, CachedLintStatus>>>,
+    /// Set while lint is paused. Every worker reads it before starting a run
+    /// and bails mid-run when a pause kills its child.
+    pub(super) paused:           Arc<AtomicBool>,
+    /// Projects whose runs were killed or whose triggers arrived while paused.
+    /// Drained on resume to re-dispatch the catch-up runs.
+    pub(super) catch_up:         Arc<Mutex<HashSet<AbsolutePath>>>,
 }
 
 /// Whether a freshly spawned worker runs a lint immediately or waits idle for
@@ -366,38 +381,108 @@ pub(super) fn stop_worker(worker: ProjectWorker) {
     if let Ok(mut slot) = worker.child.lock()
         && let Some(mut child) = slot.take()
     {
-        let _ = child.kill();
-        let _ = child.wait();
+        kill_child_tree(&mut child);
     }
     drop(worker.trigger_tx);
     let _ = worker.handle.join();
 }
 
-fn spawn_project_worker(
-    project_label: String,
-    project_root: AbsolutePath,
-    config: &WorkerConfig,
-    start: WorkerStart,
-    background_tx: Sender<BackgroundMsg>,
-) -> ProjectWorker {
-    let stop = Arc::new(AtomicBool::new(false));
-    let stop_flag = Arc::clone(&stop);
-    let child: ChildSlot = Arc::new(Mutex::new(None));
-    let child_slot = Arc::clone(&child);
-    let (trigger_tx, trigger_rx) = mpsc::channel::<LintTriggerEvent>();
-    let worker_project_label = project_label;
-    let cache_root = config.cache_root.clone();
-    let commands = config.commands.clone();
-    let cache_size_bytes = config.cache_size_bytes;
-    let status_cache = Arc::clone(&config.status_cache);
-    let run_immediately = matches!(start, WorkerStart::RunNow);
-    let handle = thread::spawn(move || {
-        let mut scheduled_run = run_immediately.then(|| ScheduledLintRun {
+/// Kill a worker's in-flight child without stopping the worker thread. Used by
+/// the pause path: the worker stays alive and idle, gated by the `paused` flag.
+fn kill_worker_child(child: &ChildSlot) {
+    if let Ok(mut slot) = child.lock()
+        && let Some(mut running_child) = slot.take()
+    {
+        kill_child_tree(&mut running_child);
+    }
+}
+
+/// Kill a lint command's whole process group — the `/bin/sh` wrapper plus the
+/// `cargo`/`rustc` descendants it spawned — then reap it. Lint commands are
+/// spawned with `process_group(0)`, so the child pid is its own group id; a
+/// negative target signals the group. A plain `Child::kill` would only signal
+/// the shell and leave cargo running, which is what made pause look like it
+/// never cancelled.
+fn kill_child_tree(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        let _ = std::process::Command::new("kill")
+            .arg("-KILL")
+            .arg(format!("-{}", child.id()))
+            .status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Record `project_root` for the resume catch-up sweep. Called when a run is
+/// held back because lint is paused, or when a pause kills a run mid-flight.
+fn remember_catch_up(catch_up: &Mutex<HashSet<AbsolutePath>>, project_root: &AbsolutePath) {
+    if let Ok(mut pending) = catch_up.lock() {
+        pending.insert(project_root.clone());
+    }
+}
+
+/// Enter the paused state: stop accepting new runs and kill every in-flight
+/// child. Workers stay alive and idle, gated by `paused`.
+fn pause_workers(paused: &AtomicBool, workers: &HashMap<AbsolutePath, ProjectWorker>) {
+    paused.store(true, Ordering::Relaxed);
+    for worker in workers.values() {
+        kill_worker_child(&worker.child);
+    }
+}
+
+/// Leave the paused state and re-dispatch a `CatchUp`-origin run for every
+/// project remembered while paused (killed mid-run or triggered by a file
+/// change). Mirrors the startup staleness sweep's `Startup` trigger.
+fn resume_workers(
+    paused: &AtomicBool,
+    catch_up: &Mutex<HashSet<AbsolutePath>>,
+    workers: &HashMap<AbsolutePath, ProjectWorker>,
+) {
+    paused.store(false, Ordering::Relaxed);
+    let pending = catch_up
+        .lock()
+        .map(|mut set| std::mem::take(&mut *set))
+        .unwrap_or_default();
+    for project_root in pending {
+        if let Some(worker) = workers.get(&project_root) {
+            let _ = worker.trigger_tx.send(LintTriggerEvent {
+                project_root,
+                trigger: LintTriggerKind::Startup,
+                event_kind: LintEventKind::CreateOrModify,
+            });
+        }
+    }
+}
+
+/// Owned per-worker state. Built by [`spawn_project_worker`] and moved into the
+/// worker thread, which drives [`WorkerContext::run`] until the channel closes
+/// or `stop` is set.
+struct WorkerContext {
+    project_root:     AbsolutePath,
+    project_label:    String,
+    cache_root:       AbsolutePath,
+    commands:         Vec<LintCommandConfig>,
+    cache_size_bytes: Option<u64>,
+    status_cache:     Arc<Mutex<HashMap<String, CachedLintStatus>>>,
+    child_slot:       ChildSlot,
+    background_tx:    Sender<BackgroundMsg>,
+    paused:           Arc<AtomicBool>,
+    catch_up:         Arc<Mutex<HashSet<AbsolutePath>>>,
+    stop:             Arc<AtomicBool>,
+    trigger_rx:       StdReceiver<LintTriggerEvent>,
+    run_immediately:  bool,
+}
+
+impl WorkerContext {
+    fn run(self) {
+        let mut scheduled_run = self.run_immediately.then(|| ScheduledLintRun {
             deadline: Instant::now(),
             origin:   LintRunOrigin::Normal,
         });
         loop {
-            if stop_flag.load(Ordering::Relaxed) {
+            if self.stop.load(Ordering::Relaxed) {
                 return;
             }
 
@@ -408,26 +493,14 @@ fn spawn_project_worker(
                     .min(STOP_POLL)
             });
 
-            if let Ok(trigger) = trigger_rx.try_recv() {
-                tracing::debug!(
-                    path = %project_root.display(),
-                    trigger = ?trigger.trigger,
-                    event_kind = ?trigger.event_kind,
-                    removal = trigger.is_removal(),
-                    "lint_worker_trigger_received"
-                );
+            if let Ok(trigger) = self.trigger_rx.try_recv() {
+                self.log_trigger(&trigger);
                 scheduled_run = Some(schedule_lint_run(scheduled_run, &trigger));
             }
 
-            match trigger_rx.recv_timeout(timeout) {
+            match self.trigger_rx.recv_timeout(timeout) {
                 Ok(trigger) => {
-                    tracing::debug!(
-                        path = %project_root.display(),
-                        trigger = ?trigger.trigger,
-                        event_kind = ?trigger.event_kind,
-                        removal = trigger.is_removal(),
-                        "lint_worker_trigger_received"
-                    );
+                    self.log_trigger(&trigger);
                     scheduled_run = Some(schedule_lint_run(scheduled_run, &trigger));
                 },
                 Err(RecvTimeoutError::Timeout) => {},
@@ -437,39 +510,95 @@ fn spawn_project_worker(
             if let Some(scheduled) = scheduled_run
                 && Instant::now() >= scheduled.deadline
             {
-                if !stop_flag.load(Ordering::Relaxed) && project_still_runnable(&project_root) {
-                    tracing::trace!(
-                        target: PERF_LOG_TARGET,
-                        path = %project_root.display(),
-                        origin = ?scheduled.origin,
-                        "lint_worker_run_start"
-                    );
-                    let run_started = Instant::now();
-                    let _ = run_commands_for_project(
-                        &project_root,
-                        &worker_project_label,
-                        &RunCommandsConfig {
-                            cache_root: &cache_root,
-                            commands: &commands,
-                            cache_size_bytes,
-                        },
-                        &status_cache,
-                        &background_tx,
-                        &child_slot,
-                        scheduled.origin,
-                    );
-                    tracing::trace!(
-                        target: PERF_LOG_TARGET,
-                        path = %project_root.display(),
-                        origin = ?scheduled.origin,
-                        duration_ms = tui_pane::perf_log_ms(run_started.elapsed().as_millis()),
-                        "lint_worker_run_complete"
-                    );
-                }
+                self.run_due(scheduled.origin);
                 scheduled_run = None;
             }
         }
-    });
+    }
+
+    fn log_trigger(&self, trigger: &LintTriggerEvent) {
+        tracing::debug!(
+            path = %self.project_root.display(),
+            trigger = ?trigger.trigger,
+            event_kind = ?trigger.event_kind,
+            removal = trigger.is_removal(),
+            "lint_worker_trigger_received"
+        );
+    }
+
+    fn run_due(&self, origin: LintRunOrigin) {
+        if self.paused.load(Ordering::Relaxed) {
+            // Hold the run back while paused; remember the project so resume
+            // re-lints it under the same catch-up policy as the startup
+            // staleness sweep.
+            remember_catch_up(&self.catch_up, &self.project_root);
+            return;
+        }
+        if self.stop.load(Ordering::Relaxed) || !project_still_runnable(&self.project_root) {
+            return;
+        }
+        tracing::trace!(
+            target: PERF_LOG_TARGET,
+            path = %self.project_root.display(),
+            origin = ?origin,
+            "lint_worker_run_start"
+        );
+        let run_started = Instant::now();
+        let _ = run_commands_for_project(
+            &self.project_root,
+            &self.project_label,
+            &RunCommandsConfig {
+                cache_root:       &self.cache_root,
+                commands:         &self.commands,
+                cache_size_bytes: self.cache_size_bytes,
+                paused:           &self.paused,
+            },
+            &self.status_cache,
+            &self.background_tx,
+            &self.child_slot,
+            origin,
+        );
+        // A pause landed mid-run and killed the child; queue the interrupted
+        // project for the resume sweep.
+        if self.paused.load(Ordering::Relaxed) {
+            remember_catch_up(&self.catch_up, &self.project_root);
+        }
+        tracing::trace!(
+            target: PERF_LOG_TARGET,
+            path = %self.project_root.display(),
+            origin = ?origin,
+            duration_ms = tui_pane::perf_log_ms(run_started.elapsed().as_millis()),
+            "lint_worker_run_complete"
+        );
+    }
+}
+
+fn spawn_project_worker(
+    project_label: String,
+    project_root: AbsolutePath,
+    config: &WorkerConfig,
+    start: WorkerStart,
+    background_tx: Sender<BackgroundMsg>,
+) -> ProjectWorker {
+    let stop = Arc::new(AtomicBool::new(false));
+    let child: ChildSlot = Arc::new(Mutex::new(None));
+    let (trigger_tx, trigger_rx) = mpsc::channel::<LintTriggerEvent>();
+    let context = WorkerContext {
+        project_root,
+        project_label,
+        cache_root: config.cache_root.clone(),
+        commands: config.commands.clone(),
+        cache_size_bytes: config.cache_size_bytes,
+        status_cache: Arc::clone(&config.status_cache),
+        child_slot: Arc::clone(&child),
+        background_tx,
+        paused: Arc::clone(&config.paused),
+        catch_up: Arc::clone(&config.catch_up),
+        stop: Arc::clone(&stop),
+        trigger_rx,
+        run_immediately: matches!(start, WorkerStart::RunNow),
+    };
+    let handle = thread::spawn(move || context.run());
     ProjectWorker {
         stop,
         trigger_tx,

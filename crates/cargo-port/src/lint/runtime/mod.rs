@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::io;
 use std::io::Read;
 #[cfg(windows)]
@@ -252,6 +253,7 @@ mod tests {
                 cache_root:       cache_root.as_path(),
                 commands:         &commands,
                 cache_size_bytes: None,
+                paused:           &AtomicBool::new(false),
             },
             &Arc::new(Mutex::new(HashMap::new())),
             &tx,
@@ -553,6 +555,7 @@ mod tests {
                 cache_root:       cache_dir.path(),
                 commands:         &commands,
                 cache_size_bytes: None,
+                paused:           &AtomicBool::new(false),
             },
             &Arc::new(Mutex::new(HashMap::new())),
             &tx,
@@ -618,6 +621,8 @@ mod tests {
             commands:         Vec::new(),
             cache_size_bytes: None,
             status_cache:     Arc::new(Mutex::new(HashMap::new())),
+            paused:           Arc::new(AtomicBool::new(false)),
+            catch_up:         Arc::new(Mutex::new(HashSet::new())),
         };
 
         reconcile_workers(
@@ -657,6 +662,8 @@ mod tests {
             commands:         Vec::new(),
             cache_size_bytes: None,
             status_cache:     Arc::new(Mutex::new(HashMap::new())),
+            paused:           Arc::new(AtomicBool::new(false)),
+            catch_up:         Arc::new(Mutex::new(HashSet::new())),
         };
         reconcile_workers(
             &mut workers,

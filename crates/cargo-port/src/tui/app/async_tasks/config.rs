@@ -443,6 +443,7 @@ impl App {
             .startup_services
             .spawn_lint_runtime(cargo_port_config, self.background.background_sender());
         self.lint.set_runtime(lint_spawn.handle);
+        self.reapply_lint_pause_after_runtime_swap();
         self.sync_lint_runtime_projects();
 
         // Scan state on App: clear lint state, refresh from
