@@ -313,6 +313,7 @@ impl App {
             self.show_timed_toast("Lint runtime", warning);
         }
         self.force_settings_if_unconfigured();
+        self.restore_persisted_lint_pause();
         self.prune_inactive_project_state();
         self.register_existing_projects();
         let lint_registered = self.register_lint_for_root_items();

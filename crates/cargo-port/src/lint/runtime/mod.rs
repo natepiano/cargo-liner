@@ -61,6 +61,7 @@ use command::RunCommandsConfig;
 pub(crate) use command::RunFinalizeGuard;
 #[cfg(test)]
 use command::build_pending_run;
+use command::publish_status;
 use command::run_commands_for_project;
 use handle::ChildSlot;
 pub use handle::RuntimeHandle;
@@ -365,6 +366,66 @@ mod tests {
         assert!(
             saw_passed,
             "expected watcher-originated lint trigger to run lint"
+        );
+    }
+
+    #[test]
+    fn trigger_while_paused_publishes_stale_without_running() {
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            project_dir.path().join("Cargo.toml"),
+            "[package]\nname='demo'\nversion='0.1.0'\n",
+        )
+        .expect("write manifest");
+
+        let cache_dir = tempfile::tempdir().expect("tempdir");
+        let mut cfg = CargoPortConfig::default();
+        cfg.cache.root = cache_dir.path().to_string_lossy().to_string();
+        cfg.lint.enabled = LintIndicator::Enabled;
+        cfg.lint.include = vec!["~/rust/demo".to_string()];
+        cfg.lint.commands = vec![LintCommandConfig {
+            name:    "echo".to_string(),
+            command: "echo lint ok".to_string(),
+        }];
+
+        let (background_tx, background_rx) = channel::unbounded();
+        let spawn = spawn(&cfg, background_tx);
+        let runtime = spawn.handle.expect("runtime handle");
+        let request = request("~/rust/demo", project_dir.path());
+        runtime.sync_projects(vec![request.clone()]);
+        runtime.register_project(request);
+        runtime.pause();
+        runtime.lint_trigger(LintTriggerEvent {
+            project_root: AbsolutePath::from(project_dir.path()),
+            trigger:      RustSource,
+            event_kind:   CreateOrModify,
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut saw_stale = false;
+        while Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match background_rx.recv_timeout(remaining) {
+                Ok(BackgroundMsg::LintStatus { path, status, .. })
+                    if path.as_path() == project_dir.path() =>
+                {
+                    assert!(
+                        !matches!(status, LintStatus::Running(_) | LintStatus::Passed(_)),
+                        "a paused trigger must not start or finish a run, got {status:?}"
+                    );
+                    if matches!(status, LintStatus::Stale) {
+                        saw_stale = true;
+                        break;
+                    }
+                },
+                Ok(_) => {},
+                Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => break,
+            }
+        }
+
+        assert!(
+            saw_stale,
+            "a trigger that arrives while paused should publish Stale"
         );
     }
 

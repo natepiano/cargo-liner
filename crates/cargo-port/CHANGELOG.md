@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Persist the lint pause state across restarts: a session paused when cargo-port exits comes back up paused (sticky warning toast restored, no confirm dialog), and lint triggers that arrive while paused now show the same stale marker as a killed run so they re-run on resume or after the restart.
+
 ## [0.2.0] - 2026-06-23
 
 ### Added

@@ -41,6 +41,7 @@ use super::handle::SpawnResult;
 use super::mpsc;
 use super::paths;
 use super::project;
+use super::publish_status;
 use super::read_write;
 use super::run_commands_for_project;
 use super::status;
@@ -530,8 +531,17 @@ impl WorkerContext {
         if self.paused.load(Ordering::Relaxed) {
             // Hold the run back while paused; remember the project so resume
             // re-lints it under the same catch-up policy as the startup
-            // staleness sweep.
+            // staleness sweep. Publish `Stale` so a trigger that arrives while
+            // paused shows the same cancelled marker as a run the pause killed
+            // mid-flight, rather than keeping its prior terminal dot.
             remember_catch_up(&self.catch_up, &self.project_root);
+            publish_status(
+                &self.status_cache,
+                &self.project_root,
+                LintStatus::Stale,
+                &self.background_tx,
+                origin,
+            );
             return;
         }
         if self.stop.load(Ordering::Relaxed) || !project_still_runnable(&self.project_root) {

@@ -107,6 +107,9 @@ pub(crate) const WATCHER_GIT_CONCURRENCY: usize = 2;
 
 pub(crate) const LINTS_LATEST_JSON: &str = "latest.json";
 pub(crate) const LINTS_HISTORY_JSONL: &str = "history.jsonl";
+/// Marker file at the lint cache root. Present iff the user paused lint work;
+/// read at startup to resume a paused session paused after a restart.
+pub(crate) const LINTS_PAUSED_MARKER: &str = "paused";
 
 /// A `started` entry older than this is considered stale (crashed watcher).
 pub(crate) const STALE_TIMEOUT: Duration = Duration::from_mins(30);

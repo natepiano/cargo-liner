@@ -174,6 +174,7 @@ use crate::constants::LINT_NO_LOG;
 use crate::constants::SCAN_METADATA_CONCURRENCY;
 use crate::constants::TARGET_DIR;
 use crate::http::HttpClient;
+use crate::lint;
 use crate::lint::LintRuns;
 #[cfg(test)]
 use crate::lint::LintStatus;
@@ -757,6 +758,7 @@ impl App {
             return;
         };
         runtime.pause();
+        lint::record_paused(self.config.current());
         // Count the runs being killed before their terminal statuses drain the
         // running-lint toast, so the cancellation notice can name how many.
         let cancelled = self.lint.running_toast_path_count();
@@ -782,6 +784,7 @@ impl App {
         if let Some(runtime) = self.lint.runtime() {
             runtime.resume();
         }
+        lint::record_resumed(self.config.current());
         if let Some(id) = self.lint.take_pause_toast() {
             self.framework.toasts.dismiss(id);
         }
@@ -805,6 +808,28 @@ impl App {
         } else if let Some(id) = self.lint.take_pause_toast() {
             self.framework.toasts.dismiss(id);
         }
+    }
+
+    /// Resume a paused session paused after a restart. When the persisted pause
+    /// marker is set, pause the freshly spawned runtime and re-raise the sticky
+    /// warning toast — without the confirm dialog a live pause shows. Runs
+    /// before project registration and the startup staleness sweep, so the
+    /// triggers those produce are held and shown as `Stale` rather than briefly
+    /// starting and then being killed.
+    pub(super) fn restore_persisted_lint_pause(&mut self) {
+        if self.lint.is_paused() || !lint::is_set(self.config.current()) {
+            return;
+        }
+        let Some(runtime) = self.lint.runtime() else {
+            return;
+        };
+        runtime.pause();
+        let id = self.framework.toasts.push_styled(
+            LINT_PAUSED_TOAST_TITLE,
+            LINT_PAUSED_TOAST_BODY,
+            Warning,
+        );
+        self.lint.set_pause_toast(id);
     }
 
     /// A `MetadataDispatchContext` built from the current App state.

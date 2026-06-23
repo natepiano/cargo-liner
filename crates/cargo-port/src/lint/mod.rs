@@ -5,6 +5,7 @@ mod constants;
 mod cache_size_index;
 mod history;
 mod paths;
+mod pause;
 mod read_write;
 mod reclaim;
 mod run;
@@ -29,6 +30,9 @@ pub(super) fn reclaim_project_cache_under(cache_root: &Path, project_root: &Path
 }
 use std::path::Path;
 
+pub(crate) use pause::is_set;
+pub(crate) use pause::record_paused;
+pub(crate) use pause::record_resumed;
 #[cfg(test)]
 pub use run::LintCommand;
 #[cfg(test)]

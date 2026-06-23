@@ -3,6 +3,7 @@ use crate::config::CargoPortConfig;
 use crate::constants::APP_NAME;
 use crate::constants::CI_CACHE_DIR;
 use crate::constants::LINTS_CACHE_DIR;
+use crate::constants::LINTS_PAUSED_MARKER;
 use crate::project::AbsolutePath;
 
 /// Default app-owned cache root under the platform cache directory.
@@ -40,6 +41,13 @@ pub(crate) fn lint_runs_root_for(cargo_port_config: &CargoPortConfig) -> Absolut
 
 /// Cache root for project-keyed lint runs.
 pub(crate) fn lint_runs_root() -> AbsolutePath { app_cache_root().join(LINTS_CACHE_DIR).into() }
+
+/// Persisted lint-pause marker under a specific config's lint cache root.
+pub(crate) fn lint_pause_marker_for(cargo_port_config: &CargoPortConfig) -> AbsolutePath {
+    lint_runs_root_for(cargo_port_config)
+        .join(LINTS_PAUSED_MARKER)
+        .into()
+}
 
 #[cfg(test)]
 mod tests {

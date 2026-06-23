@@ -350,7 +350,7 @@ fn execute_commands(
     }
 }
 
-fn publish_status(
+pub(super) fn publish_status(
     status_cache: &Arc<Mutex<HashMap<String, CachedLintStatus>>>,
     project_root: &Path,
     status: LintStatus,
