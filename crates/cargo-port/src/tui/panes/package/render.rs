@@ -263,7 +263,7 @@ const fn has_stats_column(data: &PackageData) -> bool {
 
 /// Compute the fixed stats column width across all three stat sections
 /// (Structure + Tests + crates.io). Returns `(total_width, value_width)`.
-pub fn stats_column_width(data: &PackageData) -> (u16, u16) {
+pub(super) fn stats_column_width(data: &PackageData) -> (u16, u16) {
     let max_count = data
         .stats_rows
         .iter()
@@ -1384,6 +1384,124 @@ mod tests {
         assert_eq!(
             lint_display_to_string(&display, elapsed, super::LintRenderMode::Enabled),
             ACTIVITY_SPINNER.frame_at(elapsed).to_string()
+        );
+    }
+}
+
+#[cfg(test)]
+mod moved_facade_tests {
+    use tui_pane::PaneFocusState;
+
+    use super::detail_column_scroll_offset;
+    use super::package_label_width;
+    use super::stats_column_width;
+    use crate::project::ProjectType;
+    use crate::tui::panes::pane_data;
+    use crate::tui::panes::pane_data::PackageData;
+    use crate::tui::panes::pane_data::PackagePresence;
+    use crate::tui::state::CiDisplay;
+    use crate::tui::state::LintDisplay;
+
+    fn package_data(is_rust_project: bool) -> PackageData {
+        PackageData {
+            title:                    if is_rust_project {
+                "Package".to_string()
+            } else {
+                "Project".to_string()
+            },
+            name:                     "demo".to_string(),
+            worktree_group_summary:   None,
+            primary_section:          None,
+            path:                     "~/demo".to_string(),
+            version:                  Some("0.1.0".to_string()),
+            description:              None,
+            crates_io_rows:           Vec::new(),
+            types:                    Some(vec![ProjectType::Library]),
+            disk:                     Some(38_989_922_304),
+            stats_rows:               Vec::new(),
+            test_rows:                Vec::new(),
+            package_presence:         PackagePresence::Present,
+            edition:                  None,
+            license:                  None,
+            homepage:                 None,
+            repository:               None,
+            in_project_target:        None,
+            in_project_non_target:    None,
+            out_of_tree_target_bytes: None,
+            lint_display:             LintDisplay::default(),
+            ci_display:               CiDisplay::default(),
+        }
+    }
+
+    #[test]
+    fn stats_width_cases() {
+        let cases = [
+            (
+                "three_digit_counts",
+                vec![("example", 999), ("lib", 1)],
+                17,
+                3,
+            ),
+            (
+                "four_digit_counts",
+                vec![("example", 1000), ("lib", 1)],
+                18,
+                4,
+            ),
+            ("short_labels", vec![("lib", 5), ("bin", 2)], 17, 3),
+            ("empty_rows", vec![], 17, 3),
+        ];
+
+        for (name, rows, expected_total, expected_digits) in cases {
+            let mut data = package_data(true);
+            data.stats_rows = rows;
+            let (total, digits) = stats_column_width(&data);
+            assert_eq!(total, expected_total, "{name}");
+            assert_eq!(digits, expected_digits, "{name}");
+        }
+    }
+
+    #[test]
+    fn package_label_width_matches_widest_visible_field() {
+        let data = package_data(true);
+        let fields = pane_data::package_fields_from_data(&data);
+        let expected = fields.iter().map(|f| f.label().len()).max().unwrap_or(0);
+        assert_eq!(package_label_width(&fields), expected);
+        assert!(
+            expected >= "Repository".len(),
+            "label column must be wide enough for Step 4 fields (Repository = 10 chars)"
+        );
+    }
+
+    #[test]
+    fn detail_column_scroll_waits_until_cursor_reaches_bottom() {
+        let focus = PaneFocusState::Active;
+        let line_count = 20;
+
+        assert_eq!(detail_column_scroll_offset(focus, 0, 4, line_count), 0);
+        assert_eq!(detail_column_scroll_offset(focus, 3, 4, line_count), 0);
+        assert_eq!(detail_column_scroll_offset(focus, 4, 4, line_count), 1);
+        assert_eq!(detail_column_scroll_offset(focus, 7, 4, line_count), 4);
+    }
+
+    #[test]
+    fn detail_column_scroll_clamps_to_last_page() {
+        let focus = PaneFocusState::Active;
+
+        // The cursor sits on the last line; the offset stops at the last full
+        // page rather than scrolling content off the bottom.
+        assert_eq!(detail_column_scroll_offset(focus, 9, 4, 10), 6);
+    }
+
+    #[test]
+    fn detail_column_scroll_stays_at_top_when_not_active() {
+        assert_eq!(
+            detail_column_scroll_offset(PaneFocusState::Remembered, 7, 4, 20),
+            0
+        );
+        assert_eq!(
+            detail_column_scroll_offset(PaneFocusState::Inactive, 7, 4, 20),
+            0
         );
     }
 }

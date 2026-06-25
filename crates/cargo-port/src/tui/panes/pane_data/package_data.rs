@@ -506,3 +506,115 @@ mod test_row_tests {
         assert!(test_rows_from_counts(counts(0, 0, 0, 0)).is_empty());
     }
 }
+
+#[cfg(test)]
+mod package_row_tests {
+    use super::*;
+    use crate::project::ProjectType;
+    use crate::tui::state::CiDisplay;
+    use crate::tui::state::LintDisplay;
+
+    fn package_data(is_rust_project: bool) -> PackageData {
+        PackageData {
+            title:                    if is_rust_project {
+                "Package".to_string()
+            } else {
+                "Project".to_string()
+            },
+            name:                     "demo".to_string(),
+            worktree_group_summary:   None,
+            primary_section:          None,
+            path:                     "~/demo".to_string(),
+            version:                  Some("0.1.0".to_string()),
+            description:              None,
+            crates_io_rows:           Vec::new(),
+            types:                    Some(vec![ProjectType::Library]),
+            disk:                     Some(38_989_922_304),
+            stats_rows:               Vec::new(),
+            test_rows:                Vec::new(),
+            package_presence:         PackagePresence::Present,
+            edition:                  None,
+            license:                  None,
+            homepage:                 None,
+            repository:               None,
+            in_project_target:        None,
+            in_project_non_target:    None,
+            out_of_tree_target_bytes: None,
+            lint_display:             LintDisplay::default(),
+            ci_display:               CiDisplay::default(),
+        }
+    }
+
+    #[test]
+    fn crates_io_rows_appended_as_selectable_section_rows() {
+        // The crates.io stats section contributes one selectable
+        // `PackageRow::CratesIo` per row, after the left-column fields.
+        let mut data = package_data(true);
+        data.crates_io_rows = vec![
+            ("version", "0.20.2".to_string()),
+            ("rc", "0.21.0-rc.2".to_string()),
+            ("downloads", "663".to_string()),
+        ];
+        let crates_io_rows: Vec<_> = package_rows_from_data(&data)
+            .into_iter()
+            .filter(|row| matches!(row, PackageRow::CratesIo(_)))
+            .collect();
+        assert_eq!(
+            crates_io_rows,
+            vec![
+                PackageRow::CratesIo(0),
+                PackageRow::CratesIo(1),
+                PackageRow::CratesIo(2),
+            ],
+        );
+    }
+
+    #[test]
+    fn crates_io_section_absent_without_data() {
+        // No crates.io data -> no crates.io rows.
+        let data = package_data(true);
+        assert!(
+            !package_rows_from_data(&data)
+                .iter()
+                .any(|row| matches!(row, PackageRow::CratesIo(_)))
+        );
+    }
+
+    #[test]
+    fn fields_place_lint_and_ci_before_disk_for_rust_projects() {
+        let data = package_data(true);
+        // Step 4 adds Edition / License / Homepage / Repository at the
+        // end of the Rust-package field list. They show unconditionally
+        // (the pane renders `-` for unset values).
+        assert_eq!(
+            package_fields_from_data(&data)
+                .into_iter()
+                .map(DetailField::label)
+                .collect::<Vec<_>>(),
+            vec![
+                "Path",
+                "Disk",
+                "Type",
+                "Lint",
+                "CI",
+                "Version",
+                "Edition",
+                "License",
+                "Homepage",
+                "Repository",
+            ]
+        );
+    }
+
+    #[test]
+    fn fields_place_lint_and_ci_before_disk_for_non_rust_projects() {
+        let data = package_data(false);
+        assert_eq!(
+            package_fields_from_data(&data)
+                .into_iter()
+                .map(DetailField::label)
+                .collect::<Vec<_>>(),
+            vec!["Path", "Disk", "Lint", "CI"]
+        );
+    }
+}

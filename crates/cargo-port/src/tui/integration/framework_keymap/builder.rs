@@ -72,3 +72,26 @@ fn dismiss_fallback(app: &mut App) -> bool {
 pub fn path_key(path: &AbsolutePath) -> TrackedItemKey { TrackedItemKey::new(path.to_string()) }
 
 pub fn owner_repo_key(repo: &OwnerRepo) -> TrackedItemKey { TrackedItemKey::new(repo.to_string()) }
+
+#[cfg(test)]
+mod tests {
+    use super::owner_repo_key;
+    use super::path_key;
+    use crate::ci::OwnerRepo;
+    use crate::project::AbsolutePath;
+
+    #[test]
+    fn path_key_uses_cargo_port_absolute_path_string() {
+        let path = AbsolutePath::from("/tmp/cargo-port");
+        let expected = crate::project::normalize_test_path(std::path::Path::new("/tmp/cargo-port"));
+
+        assert_eq!(path_key(&path).as_str(), expected.display().to_string());
+    }
+
+    #[test]
+    fn owner_repo_key_uses_cargo_port_owner_repo_string() {
+        let repo = OwnerRepo::new("natepiano", "cargo-port");
+
+        assert_eq!(owner_repo_key(&repo).as_str(), "natepiano/cargo-port");
+    }
+}

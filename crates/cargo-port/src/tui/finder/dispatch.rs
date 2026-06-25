@@ -48,7 +48,11 @@ use crate::tui::panes::RunTargetKind;
 use crate::tui::render_context::PaneRenderCtx;
 
 /// "bench diegetic" and "diegetic bench" produce the same results.
-pub fn search_finder(index: &[FinderItem], query: &str, max_results: usize) -> (Vec<usize>, usize) {
+pub(super) fn search_finder(
+    index: &[FinderItem],
+    query: &str,
+    max_results: usize,
+) -> (Vec<usize>, usize) {
     if query.is_empty() {
         return (Vec::new(), 0);
     }
@@ -548,4 +552,132 @@ fn render_finder_results(
         pane.viewport.overflow(),
         Style::default().fg(label_color()),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::search_finder;
+    use crate::project::AbsolutePath;
+    use crate::tui::finder::index;
+    use crate::tui::finder::index::FinderItem;
+    use crate::tui::finder::index::FinderKind;
+
+    fn test_path(path: &str) -> AbsolutePath {
+        let pb = if path == "~" {
+            dirs::home_dir().unwrap_or_else(|| PathBuf::from(path))
+        } else if let Some(rest) = path.strip_prefix("~/") {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("/tmp"))
+                .join(rest)
+        } else {
+            PathBuf::from(path)
+        };
+        AbsolutePath::from(pb)
+    }
+
+    #[test]
+    fn single_word_does_not_match_across_unrelated_tokens() {
+        let item = FinderItem {
+            display_name:  "clay-layout (vendored)".to_string(),
+            search_tokens: index::build_search_tokens(&[
+                "clay-layout (vendored)",
+                "clay-layout",
+                "clay-layout",
+                "~/rust/bevy_diegetic/clay-layout",
+                "vendored",
+                FinderKind::Project.label(),
+            ]),
+            kind:          FinderKind::Project,
+            project_path:  test_path("~/rust/bevy_diegetic/clay-layout"),
+            target_name:   None,
+            parent_label:  "clay-layout".to_string(),
+            branch:        String::new(),
+            dir:           "~/rust/bevy_diegetic/clay-layout".to_string(),
+            pr_target:     None,
+        };
+
+        let (results, total) = search_finder(&[item], "android", 50);
+        assert!(results.is_empty());
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn single_word_matches_directory_token() {
+        let item = FinderItem {
+            display_name:  "raylib_renderer".to_string(),
+            search_tokens: index::build_search_tokens(&[
+                "raylib_renderer",
+                "clay-layout",
+                "~/rust/bevy_diegetic/clay-layout",
+                "",
+                FinderKind::Example.label(),
+            ]),
+            kind:          FinderKind::Example,
+            project_path:  test_path("~/rust/bevy_diegetic/clay-layout"),
+            target_name:   Some("raylib_renderer".to_string()),
+            parent_label:  "clay-layout".to_string(),
+            branch:        String::new(),
+            dir:           "~/rust/bevy_diegetic/clay-layout".to_string(),
+            pr_target:     None,
+        };
+
+        let (results, total) = search_finder(&[item], "diegetic", 50);
+        assert_eq!(results, vec![0]);
+        assert_eq!(total, 1);
+    }
+
+    #[test]
+    fn multi_word_matches_across_tokens() {
+        let item = FinderItem {
+            display_name:  "build-easefunction-graphs".to_string(),
+            search_tokens: index::build_search_tokens(&[
+                "build-easefunction-graphs",
+                "build-easefunction-graphs",
+                "~/rust/bevy/tools/build-easefunction-graphs",
+                "fix/position-before-size-v0.19",
+                FinderKind::Binary.label(),
+            ]),
+            kind:          FinderKind::Binary,
+            project_path:  test_path("~/rust/bevy/tools/build-easefunction-graphs"),
+            target_name:   Some("build-easefunction-graphs".to_string()),
+            parent_label:  "build-easefunction-graphs".to_string(),
+            branch:        "fix/position-before-size-v0.19".to_string(),
+            dir:           "~/rust/bevy/tools/build-easefunction-graphs".to_string(),
+            pr_target:     None,
+        };
+
+        let (results, total) = search_finder(&[item], "tools graphs", 50);
+        assert_eq!(results, vec![0]);
+        assert_eq!(total, 1);
+    }
+
+    #[test]
+    fn treats_slash_as_word_separator() {
+        let item = FinderItem {
+            display_name:  "bevy".to_string(),
+            search_tokens: index::build_search_tokens(&[
+                "bevy",
+                "bevy",
+                "~/rust/bevy",
+                "main",
+                FinderKind::Project.label(),
+            ]),
+            kind:          FinderKind::Project,
+            project_path:  test_path("~/rust/bevy"),
+            target_name:   None,
+            parent_label:  "bevy".to_string(),
+            branch:        "main".to_string(),
+            dir:           "~/rust/bevy".to_string(),
+            pr_target:     None,
+        };
+        let index = [item];
+        let (with_slash, total_slash) = search_finder(&index, "rust/", 50);
+        assert_eq!(with_slash, vec![0]);
+        assert_eq!(total_slash, 1);
+        let (with_path, total_path) = search_finder(&index, "rust/bevy", 50);
+        assert_eq!(with_path, vec![0]);
+        assert_eq!(total_path, 1);
+    }
 }

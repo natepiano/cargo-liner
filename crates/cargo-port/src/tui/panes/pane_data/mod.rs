@@ -37,8 +37,6 @@ pub use detail_field::package_selectable_row_at_or_before;
 pub use detail_field::sanitize_ansi_for_output;
 pub use detail_field::strip_ansi;
 pub use formatting::format_ahead_behind;
-#[cfg(test)]
-pub use formatting::format_ahead_behind_against;
 pub use formatting::format_date;
 pub use formatting::format_duration;
 pub use formatting::format_time;

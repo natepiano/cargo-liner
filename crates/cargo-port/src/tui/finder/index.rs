@@ -547,3 +547,120 @@ fn push_search_token(tokens: &mut Vec<String>, token: &str) {
     }
     tokens.push(token.to_string());
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::build_finder_index;
+    use crate::project::AbsolutePath;
+    use crate::project::Cargo;
+    use crate::project::ExampleGroup;
+    use crate::project::Package;
+    use crate::project::ProjectType;
+    use crate::project::RootItem;
+    use crate::project::RustInfo;
+    use crate::project::RustProject;
+    use crate::project::VendoredPackage;
+    use crate::project::Visibility;
+    use crate::project::Workspace;
+    use crate::tui::project_list::ProjectList;
+
+    fn test_path(path: &str) -> AbsolutePath {
+        let pb = if path == "~" {
+            dirs::home_dir().unwrap_or_else(|| PathBuf::from(path))
+        } else if let Some(rest) = path.strip_prefix("~/") {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("/tmp"))
+                .join(rest)
+        } else {
+            PathBuf::from(path)
+        };
+        AbsolutePath::from(pb)
+    }
+
+    #[test]
+    fn includes_vendored_projects() {
+        let ws = Workspace {
+            path: test_path("~/rust/hana"),
+            name: Some("hana".to_string()),
+            rust: RustInfo {
+                vendored: vec![VendoredPackage {
+                    path: test_path("~/rust/hana/crates/clay-layout"),
+                    name: Some("clay-layout".to_string()),
+                    ..VendoredPackage::default()
+                }],
+                ..RustInfo::default()
+            },
+            ..Workspace::default()
+        };
+        let list_items = ProjectList::new(vec![RootItem::Rust(RustProject::Workspace(ws))]);
+        let (items, _widths) = build_finder_index(&list_items);
+        assert!(items.iter().any(|item| {
+            item.project_path == test_path("~/rust/hana/crates/clay-layout")
+                && item.display_name == "clay-layout (vendored)"
+                && item.branch.is_empty()
+        }));
+    }
+
+    #[test]
+    fn tokenizes_display_name_and_dir_segments() {
+        let pkg = Package {
+            path: test_path("~/rust/bevy/tools/build-easefunction-graphs"),
+            name: Some("build-easefunction-graphs".to_string()),
+            rust: RustInfo {
+                cargo: Cargo {
+                    types: vec![ProjectType::Binary],
+                    examples: vec![ExampleGroup {
+                        category: String::new(),
+                        names:    vec!["raylib_renderer".to_string()],
+                    }],
+                    ..Cargo::default()
+                },
+                ..RustInfo::default()
+            },
+            ..Package::default()
+        };
+
+        let (items, _widths) = build_finder_index(&ProjectList::new(vec![RootItem::Rust(
+            RustProject::Package(pkg),
+        )]));
+        assert!(items.iter().any(|item| {
+            item.display_name == "build-easefunction-graphs"
+                && item.search_tokens.iter().any(|token| token == "tools")
+                && item.search_tokens.iter().any(|token| token == "graphs")
+        }));
+    }
+
+    #[test]
+    fn excludes_non_visible_roots() {
+        let visible = Package {
+            path: test_path("~/rust/here"),
+            name: Some("here".to_string()),
+            ..Package::default()
+        };
+        let mut deleted = Package {
+            path: test_path("~/rust/gone"),
+            name: Some("gone".to_string()),
+            ..Package::default()
+        };
+        deleted.rust.project_info.visibility = Visibility::Deleted;
+
+        let list = ProjectList::new(vec![
+            RootItem::Rust(RustProject::Package(visible)),
+            RootItem::Rust(RustProject::Package(deleted)),
+        ]);
+        let (items, _widths) = build_finder_index(&list);
+
+        assert!(
+            items
+                .iter()
+                .any(|item| item.project_path == test_path("~/rust/here"))
+        );
+        assert!(
+            items
+                .iter()
+                .all(|item| item.project_path != test_path("~/rust/gone"))
+        );
+    }
+}

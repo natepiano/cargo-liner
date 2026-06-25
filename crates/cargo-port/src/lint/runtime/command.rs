@@ -71,12 +71,12 @@ struct CommandExecution {
 /// this, a run interrupted between the initial `Running` write and the
 /// terminal write strands the marker, and external readers (the `/clippy`
 /// cache check) wait on a run that will never finish.
-pub(crate) struct RunFinalizeGuard<'a> {
-    pub(crate) cache_root:    &'a Path,
-    pub(crate) project_root:  &'a Path,
-    pub(crate) status_cache:  &'a Arc<Mutex<HashMap<String, CachedLintStatus>>>,
-    pub(crate) background_tx: &'a Sender<BackgroundMsg>,
-    pub(crate) origin:        LintRunOrigin,
+struct RunFinalizeGuard<'a> {
+    cache_root:    &'a Path,
+    project_root:  &'a Path,
+    status_cache:  &'a Arc<Mutex<HashMap<String, CachedLintStatus>>>,
+    background_tx: &'a Sender<BackgroundMsg>,
+    origin:        LintRunOrigin,
 }
 
 impl Drop for RunFinalizeGuard<'_> {
@@ -545,4 +545,173 @@ fn sanitize_name(name: &str) -> String {
         })
         .collect();
     sanitized.trim_matches('-').to_string()
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicBool;
+
+    use super::*;
+    use crate::cache_paths;
+    use crate::channel;
+    use crate::config::CargoPortConfig;
+    use crate::config::LintCommandConfig;
+
+    #[test]
+    fn writes_reports_under_configured_cache_root() {
+        let cache_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            project_dir.path().join("Cargo.toml"),
+            "[package]\nname='demo'\nversion='0.1.0'\n",
+        )
+        .expect("write manifest");
+
+        let mut config = CargoPortConfig::default();
+        config.cache.root = cache_dir.path().to_string_lossy().to_string();
+        let cache_root = cache_paths::lint_runs_root_for(&config);
+        let commands = vec![LintCommandConfig {
+            name:    "echo".to_string(),
+            command: "echo lint ok".to_string(),
+        }];
+
+        let (tx, _rx) = channel::unbounded();
+        run_commands_for_project(
+            project_dir.path(),
+            "~/rust/demo",
+            &RunCommandsConfig {
+                cache_root:       cache_root.as_path(),
+                commands:         &commands,
+                cache_size_bytes: None,
+                paused:           &AtomicBool::new(false),
+            },
+            &Arc::new(Mutex::new(HashMap::new())),
+            &tx,
+            &Arc::new(Mutex::new(None)),
+            LintRunOrigin::Normal,
+        )
+        .expect("run commands");
+
+        let report_dir = paths::output_dir_under(&cache_root, project_dir.path());
+        let latest_path = paths::latest_path_under(&cache_root, project_dir.path());
+        let history_path = paths::history_path_under(&cache_root, project_dir.path());
+        let report = std::fs::read_to_string(report_dir.join("echo-latest.log"))
+            .expect("read command report");
+        let latest = std::fs::read_to_string(latest_path).expect("read latest report");
+        let history = std::fs::read_to_string(history_path).expect("read history report");
+
+        // `cmd`'s `echo` emits `\r\n`; normalize so the check is host-agnostic.
+        assert_eq!(report.replace("\r\n", "\n"), "lint ok\n");
+        assert!(latest.contains("\"status\": \"passed\""));
+        assert!(history.contains("\"status\":\"passed\""));
+    }
+
+    #[test]
+    fn skips_non_projects_before_writing_status() {
+        let cache_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        let commands = vec![LintCommandConfig {
+            name:    "echo".to_string(),
+            command: "echo lint ok".to_string(),
+        }];
+
+        let (tx, _rx) = channel::unbounded();
+        run_commands_for_project(
+            project_dir.path(),
+            "~/rust/demo",
+            &RunCommandsConfig {
+                cache_root:       cache_dir.path(),
+                commands:         &commands,
+                cache_size_bytes: None,
+                paused:           &AtomicBool::new(false),
+            },
+            &Arc::new(Mutex::new(HashMap::new())),
+            &tx,
+            &Arc::new(Mutex::new(None)),
+            LintRunOrigin::Normal,
+        )
+        .expect("run commands");
+
+        let latest_path = paths::latest_path_under(cache_dir.path(), project_dir.path());
+        let history_path = paths::history_path_under(cache_dir.path(), project_dir.path());
+        assert!(!latest_path.exists());
+        assert!(!history_path.exists());
+    }
+
+    #[test]
+    fn finalize_guard_publishes_terminal_status_for_stranded_running_marker() {
+        let cache_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            project_dir.path().join("Cargo.toml"),
+            "[package]\nname='demo'\nversion='0.1.0'\n",
+        )
+        .expect("write manifest");
+        let run = build_pending_run(&[], Local::now().to_rfc3339());
+        read_write::write_latest_under(cache_dir.path(), project_dir.path(), &run)
+            .expect("write running latest");
+        let status_cache = Arc::new(Mutex::new(HashMap::new()));
+        let (background_tx, background_rx) = channel::unbounded();
+
+        {
+            let _guard = RunFinalizeGuard {
+                cache_root:    cache_dir.path(),
+                project_root:  project_dir.path(),
+                status_cache:  &status_cache,
+                background_tx: &background_tx,
+                origin:        LintRunOrigin::CatchUp,
+            };
+        }
+
+        assert!(matches!(
+            background_rx.try_recv(),
+            Ok(BackgroundMsg::LintStatus {
+                status: LintStatus::NoLog,
+                origin: LintRunOrigin::CatchUp,
+                ..
+            })
+        ));
+        assert!(matches!(
+            read_status_from_disk(cache_dir.path(), project_dir.path()),
+            CachedLintStatus::NoLog
+        ));
+    }
+
+    #[test]
+    fn finalize_guard_leaves_completed_marker() {
+        let cache_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        let completed = LintRun {
+            run_id:        "completed".to_string(),
+            started_at:    "2026-04-01T18:00:00-04:00".to_string(),
+            finished_at:   Some("2026-04-01T18:00:10-04:00".to_string()),
+            duration_ms:   Some(10_000),
+            status:        LintRunStatus::Passed,
+            commands:      Vec::new(),
+            archive_bytes: 0,
+        };
+        read_write::write_latest_under(cache_dir.path(), project_dir.path(), &completed)
+            .expect("write passed");
+        let status_cache = Arc::new(Mutex::new(HashMap::new()));
+        let (background_tx, _background_rx) = channel::unbounded();
+
+        {
+            let _guard = RunFinalizeGuard {
+                cache_root:    cache_dir.path(),
+                project_root:  project_dir.path(),
+                status_cache:  &status_cache,
+                background_tx: &background_tx,
+                origin:        LintRunOrigin::Normal,
+            };
+        }
+
+        assert!(paths::latest_path_under(cache_dir.path(), project_dir.path()).exists());
+    }
 }

@@ -100,6 +100,10 @@ pub fn history_path_under(cache_root: &Path, project_root: &Path) -> AbsolutePat
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
 mod tests {
     use super::*;
 
@@ -120,5 +124,16 @@ mod tests {
         // => c76947976a369618
         let key = project_key(Path::new("/Users/natemccoy/rust/cargo-mend"));
         assert_eq!(key, "cargo-mend-c76947976a369618");
+    }
+
+    #[test]
+    fn cache_latest_path_does_not_live_under_project_dir() {
+        let cache_dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = latest_path_under(cache_dir.path(), dir.path());
+        assert!(
+            !path.starts_with(dir.path()),
+            "cache latest path should not recreate project directories"
+        );
     }
 }

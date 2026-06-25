@@ -115,3 +115,137 @@ pub(super) fn merge_worktrees_new(items: &mut Vec<RootItem>) {
         items[idx] = replacement;
     }
 }
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::panic,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use super::merge_worktrees_new;
+    use crate::project::AbsolutePath;
+    use crate::project::Package;
+    use crate::project::RootItem;
+    use crate::project::RustProject;
+    use crate::project::Workspace;
+    use crate::project::WorktreeStatus;
+
+    fn status_for(is_linked_worktree: bool, primary_abs: Option<&str>) -> WorktreeStatus {
+        match (is_linked_worktree, primary_abs) {
+            (_, None) => WorktreeStatus::NotGit,
+            (true, Some(p)) => WorktreeStatus::Linked {
+                primary: AbsolutePath::from(p.to_string()),
+            },
+            (false, Some(p)) => WorktreeStatus::Primary {
+                root: AbsolutePath::from(p.to_string()),
+            },
+        }
+    }
+
+    fn make_workspace(
+        name: Option<&str>,
+        abs_path: &str,
+        is_linked_worktree: bool,
+        primary_abs: Option<&str>,
+    ) -> RootItem {
+        RootItem::Rust(RustProject::Workspace(Workspace {
+            path: AbsolutePath::from(abs_path),
+            name: name.map(String::from),
+            worktree_status: status_for(is_linked_worktree, primary_abs),
+            ..Workspace::default()
+        }))
+    }
+
+    fn make_package(
+        name: Option<&str>,
+        abs_path: &str,
+        is_linked_worktree: bool,
+        primary_abs: Option<&str>,
+    ) -> RootItem {
+        RootItem::Rust(RustProject::Package(Package {
+            path: AbsolutePath::from(abs_path),
+            name: name.map(String::from),
+            worktree_status: status_for(is_linked_worktree, primary_abs),
+            ..Package::default()
+        }))
+    }
+
+    #[test]
+    fn merges_virtual_workspace() {
+        let primary = make_workspace(None, "/home/ws", false, Some("/home/ws"));
+        let worktree = make_workspace(None, "/home/ws_feat", true, Some("/home/ws"));
+        let mut items = vec![primary, worktree];
+        merge_worktrees_new(&mut items);
+
+        assert_eq!(items.len(), 1, "worktree should be merged into primary");
+        let RootItem::Worktrees(group) = &items[0] else {
+            panic!("merged workspace should produce a worktree group")
+        };
+        assert!(
+            matches!(&group.primary, RustProject::Workspace(_)),
+            "primary should be a workspace"
+        );
+        assert_eq!(group.linked.len(), 1, "should have one linked worktree");
+    }
+
+    #[test]
+    fn merges_named_workspace() {
+        let primary = make_workspace(Some("my-ws"), "/home/ws", false, Some("/home/ws"));
+        let worktree = make_workspace(Some("my-ws"), "/home/ws_feat", true, Some("/home/ws"));
+        let mut items = vec![primary, worktree];
+        merge_worktrees_new(&mut items);
+
+        assert_eq!(items.len(), 1);
+        let RootItem::Worktrees(group) = &items[0] else {
+            panic!("merged named workspace should produce a worktree group")
+        };
+        assert!(
+            matches!(&group.primary, RustProject::Workspace(_)),
+            "primary should be a workspace"
+        );
+        assert_eq!(group.linked.len(), 1);
+    }
+
+    #[test]
+    fn merges_standalone_project() {
+        let primary = make_package(Some("app"), "/home/app", false, Some("/home/app"));
+        let worktree = make_package(Some("app"), "/home/app_feat", true, Some("/home/app"));
+        let mut items = vec![primary, worktree];
+        merge_worktrees_new(&mut items);
+
+        assert_eq!(items.len(), 1);
+        let RootItem::Worktrees(group) = &items[0] else {
+            panic!("merged package should produce a worktree group")
+        };
+        assert!(
+            matches!(&group.primary, RustProject::Package(_)),
+            "primary should be a package"
+        );
+        assert_eq!(group.linked.len(), 1);
+    }
+
+    #[test]
+    fn leaves_different_repos_unmerged() {
+        let a = make_package(Some("a"), "/home/a", false, Some("/home/a"));
+        let b = make_package(Some("b"), "/home/b", true, Some("/home/b"));
+        let mut items = vec![a, b];
+        merge_worktrees_new(&mut items);
+
+        assert_eq!(items.len(), 2, "different repos should remain separate");
+    }
+
+    #[test]
+    fn leaves_items_without_identity_unmerged() {
+        let a = make_package(Some("x"), "/home/x", false, None);
+        let b = make_package(Some("x"), "/home/x2", true, None);
+        let mut items = vec![a, b];
+        merge_worktrees_new(&mut items);
+
+        assert_eq!(
+            items.len(),
+            2,
+            "nodes without identity should not be merged"
+        );
+    }
+}

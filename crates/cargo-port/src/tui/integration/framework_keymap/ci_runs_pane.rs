@@ -108,3 +108,26 @@ pub(super) fn ci_runs_destination_visibility(
         Visibility::Hidden
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use tui_pane::Shortcuts;
+
+    use super::CiRunsPane;
+    use crate::tui::keymap::CiRunsAction;
+
+    #[test]
+    fn branch_and_all_defaults() {
+        let defaults = CiRunsPane::defaults().into_scope_map();
+
+        assert_eq!(
+            defaults.action_for(&tui_pane::KeyBind::from('b')),
+            Some(CiRunsAction::ShowBranch),
+        );
+        assert_eq!(
+            defaults.action_for(&tui_pane::KeyBind::from('a')),
+            Some(CiRunsAction::ShowAll),
+        );
+        assert_eq!(defaults.action_for(&tui_pane::KeyBind::from('v')), None);
+    }
+}

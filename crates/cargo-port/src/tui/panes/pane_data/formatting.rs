@@ -276,3 +276,27 @@ pub fn format_ahead_behind(ahead_behind: Option<(usize, usize)>) -> String {
         None => NO_REMOTE_SYNC.to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sync_value_uses_synced_label_when_in_sync() {
+        assert_eq!(format_ahead_behind(Some((0, 0))), "☑️");
+    }
+
+    #[test]
+    fn local_ahead_behind_values_name_the_compared_branch() {
+        let cases = [
+            ((8, 0), "↑8 ahead of main"),
+            ((0, 2), "↓2 behind main"),
+            ((8, 2), "↑8 ↓2 diverged from main"),
+            ((0, 0), "☑️ up to date with main"),
+        ];
+
+        for (ahead_behind, expected) in cases {
+            assert_eq!(format_ahead_behind_against(ahead_behind, "main"), expected);
+        }
+    }
+}

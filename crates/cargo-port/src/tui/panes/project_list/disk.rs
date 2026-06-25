@@ -104,29 +104,33 @@ pub(super) fn formatted_disk_for_item(item: &RootItem) -> String {
 // other Phase-4 absorptions: typed parameters through `ctx`.
 // ── Disk-cache ───────────────────────────────────────────────────────
 //
-// Builds the per-row sorted disk-usage values that `disk_color` /
-// `disk_percentile` consume to color the disk column.
+// Builds sorted disk-usage values for the Disk column. The scale includes
+// top-level rows and collapsed child rows so equal byte counts receive the
+// same color anywhere in the project list.
 
 pub(super) fn compute_disk_cache(entries: &ProjectList) -> (Vec<u64>, HashMap<usize, Vec<u64>>) {
-    let mut root_sorted = Vec::new();
+    let mut all_sorted = Vec::new();
+    let mut child_presence = Vec::new();
     for entry in entries {
         if let Some(bytes) = entry.root_item.disk_usage_bytes() {
-            root_sorted.push(bytes);
+            all_sorted.push(bytes);
         }
-    }
-    root_sorted.sort_unstable();
 
-    let mut child_sorted = HashMap::new();
-    for (ni, entry) in entries.iter().enumerate() {
         let mut values = Vec::new();
         collect_child_disk_values(&entry.root_item, &mut values);
-        if !values.is_empty() {
-            values.sort_unstable();
-            child_sorted.insert(ni, values);
+        all_sorted.extend(values.iter().copied());
+        child_presence.push(!values.is_empty());
+    }
+    all_sorted.sort_unstable();
+
+    let mut child_sorted = HashMap::new();
+    for (ni, has_children) in child_presence.into_iter().enumerate() {
+        if has_children {
+            child_sorted.insert(ni, all_sorted.clone());
         }
     }
 
-    (root_sorted, child_sorted)
+    (all_sorted, child_sorted)
 }
 
 fn collect_child_disk_values(item: &RootItem, values: &mut Vec<u64>) {

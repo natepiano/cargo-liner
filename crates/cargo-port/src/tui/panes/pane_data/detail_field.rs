@@ -299,3 +299,95 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod git_detail_field_tests {
+    use super::DetailField;
+    use crate::project::BisectProgress;
+    use crate::project::GitStatus;
+    use crate::tui::app::AvailabilityStatus;
+    use crate::tui::panes::pane_data::GitData;
+    use crate::tui::panes::pane_data::PullRequestSection;
+
+    fn git_data() -> GitData {
+        GitData {
+            head:               None,
+            head_relation:      None,
+            bisect:             None,
+            submodule_ctx:      None,
+            status:             None,
+            vs_local:           None,
+            stars:              None,
+            description:        None,
+            inception:          None,
+            last_commit:        None,
+            last_fetched:       None,
+            rate_limit_core:    None,
+            rate_limit_graphql: None,
+            github_status:      AvailabilityStatus::Reachable,
+            pull_requests:      PullRequestSection::default(),
+            remotes:            Vec::new(),
+            worktrees:          Vec::new(),
+        }
+    }
+
+    #[test]
+    fn git_path_value_appends_status_icon() {
+        let data = GitData {
+            status: Some(GitStatus::Modified),
+            ..git_data()
+        };
+
+        assert_eq!(DetailField::GitStatus.git_value(&data), "🟠 modified");
+    }
+
+    #[test]
+    fn git_bisect_value_mirrors_git_phrasing() {
+        let data = GitData {
+            bisect: Some(BisectProgress::Narrowing {
+                revisions: 6,
+                steps:     3,
+            }),
+            ..git_data()
+        };
+
+        assert_eq!(
+            DetailField::Bisect.git_value(&data),
+            "6 revisions left · ~3 steps"
+        );
+    }
+
+    #[test]
+    fn git_bisect_value_pluralizes_singular_counts() {
+        let data = GitData {
+            bisect: Some(BisectProgress::Narrowing {
+                revisions: 1,
+                steps:     1,
+            }),
+            ..git_data()
+        };
+
+        assert_eq!(
+            DetailField::Bisect.git_value(&data),
+            "1 revision left · ~1 step"
+        );
+    }
+
+    #[test]
+    fn git_bisect_awaiting_value_prompts_for_bounds() {
+        let data = GitData {
+            bisect: Some(BisectProgress::Awaiting),
+            ..git_data()
+        };
+
+        assert_eq!(
+            DetailField::Bisect.git_value(&data),
+            "bisecting — mark a known-good & known-bad commit"
+        );
+    }
+
+    #[test]
+    fn git_path_label_is_status() {
+        assert_eq!(DetailField::GitStatus.label(), "Status");
+    }
+}

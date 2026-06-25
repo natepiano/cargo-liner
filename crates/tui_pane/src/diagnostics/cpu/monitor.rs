@@ -118,3 +118,22 @@ fn cpu_poll_loop(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::CpuMonitor;
+
+    #[test]
+    fn spawned_monitor_reports_sampling_with_a_connected_receiver() {
+        // The event loop gates `Select` registration on `is_sampling()`.
+        // A spawned worker holds the sample sender for the monitor's life,
+        // so the receiver is connected (try_recv is Empty, not
+        // Disconnected) and registering it will not busy-spin.
+        let monitor = CpuMonitor::new(1000);
+        assert!(monitor.is_sampling());
+        assert!(matches!(
+            monitor.receiver().try_recv(),
+            Err(crossbeam_channel::TryRecvError::Empty)
+        ));
+    }
+}

@@ -59,3 +59,35 @@ pub(super) fn dispatch_app_global(action: AppGlobalAction, app: &mut App) {
         AppGlobalAction::PauseLint => app.toggle_lint_pause(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use tui_pane::Globals;
+
+    use super::AppGlobalAction;
+
+    #[test]
+    fn app_global_copy_defaults_to_y_without_terminal_copy_keys() {
+        let defaults = AppGlobalAction::defaults().into_scope_map();
+
+        assert_eq!(
+            defaults.action_for(&tui_pane::KeyBind::from('y')),
+            Some(AppGlobalAction::Copy),
+        );
+        assert_eq!(defaults.action_for(&tui_pane::KeyBind::ctrl('c')), None,);
+        assert_eq!(
+            defaults.action_for(&tui_pane::KeyBind::ctrl(tui_pane::KeyBind::shift('c'))),
+            None,
+        );
+    }
+
+    #[test]
+    fn app_global_sccache_stats_defaults_to_shift_s() {
+        let defaults = AppGlobalAction::defaults().into_scope_map();
+
+        assert_eq!(
+            defaults.action_for(&tui_pane::KeyBind::from('S')),
+            Some(AppGlobalAction::SccacheStats),
+        );
+    }
+}

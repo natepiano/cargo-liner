@@ -272,6 +272,45 @@ fn parse_linux_proc_stat_line(line: &str) -> Option<CpuBreakdownRaw> {
     })
 }
 
+#[cfg(all(test, target_os = "linux"))]
+mod linux_tests {
+    use super::DrmClientSample;
+    use super::engine_busy_percent;
+    use super::parse_drm_fdinfo;
+
+    #[test]
+    fn parse_drm_fdinfo_reads_engine_busy_ns_and_skips_capacity() {
+        let input = "drm-driver:\tamdgpu\n\
+                     drm-client-id:\t42\n\
+                     drm-engine-gfx:\t1500 ns\n\
+                     drm-engine-capacity-gfx:\t2\n\
+                     drm-engine-compute:\t250 ns\n";
+        assert_eq!(
+            parse_drm_fdinfo(input),
+            Some(DrmClientSample {
+                client_id:      Some(42),
+                engine_busy_ns: vec![("gfx".to_string(), 1500), ("compute".to_string(), 250),],
+            })
+        );
+    }
+
+    #[test]
+    fn parse_drm_fdinfo_returns_none_without_engine_lines() {
+        // A render-node fd on a driver that emits no engine utilization
+        // (the Apple `asahi` driver looks exactly like this).
+        let input = "pos:\t0\nflags:\t02400002\nmnt_id:\t39\nino:\t460\n";
+        assert_eq!(parse_drm_fdinfo(input), None);
+    }
+
+    #[test]
+    fn engine_busy_percent_is_busy_over_window() {
+        assert_eq!(engine_busy_percent(500_000_000, 1_000_000_000), Some(50));
+        assert_eq!(engine_busy_percent(2_000_000_000, 1_000_000_000), Some(100));
+        assert_eq!(engine_busy_percent(0, 1_000_000_000), Some(0));
+        assert_eq!(engine_busy_percent(10, 0), None);
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn linux_sysfs_gpu_percent() -> Option<u8> {
     let entries = std::fs::read_dir("/sys/class/drm").ok()?;

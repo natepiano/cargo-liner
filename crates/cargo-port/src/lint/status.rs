@@ -188,3 +188,180 @@ pub(super) fn parse_run(run: &LintRun) -> LintStatus {
         },
     }
 }
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::panic,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use std::time::Duration;
+    use std::time::SystemTime;
+
+    use chrono::DateTime;
+    use chrono::FixedOffset;
+    use chrono::Utc;
+
+    use super::*;
+    use crate::config::DiscoveryLint;
+    use crate::lint::history;
+    use crate::lint::read_write;
+
+    fn run(status: LintRunStatus) -> LintRun {
+        LintRun {
+            run_id: "run-1".to_string(),
+            started_at: "2026-03-30T14:22:01-05:00".to_string(),
+            finished_at: Some("2026-03-30T14:22:18-05:00".to_string()),
+            duration_ms: Some(17_000),
+            status,
+            commands: Vec::new(),
+            archive_bytes: 0,
+        }
+    }
+
+    #[test]
+    fn parse_run_cases() {
+        let mut running = run(LintRunStatus::Running);
+        running.started_at = Utc::now().format("%+").to_string();
+        running.finished_at = None;
+
+        let mut stale = run(LintRunStatus::Running);
+        stale.started_at = "2020-01-01T00:00:00+00:00".to_string();
+        stale.finished_at = None;
+
+        let mut garbage = run(LintRunStatus::Passed);
+        garbage.started_at = "not a valid timestamp".to_string();
+        garbage.finished_at = Some("not a valid timestamp".to_string());
+
+        let mut empty = run(LintRunStatus::Passed);
+        empty.started_at.clear();
+        empty.finished_at = None;
+
+        let cases = [
+            ("passed", run(LintRunStatus::Passed)),
+            ("failed", run(LintRunStatus::Failed)),
+            ("running", running),
+            ("stale", stale),
+            ("garbage", garbage),
+            ("empty", empty),
+        ];
+
+        for (name, run) in cases {
+            let status = parse_run(&run);
+            match name {
+                "passed" => assert!(matches!(status, LintStatus::Passed(_)), "{name}"),
+                "failed" => assert!(matches!(status, LintStatus::Failed(_)), "{name}"),
+                "running" => assert!(matches!(status, LintStatus::Running(_)), "{name}"),
+                "stale" => assert!(matches!(status, LintStatus::Stale), "{name}"),
+                "garbage" | "empty" => assert!(matches!(status, LintStatus::NoLog), "{name}"),
+                _ => panic!("unexpected case"),
+            }
+        }
+    }
+
+    #[test]
+    fn aggregate_prefers_highest_severity() {
+        let ts = DateTime::parse_from_rfc3339("2026-03-30T14:22:18-05:00").expect("timestamp");
+        let status = LintStatus::aggregate([
+            LintStatus::Passed(ts),
+            LintStatus::Stale,
+            LintStatus::Running(ts),
+            LintStatus::Failed(ts),
+        ]);
+        assert!(matches!(status, LintStatus::Failed(_)));
+    }
+
+    #[test]
+    fn aggregate_keeps_latest_timestamp_within_variant() {
+        let older = DateTime::parse_from_rfc3339("2026-03-30T14:22:18-05:00").expect("older");
+        let newer = DateTime::parse_from_rfc3339("2026-03-30T15:22:18-05:00").expect("newer");
+        let status = LintStatus::aggregate([LintStatus::Passed(older), LintStatus::Passed(newer)]);
+        assert_eq!(status, LintStatus::Passed(newer));
+    }
+
+    fn write_latest(cache_root: &Path, project_root: &Path, run: &LintRun) {
+        read_write::write_latest_under(cache_root, project_root, run).expect("write latest");
+    }
+
+    #[test]
+    fn read_status_reads_latest_and_reports_missing_log() {
+        let cache_dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_latest(cache_dir.path(), dir.path(), &run(LintRunStatus::Passed));
+        assert!(matches!(
+            read_status_under(cache_dir.path(), dir.path()),
+            LintStatus::Passed(_)
+        ));
+
+        let missing = tempfile::tempdir().expect("tempdir");
+        assert!(matches!(
+            read_status_under(cache_dir.path(), missing.path()),
+            LintStatus::NoLog
+        ));
+    }
+
+    #[test]
+    fn read_status_uses_latest_over_history() {
+        let cache_dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().expect("tempdir");
+        history::append_history_under(
+            cache_dir.path(),
+            dir.path(),
+            &run(LintRunStatus::Failed),
+            None,
+        )
+        .expect("append history");
+        write_latest(cache_dir.path(), dir.path(), &run(LintRunStatus::Passed));
+        assert!(
+            matches!(
+                read_status_under(cache_dir.path(), dir.path()),
+                LintStatus::Passed(_)
+            ),
+            "should read latest.json, not older history"
+        );
+    }
+
+    #[test]
+    fn should_lint_on_startup_gates_nolog_by_discovery_and_relints_stale_terminal() {
+        // NoLog (never linted) is the discovery case — gated by config, and
+        // independent of any source mtime.
+        assert!(CachedLintStatus::NoLog.should_lint_on_startup(
+            None,
+            None,
+            DiscoveryLint::Immediate
+        ));
+        assert!(!CachedLintStatus::NoLog.should_lint_on_startup(
+            None,
+            None,
+            DiscoveryLint::Deferred
+        ));
+
+        // A terminal result re-lints only when a source mtime post-dates the run
+        // start, regardless of discovery config.
+        let started: DateTime<FixedOffset> =
+            DateTime::parse_from_rfc3339("2026-03-30T14:22:01-05:00").expect("parse start");
+        let run_epoch = SystemTime::UNIX_EPOCH
+            + Duration::from_secs(u64::try_from(started.timestamp()).expect("non-negative epoch"));
+        let passed = CachedLintStatus::Passed(started);
+
+        assert!(passed.should_lint_on_startup(
+            Some(started),
+            Some(run_epoch + Duration::from_secs(5)),
+            DiscoveryLint::Deferred,
+        ));
+        assert!(!passed.should_lint_on_startup(
+            Some(started),
+            Some(run_epoch - Duration::from_secs(5)),
+            DiscoveryLint::Deferred,
+        ));
+        // Same whole second is not "newer" — the second-granularity guard.
+        assert!(!passed.should_lint_on_startup(
+            Some(started),
+            Some(run_epoch),
+            DiscoveryLint::Immediate,
+        ));
+        // No source mtime collected → a terminal result cannot be stale.
+        assert!(!passed.should_lint_on_startup(Some(started), None, DiscoveryLint::Immediate));
+    }
+}

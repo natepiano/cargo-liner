@@ -39,3 +39,24 @@ pub fn project_is_eligible(
         &RegisterProjectRequest::new(project_label, AbsolutePath::from(abs_path)),
     )
 }
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use super::project_is_eligible;
+    use crate::config::LintConfig;
+
+    #[test]
+    fn non_rust_projects_are_never_watched() {
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        assert!(!project_is_eligible(
+            &LintConfig::default(),
+            "~/rust/not-rust",
+            project_dir.path(),
+            false
+        ));
+    }
+}

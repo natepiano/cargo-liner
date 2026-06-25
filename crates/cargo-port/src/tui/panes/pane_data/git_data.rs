@@ -597,3 +597,115 @@ pub(super) fn build_submodule_context(submodule: &Submodule) -> Option<Submodule
         pinned_commit,
     })
 }
+
+#[cfg(test)]
+mod git_field_tests {
+    use super::*;
+    use crate::tui::app::AvailabilityStatus;
+    use crate::tui::panes::pane_data;
+    use crate::tui::panes::pane_data::DetailField;
+
+    fn git_data() -> GitData {
+        GitData {
+            head:               None,
+            head_relation:      None,
+            bisect:             None,
+            submodule_ctx:      None,
+            status:             None,
+            vs_local:           None,
+            stars:              None,
+            description:        None,
+            inception:          None,
+            last_commit:        None,
+            last_fetched:       None,
+            rate_limit_core:    None,
+            rate_limit_graphql: None,
+            github_status:      AvailabilityStatus::Reachable,
+            pull_requests:      PullRequestSection::default(),
+            remotes:            Vec::new(),
+            worktrees:          Vec::new(),
+        }
+    }
+
+    #[test]
+    fn stars_row_hidden_when_github_reachable_and_no_data() {
+        // Pre-fetch state on a reachable GitHub: no stars yet, suppress
+        // the row - same UX as the crates.io row pre-data on a healthy
+        // service. The placeholder helper must report false.
+        let mut data = git_data();
+        data.stars = None;
+        data.github_status = AvailabilityStatus::Reachable;
+        let fields = git_fields_from_data(&data);
+        assert!(
+            !fields.contains(&DetailField::Stars),
+            "no Stars row before data lands while GitHub is reachable"
+        );
+        assert!(!pane_data::github_stars_is_unreachable_placeholder(&data));
+    }
+
+    #[test]
+    fn stars_row_shows_warning_when_github_unreachable_and_no_data() {
+        // Outage state with no stars yet: the row surfaces with the
+        // "github unreachable" placeholder so the user knows why the
+        // value is empty. Mirrors `crates_io_row_shows_warning_...`.
+        let mut data = git_data();
+        data.stars = None;
+        data.github_status = AvailabilityStatus::Unreachable;
+        let fields = git_fields_from_data(&data);
+        assert!(
+            fields.contains(&DetailField::Stars),
+            "Stars row must surface during outage so the user sees the placeholder"
+        );
+        assert!(pane_data::github_stars_is_unreachable_placeholder(&data));
+        assert!(
+            DetailField::Stars.git_value(&data).is_empty(),
+            "git_value stays empty - the placeholder is added by the renderer overlay"
+        );
+    }
+
+    #[test]
+    fn stars_row_shows_warning_when_github_rate_limited_and_no_data() {
+        // Rate-limit collapses to the same UX as unreachable on the
+        // render side - the value cell isn't going to land, so warn the
+        // user instead of leaving an invisible gap.
+        let mut data = git_data();
+        data.stars = None;
+        data.github_status = AvailabilityStatus::RateLimited;
+        let fields = git_fields_from_data(&data);
+        assert!(fields.contains(&DetailField::Stars));
+        assert!(pane_data::github_stars_is_unreachable_placeholder(&data));
+    }
+
+    #[test]
+    fn stars_row_shows_real_value_when_data_present_during_outage() {
+        // Stars landed before the outage (or during a brief recovery).
+        // Even with GitHub currently unreachable, the row renders the
+        // real value - not the warning placeholder.
+        let mut data = git_data();
+        data.stars = Some(42);
+        data.github_status = AvailabilityStatus::Unreachable;
+        let fields = git_fields_from_data(&data);
+        assert!(fields.contains(&DetailField::Stars));
+        assert_eq!(DetailField::Stars.git_value(&data), "⭐ 42");
+        assert!(
+            !pane_data::github_stars_is_unreachable_placeholder(&data),
+            "real value present - no placeholder"
+        );
+    }
+
+    #[test]
+    fn stars_row_hidden_when_github_unauthenticated() {
+        // Unauthenticated is not a service outage - don't surface the
+        // "github unreachable" placeholder on the Stars row. The rate-limit
+        // rows and the startup toast carry the `gh auth login` hint instead.
+        let mut data = git_data();
+        data.stars = None;
+        data.github_status = AvailabilityStatus::Unauthenticated;
+        let fields = git_fields_from_data(&data);
+        assert!(
+            !fields.contains(&DetailField::Stars),
+            "no Stars placeholder when merely unauthenticated"
+        );
+        assert!(!pane_data::github_stars_is_unreachable_placeholder(&data));
+    }
+}

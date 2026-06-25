@@ -51,3 +51,17 @@ pub const fn severity(
 /// Color used to render the empty (unfilled) cells of a CPU bar.
 #[must_use]
 pub fn blank_bar_color() -> Color { theme::inactive_border_color() }
+
+#[cfg(test)]
+mod tests {
+    use super::filled_cells;
+
+    #[test]
+    fn filled_cells_rounds_up_per_ten_percent_bucket() {
+        assert_eq!(filled_cells(0), 0);
+        assert_eq!(filled_cells(1), 1);
+        assert_eq!(filled_cells(10), 1);
+        assert_eq!(filled_cells(11), 2);
+        assert_eq!(filled_cells(100), 10);
+    }
+}

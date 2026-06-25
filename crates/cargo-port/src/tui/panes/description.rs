@@ -234,7 +234,7 @@ pub fn sync_floor(blocks: &[&DescriptionBlock]) -> SyncedDescriptionHeight {
 /// The placeholder string the Package pane renders when its source is
 /// empty. Exposed only for tests that check the placeholder content.
 #[cfg(test)]
-pub const fn placeholder_text() -> &'static str { NO_DESCRIPTION_AVAILABLE }
+const fn placeholder_text() -> &'static str { NO_DESCRIPTION_AVAILABLE }
 
 #[cfg(test)]
 impl DescriptionBlock {
@@ -243,4 +243,77 @@ impl DescriptionBlock {
 
     /// Test-only accessor for the row style (placeholder rows are muted).
     pub const fn style(&self) -> Style { self.style }
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::layout::Rect;
+    use tui_pane::label_color;
+
+    use super::DescriptionBlock;
+    use super::EmptyDescriptionBehavior;
+    use super::placeholder_text;
+
+    /// Helper: outer pane area sized so `DescriptionBlock::for_pane` yields
+    /// the desired inner column width. Outer width = `inner_width` + 2 (borders)
+    /// + 2 (padding). Outer height = `inner_height` + 2 (borders).
+    fn description_area(column_width: u16, inner_height: u16) -> Rect {
+        Rect {
+            x:      0,
+            y:      0,
+            width:  column_width.saturating_add(4),
+            height: inner_height.saturating_add(2),
+        }
+    }
+
+    #[test]
+    fn block_uses_muted_placeholder_when_missing() {
+        let block = DescriptionBlock::for_pane(
+            None,
+            description_area(80, 3),
+            EmptyDescriptionBehavior::ShowPlaceholder,
+        );
+
+        assert_eq!(block.rows(), &[placeholder_text().to_string()]);
+        assert_eq!(block.style().fg, Some(label_color()));
+    }
+
+    #[test]
+    fn empty_behavior_render_empty_produces_no_rows() {
+        let block = DescriptionBlock::for_pane(
+            None,
+            description_area(80, 3),
+            EmptyDescriptionBehavior::RenderEmpty,
+        );
+
+        assert!(block.rows().is_empty());
+        assert_eq!(block.natural_sync_height(), 0);
+    }
+
+    #[test]
+    fn renders_real_description_with_default_style() {
+        let block = DescriptionBlock::for_pane(
+            Some("Real package description"),
+            description_area(80, 3),
+            EmptyDescriptionBehavior::ShowPlaceholder,
+        );
+
+        assert_eq!(block.rows(), &["Real package description".to_string()]);
+        assert_eq!(block.style().fg, None);
+    }
+
+    #[test]
+    fn wraps_overflowing_text_into_rows() {
+        let block = DescriptionBlock::for_pane(
+            Some("one two three four five six seven eight"),
+            description_area(13, 5),
+            EmptyDescriptionBehavior::ShowPlaceholder,
+        );
+
+        // Pre-truncation rows - the render path's ellipsis is applied
+        // when `max_height` clamps below `rows.len()`. natural_sync_height
+        // reflects what feeds the inter-pane sync.
+        assert!(block.rows().len() > 2);
+        assert_eq!(block.rows()[0], "one two three");
+    }
 }

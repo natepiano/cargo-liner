@@ -565,7 +565,7 @@ fn render_worktree_entry<'a>(
     let (worktree_name, _) = worktree_entry_name_and_expandable(item, wi, &dp);
     let worktree_path = abs_path.as_deref().unwrap_or_else(|| Path::new(""));
     let disk = disk::formatted_disk(ctx.project_list, worktree_path);
-    let disk_bytes = item.disk_usage_bytes();
+    let disk_bytes = worktree_entry_disk_bytes(item, wi);
     let ds = disk::disk_color(disk::disk_percentile(disk_bytes, sorted));
     let lang = item.lang_icon();
     let lint_cell = state::lint_cell_for(
@@ -609,6 +609,13 @@ fn render_worktree_entry<'a>(
         worktree_health,
     });
     ListItem::new(columns::row_to_line(&row, widths))
+}
+
+fn worktree_entry_disk_bytes(item: &RootItem, wi: usize) -> Option<u64> {
+    let RootItem::Worktrees(group) = item else {
+        return item.disk_usage_bytes();
+    };
+    group.entry(wi).and_then(ProjectFields::disk_usage_bytes)
 }
 
 fn worktree_entry_name_and_expandable(
@@ -1481,4 +1488,95 @@ fn render_group_header(
     let label = format!("{group_name} ({member_count})");
     let row = columns::build_group_header_cells(prefix, &label);
     ListItem::new(columns::row_to_line(&row, widths))
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use super::*;
+    use crate::project::AbsolutePath;
+    use crate::project::Package;
+    use crate::project::ProjectInfo;
+    use crate::project::RustInfo;
+    use crate::project::WorktreeStatus;
+    use crate::tui::project_list::ProjectList;
+
+    const MIB: u64 = 1024 * 1024;
+    const GIB: u64 = 1024 * MIB;
+
+    fn package(path: &str, bytes: u64, worktree_status: WorktreeStatus) -> Package {
+        Package {
+            path: AbsolutePath::from(path.to_string()),
+            worktree_status,
+            rust: RustInfo {
+                project_info: ProjectInfo {
+                    disk_usage_bytes: Some(bytes),
+                    ..ProjectInfo::default()
+                },
+                ..RustInfo::default()
+            },
+            ..Package::default()
+        }
+    }
+
+    #[test]
+    fn worktree_entry_disk_percentile_uses_checkout_bytes_on_global_scale() {
+        let linked_bytes = 470 * MIB;
+        let peer_bytes = 500 * MIB;
+        let primary_bytes = 80 * GIB;
+        let primary_path = AbsolutePath::from("/repo".to_string());
+        let peer = RootItem::Rust(RustProject::Package(package(
+            "/peer",
+            peer_bytes,
+            WorktreeStatus::NotGit,
+        )));
+        let group = RootItem::Worktrees(WorktreeGroup::new(
+            RustProject::Package(package(
+                "/repo",
+                primary_bytes,
+                WorktreeStatus::Primary {
+                    root: primary_path.clone(),
+                },
+            )),
+            vec![RustProject::Package(package(
+                "/repo_linked",
+                linked_bytes,
+                WorktreeStatus::Linked {
+                    primary: primary_path,
+                },
+            ))],
+        ));
+        let list = ProjectList::new(vec![peer, group.clone()]);
+
+        let (all_sorted, child_sorted) = disk::compute_disk_cache(&list);
+        let group_sorted = child_sorted
+            .get(&1)
+            .expect("worktree group should have child disk cache");
+
+        assert_eq!(
+            group_sorted, &all_sorted,
+            "worktree rows should use the same disk scale as root rows"
+        );
+        assert_eq!(worktree_entry_disk_bytes(&group, 1), Some(linked_bytes));
+        assert_eq!(group.disk_usage_bytes(), Some(primary_bytes + linked_bytes));
+
+        let linked_percentile =
+            disk::disk_percentile(Some(linked_bytes), group_sorted).expect("linked percentile");
+        let peer_percentile =
+            disk::disk_percentile(Some(peer_bytes), &all_sorted).expect("peer percentile");
+        let group_percentile = disk::disk_percentile(group.disk_usage_bytes(), group_sorted)
+            .expect("group percentile");
+
+        assert!(
+            linked_percentile < peer_percentile,
+            "linked checkout should grade below the larger peer row"
+        );
+        assert!(
+            (group_percentile - 1.0).abs() < f64::EPSILON,
+            "the aggregate worktree group remains the largest disk value"
+        );
+    }
 }

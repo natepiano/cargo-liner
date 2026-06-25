@@ -157,3 +157,21 @@ impl KeymapUiContext for App {
 
     fn keymap_pane_display_order(&self) -> &[AppPaneId] { KEYMAP_OVERLAY_PANE_ORDER }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::AppPaneId;
+    use crate::tui::panes::PaneId;
+
+    #[test]
+    fn app_pane_id_round_trips_to_legacy() {
+        for (app_id, legacy) in [
+            (AppPaneId::Package, PaneId::Package),
+            (AppPaneId::Git, PaneId::Git),
+            (AppPaneId::Output, PaneId::Output),
+            (AppPaneId::Finder, PaneId::Finder),
+        ] {
+            assert_eq!(app_id.to_legacy(), legacy);
+        }
+    }
+}

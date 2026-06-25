@@ -109,7 +109,7 @@ const fn section_for_pos(
     }
 }
 
-pub fn git_label_width(fields: &[DetailField]) -> usize {
+pub(super) fn git_label_width(fields: &[DetailField]) -> usize {
     fields
         .iter()
         .map(|field| field.label().width())
@@ -1554,5 +1554,18 @@ mod tests {
         let layout = sync_col_layout(std::slice::from_ref(&remote), &[], 4);
 
         assert_eq!(layout.remote_url, MIN_FLEX_COL);
+    }
+}
+
+#[cfg(test)]
+mod moved_facade_tests {
+    use super::git_label_width;
+    use crate::tui::panes::pane_data::DetailField;
+
+    #[test]
+    fn git_label_width_uses_ahead_behind_label() {
+        let fields = vec![DetailField::VsLocal];
+
+        assert_eq!(git_label_width(&fields), "Ahead/Behind".len());
     }
 }

@@ -285,3 +285,394 @@ pub fn copy_payload_for_lints(data: &LintsData, pos: usize) -> CopySelectionResu
         CopyLabel::Path,
     )
 }
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use super::*;
+    use crate::ci::CiJob;
+    use crate::ci::CiRun;
+    use crate::ci::CiStatus;
+    use crate::ci::FetchStatus::Fetched;
+    use crate::lint;
+    use crate::lint::LintCommand;
+    use crate::lint::LintCommandStatus;
+    use crate::lint::LintRun;
+    use crate::lint::LintRunStatus;
+    use crate::project::AbsolutePath;
+    use crate::project::ProjectType;
+    use crate::tui::app::AvailabilityStatus;
+    use crate::tui::panes::pane_data;
+    use crate::tui::panes::pane_data::CiEmptyState;
+    use crate::tui::panes::pane_data::LintsProjectKind;
+    use crate::tui::panes::pane_data::PackagePresence;
+    use crate::tui::panes::pane_data::PullRequestPolling;
+    use crate::tui::panes::pane_data::PullRequestRow;
+    use crate::tui::panes::pane_data::PullRequestSection;
+    use crate::tui::panes::pane_data::PullRequestSectionState;
+    use crate::tui::panes::pane_data::RemoteRow;
+    use crate::tui::panes::pane_data::RunTargetKind;
+    use crate::tui::panes::pane_data::TargetEntry;
+    use crate::tui::panes::pane_data::TargetSource;
+    use crate::tui::panes::pane_data::WorktreeInfo;
+    use crate::tui::state::CiDisplay;
+    use crate::tui::state::LintDisplay;
+
+    fn package_data(is_rust_project: bool) -> PackageData {
+        PackageData {
+            title:                    if is_rust_project {
+                "Package".to_string()
+            } else {
+                "Project".to_string()
+            },
+            name:                     "demo".to_string(),
+            worktree_group_summary:   None,
+            primary_section:          None,
+            path:                     "~/demo".to_string(),
+            version:                  Some("0.1.0".to_string()),
+            description:              None,
+            crates_io_rows:           Vec::new(),
+            types:                    Some(vec![ProjectType::Library]),
+            disk:                     Some(38_989_922_304),
+            stats_rows:               Vec::new(),
+            test_rows:                Vec::new(),
+            package_presence:         PackagePresence::Present,
+            edition:                  None,
+            license:                  None,
+            homepage:                 None,
+            repository:               None,
+            in_project_target:        None,
+            in_project_non_target:    None,
+            out_of_tree_target_bytes: None,
+            lint_display:             LintDisplay::default(),
+            ci_display:               CiDisplay::default(),
+        }
+    }
+
+    fn git_data() -> GitData {
+        GitData {
+            head:               None,
+            head_relation:      None,
+            bisect:             None,
+            submodule_ctx:      None,
+            status:             None,
+            vs_local:           None,
+            stars:              None,
+            description:        None,
+            inception:          None,
+            last_commit:        None,
+            last_fetched:       None,
+            rate_limit_core:    None,
+            rate_limit_graphql: None,
+            github_status:      AvailabilityStatus::Reachable,
+            pull_requests:      PullRequestSection::default(),
+            remotes:            Vec::new(),
+            worktrees:          Vec::new(),
+        }
+    }
+
+    fn ci_run_with_jobs(jobs: Vec<CiJob>) -> CiRun {
+        CiRun {
+            run_id: 1,
+            created_at: "2026-04-01T21:00:00-04:00".to_string(),
+            branch: "feat/box-select".to_string(),
+            url: "https://example.com/run/1".to_string(),
+            ci_status: CiStatus::Passed,
+            jobs,
+            wall_clock_secs: Some(17),
+            commit_title: Some("feat: add box select".to_string()),
+            updated_at: None,
+            fetched: Fetched,
+        }
+    }
+
+    #[test]
+    fn package_copy_crates_io_row_uses_full_url() {
+        let mut data = package_data(true);
+        data.crates_io_rows = vec![("version", "0.1.0".to_string())];
+        let rows = package_rows_from_data(&data);
+        let pos = rows
+            .iter()
+            .position(|row| matches!(row, PackageRow::CratesIo(_)))
+            .unwrap_or(usize::MAX);
+        assert_ne!(pos, usize::MAX);
+
+        assert_eq!(
+            copy_payload_for_package(&data, pos),
+            CopySelectionResult::Payload(CopyPayload::new(
+                "https://crates.io/crates/demo",
+                CopyLabel::Url,
+            )),
+        );
+    }
+
+    #[test]
+    fn package_copy_lint_and_ci_rows_return_nothing() {
+        let data = package_data(true);
+        let rows = package_rows_from_data(&data);
+        for field in [DetailField::Lint, DetailField::Ci] {
+            let pos = rows
+                .iter()
+                .position(|candidate| matches!(candidate, PackageRow::Field(candidate) if *candidate == field))
+                .unwrap_or(usize::MAX);
+            assert_ne!(pos, usize::MAX);
+            assert_eq!(
+                copy_payload_for_package(&data, pos),
+                CopySelectionResult::Nothing
+            );
+        }
+    }
+
+    #[test]
+    fn git_copy_remote_uses_full_url_and_worktree_uses_path() {
+        let mut data = git_data();
+        data.remotes.push(RemoteRow {
+            name:            "origin".to_string(),
+            icon:            "",
+            display_url:     "github.com/natepiano/cargo-port".to_string(),
+            branch:          "main".to_string(),
+            tracked_ref:     "main".to_string(),
+            status:          "ok".to_string(),
+            full_url:        Some("https://github.com/natepiano/cargo-port".to_string()),
+            push_annotation: None,
+        });
+        data.worktrees.push(WorktreeInfo {
+            name:         "cargo-port_style_fix".to_string(),
+            path:         "/Users/natemccoy/rust/cargo-port_style_fix".to_string(),
+            branch:       Some("refactor/style".to_string()),
+            tracked:      Some("main".to_string()),
+            ahead_behind: Some((0, 0)),
+        });
+
+        let remote_pos = pane_data::git_fields_from_data(&data).len();
+        let worktree_pos = remote_pos + data.remotes.len();
+
+        assert_eq!(
+            copy_payload_for_git(&data, remote_pos),
+            CopySelectionResult::Payload(CopyPayload::new(
+                "https://github.com/natepiano/cargo-port",
+                CopyLabel::Url,
+            )),
+        );
+        assert_eq!(
+            copy_payload_for_git(&data, worktree_pos),
+            CopySelectionResult::Payload(CopyPayload::new(
+                "/Users/natemccoy/rust/cargo-port_style_fix",
+                CopyLabel::Path,
+            )),
+        );
+    }
+
+    #[test]
+    fn git_copy_pull_request_uses_url_and_routes_before_remotes() {
+        let mut data = git_data();
+        data.pull_requests = PullRequestSection {
+            state: PullRequestSectionState::Loaded,
+            rows: vec![PullRequestRow {
+                number:      128,
+                title:       "Show vendored workspace member packages".to_string(),
+                url:         "https://github.com/natepiano/cargo-port/pull/128".to_string(),
+                state_label: "draft",
+                polling:     PullRequestPolling::Idle,
+                branch:      "feature/member-vendored".to_string(),
+                base:        "main".to_string(),
+            }],
+            ..PullRequestSection::default()
+        };
+        data.remotes.push(RemoteRow {
+            name:            "origin".to_string(),
+            icon:            "",
+            display_url:     "github.com/natepiano/cargo-port".to_string(),
+            branch:          "main".to_string(),
+            tracked_ref:     "main".to_string(),
+            status:          "ok".to_string(),
+            full_url:        Some("https://github.com/natepiano/cargo-port".to_string()),
+            push_annotation: None,
+        });
+
+        let pr_pos = pane_data::git_fields_from_data(&data).len();
+        let remote_pos = pr_pos + data.pull_requests.rows.len();
+
+        assert!(matches!(
+            git_row_at(&data, pr_pos),
+            Some(GitRow::PullRequest(row)) if row.number == 128
+        ));
+        assert_eq!(
+            copy_payload_for_git(&data, pr_pos),
+            CopySelectionResult::Payload(CopyPayload::new(
+                "https://github.com/natepiano/cargo-port/pull/128",
+                CopyLabel::Url,
+            )),
+        );
+        assert!(matches!(
+            git_row_at(&data, remote_pos),
+            Some(GitRow::Remote(_))
+        ));
+    }
+
+    #[test]
+    fn ci_copy_returns_selected_run_url() {
+        let data = CiData {
+            runs:           vec![ci_run_with_jobs(Vec::new())],
+            mode_label:     None,
+            current_branch: None,
+            empty_state:    CiEmptyState::NoRuns,
+        };
+
+        assert_eq!(
+            copy_payload_for_ci(&data, 0),
+            CopySelectionResult::Payload(CopyPayload::new(
+                "https://example.com/run/1",
+                CopyLabel::Url,
+            )),
+        );
+        assert_eq!(copy_payload_for_ci(&data, 1), CopySelectionResult::Nothing);
+    }
+
+    #[test]
+    fn targets_copy_returns_source_path_for_any_target_row() {
+        let data = TargetsData {
+            binaries: vec![TargetEntry {
+                name:              "demo".to_string(),
+                display_name:      "demo".to_string(),
+                run_target_kind:   RunTargetKind::Binary,
+                source:            TargetSource::workspace_root("demo".into()),
+                project_path:      AbsolutePath::from("/ws"),
+                package_name:      "demo".to_string(),
+                src_path:          AbsolutePath::from("/ws/src/main.rs"),
+                required_features: Vec::new(),
+            }],
+            examples: vec![TargetEntry {
+                name:              "demo_example".to_string(),
+                display_name:      "demo_example".to_string(),
+                run_target_kind:   RunTargetKind::Example,
+                source:            TargetSource::workspace_root("demo".into()),
+                project_path:      AbsolutePath::from("/ws"),
+                package_name:      "demo".to_string(),
+                src_path:          AbsolutePath::from("/ws/examples/demo_example.rs"),
+                required_features: Vec::new(),
+            }],
+            benches:  Vec::new(),
+        };
+
+        assert_eq!(
+            copy_payload_for_targets(&data, 0),
+            CopySelectionResult::Payload(CopyPayload::new(
+                crate::project::normalize_test_path(std::path::Path::new("/ws/src/main.rs"))
+                    .display()
+                    .to_string(),
+                CopyLabel::Path,
+            )),
+        );
+        assert_eq!(
+            copy_payload_for_targets(&data, 1),
+            CopySelectionResult::Payload(CopyPayload::new(
+                crate::project::normalize_test_path(std::path::Path::new(
+                    "/ws/examples/demo_example.rs"
+                ))
+                .display()
+                .to_string(),
+                CopyLabel::Path,
+            )),
+        );
+    }
+
+    #[test]
+    fn lints_copy_returns_selected_run_log_path() {
+        let project_root = AbsolutePath::from("/Users/natemccoy/rust/demo");
+        let data = LintsData {
+            runs:         vec![LintRun {
+                run_id:        "run-1".to_string(),
+                started_at:    "2026-05-19T10:00:00-04:00".to_string(),
+                finished_at:   Some("2026-05-19T10:01:00-04:00".to_string()),
+                duration_ms:   Some(60_000),
+                status:        LintRunStatus::Passed,
+                commands:      vec![LintCommand {
+                    name:        "clippy".to_string(),
+                    command:     "cargo clippy".to_string(),
+                    status:      LintCommandStatus::Passed,
+                    duration_ms: Some(60_000),
+                    exit_code:   Some(0),
+                    log_file:    "runs/run-1/clippy.log".to_string(),
+                }],
+                archive_bytes: 0,
+            }],
+            sizes:        vec![Some(1024)],
+            owner_paths:  vec![project_root.clone()],
+            owner_of:     vec![0],
+            project_kind: LintsProjectKind::Rust,
+        };
+
+        let expected = lint::project_dir(project_root.as_path())
+            .join("runs/run-1/clippy.log")
+            .display()
+            .to_string();
+        assert_eq!(
+            copy_payload_for_lints(&data, 0),
+            CopySelectionResult::Payload(CopyPayload::new(expected, CopyLabel::Path)),
+        );
+        assert_eq!(
+            copy_payload_for_lints(&data, 1),
+            CopySelectionResult::Nothing
+        );
+    }
+
+    #[test]
+    fn output_copy_joins_range_and_strips_ansi() {
+        let snapshot = [
+            "first".to_string(),
+            "\u{1b}[31msecond\u{1b}[0m".to_string(),
+            "third".to_string(),
+            "fourth".to_string(),
+        ];
+
+        // anchor and cursor in either order select the same inclusive range,
+        // joined with newlines and stripped of ANSI escapes.
+        assert_eq!(
+            copy_payload_for_output(&snapshot, 1, 2),
+            CopySelectionResult::Payload(CopyPayload::new("second\nthird", CopyLabel::Row)),
+        );
+        assert_eq!(
+            copy_payload_for_output(&snapshot, 2, 1),
+            CopySelectionResult::Payload(CopyPayload::new("second\nthird", CopyLabel::Row)),
+        );
+    }
+
+    #[test]
+    fn output_copy_drops_non_sgr_escape_sequences() {
+        let snapshot = [
+            "before \u{1b}[6nafter".to_string(),
+            "start \u{1b}Pignored\u{1b}\\end".to_string(),
+        ];
+
+        assert_eq!(
+            copy_payload_for_output(&snapshot, 0, 1),
+            CopySelectionResult::Payload(CopyPayload::new(
+                "before after\nstart end",
+                CopyLabel::Row
+            )),
+        );
+    }
+
+    #[test]
+    fn output_copy_clamps_out_of_range_indices() {
+        let snapshot = ["only".to_string(), "two".to_string()];
+
+        // A cursor past the end clamps to the last row rather than panicking.
+        assert_eq!(
+            copy_payload_for_output(&snapshot, 0, 99),
+            CopySelectionResult::Payload(CopyPayload::new("only\ntwo", CopyLabel::Row)),
+        );
+    }
+
+    #[test]
+    fn output_copy_empty_snapshot_is_nothing() {
+        assert_eq!(
+            copy_payload_for_output(&[], 0, 0),
+            CopySelectionResult::Nothing
+        );
+    }
+}
