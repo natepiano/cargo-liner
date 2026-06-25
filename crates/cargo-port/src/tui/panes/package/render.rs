@@ -916,7 +916,7 @@ fn render_stats_column(
         context.border_style,
     );
 
-    let ctx = StatSectionCtx {
+    let stat_section_context = StatSectionCtx {
         rows:        context.rows,
         pane:        context.pane,
         focus:       context.focus,
@@ -936,7 +936,7 @@ fn render_stats_column(
             PackageRow::Structure,
             structure_value_style,
             section_placement(placed[index]),
-            &ctx,
+            &stat_section_context,
             &mut row_rects,
         );
     }
@@ -949,7 +949,7 @@ fn render_stats_column(
             PackageRow::Tests,
             tests_value_style,
             section_placement(placed[index]),
-            &ctx,
+            &stat_section_context,
             &mut row_rects,
         );
         render_tests_affordance(frame, context, placed[index]);
@@ -962,7 +962,7 @@ fn render_stats_column(
             PackageRow::CratesIo,
             crates_io_value_style,
             section_placement(placed[index]),
-            &ctx,
+            &stat_section_context,
             &mut row_rects,
         );
     }

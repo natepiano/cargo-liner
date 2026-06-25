@@ -120,7 +120,7 @@ pub fn spawn_watcher(
         metadata_store,
         metadata_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_METADATA_CONCURRENCY)),
     };
-    let ctx = WatcherLoopContext {
+    let watcher_loop_context = WatcherLoopContext {
         watch_roots: registered_roots,
         background_tx,
         ci_run_count,
@@ -130,7 +130,7 @@ pub fn spawn_watcher(
         metadata_dispatch,
     };
 
-    spawn_watcher_thread(ctx, watch_rx, notify_rx, watcher);
+    spawn_watcher_thread(watcher_loop_context, watch_rx, notify_rx, watcher);
 
     watch_tx
 }
@@ -960,7 +960,7 @@ mod tests {
         let watch_roots = vec![AbsolutePath::from(host.clone())];
         let project_parents = HashSet::from([AbsolutePath::from(host.clone())]);
         let discovered = HashSet::new();
-        let ctx = EventContext {
+        let event_context = EventContext {
             watch_roots:     &watch_roots,
             projects:        &projects,
             project_parents: &project_parents,
@@ -975,7 +975,11 @@ mod tests {
             metadata_limit: Arc::new(tokio::sync::Semaphore::new(1)),
         };
 
-        refresh::try_dispatch_out_of_tree_cargo_config_refresh(&event_path, &ctx, Some(&dispatch));
+        refresh::try_dispatch_out_of_tree_cargo_config_refresh(
+            &event_path,
+            &event_context,
+            Some(&dispatch),
+        );
 
         let mut refreshed: Vec<AbsolutePath> = Vec::new();
         while let Ok(msg) = receiver.recv_timeout(Duration::from_millis(200)) {
@@ -1523,7 +1527,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let (project_dir, _, projects, watch_roots, project_parents, discovered) =
             repo_with_member_event_context(&tmp);
-        let ctx = EventContext {
+        let event_context = EventContext {
             watch_roots:     &watch_roots,
             projects:        &projects,
             project_parents: &project_parents,
@@ -1537,7 +1541,7 @@ mod tests {
 
         events::handle_event(
             &project_dir.join(event_rel_path),
-            &ctx,
+            &event_context,
             &background_tx,
             &mut pending_disk,
             &mut pending_git,
@@ -1646,7 +1650,7 @@ mod tests {
         projects.insert(key, entry);
         let project_parents = HashSet::from([AbsolutePath::from(tmp.path().join("rust"))]);
         let discovered = HashSet::new();
-        let ctx = EventContext {
+        let event_context = EventContext {
             watch_roots:     &watch_roots,
             projects:        &projects,
             project_parents: &project_parents,
@@ -1659,7 +1663,7 @@ mod tests {
 
         events::handle_event(
             &bevy_dir.join("src").join("lib.rs"),
-            &ctx,
+            &event_context,
             &background_tx,
             &mut pending_disk,
             &mut pending_git,
@@ -1682,7 +1686,7 @@ mod tests {
         let watch_roots = vec![AbsolutePath::from(tmp.path())];
         let project_parents = HashSet::from([AbsolutePath::from(tmp.path())]);
         let discovered = HashSet::new();
-        let ctx =
+        let event_context =
             tracked_file_event_context(&watch_roots, &projects, &project_parents, &discovered);
         let (background_tx, background_rx) = channel::unbounded();
         let (git_done_tx, git_done_rx) = mpsc::channel();
@@ -1696,7 +1700,7 @@ mod tests {
              pending_new: &mut HashMap<AbsolutePath, Instant>| {
                 events::handle_event(
                     event_path,
-                    &ctx,
+                    &event_context,
                     &background_tx,
                     pending_disk,
                     pending_git,
@@ -1798,7 +1802,7 @@ mod tests {
         let watch_roots = vec![AbsolutePath::from(project_root.path())];
         let project_parents = HashSet::new();
         let discovered = HashSet::new();
-        let ctx = EventContext {
+        let event_context = EventContext {
             watch_roots:     &watch_roots,
             projects:        &projects,
             project_parents: &project_parents,
@@ -1811,7 +1815,7 @@ mod tests {
 
         events::handle_event(
             &project_root.path().join("examples").join("new_target.rs"),
-            &ctx,
+            &event_context,
             &background_tx,
             &mut pending_disk,
             &mut pending_git,
@@ -1899,7 +1903,7 @@ mod tests {
         let watch_roots = vec![AbsolutePath::from(tmp.path())];
         let project_parents = HashSet::from([AbsolutePath::from(tmp.path())]);
         let discovered = HashSet::new();
-        let ctx = EventContext {
+        let event_context = EventContext {
             watch_roots:     &watch_roots,
             projects:        &projects,
             project_parents: &project_parents,
@@ -1912,7 +1916,7 @@ mod tests {
 
         events::handle_event(
             &project_dir.join(".git").join("objects").join("pack.tmp"),
-            &ctx,
+            &event_context,
             &background_tx,
             &mut pending_disk,
             &mut pending_git,
@@ -1943,7 +1947,7 @@ mod tests {
             worktree_git_event_context(&tmp);
         std::fs::write(wt_git_dir.join("HEAD"), "ref: refs/heads/wt-branch\n").expect("write HEAD");
         std::fs::write(wt_git_dir.join("index"), "fake-index").expect("write index");
-        let ctx = EventContext {
+        let event_context = EventContext {
             watch_roots:     &watch_roots,
             projects:        &projects,
             project_parents: &project_parents,
@@ -1958,7 +1962,7 @@ mod tests {
         // The event fires under the real git dir, not under wt_root/.git.
         events::handle_event(
             &wt_git_dir.join("index"),
-            &ctx,
+            &event_context,
             &background_tx,
             &mut pending_disk,
             &mut pending_git,
@@ -1983,7 +1987,7 @@ mod tests {
         let logs_head = wt_git_dir.join("logs").join("HEAD");
         std::fs::create_dir_all(logs_head.parent().expect("logs dir")).expect("create logs dir");
         std::fs::write(&logs_head, "old..new commit message\n").expect("write logs/HEAD");
-        let ctx = EventContext {
+        let event_context = EventContext {
             watch_roots:     &watch_roots,
             projects:        &projects,
             project_parents: &project_parents,
@@ -1996,7 +2000,7 @@ mod tests {
 
         events::handle_event(
             &logs_head,
-            &ctx,
+            &event_context,
             &background_tx,
             &mut pending_disk,
             &mut pending_git,
@@ -2018,7 +2022,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let (_wt_root, wt_git_dir, projects, watch_roots, project_parents, discovered) =
             worktree_git_event_context(&tmp);
-        let ctx = EventContext {
+        let event_context = EventContext {
             watch_roots:     &watch_roots,
             projects:        &projects,
             project_parents: &project_parents,
@@ -2033,7 +2037,7 @@ mod tests {
         // should not enqueue a git refresh or disk refresh.
         events::handle_event(
             &wt_git_dir.join("objects").join("pack.tmp"),
-            &ctx,
+            &event_context,
             &background_tx,
             &mut pending_disk,
             &mut pending_git,
@@ -2058,7 +2062,7 @@ mod tests {
         let common_git_dir = tmp.path().join("main_repo_git");
         let branch_ref = common_git_dir.join("refs").join("heads").join("wt-branch");
         std::fs::write(&branch_ref, "deadbeef\n").expect("write branch ref");
-        let ctx = EventContext {
+        let event_context = EventContext {
             watch_roots:     &watch_roots,
             projects:        &projects,
             project_parents: &project_parents,
@@ -2071,7 +2075,7 @@ mod tests {
 
         events::handle_event(
             &branch_ref,
-            &ctx,
+            &event_context,
             &background_tx,
             &mut pending_disk,
             &mut pending_git,
@@ -2129,7 +2133,7 @@ mod tests {
         let watch_roots = vec![AbsolutePath::from(tmp.path())];
         let project_parents = HashSet::from([AbsolutePath::from(tmp.path())]);
         let discovered = HashSet::new();
-        let ctx = EventContext {
+        let event_context = EventContext {
             watch_roots:     &watch_roots,
             projects:        &projects,
             project_parents: &project_parents,
@@ -2145,7 +2149,7 @@ mod tests {
 
         events::handle_event(
             &branch_ref,
-            &ctx,
+            &event_context,
             &background_tx,
             &mut pending_disk,
             &mut pending_git,
@@ -2183,7 +2187,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let (_wt_root, wt_git_dir, projects, watch_roots, project_parents, discovered) =
             worktree_git_event_context(&tmp);
-        let ctx = EventContext {
+        let event_context = EventContext {
             watch_roots:     &watch_roots,
             projects:        &projects,
             project_parents: &project_parents,
@@ -2191,7 +2195,7 @@ mod tests {
         };
         let (background_tx, _) = channel::unbounded();
         let dispatch = WatcherDispatchContext {
-            event:             ctx,
+            event:             event_context,
             background_tx:     &background_tx,
             lint_runtime:      None,
             metadata_dispatch: None,
@@ -2230,7 +2234,7 @@ mod tests {
         let common_git_dir = tmp.path().join("main_repo_git");
         let branch_ref = common_git_dir.join("refs").join("heads").join("wt-branch");
         std::fs::write(&branch_ref, "deadbeef\n").expect("write branch ref");
-        let ctx = EventContext {
+        let event_context = EventContext {
             watch_roots:     &watch_roots,
             projects:        &projects,
             project_parents: &project_parents,
@@ -2238,7 +2242,7 @@ mod tests {
         };
         let (background_tx, _) = channel::unbounded();
         let dispatch = WatcherDispatchContext {
-            event:             ctx,
+            event:             event_context,
             background_tx:     &background_tx,
             lint_runtime:      None,
             metadata_dispatch: None,
@@ -2289,7 +2293,7 @@ mod tests {
         let watch_roots = vec![AbsolutePath::from(project_root.path())];
         let project_parents = HashSet::new();
         let discovered = HashSet::new();
-        let ctx = EventContext {
+        let event_context = EventContext {
             watch_roots:     &watch_roots,
             projects:        &projects,
             project_parents: &project_parents,
@@ -2302,7 +2306,7 @@ mod tests {
 
         events::handle_event(
             &latest_path,
-            &ctx,
+            &event_context,
             &background_tx,
             &mut pending_disk,
             &mut pending_git,
@@ -2339,7 +2343,7 @@ mod tests {
         let watch_roots = vec![AbsolutePath::from(project_root.path())];
         let project_parents = HashSet::new();
         let discovered = HashSet::new();
-        let ctx = EventContext {
+        let event_context = EventContext {
             watch_roots:     &watch_roots,
             projects:        &projects,
             project_parents: &project_parents,
@@ -2352,7 +2356,7 @@ mod tests {
 
         events::handle_event(
             &child_path,
-            &ctx,
+            &event_context,
             &background_tx,
             &mut pending_disk,
             &mut pending_git,
@@ -2381,17 +2385,17 @@ mod tests {
         std::fs::write(&source_path, "pub fn demo() {}\n").expect("write source");
 
         let cache_dir = tempfile::tempdir().expect("tempdir");
-        let mut cfg = crate::config::CargoPortConfig::default();
-        cfg.cache.root = cache_dir.path().to_string_lossy().to_string();
-        cfg.lint.enabled = LintIndicator::Enabled;
-        cfg.lint.include = vec!["~/rust/demo".to_string()];
-        cfg.lint.commands = vec![crate::config::LintCommandConfig {
+        let mut config = crate::config::CargoPortConfig::default();
+        config.cache.root = cache_dir.path().to_string_lossy().to_string();
+        config.lint.enabled = LintIndicator::Enabled;
+        config.lint.include = vec!["~/rust/demo".to_string()];
+        config.lint.commands = vec![crate::config::LintCommandConfig {
             name:    "echo".to_string(),
             command: "echo lint ok".to_string(),
         }];
 
         let (background_tx, background_rx) = channel::unbounded();
-        let runtime = lint::spawn(&cfg, background_tx.clone())
+        let runtime = lint::spawn(&config, background_tx.clone())
             .handle
             .expect("runtime handle");
         let request =
@@ -2405,7 +2409,7 @@ mod tests {
         let watch_roots = vec![AbsolutePath::from(project_dir.path())];
         let project_parents = HashSet::new();
         let discovered = HashSet::new();
-        let ctx = EventContext {
+        let event_context = EventContext {
             watch_roots:     &watch_roots,
             projects:        &projects,
             project_parents: &project_parents,
@@ -2423,7 +2427,7 @@ mod tests {
         events::handle_notify_event(
             &source_path,
             Some(&event),
-            &ctx,
+            &event_context,
             &background_tx,
             Some(&runtime),
             None,
@@ -2492,17 +2496,17 @@ mod tests {
         std::fs::write(&source_path, "pub fn demo() {}\n").expect("write source");
 
         let cache_dir = tempfile::tempdir().expect("tempdir");
-        let mut cfg = crate::config::CargoPortConfig::default();
-        cfg.cache.root = cache_dir.path().to_string_lossy().to_string();
-        cfg.lint.enabled = LintIndicator::Enabled;
-        cfg.lint.include = vec!["cargo-port".to_string()];
-        cfg.lint.commands = vec![crate::config::LintCommandConfig {
+        let mut config = crate::config::CargoPortConfig::default();
+        config.cache.root = cache_dir.path().to_string_lossy().to_string();
+        config.lint.enabled = LintIndicator::Enabled;
+        config.lint.include = vec!["cargo-port".to_string()];
+        config.lint.commands = vec![crate::config::LintCommandConfig {
             name:    "echo".to_string(),
             command: "echo lint ok".to_string(),
         }];
 
         let (background_tx, background_rx) = channel::unbounded();
-        let runtime = lint::spawn(&cfg, background_tx.clone())
+        let runtime = lint::spawn(&config, background_tx.clone())
             .handle
             .expect("runtime handle");
         let request = RegisterProjectRequest::new(
@@ -2527,7 +2531,7 @@ mod tests {
         let _ = drain_watch_messages(&watch_rx, &mut state, &mut watcher, &mut registered_roots);
         let project_parents = state.project_parents.clone();
         let discovered = state.discovered.clone();
-        let ctx = EventContext {
+        let event_context = EventContext {
             watch_roots:     registered_roots.dirs(),
             projects:        &state.projects,
             project_parents: &project_parents,
@@ -2545,7 +2549,7 @@ mod tests {
         events::handle_notify_event(
             &source_path,
             Some(&event),
-            &ctx,
+            &event_context,
             &background_tx,
             Some(&runtime),
             None,
@@ -2596,7 +2600,7 @@ mod tests {
         let watch_roots = vec![AbsolutePath::from(base.clone())];
         let project_parents = HashSet::from([AbsolutePath::from(base)]);
         let discovered = HashSet::new();
-        let ctx = EventContext {
+        let event_context = EventContext {
             watch_roots:     &watch_roots,
             projects:        &projects,
             project_parents: &project_parents,
@@ -2610,7 +2614,7 @@ mod tests {
         let event_path = new_project.join("src/main.rs");
         events::handle_event(
             &event_path,
-            &ctx,
+            &event_context,
             &background_tx,
             &mut pending_disk,
             &mut pending_git,
@@ -2636,7 +2640,7 @@ mod tests {
         let watch_roots = vec![AbsolutePath::from(base.clone())];
         let project_parents = HashSet::from([AbsolutePath::from(base)]);
         let discovered = HashSet::new();
-        let ctx = EventContext {
+        let event_context = EventContext {
             watch_roots:     &watch_roots,
             projects:        &projects,
             project_parents: &project_parents,
@@ -2644,7 +2648,7 @@ mod tests {
         };
         let (background_tx, _) = channel::unbounded();
         let dispatch = WatcherDispatchContext {
-            event:             ctx,
+            event:             event_context,
             background_tx:     &background_tx,
             lint_runtime:      None,
             metadata_dispatch: None,
@@ -2680,7 +2684,7 @@ mod tests {
         let watch_roots = vec![AbsolutePath::from(base.clone())];
         let project_parents = HashSet::from([AbsolutePath::from(base)]);
         let discovered = HashSet::from([AbsolutePath::from(project_dir.clone())]);
-        let ctx = EventContext {
+        let event_context = EventContext {
             watch_roots:     &watch_roots,
             projects:        &projects,
             project_parents: &project_parents,
@@ -2693,7 +2697,7 @@ mod tests {
         let (background_tx, _) = channel::unbounded();
         events::handle_event(
             &project_dir.join("Cargo.toml"),
-            &ctx,
+            &event_context,
             &background_tx,
             &mut pending_disk,
             &mut pending_git,
@@ -2722,7 +2726,7 @@ mod tests {
         let watch_roots = vec![AbsolutePath::from(base)];
         let project_parents = HashSet::new(); // empty — early scan
         let discovered = HashSet::new();
-        let ctx = EventContext {
+        let event_context = EventContext {
             watch_roots:     &watch_roots,
             projects:        &projects,
             project_parents: &project_parents,
@@ -2735,7 +2739,7 @@ mod tests {
 
         events::handle_event(
             &new_wt.join("src/main.rs"),
-            &ctx,
+            &event_context,
             &background_tx,
             &mut pending_disk,
             &mut pending_git,
@@ -3228,7 +3232,7 @@ mod tests {
         let watch_roots = vec![AbsolutePath::from(tmp.path())];
         let project_parents = HashSet::from([AbsolutePath::from(tmp.path())]);
         let discovered = HashSet::new();
-        let ctx = EventContext {
+        let event_context = EventContext {
             watch_roots:     &watch_roots,
             projects:        &projects,
             project_parents: &project_parents,
@@ -3242,7 +3246,7 @@ mod tests {
         std::fs::remove_dir_all(&linked_dir).expect("remove linked worktree");
         events::handle_event(
             &linked_dir.join("Cargo.toml"),
-            &ctx,
+            &event_context,
             &background_tx,
             &mut pending_disk,
             &mut pending_git,
@@ -3315,7 +3319,7 @@ mod tests {
         let canonical = real_dir.canonicalize().expect("canonicalize");
         let discovered = HashSet::from([AbsolutePath::from(canonical)]);
         let projects = HashMap::new();
-        let ctx = EventContext {
+        let event_context = EventContext {
             watch_roots:     &watch_roots,
             projects:        &projects,
             project_parents: &project_parents,
@@ -3332,7 +3336,7 @@ mod tests {
                 .join("linked_project")
                 .join("src")
                 .join("lib.rs"),
-            &ctx,
+            &event_context,
             &background_tx,
             &mut pending_disk,
             &mut pending_git,

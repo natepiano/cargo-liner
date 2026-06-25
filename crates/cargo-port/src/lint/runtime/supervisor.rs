@@ -305,6 +305,16 @@ impl WorkerStart {
             DiscoveryLint::Deferred => Self::Idle,
         }
     }
+
+    fn initial_scheduled_run(self) -> Option<ScheduledLintRun> {
+        match self {
+            Self::Idle => None,
+            Self::RunNow => Some(ScheduledLintRun {
+                deadline: Instant::now(),
+                origin:   LintRunOrigin::Normal,
+            }),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -473,15 +483,12 @@ struct WorkerContext {
     catch_up:         Arc<Mutex<HashSet<AbsolutePath>>>,
     stop:             Arc<AtomicBool>,
     trigger_rx:       StdReceiver<LintTriggerEvent>,
-    run_immediately:  bool,
+    start:            WorkerStart,
 }
 
 impl WorkerContext {
     fn run(self) {
-        let mut scheduled_run = self.run_immediately.then(|| ScheduledLintRun {
-            deadline: Instant::now(),
-            origin:   LintRunOrigin::Normal,
-        });
+        let mut scheduled_run = self.start.initial_scheduled_run();
         loop {
             if self.stop.load(Ordering::Relaxed) {
                 return;
@@ -606,7 +613,7 @@ fn spawn_project_worker(
         catch_up: Arc::clone(&config.catch_up),
         stop: Arc::clone(&stop),
         trigger_rx,
-        run_immediately: matches!(start, WorkerStart::RunNow),
+        start,
     };
     let handle = thread::spawn(move || context.run());
     ProjectWorker {

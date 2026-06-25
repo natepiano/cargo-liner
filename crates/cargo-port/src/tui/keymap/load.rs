@@ -95,18 +95,18 @@ thread_local! {
 }
 
 #[cfg(test)]
-pub(crate) struct KeymapPathOverrideGuard {
-    previous: Option<PathBuf>,
-    active:   bool,
+pub(crate) enum KeymapPathOverrideGuard {
+    Owner { previous: Option<PathBuf> },
+    NoOp,
 }
 
 #[cfg(test)]
 impl Drop for KeymapPathOverrideGuard {
     fn drop(&mut self) {
-        if !self.active {
+        let Self::Owner { previous } = self else {
             return;
-        }
-        let previous = self.previous.take();
+        };
+        let previous = previous.take();
         KEYMAP_PATH_OVERRIDE.with(|slot| {
             *slot.borrow_mut() = previous;
         });
@@ -116,10 +116,7 @@ impl Drop for KeymapPathOverrideGuard {
 #[cfg(test)]
 pub(crate) fn override_keymap_path_for_test(path: PathBuf) -> KeymapPathOverrideGuard {
     let previous = KEYMAP_PATH_OVERRIDE.with(|slot| slot.replace(Some(path)));
-    KeymapPathOverrideGuard {
-        previous,
-        active: true,
-    }
+    KeymapPathOverrideGuard::Owner { previous }
 }
 
 /// Set the keymap path override only if no override is already
@@ -132,10 +129,7 @@ pub(crate) fn override_keymap_path_for_test(path: PathBuf) -> KeymapPathOverride
 pub(crate) fn override_keymap_path_for_test_if_absent(path: PathBuf) -> KeymapPathOverrideGuard {
     let already_set = KEYMAP_PATH_OVERRIDE.with(|slot| slot.borrow().is_some());
     if already_set {
-        KeymapPathOverrideGuard {
-            previous: None,
-            active:   false,
-        }
+        KeymapPathOverrideGuard::NoOp
     } else {
         override_keymap_path_for_test(path)
     }
@@ -467,14 +461,14 @@ fn resolve_from_table(table: &Table, vim_mode: NavigationKeys) -> KeymapLoadResu
     let mut warnings = Vec::new();
     let mut missing_actions = Vec::new();
 
-    let mut ctx = ScopeResolveContext {
+    let mut scope_resolve_context = ScopeResolveContext {
         table,
         errors: &mut errors,
         warnings: &mut warnings,
         missing_actions: &mut missing_actions,
         vim_mode,
     };
-    resolve_pane_scopes(&mut ctx, &defaults, &mut keymap);
+    resolve_pane_scopes(&mut scope_resolve_context, &defaults, &mut keymap);
 
     KeymapLoadResult {
         keymap,

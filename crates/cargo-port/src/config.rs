@@ -910,8 +910,8 @@ mod tests {
     /// `Config::default()` returns correct values for every field.
     #[test]
     fn defaults_are_correct() {
-        let cfg = CargoPortConfig::default();
-        assert_default_config_subset(&cfg, 5);
+        let config = CargoPortConfig::default();
+        assert_default_config_subset(&config, 5);
     }
 
     /// Generated template parses back into a valid `CargoPortConfig` via confique.
@@ -926,11 +926,11 @@ mod tests {
 
         // Template has all fields commented out, so loading it should
         // succeed with defaults filling every field.
-        let cfg = CargoPortConfig::builder()
+        let config = CargoPortConfig::builder()
             .file(&path)
             .load()
             .expect("template should parse");
-        assert_default_config_subset(&cfg, 5);
+        assert_default_config_subset(&config, 5);
     }
 
     /// A partial config file gets defaults for missing fields.
@@ -940,20 +940,20 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "[tui]\nci_run_count = 10\n").expect("write");
 
-        let cfg = CargoPortConfig::builder()
+        let config = CargoPortConfig::builder()
             .file(&path)
             .load()
             .expect("partial config should load");
-        assert_default_config_subset(&cfg, 10);
+        assert_default_config_subset(&config, 10);
     }
 
     #[test]
     fn table_config_fills_defaults() {
         let table = toml::from_str::<toml::Table>("[tui]\nci_run_count = 10\n").expect("table");
 
-        let cfg = CargoPortConfig::from_table(&table).expect("config from table");
+        let config = CargoPortConfig::from_table(&table).expect("config from table");
 
-        assert_default_config_subset(&cfg, 10);
+        assert_default_config_subset(&config, 10);
     }
 
     #[test]
@@ -972,11 +972,11 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "").expect("write");
 
-        let cfg = CargoPortConfig::builder()
+        let config = CargoPortConfig::builder()
             .file(&path)
             .load()
             .expect("empty config should load");
-        assert_default_config_subset(&cfg, 5);
+        assert_default_config_subset(&config, 5);
     }
 
     /// Saving and reloading preserves all values.
@@ -985,21 +985,21 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config.toml");
 
-        let mut cfg = CargoPortConfig::default();
-        cfg.cache.root = "/tmp/cargo-port-cache".to_string();
-        cfg.tui.ci_run_count = 42;
-        cfg.tui.editor = "vim".to_string();
-        cfg.tui.terminal_command = "open -a Terminal .".to_string();
-        cfg.tui.main_branch = "primary".to_string();
-        cfg.tui.other_primary_branches = vec!["main".to_string(), "release".to_string()];
-        cfg.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
-        cfg.tui.discovery_shimmer_secs = 4.5;
-        cfg.cpu.poll_ms = 1500;
-        cfg.cpu.low_utilization_max_percent = 55;
-        cfg.cpu.medium_utilization_max_percent = 90;
-        cfg.mouse.invert_scroll = ScrollDirection::Normal;
+        let mut config = CargoPortConfig::default();
+        config.cache.root = "/tmp/cargo-port-cache".to_string();
+        config.tui.ci_run_count = 42;
+        config.tui.editor = "vim".to_string();
+        config.tui.terminal_command = "open -a Terminal .".to_string();
+        config.tui.main_branch = "primary".to_string();
+        config.tui.other_primary_branches = vec!["main".to_string(), "release".to_string()];
+        config.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
+        config.tui.discovery_shimmer_secs = 4.5;
+        config.cpu.poll_ms = 1500;
+        config.cpu.low_utilization_max_percent = 55;
+        config.cpu.medium_utilization_max_percent = 90;
+        config.mouse.invert_scroll = ScrollDirection::Normal;
 
-        let contents = toml::to_string_pretty(&cfg).expect("serialize");
+        let contents = toml::to_string_pretty(&config).expect("serialize");
         std::fs::write(&path, &contents).expect("write");
 
         let reloaded = CargoPortConfig::builder()
@@ -1040,12 +1040,12 @@ mod tests {
         )
         .expect("write legacy config");
 
-        let cfg = CargoPortConfig::builder()
+        let config = CargoPortConfig::builder()
             .file(&path)
             .load()
             .expect("legacy toast keys should be ignored by app config");
 
-        assert_eq!(cfg.tui.ci_run_count, 5);
+        assert_eq!(config.tui.ci_run_count, 5);
     }
 
     /// Bool-based enums deserialize correctly from TOML booleans.
@@ -1059,19 +1059,22 @@ mod tests {
         )
         .expect("write");
 
-        let cfg = CargoPortConfig::builder()
+        let config = CargoPortConfig::builder()
             .file(&path)
             .load()
             .expect("bool enums should parse");
-        assert!(cfg.cache.root.is_empty());
-        assert_eq!(cfg.mouse.invert_scroll, ScrollDirection::Normal);
-        assert_eq!(cfg.tui.include_non_rust, NonRustInclusion::Include);
-        assert_eq!(cfg.tui.navigation_keys, NavigationKeys::ArrowsAndVim);
-        assert_eq!(cfg.tui.edge_scroll, EdgeScroll::AdvancesPane);
-        assert_eq!(cfg.lint.enabled, LintIndicator::Enabled);
-        assert_eq!(cfg.appearance.focused_pane_tint, FocusedPaneTint::Disabled);
+        assert!(config.cache.root.is_empty());
+        assert_eq!(config.mouse.invert_scroll, ScrollDirection::Normal);
+        assert_eq!(config.tui.include_non_rust, NonRustInclusion::Include);
+        assert_eq!(config.tui.navigation_keys, NavigationKeys::ArrowsAndVim);
+        assert_eq!(config.tui.edge_scroll, EdgeScroll::AdvancesPane);
+        assert_eq!(config.lint.enabled, LintIndicator::Enabled);
         assert_eq!(
-            cfg.debug.force_github_rate_limit,
+            config.appearance.focused_pane_tint,
+            FocusedPaneTint::Disabled
+        );
+        assert_eq!(
+            config.debug.force_github_rate_limit,
             GitHubRateLimitMode::Forced
         );
     }
@@ -1083,12 +1086,12 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "[cache]\nroot = \"/tmp/cargo-port\"\n").expect("write");
 
-        let cfg = CargoPortConfig::builder()
+        let config = CargoPortConfig::builder()
             .file(&path)
             .load()
             .expect("cache root should parse");
-        assert_eq!(cfg.cache.root, "/tmp/cargo-port");
-        assert_eq!(cfg.lint.enabled, LintIndicator::Disabled);
+        assert_eq!(config.cache.root, "/tmp/cargo-port");
+        assert_eq!(config.lint.enabled, LintIndicator::Disabled);
     }
 
     /// Lint command arrays parse from TOML and preserve ordering.
@@ -1111,22 +1114,22 @@ mod tests {
         )
         .expect("write");
 
-        let cfg = CargoPortConfig::builder()
+        let config = CargoPortConfig::builder()
             .file(&path)
             .load()
             .expect("lint commands should parse");
-        assert_eq!(cfg.lint.enabled, LintIndicator::Enabled);
-        assert_eq!(cfg.lint.include, vec!["~/rust/cargo-port_report"]);
-        assert_eq!(cfg.lint.exclude, vec!["~/rust/archive"]);
-        assert_eq!(cfg.lint.commands.len(), 2);
-        assert_eq!(cfg.lint.commands[0].name, "fmt");
-        assert_eq!(cfg.lint.commands[0].command, "cargo fmt --check");
-        assert_eq!(cfg.lint.commands[1].name, "clippy");
+        assert_eq!(config.lint.enabled, LintIndicator::Enabled);
+        assert_eq!(config.lint.include, vec!["~/rust/cargo-port_report"]);
+        assert_eq!(config.lint.exclude, vec!["~/rust/archive"]);
+        assert_eq!(config.lint.commands.len(), 2);
+        assert_eq!(config.lint.commands[0].name, "fmt");
+        assert_eq!(config.lint.commands[0].command, "cargo fmt --check");
+        assert_eq!(config.lint.commands[1].name, "clippy");
     }
 
     #[test]
     fn normalize_config_resolves_builtin_name_only_commands() {
-        let cfg = normalize_config(CargoPortConfig {
+        let config = normalize_config(CargoPortConfig {
             lint: LintConfig {
                 commands: vec![LintCommandConfig {
                     name:    "clippy".to_string(),
@@ -1138,14 +1141,14 @@ mod tests {
         })
         .expect("normalize config");
 
-        assert_eq!(cfg.lint.commands.len(), 1);
-        assert_eq!(cfg.lint.commands[0].name, "clippy");
-        assert!(cfg.lint.commands[0].command.contains("cargo clippy"));
+        assert_eq!(config.lint.commands.len(), 1);
+        assert_eq!(config.lint.commands[0].name, "clippy");
+        assert!(config.lint.commands[0].command.contains("cargo clippy"));
     }
 
     #[test]
     fn normalize_config_names_raw_commands() {
-        let cfg = normalize_config(CargoPortConfig {
+        let config = normalize_config(CargoPortConfig {
             lint: LintConfig {
                 commands: vec![LintCommandConfig {
                     name:    String::new(),
@@ -1157,16 +1160,16 @@ mod tests {
         })
         .expect("normalize config");
 
-        assert_eq!(cfg.lint.commands.len(), 1);
-        assert_eq!(cfg.lint.commands[0].name, "fmt");
-        assert_eq!(cfg.lint.commands[0].command, "cargo fmt --check");
+        assert_eq!(config.lint.commands.len(), 1);
+        assert_eq!(config.lint.commands[0].name, "fmt");
+        assert_eq!(config.lint.commands[0].command, "cargo fmt --check");
     }
 
     /// Empty lint command config falls back to the built-in clippy command.
     #[test]
     fn resolved_lint_commands_default_to_builtins() {
-        let cfg = CargoPortConfig::default();
-        let commands = cfg.lint.resolved_commands();
+        let config = CargoPortConfig::default();
+        let commands = config.lint.resolved_commands();
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].name, "clippy");
         assert!(commands[0].command.contains("cargo clippy"));
@@ -1190,7 +1193,7 @@ mod tests {
 
     #[test]
     fn normalize_config_normalizes_cache_size_units() {
-        let cfg = normalize_config(CargoPortConfig {
+        let config = normalize_config(CargoPortConfig {
             lint: LintConfig {
                 cache_size: "1.50 gib".to_string(),
                 ..LintConfig::default()
@@ -1199,30 +1202,30 @@ mod tests {
         })
         .expect("normalize config");
 
-        assert_eq!(cfg.lint.cache_size, "1.5 GiB");
+        assert_eq!(config.lint.cache_size, "1.5 GiB");
     }
 
     #[test]
     fn normalize_config_clamps_invalid_tui_seconds_to_zero() {
-        let mut cfg = CargoPortConfig::default();
-        cfg.tui.discovery_shimmer_secs = f64::INFINITY;
+        let mut config = CargoPortConfig::default();
+        config.tui.discovery_shimmer_secs = f64::INFINITY;
 
-        let normalized = normalize_config(cfg).expect("normalize config");
+        let normalized = normalize_config(config).expect("normalize config");
 
         assert!(normalized.tui.discovery_shimmer_secs.abs() < f64::EPSILON);
     }
 
     #[test]
     fn normalize_config_trims_main_and_other_primary_branches() {
-        let mut cfg = CargoPortConfig::default();
-        cfg.tui.main_branch = "  primary  ".to_string();
-        cfg.tui.other_primary_branches = vec![
+        let mut config = CargoPortConfig::default();
+        config.tui.main_branch = "  primary  ".to_string();
+        config.tui.other_primary_branches = vec![
             "  main  ".to_string(),
             " ".to_string(),
             "release".to_string(),
         ];
 
-        let normalized = normalize_config(cfg).expect("normalize config");
+        let normalized = normalize_config(config).expect("normalize config");
 
         assert_eq!(normalized.tui.main_branch, "primary");
         assert_eq!(

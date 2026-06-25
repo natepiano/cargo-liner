@@ -811,13 +811,13 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn gpu_rows_keep_the_content_width() {
-        let cfg = CpuConfig::default();
+        let config = CpuConfig::default();
         let rows = [
             gpu_core_count_line(Some(38), CPU_CONTENT_WIDTH),
             gpu_core_count_line(None, CPU_CONTENT_WIDTH),
-            gpu_metric_line("Device", Some(100), &cfg, CPU_CONTENT_WIDTH),
-            gpu_metric_line("Renderer", None, &cfg, CPU_CONTENT_WIDTH),
-            gpu_metric_line("Tiler", Some(7), &cfg, CPU_CONTENT_WIDTH),
+            gpu_metric_line("Device", Some(100), &config, CPU_CONTENT_WIDTH),
+            gpu_metric_line("Renderer", None, &config, CPU_CONTENT_WIDTH),
+            gpu_metric_line("Tiler", Some(7), &config, CPU_CONTENT_WIDTH),
         ];
 
         for row in rows {
@@ -828,10 +828,10 @@ mod tests {
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn gpu_rows_keep_the_content_width() {
-        let cfg = CpuConfig::default();
+        let config = CpuConfig::default();
         let rows = [
-            gpu_metric_line("GPU", Some(100), &cfg, CPU_CONTENT_WIDTH),
-            gpu_metric_line("GPU", None, &cfg, CPU_CONTENT_WIDTH),
+            gpu_metric_line("GPU", Some(100), &config, CPU_CONTENT_WIDTH),
+            gpu_metric_line("GPU", None, &config, CPU_CONTENT_WIDTH),
         ];
 
         for row in rows {

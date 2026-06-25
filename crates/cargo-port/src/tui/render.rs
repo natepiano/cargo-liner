@@ -493,7 +493,7 @@ fn dispatch_finder_render(app: &mut App, frame: &mut Frame) {
         .map(std::path::Path::to_path_buf);
     let ci_status_lookup = app.ci.status_lookup();
     let split = app.split_finder_for_render();
-    let ctx = PaneRenderCtx {
+    let pane_render_context = PaneRenderCtx {
         animation_elapsed,
         config: split.config,
         project_list: split.project_list,
@@ -506,7 +506,7 @@ fn dispatch_finder_render(app: &mut App, frame: &mut Frame) {
         running_targets: split.running_targets,
     };
     // Finder body sizes the popup itself; area arg is unused.
-    Renderable::render(split.finder_pane, frame, frame.area(), &ctx);
+    Renderable::render(split.finder_pane, frame, frame.area(), &pane_render_context);
 }
 
 /// Stamp each renderable pane's [`tui_pane::RenderFocus`] snapshot

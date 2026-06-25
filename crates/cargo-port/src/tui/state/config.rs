@@ -94,8 +94,8 @@ mod tests {
 
     #[test]
     fn config_new_seeds_current() {
-        let cfg = CargoPortConfig::default();
-        let config = Config::new(None, cfg);
+        let cargo_port_config = CargoPortConfig::default();
+        let config = Config::new(None, cargo_port_config);
         assert!(config.path().is_none());
     }
 }

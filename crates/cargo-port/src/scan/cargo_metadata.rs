@@ -391,10 +391,11 @@ fn run_cargo_metadata_for_root(
 fn execute_cargo_metadata(manifest_path: &Path) -> Result<Metadata, CargoMetadataError> {
     // Wall-clock cap lives on the caller via `tokio::time::timeout`;
     // `MetadataCommand::exec` itself has no timeout knob.
-    let mut cmd = cargo_metadata::MetadataCommand::new();
-    cmd.manifest_path(manifest_path).no_deps();
-    cmd.other_options(vec![CARGO_OFFLINE_FLAG.to_string()]);
-    cmd.exec()
+    let mut command = cargo_metadata::MetadataCommand::new();
+    command.manifest_path(manifest_path).no_deps();
+    command.other_options(vec![CARGO_OFFLINE_FLAG.to_string()]);
+    command
+        .exec()
         .map_err(|err| CargoMetadataError::Other(format_cargo_metadata_error(&err)))
 }
 

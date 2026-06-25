@@ -45,43 +45,47 @@ use crate::tui::panes::PendingExampleRun;
 use crate::tui::panes::RunTargetKind;
 
 pub(super) fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
-    let mut cmd = Command::new(CARGO_COMMAND_NAME);
+    let mut command = Command::new(CARGO_COMMAND_NAME);
     match run.run_target_kind {
         RunTargetKind::Binary => {
-            cmd.arg(CARGO_RUN_SUBCOMMAND);
+            command.arg(CARGO_RUN_SUBCOMMAND);
         },
         RunTargetKind::Example => {
-            cmd.arg(CARGO_RUN_SUBCOMMAND)
+            command
+                .arg(CARGO_RUN_SUBCOMMAND)
                 .arg(CARGO_EXAMPLE_FLAG)
                 .arg(&run.target_name);
         },
         RunTargetKind::Bench => {
-            cmd.arg(CARGO_BENCH_SUBCOMMAND)
+            command
+                .arg(CARGO_BENCH_SUBCOMMAND)
                 .arg(CARGO_BENCH_FLAG)
                 .arg(&run.target_name);
         },
     }
     if run.build_mode.is_release() {
-        cmd.arg(CARGO_RELEASE_FLAG);
+        command.arg(CARGO_RELEASE_FLAG);
     }
     if let Some(pkg) = &run.package_name {
-        cmd.arg(CARGO_PACKAGE_FLAG).arg(pkg);
+        command.arg(CARGO_PACKAGE_FLAG).arg(pkg);
     }
     // Cargo does not auto-enable a target's `required-features`, so a
     // feature-gated target (e.g. an example with `required-features`)
     // errors out unless we pass them ourselves.
     if !run.required_features.is_empty() {
-        cmd.arg(CARGO_FEATURES_FLAG)
+        command
+            .arg(CARGO_FEATURES_FLAG)
             .arg(run.required_features.join(","));
     }
-    cmd.current_dir(&run.abs_path)
+    command
+        .current_dir(&run.abs_path)
         .arg(CARGO_COLOR_ALWAYS_FLAG)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    isolate_example_process(&mut cmd);
+    isolate_example_process(&mut command);
 
-    let mut child = match cmd.spawn() {
+    let mut child = match command.spawn() {
         Ok(c) => c,
         Err(e) => {
             app.inflight
@@ -209,13 +213,14 @@ fn read_with_progress(example_sender: &Sender<ExampleMsg>, stream: impl io::Read
 }
 
 pub(super) fn spawn_clean_process(app: &mut App, pending: &PendingClean) {
-    let mut cmd = std::process::Command::new(CARGO_COMMAND_NAME);
-    cmd.arg(CARGO_CLEAN_SUBCOMMAND)
+    let mut command = std::process::Command::new(CARGO_COMMAND_NAME);
+    command
+        .arg(CARGO_CLEAN_SUBCOMMAND)
         .current_dir(&pending.abs_path)
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
-    let mut child = match cmd.spawn() {
+    let mut child = match command.spawn() {
         Ok(c) => c,
         Err(e) => {
             app.clean_spawn_failed(&pending.abs_path);

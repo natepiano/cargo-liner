@@ -15,9 +15,11 @@ use super::constants::GIT_NO_OPTIONAL_LOCKS_ARG;
 /// change and re-emit a refresh signal — a self-sustaining CPU and
 /// rate-limit loop.
 pub(super) fn git_command(repo_root: &Path) -> Command {
-    let mut cmd = Command::new(GIT_BINARY);
-    cmd.arg(GIT_NO_OPTIONAL_LOCKS_ARG).current_dir(repo_root);
-    cmd
+    let mut command = Command::new(GIT_BINARY);
+    command
+        .arg(GIT_NO_OPTIONAL_LOCKS_ARG)
+        .current_dir(repo_root);
+    command
 }
 
 pub(super) fn git_output_logged<const N: usize>(
