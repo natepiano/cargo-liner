@@ -82,16 +82,10 @@ use percent::cpu_percent;
 use percent::normalize_cpu_label;
 #[cfg(target_os = "windows")]
 use percent::rounded_percent;
-#[cfg(all(test, target_os = "linux"))]
-use platform::DrmClientSample;
 #[cfg(target_os = "linux")]
 use platform::FdinfoGpuSampler;
 #[cfg(target_os = "windows")]
 use platform::GpuQuery;
-#[cfg(all(test, target_os = "linux"))]
-use platform::engine_busy_percent;
-#[cfg(all(test, target_os = "linux"))]
-use platform::parse_drm_fdinfo;
 use platform::read_cpu_breakdown_raw;
 #[cfg(not(target_os = "windows"))]
 use platform::read_gpu_usage;
