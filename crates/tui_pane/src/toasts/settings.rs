@@ -5,6 +5,8 @@ use std::time::Duration;
 use toml::Table;
 use toml::Value;
 
+use super::constants::DEFAULT_MAX_VISIBLE_TOASTS;
+use super::constants::DEFAULT_TOAST_WIDTH;
 use crate::constants::TOAST_ANIMATION_MILLIS;
 use crate::settings_store::SettingsError;
 
@@ -213,7 +215,7 @@ impl ToastWidth {
 }
 
 impl Default for ToastWidth {
-    fn default() -> Self { Self(NonZeroU16::new(60).unwrap_or(NonZeroU16::MIN)) }
+    fn default() -> Self { Self(NonZeroU16::new(DEFAULT_TOAST_WIDTH).unwrap_or(NonZeroU16::MIN)) }
 }
 
 /// Gap between toasts.
@@ -301,7 +303,9 @@ impl MaxVisibleToasts {
 }
 
 impl Default for MaxVisibleToasts {
-    fn default() -> Self { Self(NonZeroUsize::new(5).unwrap_or(NonZeroUsize::MIN)) }
+    fn default() -> Self {
+        Self(NonZeroUsize::new(DEFAULT_MAX_VISIBLE_TOASTS).unwrap_or(NonZeroUsize::MIN))
+    }
 }
 
 /// Toast placement.

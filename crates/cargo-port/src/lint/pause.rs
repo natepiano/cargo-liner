@@ -13,8 +13,8 @@ use crate::config::CargoPortConfig;
 
 /// Write the pause marker. Best-effort: a failure to persist leaves the
 /// in-memory pause in effect for this session and is not surfaced.
-pub(crate) fn record_paused(config: &CargoPortConfig) {
-    let marker = cache_paths::lint_pause_marker_for(config);
+pub(crate) fn record_paused(cargo_port_config: &CargoPortConfig) {
+    let marker = cache_paths::lint_pause_marker_for(cargo_port_config);
     if let Some(parent) = marker.as_path().parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -23,14 +23,14 @@ pub(crate) fn record_paused(config: &CargoPortConfig) {
 
 /// Remove the pause marker. A missing marker is already the resumed state, so
 /// a `NotFound` error is success.
-pub(crate) fn record_resumed(config: &CargoPortConfig) {
-    let _ = std::fs::remove_file(cache_paths::lint_pause_marker_for(config).as_path());
+pub(crate) fn record_resumed(cargo_port_config: &CargoPortConfig) {
+    let _ = std::fs::remove_file(cache_paths::lint_pause_marker_for(cargo_port_config).as_path());
 }
 
 /// Whether the persisted pause marker is set. Read once at startup to decide
 /// whether to resume the session paused.
-pub(crate) fn is_set(config: &CargoPortConfig) -> bool {
-    cache_paths::lint_pause_marker_for(config)
+pub(crate) fn is_set(cargo_port_config: &CargoPortConfig) -> bool {
+    cache_paths::lint_pause_marker_for(cargo_port_config)
         .as_path()
         .is_file()
 }
@@ -46,31 +46,40 @@ mod tests {
     use super::*;
 
     fn config_with_cache_root(root: &Path) -> CargoPortConfig {
-        let mut config = CargoPortConfig::default();
-        config.cache.root = root.to_string_lossy().to_string();
-        config
+        let mut cargo_port_config = CargoPortConfig::default();
+        cargo_port_config.cache.root = root.to_string_lossy().to_string();
+        cargo_port_config
     }
 
     #[test]
     fn marker_round_trips_through_record_and_clear() {
         let cache_dir = tempfile::tempdir().expect("tempdir");
-        let config = config_with_cache_root(cache_dir.path());
+        let cargo_port_config = config_with_cache_root(cache_dir.path());
 
-        assert!(!is_set(&config), "no marker before recording pause");
+        assert!(
+            !is_set(&cargo_port_config),
+            "no marker before recording pause"
+        );
 
-        record_paused(&config);
-        assert!(is_set(&config), "marker present after recording pause");
+        record_paused(&cargo_port_config);
+        assert!(
+            is_set(&cargo_port_config),
+            "marker present after recording pause"
+        );
 
-        record_resumed(&config);
-        assert!(!is_set(&config), "marker gone after recording resume");
+        record_resumed(&cargo_port_config);
+        assert!(
+            !is_set(&cargo_port_config),
+            "marker gone after recording resume"
+        );
     }
 
     #[test]
     fn record_resumed_is_a_noop_when_marker_absent() {
         let cache_dir = tempfile::tempdir().expect("tempdir");
-        let config = config_with_cache_root(cache_dir.path());
+        let cargo_port_config = config_with_cache_root(cache_dir.path());
 
-        record_resumed(&config);
-        assert!(!is_set(&config));
+        record_resumed(&cargo_port_config);
+        assert!(!is_set(&cargo_port_config));
     }
 }

@@ -235,9 +235,9 @@ impl StartupServices {
         }
         #[cfg(test)]
         let fixture_config = self.fixture_cache_root.borrow().clone().map(|cache_root| {
-            let mut config = cargo_port_config.clone();
-            config.cache.root = cache_root.display().to_string();
-            config
+            let mut cargo_port_config = cargo_port_config.clone();
+            cargo_port_config.cache.root = cache_root.display().to_string();
+            cargo_port_config
         });
         #[cfg(test)]
         let cargo_port_config = fixture_config.as_ref().unwrap_or(cargo_port_config);

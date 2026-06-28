@@ -1478,14 +1478,14 @@ mod tests {
             let dir = tempfile::tempdir().expect("create test tempdir");
             let path = dir.path().join("config.toml");
 
-            let mut config = CargoPortConfig::default();
-            config.tui.editor = "helix".to_string();
-            config.tui.ci_run_count = 9;
-            config.cpu.poll_ms = 1500;
-            config.mouse.invert_scroll = ScrollDirection::Normal;
+            let mut cargo_port_config = CargoPortConfig::default();
+            cargo_port_config.tui.editor = "helix".to_string();
+            cargo_port_config.tui.ci_run_count = 9;
+            cargo_port_config.cpu.poll_ms = 1500;
+            cargo_port_config.mouse.invert_scroll = ScrollDirection::Normal;
             std::fs::write(
                 &path,
-                toml::to_string_pretty(&config).expect("serialize test config"),
+                toml::to_string_pretty(&cargo_port_config).expect("serialize test config"),
             )
             .expect("write test file");
 
@@ -1510,11 +1510,11 @@ mod tests {
             let dir = tempfile::tempdir().expect("create test tempdir");
             let path = dir.path().join("config.toml");
 
-            let mut config = CargoPortConfig::default();
-            config.tui.editor = "zed".to_string();
+            let mut cargo_port_config = CargoPortConfig::default();
+            cargo_port_config.tui.editor = "zed".to_string();
             std::fs::write(
                 &path,
-                toml::to_string_pretty(&config).expect("serialize test config"),
+                toml::to_string_pretty(&cargo_port_config).expect("serialize test config"),
             )
             .expect("write test file");
 
@@ -1539,11 +1539,11 @@ mod tests {
             let dir = tempfile::tempdir().expect("create test tempdir");
             let path = dir.path().join("config.toml");
 
-            let mut config = CargoPortConfig::default();
-            config.tui.editor = "zed".to_string();
+            let mut cargo_port_config = CargoPortConfig::default();
+            cargo_port_config.tui.editor = "zed".to_string();
             std::fs::write(
                 &path,
-                toml::to_string_pretty(&config).expect("serialize test config"),
+                toml::to_string_pretty(&cargo_port_config).expect("serialize test config"),
             )
             .expect("write test file");
 
@@ -1569,15 +1569,16 @@ mod tests {
         fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
             let rust_project = make_project(Some("rust"), "~/rust");
             let non_rust_project = make_non_rust_project(Some("js"), "~/js");
-            let mut config = CargoPortConfig::default();
-            config.tui.include_non_rust = NonRustInclusion::Include;
-            config.tui.include_dirs = vec!["/tmp/test".to_string()];
-            let mut app = make_app_with_config(&[rust_project, non_rust_project], &config);
+            let mut cargo_port_config = CargoPortConfig::default();
+            cargo_port_config.tui.include_non_rust = NonRustInclusion::Include;
+            cargo_port_config.tui.include_dirs = vec!["/tmp/test".to_string()];
+            let mut app =
+                make_app_with_config(&[rust_project, non_rust_project], &cargo_port_config);
             app.scan.state.phase = ScanPhase::Complete;
 
             assert_eq!(app.project_list.len(), 2);
 
-            let mut hide_config = config.clone();
+            let mut hide_config = cargo_port_config.clone();
             hide_config.tui.include_non_rust = NonRustInclusion::Exclude;
             app.apply_config(&hide_config);
             wait_for_tree_build(&mut app);
@@ -1598,7 +1599,7 @@ mod tests {
             assert_eq!(visible.len(), 1);
             assert_eq!(visible[0], test_path("~/rust"));
 
-            app.apply_config(&config);
+            app.apply_config(&cargo_port_config);
             wait_for_tree_build(&mut app);
 
             assert!(app.scan.is_complete());
@@ -1617,9 +1618,9 @@ mod tests {
             let mut app = make_app(&[rust_project]);
             app.scan.state.phase = ScanPhase::Complete;
 
-            let mut config = app.config.current().clone();
-            config.tui.include_non_rust = NonRustInclusion::Include;
-            app.apply_config(&config);
+            let mut cargo_port_config = app.config.current().clone();
+            cargo_port_config.tui.include_non_rust = NonRustInclusion::Include;
+            app.apply_config(&cargo_port_config);
 
             assert!(app.project_list.is_empty());
             assert!(app.scan.is_complete());
@@ -2577,14 +2578,14 @@ mod tests {
 
         fn keymap_fixture_with_config(
             projects: &[RootItem],
-            cfg: &CargoPortConfig,
+            cargo_port_config: &CargoPortConfig,
             toml: &str,
         ) -> KeymapFixture<impl Sized + use<>> {
             let temp_dir = tempfile::tempdir().expect("tempdir");
             let toml_path = temp_dir.path().join("keymap.toml");
             fs::write(&toml_path, toml).expect("write keymap toml");
             let keymap_path_override_guard = keymap::override_keymap_path_for_test(toml_path);
-            let app = super::make_app_with_config(projects, cfg);
+            let app = super::make_app_with_config(projects, cargo_port_config);
             KeymapFixture {
                 app:                        Some(app),
                 keymap_path_override_guard: Some(keymap_path_override_guard),
@@ -2601,10 +2602,10 @@ mod tests {
 
         fn make_app_with_config_and_keymap_toml(
             projects: &[RootItem],
-            cfg: &CargoPortConfig,
+            cargo_port_config: &CargoPortConfig,
             toml: &str,
         ) -> KeymapFixture<impl Sized + use<>> {
-            keymap_fixture_with_config(projects, cfg, toml)
+            keymap_fixture_with_config(projects, cargo_port_config, toml)
         }
 
         fn app_returned_from_keymap_helper() -> KeymapFixture<impl Sized + use<>> {
@@ -3299,9 +3300,9 @@ mod tests {
             let projects: Vec<_> = (0..40)
                 .map(|i| super::make_project(Some("p"), &format!("~/p{i}")))
                 .collect();
-            let mut config = CargoPortConfig::default();
-            config.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
-            let mut app = make_app_with_config_and_keymap_toml(&projects, &config, "");
+            let mut cargo_port_config = CargoPortConfig::default();
+            cargo_port_config.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
+            let mut app = make_app_with_config_and_keymap_toml(&projects, &cargo_port_config, "");
             let _ = buffer_text_sized(&mut app, 120, 30);
             assert_eq!(app.project_list.cursor(), 0);
 
@@ -3378,11 +3379,11 @@ mod tests {
         #[test]
         fn generated_navigation_defaults_round_trip_without_collision() {
             let projects = vec![super::make_project(Some("alpha"), "~/alpha")];
-            let mut config = CargoPortConfig::default();
-            config.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
+            let mut cargo_port_config = CargoPortConfig::default();
+            cargo_port_config.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
             let app = make_app_with_config_and_keymap_toml(
                 &projects,
-                &config,
+                &cargo_port_config,
                 "[navigation]\n\
                  page_up = \"pageup\"\n\
                  page_down = \"pagedown\"\n\
@@ -3421,9 +3422,9 @@ mod tests {
         #[test]
         fn output_pane_navigates_with_vim_keys() {
             let projects = vec![super::make_project(Some("alpha"), "~/alpha")];
-            let mut config = CargoPortConfig::default();
-            config.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
-            let mut app = make_app_with_config_and_keymap_toml(&projects, &config, "");
+            let mut cargo_port_config = CargoPortConfig::default();
+            cargo_port_config.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
+            let mut app = make_app_with_config_and_keymap_toml(&projects, &cargo_port_config, "");
             app.set_example_output((0..30).map(|i| format!("line {i}")).collect());
             // Render once so the viewport learns its length and visible rows.
             let _ = buffer_text_sized(&mut app, 120, 20);
@@ -3468,11 +3469,11 @@ mod tests {
                 super::make_project(Some("beta"), "~/beta"),
                 super::make_project(Some("gamma"), "~/gamma"),
             ];
-            let mut config = CargoPortConfig::default();
-            config.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
+            let mut cargo_port_config = CargoPortConfig::default();
+            cargo_port_config.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
             let mut app = make_app_with_config_and_keymap_toml(
                 &projects,
-                &config,
+                &cargo_port_config,
                 "[navigation]\nhome = \"home\"\nend = \"end\"\n",
             );
 
@@ -3630,9 +3631,9 @@ mod tests {
         #[test]
         fn keymap_template_omits_generated_vim_bindings() {
             let project = super::make_project(Some("demo"), "~/demo");
-            let mut config = CargoPortConfig::default();
-            config.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
-            let app = make_app_with_config_and_keymap_toml(&[project], &config, "");
+            let mut cargo_port_config = CargoPortConfig::default();
+            cargo_port_config.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
+            let app = make_app_with_config_and_keymap_toml(&[project], &cargo_port_config, "");
 
             let generated = keymap_ui::current_keymap_toml(&app);
 
@@ -3649,11 +3650,11 @@ mod tests {
         #[test]
         fn startup_warns_for_ignored_reserved_vim_keymap_bindings() {
             let project = super::make_project(Some("demo"), "~/demo");
-            let mut config = CargoPortConfig::default();
-            config.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
+            let mut cargo_port_config = CargoPortConfig::default();
+            cargo_port_config.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
             let app = make_app_with_config_and_keymap_toml(
                 &[project],
-                &config,
+                &cargo_port_config,
                 "[project_list]\ncollapse_row = [\"shift-left\", \"h\"]\nexpand_row = [\"shift-right\", \"l\"]\n",
             );
 
@@ -4069,9 +4070,9 @@ mod tests {
         #[test]
         fn finder_text_input_keeps_vim_k_as_query_text() {
             let project = super::make_project(Some("demo"), "~/demo");
-            let mut config = CargoPortConfig::default();
-            config.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
-            let mut app = super::make_app_with_config(&[project], &config);
+            let mut cargo_port_config = CargoPortConfig::default();
+            cargo_port_config.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
+            let mut app = super::make_app_with_config(&[project], &cargo_port_config);
             input::open_finder(&mut app);
 
             press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
@@ -4472,9 +4473,9 @@ mod tests {
         /// runtime `V` check does not depend on the process-wide active-config
         /// singleton that concurrent tests mutate.
         fn make_app_vim(projects: &[RootItem]) -> App {
-            let mut config = CargoPortConfig::default();
-            config.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
-            let mut app = tui_test_support::make_app_with_config(projects, &config);
+            let mut cargo_port_config = CargoPortConfig::default();
+            cargo_port_config.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
+            let mut app = tui_test_support::make_app_with_config(projects, &cargo_port_config);
             app.config.current_mut().tui.navigation_keys = NavigationKeys::ArrowsAndVim;
             app
         }
@@ -7778,16 +7779,16 @@ mod tests {
         #[test]
         fn apply_config_resets_column_layout_flag() {
             let mut app = make_app(&[make_project(Some("demo"), "~/demo")]);
-            let mut config = CargoPortConfig::default();
+            let mut cargo_port_config = CargoPortConfig::default();
 
             assert!(!app.project_list.cached_fit_widths.lint_enabled());
 
-            config.lint.enabled = LintIndicator::Enabled;
-            app.apply_config(&config);
+            cargo_port_config.lint.enabled = LintIndicator::Enabled;
+            app.apply_config(&cargo_port_config);
             assert!(app.project_list.cached_fit_widths.lint_enabled());
 
-            config.lint.enabled = LintIndicator::Disabled;
-            app.apply_config(&config);
+            cargo_port_config.lint.enabled = LintIndicator::Disabled;
+            app.apply_config(&cargo_port_config);
             assert!(!app.project_list.cached_fit_widths.lint_enabled());
         }
 
@@ -11895,9 +11896,9 @@ mod tests {
             // untouched and `remove_dir_all` lands on the success branch (where the
             // run count is reported).
             let tmp = tempfile::tempdir().expect("create test tempdir");
-            let mut config = CargoPortConfig::default();
-            config.cache.root = tmp.path().to_string_lossy().into_owned();
-            config::set_active_config(&config);
+            let mut cargo_port_config = CargoPortConfig::default();
+            cargo_port_config.cache.root = tmp.path().to_string_lossy().into_owned();
+            config::set_active_config(&cargo_port_config);
 
             let project = make_project(Some("demo"), "~/demo");
             let mut app = make_app(std::slice::from_ref(&project));
@@ -13679,8 +13680,8 @@ mod tests {
             }
             assert_eq!(app.project_list.cached_fit_widths.generation, 0);
 
-            let config = app.config.current().clone();
-            app.apply_lint_config_change(&config);
+            let cargo_port_config = app.config.current().clone();
+            app.apply_lint_config_change(&cargo_port_config);
 
             // Projection: running-lint paths cleared, lint runtime present
             // (re-spawned).
@@ -14400,15 +14401,15 @@ mod tests {
             .expect("write test file");
 
             let cache_dir = tempfile::tempdir().expect("create test tempdir");
-            let mut config = CargoPortConfig::default();
-            config.cache.root = cache_dir.path().to_string_lossy().to_string();
-            config.lint.enabled = LintIndicator::Enabled;
-            config.lint.include = vec![project_dir.path().to_string_lossy().to_string()];
-            config.lint.commands = vec![crate::config::LintCommandConfig {
+            let mut cargo_port_config = CargoPortConfig::default();
+            cargo_port_config.cache.root = cache_dir.path().to_string_lossy().to_string();
+            cargo_port_config.lint.enabled = LintIndicator::Enabled;
+            cargo_port_config.lint.include = vec![project_dir.path().to_string_lossy().to_string()];
+            cargo_port_config.lint.commands = vec![crate::config::LintCommandConfig {
                 name:    "echo".to_string(),
                 command: "echo lint ok".to_string(),
             }];
-            let mut app = make_app_with_lint_runtime(&[], &config);
+            let mut app = make_app_with_lint_runtime(&[], &cargo_port_config);
 
             assert!(app.handle_project_discovered(item_from_project_dir(project_dir.path())));
             let trigger = lint::classify_event_path(
@@ -14452,17 +14453,17 @@ mod tests {
             add_git_worktree(&primary_dir, &linked_dir, "test/bevy_hana");
 
             let cache_dir = tempfile::tempdir().expect("create test tempdir");
-            let mut config = CargoPortConfig::default();
-            config.cache.root = cache_dir.path().to_string_lossy().to_string();
-            config.lint.enabled = LintIndicator::Enabled;
-            config.lint.include = vec!["bevy_hana".to_string()];
-            config.lint.on_discovery = DiscoveryLint::Immediate;
-            config.lint.commands = vec![crate::config::LintCommandConfig {
+            let mut cargo_port_config = CargoPortConfig::default();
+            cargo_port_config.cache.root = cache_dir.path().to_string_lossy().to_string();
+            cargo_port_config.lint.enabled = LintIndicator::Enabled;
+            cargo_port_config.lint.include = vec!["bevy_hana".to_string()];
+            cargo_port_config.lint.on_discovery = DiscoveryLint::Immediate;
+            cargo_port_config.lint.commands = vec![crate::config::LintCommandConfig {
                 name:    "echo".to_string(),
                 command: "echo lint ok".to_string(),
             }];
             let primary_item = item_from_project_dir(&primary_dir);
-            let mut app = make_app_with_lint_runtime(&[primary_item], &config);
+            let mut app = make_app_with_lint_runtime(&[primary_item], &cargo_port_config);
 
             assert!(app.handle_project_discovered(item_from_project_dir(&linked_dir)));
             let quiet_deadline = std::time::Instant::now() + std::time::Duration::from_millis(150);
@@ -14516,16 +14517,16 @@ mod tests {
             add_git_worktree(&primary_dir, &linked_dir, "test/bevy_hana");
 
             let cache_dir = tempfile::tempdir().expect("create test tempdir");
-            let mut config = CargoPortConfig::default();
-            config.cache.root = cache_dir.path().to_string_lossy().to_string();
-            config.lint.enabled = LintIndicator::Enabled;
-            config.lint.include = vec!["bevy_hana".to_string()];
-            config.lint.commands = vec![crate::config::LintCommandConfig {
+            let mut cargo_port_config = CargoPortConfig::default();
+            cargo_port_config.cache.root = cache_dir.path().to_string_lossy().to_string();
+            cargo_port_config.lint.enabled = LintIndicator::Enabled;
+            cargo_port_config.lint.include = vec!["bevy_hana".to_string()];
+            cargo_port_config.lint.commands = vec![crate::config::LintCommandConfig {
                 name:    "echo".to_string(),
                 command: "echo lint ok".to_string(),
             }];
             let primary_item = item_from_project_dir(&primary_dir);
-            let mut app = make_app_with_lint_runtime(&[primary_item], &config);
+            let mut app = make_app_with_lint_runtime(&[primary_item], &cargo_port_config);
 
             let linked_path = linked_dir.to_string_lossy().to_string();
             let stale_discovery = RootItem::Rust(RustProject::Package(make_package_raw(
@@ -15049,12 +15050,15 @@ mod tests {
 
     fn make_app(projects: &[RootItem]) -> App { tui_test_support::make_app(projects) }
 
-    fn make_app_with_config(projects: &[RootItem], cfg: &CargoPortConfig) -> App {
-        tui_test_support::make_app_with_config(projects, cfg)
+    fn make_app_with_config(projects: &[RootItem], cargo_port_config: &CargoPortConfig) -> App {
+        tui_test_support::make_app_with_config(projects, cargo_port_config)
     }
 
-    fn make_app_with_lint_runtime(projects: &[RootItem], cfg: &CargoPortConfig) -> TestApp {
-        tui_test_support::make_app_with_lint_runtime(projects, cfg)
+    fn make_app_with_lint_runtime(
+        projects: &[RootItem],
+        cargo_port_config: &CargoPortConfig,
+    ) -> TestApp {
+        tui_test_support::make_app_with_lint_runtime(projects, cargo_port_config)
     }
 
     fn set_loaded_ci(

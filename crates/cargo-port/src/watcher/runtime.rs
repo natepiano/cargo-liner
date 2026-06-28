@@ -2385,17 +2385,17 @@ mod tests {
         std::fs::write(&source_path, "pub fn demo() {}\n").expect("write source");
 
         let cache_dir = tempfile::tempdir().expect("tempdir");
-        let mut config = crate::config::CargoPortConfig::default();
-        config.cache.root = cache_dir.path().to_string_lossy().to_string();
-        config.lint.enabled = LintIndicator::Enabled;
-        config.lint.include = vec!["~/rust/demo".to_string()];
-        config.lint.commands = vec![crate::config::LintCommandConfig {
+        let mut cargo_port_config = crate::config::CargoPortConfig::default();
+        cargo_port_config.cache.root = cache_dir.path().to_string_lossy().to_string();
+        cargo_port_config.lint.enabled = LintIndicator::Enabled;
+        cargo_port_config.lint.include = vec!["~/rust/demo".to_string()];
+        cargo_port_config.lint.commands = vec![crate::config::LintCommandConfig {
             name:    "echo".to_string(),
             command: "echo lint ok".to_string(),
         }];
 
         let (background_tx, background_rx) = channel::unbounded();
-        let runtime = lint::spawn(&config, background_tx.clone())
+        let runtime = lint::spawn(&cargo_port_config, background_tx.clone())
             .handle
             .expect("runtime handle");
         let request =
@@ -2496,17 +2496,17 @@ mod tests {
         std::fs::write(&source_path, "pub fn demo() {}\n").expect("write source");
 
         let cache_dir = tempfile::tempdir().expect("tempdir");
-        let mut config = crate::config::CargoPortConfig::default();
-        config.cache.root = cache_dir.path().to_string_lossy().to_string();
-        config.lint.enabled = LintIndicator::Enabled;
-        config.lint.include = vec!["cargo-port".to_string()];
-        config.lint.commands = vec![crate::config::LintCommandConfig {
+        let mut cargo_port_config = crate::config::CargoPortConfig::default();
+        cargo_port_config.cache.root = cache_dir.path().to_string_lossy().to_string();
+        cargo_port_config.lint.enabled = LintIndicator::Enabled;
+        cargo_port_config.lint.include = vec!["cargo-port".to_string()];
+        cargo_port_config.lint.commands = vec![crate::config::LintCommandConfig {
             name:    "echo".to_string(),
             command: "echo lint ok".to_string(),
         }];
 
         let (background_tx, background_rx) = channel::unbounded();
-        let runtime = lint::spawn(&config, background_tx.clone())
+        let runtime = lint::spawn(&cargo_port_config, background_tx.clone())
             .handle
             .expect("runtime handle");
         let request = RegisterProjectRequest::new(

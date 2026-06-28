@@ -7,6 +7,8 @@ use thiserror::Error;
 use toml::Table;
 
 use super::SettingsRegistry;
+use super::constants::DEFAULT_SETTINGS_APP_ID;
+use super::constants::DEFAULT_SETTINGS_FILE_NAME;
 use crate::toasts;
 use crate::toasts::ToastSettings;
 
@@ -74,7 +76,7 @@ impl SettingsFileSpec {
 }
 
 impl Default for SettingsFileSpec {
-    fn default() -> Self { Self::new("tui_pane", "settings.toml") }
+    fn default() -> Self { Self::new(DEFAULT_SETTINGS_APP_ID, DEFAULT_SETTINGS_FILE_NAME) }
 }
 
 /// Framework settings store loaded before app construction.

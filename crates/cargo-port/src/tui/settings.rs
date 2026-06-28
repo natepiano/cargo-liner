@@ -127,11 +127,11 @@ fn settings_popup_height(line_count: usize, area_height: u16) -> u16 {
     content_height.min(area_height.saturating_sub(2))
 }
 
-fn format_lint_projects(config: &CargoPortConfig) -> String {
-    if config.lint.include.is_empty() {
+fn format_lint_projects(cargo_port_config: &CargoPortConfig) -> String {
+    if cargo_port_config.lint.include.is_empty() {
         "—".to_string()
     } else {
-        format_sorted_list(&config.lint.include)
+        format_sorted_list(&cargo_port_config.lint.include)
     }
 }
 
@@ -298,38 +298,40 @@ fn format_lint_commands_from_commands(commands: &[LintCommandConfig]) -> String 
         .join(", ")
 }
 
-fn format_lint_commands(config: &CargoPortConfig) -> String {
-    let commands = if config.lint.commands.is_empty() {
-        config.lint.resolved_commands()
+fn format_lint_commands(cargo_port_config: &CargoPortConfig) -> String {
+    let commands = if cargo_port_config.lint.commands.is_empty() {
+        cargo_port_config.lint.resolved_commands()
     } else {
-        config.lint.commands.clone()
+        cargo_port_config.lint.commands.clone()
     };
     format_lint_commands_from_commands(&commands)
 }
 
-fn format_lint_cache_size(config: &CargoPortConfig) -> String { config.lint.cache_size.clone() }
+fn format_lint_cache_size(cargo_port_config: &CargoPortConfig) -> String {
+    cargo_port_config.lint.cache_size.clone()
+}
 
-fn format_cache_root(config: &CargoPortConfig) -> String {
-    if config.cache.root.trim().is_empty() {
+fn format_cache_root(cargo_port_config: &CargoPortConfig) -> String {
+    if cargo_port_config.cache.root.trim().is_empty() {
         format!("{} (default)", cache_paths::default_app_cache_root())
     } else {
-        config.cache.root.clone()
+        cargo_port_config.cache.root.clone()
     }
 }
 
-fn format_terminal_command(config: &CargoPortConfig) -> String {
-    if config.tui.terminal_command.trim().is_empty() {
+fn format_terminal_command(cargo_port_config: &CargoPortConfig) -> String {
+    if cargo_port_config.tui.terminal_command.trim().is_empty() {
         "Not configured. Set this command to enable the global terminal shortcut.".to_string()
     } else {
-        config.tui.terminal_command.clone()
+        cargo_port_config.tui.terminal_command.clone()
     }
 }
 
-fn format_other_primary_branches(config: &CargoPortConfig) -> String {
-    if config.tui.other_primary_branches.is_empty() {
+fn format_other_primary_branches(cargo_port_config: &CargoPortConfig) -> String {
+    if cargo_port_config.tui.other_primary_branches.is_empty() {
         "—".to_string()
     } else {
-        config.tui.other_primary_branches.join(", ")
+        cargo_port_config.tui.other_primary_branches.join(", ")
     }
 }
 
@@ -354,18 +356,26 @@ fn format_finished_task_visible_secs(app: &App) -> String {
     format_toast_duration_secs(app.framework.toast_settings().finished_task_visible)
 }
 
-fn format_discovery_shimmer_secs(config: &CargoPortConfig) -> String {
-    format_secs(config.tui.discovery_shimmer_secs)
+fn format_discovery_shimmer_secs(cargo_port_config: &CargoPortConfig) -> String {
+    format_secs(cargo_port_config.tui.discovery_shimmer_secs)
 }
 
-fn format_cpu_poll_ms(config: &CargoPortConfig) -> String { config.cpu.poll_ms.to_string() }
-
-fn format_cpu_low_utilization_max(config: &CargoPortConfig) -> String {
-    config.cpu.low_utilization_max_percent.to_string()
+fn format_cpu_poll_ms(cargo_port_config: &CargoPortConfig) -> String {
+    cargo_port_config.cpu.poll_ms.to_string()
 }
 
-fn format_cpu_medium_utilization_max(config: &CargoPortConfig) -> String {
-    config.cpu.medium_utilization_max_percent.to_string()
+fn format_cpu_low_utilization_max(cargo_port_config: &CargoPortConfig) -> String {
+    cargo_port_config
+        .cpu
+        .low_utilization_max_percent
+        .to_string()
+}
+
+fn format_cpu_medium_utilization_max(cargo_port_config: &CargoPortConfig) -> String {
+    cargo_port_config
+        .cpu
+        .medium_utilization_max_percent
+        .to_string()
 }
 
 pub(super) fn cargo_port_settings_registry() -> SettingsRegistry {
@@ -558,9 +568,9 @@ fn register_lint_settings(registry: SettingsRegistry) -> SettingsRegistry {
 }
 
 pub(super) struct StartupSettings {
-    pub(super) config:         CargoPortConfig,
-    pub(super) store:          SettingsStore,
-    pub(super) toast_settings: ToastSettings,
+    pub(super) cargo_port_config: CargoPortConfig,
+    pub(super) store:             SettingsStore,
+    pub(super) toast_settings:    ToastSettings,
 }
 
 pub(super) fn load_cargo_port_settings_for_startup() -> Result<StartupSettings, String> {
@@ -586,70 +596,92 @@ pub(super) fn load_cargo_port_settings_for_startup() -> Result<StartupSettings, 
             .save()
             .map_err(|err| err.to_string())?;
     }
-    let config = CargoPortConfig::from_table(loaded_settings.store.table())?;
+    let cargo_port_config = CargoPortConfig::from_table(loaded_settings.store.table())?;
     Ok(StartupSettings {
-        config,
+        cargo_port_config,
         store: loaded_settings.store,
         toast_settings: loaded_settings.toast_settings,
     })
 }
 
-pub(super) fn settings_table_from_config(config: &CargoPortConfig) -> Result<Table, SettingsError> {
+pub(super) fn settings_table_from_config(
+    cargo_port_config: &CargoPortConfig,
+) -> Result<Table, SettingsError> {
     let mut table = Table::new();
-    set_cache_root(&mut table, &config.cache.root)?;
-    set_invert_scroll(&mut table, config.mouse.invert_scroll.is_inverted())?;
-    set_include_non_rust(&mut table, config.tui.include_non_rust.includes_non_rust())?;
-    set_navigation_keys(&mut table, config.tui.navigation_keys.uses_vim())?;
-    set_edge_scroll(&mut table, config.tui.edge_scroll.advances_pane())?;
-    set_ci_run_count(&mut table, i64::from(config.tui.ci_run_count))?;
-    set_editor(&mut table, &config.tui.editor)?;
-    set_terminal_command(&mut table, &config.tui.terminal_command)?;
-    set_main_branch(&mut table, &config.tui.main_branch)?;
+    set_cache_root(&mut table, &cargo_port_config.cache.root)?;
+    set_invert_scroll(
+        &mut table,
+        cargo_port_config.mouse.invert_scroll.is_inverted(),
+    )?;
+    set_include_non_rust(
+        &mut table,
+        cargo_port_config.tui.include_non_rust.includes_non_rust(),
+    )?;
+    set_navigation_keys(&mut table, cargo_port_config.tui.navigation_keys.uses_vim())?;
+    set_edge_scroll(
+        &mut table,
+        cargo_port_config.tui.edge_scroll.advances_pane(),
+    )?;
+    set_ci_run_count(&mut table, i64::from(cargo_port_config.tui.ci_run_count))?;
+    set_editor(&mut table, &cargo_port_config.tui.editor)?;
+    set_terminal_command(&mut table, &cargo_port_config.tui.terminal_command)?;
+    set_main_branch(&mut table, &cargo_port_config.tui.main_branch)?;
     write_string_array(
         &mut table,
         "tui",
         "other_primary_branches",
-        config.tui.other_primary_branches.clone(),
+        cargo_port_config.tui.other_primary_branches.clone(),
     )?;
     write_string_array(
         &mut table,
         "tui",
         "include_dirs",
-        config.tui.include_dirs.clone(),
+        cargo_port_config.tui.include_dirs.clone(),
     )?;
     write_string_array(
         &mut table,
         "tui",
         "inline_dirs",
-        config.tui.inline_dirs.clone(),
+        cargo_port_config.tui.inline_dirs.clone(),
     )?;
-    set_discovery_shimmer_secs(&mut table, config.tui.discovery_shimmer_secs)?;
+    set_discovery_shimmer_secs(&mut table, cargo_port_config.tui.discovery_shimmer_secs)?;
     set_cpu_poll_ms(
         &mut table,
-        i64::try_from(config.cpu.poll_ms).unwrap_or(i64::MAX),
+        i64::try_from(cargo_port_config.cpu.poll_ms).unwrap_or(i64::MAX),
     )?;
     set_cpu_low_utilization_max(
         &mut table,
-        i64::from(config.cpu.low_utilization_max_percent),
+        i64::from(cargo_port_config.cpu.low_utilization_max_percent),
     )?;
     set_cpu_medium_utilization_max(
         &mut table,
-        i64::from(config.cpu.medium_utilization_max_percent),
+        i64::from(cargo_port_config.cpu.medium_utilization_max_percent),
     )?;
-    set_lints_enabled(&mut table, config.lint.enabled.is_enabled())?;
-    set_lint_on_discovery(&mut table, config.lint.on_discovery.is_immediate())?;
-    write_string_array(&mut table, "lint", "include", config.lint.include.clone())?;
+    set_lints_enabled(&mut table, cargo_port_config.lint.enabled.is_enabled())?;
+    set_lint_on_discovery(
+        &mut table,
+        cargo_port_config.lint.on_discovery.is_immediate(),
+    )?;
+    write_string_array(
+        &mut table,
+        "lint",
+        "include",
+        cargo_port_config.lint.include.clone(),
+    )?;
     write_value(
         &mut table,
         "lint",
         "commands",
-        lint_commands_value(config.lint.commands.clone()),
+        lint_commands_value(cargo_port_config.lint.commands.clone()),
     )?;
-    set_lint_cache_size(&mut table, &config.lint.cache_size)?;
-    set_appearance_mode(&mut table, &config.appearance.mode)?;
-    set_appearance_light_theme(&mut table, &config.appearance.light_theme)?;
-    set_appearance_dark_theme(&mut table, &config.appearance.dark_theme)?;
-    set_focused_pane_tint(&mut table, config.appearance.focused_pane_tint.is_enabled())?;
+    set_lint_cache_size(&mut table, &cargo_port_config.lint.cache_size)?;
+    set_appearance_mode(&mut table, &cargo_port_config.appearance.mode)?;
+    set_appearance_light_theme(&mut table, &cargo_port_config.appearance.light_theme)?;
+    set_appearance_dark_theme(&mut table, &cargo_port_config.appearance.dark_theme)?;
+    set_focused_pane_tint(
+        &mut table,
+        cargo_port_config.appearance.focused_pane_tint.is_enabled(),
+    )?;
     Ok(table)
 }
 
@@ -1011,12 +1043,12 @@ fn set_focused_pane_tint(table: &mut Table, value: bool) -> Result<(), SettingsE
     write_value(table, "appearance", "focused_pane_tint", value.into())
 }
 
-fn settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsUiRow> {
-    let mut rows = general_settings_rows(app, config);
-    rows.extend(toast_settings_rows(app, config));
-    rows.extend(cpu_settings_rows(config));
-    rows.extend(lint_settings_rows(app, config));
-    rows.extend(appearance_settings_rows(config));
+fn settings_rows(app: &App, cargo_port_config: &CargoPortConfig) -> Vec<SettingsUiRow> {
+    let mut rows = general_settings_rows(app, cargo_port_config);
+    rows.extend(toast_settings_rows(app, cargo_port_config));
+    rows.extend(cpu_settings_rows(cargo_port_config));
+    rows.extend(lint_settings_rows(app, cargo_port_config));
+    rows.extend(appearance_settings_rows(cargo_port_config));
     rows
 }
 
@@ -1063,7 +1095,7 @@ fn cycle_appearance_mode(current: &str, step: i32) -> String {
     MODES[idx.min(MODES.len() - 1)].to_string()
 }
 
-fn appearance_settings_rows(config: &CargoPortConfig) -> Vec<SettingsUiRow> {
+fn appearance_settings_rows(cargo_port_config: &CargoPortConfig) -> Vec<SettingsUiRow> {
     let registry = tui_pane::registry();
     let failed_count = registry.status().failed_files.len();
     let section_label = match failed_count {
@@ -1076,22 +1108,22 @@ fn appearance_settings_rows(config: &CargoPortConfig) -> Vec<SettingsUiRow> {
         (
             Some(SettingOption::AppearanceMode),
             "Mode".to_string(),
-            config.appearance.mode.clone(),
+            cargo_port_config.appearance.mode.clone(),
         ),
         (
             Some(SettingOption::LightTheme),
             "Light theme".to_string(),
-            config.appearance.light_theme.clone(),
+            cargo_port_config.appearance.light_theme.clone(),
         ),
         (
             Some(SettingOption::DarkTheme),
             "Dark theme".to_string(),
-            config.appearance.dark_theme.clone(),
+            cargo_port_config.appearance.dark_theme.clone(),
         ),
         (
             Some(SettingOption::FocusedPaneTint),
             "Focused pane tint".to_string(),
-            if config.appearance.focused_pane_tint.is_enabled() {
+            if cargo_port_config.appearance.focused_pane_tint.is_enabled() {
                 "ON"
             } else {
                 "OFF"
@@ -1101,7 +1133,7 @@ fn appearance_settings_rows(config: &CargoPortConfig) -> Vec<SettingsUiRow> {
     ]
 }
 
-fn general_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsUiRow> {
+fn general_settings_rows(app: &App, cargo_port_config: &CargoPortConfig) -> Vec<SettingsUiRow> {
     vec![
         (None, "General".to_string(), String::new()),
         (
@@ -1147,7 +1179,7 @@ fn general_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsUiR
         (
             Some(SettingOption::CiRunCount),
             "CI runs to fetch".to_string(),
-            config.tui.ci_run_count.to_string(),
+            cargo_port_config.tui.ci_run_count.to_string(),
         ),
         (
             Some(SettingOption::Editor),
@@ -1157,37 +1189,37 @@ fn general_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsUiR
         (
             Some(SettingOption::TerminalCommand),
             "Terminal".to_string(),
-            format_terminal_command(config),
+            format_terminal_command(cargo_port_config),
         ),
         (
             Some(SettingOption::MainBranch),
             "Main branch".to_string(),
-            config.tui.main_branch.clone(),
+            cargo_port_config.tui.main_branch.clone(),
         ),
         (
             Some(SettingOption::OtherPrimaryBranches),
             "Other primary branches".to_string(),
-            format_other_primary_branches(config),
+            format_other_primary_branches(cargo_port_config),
         ),
         (
             Some(SettingOption::IncludeDirs),
             "Include dirs".to_string(),
-            format_sorted_list(&config.tui.include_dirs),
+            format_sorted_list(&cargo_port_config.tui.include_dirs),
         ),
         (
             Some(SettingOption::InlineDirs),
             "Inline dirs".to_string(),
-            format_sorted_list(&config.tui.inline_dirs),
+            format_sorted_list(&cargo_port_config.tui.inline_dirs),
         ),
         (
             Some(SettingOption::CacheRoot),
             "Cache root".to_string(),
-            format_cache_root(config),
+            format_cache_root(cargo_port_config),
         ),
     ]
 }
 
-fn toast_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsUiRow> {
+fn toast_settings_rows(app: &App, cargo_port_config: &CargoPortConfig) -> Vec<SettingsUiRow> {
     vec![
         (None, "Toasts".to_string(), String::new()),
         (
@@ -1203,33 +1235,33 @@ fn toast_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsUiRow
         (
             Some(SettingOption::DiscoveryShimmerSecs),
             "Discovery shimmer secs".to_string(),
-            format_discovery_shimmer_secs(config),
+            format_discovery_shimmer_secs(cargo_port_config),
         ),
     ]
 }
 
-fn cpu_settings_rows(config: &CargoPortConfig) -> Vec<SettingsUiRow> {
+fn cpu_settings_rows(cargo_port_config: &CargoPortConfig) -> Vec<SettingsUiRow> {
     vec![
         (None, "CPU".to_string(), String::new()),
         (
             Some(SettingOption::CpuPollMs),
             "Poll ms".to_string(),
-            format_cpu_poll_ms(config),
+            format_cpu_poll_ms(cargo_port_config),
         ),
         (
             Some(SettingOption::CpuLowUtilizationMaxPercent),
             "Low utilization max %".to_string(),
-            format_cpu_low_utilization_max(config),
+            format_cpu_low_utilization_max(cargo_port_config),
         ),
         (
             Some(SettingOption::CpuMediumUtilizationMaxPercent),
             "Medium utilization max %".to_string(),
-            format_cpu_medium_utilization_max(config),
+            format_cpu_medium_utilization_max(cargo_port_config),
         ),
     ]
 }
 
-fn lint_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsUiRow> {
+fn lint_settings_rows(app: &App, cargo_port_config: &CargoPortConfig) -> Vec<SettingsUiRow> {
     vec![
         (None, "Lints".to_string(), String::new()),
         (
@@ -1245,7 +1277,7 @@ fn lint_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsUiRow>
         (
             Some(SettingOption::LintOnDiscovery),
             "Lint on discovery".to_string(),
-            if config.lint.on_discovery.is_immediate() {
+            if cargo_port_config.lint.on_discovery.is_immediate() {
                 "ON"
             } else {
                 "OFF"
@@ -1255,17 +1287,17 @@ fn lint_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsUiRow>
         (
             Some(SettingOption::LintProjects),
             "Projects".to_string(),
-            format_lint_projects(config),
+            format_lint_projects(cargo_port_config),
         ),
         (
             Some(SettingOption::LintCommands),
             "Lint command(s)".to_string(),
-            format_lint_commands(config),
+            format_lint_commands(cargo_port_config),
         ),
         (
             Some(SettingOption::LintCacheSize),
             "Cache size".to_string(),
-            format_lint_cache_size(config),
+            format_lint_cache_size(cargo_port_config),
         ),
     ]
 }
@@ -1967,42 +1999,48 @@ mod tests {
 
     #[test]
     fn format_discovery_shimmer_secs_renders_whole_numbers_cleanly() {
-        let mut config = config::CargoPortConfig::default();
-        config.tui.discovery_shimmer_secs = 4.0;
-        assert_eq!(format_discovery_shimmer_secs(&config), "4");
+        let mut cargo_port_config = config::CargoPortConfig::default();
+        cargo_port_config.tui.discovery_shimmer_secs = 4.0;
+        assert_eq!(format_discovery_shimmer_secs(&cargo_port_config), "4");
     }
 
     #[test]
     fn format_terminal_command_marks_blank_value_as_unconfigured() {
-        let config = config::CargoPortConfig::default();
+        let cargo_port_config = config::CargoPortConfig::default();
 
-        assert!(format_terminal_command(&config).contains("Not configured"));
+        assert!(format_terminal_command(&cargo_port_config).contains("Not configured"));
     }
 
     #[test]
     fn format_terminal_command_preserves_configured_value() {
-        let mut config = config::CargoPortConfig::default();
-        config.tui.terminal_command = "open -a Terminal .".to_string();
+        let mut cargo_port_config = config::CargoPortConfig::default();
+        cargo_port_config.tui.terminal_command = "open -a Terminal .".to_string();
 
-        assert_eq!(format_terminal_command(&config), "open -a Terminal .");
+        assert_eq!(
+            format_terminal_command(&cargo_port_config),
+            "open -a Terminal ."
+        );
     }
 
     #[test]
     fn format_cache_root_shows_resolved_default_for_blank_value() {
-        let config = config::CargoPortConfig::default();
+        let cargo_port_config = config::CargoPortConfig::default();
 
         assert_eq!(
-            format_cache_root(&config),
+            format_cache_root(&cargo_port_config),
             format!("{} (default)", cache_paths::default_app_cache_root())
         );
     }
 
     #[test]
     fn format_cache_root_preserves_configured_value() {
-        let mut config = config::CargoPortConfig::default();
-        config.cache.root = "/tmp/cargo-port-cache".to_string();
+        let mut cargo_port_config = config::CargoPortConfig::default();
+        cargo_port_config.cache.root = "/tmp/cargo-port-cache".to_string();
 
-        assert_eq!(format_cache_root(&config), "/tmp/cargo-port-cache");
+        assert_eq!(
+            format_cache_root(&cargo_port_config),
+            "/tmp/cargo-port-cache"
+        );
     }
 
     #[test]
@@ -2037,13 +2075,14 @@ mod tests {
         let mut loaded =
             SettingsStore::load_for_startup(settings_spec, cargo_port_settings_registry())
                 .expect("load settings");
-        let mut config = CargoPortConfig::default();
-        config.tui.ci_run_count = 9;
+        let mut cargo_port_config = CargoPortConfig::default();
+        cargo_port_config.tui.ci_run_count = 9;
         let mut toast_settings = ToastSettings::default();
         toast_settings.status_toast_visible =
             ToastDuration::try_from_secs("status_toast_visible", 3.0).expect("toast duration");
 
-        *loaded.store.table_mut() = settings_table_from_config(&config).expect("settings table");
+        *loaded.store.table_mut() =
+            settings_table_from_config(&cargo_port_config).expect("settings table");
         toast_settings.write_to_table(loaded.store.table_mut());
         loaded.store.save().expect("save settings");
 

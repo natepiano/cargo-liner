@@ -82,7 +82,7 @@ impl RepoInfo {
             current_upstream: current_upstream.as_deref(),
             default_branch: default_branch.as_deref(),
             current_branch: branch.as_deref(),
-            config: &active_config,
+            cargo_port_config: &active_config,
         };
         let remotes: Vec<RemoteInfo> = remote_names
             .iter()

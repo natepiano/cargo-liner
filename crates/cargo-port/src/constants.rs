@@ -119,9 +119,21 @@ pub(crate) const STALE_TIMEOUT: Duration = Duration::from_mins(30);
 pub(crate) const APP_NAME: &str = "cargo-port";
 pub(crate) const CLIPPY_LINT_COMMAND_NAME: &str = "clippy";
 pub(crate) const CONFIG_FILE: &str = "config.toml";
+pub(crate) const DEFAULT_APPEARANCE_MODE: &str = "dark";
+pub(crate) const DEFAULT_CI_RUN_COUNT: u32 = 5;
 pub(crate) const DEFAULT_CLIPPY_LINT_COMMAND: &str = "cargo clippy --workspace --all-targets \
                                                       --all-features --manifest-path \
                                                       \"$MANIFEST_PATH\" -- -D warnings";
+pub(crate) const DEFAULT_CPU_POLL_MS: u64 = 1000;
+pub(crate) const DEFAULT_DARK_THEME: &str = "Default Dark";
+pub(crate) const DEFAULT_DISCOVERY_SHIMMER_SECS: f64 = 10.0;
+pub(crate) const DEFAULT_EDITOR: &str = "zed";
+pub(crate) const DEFAULT_INLINE_DIR: &str = "crates";
+pub(crate) const DEFAULT_LIGHT_THEME: &str = "Default Light";
+pub(crate) const DEFAULT_LOW_CPU_UTILIZATION_MAX_PERCENT: u8 = 60;
+pub(crate) const DEFAULT_MAIN_BRANCH: &str = "main";
+pub(crate) const DEFAULT_MEDIUM_CPU_UTILIZATION_MAX_PERCENT: u8 = 85;
+pub(crate) const DEFAULT_REMOTE_HOST_URL: &str = "https://github.com/";
 pub(crate) const KEYMAP_FILE: &str = "keymap.toml";
 pub(crate) const MIN_CPU_POLL_MS: u64 = 250;
 

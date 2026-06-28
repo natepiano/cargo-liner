@@ -574,9 +574,9 @@ mod tests {
         )
         .expect("write manifest");
 
-        let mut config = CargoPortConfig::default();
-        config.cache.root = cache_dir.path().to_string_lossy().to_string();
-        let cache_root = cache_paths::lint_runs_root_for(&config);
+        let mut cargo_port_config = CargoPortConfig::default();
+        cargo_port_config.cache.root = cache_dir.path().to_string_lossy().to_string();
+        let cache_root = cache_paths::lint_runs_root_for(&cargo_port_config);
         let commands = vec![LintCommandConfig {
             name:    "echo".to_string(),
             command: "echo lint ok".to_string(),

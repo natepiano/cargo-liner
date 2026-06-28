@@ -71,12 +71,12 @@ impl From<&[String]> for UpstreamRemote {
 }
 
 pub(super) struct RemoteResolveContext<'a> {
-    pub(super) repo_root:        &'a Path,
-    pub(super) upstream_remote:  UpstreamRemote,
-    pub(super) current_upstream: Option<&'a str>,
-    pub(super) default_branch:   Option<&'a str>,
-    pub(super) current_branch:   Option<&'a str>,
-    pub(super) config:           &'a CargoPortConfig,
+    pub(super) repo_root:         &'a Path,
+    pub(super) upstream_remote:   UpstreamRemote,
+    pub(super) current_upstream:  Option<&'a str>,
+    pub(super) default_branch:    Option<&'a str>,
+    pub(super) current_branch:    Option<&'a str>,
+    pub(super) cargo_port_config: &'a CargoPortConfig,
 }
 
 pub(super) fn build_remote_info(
@@ -91,7 +91,7 @@ pub(super) fn build_remote_info(
         context.current_upstream,
         context.default_branch,
         context.current_branch,
-        context.config,
+        context.cargo_port_config,
     );
     let ahead_behind = tracked_ref.as_deref().and_then(|r| {
         checkout::parse_ahead_behind(

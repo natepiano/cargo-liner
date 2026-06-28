@@ -54,8 +54,11 @@ pub(super) struct ProjectWorker {
     pub(super) handle:     JoinHandle<()>,
 }
 
-pub fn spawn(config: &CargoPortConfig, background_tx: Sender<BackgroundMsg>) -> SpawnResult {
-    if !config.lint.enabled.is_enabled() {
+pub fn spawn(
+    cargo_port_config: &CargoPortConfig,
+    background_tx: Sender<BackgroundMsg>,
+) -> SpawnResult {
+    if !cargo_port_config.lint.enabled.is_enabled() {
         return SpawnResult {
             handle:                  None,
             warning:                 None,
@@ -64,9 +67,9 @@ pub fn spawn(config: &CargoPortConfig, background_tx: Sender<BackgroundMsg>) -> 
         };
     }
 
-    let cache_root = cache_paths::lint_runs_root_for(config);
-    let cache_size_bytes = config.lint.cache_size_bytes().unwrap_or(None);
-    let lint = config.lint.clone();
+    let cache_root = cache_paths::lint_runs_root_for(cargo_port_config);
+    let cache_size_bytes = cargo_port_config.lint.cache_size_bytes().unwrap_or(None);
+    let lint = cargo_port_config.lint.clone();
     let (supervisor_sender, supervisor_receiver) = mpsc::channel();
     let supervisor = thread::spawn(move || {
         supervisor_loop(
@@ -859,17 +862,17 @@ mod tests {
             .expect("write src");
 
         let cache_dir = tempfile::tempdir().expect("tempdir");
-        let mut config = CargoPortConfig::default();
-        config.cache.root = cache_dir.path().to_string_lossy().to_string();
-        config.lint.enabled = LintIndicator::Enabled;
-        config.lint.include = vec!["~/rust/demo".to_string()];
-        config.lint.commands = vec![LintCommandConfig {
+        let mut cargo_port_config = CargoPortConfig::default();
+        cargo_port_config.cache.root = cache_dir.path().to_string_lossy().to_string();
+        cargo_port_config.lint.enabled = LintIndicator::Enabled;
+        cargo_port_config.lint.include = vec!["~/rust/demo".to_string()];
+        cargo_port_config.lint.commands = vec![LintCommandConfig {
             name:    "echo".to_string(),
             command: "echo lint ok".to_string(),
         }];
 
         let (background_tx, background_rx) = channel::unbounded();
-        let spawn = spawn(&config, background_tx);
+        let spawn = spawn(&cargo_port_config, background_tx);
         let runtime = spawn.handle.expect("runtime handle");
         let request = request("~/rust/demo", project_dir.path());
         runtime.sync_projects(vec![request.clone()]);
@@ -919,17 +922,17 @@ mod tests {
         .expect("write manifest");
 
         let cache_dir = tempfile::tempdir().expect("tempdir");
-        let mut config = CargoPortConfig::default();
-        config.cache.root = cache_dir.path().to_string_lossy().to_string();
-        config.lint.enabled = LintIndicator::Enabled;
-        config.lint.include = vec!["~/rust/demo".to_string()];
-        config.lint.commands = vec![LintCommandConfig {
+        let mut cargo_port_config = CargoPortConfig::default();
+        cargo_port_config.cache.root = cache_dir.path().to_string_lossy().to_string();
+        cargo_port_config.lint.enabled = LintIndicator::Enabled;
+        cargo_port_config.lint.include = vec!["~/rust/demo".to_string()];
+        cargo_port_config.lint.commands = vec![LintCommandConfig {
             name:    "echo".to_string(),
             command: "echo lint ok".to_string(),
         }];
 
         let (background_tx, background_rx) = channel::unbounded();
-        let spawn = spawn(&config, background_tx);
+        let spawn = spawn(&cargo_port_config, background_tx);
         let runtime = spawn.handle.expect("runtime handle");
         let request = request("~/rust/demo", project_dir.path());
         runtime.sync_projects(vec![request.clone()]);
@@ -1008,16 +1011,16 @@ mod tests {
         )
         .expect("write manifest");
         let cache_dir = tempfile::tempdir().expect("tempdir");
-        let mut config = CargoPortConfig::default();
-        config.cache.root = cache_dir.path().to_string_lossy().to_string();
-        config.lint.enabled = LintIndicator::Enabled;
-        config.lint.include = vec![project_dir.path().to_string_lossy().to_string()];
-        config.lint.on_discovery = DiscoveryLint::Immediate;
-        config.lint.commands = vec![LintCommandConfig {
+        let mut cargo_port_config = CargoPortConfig::default();
+        cargo_port_config.cache.root = cache_dir.path().to_string_lossy().to_string();
+        cargo_port_config.lint.enabled = LintIndicator::Enabled;
+        cargo_port_config.lint.include = vec![project_dir.path().to_string_lossy().to_string()];
+        cargo_port_config.lint.on_discovery = DiscoveryLint::Immediate;
+        cargo_port_config.lint.commands = vec![LintCommandConfig {
             name:    "echo".to_string(),
             command: "echo lint ok".to_string(),
         }];
-        let cache_root = cache_paths::lint_runs_root_for(&config);
+        let cache_root = cache_paths::lint_runs_root_for(&cargo_port_config);
         let finished_at = Local::now().to_rfc3339();
         let cached_run = LintRun {
             run_id:        paths::sanitize_run_id(&finished_at),
@@ -1032,7 +1035,7 @@ mod tests {
             .expect("write cached latest");
 
         let (background_tx, background_rx) = channel::unbounded();
-        let spawn = spawn(&config, background_tx);
+        let spawn = spawn(&cargo_port_config, background_tx);
         let runtime = spawn.handle.expect("runtime handle");
         runtime.sync_projects(vec![request("~/rust/demo", project_dir.path())]);
 
@@ -1072,18 +1075,18 @@ mod tests {
         )
         .expect("write manifest");
         let cache_dir = tempfile::tempdir().expect("tempdir");
-        let mut config = CargoPortConfig::default();
-        config.cache.root = cache_dir.path().to_string_lossy().to_string();
-        config.lint.enabled = LintIndicator::Enabled;
-        config.lint.include = vec![project_dir.path().to_string_lossy().to_string()];
-        config.lint.on_discovery = DiscoveryLint::Immediate;
-        config.lint.commands = vec![LintCommandConfig {
+        let mut cargo_port_config = CargoPortConfig::default();
+        cargo_port_config.cache.root = cache_dir.path().to_string_lossy().to_string();
+        cargo_port_config.lint.enabled = LintIndicator::Enabled;
+        cargo_port_config.lint.include = vec![project_dir.path().to_string_lossy().to_string()];
+        cargo_port_config.lint.on_discovery = DiscoveryLint::Immediate;
+        cargo_port_config.lint.commands = vec![LintCommandConfig {
             name:    "echo".to_string(),
             command: "echo lint ok".to_string(),
         }];
 
         let (background_tx, background_rx) = channel::unbounded();
-        let spawn = spawn(&config, background_tx);
+        let spawn = spawn(&cargo_port_config, background_tx);
         let runtime = spawn.handle.expect("runtime handle");
         runtime.sync_projects(vec![request("~/rust/demo", project_dir.path())]);
 
@@ -1127,18 +1130,18 @@ mod tests {
         )
         .expect("write manifest");
         let cache_dir = tempfile::tempdir().expect("tempdir");
-        let mut config = CargoPortConfig::default();
-        config.cache.root = cache_dir.path().to_string_lossy().to_string();
-        config.lint.enabled = LintIndicator::Enabled;
-        config.lint.include = vec![project_dir.path().to_string_lossy().to_string()];
-        config.lint.on_discovery = DiscoveryLint::Immediate;
-        config.lint.commands = vec![LintCommandConfig {
+        let mut cargo_port_config = CargoPortConfig::default();
+        cargo_port_config.cache.root = cache_dir.path().to_string_lossy().to_string();
+        cargo_port_config.lint.enabled = LintIndicator::Enabled;
+        cargo_port_config.lint.include = vec![project_dir.path().to_string_lossy().to_string()];
+        cargo_port_config.lint.on_discovery = DiscoveryLint::Immediate;
+        cargo_port_config.lint.commands = vec![LintCommandConfig {
             name:    "echo".to_string(),
             command: "echo lint ok".to_string(),
         }];
 
         let (background_tx, background_rx) = channel::unbounded();
-        let spawn = spawn(&config, background_tx);
+        let spawn = spawn(&cargo_port_config, background_tx);
         let runtime = spawn.handle.expect("runtime handle");
         runtime.register_project(request("~/rust/demo", project_dir.path()));
 

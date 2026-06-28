@@ -6,6 +6,7 @@
 //! `SettingsRegistry`; framework-owned setting types live with their
 //! owning framework module.
 
+mod constants;
 mod errors;
 mod registry;
 mod row;

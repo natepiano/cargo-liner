@@ -65,48 +65,54 @@ pub(super) fn make_app(projects: &[RootItem]) -> App {
     make_app_with_config(projects, &CargoPortConfig::default())
 }
 
-pub(super) fn make_app_with_config(projects: &[RootItem], config: &CargoPortConfig) -> App {
-    let app =
-        make_test_app_with_startup_services(projects, config, StartupServices::quiet_unit_test())
-            .into_quiet_app();
+pub(super) fn make_app_with_config(
+    projects: &[RootItem],
+    cargo_port_config: &CargoPortConfig,
+) -> App {
+    let app = make_test_app_with_startup_services(
+        projects,
+        cargo_port_config,
+        StartupServices::quiet_unit_test(),
+    )
+    .into_quiet_app();
     assert_eq!(app.startup_effect_counts().real_total(), 0);
     app
 }
 
 pub(super) fn make_app_with_lint_runtime(
     projects: &[RootItem],
-    config: &CargoPortConfig,
+    cargo_port_config: &CargoPortConfig,
 ) -> TestApp {
     make_test_app_with_startup_services(
         projects,
-        config,
+        cargo_port_config,
         StartupServices::quiet_unit_test_with_lint_runtime(),
     )
 }
 
 pub(super) fn make_local_startup_test_app(
     projects: &[RootItem],
-    config: &CargoPortConfig,
+    cargo_port_config: &CargoPortConfig,
 ) -> TestApp {
     make_test_app_with_startup_services(
         projects,
-        config,
+        cargo_port_config,
         StartupServices::local_startup_unit_test(),
     )
 }
 
 fn make_test_app_with_startup_services(
     projects: &[RootItem],
-    config: &CargoPortConfig,
+    cargo_port_config: &CargoPortConfig,
     startup_services: StartupServices,
 ) -> TestApp {
     assert!(
         !startup_services.has_production_profile_for_test(),
         "TestApp does not own production startup worker handles"
     );
-    let mut config = config.clone();
-    if config.tui.include_dirs.is_empty() {
-        config.tui.include_dirs = vec!["/tmp/test".to_string()];
+    let mut cargo_port_config = cargo_port_config.clone();
+    if cargo_port_config.tui.include_dirs.is_empty() {
+        cargo_port_config.tui.include_dirs = vec!["/tmp/test".to_string()];
     }
     let serial = startup_services
         .serializes_process_globals_for_test()
@@ -117,7 +123,7 @@ fn make_test_app_with_startup_services(
     let themes_path = fixture_dirs.themes_path();
     if startup_services.requires_fixture_cache_root_for_test() {
         let cache_path = fixture_dirs.cache_path();
-        config.cache.root = cache_path.display().to_string();
+        cargo_port_config.cache.root = cache_path.display().to_string();
         startup_services.set_fixture_cache_root_for_test(cache_path);
     }
     let config_path_guard = config::override_config_path_for_test(config_path.clone());
@@ -129,8 +135,8 @@ fn make_test_app_with_startup_services(
     let mut loaded_settings =
         SettingsStore::load_for_startup(settings_spec, settings::cargo_port_settings_registry())
             .expect("test settings store loads");
-    *loaded_settings.store.table_mut() =
-        settings::settings_table_from_config(&config).expect("test config becomes settings");
+    *loaded_settings.store.table_mut() = settings::settings_table_from_config(&cargo_port_config)
+        .expect("test config becomes settings");
     loaded_settings
         .toast_settings
         .write_to_table(loaded_settings.store.table_mut());
@@ -139,7 +145,7 @@ fn make_test_app_with_startup_services(
         .save()
         .expect("test settings file is writable");
     let startup_settings = StartupSettings {
-        config,
+        cargo_port_config,
         store: loaded_settings.store,
         toast_settings: loaded_settings.toast_settings,
     };
@@ -359,10 +365,10 @@ mod tests {
 
     #[test]
     fn lint_runtime_opt_in_enables_only_lint_runtime_startup() {
-        let mut config = CargoPortConfig::default();
-        config.lint.enabled = LintIndicator::Enabled;
+        let mut cargo_port_config = CargoPortConfig::default();
+        cargo_port_config.lint.enabled = LintIndicator::Enabled;
 
-        let app = make_app_with_lint_runtime(&[], &config);
+        let app = make_app_with_lint_runtime(&[], &cargo_port_config);
         let counts = app.startup_effect_counts();
         let configured_cache_root = Path::new(&app.config.current().cache.root);
         let lint_cache_root = crate::cache_paths::lint_runs_root_for(app.config.current());
@@ -397,11 +403,11 @@ mod tests {
     #[test]
     fn local_startup_fixture_owns_theme_dir_and_suppresses_unowned_effects() {
         let include_dir = tempfile::tempdir().expect("test include directory is available");
-        let mut config = CargoPortConfig::default();
-        config.lint.enabled = LintIndicator::Enabled;
-        config.tui.include_dirs = vec![include_dir.path().display().to_string()];
+        let mut cargo_port_config = CargoPortConfig::default();
+        cargo_port_config.lint.enabled = LintIndicator::Enabled;
+        cargo_port_config.tui.include_dirs = vec![include_dir.path().display().to_string()];
 
-        let app = make_local_startup_test_app(&[], &config);
+        let app = make_local_startup_test_app(&[], &cargo_port_config);
         let counts = app.startup_effect_counts();
         let effects = StartupEffects::local_startup_unit_test();
 

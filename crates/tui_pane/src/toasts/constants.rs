@@ -1,4 +1,6 @@
 // tui_pane src toasts format
+pub(super) const DEFAULT_MAX_VISIBLE_TOASTS: usize = 5;
+pub(super) const DEFAULT_TOAST_WIDTH: u16 = 60;
 pub(super) const ELLIPSIS: &str = "…";
 pub(super) const ELLIPSIS_WIDTH: usize = 1;
 /// All items included in the body — the toast renderer truncates based on

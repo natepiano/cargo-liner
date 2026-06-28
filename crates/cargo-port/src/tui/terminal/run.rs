@@ -97,7 +97,7 @@ pub fn run() -> ExitCode {
             return ExitCode::FAILURE;
         },
     };
-    let cargo_port_config = startup_settings.config.clone();
+    let cargo_port_config = startup_settings.cargo_port_config.clone();
     config::set_active_config(&cargo_port_config);
     let perf_log_path = std::env::temp_dir().join(PERF_LOG_FILE);
     let previous_perf_log_path = std::env::temp_dir().join(PREVIOUS_PERF_LOG_FILE);

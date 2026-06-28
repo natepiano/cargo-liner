@@ -121,7 +121,7 @@ impl AppBuilder<Inputs> {
             state: Inputs {
                 background_tx,
                 background_rx,
-                cargo_port_config: startup_settings.config,
+                cargo_port_config: startup_settings.cargo_port_config,
                 raw_projects: projects.to_vec(),
                 settings_store: startup_settings.store,
                 toast_settings: startup_settings.toast_settings,

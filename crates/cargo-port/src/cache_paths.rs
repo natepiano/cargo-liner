@@ -61,31 +61,31 @@ mod tests {
 
     #[test]
     fn empty_cache_root_uses_default() {
-        let config = CargoPortConfig::default();
+        let cargo_port_config = CargoPortConfig::default();
         assert_eq!(
-            configured_app_cache_root_for(&config),
+            configured_app_cache_root_for(&cargo_port_config),
             default_app_cache_root()
         );
     }
 
     #[test]
     fn relative_cache_root_extends_default_root() {
-        let mut config = CargoPortConfig::default();
-        config.cache.root = "custom-cache".to_string();
+        let mut cargo_port_config = CargoPortConfig::default();
+        cargo_port_config.cache.root = "custom-cache".to_string();
 
         assert_eq!(
-            configured_app_cache_root_for(&config),
+            configured_app_cache_root_for(&cargo_port_config),
             default_app_cache_root().join("custom-cache")
         );
     }
 
     #[test]
     fn absolute_cache_root_replaces_default_root() {
-        let mut config = CargoPortConfig::default();
-        config.cache.root = "/tmp/cargo-port-cache".to_string();
+        let mut cargo_port_config = CargoPortConfig::default();
+        cargo_port_config.cache.root = "/tmp/cargo-port-cache".to_string();
 
         assert_eq!(
-            configured_app_cache_root_for(&config),
+            configured_app_cache_root_for(&cargo_port_config),
             AbsolutePath::from("/tmp/cargo-port-cache")
         );
     }
