@@ -12304,6 +12304,33 @@ mod tests {
             );
         }
 
+        #[test]
+        fn successful_metadata_arrival_clears_confirm_verifying() {
+            let project_a = make_project(Some("a"), "~/never-real/a");
+            let mut app = make_app(std::slice::from_ref(&project_a));
+
+            let workspace_root = AbsolutePath::from(project_a.path().as_path().to_path_buf());
+            app.scan.set_confirm_verifying(Some(workspace_root.clone()));
+            let generation = app
+                .scan
+                .metadata_store_handle()
+                .lock()
+                .expect("store lock")
+                .next_generation(&workspace_root);
+
+            app.handle_bg_msg(BackgroundMsg::CargoMetadata {
+                workspace_root: workspace_root.clone(),
+                generation,
+                fingerprint: fake_fingerprint(),
+                result: Ok(fake_metadata(&workspace_root)),
+            });
+
+            assert!(
+                app.scan.confirm_verifying().is_none(),
+                "successful metadata arrival clears the Verifying flag"
+            );
+        }
+
         /// Race guard: an arrival stamped with a generation older than the
         /// current one is dropped. `metadata.seen` must not advance and the
         /// store must not upsert.
@@ -13482,9 +13509,8 @@ mod tests {
         fn request_clean_confirm_marks_verifying_when_no_metadata_covers_path() {
             // No metadata → nothing to verify against → flag stays Verifying
             // until metadata arrives. `request_clean_confirm` also spawns
-            // a cargo metadata refresh; we don't assert on the spawn here
-            // (the async task may race), but the `confirm_verifying` flag
-            // must be set synchronously.
+            // a cargo metadata refresh; the async task owns the eventual
+            // arrival/generation, so this test only pins the synchronous flag.
             let project = make_project(Some("demo"), "~/never-real/demo");
             let mut app = make_app(std::slice::from_ref(&project));
             let workspace_root = AbsolutePath::from(project.path().as_path().to_path_buf());
@@ -13496,26 +13522,6 @@ mod tests {
                 Some(&workspace_root),
                 "missing metadata → confirm opens in Verifying state, \
                  pending on this workspace root"
-            );
-
-            // Simulate the arrival: synthetic CargoMetadata Ok arrival must
-            // clear the Verifying flag — "Verifying target dir…" transitions
-            // to Ready on metadata arrival.
-            let generation = app
-                .scan
-                .metadata_store_handle()
-                .lock()
-                .expect("lock test store")
-                .next_generation(&workspace_root);
-            app.handle_bg_msg(BackgroundMsg::CargoMetadata {
-                workspace_root: workspace_root.clone(),
-                generation,
-                fingerprint: fake_fingerprint(),
-                result: Ok(fake_metadata(&workspace_root)),
-            });
-            assert!(
-                app.scan.confirm_verifying().is_none(),
-                "successful arrival clears the Verifying flag"
             );
         }
 
