@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Change `tui_pane::Modifiers` from a public bool-field struct to the framework's `ratatui::style::Modifier` bitflags alias; theme TOML still accepts `bold`, `italic`, `dim`, and `underline`.
+
 ## [0.2.1] - 2026-06-23
 
 ### Added

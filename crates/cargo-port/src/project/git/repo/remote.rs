@@ -2,11 +2,11 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use super::branches;
 use super::push;
 use super::push::PushState;
 use crate::config::CargoPortConfig;
 use crate::constants::GIT_REMOTE_SUFFIX;
+use crate::project::git::branches;
 use crate::project::git::checkout;
 use crate::project::git::command;
 use crate::project::git::constants::GIT_GET_URL_ARG;

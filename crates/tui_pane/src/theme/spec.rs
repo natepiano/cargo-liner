@@ -25,52 +25,7 @@ use toml::Value;
 use toml::map::Map;
 
 /// Style modifier flags carried by a [`StyleSpec`].
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "mirrors ratatui's bitflag layout one-to-one"
-)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Modifiers {
-    /// Apply `Modifier::BOLD`.
-    pub bold:      bool,
-    /// Apply `Modifier::ITALIC`.
-    pub italic:    bool,
-    /// Apply `Modifier::DIM`.
-    pub dim:       bool,
-    /// Apply `Modifier::UNDERLINED`.
-    pub underline: bool,
-}
-
-impl Modifiers {
-    /// `const`-constructible all-false [`Modifiers`] value, usable from
-    /// other `const fn`s (`Default::default()` is not `const`).
-    #[must_use]
-    pub const fn const_default() -> Self {
-        Self {
-            bold:      false,
-            italic:    false,
-            dim:       false,
-            underline: false,
-        }
-    }
-
-    fn into_ratatui(self) -> Modifier {
-        let mut m = Modifier::empty();
-        if self.bold {
-            m |= Modifier::BOLD;
-        }
-        if self.italic {
-            m |= Modifier::ITALIC;
-        }
-        if self.dim {
-            m |= Modifier::DIM;
-        }
-        if self.underline {
-            m |= Modifier::UNDERLINED;
-        }
-        m
-    }
-}
+pub type Modifiers = Modifier;
 
 /// Foreground color paired with style modifier flags.
 ///
@@ -91,31 +46,23 @@ impl StyleSpec {
     pub const fn from_color(color: Color) -> Self {
         Self {
             color,
-            modifiers: Modifiers::const_default(),
+            modifiers: Modifiers::empty(),
         }
+    }
+
+    /// Build a [`StyleSpec`] from a color plus composed modifier flags.
+    #[must_use]
+    pub const fn with_modifiers(color: Color, modifiers: Modifiers) -> Self {
+        Self { color, modifiers }
     }
 
     /// Build a [`StyleSpec`] from a color plus bold.
     #[must_use]
-    pub const fn bold(color: Color) -> Self {
-        Self {
-            color,
-            modifiers: Modifiers {
-                bold:      true,
-                italic:    false,
-                dim:       false,
-                underline: false,
-            },
-        }
-    }
+    pub const fn bold(color: Color) -> Self { Self::with_modifiers(color, Modifiers::BOLD) }
 
     /// Convert to a ratatui [`Style`] (foreground + modifier bits).
     #[must_use]
-    pub fn style(self) -> Style {
-        Style::default()
-            .fg(self.color)
-            .add_modifier(self.modifiers.into_ratatui())
-    }
+    pub fn style(self) -> Style { Style::default().fg(self.color).add_modifier(self.modifiers) }
 }
 
 impl<'de> Deserialize<'de> for StyleSpec {
@@ -170,16 +117,18 @@ impl<'de> Visitor<'de> for StyleSpecVisitor {
         if keys.contains(&"color".to_owned()) {
             // Full spec form.
             let mut color: Option<Color> = None;
-            let mut modifiers = Modifiers::const_default();
+            let mut modifiers = Modifiers::empty();
             for (k, v) in keys.into_iter().zip(values) {
                 match k.as_str() {
                     "color" => color = Some(parse_color_value(&v).map_err(A::Error::custom)?),
-                    "bold" => modifiers.bold = parse_bool(&v).map_err(A::Error::custom)?,
-                    "italic" => modifiers.italic = parse_bool(&v).map_err(A::Error::custom)?,
-                    "dim" => modifiers.dim = parse_bool(&v).map_err(A::Error::custom)?,
-                    "underline" => {
-                        modifiers.underline = parse_bool(&v).map_err(A::Error::custom)?;
-                    },
+                    "bold" => set_modifier(&mut modifiers, Modifiers::BOLD, &v)
+                        .map_err(A::Error::custom)?,
+                    "italic" => set_modifier(&mut modifiers, Modifiers::ITALIC, &v)
+                        .map_err(A::Error::custom)?,
+                    "dim" => set_modifier(&mut modifiers, Modifiers::DIM, &v)
+                        .map_err(A::Error::custom)?,
+                    "underline" => set_modifier(&mut modifiers, Modifiers::UNDERLINED, &v)
+                        .map_err(A::Error::custom)?,
                     other => {
                         return Err(A::Error::custom(format!(
                             "unknown StyleSpec field {other:?} — expected one \
@@ -206,6 +155,19 @@ impl<'de> Visitor<'de> for StyleSpecVisitor {
 fn parse_bool(v: &Value) -> Result<bool, String> {
     v.as_bool()
         .ok_or_else(|| format!("expected boolean, got {v}"))
+}
+
+fn set_modifier(
+    modifiers: &mut Modifiers,
+    modifier: Modifiers,
+    value: &Value,
+) -> Result<(), String> {
+    if parse_bool(value)? {
+        modifiers.insert(modifier);
+    } else {
+        modifiers.remove(modifier);
+    }
+    Ok(())
 }
 
 fn parse_color_value(value: &Value) -> Result<Color, String> {
@@ -279,4 +241,41 @@ fn parse_named_color(s: &str) -> Option<Color> {
         "White" => Color::White,
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn style_spec_accepts_composed_modifier_flags() {
+        let modifiers = Modifiers::BOLD | Modifiers::ITALIC;
+        let spec = StyleSpec::with_modifiers(Color::Yellow, modifiers);
+
+        assert_eq!(spec.modifiers, modifiers);
+        assert_eq!(spec.style().add_modifier, modifiers);
+    }
+
+    #[test]
+    fn style_spec_parses_legacy_modifier_fields_into_flags() {
+        let parsed = toml::from_str::<StyleSpec>(
+            r#"
+            color = "Yellow"
+            bold = true
+            italic = true
+            dim = false
+            underline = true
+            "#,
+        )
+        .ok()
+        .map(|spec| (spec.color, spec.modifiers));
+
+        assert_eq!(
+            parsed,
+            Some((
+                Color::Yellow,
+                Modifiers::BOLD | Modifiers::ITALIC | Modifiers::UNDERLINED,
+            ))
+        );
+    }
 }
