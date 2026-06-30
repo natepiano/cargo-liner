@@ -9,6 +9,7 @@ use super::client::ServiceSignal;
 use super::constants::GITHUB_PR_PAGE_CAP;
 use super::constants::GITHUB_PR_PAGE_SIZE;
 use crate::ci::OwnerRepo;
+use crate::constants::DEFAULT_MAIN_BRANCH;
 use crate::project::ProjectPrInfo;
 use crate::project::PullRequestCompleteness;
 use crate::project::PullRequestGoneReason;
@@ -461,7 +462,7 @@ impl HttpClient {
                 return (
                     Some(Ok((
                         all_nodes,
-                        default_branch.unwrap_or_else(|| "main".to_string()),
+                        default_branch.unwrap_or_else(|| DEFAULT_MAIN_BRANCH.to_string()),
                         PullRequestCompleteness::Complete,
                     ))),
                     signal,
@@ -480,7 +481,7 @@ impl HttpClient {
         (
             Some(Ok((
                 all_nodes,
-                default_branch.unwrap_or_else(|| "main".to_string()),
+                default_branch.unwrap_or_else(|| DEFAULT_MAIN_BRANCH.to_string()),
                 PullRequestCompleteness::Truncated { shown },
             ))),
             signal,

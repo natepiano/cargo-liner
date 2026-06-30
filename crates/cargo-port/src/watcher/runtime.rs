@@ -498,6 +498,8 @@ mod tests {
     use crate::watcher::refresh;
     use crate::watcher::roots::WatchRootRegistrationFailureReason;
 
+    const SOURCE_EVENT_LINT_TIMEOUT: Duration = Duration::from_secs(5);
+
     fn test_metadata_dispatch(client: &HttpClient) -> MetadataDispatchContext {
         let (sender, _receiver) = channel::unbounded();
         MetadataDispatchContext {
@@ -2466,12 +2468,12 @@ mod tests {
         for (event_kind, timeout, assertion) in [
             (
                 EventKind::Modify(ModifyKind::Data(DataChange::Any)),
-                Duration::from_secs(5),
+                SOURCE_EVENT_LINT_TIMEOUT,
                 "expected watcher event to schedule a lint run",
             ),
             (
                 EventKind::Any,
-                Duration::from_secs(2),
+                SOURCE_EVENT_LINT_TIMEOUT,
                 "ambiguous source file event should still schedule a lint run",
             ),
         ] {

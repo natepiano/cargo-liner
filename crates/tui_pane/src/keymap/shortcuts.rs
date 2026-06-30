@@ -117,7 +117,7 @@ mod tests {
         #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
         pub enum FooAction {
             Activate => ("activate", "activate", "Activate row");
-            Clean    => ("clean",    "clean",    "Clean target dir");
+            Refresh  => ("refresh",  "refresh",  "Refresh row");
         }
     }
 
@@ -148,7 +148,7 @@ mod tests {
         fn defaults() -> Bindings<Self::Actions> {
             crate::bindings! {
                 KeyCode::Enter => FooAction::Activate,
-                'c' => FooAction::Clean,
+                'r' => FooAction::Refresh,
             }
         }
 
@@ -170,7 +170,7 @@ mod tests {
             map.action_for(&KeyCode::Enter.into()),
             Some(FooAction::Activate),
         );
-        assert_eq!(map.action_for(&'c'.into()), Some(FooAction::Clean));
+        assert_eq!(map.action_for(&'r'.into()), Some(FooAction::Refresh));
     }
 
     #[test]
@@ -181,7 +181,10 @@ mod tests {
             pane.visibility(FooAction::Activate, &app),
             Visibility::Visible,
         );
-        assert_eq!(pane.visibility(FooAction::Clean, &app), Visibility::Visible);
+        assert_eq!(
+            pane.visibility(FooAction::Refresh, &app),
+            Visibility::Visible
+        );
     }
 
     #[test]
@@ -202,7 +205,7 @@ mod tests {
             pane.bar_slots(&app),
             vec![
                 (BarRegion::PaneAction, BarSlot::Single(FooAction::Activate)),
-                (BarRegion::PaneAction, BarSlot::Single(FooAction::Clean)),
+                (BarRegion::PaneAction, BarSlot::Single(FooAction::Refresh)),
             ],
         );
     }
