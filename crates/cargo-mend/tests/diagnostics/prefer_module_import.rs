@@ -1219,6 +1219,97 @@ fn example() -> String {
 }
 
 #[test]
+fn skips_function_import_when_name_collides_with_other_module() {
+    // Two distinct modules share the bare name `geometry`:
+    //   - `crate::overlay::geometry` (imported as `use super::geometry;`)
+    //   - `crate::geometry` (source of the function `extract_vertices`)
+    // Rewriting the function import to `use crate::geometry;` would collide with
+    // the existing `geometry` import (E0252) and misroute the call (E0425), so
+    // mend must leave the function import untouched.
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "name_collision_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/geometry")).expect("create src/geometry");
+    fs::create_dir_all(temp.path().join("src/overlay/geometry"))
+        .expect("create src/overlay/geometry");
+    fs::create_dir_all(temp.path().join("src/overlay/render")).expect("create src/overlay/render");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod geometry;\nmod overlay;\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/geometry/mod.rs"),
+        "pub(crate) fn extract_vertices() -> i32 { 0 }\n",
+    )
+    .expect("write crate::geometry");
+    fs::write(
+        temp.path().join("src/overlay/mod.rs"),
+        "mod geometry;\nmod render;\n",
+    )
+    .expect("write overlay mod");
+    fs::write(
+        temp.path().join("src/overlay/geometry/mod.rs"),
+        "pub(crate) struct Edge;\n",
+    )
+    .expect("write overlay::geometry");
+    fs::write(
+        temp.path().join("src/overlay/render/mod.rs"),
+        "mod bounds;\n",
+    )
+    .expect("write render mod");
+    fs::write(
+        temp.path().join("src/overlay/render/bounds.rs"),
+        r#"use super::super::geometry;
+use super::super::geometry::Edge;
+use crate::geometry::extract_vertices;
+
+fn example() -> (Edge, i32) {
+    let _ = geometry::Edge;
+    (Edge, extract_vertices())
+}
+"#,
+    )
+    .expect("write bounds");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let bounds =
+        fs::read_to_string(temp.path().join("src/overlay/render/bounds.rs")).expect("read fixed");
+    assert!(
+        bounds.contains("use crate::geometry::extract_vertices;"),
+        "colliding function import must be left untouched, got:\n{bounds}"
+    );
+    assert!(
+        !bounds.contains("use crate::geometry;"),
+        "must not introduce a duplicate `geometry` module import, got:\n{bounds}"
+    );
+    assert!(
+        bounds.contains("extract_vertices()") && !bounds.contains("geometry::extract_vertices()"),
+        "call site must stay bare, got:\n{bounds}"
+    );
+}
+
+#[test]
 fn inline_call_inserts_use_and_qualifies() {
     let temp = tempdir().expect("create temp fixture dir");
 

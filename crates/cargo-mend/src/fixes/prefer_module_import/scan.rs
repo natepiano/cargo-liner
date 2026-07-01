@@ -150,12 +150,25 @@ fn scan_file(
         return Ok((Vec::new(), Vec::new()));
     }
 
+    let existing_module_imports =
+        collect_existing_module_imports(&syntax, source_root, &current_module_path);
+
     let mut module_to_functions: BTreeMap<String, Vec<RawCandidate>> = BTreeMap::new();
     for candidate in detector.candidates {
         module_to_functions
             .entry(candidate.module_path.clone())
             .or_default()
             .push(candidate);
+    }
+
+    drop_colliding_candidates(
+        &existing_module_imports,
+        &mut module_to_functions,
+        &mut inline_detector.candidates,
+    );
+
+    if module_to_functions.is_empty() && inline_detector.candidates.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
     }
 
     let imported_names: BTreeSet<String> = module_to_functions
@@ -176,9 +189,6 @@ fn scan_file(
             );
         }
     }
-
-    let existing_module_imports =
-        collect_existing_module_imports(&syntax, source_root, &current_module_path);
 
     let (mut findings, mut fixes) = build_findings_and_fixes(
         &file_context,
@@ -244,6 +254,51 @@ fn collect_existing_module_imports(
         }
     }
     modules
+}
+
+/// Drop candidates whose target module name is already bound in this file to a
+/// *different* module. Introducing `use <module>;` would collide with that
+/// existing import (E0252), and rewriting the call to `name::fn(...)` would
+/// resolve to the wrong module (E0425). Leave such imports untouched rather than
+/// emit an unfixable finding.
+fn drop_colliding_candidates(
+    existing_module_imports: &BTreeSet<Vec<String>>,
+    module_to_functions: &mut BTreeMap<String, Vec<RawCandidate>>,
+    inline_candidates: &mut Vec<InlineCallCandidate>,
+) {
+    module_to_functions.retain(|_, functions| {
+        functions.retain(|candidate| {
+            !module_name_collides(
+                existing_module_imports,
+                &candidate.module_name,
+                &candidate.absolute_module,
+            )
+        });
+        !functions.is_empty()
+    });
+    inline_candidates.retain(|candidate| {
+        !module_name_collides(
+            existing_module_imports,
+            &candidate.module_name,
+            &candidate.absolute_module,
+        )
+    });
+}
+
+/// True when the file already imports a *different* module under the same bare
+/// name that a prefer-module-import rewrite would introduce. Rewriting to
+/// `use <module>;` in that case duplicates the name (E0252) and misroutes the
+/// qualified call (E0425). The same-module case (`absolute_module` equal to an
+/// existing import) is handled separately by deleting the redundant import.
+fn module_name_collides(
+    existing_module_imports: &BTreeSet<Vec<String>>,
+    module_name: &str,
+    absolute_module: &[String],
+) -> bool {
+    existing_module_imports.iter().any(|imported| {
+        imported.last().map(String::as_str) == Some(module_name)
+            && imported.as_slice() != absolute_module
+    })
 }
 
 fn build_will_import_modules(
