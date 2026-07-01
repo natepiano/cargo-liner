@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.16.1] - 2026-07-01
 
 ### Fixed
 - `prefer_module_import` no longer rewrites a function import to `use module;` when the file already imports a *different* module under that same bare name, which produced a duplicate-name error (E0252) and a misrouted call (E0425) and forced `cargo mend --fix` to roll back. When the target module name is already bound to another module, the function import is now left untouched instead. The prior fix only handled the case where the *same* module was already imported.
