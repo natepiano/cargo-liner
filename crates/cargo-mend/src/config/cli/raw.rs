@@ -16,11 +16,12 @@ use super::target::RawCargoCheckCli;
 use crate::compiler::CARGO_SUBCOMMAND_MEND;
 use crate::reporting::OutputFormat;
 
-pub(super) fn parse(after_help: &str) -> Cli {
-    let matches = RawCli::command()
-        .after_long_help(after_help.to_string())
-        .get_matches_from(normalized_args());
-    RawCli::from_arg_matches(&matches).map_or_else(|e| e.exit(), Cli::from)
+#[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
+#[command(next_help_heading = "Manifest Options")]
+struct RawManifestCli {
+    /// Path to mend.toml config file
+    #[arg(long, value_name = "PATH")]
+    config: Option<PathBuf>,
 }
 
 #[derive(Parser, Debug)]
@@ -59,14 +60,6 @@ struct RawCli {
     fix: RawFixCli,
 }
 
-#[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
-#[command(next_help_heading = "Manifest Options")]
-struct RawManifestCli {
-    /// Path to mend.toml config file
-    #[arg(long, value_name = "PATH")]
-    config: Option<PathBuf>,
-}
-
 impl From<RawCli> for Cli {
     fn from(raw: RawCli) -> Self {
         Self {
@@ -94,6 +87,13 @@ impl From<RawCli> for Cli {
 
 impl From<RawManifestCli> for ManifestCli {
     fn from(raw: RawManifestCli) -> Self { Self { config: raw.config } }
+}
+
+pub(super) fn parse(after_help: &str) -> Cli {
+    let matches = RawCli::command()
+        .after_long_help(after_help.to_string())
+        .get_matches_from(normalized_args());
+    RawCli::from_arg_matches(&matches).map_or_else(|e| e.exit(), Cli::from)
 }
 
 fn normalized_args() -> Vec<OsString> {

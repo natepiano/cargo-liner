@@ -15,13 +15,12 @@ use toml_edit::value;
 
 use super::constants::APP_NAME;
 use super::constants::GLOBAL_CONFIG_FILE;
+use super::constants::PRELUDE_COMMENT;
+use super::constants::PRELUDE_KEY;
 use super::diagnostic_code::DiagnosticCode;
 use super::diagnostics_config::DiagnosticsConfig;
 use super::prelude_pub_mod::PreludePubMod;
 use crate::constants::HELP_URL_BASE;
-
-const PRELUDE_KEY: &str = "allow_prelude_pub_mod";
-const PRELUDE_COMMENT: &str = "# default-on; set false to review crate-root prelude modules too\n";
 
 /// Resolved global configuration: the diagnostics defaults plus the prelude switch.
 #[derive(Debug, Default)]
