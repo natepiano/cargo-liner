@@ -41,13 +41,16 @@ pub(crate) const DIAGNOSTIC_SEVERITY_ERROR_PREFIX: &str = "error:";
 pub(crate) const DIAGNOSTIC_SEVERITY_WARNING_PREFIX: &str = "warning:";
 
 // driver-ipc environment variables
+pub(crate) const CARGO_PRIMARY_PACKAGE_ENV: &str = "CARGO_PRIMARY_PACKAGE";
 pub(crate) const CONFIG_FINGERPRINT_ENV: &str = "MEND_CONFIG_FINGERPRINT";
 pub(crate) const CONFIG_JSON_ENV: &str = "MEND_CONFIG_JSON";
 pub(crate) const CONFIG_ROOT_ENV: &str = "MEND_CONFIG_ROOT";
 pub(crate) const DRIVER_ENV: &str = "MEND_DRIVER";
 pub(crate) const DRIVER_ENV_ENABLED: &str = "1";
 pub(crate) const FINDINGS_DIR_ENV: &str = "MEND_FINDINGS_DIR";
+pub(crate) const PASSTHROUGH_RUSTC_WRAPPER_ENV: &str = "MEND_PASSTHROUGH_RUSTC_WRAPPER";
 pub(crate) const PACKAGE_ROOT_ENV: &str = "CARGO_MANIFEST_DIR";
+pub(crate) const RUSTC_WRAPPER_ENV: &str = "RUSTC_WRAPPER";
 pub(crate) const RUSTC_WORKSPACE_WRAPPER_ENV: &str = "RUSTC_WORKSPACE_WRAPPER";
 pub(crate) const SCOPE_FINGERPRINT_ENV: &str = "MEND_SCOPE_FINGERPRINT";
 

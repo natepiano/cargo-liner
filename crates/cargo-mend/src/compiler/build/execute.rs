@@ -1,5 +1,6 @@
 use std::collections::hash_map::DefaultHasher;
 use std::env;
+use std::ffi::OsString;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::path::Path;
@@ -28,7 +29,9 @@ use crate::compiler::constants::CONFIG_ROOT_ENV;
 use crate::compiler::constants::DRIVER_ENV;
 use crate::compiler::constants::DRIVER_ENV_ENABLED;
 use crate::compiler::constants::FINDINGS_DIR_ENV;
+use crate::compiler::constants::PASSTHROUGH_RUSTC_WRAPPER_ENV;
 use crate::compiler::constants::RUSTC_WORKSPACE_WRAPPER_ENV;
+use crate::compiler::constants::RUSTC_WRAPPER_ENV;
 use crate::compiler::constants::SCOPE_FINGERPRINT_ENV;
 use crate::compiler::persistence;
 use crate::config::LoadedConfig;
@@ -144,8 +147,9 @@ fn run_cargo_check(
     command.arg(CARGO_SUBCOMMAND_CHECK);
     command.args(&cargo_plan.cargo_args);
 
+    configure_rustc_wrapper(&mut command, &current_exe);
+
     command
-        .env(RUSTC_WORKSPACE_WRAPPER_ENV, &current_exe)
         .env(DRIVER_ENV, DRIVER_ENV_ENABLED)
         .env(CONFIG_ROOT_ENV, &loaded_config.root)
         .env(
@@ -160,6 +164,23 @@ fn run_cargo_check(
 
     run_cargo_command(&mut command, output_mode, color_mode)
         .context("failed to run cargo check for mend")
+}
+
+fn configure_rustc_wrapper(command: &mut Command, current_exe: &Path) {
+    if let Some(rustc_wrapper) = non_empty_env_var(RUSTC_WRAPPER_ENV) {
+        command
+            .env(RUSTC_WRAPPER_ENV, current_exe)
+            .env(PASSTHROUGH_RUSTC_WRAPPER_ENV, rustc_wrapper)
+            .env_remove(RUSTC_WORKSPACE_WRAPPER_ENV);
+    } else {
+        command
+            .env(RUSTC_WORKSPACE_WRAPPER_ENV, current_exe)
+            .env_remove(PASSTHROUGH_RUSTC_WRAPPER_ENV);
+    }
+}
+
+fn non_empty_env_var(name: &str) -> Option<OsString> {
+    env::var_os(name).filter(|value| !value.is_empty())
 }
 
 fn scope_fingerprint_for(cargo_plan: &CargoCheckPlan) -> String {

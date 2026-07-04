@@ -14,6 +14,8 @@ use rustc_driver::Compilation;
 use rustc_interface::interface::Compiler;
 use rustc_middle::ty::TyCtxt;
 
+use super::constants::CARGO_PRIMARY_PACKAGE_ENV;
+use super::constants::PASSTHROUGH_RUSTC_WRAPPER_ENV;
 use super::constants::RUSTC_BIN;
 use super::settings::DriverSettings;
 use super::visibility;
@@ -64,6 +66,9 @@ fn driver_main_impl() -> Result<ExitCode> {
     let Ok(driver_settings) = DriverSettings::from_env() else {
         return passthrough_to_rustc(&wrapper_args);
     };
+    if should_passthrough_with_existing_wrapper() {
+        return passthrough_to_rustc(&wrapper_args);
+    }
 
     let rustc_args: Vec<String> = iter::once(RUSTC_BIN.to_string())
         .chain(
@@ -88,12 +93,14 @@ fn driver_main_impl() -> Result<ExitCode> {
     Ok(exit_code)
 }
 
+fn should_passthrough_with_existing_wrapper() -> bool {
+    passthrough_rustc_wrapper().is_some() && env::var_os(CARGO_PRIMARY_PACKAGE_ENV).is_none()
+}
+
 fn passthrough_to_rustc(wrapper_args: &[OsString]) -> Result<ExitCode> {
-    let rustc = wrapper_args
-        .get(1)
-        .context("compiler driver expected rustc path in wrapper arguments")?;
-    let status = Command::new(rustc)
-        .args(wrapper_args.iter().skip(2))
+    let invocation = PassthroughInvocation::new(wrapper_args, passthrough_rustc_wrapper())?;
+    let status = invocation
+        .command()
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -102,6 +109,43 @@ fn passthrough_to_rustc(wrapper_args: &[OsString]) -> Result<ExitCode> {
     Ok(exit_code_from_i32(
         status.code().unwrap_or_else(|| i32::from(EXIT_CODE_ERROR)),
     ))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct PassthroughInvocation {
+    program: OsString,
+    args:    Vec<OsString>,
+}
+
+impl PassthroughInvocation {
+    fn new(wrapper_args: &[OsString], rustc_wrapper: Option<OsString>) -> Result<Self> {
+        let rustc = wrapper_args
+            .get(1)
+            .context("compiler driver expected rustc path in wrapper arguments")?;
+        let rustc_args = wrapper_args.iter().skip(2).cloned();
+
+        let invocation = match rustc_wrapper {
+            Some(program) => Self {
+                program,
+                args: iter::once(rustc.clone()).chain(rustc_args).collect(),
+            },
+            None => Self {
+                program: rustc.clone(),
+                args:    rustc_args.collect(),
+            },
+        };
+        Ok(invocation)
+    }
+
+    fn command(&self) -> Command {
+        let mut command = Command::new(&self.program);
+        command.args(&self.args);
+        command
+    }
+}
+
+fn passthrough_rustc_wrapper() -> Option<OsString> {
+    env::var_os(PASSTHROUGH_RUSTC_WRAPPER_ENV).filter(|value| !value.is_empty())
 }
 
 /// Compatibility trait for `rustc_driver::catch_with_exit_code` which returns
@@ -123,4 +167,57 @@ impl IntoExitCode for ExitCode {
 fn exit_code_from_i32(code: i32) -> ExitCode {
     let normalized_code = u8::try_from(code).unwrap_or(EXIT_CODE_ERROR);
     ExitCode::from(normalized_code)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+
+    use anyhow::Result;
+
+    use super::PassthroughInvocation;
+
+    #[test]
+    fn passthrough_invocation_uses_rustc_without_existing_wrapper() -> Result<()> {
+        let wrapper_args = wrapper_args();
+
+        let invocation = PassthroughInvocation::new(&wrapper_args, None)?;
+
+        assert_eq!(
+            invocation,
+            PassthroughInvocation {
+                program: OsString::from("/toolchain/bin/rustc"),
+                args:    vec![OsString::from("-vV")],
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn passthrough_invocation_chains_existing_wrapper_before_rustc() -> Result<()> {
+        let wrapper_args = wrapper_args();
+
+        let invocation =
+            PassthroughInvocation::new(&wrapper_args, Some(OsString::from("/cache/kache")))?;
+
+        assert_eq!(
+            invocation,
+            PassthroughInvocation {
+                program: OsString::from("/cache/kache"),
+                args:    vec![
+                    OsString::from("/toolchain/bin/rustc"),
+                    OsString::from("-vV")
+                ],
+            }
+        );
+        Ok(())
+    }
+
+    fn wrapper_args() -> Vec<OsString> {
+        vec![
+            OsString::from("/target/debug/cargo-mend"),
+            OsString::from("/toolchain/bin/rustc"),
+            OsString::from("-vV"),
+        ]
+    }
 }
