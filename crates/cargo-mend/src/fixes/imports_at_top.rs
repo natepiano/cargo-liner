@@ -6,7 +6,10 @@ use std::path::Path;
 use anyhow::Context;
 use anyhow::Result;
 use proc_macro2::LineColumn;
+use syn::Arm;
+use syn::Attribute;
 use syn::Block;
+use syn::Expr;
 use syn::Item;
 use syn::ItemMod;
 use syn::ItemUse;
@@ -90,6 +93,7 @@ fn scan_file(analysis_root: &Path, path: &Path) -> Result<(Vec<Finding>, Vec<Use
         path,
         display_path: &display_path,
         scope_stack: vec![root_scope],
+        gate_stack: Vec::new(),
         findings: Vec::new(),
         fixes: Vec::new(),
     };
@@ -100,12 +104,15 @@ fn scan_file(analysis_root: &Path, path: &Path) -> Result<(Vec<Finding>, Vec<Use
 }
 
 /// What the scope already exposes under a given bare name. Use-imports
-/// track the resolved path so a same-path lift dedupes cleanly. Other items
-/// (structs, fns, mods, consts, …) carry no path — any lift that would
-/// reintroduce their name at this scope is treated as a hard collision and
-/// the in-body `use` is left alone.
+/// track the resolved path so a same-path move dedupes cleanly, plus whether
+/// they are `#[cfg]`-gated — a conditional import must never dedup against or
+/// be added next to an unconditional one of the same name (both active at
+/// once is a duplicate-import error). Other items (structs, fns, mods,
+/// consts, …) carry no path — any move that would reintroduce their name at
+/// this scope is treated as a hard collision and the in-body `use` is left
+/// alone.
 enum ExistingBinding {
-    Use(String),
+    Use { full: String, gated: bool },
     Item,
 }
 
@@ -117,7 +124,7 @@ struct Scope {
     /// Indent (spaces and/or tabs) to prepend to inserted `use` lines.
     indent:           String,
     /// `bare_name -> what's already in scope under that name`. Used to
-    /// detect collisions and duplicates before lifting an in-body `use`.
+    /// detect collisions and duplicates before moving an in-body `use`.
     existing:         BTreeMap<String, ExistingBinding>,
 }
 
@@ -141,8 +148,9 @@ fn compute_scope_for_items(
         }
         match item {
             Item::Use(item_use) => {
+                let gated = any_cfg_attr(&item_use.attrs);
                 for (bare, full) in flatten_use_to_bare_paths(&item_use.tree) {
-                    existing.insert(bare, ExistingBinding::Use(full));
+                    existing.insert(bare, ExistingBinding::Use { full, gated });
                 }
                 let end = offset(offsets, item_use.span().end());
                 let end = if text.as_bytes().get(end) == Some(&b'\n') {
@@ -257,16 +265,107 @@ struct InBodyUseFinder<'a> {
     path:         &'a Path,
     display_path: &'a str,
     scope_stack:  Vec<Scope>,
+    /// Source text of the `#[cfg]`/`#[cfg_attr]` attributes on every enclosing
+    /// construct the visitor is currently inside, outermost first. A nested
+    /// `use` that moves to the module scope carries these attributes with it so
+    /// the import stays conditionally compiled. Emptied on entering an inline
+    /// module (an inner `use` moves only to that module's top, which the
+    /// module's own gate already wraps).
+    gate_stack:   Vec<String>,
     findings:     Vec<Finding>,
     fixes:        Vec<UseFix>,
 }
 
+/// Whether an attribute is `#[cfg(...)]` or `#[cfg_attr(...)]` — the two
+/// attributes that conditionally remove the code they annotate. Moving a
+/// `use` out of a construct carrying one would make a conditionally-compiled
+/// import unconditional.
+fn is_cfg_attr(attr: &Attribute) -> bool {
+    attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr")
+}
+
+fn any_cfg_attr(attrs: &[Attribute]) -> bool { attrs.iter().any(is_cfg_attr) }
+
+/// Attributes on a statement that gate a `use` nested inside it. Items are
+/// handled in [`InBodyUseFinder::visit_item`]; a `use` statement's own
+/// attributes are handled in [`InBodyUseFinder::try_emit_fix`].
+fn stmt_gate_attrs(stmt: &Stmt) -> &[Attribute] {
+    match stmt {
+        Stmt::Local(local) => &local.attrs,
+        Stmt::Macro(stmt_macro) => &stmt_macro.attrs,
+        Stmt::Expr(expr, _) => expr_gate_attrs(expr),
+        Stmt::Item(_) => &[],
+    }
+}
+
+/// Attributes on a block-bearing expression. Only expressions that introduce a
+/// block can hold a nested `use`, so other variants never gate one.
+fn expr_gate_attrs(expr: &Expr) -> &[Attribute] {
+    match expr {
+        Expr::Block(block) => &block.attrs,
+        Expr::Unsafe(block) => &block.attrs,
+        Expr::If(branch) => &branch.attrs,
+        Expr::Match(branch) => &branch.attrs,
+        Expr::Loop(loop_expr) => &loop_expr.attrs,
+        Expr::While(loop_expr) => &loop_expr.attrs,
+        Expr::ForLoop(loop_expr) => &loop_expr.attrs,
+        _ => &[],
+    }
+}
+
+/// Attributes on an item that can contain a `use` moving past it to the module
+/// scope. Modules are excluded: they open their own scope, so an inner `use`
+/// moves to the module top and stays within any gate on the module itself.
+fn item_gate_attrs(item: &Item) -> &[Attribute] {
+    match item {
+        Item::Fn(item) => &item.attrs,
+        Item::Impl(item) => &item.attrs,
+        Item::Trait(item) => &item.attrs,
+        Item::Const(item) => &item.attrs,
+        Item::Static(item) => &item.attrs,
+        _ => &[],
+    }
+}
+
+/// Whether moving an unconditional `use` of `full` would collide with what
+/// the scope already exposes under that bare name: an item, a gated use of any
+/// path (an unconditional sibling would double-import when the gate holds), or
+/// an unconditional use of a different path.
+fn unconditional_collision(existing: Option<&ExistingBinding>, full: &str) -> bool {
+    match existing {
+        Some(ExistingBinding::Item | ExistingBinding::Use { gated: true, .. }) => true,
+        Some(ExistingBinding::Use {
+            full: existing_full,
+            gated: false,
+        }) => existing_full != full,
+        None => false,
+    }
+}
+
 impl InBodyUseFinder<'_> {
+    /// Source text of `attr`, sliced from the original file so the exact
+    /// spelling (spacing, nested predicates) is preserved when it is carried
+    /// onto a moved `use`.
+    fn attr_text(&self, attr: &Attribute) -> String {
+        let span = attr.span();
+        let start = offset(self.offsets, span.start());
+        let end = offset(self.offsets, span.end());
+        self.text[start..end].to_string()
+    }
+
+    /// Source text of the `#[cfg]`/`#[cfg_attr]` attributes among `attrs`.
+    fn cfg_texts(&self, attrs: &[Attribute]) -> Vec<String> {
+        attrs
+            .iter()
+            .filter(|attr| is_cfg_attr(attr))
+            .map(|attr| self.attr_text(attr))
+            .collect()
+    }
+
     fn try_emit_fix(&mut self, use_item: &ItemUse) {
-        // Skip any attributed `use` — `#[cfg(...)]` and similar attributes
-        // can change whether the import is in scope, so lifting risks
-        // changing visibility. Conservative: skip every attributed use.
-        if !use_item.attrs.is_empty() {
+        // A non-`cfg` attribute on the `use` itself (`#[allow(...)]`, a doc
+        // comment, …) can change what the import means; leave those in place.
+        if use_item.attrs.iter().any(|attr| !is_cfg_attr(attr)) {
             return;
         }
 
@@ -274,48 +373,86 @@ impl InBodyUseFinder<'_> {
         if bare_paths.is_empty() {
             return;
         }
-        // Globs may shadow arbitrary names — don't lift.
+        // Globs may shadow arbitrary names — don't move.
         if bare_paths.iter().any(|(bare, _)| bare == "*") {
             return;
         }
+
+        // The gate the moved `use` must carry: every enclosing `#[cfg]` plus
+        // any `#[cfg]` on the `use` itself. Non-empty means the import is
+        // conditionally compiled and the attributes travel with it to the top.
+        let mut gate_attrs = self.gate_stack.clone();
+        gate_attrs.extend(self.cfg_texts(&use_item.attrs));
+        let gated = !gate_attrs.is_empty();
 
         let Some(scope) = self.scope_stack.last() else {
             return;
         };
 
-        // Collision: same bare name already in scope from a different
-        // source (an item definition, or a use with a different full path).
-        for (bare, full) in &bare_paths {
-            match scope.existing.get(bare) {
-                Some(ExistingBinding::Use(existing_full)) if existing_full != full => return,
-                Some(ExistingBinding::Item) => return,
-                _ => {},
-            }
+        // A gated `use` can't be reconciled with any existing binding of the
+        // same name (even the same path double-imports when both are active),
+        // so skip when the name is taken. An unconditional `use` skips only on
+        // a real collision. Leaving it in place is safe on every target.
+        let blocked = if gated {
+            bare_paths
+                .iter()
+                .any(|(bare, _)| scope.existing.contains_key(bare))
+        } else {
+            bare_paths
+                .iter()
+                .any(|(bare, full)| unconditional_collision(scope.existing.get(bare), full))
+        };
+        if blocked {
+            return;
         }
 
-        // Duplicate: every bare name already imported with the same full path.
-        // The fix collapses to a pure deletion (no insertion).
-        let all_duplicates = bare_paths.iter().all(|(bare, full)| {
-            matches!(scope.existing.get(bare), Some(ExistingBinding::Use(existing)) if existing == full)
-        });
+        // Duplicate: every bare name already imported unconditionally with the
+        // same full path. The fix collapses to a pure deletion (no insertion).
+        // A gated use is never a plain duplicate — its gate must be preserved.
+        let all_duplicates = !gated
+            && bare_paths.iter().all(|(bare, full)| {
+                matches!(
+                    scope.existing.get(bare),
+                    Some(ExistingBinding::Use { full: existing, gated: false }) if existing == full
+                )
+            });
 
+        self.emit_move(use_item, &bare_paths, &gate_attrs, gated, all_duplicates);
+    }
+
+    /// Push the finding and the insertion/deletion fixes for a movable `use`.
+    /// `gate_attrs` are prepended to the inserted line so the import stays
+    /// conditionally compiled; `all_duplicates` skips the insertion (the names
+    /// are already imported at the scope top, so the fix is a pure deletion).
+    fn emit_move(
+        &mut self,
+        use_item: &ItemUse,
+        bare_paths: &[(String, String)],
+        gate_attrs: &[String],
+        gated: bool,
+        all_duplicates: bool,
+    ) {
         let use_span = use_item.span();
-        let use_start = offset(self.offsets, use_span.start());
+        // `use_span` starts at the first attribute; the moved line is built
+        // from the `use` keyword onward so the carried gate is emitted cleanly.
+        let attr_start = offset(self.offsets, use_span.start());
+        let use_kw = use_item.use_token.span().start();
+        let use_kw_start = offset(self.offsets, use_kw);
         let use_end = offset(self.offsets, use_span.end());
         let use_end_with_nl = if self.text.as_bytes().get(use_end) == Some(&b'\n') {
             use_end + 1
         } else {
             use_end
         };
-        let line_start = line_start_offset(self.text, use_start);
-        let leading = &self.text[line_start..use_start];
+        let line_start = line_start_offset(self.text, attr_start);
+        let leading = &self.text[line_start..attr_start];
         let delete_start = if leading
             .chars()
             .all(|character| character == ' ' || character == '\t')
         {
             line_start
         } else {
-            use_start
+            attr_start
         };
 
         let group = bare_paths.first().map(|(bare, full)| ImportGroup {
@@ -326,16 +463,16 @@ impl InBodyUseFinder<'_> {
         let source_line = self
             .text
             .lines()
-            .nth(use_span.start().line.saturating_sub(1))
+            .nth(use_kw.line.saturating_sub(1))
             .unwrap_or_default()
             .to_string();
         self.findings.push(Finding {
             severity: Severity::Warning,
             diagnostic_code: DiagnosticCode::ImportsAtTop,
             path: self.display_path.to_string(),
-            line: use_span.start().line,
-            column: use_span.start().column + 1,
-            highlight_len: (use_end - use_start).max(1),
+            line: use_kw.line,
+            column: use_kw.column + 1,
+            highlight_len: (use_end - use_kw_start).max(1),
             source_line,
             item: None,
             message: IMPORTS_AT_TOP_MESSAGE.to_string(),
@@ -345,24 +482,14 @@ impl InBodyUseFinder<'_> {
         });
 
         if !all_duplicates {
-            let raw_use_text = &self.text[use_start..use_end];
-            let insertion = format!("{}{raw_use_text}\n", scope.indent);
-            self.fixes.push(UseFix {
-                path:         self.path.to_path_buf(),
-                start:        scope.insertion_offset,
-                end:          scope.insertion_offset,
-                replacement:  insertion,
-                import_group: group.clone(),
-            });
-            // Record the newly lifted names so later in-body uses in this
-            // pass see them as already imported.
-            if let Some(scope) = self.scope_stack.last_mut() {
-                for (bare, full) in &bare_paths {
-                    scope
-                        .existing
-                        .insert(bare.clone(), ExistingBinding::Use(full.clone()));
-                }
-            }
+            self.emit_insertion(
+                bare_paths,
+                gate_attrs,
+                gated,
+                use_kw_start,
+                use_end,
+                group.as_ref(),
+            );
         }
 
         self.fixes.push(UseFix {
@@ -373,9 +500,67 @@ impl InBodyUseFinder<'_> {
             import_group: group,
         });
     }
+
+    /// Insert the moved `use` (with its carried gate) at the scope top and
+    /// record the newly imported names so later in-body uses in this pass see
+    /// them as already imported. The gated flag rides along so a conditional
+    /// move never dedups against an unconditional import of the same name.
+    fn emit_insertion(
+        &mut self,
+        bare_paths: &[(String, String)],
+        gate_attrs: &[String],
+        gated: bool,
+        use_kw_start: usize,
+        use_end: usize,
+        group: Option<&ImportGroup>,
+    ) {
+        let Some(scope) = self.scope_stack.last() else {
+            return;
+        };
+        let indent = scope.indent.clone();
+        let insertion_offset = scope.insertion_offset;
+
+        let use_text = &self.text[use_kw_start..use_end];
+        let mut insertion = String::new();
+        for gate in gate_attrs {
+            insertion.push_str(&indent);
+            insertion.push_str(gate);
+            insertion.push('\n');
+        }
+        insertion.push_str(&indent);
+        insertion.push_str(use_text);
+        insertion.push('\n');
+        self.fixes.push(UseFix {
+            path:         self.path.to_path_buf(),
+            start:        insertion_offset,
+            end:          insertion_offset,
+            replacement:  insertion,
+            import_group: group.cloned(),
+        });
+
+        if let Some(scope) = self.scope_stack.last_mut() {
+            for (bare, full) in bare_paths {
+                scope.existing.insert(
+                    bare.clone(),
+                    ExistingBinding::Use {
+                        full: full.clone(),
+                        gated,
+                    },
+                );
+            }
+        }
+    }
 }
 
 impl<'ast> Visit<'ast> for InBodyUseFinder<'_> {
+    fn visit_item(&mut self, node: &'ast Item) {
+        let gates = self.cfg_texts(item_gate_attrs(node));
+        let pushed = gates.len();
+        self.gate_stack.extend(gates);
+        visit::visit_item(self, node);
+        self.gate_stack.truncate(self.gate_stack.len() - pushed);
+    }
+
     fn visit_item_mod(&mut self, node: &'ast ItemMod) {
         let Some((brace, items)) = &node.content else {
             return;
@@ -399,18 +584,40 @@ impl<'ast> Visit<'ast> for InBodyUseFinder<'_> {
         } else {
             scope
         };
+        // The module opens its own scope: an inner `use` moves only to this
+        // module's top, which the module's own gate already wraps, so gates
+        // from enclosing constructs no longer apply. Clear the stack for the
+        // body and restore it afterward.
+        let outer_gate_stack = std::mem::take(&mut self.gate_stack);
         self.scope_stack.push(scope);
         for item in items {
             self.visit_item(item);
         }
         self.scope_stack.pop();
+        self.gate_stack = outer_gate_stack;
+    }
+
+    fn visit_stmt(&mut self, node: &'ast Stmt) {
+        let gates = self.cfg_texts(stmt_gate_attrs(node));
+        let pushed = gates.len();
+        self.gate_stack.extend(gates);
+        visit::visit_stmt(self, node);
+        self.gate_stack.truncate(self.gate_stack.len() - pushed);
+    }
+
+    fn visit_arm(&mut self, node: &'ast Arm) {
+        let gates = self.cfg_texts(&node.attrs);
+        let pushed = gates.len();
+        self.gate_stack.extend(gates);
+        visit::visit_arm(self, node);
+        self.gate_stack.truncate(self.gate_stack.len() - pushed);
     }
 
     fn visit_block(&mut self, node: &'ast Block) {
         for stmt in &node.stmts {
             match stmt {
                 Stmt::Item(Item::Use(use_item)) => self.try_emit_fix(use_item),
-                _ => visit::visit_stmt(self, stmt),
+                _ => self.visit_stmt(stmt),
             }
         }
     }
