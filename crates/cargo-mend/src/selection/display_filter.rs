@@ -32,12 +32,6 @@ pub(crate) enum DisplayFilter {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LibraryTargetSelection {
-    Included,
-    Omitted,
-}
-
 impl DisplayFilter {
     pub(crate) fn from_cli(cli: &CargoCheckCli, packages: &[PackageMetadata]) -> Self {
         let asks_for_all = cli.target_selections.contains(&TargetSelection::All);
@@ -138,6 +132,12 @@ impl DisplayFilter {
             .retain(|finding| self.allows(Path::new(&finding.path)));
         report.refresh_summary();
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LibraryTargetSelection {
+    Included,
+    Omitted,
 }
 
 fn target_directory(target: &TargetMetadata) -> PathBuf {

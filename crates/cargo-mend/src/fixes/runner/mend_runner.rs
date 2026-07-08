@@ -28,6 +28,29 @@ pub(crate) struct MendRunner<'a> {
     pub(super) output_format: OutputFormat,
 }
 
+impl<'a> MendRunner<'a> {
+    pub const fn new(
+        selection: &'a Selection,
+        cargo_plan: &'a CargoCheckPlan,
+        loaded_config: &'a LoadedConfig,
+        color_mode: ColorMode,
+        output_format: OutputFormat,
+    ) -> Self {
+        Self {
+            selection,
+            cargo_plan,
+            loaded_config,
+            color_mode,
+            output_format,
+        }
+    }
+
+    pub fn run(&self, operation_mode: OperationMode) -> Result<ExecutionOutcome, MendFailure> {
+        let planned = self.plan(operation_mode)?;
+        self.execute(planned)
+    }
+}
+
 pub(super) struct RunPlan {
     pub(super) operation_mode:            OperationMode,
     pub(super) report:                    Report,
@@ -68,28 +91,5 @@ impl RunPlan {
             imports_at_top:   self.imports_at_top_scan.as_ref(),
             pub_use:          self.pub_use_scan.as_ref(),
         }
-    }
-}
-
-impl<'a> MendRunner<'a> {
-    pub const fn new(
-        selection: &'a Selection,
-        cargo_plan: &'a CargoCheckPlan,
-        loaded_config: &'a LoadedConfig,
-        color_mode: ColorMode,
-        output_format: OutputFormat,
-    ) -> Self {
-        Self {
-            selection,
-            cargo_plan,
-            loaded_config,
-            color_mode,
-            output_format,
-        }
-    }
-
-    pub fn run(&self, operation_mode: OperationMode) -> Result<ExecutionOutcome, MendFailure> {
-        let planned = self.plan(operation_mode)?;
-        self.execute(planned)
     }
 }

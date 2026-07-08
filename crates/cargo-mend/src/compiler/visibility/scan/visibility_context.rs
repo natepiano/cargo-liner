@@ -24,12 +24,6 @@ use crate::compiler::visibility::source;
 use crate::compiler::visibility::use_sites;
 use crate::reporting::CompilerWarningFacts;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ItemCategory {
-    Module,
-    NonModule,
-}
-
 pub struct VisibilityContext<'a, 'tcx> {
     pub tcx:                    TyCtxt<'tcx>,
     pub settings:               &'a DriverSettings,
@@ -37,6 +31,12 @@ pub struct VisibilityContext<'a, 'tcx> {
     pub root_module:            &'a Path,
     pub effective_visibilities: &'a EffectiveVisibilities,
     pub source_cache:           &'a SourceCache,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemCategory {
+    Module,
+    NonModule,
 }
 
 pub struct ItemInfo<'a> {

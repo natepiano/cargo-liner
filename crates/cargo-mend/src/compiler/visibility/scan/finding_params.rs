@@ -11,18 +11,6 @@ use crate::config::DiagnosticCode;
 use crate::reporting::FixSupport;
 use crate::reporting::Severity;
 
-pub struct SuspiciousPubInput<'a> {
-    pub def_id:            LocalDefId,
-    pub file_path:         &'a Path,
-    pub config_rel_path:   Option<&'a str>,
-    pub parent_visibility: ParentVisibility,
-    pub module_location:   ModuleLocation,
-    pub crate_kind:        CrateKind,
-    pub kind_label:        Option<&'static str>,
-    pub name:              Option<&'a str>,
-    pub highlight_span:    Span,
-}
-
 pub struct FindingParams {
     pub severity:                Severity,
     pub diagnostic_code:         DiagnosticCode,
@@ -33,6 +21,18 @@ pub struct FindingParams {
     pub related:                 Option<String>,
     pub item_def_path:           Option<String>,
     pub narrower_scope_def_path: Option<String>,
+}
+
+pub struct SuspiciousPubInput<'a> {
+    pub def_id:            LocalDefId,
+    pub file_path:         &'a Path,
+    pub config_rel_path:   Option<&'a str>,
+    pub parent_visibility: ParentVisibility,
+    pub module_location:   ModuleLocation,
+    pub crate_kind:        CrateKind,
+    pub kind_label:        Option<&'static str>,
+    pub name:              Option<&'a str>,
+    pub highlight_span:    Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

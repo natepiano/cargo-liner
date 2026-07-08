@@ -115,9 +115,10 @@ pub(super) fn stream_cargo_stderr(
     })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum ProgressStatus {
     Active,
+    #[default]
     Inactive,
 }
 
@@ -308,29 +309,29 @@ mod tests {
 
     #[derive(Default)]
     struct ProgressRecorder {
-        active:  bool,
-        notices: Vec<String>,
-        stops:   usize,
+        progress_status: ProgressStatus,
+        notices:         Vec<String>,
+        stops:           usize,
     }
 
     impl ProgressRecorder {
         const fn active() -> Self {
             Self {
-                active:  true,
-                notices: Vec::new(),
-                stops:   0,
+                progress_status: ProgressStatus::Active,
+                notices:         Vec::new(),
+                stops:           0,
             }
         }
     }
 
     impl ProgressDisplay for ProgressRecorder {
-        fn is_active(&self) -> bool { self.active }
+        fn is_active(&self) -> bool { matches!(self.progress_status, ProgressStatus::Active) }
 
         fn write_status_notice(&mut self, notice: &str) { self.notices.push(notice.to_string()); }
 
         fn stop_for_forwarded_output(&mut self) {
             self.stops += 1;
-            self.active = false;
+            self.progress_status = ProgressStatus::Inactive;
         }
     }
 
@@ -427,7 +428,7 @@ mod tests {
 
         assert_eq!(progress.stops, 1);
         assert!(progress.notices.is_empty());
-        assert!(!progress.active);
+        assert_eq!(progress.progress_status, ProgressStatus::Inactive);
     }
 
     #[test]
@@ -460,6 +461,6 @@ mod tests {
             ]
         );
         assert_eq!(progress.stops, 0);
-        assert!(progress.active);
+        assert_eq!(progress.progress_status, ProgressStatus::Active);
     }
 }
