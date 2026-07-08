@@ -5,9 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.16.2] - 2026-07-08
 
 ### Fixed
+- `cargo mend` now preserves an existing `RUSTC_WRAPPER` (e.g. `kache`, `sccache`) instead of dropping it. When a wrapper is set, dependency compilations are passed through to it (chained ahead of `rustc`) and only the primary package is intercepted for analysis, so cached artifacts are reused instead of every dependency being recompiled under the bare compiler.
 - `imports_at_top` no longer strips the `#[cfg]` gate when it moves a conditionally-compiled `use` to the file top. A `use` nested in a `#[cfg]`-gated block (the winit `#[cfg(target_os = "…")] let raw = { use winit::platform::…; … }` pattern) or carrying its own `#[cfg]` was moved unconditionally, so the other targets' imports became active on the current platform, failed to resolve (E0432), and forced `cargo mend --fix` to roll back. The moved import now carries the enclosing block's `#[cfg]` (or its own) with it, staying conditionally compiled; the gated block is left in place minus the `use`.
 
 ## [0.16.1] - 2026-07-01
