@@ -46,12 +46,51 @@ use super::read_write;
 use super::run_commands_for_project;
 use super::status;
 use super::thread;
+use crate::lint;
 
 pub(super) struct ProjectWorker {
     pub(super) stop:       Arc<AtomicBool>,
     pub(super) trigger_tx: StdSender<LintTriggerEvent>,
     pub(super) child:      ChildSlot,
     pub(super) handle:     JoinHandle<()>,
+}
+
+/// Shared pause state read by every lint worker.
+///
+/// The global flag stops all workers. The set holds workspace or package roots
+/// paused independently of that global switch.
+#[derive(Default)]
+pub(super) struct PauseState {
+    globally_paused: AtomicBool,
+    paused_projects: Mutex<HashSet<AbsolutePath>>,
+}
+
+impl PauseState {
+    pub(super) fn pause_all(&self) { self.globally_paused.store(true, Ordering::Relaxed); }
+
+    pub(super) fn resume_all(&self) { self.globally_paused.store(false, Ordering::Relaxed); }
+
+    pub(super) fn is_globally_paused(&self) -> bool { self.globally_paused.load(Ordering::Relaxed) }
+
+    pub(super) fn pause_project(&self, project_root: &AbsolutePath) {
+        if let Ok(mut paused_projects) = self.paused_projects.lock() {
+            paused_projects.insert(project_root.clone());
+        }
+    }
+
+    pub(super) fn resume_project(&self, project_root: &AbsolutePath) {
+        if let Ok(mut paused_projects) = self.paused_projects.lock() {
+            paused_projects.remove(project_root);
+        }
+    }
+
+    pub(super) fn is_project_paused(&self, project_root: &AbsolutePath) -> bool {
+        self.is_globally_paused()
+            || self
+                .paused_projects
+                .lock()
+                .is_ok_and(|paused_projects| paused_projects.contains(project_root))
+    }
 }
 
 pub fn spawn(
@@ -71,6 +110,8 @@ pub fn spawn(
     let cache_size_bytes = cargo_port_config.lint.cache_size_bytes().unwrap_or(None);
     let lint = cargo_port_config.lint.clone();
     let (supervisor_sender, supervisor_receiver) = mpsc::channel();
+    let pause_state = Arc::new(PauseState::default());
+    let supervisor_pause_state = Arc::clone(&pause_state);
     let supervisor = thread::spawn(move || {
         supervisor_loop(
             &supervisor_receiver,
@@ -78,6 +119,7 @@ pub fn spawn(
             &lint,
             cache_size_bytes,
             &background_tx,
+            &supervisor_pause_state,
         );
     });
     #[cfg(test)]
@@ -85,7 +127,10 @@ pub fn spawn(
     #[cfg(not(test))]
     drop(supervisor);
     SpawnResult {
-        handle: Some(RuntimeHandle { supervisor_sender }),
+        handle: Some(RuntimeHandle {
+            supervisor_sender,
+            pause_state,
+        }),
         warning: None,
         #[cfg(test)]
         supervisor,
@@ -98,6 +143,7 @@ fn supervisor_loop(
     lint: &LintConfig,
     cache_size_bytes: Option<u64>,
     background_tx: &Sender<BackgroundMsg>,
+    pause_state: &Arc<PauseState>,
 ) {
     let mut workers: HashMap<AbsolutePath, ProjectWorker> = HashMap::new();
     // Lazy hydration: the cache starts empty and `cached_status_for_project`
@@ -108,14 +154,13 @@ fn supervisor_loop(
     // for ~2s before it could process a single registration.
     let status_cache: Arc<Mutex<HashMap<String, CachedLintStatus>>> =
         Arc::new(Mutex::new(HashMap::new()));
-    let paused = Arc::new(AtomicBool::new(false));
     let catch_up: Arc<Mutex<HashSet<AbsolutePath>>> = Arc::new(Mutex::new(HashSet::new()));
     let worker_config = WorkerConfig {
         cache_root: cache_root.clone(),
         commands: lint.resolved_commands(),
         cache_size_bytes,
         status_cache: Arc::clone(&status_cache),
-        paused: Arc::clone(&paused),
+        pause_state: Arc::clone(pause_state),
         catch_up: Arc::clone(&catch_up),
     };
 
@@ -124,6 +169,7 @@ fn supervisor_loop(
             Ok(SupervisorMsg::SyncProjects { projects }) => {
                 emit_current_statuses(&projects, &status_cache, cache_root, background_tx);
                 let desired = desired_projects(lint, &projects);
+                sync_persisted_project_pauses(pause_state, cache_root, desired.keys());
                 reconcile_workers(
                     &mut workers,
                     desired,
@@ -143,6 +189,7 @@ fn supervisor_loop(
                     "lint_supervisor_register_project"
                 );
                 if accepted {
+                    sync_persisted_project_pause(pause_state, cache_root, &abs_path);
                     workers.entry(abs_path.clone()).or_insert_with(|| {
                         spawn_project_worker(
                             project.project_label.clone(),
@@ -189,8 +236,14 @@ fn supervisor_loop(
                     );
                 }
             },
-            Ok(SupervisorMsg::Pause) => pause_workers(&paused, &workers),
-            Ok(SupervisorMsg::Resume) => resume_workers(&paused, &catch_up, &workers),
+            Ok(SupervisorMsg::Pause) => pause_all_workers(pause_state, &workers),
+            Ok(SupervisorMsg::Resume) => resume_all_workers(pause_state, &catch_up, &workers),
+            Ok(SupervisorMsg::PauseProject { project_root }) => {
+                pause_project_workers(pause_state, &project_root, &workers);
+            },
+            Ok(SupervisorMsg::ResumeProject { project_root }) => {
+                resume_project_workers(pause_state, &project_root, &catch_up, &workers);
+            },
             Err(_) => {
                 for (_, worker) in workers.drain() {
                     stop_worker(worker);
@@ -198,6 +251,40 @@ fn supervisor_loop(
                 return;
             },
         }
+    }
+}
+
+/// Refresh the in-memory project pause set from the markers belonging to the
+/// projects a runtime now owns. A runtime swap starts with an empty set, so
+/// this restores individual pauses before any new worker can run lint.
+fn sync_persisted_project_pauses<'a>(
+    pause_state: &PauseState,
+    cache_root: &Path,
+    project_roots: impl Iterator<Item = &'a AbsolutePath>,
+) {
+    let project_roots: HashSet<AbsolutePath> = project_roots.cloned().collect();
+    let persisted_pauses: HashSet<AbsolutePath> = project_roots
+        .iter()
+        .filter(|project_root| lint::is_project_set_under(cache_root, project_root.as_path()))
+        .cloned()
+        .collect();
+    let Ok(mut paused_projects) = pause_state.paused_projects.lock() else {
+        return;
+    };
+    *paused_projects = persisted_pauses;
+}
+
+/// Refresh one persisted project pause before its newly discovered worker can
+/// start an immediate discovery lint.
+fn sync_persisted_project_pause(
+    pause_state: &PauseState,
+    cache_root: &Path,
+    project_root: &AbsolutePath,
+) {
+    if lint::is_project_set_under(cache_root, project_root.as_path()) {
+        pause_state.pause_project(project_root);
+    } else {
+        pause_state.resume_project(project_root);
     }
 }
 
@@ -277,9 +364,9 @@ pub(super) struct WorkerConfig {
     pub(super) commands:         Vec<LintCommandConfig>,
     pub(super) cache_size_bytes: Option<u64>,
     pub(super) status_cache:     Arc<Mutex<HashMap<String, CachedLintStatus>>>,
-    /// Set while lint is paused. Every worker reads it before starting a run
-    /// and bails mid-run when a pause kills its child.
-    pub(super) paused:           Arc<AtomicBool>,
+    /// Every worker reads this before starting a run and bails mid-run when a
+    /// global or project pause kills its child.
+    pub(super) pause_state:      Arc<PauseState>,
     /// Projects whose runs were killed or whose triggers arrived while paused.
     /// Drained on resume to re-dispatch the catch-up runs.
     pub(super) catch_up:         Arc<Mutex<HashSet<AbsolutePath>>>,
@@ -398,7 +485,7 @@ pub(super) fn stop_worker(worker: ProjectWorker) {
 }
 
 /// Kill a worker's in-flight child without stopping the worker thread. Used by
-/// the pause path: the worker stays alive and idle, gated by the `paused` flag.
+/// the pause path: the worker stays alive and idle, gated by `PauseState`.
 fn kill_worker_child(child: &ChildSlot) {
     if let Ok(mut slot) = child.lock()
         && let Some(mut running_child) = slot.take()
@@ -433,29 +520,65 @@ fn remember_catch_up(catch_up: &Mutex<HashSet<AbsolutePath>>, project_root: &Abs
     }
 }
 
-/// Enter the paused state: stop accepting new runs and kill every in-flight
-/// child. Workers stay alive and idle, gated by `paused`.
-fn pause_workers(paused: &AtomicBool, workers: &HashMap<AbsolutePath, ProjectWorker>) {
-    paused.store(true, Ordering::Relaxed);
+/// Enter the global paused state: stop every worker and kill in-flight runs.
+fn pause_all_workers(pause_state: &PauseState, workers: &HashMap<AbsolutePath, ProjectWorker>) {
+    pause_state.pause_all();
     for worker in workers.values() {
         kill_worker_child(&worker.child);
     }
 }
 
-/// Leave the paused state and re-dispatch a `CatchUp`-origin run for every
-/// project remembered while paused (killed mid-run or triggered by a file
-/// change). Mirrors the startup staleness sweep's `Startup` trigger.
-fn resume_workers(
-    paused: &AtomicBool,
+/// Pause one lint-owning project while leaving every other worker runnable.
+fn pause_project_workers(
+    pause_state: &PauseState,
+    project_root: &AbsolutePath,
+    workers: &HashMap<AbsolutePath, ProjectWorker>,
+) {
+    pause_state.pause_project(project_root);
+    if let Some(worker) = workers.get(project_root) {
+        kill_worker_child(&worker.child);
+    }
+}
+
+/// Leave the global paused state and resume projects that have no individual
+/// pause marker.
+fn resume_all_workers(
+    pause_state: &PauseState,
     catch_up: &Mutex<HashSet<AbsolutePath>>,
     workers: &HashMap<AbsolutePath, ProjectWorker>,
 ) {
-    paused.store(false, Ordering::Relaxed);
+    pause_state.resume_all();
+    resume_catch_up_workers(pause_state, catch_up, workers);
+}
+
+/// Leave one project's paused state. A global pause still keeps its catch-up
+/// run queued until all lints resume.
+fn resume_project_workers(
+    pause_state: &PauseState,
+    project_root: &AbsolutePath,
+    catch_up: &Mutex<HashSet<AbsolutePath>>,
+    workers: &HashMap<AbsolutePath, ProjectWorker>,
+) {
+    pause_state.resume_project(project_root);
+    resume_catch_up_workers(pause_state, catch_up, workers);
+}
+
+/// Re-dispatch remembered work when its project is no longer paused. Catch-up
+/// work for another individually paused project remains queued.
+fn resume_catch_up_workers(
+    pause_state: &PauseState,
+    catch_up: &Mutex<HashSet<AbsolutePath>>,
+    workers: &HashMap<AbsolutePath, ProjectWorker>,
+) {
     let pending = catch_up
         .lock()
         .map(|mut set| std::mem::take(&mut *set))
         .unwrap_or_default();
     for project_root in pending {
+        if pause_state.is_project_paused(&project_root) {
+            remember_catch_up(catch_up, &project_root);
+            continue;
+        }
         if let Some(worker) = workers.get(&project_root) {
             let _ = worker.trigger_tx.send(LintTriggerEvent {
                 project_root,
@@ -478,7 +601,7 @@ struct WorkerContext {
     status_cache:     Arc<Mutex<HashMap<String, CachedLintStatus>>>,
     child_slot:       ChildSlot,
     background_tx:    Sender<BackgroundMsg>,
-    paused:           Arc<AtomicBool>,
+    pause_state:      Arc<PauseState>,
     catch_up:         Arc<Mutex<HashSet<AbsolutePath>>>,
     stop:             Arc<AtomicBool>,
     trigger_rx:       StdReceiver<LintTriggerEvent>,
@@ -534,7 +657,7 @@ impl WorkerContext {
     }
 
     fn run_due(&self, origin: LintRunOrigin) {
-        if self.paused.load(Ordering::Relaxed) {
+        if self.pause_state.is_project_paused(&self.project_root) {
             // Hold the run back while paused; remember the project so resume
             // re-lints it under the same catch-up policy as the startup
             // staleness sweep. Publish `Stale` so a trigger that arrives while
@@ -567,7 +690,7 @@ impl WorkerContext {
                 cache_root:       &self.cache_root,
                 commands:         &self.commands,
                 cache_size_bytes: self.cache_size_bytes,
-                paused:           &self.paused,
+                pause_state:      &self.pause_state,
             },
             &self.status_cache,
             &self.background_tx,
@@ -576,7 +699,7 @@ impl WorkerContext {
         );
         // A pause landed mid-run and killed the child; queue the interrupted
         // project for the resume sweep.
-        if self.paused.load(Ordering::Relaxed) {
+        if self.pause_state.is_project_paused(&self.project_root) {
             remember_catch_up(&self.catch_up, &self.project_root);
         }
         tracing::trace!(
@@ -608,7 +731,7 @@ fn spawn_project_worker(
         status_cache: Arc::clone(&config.status_cache),
         child_slot: Arc::clone(&child),
         background_tx,
-        paused: Arc::clone(&config.paused),
+        pause_state: Arc::clone(&config.pause_state),
         catch_up: Arc::clone(&config.catch_up),
         stop: Arc::clone(&stop),
         trigger_rx,
@@ -1184,7 +1307,7 @@ mod tests {
             commands:         Vec::new(),
             cache_size_bytes: None,
             status_cache:     Arc::new(Mutex::new(HashMap::new())),
-            paused:           Arc::new(AtomicBool::new(false)),
+            pause_state:      Arc::new(PauseState::default()),
             catch_up:         Arc::new(Mutex::new(HashSet::new())),
         };
 
@@ -1225,7 +1348,7 @@ mod tests {
             commands:         Vec::new(),
             cache_size_bytes: None,
             status_cache:     Arc::new(Mutex::new(HashMap::new())),
-            paused:           Arc::new(AtomicBool::new(false)),
+            pause_state:      Arc::new(PauseState::default()),
             catch_up:         Arc::new(Mutex::new(HashSet::new())),
         };
         reconcile_workers(

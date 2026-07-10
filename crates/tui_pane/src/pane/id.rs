@@ -25,7 +25,7 @@ pub enum FrameworkOverlayId {
     Keymap,
     /// The settings overlay.
     Settings,
-    /// The read-only global shortcuts overlay.
+    /// The selectable global shortcuts overlay.
     GlobalShortcuts,
 }
 

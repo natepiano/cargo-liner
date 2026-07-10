@@ -10,6 +10,9 @@ use crossterm::event::DisableFocusChange;
 use crossterm::event::DisableMouseCapture;
 use crossterm::event::EnableFocusChange;
 use crossterm::event::EnableMouseCapture;
+use crossterm::event::KeyboardEnhancementFlags;
+use crossterm::event::PopKeyboardEnhancementFlags;
+use crossterm::event::PushKeyboardEnhancementFlags;
 use crossterm::execute;
 use crossterm::terminal::EnterAlternateScreen;
 use crossterm::terminal::LeaveAlternateScreen;
@@ -39,7 +42,19 @@ use crate::tui::settings;
 fn setup_terminal() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    // Legacy terminal input represents Space and Shift+Space with the same
+    // byte. `REPORT_ALL_KEYS_AS_ESCAPE_CODES` makes crossterm receive them as
+    // distinct CSI-u `KeyEvent`s. This also retains Shift on punctuation such
+    // as `?`; `keymap::canonical_event_code_and_mods` converts that redundant
+    // modifier back to the representation stored in keymap TOML.
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+        )
+    )?;
     rearm_input_modes()?;
     let backend = CrosstermBackend::new(stdout);
     Terminal::new(backend)
@@ -70,6 +85,7 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Re
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
+        PopKeyboardEnhancementFlags,
         LeaveAlternateScreen,
         DisableMouseCapture,
         DisableFocusChange
@@ -138,6 +154,7 @@ pub fn run() -> ExitCode {
         let _ = disable_raw_mode();
         let _ = execute!(
             io::stdout(),
+            PopKeyboardEnhancementFlags,
             LeaveAlternateScreen,
             DisableMouseCapture,
             DisableFocusChange

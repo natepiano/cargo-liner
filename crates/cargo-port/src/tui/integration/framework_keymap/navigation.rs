@@ -40,7 +40,8 @@ impl Globals<App> for AppGlobalAction {
             KeyBind::ctrl('r')   => Self::Rescan,
             'c'                  => Self::Clean,
             'S'                  => Self::SccacheStats,
-            ' '                  => Self::PauseLint,
+            ' '                  => Self::PauseSelectedLint,
+            KeyBind::shift(' ')  => Self::PauseAllLints,
         }
     }
 
@@ -56,7 +57,8 @@ pub(super) fn dispatch_app_global(action: AppGlobalAction, app: &mut App) {
         AppGlobalAction::Rescan => app.rescan(),
         AppGlobalAction::Clean => panes::request_clean(app),
         AppGlobalAction::SccacheStats => sccache::open_sccache_stats_overlay(app),
-        AppGlobalAction::PauseLint => app.toggle_lint_pause(),
+        AppGlobalAction::PauseSelectedLint => app.toggle_selected_lint_pause(),
+        AppGlobalAction::PauseAllLints => app.toggle_all_lint_pause(),
     }
 }
 
@@ -88,6 +90,20 @@ mod tests {
         assert_eq!(
             defaults.action_for(&tui_pane::KeyBind::from('S')),
             Some(AppGlobalAction::SccacheStats),
+        );
+    }
+
+    #[test]
+    fn lint_pause_defaults_split_selected_and_all_actions() {
+        let defaults = AppGlobalAction::defaults().into_scope_map();
+
+        assert_eq!(
+            defaults.action_for(&tui_pane::KeyBind::from(' ')),
+            Some(AppGlobalAction::PauseSelectedLint),
+        );
+        assert_eq!(
+            defaults.action_for(&tui_pane::KeyBind::shift(' ')),
+            Some(AppGlobalAction::PauseAllLints),
         );
     }
 }

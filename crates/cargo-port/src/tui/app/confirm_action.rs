@@ -21,7 +21,10 @@ pub(crate) enum ConfirmAction {
         pid:         u32,
         create_time: u64,
     },
+    /// Pause lint operations for one workspace or standalone package. A
+    /// workspace member always resolves to this owning lint root.
+    PauseLintProject(AbsolutePath),
     /// Pause all lint operations: kill in-flight runs and hold new runs until
     /// the user toggles back. Resuming needs no confirmation.
-    PauseLint,
+    PauseAllLints,
 }

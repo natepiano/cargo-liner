@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Change `tui_pane::Modifiers` from a public bool-field struct to the framework's `ratatui::style::Modifier` bitflags alias; theme TOML still accepts `bold`, `italic`, `dim`, and `underline`.
+- Change lint pause shortcuts: Space now pauses or resumes the selected workspace/package's lint run, while Shift+Space pauses or resumes all lint work. Pausing a workspace member targets its workspace root.
 
 ## [0.2.1] - 2026-06-23
 

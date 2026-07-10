@@ -106,6 +106,11 @@ pub struct RenderedSlot {
 pub struct GlobalShortcutRow {
     /// Heading under which the row is rendered.
     pub section:     &'static str,
+    /// TOML scope containing the action.
+    pub scope:       &'static str,
+    /// Stable TOML action key used to open the selected row in the
+    /// keymap editor.
+    pub action:      &'static str,
     /// Human-readable action description.
     pub description: &'static str,
     /// Currently bound display key. `None` keeps registered but
@@ -330,6 +335,8 @@ pub(crate) fn render_app_global_shortcut_rows<Ctx: AppContext + 'static, G: Glob
         .copied()
         .map(|action| GlobalShortcutRow {
             section:     "Global Shortcuts",
+            scope:       "global",
+            action:      action.toml_key(),
             description: action.description(),
             key:         scope.key_for(action).cloned(),
         })

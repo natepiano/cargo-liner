@@ -21,6 +21,7 @@ use tui_pane::KeyOutcome;
 use tui_pane::KeySequence;
 use tui_pane::Mode;
 use tui_pane::Navigation;
+use tui_pane::OverlayAction;
 use tui_pane::PERF_LOG_TARGET;
 use tui_pane::Pane;
 use tui_pane::SLOW_INPUT_EVENT_MS;
@@ -99,7 +100,11 @@ struct AppSurfaceKey {
 
 impl KeyDispatchLayer {
     const fn current(app: &App) -> Self {
-        if app.framework.overlay().is_some() {
+        if app.confirm().is_some() {
+            Self::AppSurface(AppSurfaceKey {
+                focused: *app.framework.focused(),
+            })
+        } else if app.framework.overlay().is_some() {
             Self::FrameworkOverlay
         } else {
             Self::AppSurface(AppSurfaceKey {
@@ -239,6 +244,14 @@ fn dispatch_output_cancel_preflight(app: &mut App, preflight: OutputCancelPrefli
 }
 
 fn dispatch_framework_overlay_key(app: &mut App, bind: &KeyBind, normalized: &KeyEvent) {
+    if app
+        .framework
+        .overlay()
+        .is_some_and(|overlay| !tui_pane::overlay_is_in_text_mode(&app.framework, overlay))
+        && dispatch_lint_pause_global(app, bind)
+    {
+        return;
+    }
     if !dispatch_framework_overlay(app, bind, normalized) {
         let _ = dispatch_framework_global(app, bind);
     }
@@ -318,15 +331,30 @@ fn clear_legacy_framework_overlay_state(app: &mut App, overlay: FrameworkOverlay
 }
 
 fn dispatch_app_global(app: &mut App, bind: &KeyBind) -> bool {
-    let keymap = Rc::clone(&app.framework_keymap);
-    let Some(scope) = keymap.globals::<AppGlobalAction>() else {
-        return false;
-    };
-    let Some(action) = scope.action_for(bind) else {
+    let Some(action) = app_global_action_for(app, bind) else {
         return false;
     };
     (AppGlobalAction::dispatcher())(action, app);
     true
+}
+
+fn dispatch_lint_pause_global(app: &mut App, bind: &KeyBind) -> bool {
+    let Some(action) = app_global_action_for(app, bind) else {
+        return false;
+    };
+    if !matches!(
+        action,
+        AppGlobalAction::PauseSelectedLint | AppGlobalAction::PauseAllLints
+    ) {
+        return false;
+    }
+    (AppGlobalAction::dispatcher())(action, app);
+    true
+}
+
+fn app_global_action_for(app: &App, bind: &KeyBind) -> Option<AppGlobalAction> {
+    let keymap = Rc::clone(&app.framework_keymap);
+    keymap.globals::<AppGlobalAction>()?.action_for(bind)
 }
 
 fn dispatch_focused_app_pane(app: &mut App, app_pane_id: AppPaneId, bind: &KeyBind) -> bool {
@@ -380,7 +408,9 @@ fn dispatch_framework_overlay(app: &mut App, bind: &KeyBind, normalized: &KeyEve
     match overlay {
         FrameworkOverlayId::Settings => dispatch_settings_overlay(app, bind),
         FrameworkOverlayId::Keymap => dispatch_keymap_overlay(app, bind, normalized),
-        FrameworkOverlayId::GlobalShortcuts => dispatch_global_shortcuts_overlay(app, bind),
+        FrameworkOverlayId::GlobalShortcuts => {
+            dispatch_global_shortcuts_overlay(app, bind, normalized);
+        },
     }
     true
 }
@@ -401,16 +431,21 @@ fn dispatch_keymap_overlay(app: &mut App, bind: &KeyBind, normalized: &KeyEvent)
     keymap_ui::handle_keymap_navigation_key(app, normalized);
 }
 
-fn dispatch_global_shortcuts_overlay(app: &mut App, bind: &KeyBind) {
-    if let Some(action) = app.framework_keymap.overlay().action_for(bind)
-        && matches!(action, tui_pane::OverlayAction::Cancel)
-    {
-        app.close_framework_overlay_if_open();
-        return;
+fn dispatch_global_shortcuts_overlay(app: &mut App, bind: &KeyBind, normalized: &KeyEvent) {
+    if let Some(action) = app.framework_keymap.overlay().action_for(bind) {
+        match action {
+            OverlayAction::StartEdit => {
+                keymap_ui::edit_selected_global_shortcut(app);
+            },
+            OverlayAction::Cancel => {
+                app.close_framework_overlay_if_open();
+            },
+        }
+    } else {
+        app.framework
+            .global_shortcuts_pane
+            .handle_navigation_key(normalized.code);
     }
-    app.framework
-        .global_shortcuts_pane
-        .handle_navigation_key(bind.code);
 }
 
 fn dispatch_finder_overlay(app: &mut App, bind: &KeyBind) -> bool {
@@ -561,7 +596,10 @@ fn handle_confirm_key(app: &mut App, key: KeyCode) -> bool {
             } => {
                 panes::execute_target_kill(app, pid, create_time);
             },
-            ConfirmAction::PauseLint => app.pause_lints(),
+            ConfirmAction::PauseLintProject(project_root) => {
+                app.pause_project_lints(&project_root);
+            },
+            ConfirmAction::PauseAllLints => app.pause_all_lints(),
         }
     }
     true

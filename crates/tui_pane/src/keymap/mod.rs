@@ -461,6 +461,8 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
     ) -> GlobalShortcutRow {
         GlobalShortcutRow {
             section,
+            scope: "global",
+            action: action.toml_key(),
             description: action.description(),
             key: self.framework_globals.key_for(action).cloned(),
         }

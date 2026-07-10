@@ -25,9 +25,12 @@ use super::actions::ProjectListAction;
 use super::actions::TargetsAction;
 use super::constants::CLEAN_ACTION_KEY;
 use super::constants::CPU_SCOPE_KEY;
+use super::constants::DEFAULT_LEGACY_PAUSE_LINT_BINDING;
 use super::constants::GLOBAL_SCOPE_KEY;
 use super::constants::LANG_SCOPE_KEY;
 use super::constants::LEGACY_CLEAN_SCOPES;
+use super::constants::LEGACY_PAUSE_LINT_ACTION_KEY;
+use super::constants::PAUSE_ALL_LINTS_ACTION_KEY;
 use super::constants::REMOVED_PROJECT_LIST_GLOBAL_ACTIONS;
 use super::resolved::ResolvedKeymap;
 use crate::config::NavigationKeys;
@@ -327,7 +330,34 @@ fn migrate_removed_action_keys(table: &mut Table) -> bool {
     changed |= migrate_project_list_globals(table);
     changed |= migrate_overlay_scopes(table);
     changed |= migrate_clean_to_global(table);
+    changed |= migrate_legacy_pause_lint(table);
     changed
+}
+
+/// Replace the former all-lints `pause_lint` action. Its generated Space
+/// default is dropped so the new selected-project/all-lints defaults apply;
+/// a user-selected non-default shortcut carries over to `pause_all_lints`.
+fn migrate_legacy_pause_lint(table: &mut Table) -> bool {
+    let Some(global) = table
+        .get_mut(GLOBAL_SCOPE_KEY)
+        .and_then(toml::Value::as_table_mut)
+    else {
+        return false;
+    };
+    let Some(binding) = global.remove(LEGACY_PAUSE_LINT_ACTION_KEY) else {
+        return false;
+    };
+    if global.contains_key(PAUSE_ALL_LINTS_ACTION_KEY) {
+        return true;
+    }
+    if binding
+        .as_str()
+        .is_some_and(|key| key.eq_ignore_ascii_case(DEFAULT_LEGACY_PAUSE_LINT_BINDING))
+    {
+        return true;
+    }
+    global.insert(PAUSE_ALL_LINTS_ACTION_KEY.to_string(), binding);
+    true
 }
 
 fn migrate_project_list_globals(table: &mut Table) -> bool {
@@ -954,6 +984,30 @@ open_editor = "Enter"
         assert!(!project_list.contains_key("open_editor"));
         let global = table.get("global").and_then(Value::as_table).unwrap();
         assert_eq!(global.get("open_editor").and_then(Value::as_str), Some("E"),);
+    }
+
+    #[test]
+    fn legacy_space_pause_binding_yields_new_pause_defaults() {
+        let mut table: Table = "[global]\npause_lint = \"space\"\n".parse().unwrap();
+
+        assert!(migrate_removed_action_keys(&mut table));
+
+        let global = table.get("global").and_then(Value::as_table).unwrap();
+        assert!(!global.contains_key("pause_lint"));
+        assert!(!global.contains_key("pause_all_lints"));
+    }
+
+    #[test]
+    fn legacy_custom_pause_binding_moves_to_all_lints() {
+        let mut table: Table = "[global]\npause_lint = \"ctrl-p\"\n".parse().unwrap();
+
+        assert!(migrate_removed_action_keys(&mut table));
+
+        let global = table.get("global").and_then(Value::as_table).unwrap();
+        assert_eq!(
+            global.get("pause_all_lints").and_then(Value::as_str),
+            Some("ctrl-p"),
+        );
     }
 
     #[test]

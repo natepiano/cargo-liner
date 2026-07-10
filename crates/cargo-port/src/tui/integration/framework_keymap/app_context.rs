@@ -101,7 +101,8 @@ tui_pane::action_enum! {
         Rescan       => ("rescan",        "rescan",   "Rescan projects");
         Clean        => ("clean",         "clean",    "Clean project");
         SccacheStats => ("sccache_stats", "sccache",  "Show sccache stats");
-        PauseLint    => ("pause_lint",    "pause",    "Pause or resume lints");
+        PauseSelectedLint => ("pause_selected_lint", "pause selected", "Pause or resume selected lints");
+        PauseAllLints     => ("pause_all_lints",     "pause all",      "Pause or resume all lints");
     }
 }
 

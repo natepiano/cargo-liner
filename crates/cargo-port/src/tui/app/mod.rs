@@ -121,6 +121,8 @@ use self::constants::ANIMATION_TICK;
 use self::constants::LINT_CANCELLED_TOAST_TITLE;
 use self::constants::LINT_PAUSED_TOAST_BODY;
 use self::constants::LINT_PAUSED_TOAST_TITLE;
+use self::constants::LINT_PROJECT_PAUSED_TOAST_TITLE;
+use self::constants::LINT_PROJECT_RESUMED_TOAST_TITLE;
 use self::constants::LINT_RESUMED_TOAST_BODY;
 use self::constants::LINT_RESUMED_TOAST_TITLE;
 pub(super) use super::app_render_state::FinderSplit;
@@ -736,24 +738,51 @@ impl App {
         });
     }
 
-    /// Toggle the lint pause state (bound to Space). Pausing opens a confirm
-    /// dialog (like Clean); resuming is immediate. A no-op when lint is
-    /// disabled — there is nothing to pause.
-    pub fn toggle_lint_pause(&mut self) {
-        if self.lint.runtime().is_none() {
+    /// Toggle lints for the selected project's lint-owning root (bound to
+    /// Space). A workspace member resolves to its workspace root, so all of
+    /// that workspace's lint commands pause together.
+    pub fn toggle_selected_lint_pause(&mut self) {
+        let Some(runtime) = self.lint.runtime().cloned() else {
+            return;
+        };
+        let Some(project_root) = self.selected_lint_owner_path() else {
+            return;
+        };
+        if runtime.is_globally_paused() {
             return;
         }
-        if self.lint.is_paused() {
-            self.resume_lints();
+        if runtime.is_project_paused(&project_root) {
+            self.resume_project_lints(&project_root);
         } else {
-            self.confirm = Some(ConfirmAction::PauseLint);
+            self.confirm = Some(ConfirmAction::PauseLintProject(project_root));
         }
+    }
+
+    /// Toggle all lint operations (bound to Shift+Space). Pausing opens a
+    /// confirm dialog; resuming is immediate. Individual project pauses remain
+    /// in effect when the global pause is released.
+    pub fn toggle_all_lint_pause(&mut self) {
+        let Some(runtime) = self.lint.runtime().cloned() else {
+            return;
+        };
+        if runtime.is_globally_paused() {
+            self.resume_all_lints();
+        } else {
+            self.confirm = Some(ConfirmAction::PauseAllLints);
+        }
+    }
+
+    /// Resolve the selected row to the root that owns its lint runs. The
+    /// project list maps workspace-member rows to their workspace here.
+    fn selected_lint_owner_path(&self) -> Option<AbsolutePath> {
+        let selected_path = self.project_list.selected_project_path()?;
+        self.project_list.lint_owner_path(selected_path)
     }
 
     /// Pause all lint operations: kill in-flight runs and hold new runs in the
     /// runtime. Surfaces a sticky warning toast that stays until resume.
-    /// Invoked from the `PauseLint` confirm on `y`.
-    pub(super) fn pause_lints(&mut self) {
+    /// Invoked from the `PauseAllLints` confirm on `y`.
+    pub(super) fn pause_all_lints(&mut self) {
         let Some(runtime) = self.lint.runtime() else {
             return;
         };
@@ -777,10 +806,31 @@ impl App {
         }
     }
 
-    /// Resume lint operations: dismiss the sticky warning toast, tell the
+    /// Pause lint operations for one workspace or standalone package. Its
+    /// in-flight run is cancelled without affecting the other lint workers.
+    pub(super) fn pause_project_lints(&mut self, project_root: &AbsolutePath) {
+        let Some(runtime) = self.lint.runtime() else {
+            return;
+        };
+        if runtime.is_globally_paused() || runtime.is_project_paused(project_root) {
+            return;
+        }
+        runtime.pause_project(project_root.to_owned());
+        lint::record_project_paused(self.config.current(), project_root.as_path());
+        self.framework.toasts.push_status_styled(
+            LINT_PROJECT_PAUSED_TOAST_TITLE,
+            format!(
+                "Lint runs for {} are paused.",
+                project::home_relative_path(project_root.as_path())
+            ),
+            Warning,
+        );
+    }
+
+    /// Resume all lint operations: dismiss the sticky warning toast, tell the
     /// runtime to re-dispatch the catch-up runs accumulated while paused, and
     /// flash a green confirmation toast.
-    pub(super) fn resume_lints(&mut self) {
+    pub(super) fn resume_all_lints(&mut self) {
         if let Some(runtime) = self.lint.runtime() {
             runtime.resume();
         }
@@ -791,6 +841,27 @@ impl App {
         self.framework.toasts.push_status_styled(
             LINT_RESUMED_TOAST_TITLE,
             LINT_RESUMED_TOAST_BODY,
+            Success,
+        );
+    }
+
+    /// Resume one workspace or standalone package. Its delayed source changes
+    /// re-enter the normal catch-up path unless all lints remain paused.
+    pub(super) fn resume_project_lints(&mut self, project_root: &AbsolutePath) {
+        let Some(runtime) = self.lint.runtime() else {
+            return;
+        };
+        if runtime.is_globally_paused() || !runtime.is_project_paused(project_root) {
+            return;
+        }
+        runtime.resume_project(project_root.to_owned());
+        lint::record_project_resumed(self.config.current(), project_root.as_path());
+        self.framework.toasts.push_status_styled(
+            LINT_PROJECT_RESUMED_TOAST_TITLE,
+            format!(
+                "Catching up lint runs for {}.",
+                project::home_relative_path(project_root.as_path())
+            ),
             Success,
         );
     }
@@ -2465,6 +2536,7 @@ mod tests {
         use crate::ci::CiStatus;
         use crate::ci::FetchStatus;
         use crate::config::CargoPortConfig;
+        use crate::config::LintIndicator;
         use crate::config::NavigationKeys;
         use crate::lint::LintRun;
         use crate::lint::LintRunStatus;
@@ -3881,6 +3953,22 @@ mod tests {
         }
 
         #[test]
+        fn csi_u_shifted_question_mark_opens_global_shortcuts_overlay() {
+            for character in ['/', '?'] {
+                let project = super::make_project(Some("demo"), "~/demo");
+                let mut app = make_app(&[project]);
+
+                press(&mut app, KeyCode::Char(character), KeyModifiers::SHIFT);
+
+                assert_eq!(
+                    app.framework.overlay(),
+                    Some(FrameworkOverlayId::GlobalShortcuts),
+                    "CSI-u character form {character:?} should match the ? binding"
+                );
+            }
+        }
+
+        #[test]
         fn global_shortcuts_overlay_renders_all_global_shortcuts() {
             let project = super::make_project(Some("demo"), "~/demo");
             let mut app = make_app(&[project]);
@@ -3904,6 +3992,104 @@ mod tests {
                     "Show global shortcuts",
                 ],
             );
+            assert!(
+                text.contains("▸ Next pane"),
+                "the current global action should render as selected",
+            );
+            assert!(
+                !text.contains("1 of"),
+                "the one-row-taller popup should fit the complete global list",
+            );
+            assert_eq!(
+                app.framework
+                    .global_shortcuts_pane
+                    .viewport()
+                    .scroll_offset(),
+                0,
+            );
+        }
+
+        #[test]
+        fn enter_remaps_the_selected_global_shortcut() {
+            let project = super::make_project(Some("demo"), "~/demo");
+            let mut app = make_app_with_keymap_toml(&[project], "");
+            open_framework_overlay(&mut app, FrameworkGlobalAction::OpenGlobalShortcuts);
+            let _ = buffer_text_sized(
+                &mut app,
+                GLOBAL_SHORTCUTS_TEST_WIDTH,
+                GLOBAL_SHORTCUTS_TEST_HEIGHT,
+            );
+
+            press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+            press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+
+            assert_eq!(app.framework.overlay(), Some(FrameworkOverlayId::Keymap),);
+            assert!(app.framework.keymap_pane.is_awaiting());
+
+            press(&mut app, KeyCode::F(12), KeyModifiers::NONE);
+
+            assert_eq!(
+                app.framework_keymap
+                    .framework_globals()
+                    .action_for(&KeyBind::from(KeyCode::F(12))),
+                Some(FrameworkGlobalAction::PrevPane),
+            );
+        }
+
+        #[test]
+        fn global_shortcuts_overlay_scrolls_with_vim_navigation() {
+            let project = super::make_project(Some("demo"), "~/demo");
+            let mut cargo_port_config = CargoPortConfig::default();
+            cargo_port_config.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
+            let mut app = make_app_with_config_and_keymap_toml(&[project], &cargo_port_config, "");
+            open_framework_overlay(&mut app, FrameworkGlobalAction::OpenGlobalShortcuts);
+            let _ = buffer_text_sized(&mut app, GLOBAL_SHORTCUTS_TEST_WIDTH, 16);
+
+            for _ in 0..20 {
+                press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+            }
+            let _ = buffer_text_sized(&mut app, GLOBAL_SHORTCUTS_TEST_WIDTH, 16);
+
+            let viewport = app.framework.global_shortcuts_pane.viewport();
+            assert!(
+                viewport.pos() > 0,
+                "vim down navigation should move the cursor"
+            );
+            assert!(
+                viewport.scroll_offset() > 0,
+                "the second shortcuts page should become visible"
+            );
+        }
+
+        #[test]
+        fn lint_pause_shortcuts_dispatch_over_global_shortcuts_overlay() {
+            let cache_dir = tempfile::tempdir().expect("create lint cache tempdir");
+            let project = super::make_project(Some("demo"), "~/demo");
+            let mut cargo_port_config = CargoPortConfig::default();
+            cargo_port_config.cache.root = cache_dir.path().to_string_lossy().to_string();
+            cargo_port_config.lint.enabled = LintIndicator::Enabled;
+            cargo_port_config.lint.include = vec!["demo".to_string()];
+            let mut app = super::make_app_with_lint_runtime(&[project], &cargo_port_config);
+            open_framework_overlay(&mut app, FrameworkGlobalAction::OpenGlobalShortcuts);
+
+            press(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+            assert!(matches!(
+                app.confirm(),
+                Some(super::super::ConfirmAction::PauseLintProject(_))
+            ));
+            press(&mut app, KeyCode::Char('n'), KeyModifiers::NONE);
+            assert!(app.confirm().is_none());
+            assert_eq!(
+                app.framework.overlay(),
+                Some(FrameworkOverlayId::GlobalShortcuts)
+            );
+
+            press(&mut app, KeyCode::Char(' '), KeyModifiers::SHIFT);
+            assert!(matches!(
+                app.confirm(),
+                Some(super::super::ConfirmAction::PauseAllLints)
+            ));
+            drop(app);
         }
 
         #[test]

@@ -58,6 +58,13 @@ pub(super) fn handle_click(app: &mut App, pos: Position, mode: ClickMode) -> boo
             }
             true
         },
+        HoverTarget::GlobalShortcutRow { row } => {
+            app.framework
+                .global_shortcuts_pane
+                .viewport_mut()
+                .set_pos(row);
+            true
+        },
         HoverTarget::Dismiss(target) => {
             if matches!(mode, ClickMode::FocusOnly) {
                 return true;
@@ -79,7 +86,9 @@ pub(super) fn handle_click(app: &mut App, pos: Position, mode: ClickMode) -> boo
 pub(super) fn hovered_pane_row_at(app: &App, pos: Position) -> Option<HoveredPaneRow> {
     match hit_test_at(app, pos)? {
         HoverTarget::PaneRow { pane, row } => Some(HoveredPaneRow { pane, row }),
-        HoverTarget::Dismiss(_) | HoverTarget::ToastCard(_) => None,
+        HoverTarget::GlobalShortcutRow { .. }
+        | HoverTarget::Dismiss(_)
+        | HoverTarget::ToastCard(_) => None,
     }
 }
 
@@ -170,9 +179,9 @@ impl InputContext for App {
             }),
             FrameworkHit::Overlay {
                 id: FrameworkOverlayId::GlobalShortcuts,
-                ..
-            }
-            | FrameworkHit::ModalMissed => None,
+                row,
+            } => Some(HoverTarget::GlobalShortcutRow { row }),
+            FrameworkHit::ModalMissed => None,
         }
     }
 }

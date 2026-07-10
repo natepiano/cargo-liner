@@ -3,7 +3,7 @@
 //! Three overlay structs live here:
 //! - [`KeymapPane`]: keymap viewer/editor overlay.
 //! - [`SettingsPane`]: settings overlay.
-//! - [`GlobalShortcutsPane`]: read-only global shortcut viewer.
+//! - [`GlobalShortcutsPane`]: selectable global shortcut viewer.
 //!
 //! Both consume [`OverlayAction`], the single action set for the
 //! framework-owned overlay bar (`StartEdit` / `Cancel`). The TOML

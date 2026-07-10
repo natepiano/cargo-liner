@@ -1,7 +1,8 @@
 // tui_pane src overlays global_shortcuts
-pub(super) const GLOBAL_SHORTCUTS_POPUP_MAX_HEIGHT: u16 = 22;
+pub(super) const GLOBAL_SHORTCUTS_POPUP_MAX_HEIGHT: u16 = 23;
 pub(super) const GLOBAL_SHORTCUTS_POPUP_MIN_WIDTH: u16 = 48;
-pub(super) const SHORTCUT_DESCRIPTION_WIDTH: usize = 28;
+pub(super) const GLOBAL_SHORTCUTS_RIGHT_PADDING_WIDTH: usize = 1;
+pub(super) const SHORTCUT_DESCRIPTION_WIDTH: usize = 34;
 
 // tui_pane src overlays keymap_ui
 pub(super) const BASE_POPUP_WIDTH: u16 = 52;

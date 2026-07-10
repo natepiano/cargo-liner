@@ -8,6 +8,7 @@ use super::panes::PaneId;
 #[derive(Clone, Debug)]
 pub enum HoverTarget {
     PaneRow { pane: PaneId, row: usize },
+    GlobalShortcutRow { row: usize },
     Dismiss(DismissTarget),
     ToastCard(ToastId),
 }

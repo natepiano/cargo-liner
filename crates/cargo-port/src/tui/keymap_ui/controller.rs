@@ -2,11 +2,13 @@ use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
 use tui_pane::Action;
+use tui_pane::GlobalAction;
 use tui_pane::KeyBind as FrameworkKeyBind;
 use tui_pane::KeySequence;
 use tui_pane::KeymapCaptureCommand;
 use tui_pane::KeymapHelpRow;
 use tui_pane::KeymapHelpRowKind;
+use tui_pane::KeymapPane;
 use tui_pane::KeymapUiContext as _;
 use tui_pane::OverlayAction;
 use tui_pane::Shortcuts;
@@ -76,8 +78,7 @@ pub fn handle_keymap_capture_command(app: &mut App, command: KeymapCaptureComman
 }
 
 fn help_rows(app: &App) -> Vec<KeymapHelpRow> {
-    let order = app.keymap_pane_display_order();
-    app.framework_keymap.keymap_help_rows(order)
+    KeymapPane::ordered_help_rows(app, &app.framework_keymap)
 }
 
 fn selectable_row_count(app: &App) -> usize {
@@ -85,6 +86,33 @@ fn selectable_row_count(app: &App) -> usize {
         .iter()
         .filter(|row| row.row_kind != KeymapHelpRowKind::Header)
         .count()
+}
+
+/// Begin remapping the selected row in the compact global-shortcuts
+/// overlay using the full keymap editor's capture and persistence flow.
+pub fn edit_selected_global_shortcut(app: &mut App) {
+    let shortcut_rows = app.framework_keymap.global_shortcut_rows();
+    let Some(selected) = shortcut_rows.get(app.framework.global_shortcuts_pane.viewport().pos())
+    else {
+        return;
+    };
+    let target = (selected.scope, selected.action);
+    let Some(target_index) = help_rows(app)
+        .iter()
+        .filter(|row| row.row_kind != KeymapHelpRowKind::Header)
+        .position(|row| (row.scope, row.action) == target)
+    else {
+        return;
+    };
+
+    let keymap = std::rc::Rc::clone(&app.framework_keymap);
+    keymap.dispatch_framework_global(GlobalAction::OpenKeymap, app);
+    app.framework
+        .keymap_pane
+        .viewport_mut()
+        .set_pos(target_index);
+    app.overlays.clear_inline_error();
+    app.framework.keymap_pane.enter_awaiting();
 }
 
 fn handle_captured_bind(app: &mut App, bind: FrameworkKeyBind) {

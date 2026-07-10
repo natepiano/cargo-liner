@@ -96,9 +96,7 @@ impl KeymapPane {
     where
         Ctx: KeymapUiContext + 'static,
     {
-        let order = ctx.keymap_pane_display_order();
-        let mut rows = keymap.keymap_help_rows(order);
-        sort_rows_in_sections(ctx, &mut rows);
+        let rows = Self::ordered_help_rows(ctx, keymap);
         let is_capturing = ctx.framework().keymap_pane.is_capturing();
         let KeymapLines {
             lines,
@@ -119,6 +117,23 @@ impl KeymapPane {
             selectable_len,
             content_width,
         }
+    }
+
+    /// Build action rows in the same order used by the keymap renderer.
+    ///
+    /// Input controllers use this when translating a visible selection
+    /// into the stable scope/action pair that will be rebound. Keeping
+    /// ordering here prevents rendered sorting from changing which action
+    /// a selected row edits.
+    #[must_use]
+    pub fn ordered_help_rows<Ctx>(ctx: &Ctx, keymap: &Keymap<Ctx>) -> Vec<KeymapHelpRow>
+    where
+        Ctx: KeymapUiContext + 'static,
+    {
+        let order = ctx.keymap_pane_display_order();
+        let mut rows = keymap.keymap_help_rows(order);
+        sort_rows_in_sections(ctx, &mut rows);
+        rows
     }
 
     /// Render the keymap-help overlay using pre-built `inputs` from

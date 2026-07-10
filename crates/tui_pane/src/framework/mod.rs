@@ -382,7 +382,14 @@ impl<Ctx: AppContext> Framework<Ctx> {
                     row,
                 },
             )),
-            Some(FrameworkOverlayId::GlobalShortcuts) => Some(FrameworkHit::ModalMissed),
+            Some(FrameworkOverlayId::GlobalShortcuts) => Some(
+                self.global_shortcuts_pane
+                    .row_at(pos)
+                    .map_or(FrameworkHit::ModalMissed, |row| FrameworkHit::Overlay {
+                        id: FrameworkOverlayId::GlobalShortcuts,
+                        row,
+                    }),
+            ),
             None => None,
         }
     }

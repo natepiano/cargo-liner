@@ -329,7 +329,12 @@ fn confirm_action_body(app: &App, action: &ConfirmAction) -> Vec<String> {
                 ),
             ]
         },
-        ConfirmAction::PauseLint => vec![
+        ConfirmAction::PauseLintProject(project_root) => vec![
+            project::home_relative_path(project_root.as_path()),
+            "Kills running lint jobs for this project.".to_string(),
+            "Holds new runs until you resume it.".to_string(),
+        ],
+        ConfirmAction::PauseAllLints => vec![
             "Kills running lint jobs.".to_string(),
             "Holds new runs until you resume.".to_string(),
         ],
@@ -376,7 +381,8 @@ fn render_confirm_popup(
         ConfirmAction::Clean(_) => "Run cargo clean?",
         ConfirmAction::CleanGroup { .. } => "Run cargo clean on all checkouts?",
         ConfirmAction::KillTarget { .. } => "Send SIGTERM?",
-        ConfirmAction::PauseLint => "Pause all lints?",
+        ConfirmAction::PauseLintProject(_) => "Pause lints for selected project?",
+        ConfirmAction::PauseAllLints => "Pause all lints?",
     };
     let keys_suffix = if verifying { "" } else { " (y/n)" };
     let prompt_text = if verifying {

@@ -25,8 +25,11 @@ pub(crate) fn reclaim_project_cache(project_root: &Path) {
 }
 use std::path::Path;
 
+pub(crate) use pause::is_project_set_under;
 pub(crate) use pause::is_set;
 pub(crate) use pause::record_paused;
+pub(crate) use pause::record_project_paused;
+pub(crate) use pause::record_project_resumed;
 pub(crate) use pause::record_resumed;
 #[cfg(test)]
 pub use run::LintCommand;

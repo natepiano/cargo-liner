@@ -4,7 +4,6 @@ use tui_pane::PERF_LOG_TARGET;
 
 use super::AbsolutePath;
 use super::Arc;
-use super::AtomicBool;
 use super::BackgroundMsg;
 use super::CARGO_TOML;
 use super::CachedLintStatus;
@@ -21,7 +20,6 @@ use super::LintRunStatus;
 use super::LintStatus;
 use super::Local;
 use super::Mutex;
-use super::Ordering;
 use super::Path;
 use super::Read;
 use super::Sender;
@@ -34,15 +32,16 @@ use super::project_still_runnable;
 use super::read_status_from_disk;
 use super::read_write;
 use super::status;
+use super::supervisor::PauseState;
 use super::thread;
 
 pub(super) struct RunCommandsConfig<'a> {
     pub(super) cache_root:       &'a Path,
     pub(super) commands:         &'a [LintCommandConfig],
     pub(super) cache_size_bytes: Option<u64>,
-    /// Set while lint is paused. Checked between commands so a pause kills the
-    /// run mid-flight and leaves no terminal record.
-    pub(super) paused:           &'a AtomicBool,
+    /// Checked between commands so a global or project pause kills the run
+    /// mid-flight and leaves no terminal record.
+    pub(super) pause_state:      &'a PauseState,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CommandOutcome {
@@ -182,7 +181,7 @@ pub(super) fn run_commands_for_project(
         &output_dir,
         &mut run,
         child_slot,
-        config.paused,
+        config.pause_state,
     )?;
     if matches!(result, CommandsResult::ProjectRemoved) {
         let _ = read_write::clear_latest_under(cache_root, project_root);
@@ -294,7 +293,7 @@ fn execute_commands(
     output_dir: &Path,
     run: &mut LintRun,
     child_slot: &ChildSlot,
-    paused: &AtomicBool,
+    pause_state: &PauseState,
 ) -> io::Result<CommandsResult> {
     let manifest_path = project_root.join(CARGO_TOML);
     let mut failed = false;
@@ -302,7 +301,7 @@ fn execute_commands(
         if !project_still_runnable(project_root) {
             return Ok(CommandsResult::ProjectRemoved);
         }
-        if paused.load(Ordering::Relaxed) {
+        if pause_state.is_project_paused(&AbsolutePath::from(project_root)) {
             return Ok(CommandsResult::Interrupted);
         }
         let cmd_started = Instant::now();
@@ -340,7 +339,7 @@ fn execute_commands(
     if !project_still_runnable(project_root) {
         return Ok(CommandsResult::ProjectRemoved);
     }
-    if paused.load(Ordering::Relaxed) {
+    if pause_state.is_project_paused(&AbsolutePath::from(project_root)) {
         return Ok(CommandsResult::Interrupted);
     }
     if failed {
@@ -556,7 +555,6 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::Mutex;
-    use std::sync::atomic::AtomicBool;
 
     use super::*;
     use crate::cache_paths;
@@ -583,6 +581,7 @@ mod tests {
         }];
 
         let (tx, _rx) = channel::unbounded();
+        let pause_state = PauseState::default();
         run_commands_for_project(
             project_dir.path(),
             "~/rust/demo",
@@ -590,7 +589,7 @@ mod tests {
                 cache_root:       cache_root.as_path(),
                 commands:         &commands,
                 cache_size_bytes: None,
-                paused:           &AtomicBool::new(false),
+                pause_state:      &pause_state,
             },
             &Arc::new(Mutex::new(HashMap::new())),
             &tx,
@@ -623,6 +622,7 @@ mod tests {
         }];
 
         let (tx, _rx) = channel::unbounded();
+        let pause_state = PauseState::default();
         run_commands_for_project(
             project_dir.path(),
             "~/rust/demo",
@@ -630,7 +630,7 @@ mod tests {
                 cache_root:       cache_dir.path(),
                 commands:         &commands,
                 cache_size_bytes: None,
-                paused:           &AtomicBool::new(false),
+                pause_state:      &pause_state,
             },
             &Arc::new(Mutex::new(HashMap::new())),
             &tx,
