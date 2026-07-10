@@ -110,6 +110,17 @@ analysis after macro expansion. This is a permanently unstable feature — it is
 clippy and miri access the compiler, but it means the compiler's internal crates have no
 stability guarantee and `cargo-mend` is sensitive to the exact rustc version used to build it.
 
+### Compatibility
+
+`cargo-mend` links against the compiler internals of the stable toolchain that builds it, so a
+binary built for one rustc will not build against a newer one. Build each release with the
+matching toolchain:
+
+| `cargo-mend` | rustc |
+|--------------|-------|
+| 0.17+        | 1.97  |
+| 0.16.x       | 1.96  |
+
 Install the `rustc-dev` component, then install `cargo-mend` with the stable toolchain plus
 `RUSTC_BOOTSTRAP=1`. Nightly-built binaries can fail against stable projects with `E0514`
 because `cargo-mend` links against `rustc_driver`.

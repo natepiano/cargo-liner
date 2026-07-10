@@ -122,7 +122,7 @@ pub(super) const fn item_kind_label(kind: ItemKind<'_>) -> Option<&'static str> 
         ItemKind::Fn { .. } => Some("fn"),
         ItemKind::Static(..) => Some("static"),
         ItemKind::Struct(..) => Some("struct"),
-        ItemKind::Trait(..) | ItemKind::TraitAlias(..) => Some("trait"),
+        ItemKind::Trait { .. } | ItemKind::TraitAlias(..) => Some("trait"),
         ItemKind::TyAlias(..) => Some("type"),
         ItemKind::Union(..) => Some("union"),
         ItemKind::Mod(..) => Some("mod"),

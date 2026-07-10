@@ -132,7 +132,11 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
     /// with nested eager aliases already expanded, so walking it yields the
     /// concrete types the alias exposes.
     fn record_alias_components(&mut self, alias: DefId) {
-        let aliased = self.tcx.type_of(alias).instantiate_identity();
+        let aliased = self
+            .tcx
+            .type_of(alias)
+            .instantiate_identity()
+            .skip_normalization();
         let mut seen = HashSet::new();
         for arg in aliased.walk() {
             if let Some(component) = arg.as_type()
@@ -161,7 +165,13 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
             if !self.field_escapes_module(field.did, owning_module) {
                 continue;
             }
-            for arg in self.tcx.type_of(field.did).instantiate_identity().walk() {
+            for arg in self
+                .tcx
+                .type_of(field.did)
+                .instantiate_identity()
+                .skip_normalization()
+                .walk()
+            {
                 if let Some(component) = arg.as_type()
                     && let ty::TyKind::Adt(adt_def, _) = component.kind()
                 {
@@ -187,7 +197,11 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
         ) {
             return;
         }
-        let trait_ref = self.tcx.impl_trait_ref(impl_def).instantiate_identity();
+        let trait_ref = self
+            .tcx
+            .impl_trait_ref(impl_def)
+            .instantiate_identity()
+            .skip_normalization();
         let self_adt = trait_ref.self_ty().ty_adt_def().map(ty::AdtDef::did);
 
         let previous_module = self.current_module;
@@ -202,7 +216,11 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
         for assoc_def_id in self.tcx.associated_item_def_ids(impl_def) {
             match self.tcx.def_kind(*assoc_def_id) {
                 DefKind::AssocTy | DefKind::AssocConst { .. } => {
-                    let assoc_type = self.tcx.type_of(*assoc_def_id).instantiate_identity();
+                    let assoc_type = self
+                        .tcx
+                        .type_of(*assoc_def_id)
+                        .instantiate_identity()
+                        .skip_normalization();
                     self.record_interface_component_types(assoc_type, self_adt, &mut seen);
                 },
                 DefKind::AssocFn => {

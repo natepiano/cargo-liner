@@ -108,7 +108,7 @@ fn check_field(
     // field annotation matches the type's effective visibility and should not
     // be flagged as unused.
     let type_effective = effective_type_visibility(ctx, type_def_id);
-    if type_effective.is_at_least(field_declared, ctx.tcx) {
+    if is_at_least(type_effective, field_declared, ctx.tcx) {
         return Ok(());
     }
 
@@ -152,7 +152,18 @@ fn effective_type_visibility(
 }
 
 fn visibility_strictly_wider(tcx: TyCtxt<'_>, lhs: DefIdVisibility, rhs: DefIdVisibility) -> bool {
-    lhs.is_at_least(rhs, tcx) && !rhs.is_at_least(lhs, tcx)
+    is_at_least(lhs, rhs, tcx) && !is_at_least(rhs, lhs, tcx)
+}
+
+/// Ported from rustc's `Visibility::is_at_least`, removed in 1.97. Returns
+/// `true` when `lhs` is at least as visible as `rhs`. Body is a verbatim copy
+/// of the removed method, expressed in terms of the still-present
+/// `is_public` / `is_accessible_from`.
+fn is_at_least(lhs: DefIdVisibility, rhs: DefIdVisibility, tcx: TyCtxt<'_>) -> bool {
+    match rhs {
+        Visibility::Public => lhs.is_public(),
+        Visibility::Restricted(id) => lhs.is_accessible_from(id, tcx),
+    }
 }
 
 /// Returns the type's literal visibility annotation text. An empty string
