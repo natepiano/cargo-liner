@@ -5,11 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-07-10
 
 ### Changed
 - Change `tui_pane::Modifiers` from a public bool-field struct to the framework's `ratatui::style::Modifier` bitflags alias; theme TOML still accepts `bold`, `italic`, `dim`, and `underline`.
-- Change lint pause shortcuts: Space now pauses or resumes the selected workspace/package's lint run, while Shift+Space pauses or resumes all lint work. Pausing a workspace member targets its workspace root.
+- Let Space pause or resume lints for the selected workspace/package and Shift+Space pause or resume all lints.
+- Make Global Shortcuts selectable: Enter opens the selected binding for remapping, and the popup now fits the default list.
+
+### Fixed
+- Distinguish Shift+Space from Space in supported terminals without breaking shifted punctuation shortcuts such as `?`.
+- Restore Global Shortcuts navigation and scrolling on smaller terminals.
 
 ## [0.2.1] - 2026-06-23
 
