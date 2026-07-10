@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `cargo mend --fix` now resolves aliased source paths before merging and applying fixes, and visibility fixes must agree across every target that compiles a shared source file. A module included through paths such as `src/../fixtures.rs` and `examples/../fixtures.rs` is therefore edited once, while items used by any target keep their required visibility.
+
 ## [0.17.0] - 2026-07-10
 
 ### Changed

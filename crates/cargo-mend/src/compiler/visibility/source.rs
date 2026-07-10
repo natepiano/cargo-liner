@@ -212,7 +212,9 @@ fn line_display(tcx: TyCtxt<'_>, file_path: &Path, span: Span) -> Result<LineDis
 
 fn real_file_path_from_name(name: FileName) -> Option<PathBuf> {
     match name {
-        FileName::Real(real) => real.local_path().map(Path::to_path_buf),
+        FileName::Real(real) => real
+            .local_path()
+            .map(|path| fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())),
         _ => None,
     }
 }

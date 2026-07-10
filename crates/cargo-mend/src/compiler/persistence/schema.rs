@@ -17,6 +17,9 @@ pub struct StoredReport {
     #[serde(default)]
     pub crate_root_file:        String,
     pub config_fingerprint:     String,
+    /// Canonical source paths containing HIR items compiled for this target.
+    #[serde(default)]
+    pub source_files:           Vec<String>,
     pub findings:               Vec<StoredFinding>,
     #[serde(default)]
     pub pub_use_fix_facts:      Vec<StoredPubUseFixFact>,

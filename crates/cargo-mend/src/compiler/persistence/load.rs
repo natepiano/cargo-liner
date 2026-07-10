@@ -343,6 +343,7 @@ mod tests {
                 package_root: self.package_root.to_string_lossy().into_owned(),
                 crate_root_file: self.crate_root.to_string_lossy().into_owned(),
                 config_fingerprint: CONFIG_FINGERPRINT.to_string(),
+                source_files: Vec::new(),
                 findings,
                 pub_use_fix_facts: Vec::new(),
                 compiler_warning_facts: CompilerWarningFacts::None,

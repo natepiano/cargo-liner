@@ -102,6 +102,39 @@ fn create_workspace_with_example_fixture() -> TempDir {
     temp
 }
 
+fn create_shared_path_fixture() -> TempDir {
+    let temp = tempdir().expect("create temp fixture dir");
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        "[package]\nname = \"cli_shared_path_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .expect("write manifest");
+    for directory in ["src", "examples", "tests"] {
+        fs::create_dir(temp.path().join(directory)).expect("create target source dir");
+    }
+    fs::write(
+        temp.path().join("fixtures.rs"),
+        "pub const SHARED_VALUE: usize = 1;\npub const USED_BY_EXAMPLE: usize = 2;\n",
+    )
+    .expect("write shared fixture");
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "#[path = \"../fixtures.rs\"]\nmod fixtures;\n",
+    )
+    .expect("write lib");
+    fs::write(
+        temp.path().join("examples/demo.rs"),
+        "#[path = \"../fixtures.rs\"]\nmod fixtures;\nuse fixtures::USED_BY_EXAMPLE;\nfn main() { let _ = USED_BY_EXAMPLE; }\n",
+    )
+    .expect("write example");
+    fs::write(
+        temp.path().join("tests/shared.rs"),
+        "#[path = \"../fixtures.rs\"]\nmod fixtures;\n#[test]\nfn compiles() {}\n",
+    )
+    .expect("write integration test");
+    temp
+}
+
 fn create_simple_workspace_fixture() -> TempDir {
     let temp = tempdir().expect("create temp workspace dir");
     fs::create_dir_all(temp.path().join("member/src")).expect("create member src");
@@ -355,6 +388,36 @@ fn workspace_all_targets_includes_example_target_findings() {
         BTreeSet::from(["member/examples/demo/helper.rs", "member/src/helpers.rs"])
     );
     assert_summary_matches_findings(&report);
+}
+
+#[test]
+fn all_targets_fix_edits_shared_path_module_once() {
+    let temp = create_shared_path_fixture();
+
+    let report = run_mend_json_in(temp.path(), &["--all-targets"]);
+    let unused_pub_findings = report
+        .findings
+        .iter()
+        .filter(|finding| finding.code == DiagnosticCode::UnusedPub)
+        .collect::<Vec<_>>();
+    assert_eq!(unused_pub_findings.len(), 1);
+    assert_eq!(unused_pub_findings[0].path, "fixtures.rs");
+    assert_eq!(
+        unused_pub_findings[0].item.as_deref(),
+        Some("const SHARED_VALUE")
+    );
+
+    let output = run_mend_in(temp.path(), &["--all-targets", "--fix"]);
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(temp.path().join("fixtures.rs")).expect("read shared fixture"),
+        "const SHARED_VALUE: usize = 1;\npub const USED_BY_EXAMPLE: usize = 2;\n"
+    );
 }
 
 #[test]

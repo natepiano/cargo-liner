@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -52,6 +53,9 @@ impl TryFrom<Vec<UseFix>> for ValidatedFixSet {
     type Error = Error;
 
     fn try_from(mut fixes: Vec<UseFix>) -> Result<Self> {
+        for fix in &mut fixes {
+            fix.path = fs::canonicalize(&fix.path).unwrap_or_else(|_| fix.path.clone());
+        }
         fixes.sort_by(|left, right| {
             (&left.path, left.start, left.end, &left.replacement).cmp(&(
                 &right.path,
@@ -108,10 +112,44 @@ impl TryFrom<Vec<UseFix>> for ValidatedFixSet {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::path::PathBuf;
+
+    use anyhow::Result;
+    use tempfile::tempdir;
 
     use super::UseFix;
     use super::ValidatedFixSet;
+
+    #[test]
+    fn validated_fix_set_deduplicates_paths_to_same_file() -> Result<()> {
+        let temp = tempdir()?;
+        let fixtures_path = temp.path().join("fixtures.rs");
+        fs::write(&fixtures_path, "pub const VALUE: usize = 1;\n")?;
+        let aliases = ["src/../fixtures.rs", "examples/../fixtures.rs"];
+        for directory in ["src", "examples"] {
+            fs::create_dir(temp.path().join(directory))?;
+        }
+        let fixes: Vec<UseFix> = aliases
+            .map(|path| UseFix {
+                path:         temp.path().join(path),
+                start:        0,
+                end:          "pub ".len(),
+                replacement:  String::new(),
+                import_group: None,
+            })
+            .into_iter()
+            .collect();
+
+        let validated = ValidatedFixSet::try_from(fixes)?;
+        let paths = validated
+            .iter()
+            .map(|fix| fix.path.as_path())
+            .collect::<Vec<_>>();
+
+        assert_eq!(paths, vec![fs::canonicalize(fixtures_path)?]);
+        Ok(())
+    }
 
     #[test]
     fn validated_fix_set_allows_adjacent_non_overlapping_ranges() {

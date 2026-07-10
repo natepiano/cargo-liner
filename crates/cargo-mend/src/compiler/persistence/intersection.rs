@@ -10,6 +10,11 @@ pub(super) fn apply_cross_compilation_intersection(reports: &mut [StoredReport])
         return;
     }
 
+    apply_crate_root_intersection(reports);
+    apply_shared_source_intersection(reports);
+}
+
+fn apply_crate_root_intersection(reports: &mut [StoredReport]) {
     let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (idx, report) in reports.iter().enumerate() {
         groups
@@ -29,7 +34,7 @@ pub(super) fn apply_cross_compilation_intersection(reports: &mut [StoredReport])
             let mut seen_in_this_report: BTreeSet<(DiagnosticCode, String, usize, usize)> =
                 BTreeSet::new();
             for finding in &reports[idx].findings {
-                if requires_cross_compilation_agreement(finding.diagnostic_code) {
+                if requires_crate_root_agreement(finding.diagnostic_code) {
                     let key = finding_intersection_key(finding);
                     if seen_in_this_report.insert(key.clone()) {
                         *emission_count.entry(key).or_default() += 1;
@@ -42,7 +47,7 @@ pub(super) fn apply_cross_compilation_intersection(reports: &mut [StoredReport])
 
         for &idx in &indices {
             reports[idx].findings.retain(|finding| {
-                if !requires_cross_compilation_agreement(finding.diagnostic_code) {
+                if !requires_crate_root_agreement(finding.diagnostic_code) {
                     return true;
                 }
                 let key = finding_intersection_key(finding);
@@ -52,10 +57,57 @@ pub(super) fn apply_cross_compilation_intersection(reports: &mut [StoredReport])
     }
 }
 
-const fn requires_cross_compilation_agreement(code: DiagnosticCode) -> bool {
+fn apply_shared_source_intersection(reports: &mut [StoredReport]) {
+    let mut compilation_count: BTreeMap<String, usize> = BTreeMap::new();
+    for report in reports.iter() {
+        for path in &report.source_files {
+            *compilation_count.entry(path.clone()).or_default() += 1;
+        }
+    }
+
+    let mut emission_count: BTreeMap<(DiagnosticCode, String, usize, usize), usize> =
+        BTreeMap::new();
+    for report in reports.iter() {
+        let mut seen_in_this_report = BTreeSet::new();
+        for finding in &report.findings {
+            if requires_shared_source_agreement(finding.diagnostic_code) {
+                let key = finding_intersection_key(finding);
+                if seen_in_this_report.insert(key.clone()) {
+                    *emission_count.entry(key).or_default() += 1;
+                }
+            }
+        }
+    }
+
+    for report in reports.iter_mut() {
+        report.findings.retain(|finding| {
+            if !requires_shared_source_agreement(finding.diagnostic_code) {
+                return true;
+            }
+            let Some(expected) = compilation_count.get(&finding.path) else {
+                return true;
+            };
+            let key = finding_intersection_key(finding);
+            emission_count.get(&key).copied().unwrap_or(0) == *expected
+        });
+    }
+}
+
+const fn requires_crate_root_agreement(code: DiagnosticCode) -> bool {
     matches!(
         code,
         DiagnosticCode::SuspiciousPub | DiagnosticCode::InternalParentPubUseFacade
+    )
+}
+
+const fn requires_shared_source_agreement(code: DiagnosticCode) -> bool {
+    matches!(
+        code,
+        DiagnosticCode::SuspiciousPub
+            | DiagnosticCode::UnusedPub
+            | DiagnosticCode::InternalParentPubUseFacade
+            | DiagnosticCode::NarrowToPubCrate
+            | DiagnosticCode::FieldVisibilityWiderThanType
     )
 }
 
@@ -110,6 +162,33 @@ mod tests {
         assert!(first.findings.is_empty());
     }
 
+    #[test]
+    fn shared_source_intersection_requires_all_target_reports() {
+        let path = Path::new("/package/fixtures.rs");
+        let mut first = StoredReport {
+            crate_root_file: "/package/src/lib.rs".to_string(),
+            source_files: vec![path.to_string_lossy().into_owned()],
+            findings: vec![stored_finding(
+                DiagnosticCode::UnusedPub,
+                path,
+                "const SHARED_VALUE",
+                1,
+            )],
+            ..report_for_test()
+        };
+        let second = StoredReport {
+            crate_root_file: "/package/examples/demo.rs".to_string(),
+            source_files: vec![path.to_string_lossy().into_owned()],
+            ..report_for_test()
+        };
+        let mut reports = vec![first, second];
+
+        apply_cross_compilation_intersection(&mut reports);
+        first = reports.remove(0);
+
+        assert!(first.findings.is_empty());
+    }
+
     fn narrowing_finding(
         diagnostic_code: DiagnosticCode,
         item_path: &str,
@@ -154,6 +233,7 @@ mod tests {
             package_root:           "/package".to_string(),
             crate_root_file:        "/package/src/lib.rs".to_string(),
             config_fingerprint:     CONFIG_FINGERPRINT.to_string(),
+            source_files:           Vec::new(),
             findings:               Vec::new(),
             pub_use_fix_facts:      Vec::new(),
             compiler_warning_facts: CompilerWarningFacts::None,

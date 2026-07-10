@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
@@ -76,8 +77,12 @@ pub fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) ->
         source_cache: &source_cache,
     };
 
+    let mut source_files = BTreeSet::new();
     for item_id in crate_items.free_items() {
         let item = tcx.hir_item(item_id);
+        if let Some(path) = source::real_file_path(tcx, item.span) {
+            source_files.insert(path.to_string_lossy().into_owned());
+        }
         visit::visit_item(&ctx, item, &mut sink)?;
         field::check_item(&ctx, item, &mut sink)?;
     }
@@ -143,6 +148,7 @@ pub fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) ->
         package_root:           settings.package_root.to_string_lossy().into_owned(),
         crate_root_file:        stored_crate_root.to_string_lossy().into_owned(),
         config_fingerprint:     settings.config_fingerprint.clone(),
+        source_files:           source_files.into_iter().collect(),
         findings:               sink.findings,
         pub_use_fix_facts:      sink.pub_use_fix_facts,
         compiler_warning_facts: CompilerWarningFacts::None,
