@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.17.0] - 2026-07-10
 
 ### Changed
 - Update to the rustc 1.97 `rustc_private` API. The compiler removed `Visibility::is_at_least`, restructured `ItemKind::Trait`, and stopped normalizing `instantiate_identity()` results, so `cargo-mend` 0.17 must be built with rustc 1.97 and will no longer compile against 1.96 (which 0.16.x requires).
