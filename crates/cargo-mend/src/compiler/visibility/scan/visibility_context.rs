@@ -62,12 +62,7 @@ pub fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) ->
 
     let mut sink = FindingsSink::default();
     let crate_items = tcx.hir_crate_items(());
-    let cache_roots: Vec<&Path> = if settings.config_root == settings.package_root {
-        vec![&source_root]
-    } else {
-        vec![&source_root, &settings.config_root]
-    };
-    let source_cache = SourceCache::build(&cache_roots)?;
+    let source_cache = build_source_cache(settings, &source_root)?;
     let ctx = VisibilityContext {
         tcx,
         settings,
@@ -157,4 +152,17 @@ pub fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) ->
     fs::write(&output_path, to_vec_pretty(&report)?)
         .with_context(|| format!("failed to write findings file {}", output_path.display()))?;
     Ok(true)
+}
+
+fn build_source_cache(settings: &DriverSettings, source_root: &Path) -> Result<SourceCache> {
+    let cache_roots: Vec<&Path> = if settings.config_root == settings.package_root {
+        vec![source_root]
+    } else {
+        vec![source_root, &settings.config_root]
+    };
+    let target_directory = settings
+        .findings_dir
+        .parent()
+        .context("findings path has no parent")?;
+    SourceCache::build(&cache_roots, target_directory)
 }

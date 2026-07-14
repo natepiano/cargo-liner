@@ -50,10 +50,10 @@ pub(super) struct SourceCache {
 }
 
 impl SourceCache {
-    pub fn build(roots: &[&Path]) -> Result<Self> {
+    pub fn build(roots: &[&Path], target_directory: &Path) -> Result<Self> {
         let mut contents = HashMap::new();
         for root in roots {
-            for file in rust_source_files(root)? {
+            for file in rust_source_files(root, target_directory)? {
                 contents
                     .entry(file.clone())
                     .or_insert(fs::read_to_string(&file).with_context(|| {
@@ -212,20 +212,27 @@ pub(super) fn flatten_use_tree(prefix: Vec<String>, tree: &UseTree, out: &mut Ve
     }
 }
 
-fn rust_source_files(source_root: &Path) -> Result<Vec<PathBuf>> {
+fn rust_source_files(source_root: &Path, target_directory: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    collect_rust_source_files(source_root, &mut files)?;
+    collect_rust_source_files(source_root, target_directory, &mut files)?;
     Ok(files)
 }
 
-fn collect_rust_source_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+fn collect_rust_source_files(
+    dir: &Path,
+    target_directory: &Path,
+    files: &mut Vec<PathBuf>,
+) -> Result<()> {
     for entry in fs::read_dir(dir)
         .with_context(|| format!("failed to read source directory {}", dir.display()))?
     {
         let entry = entry?;
         let path = entry.path();
+        if path == target_directory {
+            continue;
+        }
         if path.is_dir() {
-            collect_rust_source_files(&path, files)?;
+            collect_rust_source_files(&path, target_directory, files)?;
         } else if path.extension().and_then(OsStr::to_str) == Some("rs") {
             files.push(path);
         }
@@ -331,9 +338,32 @@ mod tests {
     use std::time::UNIX_EPOCH;
 
     use anyhow::Result;
+    use tempfile::tempdir;
 
+    use super::SourceCache;
     use super::analysis_source_root_for;
     use super::module_path_from_source_file;
+
+    #[test]
+    fn source_cache_excludes_cargo_target_directory() -> Result<()> {
+        let temp = tempdir()?;
+        let workspace_root = temp.path().join("workspace");
+        let source_directory = workspace_root.join("app/src");
+        let target_directory = workspace_root.join("target");
+        let source_file = source_directory.join("lib.rs");
+        let generated_source_directory = target_directory.join("debug/build");
+        let generated_source_file = generated_source_directory.join("generated.rs");
+        fs::create_dir_all(&source_directory)?;
+        fs::create_dir_all(&generated_source_directory)?;
+        fs::write(&source_file, "pub fn workspace_source() {}\n")?;
+        fs::write(&generated_source_file, "pub fn generated_source() {}\n")?;
+
+        let source_cache = SourceCache::build(&[&workspace_root], &target_directory)?;
+
+        assert!(source_cache.read_source(&source_file).is_ok());
+        assert!(source_cache.read_source(&generated_source_file).is_err());
+        Ok(())
+    }
 
     #[test]
     fn analysis_source_root_ignores_build_scripts() {
