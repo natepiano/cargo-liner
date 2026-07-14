@@ -1,5 +1,15 @@
 use crate::support::*;
 
+fn write_inline_fixture(root: &std::path::Path, package_name: &str, source: &str) {
+    fs::write(
+        root.join("Cargo.toml"),
+        format!("[package]\nname = \"{package_name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(root.join("src")).expect("create fixture source directory");
+    fs::write(root.join("src/main.rs"), source).expect("write fixture source");
+}
+
 #[test]
 fn basic_inline_type_adds_use() {
     let temp = tempdir().expect("create temp fixture dir");
@@ -581,6 +591,222 @@ fn example(_x: MyType, _y: crate::parent::types::MyType) {}
     assert!(
         !consumer.contains("crate::parent::types::MyType"),
         "inline path should be replaced, got:\n{consumer}"
+    );
+}
+
+#[test]
+fn conflicting_private_import_keeps_qualified_type() {
+    let temp = tempdir().expect("create temp fixture dir");
+    let source = r#"use std::error::Error;
+use std::io;
+
+fn completed_capture() -> Result<(), io::Error> {
+    Err(io::Error::other("capture failed"))
+}
+
+fn boxed_error(error: io::Error) -> Box<dyn Error> {
+    Box::new(error)
+}
+
+fn main() {}
+"#;
+    write_inline_fixture(temp.path(), "inline_private_collision_fixture", source);
+    let manifest_path = temp.path().join("Cargo.toml");
+
+    let report = run_mend_json(&manifest_path);
+    assert!(
+        !report
+            .findings
+            .iter()
+            .any(|finding| finding.code == DiagnosticCode::InlinePathQualifiedType),
+        "conflicting private import should suppress the inline-type finding"
+    );
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(&manifest_path)
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let main_rs = fs::read_to_string(temp.path().join("src/main.rs")).expect("read fixed source");
+    assert_eq!(main_rs, source);
+}
+
+#[test]
+fn grouped_private_import_keeps_qualified_type() {
+    let temp = tempdir().expect("create temp fixture dir");
+    let source = r#"use std::{error::Error, io};
+
+fn completed_capture() -> Result<(), io::Error> {
+    Err(io::Error::other("capture failed"))
+}
+
+fn boxed_error(error: io::Error) -> Box<dyn Error> {
+    Box::new(error)
+}
+
+fn main() {}
+"#;
+    write_inline_fixture(temp.path(), "inline_grouped_collision_fixture", source);
+    let manifest_path = temp.path().join("Cargo.toml");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(&manifest_path)
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let main_rs = fs::read_to_string(temp.path().join("src/main.rs")).expect("read fixed source");
+    assert_eq!(main_rs, source);
+}
+
+#[test]
+fn renamed_private_import_keeps_qualified_type() {
+    let temp = tempdir().expect("create temp fixture dir");
+    let source = r#"mod capture {
+    pub trait CaptureError {}
+}
+
+use std::io;
+use capture::CaptureError as Error;
+
+fn completed_capture() -> Result<(), io::Error> {
+    Err(io::Error::other("capture failed"))
+}
+
+fn boxed_error<T: Error + 'static>(error: T) -> Box<dyn Error> {
+    Box::new(error)
+}
+
+fn main() {}
+"#;
+    write_inline_fixture(temp.path(), "inline_renamed_collision_fixture", source);
+    let manifest_path = temp.path().join("Cargo.toml");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(&manifest_path)
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let main_rs = fs::read_to_string(temp.path().join("src/main.rs")).expect("read fixed source");
+    assert_eq!(main_rs, source);
+}
+
+#[test]
+fn renamed_import_does_not_hide_required_bare_import() {
+    let temp = tempdir().expect("create temp fixture dir");
+    write_inline_fixture(
+        temp.path(),
+        "inline_renamed_existing_import_fixture",
+        r#"mod types {
+    pub struct Imported;
+}
+
+use types::Imported as Alias;
+
+fn aliased(_: Alias) {}
+
+fn inline(_: crate::types::Imported) {}
+
+fn main() {}
+"#,
+    );
+    let manifest_path = temp.path().join("Cargo.toml");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(&manifest_path)
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let main_rs = fs::read_to_string(temp.path().join("src/main.rs")).expect("read fixed source");
+    assert!(
+        main_rs.contains("use crate::types::Imported;"),
+        "expected the bare import alongside its alias, got:\n{main_rs}"
+    );
+    assert!(
+        main_rs.contains("fn inline(_: Imported)"),
+        "expected the inline path to use the bare import, got:\n{main_rs}"
+    );
+}
+
+#[test]
+fn sibling_scope_import_does_not_block_fix() {
+    let temp = tempdir().expect("create temp fixture dir");
+    write_inline_fixture(
+        temp.path(),
+        "inline_sibling_scope_fixture",
+        r#"mod error_consumer {
+    use std::error::Error;
+
+    fn boxed_error<T: Error + 'static>(error: T) -> Box<dyn Error> {
+        Box::new(error)
+    }
+}
+
+mod capture {
+    use std::io;
+
+    fn completed_capture() -> Result<(), io::Error> {
+        Err(io::Error::other("capture failed"))
+    }
+}
+
+fn main() {}
+"#,
+    );
+    let manifest_path = temp.path().join("Cargo.toml");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(&manifest_path)
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let main_rs = fs::read_to_string(temp.path().join("src/main.rs")).expect("read fixed source");
+    assert!(
+        main_rs.contains("mod capture {\n    use std::io;\n    use std::io::Error;\n"),
+        "expected a new import inside capture, got:\n{main_rs}"
+    );
+    assert!(
+        main_rs.contains("fn completed_capture() -> Result<(), Error>"),
+        "expected the capture return type to use the new binding, got:\n{main_rs}"
     );
 }
 

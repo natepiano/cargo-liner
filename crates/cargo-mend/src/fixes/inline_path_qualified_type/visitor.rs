@@ -21,7 +21,6 @@ use syn::PatTupleStruct;
 use syn::Path;
 use syn::TraitItemFn;
 use syn::TypePath;
-use syn::UseTree;
 use syn::visit;
 use syn::visit::Visit;
 
@@ -345,25 +344,6 @@ impl Visit<'_> for InlinePathVisitor {
         }
         visit::visit_pat_tuple_struct(self, node);
     }
-}
-
-pub(super) fn flatten_use_path(tree: &UseTree) -> Option<String> {
-    let mut segments = Vec::new();
-    let mut cursor = tree;
-    loop {
-        match cursor {
-            UseTree::Path(path) => {
-                segments.push(path.ident.to_string());
-                cursor = &path.tree;
-            },
-            UseTree::Name(name) => {
-                segments.push(name.ident.to_string());
-                break;
-            },
-            _ => return None,
-        }
-    }
-    Some(segments.join("::"))
 }
 
 pub(super) fn is_pascal_case(name: &str) -> bool {

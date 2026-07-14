@@ -59,6 +59,11 @@ pub(super) fn process_occurrence(
         |scope| absolutize_import_path(&occ.import_path, &scope.existing_imports),
     );
 
+    if scope.is_some_and(|scope| scope.has_private_import_conflict(&occ.import_name, &import_path))
+    {
+        return;
+    }
+
     let source_line = ctx
         .text
         .lines()

@@ -1,13 +1,23 @@
 use std::cmp::Reverse;
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 use syn::Item;
+use syn::UseTree;
 use syn::Visibility;
 use syn::spanned::Spanned;
 
 use super::offsets;
-use super::visitor;
 use crate::rust_syntax::PathAnchor;
+
+struct ImportBinding {
+    name: String,
+    path: String,
+}
+
+impl ImportBinding {
+    fn binds_path_leaf(&self) -> bool { self.path.rsplit("::").next() == Some(self.name.as_str()) }
+}
 
 pub(super) struct ScopeInfo {
     pub(super) span_start:              usize,
@@ -16,7 +26,16 @@ pub(super) struct ScopeInfo {
     pub(super) indent:                  String,
     pub(super) module_path:             Vec<String>,
     pub(super) existing_imports:        BTreeSet<String>,
+    private_imports:                    BTreeMap<String, BTreeSet<String>>,
     pub(super) existing_reexport_names: BTreeSet<String>,
+}
+
+impl ScopeInfo {
+    pub(super) fn has_private_import_conflict(&self, name: &str, path: &str) -> bool {
+        self.private_imports
+            .get(name)
+            .is_some_and(|paths| paths.iter().any(|existing| existing != path))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -42,6 +61,7 @@ pub(super) fn collect_scopes(
     scope_collection_context: &mut ScopeCollectionContext<'_>,
 ) {
     let mut existing_imports = BTreeSet::new();
+    let mut private_imports: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut existing_reexport_names = BTreeSet::new();
     let mut last_use_start = None;
     let mut last_use_end = None;
@@ -56,13 +76,21 @@ pub(super) fn collect_scopes(
         first_item_start.get_or_insert(item_start);
 
         if let Item::Use(item_use) = item {
-            if let Some(import_path) = visitor::flatten_use_path(&item_use.tree) {
-                if !matches!(item_use.vis, Visibility::Inherited)
-                    && let Some(import_name) = import_path.rsplit("::").next()
-                {
-                    existing_reexport_names.insert(import_name.to_string());
+            for binding in import_bindings(&item_use.tree) {
+                if binding.binds_path_leaf() {
+                    existing_imports.insert(binding.path.clone());
                 }
-                existing_imports.insert(import_path);
+                match &item_use.vis {
+                    Visibility::Inherited => {
+                        private_imports
+                            .entry(binding.name)
+                            .or_default()
+                            .insert(binding.path);
+                    },
+                    _ => {
+                        existing_reexport_names.insert(binding.name);
+                    },
+                }
             }
             last_use_start = Some(item_start);
             let item_end = offsets::offset(
@@ -90,6 +118,7 @@ pub(super) fn collect_scopes(
         indent,
         module_path: module_path.to_vec(),
         existing_imports,
+        private_imports,
         existing_reexport_names,
     });
 
@@ -117,6 +146,63 @@ pub(super) fn collect_scopes(
                 scope_collection_context,
             );
         }
+    }
+}
+
+fn import_bindings(tree: &UseTree) -> Vec<ImportBinding> {
+    let mut bindings = Vec::new();
+    collect_import_bindings(tree, &mut Vec::new(), &mut bindings);
+    bindings
+}
+
+fn collect_import_bindings(
+    tree: &UseTree,
+    prefix: &mut Vec<String>,
+    bindings: &mut Vec<ImportBinding>,
+) {
+    match tree {
+        UseTree::Path(path) => {
+            prefix.push(path.ident.to_string());
+            collect_import_bindings(&path.tree, prefix, bindings);
+            prefix.pop();
+        },
+        UseTree::Name(name) => {
+            let name = name.ident.to_string();
+            if name == "self" {
+                if let Some(bound_name) = prefix.last() {
+                    bindings.push(ImportBinding {
+                        name: bound_name.clone(),
+                        path: prefix.join("::"),
+                    });
+                }
+            } else {
+                let mut path = prefix.clone();
+                path.push(name.clone());
+                bindings.push(ImportBinding {
+                    name,
+                    path: path.join("::"),
+                });
+            }
+        },
+        UseTree::Rename(rename) => {
+            let mut path = prefix.clone();
+            let source_name = rename.ident.to_string();
+            if source_name != "self" {
+                path.push(source_name);
+            }
+            if !path.is_empty() {
+                bindings.push(ImportBinding {
+                    name: rename.rename.to_string(),
+                    path: path.join("::"),
+                });
+            }
+        },
+        UseTree::Group(group) => {
+            for item in &group.items {
+                collect_import_bindings(item, prefix, bindings);
+            }
+        },
+        UseTree::Glob(_) => {},
     }
 }
 
