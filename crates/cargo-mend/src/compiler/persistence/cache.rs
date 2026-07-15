@@ -3,6 +3,8 @@ use std::hash::Hash;
 use std::hash::Hasher;
 use std::path::Path;
 
+use crate::constants::FINGERPRINT_HEX_WIDTH;
+
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum CacheBuildKind {
     Library,
@@ -18,7 +20,11 @@ pub fn cache_filename_for(
     package_root.hash(&mut hasher);
     crate_root_file.hash(&mut hasher);
     build_kind.hash(&mut hasher);
-    format!("{:016x}.json", hasher.finish())
+    format!(
+        "{:0width$x}.json",
+        hasher.finish(),
+        width = FINGERPRINT_HEX_WIDTH
+    )
 }
 
 #[cfg(test)]

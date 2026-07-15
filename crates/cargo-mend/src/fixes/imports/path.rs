@@ -12,6 +12,12 @@ pub(super) struct ImportCandidate {
     pub(super) message:         &'static str,
 }
 
+struct FlattenedImport {
+    segments: Vec<String>,
+    original: String,
+    rename:   Option<String>,
+}
+
 pub(super) fn analyze_use_tree(
     current_module_path: &[String],
     tree: &UseTree,
@@ -80,12 +86,6 @@ pub(super) fn analyze_deep_super(
         diagnostic_code: DiagnosticCode::ReplaceDeepSuperImport,
         message: "deep `super::` chain is hard to follow — use a named `crate::` path",
     })
-}
-
-struct FlattenedImport {
-    segments: Vec<String>,
-    original: String,
-    rename:   Option<String>,
 }
 
 fn flatten_use_tree(tree: &UseTree) -> Option<FlattenedImport> {

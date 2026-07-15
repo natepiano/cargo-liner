@@ -48,6 +48,55 @@ impl Callbacks for AnalysisCallbacks {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct PassthroughInvocation {
+    program: OsString,
+    args:    Vec<OsString>,
+}
+
+impl PassthroughInvocation {
+    fn new(wrapper_args: &[OsString], rustc_wrapper: Option<OsString>) -> Result<Self> {
+        let rustc = wrapper_args
+            .get(1)
+            .context("compiler driver expected rustc path in wrapper arguments")?;
+        let rustc_args = wrapper_args.iter().skip(2).cloned();
+
+        let invocation = match rustc_wrapper {
+            Some(program) => Self {
+                program,
+                args: iter::once(rustc.clone()).chain(rustc_args).collect(),
+            },
+            None => Self {
+                program: rustc.clone(),
+                args:    rustc_args.collect(),
+            },
+        };
+        Ok(invocation)
+    }
+
+    fn command(&self) -> Command {
+        let mut command = Command::new(&self.program);
+        command.args(&self.args);
+        command
+    }
+}
+
+/// Compatibility trait for `rustc_driver::catch_with_exit_code` which returns
+/// `i32` on stable 1.94 and `ExitCode` from 1.95+ (PR #150379).
+trait IntoExitCode {
+    fn into_exit_code(self) -> ExitCode;
+}
+
+impl IntoExitCode for i32 {
+    fn into_exit_code(self) -> ExitCode {
+        ExitCode::from(u8::try_from(self).unwrap_or(EXIT_CODE_ERROR))
+    }
+}
+
+impl IntoExitCode for ExitCode {
+    fn into_exit_code(self) -> ExitCode { self }
+}
+
 pub(crate) fn driver_main() -> ExitCode {
     match driver_main_impl() {
         Ok(code) => code,
@@ -111,57 +160,8 @@ fn passthrough_to_rustc(wrapper_args: &[OsString]) -> Result<ExitCode> {
     ))
 }
 
-#[derive(Debug, PartialEq, Eq)]
-struct PassthroughInvocation {
-    program: OsString,
-    args:    Vec<OsString>,
-}
-
-impl PassthroughInvocation {
-    fn new(wrapper_args: &[OsString], rustc_wrapper: Option<OsString>) -> Result<Self> {
-        let rustc = wrapper_args
-            .get(1)
-            .context("compiler driver expected rustc path in wrapper arguments")?;
-        let rustc_args = wrapper_args.iter().skip(2).cloned();
-
-        let invocation = match rustc_wrapper {
-            Some(program) => Self {
-                program,
-                args: iter::once(rustc.clone()).chain(rustc_args).collect(),
-            },
-            None => Self {
-                program: rustc.clone(),
-                args:    rustc_args.collect(),
-            },
-        };
-        Ok(invocation)
-    }
-
-    fn command(&self) -> Command {
-        let mut command = Command::new(&self.program);
-        command.args(&self.args);
-        command
-    }
-}
-
 fn passthrough_rustc_wrapper() -> Option<OsString> {
     env::var_os(PASSTHROUGH_RUSTC_WRAPPER_ENV).filter(|value| !value.is_empty())
-}
-
-/// Compatibility trait for `rustc_driver::catch_with_exit_code` which returns
-/// `i32` on stable 1.94 and `ExitCode` from 1.95+ (PR #150379).
-trait IntoExitCode {
-    fn into_exit_code(self) -> ExitCode;
-}
-
-impl IntoExitCode for i32 {
-    fn into_exit_code(self) -> ExitCode {
-        ExitCode::from(u8::try_from(self).unwrap_or(EXIT_CODE_ERROR))
-    }
-}
-
-impl IntoExitCode for ExitCode {
-    fn into_exit_code(self) -> ExitCode { self }
 }
 
 fn exit_code_from_i32(code: i32) -> ExitCode {

@@ -16,6 +16,7 @@ use super::constants::CONFIG_FILE_NAME;
 use super::diagnostics_config::DiagnosticsConfig;
 use super::global::GlobalConfig;
 use super::prelude_pub_mod::PreludePubMod;
+use crate::constants::FINGERPRINT_HEX_WIDTH;
 
 #[derive(Debug, Default, Deserialize)]
 struct ConfigFile {
@@ -109,5 +110,9 @@ fn fingerprint_for(root: &Path, config: &VisibilityConfig) -> Result<String> {
     to_string(config)
         .context("failed to serialize mend config for fingerprinting")?
         .hash(&mut hasher);
-    Ok(format!("{:016x}", hasher.finish()))
+    Ok(format!(
+        "{:0width$x}",
+        hasher.finish(),
+        width = FINGERPRINT_HEX_WIDTH
+    ))
 }

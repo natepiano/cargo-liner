@@ -110,6 +110,47 @@ impl SourceCache {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UseItemPosition {
+    Outside,
+    Inside,
+}
+
+struct PathExtractor {
+    use_paths:       Vec<(Vec<String>, PathOrigin)>,
+    expr_paths:      Vec<(Vec<String>, PathOrigin)>,
+    use_renames:     Vec<UseRename>,
+    inside_use_item: UseItemPosition,
+}
+
+impl<'ast> Visit<'ast> for PathExtractor {
+    fn visit_item_use(&mut self, item_use: &'ast ItemUse) {
+        let mut flat = Vec::new();
+        flatten_use_tree(Vec::new(), &item_use.tree, &mut flat);
+        for raw in flat {
+            let origin = path_origin(&raw);
+            self.use_paths.push((raw, origin));
+        }
+        extract_use_renames(Vec::new(), &item_use.tree, &mut self.use_renames);
+        self.inside_use_item = UseItemPosition::Inside;
+        visit::visit_item_use(self, item_use);
+        self.inside_use_item = UseItemPosition::Outside;
+    }
+
+    fn visit_path(&mut self, path: &'ast SynPath) {
+        if self.inside_use_item == UseItemPosition::Outside {
+            let segments: Vec<String> = path
+                .segments
+                .iter()
+                .map(|segment| segment.ident.to_string())
+                .collect();
+            let origin = path_origin(&segments);
+            self.expr_paths.push((segments, origin));
+        }
+        visit::visit_path(self, path);
+    }
+}
+
 pub(super) fn analysis_source_root_for(
     crate_root_file: &Path,
     package_root: &Path,
@@ -245,47 +286,6 @@ pub(super) fn path_origin(raw: &[String]) -> PathOrigin {
         Some(PathAnchor::Crate) => PathOrigin::Crate,
         Some(PathAnchor::Super | PathAnchor::SelfMod | PathAnchor::SelfType | PathAnchor::Name)
         | None => PathOrigin::Relative,
-    }
-}
-
-struct PathExtractor {
-    use_paths:       Vec<(Vec<String>, PathOrigin)>,
-    expr_paths:      Vec<(Vec<String>, PathOrigin)>,
-    use_renames:     Vec<UseRename>,
-    inside_use_item: UseItemPosition,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum UseItemPosition {
-    Outside,
-    Inside,
-}
-
-impl<'ast> Visit<'ast> for PathExtractor {
-    fn visit_item_use(&mut self, item_use: &'ast ItemUse) {
-        let mut flat = Vec::new();
-        flatten_use_tree(Vec::new(), &item_use.tree, &mut flat);
-        for raw in flat {
-            let origin = path_origin(&raw);
-            self.use_paths.push((raw, origin));
-        }
-        extract_use_renames(Vec::new(), &item_use.tree, &mut self.use_renames);
-        self.inside_use_item = UseItemPosition::Inside;
-        visit::visit_item_use(self, item_use);
-        self.inside_use_item = UseItemPosition::Outside;
-    }
-
-    fn visit_path(&mut self, path: &'ast SynPath) {
-        if self.inside_use_item == UseItemPosition::Outside {
-            let segments: Vec<String> = path
-                .segments
-                .iter()
-                .map(|segment| segment.ident.to_string())
-                .collect();
-            let origin = path_origin(&segments);
-            self.expr_paths.push((segments, origin));
-        }
-        visit::visit_path(self, path);
     }
 }
 

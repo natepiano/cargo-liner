@@ -36,6 +36,11 @@ impl From<&str> for PathAnchor {
     }
 }
 
+enum BoundaryModuleName<'a> {
+    Root,
+    Named(&'a str),
+}
+
 pub(crate) fn leading_super_count(segments: &[String]) -> usize {
     segments
         .iter()
@@ -71,11 +76,6 @@ pub(crate) fn module_name_for_child_boundary_file(child_file: &Path) -> Option<&
         BoundaryModuleName::Named(name) => Some(name),
         BoundaryModuleName::Root => None,
     }
-}
-
-enum BoundaryModuleName<'a> {
-    Root,
-    Named(&'a str),
 }
 
 fn module_name_for_boundary_file(path: &Path) -> Option<BoundaryModuleName<'_>> {

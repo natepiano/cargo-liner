@@ -188,25 +188,6 @@ static IMPORTS_AT_TOP: DiagnosticSpec = DiagnosticSpec {
     fix_support: FixSupport::ImportsAtTop,
 };
 
-pub(crate) fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
-    match code {
-        DiagnosticCode::ForbiddenPubCrate => &FORBIDDEN_PUB_CRATE,
-        DiagnosticCode::ForbiddenPubInCrate => &FORBIDDEN_PUB_IN_CRATE,
-        DiagnosticCode::ReviewPubMod => &REVIEW_PUB_MOD,
-        DiagnosticCode::SuspiciousPub => &SUSPICIOUS_PUB,
-        DiagnosticCode::UnusedPub => &UNUSED_PUB,
-        DiagnosticCode::PreferModuleImport => &PREFER_MODULE_IMPORT,
-        DiagnosticCode::InlinePathQualifiedType => &INLINE_PATH_QUALIFIED_TYPE,
-        DiagnosticCode::ShortenLocalCrateImport => &SHORTEN_LOCAL_CRATE_IMPORT,
-        DiagnosticCode::ReplaceDeepSuperImport => &REPLACE_DEEP_SUPER_IMPORT,
-        DiagnosticCode::WildcardParentPubUse => &WILDCARD_PARENT_PUB_USE,
-        DiagnosticCode::InternalParentPubUseFacade => &INTERNAL_PARENT_PUB_USE_FACADE,
-        DiagnosticCode::NarrowToPubCrate => &NARROW_TO_PUB_CRATE,
-        DiagnosticCode::FieldVisibilityWiderThanType => &FIELD_VISIBILITY_WIDER_THAN_TYPE,
-        DiagnosticCode::ImportsAtTop => &IMPORTS_AT_TOP,
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Finding {
     pub severity:        Severity,
@@ -344,6 +325,25 @@ impl Report {
                 })
                 .count(),
         };
+    }
+}
+
+pub(crate) fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
+    match code {
+        DiagnosticCode::ForbiddenPubCrate => &FORBIDDEN_PUB_CRATE,
+        DiagnosticCode::ForbiddenPubInCrate => &FORBIDDEN_PUB_IN_CRATE,
+        DiagnosticCode::ReviewPubMod => &REVIEW_PUB_MOD,
+        DiagnosticCode::SuspiciousPub => &SUSPICIOUS_PUB,
+        DiagnosticCode::UnusedPub => &UNUSED_PUB,
+        DiagnosticCode::PreferModuleImport => &PREFER_MODULE_IMPORT,
+        DiagnosticCode::InlinePathQualifiedType => &INLINE_PATH_QUALIFIED_TYPE,
+        DiagnosticCode::ShortenLocalCrateImport => &SHORTEN_LOCAL_CRATE_IMPORT,
+        DiagnosticCode::ReplaceDeepSuperImport => &REPLACE_DEEP_SUPER_IMPORT,
+        DiagnosticCode::WildcardParentPubUse => &WILDCARD_PARENT_PUB_USE,
+        DiagnosticCode::InternalParentPubUseFacade => &INTERNAL_PARENT_PUB_USE_FACADE,
+        DiagnosticCode::NarrowToPubCrate => &NARROW_TO_PUB_CRATE,
+        DiagnosticCode::FieldVisibilityWiderThanType => &FIELD_VISIBILITY_WIDER_THAN_TYPE,
+        DiagnosticCode::ImportsAtTop => &IMPORTS_AT_TOP,
     }
 }
 

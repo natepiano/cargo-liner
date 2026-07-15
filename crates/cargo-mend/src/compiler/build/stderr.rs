@@ -46,6 +46,17 @@ enum SuppressionNotice {
     Printed,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum ProgressStatus {
+    Active,
+    #[default]
+    Inactive,
+}
+
+impl From<bool> for ProgressStatus {
+    fn from(value: bool) -> Self { if value { Self::Active } else { Self::Inactive } }
+}
+
 pub(super) fn stream_cargo_stderr(
     stderr: ChildStderr,
     output_mode: BuildOutputMode,
@@ -113,17 +124,6 @@ pub(super) fn stream_cargo_stderr(
         warning_count: compiler_warning_count,
         fixable_count: compiler_fixable_count,
     })
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-enum ProgressStatus {
-    Active,
-    #[default]
-    Inactive,
-}
-
-impl From<bool> for ProgressStatus {
-    fn from(value: bool) -> Self { if value { Self::Active } else { Self::Inactive } }
 }
 
 fn should_forward_progress_line(

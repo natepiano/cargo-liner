@@ -45,30 +45,6 @@ use rustc_middle::ty::Visibility;
 use crate::compiler::persistence::UseSite;
 use crate::rust_syntax::PathAnchor;
 
-/// Walk the entire crate's HIR and append every resolved
-/// expression/type/pattern path reference to `out`. The caller module is
-/// the nearest enclosing module def (defaults to the crate root).
-pub(super) fn collect_use_sites(tcx: TyCtxt<'_>, out: &mut Vec<UseSite>) {
-    let mut collector = UseSiteCollector {
-        tcx,
-        current_module: CRATE_DEF_ID.to_def_id(),
-        out,
-    };
-    let crate_items = tcx.hir_crate_items(());
-    for item_id in crate_items.free_items() {
-        let item = tcx.hir_item(item_id);
-        collector.visit_item(item);
-    }
-    for impl_item_id in crate_items.impl_items() {
-        let impl_item = tcx.hir_impl_item(impl_item_id);
-        collector.visit_impl_item(impl_item);
-    }
-    for trait_item_id in crate_items.trait_items() {
-        let trait_item = tcx.hir_trait_item(trait_item_id);
-        collector.visit_trait_item(trait_item);
-    }
-}
-
 struct UseSiteCollector<'a, 'tcx> {
     tcx:            TyCtxt<'tcx>,
     /// Def-id of the nearest enclosing module. Updated as the visitor
@@ -394,6 +370,30 @@ impl<'tcx> Visitor<'tcx> for UseSiteCollector<'_, 'tcx> {
             self.record_qpath(qpath, expr.hir_id);
         }
         rustc_hir::intravisit::walk_pat(self, pat);
+    }
+}
+
+/// Walk the entire crate's HIR and append every resolved
+/// expression/type/pattern path reference to `out`. The caller module is
+/// the nearest enclosing module def (defaults to the crate root).
+pub(super) fn collect_use_sites(tcx: TyCtxt<'_>, out: &mut Vec<UseSite>) {
+    let mut collector = UseSiteCollector {
+        tcx,
+        current_module: CRATE_DEF_ID.to_def_id(),
+        out,
+    };
+    let crate_items = tcx.hir_crate_items(());
+    for item_id in crate_items.free_items() {
+        let item = tcx.hir_item(item_id);
+        collector.visit_item(item);
+    }
+    for impl_item_id in crate_items.impl_items() {
+        let impl_item = tcx.hir_impl_item(impl_item_id);
+        collector.visit_impl_item(impl_item);
+    }
+    for trait_item_id in crate_items.trait_items() {
+        let trait_item = tcx.hir_trait_item(trait_item_id);
+        collector.visit_trait_item(trait_item);
     }
 }
 

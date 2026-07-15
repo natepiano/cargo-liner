@@ -14,9 +14,11 @@ use toml_edit::Table;
 use toml_edit::value;
 
 use super::constants::APP_NAME;
+use super::constants::DIAGNOSTICS_TABLE_KEY;
 use super::constants::GLOBAL_CONFIG_FILE;
 use super::constants::PRELUDE_COMMENT;
 use super::constants::PRELUDE_KEY;
+use super::constants::VISIBILITY_TABLE_KEY;
 use super::diagnostic_code::DiagnosticCode;
 use super::diagnostics_config::DiagnosticsConfig;
 use super::prelude_pub_mod::PreludePubMod;
@@ -87,7 +89,7 @@ fn reconcile_global_config(path: &Path) -> Result<()> {
 
     let mut inserted = false;
 
-    if let Some(diagnostics) = ensure_table(doc.as_table_mut(), "diagnostics") {
+    if let Some(diagnostics) = ensure_table(doc.as_table_mut(), DIAGNOSTICS_TABLE_KEY) {
         for code in DiagnosticCode::ALL {
             if !diagnostics.contains_key(code.as_str()) {
                 diagnostics.insert(code.as_str(), value(true));
@@ -96,7 +98,7 @@ fn reconcile_global_config(path: &Path) -> Result<()> {
         }
     }
 
-    if let Some(visibility) = ensure_table(doc.as_table_mut(), "visibility")
+    if let Some(visibility) = ensure_table(doc.as_table_mut(), VISIBILITY_TABLE_KEY)
         && !visibility.contains_key(PRELUDE_KEY)
     {
         visibility.insert(PRELUDE_KEY, value(true));

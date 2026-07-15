@@ -61,6 +61,73 @@ impl From<ShortenImportFact> for Finding {
     }
 }
 
+struct UseVisitor<'a> {
+    analysis_root:       &'a Path,
+    path:                &'a Path,
+    text:                &'a str,
+    offsets:             &'a [usize],
+    current_module_path: Vec<String>,
+    findings:            Vec<ImportFinding>,
+}
+
+impl Visit<'_> for UseVisitor<'_> {
+    fn visit_item_mod(&mut self, node: &ItemMod) {
+        if let Some((_, items)) = &node.content {
+            self.current_module_path.push(node.ident.to_string());
+            for item in items {
+                self.visit_item(item);
+            }
+            self.current_module_path.pop();
+        }
+    }
+
+    fn visit_item_use(&mut self, node: &ItemUse) {
+        let candidate = import_path::analyze_use_tree(&self.current_module_path, &node.tree)
+            .or_else(|| import_path::analyze_deep_super(&self.current_module_path, &node.tree));
+        if let Some(candidate) = candidate {
+            let span = node.span();
+            let start = span.start();
+            let end = span.end();
+            let start_offset = import_path::offset(self.offsets, start);
+            let end_offset = import_path::offset(self.offsets, end);
+            let original_item = &self.text[start_offset..end_offset];
+            let replacement =
+                original_item.replacen(&candidate.original, &candidate.replacement, 1);
+            let source_line = self
+                .text
+                .lines()
+                .nth(start.line.saturating_sub(1))
+                .unwrap_or_default()
+                .to_string();
+            let display_path = self
+                .path
+                .strip_prefix(self.analysis_root)
+                .unwrap_or(self.path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            self.findings.push(ImportFinding {
+                shorten_import_fact: ShortenImportFact {
+                    diagnostic_code: candidate.diagnostic_code,
+                    message: candidate.message,
+                    path: display_path,
+                    line: start.line,
+                    column: start.column + 1,
+                    highlight_len: candidate.original.len().max(1),
+                    source_line,
+                    replacement: replacement.clone(),
+                },
+                use_fix:             UseFix {
+                    path: self.path.to_path_buf(),
+                    start: start_offset,
+                    end: end_offset,
+                    replacement,
+                    import_group: None,
+                },
+            });
+        }
+    }
+}
+
 pub fn scan_selection(selection: &Selection) -> Result<ImportScan> {
     let findings_with_fixes = scan_selection_with_fixes(selection)?;
     let fixes = ValidatedFixSet::try_from(
@@ -142,71 +209,4 @@ fn scan_file(analysis_root: &Path, source_root: &Path, path: &Path) -> Result<Ve
     };
     visitor.visit_file(&syntax);
     Ok(visitor.findings)
-}
-
-struct UseVisitor<'a> {
-    analysis_root:       &'a Path,
-    path:                &'a Path,
-    text:                &'a str,
-    offsets:             &'a [usize],
-    current_module_path: Vec<String>,
-    findings:            Vec<ImportFinding>,
-}
-
-impl Visit<'_> for UseVisitor<'_> {
-    fn visit_item_mod(&mut self, node: &ItemMod) {
-        if let Some((_, items)) = &node.content {
-            self.current_module_path.push(node.ident.to_string());
-            for item in items {
-                self.visit_item(item);
-            }
-            self.current_module_path.pop();
-        }
-    }
-
-    fn visit_item_use(&mut self, node: &ItemUse) {
-        let candidate = import_path::analyze_use_tree(&self.current_module_path, &node.tree)
-            .or_else(|| import_path::analyze_deep_super(&self.current_module_path, &node.tree));
-        if let Some(candidate) = candidate {
-            let span = node.span();
-            let start = span.start();
-            let end = span.end();
-            let start_offset = import_path::offset(self.offsets, start);
-            let end_offset = import_path::offset(self.offsets, end);
-            let original_item = &self.text[start_offset..end_offset];
-            let replacement =
-                original_item.replacen(&candidate.original, &candidate.replacement, 1);
-            let source_line = self
-                .text
-                .lines()
-                .nth(start.line.saturating_sub(1))
-                .unwrap_or_default()
-                .to_string();
-            let display_path = self
-                .path
-                .strip_prefix(self.analysis_root)
-                .unwrap_or(self.path)
-                .to_string_lossy()
-                .replace('\\', "/");
-            self.findings.push(ImportFinding {
-                shorten_import_fact: ShortenImportFact {
-                    diagnostic_code: candidate.diagnostic_code,
-                    message: candidate.message,
-                    path: display_path,
-                    line: start.line,
-                    column: start.column + 1,
-                    highlight_len: candidate.original.len().max(1),
-                    source_line,
-                    replacement: replacement.clone(),
-                },
-                use_fix:             UseFix {
-                    path: self.path.to_path_buf(),
-                    start: start_offset,
-                    end: end_offset,
-                    replacement,
-                    import_group: None,
-                },
-            });
-        }
-    }
 }

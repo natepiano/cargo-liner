@@ -12,6 +12,53 @@ use syn::Visibility;
 use syn::visit;
 use syn::visit::Visit;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PublicSurfaceStatus {
+    Missing,
+    Found,
+}
+
+impl PublicSurfaceStatus {
+    const fn is_found(self) -> bool { matches!(self, Self::Found) }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SurfaceReferenceMatch {
+    Missing,
+    Found,
+}
+
+struct ItemSurfaceReferenceVisitor<'a> {
+    item_name: &'a str,
+    found:     SurfaceReferenceMatch,
+}
+
+impl<'a> ItemSurfaceReferenceVisitor<'a> {
+    const fn new(item_name: &'a str) -> Self {
+        Self {
+            item_name,
+            found: SurfaceReferenceMatch::Missing,
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for ItemSurfaceReferenceVisitor<'_> {
+    fn visit_path(&mut self, path: &'ast Path) {
+        if self.found == SurfaceReferenceMatch::Found {
+            return;
+        }
+        if path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == self.item_name)
+        {
+            self.found = SurfaceReferenceMatch::Found;
+            return;
+        }
+        visit::visit_path(self, path);
+    }
+}
+
 pub(super) fn public_item_name(item: &Item) -> Option<String> {
     match item {
         Item::Const(item) if matches!(item.vis, Visibility::Public(_)) => {
@@ -173,53 +220,6 @@ pub(super) fn outward_impl_surface_mentions_name(item_impl: &ItemImpl, item_name
     }
 
     public_surface_status.is_found() && visitor.found == SurfaceReferenceMatch::Found
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PublicSurfaceStatus {
-    Missing,
-    Found,
-}
-
-impl PublicSurfaceStatus {
-    const fn is_found(self) -> bool { matches!(self, Self::Found) }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SurfaceReferenceMatch {
-    Missing,
-    Found,
-}
-
-struct ItemSurfaceReferenceVisitor<'a> {
-    item_name: &'a str,
-    found:     SurfaceReferenceMatch,
-}
-
-impl<'a> ItemSurfaceReferenceVisitor<'a> {
-    const fn new(item_name: &'a str) -> Self {
-        Self {
-            item_name,
-            found: SurfaceReferenceMatch::Missing,
-        }
-    }
-}
-
-impl<'ast> Visit<'ast> for ItemSurfaceReferenceVisitor<'_> {
-    fn visit_path(&mut self, path: &'ast Path) {
-        if self.found == SurfaceReferenceMatch::Found {
-            return;
-        }
-        if path
-            .segments
-            .last()
-            .is_some_and(|segment| segment.ident == self.item_name)
-        {
-            self.found = SurfaceReferenceMatch::Found;
-            return;
-        }
-        visit::visit_path(self, path);
-    }
 }
 
 fn attributes_mention_name(attrs: &[Attribute], item_name: &str) -> bool {

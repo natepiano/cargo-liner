@@ -11,10 +11,6 @@ use crate::reporting::constants::CARGO_MEND_FIX_PUB_USE;
 use crate::reporting::constants::SUMMARY_LABEL;
 use crate::reporting::diagnostics::Report;
 
-const fn pluralize<'a>(count: usize, singular: &'a str, plural: &'a str) -> &'a str {
-    if count == 1 { singular } else { plural }
-}
-
 struct SummaryRow {
     count:       usize,
     description: String,
@@ -26,6 +22,10 @@ struct SummaryRow {
 struct SummaryFixable {
     count:   usize,
     command: &'static str,
+}
+
+const fn pluralize<'a>(count: usize, singular: &'a str, plural: &'a str) -> &'a str {
+    if count == 1 { singular } else { plural }
 }
 
 pub(super) fn errors_block(report: &Report, color_mode: ColorMode) -> Option<String> {

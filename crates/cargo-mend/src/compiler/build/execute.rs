@@ -35,6 +35,7 @@ use crate::compiler::constants::RUSTC_WRAPPER_ENV;
 use crate::compiler::constants::SCOPE_FINGERPRINT_ENV;
 use crate::compiler::persistence;
 use crate::config::LoadedConfig;
+use crate::constants::FINGERPRINT_HEX_WIDTH;
 use crate::reporting::AnalysisFailure;
 use crate::reporting::CARGO_TERM_COLOR_ALWAYS;
 use crate::reporting::CARGO_TERM_COLOR_ENV;
@@ -189,7 +190,11 @@ fn scope_fingerprint_for(cargo_plan: &CargoCheckPlan) -> String {
     for arg in &cargo_plan.cargo_args {
         arg.hash(&mut hasher);
     }
-    format!("{:016x}", hasher.finish())
+    format!(
+        "{:0width$x}",
+        hasher.finish(),
+        width = FINGERPRINT_HEX_WIDTH
+    )
 }
 
 pub(crate) fn run_cargo_fix(

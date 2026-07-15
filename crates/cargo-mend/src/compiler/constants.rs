@@ -70,3 +70,6 @@ pub(crate) const SOURCE_DIR_BENCHES: &str = "benches";
 pub(crate) const SOURCE_DIR_EXAMPLES: &str = "examples";
 pub(crate) const SOURCE_DIR_SRC: &str = "src";
 pub(crate) const SOURCE_DIR_TESTS: &str = "tests";
+
+// visibility policy
+pub(crate) const PRELUDE_MODULE_NAME: &str = "prelude";

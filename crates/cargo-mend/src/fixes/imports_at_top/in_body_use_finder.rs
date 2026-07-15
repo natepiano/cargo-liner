@@ -1,107 +1,29 @@
 use std::collections::BTreeMap;
-use std::ffi::OsStr;
-use std::fs;
 use std::path::Path;
 
-use anyhow::Context;
-use anyhow::Result;
 use proc_macro2::LineColumn;
 use syn::Arm;
 use syn::Attribute;
 use syn::Block;
 use syn::Expr;
+use syn::File;
 use syn::Item;
 use syn::ItemMod;
 use syn::ItemUse;
 use syn::Stmt;
 use syn::UseTree;
-use syn::parse_file;
 use syn::spanned::Spanned;
 use syn::visit;
 use syn::visit::Visit;
-use walkdir::WalkDir;
 
-use super::constants::IMPORTS_AT_TOP_MESSAGE;
-use super::constants::IMPORTS_AT_TOP_SUGGESTION;
-use super::imports::ImportGroup;
-use super::imports::UseFix;
-use super::imports::ValidatedFixSet;
-use crate::compiler::SOURCE_DIR_SRC;
 use crate::config::DiagnosticCode;
+use crate::fixes::constants::IMPORTS_AT_TOP_MESSAGE;
+use crate::fixes::constants::IMPORTS_AT_TOP_SUGGESTION;
+use crate::fixes::imports::ImportGroup;
+use crate::fixes::imports::UseFix;
 use crate::reporting::Finding;
 use crate::reporting::FixSupport;
 use crate::reporting::Severity;
-use crate::selection::Selection;
-
-pub(crate) struct ImportsAtTopScan {
-    pub findings: Vec<Finding>,
-    pub fixes:    ValidatedFixSet,
-}
-
-pub(crate) fn scan_selection(selection: &Selection) -> Result<ImportsAtTopScan> {
-    let mut all_findings = Vec::new();
-    let mut all_fixes = Vec::new();
-    for package_root in &selection.package_roots {
-        let source_root = package_root.join(SOURCE_DIR_SRC);
-        if !source_root.is_dir() {
-            continue;
-        }
-        for entry in WalkDir::new(&source_root)
-            .into_iter()
-            .filter_map(Result::ok)
-        {
-            let path = entry.path();
-            if !entry.file_type().is_file()
-                || path.extension().and_then(OsStr::to_str) != Some("rs")
-            {
-                continue;
-            }
-            let (findings, fixes) = scan_file(selection.analysis_root.as_path(), path)?;
-            all_findings.extend(findings);
-            all_fixes.extend(fixes);
-        }
-    }
-    all_findings.sort_by(|left, right| {
-        (&left.path, left.line, left.column).cmp(&(&right.path, right.line, right.column))
-    });
-    all_findings.dedup_by(|left, right| {
-        left.path == right.path && left.line == right.line && left.column == right.column
-    });
-    Ok(ImportsAtTopScan {
-        findings: all_findings,
-        fixes:    ValidatedFixSet::try_from(all_fixes)?,
-    })
-}
-
-fn scan_file(analysis_root: &Path, path: &Path) -> Result<(Vec<Finding>, Vec<UseFix>)> {
-    let text =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let syntax =
-        parse_file(&text).with_context(|| format!("failed to parse {}", path.display()))?;
-    let offsets = line_offsets(&text);
-    let display_path = path
-        .strip_prefix(analysis_root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/");
-
-    let root_scope = compute_scope_for_items(&syntax.items, &text, &offsets, "");
-
-    let mut visitor = InBodyUseFinder {
-        text: &text,
-        offsets: &offsets,
-        path,
-        display_path: &display_path,
-        scope_stack: vec![root_scope],
-        gate_stack: Vec::new(),
-        findings: Vec::new(),
-        fixes: Vec::new(),
-    };
-    for item in &syntax.items {
-        visitor.visit_item(item);
-    }
-    Ok((visitor.findings, visitor.fixes))
-}
 
 /// What the scope already exposes under a given bare name. Use-imports
 /// track the resolved path so a same-path move dedupes cleanly, plus whether
@@ -128,137 +50,6 @@ struct Scope {
     existing:         BTreeMap<String, ExistingBinding>,
 }
 
-fn compute_scope_for_items(
-    items: &[Item],
-    text: &str,
-    offsets: &[usize],
-    default_indent: &str,
-) -> Scope {
-    let mut existing: BTreeMap<String, ExistingBinding> = BTreeMap::new();
-    let mut last_use_end: Option<usize> = None;
-    let mut first_item_start: Option<usize> = None;
-    let mut detected_indent: Option<String> = None;
-
-    for item in items {
-        let item_start_lc = item.span().start();
-        let item_start = offset(offsets, item_start_lc);
-        first_item_start.get_or_insert(item_start);
-        if detected_indent.is_none() {
-            detected_indent = Some(indent_for_offset(text, item_start));
-        }
-        match item {
-            Item::Use(item_use) => {
-                let gated = any_cfg_attr(&item_use.attrs);
-                for (bare, full) in flatten_use_to_bare_paths(&item_use.tree) {
-                    existing.insert(bare, ExistingBinding::Use { full, gated });
-                }
-                let end = offset(offsets, item_use.span().end());
-                let end = if text.as_bytes().get(end) == Some(&b'\n') {
-                    end + 1
-                } else {
-                    end
-                };
-                last_use_end = Some(end);
-            },
-            other => {
-                for name in item_defined_names(other) {
-                    existing.entry(name).or_insert(ExistingBinding::Item);
-                }
-            },
-        }
-    }
-
-    let insertion_offset = last_use_end.or(first_item_start).unwrap_or(0);
-    let indent = detected_indent.unwrap_or_else(|| default_indent.to_string());
-    Scope {
-        insertion_offset,
-        indent,
-        existing,
-    }
-}
-
-/// Bare identifiers that an item introduces at its containing module's
-/// scope. Returns an empty vector for items that don't bind a name at
-/// module level (`Item::Impl`, `Item::ExternCrate`, `Item::Use`,
-/// `Item::Macro`, etc.).
-fn item_defined_names(item: &Item) -> Vec<String> {
-    match item {
-        Item::Struct(s) => vec![s.ident.to_string()],
-        Item::Enum(e) => vec![e.ident.to_string()],
-        Item::Union(u) => vec![u.ident.to_string()],
-        Item::Fn(f) => vec![f.sig.ident.to_string()],
-        Item::Const(c) => vec![c.ident.to_string()],
-        Item::Static(s) => vec![s.ident.to_string()],
-        Item::Mod(m) => vec![m.ident.to_string()],
-        Item::Trait(t) => vec![t.ident.to_string()],
-        Item::TraitAlias(t) => vec![t.ident.to_string()],
-        Item::Type(t) => vec![t.ident.to_string()],
-        Item::ExternCrate(c) => c.rename.as_ref().map_or_else(
-            || vec![c.ident.to_string()],
-            |(_, rename)| vec![rename.to_string()],
-        ),
-        _ => Vec::new(),
-    }
-}
-
-fn indent_for_offset(text: &str, offset: usize) -> String {
-    let line_start = line_start_offset(text, offset);
-    let leading = &text[line_start..offset];
-    if leading
-        .chars()
-        .all(|character| character == ' ' || character == '\t')
-    {
-        leading.to_string()
-    } else {
-        String::new()
-    }
-}
-
-fn line_start_offset(text: &str, offset: usize) -> usize {
-    text[..offset]
-        .rfind('\n')
-        .map_or(0, |position| position + 1)
-}
-
-fn flatten_use_to_bare_paths(tree: &UseTree) -> Vec<(String, String)> {
-    let mut prefix: Vec<String> = Vec::new();
-    let mut out: Vec<(String, String)> = Vec::new();
-    walk_use_tree(tree, &mut prefix, &mut out);
-    out
-}
-
-fn walk_use_tree(tree: &UseTree, prefix: &mut Vec<String>, out: &mut Vec<(String, String)>) {
-    match tree {
-        UseTree::Path(path) => {
-            prefix.push(path.ident.to_string());
-            walk_use_tree(&path.tree, prefix, out);
-            prefix.pop();
-        },
-        UseTree::Name(name) => {
-            let bare = name.ident.to_string();
-            let mut segments = prefix.clone();
-            segments.push(bare.clone());
-            out.push((bare, segments.join("::")));
-        },
-        UseTree::Rename(rename) => {
-            let bare = rename.rename.to_string();
-            let mut segments = prefix.clone();
-            segments.push(rename.ident.to_string());
-            out.push((bare, segments.join("::")));
-        },
-        UseTree::Group(group) => {
-            for item in &group.items {
-                walk_use_tree(item, prefix, out);
-            }
-        },
-        UseTree::Glob(_) => {
-            let mut segments = prefix.clone();
-            segments.push("*".to_string());
-            out.push(("*".to_string(), segments.join("::")));
-        },
-    }
-}
-
 struct InBodyUseFinder<'a> {
     text:         &'a str,
     offsets:      &'a [usize],
@@ -274,72 +65,6 @@ struct InBodyUseFinder<'a> {
     gate_stack:   Vec<String>,
     findings:     Vec<Finding>,
     fixes:        Vec<UseFix>,
-}
-
-/// Whether an attribute is `#[cfg(...)]` or `#[cfg_attr(...)]` — the two
-/// attributes that conditionally remove the code they annotate. Moving a
-/// `use` out of a construct carrying one would make a conditionally-compiled
-/// import unconditional.
-fn is_cfg_attr(attr: &Attribute) -> bool {
-    attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr")
-}
-
-fn any_cfg_attr(attrs: &[Attribute]) -> bool { attrs.iter().any(is_cfg_attr) }
-
-/// Attributes on a statement that gate a `use` nested inside it. Items are
-/// handled in [`InBodyUseFinder::visit_item`]; a `use` statement's own
-/// attributes are handled in [`InBodyUseFinder::try_emit_fix`].
-fn stmt_gate_attrs(stmt: &Stmt) -> &[Attribute] {
-    match stmt {
-        Stmt::Local(local) => &local.attrs,
-        Stmt::Macro(stmt_macro) => &stmt_macro.attrs,
-        Stmt::Expr(expr, _) => expr_gate_attrs(expr),
-        Stmt::Item(_) => &[],
-    }
-}
-
-/// Attributes on a block-bearing expression. Only expressions that introduce a
-/// block can hold a nested `use`, so other variants never gate one.
-fn expr_gate_attrs(expr: &Expr) -> &[Attribute] {
-    match expr {
-        Expr::Block(block) => &block.attrs,
-        Expr::Unsafe(block) => &block.attrs,
-        Expr::If(branch) => &branch.attrs,
-        Expr::Match(branch) => &branch.attrs,
-        Expr::Loop(loop_expr) => &loop_expr.attrs,
-        Expr::While(loop_expr) => &loop_expr.attrs,
-        Expr::ForLoop(loop_expr) => &loop_expr.attrs,
-        _ => &[],
-    }
-}
-
-/// Attributes on an item that can contain a `use` moving past it to the module
-/// scope. Modules are excluded: they open their own scope, so an inner `use`
-/// moves to the module top and stays within any gate on the module itself.
-fn item_gate_attrs(item: &Item) -> &[Attribute] {
-    match item {
-        Item::Fn(item) => &item.attrs,
-        Item::Impl(item) => &item.attrs,
-        Item::Trait(item) => &item.attrs,
-        Item::Const(item) => &item.attrs,
-        Item::Static(item) => &item.attrs,
-        _ => &[],
-    }
-}
-
-/// Whether moving an unconditional `use` of `full` would collide with what
-/// the scope already exposes under that bare name: an item, a gated use of any
-/// path (an unconditional sibling would double-import when the gate holds), or
-/// an unconditional use of a different path.
-fn unconditional_collision(existing: Option<&ExistingBinding>, full: &str) -> bool {
-    match existing {
-        Some(ExistingBinding::Item | ExistingBinding::Use { gated: true, .. }) => true,
-        Some(ExistingBinding::Use {
-            full: existing_full,
-            gated: false,
-        }) => existing_full != full,
-        None => false,
-    }
 }
 
 impl InBodyUseFinder<'_> {
@@ -503,8 +228,8 @@ impl InBodyUseFinder<'_> {
 
     /// Insert the moved `use` (with its carried gate) at the scope top and
     /// record the newly imported names so later in-body uses in this pass see
-    /// them as already imported. The gated flag rides along so a conditional
-    /// move never dedups against an unconditional import of the same name.
+    /// them as already imported. The `gated` flag stays with the binding so a
+    /// conditional move never dedups against an unconditional import of the same name.
     fn emit_insertion(
         &mut self,
         bare_paths: &[(String, String)],
@@ -620,6 +345,227 @@ impl<'ast> Visit<'ast> for InBodyUseFinder<'_> {
                 _ => self.visit_stmt(stmt),
             }
         }
+    }
+}
+
+pub(super) fn scan(
+    syntax: &File,
+    text: &str,
+    path: &Path,
+    display_path: &str,
+) -> (Vec<Finding>, Vec<UseFix>) {
+    let offsets = line_offsets(text);
+    let root_scope = compute_scope_for_items(&syntax.items, text, &offsets, "");
+    let mut visitor = InBodyUseFinder {
+        text,
+        offsets: &offsets,
+        path,
+        display_path,
+        scope_stack: vec![root_scope],
+        gate_stack: Vec::new(),
+        findings: Vec::new(),
+        fixes: Vec::new(),
+    };
+    for item in &syntax.items {
+        visitor.visit_item(item);
+    }
+    (visitor.findings, visitor.fixes)
+}
+
+fn compute_scope_for_items(
+    items: &[Item],
+    text: &str,
+    offsets: &[usize],
+    default_indent: &str,
+) -> Scope {
+    let mut existing: BTreeMap<String, ExistingBinding> = BTreeMap::new();
+    let mut last_use_end: Option<usize> = None;
+    let mut first_item_start: Option<usize> = None;
+    let mut detected_indent: Option<String> = None;
+
+    for item in items {
+        let item_start_lc = item.span().start();
+        let item_start = offset(offsets, item_start_lc);
+        first_item_start.get_or_insert(item_start);
+        if detected_indent.is_none() {
+            detected_indent = Some(indent_for_offset(text, item_start));
+        }
+        match item {
+            Item::Use(item_use) => {
+                let gated = any_cfg_attr(&item_use.attrs);
+                for (bare, full) in flatten_use_to_bare_paths(&item_use.tree) {
+                    existing.insert(bare, ExistingBinding::Use { full, gated });
+                }
+                let end = offset(offsets, item_use.span().end());
+                let end = if text.as_bytes().get(end) == Some(&b'\n') {
+                    end + 1
+                } else {
+                    end
+                };
+                last_use_end = Some(end);
+            },
+            other => {
+                for name in item_defined_names(other) {
+                    existing.entry(name).or_insert(ExistingBinding::Item);
+                }
+            },
+        }
+    }
+
+    let insertion_offset = last_use_end.or(first_item_start).unwrap_or(0);
+    let indent = detected_indent.unwrap_or_else(|| default_indent.to_string());
+    Scope {
+        insertion_offset,
+        indent,
+        existing,
+    }
+}
+
+/// Bare identifiers that an item introduces at its containing module's
+/// scope. Returns an empty vector for items that don't bind a name at
+/// module level (`Item::Impl`, `Item::ExternCrate`, `Item::Use`,
+/// `Item::Macro`, etc.).
+fn item_defined_names(item: &Item) -> Vec<String> {
+    match item {
+        Item::Struct(item) => vec![item.ident.to_string()],
+        Item::Enum(item) => vec![item.ident.to_string()],
+        Item::Union(item) => vec![item.ident.to_string()],
+        Item::Fn(item) => vec![item.sig.ident.to_string()],
+        Item::Const(item) => vec![item.ident.to_string()],
+        Item::Static(item) => vec![item.ident.to_string()],
+        Item::Mod(item) => vec![item.ident.to_string()],
+        Item::Trait(item) => vec![item.ident.to_string()],
+        Item::TraitAlias(item) => vec![item.ident.to_string()],
+        Item::Type(item) => vec![item.ident.to_string()],
+        Item::ExternCrate(item) => item.rename.as_ref().map_or_else(
+            || vec![item.ident.to_string()],
+            |(_, rename)| vec![rename.to_string()],
+        ),
+        _ => Vec::new(),
+    }
+}
+
+fn indent_for_offset(text: &str, offset: usize) -> String {
+    let line_start = line_start_offset(text, offset);
+    let leading = &text[line_start..offset];
+    if leading
+        .chars()
+        .all(|character| character == ' ' || character == '\t')
+    {
+        leading.to_string()
+    } else {
+        String::new()
+    }
+}
+
+fn line_start_offset(text: &str, offset: usize) -> usize {
+    text[..offset]
+        .rfind('\n')
+        .map_or(0, |position| position + 1)
+}
+
+fn flatten_use_to_bare_paths(tree: &UseTree) -> Vec<(String, String)> {
+    let mut prefix: Vec<String> = Vec::new();
+    let mut out: Vec<(String, String)> = Vec::new();
+    walk_use_tree(tree, &mut prefix, &mut out);
+    out
+}
+
+fn walk_use_tree(tree: &UseTree, prefix: &mut Vec<String>, out: &mut Vec<(String, String)>) {
+    match tree {
+        UseTree::Path(path) => {
+            prefix.push(path.ident.to_string());
+            walk_use_tree(&path.tree, prefix, out);
+            prefix.pop();
+        },
+        UseTree::Name(name) => {
+            let bare = name.ident.to_string();
+            let mut segments = prefix.clone();
+            segments.push(bare.clone());
+            out.push((bare, segments.join("::")));
+        },
+        UseTree::Rename(rename) => {
+            let bare = rename.rename.to_string();
+            let mut segments = prefix.clone();
+            segments.push(rename.ident.to_string());
+            out.push((bare, segments.join("::")));
+        },
+        UseTree::Group(group) => {
+            for item in &group.items {
+                walk_use_tree(item, prefix, out);
+            }
+        },
+        UseTree::Glob(_) => {
+            let mut segments = prefix.clone();
+            segments.push("*".to_string());
+            out.push(("*".to_string(), segments.join("::")));
+        },
+    }
+}
+
+/// Whether an attribute is `#[cfg(...)]` or `#[cfg_attr(...)]` — the two
+/// attributes that conditionally remove the code they annotate. Moving a
+/// `use` out of a construct carrying one would make a conditionally-compiled
+/// import unconditional.
+fn is_cfg_attr(attr: &Attribute) -> bool {
+    attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr")
+}
+
+fn any_cfg_attr(attrs: &[Attribute]) -> bool { attrs.iter().any(is_cfg_attr) }
+
+/// Attributes on a statement that gate a `use` nested inside it. Items are
+/// handled in [`InBodyUseFinder::visit_item`]; a `use` statement's own
+/// attributes are handled in [`InBodyUseFinder::try_emit_fix`].
+fn stmt_gate_attrs(stmt: &Stmt) -> &[Attribute] {
+    match stmt {
+        Stmt::Local(local) => &local.attrs,
+        Stmt::Macro(stmt_macro) => &stmt_macro.attrs,
+        Stmt::Expr(expr, _) => expr_gate_attrs(expr),
+        Stmt::Item(_) => &[],
+    }
+}
+
+/// Attributes on a block-bearing expression. Only expressions that introduce a
+/// block can hold a nested `use`, so other variants never gate one.
+fn expr_gate_attrs(expr: &Expr) -> &[Attribute] {
+    match expr {
+        Expr::Block(block) => &block.attrs,
+        Expr::Unsafe(block) => &block.attrs,
+        Expr::If(branch) => &branch.attrs,
+        Expr::Match(branch) => &branch.attrs,
+        Expr::Loop(loop_expr) => &loop_expr.attrs,
+        Expr::While(loop_expr) => &loop_expr.attrs,
+        Expr::ForLoop(loop_expr) => &loop_expr.attrs,
+        _ => &[],
+    }
+}
+
+/// Attributes on an item that can contain a `use` moving past it to the module
+/// scope. Modules are excluded: they open their own scope, so an inner `use`
+/// moves to the module top and stays within any gate on the module itself.
+fn item_gate_attrs(item: &Item) -> &[Attribute] {
+    match item {
+        Item::Fn(item) => &item.attrs,
+        Item::Impl(item) => &item.attrs,
+        Item::Trait(item) => &item.attrs,
+        Item::Const(item) => &item.attrs,
+        Item::Static(item) => &item.attrs,
+        _ => &[],
+    }
+}
+
+/// Whether moving an unconditional `use` of `full` would collide with what
+/// the scope already exposes under that bare name: an item, a gated use of any
+/// path (an unconditional sibling would double-import when the gate holds), or
+/// an unconditional use of a different path.
+fn unconditional_collision(existing: Option<&ExistingBinding>, full: &str) -> bool {
+    match existing {
+        Some(ExistingBinding::Item | ExistingBinding::Use { gated: true, .. }) => true,
+        Some(ExistingBinding::Use {
+            full: existing_full,
+            gated: false,
+        }) => existing_full != full,
+        None => false,
     }
 }
 

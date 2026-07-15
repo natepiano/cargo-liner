@@ -26,21 +26,6 @@ use crate::selection::Selection;
 use crate::selection::TargetMetadata;
 use crate::selection::TargetSupport;
 
-pub(crate) fn render_report(report: &Report, selection: &Selection) -> Result<String> {
-    let mut output = String::new();
-    for finding in &report.findings {
-        let message = compiler_message(finding, selection)?;
-        output.push_str(&to_string(&message)?);
-        output.push('\n');
-    }
-    output.push_str(&to_string(&BuildFinished {
-        reason:  CARGO_REASON_BUILD_FINISHED,
-        success: report.outcome(),
-    })?);
-    output.push('\n');
-    Ok(output)
-}
-
 #[derive(Serialize)]
 struct CompilerMessage<'a> {
     reason:        &'static str,
@@ -120,6 +105,21 @@ struct RustcSpanText {
 struct BuildFinished {
     reason:  &'static str,
     success: BuildOutcome,
+}
+
+pub(crate) fn render_report(report: &Report, selection: &Selection) -> Result<String> {
+    let mut output = String::new();
+    for finding in &report.findings {
+        let message = compiler_message(finding, selection)?;
+        output.push_str(&to_string(&message)?);
+        output.push('\n');
+    }
+    output.push_str(&to_string(&BuildFinished {
+        reason:  CARGO_REASON_BUILD_FINISHED,
+        success: report.outcome(),
+    })?);
+    output.push('\n');
+    Ok(output)
 }
 
 fn compiler_message<'a>(

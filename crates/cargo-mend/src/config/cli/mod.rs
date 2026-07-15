@@ -25,6 +25,11 @@ pub(crate) enum WarningPolicy {
     Fail,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ManifestCli {
+    pub config: Option<PathBuf>,
+}
+
 #[derive(Debug)]
 pub(crate) struct Cli {
     pub build_info: BuildInfoMode,
@@ -41,8 +46,3 @@ pub(crate) struct Cli {
 }
 
 pub(crate) fn parse(after_help: &str) -> Cli { raw::parse(after_help) }
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct ManifestCli {
-    pub config: Option<PathBuf>,
-}

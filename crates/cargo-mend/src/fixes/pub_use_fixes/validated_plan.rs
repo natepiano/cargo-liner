@@ -32,6 +32,64 @@ pub(super) struct ValidatedPubUsePlan {
     pub(super) child_narrowing:    UseFix,
 }
 
+struct UseRewrite {
+    original:  String,
+    rewritten: String,
+}
+
+struct BaseImport<'a> {
+    base_segments: Vec<String>,
+    leaf:          &'a UseTree,
+}
+
+#[derive(Clone)]
+struct GroupedRewriteTarget {
+    original_name: String,
+    rename:        Option<String>,
+    target_path:   Vec<String>,
+}
+
+struct PubUseFixVisitor<'a> {
+    file:                &'a Path,
+    source:              &'a str,
+    offsets:             &'a [usize],
+    current_module_path: Vec<String>,
+    plans:               &'a [&'a ValidatedPubUsePlan],
+    fixes:               Vec<UseFix>,
+}
+
+impl Visit<'_> for PubUseFixVisitor<'_> {
+    fn visit_item_mod(&mut self, node: &ItemMod) {
+        if let Some((_, items)) = &node.content {
+            self.current_module_path.push(node.ident.to_string());
+            for item in items {
+                self.visit_item(item);
+            }
+            self.current_module_path.pop();
+        }
+    }
+
+    fn visit_item_use(&mut self, node: &ItemUse) {
+        if let Some(replacement) =
+            rewrite_use_tree(&self.current_module_path, &node.tree, self.plans)
+        {
+            let span = node.span();
+            let start = offset(self.offsets, span.start());
+            let end = offset(self.offsets, span.end());
+            let original_item = &self.source[start..end];
+            let rewritten =
+                original_item.replacen(&replacement.original, &replacement.rewritten, 1);
+            self.fixes.push(UseFix {
+                path: self.file.to_path_buf(),
+                start,
+                end,
+                replacement: rewritten,
+                import_group: None,
+            });
+        }
+    }
+}
+
 pub(super) fn rewrite_subtree_imports_for_plans(
     selection: &Selection,
     plans: &[ValidatedPubUsePlan],
@@ -97,64 +155,6 @@ fn rewrite_in_subtree_imports(
     };
     visitor.visit_file(&syntax);
     Ok(visitor.fixes)
-}
-
-struct PubUseFixVisitor<'a> {
-    file:                &'a Path,
-    source:              &'a str,
-    offsets:             &'a [usize],
-    current_module_path: Vec<String>,
-    plans:               &'a [&'a ValidatedPubUsePlan],
-    fixes:               Vec<UseFix>,
-}
-
-impl Visit<'_> for PubUseFixVisitor<'_> {
-    fn visit_item_mod(&mut self, node: &ItemMod) {
-        if let Some((_, items)) = &node.content {
-            self.current_module_path.push(node.ident.to_string());
-            for item in items {
-                self.visit_item(item);
-            }
-            self.current_module_path.pop();
-        }
-    }
-
-    fn visit_item_use(&mut self, node: &ItemUse) {
-        if let Some(replacement) =
-            rewrite_use_tree(&self.current_module_path, &node.tree, self.plans)
-        {
-            let span = node.span();
-            let start = offset(self.offsets, span.start());
-            let end = offset(self.offsets, span.end());
-            let original_item = &self.source[start..end];
-            let rewritten =
-                original_item.replacen(&replacement.original, &replacement.rewritten, 1);
-            self.fixes.push(UseFix {
-                path: self.file.to_path_buf(),
-                start,
-                end,
-                replacement: rewritten,
-                import_group: None,
-            });
-        }
-    }
-}
-
-struct UseRewrite {
-    original:  String,
-    rewritten: String,
-}
-
-struct BaseImport<'a> {
-    base_segments: Vec<String>,
-    leaf:          &'a UseTree,
-}
-
-#[derive(Clone)]
-struct GroupedRewriteTarget {
-    original_name: String,
-    rename:        Option<String>,
-    target_path:   Vec<String>,
 }
 
 fn rewrite_use_tree(

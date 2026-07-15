@@ -25,6 +25,9 @@ pub(super) const CARGO_MEND_FIX_PUB_USE: &str = "cargo mend --fix-pub-use";
 // diagnostics help
 pub(crate) const DIAGNOSTICS_HELP_NAME_COLUMN_WIDTH: usize = 40;
 
+// duration formatting
+pub(super) const DURATION_SECONDS_PRECISION: usize = 2;
+
 // exit codes
 pub(crate) const EXIT_CODE_ERROR: u8 = 1;
 pub(crate) const EXIT_CODE_WARNING: u8 = 2;

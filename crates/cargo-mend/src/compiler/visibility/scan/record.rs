@@ -15,6 +15,7 @@ use super::classify::ModuleLocation;
 use super::classify::ParentVisibility;
 use super::classify::SignatureExposure;
 use super::classify::VisibilityFindingContext;
+use crate::compiler::constants::PRELUDE_MODULE_NAME;
 use crate::compiler::facade;
 use crate::compiler::facade::ParentFacadeVisibility;
 use crate::compiler::persistence::FindingsSink;
@@ -247,7 +248,7 @@ fn record_review_pub_mod(
     if matches!(
         ctx.settings.visibility_config.prelude_pub_mod,
         PreludePubMod::Allowed
-    ) && item.name == Some("prelude")
+    ) && item.name == Some(PRELUDE_MODULE_NAME)
         && finding_context.module_location == ModuleLocation::CrateRoot
     {
         return Ok(());
