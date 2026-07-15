@@ -592,8 +592,8 @@ impl Iterator for Extension {
 
 #[test]
 fn fix_keeps_trait_impl_interface_type_compiling() {
-    // End-to-end form of the bevy_diegetic failure: before trait-impl
-    // interfaces were recorded as use sites, `--fix` removed `pub` from
+    // Before trait-impl interfaces were recorded as use sites, `--fix`
+    // removed `pub` from
     // `ExtensionKey`, the `impl Iterator for Extension` interface then
     // leaked a private type (E0446), and the whole batch rolled back.
     let temp = tempdir().expect("create temp fixture dir");
