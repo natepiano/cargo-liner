@@ -280,7 +280,7 @@ mod tests {
     fn assigns_workspace_path_dependency_to_member() {
         let tmp = tempfile::tempdir().expect("create path-dependency test tempdir");
         let workspace_dir = tmp.path().join("bevy_hana");
-        let member_dir = workspace_dir.join("crates").join("bevy_diegetic");
+        let member_dir = workspace_dir.join("crates").join("fake_widgets");
         let sibling_dir = workspace_dir.join("crates").join("bevy_lagrange");
         let vendored_dir = workspace_dir.join("vendor").join("clay-layout");
 
@@ -300,7 +300,7 @@ mod tests {
         std::fs::write(
             member_dir.join("Cargo.toml"),
             "[package]\n\
-             name = \"bevy_diegetic\"\n\
+             name = \"fake_widgets\"\n\
              version = \"0.1.0\"\n\
              \n\
              [dev-dependencies]\n\
@@ -320,7 +320,7 @@ mod tests {
             None,
         );
         let member = make_package(
-            Some("bevy_diegetic"),
+            Some("fake_widgets"),
             &member_dir.to_string_lossy(),
             false,
             None,

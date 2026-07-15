@@ -585,16 +585,16 @@ mod tests {
                 "clay-layout (vendored)",
                 "clay-layout",
                 "clay-layout",
-                "~/rust/bevy_diegetic/clay-layout",
+                "~/rust/fake_widgets/clay-layout",
                 "vendored",
                 FinderKind::Project.label(),
             ]),
             kind:          FinderKind::Project,
-            project_path:  test_path("~/rust/bevy_diegetic/clay-layout"),
+            project_path:  test_path("~/rust/fake_widgets/clay-layout"),
             target_name:   None,
             parent_label:  "clay-layout".to_string(),
             branch:        String::new(),
-            dir:           "~/rust/bevy_diegetic/clay-layout".to_string(),
+            dir:           "~/rust/fake_widgets/clay-layout".to_string(),
             pr_target:     None,
         };
 
@@ -610,20 +610,20 @@ mod tests {
             search_tokens: index::build_search_tokens(&[
                 "raylib_renderer",
                 "clay-layout",
-                "~/rust/bevy_diegetic/clay-layout",
+                "~/rust/fake_widgets/clay-layout",
                 "",
                 FinderKind::Example.label(),
             ]),
             kind:          FinderKind::Example,
-            project_path:  test_path("~/rust/bevy_diegetic/clay-layout"),
+            project_path:  test_path("~/rust/fake_widgets/clay-layout"),
             target_name:   Some("raylib_renderer".to_string()),
             parent_label:  "clay-layout".to_string(),
             branch:        String::new(),
-            dir:           "~/rust/bevy_diegetic/clay-layout".to_string(),
+            dir:           "~/rust/fake_widgets/clay-layout".to_string(),
             pr_target:     None,
         };
 
-        let (results, total) = search_finder(&[item], "diegetic", 50);
+        let (results, total) = search_finder(&[item], "widgets", 50);
         assert_eq!(results, vec![0]);
         assert_eq!(total, 1);
     }

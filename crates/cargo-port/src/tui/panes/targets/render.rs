@@ -531,7 +531,7 @@ mod tests {
     #[test]
     fn target_table_anchors_source_and_kind_to_right_edge_when_roomy() {
         let entries = vec![
-            entry("cascade", "bevy_hana/bevy_diegetic"),
+            entry("cascade", "bevy_hana/fake_widgets"),
             entry("two_window_panels", "bevy_hana/bevy_lagrange"),
         ];
         let content_width = 80;
@@ -559,7 +559,7 @@ mod tests {
         let entries = vec![
             entry(
                 "long_target_name_that_will_not_fit",
-                "bevy_hana/bevy_diegetic",
+                "bevy_hana/fake_widgets",
             ),
             entry("short", "bevy_hana/bevy_lagrange"),
         ];

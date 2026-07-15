@@ -9582,11 +9582,11 @@ mod tests {
         #[test]
         fn member_vendored_rows_render_box_drawing_continuations() {
             let first = make_package_with_vendored(
-                Some("bevy_diegetic"),
-                "~/ws/bevy_diegetic",
+                Some("fake_widgets"),
+                "~/ws/fake_widgets",
                 vec![super::make_vendored(
                     Some("clay-layout"),
-                    "~/ws/bevy_diegetic/vendor/clay-layout",
+                    "~/ws/fake_widgets/vendor/clay-layout",
                 )],
             );
             let second = make_package_raw(Some("bevy_lagrange"), "~/ws/bevy_lagrange", None);
@@ -9607,7 +9607,7 @@ mod tests {
             assert!(
                 rendered
                     .iter()
-                    .any(|line| line.starts_with("├─▼ bevy_diegetic")),
+                    .any(|line| line.starts_with("├─▼ fake_widgets")),
                 "expanded member should render as a non-final branch: {rendered:?}"
             );
             assert!(

@@ -216,9 +216,9 @@ mod tests {
             name:              name.to_string(),
             display_name:      name.to_string(),
             run_target_kind:   RunTargetKind::Example,
-            source:            TargetSource::member("bevy_diegetic".to_string()),
+            source:            TargetSource::member("fake_widgets".to_string()),
             project_path:      path(project_path),
-            package_name:      "bevy_diegetic".to_string(),
+            package_name:      "fake_widgets".to_string(),
             src_path:          path(&format!("{member_path}/examples/{name}.rs")),
             required_features: Vec::new(),
         }
@@ -248,7 +248,7 @@ mod tests {
             binaries: Vec::new(),
             examples: vec![example_entry(
                 "/tmp/hana",
-                "/tmp/hana/crates/bevy_diegetic",
+                "/tmp/hana/crates/fake_widgets",
                 "oit_resize_repro",
             )],
             benches:  Vec::new(),
@@ -262,7 +262,7 @@ mod tests {
         assert_eq!(slice.target_dir, path("/tmp/hana/target"));
         assert_eq!(
             slice.member_dirs.get(&key),
-            Some(&path("/tmp/hana/crates/bevy_diegetic"))
+            Some(&path("/tmp/hana/crates/fake_widgets"))
         );
     }
 
@@ -278,7 +278,7 @@ mod tests {
             binaries: Vec::new(),
             examples: vec![example_entry(
                 "/tmp/hana",
-                "/tmp/hana/crates/bevy_diegetic",
+                "/tmp/hana/crates/fake_widgets",
                 "oit_resize_repro",
             )],
             benches:  Vec::new(),
@@ -290,7 +290,7 @@ mod tests {
         assert_eq!(slices.len(), 1);
         assert_eq!(
             slices[0].member_dirs.get(&key),
-            Some(&path("/tmp/hana/crates/bevy_diegetic"))
+            Some(&path("/tmp/hana/crates/fake_widgets"))
         );
     }
 }
