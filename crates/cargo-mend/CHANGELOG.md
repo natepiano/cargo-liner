@@ -5,10 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.17.2] - 2026-07-15
 
 ### Fixed
 - Fix inline path type rewrites introducing imports that conflict with existing private bindings
+- Source discovery no longer traverses Cargo's target directory, so transient generated `.rs` files under `target/` are no longer read into the source cache.
 
 ## [0.17.1] - 2026-07-10
 
