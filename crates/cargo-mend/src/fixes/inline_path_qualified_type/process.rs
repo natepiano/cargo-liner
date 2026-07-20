@@ -7,6 +7,7 @@ use super::scope;
 use super::scope::ScopeInfo;
 use super::visitor::InlinePathOccurrence;
 use crate::config::DiagnosticCode;
+use crate::fixes::imports::ConditionalAttributes;
 use crate::fixes::imports::ImportGroup;
 use crate::fixes::imports::UseFix;
 use crate::reporting::Finding;
@@ -58,6 +59,15 @@ pub(super) fn process_occurrence(
         || occ.import_path.clone(),
         |scope| absolutize_import_path(&occ.import_path, &scope.existing_imports),
     );
+    let (import_path, conditional_attributes) = if import_path == occ.import_path
+        && let Some(scope_id) = scope_id
+        && let Some(parent_import) =
+            scope::qualify_through_parent_scope(ctx.scopes, scope_id, &import_path)
+    {
+        (parent_import.path, parent_import.conditional_attributes)
+    } else {
+        (import_path, ConditionalAttributes::default())
+    };
 
     if scope.is_some_and(|scope| scope.has_private_import_conflict(&occ.import_name, &import_path))
     {
@@ -114,7 +124,8 @@ pub(super) fn process_occurrence(
         && inserted_use_paths.insert((scope_id, import_path.clone()))
     {
         let use_path = scope::canonicalize_inserted_use_path(scope, &import_path);
-        let use_text = format!("{}use {use_path};\n", scope.indent);
+        let attributes = conditional_attributes.render(&scope.indent);
+        let use_text = format!("{}{}use {use_path};\n", attributes, scope.indent);
         fixes.push(UseFix {
             path:         ctx.path.to_path_buf(),
             start:        scope.insertion_offset,

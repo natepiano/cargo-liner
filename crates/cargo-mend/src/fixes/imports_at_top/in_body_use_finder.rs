@@ -19,6 +19,8 @@ use syn::visit::Visit;
 use crate::config::DiagnosticCode;
 use crate::fixes::constants::IMPORTS_AT_TOP_MESSAGE;
 use crate::fixes::constants::IMPORTS_AT_TOP_SUGGESTION;
+use crate::fixes::imports;
+use crate::fixes::imports::ConditionalAttributes;
 use crate::fixes::imports::ImportGroup;
 use crate::fixes::imports::UseFix;
 use crate::reporting::Finding;
@@ -51,46 +53,35 @@ struct Scope {
 }
 
 struct InBodyUseFinder<'a> {
-    text:         &'a str,
-    offsets:      &'a [usize],
-    path:         &'a Path,
-    display_path: &'a str,
-    scope_stack:  Vec<Scope>,
+    text:                   &'a str,
+    offsets:                &'a [usize],
+    path:                   &'a Path,
+    display_path:           &'a str,
+    scope_stack:            Vec<Scope>,
     /// Source text of the `#[cfg]`/`#[cfg_attr]` attributes on every enclosing
     /// construct the visitor is currently inside, outermost first. A nested
     /// `use` that moves to the module scope carries these attributes with it so
     /// the import stays conditionally compiled. Emptied on entering an inline
     /// module (an inner `use` moves only to that module's top, which the
     /// module's own gate already wraps).
-    gate_stack:   Vec<String>,
-    findings:     Vec<Finding>,
-    fixes:        Vec<UseFix>,
+    conditional_attributes: ConditionalAttributes,
+    findings:               Vec<Finding>,
+    fixes:                  Vec<UseFix>,
 }
 
 impl InBodyUseFinder<'_> {
-    /// Source text of `attr`, sliced from the original file so the exact
-    /// spelling (spacing, nested predicates) is preserved when it is carried
-    /// onto a moved `use`.
-    fn attr_text(&self, attr: &Attribute) -> String {
-        let span = attr.span();
-        let start = offset(self.offsets, span.start());
-        let end = offset(self.offsets, span.end());
-        self.text[start..end].to_string()
-    }
-
-    /// Source text of the `#[cfg]`/`#[cfg_attr]` attributes among `attrs`.
-    fn cfg_texts(&self, attrs: &[Attribute]) -> Vec<String> {
-        attrs
-            .iter()
-            .filter(|attr| is_cfg_attr(attr))
-            .map(|attr| self.attr_text(attr))
-            .collect()
+    fn attributes(&self, attributes: &[Attribute]) -> ConditionalAttributes {
+        ConditionalAttributes::from_attributes(self.text, self.offsets, attributes)
     }
 
     fn try_emit_fix(&mut self, use_item: &ItemUse) {
         // A non-`cfg` attribute on the `use` itself (`#[allow(...)]`, a doc
         // comment, …) can change what the import means; leave those in place.
-        if use_item.attrs.iter().any(|attr| !is_cfg_attr(attr)) {
+        if use_item
+            .attrs
+            .iter()
+            .any(|attribute| !imports::is_conditional(attribute))
+        {
             return;
         }
 
@@ -106,9 +97,9 @@ impl InBodyUseFinder<'_> {
         // The gate the moved `use` must carry: every enclosing `#[cfg]` plus
         // any `#[cfg]` on the `use` itself. Non-empty means the import is
         // conditionally compiled and the attributes travel with it to the top.
-        let mut gate_attrs = self.gate_stack.clone();
-        gate_attrs.extend(self.cfg_texts(&use_item.attrs));
-        let gated = !gate_attrs.is_empty();
+        let mut conditional_attributes = self.conditional_attributes.clone();
+        conditional_attributes.extend(self.attributes(&use_item.attrs));
+        let gated = !conditional_attributes.is_empty();
 
         let Some(scope) = self.scope_stack.last() else {
             return;
@@ -142,7 +133,13 @@ impl InBodyUseFinder<'_> {
                 )
             });
 
-        self.emit_move(use_item, &bare_paths, &gate_attrs, gated, all_duplicates);
+        self.emit_move(
+            use_item,
+            &bare_paths,
+            &conditional_attributes,
+            gated,
+            all_duplicates,
+        );
     }
 
     /// Push the finding and the insertion/deletion fixes for a movable `use`.
@@ -153,7 +150,7 @@ impl InBodyUseFinder<'_> {
         &mut self,
         use_item: &ItemUse,
         bare_paths: &[(String, String)],
-        gate_attrs: &[String],
+        conditional_attributes: &ConditionalAttributes,
         gated: bool,
         all_duplicates: bool,
     ) {
@@ -209,7 +206,7 @@ impl InBodyUseFinder<'_> {
         if !all_duplicates {
             self.emit_insertion(
                 bare_paths,
-                gate_attrs,
+                conditional_attributes,
                 gated,
                 use_kw_start,
                 use_end,
@@ -233,7 +230,7 @@ impl InBodyUseFinder<'_> {
     fn emit_insertion(
         &mut self,
         bare_paths: &[(String, String)],
-        gate_attrs: &[String],
+        conditional_attributes: &ConditionalAttributes,
         gated: bool,
         use_kw_start: usize,
         use_end: usize,
@@ -246,12 +243,7 @@ impl InBodyUseFinder<'_> {
         let insertion_offset = scope.insertion_offset;
 
         let use_text = &self.text[use_kw_start..use_end];
-        let mut insertion = String::new();
-        for gate in gate_attrs {
-            insertion.push_str(&indent);
-            insertion.push_str(gate);
-            insertion.push('\n');
-        }
+        let mut insertion = conditional_attributes.render(&indent);
         insertion.push_str(&indent);
         insertion.push_str(use_text);
         insertion.push('\n');
@@ -279,11 +271,12 @@ impl InBodyUseFinder<'_> {
 
 impl<'ast> Visit<'ast> for InBodyUseFinder<'_> {
     fn visit_item(&mut self, node: &'ast Item) {
-        let gates = self.cfg_texts(item_gate_attrs(node));
-        let pushed = gates.len();
-        self.gate_stack.extend(gates);
+        let attributes = self.attributes(item_gate_attrs(node));
+        let pushed = attributes.len();
+        self.conditional_attributes.extend(attributes);
         visit::visit_item(self, node);
-        self.gate_stack.truncate(self.gate_stack.len() - pushed);
+        self.conditional_attributes
+            .truncate(self.conditional_attributes.len() - pushed);
     }
 
     fn visit_item_mod(&mut self, node: &'ast ItemMod) {
@@ -313,29 +306,31 @@ impl<'ast> Visit<'ast> for InBodyUseFinder<'_> {
         // module's top, which the module's own gate already wraps, so gates
         // from enclosing constructs no longer apply. Clear the stack for the
         // body and restore it afterward.
-        let outer_gate_stack = std::mem::take(&mut self.gate_stack);
+        let outer_attributes = std::mem::take(&mut self.conditional_attributes);
         self.scope_stack.push(scope);
         for item in items {
             self.visit_item(item);
         }
         self.scope_stack.pop();
-        self.gate_stack = outer_gate_stack;
+        self.conditional_attributes = outer_attributes;
     }
 
     fn visit_stmt(&mut self, node: &'ast Stmt) {
-        let gates = self.cfg_texts(stmt_gate_attrs(node));
-        let pushed = gates.len();
-        self.gate_stack.extend(gates);
+        let attributes = self.attributes(stmt_gate_attrs(node));
+        let pushed = attributes.len();
+        self.conditional_attributes.extend(attributes);
         visit::visit_stmt(self, node);
-        self.gate_stack.truncate(self.gate_stack.len() - pushed);
+        self.conditional_attributes
+            .truncate(self.conditional_attributes.len() - pushed);
     }
 
     fn visit_arm(&mut self, node: &'ast Arm) {
-        let gates = self.cfg_texts(&node.attrs);
-        let pushed = gates.len();
-        self.gate_stack.extend(gates);
+        let attributes = self.attributes(&node.attrs);
+        let pushed = attributes.len();
+        self.conditional_attributes.extend(attributes);
         visit::visit_arm(self, node);
-        self.gate_stack.truncate(self.gate_stack.len() - pushed);
+        self.conditional_attributes
+            .truncate(self.conditional_attributes.len() - pushed);
     }
 
     fn visit_block(&mut self, node: &'ast Block) {
@@ -362,7 +357,7 @@ pub(super) fn scan(
         path,
         display_path,
         scope_stack: vec![root_scope],
-        gate_stack: Vec::new(),
+        conditional_attributes: ConditionalAttributes::default(),
         findings: Vec::new(),
         fixes: Vec::new(),
     };
@@ -392,7 +387,7 @@ fn compute_scope_for_items(
         }
         match item {
             Item::Use(item_use) => {
-                let gated = any_cfg_attr(&item_use.attrs);
+                let gated = ConditionalAttributes::contains(&item_use.attrs);
                 for (bare, full) in flatten_use_to_bare_paths(&item_use.tree) {
                     existing.insert(bare, ExistingBinding::Use { full, gated });
                 }
@@ -465,54 +460,21 @@ fn line_start_offset(text: &str, offset: usize) -> usize {
 }
 
 fn flatten_use_to_bare_paths(tree: &UseTree) -> Vec<(String, String)> {
-    let mut prefix: Vec<String> = Vec::new();
-    let mut out: Vec<(String, String)> = Vec::new();
-    walk_use_tree(tree, &mut prefix, &mut out);
-    out
-}
-
-fn walk_use_tree(tree: &UseTree, prefix: &mut Vec<String>, out: &mut Vec<(String, String)>) {
-    match tree {
-        UseTree::Path(path) => {
-            prefix.push(path.ident.to_string());
-            walk_use_tree(&path.tree, prefix, out);
-            prefix.pop();
-        },
-        UseTree::Name(name) => {
-            let bare = name.ident.to_string();
-            let mut segments = prefix.clone();
-            segments.push(bare.clone());
-            out.push((bare, segments.join("::")));
-        },
-        UseTree::Rename(rename) => {
-            let bare = rename.rename.to_string();
-            let mut segments = prefix.clone();
-            segments.push(rename.ident.to_string());
-            out.push((bare, segments.join("::")));
-        },
-        UseTree::Group(group) => {
-            for item in &group.items {
-                walk_use_tree(item, prefix, out);
-            }
-        },
-        UseTree::Glob(_) => {
-            let mut segments = prefix.clone();
-            segments.push("*".to_string());
-            out.push(("*".to_string(), segments.join("::")));
-        },
-    }
+    imports::collect_use_bindings(tree)
+        .into_iter()
+        .map(|binding| {
+            binding.name().map_or_else(
+                || ("*".to_string(), format!("{}::*", binding.path())),
+                |name| (name.to_string(), binding.path().to_string()),
+            )
+        })
+        .collect()
 }
 
 /// Whether an attribute is `#[cfg(...)]` or `#[cfg_attr(...)]` — the two
 /// attributes that conditionally remove the code they annotate. Moving a
 /// `use` out of a construct carrying one would make a conditionally-compiled
 /// import unconditional.
-fn is_cfg_attr(attr: &Attribute) -> bool {
-    attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr")
-}
-
-fn any_cfg_attr(attrs: &[Attribute]) -> bool { attrs.iter().any(is_cfg_attr) }
-
 /// Attributes on a statement that gate a `use` nested inside it. Items are
 /// handled in [`InBodyUseFinder::visit_item`]; a `use` statement's own
 /// attributes are handled in [`InBodyUseFinder::try_emit_fix`].

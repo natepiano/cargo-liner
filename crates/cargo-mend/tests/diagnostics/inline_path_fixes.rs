@@ -272,6 +272,107 @@ mod tests {
 }
 
 #[test]
+fn nested_module_uses_parent_import_for_partial_path() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "inline_parent_import_fixture"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+monitor-probe = []
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/monitors")).expect("create src/monitors");
+    fs::write(temp.path().join("src/lib.rs"), "mod monitors;\n").expect("write fixture lib");
+    fs::write(
+        temp.path().join("src/monitors/mod.rs"),
+        "#[cfg(feature = \"monitor-probe\")]\nmod monitor_probe;\nmod topology;\n",
+    )
+    .expect("write monitors mod");
+    fs::write(
+        temp.path().join("src/monitors/monitor_probe.rs"),
+        "pub(super) struct InjectedTopologyProbeRecords;\n",
+    )
+    .expect("write monitor probe");
+    fs::write(
+        temp.path().join("src/monitors/topology.rs"),
+        r#"#[cfg(feature = "monitor-probe")]
+#[cfg_attr(feature = "monitor-probe", cfg(target_os = "macos"))]
+use super::monitor_probe;
+
+pub fn keep() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(feature = "monitor-probe")]
+    #[cfg_attr(feature = "monitor-probe", cfg(target_os = "macos"))]
+    fn first() -> Option<monitor_probe::InjectedTopologyProbeRecords> {
+        None
+    }
+
+    #[cfg(feature = "monitor-probe")]
+    #[cfg_attr(feature = "monitor-probe", cfg(target_os = "macos"))]
+    fn second() -> Option<monitor_probe::InjectedTopologyProbeRecords> {
+        first()
+    }
+}
+"#,
+    )
+    .expect("write topology");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let topology =
+        fs::read_to_string(temp.path().join("src/monitors/topology.rs")).expect("read topology");
+    assert!(
+        topology.contains(
+            "    #[cfg(feature = \"monitor-probe\")]\n    #[cfg_attr(feature = \"monitor-probe\", cfg(target_os = \"macos\"))]\n    use super::monitor_probe::InjectedTopologyProbeRecords;"
+        ),
+        "expected the nested import to resolve through the parent scope, got:\n{topology}"
+    );
+    assert_eq!(
+        topology
+            .matches("Option<InjectedTopologyProbeRecords>")
+            .count(),
+        2,
+        "expected both partial paths to use the imported type, got:\n{topology}"
+    );
+
+    let check = cargo_command()
+        .arg("check")
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--all-features")
+        .arg("--tests")
+        .output()
+        .expect("check fixed fixture with all features");
+    assert!(
+        check.status.success(),
+        "fixed fixture failed with all features: {}\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
+    );
+}
+
+#[test]
 fn two_types_same_module() {
     let temp = tempdir().expect("create temp fixture dir");
 

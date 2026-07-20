@@ -3,21 +3,13 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 use syn::Item;
-use syn::UseTree;
 use syn::Visibility;
 use syn::spanned::Spanned;
 
 use super::offsets;
+use crate::fixes::imports;
+use crate::fixes::imports::ConditionalAttributes;
 use crate::rust_syntax::PathAnchor;
-
-struct ImportBinding {
-    name: String,
-    path: String,
-}
-
-impl ImportBinding {
-    fn binds_path_leaf(&self) -> bool { self.path.rsplit("::").next() == Some(self.name.as_str()) }
-}
 
 pub(super) struct ScopeInfo {
     pub(super) span_start:              usize,
@@ -27,6 +19,7 @@ pub(super) struct ScopeInfo {
     pub(super) module_path:             Vec<String>,
     pub(super) existing_imports:        BTreeSet<String>,
     private_imports:                    BTreeMap<String, BTreeSet<String>>,
+    import_attributes:                  BTreeMap<String, BTreeSet<ConditionalAttributes>>,
     pub(super) existing_reexport_names: BTreeSet<String>,
 }
 
@@ -36,6 +29,21 @@ impl ScopeInfo {
             .get(name)
             .is_some_and(|paths| paths.iter().any(|existing| existing != path))
     }
+
+    fn import_attributes(&self, name: &str) -> Option<ConditionalAttributes> {
+        let attributes = self.import_attributes.get(name)?;
+        if attributes.contains(&ConditionalAttributes::default()) {
+            return Some(ConditionalAttributes::default());
+        }
+        (attributes.len() == 1)
+            .then(|| attributes.first().cloned())
+            .flatten()
+    }
+}
+
+pub(super) struct ParentImport {
+    pub(super) path:                   String,
+    pub(super) conditional_attributes: ConditionalAttributes,
 }
 
 #[derive(Clone, Copy)]
@@ -62,6 +70,7 @@ pub(super) fn collect_scopes(
 ) {
     let mut existing_imports = BTreeSet::new();
     let mut private_imports: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut import_attributes: BTreeMap<String, BTreeSet<ConditionalAttributes>> = BTreeMap::new();
     let mut existing_reexport_names = BTreeSet::new();
     let mut last_use_start = None;
     let mut last_use_end = None;
@@ -76,19 +85,31 @@ pub(super) fn collect_scopes(
         first_item_start.get_or_insert(item_start);
 
         if let Item::Use(item_use) = item {
-            for binding in import_bindings(&item_use.tree) {
+            let attributes = ConditionalAttributes::from_attributes(
+                scope_collection_context.text,
+                scope_collection_context.offsets,
+                &item_use.attrs,
+            );
+            for binding in imports::collect_use_bindings(&item_use.tree) {
+                let Some(name) = binding.name() else {
+                    continue;
+                };
+                import_attributes
+                    .entry(name.to_string())
+                    .or_default()
+                    .insert(attributes.clone());
                 if binding.binds_path_leaf() {
-                    existing_imports.insert(binding.path.clone());
+                    existing_imports.insert(binding.path().to_string());
                 }
                 match &item_use.vis {
                     Visibility::Inherited => {
                         private_imports
-                            .entry(binding.name)
+                            .entry(name.to_string())
                             .or_default()
-                            .insert(binding.path);
+                            .insert(binding.path().to_string());
                     },
                     _ => {
-                        existing_reexport_names.insert(binding.name);
+                        existing_reexport_names.insert(name.to_string());
                     },
                 }
             }
@@ -119,6 +140,7 @@ pub(super) fn collect_scopes(
         module_path: module_path.to_vec(),
         existing_imports,
         private_imports,
+        import_attributes,
         existing_reexport_names,
     });
 
@@ -149,63 +171,6 @@ pub(super) fn collect_scopes(
     }
 }
 
-fn import_bindings(tree: &UseTree) -> Vec<ImportBinding> {
-    let mut bindings = Vec::new();
-    collect_import_bindings(tree, &mut Vec::new(), &mut bindings);
-    bindings
-}
-
-fn collect_import_bindings(
-    tree: &UseTree,
-    prefix: &mut Vec<String>,
-    bindings: &mut Vec<ImportBinding>,
-) {
-    match tree {
-        UseTree::Path(path) => {
-            prefix.push(path.ident.to_string());
-            collect_import_bindings(&path.tree, prefix, bindings);
-            prefix.pop();
-        },
-        UseTree::Name(name) => {
-            let name = name.ident.to_string();
-            if name == "self" {
-                if let Some(bound_name) = prefix.last() {
-                    bindings.push(ImportBinding {
-                        name: bound_name.clone(),
-                        path: prefix.join("::"),
-                    });
-                }
-            } else {
-                let mut path = prefix.clone();
-                path.push(name.clone());
-                bindings.push(ImportBinding {
-                    name,
-                    path: path.join("::"),
-                });
-            }
-        },
-        UseTree::Rename(rename) => {
-            let mut path = prefix.clone();
-            let source_name = rename.ident.to_string();
-            if source_name != "self" {
-                path.push(source_name);
-            }
-            if !path.is_empty() {
-                bindings.push(ImportBinding {
-                    name: rename.rename.to_string(),
-                    path: path.join("::"),
-                });
-            }
-        },
-        UseTree::Group(group) => {
-            for item in &group.items {
-                collect_import_bindings(item, prefix, bindings);
-            }
-        },
-        UseTree::Glob(_) => {},
-    }
-}
-
 pub(super) fn find_innermost_scope(scopes: &[ScopeInfo], byte_offset: usize) -> Option<usize> {
     scopes
         .iter()
@@ -213,6 +178,37 @@ pub(super) fn find_innermost_scope(scopes: &[ScopeInfo], byte_offset: usize) -> 
         .filter(|(_, scope)| scope.span_start <= byte_offset && byte_offset < scope.span_end)
         .max_by_key(|(_, scope)| (scope.span_start, Reverse(scope.span_end)))
         .map(|(scope_id, _)| scope_id)
+}
+
+pub(super) fn qualify_through_parent_scope(
+    scopes: &[ScopeInfo],
+    scope_id: usize,
+    import_path: &str,
+) -> Option<ParentImport> {
+    let leading = import_path.split("::").next()?;
+    if PathAnchor::from(leading) != PathAnchor::Name {
+        return None;
+    }
+
+    let current = &scopes[scope_id];
+    let (parent, conditional_attributes) = scopes
+        .iter()
+        .filter_map(|scope| {
+            if scope.module_path.len() >= current.module_path.len()
+                || !current.module_path.starts_with(&scope.module_path)
+            {
+                return None;
+            }
+            scope
+                .import_attributes(leading)
+                .map(|attributes| (scope, attributes))
+        })
+        .max_by_key(|(scope, _)| scope.module_path.len())?;
+    let levels = current.module_path.len() - parent.module_path.len();
+    Some(ParentImport {
+        path: format!("{}{import_path}", "super::".repeat(levels)),
+        conditional_attributes,
+    })
 }
 
 fn indentation_at(text: &str, byte_offset: usize) -> String {
