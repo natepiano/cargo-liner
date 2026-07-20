@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.17.3] - 2026-07-20
 
 ### Fixed
 - `inline_path_qualified_type --fix` now resolves partial module paths inherited from enclosing modules and preserves their `#[cfg(...)]` and `#[cfg_attr(...)]` attributes when adding imports inside nested modules. This prevents generated imports such as `use monitor_probe::Type;` from failing with E0432 and rolling back the fix.
