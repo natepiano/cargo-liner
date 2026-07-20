@@ -5,24 +5,18 @@ use tui_pane::SystemClipboard;
 
 use crate::scan::BackgroundMsg;
 use crate::sccache;
-use crate::sccache::Config;
 use crate::tui::app::App;
 use crate::tui::integration::AppGlobalAction;
 
 pub(super) fn open_sccache_stats_overlay(app: &mut App) {
     app.overlays.close_finder();
     app.overlays.open_sccache();
-    match sccache::config_from_env() {
-        Config::NotConfigured => app.overlays.sccache_pane.show_not_configured(),
-        Config::Configured { source } => {
-            let request_id = app.overlays.sccache_pane.start_loading(source);
-            let sender = app.background.background_sender();
-            std::thread::spawn(move || {
-                let result = sccache::read_stats();
-                let _ = sender.send(BackgroundMsg::SccacheStats { request_id, result });
-            });
-        },
-    }
+    let request_id = app.overlays.sccache_pane.start_loading();
+    let sender = app.background.background_sender();
+    std::thread::spawn(move || {
+        let result = sccache::read_stats();
+        let _ = sender.send(BackgroundMsg::SccacheStats { request_id, result });
+    });
 }
 
 pub(super) fn dispatch_sccache_overlay(app: &mut App, bind: &KeyBind) -> bool {

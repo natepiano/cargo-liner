@@ -88,44 +88,11 @@ fn build_lines(pane: &SccachePane) -> SccacheLines {
     let mut line_targets = Vec::new();
     let mut selectable_values = Vec::new();
     match pane.status() {
-        SccacheStatus::Loading { source } => {
+        SccacheStatus::Loading => {
             push_header(&mut lines, &mut line_targets, "Status");
             push_item(&mut lines, &mut line_targets, "Loading sccache stats");
-            push_source(
-                &mut lines,
-                &mut line_targets,
-                &mut selectable_values,
-                pane,
-                source,
-            );
         },
-        SccacheStatus::NotConfigured => {
-            push_header(&mut lines, &mut line_targets, "Status");
-            push_item(
-                &mut lines,
-                &mut line_targets,
-                "sccache is not configured for this process",
-            );
-            push_item(
-                &mut lines,
-                &mut line_targets,
-                "Set RUSTC_WRAPPER=sccache to enable stats",
-            );
-        },
-        SccacheStatus::Ready {
-            source,
-            lines: stat_rows,
-        } => {
-            push_header(&mut lines, &mut line_targets, "Configured");
-            push_source(
-                &mut lines,
-                &mut line_targets,
-                &mut selectable_values,
-                pane,
-                source,
-            );
-            lines.push(Line::from(""));
-            line_targets.push(None);
+        SccacheStatus::Ready { lines: stat_rows } => {
             push_header(&mut lines, &mut line_targets, "Stats");
             push_stat_lines(
                 &mut lines,
@@ -135,20 +102,7 @@ fn build_lines(pane: &SccachePane) -> SccacheLines {
                 stat_rows,
             );
         },
-        SccacheStatus::Failed {
-            source,
-            lines: errors,
-        } => {
-            push_header(&mut lines, &mut line_targets, "Configured");
-            push_source(
-                &mut lines,
-                &mut line_targets,
-                &mut selectable_values,
-                pane,
-                source,
-            );
-            lines.push(Line::from(""));
-            line_targets.push(None);
+        SccacheStatus::Failed { lines: errors } => {
             push_header(&mut lines, &mut line_targets, "Error");
             push_stat_lines(
                 &mut lines,
@@ -181,29 +135,6 @@ fn push_header(
         ),
     ]));
     line_targets.push(None);
-}
-
-fn push_source(
-    lines: &mut Vec<Line<'static>>,
-    line_targets: &mut Vec<Option<usize>>,
-    selectable_values: &mut Vec<SccacheTarget>,
-    pane: &SccachePane,
-    source: &str,
-) {
-    let target = push_target(
-        line_targets,
-        selectable_values,
-        "Configured",
-        source.to_string(),
-    );
-    let selection = selection_state(&pane.viewport, target, PaneFocusState::Active);
-    lines.push(Line::from(vec![
-        Span::styled(SECTION_ITEM_INDENT, selection.patch(Style::default())),
-        Span::styled(
-            source.to_string(),
-            selection.patch(Style::default().fg(text_default())),
-        ),
-    ]));
 }
 
 fn push_item(

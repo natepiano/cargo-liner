@@ -145,11 +145,4 @@ pub(crate) const DEFAULT_CACHE_SIZE: &str = "512 MiB";
 
 // src sccache
 pub(crate) const SCCACHE_BINARY: &str = "sccache";
-pub(crate) const SCCACHE_BINARY_WINDOWS: &str = "sccache.exe";
 pub(crate) const SCCACHE_STATS_ARG: &str = "--show-stats";
-pub(crate) const WRAPPER_ENV_KEYS: &[&str] = &[
-    "RUSTC_WRAPPER",
-    "RUSTC_WORKSPACE_WRAPPER",
-    "CARGO_BUILD_RUSTC_WRAPPER",
-    "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
-];

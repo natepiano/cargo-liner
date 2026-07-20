@@ -15,10 +15,9 @@ pub(super) struct SccacheTarget {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum SccacheStatus {
-    Loading { source: String },
-    NotConfigured,
-    Ready { source: String, lines: Vec<String> },
-    Failed { source: String, lines: Vec<String> },
+    Loading,
+    Ready { lines: Vec<String> },
+    Failed { lines: Vec<String> },
 }
 
 pub struct SccachePane {
@@ -32,7 +31,7 @@ pub struct SccachePane {
 impl SccachePane {
     pub const fn new() -> Self {
         Self {
-            status:            SccacheStatus::NotConfigured,
+            status:            SccacheStatus::Loading,
             request_id:        0,
             line_targets:      Vec::new(),
             selectable_values: Vec::new(),
@@ -72,14 +71,9 @@ impl SccachePane {
         self.selectable_values.get(self.viewport.pos())
     }
 
-    pub fn show_not_configured(&mut self) {
-        self.status = SccacheStatus::NotConfigured;
-        self.viewport.home();
-    }
-
-    pub fn start_loading(&mut self, source: String) -> u64 {
+    pub fn start_loading(&mut self) -> u64 {
         self.request_id = self.request_id.saturating_add(1);
-        self.status = SccacheStatus::Loading { source };
+        self.status = SccacheStatus::Loading;
         self.viewport.home();
         self.request_id
     }
@@ -88,15 +82,9 @@ impl SccachePane {
         if self.request_id != request_id {
             return;
         }
-        let source = match &self.status {
-            SccacheStatus::Loading { source }
-            | SccacheStatus::Ready { source, .. }
-            | SccacheStatus::Failed { source, .. } => source.clone(),
-            SccacheStatus::NotConfigured => return,
-        };
         self.status = match result {
-            StatsResult::Ready(lines) => SccacheStatus::Ready { source, lines },
-            StatsResult::Failed(lines) => SccacheStatus::Failed { source, lines },
+            StatsResult::Ready(lines) => SccacheStatus::Ready { lines },
+            StatsResult::Failed(lines) => SccacheStatus::Failed { lines },
         };
         self.viewport.home();
     }
@@ -128,4 +116,39 @@ impl Hittable<HoverTarget> for SccachePane {
 
 impl Default for SccachePane {
     fn default() -> Self { Self::new() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn starting_another_request_retries_and_ignores_the_previous_result() {
+        let mut pane = SccachePane::new();
+        let previous_request = pane.start_loading();
+        pane.apply_result(
+            previous_request,
+            StatsResult::Ready(vec!["previous".to_string()]),
+        );
+
+        let current_request = pane.start_loading();
+        assert_eq!(pane.status(), &SccacheStatus::Loading);
+
+        pane.apply_result(
+            previous_request,
+            StatsResult::Failed(vec!["late failure".to_string()]),
+        );
+        assert_eq!(pane.status(), &SccacheStatus::Loading);
+
+        pane.apply_result(
+            current_request,
+            StatsResult::Ready(vec!["current".to_string()]),
+        );
+        assert_eq!(
+            pane.status(),
+            &SccacheStatus::Ready {
+                lines: vec!["current".to_string()],
+            }
+        );
+    }
 }
