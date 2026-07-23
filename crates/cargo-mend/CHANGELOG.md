@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `prefer_module_import` no longer rewrites `use crate::parent::child;` to `use crate::parent;` when `child` is an inline `mod` block inside the parent module's file. Module detection only checked the filesystem for `child.rs`/`child/mod.rs`, so the inline module was misclassified as a function import, leaving multi-segment references like `child::CONST` unresolved (E0433) and forcing `cargo mend --fix` to roll back.
+- `prefer_module_import` import dedup is now scope-aware: a `use` inside a nested `mod` (e.g. `mod tests`) no longer suppresses inserting the same module import at file top level, no longer causes deletion of an import that only exists in a different scope, and same-module imports in different scopes each rewrite in place. Previously an inline call rewrite could be left without its `use crate::module;` (E0433, rollback) because a `mod tests` import already claimed that module file-globally.
+
 ## [0.17.3] - 2026-07-20
 
 ### Fixed

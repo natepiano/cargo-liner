@@ -28,11 +28,16 @@ pub(super) struct RawCandidate {
     /// True when the target module is the file's own parent module.
     /// The use statement should be deleted and references rewritten as `super::fn(...)`.
     pub(super) import_target:   ImportTarget,
+    /// Inline `mod` chain containing the `use` — empty at file top level.
+    /// An import inside `mod tests` binds nothing at file top level (and vice
+    /// versa), so dedup and reuse decisions must compare scopes.
+    pub(super) inline_scope:    Vec<String>,
 }
 
 pub(super) struct ImportDetector<'a> {
     pub(super) source_root:         &'a Path,
     pub(super) current_module_path: Vec<String>,
+    pub(super) inline_scope:        Vec<String>,
     pub(super) declared_modules:    &'a BTreeSet<String>,
     pub(super) candidates:          Vec<RawCandidate>,
 }
@@ -42,6 +47,7 @@ impl Visit<'_> for ImportDetector<'_> {
         if let Some(candidate) = analyze_function_import(
             self.source_root,
             &self.current_module_path,
+            &self.inline_scope,
             self.declared_modules,
             node,
         ) {
@@ -52,7 +58,9 @@ impl Visit<'_> for ImportDetector<'_> {
     fn visit_item_mod(&mut self, node: &ItemMod) {
         if node.content.is_some() {
             self.current_module_path.push(node.ident.to_string());
+            self.inline_scope.push(node.ident.to_string());
             visit_item_mod(self, node);
+            self.inline_scope.pop();
             self.current_module_path.pop();
         } else {
             visit_item_mod(self, node);
@@ -63,6 +71,7 @@ impl Visit<'_> for ImportDetector<'_> {
 fn analyze_function_import(
     source_root: &Path,
     current_module_path: &[String],
+    inline_scope: &[String],
     declared_modules: &BTreeSet<String>,
     node: &ItemUse,
 ) -> Option<RawCandidate> {
@@ -130,5 +139,6 @@ fn analyze_function_import(
         span_start: span.start(),
         span_end: span.end(),
         import_target,
+        inline_scope: inline_scope.to_vec(),
     })
 }

@@ -1,7 +1,11 @@
+use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
 
 use proc_macro2::LineColumn;
 use quote::quote;
+use syn::Item;
+use syn::ItemMod;
 use syn::ItemUse;
 use syn::UseTree;
 use syn::Visibility;
@@ -39,16 +43,70 @@ pub(super) fn leaf_is_module(source_root: &Path, absolute_segments: &[String]) -
         return false;
     }
 
-    let parent_segments = &absolute_segments[..absolute_segments.len() - 1];
-    let leaf = &absolute_segments[absolute_segments.len() - 1];
-
-    let mut parent_dir = source_root.to_path_buf();
-    for segment in parent_segments {
-        parent_dir.push(segment);
+    let mut dir = source_root.to_path_buf();
+    let mut module_file = crate_root_file(source_root);
+    for (index, segment) in absolute_segments.iter().enumerate() {
+        let file = dir.join(format!("{segment}.rs"));
+        let dir_mod = dir.join(segment).join("mod.rs");
+        if file.is_file() {
+            module_file = Some(file);
+        } else if dir_mod.is_file() {
+            module_file = Some(dir_mod);
+        } else {
+            // No file backs this segment, so the remaining path can only exist
+            // as inline `mod` blocks inside the last file-backed module.
+            return module_file.is_some_and(|module_file| {
+                declares_inline_mod_path(&module_file, &absolute_segments[index..])
+            });
+        }
+        dir.push(segment);
     }
+    true
+}
 
-    parent_dir.join(format!("{leaf}.rs")).is_file()
-        || parent_dir.join(leaf).join("mod.rs").is_file()
+fn crate_root_file(source_root: &Path) -> Option<PathBuf> {
+    ["lib.rs", "main.rs"]
+        .iter()
+        .map(|name| source_root.join(name))
+        .find(|path| path.is_file())
+}
+
+/// True when `file` declares `segments` as a chain of nested `mod` items, e.g.
+/// `["parameter_fields"]` matches an inline `pub mod parameter_fields { ... }`.
+/// Intermediate segments must be inline blocks (`mod x { ... }`); the final
+/// segment may also be a boundary declaration (`mod x;`).
+fn declares_inline_mod_path(file: &Path, segments: &[String]) -> bool {
+    let Some((leaf, parents)) = segments.split_last() else {
+        return false;
+    };
+    let Some(first) = segments.first() else {
+        return false;
+    };
+    let Ok(text) = fs::read_to_string(file) else {
+        return false;
+    };
+    if !text.contains(&format!("mod {first}")) {
+        return false;
+    }
+    let Ok(syntax) = syn::parse_file(&text) else {
+        return false;
+    };
+
+    let mut items = &syntax.items;
+    for segment in parents {
+        match find_mod_item(items, segment).and_then(|item_mod| item_mod.content.as_ref()) {
+            Some((_, content)) => items = content,
+            None => return false,
+        }
+    }
+    find_mod_item(items, leaf).is_some()
+}
+
+fn find_mod_item<'a>(items: &'a [Item], name: &str) -> Option<&'a ItemMod> {
+    items.iter().find_map(|item| match item {
+        Item::Mod(item_mod) if item_mod.ident == name => Some(item_mod),
+        _ => None,
+    })
 }
 
 pub(super) fn shorten_module_path(

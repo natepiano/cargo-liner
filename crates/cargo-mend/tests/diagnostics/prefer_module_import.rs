@@ -2237,3 +2237,366 @@ edition = "2024"
         "fully-qualified calls should be rewritten, got:\n{child}"
     );
 }
+
+/// Regression (`hana_tool_graph`): `use crate::constants::parameter_fields;`
+/// imports an inline `pub mod parameter_fields { ... }` declared inside
+/// `constants.rs`. The module check used to look only for
+/// `constants/parameter_fields.rs` / `.../mod.rs` on disk, so the `snake_case`
+/// module name was misclassified as a function import and rewritten to
+/// `use crate::constants;`, orphaning every `parameter_fields::CONST` use site.
+#[test]
+fn skips_import_of_inline_mod_in_parent_file() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "inline_mod_import_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod constants;\nmod consumer;\nfn main() {}\n",
+    )
+    .expect("write main");
+    fs::write(
+        temp.path().join("src/constants.rs"),
+        r#"pub mod parameter_fields {
+    pub const GROUP_MIX: &str = "mix";
+}
+"#,
+    )
+    .expect("write constants");
+    fs::write(
+        temp.path().join("src/consumer.rs"),
+        r#"use crate::constants::parameter_fields;
+
+pub fn run() -> &'static str {
+    parameter_fields::GROUP_MIX
+}
+"#,
+    )
+    .expect("write consumer");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        !report
+            .findings
+            .iter()
+            .any(|f| f.code == DiagnosticCode::PreferModuleImport),
+        "importing an inline `mod` block from its parent's file must not be \
+         flagged as a function import"
+    );
+}
+
+/// Counterpart of the inline-mod skip: an inline *call* into a function that
+/// lives in an inline `mod` block gets the standard treatment — insert a
+/// module `use` and qualify the call — now that the module check can see
+/// inline `mod` declarations.
+#[test]
+fn inline_call_into_inline_mod_rewrites_with_module_import() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "inline_mod_call_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::write(
+        temp.path().join("mend.toml"),
+        r#"[diagnostics]
+review_pub_mod = false
+"#,
+    )
+    .expect("write mend.toml");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod constants;\nmod consumer;\nfn main() {}\n",
+    )
+    .expect("write main");
+    fs::write(
+        temp.path().join("src/constants.rs"),
+        r#"pub mod helpers {
+    pub fn compute() -> i32 { 7 }
+}
+"#,
+    )
+    .expect("write constants");
+    fs::write(
+        temp.path().join("src/consumer.rs"),
+        r#"pub fn run() -> i32 {
+    crate::constants::helpers::compute()
+}
+"#,
+    )
+    .expect("write consumer");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let consumer =
+        fs::read_to_string(temp.path().join("src/consumer.rs")).expect("read fixed file");
+    assert!(
+        consumer.contains("use crate::constants::helpers;"),
+        "expected a module import for the inline mod, got:\n{consumer}"
+    );
+    assert!(
+        consumer.contains("helpers::compute()")
+            && !consumer.contains("crate::constants::helpers::compute()"),
+        "expected qualified call, got:\n{consumer}"
+    );
+}
+
+/// Regression (`hana_tool_graph` `fusion.rs`): a `use crate::effect::fn;` inside
+/// `mod tests` was rewritten to `use crate::effect;`, and that planned rewrite
+/// suppressed the top-level `use crate::effect;` insertion needed by an inline
+/// call at file top level — the tests-scope import doesn't bind there (E0433).
+#[test]
+fn inline_call_use_inserted_when_nested_mod_rewrites_same_module() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "nested_rewrite_suppression_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod effect;\nmod consumer;\nfn main() { consumer::run(); }\n",
+    )
+    .expect("write main");
+    fs::write(
+        temp.path().join("src/effect.rs"),
+        "pub fn classify() {}\npub fn register() {}\n",
+    )
+    .expect("write effect");
+    fs::write(
+        temp.path().join("src/consumer.rs"),
+        r#"pub fn run() {
+    crate::effect::classify();
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::effect::register;
+
+    #[test]
+    fn calls_register() {
+        register();
+    }
+}
+"#,
+    )
+    .expect("write consumer");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let consumer =
+        fs::read_to_string(temp.path().join("src/consumer.rs")).expect("read fixed file");
+    assert!(
+        consumer.contains("effect::classify()") && !consumer.contains("crate::effect::classify()"),
+        "top-level call should be qualified with the bare module, got:\n{consumer}"
+    );
+    let use_count = consumer.matches("use crate::effect;").count();
+    assert_eq!(
+        use_count, 2,
+        "expected a top-level `use crate::effect;` AND one inside `mod tests`, got:\n{consumer}"
+    );
+    assert!(
+        consumer.contains("effect::register()"),
+        "tests-scope reference should be qualified, got:\n{consumer}"
+    );
+}
+
+/// Two function imports of the same module — one at file top level, one inside
+/// `mod tests` — must each be rewritten in place. The file-global dedup used to
+/// rewrite the first and delete the second, leaving the tests scope with
+/// qualified calls but no binding (E0433).
+#[test]
+fn function_imports_same_module_top_level_and_in_nested_mod() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "cross_scope_dedup_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod effect;\nmod consumer;\nfn main() { consumer::run(); }\n",
+    )
+    .expect("write main");
+    fs::write(
+        temp.path().join("src/effect.rs"),
+        "pub fn classify() {}\npub fn register() {}\n",
+    )
+    .expect("write effect");
+    fs::write(
+        temp.path().join("src/consumer.rs"),
+        r#"use crate::effect::classify;
+
+pub fn run() {
+    classify();
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::effect::register;
+
+    #[test]
+    fn calls_register() {
+        register();
+    }
+}
+"#,
+    )
+    .expect("write consumer");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let consumer =
+        fs::read_to_string(temp.path().join("src/consumer.rs")).expect("read fixed file");
+    let use_count = consumer.matches("use crate::effect;").count();
+    assert_eq!(
+        use_count, 2,
+        "each scope needs its own module import, got:\n{consumer}"
+    );
+    assert!(
+        consumer.contains("effect::classify()") && consumer.contains("effect::register()"),
+        "both references should be qualified, got:\n{consumer}"
+    );
+    assert!(
+        !consumer.contains("use crate::effect::classify;")
+            && !consumer.contains("use crate::effect::register;"),
+        "both function imports should be rewritten, got:\n{consumer}"
+    );
+}
+
+/// A top-level `use crate::effect;` does not bind inside `mod tests`, so a
+/// function import inside the nested mod must be rewritten in place — not
+/// deleted as "already imported" (which strands the tests-scope references).
+#[test]
+fn nested_mod_function_import_rewrites_when_module_imported_at_top_level() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "nested_already_imported_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod effect;\nmod consumer;\nfn main() { consumer::run(); }\n",
+    )
+    .expect("write main");
+    fs::write(
+        temp.path().join("src/effect.rs"),
+        "pub fn classify() {}\npub fn register() {}\n",
+    )
+    .expect("write effect");
+    fs::write(
+        temp.path().join("src/consumer.rs"),
+        r#"use crate::effect;
+
+pub fn run() {
+    effect::classify();
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::effect::register;
+
+    #[test]
+    fn calls_register() {
+        register();
+    }
+}
+"#,
+    )
+    .expect("write consumer");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let consumer =
+        fs::read_to_string(temp.path().join("src/consumer.rs")).expect("read fixed file");
+    let use_count = consumer.matches("use crate::effect;").count();
+    assert_eq!(
+        use_count, 2,
+        "the nested import must be rewritten in place, not deleted, got:\n{consumer}"
+    );
+    assert!(
+        consumer.contains("effect::register()"),
+        "tests-scope reference should be qualified, got:\n{consumer}"
+    );
+    assert!(
+        !consumer.contains("use crate::effect::register;"),
+        "the nested function import should be rewritten, got:\n{consumer}"
+    );
+}

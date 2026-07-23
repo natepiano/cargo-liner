@@ -8,9 +8,12 @@ use anyhow::Context;
 use anyhow::Result;
 use syn::File;
 use syn::Item;
+use syn::ItemMod;
+use syn::ItemUse;
 use syn::parse_file;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
+use syn::visit::visit_item_mod;
 use walkdir::WalkDir;
 
 use super::function_imports::ImportDetector;
@@ -55,15 +58,26 @@ impl ScanFileContext<'_> {
     }
 }
 
+/// A bare module import (`use path::to::module;`) recorded with the inline
+/// `mod` chain that contains it — empty for file top level. An import inside
+/// `mod tests` binds nothing at file top level (and vice versa), so every
+/// decision that reuses or dedups against an existing import must compare
+/// scopes, not just module paths.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct ScopedModuleImport {
+    pub(super) inline_scope:    Vec<String>,
+    pub(super) absolute_module: Vec<String>,
+}
+
 pub(super) struct ImportFindingInputs<'a> {
     module_to_functions:     &'a BTreeMap<String, Vec<RawCandidate>>,
     func_to_module:          &'a BTreeMap<&'a str, (&'a str, ImportTarget)>,
     references:              &'a [BareReference],
-    /// Absolute paths of modules the file already imports with a bare `use
-    /// module;`. A function import whose target module is in this set is
-    /// rewritten to nothing (deleted) instead of to `use module;`, which would
-    /// duplicate the existing import and fail to compile (E0252).
-    existing_module_imports: &'a BTreeSet<Vec<String>>,
+    /// Modules the file already imports with a bare `use module;`, keyed by
+    /// scope. A function import whose target module is in this set at the same
+    /// scope is rewritten to nothing (deleted) instead of to `use module;`,
+    /// which would duplicate the existing import and fail to compile (E0252).
+    existing_module_imports: &'a BTreeSet<ScopedModuleImport>,
 }
 
 pub(super) struct InlineCallFindingInputs<'a> {
@@ -132,6 +146,7 @@ fn scan_file(
     let mut detector = ImportDetector {
         source_root,
         current_module_path: current_module_path.clone(),
+        inline_scope: Vec::new(),
         declared_modules: &declared_modules,
         candidates: Vec::new(),
     };
@@ -239,30 +254,60 @@ fn collect_existing_module_imports(
     syntax: &File,
     source_root: &Path,
     current_module_path: &[String],
-) -> BTreeSet<Vec<String>> {
-    let mut modules: BTreeSet<Vec<String>> = BTreeSet::new();
-    for item in &syntax.items {
-        if let Item::Use(item_use) = item
-            && let Some(flat) = support::flatten_use_tree(&item_use.tree)
-            && flat.rename.is_none()
-            && let Some(absolute) =
-                support::resolve_to_absolute(&flat.segments, current_module_path)
-            && !absolute.is_empty()
-            && support::leaf_is_module(source_root, &absolute)
-        {
-            modules.insert(absolute);
-        }
-    }
-    modules
+) -> BTreeSet<ScopedModuleImport> {
+    let mut collector = ExistingModuleImportCollector {
+        source_root,
+        current_module_path: current_module_path.to_vec(),
+        inline_scope: Vec::new(),
+        imports: BTreeSet::new(),
+    };
+    Visit::visit_file(&mut collector, syntax);
+    collector.imports
 }
 
-/// Drop candidates whose target module name is already bound in this file to a
-/// *different* module. Introducing `use <module>;` would collide with that
+struct ExistingModuleImportCollector<'a> {
+    source_root:         &'a Path,
+    current_module_path: Vec<String>,
+    inline_scope:        Vec<String>,
+    imports:             BTreeSet<ScopedModuleImport>,
+}
+
+impl Visit<'_> for ExistingModuleImportCollector<'_> {
+    fn visit_item_use(&mut self, node: &ItemUse) {
+        if let Some(flat) = support::flatten_use_tree(&node.tree)
+            && flat.rename.is_none()
+            && let Some(absolute) =
+                support::resolve_to_absolute(&flat.segments, &self.current_module_path)
+            && !absolute.is_empty()
+            && support::leaf_is_module(self.source_root, &absolute)
+        {
+            self.imports.insert(ScopedModuleImport {
+                inline_scope:    self.inline_scope.clone(),
+                absolute_module: absolute,
+            });
+        }
+    }
+
+    fn visit_item_mod(&mut self, node: &ItemMod) {
+        if node.content.is_some() {
+            self.current_module_path.push(node.ident.to_string());
+            self.inline_scope.push(node.ident.to_string());
+            visit_item_mod(self, node);
+            self.inline_scope.pop();
+            self.current_module_path.pop();
+        } else {
+            visit_item_mod(self, node);
+        }
+    }
+}
+
+/// Drop candidates whose target module name is already bound in the same scope
+/// to a *different* module. Introducing `use <module>;` would collide with that
 /// existing import (E0252), and rewriting the call to `name::fn(...)` would
 /// resolve to the wrong module (E0425). Leave such imports untouched rather than
 /// emit an unfixable finding.
 fn drop_colliding_candidates(
-    existing_module_imports: &BTreeSet<Vec<String>>,
+    existing_module_imports: &BTreeSet<ScopedModuleImport>,
     module_to_functions: &mut BTreeMap<String, Vec<RawCandidate>>,
     inline_candidates: &mut Vec<InlineCallCandidate>,
 ) {
@@ -270,45 +315,61 @@ fn drop_colliding_candidates(
         functions.retain(|candidate| {
             !module_name_collides(
                 existing_module_imports,
+                &candidate.inline_scope,
                 &candidate.module_name,
                 &candidate.absolute_module,
             )
         });
         !functions.is_empty()
     });
+    // Inline call candidates are only detected at file top level (the detector
+    // skips inline `mod` bodies), so their scope is always the empty chain.
     inline_candidates.retain(|candidate| {
         !module_name_collides(
             existing_module_imports,
+            &[],
             &candidate.module_name,
             &candidate.absolute_module,
         )
     });
 }
 
-/// True when the file already imports a *different* module under the same bare
-/// name that a prefer-module-import rewrite would introduce. Rewriting to
+/// True when the same scope already imports a *different* module under the same
+/// bare name that a prefer-module-import rewrite would introduce. Rewriting to
 /// `use <module>;` in that case duplicates the name (E0252) and misroutes the
 /// qualified call (E0425). The same-module case (`absolute_module` equal to an
 /// existing import) is handled separately by deleting the redundant import.
 fn module_name_collides(
-    existing_module_imports: &BTreeSet<Vec<String>>,
+    existing_module_imports: &BTreeSet<ScopedModuleImport>,
+    inline_scope: &[String],
     module_name: &str,
     absolute_module: &[String],
 ) -> bool {
     existing_module_imports.iter().any(|imported| {
-        imported.last().map(String::as_str) == Some(module_name)
-            && imported.as_slice() != absolute_module
+        imported.inline_scope == inline_scope
+            && imported.absolute_module.last().map(String::as_str) == Some(module_name)
+            && imported.absolute_module.as_slice() != absolute_module
     })
 }
 
+/// Modules that will be importable at file top level once the planned `use`
+/// rewrites are applied. Imports and candidates inside inline `mod` blocks are
+/// excluded: a `use` inside `mod tests` does not cover a top-level call site,
+/// so it must not suppress the insertion of a top-level `use`.
 fn build_will_import_modules(
-    existing_module_imports: &BTreeSet<Vec<String>>,
+    existing_module_imports: &BTreeSet<ScopedModuleImport>,
     module_to_functions: &BTreeMap<String, Vec<RawCandidate>>,
 ) -> BTreeSet<Vec<String>> {
-    let mut will_import_modules = existing_module_imports.clone();
+    let mut will_import_modules: BTreeSet<Vec<String>> = existing_module_imports
+        .iter()
+        .filter(|import| import.inline_scope.is_empty())
+        .map(|import| import.absolute_module.clone())
+        .collect();
     for functions in module_to_functions.values() {
         for candidate in functions {
-            will_import_modules.insert(candidate.absolute_module.clone());
+            if candidate.inline_scope.is_empty() {
+                will_import_modules.insert(candidate.absolute_module.clone());
+            }
         }
     }
     will_import_modules
@@ -340,7 +401,7 @@ fn build_findings_and_fixes(
     let display_path = file_context.display_path();
     let mut findings = Vec::new();
     let mut fixes = Vec::new();
-    let mut rewritten_modules: BTreeSet<String> = BTreeSet::new();
+    let mut rewritten_modules: BTreeSet<ScopedModuleImport> = BTreeSet::new();
 
     for functions in import_inputs.module_to_functions.values() {
         for function in functions {
@@ -415,8 +476,8 @@ fn build_function_finding(
 fn build_function_use_fix(
     function: &RawCandidate,
     file_context: &ScanFileContext<'_>,
-    existing_module_imports: &BTreeSet<Vec<String>>,
-    rewritten_modules: &mut BTreeSet<String>,
+    existing_module_imports: &BTreeSet<ScopedModuleImport>,
+    rewritten_modules: &mut BTreeSet<ScopedModuleImport>,
 ) -> UseFix {
     let byte_start = support::offset(file_context.offsets, function.span_start);
     let byte_end = support::offset(file_context.offsets, function.span_end);
@@ -429,13 +490,17 @@ fn build_function_use_fix(
         bare_name: function.module_name.clone(),
         full_path: function.absolute_module.join("::"),
     });
+    let scoped_module = ScopedModuleImport {
+        inline_scope:    function.inline_scope.clone(),
+        absolute_module: function.absolute_module.clone(),
+    };
 
     if function.import_target == ImportTarget::ParentModule
-        || existing_module_imports.contains(&function.absolute_module)
+        || existing_module_imports.contains(&scoped_module)
     {
         // Either call sites become `super::fn(...)` (parent module, no `use`
-        // needed), or the file already imports the target module — so the
-        // function import is redundant. Delete the line in both cases;
+        // needed), or the same scope already imports the target module — so
+        // the function import is redundant. Delete the line in both cases;
         // rewriting it to `use module;` when the module is already imported
         // would produce a duplicate import (E0252).
         UseFix {
@@ -445,7 +510,7 @@ fn build_function_use_fix(
             replacement:  String::new(),
             import_group: group,
         }
-    } else if rewritten_modules.insert(function.module_path.clone()) {
+    } else if rewritten_modules.insert(scoped_module) {
         UseFix {
             path:         file_context.path.to_path_buf(),
             start:        byte_start,
