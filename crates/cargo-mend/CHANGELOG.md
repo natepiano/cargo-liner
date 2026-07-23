@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.17.4] - 2026-07-23
 
 ### Fixed
 - `prefer_module_import` no longer rewrites `use crate::parent::child;` to `use crate::parent;` when `child` is an inline `mod` block inside the parent module's file. Module detection only checked the filesystem for `child.rs`/`child/mod.rs`, so the inline module was misclassified as a function import, leaving multi-segment references like `child::CONST` unresolved (E0433) and forcing `cargo mend --fix` to roll back.
