@@ -13,21 +13,26 @@ use crate::project::VendoredPackage;
 use crate::tui::project_list::ProjectList;
 use crate::tui::render;
 
-/// Compute the percentile rank of `bytes` within `sorted_values` (0.0 to 1.0).
+/// Compute a logarithmic position for `bytes` within the smallest..largest
+/// span of `sorted_values` (0.0 to 1.0). The smallest disk value maps to 0.0,
+/// the largest to 1.0, and the geometric midpoint to 0.5, so equal ratios in
+/// size cover equal distance on the color gradient. `None` when there is no
+/// span to interpolate against (empty, or all values identical).
 #[allow(
     clippy::cast_precision_loss,
-    reason = "display-only — index-to-float ratio for color interpolation"
+    reason = "display-only — byte magnitudes to f64 for log interpolation"
 )]
 pub(super) fn disk_percentile(bytes: Option<u64>, sorted_values: &[u64]) -> Option<f64> {
     let bytes = bytes?;
-    if sorted_values.len() <= 1 {
+    let min = *sorted_values.first()?;
+    let max = *sorted_values.last()?;
+    let lo = (min.max(1) as f64).log2();
+    let hi = (max.max(1) as f64).log2();
+    if hi <= lo {
         return None;
     }
-    let rank = sorted_values
-        .iter()
-        .position(|&v| v >= bytes)
-        .unwrap_or(sorted_values.len() - 1);
-    Some(rank as f64 / (sorted_values.len() - 1) as f64)
+    let pos = ((bytes.max(1) as f64).log2() - lo) / (hi - lo);
+    Some(pos.clamp(0.0, 1.0))
 }
 
 /// Compute a color for a disk value by interpolating the active
