@@ -90,6 +90,180 @@ edition = "2024"
 }
 
 #[test]
+fn fix_preserves_pub_required_by_private_module_reexport() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "private_module_reexport_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src/planner")).expect("create src/planner");
+    fs::create_dir_all(temp.path().join("src/spatial")).expect("create src/spatial");
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "mod planner;\nmod spatial;\n",
+    )
+    .expect("write lib");
+    fs::write(temp.path().join("src/planner/mod.rs"), "mod op;\n").expect("write planner module");
+    fs::write(
+        temp.path().join("src/planner/op.rs"),
+        "pub(crate) use crate::spatial::CrateReexported;\npub use crate::spatial::PubliclyReexported;\n",
+    )
+    .expect("write planner operation module");
+    fs::write(
+        temp.path().join("src/spatial/mod.rs"),
+        "pub struct CrateReexported;\npub struct PubliclyReexported;\npub struct Unused;\n",
+    )
+    .expect("write spatial module");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let narrow_findings: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.code == DiagnosticCode::NarrowToPubCrate)
+        .collect();
+    assert!(
+        narrow_findings
+            .iter()
+            .all(|finding| finding.item.as_deref() != Some("struct PubliclyReexported")),
+        "bare public re-export target should not be narrowed: {narrow_findings:?}"
+    );
+    assert!(
+        narrow_findings
+            .iter()
+            .any(|finding| finding.item.as_deref() == Some("struct CrateReexported")),
+        "pub(crate) re-export target should still be narrowed: {narrow_findings:?}"
+    );
+    assert!(
+        report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::UnusedPub
+                && finding.item.as_deref() == Some("struct Unused")
+        }),
+        "unused sibling should still be flagged: {:?}",
+        report.findings
+    );
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let spatial =
+        fs::read_to_string(temp.path().join("src/spatial/mod.rs")).expect("read spatial module");
+    assert!(
+        spatial.contains("pub struct PubliclyReexported;"),
+        "bare public re-export target should retain pub: {spatial}"
+    );
+    assert!(
+        spatial.contains("pub(crate) struct CrateReexported;"),
+        "pub(crate) re-export target should narrow: {spatial}"
+    );
+    assert!(
+        spatial.contains("struct Unused;") && !spatial.contains("pub struct Unused;"),
+        "unused sibling should become private: {spatial}"
+    );
+    assert_summary_matches_findings(&report);
+}
+
+#[test]
+fn fix_preserves_pub_required_by_public_trait_interface() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "public_trait_interface_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "mod material;\npub use material::PublicTool;\n",
+    )
+    .expect("write lib");
+    fs::write(
+        temp.path().join("src/material.rs"),
+        r#"pub struct PublicState;
+pub struct Unused;
+
+macro_rules! define_public_tool {
+    () => {
+        pub struct PublicTool;
+
+        impl Iterator for PublicTool {
+            type Item = PublicState;
+
+            fn next(&mut self) -> Option<PublicState> { None }
+        }
+    };
+}
+
+define_public_tool!();
+"#,
+    )
+    .expect("write material");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let narrow_findings: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.code == DiagnosticCode::NarrowToPubCrate)
+        .collect();
+    assert!(
+        narrow_findings
+            .iter()
+            .all(|finding| finding.item.as_deref() != Some("struct PublicState")),
+        "public trait interface type should not be narrowed: {narrow_findings:?}"
+    );
+    assert!(
+        report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::UnusedPub
+                && finding.item.as_deref() == Some("struct Unused")
+        }),
+        "unused sibling should still be flagged: {:?}",
+        report.findings
+    );
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let material = fs::read_to_string(temp.path().join("src/material.rs")).expect("read material");
+    assert!(
+        material.contains("pub struct PublicState;"),
+        "public trait interface type should retain pub: {material}"
+    );
+    assert!(
+        material.contains("struct Unused;") && !material.contains("pub struct Unused;"),
+        "unused sibling should become private: {material}"
+    );
+    assert_summary_matches_findings(&report);
+}
+
+#[test]
 fn mixed_items_only_non_exported_flagged() {
     let temp = tempdir().expect("create temp fixture dir");
 

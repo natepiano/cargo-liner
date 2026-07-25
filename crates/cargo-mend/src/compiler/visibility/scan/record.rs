@@ -294,6 +294,9 @@ fn maybe_record_narrow_to_pub_crate(
     let (Some(name), Some(kind_label)) = (item.name, item.kind_label) else {
         return Ok(());
     };
+    if ctx.public_visibility_targets.contains(&item.def_id) {
+        return Ok(());
+    }
     if ctx
         .effective_visibilities
         .is_public_at_level(item.def_id, Level::Reachable)

@@ -27,6 +27,7 @@ use rustc_hir::QPath;
 use rustc_hir::TraitItem;
 use rustc_hir::Ty;
 use rustc_hir::TyKind;
+use rustc_hir::UseKind;
 use rustc_hir::def::DefKind;
 use rustc_hir::def::Res;
 use rustc_hir::def_id::CRATE_DEF_ID;
@@ -46,13 +47,25 @@ use crate::compiler::persistence::UseSite;
 use crate::rust_syntax::PathAnchor;
 
 struct UseSiteCollector<'a, 'tcx> {
-    tcx:            TyCtxt<'tcx>,
+    tcx:                       TyCtxt<'tcx>,
     /// Def-id of the nearest enclosing module. Updated as the visitor
     /// descends into `mod` items so each call site is tagged with the
     /// module path it lives in (not the function or impl that contains
     /// it).
-    current_module: DefId,
-    out:            &'a mut Vec<UseSite>,
+    current_module:            DefId,
+    out:                       &'a mut Vec<UseSite>,
+    public_visibility_targets: &'a mut HashSet<LocalDefId>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InterfaceVisibility {
+    Public,
+    Restricted,
+}
+
+struct InterfaceReach {
+    module:     DefId,
+    visibility: InterfaceVisibility,
 }
 
 impl<'tcx> UseSiteCollector<'_, 'tcx> {
@@ -181,12 +194,18 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
         let self_adt = trait_ref.self_ty().ty_adt_def().map(ty::AdtDef::did);
 
         let previous_module = self.current_module;
-        self.current_module = self.interface_scope_module(trait_ref.def_id, self_adt);
+        let interface_reach = self.interface_reach(trait_ref.def_id, self_adt);
+        self.current_module = interface_reach.module;
 
         let mut seen = HashSet::new();
         for arg in trait_ref.args {
             if let Some(arg_type) = arg.as_type() {
-                self.record_interface_component_types(arg_type, self_adt, &mut seen);
+                self.record_interface_component_types(
+                    arg_type,
+                    self_adt,
+                    interface_reach.visibility,
+                    &mut seen,
+                );
             }
         }
         for assoc_def_id in self.tcx.associated_item_def_ids(impl_def) {
@@ -197,12 +216,22 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
                         .type_of(*assoc_def_id)
                         .instantiate_identity()
                         .skip_normalization();
-                    self.record_interface_component_types(assoc_type, self_adt, &mut seen);
+                    self.record_interface_component_types(
+                        assoc_type,
+                        self_adt,
+                        interface_reach.visibility,
+                        &mut seen,
+                    );
                 },
                 DefKind::AssocFn => {
                     let signature = self.tcx.fn_sig(*assoc_def_id).instantiate_identity();
                     for input_or_output in signature.skip_binder().inputs_and_output {
-                        self.record_interface_component_types(input_or_output, self_adt, &mut seen);
+                        self.record_interface_component_types(
+                            input_or_output,
+                            self_adt,
+                            interface_reach.visibility,
+                            &mut seen,
+                        );
                     }
                 },
                 _ => {},
@@ -216,21 +245,31 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
     /// narrower of the trait's visibility and the self type's visibility.
     /// `Public` on both sides reaches the whole crate (and beyond), so the
     /// crate root stands in as the caller module.
-    fn interface_scope_module(&self, trait_def_id: DefId, self_adt: Option<DefId>) -> DefId {
+    fn interface_reach(&self, trait_def_id: DefId, self_adt: Option<DefId>) -> InterfaceReach {
         let trait_visibility = self.tcx.visibility(trait_def_id);
         let self_visibility =
             self_adt.map_or(Visibility::Public, |adt_did| self.tcx.visibility(adt_did));
         match (trait_visibility, self_visibility) {
             (Visibility::Restricted(trait_scope), Visibility::Restricted(self_scope)) => {
-                if self.tcx.is_descendant_of(trait_scope, self_scope) {
+                let module = if self.tcx.is_descendant_of(trait_scope, self_scope) {
                     trait_scope
                 } else {
                     self_scope
+                };
+                InterfaceReach {
+                    module,
+                    visibility: InterfaceVisibility::Restricted,
                 }
             },
             (Visibility::Restricted(scope), Visibility::Public)
-            | (Visibility::Public, Visibility::Restricted(scope)) => scope,
-            (Visibility::Public, Visibility::Public) => CRATE_DEF_ID.to_def_id(),
+            | (Visibility::Public, Visibility::Restricted(scope)) => InterfaceReach {
+                module:     scope,
+                visibility: InterfaceVisibility::Restricted,
+            },
+            (Visibility::Public, Visibility::Public) => InterfaceReach {
+                module:     CRATE_DEF_ID.to_def_id(),
+                visibility: InterfaceVisibility::Public,
+            },
         }
     }
 
@@ -242,6 +281,7 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
         &mut self,
         component_type: ty::Ty<'tcx>,
         self_adt: Option<DefId>,
+        interface_visibility: InterfaceVisibility,
         seen: &mut HashSet<DefId>,
     ) {
         for arg in component_type.walk() {
@@ -251,6 +291,10 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
                 && Some(adt_def.did()) != self_adt
                 && seen.insert(adt_def.did())
             {
+                if interface_visibility == InterfaceVisibility::Public {
+                    self.public_visibility_targets
+                        .insert(adt_def.did().expect_local());
+                }
                 self.push_site(adt_def.did());
             }
         }
@@ -376,11 +420,16 @@ impl<'tcx> Visitor<'tcx> for UseSiteCollector<'_, 'tcx> {
 /// Walk the entire crate's HIR and append every resolved
 /// expression/type/pattern path reference to `out`. The caller module is
 /// the nearest enclosing module def (defaults to the crate root).
-pub(super) fn collect_use_sites(tcx: TyCtxt<'_>, out: &mut Vec<UseSite>) {
+pub(super) fn collect_use_sites(
+    tcx: TyCtxt<'_>,
+    out: &mut Vec<UseSite>,
+    public_visibility_targets: &mut HashSet<LocalDefId>,
+) {
     let mut collector = UseSiteCollector {
         tcx,
         current_module: CRATE_DEF_ID.to_def_id(),
         out,
+        public_visibility_targets,
     };
     let crate_items = tcx.hir_crate_items(());
     for item_id in crate_items.free_items() {
@@ -395,6 +444,33 @@ pub(super) fn collect_use_sites(tcx: TyCtxt<'_>, out: &mut Vec<UseSite>) {
         let trait_item = tcx.hir_trait_item(trait_item_id);
         collector.visit_trait_item(trait_item);
     }
+}
+
+/// Collect local items named by bare `pub use` declarations.
+///
+/// Rust requires each explicitly re-exported item to retain bare `pub`, even
+/// when the `pub use` declaration lives inside a private module. HIR paths
+/// resolve aliases and grouped imports to the original item def-id, so this
+/// avoids source-path reconstruction when enforcing that visibility floor.
+pub(super) fn public_reexport_targets(tcx: TyCtxt<'_>) -> HashSet<LocalDefId> {
+    let mut targets = HashSet::new();
+    for item_id in tcx.hir_crate_items(()).free_items() {
+        let item = tcx.hir_item(item_id);
+        if !tcx.local_visibility(item.owner_id.def_id).is_public() {
+            continue;
+        }
+        let ItemKind::Use(path, UseKind::Single(_)) = item.kind else {
+            continue;
+        };
+        for resolution in path.res.present_items() {
+            if let Res::Def(_, target) = resolution
+                && let Some(local_target) = target.as_local()
+            {
+                targets.insert(local_target);
+            }
+        }
+    }
+    targets
 }
 
 /// Returns the def-path of `LocalDefId` as a `String`, e.g.

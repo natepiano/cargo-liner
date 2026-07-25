@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Fix `cargo mend --fix` narrowing types to `pub(crate)` when they must remain public, such as types exposed by `pub use` or `Iterator::Item`
+
 ## [0.17.4] - 2026-07-23
 
 ### Fixed

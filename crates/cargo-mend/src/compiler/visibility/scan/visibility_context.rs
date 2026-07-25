@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
@@ -26,12 +27,13 @@ use crate::compiler::visibility::use_sites;
 use crate::reporting::CompilerWarningFacts;
 
 pub struct VisibilityContext<'a, 'tcx> {
-    pub tcx:                    TyCtxt<'tcx>,
-    pub settings:               &'a DriverSettings,
-    pub source_root:            &'a Path,
-    pub root_module:            &'a Path,
-    pub effective_visibilities: &'a EffectiveVisibilities,
-    pub source_cache:           &'a SourceCache,
+    pub tcx:                       TyCtxt<'tcx>,
+    pub settings:                  &'a DriverSettings,
+    pub source_root:               &'a Path,
+    pub root_module:               &'a Path,
+    pub effective_visibilities:    &'a EffectiveVisibilities,
+    pub source_cache:              &'a SourceCache,
+    pub public_visibility_targets: &'a HashSet<LocalDefId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +65,8 @@ pub fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) ->
     let mut sink = FindingsSink::default();
     let crate_items = tcx.hir_crate_items(());
     let source_cache = build_source_cache(settings, &source_root)?;
+    let mut public_visibility_targets = use_sites::public_reexport_targets(tcx);
+    use_sites::collect_use_sites(tcx, &mut sink.use_sites, &mut public_visibility_targets);
     let ctx = VisibilityContext {
         tcx,
         settings,
@@ -70,6 +74,7 @@ pub fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) ->
         root_module: &crate_root_file,
         effective_visibilities: tcx.effective_visibilities(()),
         source_cache: &source_cache,
+        public_visibility_targets: &public_visibility_targets,
     };
 
     let mut source_files = BTreeSet::new();
@@ -89,8 +94,6 @@ pub fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) ->
     for item_id in crate_items.foreign_items() {
         visit::visit_foreign_item(&ctx, tcx.hir_foreign_item(item_id), &mut sink)?;
     }
-
-    use_sites::collect_use_sites(tcx, &mut sink.use_sites);
 
     let build_kind = if tcx.sess.opts.test {
         CacheBuildKind::Test
