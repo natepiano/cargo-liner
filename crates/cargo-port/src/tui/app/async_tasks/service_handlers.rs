@@ -182,9 +182,15 @@ impl App {
     }
     /// Unified post-recovery dispatch: dismiss / push the back-online
     /// toast on the `WithToast` variant, then fire
-    /// [`Self::refetch_missing_after_recovery`] on every transition
-    /// (silent or not) so rows that failed to fetch during the outage
-    /// fill in once the service is reachable again.
+    /// [`Self::refetch_missing_after_recovery`] — but only for a
+    /// *confirmed* outage. A transient blip absorbed by the grace window
+    /// recovers `Silent`, and refetching there re-dispatches every fetch
+    /// that failed during the blip; at startup those land after the panel
+    /// hands the network rows back to steady state and leak the standalone
+    /// "Fetching crates.io info" / "Retrieving GitHub repo details" toasts
+    /// the startup panel was meant to embed. Gating on
+    /// [`RecoveryOutcome::triggers_refetch`] keeps the missing-data refetch
+    /// for outages the user actually saw while suppressing that startup burst.
     fn apply_recovery_outcome(&mut self, service: ServiceKind, outcome: RecoveryOutcome) {
         match outcome {
             RecoveryOutcome::NoTransition => return,
@@ -195,7 +201,9 @@ impl App {
                 self.show_timed_toast(title, body);
             },
         }
-        self.refetch_missing_after_recovery(service);
+        if outcome.triggers_refetch() {
+            self.refetch_missing_after_recovery(service);
+        }
     }
 }
 

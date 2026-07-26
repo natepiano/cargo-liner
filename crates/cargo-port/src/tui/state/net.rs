@@ -94,6 +94,18 @@ pub enum RecoveryOutcome {
     WithToast(ToastId),
 }
 
+impl RecoveryOutcome {
+    /// Whether recovery should re-dispatch the fetches that failed during the
+    /// outage. Only a *confirmed* outage — one whose unavailable toast the
+    /// user actually saw (`WithToast`) — refetches. A transient blip absorbed
+    /// by the grace window (`Silent`) must not: during startup its
+    /// re-dispatched crates.io / GitHub fetches would land after the startup
+    /// panel hands the network rows back to steady state, spraying the
+    /// standalone "Fetching crates.io info" toasts the panel was meant to
+    /// embed.
+    pub const fn triggers_refetch(self) -> bool { matches!(self, Self::WithToast(_)) }
+}
+
 /// Render-side snapshot of service availability — collapses
 /// [`AvailabilityStatus`]'s three-way state to a binary "render the
 /// placeholder, or render the real value." UI code carries this on
@@ -513,6 +525,17 @@ const fn service_exit(running: usize, failed: bool) -> Result<StartupServiceExit
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_confirmed_outage_recovery_triggers_refetch() {
+        // A transient blip absorbed by the grace window recovers `Silent` and
+        // must not refetch — its re-dispatched fetches would leak standalone
+        // toasts after the startup panel hands off. Only a confirmed outage
+        // (a toast the user saw) refetches on recovery.
+        assert!(!RecoveryOutcome::NoTransition.triggers_refetch());
+        assert!(!RecoveryOutcome::Silent.triggers_refetch());
+        assert!(RecoveryOutcome::WithToast(ToastId(1)).triggers_refetch());
+    }
 
     #[test]
     fn mark_unauthenticated_sets_status_and_reports_unavailable() {
