@@ -1,17 +1,56 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::Path;
 
 use ratatui::style::Color;
 use ratatui::style::Style;
+use tui_pane::hover_focus_color;
 use tui_pane::label_color;
 
-use crate::project::MemberGroup;
-use crate::project::ProjectFields;
 use crate::project::RootItem;
-use crate::project::RustProject;
-use crate::project::VendoredPackage;
 use crate::tui::project_list::ProjectList;
+use crate::tui::project_list::VisibleRow;
 use crate::tui::render;
+
+/// Number of largest distinct visible disk values highlighted by
+/// [`disk_style`].
+const TOP_DISK_COUNT: usize = 3;
+
+/// Style for a disk value: the theme's high (red) `disk_usage` stop on a
+/// subtle focus tint when `bytes` is among the largest [`TOP_DISK_COUNT`]
+/// distinct values in `sorted_values`, otherwise the logarithmic gradient
+/// from [`disk_color`].
+pub(super) fn disk_style(bytes: Option<u64>, sorted_values: &[u64]) -> Style {
+    if let Some(bytes) = bytes
+        && is_top_disk_value(bytes, sorted_values)
+    {
+        return Style::default()
+            .fg(tui_pane::theme().disk_usage.high.color)
+            .bg(hover_focus_color());
+    }
+    disk_color(disk_percentile(bytes, sorted_values))
+}
+
+/// Whether `bytes` is at or above the [`TOP_DISK_COUNT`]-th largest distinct
+/// value in the ascending `sorted_values`. When fewer than [`TOP_DISK_COUNT`]
+/// distinct values exist, the threshold is the smallest, so every visible
+/// value qualifies.
+fn is_top_disk_value(bytes: u64, sorted_values: &[u64]) -> bool {
+    let mut distinct = 0usize;
+    let mut prev = None;
+    let mut threshold = None;
+    for &value in sorted_values.iter().rev() {
+        if prev != Some(value) {
+            distinct += 1;
+            prev = Some(value);
+            threshold = Some(value);
+            if distinct == TOP_DISK_COUNT {
+                break;
+            }
+        }
+    }
+    threshold.is_some_and(|t| bytes >= t)
+}
 
 /// Compute a logarithmic position for `bytes` within the smallest..largest
 /// span of `sorted_values` (0.0 to 1.0). The smallest disk value maps to 0.0,
@@ -109,86 +148,42 @@ pub(super) fn formatted_disk_for_item(item: &RootItem) -> String {
 // other Phase-4 absorptions: typed parameters through `ctx`.
 // ── Disk-cache ───────────────────────────────────────────────────────
 //
-// Builds sorted disk-usage values for the Disk column. The scale includes
-// top-level rows and collapsed child rows so equal byte counts receive the
-// same color anywhere in the project list.
+// Builds sorted disk-usage values for the rows currently rendered in the
+// Project pane. Expansion and collapse therefore update both the gradient and
+// the three emphasized values.
 
 pub(super) fn compute_disk_cache(entries: &ProjectList) -> (Vec<u64>, HashMap<usize, Vec<u64>>) {
-    let mut all_sorted = Vec::new();
-    let mut child_presence = Vec::new();
-    for entry in entries {
-        if let Some(bytes) = entry.root_item.disk_usage_bytes() {
-            all_sorted.push(bytes);
-        }
-
-        let mut values = Vec::new();
-        collect_child_disk_values(&entry.root_item, &mut values);
-        all_sorted.extend(values.iter().copied());
-        child_presence.push(!values.is_empty());
-    }
+    let mut all_sorted: Vec<u64> = entries
+        .visible_rows()
+        .iter()
+        .filter_map(|row| entries.visible_row_disk_usage(*row))
+        .collect();
     all_sorted.sort_unstable();
 
+    let child_nodes: HashSet<usize> = entries
+        .visible_rows()
+        .iter()
+        .filter_map(child_row_node_index)
+        .collect();
     let mut child_sorted = HashMap::new();
-    for (ni, has_children) in child_presence.into_iter().enumerate() {
-        if has_children {
-            child_sorted.insert(ni, all_sorted.clone());
-        }
+    for node_index in child_nodes {
+        child_sorted.insert(node_index, all_sorted.clone());
     }
 
     (all_sorted, child_sorted)
 }
 
-fn collect_child_disk_values(item: &RootItem, values: &mut Vec<u64>) {
-    match item {
-        RootItem::Rust(RustProject::Workspace(ws)) => {
-            collect_member_group_disk(ws.groups(), values);
-            collect_vendored_disk(ws.vendored(), values);
-        },
-        RootItem::Rust(RustProject::Package(pkg)) => {
-            collect_vendored_disk(pkg.vendored(), values);
-        },
-        RootItem::NonRust(_) => {},
-        RootItem::Worktrees(group) => {
-            for entry in group.iter_entries() {
-                if let Some(bytes) = entry.disk_usage_bytes() {
-                    values.push(bytes);
-                }
-                if let RustProject::Workspace(ws) = entry {
-                    collect_member_group_disk(ws.groups(), values);
-                }
-                collect_vendored_disk(entry.rust_info().vendored(), values);
-            }
-        },
-    }
-    collect_project_list_entry_disk(item.submodules(), values);
-}
-
-fn collect_member_group_disk(groups: &[MemberGroup], values: &mut Vec<u64>) {
-    for group in groups {
-        for member in group.members() {
-            if let Some(bytes) = member.disk_usage_bytes() {
-                values.push(bytes);
-            }
-            collect_vendored_disk(member.vendored(), values);
-        }
-    }
-}
-
-fn collect_vendored_disk(vendored: &[VendoredPackage], values: &mut Vec<u64>) {
-    for project in vendored {
-        if let Some(bytes) = project.disk_usage_bytes() {
-            values.push(bytes);
-        }
-    }
-}
-
-fn collect_project_list_entry_disk(
-    entries: &[impl crate::project::ProjectFields],
-    values: &mut Vec<u64>,
-) {
-    for entry in entries {
-        if let Some(bytes) = entry.info().disk_usage_bytes {
-            values.push(bytes);
-        }
+const fn child_row_node_index(row: &VisibleRow) -> Option<usize> {
+    match row {
+        VisibleRow::Root { .. } | VisibleRow::GroupHeader { .. } => None,
+        VisibleRow::Member { node_index, .. }
+        | VisibleRow::MemberVendored { node_index, .. }
+        | VisibleRow::Vendored { node_index, .. }
+        | VisibleRow::WorktreeEntry { node_index, .. }
+        | VisibleRow::WorktreeGroupHeader { node_index, .. }
+        | VisibleRow::WorktreeMember { node_index, .. }
+        | VisibleRow::WorktreeMemberVendored { node_index, .. }
+        | VisibleRow::WorktreeVendored { node_index, .. }
+        | VisibleRow::Submodule { node_index, .. } => Some(*node_index),
     }
 }

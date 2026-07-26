@@ -781,7 +781,59 @@ pub fn build_summary_cells(widths: &ProjectListWidths, disk: &str) -> RowCells {
     }
 }
 
+/// Build the project-volume availability row below the Σ disk total.
+///
+/// The label spans the normally-empty metadata columns so its final `e`
+/// right-aligns with the Σ above it, without disturbing the Disk column.
+pub fn build_available_line(widths: &ProjectListWidths, disk: &str) -> Line<'static> {
+    let style = Style::default().fg(theme_roles::language_subtotal_color());
+
+    let defs = column_defs(widths.lint_enabled());
+    let sigma_col = summary_label_col(widths);
+    let sigma_end = (0..=sigma_col)
+        .map(|col| rendered_column_width(widths, &defs, col))
+        .sum();
+    let mut spans = vec![Span::styled(pad_left("Available", sigma_end), style)];
+    for col in sigma_col.saturating_add(1)..COL_DISK {
+        let width = rendered_column_width(widths, &defs, col);
+        if width > 0 {
+            spans.push(Span::raw(" ".repeat(width)));
+        }
+    }
+
+    let disk_width = widths.get(COL_DISK);
+    if disk_width > 0 {
+        let disk_cell = format!(
+            "{}{}",
+            " ".repeat(defs[COL_DISK].gap),
+            pad_left(disk, disk_width)
+        );
+        spans.push(Span::styled(disk_cell, style));
+    }
+
+    Line::from(spans)
+}
+
+fn rendered_column_width(
+    widths: &ProjectListWidths,
+    defs: &[ColumnDef; NUM_COLS],
+    col: usize,
+) -> usize {
+    let width = widths.get(col);
+    if width == 0 {
+        0
+    } else if col == COL_NAME {
+        width
+    } else {
+        defs[col].gap.saturating_add(width)
+    }
+}
+
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
 mod tests {
     use super::*;
     use crate::constants::GIT_STATUS_CLEAN;
@@ -1012,6 +1064,48 @@ mod tests {
         assert_eq!(line.spans[COL_MAIN].content.as_ref(), "  Σ");
         assert_eq!(line.spans[COL_CI].content.as_ref(), "   ");
         assert_eq!(line.spans[COL_DISK].content.as_ref(), " 36.3 GiB");
+    }
+
+    #[test]
+    fn availability_label_ends_below_summary_sigma() {
+        let mut widths = ProjectListWidths::new(true);
+        widths.observe(COL_NAME, 30);
+        widths.observe(COL_DISK, 8);
+        widths.observe(COL_SYNC, 2);
+        widths.observe(COL_MAIN, 2);
+
+        let summary = build_summary_cells(&widths, "36.3 GiB");
+        let summary_line = row_to_line(&summary, &widths);
+        let available_line = build_available_line(&widths, "64.9 GiB");
+        let summary_text: String = summary_line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        let available_text: String = available_line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        let sigma_start = summary_text.find('Σ').expect("summary has a sigma");
+        let available_start = available_text
+            .find("Available")
+            .expect("availability row has a label");
+        let summary_disk_start = summary_text
+            .find("36.3 GiB")
+            .expect("summary has disk bytes");
+        let available_disk_start = available_text
+            .find("64.9 GiB")
+            .expect("availability row has disk bytes");
+
+        assert_eq!(
+            display_width(&available_text[..available_start]) + display_width("Available"),
+            display_width(&summary_text[..sigma_start]) + display_width("Σ"),
+        );
+        assert_eq!(
+            display_width(&available_text[..available_disk_start]),
+            display_width(&summary_text[..summary_disk_start]),
+        );
     }
 
     #[test]

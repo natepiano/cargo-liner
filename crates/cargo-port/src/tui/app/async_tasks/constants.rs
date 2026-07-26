@@ -9,6 +9,9 @@ pub(super) const CRATES_IO_FETCH_WORKERS: usize = 10;
 
 // src tui app async_tasks poll
 pub(super) const MAX_MSGS_PER_FRAME: usize = 50;
+/// Refresh the project volume's free capacity even when a non-project process
+/// changes disk space.
+pub(super) const PROJECT_STORAGE_REFRESH_SECS: u64 = 2;
 
 // src tui app async_tasks repo_handlers
 pub(super) const PR_CHECK_POLL_SECS: u64 = 10;

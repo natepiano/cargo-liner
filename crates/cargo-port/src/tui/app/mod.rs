@@ -265,6 +265,9 @@ pub(super) struct App {
     pub(super) overlays:           Overlays,
     confirm:                       Option<ConfirmAction>,
     pub(super) animation_started:  Instant,
+    /// Time the project-volume capacity was last requested. This refreshes on
+    /// disk-watch updates and at a low fixed cadence for external disk use.
+    pub(super) storage_refresh_at: Instant,
     pub(super) mouse_pos:          Option<Position>,
     /// Framework aggregator from `tui_pane`. Owns the focused-pane id,
     /// quit/restart flags, the per-pane mode-query registry, and the

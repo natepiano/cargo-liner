@@ -1,10 +1,13 @@
 use tui_pane::PERF_LOG_TARGET;
 
+use crate::scan::ProjectStorage;
 use crate::tui;
 use crate::tui::app::App;
 use crate::tui::app::VisibleRow;
+use crate::tui::columns;
 use crate::tui::panes;
 use crate::tui::panes::DetailCacheKey;
+use crate::tui::render;
 
 impl App {
     pub fn ensure_visible_rows_cached(&mut self) {
@@ -25,6 +28,18 @@ impl App {
             self.config.lint_enabled(),
             0,
         );
+        let mut widths = widths;
+        let total = self.project_list.visible_project_disk_usage();
+        widths.observe(
+            columns::COL_DISK,
+            columns::display_width(&render::format_bytes(total)),
+        );
+        if let ProjectStorage::Available(bytes) = self.project_list.project_storage() {
+            widths.observe(
+                columns::COL_DISK,
+                columns::display_width(&render::format_bytes(bytes)),
+            );
+        }
         self.project_list.set_fit_widths(widths);
     }
 

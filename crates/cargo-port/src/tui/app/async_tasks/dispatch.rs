@@ -75,6 +75,7 @@ impl App {
         let pending = std::mem::take(&mut self.project_list.paths.pending_expanded);
         self.project_list.apply_expanded(&pending);
         self.rebuild_visible_rows_now();
+        self.refresh_project_storage();
 
         // Restore selection.
         if let Some(path) = selected_path {
@@ -113,6 +114,9 @@ impl App {
             },
             BackgroundMsg::DiskUsageBatch { root_path, entries } => {
                 self.handle_disk_usage_batch_msg(&root_path, entries);
+            },
+            BackgroundMsg::ProjectStorage { paths, storage } => {
+                self.set_project_storage(&paths, storage);
             },
             BackgroundMsg::CiRuns {
                 path,

@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use sysinfo::Disks;
 use tui_pane::PERF_LOG_TARGET;
 use walkdir::WalkDir;
 
@@ -14,6 +16,50 @@ use crate::constants::GIT_DIR;
 use crate::constants::TARGET_DIR;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
+
+/// Storage capacity shared by every visible project root.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ProjectStorage {
+    /// The volume query has not completed or could not map a project to a volume.
+    #[default]
+    Unknown,
+    /// All visible projects reside on one mounted volume.
+    Available(u64),
+    /// Visible projects span more than one mounted volume.
+    MultipleVolumes,
+}
+
+/// Query the writable capacity shared by `paths` without walking their trees.
+pub(crate) fn project_storage(paths: &[AbsolutePath]) -> ProjectStorage {
+    let disks = Disks::new_with_refreshed_list();
+    let mut volumes = HashMap::new();
+
+    for path in paths {
+        let Some(disk) = disks
+            .list()
+            .iter()
+            .filter(|disk| path.starts_with(disk.mount_point()))
+            .max_by_key(|disk| disk.mount_point().components().count())
+        else {
+            return ProjectStorage::Unknown;
+        };
+        volumes.insert(disk.mount_point().to_path_buf(), disk.available_space());
+    }
+
+    project_storage_for_volumes(&volumes)
+}
+
+fn project_storage_for_volumes(volumes: &HashMap<PathBuf, u64>) -> ProjectStorage {
+    match volumes.len() {
+        0 => ProjectStorage::Unknown,
+        1 => volumes
+            .values()
+            .next()
+            .copied()
+            .map_or(ProjectStorage::Unknown, ProjectStorage::Available),
+        _ => ProjectStorage::MultipleVolumes,
+    }
+}
 
 pub(super) fn spawn_initial_disk_usage(
     scan_context: &StreamingScanContext,
@@ -226,6 +272,29 @@ pub(crate) fn disk_usage_batch_for_item(item: &RootItem) -> Vec<(AbsolutePath, D
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_storage_uses_one_volume_capacity() {
+        let volumes = HashMap::from([(PathBuf::from("/"), 123_u64)]);
+
+        assert_eq!(
+            project_storage_for_volumes(&volumes),
+            ProjectStorage::Available(123)
+        );
+    }
+
+    #[test]
+    fn project_storage_marks_multiple_volumes_without_summing_them() {
+        let volumes = HashMap::from([
+            (PathBuf::from("/"), 123_u64),
+            (PathBuf::from("/Volumes/external"), 456_u64),
+        ]);
+
+        assert_eq!(
+            project_storage_for_volumes(&volumes),
+            ProjectStorage::MultipleVolumes
+        );
+    }
 
     #[test]
     fn group_disk_usage_trees_merges_nested_projects_under_one_root() {

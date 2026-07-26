@@ -291,6 +291,7 @@ impl AppBuilder<Started> {
             overlays,
             confirm: None,
             animation_started: Instant::now(),
+            storage_refresh_at: Instant::now(),
             mouse_pos: None,
             framework,
             framework_keymap: Rc::new(framework_keymap),

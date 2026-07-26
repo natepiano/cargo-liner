@@ -389,7 +389,7 @@ fn render_root_item(
     let name = &root_labels[node_index];
     let disk = disk::formatted_disk_for_item(item);
     let disk_bytes = item.disk_usage_bytes();
-    let ds = disk::disk_color(disk::disk_percentile(disk_bytes, root_sorted));
+    let ds = disk::disk_style(disk_bytes, root_sorted);
     let ci = ctx
         .project_list
         .ci_status_for_root_item_using_lookup(&item.root_item, ctx.ci_status_lookup);
@@ -456,7 +456,7 @@ fn render_child_item<P: project::ProjectFields>(
     let path = project.path();
     let disk = disk::formatted_disk(ctx.project_list, path);
     let disk_bytes = project.disk_usage_bytes();
-    let ds = disk::disk_color(disk::disk_percentile(disk_bytes, child_sorted));
+    let ds = disk::disk_style(disk_bytes, child_sorted);
     let lang = project::Package::lang_icon();
     let is_workspace_member = ctx.project_list.is_workspace_member_path(path);
     let is_vendored = ctx.project_list.is_vendored_path(path);
@@ -566,7 +566,7 @@ fn render_worktree_entry<'a>(
     let worktree_path = abs_path.as_deref().unwrap_or_else(|| Path::new(""));
     let disk = disk::formatted_disk(ctx.project_list, worktree_path);
     let disk_bytes = worktree_entry_disk_bytes(item, wi);
-    let ds = disk::disk_color(disk::disk_percentile(disk_bytes, sorted));
+    let ds = disk::disk_style(disk_bytes, sorted);
     let lang = item.lang_icon();
     let lint_cell = state::lint_cell_for(
         &Lint::status_for_worktree(&item.root_item, wi),
@@ -940,7 +940,7 @@ fn render_path_only_entry(
 ) -> ListItem<'static> {
     let path = entry.path().as_path();
     let disk = disk::formatted_disk(ctx.project_list, path);
-    let ds = disk::disk_color(disk::disk_percentile(entry.info().disk_usage_bytes, sorted));
+    let ds = disk::disk_style(entry.info().disk_usage_bytes, sorted);
     let git_status = ctx.project_list.git_status_for(path);
     let deleted =
         ctx.project_list.is_deleted(inherited_deleted_path) || ctx.project_list.is_deleted(path);
@@ -1502,6 +1502,7 @@ mod tests {
     use crate::project::ProjectInfo;
     use crate::project::RustInfo;
     use crate::project::WorktreeStatus;
+    use crate::tui::project_list::ExpandKey;
     use crate::tui::project_list::ProjectList;
 
     const MIB: u64 = 1024 * 1024;
@@ -1523,7 +1524,7 @@ mod tests {
     }
 
     #[test]
-    fn worktree_entry_disk_percentile_uses_checkout_bytes_on_global_scale() {
+    fn disk_cache_tracks_expanded_worktree_rows() {
         let linked_bytes = 470 * MIB;
         let peer_bytes = 500 * MIB;
         let primary_bytes = 80 * GIB;
@@ -1549,34 +1550,29 @@ mod tests {
                 },
             ))],
         ));
-        let list = ProjectList::new(vec![peer, group.clone()]);
-
-        let (all_sorted, child_sorted) = disk::compute_disk_cache(&list);
-        let group_sorted = child_sorted
-            .get(&1)
-            .expect("worktree group should have child disk cache");
+        let mut list = ProjectList::new(vec![peer, group.clone()]);
+        list.recompute_visibility(true);
+        let (collapsed, _) = disk::compute_disk_cache(&list);
 
         assert_eq!(
-            group_sorted, &all_sorted,
-            "worktree rows should use the same disk scale as root rows"
+            collapsed,
+            vec![peer_bytes, primary_bytes + linked_bytes],
+            "collapsed worktrees contribute only their rendered group total"
         );
         assert_eq!(worktree_entry_disk_bytes(&group, 1), Some(linked_bytes));
         assert_eq!(group.disk_usage_bytes(), Some(primary_bytes + linked_bytes));
 
-        let linked_percentile =
-            disk::disk_percentile(Some(linked_bytes), group_sorted).expect("linked percentile");
-        let peer_percentile =
-            disk::disk_percentile(Some(peer_bytes), &all_sorted).expect("peer percentile");
-        let group_percentile = disk::disk_percentile(group.disk_usage_bytes(), group_sorted)
-            .expect("group percentile");
+        list.expanded.insert(ExpandKey::Node(1));
+        list.recompute_visibility(true);
+        let (expanded, _) = disk::compute_disk_cache(&list);
 
         assert!(
-            linked_percentile < peer_percentile,
-            "linked checkout should grade below the larger peer row"
+            expanded.contains(&linked_bytes),
+            "the linked checkout joins the disk scale when its row is visible"
         );
         assert!(
-            (group_percentile - 1.0).abs() < f64::EPSILON,
-            "the aggregate worktree group remains the largest disk value"
+            !collapsed.contains(&linked_bytes),
+            "collapsed child rows cannot claim a top-three highlight"
         );
     }
 }

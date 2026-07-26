@@ -38,6 +38,7 @@ impl App {
         stats.ci_msgs = self.poll_ci_fetches();
         stats.example_msgs = self.poll_example_msgs();
         self.poll_clean_msgs();
+        self.refresh_project_storage_if_due(Instant::now());
 
         stats.tree_results = 0;
         stats.fit_results = 0;
@@ -205,6 +206,7 @@ pub(super) const fn record_background_msg_kind(
         | BackgroundMsg::CratesIoFetchComplete { .. }
         | BackgroundMsg::RepoMeta { .. }
         | BackgroundMsg::ProjectDetailsDeclared { .. }
+        | BackgroundMsg::ProjectStorage { .. }
         | BackgroundMsg::Submodules { .. }
         | BackgroundMsg::ScanResult { .. }
         | BackgroundMsg::ProjectDiscovered { .. }

@@ -4,6 +4,7 @@ use tui_pane::Appearance;
 
 use super::cargo_metadata::CargoMetadataError;
 use super::disk_usage::DirSizes;
+use super::disk_usage::ProjectStorage;
 use crate::cache_paths;
 use crate::channel::Sender;
 use crate::ci::CiRun;
@@ -39,6 +40,11 @@ pub enum BackgroundMsg {
     DiskUsageBatch {
         root_path: AbsolutePath,
         entries:   Vec<(AbsolutePath, DirSizes)>,
+    },
+    /// Writable capacity for the mounted volume shared by visible projects.
+    ProjectStorage {
+        paths:   Vec<AbsolutePath>,
+        storage: ProjectStorage,
     },
     /// GitHub Actions CI runs fetched for a project.
     CiRuns {
@@ -269,6 +275,9 @@ impl BackgroundMsg {
             // Batch arrivals are aggregated and the handler bumps
             // generation explicitly (see `handle_disk_usage_batch_msg`).
             | Self::DiskUsageBatch { .. }
+            // The project-pane footer reads this stored aggregate rather
+            // than feeding selected-project detail data.
+            | Self::ProjectStorage { .. }
             // Counted language progress only feeds the startup panel.
             | Self::LanguageStatsProgressPlan { .. }
             // Language stats live in `RustInfo`, not in the detail set.

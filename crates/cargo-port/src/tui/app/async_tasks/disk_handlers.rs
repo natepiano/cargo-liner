@@ -1,11 +1,47 @@
 use std::path::Path;
+use std::time::Duration;
+use std::time::Instant;
 
+use super::constants::PROJECT_STORAGE_REFRESH_SECS;
 use crate::project::AbsolutePath;
 use crate::project::Visibility::Deleted;
 use crate::project::Visibility::Visible;
+use crate::scan;
+use crate::scan::BackgroundMsg;
 use crate::scan::DirSizes;
+use crate::scan::ProjectStorage;
 use crate::tui::app::App;
+
 impl App {
+    /// Refresh the mounted-volume capacity for the roots represented in the
+    /// project-pane summary without doing filesystem work on the render path.
+    pub(super) fn refresh_project_storage(&mut self) {
+        self.storage_refresh_at = Instant::now();
+        let paths = self.project_list.visible_project_storage_paths();
+        let sender = self.background.background_sender();
+        let handle = self.net.http_client().handle;
+        handle.spawn(async move {
+            let paths_for_probe = paths.clone();
+            let storage =
+                tokio::task::spawn_blocking(move || scan::project_storage(&paths_for_probe))
+                    .await
+                    .unwrap_or_default();
+            let _ = sender.send(BackgroundMsg::ProjectStorage { paths, storage });
+        });
+    }
+
+    /// Refresh free capacity periodically so non-project disk activity is
+    /// reflected even when no watched path changes.
+    pub(super) fn refresh_project_storage_if_due(&mut self, now: Instant) {
+        if project_storage_refresh_due(self.storage_refresh_at, now) {
+            self.refresh_project_storage();
+        }
+    }
+
+    pub(super) fn set_project_storage(&mut self, paths: &[AbsolutePath], storage: ProjectStorage) {
+        self.project_list.set_project_storage(paths, storage);
+    }
+
     pub fn handle_disk_usage(&mut self, path: &Path, bytes: u64) {
         self.apply_disk_usage(path, bytes);
     }
@@ -52,6 +88,7 @@ impl App {
     pub(super) fn handle_disk_usage_msg(&mut self, path: &Path, bytes: u64) {
         self.startup.disk.seen.insert(AbsolutePath::from(path));
         self.handle_disk_usage(path, bytes);
+        self.refresh_project_storage();
         self.maybe_log_startup_phase_completions();
     }
     pub(super) fn handle_disk_usage_batch_msg(
@@ -84,6 +121,32 @@ impl App {
             }
         }
         self.handle_disk_usage_batch(entries);
+        self.refresh_project_storage();
         self.maybe_log_startup_phase_completions();
+    }
+}
+
+fn project_storage_refresh_due(last_refresh: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(last_refresh) >= Duration::from_secs(PROJECT_STORAGE_REFRESH_SECS)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+    use std::time::Instant;
+
+    use super::PROJECT_STORAGE_REFRESH_SECS;
+    use super::project_storage_refresh_due;
+
+    #[test]
+    fn project_storage_refresh_is_due_after_two_seconds() {
+        let start = Instant::now();
+        let interval = Duration::from_secs(PROJECT_STORAGE_REFRESH_SECS);
+
+        assert!(!project_storage_refresh_due(
+            start,
+            start + interval.saturating_sub(Duration::from_millis(1))
+        ));
+        assert!(project_storage_refresh_due(start, start + interval));
     }
 }

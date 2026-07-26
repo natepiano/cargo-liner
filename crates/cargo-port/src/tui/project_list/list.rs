@@ -57,6 +57,7 @@ use crate::project::Workspace;
 use crate::project::WorkspaceMetadata;
 use crate::project::WorktreeGroup;
 use crate::project::WorktreeStatus;
+use crate::scan::ProjectStorage;
 use crate::tui::app::CiRunDisplayMode;
 use crate::tui::app::CleanSelection;
 use crate::tui::app::SelectionPaths;
@@ -72,6 +73,12 @@ fn project_lint_is_running(project: &RustProject) -> bool {
             project.lint_at_path(project.path()).map(LintRuns::status),
             Some(crate::lint::LintStatus::Running(_))
         )
+}
+
+fn push_unique_path(paths: &mut Vec<AbsolutePath>, path: &AbsolutePath) {
+    if !paths.contains(path) {
+        paths.push(path.clone());
+    }
 }
 
 impl ProjectList {
@@ -104,6 +111,67 @@ impl ProjectList {
     pub fn is_empty(&self) -> bool { self.roots.is_empty() }
 
     pub fn iter(&self) -> Values<'_, AbsolutePath, ProjectEntry> { self.roots.values() }
+
+    /// Disk space represented by top-level rows currently visible in the pane.
+    pub fn visible_project_disk_usage(&self) -> u64 {
+        self.cached_visible_rows
+            .iter()
+            .filter_map(|row| match row {
+                VisibleRow::Root { node_index } => self
+                    .get(*node_index)
+                    .and_then(|entry| entry.root_item.disk_usage_bytes()),
+                _ => None,
+            })
+            .sum()
+    }
+
+    /// Mounted-volume probe paths for all currently visible top-level rows.
+    pub fn visible_project_storage_paths(&self) -> Vec<AbsolutePath> {
+        let mut paths = Vec::new();
+        for row in &self.cached_visible_rows {
+            let VisibleRow::Root { node_index } = row else {
+                continue;
+            };
+            let Some(entry) = self.get(*node_index) else {
+                continue;
+            };
+            match &entry.root_item {
+                RootItem::Worktrees(group) if group.renders_as_group() => {
+                    for worktree in group.iter_entries() {
+                        if worktree.visibility() == Visibility::Visible {
+                            push_unique_path(&mut paths, worktree.path());
+                        }
+                    }
+                },
+                root => push_unique_path(&mut paths, root.path()),
+            }
+        }
+        paths
+    }
+
+    /// Stored result of the latest visible-project volume probe.
+    pub const fn project_storage(&self) -> ProjectStorage { self.storage }
+
+    /// Accept a volume probe only while it still describes the current roots.
+    pub fn set_project_storage(&mut self, paths: &[AbsolutePath], storage: ProjectStorage) {
+        if self.visible_project_storage_paths() == paths {
+            self.storage = storage;
+        }
+    }
+
+    /// Disk bytes rendered by one visible row, excluding label-only group rows.
+    pub fn visible_row_disk_usage(&self, row: VisibleRow) -> Option<u64> {
+        match row {
+            VisibleRow::Root { node_index } => self
+                .get(node_index)
+                .and_then(|entry| entry.root_item.disk_usage_bytes()),
+            VisibleRow::GroupHeader { .. } | VisibleRow::WorktreeGroupHeader { .. } => None,
+            row => self
+                .abs_path_for_row(row)
+                .and_then(|path| self.at_path(path.as_path()))
+                .and_then(|info| info.disk_usage_bytes),
+        }
+    }
 
     /// Replace only the project hierarchy, keeping the selection-cluster
     /// state (cursor, expansion set, finder, sort/width caches) intact.

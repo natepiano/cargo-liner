@@ -15,6 +15,7 @@ use super::ProjectListPane;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::scan;
+use crate::scan::ProjectStorage;
 use crate::tui::columns;
 use crate::tui::dismiss_target::DismissTarget;
 use crate::tui::panes::constants::DISMISS_SUFFIX;
@@ -32,20 +33,28 @@ pub(super) fn render_project_list_pane_body(
     ctx: &PaneRenderCtx<'_>,
 ) {
     let projects = ctx.project_list;
-    let (mut items, header, summary_line, row_width) = {
+    let (mut items, header, summary_lines, row_width) = {
         let widths = &projects.cached_fit_widths;
         let items: Vec<ListItem> = super::render_tree_items(ctx, pane, &pane.viewport, widths);
-        let total_str = render::format_bytes(
-            projects
-                .iter()
-                .filter_map(|entry| entry.root_item.disk_usage_bytes())
-                .sum(),
-        );
+        let total = projects.visible_project_disk_usage();
+        let total_str = render::format_bytes(total);
         let header = columns::header_line(widths, "  Projects");
-        let summary = columns::build_summary_cells(widths, &total_str);
-        let summary_line = Some(columns::row_to_line(&summary, widths));
+        let mut summaries = vec![columns::row_to_line(
+            &columns::build_summary_cells(widths, &total_str),
+            widths,
+        )];
+        match projects.project_storage() {
+            ProjectStorage::Unknown => {},
+            ProjectStorage::Available(bytes) => {
+                let available = render::format_bytes(bytes);
+                summaries.push(columns::build_available_line(widths, &available));
+            },
+            ProjectStorage::MultipleVolumes => {
+                summaries.push(columns::build_available_line(widths, "mixed"));
+            },
+        }
         let row_width = u16::try_from(widths.total_width()).unwrap_or(u16::MAX);
-        (items, header, summary_line, row_width)
+        (items, header, summaries, row_width)
     };
 
     let total_project_rows = items.len();
@@ -77,22 +86,20 @@ pub(super) fn render_project_list_pane_body(
         return;
     }
 
-    let pin_summary = should_pin_project_summary(
-        total_project_rows,
-        summary_line.is_some(),
-        content_area.height,
-    );
+    let summary_height = u16::try_from(summary_lines.len()).unwrap_or(u16::MAX);
+    let pin_summary =
+        should_pin_project_summary(total_project_rows, summary_lines.len(), content_area.height);
 
-    if !pin_summary && let Some(ref line) = summary_line {
-        items.push(ListItem::new(line.clone()));
+    if !pin_summary {
+        items.extend(summary_lines.iter().cloned().map(ListItem::new));
     }
 
-    let list_area = if pin_summary && content_area.height > 1 {
+    let list_area = if pin_summary {
         Rect::new(
             content_area.x,
             content_area.y,
             content_area.width,
-            content_area.height - 1,
+            content_area.height - summary_height,
         )
     } else {
         content_area
@@ -116,8 +123,8 @@ pub(super) fn render_project_list_pane_body(
     // path doesn't supply. Dropped.
     set_project_list_dismiss_actions(pane, ctx, list_area, row_width);
 
-    if pin_summary && let Some(line) = summary_line {
-        render_project_list_footer(frame, content_area, line);
+    if pin_summary {
+        render_project_list_footer(frame, content_area, &summary_lines);
     }
 
     render_overflow_affordance(
@@ -164,14 +171,25 @@ fn set_project_list_dismiss_actions(
     pane.set_dismiss_actions(actions);
 }
 
-fn render_project_list_footer(frame: &mut Frame, content_area: Rect, line: Line<'static>) {
+fn render_project_list_footer(frame: &mut Frame, content_area: Rect, lines: &[Line<'static>]) {
+    let footer_height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
     let footer_area = Rect::new(
         content_area.x,
-        content_area.y + content_area.height.saturating_sub(1),
+        content_area
+            .y
+            .saturating_add(content_area.height.saturating_sub(footer_height)),
         content_area.width,
-        1,
+        footer_height,
     );
-    frame.render_widget(Paragraph::new(line), footer_area);
+    for (index, line) in lines.iter().cloned().enumerate() {
+        let y = footer_area
+            .y
+            .saturating_add(u16::try_from(index).unwrap_or(u16::MAX));
+        frame.render_widget(
+            Paragraph::new(line),
+            Rect::new(footer_area.x, y, footer_area.width, 1),
+        );
+    }
 }
 
 fn project_panel_title_with_counts(
@@ -278,10 +296,12 @@ pub(super) fn project_roots_title(body: &str, max_width: usize) -> String {
 
 pub(super) fn should_pin_project_summary(
     project_rows: usize,
-    has_summary: bool,
+    summary_rows: usize,
     inner_height: u16,
 ) -> bool {
-    has_summary && project_rows.saturating_add(1) > usize::from(inner_height)
+    summary_rows > 0
+        && usize::from(inner_height) > summary_rows
+        && project_rows.saturating_add(summary_rows) > usize::from(inner_height)
 }
 
 #[cfg(test)]
@@ -386,17 +406,22 @@ mod tests {
 
     #[test]
     fn project_summary_stays_inline_when_everything_fits() {
-        assert!(!should_pin_project_summary(5, true, 6));
+        assert!(!should_pin_project_summary(5, 1, 6));
     }
 
     #[test]
     fn project_summary_pins_when_list_overflows() {
-        assert!(should_pin_project_summary(6, true, 6));
+        assert!(should_pin_project_summary(6, 1, 6));
     }
 
     #[test]
     fn project_summary_does_not_pin_without_summary_content() {
-        assert!(!should_pin_project_summary(100, false, 6));
+        assert!(!should_pin_project_summary(100, 0, 6));
+    }
+
+    #[test]
+    fn project_summary_stays_inline_without_room_for_project_rows() {
+        assert!(!should_pin_project_summary(1, 2, 2));
     }
 
     fn package(path: &str) -> RootItem {
