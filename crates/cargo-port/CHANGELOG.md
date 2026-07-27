@@ -7,8 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Show an Available row under the Project List disk total with free space on the projects' volume, refreshed after each disk scan and every two seconds.
+
 ### Changed
+- Scale Project List Disk column coloring logarithmically by size, so the green→white→red gradient spreads evenly across mixed KiB/MiB/GiB projects instead of ranking rows by position.
 - Color the Project List Available row by remaining free space on the projects' volume: green above 100 GiB, yellow from 50–100 GiB, red below 50 GiB. Projects spanning multiple volumes still show `mixed`, uncolored.
+
+### Fixed
+- Detect sccache when rust-cache delegates to it, by probing sccache stats each time the pane opens instead of inferring availability from the wrapper name.
+- Stop transient startup blips from leaking standalone fetch toasts after panel handoff; failed service data now refetches only after a confirmed outage.
 
 ## [0.3.0] - 2026-07-10
 

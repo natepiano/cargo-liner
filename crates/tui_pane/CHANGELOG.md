@@ -7,6 +7,9 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ## [Unreleased]
 
+### Changed
+- Version bump to 0.4.0 to maintain workspace version synchronization.
+
 ## [0.3.0] - 2026-07-10
 
 ### Changed
