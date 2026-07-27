@@ -15,6 +15,7 @@ pub(crate) use cargo::ExampleGroup;
 // ── Cargo metadata cache ─────────────────────────────────────────────
 pub(crate) use cargo::FileStamp;
 pub(crate) use cargo::ManifestFingerprint;
+pub(crate) use cargo::ManifestTargets;
 pub(crate) use cargo::MemberGroup;
 // ── Project types ────────────────────────────────────────────────────
 pub(crate) use cargo::Package;
@@ -32,6 +33,7 @@ pub(crate) use cargo::WorkspaceMetadata;
 pub(crate) use cargo::WorkspaceMetadataStore;
 pub(crate) use cargo::from_cargo_toml;
 pub(crate) use cargo::from_git_dir;
+pub(crate) use cargo::manifest_targets;
 pub(crate) use entry::GitRepo;
 pub(crate) use entry::ProjectEntry;
 pub(crate) use entry::entry_contains;

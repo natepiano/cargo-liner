@@ -23,6 +23,7 @@ use crate::http::HttpClient;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::GitRepoPresence;
+use crate::project::ManifestTargets;
 use crate::project::ProjectFields;
 use crate::project::ProjectPrData;
 use crate::project::RootItem;
@@ -43,7 +44,13 @@ pub(crate) fn discover_project_item(root_dir: &Path) -> Option<RootItem> {
                 continue;
             }
         }
-        if entry.file_type().is_file() && entry.file_name() == CARGO_TOML {
+        if entry.file_type().is_file()
+            && entry.file_name() == CARGO_TOML
+            && matches!(
+                project::manifest_targets(entry.path()),
+                ManifestTargets::Resolvable
+            )
+        {
             let parsed = project::from_cargo_toml(entry.path()).ok()?;
             items.push(tree::cargo_project_to_item(parsed));
         }
@@ -305,7 +312,13 @@ pub(super) fn phase1_discover(
                     continue;
                 }
             }
-            if entry.file_type().is_file() && entry.file_name() == CARGO_TOML {
+            if entry.file_type().is_file()
+                && entry.file_name() == CARGO_TOML
+                && matches!(
+                    project::manifest_targets(entry.path()),
+                    ManifestTargets::Resolvable
+                )
+            {
                 stats.manifests += 1;
                 let manifest_started = std::time::Instant::now();
                 let Ok(cargo_project) = project::from_cargo_toml(entry.path()) else {

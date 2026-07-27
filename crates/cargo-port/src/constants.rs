@@ -39,14 +39,24 @@ pub(crate) const LINTS_CACHE_DIR: &str = "lint-runs";
 
 // ── Cargo / git paths ─────────────────────────────────────────────────
 
+/// Directory cargo auto-discovers extra binary targets from — either
+/// `src/bin/name.rs` or `src/bin/name/main.rs`.
+pub(crate) const CARGO_BIN_TARGET_DIR: &str = "src/bin";
 pub(crate) const CARGO_COMMAND_NAME: &str = "cargo";
 pub(crate) const CARGO_CONFIG: &str = "config";
 pub(crate) const CARGO_CONFIG_TOML: &str = "config.toml";
+pub(crate) const CARGO_LIB_TARGET: &str = "src/lib.rs";
 pub(crate) const CARGO_LOCK: &str = "Cargo.lock";
+pub(crate) const CARGO_MAIN_FILE: &str = "main.rs";
+pub(crate) const CARGO_MAIN_TARGET: &str = "src/main.rs";
+/// Manifest tables that may name a target path explicitly, overriding the
+/// conventional `src/` layout.
+pub(crate) const CARGO_TARGET_TABLES: [&str; 5] = ["bench", "bin", "example", "lib", "test"];
 pub(crate) const CARGO_TOML: &str = "Cargo.toml";
 pub(crate) const DOT_CARGO_DIR: &str = ".cargo";
 pub(crate) const GIT_DIR: &str = ".git";
 pub(crate) const GIT_REMOTE_SUFFIX: &str = ".git";
+pub(crate) const RUST_SOURCE_EXTENSION: &str = "rs";
 pub(crate) const RUST_TOOLCHAIN: &str = "rust-toolchain";
 pub(crate) const RUST_TOOLCHAIN_TOML: &str = "rust-toolchain.toml";
 pub(crate) const TARGET_DIR: &str = "target";
