@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.3] - 2026-07-27
 
 ### Fixed
 - Store canonicalized paths in the conventional `C:\…` form instead of the verbatim `\\?\C:\…` form Windows returns, so the Project List Available row appears again and project paths under the home directory display as `~/…` rather than `\\?\C:\Users\…`.

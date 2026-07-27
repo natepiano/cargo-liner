@@ -5,7 +5,10 @@ All notable changes to this crate will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.3] - 2026-07-27
+
+### Changed
+- Version bump to 0.4.3 to maintain workspace version synchronization.
 
 ## [0.4.2] - 2026-07-27
 
