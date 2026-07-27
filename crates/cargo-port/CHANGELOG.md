@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Color the Project List Available row by remaining free space on the projects' volume: green above 100 GiB, yellow from 50–100 GiB, red below 50 GiB. Projects spanning multiple volumes still show `mixed`, uncolored.
+
 ## [0.3.0] - 2026-07-10
 
 ### Changed
