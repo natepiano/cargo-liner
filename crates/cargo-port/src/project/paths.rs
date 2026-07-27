@@ -3,8 +3,12 @@ use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::ops::Deref;
+#[cfg(windows)]
+use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
+#[cfg(windows)]
+use std::path::Prefix;
 
 /// An absolute filesystem path. Used as `HashMap` keys and for filesystem operations.
 /// Wraps `PathBuf`. Created from absolute paths only.
@@ -79,6 +83,8 @@ impl Display for AbsolutePath {
 
 impl From<PathBuf> for AbsolutePath {
     fn from(path: PathBuf) -> Self {
+        #[cfg(windows)]
+        let path = strip_verbatim_disk_prefix(path);
         #[cfg(all(test, windows))]
         let path = normalize_test_path(&path);
         debug_assert!(
@@ -100,6 +106,36 @@ impl From<&str> for AbsolutePath {
 
 impl From<&Path> for AbsolutePath {
     fn from(path: &Path) -> Self { Self::from(path.to_path_buf()) }
+}
+
+/// Rewrite the verbatim `\\?\C:\…` form that [`std::fs::canonicalize`] returns
+/// on Windows back into the conventional `C:\…` form.
+///
+/// [`Prefix::VerbatimDisk`] never compares equal to [`Prefix::Disk`], so a
+/// verbatim path fails every prefix test against the conventional paths the
+/// rest of the program meets: the `C:\` mount points `Disks::mount_point`
+/// reports (`scan::project_storage` returns
+/// [`Unknown`](crate::scan::ProjectStorage::Unknown), and the project pane
+/// drops its Available row), the `dirs::home_dir` prefix
+/// [`home_relative_path`] strips, and the manifest paths `cargo metadata`
+/// prints. Storing the conventional form makes those comparisons work.
+///
+/// `std`'s filesystem calls re-apply the prefix internally for paths past
+/// `MAX_PATH`, so dropping it does not shorten the paths we can open.
+/// Identity on the other verbatim forms (`\\?\UNC\…`, `\\?\pipe\…`), which
+/// have no conventional spelling to rewrite to.
+#[cfg(windows)]
+fn strip_verbatim_disk_prefix(path: PathBuf) -> PathBuf {
+    let mut components = path.components();
+    let Some(Component::Prefix(prefix)) = components.next() else {
+        return path;
+    };
+    let Prefix::VerbatimDisk(drive) = prefix.kind() else {
+        return path;
+    };
+    let mut conventional = PathBuf::from(format!("{}:\\", char::from(drive)));
+    conventional.extend(components.filter(|component| !matches!(component, Component::RootDir)));
+    conventional
 }
 
 /// Rewrite a Unix-style absolute test path so it is absolute on the host
@@ -193,4 +229,33 @@ pub(super) fn directory_leaf(path: &Path) -> String {
         .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("")
         .to_string()
+}
+
+/// Windows-only: these assert on `std::path::Prefix` behavior that has no Unix
+/// counterpart. The `windows` CI job runs them with
+/// `cargo nextest run -E 'test(/^project::paths::/)'`.
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verbatim_disk_prefix_is_stored_in_conventional_form() {
+        let canonicalized = AbsolutePath::from(PathBuf::from(r"\\?\C:\Users\dev\rust\bevy"));
+
+        assert_eq!(
+            canonicalized.as_path(),
+            Path::new(r"C:\Users\dev\rust\bevy")
+        );
+        assert!(
+            canonicalized.starts_with(Path::new(r"C:\")),
+            "a volume whose mount point reads `C:\\` must prefix-match the stored path"
+        );
+    }
+
+    #[test]
+    fn conventional_path_is_stored_unchanged() {
+        let path = AbsolutePath::from(PathBuf::from(r"C:\Users\dev\rust"));
+
+        assert_eq!(path.as_path(), Path::new(r"C:\Users\dev\rust"));
+    }
 }

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Store canonicalized paths in the conventional `C:\…` form instead of the verbatim `\\?\C:\…` form Windows returns, so the Project List Available row appears again and project paths under the home directory display as `~/…` rather than `\\?\C:\Users\…`.
+
 ## [0.4.2] - 2026-07-27
 
 ### Fixed

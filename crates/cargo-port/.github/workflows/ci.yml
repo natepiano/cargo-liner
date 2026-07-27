@@ -209,5 +209,13 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
       - name: Check all targets
         run: cargo check --workspace --all-targets --all-features
+
+      # The rest of the suite assumes a Unix host, but `src/project/paths.rs`
+      # asserts on `std::path::Prefix` behavior that only exists here.
+      - name: Run Windows path tests
+        run: cargo nextest run --workspace -E 'test(/^project::paths::/)'
