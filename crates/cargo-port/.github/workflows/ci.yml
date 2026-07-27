@@ -191,3 +191,23 @@ jobs:
           CARGO_TERM_COLOR: never
 
   # Add repo-specific jobs after the standard jobs above.
+
+  # cargo-port ships to Windows users via `cargo install`, and the Unix-only
+  # jobs above cannot see a `#[cfg]` mistake in a Windows code path. Compile
+  # only — the test suite assumes a Unix host.
+  windows:
+    name: Windows Build Check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check all targets
+        run: cargo check --workspace --all-targets --all-features

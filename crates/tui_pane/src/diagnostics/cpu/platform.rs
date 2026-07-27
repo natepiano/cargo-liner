@@ -20,6 +20,7 @@ use super::CFType;
 use super::CpuBreakdownRaw;
 #[cfg(target_os = "windows")]
 use super::GPU_COUNTER_PATH;
+#[cfg(not(target_os = "windows"))]
 use super::GpuUsage;
 #[cfg(target_os = "macos")]
 use super::IOIteratorNext;
@@ -41,6 +42,7 @@ use super::PDH_FMT_DOUBLE;
 use super::PDH_MORE_DATA;
 #[cfg(target_os = "windows")]
 use super::PDH_SUCCESS;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use super::bounded_percent_u8;
 #[cfg(target_os = "macos")]
 use super::from_ref;

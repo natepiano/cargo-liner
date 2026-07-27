@@ -1,4 +1,7 @@
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 use tui_pane::PERF_LOG_TARGET;
 
