@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Fall back to the console's own key reporting when a terminal can't take the kitty keyboard-protocol sequences, so cargo-port starts on Windows instead of exiting with `failed to initialize terminal`.
+- Resolve `~/.cargo/bin` through the OS home directory rather than the `HOME` environment variable, so Running Targets still recognizes cargo-installed binaries on Windows.
+
 ## [0.4.1] - 2026-07-27
 
 ### Fixed

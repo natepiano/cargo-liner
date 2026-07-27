@@ -76,6 +76,7 @@ mod severity;
 
 pub use monitor::CpuMonitor;
 use percent::CpuBreakdownRaw;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use percent::bounded_percent_u8;
 use percent::cpu_breakdown;
 use percent::cpu_percent;
@@ -93,6 +94,7 @@ pub use poller::CpuBreakdown;
 pub use poller::CpuCoreUsage;
 pub use poller::CpuPoller;
 pub use poller::CpuUsage;
+#[cfg(not(target_os = "windows"))]
 pub use poller::GpuUsage;
 pub use rolling_mean::RollingMean;
 pub use severity::CpuSeverity;

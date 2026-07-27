@@ -1,3 +1,4 @@
+use std::fmt;
 use std::io;
 use std::io::Stdout;
 #[cfg(unix)]
@@ -6,6 +7,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use crossterm::Command;
 use crossterm::event::DisableFocusChange;
 use crossterm::event::DisableMouseCapture;
 use crossterm::event::EnableFocusChange;
@@ -39,6 +41,33 @@ use crate::tui::constants::PERF_LOG_FILE;
 use crate::tui::constants::PREVIOUS_PERF_LOG_FILE;
 use crate::tui::settings;
 
+/// The kitty keyboard protocol level cargo-port asks terminals for, wrapped so
+/// that terminals without it are left alone rather than treated as failures.
+///
+/// crossterm's own [`PushKeyboardEnhancementFlags`] and
+/// [`PopKeyboardEnhancementFlags`] return `io::ErrorKind::Unsupported` on
+/// Windows — their `is_ansi_code_supported` is hardcoded `false`, so every
+/// Windows console routes to a `execute_winapi` that only reports the error.
+/// That aborts `setup_terminal` before the first frame. These variants emit the
+/// same escape sequences through crossterm and do nothing on a console that
+/// cannot accept them.
+enum KeyboardEnhancement {
+    Push(KeyboardEnhancementFlags),
+    Pop,
+}
+
+impl Command for KeyboardEnhancement {
+    fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
+        match *self {
+            Self::Push(flags) => PushKeyboardEnhancementFlags(flags).write_ansi(f),
+            Self::Pop => PopKeyboardEnhancementFlags.write_ansi(f),
+        }
+    }
+
+    #[cfg(windows)]
+    fn execute_winapi(&self) -> io::Result<()> { Ok(()) }
+}
+
 fn setup_terminal() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -46,11 +75,13 @@ fn setup_terminal() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
     // byte. `REPORT_ALL_KEYS_AS_ESCAPE_CODES` makes crossterm receive them as
     // distinct CSI-u `KeyEvent`s. This also retains Shift on punctuation such
     // as `?`; `keymap::canonical_event_code_and_mods` converts that redundant
-    // modifier back to the representation stored in keymap TOML.
+    // modifier back to the representation stored in keymap TOML. The Windows
+    // console reports both distinctions natively, so nothing is lost there when
+    // the sequence goes unanswered.
     execute!(
         stdout,
         EnterAlternateScreen,
-        PushKeyboardEnhancementFlags(
+        KeyboardEnhancement::Push(
             KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
                 | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
         )
@@ -85,7 +116,7 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Re
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
-        PopKeyboardEnhancementFlags,
+        KeyboardEnhancement::Pop,
         LeaveAlternateScreen,
         DisableMouseCapture,
         DisableFocusChange
@@ -154,7 +185,7 @@ pub fn run() -> ExitCode {
         let _ = disable_raw_mode();
         let _ = execute!(
             io::stdout(),
-            PopKeyboardEnhancementFlags,
+            KeyboardEnhancement::Pop,
             LeaveAlternateScreen,
             DisableMouseCapture,
             DisableFocusChange

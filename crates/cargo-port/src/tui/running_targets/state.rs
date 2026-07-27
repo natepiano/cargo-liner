@@ -22,6 +22,7 @@ use super::constants::ANCESTOR_WALK_CAP;
 use super::constants::CARGO_BIN_DIR;
 use super::constants::MIN_HEX_HASH_LEN;
 use crate::constants::CARGO_COMMAND_NAME;
+use crate::constants::DOT_CARGO_DIR;
 use crate::project::AbsolutePath;
 use crate::tui::panes::RunTargetKind;
 use crate::tui::startup_services::StartupEffect;
@@ -725,7 +726,7 @@ fn cargo_install_bin_dir() -> Option<AbsolutePath> {
     let base = env::var_os("CARGO_INSTALL_ROOT")
         .map(PathBuf::from)
         .or_else(|| env::var_os("CARGO_HOME").map(PathBuf::from))
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")))?;
+        .or_else(|| dirs::home_dir().map(|home| home.join(DOT_CARGO_DIR)))?;
     let bin = base.join(CARGO_BIN_DIR);
     let canonical = bin.canonicalize().unwrap_or(bin);
     Some(AbsolutePath::from(canonical))
