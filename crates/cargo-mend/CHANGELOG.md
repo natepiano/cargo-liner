@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `prefer_module_import` now leaves a function import alone when an attribute names that function, instead of rewriting the import and breaking the build. Attributes can name a function as a string — `#[serde(default = "default_monitor_scale")]` — and a string is not a path, so nothing rewrote it when the import changed. Rewriting `use super::window_state::default_monitor_scale;` to `use super::window_state;` left the attribute naming something no longer in scope (E0425), and `cargo mend --fix` rolled the entire run back. The same guard covers functions named as bare idents inside attribute tokens, such as `#[arg(default_value_t = default_scale())]`, which were invisible to the rewrite for the same reason.
+
 ## [0.17.5] - 2026-07-25
 
 ### Fixed

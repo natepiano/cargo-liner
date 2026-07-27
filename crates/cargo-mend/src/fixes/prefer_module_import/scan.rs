@@ -16,6 +16,7 @@ use syn::visit::Visit;
 use syn::visit::visit_item_mod;
 use walkdir::WalkDir;
 
+use super::attribute_references;
 use super::function_imports::ImportDetector;
 use super::function_imports::ImportTarget;
 use super::function_imports::RawCandidate;
@@ -181,6 +182,8 @@ fn scan_file(
         &mut module_to_functions,
         &mut inline_detector.candidates,
     );
+
+    drop_attribute_referenced_candidates(&syntax, &mut module_to_functions);
 
     if module_to_functions.is_empty() && inline_detector.candidates.is_empty() {
         return Ok((Vec::new(), Vec::new()));
@@ -350,6 +353,27 @@ fn module_name_collides(
             && imported.absolute_module.last().map(String::as_str) == Some(module_name)
             && imported.absolute_module.as_slice() != absolute_module
     })
+}
+
+/// Drop candidates whose function name is mentioned by an attribute. Attribute
+/// payloads belong to the attribute macro's grammar rather than to the path
+/// graph the rewrite walks — `#[serde(default = "make_default")]` names the
+/// function as a string literal — so the reference collector never sees them and
+/// removing the import would leave the name unresolved (E0425). Leave such
+/// imports untouched rather than emit a fix that does not compile.
+///
+/// Inline call candidates are unaffected: they add a module import and shorten a
+/// path that is already fully qualified, so nothing an attribute names stops
+/// resolving.
+fn drop_attribute_referenced_candidates(
+    syntax: &File,
+    module_to_functions: &mut BTreeMap<String, Vec<RawCandidate>>,
+) {
+    let attribute_names = attribute_references::collect(syntax);
+    module_to_functions.retain(|_, functions| {
+        functions.retain(|candidate| !attribute_names.contains(&candidate.function_name));
+        !functions.is_empty()
+    });
 }
 
 /// Modules that will be importable at file top level once the planned `use`

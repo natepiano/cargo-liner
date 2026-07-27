@@ -1,3 +1,4 @@
+mod attribute_references;
 mod function_imports;
 mod inline_calls;
 mod references;

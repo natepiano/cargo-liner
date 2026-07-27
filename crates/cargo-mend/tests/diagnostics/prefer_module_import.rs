@@ -2600,3 +2600,60 @@ mod tests {
         "the nested function import should be rewritten, got:\n{consumer}"
     );
 }
+
+#[test]
+fn skips_functions_named_by_an_attribute() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "attr_named_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod parent;\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/parent.rs"),
+        "mod defaults;\nmod consumer;\n",
+    )
+    .expect("write parent mod");
+    fs::write(
+        temp.path().join("src/parent/defaults.rs"),
+        "pub fn make_default() -> i32 { 1 }\n",
+    )
+    .expect("write defaults");
+    // `#[deprecated(note = "...")]` stands in for `#[serde(default = "...")]`:
+    // both name a function in a string literal that no path visitor can reach,
+    // and only the inert one keeps this fixture dependency-free.
+    fs::write(
+        temp.path().join("src/parent/consumer.rs"),
+        r#"use crate::parent::defaults::make_default;
+
+#[deprecated(note = "make_default")]
+pub struct Legacy;
+
+fn example() -> i32 {
+    make_default()
+}
+"#,
+    )
+    .expect("write consumer");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        !report
+            .findings
+            .iter()
+            .any(|f| f.code == DiagnosticCode::PreferModuleImport),
+        "a function named by an attribute string must not be flagged: {:?}",
+        report.findings
+    );
+}

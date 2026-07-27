@@ -119,20 +119,34 @@ fn moves_cfg_gated_use_carrying_its_gate() {
     // A `#[cfg]`-gated `use` sitting directly in a fn body (not nested in a
     // gated block) is moved to the file top with its `#[cfg]` carried along,
     // so the import stays conditionally compiled instead of becoming
-    // unconditional. The trait lives in a submodule so the in-body `use` is
+    // unconditional. The traits live in a submodule so the in-body `use` is
     // load-bearing for the `handle.ext()` call.
+    //
+    // Both sides of the gate are spelled out because mend compiles the fixture
+    // to validate its own fix: a gate that is false on the host would configure
+    // the only import out and leave the call with no trait in scope. The two
+    // traits share the `ext` method name so exactly one is in scope per target
+    // and the call site stays unconditional.
     let temp = tempdir().expect("create temp fixture dir");
     write_manifest(temp.path(), "imports_at_top_cfg");
     fs::create_dir_all(temp.path().join("src")).expect("create src");
     fs::write(
         temp.path().join("src/lib.rs"),
         r#"mod ext {
-    pub trait Ext {
+    pub trait UnixExt {
         fn ext(&self) -> u64;
     }
-    impl Ext for super::Handle {
+    pub trait OtherExt {
+        fn ext(&self) -> u64;
+    }
+    impl UnixExt for super::Handle {
         fn ext(&self) -> u64 {
             0
+        }
+    }
+    impl OtherExt for super::Handle {
+        fn ext(&self) -> u64 {
+            1
         }
     }
 }
@@ -141,7 +155,9 @@ pub struct Handle;
 
 pub fn call(handle: &Handle) -> u64 {
     #[cfg(unix)]
-    use crate::ext::Ext;
+    use crate::ext::UnixExt;
+    #[cfg(not(unix))]
+    use crate::ext::OtherExt;
     handle.ext()
 }
 "#,
@@ -162,16 +178,20 @@ pub fn call(handle: &Handle) -> u64 {
     );
 
     let lib = fs::read_to_string(temp.path().join("src/lib.rs")).expect("read lib.rs");
-    // The gate travels with the moved import to the file top.
+    // Each gate travels with its moved import to the file top.
     assert!(
-        lib.contains("#[cfg(unix)]\nuse crate::ext::Ext;"),
-        "gated use should move to the top carrying its #[cfg], got:\n{lib}"
+        lib.contains("#[cfg(unix)]\nuse crate::ext::UnixExt;"),
+        "unix-gated use should move to the top carrying its #[cfg], got:\n{lib}"
     );
-    // The in-body copy is gone.
+    assert!(
+        lib.contains("#[cfg(not(unix))]\nuse crate::ext::OtherExt;"),
+        "non-unix-gated use should move to the top carrying its #[cfg], got:\n{lib}"
+    );
+    // The in-body copies are gone.
     let fn_start = lib.find("pub fn call").expect("fn should still exist");
     assert!(
-        !lib[fn_start..].contains("use crate::ext::Ext;"),
-        "in-body use should be removed, got:\n{lib}"
+        !lib[fn_start..].contains("use crate::ext::"),
+        "in-body uses should be removed, got:\n{lib}"
     );
 }
 
