@@ -37,6 +37,7 @@ pub(crate) use discovery::resolve_include_dirs;
 pub(crate) use discovery::store_cached_repo_data;
 pub(crate) use disk_usage::DirSizes;
 pub(crate) use disk_usage::ProjectStorage;
+pub(crate) use disk_usage::StorageHeadroom;
 pub(crate) use disk_usage::disk_usage_batch_for_item;
 pub(crate) use disk_usage::project_storage;
 pub(crate) use language_stats::collect_language_stats_single;

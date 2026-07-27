@@ -4,10 +4,14 @@ use std::path::Path;
 
 use ratatui::style::Color;
 use ratatui::style::Style;
+use tui_pane::error_color;
 use tui_pane::hover_focus_color;
 use tui_pane::label_color;
+use tui_pane::success_color;
+use tui_pane::warning_color;
 
 use crate::project::RootItem;
+use crate::scan::StorageHeadroom;
 use crate::tui::project_list::ProjectList;
 use crate::tui::project_list::VisibleRow;
 use crate::tui::render;
@@ -129,6 +133,19 @@ const fn rgb_channels(color: Color) -> (u8, u8, u8) {
         Color::LightCyan => (85, 255, 255),
         Color::White => (255, 255, 255),
     }
+}
+
+/// Style for the Available row under the Σ disk total, banded by how much
+/// free space the projects' volume has left: the theme's success color for
+/// [`StorageHeadroom::Ample`], warning for [`StorageHeadroom::Low`], error
+/// for [`StorageHeadroom::Critical`].
+pub(super) fn headroom_style(headroom: StorageHeadroom) -> Style {
+    let color = match headroom {
+        StorageHeadroom::Ample => success_color(),
+        StorageHeadroom::Low => warning_color(),
+        StorageHeadroom::Critical => error_color(),
+    };
+    Style::default().fg(color)
 }
 
 pub(super) fn formatted_disk(projects: &ProjectList, path: &Path) -> String {

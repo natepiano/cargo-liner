@@ -12,10 +12,12 @@ use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
 
 use super::ProjectListPane;
+use super::disk;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::scan;
 use crate::scan::ProjectStorage;
+use crate::scan::StorageHeadroom;
 use crate::tui::columns;
 use crate::tui::dismiss_target::DismissTarget;
 use crate::tui::panes::constants::DISMISS_SUFFIX;
@@ -47,10 +49,20 @@ pub(super) fn render_project_list_pane_body(
             ProjectStorage::Unknown => {},
             ProjectStorage::Available(bytes) => {
                 let available = render::format_bytes(bytes);
-                summaries.push(columns::build_available_line(widths, &available));
+                let headroom_style = disk::headroom_style(StorageHeadroom::from(bytes));
+                summaries.push(columns::build_available_line(
+                    widths,
+                    &available,
+                    headroom_style,
+                ));
             },
             ProjectStorage::MultipleVolumes => {
-                summaries.push(columns::build_available_line(widths, "mixed"));
+                let subtotal_style = Style::default().fg(theme_roles::language_subtotal_color());
+                summaries.push(columns::build_available_line(
+                    widths,
+                    "mixed",
+                    subtotal_style,
+                ));
             },
         }
         let row_width = u16::try_from(widths.total_width()).unwrap_or(u16::MAX);

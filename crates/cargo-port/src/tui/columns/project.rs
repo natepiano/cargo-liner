@@ -785,9 +785,9 @@ pub fn build_summary_cells(widths: &ProjectListWidths, disk: &str) -> RowCells {
 ///
 /// The label spans the normally-empty metadata columns so its final `e`
 /// right-aligns with the Σ above it, without disturbing the Disk column.
-pub fn build_available_line(widths: &ProjectListWidths, disk: &str) -> Line<'static> {
-    let style = Style::default().fg(theme_roles::language_subtotal_color());
-
+/// `style` colors both the label and the value — the caller bands it by
+/// remaining free space.
+pub fn build_available_line(widths: &ProjectListWidths, disk: &str, style: Style) -> Line<'static> {
     let defs = column_defs(widths.lint_enabled());
     let sigma_col = summary_label_col(widths);
     let sigma_end = (0..=sigma_col)
@@ -1076,7 +1076,7 @@ mod tests {
 
         let summary = build_summary_cells(&widths, "36.3 GiB");
         let summary_line = row_to_line(&summary, &widths);
-        let available_line = build_available_line(&widths, "64.9 GiB");
+        let available_line = build_available_line(&widths, "64.9 GiB", Style::default());
         let summary_text: String = summary_line
             .spans
             .iter()

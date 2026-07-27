@@ -13,6 +13,8 @@ use super::cargo_metadata::StreamingScanContext;
 use crate::constants::CARGO_LOCK;
 use crate::constants::CARGO_TOML;
 use crate::constants::GIT_DIR;
+use crate::constants::STORAGE_HEADROOM_AMPLE_BYTES;
+use crate::constants::STORAGE_HEADROOM_LOW_BYTES;
 use crate::constants::TARGET_DIR;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
@@ -27,6 +29,34 @@ pub(crate) enum ProjectStorage {
     Available(u64),
     /// Visible projects span more than one mounted volume.
     MultipleVolumes,
+}
+
+/// How much free space is left on the volume behind
+/// [`ProjectStorage::Available`], banded so the project pane's Available row
+/// can color it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StorageHeadroom {
+    /// Above [`STORAGE_HEADROOM_AMPLE_BYTES`] free.
+    Ample,
+    /// [`STORAGE_HEADROOM_LOW_BYTES`] up to [`STORAGE_HEADROOM_AMPLE_BYTES`]
+    /// free.
+    Low,
+    /// Below [`STORAGE_HEADROOM_LOW_BYTES`] free.
+    Critical,
+}
+
+impl From<u64> for StorageHeadroom {
+    /// `available_bytes` is the writable capacity carried by
+    /// [`ProjectStorage::Available`].
+    fn from(available_bytes: u64) -> Self {
+        if available_bytes > STORAGE_HEADROOM_AMPLE_BYTES {
+            Self::Ample
+        } else if available_bytes >= STORAGE_HEADROOM_LOW_BYTES {
+            Self::Low
+        } else {
+            Self::Critical
+        }
+    }
 }
 
 /// Query the writable capacity shared by `paths` without walking their trees.
@@ -280,6 +310,27 @@ mod tests {
         assert_eq!(
             project_storage_for_volumes(&volumes),
             ProjectStorage::Available(123)
+        );
+    }
+
+    #[test]
+    fn storage_headroom_bands_available_bytes() {
+        assert_eq!(
+            StorageHeadroom::from(STORAGE_HEADROOM_AMPLE_BYTES + 1),
+            StorageHeadroom::Ample
+        );
+        assert_eq!(
+            StorageHeadroom::from(STORAGE_HEADROOM_AMPLE_BYTES),
+            StorageHeadroom::Low,
+            "the ample threshold itself is still only low headroom"
+        );
+        assert_eq!(
+            StorageHeadroom::from(STORAGE_HEADROOM_LOW_BYTES),
+            StorageHeadroom::Low
+        );
+        assert_eq!(
+            StorageHeadroom::from(STORAGE_HEADROOM_LOW_BYTES - 1),
+            StorageHeadroom::Critical
         );
     }
 

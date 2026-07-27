@@ -60,6 +60,12 @@ pub(crate) const SCAN_DISK_CONCURRENCY: usize = 6;
 /// milliseconds per invocation on typical workspaces — so a small cap is
 /// enough to preserve fairness with other enrichment tasks.
 pub(crate) const SCAN_METADATA_CONCURRENCY: usize = 4;
+/// Free space at or above which the projects' volume is considered roomy —
+/// the Available row renders in the theme's success color.
+pub(crate) const STORAGE_HEADROOM_AMPLE_BYTES: u64 = 100 * BYTES_PER_GIB;
+/// Free space below which the projects' volume is considered critical — the
+/// Available row renders in the theme's error color.
+pub(crate) const STORAGE_HEADROOM_LOW_BYTES: u64 = 50 * BYTES_PER_GIB;
 /// Hard wall-clock cap for a single `cargo metadata` invocation. Beyond
 /// this the result is discarded and the workspace enters the error toast
 /// path.
