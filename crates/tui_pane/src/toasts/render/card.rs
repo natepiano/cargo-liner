@@ -22,6 +22,7 @@ use crate::title_color;
 use crate::toasts::ToastId;
 use crate::toasts::ToastStyle;
 use crate::toasts::ToastView;
+use crate::toasts::TrackedItemActivity;
 use crate::toasts::TrackedItemView;
 
 pub(super) fn render_toast(
@@ -279,6 +280,21 @@ pub(super) fn body_lines_tracked(
     result
 }
 
+/// A running item's spinner takes the palette's error color while the item is
+/// stalled, so a caller that reports a stall gets a red spinner without knowing
+/// anything about the palette. An item that is lingering after completion shows
+/// no spinner, so there is nothing to color.
+fn spinner_style(linger_progress: Option<f64>, activity: TrackedItemActivity) -> Style {
+    if linger_progress.is_some() {
+        return Style::default();
+    }
+    let palette = fallback_toast_palette();
+    match activity {
+        TrackedItemActivity::Progressing => Style::default().fg(palette.accent),
+        TrackedItemActivity::Stalled => Style::default().fg(palette.error),
+    }
+}
+
 pub(super) fn tracked_item_line(
     item: &TrackedItemView,
     body_style: Style,
@@ -315,11 +331,7 @@ pub(super) fn tracked_item_line(
         Span::raw(" ".repeat(padding)),
         Span::styled(
             spinner_text,
-            if is_running {
-                Style::default().fg(palette.accent)
-            } else {
-                Style::default()
-            },
+            spinner_style(item.linger_progress, item.activity),
         ),
         Span::styled(duration_suffix, duration_style),
     ])

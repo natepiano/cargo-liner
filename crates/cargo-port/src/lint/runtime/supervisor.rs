@@ -1076,7 +1076,7 @@ mod tests {
                     if path.as_path() == project_dir.path() =>
                 {
                     assert!(
-                        !matches!(status, LintStatus::Running(_) | LintStatus::Passed(_)),
+                        !matches!(status, LintStatus::Running(..) | LintStatus::Passed(_)),
                         "a paused trigger must not start or finish a run, got {status:?}"
                     );
                     if matches!(status, LintStatus::Stale) {

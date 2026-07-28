@@ -118,6 +118,12 @@ impl App {
                     self.framework
                         .toasts
                         .add_new_tracked_items(task_id, running_items);
+                    // `add_new_tracked_items` skips keys the toast already
+                    // holds, so an item that stalls (or resumes) after it was
+                    // added needs this to reach the rendered spinner.
+                    self.framework
+                        .toasts
+                        .refresh_tracked_item_activity(task_id, running_items);
                     for item in running_items {
                         if let Some(started) = item.started_at {
                             self.framework
@@ -161,6 +167,7 @@ impl App {
 )]
 mod tests {
     use tui_pane::ToastId;
+    use tui_pane::TrackedItemActivity;
 
     use super::*;
     use crate::tui::test_support;
@@ -230,6 +237,45 @@ mod tests {
             app.framework.toasts.tracked_item_count(fresh_task_id),
             stale_items.len()
         );
+    }
+
+    /// `add_new_tracked_items` skips keys the toast already holds, so a later
+    /// activity change only lands because `sync_running_toast` also refreshes
+    /// activity on existing items.
+    #[test]
+    fn sync_running_toast_pushes_activity_changes_onto_existing_items() {
+        let mut app = test_support::make_app(&[]);
+        let mut items = [tracked_item(FIRST_ITEM)];
+
+        let task_id = app
+            .sync_running_toast(None, RUNNING_TOAST_TITLE, &items)
+            .expect("running items should create the toast");
+        assert_eq!(
+            item_activity(&app, task_id),
+            TrackedItemActivity::Progressing
+        );
+
+        items[0].activity = TrackedItemActivity::Stalled;
+        app.sync_running_toast(Some(task_id), RUNNING_TOAST_TITLE, &items);
+        assert_eq!(item_activity(&app, task_id), TrackedItemActivity::Stalled);
+
+        items[0].activity = TrackedItemActivity::Progressing;
+        app.sync_running_toast(Some(task_id), RUNNING_TOAST_TITLE, &items);
+        assert_eq!(
+            item_activity(&app, task_id),
+            TrackedItemActivity::Progressing
+        );
+    }
+
+    fn item_activity(app: &App, task_id: ToastTaskId) -> TrackedItemActivity {
+        app.framework
+            .toasts
+            .active_now()
+            .iter()
+            .find(|view| view.id() == ToastId(task_id.get()))
+            .and_then(|view| view.tracked_items().first())
+            .expect("the toast should carry its tracked item")
+            .activity
     }
 
     fn tracked_item(label: &str) -> TrackedItem { TrackedItem::new(label, label) }

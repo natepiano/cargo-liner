@@ -2,6 +2,10 @@ use itertools::Itertools;
 
 use crate::lint;
 use crate::lint::LintRun;
+use crate::lint::LintRunPhase;
+use crate::lint::LintRunStatus;
+use crate::lint::LintRuns;
+use crate::lint::LintStatus;
 use crate::project::AbsolutePath;
 use crate::tui::app::App;
 
@@ -30,6 +34,11 @@ pub struct LintsData {
     /// empty. The renderer renders `None` as "—" and `Some(_)` as a byte
     /// count, distinguishing missing data from known-empty.
     pub sizes:        Vec<Option<u64>>,
+    /// Per-run blocking phase aligned with `runs`, read from the owner's live
+    /// [`LintStatus`] rather than the run record — the phase flips several
+    /// times inside a run and is never persisted. Only a `Running` row can be
+    /// `Blocked`; every finished run is `Executing`.
+    pub phases:       Vec<LintRunPhase>,
     /// The checkout(s) the runs belong to: one path for a single project,
     /// one per visible checkout when a worktree-group parent row aggregates
     /// every checkout's history. `owner_of` indexes into this, so the
@@ -86,12 +95,37 @@ pub fn build_lints_data(app: &App) -> LintsData {
     );
     let owner_paths = selected_path.map(AbsolutePath::from).into_iter().collect();
     let owner_of = vec![0; runs.len()];
+    let live_phase = phase_of(lint_runs.map(LintRuns::status));
+    let phases = runs.iter().map(|run| run_phase(run, live_phase)).collect();
     LintsData {
         runs,
         sizes,
+        phases,
         owner_paths,
         owner_of,
         project_kind: LintsProjectKind::from(is_rust),
+    }
+}
+
+/// The blocking phase carried by a live [`LintStatus`]. Anything that is not a
+/// live run — a finished result, no history, or no lint slot at all — is not
+/// blocked on anything.
+const fn phase_of(status: Option<&LintStatus>) -> LintRunPhase {
+    match status {
+        Some(LintStatus::Running(_, phase)) => *phase,
+        Some(
+            LintStatus::Passed(_) | LintStatus::Failed(_) | LintStatus::Stale | LintStatus::NoLog,
+        )
+        | None => LintRunPhase::Executing,
+    }
+}
+
+/// A finished run cannot be waiting on a lock, so only the in-flight row takes
+/// its owner's live phase.
+const fn run_phase(run: &LintRun, live_phase: LintRunPhase) -> LintRunPhase {
+    match run.status {
+        LintRunStatus::Running => live_phase,
+        LintRunStatus::Passed | LintRunStatus::Failed => LintRunPhase::Executing,
     }
 }
 
@@ -123,9 +157,27 @@ fn aggregate_group_lints(app: &App, paths: Vec<AbsolutePath>, is_rust: bool) -> 
     // Fan the merged stream into the three index-aligned vectors in one pass.
     let (runs, sizes, owner_of): (Vec<LintRun>, Vec<Option<u64>>, Vec<usize>) =
         merged.into_iter().multiunzip();
+    let owner_phases: Vec<LintRunPhase> = paths
+        .iter()
+        .map(|path| phase_of(app.lint_at_path(path.as_path()).map(LintRuns::status)))
+        .collect();
+    let phases = runs
+        .iter()
+        .zip(&owner_of)
+        .map(|(run, &owner)| {
+            run_phase(
+                run,
+                owner_phases
+                    .get(owner)
+                    .copied()
+                    .unwrap_or(LintRunPhase::Executing),
+            )
+        })
+        .collect();
     LintsData {
         runs,
         sizes,
+        phases,
         owner_paths: paths,
         owner_of,
         project_kind: LintsProjectKind::from(is_rust),

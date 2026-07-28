@@ -21,6 +21,7 @@ use std::time::Instant;
 use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
+use ratatui::style::Color;
 use tui_pane::Hittable;
 use tui_pane::RenderFocus;
 use tui_pane::Renderable;
@@ -28,6 +29,7 @@ use tui_pane::RunningTracker;
 use tui_pane::ToastId;
 use tui_pane::ToastTaskId;
 use tui_pane::TrackedItem;
+use tui_pane::TrackedItemActivity;
 use tui_pane::Viewport;
 
 use super::Config;
@@ -36,6 +38,7 @@ use super::constants::NORMAL_LINT_TOAST_TITLE;
 use crate::constants::LINT_NO_LOG;
 use crate::lint::CacheUsage;
 use crate::lint::LintRunOrigin;
+use crate::lint::LintRunPhase;
 use crate::lint::LintStatus;
 use crate::lint::LintStatusKind;
 use crate::lint::RuntimeHandle;
@@ -171,10 +174,13 @@ impl Lint {
         origin: LintRunOrigin,
     ) {
         match kind {
-            LintStatusKind::Running => {
+            LintStatusKind::Running(phase) => {
                 self.remove_from_other_running_toast(origin, path.as_path());
-                let tracker = self.running_tracker_mut(origin);
-                tracker.running.entry(path).or_insert_with(Instant::now);
+                self.running_tracker_mut(origin).mark_running(
+                    path,
+                    Instant::now(),
+                    activity_for(phase),
+                );
             },
             LintStatusKind::Passed
             | LintStatusKind::Failed
@@ -352,11 +358,30 @@ impl Lint {
         // shows the spinner — matching the project-list column and
         // toast, which key off `status` directly. The renderer omits
         // the `0` count while it's zero.
-        if count == 0 && !matches!(status, LintStatus::Running(_)) {
+        if count == 0 && !matches!(status, LintStatus::Running(..)) {
             LintDisplay::NoRuns
         } else {
             LintDisplay::Runs { count, status }
         }
+    }
+}
+
+/// The toast-framework activity a lint run's phase projects to. A run stopped
+/// on a cargo file lock is making no progress, so its spinner reads as stalled.
+const fn activity_for(phase: LintRunPhase) -> TrackedItemActivity {
+    match phase {
+        LintRunPhase::Executing => TrackedItemActivity::Progressing,
+        LintRunPhase::Blocked => TrackedItemActivity::Stalled,
+    }
+}
+
+/// The color a live lint spinner takes. Blocked on a cargo file lock reads as
+/// an error color so a stuck run is visible at a glance; anything else spins
+/// in the accent color.
+pub fn running_spinner_color(phase: LintRunPhase) -> Color {
+    match phase {
+        LintRunPhase::Executing => tui_pane::accent_color(),
+        LintRunPhase::Blocked => tui_pane::error_color(),
     }
 }
 
@@ -372,10 +397,13 @@ pub fn lint_cell_for(
         return LintCell::from_parts(LINT_NO_LOG, ratatui::style::Style::default());
     }
     let icon = integration::lint_icon_for(status.kind()).frame_at(animation_elapsed);
-    let style = if matches!(status, LintStatus::Running(_)) {
-        ratatui::style::Style::default().fg(tui_pane::accent_color())
-    } else {
-        ratatui::style::Style::default()
+    let style = match status {
+        LintStatus::Running(_, phase) => {
+            ratatui::style::Style::default().fg(running_spinner_color(*phase))
+        },
+        LintStatus::Passed(_) | LintStatus::Failed(_) | LintStatus::Stale | LintStatus::NoLog => {
+            ratatui::style::Style::default()
+        },
     };
     LintCell::from_parts(icon, style)
 }
@@ -424,18 +452,58 @@ mod tests {
 
         lint.apply_lint_status(
             path.clone(),
-            LintStatusKind::Running,
+            LintStatusKind::Running(LintRunPhase::Executing),
             LintRunOrigin::CatchUp,
         );
         assert!(lint.catch_up_running_toast_contains_path(path.as_path()));
         assert!(!lint.normal_running_toast_contains_path(path.as_path()));
 
-        lint.apply_lint_status(path.clone(), LintStatusKind::Running, LintRunOrigin::Normal);
+        lint.apply_lint_status(
+            path.clone(),
+            LintStatusKind::Running(LintRunPhase::Executing),
+            LintRunOrigin::Normal,
+        );
         assert!(!lint.catch_up_running_toast_contains_path(path.as_path()));
         assert!(lint.normal_running_toast_contains_path(path.as_path()));
 
         lint.apply_lint_status(path.clone(), LintStatusKind::Passed, LintRunOrigin::Normal);
         assert!(!lint.running_toast_contains_path(path.as_path()));
+    }
+
+    #[test]
+    fn a_blocked_run_turns_the_lint_spinner_red() {
+        assert_eq!(
+            running_spinner_color(LintRunPhase::Executing),
+            tui_pane::accent_color()
+        );
+        assert_eq!(
+            running_spinner_color(LintRunPhase::Blocked),
+            tui_pane::error_color()
+        );
+    }
+
+    #[test]
+    fn a_blocked_run_stalls_its_toast_item() {
+        let mut lint = Lint::new(None);
+        let path = AbsolutePath::from(Path::new("/abs/a"));
+
+        lint.apply_lint_status(
+            path.clone(),
+            LintStatusKind::Running(LintRunPhase::Blocked),
+            LintRunOrigin::Normal,
+        );
+        let (_toast, items) = lint.toast_items_for_origin(LintRunOrigin::Normal);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].activity, TrackedItemActivity::Stalled);
+
+        // Acquiring the lock flips the same item back without restarting it.
+        lint.apply_lint_status(
+            path,
+            LintStatusKind::Running(LintRunPhase::Executing),
+            LintRunOrigin::Normal,
+        );
+        let (_toast, items) = lint.toast_items_for_origin(LintRunOrigin::Normal);
+        assert_eq!(items[0].activity, TrackedItemActivity::Progressing);
     }
 
     #[test]

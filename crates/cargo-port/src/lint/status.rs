@@ -13,13 +13,27 @@ use super::run::LintRunStatus;
 use crate::config::DiscoveryLint;
 use crate::constants::STALE_TIMEOUT;
 
+/// Whether a live lint command is making progress or is stopped waiting for a
+/// cargo file lock. Detected from command output by
+/// `crate::lint::runtime::command`; consumed by the spinner color in
+/// `crate::tui::state::lint_cell_for`.
+///
+/// `Ord` places `Blocked` above `Executing` so [`LintStatus::combine`] makes one
+/// blocked worktree turn its whole group's rollup row red.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LintRunPhase {
+    #[default]
+    Executing,
+    Blocked,
+}
+
 /// Display-agnostic discriminant of [`LintStatus`]. The TUI integration
 /// layer (`crate::tui::integration::lint_display`) maps this to the
 /// concrete `tui_pane::Icon` used at render time, keeping `lint/` free
 /// of UI-framework imports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LintStatusKind {
-    Running,
+    Running(LintRunPhase),
     Passed,
     Failed,
     Stale,
@@ -29,7 +43,7 @@ pub enum LintStatusKind {
 /// Lint status derived from the latest lint run record.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum LintStatus {
-    Running(DateTime<FixedOffset>),
+    Running(DateTime<FixedOffset>, LintRunPhase),
     Passed(DateTime<FixedOffset>),
     Failed(DateTime<FixedOffset>),
     Stale,
@@ -41,7 +55,7 @@ impl LintStatus {
     /// Returns the display-agnostic [`LintStatusKind`] discriminant.
     pub const fn kind(&self) -> LintStatusKind {
         match self {
-            Self::Running(_) => LintStatusKind::Running,
+            Self::Running(_, phase) => LintStatusKind::Running(*phase),
             Self::Passed(_) => LintStatusKind::Passed,
             Self::Failed(_) => LintStatusKind::Failed,
             Self::Stale => LintStatusKind::Stale,
@@ -54,7 +68,7 @@ impl LintStatus {
             Self::NoLog => 0,
             Self::Passed(_) => 1,
             Self::Stale => 2,
-            Self::Running(_) => 3,
+            Self::Running(..) => 3,
             Self::Failed(_) => 4,
         }
     }
@@ -65,7 +79,9 @@ impl LintStatus {
             Ordering::Less => other,
             Ordering::Equal => match (self, other) {
                 (Self::Passed(lhs), Self::Passed(rhs)) => Self::Passed(lhs.max(rhs)),
-                (Self::Running(lhs), Self::Running(rhs)) => Self::Running(lhs.max(rhs)),
+                (Self::Running(lhs_at, lhs_phase), Self::Running(rhs_at, rhs_phase)) => {
+                    Self::Running(lhs_at.max(rhs_at), lhs_phase.max(rhs_phase))
+                },
                 (Self::Failed(lhs), Self::Failed(rhs)) => Self::Failed(lhs.max(rhs)),
                 (Self::Stale, Self::Stale) => Self::Stale,
                 (Self::NoLog, Self::NoLog) => Self::NoLog,
@@ -104,7 +120,7 @@ impl CachedLintStatus {
             LintStatus::Passed(timestamp) => Some(Self::Passed(*timestamp)),
             LintStatus::Failed(timestamp) => Some(Self::Failed(*timestamp)),
             LintStatus::NoLog => Some(Self::NoLog),
-            LintStatus::Running(_) | LintStatus::Stale => None,
+            LintStatus::Running(..) | LintStatus::Stale => None,
         }
     }
 
@@ -183,7 +199,10 @@ pub(super) fn parse_run(run: &LintRun) -> LintStatus {
             if elapsed > chrono::Duration::from_std(STALE_TIMEOUT).unwrap_or_default() {
                 LintStatus::Stale
             } else {
-                LintStatus::Running(ts)
+                // A record read back from disk never carries live blocking state:
+                // the phase is published straight from the worker's output reader
+                // and deliberately never persisted.
+                LintStatus::Running(ts, LintRunPhase::Executing)
             }
         },
     }
@@ -252,7 +271,10 @@ mod tests {
             match name {
                 "passed" => assert!(matches!(status, LintStatus::Passed(_)), "{name}"),
                 "failed" => assert!(matches!(status, LintStatus::Failed(_)), "{name}"),
-                "running" => assert!(matches!(status, LintStatus::Running(_)), "{name}"),
+                "running" => assert!(
+                    matches!(status, LintStatus::Running(_, LintRunPhase::Executing)),
+                    "{name}"
+                ),
                 "stale" => assert!(matches!(status, LintStatus::Stale), "{name}"),
                 "garbage" | "empty" => assert!(matches!(status, LintStatus::NoLog), "{name}"),
                 _ => panic!("unexpected case"),
@@ -266,10 +288,20 @@ mod tests {
         let status = LintStatus::aggregate([
             LintStatus::Passed(ts),
             LintStatus::Stale,
-            LintStatus::Running(ts),
+            LintStatus::Running(ts, LintRunPhase::Executing),
             LintStatus::Failed(ts),
         ]);
         assert!(matches!(status, LintStatus::Failed(_)));
+    }
+
+    #[test]
+    fn aggregate_running_prefers_blocked_phase() {
+        let ts = DateTime::parse_from_rfc3339("2026-03-30T14:22:18-05:00").expect("timestamp");
+        let status = LintStatus::aggregate([
+            LintStatus::Running(ts, LintRunPhase::Executing),
+            LintStatus::Running(ts, LintRunPhase::Blocked),
+        ]);
+        assert_eq!(status, LintStatus::Running(ts, LintRunPhase::Blocked));
     }
 
     #[test]

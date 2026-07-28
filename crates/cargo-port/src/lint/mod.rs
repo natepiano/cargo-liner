@@ -44,6 +44,7 @@ pub use runtime::RuntimeHandle;
 pub use runtime::project_is_eligible;
 pub use runtime::spawn;
 pub use status::CachedLintStatus;
+pub use status::LintRunPhase;
 pub use status::LintStatus;
 pub use status::LintStatusKind;
 pub(crate) use status::parse_timestamp;

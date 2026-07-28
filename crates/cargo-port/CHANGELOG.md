@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Turn every lint spinner for a project red while a command in its lint run is stopped waiting for a cargo file lock, and back to the accent color once the lock is acquired.
+
 ### Fixed
 - Require a `Cargo.toml` to resolve to a real target — a `[package]` with a discoverable or explicitly-pathed target, or a `[workspace]` with a member directory that exists — before scan registers its directory as a project, so stray manifest copies in scratch directories no longer appear in the Project List.
 

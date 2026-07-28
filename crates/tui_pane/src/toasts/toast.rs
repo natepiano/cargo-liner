@@ -209,6 +209,7 @@ impl<Ctx: AppContext> Toast<Ctx> {
                         label: item.label.clone(),
                         linger_progress,
                         elapsed,
+                        activity: item.activity,
                     }
                 })
                 .collect(),

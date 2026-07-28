@@ -5,6 +5,7 @@ use std::time::Instant;
 use tui_pane::PERF_LOG_TARGET;
 use tui_pane::SLOW_BG_BATCH_MS;
 use tui_pane::TrackedItem;
+use tui_pane::TrackedItemActivity;
 use tui_pane::TrackedItemKey;
 
 use super::constants::MAX_MSGS_PER_FRAME;
@@ -122,6 +123,7 @@ impl App {
                             key: TrackedItemKey::new(format!("{path}:result")),
                             started_at: None,
                             completed_at: None,
+                            activity: TrackedItemActivity::Progressing,
                         };
                         self.framework
                             .toasts

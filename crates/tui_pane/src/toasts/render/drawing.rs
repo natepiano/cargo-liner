@@ -151,6 +151,7 @@ mod tests {
     use crate::PaneFocusState;
     use crate::Toasts;
     use crate::TrackedItem;
+    use crate::TrackedItemActivity;
     use crate::toasts::TrackedItemView;
     use crate::toasts::render::card;
 
@@ -222,6 +223,7 @@ mod tests {
                 label:           label.to_string(),
                 linger_progress: None,
                 elapsed:         None,
+                activity:        TrackedItemActivity::Progressing,
             })
             .collect::<Vec<_>>();
 
@@ -294,10 +296,42 @@ mod tests {
             label:           "repo".to_string(),
             linger_progress: None,
             elapsed:         Some(elapsed),
+            activity:        TrackedItemActivity::Progressing,
         };
 
         let line = card::tracked_item_line(&item, Style::default(), 40);
 
         assert!(line_text(&line).contains(ACTIVITY_SPINNER.frame_at(elapsed)));
+    }
+
+    #[test]
+    fn stalled_tracked_item_spinner_takes_the_palette_error_color() {
+        let spinner_color = |activity| {
+            let item = TrackedItemView {
+                label: "repo".to_string(),
+                linger_progress: None,
+                elapsed: Some(Duration::from_millis(100)),
+                activity,
+            };
+            card::tracked_item_line(&item, Style::default(), 40)
+                .spans
+                .iter()
+                .find_map(|span| {
+                    span.content
+                        .contains(ACTIVITY_SPINNER.frame_at(Duration::from_millis(100)))
+                        .then_some(span.style.fg)
+                })
+                .flatten()
+        };
+
+        let palette = fallback_toast_palette();
+        assert_eq!(
+            spinner_color(TrackedItemActivity::Progressing),
+            Some(palette.accent)
+        );
+        assert_eq!(
+            spinner_color(TrackedItemActivity::Stalled),
+            Some(palette.error)
+        );
     }
 }

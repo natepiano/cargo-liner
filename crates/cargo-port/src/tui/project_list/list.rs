@@ -71,7 +71,7 @@ fn project_lint_is_running(project: &RustProject) -> bool {
     project.visibility() == Visibility::Visible
         && matches!(
             project.lint_at_path(project.path()).map(LintRuns::status),
-            Some(crate::lint::LintStatus::Running(_))
+            Some(crate::lint::LintStatus::Running(..))
         )
 }
 

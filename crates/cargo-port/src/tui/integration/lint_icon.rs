@@ -13,7 +13,9 @@ use crate::lint::LintStatusKind;
 /// crosses into `tui_pane` types.
 pub const fn icon_for(kind: LintStatusKind) -> Icon {
     match kind {
-        LintStatusKind::Running => Icon::Animated(ACTIVITY_SPINNER),
+        // Both phases spin the same glyph; only the spinner's color separates a
+        // blocked run from a progressing one.
+        LintStatusKind::Running(_) => Icon::Animated(ACTIVITY_SPINNER),
         LintStatusKind::Passed => Icon::Static(LINT_PASSED),
         LintStatusKind::Failed => Icon::Static(LINT_FAILED),
         LintStatusKind::Stale => Icon::Static(LINT_STALE),
@@ -26,14 +28,18 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::lint::LintRunPhase;
 
     #[test]
-    fn running_kind_uses_framework_activity_spinner() {
+    fn running_kind_uses_framework_activity_spinner_in_both_phases() {
         let elapsed = Duration::from_millis(100);
 
-        assert_eq!(
-            icon_for(LintStatusKind::Running).frame_at(elapsed),
-            ACTIVITY_SPINNER.frame_at(elapsed)
-        );
+        for phase in [LintRunPhase::Executing, LintRunPhase::Blocked] {
+            assert_eq!(
+                icon_for(LintStatusKind::Running(phase)).frame_at(elapsed),
+                ACTIVITY_SPINNER.frame_at(elapsed),
+                "{phase:?}"
+            );
+        }
     }
 }

@@ -60,6 +60,7 @@ use crate::tui::panes::pane_data::PackageSection;
 use crate::tui::panes::support;
 use crate::tui::render;
 use crate::tui::render_context::PaneRenderCtx;
+use crate::tui::state;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LintRenderMode {
@@ -1155,7 +1156,10 @@ fn lint_display_style(display: &LintDisplay) -> Style {
         LintDisplay::Runs { status, .. } => match status {
             LintStatus::Passed(_) => Style::default().fg(success_color()),
             LintStatus::Failed(_) => Style::default().fg(error_color()),
-            LintStatus::Running(_) | LintStatus::Stale => Style::default().fg(accent_color()),
+            LintStatus::Running(_, phase) => {
+                Style::default().fg(state::lint_running_spinner_color(*phase))
+            },
+            LintStatus::Stale => Style::default().fg(accent_color()),
             LintStatus::NoLog => Style::default(),
         },
     }
@@ -1247,9 +1251,13 @@ mod tests {
     use tui_pane::ACTIVITY_SPINNER;
     use unicode_width::UnicodeWidthStr;
 
+    use super::accent_color;
+    use super::error_color;
+    use super::lint_display_style;
     use super::lint_display_to_string;
     use super::package_region;
     use super::stats_column_width;
+    use crate::lint::LintRunPhase;
     use crate::lint::LintStatus;
     use crate::tui::panes;
     use crate::tui::panes::LintDisplay;
@@ -1361,13 +1369,29 @@ mod tests {
         let elapsed = Duration::from_millis(100);
         let display = LintDisplay::Runs {
             count:  3,
-            status: LintStatus::Running(timestamp),
+            status: LintStatus::Running(timestamp, LintRunPhase::Executing),
         };
 
         assert_eq!(
             lint_display_to_string(&display, elapsed, super::LintRenderMode::Enabled),
             format!("{} 3", ACTIVITY_SPINNER.frame_at(elapsed))
         );
+    }
+
+    #[test]
+    fn package_lint_row_reddens_while_blocked_on_a_file_lock() {
+        let timestamp =
+            DateTime::parse_from_rfc3339("2026-03-30T14:22:18-05:00").expect("timestamp");
+        let style_for = |phase| {
+            lint_display_style(&LintDisplay::Runs {
+                count:  3,
+                status: LintStatus::Running(timestamp, phase),
+            })
+            .fg
+        };
+
+        assert_eq!(style_for(LintRunPhase::Executing), Some(accent_color()));
+        assert_eq!(style_for(LintRunPhase::Blocked), Some(error_color()));
     }
 
     #[test]
@@ -1378,7 +1402,7 @@ mod tests {
         // First run, no completed history yet: spinner only, no bare "0".
         let display = LintDisplay::Runs {
             count:  0,
-            status: LintStatus::Running(timestamp),
+            status: LintStatus::Running(timestamp, LintRunPhase::Executing),
         };
 
         assert_eq!(

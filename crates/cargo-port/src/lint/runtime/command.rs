@@ -7,11 +7,17 @@ use tui_pane::PERF_LOG_TARGET;
 
 use super::AbsolutePath;
 use super::Arc;
+use super::AtomicU8;
 use super::BackgroundMsg;
+use super::BufRead;
+use super::BufReader;
 use super::CARGO_TOML;
 use super::CachedLintStatus;
 use super::ChildSlot;
 use super::Command;
+use super::DateTime;
+use super::FILE_LOCK_WAIT_MARKER;
+use super::FixedOffset;
 use super::HashMap;
 use super::Instant;
 use super::LintCommand;
@@ -19,10 +25,12 @@ use super::LintCommandConfig;
 use super::LintCommandStatus;
 use super::LintRun;
 use super::LintRunOrigin;
+use super::LintRunPhase;
 use super::LintRunStatus;
 use super::LintStatus;
 use super::Local;
 use super::Mutex;
+use super::Ordering;
 use super::Path;
 use super::Read;
 use super::Sender;
@@ -64,6 +72,103 @@ struct CommandExecution {
     outcome:     CommandOutcome,
     exit_code:   Option<i32>,
     duration_ms: u64,
+}
+
+/// Which of a command's two output pipes a scanned line arrived on. Each pipe
+/// tracks its own blocked state, so a line on one cannot clear a wait still in
+/// force on the other.
+#[derive(Clone, Copy)]
+enum OutputStream {
+    Stdout,
+    Stderr,
+}
+
+impl OutputStream {
+    const fn bit(self) -> u8 {
+        match self {
+            Self::Stdout => 1,
+            Self::Stderr => 1 << 1,
+        }
+    }
+}
+
+/// Lock-free per-pipe blocked state for one lint run, shared by both output
+/// reader threads. The combined phase is [`LintRunPhase::Blocked`] while either
+/// pipe's most recent line matched [`FILE_LOCK_WAIT_MARKER`]. The bitmask is an
+/// implementation detail; every method speaks `LintRunPhase`.
+#[derive(Clone, Default)]
+struct SharedPhase(Arc<AtomicU8>);
+
+impl SharedPhase {
+    /// Records `phase` for `stream`, returning the combined phase only when it
+    /// changed — the caller publishes on transitions, not on every line.
+    fn record(&self, stream: OutputStream, phase: LintRunPhase) -> Option<LintRunPhase> {
+        let (before, after) = match phase {
+            LintRunPhase::Blocked => {
+                let before = self.0.fetch_or(stream.bit(), Ordering::Relaxed);
+                (before, before | stream.bit())
+            },
+            LintRunPhase::Executing => {
+                let before = self.0.fetch_and(!stream.bit(), Ordering::Relaxed);
+                (before, before & !stream.bit())
+            },
+        };
+        let after_phase = Self::phase(after);
+        (Self::phase(before) != after_phase).then_some(after_phase)
+    }
+
+    /// Clears both pipes as a command ends, returning the combined phase only
+    /// when that was a change. A command killed while cargo was still waiting
+    /// would otherwise leave the run stuck red.
+    fn clear(&self) -> Option<LintRunPhase> {
+        (self.0.swap(0, Ordering::Relaxed) != 0).then_some(LintRunPhase::Executing)
+    }
+
+    const fn phase(mask: u8) -> LintRunPhase {
+        if mask == 0 {
+            LintRunPhase::Executing
+        } else {
+            LintRunPhase::Blocked
+        }
+    }
+}
+
+/// Publishes [`LintRunPhase`] transitions straight from a command's output
+/// reader threads, so every lint spinner for the project turns red the moment
+/// cargo starts waiting on a file lock instead of at the next terminal write.
+///
+/// This bypasses [`publish_status`] deliberately: the status cache holds
+/// historical results only and never accepts `Running`, so there is nothing to
+/// update there.
+#[derive(Clone)]
+struct PhaseReporter {
+    project_root:  AbsolutePath,
+    started_at:    DateTime<FixedOffset>,
+    origin:        LintRunOrigin,
+    background_tx: Sender<BackgroundMsg>,
+    phase:         SharedPhase,
+}
+
+impl PhaseReporter {
+    fn record(&self, stream: OutputStream, phase: LintRunPhase) {
+        if let Some(combined) = self.phase.record(stream, phase) {
+            self.publish(combined);
+        }
+    }
+
+    fn clear(&self) {
+        if let Some(combined) = self.phase.clear() {
+            self.publish(combined);
+        }
+    }
+
+    fn publish(&self, phase: LintRunPhase) {
+        let _ = self.background_tx.send(BackgroundMsg::LintStatus {
+            path:   self.project_root.clone(),
+            status: LintStatus::Running(self.started_at, phase),
+            origin: self.origin,
+        });
+    }
 }
 
 /// Clears a stranded `Running` `latest.json` if the run never reaches its
@@ -153,7 +258,8 @@ pub(super) fn run_commands_for_project(
     let output_dir = paths::output_dir_under(cache_root, project_root);
     std::fs::create_dir_all(&output_dir)?;
     let run_started = Instant::now();
-    let mut run = build_pending_run(commands, Local::now().to_rfc3339());
+    let started_at = Local::now().fixed_offset();
+    let mut run = build_pending_run(commands, started_at.to_rfc3339());
     read_write::write_latest_under(cache_root, project_root, &run)?;
     let _finalize = RunFinalizeGuard {
         cache_root,
@@ -178,12 +284,22 @@ pub(super) fn run_commands_for_project(
     );
 
     let result = execute_commands(
-        project_root,
-        cache_root,
+        &CommandContext {
+            project_root,
+            manifest_path: &project_root.join(CARGO_TOML),
+            cache_root,
+            output_dir: &output_dir,
+            child_slot,
+            reporter: &PhaseReporter {
+                project_root: AbsolutePath::from(project_root),
+                started_at,
+                origin,
+                background_tx: background_tx.clone(),
+                phase: SharedPhase::default(),
+            },
+        },
         commands,
-        &output_dir,
         &mut run,
-        child_slot,
         config.pause_state,
     )?;
     if matches!(result, CommandsResult::ProjectRemoved) {
@@ -289,16 +405,24 @@ enum CommandsResult {
     Interrupted,
 }
 
+/// The values every command in one lint run shares — everything
+/// [`run_command`] needs beyond the command line and its index.
+struct CommandContext<'a> {
+    project_root:  &'a Path,
+    manifest_path: &'a Path,
+    cache_root:    &'a Path,
+    output_dir:    &'a Path,
+    child_slot:    &'a ChildSlot,
+    reporter:      &'a PhaseReporter,
+}
+
 fn execute_commands(
-    project_root: &Path,
-    cache_root: &Path,
+    context: &CommandContext<'_>,
     commands: &[LintCommandConfig],
-    output_dir: &Path,
     run: &mut LintRun,
-    child_slot: &ChildSlot,
     pause_state: &PauseState,
 ) -> io::Result<CommandsResult> {
-    let manifest_path = project_root.join(CARGO_TOML);
+    let project_root = context.project_root;
     let mut failed = false;
     for (index, command) in commands.iter().enumerate() {
         if !project_still_runnable(project_root) {
@@ -308,15 +432,7 @@ fn execute_commands(
             return Ok(CommandsResult::Interrupted);
         }
         let cmd_started = Instant::now();
-        let execution = run_command(
-            project_root,
-            &manifest_path,
-            cache_root,
-            output_dir,
-            command,
-            index,
-            child_slot,
-        )?;
+        let execution = run_command(context, command, index)?;
         tracing::trace!(
             target: PERF_LOG_TARGET,
             command = %command.name,
@@ -334,7 +450,7 @@ fn execute_commands(
             command_run.duration_ms = Some(execution.duration_ms);
             command_run.exit_code = execution.exit_code;
         }
-        read_write::write_latest_under(cache_root, project_root, run)?;
+        read_write::write_latest_under(context.cache_root, project_root, run)?;
         if !execution.outcome.succeeded() {
             failed = true;
         }
@@ -427,27 +543,62 @@ fn isolate_lint_process(command: &mut Command) { command.process_group(0); }
 #[cfg(not(unix))]
 fn isolate_lint_process(_: &mut Command) {}
 
+/// Drains one of a command's output pipes, returning its bytes verbatim for the
+/// log while reporting file-lock waits as they arrive. Reading a line at a time
+/// rather than to EOF is what makes a wait observable while the command is
+/// still running; the accumulated bytes are the same either way.
+fn scan_stream<R: Read>(
+    source: Option<R>,
+    stream: OutputStream,
+    reporter: &PhaseReporter,
+) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let Some(source) = source else {
+        return bytes;
+    };
+    let mut reader = BufReader::new(source);
+    loop {
+        let line_start = bytes.len();
+        match reader.read_until(b'\n', &mut bytes) {
+            Ok(0) | Err(_) => return bytes,
+            Ok(_) => {},
+        }
+        let line = String::from_utf8_lossy(&bytes[line_start..]);
+        // Cargo prints nothing when it finally acquires the lock, so any line
+        // that is not another wait notice means the command resumed.
+        let phase = if line.contains(FILE_LOCK_WAIT_MARKER) {
+            LintRunPhase::Blocked
+        } else {
+            LintRunPhase::Executing
+        };
+        reporter.record(stream, phase);
+    }
+}
+
 fn run_command(
-    project_root: &Path,
-    manifest_path: &Path,
-    cache_root: &Path,
-    output_dir: &Path,
+    context: &CommandContext<'_>,
     command: &LintCommandConfig,
     index: usize,
-    child_slot: &ChildSlot,
 ) -> io::Result<CommandExecution> {
+    let project_root = context.project_root;
+    let output_dir = context.output_dir;
+    let child_slot = context.child_slot;
     let log_name = command_log_name(command, index);
     let log_path = output_dir.join(format!("{log_name}-latest.log"));
     let tmp_path = output_dir.join(format!("{log_name}-latest.log.tmp"));
 
     let started = Instant::now();
-    let expanded =
-        expand_lint_placeholders(&command.command, project_root, manifest_path, output_dir);
+    let expanded = expand_lint_placeholders(
+        &command.command,
+        project_root,
+        context.manifest_path,
+        output_dir,
+    );
     let mut shell = lint_shell(&expanded);
     shell
         .current_dir(project_root)
         .env("PROJECT_DIR", project_root)
-        .env("MANIFEST_PATH", manifest_path)
+        .env("MANIFEST_PATH", context.manifest_path)
         .env("LINT_OUTPUT_DIR", output_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -465,22 +616,17 @@ fn run_command(
             if let Ok(mut slot) = child_slot.lock() {
                 *slot = Some(child);
             }
-            let stdout_join = thread::spawn(move || {
-                let mut buf = Vec::new();
-                if let Some(mut s) = stdout {
-                    let _ = s.read_to_end(&mut buf);
-                }
-                buf
-            });
-            let stderr_join = thread::spawn(move || {
-                let mut buf = Vec::new();
-                if let Some(mut s) = stderr {
-                    let _ = s.read_to_end(&mut buf);
-                }
-                buf
-            });
+            let stdout_reporter = context.reporter.clone();
+            let stdout_join =
+                thread::spawn(move || scan_stream(stdout, OutputStream::Stdout, &stdout_reporter));
+            let stderr_reporter = context.reporter.clone();
+            let stderr_join =
+                thread::spawn(move || scan_stream(stderr, OutputStream::Stderr, &stderr_reporter));
             let mut bytes = stdout_join.join().unwrap_or_default();
             bytes.extend(stderr_join.join().unwrap_or_default());
+            // Both pipes are at EOF; a wait notice that was the last thing the
+            // command printed must not outlive it.
+            context.reporter.clear();
             let taken = child_slot.lock().ok().and_then(|mut slot| slot.take());
             match taken {
                 Some(mut child) => match child.wait() {
@@ -513,7 +659,7 @@ fn run_command(
     std::fs::write(&tmp_path, bytes)?;
     std::fs::rename(tmp_path, &log_path)?;
     let new_size = cache_size_index::file_size_or_zero(&log_path);
-    cache_size_index::apply_write_delta(cache_root, old_size, new_size);
+    cache_size_index::apply_write_delta(context.cache_root, old_size, new_size);
     Ok(CommandExecution {
         outcome: CommandOutcome::from(success),
         exit_code,
@@ -562,6 +708,7 @@ mod tests {
     use super::*;
     use crate::cache_paths;
     use crate::channel;
+    use crate::channel::Receiver;
     use crate::config::CargoPortConfig;
     use crate::config::LintCommandConfig;
 
@@ -613,6 +760,137 @@ mod tests {
         assert_eq!(report.replace("\r\n", "\n"), "lint ok\n");
         assert!(latest.contains("\"status\": \"passed\""));
         assert!(history.contains("\"status\":\"passed\""));
+    }
+
+    fn phase_reporter(background_tx: &Sender<BackgroundMsg>) -> PhaseReporter {
+        PhaseReporter {
+            project_root:  AbsolutePath::from(Path::new("/abs/demo")),
+            started_at:    Local::now().fixed_offset(),
+            origin:        LintRunOrigin::Normal,
+            background_tx: background_tx.clone(),
+            phase:         SharedPhase::default(),
+        }
+    }
+
+    /// Drain every `Running` phase published so far, in order.
+    fn published_phases(background_rx: &Receiver<BackgroundMsg>) -> Vec<LintRunPhase> {
+        let mut phases = Vec::new();
+        while let Ok(msg) = background_rx.try_recv() {
+            if let BackgroundMsg::LintStatus {
+                status: LintStatus::Running(_, phase),
+                ..
+            } = msg
+            {
+                phases.push(phase);
+            }
+        }
+        phases
+    }
+
+    #[test]
+    fn scanning_output_reports_file_lock_waits_and_passes_log_bytes_through() {
+        // Cargo wraps the leading status word in ANSI escapes and prints
+        // nothing at all when it finally takes the lock.
+        let raw = concat!(
+            "    Compiling demo v0.1.0\n",
+            "\u{1b}[1m\u{1b}[92m    Blocking\u{1b}[0m waiting for file lock on build directory\n",
+            "    Checking demo v0.1.0\n",
+        );
+        let (background_tx, background_rx) = channel::unbounded();
+        let reporter = phase_reporter(&background_tx);
+
+        let bytes = scan_stream(
+            Some(io::Cursor::new(raw.as_bytes())),
+            OutputStream::Stderr,
+            &reporter,
+        );
+
+        assert_eq!(
+            bytes,
+            raw.as_bytes(),
+            "log bytes must pass through verbatim"
+        );
+        assert_eq!(
+            published_phases(&background_rx),
+            vec![LintRunPhase::Blocked, LintRunPhase::Executing]
+        );
+    }
+
+    #[test]
+    fn a_wait_on_one_stream_is_not_cleared_by_output_on_the_other() {
+        let (background_tx, background_rx) = channel::unbounded();
+        let reporter = phase_reporter(&background_tx);
+
+        reporter.record(OutputStream::Stderr, LintRunPhase::Blocked);
+        reporter.record(OutputStream::Stdout, LintRunPhase::Executing);
+        assert_eq!(
+            published_phases(&background_rx),
+            vec![LintRunPhase::Blocked],
+            "stdout progress must not clear a wait still held on stderr"
+        );
+
+        reporter.record(OutputStream::Stderr, LintRunPhase::Executing);
+        assert_eq!(
+            published_phases(&background_rx),
+            vec![LintRunPhase::Executing]
+        );
+    }
+
+    #[test]
+    fn ending_a_command_clears_a_wait_it_never_recovered_from() {
+        let (background_tx, background_rx) = channel::unbounded();
+        let reporter = phase_reporter(&background_tx);
+
+        reporter.record(OutputStream::Stderr, LintRunPhase::Blocked);
+        reporter.clear();
+
+        assert_eq!(
+            published_phases(&background_rx),
+            vec![LintRunPhase::Blocked, LintRunPhase::Executing]
+        );
+    }
+
+    #[test]
+    fn a_running_command_publishes_its_file_lock_wait() {
+        let cache_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            project_dir.path().join("Cargo.toml"),
+            "[package]\nname='demo'\nversion='0.1.0'\n",
+        )
+        .expect("write manifest");
+
+        let mut cargo_port_config = CargoPortConfig::default();
+        cargo_port_config.cache.root = cache_dir.path().to_string_lossy().to_string();
+        let cache_root = cache_paths::lint_runs_root_for(&cargo_port_config);
+        let commands = vec![LintCommandConfig {
+            name:    "echo".to_string(),
+            command: "echo Blocking waiting for file lock on build directory && echo Checking demo"
+                .to_string(),
+        }];
+
+        let (background_tx, background_rx) = channel::unbounded();
+        let pause_state = PauseState::default();
+        run_commands_for_project(
+            project_dir.path(),
+            "~/rust/demo",
+            &RunCommandsConfig {
+                cache_root:       cache_root.as_path(),
+                commands:         &commands,
+                cache_size_bytes: None,
+                pause_state:      &pause_state,
+            },
+            &Arc::new(Mutex::new(HashMap::new())),
+            &background_tx,
+            &Arc::new(Mutex::new(None)),
+            LintRunOrigin::Normal,
+        )
+        .expect("run commands");
+
+        assert!(
+            published_phases(&background_rx).contains(&LintRunPhase::Blocked),
+            "the wait notice on the command's output should reach the UI"
+        );
     }
 
     #[test]

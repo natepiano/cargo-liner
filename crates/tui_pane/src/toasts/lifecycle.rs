@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::time::Duration;
 use std::time::Instant;
@@ -12,6 +13,7 @@ use super::ToastTaskId;
 use super::ToastView;
 use super::Toasts;
 use super::TrackedItem;
+use super::TrackedItemActivity;
 use super::TrackedItemKey;
 use super::toast::ToastDismissal;
 use super::toast::ToastLifetime;
@@ -238,6 +240,36 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         toast.item_linger = item_linger;
         if changed {
             self.recompute_task_status(task_id);
+        }
+        changed
+    }
+
+    /// Update the activity of tracked items already on the toast, matched by
+    /// key. [`Self::add_new_tracked_items`] skips keys it already holds, so an
+    /// item that stalls after it was added needs this to reach the toast.
+    /// Returns whether any item's activity changed. Activity affects only the
+    /// spinner color, so the toast's lifetime status is left alone.
+    pub fn refresh_tracked_item_activity(
+        &mut self,
+        task_id: ToastTaskId,
+        items: &[TrackedItem],
+    ) -> bool {
+        let Some(toast) = self.toast_for_task_mut(task_id) else {
+            return false;
+        };
+        let activities: HashMap<&TrackedItemKey, TrackedItemActivity> = items
+            .iter()
+            .map(|item| (&item.key, item.activity))
+            .collect();
+        let mut changed = false;
+        for item in &mut toast.tracked_items {
+            let Some(&activity) = activities.get(&item.key) else {
+                continue;
+            };
+            if item.activity != activity {
+                item.activity = activity;
+                changed = true;
+            }
         }
         changed
     }

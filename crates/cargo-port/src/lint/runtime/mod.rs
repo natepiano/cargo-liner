@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io;
+use std::io::BufRead;
+use std::io::BufReader;
 use std::io::Read;
 use std::path::Path;
 use std::process::Child;
@@ -9,6 +11,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver as StdReceiver;
@@ -18,9 +21,12 @@ use std::thread;
 use std::thread::JoinHandle;
 use std::time::Instant;
 
+use chrono::DateTime;
+use chrono::FixedOffset;
 use chrono::Local;
 
 use super::cache_size_index;
+use super::constants::FILE_LOCK_WAIT_MARKER;
 use super::constants::STOP_POLL;
 use super::history;
 use super::paths;
@@ -32,6 +38,7 @@ use super::run::LintRunOrigin;
 use super::run::LintRunStatus;
 use super::status;
 use super::status::CachedLintStatus;
+use super::status::LintRunPhase;
 use super::status::LintStatus;
 use super::trigger::LintEventKind;
 use super::trigger::LintTriggerEvent;

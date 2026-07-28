@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use tui_pane::PERF_LOG_TARGET;
 use tui_pane::TrackedItem;
+use tui_pane::TrackedItemActivity;
 
 use super::constants::PR_CHECK_POLL_SECS;
 use crate::ci;
@@ -204,6 +205,7 @@ impl App {
             key: key.into(),
             started_at: None,
             completed_at: Some(Instant::now()),
+            activity: TrackedItemActivity::Progressing,
         };
         let reuse = self
             .git_status_tracker
@@ -300,6 +302,7 @@ impl App {
             key: key.into(),
             started_at: None,
             completed_at: Some(Instant::now()),
+            activity: TrackedItemActivity::Progressing,
         };
         let reuse = self
             .sync_tracker

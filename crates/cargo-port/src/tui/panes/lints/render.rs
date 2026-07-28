@@ -17,7 +17,6 @@ use tui_pane::ACTIVITY_SPINNER;
 use tui_pane::PaneFocusState;
 use tui_pane::PaneTitleCount;
 use tui_pane::Viewport;
-use tui_pane::accent_color;
 use tui_pane::error_color;
 use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
@@ -26,9 +25,11 @@ use tui_pane::title_color;
 
 use super::data::LintsData;
 use crate::lint::LintRun;
+use crate::lint::LintRunPhase;
 use crate::lint::LintRunStatus;
 use crate::tui::render;
 use crate::tui::render_context::PaneRenderCtx;
+use crate::tui::state;
 use crate::tui::state::Lint;
 use crate::tui::theme_roles;
 
@@ -61,6 +62,7 @@ fn lints_panel_block(title: String, focused: bool, has_runs: bool) -> Block<'sta
 fn build_lint_rows(
     runs: &[LintRun],
     sizes: &[Option<u64>],
+    phases: &[LintRunPhase],
     animation_elapsed: Duration,
     pane: &Viewport,
     focus: PaneFocusState,
@@ -96,7 +98,14 @@ fn build_lint_rows(
         let (result_cell, row_style) = match run.status {
             LintRunStatus::Running => {
                 let spinner = running_lint_spinner(animation_elapsed);
-                (Cell::from(spinner), Style::default().fg(accent_color()))
+                let phase = phases
+                    .get(row_index)
+                    .copied()
+                    .unwrap_or(LintRunPhase::Executing);
+                (
+                    Cell::from(spinner),
+                    Style::default().fg(state::lint_running_spinner_color(phase)),
+                )
             },
             LintRunStatus::Passed => (Cell::from("passed"), Style::default().fg(success_color())),
             LintRunStatus::Failed => (Cell::from("failed"), Style::default().fg(error_color())),
@@ -172,6 +181,7 @@ pub fn render_lints_pane_body(
     let rows = build_lint_rows(
         &lints_data.runs,
         &lints_data.sizes,
+        &lints_data.phases,
         ctx.animation_elapsed,
         &viewport_clone,
         pane_focus_state,

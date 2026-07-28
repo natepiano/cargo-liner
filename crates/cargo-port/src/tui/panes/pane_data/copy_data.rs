@@ -301,6 +301,7 @@ mod tests {
     use crate::lint::LintCommand;
     use crate::lint::LintCommandStatus;
     use crate::lint::LintRun;
+    use crate::lint::LintRunPhase;
     use crate::lint::LintRunStatus;
     use crate::project::AbsolutePath;
     use crate::project::ProjectType;
@@ -601,6 +602,7 @@ mod tests {
                 archive_bytes: 0,
             }],
             sizes:        vec![Some(1024)],
+            phases:       vec![LintRunPhase::Executing],
             owner_paths:  vec![project_root.clone()],
             owner_of:     vec![0],
             project_kind: LintsProjectKind::Rust,

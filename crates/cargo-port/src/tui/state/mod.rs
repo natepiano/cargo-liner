@@ -21,6 +21,7 @@ pub(super) use keymap::Keymap;
 pub(super) use lint::Lint;
 pub(super) use lint::LintDisplay;
 pub(super) use lint::lint_cell_for;
+pub(super) use lint::running_spinner_color as lint_running_spinner_color;
 pub(super) use net::AvailabilityStatus;
 pub(super) use net::Net;
 pub(super) use net::RecoveryOutcome;

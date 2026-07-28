@@ -29,6 +29,18 @@ impl Display for TrackedItemKey {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult { f.write_str(&self.0) }
 }
 
+/// Whether a tracked item is making progress or is stalled waiting on
+/// something outside its control. `Stalled` renders the item's spinner in the
+/// palette's error color instead of its accent color.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TrackedItemActivity {
+    /// The work is progressing.
+    #[default]
+    Progressing,
+    /// The work is stalled and cannot proceed.
+    Stalled,
+}
+
 /// One item tracked by a task toast.
 #[derive(Clone, Debug)]
 pub struct TrackedItem {
@@ -40,6 +52,8 @@ pub struct TrackedItem {
     pub started_at:   Option<Instant>,
     /// Time the item completed.
     pub completed_at: Option<Instant>,
+    /// Whether the item is progressing or stalled.
+    pub activity:     TrackedItemActivity,
 }
 
 impl TrackedItem {
@@ -50,6 +64,7 @@ impl TrackedItem {
             key:          key.into(),
             started_at:   Some(Instant::now()),
             completed_at: None,
+            activity:     TrackedItemActivity::Progressing,
         }
     }
 
@@ -78,6 +93,8 @@ pub struct TrackedItemView {
     pub linger_progress: Option<f64>,
     /// Elapsed time since the item started, if known.
     pub elapsed:         Option<Duration>,
+    /// Whether the item is progressing or stalled.
+    pub activity:        TrackedItemActivity,
 }
 
 impl TrackedItemView {

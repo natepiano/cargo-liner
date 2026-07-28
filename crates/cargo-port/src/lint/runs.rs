@@ -67,7 +67,7 @@ impl LintRuns {
     /// in-memory states, not terminal runs, so a history hydrate must not
     /// overwrite them with the prior terminal result.
     pub fn set_hydrated_runs(&mut self, runs: Vec<LintRun>) {
-        let live_status = matches!(self.status, LintStatus::Running(_) | LintStatus::Stale)
+        let live_status = matches!(self.status, LintStatus::Running(..) | LintStatus::Stale)
             .then(|| self.status.clone());
         self.set_runs(runs);
         if let Some(status) = live_status {

@@ -92,7 +92,7 @@ impl WorktreeGroup {
             .collect();
         let running: Vec<LintStatus> = statuses
             .iter()
-            .filter(|s| matches!(s, LintStatus::Running(_)))
+            .filter(|s| matches!(s, LintStatus::Running(..)))
             .cloned()
             .collect();
         if !running.is_empty() {

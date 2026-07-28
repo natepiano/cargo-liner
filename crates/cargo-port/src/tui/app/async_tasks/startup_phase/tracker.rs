@@ -282,7 +282,7 @@ impl App {
             .github_running()
             .running
             .iter()
-            .min_by_key(|(_, started)| **started)
+            .min_by_key(|(_, entry)| entry.started_at)
             .map(|(repo, _)| repo.to_string())
     }
     /// The crates.io fetch in flight (one at a time) — the row's detail.
@@ -291,7 +291,7 @@ impl App {
             .crates_io_running()
             .running
             .iter()
-            .min_by_key(|(_, started)| **started)
+            .min_by_key(|(_, entry)| entry.started_at)
             .map(|(name, _)| name.clone())
     }
     pub fn maybe_log_startup_phase_completions(&mut self) {

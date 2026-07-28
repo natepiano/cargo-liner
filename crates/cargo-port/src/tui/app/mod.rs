@@ -157,6 +157,8 @@ use super::settings::StartupSettings;
 use super::startup_services::StartupEffectCounts;
 use super::startup_services::StartupEnvironment;
 use super::startup_services::StartupServices;
+#[cfg(test)]
+use super::state;
 pub(super) use super::state::AvailabilityStatus;
 use super::state::Ci;
 use super::state::CiStatusLookup;
@@ -171,8 +173,6 @@ use super::state::SyncTracker;
 use crate::channel::Receiver;
 use crate::channel::Sender;
 use crate::ci::OwnerRepo;
-#[cfg(test)]
-use crate::constants::LINT_NO_LOG;
 use crate::constants::SCAN_METADATA_CONCURRENCY;
 use crate::constants::TARGET_DIR;
 use crate::http::HttpClient;
@@ -376,17 +376,7 @@ impl App {
     /// because `Pane::render` has no `&App` to call methods on.
     #[cfg(test)]
     pub(super) fn lint_cell(&self, status: &LintStatus) -> LintCell {
-        if !self.config.lint_enabled() {
-            return LintCell::from_parts(LINT_NO_LOG, ratatui::style::Style::default());
-        }
-        let icon =
-            integration::lint_icon_for(status.kind()).frame_at(self.animation_started.elapsed());
-        let style = if matches!(status, LintStatus::Running(_)) {
-            ratatui::style::Style::default().fg(tui_pane::accent_color())
-        } else {
-            ratatui::style::Style::default()
-        };
-        LintCell::from_parts(icon, style)
+        state::lint_cell_for(status, &self.config, self.animation_started.elapsed())
     }
 
     pub(super) fn prune_toasts(&mut self) {
@@ -2971,6 +2961,7 @@ mod tests {
             LintsData {
                 runs,
                 sizes: Vec::new(),
+                phases: Vec::new(),
                 owner_paths: Vec::new(),
                 owner_of: Vec::new(),
                 project_kind: LintsProjectKind::Rust,
@@ -4450,6 +4441,7 @@ mod tests {
         use crate::lint::LintCommand;
         use crate::lint::LintCommandStatus;
         use crate::lint::LintRun;
+        use crate::lint::LintRunPhase;
         use crate::lint::LintRunStatus;
         use crate::project;
         use crate::project::AbsolutePath;
@@ -4510,7 +4502,6 @@ mod tests {
         use crate::tui::settings;
         use crate::tui::settings::SettingOption;
         use crate::tui::test_support as tui_test_support;
-
         fn open_settings_overlay(app: &mut App) {
             let keymap = Rc::clone(&app.framework_keymap);
             keymap.dispatch_framework_global(FrameworkGlobalAction::OpenSettings, app);
@@ -4698,6 +4689,7 @@ mod tests {
             app.lint.set_content(LintsData {
                 runs:         runs.to_vec(),
                 sizes:        vec![Some(0); runs.len()],
+                phases:       vec![LintRunPhase::Executing; runs.len()],
                 owner_paths:  Vec::new(),
                 owner_of:     Vec::new(),
                 project_kind: LintsProjectKind::Rust,
@@ -7357,6 +7349,7 @@ mod tests {
         use super::*;
         use crate::config::LintIndicator;
         use crate::lint::LintRun;
+        use crate::lint::LintRunPhase;
         use crate::lint::LintRunStatus;
         use crate::project::Cargo;
         use crate::project::ExampleGroup;
@@ -7376,7 +7369,6 @@ mod tests {
         use crate::tui::columns::ProjectRow;
         use crate::tui::columns::RowLifecycle;
         use crate::tui::input;
-
         fn test_submodule(name: &str, path: &str) -> Submodule {
             Submodule {
                 name:          name.to_string(),
@@ -8147,7 +8139,10 @@ mod tests {
                 }]);
             app.handle_bg_msg(BackgroundMsg::LintStatus {
                 path:   abs_path.clone(),
-                status: LintStatus::Running(parse_ts("2026-03-30T14:24:18-05:00")),
+                status: LintStatus::Running(
+                    parse_ts("2026-03-30T14:24:18-05:00"),
+                    LintRunPhase::Executing,
+                ),
                 origin: LintRunOrigin::Normal,
             });
             assert!(
@@ -8194,6 +8189,7 @@ mod tests {
         use super::*;
         use crate::config::LintIndicator;
         use crate::constants::CI_PASSED;
+        use crate::lint::LintRunPhase;
         use crate::project::Submodule;
         use crate::tui::columns;
         use crate::tui::panes;
@@ -8330,7 +8326,10 @@ mod tests {
 
             app.handle_bg_msg(BackgroundMsg::LintStatus {
                 path:   test_path("~/ws_feat"),
-                status: LintStatus::Running(parse_ts("2026-03-30T16:22:18-05:00")),
+                status: LintStatus::Running(
+                    parse_ts("2026-03-30T16:22:18-05:00"),
+                    LintRunPhase::Executing,
+                ),
                 origin: LintRunOrigin::Normal,
             });
 
@@ -9693,6 +9692,7 @@ mod tests {
         use crate::constants::NO_REMOTE_SYNC;
         use crate::lint::CachedLintStatus;
         use crate::lint::LintRun;
+        use crate::lint::LintRunPhase;
         use crate::lint::LintRunStatus;
         use crate::project::AbsolutePath;
         use crate::project::FileStamp;
@@ -9721,7 +9721,6 @@ mod tests {
         use crate::tui::panes;
         use crate::tui::state::StartupNetworkReadiness;
         use crate::tui::terminal::CleanMsg;
-
         fn test_pull_request_info(number: u32, title: &str) -> PullRequestInfo {
             test_pull_request_info_with_state(number, title, PullRequestState::Ready)
         }
@@ -10598,7 +10597,10 @@ mod tests {
 
             app.handle_bg_msg(BackgroundMsg::LintStatus {
                 path:   project_path.clone(),
-                status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
+                status: LintStatus::Running(
+                    parse_ts("2026-03-30T14:22:18-05:00"),
+                    LintRunPhase::Executing,
+                ),
                 origin: LintRunOrigin::Normal,
             });
             let first_toast = app.lint.running_toast_id();
@@ -10613,7 +10615,10 @@ mod tests {
 
             app.handle_bg_msg(BackgroundMsg::LintStatus {
                 path:   project_path,
-                status: LintStatus::Running(parse_ts("2026-03-30T14:24:18-05:00")),
+                status: LintStatus::Running(
+                    parse_ts("2026-03-30T14:24:18-05:00"),
+                    LintRunPhase::Executing,
+                ),
                 origin: LintRunOrigin::Normal,
             });
             assert_eq!(app.lint.running_toast_id(), first_toast);
@@ -10625,7 +10630,10 @@ mod tests {
             let mut app = make_app(std::slice::from_ref(&project));
             app.handle_bg_msg(BackgroundMsg::LintStatus {
                 path:   test_path("~/a"),
-                status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
+                status: LintStatus::Running(
+                    parse_ts("2026-03-30T14:22:18-05:00"),
+                    LintRunPhase::Executing,
+                ),
                 origin: LintRunOrigin::Normal,
             });
             assert!(
@@ -10652,7 +10660,10 @@ mod tests {
             // catch-up running status creates the distinct catch-up toast.
             app.handle_bg_msg(BackgroundMsg::LintStatus {
                 path:   test_path("~/a"),
-                status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
+                status: LintStatus::Running(
+                    parse_ts("2026-03-30T14:22:18-05:00"),
+                    LintRunPhase::Executing,
+                ),
                 origin: LintRunOrigin::CatchUp,
             });
 
@@ -10681,12 +10692,18 @@ mod tests {
 
             app.handle_bg_msg(BackgroundMsg::LintStatus {
                 path:   test_path("~/a"),
-                status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
+                status: LintStatus::Running(
+                    parse_ts("2026-03-30T14:22:18-05:00"),
+                    LintRunPhase::Executing,
+                ),
                 origin: LintRunOrigin::CatchUp,
             });
             app.handle_bg_msg(BackgroundMsg::LintStatus {
                 path:   test_path("~/b"),
-                status: LintStatus::Running(parse_ts("2026-03-30T14:22:19-05:00")),
+                status: LintStatus::Running(
+                    parse_ts("2026-03-30T14:22:19-05:00"),
+                    LintRunPhase::Executing,
+                ),
                 origin: LintRunOrigin::Normal,
             });
 
@@ -10729,7 +10746,10 @@ mod tests {
 
             app.handle_bg_msg(BackgroundMsg::LintStatus {
                 path:   project_path.clone(),
-                status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
+                status: LintStatus::Running(
+                    parse_ts("2026-03-30T14:22:18-05:00"),
+                    LintRunPhase::Executing,
+                ),
                 origin: LintRunOrigin::Normal,
             });
             let first_toast = app.lint.running_toast_id();
@@ -10741,7 +10761,7 @@ mod tests {
 
             assert!(matches!(
                 crate::tui::state::Lint::status_for_root(&app.project_list[0].root_item),
-                LintStatus::Running(_)
+                LintStatus::Running(..)
             ));
             assert_eq!(app.lint.running_toast_id(), first_toast);
             assert!(app.lint.running_toast_contains_path(project_path.as_path()));
@@ -10757,7 +10777,10 @@ mod tests {
 
             app.handle_bg_msg(BackgroundMsg::LintStatus {
                 path:   project_path.clone(),
-                status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
+                status: LintStatus::Running(
+                    parse_ts("2026-03-30T14:22:18-05:00"),
+                    LintRunPhase::Executing,
+                ),
                 origin: LintRunOrigin::Normal,
             });
             let first_toast = app.lint.running_toast_id();
@@ -10779,7 +10802,7 @@ mod tests {
 
             assert!(matches!(
                 crate::tui::state::Lint::status_for_root(&app.project_list[0].root_item),
-                LintStatus::Running(_)
+                LintStatus::Running(..)
             ));
             assert_eq!(app.lint.running_toast_id(), first_toast);
             assert!(app.lint.running_toast_contains_path(project_path.as_path()));
@@ -10804,7 +10827,10 @@ mod tests {
 
             app.handle_bg_msg(BackgroundMsg::LintStatus {
                 path:   project_path.clone(),
-                status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
+                status: LintStatus::Running(
+                    parse_ts("2026-03-30T14:22:18-05:00"),
+                    LintRunPhase::Executing,
+                ),
                 origin: LintRunOrigin::Normal,
             });
 
@@ -10814,7 +10840,7 @@ mod tests {
             );
             assert!(matches!(
                 crate::tui::state::Lint::status_for_root(&app.project_list[0].root_item),
-                LintStatus::Running(_)
+                LintStatus::Running(..)
             ));
             assert!(app.lint.running_toast_contains_path(project_path.as_path()));
 
@@ -10825,7 +10851,7 @@ mod tests {
                     display,
                     panes::LintDisplay::Runs {
                         count:  0,
-                        status: LintStatus::Running(_),
+                        status: LintStatus::Running(..),
                     }
                 ),
                 "{display:?}"
@@ -11751,10 +11777,13 @@ mod tests {
             app.project_list
                 .lint_at_path_mut(&test_path("~/ws"))
                 .unwrap()
-                .set_status(LintStatus::Running(parse_ts("2026-03-30T16:22:18-05:00")));
+                .set_status(LintStatus::Running(
+                    parse_ts("2026-03-30T16:22:18-05:00"),
+                    LintRunPhase::Executing,
+                ));
 
             let root_status = app.project_list.first().unwrap().lint_rollup_status();
-            assert!(matches!(root_status, LintStatus::Running(_)));
+            assert!(matches!(root_status, LintStatus::Running(..)));
         }
 
         #[test]
@@ -11774,17 +11803,20 @@ mod tests {
             app.project_list
                 .lint_at_path_mut(&test_path("~/ws_feat"))
                 .unwrap()
-                .set_status(LintStatus::Running(parse_ts("2026-03-30T16:22:18-05:00")));
+                .set_status(LintStatus::Running(
+                    parse_ts("2026-03-30T16:22:18-05:00"),
+                    LintRunPhase::Executing,
+                ));
 
             let root_status = app.project_list.first().unwrap().lint_rollup_status();
-            assert!(matches!(root_status, LintStatus::Running(_)));
+            assert!(matches!(root_status, LintStatus::Running(..)));
 
             let RootItem::Worktrees(g) = &app.project_list.first().unwrap().root_item else {
                 panic!("expected Worktrees");
             };
             assert!(matches!(
                 g.lint_status_for_worktree(1),
-                LintStatus::Running(_)
+                LintStatus::Running(..)
             ));
         }
 
@@ -12179,7 +12211,10 @@ mod tests {
                 commands:      Vec::new(),
                 archive_bytes: 0,
             }]);
-            linked_lints.set_status(LintStatus::Running(parse_ts("2026-03-30T16:22:18-05:00")));
+            linked_lints.set_status(LintStatus::Running(
+                parse_ts("2026-03-30T16:22:18-05:00"),
+                LintRunPhase::Executing,
+            ));
             app.scan.bump_generation();
             app.ensure_detail_cached();
             let running_display = app.panes.package.content().unwrap().lint_display.clone();
@@ -12187,7 +12222,7 @@ mod tests {
                 matches!(
                     running_display,
                     panes::LintDisplay::Runs {
-                        status: LintStatus::Running(_),
+                        status: LintStatus::Running(..),
                         ..
                     }
                 ),
@@ -12209,7 +12244,7 @@ mod tests {
                 !matches!(
                     finished_display,
                     panes::LintDisplay::Runs {
-                        status: LintStatus::Running(_),
+                        status: LintStatus::Running(..),
                         ..
                     }
                 ),
@@ -13858,7 +13893,10 @@ mod tests {
             // clears project lint state and reconciles the toast from it.
             app.handle_bg_msg(BackgroundMsg::LintStatus {
                 path:   project_path,
-                status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
+                status: LintStatus::Running(
+                    parse_ts("2026-03-30T14:22:18-05:00"),
+                    LintRunPhase::Executing,
+                ),
                 origin: LintRunOrigin::Normal,
             });
             assert!(!app.lint.running_toast_is_empty());
@@ -13914,6 +13952,7 @@ mod tests {
         use crate::config::DiscoveryLint;
         use crate::config::LintIndicator;
         use crate::lint;
+        use crate::lint::LintRunPhase;
         use crate::project::FileStamp;
         use crate::project::ManifestFingerprint;
         use crate::project::PackageRecord;
@@ -13923,7 +13962,6 @@ mod tests {
         use crate::scan;
         use crate::tui::keymap::TargetsAction;
         use crate::tui::panes;
-
         fn metadata_with_example(
             root: &AbsolutePath,
             package_name: &str,
@@ -15058,7 +15096,10 @@ mod tests {
 
             app.handle_bg_msg(BackgroundMsg::LintStatus {
                 path:   linked_abs,
-                status: LintStatus::Running(parse_ts("2026-03-30T16:22:18-05:00")),
+                status: LintStatus::Running(
+                    parse_ts("2026-03-30T16:22:18-05:00"),
+                    LintRunPhase::Executing,
+                ),
                 origin: LintRunOrigin::Normal,
             });
 
@@ -15075,7 +15116,7 @@ mod tests {
             };
             assert!(matches!(
                 group.lint_status_for_worktree(1),
-                LintStatus::Running(_)
+                LintStatus::Running(..)
             ));
         }
 

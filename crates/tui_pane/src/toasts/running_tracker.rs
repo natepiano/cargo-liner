@@ -1,4 +1,4 @@
-//! Generic in-flight tracker: a `HashMap<K, Instant>` of running
+//! Generic in-flight tracker: a `HashMap<K, RunningEntry>` of running
 //! work paired with the single sticky [`ToastTaskId`] that displays
 //! "N \<thing\> running."
 //!
@@ -9,18 +9,40 @@
 
 use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::hash::Hash;
 use std::time::Instant;
 
 use crate::ToastTaskId;
 use crate::TrackedItem;
+use crate::TrackedItemActivity;
 use crate::TrackedItemKey;
 
-/// In-flight tracker pairing a `HashMap<K, Instant>` of running keys
-/// with a single sticky toast slot.
+/// What a [`RunningTracker`] holds per in-flight key.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RunningEntry {
+    /// Time the work started or restarted.
+    pub started_at: Instant,
+    /// Whether the work is progressing or stalled.
+    pub activity:   TrackedItemActivity,
+}
+
+impl RunningEntry {
+    /// Construct an entry that started at `started_at` and is progressing.
+    #[must_use]
+    pub const fn new(started_at: Instant) -> Self {
+        Self {
+            started_at,
+            activity: TrackedItemActivity::Progressing,
+        }
+    }
+}
+
+/// In-flight tracker pairing a `HashMap<K, RunningEntry>` of running
+/// keys with a single sticky toast slot.
 pub struct RunningTracker<K: Eq + Hash> {
-    /// Each in-flight key with its start instant.
-    pub running: HashMap<K, Instant>,
+    /// Each in-flight key with its start instant and activity.
+    pub running: HashMap<K, RunningEntry>,
     /// Sticky toast slot displayed while at least one key is in flight.
     pub toast:   Option<ToastTaskId>,
 }
@@ -46,13 +68,34 @@ impl<K: Eq + Hash> RunningTracker<K> {
 
     /// Insert `k` with `started`. Returns `true` when the key was
     /// not previously running (the run is new), `false` when it was
-    /// already in flight (the timestamp is overwritten).
+    /// already in flight (the entry is overwritten, resetting its
+    /// activity to progressing).
     pub fn insert(&mut self, k: K, started: Instant) -> bool {
-        self.running.insert(k, started).is_none()
+        self.running.insert(k, RunningEntry::new(started)).is_none()
     }
 
-    /// Remove a tracked key. Returns its start instant when present.
-    pub fn remove<Q>(&mut self, k: &Q) -> Option<Instant>
+    /// Record `k` as running with `activity`. A key already in flight
+    /// keeps its original start instant and only takes the new
+    /// activity, so a status refresh never restarts its elapsed clock.
+    /// Returns `true` when the key was not previously running.
+    pub fn mark_running(&mut self, k: K, started: Instant, activity: TrackedItemActivity) -> bool {
+        match self.running.entry(k) {
+            Entry::Occupied(mut occupied) => {
+                occupied.get_mut().activity = activity;
+                false
+            },
+            Entry::Vacant(vacant) => {
+                vacant.insert(RunningEntry {
+                    started_at: started,
+                    activity,
+                });
+                true
+            },
+        }
+    }
+
+    /// Remove a tracked key. Returns its entry when present.
+    pub fn remove<Q>(&mut self, k: &Q) -> Option<RunningEntry>
     where
         K: Borrow<Q>,
         Q: ?Sized + Eq + Hash,
@@ -83,11 +126,12 @@ impl<K: Eq + Hash> RunningTracker<K> {
         let items = self
             .running
             .iter()
-            .map(|(k, &started)| TrackedItem {
+            .map(|(k, entry)| TrackedItem {
                 label:        label_fn(k),
                 key:          key_fn(k),
-                started_at:   Some(started),
+                started_at:   Some(entry.started_at),
                 completed_at: None,
+                activity:     entry.activity,
             })
             .collect();
         (self.toast, items)
@@ -96,6 +140,8 @@ impl<K: Eq + Hash> RunningTracker<K> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
@@ -117,13 +163,32 @@ mod tests {
     }
 
     #[test]
-    fn remove_returns_started_instant_when_present() {
+    fn remove_returns_entry_when_present() {
         let mut t: RunningTracker<String> = RunningTracker::new();
         let now = Instant::now();
         t.insert("a".into(), now);
-        assert_eq!(t.remove("a"), Some(now));
+        assert_eq!(t.remove("a"), Some(RunningEntry::new(now)));
         assert!(t.remove("a").is_none());
         assert!(t.is_empty());
+    }
+
+    #[test]
+    fn mark_running_keeps_the_original_start_and_takes_the_new_activity() {
+        let mut t: RunningTracker<String> = RunningTracker::new();
+        let started = Instant::now();
+
+        assert!(t.mark_running("a".into(), started, TrackedItemActivity::Progressing));
+        assert!(!t.mark_running(
+            "a".into(),
+            started + Duration::from_secs(30),
+            TrackedItemActivity::Stalled
+        ));
+
+        let (_toast, items) =
+            t.items_for_toast(ToString::to_string, |key| TrackedItemKey::new(key.clone()));
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].activity, TrackedItemActivity::Stalled);
+        assert_eq!(items[0].started_at, Some(started));
     }
 
     #[test]

@@ -19,7 +19,7 @@ impl App {
         status: CachedLintStatus,
     ) {
         if let Some(lr) = self.project_list.lint_at_path_mut(path)
-            && !matches!(lr.status(), LintStatus::Running(_))
+            && !matches!(lr.status(), LintStatus::Running(..))
         {
             lr.set_status(status.into_lint_status());
         }
@@ -63,7 +63,7 @@ impl App {
                 origin = ?origin,
                 "lint_status_dropped_no_owner"
             );
-            if !matches!(status_kind, LintStatusKind::Running) {
+            if !matches!(status_kind, LintStatusKind::Running(_)) {
                 self.lint.clear_running_path(path);
             }
             self.sync_running_lint_toast();
@@ -95,7 +95,7 @@ impl App {
             self.lint
                 .apply_lint_status(owner_abs.clone(), status_kind, origin);
         } else {
-            if !matches!(status_kind, LintStatusKind::Running) {
+            if !matches!(status_kind, LintStatusKind::Running(_)) {
                 self.lint.clear_running_path(owner_abs.as_path());
             }
             tracing::warn!(
