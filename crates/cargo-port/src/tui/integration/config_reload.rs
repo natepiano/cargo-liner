@@ -13,6 +13,7 @@ pub(super) enum ConfigKey {
     MainBranch,
     OtherPrimaryBranches,
     IncludeDirs,
+    ExcludeDirs,
     InlineDirs,
     DiscoveryShimmerSecs,
     CacheRoot,
@@ -184,6 +185,9 @@ fn changed_keys(old: &CargoPortConfig, new: &CargoPortConfig) -> Vec<ConfigKey> 
     }
     if old.tui.include_dirs != new.tui.include_dirs {
         keys.push(ConfigKey::IncludeDirs);
+    }
+    if old.tui.exclude_dirs != new.tui.exclude_dirs {
+        keys.push(ConfigKey::ExcludeDirs);
     }
     if old.tui.inline_dirs != new.tui.inline_dirs {
         keys.push(ConfigKey::InlineDirs);

@@ -26,6 +26,7 @@ impl App {
             background_tx:  self.background.background_sender(),
             ci_run_count:   self.config.ci_run_count(),
             non_rust:       self.config.include_non_rust(),
+            exclude_dirs:   self.config.exclude_dirs(),
             client:         self.net.http_client(),
             lint_runtime:   self.lint.runtime_clone(),
             metadata_store: self.scan.metadata_store_handle(),

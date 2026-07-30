@@ -758,6 +758,14 @@ pub(crate) struct TuiConfig {
     #[config(default = [])]
     pub include_dirs: Vec<String>,
 
+    /// Directory-name glob patterns to skip while scanning. A matching
+    /// directory is not descended into and never becomes a project row.
+    /// Patterns match the directory name alone, not the full path; `*` matches
+    /// any run of characters and `?` matches exactly one. Example:
+    /// `[".tmp*"]` hides the temporary directories test runs leave behind.
+    #[config(default = [])]
+    pub exclude_dirs: Vec<String>,
+
     /// Whether to include non-Rust projects (git repos without Cargo.toml).
     #[config(default = false)]
     pub include_non_rust: NonRustInclusion,
@@ -807,6 +815,7 @@ impl Default for TuiConfig {
             navigation_keys:         NavigationKeys::ArrowsOnly,
             edge_scroll:             EdgeScroll::Stops,
             include_dirs:            Vec::new(),
+            exclude_dirs:            Vec::new(),
             include_non_rust:        NonRustInclusion::Exclude,
             editor:                  DEFAULT_EDITOR.to_string(),
             terminal_command:        String::new(),

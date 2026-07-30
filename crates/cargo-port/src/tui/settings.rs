@@ -66,6 +66,7 @@ pub(super) enum SettingOption {
     MainBranch,
     OtherPrimaryBranches,
     IncludeDirs,
+    ExcludeDirs,
     InlineDirs,
     StatusToastVisibleSecs,
     FinishedTaskVisibleSecs,
@@ -490,6 +491,15 @@ fn register_general_settings(registry: SettingsRegistry) -> SettingsRegistry {
         )
         .add_custom_in(
             SettingsSection::App("tui"),
+            "exclude_dirs",
+            SettingCodecs {
+                format: format_exclude_dirs,
+                parse:  set_exclude_dirs,
+                adjust: None,
+            },
+        )
+        .add_custom_in(
+            SettingsSection::App("tui"),
             "inline_dirs",
             SettingCodecs {
                 format: format_inline_dirs,
@@ -637,6 +647,12 @@ pub(super) fn settings_table_from_config(
         "tui",
         "include_dirs",
         cargo_port_config.tui.include_dirs.clone(),
+    )?;
+    write_string_array(
+        &mut table,
+        "tui",
+        "exclude_dirs",
+        cargo_port_config.tui.exclude_dirs.clone(),
     )?;
     write_string_array(
         &mut table,
@@ -825,6 +841,15 @@ fn format_include_dirs(table: &Table) -> String {
 
 fn set_include_dirs(value: &str, table: &mut Table) -> Result<(), SettingsError> {
     write_string_array(table, "tui", "include_dirs", normalize_sorted_list(value))
+}
+
+fn format_exclude_dirs(table: &Table) -> String {
+    let default = default_config().tui.exclude_dirs;
+    format_sorted_list(&read_string_array(table, "tui", "exclude_dirs", default))
+}
+
+fn set_exclude_dirs(value: &str, table: &mut Table) -> Result<(), SettingsError> {
+    write_string_array(table, "tui", "exclude_dirs", normalize_sorted_list(value))
 }
 
 fn format_inline_dirs(table: &Table) -> String {
@@ -1205,6 +1230,11 @@ fn general_settings_rows(app: &App, cargo_port_config: &CargoPortConfig) -> Vec<
             Some(SettingOption::IncludeDirs),
             "Include dirs".to_string(),
             format_sorted_list(&cargo_port_config.tui.include_dirs),
+        ),
+        (
+            Some(SettingOption::ExcludeDirs),
+            "Exclude dirs".to_string(),
+            format_sorted_list(&cargo_port_config.tui.exclude_dirs),
         ),
         (
             Some(SettingOption::InlineDirs),
@@ -1618,6 +1648,7 @@ fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<Setti
             | SettingOption::MainBranch
             | SettingOption::OtherPrimaryBranches
             | SettingOption::IncludeDirs
+            | SettingOption::ExcludeDirs
             | SettingOption::InlineDirs
             | SettingOption::StatusToastVisibleSecs
             | SettingOption::FinishedTaskVisibleSecs
@@ -1657,94 +1688,96 @@ fn begin_settings_edit(app: &mut App, value: String) {
 }
 
 fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
+    let Some(setting) = setting else { return };
+    if let Some(seed) = settings_edit_seed(app, setting) {
+        begin_settings_edit(app, seed);
+        return;
+    }
+    toggle_setting(app, setting);
+}
+
+/// Current value of a setting that activates into the inline text editor,
+/// used to seed the edit buffer. Settings that toggle or cycle in place
+/// return `None` and are handled by `toggle_setting`.
+fn settings_edit_seed(app: &App, setting: SettingOption) -> Option<String> {
+    let cargo_port_config = app.config.current();
     match setting {
-        Some(SettingOption::InvertScroll) => {
+        SettingOption::CiRunCount => Some(cargo_port_config.tui.ci_run_count.to_string()),
+        SettingOption::CacheRoot => Some(cargo_port_config.cache.root.clone()),
+        SettingOption::InlineDirs => Some(cargo_port_config.tui.inline_dirs.join(", ")),
+        SettingOption::IncludeDirs => Some(cargo_port_config.tui.include_dirs.join(", ")),
+        SettingOption::ExcludeDirs => Some(cargo_port_config.tui.exclude_dirs.join(", ")),
+        SettingOption::LintProjects => Some(cargo_port_config.lint.include.join(", ")),
+        SettingOption::LintCommands => Some(format_lint_commands(cargo_port_config)),
+        SettingOption::LintCacheSize => Some(cargo_port_config.lint.cache_size.clone()),
+        SettingOption::StatusToastVisibleSecs => Some(format_status_toast_visible_secs(app)),
+        SettingOption::FinishedTaskVisibleSecs => Some(format_finished_task_visible_secs(app)),
+        SettingOption::DiscoveryShimmerSecs => {
+            Some(format_discovery_shimmer_secs(cargo_port_config))
+        },
+        SettingOption::CpuPollMs => Some(format_cpu_poll_ms(cargo_port_config)),
+        SettingOption::CpuLowUtilizationMaxPercent => {
+            Some(format_cpu_low_utilization_max(cargo_port_config))
+        },
+        SettingOption::CpuMediumUtilizationMaxPercent => {
+            Some(format_cpu_medium_utilization_max(cargo_port_config))
+        },
+        SettingOption::Editor => Some(app.config.editor().to_string()),
+        SettingOption::TerminalCommand => Some(cargo_port_config.tui.terminal_command.clone()),
+        SettingOption::MainBranch => Some(cargo_port_config.tui.main_branch.clone()),
+        SettingOption::OtherPrimaryBranches => {
+            Some(cargo_port_config.tui.other_primary_branches.join(", "))
+        },
+        SettingOption::InvertScroll
+        | SettingOption::NavigationKeys
+        | SettingOption::EdgeScroll
+        | SettingOption::IncludeNonRust
+        | SettingOption::LintsEnabled
+        | SettingOption::LintOnDiscovery
+        | SettingOption::AppearanceMode
+        | SettingOption::LightTheme
+        | SettingOption::DarkTheme
+        | SettingOption::FocusedPaneTint => None,
+    }
+}
+
+/// Apply a setting that changes in place on activation rather than opening
+/// the inline editor. Settings with an editor seed never reach here.
+fn toggle_setting(app: &mut App, setting: SettingOption) {
+    match setting {
+        SettingOption::InvertScroll => {
             let next = !app.config.invert_scroll().is_inverted();
             let _ = save_app_setting_with_toast(app, |table| set_invert_scroll(table, next));
         },
-        Some(SettingOption::NavigationKeys) => {
+        SettingOption::NavigationKeys => {
             toggle_vim_mode(app);
         },
-        Some(SettingOption::EdgeScroll) => {
+        SettingOption::EdgeScroll => {
             let next = !app.config.edge_scroll().advances_pane();
             let _ = save_app_setting_with_toast(app, |table| set_edge_scroll(table, next));
         },
-        Some(SettingOption::CiRunCount) => {
-            begin_settings_edit(app, app.config.current().tui.ci_run_count.to_string());
-        },
-        Some(SettingOption::CacheRoot) => {
-            begin_settings_edit(app, app.config.current().cache.root.clone());
-        },
-        Some(SettingOption::InlineDirs) => {
-            begin_settings_edit(app, app.config.current().tui.inline_dirs.join(", "));
-        },
-        Some(SettingOption::IncludeDirs) => {
-            begin_settings_edit(app, app.config.current().tui.include_dirs.join(", "));
-        },
-        Some(SettingOption::LintProjects) => {
-            begin_settings_edit(app, app.config.current().lint.include.join(", "));
-        },
-        Some(SettingOption::LintCommands) => {
-            begin_settings_edit(app, format_lint_commands(app.config.current()));
-        },
-        Some(SettingOption::LintCacheSize) => {
-            begin_settings_edit(app, app.config.current().lint.cache_size.clone());
-        },
-        Some(SettingOption::StatusToastVisibleSecs) => {
-            begin_settings_edit(app, format_status_toast_visible_secs(app));
-        },
-        Some(SettingOption::FinishedTaskVisibleSecs) => {
-            begin_settings_edit(app, format_finished_task_visible_secs(app));
-        },
-        Some(SettingOption::DiscoveryShimmerSecs) => {
-            begin_settings_edit(app, format_discovery_shimmer_secs(app.config.current()));
-        },
-        Some(SettingOption::CpuPollMs) => {
-            begin_settings_edit(app, format_cpu_poll_ms(app.config.current()));
-        },
-        Some(SettingOption::CpuLowUtilizationMaxPercent) => {
-            begin_settings_edit(app, format_cpu_low_utilization_max(app.config.current()));
-        },
-        Some(SettingOption::CpuMediumUtilizationMaxPercent) => {
-            begin_settings_edit(app, format_cpu_medium_utilization_max(app.config.current()));
-        },
-        Some(SettingOption::IncludeNonRust) => {
+        SettingOption::IncludeNonRust => {
             let next = !app.config.include_non_rust().includes_non_rust();
             let _ = save_app_setting_with_toast(app, |table| set_include_non_rust(table, next));
         },
-        Some(SettingOption::LintsEnabled) => {
+        SettingOption::LintsEnabled => {
             toggle_lints(app);
         },
-        Some(SettingOption::LintOnDiscovery) => {
+        SettingOption::LintOnDiscovery => {
             let next = !app.config.current().lint.on_discovery.is_immediate();
             let _ = save_app_setting_with_toast(app, |table| set_lint_on_discovery(table, next));
         },
-        Some(SettingOption::Editor) => {
-            begin_settings_edit(app, app.config.editor().to_string());
-        },
-        Some(SettingOption::TerminalCommand) => {
-            begin_settings_edit(app, app.config.current().tui.terminal_command.clone());
-        },
-        Some(SettingOption::MainBranch) => {
-            begin_settings_edit(app, app.config.current().tui.main_branch.clone());
-        },
-        Some(SettingOption::OtherPrimaryBranches) => {
-            begin_settings_edit(
-                app,
-                app.config.current().tui.other_primary_branches.join(", "),
-            );
-        },
-        Some(SettingOption::AppearanceMode) => {
+        SettingOption::AppearanceMode => {
             let next = cycle_appearance_mode(&app.config.current().appearance.mode, 1);
             let _ = save_app_setting_with_toast(app, |table| set_appearance_mode(table, &next));
         },
-        Some(SettingOption::LightTheme) => {
+        SettingOption::LightTheme => {
             cycle_appearance_theme_setting(app, Appearance::Light, 1);
         },
-        Some(SettingOption::DarkTheme) => {
+        SettingOption::DarkTheme => {
             cycle_appearance_theme_setting(app, Appearance::Dark, 1);
         },
-        Some(SettingOption::FocusedPaneTint) => {
+        SettingOption::FocusedPaneTint => {
             let next = !app
                 .config
                 .current()
@@ -1753,7 +1786,7 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
                 .is_enabled();
             let _ = save_app_setting_with_toast(app, |table| set_focused_pane_tint(table, next));
         },
-        None => {},
+        _ => {},
     }
 }
 
@@ -1802,6 +1835,9 @@ fn apply_general_settings_edit(
         }),
         SettingOption::IncludeDirs => save_sorted_list_setting(app, value, |table, dirs| {
             write_string_array(table, "tui", "include_dirs", dirs)
+        }),
+        SettingOption::ExcludeDirs => save_sorted_list_setting(app, value, |table, dirs| {
+            write_string_array(table, "tui", "exclude_dirs", dirs)
         }),
         SettingOption::Editor if !value.trim().is_empty() => {
             save_string_setting(app, value, |table, editor| set_editor(table, &editor));

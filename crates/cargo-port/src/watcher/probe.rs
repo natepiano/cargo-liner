@@ -18,6 +18,7 @@ use crate::project::RootItem;
 use crate::project::RootItem::NonRust;
 use crate::scan;
 use crate::scan::BackgroundMsg;
+use crate::scan::ExcludeDirs;
 use crate::scan::FetchContext;
 use crate::scan::ProjectDetailRequest;
 
@@ -62,6 +63,7 @@ pub(super) fn probe_new_projects(
     discovered: &mut HashSet<AbsolutePath>,
     _: u32,
     non_rust: NonRustInclusion,
+    exclude_dirs: &ExcludeDirs,
     client: &HttpClient,
 ) {
     let now = Instant::now();
@@ -73,6 +75,15 @@ pub(super) fn probe_new_projects(
 
     for dir in ready {
         pending_new.remove(&dir);
+
+        // Excluded names never became projects, so there is no tracked row to
+        // retire — skip before the deletion branch below.
+        if dir
+            .file_name()
+            .is_some_and(|name| exclude_dirs.excludes(name))
+        {
+            continue;
+        }
 
         if !dir.is_dir() {
             // Directory was removed — send a zero-byte update so the app

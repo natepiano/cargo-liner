@@ -32,9 +32,11 @@ use crate::project::AbsolutePath;
 use crate::project::WorkspaceMetadataStore;
 use crate::scan;
 use crate::scan::BackgroundMsg;
+use crate::scan::ExcludeDirs;
 use crate::themes;
 use crate::watcher;
 use crate::watcher::WatcherMsg;
+use crate::watcher::WatcherSpawn;
 
 #[derive(Clone, Debug)]
 pub(crate) enum StartupProfile {
@@ -258,15 +260,16 @@ impl StartupServices {
     pub(crate) fn spawn_watcher(&self, startup: WatcherStartup<'_>) -> WatcherHandle {
         if self.allows(StartupEffectKind::Watcher) {
             self.record_real(StartupEffectKind::Watcher);
-            WatcherHandle::active(watcher::spawn_watcher(
-                startup.watch_roots,
-                startup.background_tx,
-                startup.ci_run_count,
-                startup.non_rust,
-                startup.client,
-                startup.lint_runtime,
-                startup.metadata_store,
-            ))
+            WatcherHandle::active(watcher::spawn_watcher(WatcherSpawn {
+                watch_roots:    startup.watch_roots,
+                background_tx:  startup.background_tx,
+                ci_run_count:   startup.ci_run_count,
+                non_rust:       startup.non_rust,
+                exclude_dirs:   startup.exclude_dirs,
+                client:         startup.client,
+                lint_runtime:   startup.lint_runtime,
+                metadata_store: startup.metadata_store,
+            }))
         } else {
             self.record_suppressed(StartupEffectKind::Watcher);
             WatcherHandle::disabled()
@@ -292,6 +295,7 @@ impl StartupServices {
             startup.scan_dirs,
             startup.inline_dirs,
             startup.non_rust,
+            startup.exclude_dirs,
             startup.client,
             startup.metadata_store,
         );
@@ -604,6 +608,7 @@ pub(crate) struct WatcherStartup<'a> {
     pub(crate) background_tx:  Sender<BackgroundMsg>,
     pub(crate) ci_run_count:   u32,
     pub(crate) non_rust:       NonRustInclusion,
+    pub(crate) exclude_dirs:   ExcludeDirs,
     pub(crate) client:         HttpClient,
     pub(crate) lint_runtime:   Option<RuntimeHandle>,
     pub(crate) metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
@@ -612,6 +617,7 @@ pub(crate) struct WatcherStartup<'a> {
 pub(crate) struct StreamingScanStartup<'a> {
     pub(crate) scan_dirs:      Vec<AbsolutePath>,
     pub(crate) inline_dirs:    &'a [String],
+    pub(crate) exclude_dirs:   ExcludeDirs,
     pub(crate) non_rust:       NonRustInclusion,
     pub(crate) client:         HttpClient,
     pub(crate) metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,

@@ -36,6 +36,7 @@ use crate::project::RootItem;
 use crate::project::WorkspaceMetadataStore;
 use crate::scan;
 use crate::scan::BackgroundMsg;
+use crate::scan::ExcludeDirs;
 use crate::tui::app::App;
 use crate::tui::constants::PERF_LOG_FILE;
 use crate::tui::constants::PREVIOUS_PERF_LOG_FILE;
@@ -171,6 +172,7 @@ pub fn run() -> ExitCode {
         scan_dirs,
         &cargo_port_config.tui.inline_dirs,
         cargo_port_config.tui.include_non_rust,
+        ExcludeDirs::from(cargo_port_config.tui.exclude_dirs.as_slice()),
         http_client.clone(),
         Arc::clone(&metadata_store),
     );

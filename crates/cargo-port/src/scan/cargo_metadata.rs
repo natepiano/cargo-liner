@@ -18,6 +18,7 @@ use super::BackgroundMsg;
 use super::constants::CARGO_OFFLINE_FLAG;
 use super::discovery;
 use super::disk_usage;
+use super::exclude::ExcludeDirs;
 use super::language_stats;
 use super::test_counts;
 use super::tree;
@@ -95,6 +96,7 @@ pub(crate) fn spawn_streaming_scan(
     scan_dirs: Vec<AbsolutePath>,
     inline_dirs: &[String],
     non_rust: NonRustInclusion,
+    exclude_dirs: ExcludeDirs,
     client: HttpClient,
     metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
 ) -> (Sender<BackgroundMsg>, Receiver<BackgroundMsg>) {
@@ -112,7 +114,7 @@ pub(crate) fn spawn_streaming_scan(
         };
 
         let phase1_started = std::time::Instant::now();
-        let phase1 = discovery::phase1_discover(&scan_dirs, non_rust);
+        let phase1 = discovery::phase1_discover(&scan_dirs, non_rust, &exclude_dirs);
         tracing::trace!(
             target: PERF_LOG_TARGET,
             elapsed_ms = tui_pane::perf_log_ms(phase1_started.elapsed().as_millis()),

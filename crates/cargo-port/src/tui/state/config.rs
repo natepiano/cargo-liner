@@ -16,6 +16,7 @@ use crate::config::EdgeScroll;
 use crate::config::NavigationKeys;
 use crate::config::NonRustInclusion;
 use crate::config::ScrollDirection;
+use crate::scan::ExcludeDirs;
 
 /// Owns the parsed config plus the on-disk watch state.
 pub(crate) struct Config {
@@ -57,6 +58,10 @@ impl Config {
     pub const fn include_non_rust(&self) -> NonRustInclusion { self.current().tui.include_non_rust }
 
     pub const fn ci_run_count(&self) -> u32 { self.current().tui.ci_run_count }
+
+    pub fn exclude_dirs(&self) -> ExcludeDirs {
+        ExcludeDirs::from(self.current().tui.exclude_dirs.as_slice())
+    }
 
     pub const fn navigation_keys(&self) -> NavigationKeys { self.current().tui.navigation_keys }
 

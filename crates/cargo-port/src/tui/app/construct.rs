@@ -42,6 +42,7 @@ use crate::project::AbsolutePath;
 use crate::project::RootItem;
 use crate::scan;
 use crate::scan::BackgroundMsg;
+use crate::scan::ExcludeDirs;
 use crate::tui::background::Background;
 use crate::tui::background::BackgroundChannels;
 use crate::tui::integration;
@@ -188,6 +189,7 @@ impl AppBuilder<Channeled> {
             background_tx:  inputs.background_tx.clone(),
             ci_run_count:   inputs.cargo_port_config.tui.ci_run_count,
             non_rust:       inputs.cargo_port_config.tui.include_non_rust,
+            exclude_dirs:   ExcludeDirs::from(inputs.cargo_port_config.tui.exclude_dirs.as_slice()),
             client:         inputs.startup_environment.http_client.clone(),
             lint_runtime:   lint_spawn.handle.clone(),
             metadata_store: Arc::clone(&inputs.startup_environment.metadata_store),

@@ -42,6 +42,10 @@ pub(super) const CONFIG_HANDLERS: &[ConfigHandler] = &[
         mark: config_reload::mark_full_rescan,
     },
     ConfigHandler {
+        key:  ConfigKey::ExcludeDirs,
+        mark: config_reload::mark_full_rescan,
+    },
+    ConfigHandler {
         key:  ConfigKey::CacheRoot,
         mark: config_reload::mark_full_rescan,
     },

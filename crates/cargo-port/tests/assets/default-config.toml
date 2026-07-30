@@ -59,6 +59,15 @@
 # Default value: []
 #include_dirs = []
 
+# Directory-name glob patterns to skip while scanning. A matching
+# directory is not descended into and never becomes a project row.
+# Patterns match the directory name alone, not the full path; `*` matches
+# any run of characters and `?` matches exactly one. Example:
+# `[".tmp*"]` hides the temporary directories test runs leave behind.
+#
+# Default value: []
+#exclude_dirs = []
+
 # Whether to include non-Rust projects (git repos without Cargo.toml).
 #
 # Default value: false

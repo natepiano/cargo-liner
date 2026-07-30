@@ -96,6 +96,7 @@ impl App {
             .spawn_streaming_scan(StreamingScanStartup {
                 scan_dirs,
                 inline_dirs: &self.config.current().tui.inline_dirs,
+                exclude_dirs: self.config.exclude_dirs(),
                 non_rust: self.config.include_non_rust(),
                 client: self.net.http_client(),
                 metadata_store: self.scan.metadata_store_handle(),

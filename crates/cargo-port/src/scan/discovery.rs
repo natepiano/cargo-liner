@@ -10,6 +10,7 @@ use walkdir::WalkDir;
 use super::BackgroundMsg;
 use super::emit_git_info;
 use super::emit_service_signal;
+use super::exclude::ExcludeDirs;
 use super::tree;
 use crate::channel::Sender;
 use crate::ci::CiRun;
@@ -275,6 +276,7 @@ fn discover_non_rust_project(
 pub(super) fn phase1_discover(
     scan_dirs: &[AbsolutePath],
     non_rust: NonRustInclusion,
+    exclude_dirs: &ExcludeDirs,
 ) -> Phase1DiscoverResult {
     let mut items = Vec::new();
     let mut disk_entries = Vec::new();
@@ -293,7 +295,7 @@ pub(super) fn phase1_discover(
             if entry.file_type().is_dir() {
                 stats.visited_dirs += 1;
                 let name = entry.file_name();
-                if name == TARGET_DIR || name == GIT_DIR {
+                if name == TARGET_DIR || name == GIT_DIR || exclude_dirs.excludes(name) {
                     iter.skip_current_dir();
                     continue;
                 }

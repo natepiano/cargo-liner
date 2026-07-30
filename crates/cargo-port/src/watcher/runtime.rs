@@ -41,6 +41,7 @@ use crate::project::AbsolutePath;
 use crate::project::ProjectFields;
 use crate::project::WorkspaceMetadataStore;
 use crate::scan::BackgroundMsg;
+use crate::scan::ExcludeDirs;
 use crate::scan::MetadataDispatchContext;
 
 /// Request to register an already-known project with the watcher.
@@ -72,15 +73,28 @@ pub enum WatcherMsg {
 // register time, collect the ancestor `.cargo/` dirs, diff the union
 // across projects on add/remove, and register notify watches on the
 // diff. Tracked for Step 1b follow-up.
-pub fn spawn_watcher(
-    watch_roots: &[AbsolutePath],
-    background_tx: Sender<BackgroundMsg>,
-    ci_run_count: u32,
-    non_rust: NonRustInclusion,
-    client: HttpClient,
-    lint_runtime: Option<RuntimeHandle>,
-    metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
-) -> Sender<WatcherMsg> {
+pub struct WatcherSpawn<'a> {
+    pub watch_roots:    &'a [AbsolutePath],
+    pub background_tx:  Sender<BackgroundMsg>,
+    pub ci_run_count:   u32,
+    pub non_rust:       NonRustInclusion,
+    pub exclude_dirs:   ExcludeDirs,
+    pub client:         HttpClient,
+    pub lint_runtime:   Option<RuntimeHandle>,
+    pub metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
+}
+
+pub fn spawn_watcher(spawn: WatcherSpawn<'_>) -> Sender<WatcherMsg> {
+    let WatcherSpawn {
+        watch_roots,
+        background_tx,
+        ci_run_count,
+        non_rust,
+        exclude_dirs,
+        client,
+        lint_runtime,
+        metadata_store,
+    } = spawn;
     let (watch_tx, watch_rx) = channel::unbounded();
     let (notify_tx, notify_rx) = mpsc::channel();
     let handler = move |res| {
@@ -125,6 +139,7 @@ pub fn spawn_watcher(
         background_tx,
         ci_run_count,
         non_rust,
+        exclude_dirs,
         client,
         lint_runtime,
         metadata_dispatch,
@@ -140,6 +155,7 @@ struct WatcherLoopContext {
     background_tx:     Sender<BackgroundMsg>,
     ci_run_count:      u32,
     non_rust:          NonRustInclusion,
+    exclude_dirs:      ExcludeDirs,
     client:            HttpClient,
     lint_runtime:      Option<RuntimeHandle>,
     metadata_dispatch: MetadataDispatchContext,
@@ -249,6 +265,7 @@ fn watcher_loop<W: Watcher + Send + 'static>(
         background_tx,
         ci_run_count,
         non_rust,
+        exclude_dirs,
         client,
         lint_runtime: _,
         metadata_dispatch,
@@ -318,6 +335,7 @@ fn watcher_loop<W: Watcher + Send + 'static>(
             &mut state.discovered,
             *ci_run_count,
             *non_rust,
+            exclude_dirs,
             client,
         );
 
@@ -1220,6 +1238,7 @@ mod tests {
                 background_tx,
                 ci_run_count: 0,
                 non_rust: NonRustInclusion::Exclude,
+                exclude_dirs: ExcludeDirs::default(),
                 client,
                 lint_runtime: None,
                 metadata_dispatch: test_metadata_dispatch(&client_for_dispatch),
@@ -3030,6 +3049,7 @@ mod tests {
             &mut discovered,
             5,
             NonRustInclusion::default(),
+            &ExcludeDirs::default(),
             &crate::http::HttpClient::new(test_support::test_runtime().handle().clone())
                 .expect("http client"),
         );
@@ -3074,6 +3094,7 @@ mod tests {
             &mut discovered,
             5,
             NonRustInclusion::default(),
+            &ExcludeDirs::default(),
             &crate::http::HttpClient::new(test_support::test_runtime().handle().clone())
                 .expect("http client"),
         );
