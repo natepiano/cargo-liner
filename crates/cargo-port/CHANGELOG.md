@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Re-query one publishable crate's crates.io version every minute, oldest-checked first and never the same crate more than once an hour, so a release published while cargo-port is running no longer reads as the version shown at launch. The refresh raises no fetch toast; a version that differs from the one on display raises a "New release on crates.io" toast naming the crate and both versions.
 - Turn every lint spinner for a project red while a command in its lint run is stopped waiting for a cargo file lock, and back to the accent color once the lock is acquired.
 
 ### Fixed

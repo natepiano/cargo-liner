@@ -170,6 +170,11 @@ impl App {
                 prerelease,
                 downloads,
             ),
+            BackgroundMsg::CratesIoNewRelease {
+                name,
+                previous_version,
+                version,
+            } => self.handle_crates_io_new_release(&name, &previous_version, &version),
             BackgroundMsg::RepoMeta {
                 path,
                 stars,

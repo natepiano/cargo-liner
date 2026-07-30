@@ -98,6 +98,16 @@ pub enum BackgroundMsg {
     /// A crates.io fetch finished for `name` (success or failure).
     /// Mirrors [`Self::RepoFetchComplete`].
     CratesIoFetchComplete { name: String },
+    /// The periodic refresh in `App::refresh_crates_io_if_due` found a
+    /// version for `name` that differs from the one on display. The
+    /// version itself arrives via [`Self::CratesIoVersion`], one message
+    /// per path; this one carries the comparison so the release toast is
+    /// raised once per refresh rather than once per path.
+    CratesIoNewRelease {
+        name:             String,
+        previous_version: String,
+        version:          String,
+    },
     /// GitHub repo metadata (stars, description) fetched.
     RepoMeta {
         path:        AbsolutePath,
@@ -296,6 +306,10 @@ impl BackgroundMsg {
             | Self::PullRequestDisappeared { .. }
             | Self::CratesIoFetchQueued { .. }
             | Self::CratesIoFetchComplete { .. }
+            // The refreshed version reaches the detail set through the
+            // accompanying `CratesIoVersion` messages; this variant only
+            // raises a toast.
+            | Self::CratesIoNewRelease { .. }
             | Self::ProjectDetailsDeclared { .. }
             // Live lint statuses resolve the lint-owning project before
             // invalidating detail panes; doing it in the handler keeps

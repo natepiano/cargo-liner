@@ -2,6 +2,7 @@ use std::time::Instant;
 
 use tui_pane::PERF_LOG_TARGET;
 
+use super::constants::CRATES_IO_NEW_RELEASE_TITLE;
 use crate::tui::app::App;
 
 impl App {
@@ -49,7 +50,32 @@ impl App {
     pub(super) fn handle_crates_io_fetch_complete(&mut self, name: &str) {
         self.net.crates_io_running_mut().remove(name);
         self.startup.crates_io.seen.insert(name.to_string());
+        // Every toast-bearing fetch path — startup, watcher discovery,
+        // priority fetch — lands here, so this is where the periodic
+        // refresh learns a name is already fresh. Without the stamp the
+        // first refresh would fire a minute after startup instead of an
+        // hour after the name was last queried.
+        self.crates_io_checked_at
+            .insert(name.to_string(), Instant::now());
         self.maybe_log_startup_phase_completions();
         self.sync_running_crates_io_toast();
+    }
+
+    /// A background refresh found `name` published at a version other
+    /// than the one on display. The new version is already applied by
+    /// the accompanying `BackgroundMsg::CratesIoVersion` messages; this
+    /// raises the persistent toast that says so, since the refresh is
+    /// otherwise silent and a version that changes while the user is
+    /// looking elsewhere would go unnoticed.
+    pub(super) fn handle_crates_io_new_release(
+        &mut self,
+        name: &str,
+        previous_version: &str,
+        version: &str,
+    ) {
+        self.framework.toasts.push(
+            CRATES_IO_NEW_RELEASE_TITLE,
+            format!("{name} {previous_version} → {version}"),
+        );
     }
 }

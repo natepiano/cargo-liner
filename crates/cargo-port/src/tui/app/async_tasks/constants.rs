@@ -7,6 +7,20 @@
 /// misses.
 pub(super) const CRATES_IO_FETCH_WORKERS: usize = 10;
 
+// src tui app async_tasks crates_io_handlers
+pub(super) const CRATES_IO_NEW_RELEASE_TITLE: &str = "New release on crates.io";
+
+// src tui app async_tasks crates_io_refresh
+/// Minimum gap between two background crates.io refresh requests. One
+/// crate is re-queried per gap, so a set of N stale crates takes N
+/// minutes to cover — the period stretches instead of the request rate
+/// rising.
+pub(super) const CRATES_IO_REFRESH_INTERVAL_SECS: u64 = 60;
+/// A crate becomes eligible for a background refresh only once its last
+/// crates.io query is this old, so no crate is queried more than once an
+/// hour however long the session runs.
+pub(super) const CRATES_IO_REFRESH_MIN_AGE_SECS: u64 = 3600;
+
 // src tui app async_tasks poll
 pub(super) const MAX_MSGS_PER_FRAME: usize = 50;
 /// Refresh the project volume's free capacity even when a non-project process

@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::time::Duration;
 use std::time::Instant;
 
 use tui_pane::PERF_LOG_TARGET;
@@ -95,19 +96,19 @@ impl App {
     /// once the network is back.
     pub(super) fn refetch_missing_crates_io_targets(&self) {
         let mut plan = self.collect_crates_io_fetch_plan();
-        plan.retain_paths(|path| !self.has_crates_io_version(path));
+        plan.retain_paths(|path| self.displayed_crates_io_version(path).is_none());
         self.dispatch_crates_io_fetches(plan);
     }
-    /// Whether `path` has a cached crates.io version already. Looks
-    /// the project up via either the rust-info or vendored accessor;
-    /// `None` for either resolution counts as "no version yet."
-    fn has_crates_io_version(&self, path: &AbsolutePath) -> bool {
+    /// The crates.io version currently on display for `path`, if one has
+    /// landed. Looks the project up via either the rust-info or vendored
+    /// accessor; `None` for either resolution means "no version yet."
+    pub(super) fn displayed_crates_io_version(&self, path: &AbsolutePath) -> Option<&str> {
         if let Some(rust) = self.project_list.rust_info_at_path(path.as_path()) {
-            return rust.crates_version().is_some();
+            return rust.crates_version();
         }
         self.project_list
             .vendored_at_path(path.as_path())
-            .is_some_and(|v| v.crates_version().is_some())
+            .and_then(|vendored| vendored.crates_version())
     }
     /// Fan the plan out to [`CRATES_IO_FETCH_WORKERS`] rayon workers, each
     /// driving its share through the crates.io fetch lifecycle — queued
@@ -215,6 +216,28 @@ impl CratesIoFetchPlan {
         });
     }
 
+    /// Remove and return the name whose last crates.io query is oldest,
+    /// provided that query is at least `min_age` old. A name missing from
+    /// `checked_at` has never been queried and sorts oldest. `None` means
+    /// the plan is empty or every name was queried more recently than
+    /// `min_age` — the steady state once the whole set has been covered.
+    pub(super) fn take_stalest(
+        mut self,
+        checked_at: &HashMap<String, Instant>,
+        now: Instant,
+        min_age: Duration,
+    ) -> Option<(String, Vec<AbsolutePath>)> {
+        let name = self
+            .by_name
+            .keys()
+            .max_by_key(|name| query_age(checked_at, name, now))?
+            .clone();
+        if query_age(checked_at, &name, now) < min_age {
+            return None;
+        }
+        self.by_name.remove_entry(&name)
+    }
+
     /// Split the plan into at most `workers` non-empty round-robin
     /// buckets, one per dispatch worker. Round-robin keeps each worker's
     /// share even regardless of where slow names cluster alphabetically.
@@ -227,6 +250,15 @@ impl CratesIoFetchPlan {
         buckets.retain(|bucket| !bucket.is_empty());
         buckets
     }
+}
+
+/// How long ago `name` was last queried on crates.io. A name that has
+/// never been queried reports [`Duration::MAX`] so it outranks every
+/// stamped entry.
+fn query_age(checked_at: &HashMap<String, Instant>, name: &str, now: Instant) -> Duration {
+    checked_at
+        .get(name)
+        .map_or(Duration::MAX, |at| now.saturating_duration_since(*at))
 }
 
 /// Collect one root item's publishable crates — the root package itself,
@@ -271,8 +303,13 @@ fn collect_plan_children(item: &RootItem, plan: &mut CratesIoFetchPlan) {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
 mod tests {
     use super::*;
+    use crate::tui::app::async_tasks::constants::CRATES_IO_REFRESH_MIN_AGE_SECS;
 
     fn abs(raw: &str) -> AbsolutePath { AbsolutePath::from(raw) }
 
@@ -305,6 +342,68 @@ mod tests {
             plan.by_name["tokio"],
             vec![abs("/b/tokio")],
             "surviving paths stay under their name"
+        );
+    }
+
+    #[test]
+    fn take_stalest_picks_the_oldest_query_past_the_age_gate() {
+        let min_age = Duration::from_secs(CRATES_IO_REFRESH_MIN_AGE_SECS);
+        let base = Instant::now();
+        let now = base + min_age * 2;
+        let mut plan = CratesIoFetchPlan::default();
+        for name in ["fresh", "stale", "stalest"] {
+            plan.insert(name, &abs(&format!("/x/{name}")));
+        }
+        let checked_at = HashMap::from([
+            ("fresh".to_string(), now),
+            ("stale".to_string(), base + min_age),
+            ("stalest".to_string(), base),
+        ]);
+
+        let (name, paths) = plan
+            .take_stalest(&checked_at, now, min_age)
+            .expect("one name is past the age gate");
+        assert_eq!(name, "stalest", "the oldest query goes first");
+        assert_eq!(paths, vec![abs("/x/stalest")]);
+    }
+
+    #[test]
+    fn take_stalest_prefers_a_never_queried_name() {
+        let min_age = Duration::from_secs(CRATES_IO_REFRESH_MIN_AGE_SECS);
+        let base = Instant::now();
+        let now = base + min_age * 2;
+        let mut plan = CratesIoFetchPlan::default();
+        plan.insert("queried", &abs("/x/queried"));
+        plan.insert("new", &abs("/x/new"));
+        let checked_at = HashMap::from([("queried".to_string(), base)]);
+
+        let (name, _) = plan
+            .take_stalest(&checked_at, now, min_age)
+            .expect("the unstamped name is eligible");
+        assert_eq!(
+            name, "new",
+            "a name discovered mid-session outranks every stamped one"
+        );
+    }
+
+    #[test]
+    fn take_stalest_holds_back_until_the_age_gate_passes() {
+        let min_age = Duration::from_secs(CRATES_IO_REFRESH_MIN_AGE_SECS);
+        let base = Instant::now();
+        let now = base + min_age.saturating_sub(Duration::from_millis(1));
+        let mut plan = CratesIoFetchPlan::default();
+        plan.insert("recent", &abs("/x/recent"));
+        let checked_at = HashMap::from([("recent".to_string(), base)]);
+
+        assert!(
+            plan.take_stalest(&checked_at, now, min_age).is_none(),
+            "a name queried inside the window is not re-queried"
+        );
+        assert!(
+            CratesIoFetchPlan::default()
+                .take_stalest(&HashMap::new(), now, min_age)
+                .is_none(),
+            "an empty plan yields nothing to refresh"
         );
     }
 

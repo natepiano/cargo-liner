@@ -13,6 +13,7 @@
 //! end-to-end and is the only `pub(super)` entry point — siblings in `tui/*`
 //! reach construction through that one method.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -292,6 +293,8 @@ impl AppBuilder<Started> {
             confirm: None,
             animation_started: Instant::now(),
             storage_refresh_at: Instant::now(),
+            crates_io_refresh_at: Instant::now(),
+            crates_io_checked_at: HashMap::new(),
             mouse_pos: None,
             framework,
             framework_keymap: Rc::new(framework_keymap),

@@ -488,6 +488,10 @@ impl Net {
 
     pub const fn github_status(&self) -> AvailabilityStatus { self.github.availability.status() }
 
+    pub const fn crates_io_status(&self) -> AvailabilityStatus {
+        self.crates_io.availability.status()
+    }
+
     /// Clear the GitHub sub-state on rescan: drop the repo-fetch
     /// cache, the in-flight set, and the running tracker (running
     /// fetches map + toast slot). Crates.io and the `HttpClient`
