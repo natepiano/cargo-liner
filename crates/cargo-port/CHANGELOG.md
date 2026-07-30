@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-07-30
 
 ### Added
 - Re-query one publishable crate's crates.io version every minute, oldest-checked first and never the same crate more than once an hour, so a release published while cargo-port is running no longer reads as the version shown at launch. The refresh raises no fetch toast; a version that differs from the one on display raises a "New release on crates.io" toast naming the crate and both versions.
