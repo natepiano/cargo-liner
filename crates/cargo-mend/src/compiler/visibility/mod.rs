@@ -1,3 +1,8 @@
+#[expect(
+    dead_code,
+    reason = "no consumer exists yet; the unfulfilled expectation warns and removes itself once one does"
+)]
+mod annotation;
 mod field;
 mod policy;
 mod scan;

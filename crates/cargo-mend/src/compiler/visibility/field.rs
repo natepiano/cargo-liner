@@ -15,14 +15,10 @@ use rustc_hir::Item;
 use rustc_hir::ItemKind;
 use rustc_hir::VariantData;
 use rustc_middle::middle::privacy::Level;
-use rustc_middle::ty::TyCtxt;
-use rustc_middle::ty::Visibility;
 use rustc_span::Span;
-use rustc_span::def_id::DefId;
 use rustc_span::def_id::LocalDefId;
 
-type DefIdVisibility = Visibility<DefId>;
-
+use super::annotation::VisibilityReach;
 use super::scan::FindingParams;
 use super::scan::VisibilityContext;
 use super::source;
@@ -98,17 +94,17 @@ fn check_field(
     }
 
     let field_def_id = field.def_id;
-    let field_declared = ctx.tcx.visibility(field_def_id.to_def_id());
-    let type_declared = ctx.tcx.visibility(type_def_id.to_def_id());
+    let field_declared: VisibilityReach = ctx.tcx.visibility(field_def_id.to_def_id()).into();
+    let type_declared: VisibilityReach = ctx.tcx.visibility(type_def_id.to_def_id()).into();
 
-    if !visibility_strictly_wider(ctx.tcx, field_declared, type_declared) {
+    if !field_declared.is_strictly_wider(type_declared, ctx.tcx) {
         return Ok(());
     }
     // Re-export refinement: if the type is reachable through a `pub use`, the
     // field annotation matches the type's effective visibility and should not
     // be flagged as unused.
     let type_effective = effective_type_visibility(ctx, type_def_id);
-    if is_at_least(type_effective, field_declared, ctx.tcx) {
+    if type_effective.is_at_least(field_declared, ctx.tcx) {
         return Ok(());
     }
 
@@ -144,26 +140,11 @@ fn check_field(
 fn effective_type_visibility(
     ctx: &VisibilityContext<'_, '_>,
     type_def_id: LocalDefId,
-) -> DefIdVisibility {
+) -> VisibilityReach {
     if let Some(eff) = ctx.effective_visibilities.effective_vis(type_def_id) {
-        return eff.at_level(Level::Reachable).to_def_id();
+        return eff.at_level(Level::Reachable).to_def_id().into();
     }
-    ctx.tcx.visibility(type_def_id.to_def_id())
-}
-
-fn visibility_strictly_wider(tcx: TyCtxt<'_>, lhs: DefIdVisibility, rhs: DefIdVisibility) -> bool {
-    is_at_least(lhs, rhs, tcx) && !is_at_least(rhs, lhs, tcx)
-}
-
-/// Ported from rustc's `Visibility::is_at_least`, removed in 1.97. Returns
-/// `true` when `lhs` is at least as visible as `rhs`. Body is a verbatim copy
-/// of the removed method, expressed in terms of the still-present
-/// `is_public` / `is_accessible_from`.
-fn is_at_least(lhs: DefIdVisibility, rhs: DefIdVisibility, tcx: TyCtxt<'_>) -> bool {
-    match rhs {
-        Visibility::Public => lhs.is_public(),
-        Visibility::Restricted(id) => lhs.is_accessible_from(id, tcx),
-    }
+    ctx.tcx.visibility(type_def_id.to_def_id()).into()
 }
 
 /// Returns the type's literal visibility annotation text. An empty string
