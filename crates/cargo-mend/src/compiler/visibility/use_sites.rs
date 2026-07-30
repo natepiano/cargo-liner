@@ -474,7 +474,8 @@ pub(super) fn public_reexport_targets(tcx: TyCtxt<'_>) -> HashSet<LocalDefId> {
 }
 
 /// Returns the def-path of `LocalDefId` as a `String`, e.g.
-/// `crate::tui::panes::cpu::cpu_required_pane_height`.
+/// `tui::panes::cpu::cpu_required_pane_height`. Local def-paths are rendered
+/// root-relative with no leading `crate::` and no crate-name segment.
 pub(super) fn def_path_string(tcx: TyCtxt<'_>, def_id: LocalDefId) -> String {
     tcx.def_path_str(def_id.to_def_id())
 }

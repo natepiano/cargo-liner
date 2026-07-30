@@ -177,7 +177,11 @@ fn record_forbidden_pub_crate(
     ) {
         return Ok(());
     }
-    if parent_facade_caps_at_pub_crate(ctx, item)? {
+    let parent_facade_visibility = resolve_parent_facade_visibility(ctx, item)?;
+    if matches!(
+        parent_facade_visibility,
+        Some(ParentFacadeVisibility::Crate)
+    ) {
         return Ok(());
     }
     let signature_exposure: SignatureExposure =
@@ -195,6 +199,7 @@ fn record_forbidden_pub_crate(
                 policy::forbidden_pub_crate_suggestion(
                     finding_context.module_location,
                     signature_exposure,
+                    parent_facade_visibility,
                 )
                 .to_string(),
             ),
@@ -345,7 +350,10 @@ fn maybe_record_narrow_to_pub_crate_nested(
     let (Some(name), Some(kind_label)) = (item.name, item.kind_label) else {
         return Ok(());
     };
-    if !parent_facade_caps_at_pub_crate(ctx, item)? {
+    if !matches!(
+        resolve_parent_facade_visibility(ctx, item)?,
+        Some(ParentFacadeVisibility::Crate)
+    ) {
         return Ok(());
     }
     sink.findings.push(source::build_finding(
@@ -369,12 +377,16 @@ fn maybe_record_narrow_to_pub_crate_nested(
     Ok(())
 }
 
-fn parent_facade_caps_at_pub_crate(
+/// Visibility of the parent module's `use` re-export of this item, when the
+/// parent re-exports it at all. `Crate` means `pub(crate)` is already capped
+/// where policy allows it; `Super` means the declaration cannot be narrower than
+/// `pub` without failing E0364.
+fn resolve_parent_facade_visibility(
     ctx: &VisibilityContext<'_, '_>,
     item: &ItemInfo<'_>,
-) -> Result<bool> {
+) -> Result<Option<ParentFacadeVisibility>> {
     let Some(name) = item.name else {
-        return Ok(false);
+        return Ok(None);
     };
     let status = facade::parent_facade_export_status(
         ctx.source_cache,
@@ -383,10 +395,7 @@ fn parent_facade_caps_at_pub_crate(
         item.file_path,
         name,
     )?;
-    Ok(matches!(
-        status.as_ref().map(|s| s.visibility),
-        Some(ParentFacadeVisibility::Crate)
-    ))
+    Ok(status.as_ref().map(|status| status.visibility))
 }
 
 fn parent_facade_exports_item(

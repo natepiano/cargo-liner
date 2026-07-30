@@ -186,24 +186,34 @@ pub(super) const fn forbidden_pub_crate_help(module_location: ModuleLocation) ->
     }
 }
 
-/// Suggestion for a forbidden `pub(crate)` item. When the item is structurally
-/// exposed through a reachable public signature (a return type or parameter of
-/// a function reachable at `pub(crate)`), narrowing to `pub(super)` or removing
-/// the modifier would fail to compile under `private_interfaces`: the type must
-/// stay at least as visible as the signature that exposes it. The only correct
-/// modifier is then `pub` — the compiler minimum that satisfies the signature
-/// while the private module chain still caps the actual reach. Otherwise defer
-/// to the location-based help.
+/// Suggestion for a forbidden `pub(crate)` item. Two conditions make `pub` the
+/// only modifier that compiles, and each names its own reason:
+///
+/// - **Signature exposure** — the item is structurally exposed through a reachable public signature
+///   (a return type or parameter of a function reachable at `pub(crate)`). Narrowing to
+///   `pub(super)` or removing the modifier fails under `private_interfaces`: the type must stay at
+///   least as visible as the signature that exposes it.
+/// - **A `pub(super) use` parent facade** — the parent re-exports the item one level above itself,
+///   so `pub(super)` at the declaration is narrower than its own re-export and fails with E0364.
+///   `pub(crate)` and `pub(in path)` are both forbidden by policy, which leaves `pub`; the private
+///   module chain still caps the actual reach, and the facade's `use` line states where.
+///
+/// Otherwise defer to the location-based help.
 pub(super) const fn forbidden_pub_crate_suggestion(
     module_location: ModuleLocation,
     signature_exposure: SignatureExposure,
+    parent_facade_visibility: Option<ParentFacadeVisibility>,
 ) -> &'static str {
-    match signature_exposure {
-        SignatureExposure::Present => {
+    match (signature_exposure, parent_facade_visibility) {
+        (SignatureExposure::Present, _) => {
             "this item is exposed through a public signature; consider using `pub` (a narrower \
              modifier would not compile)"
         },
-        SignatureExposure::Absent => forbidden_pub_crate_help(module_location),
+        (SignatureExposure::Absent, Some(ParentFacadeVisibility::Super)) => {
+            "the parent module re-exports this with `pub(super) use`; consider using `pub` \
+             (`pub(super)` here would not compile — the re-export would be wider than the item)"
+        },
+        (SignatureExposure::Absent, _) => forbidden_pub_crate_help(module_location),
     }
 }
 
@@ -357,6 +367,7 @@ mod tests {
 
     use super::CrateKind;
     use super::ModuleLocation;
+    use super::ParentFacadeVisibility;
     use super::ParentVisibility;
     use super::SignatureExposure;
     use super::allow_pub_crate_by_policy;
@@ -517,16 +528,33 @@ mod tests {
     #[test]
     fn forbidden_pub_crate_suggestion_recommends_pub_when_structurally_exposed() {
         assert_eq!(
-            forbidden_pub_crate_suggestion(ModuleLocation::Nested, SignatureExposure::Present),
+            forbidden_pub_crate_suggestion(
+                ModuleLocation::Nested,
+                SignatureExposure::Present,
+                None
+            ),
             "this item is exposed through a public signature; consider using `pub` (a narrower \
              modifier would not compile)"
         );
     }
 
     #[test]
+    fn forbidden_pub_crate_suggestion_recommends_pub_for_a_pub_super_parent_facade() {
+        assert_eq!(
+            forbidden_pub_crate_suggestion(
+                ModuleLocation::Nested,
+                SignatureExposure::Absent,
+                Some(ParentFacadeVisibility::Super)
+            ),
+            "the parent module re-exports this with `pub(super) use`; consider using `pub` \
+             (`pub(super)` here would not compile — the re-export would be wider than the item)"
+        );
+    }
+
+    #[test]
     fn forbidden_pub_crate_suggestion_defers_to_location_help_when_not_exposed() {
         assert_eq!(
-            forbidden_pub_crate_suggestion(ModuleLocation::Nested, SignatureExposure::Absent),
+            forbidden_pub_crate_suggestion(ModuleLocation::Nested, SignatureExposure::Absent, None),
             forbidden_pub_crate_help(ModuleLocation::Nested)
         );
     }
