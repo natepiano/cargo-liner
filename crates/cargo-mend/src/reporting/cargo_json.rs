@@ -145,8 +145,8 @@ fn compiler_message<'a>(
 
 fn rustc_diagnostic(finding: &Finding, span: RustcSpan) -> RustcDiagnostic {
     let mut children = Vec::new();
-    if !finding.message.is_empty() {
-        children.push(child(RUSTC_LEVEL_NOTE, finding.message.clone(), Vec::new()));
+    if let Some(message) = diagnostics::finding_message_not_in_headline(finding) {
+        children.push(child(RUSTC_LEVEL_NOTE, message.to_string(), Vec::new()));
     }
     if let Some(related) = &finding.related {
         children.push(child(RUSTC_LEVEL_NOTE, related.clone(), Vec::new()));
@@ -217,9 +217,9 @@ fn render_diagnostic(finding: &Finding, span: &RustcSpan, level: &str) -> String
         finding.column,
         finding.source_line,
     );
-    if !finding.message.is_empty() {
+    if let Some(message) = diagnostics::finding_message_not_in_headline(finding) {
         rendered.push_str("  = note: ");
-        rendered.push_str(&finding.message);
+        rendered.push_str(message);
         rendered.push('\n');
     }
     if let Some(related) = &finding.related {

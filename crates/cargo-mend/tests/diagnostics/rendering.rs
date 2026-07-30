@@ -259,6 +259,92 @@ fn assert_rendered_diagnostics(report: &Report, rendered: &str) {
     assert!(rendered.contains("help: consider re-exporting explicit items instead of `*`"));
 }
 
+fn assert_forbidden_visibility_json(output: &str) {
+    let expected_diagnostics = [
+        (
+            "forbidden_pub_crate",
+            "use of `pub(crate)` is forbidden by policy",
+            Some("consider using just `pub` or removing `pub(crate)` entirely"),
+        ),
+        (
+            "forbidden_pub_in_crate",
+            "use of `pub(in crate::...)` is forbidden by policy",
+            None,
+        ),
+    ];
+
+    for (code, headline, help) in expected_diagnostics {
+        let diagnostic = output
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("parse cargo JSON line"))
+            .find(|message| {
+                message
+                    .pointer("/message/code/code")
+                    .and_then(Value::as_str)
+                    == Some(code)
+            })
+            .expect("find forbidden visibility cargo diagnostic");
+        let message = diagnostic.get("message").expect("cargo diagnostic message");
+        assert_eq!(
+            message.get("message").and_then(Value::as_str),
+            Some(headline),
+            "cargo JSON headline for {code}"
+        );
+        let rendered = message
+            .get("rendered")
+            .and_then(Value::as_str)
+            .expect("cargo JSON rendered diagnostic");
+        assert_eq!(
+            rendered.matches(headline).count(),
+            1,
+            "cargo JSON rendered diagnostic should not repeat its headline for {code}"
+        );
+        let children = message
+            .get("children")
+            .and_then(Value::as_array)
+            .expect("cargo JSON diagnostic children");
+        assert!(
+            !children.iter().any(|child| {
+                child.get("level").and_then(Value::as_str) == Some("note")
+                    && child.get("message").and_then(Value::as_str) == Some(headline)
+            }),
+            "cargo JSON should not emit a headline note for {code}"
+        );
+        if let Some(help) = help {
+            assert!(
+                children.iter().any(|child| {
+                    child.get("level").and_then(Value::as_str) == Some("help")
+                        && child.get("message").and_then(Value::as_str) == Some(help)
+                }),
+                "cargo JSON is missing help for {code}"
+            );
+        }
+    }
+}
+
+fn assert_forbidden_visibility_human(rendered: &str) {
+    let expected_headlines = [
+        "use of `pub(crate)` is forbidden by policy",
+        "use of `pub(in crate::...)` is forbidden by policy",
+    ];
+
+    for headline in expected_headlines {
+        assert_eq!(
+            rendered.matches(&format!("error: {headline}")).count(),
+            1,
+            "human output should use the finding message as the headline"
+        );
+        assert!(
+            !rendered.contains(&format!("note: {headline}")),
+            "human output should not repeat the headline as a note"
+        );
+    }
+    assert!(
+        rendered.contains("help: consider using just `pub` or removing `pub(crate)` entirely"),
+        "human output is missing forbidden pub(crate) help"
+    );
+}
+
 #[test]
 fn fixture_renders_every_current_diagnostic() {
     let temp = create_all_diagnostics_fixture();
@@ -297,6 +383,7 @@ fn fixture_renders_every_current_diagnostic() {
     );
     assert_eq!(report.findings.len(), 16);
     assert_summary_matches_findings(&report);
+    assert_forbidden_visibility_json(&stdout);
 
     let rendered_output = mend_command()
         .arg("--manifest-path")
@@ -313,6 +400,7 @@ fn fixture_renders_every_current_diagnostic() {
         strip_ansi(&String::from_utf8(rendered_output.stdout).expect("decode human output"));
 
     assert_rendered_diagnostics(&report, &rendered);
+    assert_forbidden_visibility_human(&rendered);
 }
 
 #[test]

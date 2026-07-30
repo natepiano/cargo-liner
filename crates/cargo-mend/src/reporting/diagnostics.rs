@@ -79,8 +79,14 @@ enum DetailMode {
 }
 
 #[derive(Debug, Clone, Copy)]
+enum HeadlineSource {
+    Static(&'static str),
+    FindingMessage { fallback: &'static str },
+}
+
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct DiagnosticSpec {
-    pub headline:    &'static str,
+    headline:        HeadlineSource,
     pub inline_help: Option<&'static str>,
     pub help_anchor: &'static str,
     detail_mode:     DetailMode,
@@ -88,77 +94,83 @@ pub(crate) struct DiagnosticSpec {
 }
 
 static FORBIDDEN_PUB_CRATE: DiagnosticSpec = DiagnosticSpec {
-    headline:    "use of `pub(crate)` is forbidden by policy",
+    headline:    HeadlineSource::FindingMessage {
+        fallback: "use of `pub(crate)` is forbidden by policy",
+    },
     inline_help: None,
     help_anchor: "forbidden-pub-crate",
     detail_mode: DetailMode::None,
     fix_support: FixSupport::None,
 };
 static FORBIDDEN_PUB_IN_CRATE: DiagnosticSpec = DiagnosticSpec {
-    headline:    "use of `pub(in crate::...)` is forbidden by policy",
+    headline:    HeadlineSource::FindingMessage {
+        fallback: "use of `pub(in crate::...)` is forbidden by policy",
+    },
     inline_help: None,
     help_anchor: "forbidden-pub-in-crate",
     detail_mode: DetailMode::None,
     fix_support: FixSupport::None,
 };
 static REVIEW_PUB_MOD: DiagnosticSpec = DiagnosticSpec {
-    headline:    "`pub mod` requires explicit review or allowlisting",
+    headline:    HeadlineSource::Static("`pub mod` requires explicit review or allowlisting"),
     inline_help: None,
     help_anchor: "review-pub-mod",
     detail_mode: DetailMode::None,
     fix_support: FixSupport::None,
 };
 static SUSPICIOUS_PUB: DiagnosticSpec = DiagnosticSpec {
-    headline:    "`pub` is broader than this nested module boundary",
+    headline:    HeadlineSource::Static("`pub` is broader than this nested module boundary"),
     inline_help: Some("consider using: `pub(super)`"),
     help_anchor: "suspicious-pub",
     detail_mode: DetailMode::MessageRelatedAndFix,
     fix_support: FixSupport::None,
 };
 static UNUSED_PUB: DiagnosticSpec = DiagnosticSpec {
-    headline:    "`pub` item is not used outside its defining module",
+    headline:    HeadlineSource::Static("`pub` item is not used outside its defining module"),
     inline_help: Some("consider removing `pub`"),
     help_anchor: "unused-pub",
     detail_mode: DetailMode::MessageRelatedAndFix,
     fix_support: FixSupport::UnusedPub,
 };
 static PREFER_MODULE_IMPORT: DiagnosticSpec = DiagnosticSpec {
-    headline:    "function import should use module-qualified form",
+    headline:    HeadlineSource::Static("function import should use module-qualified form"),
     inline_help: None,
     help_anchor: "prefer-module-import",
     detail_mode: DetailMode::MessageRelatedAndFix,
     fix_support: FixSupport::PreferModuleImport,
 };
 static INLINE_PATH_QUALIFIED_TYPE: DiagnosticSpec = DiagnosticSpec {
-    headline:    "inline path-qualified type should use a `use` import",
+    headline:    HeadlineSource::Static("inline path-qualified type should use a `use` import"),
     inline_help: None,
     help_anchor: "inline-path-qualified-type",
     detail_mode: DetailMode::MessageRelatedAndFix,
     fix_support: FixSupport::InlinePathQualifiedType,
 };
 static SHORTEN_LOCAL_CRATE_IMPORT: DiagnosticSpec = DiagnosticSpec {
-    headline:    "crate-relative import can be shortened to a local-relative import",
+    headline:    HeadlineSource::Static(
+        "crate-relative import can be shortened to a local-relative import",
+    ),
     inline_help: None,
     help_anchor: "shorten-local-crate-import",
     detail_mode: DetailMode::MessageRelatedAndFix,
     fix_support: FixSupport::ShortenImport,
 };
 static REPLACE_DEEP_SUPER_IMPORT: DiagnosticSpec = DiagnosticSpec {
-    headline:    "deep `super::` chain should use a `crate::` path",
+    headline:    HeadlineSource::Static("deep `super::` chain should use a `crate::` path"),
     inline_help: None,
     help_anchor: "replace-deep-super-import",
     detail_mode: DetailMode::MessageRelatedAndFix,
     fix_support: FixSupport::ShortenImport,
 };
 static WILDCARD_PARENT_PUB_USE: DiagnosticSpec = DiagnosticSpec {
-    headline:    "parent module `pub use *` should be explicit",
+    headline:    HeadlineSource::Static("parent module `pub use *` should be explicit"),
     inline_help: Some("consider re-exporting explicit items instead of `*`"),
     help_anchor: "wildcard-parent-pub-use",
     detail_mode: DetailMode::None,
     fix_support: FixSupport::None,
 };
 static INTERNAL_PARENT_PUB_USE_FACADE: DiagnosticSpec = DiagnosticSpec {
-    headline:    "parent module `pub use` is acting as an internal facade",
+    headline:    HeadlineSource::Static("parent module `pub use` is acting as an internal facade"),
     inline_help: Some(
         "consider removing this parent facade and importing the item from its defining child module",
     ),
@@ -167,21 +179,25 @@ static INTERNAL_PARENT_PUB_USE_FACADE: DiagnosticSpec = DiagnosticSpec {
     fix_support: FixSupport::InternalParentFacade,
 };
 static NARROW_TO_PUB_CRATE: DiagnosticSpec = DiagnosticSpec {
-    headline:    "`pub` exceeds the item's effective reach — use `pub(crate)`",
+    headline:    HeadlineSource::Static(
+        "`pub` exceeds the item's effective reach — use `pub(crate)`",
+    ),
     inline_help: Some("consider using: `pub(crate)`"),
     help_anchor: "narrow-to-pub-crate",
     detail_mode: DetailMode::MessageRelatedAndFix,
     fix_support: FixSupport::NarrowToPubCrate,
 };
 static FIELD_VISIBILITY_WIDER_THAN_TYPE: DiagnosticSpec = DiagnosticSpec {
-    headline:    "field visibility is wider than its containing type",
+    headline:    HeadlineSource::Static("field visibility is wider than its containing type"),
     inline_help: None,
     help_anchor: "field-visibility-wider-than-type",
     detail_mode: DetailMode::MessageRelatedAndFix,
     fix_support: FixSupport::FieldVisibility,
 };
 static IMPORTS_AT_TOP: DiagnosticSpec = DiagnosticSpec {
-    headline:    "`use` statement should live at the top of the file or inline module",
+    headline:    HeadlineSource::Static(
+        "`use` statement should live at the top of the file or inline module",
+    ),
     inline_help: None,
     help_anchor: "imports-at-top",
     detail_mode: DetailMode::MessageRelatedAndFix,
@@ -356,9 +372,29 @@ pub(crate) fn effective_fixability(finding: &Finding) -> FixSupport {
 }
 
 pub(crate) fn finding_headline(finding: &Finding) -> String {
-    diagnostic_spec(finding.diagnostic_code)
-        .headline
-        .to_string()
+    match diagnostic_spec(finding.diagnostic_code).headline {
+        HeadlineSource::Static(headline) => headline.to_string(),
+        HeadlineSource::FindingMessage { fallback } => {
+            if finding.message.is_empty() {
+                fallback.to_string()
+            } else {
+                finding.message.clone()
+            }
+        },
+    }
+}
+
+pub(crate) fn finding_message_not_in_headline(finding: &Finding) -> Option<&str> {
+    if finding.message.is_empty()
+        || matches!(
+            diagnostic_spec(finding.diagnostic_code).headline,
+            HeadlineSource::FindingMessage { .. }
+        )
+    {
+        None
+    } else {
+        Some(&finding.message)
+    }
 }
 
 pub(crate) fn detail_reasons(finding: &Finding) -> Vec<String> {
@@ -366,8 +402,8 @@ pub(crate) fn detail_reasons(finding: &Finding) -> Vec<String> {
         DetailMode::None => Vec::new(),
         DetailMode::MessageRelatedAndFix => {
             let mut reasons = Vec::new();
-            if !finding.message.is_empty() {
-                reasons.push(finding.message.clone());
+            if let Some(message) = finding_message_not_in_headline(finding) {
+                reasons.push(message.to_string());
             }
             if let Some(related) = &finding.related {
                 reasons.push(related.clone());
@@ -393,4 +429,50 @@ pub(crate) fn finding_help_url(finding: &Finding) -> String {
         "{HELP_URL_BASE}#{}",
         diagnostic_spec(finding.diagnostic_code).help_anchor
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Finding;
+    use super::FixSupport;
+    use super::Severity;
+    use super::finding_headline;
+    use crate::config::DiagnosticCode;
+
+    #[test]
+    fn forbidden_headline_uses_message_with_static_fallback() {
+        for (diagnostic_code, fallback) in [
+            (
+                DiagnosticCode::ForbiddenPubCrate,
+                "use of `pub(crate)` is forbidden by policy",
+            ),
+            (
+                DiagnosticCode::ForbiddenPubInCrate,
+                "use of `pub(in crate::...)` is forbidden by policy",
+            ),
+        ] {
+            let mut finding = Finding {
+                severity: Severity::Error,
+                diagnostic_code,
+                path: "src/lib.rs".to_string(),
+                line: 1,
+                column: 1,
+                highlight_len: 1,
+                source_line: "pub(crate) struct Example;".to_string(),
+                item: Some("Example".to_string()),
+                message: "custom forbidden visibility outcome".to_string(),
+                suggestion: None,
+                fix_support: FixSupport::None,
+                related: None,
+            };
+
+            assert_eq!(
+                finding_headline(&finding),
+                "custom forbidden visibility outcome"
+            );
+
+            finding.message.clear();
+            assert_eq!(finding_headline(&finding), fallback);
+        }
+    }
 }
