@@ -4,8 +4,8 @@ use clap::Args;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct FixCli {
-    pub(crate) execution:       FixExecution,
-    pub(crate) requested_fixes: BTreeSet<FixRequest>,
+    pub execution:       FixExecution,
+    pub requested_fixes: BTreeSet<FixRequest>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

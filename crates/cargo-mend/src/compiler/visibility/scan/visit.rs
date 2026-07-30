@@ -68,10 +68,10 @@ pub(super) fn visit_item(
                 item.vis_span,
                 item.kind.ident().map(|ident| ident.span),
             ),
-            category:        if matches!(item.kind, ItemKind::Mod(..)) {
-                ItemCategory::Module
-            } else {
-                ItemCategory::NonModule
+            category:        match item.kind {
+                ItemKind::Mod(..) => ItemCategory::Module,
+                ItemKind::Use(..) => ItemCategory::Use,
+                _ => ItemCategory::Declaration,
             },
             impl_self_name:  None,
         },
@@ -109,7 +109,7 @@ pub(super) fn visit_impl_item(
             kind_label: Some(source::impl_item_kind_label(item.kind)),
             name: Some(name.as_str()),
             highlight_span: source::highlight_span(visibility_span, Some(item.ident.span)),
-            category: ItemCategory::NonModule,
+            category: ItemCategory::Declaration,
             impl_self_name,
         },
         sink,
@@ -142,7 +142,7 @@ pub(super) fn visit_foreign_item(
             kind_label:      Some(source::foreign_item_kind_label(item.kind)),
             name:            Some(name.as_str()),
             highlight_span:  source::highlight_span(item.vis_span, Some(item.ident.span)),
-            category:        ItemCategory::NonModule,
+            category:        ItemCategory::Declaration,
             impl_self_name:  None,
         },
         sink,

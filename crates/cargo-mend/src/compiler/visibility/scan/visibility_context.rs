@@ -39,7 +39,8 @@ pub struct VisibilityContext<'a, 'tcx> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ItemCategory {
     Module,
-    NonModule,
+    Declaration,
+    Use,
 }
 
 pub struct ItemInfo<'a> {

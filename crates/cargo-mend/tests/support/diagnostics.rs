@@ -115,79 +115,114 @@ impl FixSupport {
 
 #[derive(Debug, Clone, Copy)]
 pub struct DiagnosticSpec {
-    pub headline:    &'static str,
+    pub headline:    HeadlineSource,
     pub help_anchor: &'static str,
     pub fix_support: FixSupport,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum HeadlineSource {
+    Literal(&'static str),
+    FindingMessage { fallback: &'static str },
+}
+
+impl HeadlineSource {
+    pub const fn resolve(self, headline: &str) -> &str {
+        match self {
+            Self::Literal(literal) => literal,
+            Self::FindingMessage { fallback } => {
+                if headline.is_empty() {
+                    fallback
+                } else {
+                    headline
+                }
+            },
+        }
+    }
+}
+
 pub const fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
     const FORBIDDEN_PUB_CRATE: DiagnosticSpec = DiagnosticSpec {
-        headline:    "use of `pub(crate)` is forbidden by policy",
+        headline:    HeadlineSource::FindingMessage {
+            fallback: "use of `pub(crate)` is forbidden by policy",
+        },
         help_anchor: "forbidden-pub-crate",
         fix_support: FixSupport::None,
     };
     const FORBIDDEN_PUB_IN_CRATE: DiagnosticSpec = DiagnosticSpec {
-        headline:    "use of `pub(in crate::...)` is forbidden by policy",
+        headline:    HeadlineSource::FindingMessage {
+            fallback: "use of `pub(in crate::...)` is forbidden by policy",
+        },
         help_anchor: "forbidden-pub-in-crate",
         fix_support: FixSupport::None,
     };
     const REVIEW_PUB_MOD: DiagnosticSpec = DiagnosticSpec {
-        headline:    "`pub mod` requires explicit review or allowlisting",
+        headline:    HeadlineSource::Literal("`pub mod` requires explicit review or allowlisting"),
         help_anchor: "review-pub-mod",
         fix_support: FixSupport::None,
     };
     const SUSPICIOUS_PUB: DiagnosticSpec = DiagnosticSpec {
-        headline:    "`pub` is broader than this nested module boundary",
+        headline:    HeadlineSource::Literal("`pub` is broader than this nested module boundary"),
         help_anchor: "suspicious-pub",
         fix_support: FixSupport::None,
     };
     const UNUSED_PUB: DiagnosticSpec = DiagnosticSpec {
-        headline:    "`pub` item is not used outside its defining module",
+        headline:    HeadlineSource::Literal("`pub` item is not used outside its defining module"),
         help_anchor: "unused-pub",
         fix_support: FixSupport::UnusedPub,
     };
     const PREFER_MODULE_IMPORT: DiagnosticSpec = DiagnosticSpec {
-        headline:    "function import should use module-qualified form",
+        headline:    HeadlineSource::Literal("function import should use module-qualified form"),
         help_anchor: "prefer-module-import",
         fix_support: FixSupport::PreferModuleImport,
     };
     const INLINE_PATH_QUALIFIED_TYPE: DiagnosticSpec = DiagnosticSpec {
-        headline:    "inline path-qualified type should use a `use` import",
+        headline:    HeadlineSource::Literal(
+            "inline path-qualified type should use a `use` import",
+        ),
         help_anchor: "inline-path-qualified-type",
         fix_support: FixSupport::InlinePathQualifiedType,
     };
     const SHORTEN_LOCAL_CRATE_IMPORT: DiagnosticSpec = DiagnosticSpec {
-        headline:    "crate-relative import can be shortened to a local-relative import",
+        headline:    HeadlineSource::Literal(
+            "crate-relative import can be shortened to a local-relative import",
+        ),
         help_anchor: "shorten-local-crate-import",
         fix_support: FixSupport::ShortenImport,
     };
     const REPLACE_DEEP_SUPER_IMPORT: DiagnosticSpec = DiagnosticSpec {
-        headline:    "deep `super::` chain should use a `crate::` path",
+        headline:    HeadlineSource::Literal("deep `super::` chain should use a `crate::` path"),
         help_anchor: "replace-deep-super-import",
         fix_support: FixSupport::ShortenImport,
     };
     const WILDCARD_PARENT_PUB_USE: DiagnosticSpec = DiagnosticSpec {
-        headline:    "parent module `pub use *` should be explicit",
+        headline:    HeadlineSource::Literal("parent module `pub use *` should be explicit"),
         help_anchor: "wildcard-parent-pub-use",
         fix_support: FixSupport::None,
     };
     const INTERNAL_PARENT_PUB_USE_FACADE: DiagnosticSpec = DiagnosticSpec {
-        headline:    "parent module `pub use` is acting as an internal facade",
+        headline:    HeadlineSource::Literal(
+            "parent module `pub use` is acting as an internal facade",
+        ),
         help_anchor: "internal-parent-pub-use-facade",
         fix_support: FixSupport::InternalParentFacade,
     };
     const NARROW_TO_PUB_CRATE: DiagnosticSpec = DiagnosticSpec {
-        headline:    "`pub` exceeds the item's effective reach — use `pub(crate)`",
+        headline:    HeadlineSource::Literal(
+            "`pub` exceeds the item's effective reach — use `pub(crate)`",
+        ),
         help_anchor: "narrow-to-pub-crate",
         fix_support: FixSupport::NarrowToPubCrate,
     };
     const FIELD_VISIBILITY_WIDER_THAN_TYPE: DiagnosticSpec = DiagnosticSpec {
-        headline:    "field visibility is wider than its containing type",
+        headline:    HeadlineSource::Literal("field visibility is wider than its containing type"),
         help_anchor: "field-visibility-wider-than-type",
         fix_support: FixSupport::FieldVisibility,
     };
     const IMPORTS_AT_TOP: DiagnosticSpec = DiagnosticSpec {
-        headline:    "`use` statement should live at the top of the file or inline module",
+        headline:    HeadlineSource::Literal(
+            "`use` statement should live at the top of the file or inline module",
+        ),
         help_anchor: "imports-at-top",
         fix_support: FixSupport::ImportsAtTop,
     };

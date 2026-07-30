@@ -1,3 +1,9 @@
+use anyhow::Result;
+
+use super::annotation::VisibilityAnnotation;
+use crate::compiler::facade::ParentFacadeVisibility;
+use crate::compiler::persistence::FindingsSink;
+
 mod classify;
 mod finding_params;
 mod record;
@@ -16,3 +22,21 @@ pub(super) use visibility_context::ItemCategory;
 pub(super) use visibility_context::ItemInfo;
 pub(super) use visibility_context::VisibilityContext;
 pub(super) use visibility_context::collect_and_store_findings;
+
+pub(super) fn record_forbidden_visibility_annotation(
+    ctx: &VisibilityContext<'_, '_>,
+    item: &ItemInfo<'_>,
+    annotation: &VisibilityAnnotation<'_>,
+    parent_facade_visibility: Option<ParentFacadeVisibility>,
+    sink: &mut FindingsSink,
+) -> Result<bool> {
+    let finding_context = classify::visibility_finding_context(ctx, item);
+    record::record_forbidden_visibility_annotation(
+        ctx,
+        item,
+        annotation,
+        &finding_context,
+        parent_facade_visibility,
+        sink,
+    )
+}

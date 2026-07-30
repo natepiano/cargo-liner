@@ -384,7 +384,15 @@ mod tests {
             "item",
             1,
         )]);
-        wrong_schema.version = FINDINGS_SCHEMA_VERSION + 1;
+        wrong_schema.pub_use_fix_facts.push(StoredPubUseFixFact {
+            child_path:      fixture.crate_root.to_string_lossy().into_owned(),
+            child_line:      2,
+            child_item_name: "Child".to_string(),
+            parent_path:     fixture.crate_root.to_string_lossy().into_owned(),
+            parent_line:     3,
+            child_module:    "child".to_string(),
+        });
+        wrong_schema.version = FINDINGS_SCHEMA_VERSION - 1;
         let mut wrong_analysis = fixture.report_with_findings(vec![stored_finding(
             DiagnosticCode::ForbiddenPubCrate,
             &fixture.crate_root,
@@ -411,6 +419,7 @@ mod tests {
         .expect("load report");
 
         assert!(loaded.findings.is_empty());
+        assert!(loaded.facts.pub_use_fix_facts.iter().next().is_none());
     }
 
     #[test]

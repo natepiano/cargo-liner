@@ -220,8 +220,14 @@ fn write_field_visibility_fixture(root: &Path) {
 fn assert_rendered_diagnostics(report: &Report, rendered: &str) {
     for &code in DiagnosticCode::ALL {
         let spec = diagnostic_spec(code);
+        let finding = report
+            .findings
+            .iter()
+            .find(|finding| finding.code == code)
+            .unwrap_or_else(|| panic!("fixture is missing finding for {code:?}"));
+        let headline = spec.headline.resolve(&finding.headline);
         assert!(
-            rendered.contains(spec.headline),
+            rendered.contains(headline),
             "rendered output is missing headline for {code:?}",
         );
         let help_url = format!(
@@ -259,21 +265,24 @@ fn assert_rendered_diagnostics(report: &Report, rendered: &str) {
     assert!(rendered.contains("help: consider re-exporting explicit items instead of `*`"));
 }
 
-fn assert_forbidden_visibility_json(output: &str) {
+fn assert_forbidden_visibility_json(output: &str, report: &Report) {
     let expected_diagnostics = [
         (
             "forbidden_pub_crate",
-            "use of `pub(crate)` is forbidden by policy",
             Some("consider using just `pub` or removing `pub(crate)` entirely"),
         ),
-        (
-            "forbidden_pub_in_crate",
-            "use of `pub(in crate::...)` is forbidden by policy",
-            None,
-        ),
+        ("forbidden_pub_in_crate", None),
     ];
 
-    for (code, headline, help) in expected_diagnostics {
+    for (code, help) in expected_diagnostics {
+        let headline = report
+            .findings
+            .iter()
+            .find(|finding| finding.code.as_str() == code)
+            .map_or_else(
+                || panic!("fixture is missing finding for {code}"),
+                |finding| finding.headline.as_str(),
+            );
         let diagnostic = output
             .lines()
             .map(|line| serde_json::from_str::<Value>(line).expect("parse cargo JSON line"))
@@ -322,13 +331,19 @@ fn assert_forbidden_visibility_json(output: &str) {
     }
 }
 
-fn assert_forbidden_visibility_human(rendered: &str) {
-    let expected_headlines = [
-        "use of `pub(crate)` is forbidden by policy",
-        "use of `pub(in crate::...)` is forbidden by policy",
-    ];
-
-    for headline in expected_headlines {
+fn assert_forbidden_visibility_human(rendered: &str, report: &Report) {
+    for code in [
+        DiagnosticCode::ForbiddenPubCrate,
+        DiagnosticCode::ForbiddenPubInCrate,
+    ] {
+        let headline = report
+            .findings
+            .iter()
+            .find(|finding| finding.code == code)
+            .map_or_else(
+                || panic!("fixture is missing finding for {code:?}"),
+                |finding| finding.headline.as_str(),
+            );
         assert_eq!(
             rendered.matches(&format!("error: {headline}")).count(),
             1,
@@ -383,7 +398,7 @@ fn fixture_renders_every_current_diagnostic() {
     );
     assert_eq!(report.findings.len(), 16);
     assert_summary_matches_findings(&report);
-    assert_forbidden_visibility_json(&stdout);
+    assert_forbidden_visibility_json(&stdout, &report);
 
     let rendered_output = mend_command()
         .arg("--manifest-path")
@@ -400,7 +415,7 @@ fn fixture_renders_every_current_diagnostic() {
         strip_ansi(&String::from_utf8(rendered_output.stdout).expect("decode human output"));
 
     assert_rendered_diagnostics(&report, &rendered);
-    assert_forbidden_visibility_human(&rendered);
+    assert_forbidden_visibility_human(&rendered, &report);
 }
 
 #[test]

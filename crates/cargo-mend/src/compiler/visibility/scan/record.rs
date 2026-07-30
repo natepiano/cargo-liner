@@ -20,6 +20,9 @@ use crate::compiler::facade;
 use crate::compiler::facade::ParentFacadeVisibility;
 use crate::compiler::persistence::FindingsSink;
 use crate::compiler::persistence::StoredPubUseFixFact;
+use crate::compiler::visibility::annotation::PathSpelling;
+use crate::compiler::visibility::annotation::VisibilityAnnotation;
+use crate::compiler::visibility::annotation::VisibilitySyntax;
 use crate::compiler::visibility::policy;
 use crate::compiler::visibility::source;
 use crate::compiler::visibility::use_sites;
@@ -33,14 +36,33 @@ pub(super) fn record_visibility_findings(
     item: &ItemInfo<'_>,
     sink: &mut FindingsSink,
 ) -> Result<()> {
+    let Some(annotation) =
+        VisibilityAnnotation::from_item(item.visibility_text, item.def_id, ctx.tcx)
+    else {
+        return Ok(());
+    };
     let finding_context = classify::visibility_finding_context(ctx, item);
+    let parent_facade_visibility = match annotation.syntax() {
+        VisibilitySyntax::Crate | VisibilitySyntax::InCrate => {
+            resolve_parent_facade_visibility(ctx, item)?
+        },
+        _ => None,
+    };
 
-    record_forbidden_pub_crate(ctx, item, &finding_context, sink)?;
-    record_forbidden_pub_in_crate(ctx, item, sink)?;
-    record_review_pub_mod(ctx, item, &finding_context, sink)?;
-    maybe_record_unused_pub(ctx, item, &finding_context, sink)?;
+    if record_forbidden_visibility_annotation(
+        ctx,
+        item,
+        &annotation,
+        &finding_context,
+        parent_facade_visibility,
+        sink,
+    )? {
+        return Ok(());
+    }
+    record_review_pub_mod(ctx, item, &annotation, &finding_context, sink)?;
+    maybe_record_unused_pub(ctx, item, &annotation, &finding_context, sink)?;
 
-    if item.visibility_text == "pub"
+    if matches!(annotation.syntax(), VisibilitySyntax::Public)
         && finding_context.parent_visibility == ParentVisibility::Private
         && policy::is_top_level_module_file(ctx.source_root, ctx.root_module, item.file_path)
         && policy::allow_pub_crate_by_policy(
@@ -52,7 +74,7 @@ pub(super) fn record_visibility_findings(
         maybe_record_narrow_to_pub_crate(ctx, item, sink)?;
     }
 
-    if item.visibility_text == "pub"
+    if matches!(annotation.syntax(), VisibilitySyntax::Public)
         && finding_context.parent_visibility == ParentVisibility::Private
         && !policy::is_top_level_module_file(ctx.source_root, ctx.root_module, item.file_path)
         && finding_context.crate_kind != CrateKind::IntegrationTest
@@ -60,7 +82,7 @@ pub(super) fn record_visibility_findings(
         maybe_record_narrow_to_pub_crate_nested(ctx, item, sink)?;
     }
 
-    if item.visibility_text == "pub"
+    if matches!(annotation.syntax(), VisibilitySyntax::Public)
         && !policy::is_boundary_file(ctx.source_root, ctx.root_module, item.file_path)
     {
         maybe_record_suspicious_pub(
@@ -85,10 +107,13 @@ pub(super) fn record_visibility_findings(
 fn maybe_record_unused_pub(
     ctx: &VisibilityContext<'_, '_>,
     item: &ItemInfo<'_>,
+    annotation: &VisibilityAnnotation<'_>,
     finding_context: &VisibilityFindingContext,
     sink: &mut FindingsSink,
 ) -> Result<()> {
-    if item.visibility_text != "pub" || item.category == ItemCategory::Module {
+    if !matches!(annotation.syntax(), VisibilitySyntax::Public)
+        || item.category == ItemCategory::Module
+    {
         return Ok(());
     }
     let (Some(name), Some(kind_label)) = (item.name, item.kind_label) else {
@@ -161,31 +186,65 @@ fn pub_item_is_allowlisted(
         .any(|allowed| allowed == &item_key)
 }
 
+pub(super) fn record_forbidden_visibility_annotation(
+    ctx: &VisibilityContext<'_, '_>,
+    item: &ItemInfo<'_>,
+    annotation: &VisibilityAnnotation<'_>,
+    finding_context: &VisibilityFindingContext,
+    parent_facade_visibility: Option<ParentFacadeVisibility>,
+    sink: &mut FindingsSink,
+) -> Result<bool> {
+    match annotation.syntax() {
+        VisibilitySyntax::Crate | VisibilitySyntax::InCrate => record_forbidden_pub_crate(
+            ctx,
+            item,
+            annotation,
+            finding_context,
+            parent_facade_visibility,
+            sink,
+        ),
+        VisibilitySyntax::InParent | VisibilitySyntax::InCurrent | VisibilitySyntax::InPath(_) => {
+            record_forbidden_pub_in_crate(ctx, item, annotation, sink)
+        },
+        VisibilitySyntax::Private
+        | VisibilitySyntax::Public
+        | VisibilitySyntax::Parent
+        | VisibilitySyntax::Current => Ok(false),
+    }
+}
+
 fn record_forbidden_pub_crate(
     ctx: &VisibilityContext<'_, '_>,
     item: &ItemInfo<'_>,
+    annotation: &VisibilityAnnotation<'_>,
     finding_context: &VisibilityFindingContext,
+    parent_facade_visibility: Option<ParentFacadeVisibility>,
     sink: &mut FindingsSink,
-) -> Result<()> {
-    if !matches!(item.visibility_text, "pub(crate)") {
-        return Ok(());
-    }
-    if policy::allow_pub_crate_by_policy(
+) -> Result<bool> {
+    let pub_crate_is_permitted = policy::allow_pub_crate_by_policy(
         finding_context.crate_kind,
         finding_context.module_location,
         finding_context.parent_visibility,
-    ) {
-        return Ok(());
-    }
-    let parent_facade_visibility = resolve_parent_facade_visibility(ctx, item)?;
-    if matches!(
+    ) || matches!(
         parent_facade_visibility,
         Some(ParentFacadeVisibility::Crate)
-    ) {
-        return Ok(());
+    );
+    if matches!(annotation.syntax(), VisibilitySyntax::Crate) && pub_crate_is_permitted {
+        return Ok(false);
     }
     let signature_exposure: SignatureExposure =
         policy::has_signature_exposure_allowance(ctx, item.file_path, item.name)?.into();
+    let suggestion =
+        if matches!(annotation.syntax(), VisibilitySyntax::InCrate) && pub_crate_is_permitted {
+            String::from("consider using: `pub(crate)`")
+        } else {
+            policy::forbidden_pub_crate_suggestion(
+                finding_context.module_location,
+                signature_exposure,
+                parent_facade_visibility,
+            )
+            .to_string()
+        };
     sink.findings.push(source::build_finding(
         ctx.tcx,
         item.file_path,
@@ -194,59 +253,70 @@ fn record_forbidden_pub_crate(
             severity:                Severity::Error,
             diagnostic_code:         DiagnosticCode::ForbiddenPubCrate,
             item:                    None,
-            message:                 "use of `pub(crate)` is forbidden by policy".to_string(),
-            suggestion:              Some(
-                policy::forbidden_pub_crate_suggestion(
-                    finding_context.module_location,
-                    signature_exposure,
-                    parent_facade_visibility,
-                )
-                .to_string(),
+            message:                 format!(
+                "use of `{}` is forbidden by policy",
+                annotation.source()
             ),
+            suggestion:              Some(suggestion),
             fix_support:             FixSupport::None,
             related:                 None,
             item_def_path:           None,
             narrower_scope_def_path: None,
         },
     )?);
-    Ok(())
+    Ok(true)
 }
 
 fn record_forbidden_pub_in_crate(
     ctx: &VisibilityContext<'_, '_>,
     item: &ItemInfo<'_>,
+    annotation: &VisibilityAnnotation<'_>,
     sink: &mut FindingsSink,
-) -> Result<()> {
-    if !item.visibility_text.starts_with("pub(in crate::") {
-        return Ok(());
-    }
+) -> Result<bool> {
+    let suggestion = match annotation.syntax() {
+        VisibilitySyntax::InParent => Some(String::from("consider using: `pub(super)`")),
+        VisibilitySyntax::InCurrent => Some(String::from("consider using: `pub(self)`")),
+        VisibilitySyntax::InPath(PathSpelling::CrateRooted) => None,
+        VisibilitySyntax::InPath(PathSpelling::Relative) => Some(format!(
+            "consider using: `{}`",
+            annotation.reach(item.def_id, ctx.tcx).to_source(ctx.tcx)
+        )),
+        VisibilitySyntax::Private
+        | VisibilitySyntax::Public
+        | VisibilitySyntax::Crate
+        | VisibilitySyntax::Parent
+        | VisibilitySyntax::Current
+        | VisibilitySyntax::InCrate => return Ok(false),
+    };
     sink.findings.push(source::build_finding(
         ctx.tcx,
         item.file_path,
         item.highlight_span,
         FindingParams {
-            severity:                Severity::Error,
-            diagnostic_code:         DiagnosticCode::ForbiddenPubInCrate,
-            item:                    None,
-            message:                 "use of `pub(in crate::...)` is forbidden by policy"
-                .to_string(),
-            suggestion:              None,
-            fix_support:             FixSupport::None,
-            related:                 None,
-            item_def_path:           None,
+            severity: Severity::Error,
+            diagnostic_code: DiagnosticCode::ForbiddenPubInCrate,
+            item: None,
+            message: format!("use of `{}` is forbidden by policy", annotation.source()),
+            suggestion,
+            fix_support: FixSupport::None,
+            related: None,
+            item_def_path: None,
             narrower_scope_def_path: None,
         },
     )?);
-    Ok(())
+    Ok(true)
 }
 
 fn record_review_pub_mod(
     ctx: &VisibilityContext<'_, '_>,
     item: &ItemInfo<'_>,
+    annotation: &VisibilityAnnotation<'_>,
     finding_context: &VisibilityFindingContext,
     sink: &mut FindingsSink,
 ) -> Result<()> {
-    if item.category != ItemCategory::Module || !item.visibility_text.starts_with("pub") {
+    if item.category != ItemCategory::Module
+        || matches!(annotation.syntax(), VisibilitySyntax::Private)
+    {
         return Ok(());
     }
     // A crate-root `pub mod prelude;` is exempt by default (global `allow_prelude_pub_mod`).

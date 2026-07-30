@@ -18,8 +18,12 @@ use rustc_middle::middle::privacy::Level;
 use rustc_span::Span;
 use rustc_span::def_id::LocalDefId;
 
+use super::annotation::VisibilityAnnotation;
 use super::annotation::VisibilityReach;
+use super::scan;
 use super::scan::FindingParams;
+use super::scan::ItemCategory;
+use super::scan::ItemInfo;
 use super::scan::VisibilityContext;
 use super::source;
 use crate::compiler::persistence::FindingsSink;
@@ -78,6 +82,27 @@ fn check_field(
     if field_visibility_text.is_empty() {
         return Ok(());
     }
+    let field_def_id = field.def_id;
+    let Some(annotation) =
+        VisibilityAnnotation::from_item(&field_visibility_text, field_def_id, ctx.tcx)
+    else {
+        return Ok(());
+    };
+    let highlight_span = field_highlight_span(field);
+    let field_name = field.ident.to_string();
+    let field_info = ItemInfo {
+        def_id: field_def_id,
+        file_path: &file_path,
+        visibility_text: &field_visibility_text,
+        kind_label: Some("field"),
+        name: Some(field_name.as_str()),
+        highlight_span,
+        category: ItemCategory::Declaration,
+        impl_self_name: None,
+    };
+    if scan::record_forbidden_visibility_annotation(ctx, &field_info, &annotation, None, sink)? {
+        return Ok(());
+    }
 
     let Some(type_visibility_annotation_text) = type_visibility_text(ctx, type_def_id)? else {
         return Ok(());
@@ -93,7 +118,6 @@ fn check_field(
         return Ok(());
     }
 
-    let field_def_id = field.def_id;
     let field_declared: VisibilityReach = ctx.tcx.visibility(field_def_id.to_def_id()).into();
     let type_declared: VisibilityReach = ctx.tcx.visibility(type_def_id.to_def_id()).into();
 
@@ -108,8 +132,6 @@ fn check_field(
         return Ok(());
     }
 
-    let highlight_span = field_highlight_span(field);
-    let field_name = field.ident.to_string();
     let finding = source::build_finding(
         ctx.tcx,
         &file_path,

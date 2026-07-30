@@ -6,7 +6,7 @@ use clap::Args;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct CargoCheckCli {
-    pub(crate) workspace_selection: WorkspaceSelection,
+    pub workspace_selection: WorkspaceSelection,
 
     pub package: Vec<String>,
 
@@ -16,7 +16,7 @@ pub(crate) struct CargoCheckCli {
 
     pub positional_manifest_path: Option<PathBuf>,
 
-    pub(crate) target_selections: BTreeSet<TargetSelection>,
+    pub target_selections: BTreeSet<TargetSelection>,
 
     pub bin: Vec<String>,
 

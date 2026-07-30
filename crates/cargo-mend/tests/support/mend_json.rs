@@ -246,6 +246,11 @@ fn finding_from_compiler_message(message: &Value) -> super::report::Finding {
 
     super::report::Finding {
         code,
+        headline: diagnostic
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
         path: span
             .and_then(|span| span.get("file_name"))
             .and_then(Value::as_str)

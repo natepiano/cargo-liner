@@ -7,6 +7,8 @@ use super::FixSupport;
 pub struct Finding {
     pub code:        DiagnosticCode,
     #[serde(default)]
+    pub headline:    String,
+    #[serde(default)]
     pub path:        String,
     #[serde(default)]
     pub item:        Option<String>,
