@@ -205,15 +205,13 @@ impl TestApp {
     }
 
     fn into_quiet_app(mut self) -> App {
-        let app = self.app.take().expect("test app should be live");
+        let mut app = self.app.take().expect("test app should be live");
         assert_eq!(
             app.startup_effect_counts().real_total(),
             0,
             "only quiet fixtures may return an unowned App"
         );
-        if let Some(fixture_dirs) = self.fixture_dirs.take() {
-            fixture_dirs.persist_for_returned_app();
-        }
+        app.fixture_dirs = self.fixture_dirs.take();
         app
     }
 }
@@ -261,7 +259,11 @@ impl OverrideGuards {
     }
 }
 
-struct FixtureDirs {
+/// The four temp directories a fixture points the config, keymap, themes,
+/// and cache paths at. `TestApp` owns them while it is live; `into_quiet_app`
+/// transfers them to [`App::fixture_dirs`] so a returned bare `App` keeps
+/// them alive for exactly as long as it reads from them.
+pub(super) struct FixtureDirs {
     cache:  TempDir,
     config: TempDir,
     keymap: TempDir,
@@ -285,19 +287,6 @@ impl FixtureDirs {
     fn keymap_path(&self) -> PathBuf { self.keymap.path().join(KEYMAP_FILE) }
 
     fn themes_path(&self) -> PathBuf { self.themes.path().to_path_buf() }
-
-    fn persist_for_returned_app(self) {
-        let Self {
-            cache,
-            config,
-            keymap,
-            themes,
-        } = self;
-        std::mem::forget(cache);
-        std::mem::forget(config);
-        std::mem::forget(keymap);
-        std::mem::forget(themes);
-    }
 }
 
 fn acquire_startup_test_lock() -> MutexGuard<'static, ()> {

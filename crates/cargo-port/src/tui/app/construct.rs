@@ -301,6 +301,8 @@ impl AppBuilder<Started> {
             framework,
             framework_keymap: Rc::new(framework_keymap),
             pending_nav_chord: Vec::new(),
+            #[cfg(test)]
+            fixture_dirs: None,
         };
         app.finish_new();
         Ok(app)

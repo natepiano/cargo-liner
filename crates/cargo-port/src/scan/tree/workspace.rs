@@ -6,7 +6,7 @@ use super::Path;
 use super::RootItem;
 use super::Table;
 use super::Value;
-use crate::scan::exclude::glob_segment_matches;
+use crate::scan::exclude;
 
 pub(super) fn workspace_member_paths_new(
     ws_path: &Path,
@@ -106,7 +106,7 @@ fn workspace_pattern_matches_segments(pattern: &[&str], path: &[&str]) -> bool {
         },
         Some((segment, rest)) => {
             !path.is_empty()
-                && glob_segment_matches(segment, path[0])
+                && exclude::glob_segment_matches(segment, path[0])
                 && workspace_pattern_matches_segments(rest, &path[1..])
         },
     }

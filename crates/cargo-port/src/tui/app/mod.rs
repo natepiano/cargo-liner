@@ -171,6 +171,8 @@ use super::state::Lint;
 use super::state::Net;
 use super::state::Scan;
 use super::state::SyncTracker;
+#[cfg(test)]
+use super::test_support::FixtureDirs;
 use crate::channel::Receiver;
 use crate::channel::Sender;
 use crate::ci::OwnerRepo;
@@ -292,6 +294,13 @@ pub(super) struct App {
     /// key dispatch.
     pub(super) framework_keymap:     Rc<FrameworkKeymap<Self>>,
     pub(super) pending_nav_chord:    Vec<KeyBind>,
+    /// Temp directories backing the config, keymap, themes, and cache paths
+    /// this `App` was built against, handed over by
+    /// [`test_support::TestApp::into_quiet_app`] when a fixture returns a bare
+    /// `App`. Declared last so the directories are removed only after every
+    /// field that reads from them has dropped.
+    #[cfg(test)]
+    pub(super) fixture_dirs:         Option<FixtureDirs>,
 }
 
 impl App {
