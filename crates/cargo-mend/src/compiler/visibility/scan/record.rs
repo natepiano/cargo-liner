@@ -17,6 +17,8 @@ use super::classify::SignatureExposure;
 use super::classify::VisibilityFindingContext;
 use crate::compiler::constants::PRELUDE_MODULE_NAME;
 use crate::compiler::facade;
+use crate::compiler::facade::ParentFacadeReach;
+use crate::compiler::facade::ParentFacadeSpelling;
 use crate::compiler::facade::ParentFacadeVisibility;
 use crate::compiler::persistence::FindingsSink;
 use crate::compiler::persistence::StoredPubUseFixFact;
@@ -26,6 +28,7 @@ use crate::compiler::visibility::annotation::VisibilitySyntax;
 use crate::compiler::visibility::policy;
 use crate::compiler::visibility::source;
 use crate::compiler::visibility::use_sites;
+use crate::compiler::visibility::use_sites::FacadeVisibility;
 use crate::config::DiagnosticCode;
 use crate::config::PreludePubMod;
 use crate::reporting::FixSupport;
@@ -42,9 +45,9 @@ pub(super) fn record_visibility_findings(
         return Ok(());
     };
     let finding_context = classify::visibility_finding_context(ctx, item);
-    let parent_facade_visibility = match annotation.syntax() {
+    let parent_facade_reach = match annotation.syntax() {
         VisibilitySyntax::Crate | VisibilitySyntax::InCrate => {
-            resolve_parent_facade_visibility(ctx, item)?
+            resolve_parent_facade_reach(ctx, item)
         },
         _ => None,
     };
@@ -54,7 +57,7 @@ pub(super) fn record_visibility_findings(
         item,
         &annotation,
         &finding_context,
-        parent_facade_visibility,
+        parent_facade_reach,
         sink,
     )? {
         return Ok(());
@@ -64,7 +67,7 @@ pub(super) fn record_visibility_findings(
 
     if matches!(annotation.syntax(), VisibilitySyntax::Public)
         && finding_context.parent_visibility == ParentVisibility::Private
-        && policy::is_top_level_module_file(ctx.source_root, ctx.root_module, item.file_path)
+        && finding_context.logical_module_depth == 1
         && policy::allow_pub_crate_by_policy(
             finding_context.crate_kind,
             finding_context.module_location,
@@ -76,19 +79,20 @@ pub(super) fn record_visibility_findings(
 
     if matches!(annotation.syntax(), VisibilitySyntax::Public)
         && finding_context.parent_visibility == ParentVisibility::Private
-        && !policy::is_top_level_module_file(ctx.source_root, ctx.root_module, item.file_path)
+        && finding_context.logical_module_depth > 1
         && finding_context.crate_kind != CrateKind::IntegrationTest
     {
         maybe_record_narrow_to_pub_crate_nested(ctx, item, sink)?;
     }
 
     if matches!(annotation.syntax(), VisibilitySyntax::Public)
-        && !policy::is_boundary_file(ctx.source_root, ctx.root_module, item.file_path)
+        && finding_context.logical_module_depth > 1
     {
         maybe_record_suspicious_pub(
             ctx,
             &SuspiciousPubInput {
                 def_id:            item.def_id,
+                facade_subject:    item.facade_subject,
                 file_path:         item.file_path,
                 config_rel_path:   finding_context.config_rel_path.as_deref(),
                 parent_visibility: finding_context.parent_visibility,
@@ -136,15 +140,16 @@ fn maybe_record_unused_pub(
     {
         return Ok(());
     }
-    if parent_facade_exports_item(ctx, item)?
-        || facade::parent_facade_has_glob_export(ctx.source_cache, ctx.source_root, item.file_path)?
+    if parent_facade_exports_item(ctx, item)
         || facade::path_exists_outside_child_module(
             ctx.source_cache,
             ctx.source_root,
+            ctx.tcx,
+            ctx.module_sources,
             &use_sites::parent_module_path_segments(ctx.tcx, item.def_id),
             name,
         )
-        || policy::has_signature_exposure_allowance(ctx, item.file_path, item.name)?
+        || policy::has_signature_exposure_allowance(ctx, item.def_id, item.file_path, item.name)?
     {
         return Ok(());
     }
@@ -191,7 +196,7 @@ pub(super) fn record_forbidden_visibility_annotation(
     item: &ItemInfo<'_>,
     annotation: &VisibilityAnnotation<'_>,
     finding_context: &VisibilityFindingContext,
-    parent_facade_visibility: Option<ParentFacadeVisibility>,
+    parent_facade_reach: Option<ParentFacadeReach>,
     sink: &mut FindingsSink,
 ) -> Result<bool> {
     match annotation.syntax() {
@@ -200,7 +205,7 @@ pub(super) fn record_forbidden_visibility_annotation(
             item,
             annotation,
             finding_context,
-            parent_facade_visibility,
+            parent_facade_reach,
             sink,
         ),
         VisibilitySyntax::InParent | VisibilitySyntax::InCurrent | VisibilitySyntax::InPath(_) => {
@@ -218,7 +223,7 @@ fn record_forbidden_pub_crate(
     item: &ItemInfo<'_>,
     annotation: &VisibilityAnnotation<'_>,
     finding_context: &VisibilityFindingContext,
-    parent_facade_visibility: Option<ParentFacadeVisibility>,
+    parent_facade_reach: Option<ParentFacadeReach>,
     sink: &mut FindingsSink,
 ) -> Result<bool> {
     let pub_crate_is_permitted = policy::allow_pub_crate_by_policy(
@@ -226,14 +231,18 @@ fn record_forbidden_pub_crate(
         finding_context.module_location,
         finding_context.parent_visibility,
     ) || matches!(
-        parent_facade_visibility,
-        Some(ParentFacadeVisibility::Crate)
+        parent_facade_reach,
+        Some(ParentFacadeReach {
+            visibility: ParentFacadeVisibility::Crate,
+            ..
+        })
     );
     if matches!(annotation.syntax(), VisibilitySyntax::Crate) && pub_crate_is_permitted {
         return Ok(false);
     }
     let signature_exposure: SignatureExposure =
-        policy::has_signature_exposure_allowance(ctx, item.file_path, item.name)?.into();
+        policy::has_signature_exposure_allowance(ctx, item.def_id, item.file_path, item.name)?
+            .into();
     let suggestion =
         if matches!(annotation.syntax(), VisibilitySyntax::InCrate) && pub_crate_is_permitted {
             String::from("consider using: `pub(crate)`")
@@ -241,7 +250,7 @@ fn record_forbidden_pub_crate(
             policy::forbidden_pub_crate_suggestion(
                 finding_context.module_location,
                 signature_exposure,
-                parent_facade_visibility,
+                parent_facade_reach,
             )
             .to_string()
         };
@@ -369,25 +378,16 @@ fn maybe_record_narrow_to_pub_crate(
     let (Some(name), Some(kind_label)) = (item.name, item.kind_label) else {
         return Ok(());
     };
-    if ctx.public_visibility_targets.contains(&item.def_id) {
+    if ctx.public_visibility_targets.contains(&item.def_id)
+        || ctx
+            .reexport_index
+            .has_public_reexport(ctx.tcx, item.def_id, item.facade_subject)
+    {
         return Ok(());
     }
     if ctx
         .effective_visibilities
         .is_public_at_level(item.def_id, Level::Reachable)
-    {
-        return Ok(());
-    }
-    if facade::root_module_exports_item(ctx.source_cache, ctx.root_module, item.file_path, name) {
-        return Ok(());
-    }
-    if let Some(self_name) = &item.impl_self_name
-        && facade::root_module_exports_item(
-            ctx.source_cache,
-            ctx.root_module,
-            item.file_path,
-            self_name,
-        )
     {
         return Ok(());
     }
@@ -420,10 +420,17 @@ fn maybe_record_narrow_to_pub_crate_nested(
     let (Some(name), Some(kind_label)) = (item.name, item.kind_label) else {
         return Ok(());
     };
-    if !matches!(
-        resolve_parent_facade_visibility(ctx, item)?,
-        Some(ParentFacadeVisibility::Crate)
-    ) {
+    let Some(occurrences) =
+        ctx.reexport_index
+            .parent_facade_occurrences(ctx.tcx, item.def_id, item.facade_subject)
+    else {
+        return Ok(());
+    };
+    let occurrence = occurrences.selected;
+    if occurrences.spelling_conflict
+        || occurrence.facade_visibility != FacadeVisibility::Crate
+        || occurrence.facade_spelling == ParentFacadeSpelling::Super
+    {
         return Ok(());
     }
     sink.findings.push(source::build_finding(
@@ -447,42 +454,33 @@ fn maybe_record_narrow_to_pub_crate_nested(
     Ok(())
 }
 
-/// Visibility of the parent module's `use` re-export of this item, when the
-/// parent re-exports it at all. `Crate` means `pub(crate)` is already capped
-/// where policy allows it; `Super` means the declaration cannot be narrower than
-/// `pub` without failing E0364.
-fn resolve_parent_facade_visibility(
+/// Resolved reach and source-spelling metadata for the parent module's `use`
+/// re-export of this item, when the parent re-exports it at all.
+fn resolve_parent_facade_reach(
     ctx: &VisibilityContext<'_, '_>,
     item: &ItemInfo<'_>,
-) -> Result<Option<ParentFacadeVisibility>> {
-    let Some(name) = item.name else {
-        return Ok(None);
-    };
-    let status = facade::parent_facade_export_status(
-        ctx.source_cache,
-        ctx.settings,
-        ctx.source_root,
-        item.file_path,
-        name,
-    )?;
-    Ok(status.as_ref().map(|status| status.visibility))
+) -> Option<ParentFacadeReach> {
+    ctx.reexport_index
+        .parent_facade_occurrences(ctx.tcx, item.def_id, item.facade_subject)
+        .map(|occurrences| ParentFacadeReach {
+            visibility:        parent_facade_visibility(occurrences.selected.facade_visibility),
+            spelling:          occurrences.selected.facade_spelling,
+            spelling_conflict: occurrences.spelling_conflict,
+        })
 }
 
-fn parent_facade_exports_item(
-    ctx: &VisibilityContext<'_, '_>,
-    item: &ItemInfo<'_>,
-) -> Result<bool> {
-    let Some(name) = item.name else {
-        return Ok(false);
-    };
-    Ok(facade::parent_facade_export_status(
-        ctx.source_cache,
-        ctx.settings,
-        ctx.source_root,
-        item.file_path,
-        name,
-    )?
-    .is_some())
+fn parent_facade_exports_item(ctx: &VisibilityContext<'_, '_>, item: &ItemInfo<'_>) -> bool {
+    ctx.reexport_index
+        .has_parent_facade(ctx.tcx, item.def_id, item.facade_subject)
+}
+
+const fn parent_facade_visibility(visibility: FacadeVisibility) -> ParentFacadeVisibility {
+    match visibility {
+        FacadeVisibility::Public => ParentFacadeVisibility::Public,
+        FacadeVisibility::Crate => ParentFacadeVisibility::Crate,
+        FacadeVisibility::Super => ParentFacadeVisibility::Super,
+        FacadeVisibility::Unrecognized => ParentFacadeVisibility::Unrecognized,
+    }
 }
 
 fn maybe_record_suspicious_pub(
@@ -497,22 +495,17 @@ fn maybe_record_suspicious_pub(
     match policy::classify_suspicious_pub(ctx, input)? {
         SuspiciousPubAssessment::Allowed(_) => {},
         SuspiciousPubAssessment::ReviewInternalParentFacade { related } => {
-            let Some(status) = input
-                .name
-                .map(|name| {
-                    facade::parent_facade_export_status(
-                        ctx.source_cache,
-                        ctx.settings,
-                        ctx.source_root,
-                        input.file_path,
-                        name,
-                    )
-                })
-                .transpose()?
-                .flatten()
+            let Some(status) = policy::parent_facade_export_status(
+                ctx,
+                input.def_id,
+                input.facade_subject,
+                input.file_path,
+                input.name,
+            )?
             else {
                 return Ok(());
             };
+            let facade_use = status.use_syntax();
             sink.findings.push(source::build_line_finding(
                 ctx.source_cache,
                 &status.parent_path,
@@ -520,9 +513,17 @@ fn maybe_record_suspicious_pub(
                 FindingParams {
                     severity: Severity::Warning,
                     diagnostic_code: DiagnosticCode::InternalParentPubUseFacade,
-                    item: input.name.map(|name| format!("pub use {name}")),
-                    message: String::from(
-                        "this `pub use` is used inside its parent module subtree",
+                    item: input.name.map(|name| {
+                        facade_use.map_or_else(
+                            || format!("re-export {name}"),
+                            |syntax| format!("{syntax} {name}"),
+                        )
+                    }),
+                    message: facade_use.map_or_else(
+                        || String::from("parent module re-export is acting as an internal facade"),
+                        |syntax| {
+                            format!("parent module `{syntax}` is acting as an internal facade")
+                        },
                     ),
                     suggestion: None,
                     fix_support: FixSupport::InternalParentFacade,

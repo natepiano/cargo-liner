@@ -8,13 +8,9 @@ use anyhow::anyhow;
 use rustc_hir::ForeignItemKind;
 use rustc_hir::ImplItemKind;
 use rustc_hir::ItemKind;
-use rustc_hir::Node;
-use rustc_hir::QPath;
-use rustc_hir::TyKind;
 use rustc_middle::ty::TyCtxt;
 use rustc_span::FileName;
 use rustc_span::Span;
-use rustc_span::def_id::LocalDefId;
 
 use super::scan::FindingParams;
 use crate::compiler::persistence::StoredFinding;
@@ -92,27 +88,6 @@ pub(super) fn build_line_finding(
 
 pub(super) fn highlight_span(visibility_span: Span, ident_span: Option<Span>) -> Span {
     ident_span.map_or(visibility_span, |ident_span| visibility_span.to(ident_span))
-}
-
-pub(super) fn impl_self_type_name_from_tcx(
-    tcx: TyCtxt<'_>,
-    impl_item_def: LocalDefId,
-) -> Option<String> {
-    let hir_id = tcx.local_def_id_to_hir_id(impl_item_def);
-    let parent_id = tcx.hir_get_parent_item(hir_id);
-    let parent_node = tcx.hir_node_by_def_id(parent_id.def_id);
-    let Node::Item(parent_item) = parent_node else {
-        return None;
-    };
-    let ItemKind::Impl(impl_block) = parent_item.kind else {
-        return None;
-    };
-    let TyKind::Path(QPath::Resolved(_, path)) = impl_block.self_ty.kind else {
-        return None;
-    };
-    path.segments
-        .last()
-        .map(|segment| segment.ident.to_string())
 }
 
 pub(super) const fn item_kind_label(kind: ItemKind<'_>) -> Option<&'static str> {

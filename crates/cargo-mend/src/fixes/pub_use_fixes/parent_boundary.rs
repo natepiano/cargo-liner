@@ -70,7 +70,7 @@ pub(super) fn build_parent_pub_use_edit_for_exports(
     }
 
     bail!(
-        "matching parent `pub use` item not found in {} for span {}..{}",
+        "matching parent re-export item not found in {} for span {}..{}",
         parent_boundary.parent_module.display(),
         parent_boundary.item_start,
         parent_boundary.item_end
@@ -160,7 +160,7 @@ fn rewrite_parent_pub_use_item_for_exports(
     Ok(lines.join("\n"))
 }
 
-fn facade_use_prefix(vis: &Visibility) -> Option<&'static str> {
+pub(crate) fn facade_use_prefix(vis: &Visibility) -> Option<&'static str> {
     match vis {
         Visibility::Public(_) => Some("pub use"),
         Visibility::Restricted(restricted) if restricted.path.segments.len() == 1 => {

@@ -5,7 +5,7 @@ pub(crate) enum ColorMode {
 }
 
 impl ColorMode {
-    pub const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
+    pub(crate) const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

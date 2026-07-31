@@ -1,83 +1,168 @@
+use std::collections::HashMap;
+use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
-use crate::compiler::source_cache;
+use rustc_middle::ty::TyCtxt;
+use rustc_span::FileName;
+use rustc_span::Span;
+use rustc_span::def_id::CRATE_DEF_ID;
+use rustc_span::def_id::LocalDefId;
 
 #[derive(Debug, Clone)]
 pub struct ParentBoundary {
     pub boundary_file: PathBuf,
-    pub subtree_root:  PathBuf,
     pub module_path:   Vec<String>,
 }
 
-pub fn parent_boundary_for_child(source_root: &Path, child_file: &Path) -> Option<ParentBoundary> {
-    let parent_dir = child_file.parent()?;
-    let parent_module_rs = parent_dir.join("mod.rs");
-    if parent_module_rs.is_file() {
-        return Some(ParentBoundary {
-            boundary_file: parent_module_rs,
-            subtree_root:  parent_dir.to_path_buf(),
-            module_path:   source_cache::module_path_from_dir(source_root, parent_dir)?,
-        });
-    }
-
-    let parent_file = parent_dir.with_extension("rs");
-    if parent_file.is_file() {
-        return Some(ParentBoundary {
-            boundary_file: parent_file.clone(),
-            subtree_root:  parent_dir.to_path_buf(),
-            module_path:   source_cache::module_path_from_boundary_file(source_root, &parent_file)?,
-        });
-    }
-
-    None
+pub struct LogicalParentBoundary {
+    pub module:      LocalDefId,
+    pub module_path: Vec<String>,
 }
 
-/// Find the parent boundary of an existing boundary file itself.
-///
-/// `parent_boundary_for_child` cannot be called on a `mod.rs` file because it
-/// would find itself.  This helper handles both `mod.rs` and named boundary
-/// files (e.g. `tools.rs`).
-pub(super) fn parent_of_boundary(
-    source_root: &Path,
-    boundary_file: &Path,
-) -> Option<ParentBoundary> {
-    if boundary_file.file_name()?.to_str() != Some("mod.rs") {
-        return parent_boundary_for_child(source_root, boundary_file);
-    }
+#[derive(Debug, Default)]
+pub struct ModuleSourceMap {
+    modules_by_file: HashMap<PathBuf, Vec<LocalDefId>>,
+    files_by_module: HashMap<LocalDefId, Vec<PathBuf>>,
+}
 
-    // For mod.rs the enclosing directory IS the module, so go up one more
-    // level to reach the parent module's directory.
-    let container_dir = boundary_file.parent()?.parent()?;
-
-    let module_rs = container_dir.join("mod.rs");
-    if module_rs.is_file() {
-        return Some(ParentBoundary {
-            boundary_file: module_rs,
-            subtree_root:  container_dir.to_path_buf(),
-            module_path:   source_cache::module_path_from_dir(source_root, container_dir)?,
-        });
-    }
-
-    let named_file = container_dir.with_extension("rs");
-    if named_file.is_file() {
-        return Some(ParentBoundary {
-            boundary_file: named_file.clone(),
-            subtree_root:  container_dir.to_path_buf(),
-            module_path:   source_cache::module_path_from_boundary_file(source_root, &named_file)?,
-        });
-    }
-
-    for name in ["lib.rs", "main.rs"] {
-        let root = container_dir.join(name);
-        if root.is_file() {
-            return Some(ParentBoundary {
-                boundary_file: root,
-                subtree_root:  container_dir.to_path_buf(),
-                module_path:   Vec::new(),
-            });
+impl ModuleSourceMap {
+    pub fn new(tcx: TyCtxt<'_>) -> Self {
+        let mut module_sources = Self::default();
+        for item_id in tcx.hir_crate_items(()).free_items() {
+            let item = tcx.hir_item(item_id);
+            let Some(source_file) = real_file_path(tcx, item.span) else {
+                continue;
+            };
+            let module: LocalDefId = tcx.parent_module_from_def_id(item.owner_id.def_id).into();
+            let modules = module_sources
+                .modules_by_file
+                .entry(source_file.clone())
+                .or_default();
+            if !modules.contains(&module) {
+                modules.push(module);
+            }
+            let files = module_sources.files_by_module.entry(module).or_default();
+            if !files.contains(&source_file) {
+                files.push(source_file);
+            }
         }
+        module_sources
     }
 
-    None
+    pub fn root_modules_for_file(&self, tcx: TyCtxt<'_>, source_file: &Path) -> Vec<LocalDefId> {
+        let canonical_source_file =
+            fs::canonicalize(source_file).unwrap_or_else(|_| source_file.to_path_buf());
+        self.modules_by_file
+            .get(&canonical_source_file)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|module| {
+                if *module == CRATE_DEF_ID {
+                    return true;
+                }
+                let parent: LocalDefId = tcx.parent_module_from_def_id(*module).into();
+                self.files_by_module
+                    .get(&parent)
+                    .is_none_or(|files| !files.contains(&canonical_source_file))
+            })
+            .collect()
+    }
+
+    pub fn source_files(&self, module: LocalDefId) -> &[PathBuf] {
+        self.files_by_module.get(&module).map_or(&[], Vec::as_slice)
+    }
+
+    pub fn file_contains_module_path(
+        &self,
+        tcx: TyCtxt<'_>,
+        source_file: &Path,
+        expected: &[String],
+    ) -> bool {
+        let canonical_source_file =
+            fs::canonicalize(source_file).unwrap_or_else(|_| source_file.to_path_buf());
+        self.modules_by_file
+            .get(&canonical_source_file)
+            .is_some_and(|modules| {
+                modules
+                    .iter()
+                    .any(|module| module_path(tcx, *module) == expected)
+            })
+    }
+}
+
+/// Locate a facade's owning module from the compiler-resolved `use` item.
+///
+/// This path is intentionally used only after HIR has selected a re-export.
+/// The source path supplies reporting and usage-analysis metadata; it never
+/// decides whether a facade exists.
+pub fn parent_boundary_for_reexport(
+    tcx: TyCtxt<'_>,
+    owner_module: LocalDefId,
+    use_span: Span,
+) -> Option<ParentBoundary> {
+    let boundary_file = real_file_path(tcx, use_span)?;
+    let module_path = if owner_module == CRATE_DEF_ID {
+        Vec::new()
+    } else {
+        tcx.def_path_str(owner_module.to_def_id())
+            .split("::")
+            .filter(|segment| !segment.is_empty())
+            .map(String::from)
+            .collect()
+    };
+    Some(ParentBoundary {
+        boundary_file,
+        module_path,
+    })
+}
+
+pub fn logical_parent_boundary_for_child(
+    tcx: TyCtxt<'_>,
+    child_item: LocalDefId,
+) -> Option<LogicalParentBoundary> {
+    let child_module: LocalDefId = tcx.parent_module_from_def_id(child_item).into();
+    if child_module == CRATE_DEF_ID {
+        return None;
+    }
+    let module: LocalDefId = tcx.parent_module_from_def_id(child_module).into();
+    Some(LogicalParentBoundary {
+        module,
+        module_path: module_path(tcx, module),
+    })
+}
+
+pub fn module_path(tcx: TyCtxt<'_>, module: LocalDefId) -> Vec<String> {
+    if module == CRATE_DEF_ID {
+        return Vec::new();
+    }
+    tcx.def_path_str(module.to_def_id())
+        .split("::")
+        .filter(|segment| !segment.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+pub fn module_is_within(tcx: TyCtxt<'_>, mut candidate: LocalDefId, ancestor: LocalDefId) -> bool {
+    loop {
+        if candidate == ancestor {
+            return true;
+        }
+        if candidate == CRATE_DEF_ID {
+            return false;
+        }
+        candidate = tcx.parent_module_from_def_id(candidate).into();
+    }
+}
+
+fn real_file_path(tcx: TyCtxt<'_>, span: Span) -> Option<PathBuf> {
+    let source_map = tcx.sess.source_map();
+    let file = source_map.lookup_char_pos(span.lo()).file;
+    match file.name.clone() {
+        FileName::Real(real) => real
+            .local_path()
+            .map(|path| fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())),
+        _ => None,
+    }
 }

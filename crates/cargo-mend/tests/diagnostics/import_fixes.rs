@@ -429,7 +429,7 @@ edition = "2024"
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("mend: would apply 1 import fix(es) in dry run"));
+    assert!(stderr.contains("mend: would apply 2 import fix(es) in dry run"));
 
     let consumer = fs::read_to_string(temp.path().join("src/parent/consumer.rs"))
         .expect("read consumer after dry-run");

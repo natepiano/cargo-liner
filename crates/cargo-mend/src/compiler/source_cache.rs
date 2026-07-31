@@ -7,9 +7,11 @@ use std::path::PathBuf;
 use anyhow::Context;
 use anyhow::Result;
 use syn::File;
+use syn::ItemMod;
 use syn::ItemUse;
 use syn::Path as SynPath;
 use syn::UseTree;
+use syn::ext::IdentExt;
 use syn::parse_file;
 use syn::visit;
 use syn::visit::Visit;
@@ -19,7 +21,9 @@ use super::constants::SOURCE_DIR_EXAMPLES;
 use super::constants::SOURCE_DIR_SRC;
 use super::constants::SOURCE_DIR_TESTS;
 use crate::rust_syntax::PathAnchor;
+#[cfg(test)]
 use crate::selection::CARGO_TARGET_KIND_LIB;
+#[cfg(test)]
 use crate::selection::CARGO_TARGET_KIND_MAIN;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,17 +33,24 @@ pub(super) enum PathOrigin {
 }
 
 pub(super) struct ExtractedPaths {
-    /// Flattened use-tree paths with their origin (`Relative`/`Crate`).
-    pub use_paths:   Vec<(Vec<String>, PathOrigin)>,
-    /// All `syn::Path` nodes found via AST visit, as raw segment strings with origin.
-    pub expr_paths:  Vec<(Vec<String>, PathOrigin)>,
+    /// Flattened use-tree paths with their origin and lexical inline module.
+    pub use_paths:   Vec<ExtractedPath>,
+    /// All `syn::Path` nodes with their origin and lexical inline module.
+    pub expr_paths:  Vec<ExtractedPath>,
     /// Module-level renames (`use path::to::module as alias`): maps alias → original path.
     pub use_renames: Vec<UseRename>,
+}
+
+pub(super) struct ExtractedPath {
+    pub segments:      Vec<String>,
+    pub origin:        PathOrigin,
+    pub module_suffix: Vec<String>,
 }
 
 pub(super) struct UseRename {
     pub alias:         String,
     pub original_path: Vec<String>,
+    pub module_suffix: Vec<String>,
 }
 
 pub(super) struct SourceCache {
@@ -117,24 +128,44 @@ enum UseItemPosition {
 }
 
 struct PathExtractor {
-    use_paths:       Vec<(Vec<String>, PathOrigin)>,
-    expr_paths:      Vec<(Vec<String>, PathOrigin)>,
+    use_paths:       Vec<ExtractedPath>,
+    expr_paths:      Vec<ExtractedPath>,
     use_renames:     Vec<UseRename>,
     inside_use_item: UseItemPosition,
+    inline_modules:  Vec<String>,
 }
 
 impl<'ast> Visit<'ast> for PathExtractor {
     fn visit_item_use(&mut self, item_use: &'ast ItemUse) {
         let mut flat = Vec::new();
         flatten_use_tree(Vec::new(), &item_use.tree, &mut flat);
-        for raw in flat {
-            let origin = path_origin(&raw);
-            self.use_paths.push((raw, origin));
+        for segments in flat {
+            let origin = path_origin(&segments);
+            self.use_paths.push(ExtractedPath {
+                segments,
+                origin,
+                module_suffix: self.inline_modules.clone(),
+            });
         }
-        extract_use_renames(Vec::new(), &item_use.tree, &mut self.use_renames);
+        extract_use_renames(
+            Vec::new(),
+            &item_use.tree,
+            &self.inline_modules,
+            &mut self.use_renames,
+        );
         self.inside_use_item = UseItemPosition::Inside;
         visit::visit_item_use(self, item_use);
         self.inside_use_item = UseItemPosition::Outside;
+    }
+
+    fn visit_item_mod(&mut self, item_mod: &'ast ItemMod) {
+        if item_mod.content.is_none() {
+            visit::visit_item_mod(self, item_mod);
+            return;
+        }
+        self.inline_modules.push(item_mod.ident.unraw().to_string());
+        visit::visit_item_mod(self, item_mod);
+        self.inline_modules.pop();
     }
 
     fn visit_path(&mut self, path: &'ast SynPath) {
@@ -145,7 +176,11 @@ impl<'ast> Visit<'ast> for PathExtractor {
                 .map(|segment| segment.ident.to_string())
                 .collect();
             let origin = path_origin(&segments);
-            self.expr_paths.push((segments, origin));
+            self.expr_paths.push(ExtractedPath {
+                segments,
+                origin,
+                module_suffix: self.inline_modules.clone(),
+            });
         }
         visit::visit_path(self, path);
     }
@@ -174,6 +209,7 @@ pub(super) fn analysis_source_root_for(
     .then_some(source_root)
 }
 
+#[cfg(test)]
 pub(super) fn module_path_from_boundary_file(
     source_root: &Path,
     boundary_file: &Path,
@@ -195,6 +231,7 @@ pub(super) fn module_path_from_boundary_file(
     }
 }
 
+#[cfg(test)]
 pub(super) fn module_path_from_source_file(
     source_root: &Path,
     source_file: &Path,
@@ -206,6 +243,7 @@ pub(super) fn module_path_from_source_file(
     }
 }
 
+#[cfg(test)]
 pub(super) fn module_path_from_dir(source_root: &Path, module_dir: &Path) -> Option<Vec<String>> {
     let relative = module_dir.strip_prefix(source_root).ok()?;
     let components = relative
@@ -213,13 +251,6 @@ pub(super) fn module_path_from_dir(source_root: &Path, module_dir: &Path) -> Opt
         .map(|component| component.as_os_str().to_string_lossy().into_owned())
         .collect::<Vec<_>>();
     (!components.is_empty()).then_some(components)
-}
-
-pub(super) fn first_line_matching(source: &str, needle: &str) -> Option<usize> {
-    source
-        .lines()
-        .position(|line| line.contains(needle))
-        .map(|index| index + 1)
 }
 
 pub(super) fn flatten_use_tree(prefix: Vec<String>, tree: &UseTree, out: &mut Vec<Vec<String>>) {
@@ -295,6 +326,7 @@ pub(super) fn extract_paths(file: &File) -> ExtractedPaths {
         expr_paths:      Vec::new(),
         use_renames:     Vec::new(),
         inside_use_item: UseItemPosition::Outside,
+        inline_modules:  Vec::new(),
     };
     extractor.visit_file(file);
 
@@ -305,12 +337,17 @@ pub(super) fn extract_paths(file: &File) -> ExtractedPaths {
     }
 }
 
-pub(super) fn extract_use_renames(prefix: Vec<String>, tree: &UseTree, out: &mut Vec<UseRename>) {
+fn extract_use_renames(
+    prefix: Vec<String>,
+    tree: &UseTree,
+    module_suffix: &[String],
+    out: &mut Vec<UseRename>,
+) {
     match tree {
         UseTree::Path(path) => {
             let mut next = prefix;
             next.push(path.ident.to_string());
-            extract_use_renames(next, &path.tree, out);
+            extract_use_renames(next, &path.tree, module_suffix, out);
         },
         UseTree::Rename(rename) => {
             let mut original_path = prefix;
@@ -318,11 +355,12 @@ pub(super) fn extract_use_renames(prefix: Vec<String>, tree: &UseTree, out: &mut
             out.push(UseRename {
                 alias: rename.rename.to_string(),
                 original_path,
+                module_suffix: module_suffix.to_vec(),
             });
         },
         UseTree::Group(group) => {
             for item in &group.items {
-                extract_use_renames(prefix.clone(), item, out);
+                extract_use_renames(prefix.clone(), item, module_suffix, out);
             }
         },
         UseTree::Name(_) | UseTree::Glob(_) => {},

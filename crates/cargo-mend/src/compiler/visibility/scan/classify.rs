@@ -34,10 +34,11 @@ impl From<bool> for SignatureExposure {
 }
 
 pub(super) struct VisibilityFindingContext {
-    pub(super) crate_kind:        CrateKind,
-    pub(super) config_rel_path:   Option<String>,
-    pub(super) module_location:   ModuleLocation,
-    pub(super) parent_visibility: ParentVisibility,
+    pub(super) crate_kind:           CrateKind,
+    pub(super) config_rel_path:      Option<String>,
+    pub(super) logical_module_depth: usize,
+    pub(super) module_location:      ModuleLocation,
+    pub(super) parent_visibility:    ParentVisibility,
 }
 
 pub(super) fn visibility_finding_context(
@@ -57,10 +58,12 @@ pub(super) fn visibility_finding_context(
         ParentVisibility::Private
     };
     let module_location = policy::resolve_module_location(ctx.tcx, parent_module.to_local_def_id());
+    let logical_module_depth = policy::module_depth(ctx.tcx, parent_module.to_local_def_id());
 
     VisibilityFindingContext {
         crate_kind,
         config_rel_path,
+        logical_module_depth,
         module_location,
         parent_visibility,
     }

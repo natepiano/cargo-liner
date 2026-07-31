@@ -25,6 +25,7 @@ pub struct FindingParams {
 
 pub struct SuspiciousPubInput<'a> {
     pub def_id:            LocalDefId,
+    pub facade_subject:    LocalDefId,
     pub file_path:         &'a Path,
     pub config_rel_path:   Option<&'a str>,
     pub parent_visibility: ParentVisibility,

@@ -32,9 +32,10 @@ pub(super) fn visit_item(
     };
 
     let name = item.kind.ident().as_ref().map(ToString::to_string);
+    let owner_module = ctx.tcx.parent_module_from_def_id(item.owner_id.def_id);
 
     if visibility_text == "pub"
-        && policy::is_boundary_file(ctx.source_root, ctx.root_module, &file_path)
+        && policy::module_depth(ctx.tcx, owner_module.to_local_def_id()) <= 1
         && matches!(item.kind, ItemKind::Use(..))
         && source::use_item_contains_glob(ctx.tcx, item.span)?
     {
@@ -73,7 +74,7 @@ pub(super) fn visit_item(
                 ItemKind::Use(..) => ItemCategory::Use,
                 _ => ItemCategory::Declaration,
             },
-            impl_self_name:  None,
+            facade_subject:  item.owner_id.def_id,
         },
         sink,
     )
@@ -98,7 +99,7 @@ pub(super) fn visit_impl_item(
     };
 
     let name = item.ident.to_string();
-    let impl_self_name = source::impl_self_type_name_from_tcx(ctx.tcx, item.owner_id.def_id);
+    let facade_subject = ctx.reexport_index.facade_subject(item.owner_id.def_id);
 
     record::record_visibility_findings(
         ctx,
@@ -110,7 +111,7 @@ pub(super) fn visit_impl_item(
             name: Some(name.as_str()),
             highlight_span: source::highlight_span(visibility_span, Some(item.ident.span)),
             category: ItemCategory::Declaration,
-            impl_self_name,
+            facade_subject,
         },
         sink,
     )
@@ -143,7 +144,7 @@ pub(super) fn visit_foreign_item(
             name:            Some(name.as_str()),
             highlight_span:  source::highlight_span(item.vis_span, Some(item.ident.span)),
             category:        ItemCategory::Declaration,
-            impl_self_name:  None,
+            facade_subject:  item.owner_id.def_id,
         },
         sink,
     )

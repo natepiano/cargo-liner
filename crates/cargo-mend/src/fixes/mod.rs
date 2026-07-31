@@ -10,4 +10,5 @@ mod runner;
 mod unused_pub;
 
 pub(crate) use constants::FIX_ALL_MAX_PASSES;
+pub(crate) use pub_use_fixes::facade_use_prefix;
 pub(crate) use runner::MendRunner;

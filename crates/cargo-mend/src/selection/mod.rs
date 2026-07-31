@@ -6,6 +6,7 @@ pub(crate) use constants::CARGO_TARGET_KIND_BENCH;
 pub(crate) use constants::CARGO_TARGET_KIND_BIN;
 pub(crate) use constants::CARGO_TARGET_KIND_EXAMPLE;
 pub(crate) use constants::CARGO_TARGET_KIND_LIB;
+#[cfg(test)]
 pub(crate) use constants::CARGO_TARGET_KIND_MAIN;
 pub(crate) use constants::CARGO_TARGET_KIND_TEST;
 pub(crate) use display_filter::DisplayFilter;

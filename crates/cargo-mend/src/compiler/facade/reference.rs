@@ -1,14 +1,13 @@
 use std::path::Path;
 
 use anyhow::Result;
-use syn::Item;
+use rustc_middle::ty::TyCtxt;
 
 use super::boundary;
+use super::boundary::ModuleSourceMap;
 use super::boundary::ParentBoundary;
-use super::exports;
 use super::exports::ParentFacadeExports;
 use crate::compiler::settings::DriverSettings;
-use crate::compiler::source_cache;
 use crate::compiler::source_cache::ExtractedPaths;
 use crate::compiler::source_cache::PathOrigin;
 use crate::compiler::source_cache::SourceCache;
@@ -26,7 +25,7 @@ pub enum ParentFacadeUsage {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ParentFacadeReferenceUsage {
+enum ParentFacadeReferenceUsage {
     None,
     Import(PathOrigin),
     DirectPath(PathOrigin),
@@ -36,65 +35,68 @@ pub(super) fn scan_facade_usage(
     source_cache: &SourceCache,
     settings: &DriverSettings,
     source_root: &Path,
+    tcx: TyCtxt<'_>,
+    module_sources: &ModuleSourceMap,
     parent_boundary: &ParentBoundary,
     exported_names: &ParentFacadeExports,
 ) -> Result<ParentFacadeUsage> {
     let mut usage = ParentFacadeUsage::Unused;
-    for source_path in source_cache.source_files_under(source_root) {
-        if source_path == parent_boundary.boundary_file {
-            continue;
-        }
-        let Some(current_module_path) =
-            source_cache::module_path_from_source_file(source_root, source_path)
-        else {
-            continue;
-        };
+    'source_files: for source_path in source_cache.source_files_under(source_root) {
         let Some(extracted) = source_cache.extracted_paths(source_path) else {
             continue;
         };
-        match source_references_parent_export(
-            extracted,
-            &current_module_path,
-            &parent_boundary.module_path,
-            &exported_names.explicit,
-        ) {
-            ParentFacadeReferenceUsage::None => {},
-            ParentFacadeReferenceUsage::Import(PathOrigin::Relative) => {
-                if matches!(usage, ParentFacadeUsage::Unused)
-                    && source_path.starts_with(&parent_boundary.subtree_root)
-                {
-                    usage = ParentFacadeUsage::UsedInsideSubtreeByRelativeImport;
-                } else if !source_path.starts_with(&parent_boundary.subtree_root) {
-                    usage = ParentFacadeUsage::UsedOutsideSubtree;
-                    break;
-                }
-            },
-            ParentFacadeReferenceUsage::Import(PathOrigin::Crate) => {
-                if matches!(usage, ParentFacadeUsage::Unused)
-                    && source_path.starts_with(&parent_boundary.subtree_root)
-                {
-                    usage = ParentFacadeUsage::UsedInsideSubtreeByCrateImport;
-                } else if !source_path.starts_with(&parent_boundary.subtree_root) {
-                    usage = ParentFacadeUsage::UsedOutsideSubtree;
-                    break;
-                }
-            },
-            ParentFacadeReferenceUsage::DirectPath(PathOrigin::Relative) => {
-                if source_path.starts_with(&parent_boundary.subtree_root) {
-                    usage = ParentFacadeUsage::UsedInsideSubtreeByRelativePath;
-                } else {
-                    usage = ParentFacadeUsage::UsedOutsideSubtree;
-                    break;
-                }
-            },
-            ParentFacadeReferenceUsage::DirectPath(PathOrigin::Crate) => {
-                if source_path.starts_with(&parent_boundary.subtree_root) {
-                    usage = ParentFacadeUsage::UsedInsideSubtreeByCratePath;
-                } else {
-                    usage = ParentFacadeUsage::UsedOutsideSubtree;
-                    break;
-                }
-            },
+        for (current_module_path, module_suffix) in
+            active_module_contexts(extracted, module_sources, tcx, source_path)
+        {
+            if source_path == parent_boundary.boundary_file
+                && current_module_path == parent_boundary.module_path
+            {
+                continue;
+            }
+            let reference_usage = source_references_parent_export(
+                extracted,
+                &current_module_path,
+                &module_suffix,
+                &parent_boundary.module_path,
+                &exported_names.explicit,
+            );
+            let inside_subtree =
+                module_path_is_descendant(&current_module_path, &parent_boundary.module_path);
+            match reference_usage {
+                ParentFacadeReferenceUsage::None => {},
+                ParentFacadeReferenceUsage::Import(PathOrigin::Relative) => {
+                    if matches!(usage, ParentFacadeUsage::Unused) && inside_subtree {
+                        usage = ParentFacadeUsage::UsedInsideSubtreeByRelativeImport;
+                    } else if !inside_subtree {
+                        usage = ParentFacadeUsage::UsedOutsideSubtree;
+                        break 'source_files;
+                    }
+                },
+                ParentFacadeReferenceUsage::Import(PathOrigin::Crate) => {
+                    if matches!(usage, ParentFacadeUsage::Unused) && inside_subtree {
+                        usage = ParentFacadeUsage::UsedInsideSubtreeByCrateImport;
+                    } else if !inside_subtree {
+                        usage = ParentFacadeUsage::UsedOutsideSubtree;
+                        break 'source_files;
+                    }
+                },
+                ParentFacadeReferenceUsage::DirectPath(PathOrigin::Relative) => {
+                    if inside_subtree {
+                        usage = ParentFacadeUsage::UsedInsideSubtreeByRelativePath;
+                    } else {
+                        usage = ParentFacadeUsage::UsedOutsideSubtree;
+                        break 'source_files;
+                    }
+                },
+                ParentFacadeReferenceUsage::DirectPath(PathOrigin::Crate) => {
+                    if inside_subtree {
+                        usage = ParentFacadeUsage::UsedInsideSubtreeByCratePath;
+                    } else {
+                        usage = ParentFacadeUsage::UsedOutsideSubtree;
+                        break 'source_files;
+                    }
+                },
+            }
         }
     }
 
@@ -102,7 +104,7 @@ pub(super) fn scan_facade_usage(
         && workspace_source_mentions_parent_export_literal(
             source_cache,
             settings,
-            parent_boundary,
+            &parent_boundary.module_path,
             &exported_names.explicit,
         )?
     {
@@ -115,18 +117,18 @@ pub(super) fn scan_facade_usage(
 pub fn workspace_source_mentions_parent_export_literal(
     source_cache: &SourceCache,
     settings: &DriverSettings,
-    parent_boundary: &ParentBoundary,
+    module_path: &[String],
     exported_names: &[String],
 ) -> Result<bool> {
     if settings.config_root == settings.package_root {
         return Ok(false);
     }
 
-    if parent_boundary.module_path.is_empty() {
+    if module_path.is_empty() {
         return Ok(false);
     }
 
-    let module_prefix = format!("crate::{}", parent_boundary.module_path.join("::"));
+    let module_prefix = format!("crate::{}", module_path.join("::"));
     let findings_root = settings
         .findings_dir
         .parent()
@@ -151,51 +153,63 @@ pub fn workspace_source_mentions_parent_export_literal(
     Ok(false)
 }
 
-pub fn source_references_parent_export(
+fn source_references_parent_export(
     extracted: &ExtractedPaths,
     current_module_path: &[String],
+    module_suffix: &[String],
     module_path: &[String],
     exported_names: &[String],
 ) -> ParentFacadeReferenceUsage {
-    for (raw, origin) in &extracted.expr_paths {
+    for extracted_path in &extracted.expr_paths {
+        if extracted_path.module_suffix != module_suffix {
+            continue;
+        }
         if matching_origin_indexed(
-            raw,
-            *origin,
+            &extracted_path.segments,
+            extracted_path.origin,
             current_module_path,
             module_path,
             exported_names,
         )
         .is_some()
         {
-            return ParentFacadeReferenceUsage::DirectPath(*origin);
+            return ParentFacadeReferenceUsage::DirectPath(extracted_path.origin);
         }
-        if let Some(resolved) = resolve_alias_expr_path(raw, &extracted.use_renames)
-            && matching_origin_indexed(
-                &resolved,
-                *origin,
-                current_module_path,
-                module_path,
-                exported_names,
-            )
-            .is_some()
+        if let Some(resolved) = resolve_alias_expr_path(
+            &extracted_path.segments,
+            module_suffix,
+            &extracted.use_renames,
+        ) && matching_origin_indexed(
+            &resolved,
+            extracted_path.origin,
+            current_module_path,
+            module_path,
+            exported_names,
+        )
+        .is_some()
         {
-            return ParentFacadeReferenceUsage::DirectPath(*origin);
+            return ParentFacadeReferenceUsage::DirectPath(extracted_path.origin);
         }
     }
 
     let mut import_usage = ParentFacadeReferenceUsage::None;
-    for (raw, origin) in &extracted.use_paths {
+    for extracted_path in &extracted.use_paths {
+        if extracted_path.module_suffix != module_suffix {
+            continue;
+        }
         if matching_origin_indexed(
-            raw,
-            *origin,
+            &extracted_path.segments,
+            extracted_path.origin,
             current_module_path,
             module_path,
             exported_names,
         )
         .is_some()
         {
-            import_usage =
-                merge_reference_usage(import_usage, ParentFacadeReferenceUsage::Import(*origin));
+            import_usage = merge_reference_usage(
+                import_usage,
+                ParentFacadeReferenceUsage::Import(extracted_path.origin),
+            );
         }
     }
 
@@ -207,9 +221,15 @@ pub fn source_references_parent_export(
 /// Given `["test_utils", "assert_test_case"]` and a rename mapping
 /// `test_utils → ["crate", "test_support"]`, returns
 /// `["crate", "test_support", "assert_test_case"]`.
-fn resolve_alias_expr_path(raw: &[String], renames: &[UseRename]) -> Option<Vec<String>> {
+fn resolve_alias_expr_path(
+    raw: &[String],
+    module_suffix: &[String],
+    renames: &[UseRename],
+) -> Option<Vec<String>> {
     let first = raw.first()?;
-    let rename = renames.iter().find(|rename| rename.alias == *first)?;
+    let rename = renames
+        .iter()
+        .find(|rename| rename.module_suffix == module_suffix && rename.alias == *first)?;
     let mut resolved = rename.original_path.clone();
     resolved.extend(raw[1..].iter().cloned());
     Some(resolved)
@@ -285,7 +305,7 @@ pub(super) fn resolve_module_relative_paths(
         .collect()
 }
 
-pub(super) const fn merge_reference_usage(
+const fn merge_reference_usage(
     current: ParentFacadeReferenceUsage,
     next: ParentFacadeReferenceUsage,
 ) -> ParentFacadeReferenceUsage {
@@ -310,134 +330,145 @@ pub(super) const fn merge_reference_usage(
     }
 }
 
-pub fn public_reexport_exists_outside_parent(
-    source_cache: &SourceCache,
-    settings: &DriverSettings,
-    source_root: &Path,
-    child_file: &Path,
-    item_name: &str,
-) -> Result<bool> {
-    let Some(parent_boundary) = boundary::parent_boundary_for_child(source_root, child_file) else {
-        return Ok(false);
-    };
-    let Some(child_module_path) =
-        source_cache::module_path_from_source_file(source_root, child_file)
-    else {
-        return Ok(false);
-    };
-
-    for source_file in source_cache.source_files_under(source_root) {
-        if source_file.starts_with(&parent_boundary.subtree_root) {
-            continue;
-        }
-        let Some(file) = source_cache.parsed_file(source_file) else {
-            continue;
-        };
-        let Some(current_module_path) =
-            source_cache::module_path_from_source_file(source_root, source_file)
-        else {
-            continue;
-        };
-
-        for item in &file.items {
-            let Item::Use(item_use) = item else {
-                continue;
-            };
-            let Some(_) = exports::parent_facade_visibility(&item_use.vis) else {
-                continue;
-            };
-            let mut paths = Vec::new();
-            source_cache::flatten_use_tree(Vec::new(), &item_use.tree, &mut paths);
-            for path in paths {
-                for resolved in resolve_module_relative_paths(&path, &current_module_path) {
-                    if resolved.len() != child_module_path.len() + 1 {
-                        continue;
-                    }
-                    if resolved[..child_module_path.len()] == *child_module_path
-                        && resolved[child_module_path.len()] == item_name
-                    {
-                        return Ok(true);
-                    }
-                }
-            }
-        }
-    }
-
-    if settings.config_root != settings.package_root {
-        let module_prefix = format!("crate::{}", child_module_path.join("::"));
-        let findings_root = settings
-            .findings_dir
-            .parent()
-            .map_or_else(|| settings.findings_dir.clone(), Path::to_path_buf);
-
-        for file in source_cache.source_files_under(&settings.config_root) {
-            if file.starts_with(&settings.package_root)
-                || file.starts_with(&settings.findings_dir)
-                || file.starts_with(&findings_root)
-            {
-                continue;
-            }
-            let source = source_cache.read_source(file)?;
-            let pattern = format!("{module_prefix}::{item_name}");
-            if source.contains(&pattern) {
-                return Ok(true);
-            }
-        }
-    }
-
-    Ok(false)
-}
-
 pub fn path_exists_outside_child_module(
     source_cache: &SourceCache,
     source_root: &Path,
+    tcx: TyCtxt<'_>,
+    module_sources: &ModuleSourceMap,
     child_module_path: &[String],
     item_name: &str,
 ) -> bool {
     for source_file in source_cache.source_files_under(source_root) {
-        let Some(current_module_path) =
-            source_cache::module_path_from_source_file(source_root, source_file)
-        else {
-            continue;
-        };
-        if module_path_is_descendant(&current_module_path, child_module_path) {
-            continue;
-        }
         let Some(extracted) = source_cache.extracted_paths(source_file) else {
             continue;
         };
-        if extracted_paths_mention_child_item(
-            extracted,
-            &current_module_path,
-            child_module_path,
-            item_name,
-        ) {
-            return true;
+        for (current_module_path, module_suffix) in
+            active_module_contexts(extracted, module_sources, tcx, source_file)
+        {
+            if module_path_is_descendant(&current_module_path, child_module_path) {
+                continue;
+            }
+            if extracted_paths_mention_child_item(
+                extracted,
+                &current_module_path,
+                &module_suffix,
+                child_module_path,
+                item_name,
+            ) {
+                return true;
+            }
         }
     }
 
     false
 }
 
+pub fn path_exists_outside_module(
+    source_cache: &SourceCache,
+    source_root: &Path,
+    tcx: TyCtxt<'_>,
+    module_sources: &ModuleSourceMap,
+    module_path: &[String],
+    item_names: &[String],
+) -> bool {
+    for source_file in source_cache.source_files_under(source_root) {
+        let Some(extracted) = source_cache.extracted_paths(source_file) else {
+            continue;
+        };
+        for (current_module_path, module_suffix) in
+            active_module_contexts(extracted, module_sources, tcx, source_file)
+        {
+            if module_path_is_descendant(&current_module_path, module_path) {
+                continue;
+            }
+            if !matches!(
+                source_references_parent_export(
+                    extracted,
+                    &current_module_path,
+                    &module_suffix,
+                    module_path,
+                    item_names,
+                ),
+                ParentFacadeReferenceUsage::None
+            ) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn extracted_paths_mention_child_item(
     extracted: &ExtractedPaths,
     current_module_path: &[String],
+    module_suffix: &[String],
     child_module_path: &[String],
     item_name: &str,
 ) -> bool {
-    extracted.use_paths.iter().any(|(path, _)| {
-        resolved_path_mentions_child_item(path, current_module_path, child_module_path, item_name)
-    }) || extracted.expr_paths.iter().any(|(path, _)| {
-        resolved_path_mentions_child_item(path, current_module_path, child_module_path, item_name)
-            || resolve_alias_expr_path(path, &extracted.use_renames).is_some_and(|resolved| {
+    extracted.use_paths.iter().any(|extracted_path| {
+        extracted_path.module_suffix == module_suffix
+            && resolved_path_mentions_child_item(
+                &extracted_path.segments,
+                current_module_path,
+                child_module_path,
+                item_name,
+            )
+    }) || extracted.expr_paths.iter().any(|extracted_path| {
+        extracted_path.module_suffix == module_suffix
+            && (resolved_path_mentions_child_item(
+                &extracted_path.segments,
+                current_module_path,
+                child_module_path,
+                item_name,
+            ) || resolve_alias_expr_path(
+                &extracted_path.segments,
+                module_suffix,
+                &extracted.use_renames,
+            )
+            .is_some_and(|resolved| {
                 resolved_path_mentions_child_item(
                     &resolved,
                     current_module_path,
                     child_module_path,
                     item_name,
                 )
-            })
+            }))
     })
+}
+
+fn active_module_contexts(
+    extracted: &ExtractedPaths,
+    module_sources: &ModuleSourceMap,
+    tcx: TyCtxt<'_>,
+    source_file: &Path,
+) -> Vec<(Vec<String>, Vec<String>)> {
+    let mut contexts = Vec::new();
+    for root_module in module_sources.root_modules_for_file(tcx, source_file) {
+        let root_path = boundary::module_path(tcx, root_module);
+        for module_suffix in lexical_module_suffixes(extracted) {
+            let mut current_module_path = root_path.clone();
+            current_module_path.extend(module_suffix.iter().cloned());
+            if module_sources.file_contains_module_path(tcx, source_file, &current_module_path)
+                && !contexts
+                    .iter()
+                    .any(|(path, _)| path == &current_module_path)
+            {
+                contexts.push((current_module_path, module_suffix.to_vec()));
+            }
+        }
+    }
+    contexts
+}
+
+fn lexical_module_suffixes(extracted: &ExtractedPaths) -> Vec<&[String]> {
+    let mut suffixes = Vec::new();
+    for extracted_path in extracted.use_paths.iter().chain(&extracted.expr_paths) {
+        let module_suffix = extracted_path.module_suffix.as_slice();
+        if !suffixes.contains(&module_suffix) {
+            suffixes.push(module_suffix);
+        }
+    }
+    suffixes
 }
 
 fn resolved_path_mentions_child_item(
@@ -449,7 +480,6 @@ fn resolved_path_mentions_child_item(
     resolve_module_relative_paths(path, current_module_path)
         .into_iter()
         .any(|resolved| path_mentions_child_item(&resolved, child_module_path, item_name))
-        || relative_tail_mentions_child_item(path, child_module_path, item_name)
 }
 
 fn path_mentions_child_item(
@@ -460,37 +490,6 @@ fn path_mentions_child_item(
     path.len() > child_module_path.len()
         && path[..child_module_path.len()] == *child_module_path
         && (path[child_module_path.len()] == item_name || path[child_module_path.len()] == "*")
-}
-
-fn relative_tail_mentions_child_item(
-    path: &[String],
-    child_module_path: &[String],
-    item_name: &str,
-) -> bool {
-    if PathAnchor::first(path) == Some(PathAnchor::Crate) || child_module_path.is_empty() {
-        return false;
-    }
-
-    let mut tail_start = 0usize;
-    while path
-        .get(tail_start)
-        .is_some_and(|segment| PathAnchor::from(segment.as_str()) == PathAnchor::Super)
-    {
-        tail_start += 1;
-    }
-    if path
-        .get(tail_start)
-        .is_some_and(|segment| PathAnchor::from(segment.as_str()) == PathAnchor::SelfMod)
-    {
-        tail_start += 1;
-    }
-    let tail = &path[tail_start..];
-
-    (1..=child_module_path.len()).any(|suffix_len| {
-        tail.len() > suffix_len
-            && child_module_path[child_module_path.len() - suffix_len..] == tail[..suffix_len]
-            && (tail[suffix_len] == item_name || tail[suffix_len] == "*")
-    })
 }
 
 fn module_path_is_descendant(candidate: &[String], parent: &[String]) -> bool {

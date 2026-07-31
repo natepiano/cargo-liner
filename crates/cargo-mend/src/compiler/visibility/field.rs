@@ -98,7 +98,7 @@ fn check_field(
         name: Some(field_name.as_str()),
         highlight_span,
         category: ItemCategory::Declaration,
-        impl_self_name: None,
+        facade_subject: field_def_id,
     };
     if scan::record_forbidden_visibility_annotation(ctx, &field_info, &annotation, None, sink)? {
         return Ok(());

@@ -201,9 +201,9 @@ pub const fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
         fix_support: FixSupport::None,
     };
     const INTERNAL_PARENT_PUB_USE_FACADE: DiagnosticSpec = DiagnosticSpec {
-        headline:    HeadlineSource::Literal(
-            "parent module `pub use` is acting as an internal facade",
-        ),
+        headline:    HeadlineSource::FindingMessage {
+            fallback: "parent module re-export is acting as an internal facade",
+        },
         help_anchor: "internal-parent-pub-use-facade",
         fix_support: FixSupport::InternalParentFacade,
     };

@@ -170,7 +170,9 @@ static WILDCARD_PARENT_PUB_USE: DiagnosticSpec = DiagnosticSpec {
     fix_support: FixSupport::None,
 };
 static INTERNAL_PARENT_PUB_USE_FACADE: DiagnosticSpec = DiagnosticSpec {
-    headline:    HeadlineSource::Static("parent module `pub use` is acting as an internal facade"),
+    headline:    HeadlineSource::FindingMessage {
+        fallback: "parent module re-export is acting as an internal facade",
+    },
     inline_help: Some(
         "consider removing this parent facade and importing the item from its defining child module",
     ),

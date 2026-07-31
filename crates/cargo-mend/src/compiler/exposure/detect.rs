@@ -1,100 +1,152 @@
 use std::collections::HashSet;
+use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use syn::ImplItem;
+use rustc_hir::def::DefKind;
+use rustc_hir::def::Res;
+use rustc_middle::ty;
+use rustc_middle::ty::TyCtxt;
+use rustc_span::FileName;
+use rustc_span::Span;
+use rustc_span::def_id::DefId;
+use rustc_span::def_id::LocalDefId;
 use syn::Item;
-use syn::Visibility;
 
 use super::visitor;
 use crate::compiler::facade;
-use crate::compiler::facade::ParentFacadeReferenceUsage;
-use crate::compiler::facade::ParentFacadeUsage;
+use crate::compiler::facade::ModuleSourceMap;
 use crate::compiler::settings::DriverSettings;
-use crate::compiler::source_cache;
 use crate::compiler::source_cache::SourceCache;
 
-/// `(file, item)` pairs already on the exposure-evaluation stack.
+/// Items already on the exposure-evaluation stack.
 ///
 /// Two public items whose signatures mention each other (`Alpha` holds a
 /// `Beta` field, `Beta` holds an `Alpha` field) would otherwise recurse
 /// through `type_is_exposed_outside_parent` forever and overflow the stack.
-/// A revisited pair contributes no new exposure path, so it evaluates to
+/// A revisited item contributes no new exposure path, so it evaluates to
 /// `false` and any real exposure is found on another branch of the walk.
-type VisitedItems = HashSet<(PathBuf, String)>;
+type VisitedItems = HashSet<LocalDefId>;
+type FacadeExposure<'a> = dyn FnMut(LocalDefId, &Path, &str) -> Result<bool> + 'a;
+
+pub struct ExposureContext<'source, 'tcx> {
+    pub source_cache:   &'source SourceCache,
+    pub settings:       &'source DriverSettings,
+    pub source_root:    &'source Path,
+    pub tcx:            TyCtxt<'tcx>,
+    pub module_sources: &'source ModuleSourceMap,
+}
+
+struct ModuleScope<'syntax> {
+    module: LocalDefId,
+    items:  &'syntax [Item],
+}
 
 pub fn child_item_is_exposed_by_other_crate_visible_signature(
-    source_cache: &SourceCache,
-    settings: &DriverSettings,
-    source_root: &Path,
+    ctx: &ExposureContext<'_, '_>,
+    item_def_id: LocalDefId,
     child_file: &Path,
     item_name: &str,
+    facade_exposes: &mut FacadeExposure<'_>,
 ) -> Result<bool> {
     crate_visible_signature_exposes_item(
-        source_cache,
-        settings,
-        source_root,
+        ctx,
+        item_def_id,
         child_file,
         item_name,
         &mut VisitedItems::new(),
+        facade_exposes,
     )
 }
 
 fn crate_visible_signature_exposes_item(
-    source_cache: &SourceCache,
-    settings: &DriverSettings,
-    source_root: &Path,
+    ctx: &ExposureContext<'_, '_>,
+    item_def_id: LocalDefId,
     child_file: &Path,
     item_name: &str,
     visited: &mut VisitedItems,
+    facade_exposes: &mut FacadeExposure<'_>,
 ) -> Result<bool> {
-    let Some(file) = source_cache.parsed_file(child_file) else {
+    let Some(file) = ctx.source_cache.parsed_file(child_file) else {
         return Ok(false);
     };
+    let item_module: LocalDefId = ctx.tcx.parent_module_from_def_id(item_def_id).into();
 
-    for item in &file.items {
+    for module_scope in module_scopes(ctx, child_file, &file.items) {
+        if module_scope.module == item_module
+            && module_signature_exposes_item(
+                ctx,
+                module_scope.module,
+                module_scope.items,
+                child_file,
+                item_name,
+                visited,
+                facade_exposes,
+            )?
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn module_signature_exposes_item(
+    ctx: &ExposureContext<'_, '_>,
+    module: LocalDefId,
+    items: &[Item],
+    source_file: &Path,
+    item_name: &str,
+    visited: &mut VisitedItems,
+    facade_exposes: &mut FacadeExposure<'_>,
+) -> Result<bool> {
+    for item in items {
         let Some(exposing_item_name) = visitor::public_item_name(item) else {
             continue;
         };
-        if exposing_item_name == item_name {
+        if exposing_item_name == item_name
+            || !visitor::public_item_surface_mentions_name(item, item_name)
+        {
             continue;
         }
-        if !visitor::public_item_surface_mentions_name(item, item_name) {
+        let Some(exposing_item_def_id) = module_item_def_id(ctx.tcx, module, &exposing_item_name)
+        else {
             continue;
-        }
+        };
         if type_is_exposed_outside_parent(
-            source_cache,
-            settings,
-            source_root,
-            child_file,
+            ctx,
+            exposing_item_def_id,
+            source_file,
             &exposing_item_name,
             visited,
+            facade_exposes,
         )? {
             return Ok(true);
         }
     }
 
-    for item in &file.items {
+    for item in items {
         let Item::Impl(item_impl) = item else {
             continue;
         };
         let Some(self_type_name) = visitor::impl_self_type_name(item_impl) else {
             continue;
         };
-        if self_type_name == item_name {
+        if self_type_name == item_name
+            || !visitor::outward_impl_surface_mentions_name(item_impl, item_name)
+        {
             continue;
         }
-        if !visitor::outward_impl_surface_mentions_name(item_impl, item_name) {
+        let Some(self_type_def_id) = module_item_def_id(ctx.tcx, module, &self_type_name) else {
             continue;
-        }
+        };
         if type_is_exposed_outside_parent(
-            source_cache,
-            settings,
-            source_root,
-            child_file,
+            ctx,
+            self_type_def_id,
+            source_file,
             &self_type_name,
             visited,
+            facade_exposes,
         )? {
             return Ok(true);
         }
@@ -104,85 +156,54 @@ fn crate_visible_signature_exposes_item(
 }
 
 pub fn child_item_is_exposed_by_sibling_boundary_signature(
-    source_cache: &SourceCache,
-    settings: &DriverSettings,
-    source_root: &Path,
-    child_file: &Path,
+    ctx: &ExposureContext<'_, '_>,
+    item_def_id: LocalDefId,
     item_name: &str,
+    facade_exposes: &mut FacadeExposure<'_>,
 ) -> Result<bool> {
     sibling_boundary_signature_exposes_item(
-        source_cache,
-        settings,
-        source_root,
-        child_file,
+        ctx,
+        item_def_id,
         item_name,
         &mut VisitedItems::new(),
+        facade_exposes,
     )
 }
 
 fn sibling_boundary_signature_exposes_item(
-    source_cache: &SourceCache,
-    settings: &DriverSettings,
-    source_root: &Path,
-    child_file: &Path,
+    ctx: &ExposureContext<'_, '_>,
+    item_def_id: LocalDefId,
     item_name: &str,
     visited: &mut VisitedItems,
+    facade_exposes: &mut FacadeExposure<'_>,
 ) -> Result<bool> {
-    let Some(parent_boundary) = facade::parent_boundary_for_child(source_root, child_file) else {
+    let Some(parent_boundary) = facade::logical_parent_boundary_for_child(ctx.tcx, item_def_id)
+    else {
         return Ok(false);
     };
+    let child_module: LocalDefId = ctx.tcx.parent_module_from_def_id(item_def_id).into();
 
-    for candidate_file in source_cache.source_files_under(&parent_boundary.subtree_root) {
-        if candidate_file == child_file || candidate_file == parent_boundary.boundary_file {
-            continue;
-        }
-
-        let Some(file) = source_cache.parsed_file(candidate_file) else {
+    for candidate_file in ctx.source_cache.source_files_under(ctx.source_root) {
+        let Some(file) = ctx.source_cache.parsed_file(candidate_file) else {
             continue;
         };
+        for module_scope in module_scopes(ctx, candidate_file, &file.items) {
+            let candidate_module = module_scope.module;
+            if candidate_module == parent_boundary.module
+                || facade::module_is_within(ctx.tcx, candidate_module, child_module)
+                || !facade::module_is_within(ctx.tcx, candidate_module, parent_boundary.module)
+            {
+                continue;
+            }
 
-        for item in &file.items {
-            let Some(exposing_item_name) = visitor::public_item_name(item) else {
-                continue;
-            };
-            if exposing_item_name == item_name {
-                continue;
-            }
-            if !visitor::public_item_surface_mentions_name(item, item_name) {
-                continue;
-            }
-            if type_is_exposed_outside_parent(
-                source_cache,
-                settings,
-                source_root,
+            if module_signature_exposes_item(
+                ctx,
+                candidate_module,
+                module_scope.items,
                 candidate_file,
-                &exposing_item_name,
+                item_name,
                 visited,
-            )? {
-                return Ok(true);
-            }
-        }
-
-        for item in &file.items {
-            let Item::Impl(item_impl) = item else {
-                continue;
-            };
-            let Some(self_type_name) = visitor::impl_self_type_name(item_impl) else {
-                continue;
-            };
-            if self_type_name == item_name {
-                continue;
-            }
-            if !visitor::outward_impl_surface_mentions_name(item_impl, item_name) {
-                continue;
-            }
-            if type_is_exposed_outside_parent(
-                source_cache,
-                settings,
-                source_root,
-                candidate_file,
-                &self_type_name,
-                visited,
+                facade_exposes,
             )? {
                 return Ok(true);
             }
@@ -193,140 +214,74 @@ fn sibling_boundary_signature_exposes_item(
 }
 
 pub fn impl_item_is_exposed_by_exported_self_type(
-    source_cache: &SourceCache,
-    settings: &DriverSettings,
-    source_root: &Path,
-    child_file: &Path,
-    item_name: &str,
+    ctx: &ExposureContext<'_, '_>,
+    item_def_id: LocalDefId,
+    _: &str,
+    facade_exposes: &mut FacadeExposure<'_>,
 ) -> Result<bool> {
-    let Some(file) = source_cache.parsed_file(child_file) else {
+    if !matches!(
+        ctx.tcx.def_kind(item_def_id),
+        DefKind::AssocFn | DefKind::AssocConst { .. } | DefKind::AssocTy
+    ) {
+        return Ok(false);
+    }
+    let impl_def_id = ctx.tcx.parent(item_def_id.to_def_id());
+    let Some(self_type_def_id) = ctx
+        .tcx
+        .type_of(impl_def_id)
+        .instantiate_identity()
+        .skip_normalization()
+        .ty_adt_def()
+        .map(ty::AdtDef::did)
+        .and_then(DefId::as_local)
+    else {
         return Ok(false);
     };
-
-    let mut visited = VisitedItems::new();
-    for item in &file.items {
-        let Item::Impl(item_impl) = item else {
-            continue;
-        };
-        let Some(self_type_name) = visitor::impl_self_type_name(item_impl) else {
-            continue;
-        };
-        for impl_item in &item_impl.items {
-            let outward = item_impl.trait_.is_some();
-            let is_target = match impl_item {
-                ImplItem::Fn(item)
-                    if (outward || matches!(item.vis, Visibility::Public(_)))
-                        && item.sig.ident == item_name =>
-                {
-                    true
-                },
-                ImplItem::Const(item)
-                    if (outward || matches!(item.vis, Visibility::Public(_)))
-                        && item.ident == item_name =>
-                {
-                    true
-                },
-                ImplItem::Type(item)
-                    if (outward || matches!(item.vis, Visibility::Public(_)))
-                        && item.ident == item_name =>
-                {
-                    true
-                },
-                _ => false,
-            };
-
-            if is_target {
-                let definition_file =
-                    find_type_definition_file(source_cache, child_file, &self_type_name);
-                let check_file = definition_file.as_deref().unwrap_or(child_file);
-                if type_is_exposed_outside_parent(
-                    source_cache,
-                    settings,
-                    source_root,
-                    check_file,
-                    &self_type_name,
-                    &mut visited,
-                )? {
-                    return Ok(true);
-                }
-            }
-        }
-    }
-
-    Ok(false)
-}
-
-/// When an `impl` block for a type lives in a different child module than the
-/// type definition (e.g. `impl App` in `focus.rs` while `struct App` is in
-/// `types.rs`), the exposure check must use the definition file — not the impl
-/// file — so that `parent_facade_export_status` resolves the correct child
-/// module name.
-///
-/// Returns `Some(path)` if the type is defined in a sibling file, `None` if it
-/// is defined in `child_file` itself or cannot be located.
-fn find_type_definition_file(
-    source_cache: &SourceCache,
-    child_file: &Path,
-    type_name: &str,
-) -> Option<PathBuf> {
-    if file_defines_type(source_cache, child_file, type_name) {
-        return None;
-    }
-
-    let parent_dir = child_file.parent()?;
-    for path in source_cache.source_files_under(parent_dir) {
-        if path == child_file {
-            continue;
-        }
-        if file_defines_type(source_cache, path, type_name) {
-            return Some(path.to_path_buf());
-        }
-    }
-
-    None
-}
-
-fn file_defines_type(source_cache: &SourceCache, path: &Path, type_name: &str) -> bool {
-    let Some(file) = source_cache.parsed_file(path) else {
-        return false;
+    let Some(definition_file) = real_file_path(ctx.tcx, ctx.tcx.def_span(self_type_def_id)) else {
+        return Ok(false);
     };
-    for item in &file.items {
-        let name = match item {
-            Item::Struct(item) => &item.ident,
-            Item::Enum(item) => &item.ident,
-            Item::Type(item) => &item.ident,
-            Item::Union(item) => &item.ident,
-            _ => continue,
-        };
-        if name == type_name {
-            return true;
-        }
-    }
-    false
+    let self_type_name = ctx.tcx.item_name(self_type_def_id.to_def_id()).to_string();
+    type_is_exposed_outside_parent(
+        ctx,
+        self_type_def_id,
+        &definition_file,
+        &self_type_name,
+        &mut VisitedItems::new(),
+        facade_exposes,
+    )
 }
 
 pub fn parent_boundary_public_signature_exposes_child_used_outside_parent(
-    source_cache: &SourceCache,
-    settings: &DriverSettings,
-    source_root: &Path,
-    child_file: &Path,
+    ctx: &ExposureContext<'_, '_>,
+    item_def_id: LocalDefId,
     item_name: &str,
 ) -> Result<bool> {
-    let Some(parent_boundary) = facade::parent_boundary_for_child(source_root, child_file) else {
-        return Ok(false);
-    };
-
-    let Some(file) = source_cache.parsed_file(&parent_boundary.boundary_file) else {
+    let Some(parent_boundary) = facade::logical_parent_boundary_for_child(ctx.tcx, item_def_id)
+    else {
         return Ok(false);
     };
 
     let mut exposing_names = Vec::new();
-    for item in &file.items {
-        let Some(exposing_item_name) = visitor::public_item_name(item) else {
+    for boundary_file in ctx.module_sources.source_files(parent_boundary.module) {
+        let Some(file) = ctx.source_cache.parsed_file(boundary_file) else {
             continue;
         };
-        if visitor::public_item_surface_mentions_name(item, item_name) {
-            exposing_names.push(exposing_item_name);
+        for module_scope in module_scopes(ctx, boundary_file, &file.items) {
+            if module_scope.module != parent_boundary.module {
+                continue;
+            }
+            for item in module_scope.items {
+                let Some(exposing_item_name) = visitor::public_item_name(item) else {
+                    continue;
+                };
+                if visitor::public_item_surface_mentions_name(item, item_name)
+                    && module_item_def_id(ctx.tcx, parent_boundary.module, &exposing_item_name)
+                        .is_some()
+                    && !exposing_names.contains(&exposing_item_name)
+                {
+                    exposing_names.push(exposing_item_name);
+                }
+            }
         }
     }
 
@@ -334,37 +289,21 @@ pub fn parent_boundary_public_signature_exposes_child_used_outside_parent(
         return Ok(false);
     }
 
-    for source_file in source_cache.source_files_under(source_root) {
-        if source_file == parent_boundary.boundary_file
-            || source_file.starts_with(&parent_boundary.subtree_root)
-        {
-            continue;
-        }
-        let Some(current_module_path) =
-            source_cache::module_path_from_source_file(source_root, source_file)
-        else {
-            continue;
-        };
-        let Some(extracted) = source_cache.extracted_paths(source_file) else {
-            continue;
-        };
-        if !matches!(
-            facade::source_references_parent_export(
-                extracted,
-                &current_module_path,
-                &parent_boundary.module_path,
-                &exposing_names,
-            ),
-            ParentFacadeReferenceUsage::None
-        ) {
-            return Ok(true);
-        }
+    if facade::path_exists_outside_module(
+        ctx.source_cache,
+        ctx.source_root,
+        ctx.tcx,
+        ctx.module_sources,
+        &parent_boundary.module_path,
+        &exposing_names,
+    ) {
+        return Ok(true);
     }
 
     if facade::workspace_source_mentions_parent_export_literal(
-        source_cache,
-        settings,
-        &parent_boundary,
+        ctx.source_cache,
+        ctx.settings,
+        &parent_boundary.module_path,
         &exposing_names,
     )? {
         return Ok(true);
@@ -374,52 +313,108 @@ pub fn parent_boundary_public_signature_exposes_child_used_outside_parent(
 }
 
 fn type_is_exposed_outside_parent(
-    source_cache: &SourceCache,
-    settings: &DriverSettings,
-    source_root: &Path,
+    ctx: &ExposureContext<'_, '_>,
+    item_def_id: LocalDefId,
     child_file: &Path,
     item_name: &str,
     visited: &mut VisitedItems,
+    facade_exposes: &mut FacadeExposure<'_>,
 ) -> Result<bool> {
-    if !visited.insert((child_file.to_path_buf(), item_name.to_string())) {
+    if !visited.insert(item_def_id) {
         return Ok(false);
     }
-    Ok(facade::parent_facade_export_status(
-        source_cache,
-        settings,
-        source_root,
-        child_file,
-        item_name,
-    )?
-    .is_some_and(|status| status.usage == ParentFacadeUsage::UsedOutsideSubtree)
-        || facade::public_reexport_exists_outside_parent(
-            source_cache,
-            settings,
-            source_root,
-            child_file,
-            item_name,
-        )?
+    Ok(facade_exposes(item_def_id, child_file, item_name)?
         || crate_visible_signature_exposes_item(
-            source_cache,
-            settings,
-            source_root,
+            ctx,
+            item_def_id,
             child_file,
             item_name,
             visited,
+            facade_exposes,
         )?
         || sibling_boundary_signature_exposes_item(
-            source_cache,
-            settings,
-            source_root,
-            child_file,
+            ctx,
+            item_def_id,
             item_name,
             visited,
+            facade_exposes,
         )?
         || parent_boundary_public_signature_exposes_child_used_outside_parent(
-            source_cache,
-            settings,
-            source_root,
-            child_file,
+            ctx,
+            item_def_id,
             item_name,
         )?)
+}
+
+fn module_item_def_id(tcx: TyCtxt<'_>, module: LocalDefId, item_name: &str) -> Option<LocalDefId> {
+    tcx.module_children_local(module).iter().find_map(|child| {
+        if child.ident.name.as_str() != item_name {
+            return None;
+        }
+        match child.res {
+            Res::Def(_, def_id) => def_id.as_local(),
+            _ => None,
+        }
+    })
+}
+
+fn module_scopes<'syntax>(
+    ctx: &ExposureContext<'_, '_>,
+    source_file: &Path,
+    items: &'syntax [Item],
+) -> Vec<ModuleScope<'syntax>> {
+    let mut scopes = Vec::new();
+    for root_module in ctx
+        .module_sources
+        .root_modules_for_file(ctx.tcx, source_file)
+    {
+        collect_module_scopes(ctx.tcx, root_module, items, &mut scopes);
+    }
+    scopes
+}
+
+fn collect_module_scopes<'syntax>(
+    tcx: TyCtxt<'_>,
+    module: LocalDefId,
+    items: &'syntax [Item],
+    scopes: &mut Vec<ModuleScope<'syntax>>,
+) {
+    scopes.push(ModuleScope { module, items });
+    for item in items {
+        let Item::Mod(item_mod) = item else {
+            continue;
+        };
+        let Some((_, child_items)) = &item_mod.content else {
+            continue;
+        };
+        let source_name = item_mod.ident.to_string();
+        let child_name = source_name.strip_prefix("r#").unwrap_or(&source_name);
+        let Some(child_module) = module_def_id(tcx, module, child_name) else {
+            continue;
+        };
+        collect_module_scopes(tcx, child_module, child_items, scopes);
+    }
+}
+
+fn module_def_id(tcx: TyCtxt<'_>, module: LocalDefId, module_name: &str) -> Option<LocalDefId> {
+    tcx.module_children_local(module).iter().find_map(|child| {
+        if child.ident.name.as_str() != module_name {
+            return None;
+        }
+        match child.res {
+            Res::Def(DefKind::Mod, def_id) => def_id.as_local(),
+            _ => None,
+        }
+    })
+}
+
+fn real_file_path(tcx: TyCtxt<'_>, span: Span) -> Option<PathBuf> {
+    let source_map = tcx.sess.source_map();
+    let file = source_map.lookup_char_pos(span.lo()).file;
+    match file.name.clone() {
+        FileName::Real(real) => real
+            .local_path()
+            .map(|path| fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())),
+        _ => None,
+    }
 }

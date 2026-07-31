@@ -178,46 +178,59 @@ edition = "2024"
 }
 
 #[test]
-fn pub_crate_at_depth_3_fires_when_parent_reexports_as_pub_super() {
-    let temp = tempdir().expect("create temp fixture dir");
+fn pub_crate_at_depth_3_describes_parent_facade_spelling_accurately() {
+    for (package_name, facade_visibility, expected_help) in [
+        (
+            "depth_3_pub_super_fixture",
+            "pub(super)",
+            "the parent module re-exports this with `pub(super) use`; consider using `pub` \
+             (`pub(super)` here would not compile — the re-export would be wider than the item)",
+        ),
+        (
+            "depth_3_pub_in_super_fixture",
+            "pub(in super)",
+            "the parent module re-exports this to its own parent; consider using `pub` \
+             (`pub(crate)` and `pub(in ...)` are forbidden by policy)",
+        ),
+    ] {
+        let temp = tempdir().expect("create temp fixture dir");
 
-    fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "depth_3_pub_super_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write manifest");
-    fs::create_dir_all(temp.path().join("src/foo/bar")).expect("create src/foo/bar");
-    fs::write(temp.path().join("src/lib.rs"), "mod foo;\n").expect("write lib");
-    fs::write(temp.path().join("src/foo/mod.rs"), "mod bar;\n").expect("write foo/mod.rs");
-    fs::write(
-        temp.path().join("src/foo/bar/mod.rs"),
-        "mod baz;\npub(super) use baz::helper;\n",
-    )
-    .expect("write foo/bar/mod.rs");
-    fs::write(
-        temp.path().join("src/foo/bar/baz.rs"),
-        "pub(crate) fn helper() {}\n",
-    )
-    .expect("write foo/bar/baz.rs");
+        fs::write(
+            temp.path().join("Cargo.toml"),
+            format!(
+                "[package]\nname = \"{package_name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"
+            ),
+        )
+        .expect("write manifest");
+        fs::create_dir_all(temp.path().join("src/foo/bar")).expect("create src/foo/bar");
+        fs::write(temp.path().join("src/lib.rs"), "mod foo;\n").expect("write lib");
+        fs::write(temp.path().join("src/foo/mod.rs"), "mod bar;\n").expect("write foo/mod.rs");
+        fs::write(
+            temp.path().join("src/foo/bar/mod.rs"),
+            format!("mod baz;\n{facade_visibility} use baz::helper;\n"),
+        )
+        .expect("write foo/bar/mod.rs");
+        fs::write(
+            temp.path().join("src/foo/bar/baz.rs"),
+            "pub(crate) fn helper() {}\n",
+        )
+        .expect("write foo/bar/baz.rs");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    let forbidden_count = report
-        .findings
-        .iter()
-        .filter(|f| {
-            f.code == DiagnosticCode::ForbiddenPubCrate && f.path.ends_with("src/foo/bar/baz.rs")
-        })
-        .count();
-    assert_eq!(
-        forbidden_count, 1,
-        "pub(crate) at depth 3 should fire when the parent re-exports as `pub(super) use` \
-         (facade visibility is Super, not Crate): {:?}",
-        report.findings,
-    );
+        let report = run_mend_json(&temp.path().join("Cargo.toml"));
+        let finding = report
+            .findings
+            .iter()
+            .find(|finding| {
+                finding.code == DiagnosticCode::ForbiddenPubCrate
+                    && finding.path.ends_with("src/foo/bar/baz.rs")
+            })
+            .expect("depth-three parent facade should reject pub(crate)");
+        assert!(
+            finding.help.iter().any(|help| help == expected_help),
+            "{facade_visibility} parent facade help was wrong: {:?}",
+            finding.help,
+        );
+    }
 }
 
 #[test]

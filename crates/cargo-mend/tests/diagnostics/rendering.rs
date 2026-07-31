@@ -142,7 +142,7 @@ pub struct PublicContainer {
     pub dependency: LegitDependency,
 }
 
-pub struct Suspicious;
+struct Suspicious;
 "#,
     )
     .expect("write suspicious child");
@@ -183,7 +183,7 @@ pub struct Suspicious;
     .expect("write wildcard child");
     fs::write(
         root.join("src/deep_parent/mod.rs"),
-        "mod nested;\npub struct DeepTarget;\n",
+        "mod nested;\npub(crate) struct DeepTarget;\n",
     )
     .expect("write deep parent mod");
     fs::write(root.join("src/deep_parent/nested/mod.rs"), "mod leaf;\n")

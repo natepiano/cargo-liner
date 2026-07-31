@@ -14,6 +14,7 @@ use serde_json::to_vec_pretty;
 
 use super::visit;
 use crate::compiler::constants::FINDINGS_SCHEMA_VERSION;
+use crate::compiler::facade::ModuleSourceMap;
 use crate::compiler::persistence;
 use crate::compiler::persistence::CacheBuildKind;
 use crate::compiler::persistence::FindingsSink;
@@ -24,6 +25,7 @@ use crate::compiler::source_cache::SourceCache;
 use crate::compiler::visibility::field;
 use crate::compiler::visibility::source;
 use crate::compiler::visibility::use_sites;
+use crate::compiler::visibility::use_sites::ReexportIndex;
 use crate::reporting::CompilerWarningFacts;
 
 pub struct VisibilityContext<'a, 'tcx> {
@@ -34,6 +36,8 @@ pub struct VisibilityContext<'a, 'tcx> {
     pub effective_visibilities:    &'a EffectiveVisibilities,
     pub source_cache:              &'a SourceCache,
     pub public_visibility_targets: &'a HashSet<LocalDefId>,
+    pub reexport_index:            &'a ReexportIndex,
+    pub module_sources:            &'a ModuleSourceMap,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,7 +55,7 @@ pub struct ItemInfo<'a> {
     pub name:            Option<&'a str>,
     pub highlight_span:  Span,
     pub category:        ItemCategory,
-    pub impl_self_name:  Option<String>,
+    pub facade_subject:  LocalDefId,
 }
 
 pub fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) -> Result<bool> {
@@ -66,7 +70,9 @@ pub fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) ->
     let mut sink = FindingsSink::default();
     let crate_items = tcx.hir_crate_items(());
     let source_cache = build_source_cache(settings, &source_root)?;
-    let mut public_visibility_targets = use_sites::public_reexport_targets(tcx);
+    let reexport_index = use_sites::reexport_index(tcx);
+    let module_sources = ModuleSourceMap::new(tcx);
+    let mut public_visibility_targets = HashSet::new();
     use_sites::collect_use_sites(tcx, &mut sink.use_sites, &mut public_visibility_targets);
     let ctx = VisibilityContext {
         tcx,
@@ -76,6 +82,8 @@ pub fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) ->
         effective_visibilities: tcx.effective_visibilities(()),
         source_cache: &source_cache,
         public_visibility_targets: &public_visibility_targets,
+        reexport_index: &reexport_index,
+        module_sources: &module_sources,
     };
 
     let mut source_files = BTreeSet::new();

@@ -1,23 +1,36 @@
 use std::path::Path;
 use std::path::PathBuf;
 
+#[cfg(test)]
 use ParentFacadeVisibility::Crate;
+#[cfg(test)]
 use ParentFacadeVisibility::Public;
+#[cfg(test)]
 use ParentFacadeVisibility::Super;
 use anyhow::Result;
+use rustc_middle::ty::TyCtxt;
+use rustc_span::Span;
+use rustc_span::def_id::LocalDefId;
+#[cfg(test)]
 use syn::File;
 use syn::Item;
 use syn::ItemUse;
 use syn::UseTree;
+#[cfg(test)]
 use syn::Visibility;
+use syn::spanned::Spanned;
 
 use super::boundary;
+use super::boundary::ModuleSourceMap;
 use super::reference;
 use super::reference::ParentFacadeUsage;
 use crate::compiler::settings::DriverSettings;
+#[cfg(test)]
 use crate::compiler::source_cache;
 use crate::compiler::source_cache::SourceCache;
+use crate::fixes;
 use crate::rust_syntax;
+#[cfg(test)]
 use crate::rust_syntax::PathAnchor;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -32,6 +45,22 @@ pub enum ParentFacadeVisibility {
     Public,
     Crate,
     Super,
+    Unrecognized,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParentFacadeSpelling {
+    Public,
+    Crate,
+    Super,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParentFacadeReach {
+    pub visibility:        ParentFacadeVisibility,
+    pub spelling:          ParentFacadeSpelling,
+    pub spelling_conflict: bool,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -43,87 +72,95 @@ pub(super) struct ParentFacadeExports {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParentFacadeExportStatus {
-    pub usage:           ParentFacadeUsage,
-    pub fix_support:     ParentFacadeFixSupport,
-    pub visibility:      ParentFacadeVisibility,
-    pub parent_path:     PathBuf,
-    pub parent_rel_path: String,
-    pub parent_line:     usize,
+    pub usage:             ParentFacadeUsage,
+    pub fix_support:       ParentFacadeFixSupport,
+    pub visibility:        ParentFacadeVisibility,
+    pub spelling:          ParentFacadeSpelling,
+    pub spelling_conflict: bool,
+    pub parent_path:       PathBuf,
+    pub parent_rel_path:   String,
+    pub parent_line:       usize,
 }
 
-/// Check whether `root_module` (lib.rs / main.rs) re-exports `item_name`
-/// from the child module that `child_file` belongs to.
-pub fn root_module_exports_item(
-    source_cache: &SourceCache,
-    root_module: &Path,
-    child_file: &Path,
-    item_name: &str,
-) -> bool {
-    let Some(child_module_name) = rust_syntax::module_name_for_child_boundary_file(child_file)
-    else {
-        return false;
-    };
-    let Some(file) = source_cache.parsed_file(root_module) else {
-        return false;
-    };
-    let exports = exported_names_from_parent_boundary(file, child_module_name, item_name);
-    !exports.explicit.is_empty()
+impl ParentFacadeExportStatus {
+    pub const fn use_syntax(&self) -> Option<&'static str> {
+        if self.spelling_conflict {
+            return None;
+        }
+        match self.spelling {
+            ParentFacadeSpelling::Public => Some("pub use"),
+            ParentFacadeSpelling::Crate => Some("pub(crate) use"),
+            ParentFacadeSpelling::Super => Some("pub(super) use"),
+            ParentFacadeSpelling::Other => None,
+        }
+    }
+}
+
+pub struct ParentFacadeExportRequest<'tcx, 'source> {
+    pub source_cache:   &'source SourceCache,
+    pub settings:       &'source DriverSettings,
+    pub source_root:    &'source Path,
+    pub tcx:            TyCtxt<'tcx>,
+    pub module_sources: &'source ModuleSourceMap,
+    pub owner_module:   LocalDefId,
+    pub use_span:       Span,
+    pub visibility:     ParentFacadeVisibility,
+    pub spelling:       ParentFacadeSpelling,
+    pub export_names:   Vec<String>,
+    pub unique_export:  bool,
+    pub child_file:     &'source Path,
+    pub item_name:      &'source str,
 }
 
 pub fn parent_facade_export_status(
-    source_cache: &SourceCache,
-    settings: &DriverSettings,
-    source_root: &Path,
-    child_file: &Path,
-    item_name: &str,
+    request: ParentFacadeExportRequest<'_, '_>,
 ) -> Result<Option<ParentFacadeExportStatus>> {
-    let Some(initial_boundary) = boundary::parent_boundary_for_child(source_root, child_file)
+    let ParentFacadeExportRequest {
+        source_cache,
+        settings,
+        source_root,
+        tcx,
+        module_sources,
+        owner_module,
+        use_span,
+        visibility,
+        spelling,
+        export_names,
+        unique_export,
+        child_file,
+        item_name,
+    } = request;
+    let Some(parent_boundary) = boundary::parent_boundary_for_reexport(tcx, owner_module, use_span)
     else {
         return Ok(None);
     };
-
-    // Walk up from the immediate parent through ancestors until we find a
-    // boundary that re-exports `item_name`, or run out of ancestors.
-    let mut current_child: PathBuf = child_file.to_path_buf();
-    let mut parent_boundary = initial_boundary;
-
-    let exported_names = loop {
-        let Some(child_module_name) =
-            rust_syntax::module_name_for_child_boundary_file(&current_child)
-        else {
-            return Ok(None);
-        };
-
-        let Some(file) = source_cache.parsed_file(&parent_boundary.boundary_file) else {
-            return Ok(None);
-        };
-        let exports = exported_names_from_parent_boundary(file, child_module_name, item_name);
-
-        if !exports.explicit.is_empty() {
-            break exports;
-        }
-
-        // Not found at this level — walk up to the next ancestor.
-        current_child.clone_from(&parent_boundary.boundary_file);
-        let Some(next_boundary) = boundary::parent_of_boundary(source_root, &current_child) else {
-            return Ok(None);
-        };
-        parent_boundary = next_boundary;
-    };
-
     let parent_rel_path = parent_boundary
         .boundary_file
         .strip_prefix(source_root)
         .unwrap_or(&parent_boundary.boundary_file)
         .to_string_lossy()
         .replace('\\', "/");
-    let parent_source = source_cache.read_source(&parent_boundary.boundary_file)?;
-    let parent_line = source_cache::first_line_matching(parent_source, item_name).unwrap_or(1);
+    let parent_line = tcx.sess.source_map().lookup_char_pos(use_span.lo()).line;
+    let exported_names = ParentFacadeExports {
+        explicit:    export_names,
+        fix_support: parent_facade_fix_support(
+            source_cache,
+            &parent_boundary.boundary_file,
+            child_file,
+            item_name,
+            tcx,
+            use_span,
+            unique_export,
+        ),
+        visibility:  Some(visibility),
+    };
 
     let usage = reference::scan_facade_usage(
         source_cache,
         settings,
         source_root,
+        tcx,
+        module_sources,
         &parent_boundary,
         &exported_names,
     )?;
@@ -131,66 +168,75 @@ pub fn parent_facade_export_status(
     Ok(Some(ParentFacadeExportStatus {
         usage,
         fix_support: exported_names.fix_support,
-        visibility: exported_names
-            .visibility
-            .unwrap_or(ParentFacadeVisibility::Public),
+        visibility,
+        spelling,
+        spelling_conflict: false,
         parent_path: parent_boundary.boundary_file,
         parent_rel_path,
         parent_line,
     }))
 }
 
-pub fn parent_facade_has_glob_export(
+fn parent_facade_fix_support(
     source_cache: &SourceCache,
-    source_root: &Path,
+    parent_path: &Path,
     child_file: &Path,
-) -> Result<bool> {
-    let Some(initial_boundary) = boundary::parent_boundary_for_child(source_root, child_file)
+    item_name: &str,
+    tcx: TyCtxt<'_>,
+    use_span: Span,
+    unique_export: bool,
+) -> ParentFacadeFixSupport {
+    if !unique_export {
+        return ParentFacadeFixSupport::Unsupported;
+    }
+    let Some(child_module_name) = rust_syntax::module_name_for_child_boundary_file(child_file)
     else {
-        return Ok(false);
+        return ParentFacadeFixSupport::Unsupported;
     };
-
-    let mut current_child: PathBuf = child_file.to_path_buf();
-    let mut parent_boundary = initial_boundary;
-
-    loop {
-        let Some(child_module_name) =
-            rust_syntax::module_name_for_child_boundary_file(&current_child)
-        else {
-            return Ok(false);
-        };
-
-        if let Some(file) = source_cache.parsed_file(&parent_boundary.boundary_file)
-            && parent_boundary_has_matching_pub_use_glob(file, child_module_name)
-        {
-            return Ok(true);
-        }
-
-        current_child.clone_from(&parent_boundary.boundary_file);
-        let Some(next_boundary) = boundary::parent_of_boundary(source_root, &current_child) else {
-            return Ok(false);
-        };
-        parent_boundary = next_boundary;
+    let Some(file) = source_cache.parsed_file(parent_path) else {
+        return ParentFacadeFixSupport::Unsupported;
+    };
+    let Some(source) = source_cache.read_source(parent_path).ok() else {
+        return ParentFacadeFixSupport::Unsupported;
+    };
+    let use_offset = tcx
+        .sess
+        .source_map()
+        .lookup_byte_offset(use_span.lo())
+        .pos
+        .0 as usize;
+    if file
+        .items
+        .iter()
+        .filter_map(|item| {
+            let Item::Use(item_use) = item else {
+                return None;
+            };
+            Some(item_use)
+        })
+        .find(|item_use| item_use_start_offset(source, item_use) == Some(use_offset))
+        .is_some_and(|item_use| {
+            fixes::facade_use_prefix(&item_use.vis).is_some()
+                && pub_use_is_fix_supported(&item_use.tree, child_module_name, item_name)
+        })
+    {
+        ParentFacadeFixSupport::Supported
+    } else {
+        ParentFacadeFixSupport::Unsupported
     }
 }
 
-fn parent_boundary_has_matching_pub_use_glob(file: &File, child_module_name: &str) -> bool {
-    file.items.iter().any(|item| {
-        let Item::Use(item_use) = item else {
-            return false;
-        };
-        if parent_facade_visibility(&item_use.vis).is_none() {
-            return false;
-        }
-        let mut paths = Vec::new();
-        source_cache::flatten_use_tree(Vec::new(), &item_use.tree, &mut paths);
-        paths.into_iter().any(|path| {
-            let normalized = rust_syntax::trim_leading_self(&path);
-            normalized.len() == 2 && normalized[0] == child_module_name && normalized[1] == "*"
-        })
-    })
+fn item_use_start_offset(source: &str, item_use: &ItemUse) -> Option<usize> {
+    let start = item_use.span().start();
+    let line_offset = source
+        .split_inclusive('\n')
+        .take(start.line.saturating_sub(1))
+        .map(str::len)
+        .sum::<usize>();
+    (line_offset + start.column <= source.len()).then_some(line_offset + start.column)
 }
 
+#[cfg(test)]
 pub(super) fn exported_names_from_parent_boundary(
     file: &File,
     child_module_name: &str,
@@ -217,6 +263,7 @@ pub(super) fn exported_names_from_parent_boundary(
     exported
 }
 
+#[cfg(test)]
 fn collect_matching_pub_use_exports(
     item_use: &ItemUse,
     use_visibility: ParentFacadeVisibility,
@@ -239,7 +286,9 @@ fn collect_matching_pub_use_exports(
         }
     }
     if matched {
-        if pub_use_is_fix_supported(&item_use.tree, child_module_name, item_name) {
+        if fixes::facade_use_prefix(&item_use.vis).is_some()
+            && pub_use_is_fix_supported(&item_use.tree, child_module_name, item_name)
+        {
             exported.fix_support = ParentFacadeFixSupport::Supported;
         }
         exported.visibility = Some(exported.visibility.map_or(use_visibility, |existing| {
@@ -248,11 +297,15 @@ fn collect_matching_pub_use_exports(
     }
 }
 
+#[cfg(test)]
 const fn widest_visibility(
     a: ParentFacadeVisibility,
     b: ParentFacadeVisibility,
 ) -> ParentFacadeVisibility {
     match (a, b) {
+        (ParentFacadeVisibility::Unrecognized, _) | (_, ParentFacadeVisibility::Unrecognized) => {
+            ParentFacadeVisibility::Unrecognized
+        },
         (Public, _) | (_, Public) => Public,
         (Crate, _) | (_, Crate) => Crate,
         (Super, Super) => Super,
@@ -286,6 +339,7 @@ fn pub_use_is_fix_supported_with_prefix(
     }
 }
 
+#[cfg(test)]
 pub(super) fn parent_facade_visibility(vis: &Visibility) -> Option<ParentFacadeVisibility> {
     match vis {
         Visibility::Public(_) => Some(ParentFacadeVisibility::Public),
