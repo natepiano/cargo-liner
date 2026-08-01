@@ -18,17 +18,21 @@ use super::constants::DIAGNOSTICS_TABLE_KEY;
 use super::constants::GLOBAL_CONFIG_FILE;
 use super::constants::PRELUDE_COMMENT;
 use super::constants::PRELUDE_KEY;
+use super::constants::PUB_IN_PATH_COMMENT;
+use super::constants::PUB_IN_PATH_KEY;
 use super::constants::VISIBILITY_TABLE_KEY;
 use super::diagnostic_code::DiagnosticCode;
 use super::diagnostics_config::DiagnosticsConfig;
 use super::prelude_pub_mod::PreludePubMod;
+use super::pub_in_path::PubInPath;
 use crate::constants::HELP_URL_BASE;
 
-/// Resolved global configuration: the diagnostics defaults plus the prelude switch.
+/// Resolved global configuration: diagnostics defaults and visibility settings.
 #[derive(Debug, Default)]
 pub(crate) struct GlobalConfig {
     pub(crate) diagnostics:     DiagnosticsConfig,
     pub(crate) prelude_pub_mod: PreludePubMod,
+    pub(crate) pub_in_path:     PubInPath,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -43,6 +47,8 @@ struct GlobalConfigFile {
 struct GlobalVisibility {
     #[serde(default, rename = "allow_prelude_pub_mod")]
     prelude_pub_mod: PreludePubMod,
+    #[serde(default)]
+    pub_in_path:     PubInPath,
 }
 
 impl From<GlobalConfigFile> for GlobalConfig {
@@ -50,6 +56,7 @@ impl From<GlobalConfigFile> for GlobalConfig {
         Self {
             diagnostics:     file.diagnostics_config,
             prelude_pub_mod: file.visibility.prelude_pub_mod,
+            pub_in_path:     file.visibility.pub_in_path,
         }
     }
 }
@@ -108,6 +115,16 @@ fn reconcile_global_config(path: &Path) -> Result<()> {
         inserted = true;
     }
 
+    if let Some(visibility) = ensure_table(doc.as_table_mut(), VISIBILITY_TABLE_KEY)
+        && !visibility.contains_key(PUB_IN_PATH_KEY)
+    {
+        visibility.insert(PUB_IN_PATH_KEY, value("permitted"));
+        if let Some(mut key) = visibility.key_mut(PUB_IN_PATH_KEY) {
+            key.leaf_decor_mut().set_prefix(PUB_IN_PATH_COMMENT);
+        }
+        inserted = true;
+    }
+
     if inserted {
         fs::write(path, doc.to_string())
             .with_context(|| format!("failed to write global config {}", path.display()))?;
@@ -141,6 +158,8 @@ fn default_global_config_toml() -> String {
     out.push_str("\n[visibility]\n");
     out.push_str(PRELUDE_COMMENT);
     let _ = writeln!(out, "{PRELUDE_KEY} = true");
+    out.push_str(PUB_IN_PATH_COMMENT);
+    let _ = writeln!(out, "{PUB_IN_PATH_KEY} = \"permitted\"");
     out
 }
 
@@ -165,6 +184,9 @@ mod tests {
     use super::GlobalConfig;
     use super::GlobalConfigFile;
     use super::PRELUDE_KEY;
+    use super::PUB_IN_PATH_COMMENT;
+    use super::PUB_IN_PATH_KEY;
+    use super::PubInPath;
     use super::default_global_config_toml;
     use super::reconcile_global_config;
     use crate::config::DiagnosticCode;
@@ -185,6 +207,7 @@ mod tests {
         }
         let global = GlobalConfig::from(global_config_file);
         assert_eq!(global.prelude_pub_mod, PreludePubMod::Allowed);
+        assert_eq!(global.pub_in_path, PubInPath::Permitted);
     }
 
     #[test]
@@ -206,10 +229,9 @@ prefer_module_import = false
                 .is_enabled(DiagnosticCode::ForbiddenPubCrate),
             DiagnosticStatus::Enabled
         ));
-        assert_eq!(
-            GlobalConfig::from(global_config_file).prelude_pub_mod,
-            PreludePubMod::Allowed
-        );
+        let global = GlobalConfig::from(global_config_file);
+        assert_eq!(global.prelude_pub_mod, PreludePubMod::Allowed);
+        assert_eq!(global.pub_in_path, PubInPath::Permitted);
     }
 
     #[test]
@@ -223,6 +245,7 @@ prefer_module_import = false
             assert!(matches!(enabled, DiagnosticStatus::Enabled));
         }
         assert!(contents.contains(PRELUDE_KEY));
+        assert!(contents.contains(PUB_IN_PATH_KEY));
     }
 
     #[test]
@@ -265,6 +288,7 @@ prefer_module_import = false
             "explicit value preserved"
         );
         assert!(after.contains(PRELUDE_KEY), "prelude key inserted");
+        assert!(after.contains(PUB_IN_PATH_KEY), "pub_in_path key inserted");
 
         let file: GlobalConfigFile = from_str(&after).unwrap();
         assert!(matches!(
@@ -280,5 +304,24 @@ prefer_module_import = false
         reconcile_global_config(&path).unwrap();
         let second = std::fs::read_to_string(&path).unwrap();
         assert_eq!(second, after, "reconcile is idempotent");
+    }
+
+    #[test]
+    fn reconcile_inserts_pub_in_path_without_disturbing_existing_visibility_content() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.toml");
+        let existing = default_global_config_toml().replace(
+            &format!("{PUB_IN_PATH_COMMENT}{PUB_IN_PATH_KEY} = \"permitted\"\n"),
+            "",
+        );
+        std::fs::write(&path, &existing).unwrap();
+
+        reconcile_global_config(&path).unwrap();
+
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            after,
+            format!("{existing}{PUB_IN_PATH_COMMENT}{PUB_IN_PATH_KEY} = \"permitted\"\n")
+        );
     }
 }

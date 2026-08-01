@@ -15,10 +15,15 @@ edition = "2024"
 }
 
 #[test]
-fn crate_root_prelude_is_not_flagged_without_override() {
+fn crate_root_prelude_is_not_flagged_when_project_allows_it() {
     let temp = tempdir().expect("create temp project dir");
     fs::create_dir_all(temp.path().join("src")).expect("create src");
     write_manifest(temp.path(), "prelude_fixture");
+    fs::write(
+        temp.path().join("mend.toml"),
+        "[visibility]\nallow_prelude_pub_mod = true\n",
+    )
+    .expect("write mend.toml");
     fs::write(
         temp.path().join("src/main.rs"),
         "pub mod prelude;\n\npub fn run() {}\n\nfn main() {}\n",
@@ -32,6 +37,33 @@ fn crate_root_prelude_is_not_flagged_without_override() {
             finding.code == DiagnosticCode::ReviewPubMod && finding.path == "src/main.rs"
         }),
         "crate-root `pub mod prelude;` should be exempt by default, findings: {:?}",
+        report.findings
+    );
+}
+
+#[test]
+fn crate_root_prelude_is_flagged_when_project_requires_review() {
+    let temp = tempdir().expect("create temp project dir");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    write_manifest(temp.path(), "prelude_review_fixture");
+    fs::write(
+        temp.path().join("mend.toml"),
+        "[visibility]\nallow_prelude_pub_mod = false\n",
+    )
+    .expect("write mend.toml");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "pub mod prelude;\n\npub fn run() {}\n\nfn main() {}\n",
+    )
+    .expect("write main");
+    fs::write(temp.path().join("src/prelude.rs"), "pub use super::run;\n").expect("write prelude");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::ReviewPubMod && finding.path == "src/main.rs"
+        }),
+        "project `allow_prelude_pub_mod = false` should review the crate-root prelude, findings: {:?}",
         report.findings
     );
 }

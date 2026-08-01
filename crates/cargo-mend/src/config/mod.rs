@@ -6,6 +6,7 @@ mod diagnostics_config;
 mod global;
 mod loaded;
 mod prelude_pub_mod;
+mod pub_in_path;
 mod run_mode;
 
 pub(crate) use cli::BuildInfoMode;
