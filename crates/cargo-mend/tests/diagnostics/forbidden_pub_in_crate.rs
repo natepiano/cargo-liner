@@ -500,7 +500,7 @@ fn sibling_binary_callers_refine_no_facade_advice() {
     assert_headline_and_help(
         &with_binary_report,
         "src/a/c.rs",
-        "use of `pub(in crate::a)` outside an exact facade boundary is forbidden by policy",
+        "no visibility annotation allowed by policy preserves this item's current callers",
         "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend`",
     );
 }

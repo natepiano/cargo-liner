@@ -951,7 +951,7 @@ Call it twice:
 
 **The refinement is monotone and therefore safe.** The union can only *add* callers, and adding callers only moves the branch toward wider reach: `RemoveAnnotation` → `SuggestPubSuper` → `StructuralMigration`, never the reverse. So the load pass can only ever retract a suggestion that would have produced E0603 in a sibling target; it can never introduce one. A single-target run gets the same answer twice and the pass is a no-op.
 
-The load pass must be code-gated (it touches only this diagnostic's findings). **The original claim that it "must leave `message` alone — only `suggestion` differs between the three branches" turned out to be false, and the shipped code inherits the gap.** `no_facade_pub_in_advice` (`record.rs:645-654`) emits a *different* message for `NoFacadeAdvice::StructuralMigration` than for the other two branches, while `refine_no_facade_advice` (`load.rs:121-157`) rewrites only `suggestion`. See the pending decision in Phase 8.
+The load pass must be code-gated (it touches only this diagnostic's findings). The original claim that it could leave `message` alone was false: `NoFacadeAdvice::StructuralMigration` has a distinct headline because no visibility-only repair works. Phase 8 owns the shipped follow-up: both the in-pass recorder and the cross-target refinement use one shared headline selector, and the refinement updates `message` alongside `suggestion` whenever the combined caller set reaches that branch.
 
 **`forbidden_pub_crate_suggestion`** (`policy.rs:215`) — **stale in three ways, one load-bearing:**
 
@@ -1069,13 +1069,15 @@ Three test obligations this phase inherits from Phase 3:
 
 ---
 
-### Phase 8 — README and style-guide updates · status: todo
+### Phase 8 — README and style-guide updates · status: done
 
 #### Work Order
 
 **Goal:** `README.md` and `~/rust/nate_style/rust/use-narrowest-visibility.md` document the new rung, the config key, and the upgrade contract.
 
 **Spec:**
+
+First, make the cross-target refinement keep each diagnostic's headline and help in agreement. `no_facade_pub_in_advice` and `refine_no_facade_advice` must use one shared headline selector. When the combined caller set reaches `NoFacadeAdvice::StructuralMigration`, the load pass rewrites `finding.message` to `no visibility annotation allowed by policy preserves this item's current callers` alongside the structural-migration suggestion. For the other two branches, preserve the existing generic headline; do not reconstruct it from the persisted raw annotation text. Update the sibling-binary regression test to assert the structural headline and help together, while the library-only case keeps its current generic headline and removal suggestion.
 
 `README.md`:
 
@@ -1144,28 +1146,12 @@ Four more from Phase 4:
 The first three need release-note compatibility bullets, stated as the two-code matrix and using the word *disable* — `[diagnostics]` cannot downgrade. The fourth belongs in the feature note describing newly accepted exact boundaries and revised advice. No warning-first grace mode is built: adding one would mean giving `[diagnostics]` a severity state it does not have, in the middle of this feature, to defer a handful of one-line annotation edits.
 
 **Files:**
+- `src/compiler/visibility/policy.rs` — shared no-facade headline selection beside `NoFacadeAdvice` / `no_facade_suggestion`
+- `src/compiler/visibility/scan/record.rs` — use the shared selector for the in-pass headline
+- `src/compiler/persistence/load.rs` — update `message` alongside `suggestion` after cross-target caller refinement
+- `tests/diagnostics/forbidden_pub_in_crate.rs` — replace the pinned contradictory sibling-binary pair with the structural headline and matching help; keep the library-only pair unchanged
 - `README.md` — `:194`, `:209-213`, `:258`, `:287`, `~:70-99`, `~:184-190`, **and `:83-84` + `:102-103`** (see the sixth item below — `:102-103` sits outside the `~:70-99` range and is easy to miss)
 - `CHANGELOG.md` — the eleven upgrade cases above, **plus a twelfth, plus four more from Phase 7 (below)**
-
-**Pending decision:** headline and help disagree after the cross-target refinement.
-
-Actual problem:
-A no-facade `pub(in ...)` finding picks one of three pieces of advice based on where its callers are. The compiler pass picks a branch from one build target's callers; a later pass re-picks it once every target's callers are known. That second pass rewrites only the *help* line, never the *headline* — and the third branch is the one case that also changes the headline. So in any package with more than one target (a library plus a binary, say), a finding can end up telling the user two different things at once.
-
-What exists now:
-- `no_facade_pub_in_advice` (`src/compiler/visibility/scan/record.rs:645-654`) emits the message `no visibility annotation allowed by policy preserves this item's current callers` for the `StructuralMigration` branch, and `use of \`<annotation>\` outside an exact facade boundary is forbidden by policy` for the other two.
-- `refine_no_facade_advice` (`src/compiler/persistence/load.rs:121-157`) recomputes the branch against the cross-target caller union and assigns `finding.suggestion`. It never touches `finding.message`.
-- `tests/diagnostics/forbidden_pub_in_crate.rs:498-505` currently **pins the mismatch**: with the sibling binary present, the help is the structural-migration text while the headline still reads `outside an exact facade boundary is forbidden by policy`.
-- Consequence: the advice matrix's last row (`no visibility annotation allowed by policy preserves this item's current callers`) is unreachable in any multi-target package, and Phase 8 would document a headline those users never see.
-
-What should change:
-- Either (a) make the message branch-invariant — all three branches share the `outside an exact facade boundary` headline and differ only in help, which makes the plan's original claim true and deletes the matrix's last headline row; or (b) extend `refine_no_facade_advice` to rewrite `message` alongside `suggestion`, keeping the matrix as written.
-- Either way, update the pinned assertion at `forbidden_pub_in_crate.rs:498-505` to the intended pairing rather than the current output, and correct Phase 7's Spec sentence (already flagged there).
-
-Recommendation:
-Take (b). The structural-migration headline is doing real work — it is the one outcome where no visibility annotation can fix the problem, and burying that in the help line under a headline that says the opposite is what the matrix was written to avoid. The change is small and local: `refine_no_facade_advice` already computes the branch, so it only needs the same `if matches!(advice, StructuralMigration)` message selection the recorder uses, factored into one shared function so the two sites cannot drift. Do it as the first item of Phase 8 (which otherwise touches no `src/` file) or as a Phase 7 follow-up commit, whichever the user prefers.
-
-Approve this direction, or modify it?
 
 **Four more upgrade cases and one README correction — from Phase 7.** None of the twelve cases covers these, and all four are user-visible:
 
@@ -1181,7 +1167,32 @@ Approve this direction, or modify it?
 
 **Constraints from prior phases:** Phases 3, 6, and 7 define the behavior being documented: the two-code split for rejections, `pub_in_path` with project>global precedence and a `permitted` default, and acceptance limited to exact-boundary declarations. `FINDINGS_SCHEMA_VERSION` was bumped to `19` in Phase 7 (`constants.rs:65`).
 
-**Acceptance gate:** `verify.sh check`, `verify.sh test`, `verify.sh lint` green, **plus `bash ~/.claude/scripts/delegate/verify.sh test cargo-mend diagnostics` — the bare `verify.sh test` line runs only `--lib`/`--bins`, so every fixture under `tests/diagnostics/` is invisible to it and a phase whose only new tests live there would gate green having run none of them,** **and the self-policy gate: `RUSTC_BOOTSTRAP=1 cargo +stable run --release -- --workspace --all-targets --fail-on-warn` reports "No findings" on cargo-mend's own source. **Before that run, `rm -rf target/mend-findings` and force a recompile (touch every non-`target` `.rs`, or `cargo clean -p cargo-mend`).** A stale stored report is rejected on version or fingerprint mismatch, so a fully cached `cargo check` emits nothing fresh and prints `No findings.` indistinguishably from a real pass — the gate would prove nothing. This is not hypothetical: it happened during Phase 7's smoke test after the 18 → 19 bump.** That last check is not redundant with `lint` — Phase 1 shipped `check`/`test`/`lint` all green while the tool rejected its own new file, and two blind reviews missed it, because the only thing that knows cargo-mend's house rules is cargo-mend. The two rules that bite new rustc-facing code are `inline_path_qualified_type` (write `use rustc_middle::ty::Foo;` and then `Foo`, never an inline `rustc_middle::ty::Foo` in a type position) and `imports_at_top`. Every `<a id="...">` anchor referenced by a `DiagnosticSpec.help_anchor` still resolves in `README.md`. `docs/style/diagnostic-lifecycle.md`'s README checklist items are satisfied for both forbidden diagnostics.
+**Acceptance gate:** `verify.sh check`, `verify.sh test`, `verify.sh lint` green, **plus `bash ~/.claude/scripts/delegate/verify.sh test cargo-mend diagnostics` — the bare `verify.sh test` line runs only `--lib`/`--bins`, so every fixture under `tests/diagnostics/` is invisible to it and a phase whose only new tests live there would gate green having run none of them,** **and the self-policy gate: `RUSTC_BOOTSTRAP=1 cargo +stable run --release -- --workspace --all-targets --fail-on-warn` reports "No findings" on cargo-mend's own source. **Before that run, `rm -rf target/mend-findings` and force a recompile (touch every non-`target` `.rs`, or `cargo clean -p cargo-mend`).** A stale stored report is rejected on version or fingerprint mismatch, so a fully cached `cargo check` emits nothing fresh and prints `No findings.` indistinguishably from a real pass — the gate would prove nothing. This is not hypothetical: it happened during Phase 7's smoke test after the 18 → 19 bump.** That last check is not redundant with `lint` — Phase 1 shipped `check`/`test`/`lint` green while the tool rejected its own new file, and two blind reviews missed it, because the only thing that knows cargo-mend's house rules is cargo-mend. The two rules that bite new rustc-facing code are `inline_path_qualified_type` (write `use rustc_middle::ty::Foo;` and then `Foo`, never an inline `rustc_middle::ty::Foo` in a type position) and `imports_at_top`. The sibling-binary no-facade fixture emits the structural-migration headline and matching help after cross-target refinement; the library-only fixture keeps the generic headline and removal suggestion. Every `<a id="...">` anchor referenced by a `DiagnosticSpec.help_anchor` still resolves in `README.md`. `docs/style/diagnostic-lifecycle.md`'s README checklist items are satisfied for both forbidden diagnostics.
+
+### Retrospective
+
+**What worked:**
+- One `no_facade_headline` selector now keeps the compiler-pass and cross-target headline branches aligned; the sibling-binary regression pins the structural headline and help together.
+- The scoped package tests, diagnostics suite, lint gate, and forced-rebuild self-policy run all passed after the documentation corrections.
+
+**What deviated from the plan:**
+- The approved Phase 8 decision expanded this documentation phase into `policy.rs`, `visibility/mod.rs`, `record.rs`, `load.rs`, and the cross-target regression test.
+- Dual review found three documentation-only gaps outside the primary edited sections: two flat-ban statements, false global precedence for project-only allowlists, and the omitted widest-facade rule. The orchestrator corrected them directly.
+
+**Surprises:**
+- `allow_pub_mod` and `allow_pub_items` are project-only lists; only `allow_prelude_pub_mod` and `pub_in_path` participate in project > global > compiled-in precedence.
+- Saying that chained facades increase the path length is insufficient guidance unless the reader is told to select the widest facade and then use its parent.
+
+**Implications for remaining phases:**
+- Any phase that recomputes `NoFacadeAdvice` must update headline and suggestion through the shared selectors; changing only one recreates contradictory output.
+- Phase 10's default decision must preserve the README's documented `permitted` default unless it also updates the config and README sites already named in that Work Order.
+
+### Phase 8 Review
+
+- **Phase 9:** corrected the partially retained exposing-item identity, added the `record.rs` enforcement surface, explicit field/rendering ownership, live symbol anchors, and equal/narrower/sibling/public reach regressions.
+- **Phase 10:** restored the Phase 9 dependency and deferred the rollout structure: the fixer should precede migration, Hana needs a separate repository-local plan, no `mend.toml` may be added, and the default choice waits for measured evidence.
+- **Phase 11:** added the missing `FixKind`/runner/module routing surfaces, deterministic branch eligibility, the same-line facade defect, and explicit internal-JSON/schema and phase-splitting decisions.
+- **All remaining phases:** separated delegate `verify.sh` gates from the orchestrator-owned forced-rebuild self-policy smoke run.
 
 ---
 
@@ -1210,13 +1221,15 @@ mod video_plane {
 
 The real constraint is "at least as visible as the widest signature carrying it", and an exact `pub(in ...)` clears it whenever the exposure is contained below that boundary.
 
-**Phase 4 already did the hard half of this and the phase shrinks accordingly.** This Work Order used to say the exposing item's `DefId` and scope "are already discarded before a level could be recovered." That is no longer true: Phase 4 threaded `LocalDefId` through the whole exposure recursion. `module_signature_exposes_item` resolves `exposing_item_def_id` at `exposure/detect.rs:112` and `self_type_def_id` at `:140`, and `type_is_exposed_outside_parent` now takes `item_def_id: LocalDefId` (`detect.rs:315-322`). **The identity you need is already in hand — compute a reach from it.**
+**Phase 4 retained only part of the identity this phase needs.** Ordinary module-signature paths resolve an exposing `LocalDefId`, but impl exposure still collapses associated-item surfaces to `bool` through `outward_impl_surface_mentions_name`, and the parent-boundary path discards its resolved ID after `is_some()`. Retain the actual exposing declaration through every branch before computing and joining reaches; do not assume the current boolean paths can be lifted mechanically.
 
-What remains source- and name-based is only *which items count as exposing*: `public_item_name` (`exposure/visitor.rs:62-87`) matches solely `Visibility::Public(_)` on unexpanded `syn` items, so a `pub(crate)` or `pub(in path)` item never registers as exposing at all. So re-scope this phase to two jobs: **(1) compute a reach from the `DefId` already threaded through, and (2) widen `public_item_name` beyond bare `pub`.**
+The source visitor also gates more than `public_item_name`: both `public_item_surface_mentions_name` and `outward_impl_surface_mentions_name` still admit only bare `pub`. Widen the complete exposing-item selection path so `pub(crate)` and `pub(in path)` declarations can contribute their real reach, while preserving the resolved exposing item rather than returning a name/boolean alone.
 
 The four predicates behind `assess_signature_exposure_allowance` (`policy.rs:503` after Phase 7, not `:320`) **are no longer in `policy.rs`** — Phase 4 moved them into `src/compiler/exposure/`, re-exported from `exposure/mod.rs:4-8` as `child_item_is_exposed_by_other_crate_visible_signature`, `impl_item_is_exposed_by_exported_self_type`, `child_item_is_exposed_by_sibling_boundary_signature`, and `parent_boundary_public_signature_exposes_child_used_outside_parent`. Each still returns on first match and collapses recursion to `bool`.
 
 Each path must retain the resolved exposing item, compute its effective reach, and `join` it with the facade-required reach. The result type is `Option<VisibilityReach>`; `None` means no exposure, which retires `SignatureExposure::{Present, Absent}` (`scan/classify.rs:27`).
+
+The computed exposure floor must reach the decision point in `visibility/scan/record.rs`, not stop inside `exposure/`. Join it with the resolved facade reach before exact-boundary acceptance and before `forbidden_pub_crate`, `suspicious_pub`, and `unused_pub` decide whether an annotation is wide enough. Pin four relationships: exposure equal to the facade boundary, exposure narrower than it, an incomparable sibling exposure whose join is their common ancestor, and public exposure that still requires bare `pub`.
 
 **Anchor every exposure reach before accumulating it.** Sibling scopes are reachable here — an exposing signature can be a sibling or parent boundary reaching past the facade, which is why there are four distinct predicates rather than one. With a single exposure there is no second operand to trigger `join`'s common-ancestor branch, so a lone sibling reach would render as a sibling path and hit E0742. Apply `anchored(reach, target, tcx)` from Phase 1 to each exposure reach, then join the normalized reaches.
 
@@ -1228,13 +1241,18 @@ Each path must retain the resolved exposing item, compute its effective reach, a
 - `src/compiler/exposure/detect.rs` — recursion carries a reach, not a `bool`: `type_is_exposed_outside_parent` (`:315`, already taking `item_def_id: LocalDefId`), `module_signature_exposes_item`'s `exposing_item_def_id` (`:112`) and `self_type_def_id` (`:140`)
 - `src/compiler/visibility/policy.rs` — `assess_signature_exposure_allowance` (`:503` after Phase 7); `has_signature_exposure_allowance` (`:694` after Phase 7) now takes four params `(ctx, item_def_id, file_path, item_name)`. **`forbidden_pub_crate_suggestion` is now `fn(module_location, signature_exposure, parent_facade_reach, boundary_path: Option<&str>) -> String` at `:251`, still taking `SignatureExposure`, so retiring that type reaches it. The spelling-gated `Super` split and its E0364 compile claim must survive the retirement — the arms are now `:258-300` and their unit tests `:868-925`.** (This replaces the old "Do not edit `:224-234`" instruction, whose line numbers no longer exist.)
 - `src/compiler/visibility/scan/classify.rs` — retire `SignatureExposure` (`:27`)
+- `src/compiler/visibility/scan/record.rs` — consume the exposure reach at the shared forbidden-visibility and exact-boundary decision points; current call sites are `record.rs:165` and `:306`, and exact-boundary acceptance is in the `record.rs:414-435` region
 - `src/compiler/visibility/annotation.rs` — source of `VisibilityReach`, `join`, and the free `anchored(reach, target, tcx)`. **This phase — not Phase 5 — is the first genuine consumer outside `src/compiler/visibility/`**, because `src/compiler/exposure/` is a sibling module while Phase 4 put the chain machinery inside `visibility/use_sites.rs`. Use the house pattern: bare `pub` on the items inside this private module, plus `pub(super) use annotation::{VisibilityReach, anchored};` in `src/compiler/visibility/mod.rs`. Precedent: `src/compiler/facade/exports.rs` pairs bare-`pub` items with `pub(super) use` lines in `facade/mod.rs`. **Phase 7 landed boundary acceptance, so `pub(in crate::compiler)` is now a legal spelling in this crate and the former prohibition on it is void.** Phase 7 itself uses it at `policy.rs:309, 328, 335, 355, 361` (`NoFacadeAdvice`, `no_facade_suggestion`, `classify_no_facade_callers`, `parent_scope_def_path`, `canonical_pub_in_boundary`), paired with `pub(super) use` re-exports in `visibility/mod.rs:9-13`, and the self-policy gate is green. Either shape passes: an exact `pub(in ...)` annotation behind a `pub(super) use` facade in `visibility/mod.rs`, or the bare-`pub` + `pub(super) use` house pattern above. What is still rejected is a `pub(in ...)` whose path is not the exact facade boundary
 - `src/compiler/visibility/mod.rs` — the `pub(super) use` re-exports above. **The `#[expect(dead_code)]` on `mod annotation;` is already gone — Phase 7 removed it and `src/compiler/visibility/mod.rs:1` is now a bare `mod annotation;`. No action here.**
-- `tests/diagnostics/allowances.rs` — exposure fixtures
+- `src/compiler/visibility/field.rs` — awareness surface for the shared classifier; runtime edits are expected only if retaining the field's existing behavior requires plumbing the new reach
+- `tests/diagnostics/allowances.rs` — exposure fixtures, including explicit struct and union field regressions
+- `tests/diagnostics/rendering.rs` — preserve both 16-finding hard gates if the changed classifier moves which fixture emits a diagnostic
 
-**Constraints from prior phases:** Phase 1 supplies `VisibilityReach::join` and the free fn `anchored(reach, target, tcx)`, both in `src/compiler/visibility/annotation.rs` and both shipped `pub(super)` — see **Files** for how this phase reaches them from `src/compiler/exposure/`. `VisibilityReach` derives only `Clone, Copy`: it has no `Debug`, no `PartialEq`, and deliberately no `Ord`/`PartialOrd`, so a struct holding one cannot `#[derive(Debug, PartialEq)]` and an equality test must be spelled `lhs.compare(rhs, tcx) == Some(Ordering::Equal)`. `compare` returning `None` means two restricted scopes are incomparable siblings — not an error; feed such pairs to `join`, which returns their nearest common ancestor. Phase 5 supplies the chain-required reach to join against. Phase 7 shipped with the conservative `(Present, _)`-first arm ordering, which this phase replaces; its acceptance behavior for non-exposed items must not regress. **Phase 3 added a field entry point into this analysis.** `has_signature_exposure_allowance` (`policy.rs:694` after Phase 7, now four params: `ctx, item_def_id, file_path, item_name`) is called from `scan/record.rs:244` and `:152`, and struct/union fields reach it with `item.name = Some(<field name>)` because `check_field` (`src/compiler/visibility/field.rs:85-104`) routes fields through the shared classifier. Converting the predicates to return `Option<VisibilityReach>` must therefore not silently change field behavior — add `src/compiler/visibility/field.rs` to this phase's awareness list even though it is not edited.
+**Constraints from prior phases:** Phase 1 supplies `VisibilityReach::join` and the free fn `anchored(reach, target, tcx)`, both in `src/compiler/visibility/annotation.rs` and both shipped `pub(super)` — see **Files** for how this phase reaches them from `src/compiler/exposure/`. `VisibilityReach` derives only `Clone, Copy`: it has no `Debug`, no `PartialEq`, and deliberately no `Ord`/`PartialOrd`, so a struct holding one cannot `#[derive(Debug, PartialEq)]` and an equality test must be spelled `lhs.compare(rhs, tcx) == Some(Ordering::Equal)`. `compare` returning `None` means two restricted scopes are incomparable siblings — not an error; feed such pairs to `join`, which returns their nearest common ancestor. Phase 5 supplies the chain-required reach to join against. Phase 7 shipped with the conservative `(Present, _)`-first arm ordering, which this phase replaces; its acceptance behavior for non-exposed items must not regress. Phase 8 added `no_facade_headline`; if this phase changes `NoFacadeAdvice`, it must update headline and suggestion through the shared selectors. **Phase 3 added a field entry point into this analysis.** Current anchors are `assess_signature_exposure_allowance` at `policy.rs:515`, `has_signature_exposure_allowance` at `policy.rs:706`, and its shared call sites at `record.rs:165` and `:306`. Struct/union fields reach that classifier with `item.name = Some(<field name>)`; preserve that behavior explicitly.
 
-**Acceptance gate:** `verify.sh check`, `verify.sh test`, `verify.sh lint` green, **plus `bash ~/.claude/scripts/delegate/verify.sh test cargo-mend diagnostics` — the bare `verify.sh test` line runs only `--lib`/`--bins`, so every fixture under `tests/diagnostics/` is invisible to it and a phase whose only new tests live there would gate green having run none of them,** **and the self-policy gate: `RUSTC_BOOTSTRAP=1 cargo +stable run --release -- --workspace --all-targets --fail-on-warn` reports "No findings" on cargo-mend's own source. **Before that run, `rm -rf target/mend-findings` and force a recompile (touch every non-`target` `.rs`, or `cargo clean -p cargo-mend`).** A stale stored report is rejected on version or fingerprint mismatch, so a fully cached `cargo check` emits nothing fresh and prints `No findings.` indistinguishably from a real pass — the gate would prove nothing. This is not hypothetical: it happened during Phase 7's smoke test after the 18 → 19 bump.** That last check is not redundant with `lint` — Phase 1 shipped `check`/`test`/`lint` all green while the tool rejected its own new file, and two blind reviews missed it, because the only thing that knows cargo-mend's house rules is cargo-mend. The two rules that bite new rustc-facing code are `inline_path_qualified_type` (write `use rustc_middle::ty::Foo;` and then `Foo`, never an inline `rustc_middle::ty::Foo` in a type position) and `imports_at_top`. Fixtures: the `video_plane` snippet above is accepted at `"permitted"`; a **single sibling signature exposure** yields a common-ancestor boundary, not the sibling scope, and the suggested code compiles; an exposure reaching past the facade still forces the wider annotation. Existing allowance tests pass unchanged. **`tests/diagnostics/rendering.rs` is a hard gate:** `:223-227` panics with "fixture is missing finding for {code:?}" if any `DiagnosticCode` fails to fire and `:399` asserts `report.findings.len() == 16`. This phase changes which findings fire, so the all-diagnostics fixture must still emit all 16, one per code — adjust the fixture, never the assertion.
+**Delegate acceptance gate:** `verify.sh check`, `verify.sh test`, `verify.sh lint`, and `bash ~/.claude/scripts/delegate/verify.sh test cargo-mend diagnostics` green. Fixtures must distinguish equal, narrower, sibling, and public exposure reaches; explicit struct and union field cases preserve current behavior. The `video_plane` snippet already passes after Phase 7, so it is regression coverage rather than proof of this phase's new behavior. `tests/diagnostics/rendering.rs` keeps both 16-finding gates at the current `:409` and `:633`, with the missing-code panic at `:237`.
+
+**Orchestrator smoke:** clear `target/mend-findings`, force a cargo-mend recompile, then run `RUSTC_BOOTSTRAP=1 cargo +stable run --release -- --workspace --all-targets --fail-on-warn`; require `No findings`.
 
 ---
 
@@ -1248,7 +1266,7 @@ Each path must retain the resolved exposing item, compute its effective reach, a
 
 Drop `AllowanceReason::InternalParentFacadeBoundary` for bare `pub` when the setting is `Required`. "Drop the allowance at `Required`" is too broad as stated: a conforming exact annotation still needs that allowance when its facade is used — **only bare `pub` loses it**.
 
-Then flip hana to `pub_in_path = "required"` in its committed `mend.toml` and convert its 10 sites by hand. Decide from that experience whether `Required` becomes the default; record the decision in `CHANGELOG.md` either way.
+Do not add or restore `mend.toml` in Hana: the live checkout has none, and the project-wide policy forbids introducing one. A Required-mode experiment therefore needs an isolated temporary copy/configuration or a separately authorized mechanism that leaves the Hana checkout without `mend.toml`. The experiment and any Hana conversion also need their own repository-local plan/checkpoint; a cargo-mend checkpoint cannot atomically own another repository's edits.
 
 The "yes, make it the default" branch costs more than hana's 10 sites: cargo-mend itself uses the bare-`pub`-behind-a-`pub(super) use`-facade shape at roughly **51** sites (`compiler/facade/exports.rs:31` + `compiler/facade/mod.rs:8` is the canonical one), and that shape is exactly what `Required` converts to `pub(in crate::path)`. Defaulting to `Required` therefore also means converting those ~51 declarations in this repo, or the self-policy gate goes red the moment the default flips. Price that in before choosing; the "no, keep `Permitted` as the default" branch has no such cost. **Treat ~51 as a lower bound and re-derive the count at dispatch time:** Phase 3 converted four struct fields in `src/config/cli/fix.rs` and `src/config/cli/target.rs` from `pub(crate)` to bare `pub` to satisfy the self-policy gate, and bare `pub` behind a facade is precisely the shape `Required` converts. **Phase 4 raised it again** — it added roughly a dozen bare-`pub` items behind `pub(super) use` facades in `compiler/facade/exports.rs` alone (`ParentFacadeSpelling`, `ParentFacadeReach`, `ParentFacadeExportRequest`, `use_syntax`, …), grew `compiler/facade/mod.rs` to 14 re-export lines, and left the crate with **175** `pub(super) use` / `pub(crate) use` re-export lines (Phase 4 left 162; Phase 7 added more, and its five new `pub(in crate::compiler)` declarations are already conforming) across its `mod.rs` files.
 
@@ -1260,11 +1278,34 @@ The "yes, make it the default" branch costs more than hana's 10 sites: cargo-men
 **If — and only if — this phase flips the compiled-in default to `Required`, the blast radius is five config sites none of which appear above:** `#[default]` in `src/config/pub_in_path.rs`; the literal `value("permitted")` in `reconcile_global_config` (`src/config/global.rs:118`); the literal `"permitted"` in `default_global_config_toml` (`:161`); `PUB_IN_PATH_COMMENT` (`src/config/constants.rs:11`); and the README text Phase 8 will already have written. Add all five to **Files** if that branch is taken.
 
 **Stated decision, not an accident:** `reconcile_global_config` writes the literal string `"permitted"` into every user's global config on first run after upgrading to 0.18. A user who has already upgraded therefore has an explicit `pub_in_path = "permitted"` on disk, which **overrides a flipped compiled-in default**. Flipping the default only affects fresh installs and users who deleted the key. That is a defensible outcome, but it must be chosen deliberately — if the intent is to move existing users to `Required`, the reconcile pass needs to rewrite the value, not just insert it, and that is a separate, riskier change to specify.
-- (external, not in this repo) hana's `mend.toml` and its 10 conversion sites
+- (external, separate plan/checkpoint) Hana Required-mode experiment and conversion sites; never add `mend.toml` to the source checkout
 
-**Constraints from prior phases:** Phase 6 supplies `PubInPath::Required` on the resolved config. Phase 7 supplies the `suspicious_pub` case table, in which `Required` + bare `pub` + exact restricted facade already yields a dynamic suggestion; this phase is what removes the allowance that currently pre-empts it. **Phase 9 is NOT a prerequisite — Phase 7 removed that dependency edge.** The protection this sentence wanted already exists: `assess_signature_exposure_allowance` (`policy.rs:90-94`) is deliberately *not* gated on `required_path.is_none()`, so an item whose signature genuinely requires `pub` is still `Allowed` at `Required` and is not swept in. Phase 9 refines the *level* that allowance reports; it is not what keeps exposed items out. (Phase order is unchanged — the edge is simply gone, and renumbering would churn the whole doc for nothing.)
+**Constraints from prior phases:** Phase 6 supplies `PubInPath::Required` on the resolved config. Phase 7 already supplies the Required-mode finding and its local regression. Phase 9 is a prerequisite for measuring the true conversion set: the current boolean signature allowance can keep bare `pub` even when its exposure only requires the exact restricted boundary. Phase 8 documents `permitted` as the default, so flipping it requires updating every named config, test, README, changelog, and shared-style statement together. The restricted-annotation fixer currently planned in Phase 11 should run before any bulk Required-mode migration rather than after manually converting the same workload.
 
-**Acceptance gate:** `verify.sh check`, `verify.sh test`, `verify.sh lint` green, **plus `bash ~/.claude/scripts/delegate/verify.sh test cargo-mend diagnostics` — the bare `verify.sh test` line runs only `--lib`/`--bins`, so every fixture under `tests/diagnostics/` is invisible to it and a phase whose only new tests live there would gate green having run none of them,** **and the self-policy gate: `RUSTC_BOOTSTRAP=1 cargo +stable run --release -- --workspace --all-targets --fail-on-warn` reports "No findings" on cargo-mend's own source. **Before that run, `rm -rf target/mend-findings` and force a recompile (touch every non-`target` `.rs`, or `cargo clean -p cargo-mend`).** A stale stored report is rejected on version or fingerprint mismatch, so a fully cached `cargo check` emits nothing fresh and prints `No findings.` indistinguishably from a real pass — the gate would prove nothing. This is not hypothetical: it happened during Phase 7's smoke test after the 18 → 19 bump.** That last check is not redundant with `lint` — Phase 1 shipped `check`/`test`/`lint` all green while the tool rejected its own new file, and two blind reviews missed it, because the only thing that knows cargo-mend's house rules is cargo-mend. The two rules that bite new rustc-facing code are `inline_path_qualified_type` (write `use rustc_middle::ty::Foo;` and then `Foo`, never an inline `rustc_middle::ty::Foo` in a type position) and `imports_at_top`. Fixtures: bare `pub` behind a used exact restricted facade is silent at `"permitted"` and fires `suspicious_pub` with the exact-boundary suggestion at `"required"`; an accepted exact annotation behind the same used facade stays silent at `"required"`. hana reports zero findings after conversion. **`tests/diagnostics/rendering.rs` is a hard gate:** `:223-227` panics with "fixture is missing finding for {code:?}" if any `DiagnosticCode` fails to fire and `:399` asserts `report.findings.len() == 16`. This phase changes which findings fire, so the all-diagnostics fixture must still emit all 16, one per code — adjust the fixture, never the assertion.
+**Pending decision:** restructure the Required-mode rollout before dispatch.
+
+Actual problem:
+This phase mixes three boundaries that cannot share one checkpoint: cargo-mend's already-shipped Required behavior, a Hana migration in another repository, and the product decision about changing the default. The live Hana checkout has no `mend.toml`, adding one is prohibited, and Phase 11 is intended to automate the conversion this phase currently schedules by hand.
+
+What exists now:
+- Phase 7 already emits and tests Required-mode findings locally.
+- Phase 9 must refine signature exposure before a conversion count is trustworthy.
+- The current Phase 11 fixer has no dependency on this phase and can precede the migration.
+- Existing global configs already contain explicit `permitted`, so a compiled-in default flip alone affects only fresh installs and users who delete the key.
+
+What should change:
+- Move the restricted-annotation fixer ahead of the migration.
+- Run the Hana experiment under a separate Hana-local plan/checkpoint using an isolated configuration path that never adds `mend.toml` to the source checkout.
+- Return the measured conversion set here, then make a separate explicit decision between keeping `permitted`, changing only fresh-install defaults, or migrating existing global values.
+
+Recommendation:
+Reorder the fixer first, split the Hana experiment into its own repository-local plan, and defer the default choice until that evidence exists.
+
+Approve this direction, or modify it?
+
+**Delegate acceptance gate:** `verify.sh check`, `verify.sh test`, `verify.sh lint`, and `bash ~/.claude/scripts/delegate/verify.sh test cargo-mend diagnostics` green. Bare `pub` behind a used exact restricted facade remains silent at `"permitted"` and yields the exact-boundary suggestion at `"required"`; an already exact annotation stays silent. Keep both 16-finding rendering gates unchanged.
+
+**Orchestrator smoke:** clear `target/mend-findings`, force a cargo-mend recompile, then run `RUSTC_BOOTSTRAP=1 cargo +stable run --release -- --workspace --all-targets --fail-on-warn`; require `No findings`. A separate Hana plan owns Hana's validation command and clean result.
 
 ---
 
@@ -1286,6 +1327,8 @@ This deliberately does not reuse Phase 1's `annotation.rs` parser, and that is n
 
 Then wire `suspicious_pub`'s facade arm from `FixSupport::None` to `FixSupport::Standard` so the fix rewrites `pub` to the exact annotation. The fix must also confirm the facade line itself needs no edit before applying — that is why this is last.
 
+Fix eligibility is branch-specific. Only a Required-mode finding produced from bare `pub` with a resolved exact restricted boundary is eligible for automatic replacement. A finding whose input is already `pub(in ...)`, including a stale boundary whose repair also removes or changes a facade, remains non-fixable. The replacement comes from the finding's exact computed suggestion, and the span must cover the complete annotation even when it is multiline; otherwise report no fix.
+
 Add `--fix` assertions to the stale-annotation tests: the fixer either edits correctly or reports no fix, never a silent no-op.
 
 **Two carried-forward defects fold into this phase** — they sit inside its blast radius, so fix them here rather than tracking them separately.
@@ -1294,20 +1337,25 @@ Add `--fix` assertions to the stale-annotation tests: the fixer either edits cor
 
 *Defect 2 — `pub_use_fixes/scan.rs` requires the literal `"pub "`,* so a declaration written `pub\nstruct Thing` is advertised as fixable and then silently skipped. The literal is `line_contains_plain_pub` at `scan.rs:237`, reached from `screen_candidate` at `:183`. Same class of problem as the corrected paragraph above.
 
-*(A third carried-forward defect — `pub_use_fixes/parent_boundary.rs:95` selects the wrong occurrence when two parent `use` declarations share a source line — is **not** in this phase's blast radius and stays a standalone follow-up.)*
+*Defect 3 — `pub_use_fixes/parent_boundary.rs:95` selects the wrong occurrence when two parent `use` declarations share a source line.* This plan has no later owner, so fold it into the pub-use integrity work and add a same-line two-use regression.
 
 **Files:**
 - `src/fixes/field_visibility.rs` — extract `visibility_annotation_byte_len` (`:89-101`) into a shared helper
 - `src/fixes/unused_pub.rs` — use the shared parser at `:36` but **keep the bare-only gate** that `bare_pub_annotation_byte_len` (`:56-62`) provides today
 - `src/fixes/narrow_pub_crate.rs` — replace the raw `line_text.find("pub ")` at `:32`
 - `src/fixes/pub_use_fixes/scan.rs` — `line_contains_plain_pub` (`:237`), reached from `screen_candidate` (`:183`) — defect 2
+- `src/fixes/pub_use_fixes/parent_boundary.rs` — select the intended facade occurrence when two parent `use` declarations share a line — defect 3
+- `src/fixes/restricted_annotation.rs` (new, name subject to the pending decision below) and `src/fixes/mod.rs` — restricted-annotation scan and module wiring
+- `src/config/run_mode.rs` — add the purpose-specific `FixKind` and include it in the relevant CLI fix selections
+- `src/fixes/runner/{plan,mend_runner,combine,notices}.rs` — plan, combine, apply, and user-notice plumbing for the new fix kind
 - `src/compiler/persistence/{caller_aware.rs, intersection.rs, load.rs}` — defect 1: `load.rs:70-71` and `:232-238` copy fix facts unconditionally after suppression. **Also in `caller_aware.rs`: `def_path_is_descendant` now exists twice with divergent semantics** — a private copy here and another at `policy.rs:412` carrying an extra `scope.is_empty()` → `true` arm. Unify them or document why they differ; two subtly different predicates over the same caller strings is how a suppression and an advice branch drift apart
 - `src/compiler/visibility/scan/record.rs` — `suspicious_pub` fix support (`maybe_record_suspicious_pub` at `:486`; the `StoredPubUseFixFact` write is `:578`)
-- `tests/diagnostics/unused_pub.rs`, `tests/diagnostics/narrow_pub_crate.rs`, `tests/diagnostics/pub_use_fixes.rs` — `--fix` assertions, including a regression test that `--fix` does **not** strip a restricted annotation from an `unused_pub` finding
+- `tests/diagnostics/unused_pub.rs`, `tests/diagnostics/narrow_pub_crate.rs`, `tests/diagnostics/pub_use_fixes.rs` — `--fix` assertions, including a regression test that `--fix` does **not** strip a restricted annotation from an `unused_pub` finding and the same-line facade occurrence case
+- `tests/support/{diagnostics,report}.rs` — mirror the new fixability and finding fields used by diagnostics fixtures
 
-**`visibility_annotation` does not reach the fixers yet — this phase must plumb it.** Phase 7's Retrospective requires the auto-fix to read `Finding::visibility_annotation` rather than `source_line`, because `source_line` holds one physical line and cannot represent a multiline `pub(\n    in crate::a\n)`. But the field exists only on `StoredFinding` (`src/compiler/persistence/schema.rs:65`) and `FindingParams` (`src/compiler/visibility/scan/finding_params.rs:23`). The `Finding` the fixers actually consume (`src/reporting/diagnostics.rs:210-225`, reached via `scan_from_report(report: &Report)` at `src/compiler/fixes/unused_pub.rs:15` and `src/compiler/fixes/narrow_pub_crate.rs:15`) has no such field. Add it to `reporting::Finding`, to the `StoredFinding → Finding` conversion in `persistence/load.rs`, and to the test mirror at `tests/support/report.rs:7-21`.
+**`visibility_annotation` does not reach the fixers yet — this phase must plumb it.** Phase 7's Retrospective requires the auto-fix to read `Finding::visibility_annotation` rather than `source_line`, because `source_line` holds one physical line and cannot represent a multiline `pub(\n    in crate::a\n)`. But the field exists only on `StoredFinding` (`src/compiler/persistence/schema.rs:65`) and `FindingParams` (`src/compiler/visibility/scan/finding_params.rs:23`). The `Finding` the fixers actually consume (`src/reporting/diagnostics.rs:210-225`, reached via `scan_from_report(report: &Report)` at `src/compiler/fixes/unused_pub.rs:15` and `src/compiler/fixes/narrow_pub_crate.rs:15`) has no such field. Add it to `reporting::Finding`, to the `StoredFinding → Finding` conversion in `persistence/load.rs`, and to the test mirror at `tests/support/report.rs:7-21`. Because `reporting::Finding` is serializable, the pending decision below must also say whether this field stays internal with serde skip attributes or becomes a documented public JSON field.
 
-**Constraints from prior phases:** Phase 7 set the stale-facade finding to `FixSupport::None` **and** suppressed its `StoredPubUseFixFact`; this phase re-enables the first while keeping the pub-use fixer out of the path, since that fixer routes from stored facts and only accepts a bare `"pub "` child (`fixes/pub_use_fixes/scan.rs:183`). Phase 10 made `Required` produce these findings in volume.
+**Constraints from prior phases:** Phase 7 set the stale-facade finding to `FixSupport::None` **and** suppressed its `StoredPubUseFixFact`; this phase re-enables only the bare-`pub` exact-boundary branch while keeping restricted-input findings and the pub-use fixer out of that path. Phase 7 already makes Required mode produce these findings, so this phase has no dependency on Phase 10 and should precede any bulk Required-mode migration. Phase 8's shared headline selector is orthogonal and must remain intact.
 
 **Pending decision:** this phase's Spec names a `FixSupport` variant that does not exist, and adding one changes the persisted findings schema.
 
@@ -1317,16 +1365,39 @@ The Spec says to wire `suspicious_pub`'s facade arm from `FixSupport::None` to `
 What exists now:
 - `FixSupport` variants are all fixer-specific: `ShortenImport`, `PreferModuleImport`, `InlinePathQualifiedType`, `PubUse`, `NeedsManualPubUseCleanup`, `InternalParentFacade`, `UnusedPub`, `NarrowToPubCrate`, `FieldVisibility`, `ImportsAtTop`, plus `None`.
 - The enum is `Serialize, Deserialize` with `#[serde(rename_all = "snake_case")]` and several explicit `#[serde(rename = ...)]` overrides, and its value is persisted as the `fixability` field on every stored finding.
-- Fix appliers route by `DiagnosticCode`, not by `FixSupport` (`src/fixes/runner/execute.rs:64-90`).
+- Fix planning routes through `FixKind` in `src/config/run_mode.rs` and `src/fixes/runner/plan.rs`, then through `mend_runner.rs`, `combine.rs`, and notices/apply plumbing; `execute.rs` is not the complete routing surface.
 - `tests/support/diagnostics.rs` maintains a parallel copy of the enum — Phase 3 moved it: the `FixSupport` mirror is now `:60-85` with its `impl` at `:86`, and `:115-140` is the `DiagnosticSpec` / `HeadlineSource` block Phase 3 added that must be kept in step.
 
 What should change:
 - Add a purpose-named variant — `RestrictedAnnotation` rather than `Standard`, matching how every other variant names its fixer — with a serde name, arms in `note()` (`:39`) and `summary_bucket()` (`:53`), the mirrored variant in the test support copy, and an applier registered in the `DiagnosticCode` routing table.
 - Decide whether the new `fixability` string requires a `FINDINGS_SCHEMA_VERSION` bump (`src/compiler/constants.rs:65`; Phase 7 already takes it to `19`). A cache written by an older mend has no such value, so only newly written reports carry it — but the plan's own invariant is that a change to emitted findings bumps the version.
+- Decide whether `Finding::visibility_annotation` is internal-only and skipped by serde or a public JSON addition with an upgrade-contract entry. The fixer needs it internally; exposing it publicly is not required for the edit.
 
 Recommendation:
-Add `FixSupport::RestrictedAnnotation` and bump the schema version in this phase. The bump is cheap — it invalidates caches, nothing more — and the alternative is relying on the argument that old caches never contain the new string, which is exactly the kind of reasoning the schema invariant exists to make unnecessary. Confirm the variant name before the phase is dispatched, since it lands in the persisted format and in the test mirror.
+Add `FixSupport::RestrictedAnnotation`, add the matching `FixKind`, bump the schema version, and keep `visibility_annotation` internal with explicit serde skip attributes. The bump is cheap — it invalidates caches, nothing more — and the fixer does not need to expand the public JSON contract.
 
 Approve this direction, or modify it?
 
-**Acceptance gate:** `verify.sh check`, `verify.sh test`, `verify.sh lint` green, **plus `bash ~/.claude/scripts/delegate/verify.sh test cargo-mend diagnostics` — the bare `verify.sh test` line runs only `--lib`/`--bins`, so every fixture under `tests/diagnostics/` is invisible to it and a phase whose only new tests live there would gate green having run none of them,** **and the self-policy gate: `RUSTC_BOOTSTRAP=1 cargo +stable run --release -- --workspace --all-targets --fail-on-warn` reports "No findings" on cargo-mend's own source. **Before that run, `rm -rf target/mend-findings` and force a recompile (touch every non-`target` `.rs`, or `cargo clean -p cargo-mend`).** A stale stored report is rejected on version or fingerprint mismatch, so a fully cached `cargo check` emits nothing fresh and prints `No findings.` indistinguishably from a real pass — the gate would prove nothing. This is not hypothetical: it happened during Phase 7's smoke test after the 18 → 19 bump.** That last check is not redundant with `lint` — Phase 1 shipped `check`/`test`/`lint` all green while the tool rejected its own new file, and two blind reviews missed it, because the only thing that knows cargo-mend's house rules is cargo-mend. The two rules that bite new rustc-facing code are `inline_path_qualified_type` (write `use rustc_middle::ty::Foo;` and then `Foo`, never an inline `rustc_middle::ty::Foo` in a type position) and `imports_at_top`. `cargo mend --fix` on a `Required`-mode fixture rewrites bare `pub` to the exact annotation and leaves the facade line untouched; `--fix`, `--fix-pub-use`, and `--fix-all` on every restricted-annotation finding either produce a correct edit or report no fix — never success with no edit.
+**Pending decision:** split the fixer and persistence-integrity work into reviewable phases.
+
+Actual problem:
+This Work Order currently combines the new restricted-annotation fixer, shared annotation-span infrastructure, stored pub-use-fact integrity, descendant-predicate unification, and the same-line facade bug. Those changes have different invariants and failure modes, and the current defect-1 instruction edits several suppression passes instead of defining one post-suppression fact-pruning boundary.
+
+What exists now:
+- Intersection, caller-aware suppression, and visibility priority can all remove findings before fix facts are copied.
+- The restricted fixer needs the span parser and runner routing, but not the pub-use fact-pruning implementation.
+- The same-line facade selection bug belongs with pub-use integrity, not restricted annotation replacement.
+
+What should change:
+- Split persistence/pub-use integrity from restricted-annotation replacement.
+- Prune fix facts once after intersection, caller-aware suppression, and visibility priority have established the surviving finding set.
+- Build and review the restricted fixer on the shared span/routing infrastructure in the following phase.
+
+Recommendation:
+Split this Work Order into two checkpoint phases: first central fact pruning plus the two pub-use scan defects and descendant-predicate unification; then shared annotation spans, reporting plumbing, runner routing, and the branch-limited restricted fixer.
+
+Approve this direction, or modify it?
+
+**Delegate acceptance gate:** `verify.sh check`, `verify.sh test`, `verify.sh lint`, and `bash ~/.claude/scripts/delegate/verify.sh test cargo-mend diagnostics` green. A Required-mode bare-`pub` fixture rewrites only the full annotation to the exact boundary and leaves the facade untouched; every restricted-input finding reports no fix; multiline annotations and both same-line facade occurrences are pinned. Suppressed findings leave no applicable stored fix fact.
+
+**Orchestrator smoke:** clear `target/mend-findings`, force a cargo-mend recompile, then run `RUSTC_BOOTSTRAP=1 cargo +stable run --release -- --workspace --all-targets --fail-on-warn`; require `No findings`.

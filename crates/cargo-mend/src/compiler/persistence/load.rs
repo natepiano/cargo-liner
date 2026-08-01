@@ -150,7 +150,11 @@ fn refine_no_facade_advice(reports: &mut [StoredReport], callers: &CallerMap) {
                 visibility::parent_scope_def_path(item_module),
                 item_callers,
             );
+            let message = visibility::no_facade_headline(advice, finding.message.clone());
             let suggestion = visibility::no_facade_suggestion(advice, &boundary_path);
+            if finding.message != message {
+                finding.message = message;
+            }
             if finding.suggestion.as_deref() != Some(suggestion.as_str()) {
                 finding.suggestion = Some(suggestion);
             }

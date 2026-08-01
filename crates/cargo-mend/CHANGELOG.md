@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Exact, crate-rooted `pub(in crate::path)` declaration boundaries that match a parent facade are
+  now accepted when `[visibility] pub_in_path` is `"permitted"` (the default) or `"required"`.
+  `required` also revises `suspicious_pub` advice for a bare `pub` behind such a facade. There is no
+  warning-first grace mode: `[diagnostics]` supports enable/disable, not severity levels, and the
+  required annotation change is a one-line edit.
+
+#### Visibility-policy upgrade contract
+
+The following two-code matrix applies to `forbidden_pub_in_crate` and `forbidden_pub_crate`:
+
+- **Previously green with `forbidden_pub_in_crate` enabled:** exact `pub(in crate::...)`
+  declarations covered by the scanner were previously absent, while `pub(in crate)`, relative
+  spellings, and restricted field annotations can now become new errors. Output is unchanged only
+  when none of those newly detected forms exist.
+- **`forbidden_pub_in_crate` disabled:** existing annotations may be present. Exact boundaries
+  become permitted, while `suspicious_pub` or another canonical diagnostic can newly appear;
+  disabling `forbidden_pub_in_crate` does not disable those codes.
+- **`forbidden_pub_in_crate` disabled while `forbidden_pub_crate` remains enabled:** new
+  `pub(in crate)` detection routes to the enabled code, so a project that believed it had opted out
+  can still receive new errors.
+- **Already failing:** an exact-boundary error can disappear under `permitted`; retained failures
+  receive new headlines and help, and secondary findings can change count and order.
+- **Machine-readable output:** `rustc_diagnostic` no longer emits the `note` child that duplicated
+  the headline, and `render_diagnostic` no longer repeats it in `rendered`. Consumers of mend's
+  cargo JSON therefore see one fewer child on every forbidden-visibility finding, including when
+  the finding itself is otherwise unchanged.
+- **Struct and union fields now follow the `pub(crate)` location policy:** a `pub(crate)` field now
+  reaches the same rejection rule as a `pub(crate)` item wherever that policy does not permit it.
+  This does not make every `pub(crate)` field an error: permitted locations remain green, and
+  `pub(super)` and `pub(self)` fields remain allowed. Struct and union fields were previously
+  exempt, so this is the broadest behavior change for existing codebases.
+- **Reject-once changes co-occurring codes:** a forbidden `pub(crate) mod` that previously emitted
+  both `forbidden_pub_crate` and `review_pub_mod` now emits only the rejection. Finding counts and
+  code sets can therefore change even when the source is otherwise unaffected.
+- **Facade `use` spellings are quoted only when mend can establish them:**
+  `forbidden_pub_crate` has both a spelling-specific and a neutral facade-help variant, and
+  `internal_parent_pub_use_facade` uses neutral re-export wording when the written modifier is not
+  recoverable. Consumers matching those strings will see different text.
+- **Impl items reached through their self type now count as exposed:** items in an `impl` can inherit
+  exposure from the implemented type, so items that were previously flagged can now be allowed.
+- **Files unreachable from the crate root no longer influence findings:** source files that no `mod`
+  declaration reaches are no longer scanned for usage or facades, so findings that depended on them
+  disappear.
+- **A child module importing a parent re-export no longer counts as an outside caller:** this can
+  make `narrow_to_pub_crate` and stale-facade findings newly appear.
+- **Project `[visibility] allow_prelude_pub_mod` now takes effect:** a project `mend.toml` value is
+  no longer discarded in favor of the global configuration, so repositories that relied on it being
+  ignored change behavior.
+- **Findings schema 18 is invalidated by schema 19:** cached reports from an older build are
+  rejected because findings now include `visibility_annotation`. After upgrading, a fully cached
+  `cargo check` emits nothing fresh, stale reports are discarded, and mend can print `No findings.`
+  exactly as it would for a clean run. Run `rm -rf target/mend-findings` and force a recompile
+  after upgrading.
+- **`suspicious_pub` help is now always computed:** the former static
+  ``consider using: `pub(super)` `` text is gone, so items behind a facade receive the facade
+  boundary instead.
+- **`cargo mend --message-format=json` now emits exactly one `help` child per finding:** it no
+  longer emits both static and dynamic suggestions for the same diagnostic.
+- **Both renderers resolve custom help before static help:** terminal output and
+  `--message-format=json` now agree for diagnostics carrying both values. Consumers pinned to the
+  former JSON string will see a change.
+
 ## [0.17.6] - 2026-07-27
 
 ### Fixed

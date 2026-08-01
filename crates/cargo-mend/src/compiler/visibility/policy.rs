@@ -332,6 +332,18 @@ pub(in crate::compiler) fn no_facade_suggestion(
     advice.suggestion(boundary_path)
 }
 
+pub(in crate::compiler) fn no_facade_headline(
+    advice: NoFacadeAdvice,
+    generic_headline: String,
+) -> String {
+    match advice {
+        NoFacadeAdvice::RemoveAnnotation | NoFacadeAdvice::SuggestPubSuper => generic_headline,
+        NoFacadeAdvice::StructuralMigration => String::from(
+            "no visibility annotation allowed by policy preserves this item's current callers",
+        ),
+    }
+}
+
 pub(in crate::compiler) fn classify_no_facade_callers(
     item_module: &str,
     parent_scope: &str,

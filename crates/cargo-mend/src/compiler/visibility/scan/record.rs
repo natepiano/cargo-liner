@@ -642,16 +642,13 @@ fn no_facade_pub_in_advice(
         .map(|site| site.caller_module_def_path.clone())
         .collect::<BTreeSet<_>>();
     let advice = policy::classify_no_facade_callers(&item_module, parent_scope, &callers);
-    let message = if matches!(advice, policy::NoFacadeAdvice::StructuralMigration) {
-        String::from(
-            "no visibility annotation allowed by policy preserves this item's current callers",
-        )
-    } else {
+    let message = policy::no_facade_headline(
+        advice,
         format!(
             "use of `{}` outside an exact facade boundary is forbidden by policy",
             annotation.display_source()
-        )
-    };
+        ),
+    );
     ForbiddenPubInAdvice {
         message,
         suggestion: Some(policy::no_facade_suggestion(advice, &boundary_path)),
