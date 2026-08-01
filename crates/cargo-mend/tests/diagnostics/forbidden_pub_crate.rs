@@ -178,20 +178,10 @@ edition = "2024"
 }
 
 #[test]
-fn pub_crate_at_depth_3_describes_parent_facade_spelling_accurately() {
-    for (package_name, facade_visibility, expected_help) in [
-        (
-            "depth_3_pub_super_fixture",
-            "pub(super)",
-            "the parent module re-exports this with `pub(super) use`; consider using `pub` \
-             (`pub(super)` here would not compile — the re-export would be wider than the item)",
-        ),
-        (
-            "depth_3_pub_in_super_fixture",
-            "pub(in super)",
-            "the parent module re-exports this to its own parent; consider using `pub` \
-             (`pub(crate)` and `pub(in ...)` are forbidden by policy)",
-        ),
+fn pub_crate_at_depth_3_names_exact_boundary_for_supported_facade_spellings() {
+    for (package_name, facade_visibility) in [
+        ("depth_3_pub_super_fixture", "pub(super)"),
+        ("depth_3_pub_in_super_fixture", "pub(in super)"),
     ] {
         let temp = tempdir().expect("create temp fixture dir");
 
@@ -202,6 +192,11 @@ fn pub_crate_at_depth_3_describes_parent_facade_spelling_accurately() {
             ),
         )
         .expect("write manifest");
+        fs::write(
+            temp.path().join("mend.toml"),
+            "[visibility]\npub_in_path = \"permitted\"\n",
+        )
+        .expect("write visibility config");
         fs::create_dir_all(temp.path().join("src/foo/bar")).expect("create src/foo/bar");
         fs::write(temp.path().join("src/lib.rs"), "mod foo;\n").expect("write lib");
         fs::write(temp.path().join("src/foo/mod.rs"), "mod bar;\n").expect("write foo/mod.rs");
@@ -226,7 +221,10 @@ fn pub_crate_at_depth_3_describes_parent_facade_spelling_accurately() {
             })
             .expect("depth-three parent facade should reject pub(crate)");
         assert!(
-            finding.help.iter().any(|help| help == expected_help),
+            finding
+                .help
+                .iter()
+                .any(|help| help == "consider using: `pub(in crate::foo)`"),
             "{facade_visibility} parent facade help was wrong: {:?}",
             finding.help,
         );
@@ -234,7 +232,7 @@ fn pub_crate_at_depth_3_describes_parent_facade_spelling_accurately() {
 }
 
 #[test]
-fn restricted_facade_wider_than_parent_recommends_pub() {
+fn restricted_facade_sets_the_exact_declaration_boundary() {
     let temp = tempdir().expect("create restricted facade fixture dir");
     fs::create_dir_all(temp.path().join("src/a/b/c")).expect("create fixture modules");
     fs::write(
@@ -246,6 +244,11 @@ edition = "2024"
 "#,
     )
     .expect("write manifest");
+    fs::write(
+        temp.path().join("mend.toml"),
+        "[visibility]\npub_in_path = \"permitted\"\n",
+    )
+    .expect("write visibility config");
     fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
         .expect("write fixture main");
     fs::write(temp.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
@@ -274,7 +277,7 @@ edition = "2024"
         finding
             .help
             .iter()
-            .any(|help| help.contains("re-exports this to its own parent; consider using `pub`")),
+            .any(|help| help == "consider using: `pub(in crate::a)`"),
         "{report:#?}"
     );
 }
@@ -414,6 +417,11 @@ edition = "2024"
 "#,
     )
     .expect("write manifest");
+    fs::write(
+        temp.path().join("mend.toml"),
+        "[visibility]\npub_in_path = \"permitted\"\n",
+    )
+    .expect("write visibility config");
     fs::write(temp.path().join("src/lib.rs"), "mod a;\n").expect("write library root");
     fs::write(temp.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
     fs::write(
@@ -433,18 +441,13 @@ edition = "2024"
     .expect("write facade subjects");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    let exact = report
-        .findings
-        .iter()
-        .find(|finding| {
+    assert!(
+        !report.findings.iter().any(|finding| {
             finding.code == DiagnosticCode::ForbiddenPubInCrate
                 && finding.path == "src/a/b/c/d.rs"
                 && finding.headline.contains("pub(in crate::a)")
-        })
-        .unwrap_or_else(|| panic!("missing exact-boundary policy finding: {report:#?}"));
-    assert!(
-        exact.help.is_empty(),
-        "the compiling crate::a boundary must not be replaced with another modifier: {report:#?}"
+        }),
+        "the exact crate::a boundary must be accepted: {report:#?}"
     );
     let wide = report
         .findings

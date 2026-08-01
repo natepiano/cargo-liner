@@ -7,6 +7,7 @@ use super::classify::CrateKind;
 use super::classify::ModuleLocation;
 use super::classify::ParentVisibility;
 use crate::compiler::facade::ParentFacadeExportStatus;
+use crate::compiler::visibility::annotation::VisibilitySyntax;
 use crate::config::DiagnosticCode;
 use crate::reporting::FixSupport;
 use crate::reporting::Severity;
@@ -19,6 +20,7 @@ pub struct FindingParams {
     pub suggestion:              Option<String>,
     pub fix_support:             FixSupport,
     pub related:                 Option<String>,
+    pub visibility_annotation:   Option<String>,
     pub item_def_path:           Option<String>,
     pub narrower_scope_def_path: Option<String>,
 }
@@ -33,6 +35,7 @@ pub struct SuspiciousPubInput<'a> {
     pub kind_label:        Option<&'static str>,
     pub name:              Option<&'a str>,
     pub highlight_span:    Span,
+    pub visibility_syntax: VisibilitySyntax,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

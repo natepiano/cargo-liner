@@ -51,6 +51,7 @@ pub(super) fn visit_item(
                 suggestion:              None,
                 fix_support:             FixSupport::None,
                 related:                 None,
+                visibility_annotation:   None,
                 item_def_path:           None,
                 narrower_scope_def_path: None,
             },

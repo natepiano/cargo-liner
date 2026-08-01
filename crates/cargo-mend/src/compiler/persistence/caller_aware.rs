@@ -2,27 +2,52 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 use super::StoredReport;
+use crate::config::DiagnosticCode;
 
-pub(super) fn apply_caller_aware_suppression(reports: &mut [StoredReport]) {
-    let mut callers: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+pub(super) type CallerMap = BTreeMap<CallerKey, BTreeSet<String>>;
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct CallerKey {
+    package_root:    String,
+    target_def_path: String,
+}
+
+impl CallerKey {
+    fn for_package(package_root: &str, target_def_path: &str) -> Self {
+        Self {
+            package_root:    package_root.to_string(),
+            target_def_path: target_def_path.to_string(),
+        }
+    }
+}
+
+pub(super) fn apply_caller_aware_suppression(reports: &mut [StoredReport]) -> CallerMap {
+    let mut callers = CallerMap::new();
     for report in reports.iter() {
         for site in &report.use_sites {
             callers
-                .entry(site.target_def_path.clone())
+                .entry(CallerKey::for_package(
+                    &report.package_root,
+                    &site.target_def_path,
+                ))
                 .or_default()
                 .insert(site.caller_module_def_path.clone());
         }
     }
 
     for report in reports.iter_mut() {
+        let package_root = report.package_root.clone();
         report.findings.retain(|finding| {
+            if finding.diagnostic_code == DiagnosticCode::ForbiddenPubInCrate {
+                return true;
+            }
             let Some(item_path) = finding.item_def_path.as_deref() else {
                 return true;
             };
             let Some(narrower_scope) = finding.narrower_scope_def_path.as_deref() else {
                 return true;
             };
-            let Some(caller_set) = callers.get(item_path) else {
+            let Some(caller_set) = callers_for_package(&callers, &package_root, item_path) else {
                 return true;
             };
             caller_set
@@ -30,6 +55,15 @@ pub(super) fn apply_caller_aware_suppression(reports: &mut [StoredReport]) {
                 .all(|caller| def_path_is_descendant(caller, narrower_scope))
         });
     }
+    callers
+}
+
+pub(super) fn callers_for_package<'a>(
+    callers: &'a CallerMap,
+    package_root: &str,
+    item_def_path: &str,
+) -> Option<&'a BTreeSet<String>> {
+    callers.get(&CallerKey::for_package(package_root, item_def_path))
 }
 
 fn def_path_is_descendant(caller_path: &str, narrower_scope: &str) -> bool {
@@ -115,6 +149,7 @@ mod tests {
             suggestion: Some("use narrower visibility".to_string()),
             fix_support: FixSupport::None,
             related: None,
+            visibility_annotation: None,
             item_def_path: None,
             narrower_scope_def_path: None,
         }

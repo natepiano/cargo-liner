@@ -44,6 +44,7 @@ pub(super) fn build_finding(
         suggestion:              params.suggestion,
         fix_support:             params.fix_support,
         related:                 params.related,
+        visibility_annotation:   params.visibility_annotation,
         item_def_path:           params.item_def_path,
         narrower_scope_def_path: params.narrower_scope_def_path,
     })
@@ -81,6 +82,7 @@ pub(super) fn build_line_finding(
         suggestion: params.suggestion,
         fix_support: params.fix_support,
         related: params.related,
+        visibility_annotation: params.visibility_annotation,
         item_def_path: params.item_def_path,
         narrower_scope_def_path: params.narrower_scope_def_path,
     })

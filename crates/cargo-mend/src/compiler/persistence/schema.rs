@@ -58,6 +58,11 @@ pub struct StoredFinding {
     pub fix_support:             FixSupport,
     #[serde(default)]
     pub related:                 Option<String>,
+    /// The complete source text of a visibility annotation. This is separate
+    /// from `source_line`, which contains only the physical line shown in a
+    /// diagnostic and therefore cannot represent a multiline annotation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility_annotation:   Option<String>,
     /// Canonical def-path of the item this finding is about. Set on
     /// narrowing-style findings so cross-compilation merge can look up the
     /// item's callers post-hoc and suppress findings that would break the

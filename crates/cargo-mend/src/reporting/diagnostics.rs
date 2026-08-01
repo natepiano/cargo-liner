@@ -120,7 +120,7 @@ static REVIEW_PUB_MOD: DiagnosticSpec = DiagnosticSpec {
 };
 static SUSPICIOUS_PUB: DiagnosticSpec = DiagnosticSpec {
     headline:    HeadlineSource::Static("`pub` is broader than this nested module boundary"),
-    inline_help: Some("consider using: `pub(super)`"),
+    inline_help: None,
     help_anchor: "suspicious-pub",
     detail_mode: DetailMode::MessageRelatedAndFix,
     fix_support: FixSupport::None,
@@ -445,6 +445,10 @@ pub(crate) fn custom_inline_help_text(finding: &Finding) -> Option<&str> {
     finding.suggestion.as_deref()
 }
 
+pub(crate) fn resolved_inline_help_text(finding: &Finding) -> Option<&str> {
+    custom_inline_help_text(finding).or_else(|| inline_help_text(finding))
+}
+
 pub(crate) fn finding_help_url(finding: &Finding) -> String {
     format!(
         "{HELP_URL_BASE}#{}",
@@ -461,7 +465,7 @@ mod tests {
     use crate::config::DiagnosticCode;
 
     #[test]
-    fn forbidden_headline_uses_message_with_static_fallback() {
+    fn finding_message_headlines_use_messages_with_static_fallbacks() {
         for (diagnostic_code, fallback) in [
             (
                 DiagnosticCode::ForbiddenPubCrate,
@@ -470,6 +474,10 @@ mod tests {
             (
                 DiagnosticCode::ForbiddenPubInCrate,
                 "use of `pub(in crate::...)` is forbidden by policy",
+            ),
+            (
+                DiagnosticCode::InternalParentPubUseFacade,
+                "parent module re-export is acting as an internal facade",
             ),
         ] {
             let mut finding = Finding {
@@ -494,6 +502,58 @@ mod tests {
 
             finding.message.clear();
             assert_eq!(finding_headline(&finding), fallback);
+        }
+
+        for (diagnostic_code, message) in [
+            (
+                DiagnosticCode::ForbiddenPubCrate,
+                "use of `pub(crate)` does not match the parent facade boundary",
+            ),
+            (
+                DiagnosticCode::ForbiddenPubCrate,
+                "`pub(in crate)` is a redundant spelling of `pub(crate)`",
+            ),
+            (
+                DiagnosticCode::ForbiddenPubCrate,
+                "`pub(in crate)` is wider than the exact parent facade boundary",
+            ),
+            (
+                DiagnosticCode::ForbiddenPubInCrate,
+                "parent facade caps reach at `pub(crate)`",
+            ),
+            (
+                DiagnosticCode::ForbiddenPubInCrate,
+                "use of `pub(in crate::video_plane)` is disabled by project visibility policy",
+            ),
+            (
+                DiagnosticCode::ForbiddenPubInCrate,
+                "parent facade does not provide a resolvable visibility boundary",
+            ),
+            (
+                DiagnosticCode::ForbiddenPubInCrate,
+                "use of `pub(in crate::a)` outside an exact facade boundary is forbidden by policy",
+            ),
+            (
+                DiagnosticCode::ForbiddenPubInCrate,
+                "no visibility annotation allowed by policy preserves this item's current callers",
+            ),
+        ] {
+            let finding = Finding {
+                severity: Severity::Error,
+                diagnostic_code,
+                path: "src/lib.rs".to_string(),
+                line: 1,
+                column: 1,
+                highlight_len: 1,
+                source_line: "pub(crate) struct Example;".to_string(),
+                item: Some("Example".to_string()),
+                message: message.to_string(),
+                suggestion: None,
+                fix_support: FixSupport::None,
+                related: None,
+            };
+
+            assert_eq!(finding_headline(&finding), message);
         }
     }
 }

@@ -1,6 +1,91 @@
+use serde_json::Value;
 use tempfile::TempDir;
 
 use crate::support::*;
+
+#[test]
+fn accepted_restricted_stale_facade_is_not_offered_to_any_fixer() {
+    for fix_flag in ["--fix", "--fix-pub-use", "--fix-all"] {
+        let temp = tempdir().expect("create restricted stale-facade fixture dir");
+        fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
+        fs::write(
+            temp.path().join("Cargo.toml"),
+            r#"[package]
+name = "restricted_stale_facade_fix_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+        )
+        .expect("write fixture manifest");
+        fs::write(
+            temp.path().join("mend.toml"),
+            "[visibility]\npub_in_path = \"permitted\"\n",
+        )
+        .expect("write fixture visibility config");
+        fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
+            .expect("write fixture root");
+        fs::write(temp.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
+        fs::write(
+            temp.path().join("src/a/b.rs"),
+            "mod c;\n#[allow(unused_imports, reason = \"exercise stale facade handling\")]\npub(super) use c::Thing;\n",
+        )
+        .expect("write stale facade");
+        let child_path = temp.path().join("src/a/b/c.rs");
+        let child_source = "pub(in crate::a) struct Thing;\n";
+        fs::write(&child_path, child_source).expect("write restricted child");
+
+        let report = run_mend_json(&temp.path().join("Cargo.toml"));
+        let finding = report
+            .findings
+            .iter()
+            .find(|finding| finding.code == DiagnosticCode::SuspiciousPub)
+            .unwrap_or_else(|| panic!("missing restricted stale-facade finding: {report:#?}"));
+        assert_eq!(finding.fix_support, FixSupport::None);
+        assert_eq!(report.summary.fixable_with_fix, 0);
+        assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
+        assert_no_stored_pub_use_fix_facts(&temp);
+
+        let output = mend_command()
+            .arg("--manifest-path")
+            .arg(temp.path().join("Cargo.toml"))
+            .arg(fix_flag)
+            .output()
+            .expect("run restricted stale-facade fixer");
+        assert!(
+            output.status.success(),
+            "{fix_flag} failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        assert_eq!(
+            fs::read_to_string(&child_path).expect("read restricted child"),
+            child_source,
+        );
+    }
+}
+
+fn assert_no_stored_pub_use_fix_facts(temp: &TempDir) {
+    let findings_dir = temp.path().join("target/mend-findings");
+    let mut stored_report_count = 0;
+    for entry in fs::read_dir(&findings_dir).expect("read stored findings directory") {
+        let path = entry.expect("read stored finding entry").path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+            continue;
+        }
+        stored_report_count += 1;
+        let bytes = fs::read(&path).expect("read stored findings report");
+        let stored_report = serde_json::from_slice::<Value>(&bytes).expect("parse stored report");
+        let facts = stored_report
+            .get("pub_use_fix_facts")
+            .and_then(Value::as_array)
+            .expect("read stored pub-use fix facts");
+        assert!(
+            facts.is_empty(),
+            "a restricted annotation must not write a pub-use fix fact: {stored_report:#?}"
+        );
+    }
+    assert!(stored_report_count > 0, "missing stored findings report");
+}
 
 #[test]
 fn fix_pub_use_reports_import_cleanup_suggestion_after_summary() {

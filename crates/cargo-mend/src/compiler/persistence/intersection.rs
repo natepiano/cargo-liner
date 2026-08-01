@@ -221,6 +221,7 @@ mod tests {
             suggestion: Some("use narrower visibility".to_string()),
             fix_support: FixSupport::None,
             related: None,
+            visibility_annotation: None,
             item_def_path: None,
             narrower_scope_def_path: None,
         }

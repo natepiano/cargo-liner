@@ -16,6 +16,7 @@ version = "0.1.0"
 edition = "2024"
 "#,
             ),
+            ("mend.toml", "[visibility]\npub_in_path = \"forbidden\"\n"),
             (
                 "src/lib.rs",
                 "mod fields;\nmod outer;\nmod use_line;\npub(crate) struct Imported;\npub(in crate) fn crate_wide() {}\n",
@@ -57,6 +58,7 @@ version = "0.1.0"
 edition = "2024"
 "#,
             ),
+            ("mend.toml", "[visibility]\npub_in_path = \"forbidden\"\n"),
             ("src/lib.rs", "mod a;\n"),
             ("src/a.rs", "mod b;\n"),
             ("src/a/b.rs", "mod c;\npub(super) use c::*;\n"),
@@ -68,18 +70,657 @@ edition = "2024"
     );
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let blocked = report
+        .findings
+        .iter()
+        .filter(|finding| {
+            finding.path.ends_with("src/a/b/c.rs")
+                && finding.headline
+                    == "parent facade does not provide a resolvable visibility boundary"
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(blocked.len(), 2, "unexpected glob findings: {report:#?}");
+    for finding in blocked {
+        assert_eq!(
+            finding.help,
+            [
+                "facade at a/b.rs:2 uses `*`; replace it with an explicit re-export before using `pub(in ...)`"
+            ],
+        );
+    }
+}
+
+#[test]
+fn exact_crate_rooted_boundary_is_accepted_when_enabled() {
+    for (pub_in_path, expected_codes) in [
+        ("forbidden", vec![DiagnosticCode::ForbiddenPubInCrate]),
+        ("permitted", Vec::new()),
+        ("required", Vec::new()),
+    ] {
+        let temp = tempdir().expect("create temp fixture dir");
+        write_sources(
+            &temp,
+            &[
+                (
+                    "Cargo.toml",
+                    r#"[package]
+name = "exact_boundary_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+                ),
+                (
+                    "mend.toml",
+                    &format!("[visibility]\npub_in_path = \"{pub_in_path}\"\n"),
+                ),
+                ("src/lib.rs", "mod a;\n"),
+                ("src/a.rs", "mod b;\nfn use_exact() { b::exact(); }\n"),
+                ("src/a/b.rs", "mod c;\npub(super) use c::exact;\n"),
+                ("src/a/b/c.rs", "pub(in crate::a) fn exact() {}\n"),
+            ],
+        );
+
+        let report = run_mend_json(&temp.path().join("Cargo.toml"));
+        assert_codes(&report, "src/a/b/c.rs", &expected_codes);
+        if pub_in_path == "forbidden" {
+            assert_headline_and_help(
+                &report,
+                "src/a/b/c.rs",
+                "use of `pub(in crate::a)` is disabled by project visibility policy",
+                "consider using: `pub`; or set `pub_in_path = \"permitted\"`",
+            );
+        }
+    }
+}
+
+#[test]
+fn required_setting_reviews_bare_pub_behind_restricted_facade() {
+    for (pub_in_path, expected_codes) in [
+        ("forbidden", Vec::new()),
+        ("permitted", Vec::new()),
+        ("required", vec![DiagnosticCode::SuspiciousPub]),
+    ] {
+        let temp = tempdir().expect("create required-path fixture dir");
+        write_sources(
+            &temp,
+            &[
+                (
+                    "Cargo.toml",
+                    r#"[package]
+name = "required_path_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+                ),
+                (
+                    "mend.toml",
+                    &format!("[visibility]\npub_in_path = \"{pub_in_path}\"\n"),
+                ),
+                ("src/lib.rs", "mod a;\n"),
+                ("src/a.rs", "mod b;\nfn use_exact() { b::exact(); }\n"),
+                ("src/a/b.rs", "mod c;\npub(super) use c::exact;\n"),
+                ("src/a/b/c.rs", "pub fn exact() {}\n"),
+            ],
+        );
+
+        let report = run_mend_json(&temp.path().join("Cargo.toml"));
+        assert_codes(&report, "src/a/b/c.rs", &expected_codes);
+        if pub_in_path == "required" {
+            assert_headline_and_help(
+                &report,
+                "src/a/b/c.rs",
+                "`pub` is broader than this nested module boundary",
+                "consider using: `pub(in crate::a)`",
+            );
+        }
+    }
+}
+
+#[test]
+fn boundary_mismatch_precedes_redundant_spelling_at_every_setting() {
+    for pub_in_path in ["forbidden", "permitted", "required"] {
+        let temp = tempdir().expect("create boundary-mismatch fixture dir");
+        write_sources(
+            &temp,
+            &[
+                (
+                    "Cargo.toml",
+                    r#"[package]
+name = "boundary_mismatch_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+                ),
+                (
+                    "mend.toml",
+                    &format!("[visibility]\npub_in_path = \"{pub_in_path}\"\n"),
+                ),
+                ("src/lib.rs", "mod a;\n"),
+                ("src/a.rs", "mod b;\n"),
+                ("src/a/b.rs", "mod c;\npub(super) use c::wide;\n"),
+                ("src/a/b/c.rs", "pub(in crate) fn wide() {}\n"),
+            ],
+        );
+
+        let report = run_mend_json(&temp.path().join("Cargo.toml"));
+        assert_codes(
+            &report,
+            "src/a/b/c.rs",
+            &[DiagnosticCode::ForbiddenPubCrate],
+        );
+        assert_headline_and_help(
+            &report,
+            "src/a/b/c.rs",
+            "`pub(in crate)` is wider than the exact parent facade boundary",
+            "consider using: `pub(in crate::a)`",
+        );
+    }
+}
+
+#[test]
+fn crate_boundary_uses_the_canonical_pub_crate_spelling_at_every_setting() {
+    for pub_in_path in ["forbidden", "permitted", "required"] {
+        let temp = tempdir().expect("create crate-boundary fixture dir");
+        write_sources(
+            &temp,
+            &[
+                (
+                    "Cargo.toml",
+                    r#"[package]
+name = "crate_boundary_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+                ),
+                (
+                    "mend.toml",
+                    &format!("[visibility]\npub_in_path = \"{pub_in_path}\"\n"),
+                ),
+                ("src/lib.rs", "mod a;\npub(crate) use a::helper;\n"),
+                ("src/a.rs", "pub(in super) fn helper() {}\n"),
+            ],
+        );
+
+        let report = run_mend_json(&temp.path().join("Cargo.toml"));
+        assert_codes(&report, "src/a.rs", &[DiagnosticCode::ForbiddenPubInCrate]);
+        assert_headline_and_help(
+            &report,
+            "src/a.rs",
+            "parent facade caps reach at `pub(crate)`",
+            "consider using: `pub(crate)`",
+        );
+    }
+}
+
+#[test]
+fn written_visibility_syntaxes_are_checked_at_every_setting() {
+    for pub_in_path in ["forbidden", "permitted", "required"] {
+        let temp = tempdir().expect("create written-syntax matrix fixture dir");
+        write_sources(
+            &temp,
+            &[
+                (
+                    "Cargo.toml",
+                    r#"[package]
+name = "written-syntax-matrix-fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+                ),
+                (
+                    "mend.toml",
+                    &format!("[visibility]\npub_in_path = \"{pub_in_path}\"\n"),
+                ),
+                ("src/lib.rs", "mod a;\n"),
+                ("src/a.rs", "pub(in crate) fn crate_wide() {}\nmod b;\n"),
+                (
+                    "src/a/b.rs",
+                    "pub(in self) fn current_only() {}\npub(in super) fn parent_only() {}\nmod c;\n",
+                ),
+                (
+                    "src/a/b/c.rs",
+                    "pub(in super::super) fn grandparent_only() {}\n",
+                ),
+            ],
+        );
+
+        let report = run_mend_json(&temp.path().join("Cargo.toml"));
+        assert_codes(&report, "src/a.rs", &[DiagnosticCode::ForbiddenPubCrate]);
+        assert_headline_and_help(
+            &report,
+            "src/a.rs",
+            "`pub(in crate)` is a redundant spelling of `pub(crate)`",
+            "consider using: `pub(crate)`",
+        );
+        assert_codes(
+            &report,
+            "src/a/b.rs",
+            &[
+                DiagnosticCode::ForbiddenPubInCrate,
+                DiagnosticCode::ForbiddenPubInCrate,
+            ],
+        );
+        assert_headline_and_help(
+            &report,
+            "src/a/b.rs",
+            "`pub(in self)` is a redundant spelling of `pub(self)`",
+            "consider using: `pub(self)`",
+        );
+        assert_headline_and_help(
+            &report,
+            "src/a/b.rs",
+            "`pub(in super)` is a redundant spelling of `pub(super)`",
+            "consider using: `pub(super)`",
+        );
+        assert_codes(
+            &report,
+            "src/a/b/c.rs",
+            &[DiagnosticCode::ForbiddenPubInCrate],
+        );
+        assert_headline_and_help(
+            &report,
+            "src/a/b/c.rs",
+            "use of `pub(in super::super)` outside an exact facade boundary is forbidden by policy",
+            "consider removing the visibility",
+        );
+    }
+}
+
+#[test]
+fn canonical_pub_in_crate_stays_redundant_at_a_pub_crate_boundary() {
+    for pub_in_path in ["forbidden", "permitted", "required"] {
+        let temp = tempdir().expect("create canonical crate-boundary fixture dir");
+        write_sources(
+            &temp,
+            &[
+                (
+                    "Cargo.toml",
+                    r#"[package]
+name = "canonical-pub-in-crate-fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+                ),
+                (
+                    "mend.toml",
+                    &format!("[visibility]\npub_in_path = \"{pub_in_path}\"\n"),
+                ),
+                ("src/lib.rs", "mod a;\npub(crate) use a::helper;\n"),
+                ("src/a.rs", "pub(in crate) fn helper() {}\n"),
+            ],
+        );
+
+        let report = run_mend_json(&temp.path().join("Cargo.toml"));
+        assert_codes(&report, "src/a.rs", &[DiagnosticCode::ForbiddenPubCrate]);
+        assert_headline_and_help(
+            &report,
+            "src/a.rs",
+            "`pub(in crate)` is a redundant spelling of `pub(crate)`",
+            "consider using: `pub(crate)`",
+        );
+    }
+}
+
+#[test]
+fn relative_exact_boundary_suggests_crate_rooted_spelling() {
+    for pub_in_path in ["forbidden", "permitted", "required"] {
+        let temp = tempdir().expect("create relative exact-boundary fixture dir");
+        write_sources(
+            &temp,
+            &[
+                (
+                    "Cargo.toml",
+                    r#"[package]
+name = "relative_exact_boundary_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+                ),
+                (
+                    "mend.toml",
+                    &format!("[visibility]\npub_in_path = \"{pub_in_path}\"\n"),
+                ),
+                ("src/lib.rs", "mod a;\n"),
+                ("src/a.rs", "mod b;\n"),
+                ("src/a/b.rs", "mod c;\npub(super) use c::relative;\n"),
+                ("src/a/b/c.rs", "pub(in super::super) fn relative() {}\n"),
+            ],
+        );
+
+        let report = run_mend_json(&temp.path().join("Cargo.toml"));
+        assert_headline_and_help(
+            &report,
+            "src/a/b/c.rs",
+            "use of `pub(in super::super)` does not use the canonical crate-rooted boundary",
+            "consider using: `pub(in crate::a)`",
+        );
+    }
+}
+
+#[test]
+fn declaration_narrower_than_facade_is_rejected_by_rustc() {
+    let temp = tempdir().expect("create too-narrow compile fixture dir");
+    write_sources(
+        &temp,
+        &[
+            (
+                "Cargo.toml",
+                r#"[package]
+name = "too_narrow_compile_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+            ),
+            ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
+            ("src/lib.rs", "mod a;\n"),
+            ("src/a.rs", "mod b;\n"),
+            ("src/a/b.rs", "mod c;\npub(super) use c::narrow;\n"),
+            ("src/a/b/c.rs", "pub(super) fn narrow() {}\n"),
+        ],
+    );
+
+    let output = cargo_command()
+        .arg("check")
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .output()
+        .expect("run rustc compile-fail control");
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("E0364"),
+        "expected E0364 for a facade wider than its declaration:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
+fn no_facade_callers_select_only_compiling_advice() {
+    for (package_name, a_source, b_source, c_source, expected_headline, expected_help) in [
+        (
+            "no_facade_local_callers_fixture",
+            "mod b;\n",
+            "mod c;\n",
+            "pub(in crate::a) fn helper() {}\nfn local() { helper(); }\n",
+            "use of `pub(in crate::a)` outside an exact facade boundary is forbidden by policy",
+            "consider removing the visibility",
+        ),
+        (
+            "no_facade_parent_callers_fixture",
+            "mod b;\n",
+            "mod c;\nfn parent() { c::helper(); }\n",
+            "pub(in crate::a) fn helper() {}\n",
+            "use of `pub(in crate::a)` outside an exact facade boundary is forbidden by policy",
+            "consider using: `pub(super)`",
+        ),
+        (
+            "no_facade_outer_callers_fixture",
+            "mod b;\nfn above_parent() { b::c::helper(); }\n",
+            "pub(super) mod c;\n",
+            "pub(in crate::a) fn helper() {}\n",
+            "no visibility annotation allowed by policy preserves this item's current callers",
+            "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend`",
+        ),
+    ] {
+        let temp = tempdir().expect("create no-facade fixture dir");
+        write_sources(
+            &temp,
+            &[
+                (
+                    "Cargo.toml",
+                    &format!(
+                        "[package]\nname = \"{package_name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"
+                    ),
+                ),
+                ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
+                ("src/lib.rs", "mod a;\n"),
+                ("src/a.rs", a_source),
+                ("src/a/b.rs", b_source),
+                ("src/a/b/c.rs", c_source),
+            ],
+        );
+
+        let report = run_mend_json(&temp.path().join("Cargo.toml"));
+        assert_headline_and_help(&report, "src/a/b/c.rs", expected_headline, expected_help);
+    }
+}
+
+#[test]
+fn sibling_binary_callers_refine_no_facade_advice() {
+    let lib_only = create_cross_target_no_facade_fixture(SiblingBinary::Absent);
+    let lib_only_report = run_mend_json(&lib_only.path().join("Cargo.toml"));
+    assert_headline_and_help(
+        &lib_only_report,
+        "src/a/c.rs",
+        "use of `pub(in crate::a)` outside an exact facade boundary is forbidden by policy",
+        "consider removing the visibility",
+    );
+
+    let with_binary = create_cross_target_no_facade_fixture(SiblingBinary::Present);
+    let with_binary_report = run_mend_json(&with_binary.path().join("Cargo.toml"));
+    assert_headline_and_help(
+        &with_binary_report,
+        "src/a/c.rs",
+        "use of `pub(in crate::a)` outside an exact facade boundary is forbidden by policy",
+        "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend`",
+    );
+}
+
+#[test]
+fn workspace_member_callers_do_not_cross_contaminate_no_facade_advice() {
+    let temp = tempdir().expect("create workspace caller-isolation fixture dir");
+    write_sources(
+        &temp,
+        &[
+            (
+                "Cargo.toml",
+                r#"[workspace]
+members = ["member-a", "member-b"]
+resolver = "3"
+"#,
+            ),
+            ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
+            (
+                "member-a/Cargo.toml",
+                r#"[package]
+name = "caller-isolation-member-a"
+version = "0.1.0"
+edition = "2024"
+"#,
+            ),
+            (
+                "member-a/src/lib.rs",
+                "mod a {\n    mod b {\n        pub(in crate::a) fn helper() {}\n    }\n}\n",
+            ),
+            (
+                "member-b/Cargo.toml",
+                r#"[package]
+name = "caller-isolation-member-b"
+version = "0.1.0"
+edition = "2024"
+"#,
+            ),
+            (
+                "member-b/src/lib.rs",
+                "mod a {\n    mod b {\n        pub(in crate::a) fn helper() {}\n    }\n    fn caller() { b::helper(); }\n}\n",
+            ),
+        ],
+    );
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert_headline_and_help(
         &report,
-        "src/a/b/c.rs",
-        "use of `pub(in super)` is forbidden by policy",
-        "facade at a/b.rs:2 uses `*`; replace it with an explicit re-export — consider using: `pub(super)`",
+        "member-a/src/lib.rs",
+        "use of `pub(in crate::a)` outside an exact facade boundary is forbidden by policy",
+        "consider removing the visibility",
     );
     assert_headline_and_help(
         &report,
-        "src/a/b/c.rs",
-        "use of `pub(in crate::a)` is forbidden by policy",
-        "facade at a/b.rs:2 uses `*`; replace it with an explicit re-export",
+        "member-b/src/lib.rs",
+        "use of `pub(in crate::a)` outside an exact facade boundary is forbidden by policy",
+        "consider using: `pub(super)`",
     );
+}
+
+#[test]
+fn caller_analysis_tracks_field_accesses() {
+    let temp = tempdir().expect("create field-caller fixture dir");
+    write_sources(
+        &temp,
+        &[
+            (
+                "Cargo.toml",
+                r#"[package]
+name = "field-caller-fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+            ),
+            ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
+            ("src/lib.rs", "mod a;\n"),
+            (
+                "src/a.rs",
+                "mod b;\nfn reads_field() { let record = b::Record { value: 1 }; let _ = record.value; }\n",
+            ),
+            (
+                "src/a/b.rs",
+                "pub(super) struct Record { pub(in crate::a) value: u8 }\n",
+            ),
+        ],
+    );
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert_codes(
+        &report,
+        "src/a/b.rs",
+        &[DiagnosticCode::ForbiddenPubInCrate],
+    );
+    assert_headline_and_help(
+        &report,
+        "src/a/b.rs",
+        "use of `pub(in crate::a)` outside an exact facade boundary is forbidden by policy",
+        "consider using: `pub(super)`",
+    );
+}
+
+#[test]
+fn caller_analysis_tracks_intermediate_modules() {
+    let temp = tempdir().expect("create module-caller fixture dir");
+    write_sources(
+        &temp,
+        &[
+            (
+                "Cargo.toml",
+                r#"[package]
+name = "module-caller-fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+            ),
+            ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
+            ("src/lib.rs", "mod a;\n"),
+            (
+                "src/a.rs",
+                "mod b;\nfn calls_child() { b::child::helper(); }\n",
+            ),
+            ("src/a/b.rs", "pub(in crate::a) mod child;\n"),
+            ("src/a/b/child.rs", "pub(in crate::a) fn helper() {}\n"),
+        ],
+    );
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert_codes(
+        &report,
+        "src/a/b.rs",
+        &[DiagnosticCode::ForbiddenPubInCrate],
+    );
+    assert_headline_and_help(
+        &report,
+        "src/a/b.rs",
+        "use of `pub(in crate::a)` outside an exact facade boundary is forbidden by policy",
+        "consider using: `pub(super)`",
+    );
+}
+
+#[test]
+fn caller_analysis_withholds_replacement_for_use_items() {
+    let temp = tempdir().expect("create use-item caller fixture dir");
+    write_sources(
+        &temp,
+        &[
+            (
+                "Cargo.toml",
+                r#"[package]
+name = "use-item-caller-fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+            ),
+            ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
+            ("src/lib.rs", "mod a;\n"),
+            (
+                "src/a.rs",
+                "mod b;\nfn reads_alias() { let _: b::Thing = b::Thing; }\n",
+            ),
+            (
+                "src/a/b.rs",
+                "mod child;\npub(in crate::a) use child::Thing;\n",
+            ),
+            ("src/a/b/child.rs", "pub(in crate::a) struct Thing;\n"),
+        ],
+    );
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let finding = report
+        .findings
+        .iter()
+        .find(|finding| {
+            finding.path.ends_with("src/a/b.rs")
+                && finding.code == DiagnosticCode::ForbiddenPubInCrate
+        })
+        .unwrap_or_else(|| panic!("missing restricted use finding: {report:#?}"));
+    assert!(
+        finding.help.is_empty(),
+        "a `use` item must not be told to remove its visibility: {finding:#?}"
+    );
+}
+
+#[derive(Clone, Copy)]
+enum SiblingBinary {
+    Absent,
+    Present,
+}
+
+fn create_cross_target_no_facade_fixture(sibling_binary: SiblingBinary) -> TempDir {
+    let temp = tempdir().expect("create cross-target fixture dir");
+    write_sources(
+        &temp,
+        &[
+            (
+                "Cargo.toml",
+                r#"[package]
+name = "cross_target_no_facade_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+            ),
+            ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
+            (
+                "src/lib.rs",
+                "mod a {\n    mod b {\n        mod c { include!(\"a/c.rs\"); }\n    }\n}\n",
+            ),
+            ("src/a/c.rs", "pub(\n    in crate::a\n) fn helper() {}\n"),
+        ],
+    );
+    if matches!(sibling_binary, SiblingBinary::Present) {
+        write_sources(
+            &temp,
+            &[(
+                "src/bin/probe.rs",
+                "mod a {\n    mod b {\n        mod c { include!(\"../a/c.rs\"); }\n        pub(super) use c::helper;\n    }\n    pub(super) fn caller() { b::helper(); }\n}\nfn main() { a::caller(); }\n",
+            )],
+        );
+    }
+    temp
 }
 
 fn assert_rejected_annotations(report: &Report) {
@@ -116,56 +757,56 @@ fn assert_rejected_annotations(report: &Report) {
     assert_headline_and_help(
         report,
         "src/lib.rs",
-        "use of `pub(in crate)` is forbidden by policy",
+        "`pub(in crate)` is a redundant spelling of `pub(crate)`",
         "consider using: `pub(crate)`",
     );
     assert_headline_and_help(
         report,
         "src/outer/child.rs",
-        "use of `pub(in super)` is forbidden by policy",
+        "`pub(in super)` is a redundant spelling of `pub(super)`",
         "consider using: `pub(super)`",
     );
     assert_headline_and_help(
         report,
         "src/outer/child.rs",
-        "use of `pub(in self)` is forbidden by policy",
+        "`pub(in self)` is a redundant spelling of `pub(self)`",
         "consider using: `pub(self)`",
     );
     assert_headline_and_help(
         report,
         "src/outer/grandchild.rs",
-        "use of `pub(in super::super)` is forbidden by policy",
-        "consider using: `pub(crate)`",
+        "use of `pub(in super::super)` outside an exact facade boundary is forbidden by policy",
+        "consider removing the visibility",
     );
     assert_headline_and_help(
         report,
         "src/use_line.rs",
-        "use of `pub(in super)` is forbidden by policy",
+        "`pub(in super)` is a redundant spelling of `pub(super)`",
         "consider using: `pub(super)`",
     );
     assert_headline_and_help(
         report,
         "src/fields/inner.rs",
-        "use of `pub(in crate)` is forbidden by policy",
+        "`pub(in crate)` is a redundant spelling of `pub(crate)`",
         "consider using: `pub(crate)`",
     );
     assert_headline_and_help(
         report,
         "src/fields/inner.rs",
-        "use of `pub(in super)` is forbidden by policy",
+        "`pub(in super)` is a redundant spelling of `pub(super)`",
         "consider using: `pub(super)`",
     );
     assert_headline_and_help(
         report,
         "src/fields/inner.rs",
-        "use of `pub(in self)` is forbidden by policy",
+        "`pub(in self)` is a redundant spelling of `pub(self)`",
         "consider using: `pub(self)`",
     );
     assert_headline_and_help(
         report,
         "src/fields/inner.rs",
-        "use of `pub(in super::super)` is forbidden by policy",
-        "consider using: `pub(crate)`",
+        "use of `pub(in super::super)` outside an exact facade boundary is forbidden by policy",
+        "consider removing the visibility",
     );
 }
 

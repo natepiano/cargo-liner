@@ -1,9 +1,13 @@
 use std::cmp::Ordering;
+use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::Path;
 
 use anyhow::Result;
+use proc_macro2::Delimiter;
+use proc_macro2::TokenStream;
+use proc_macro2::TokenTree;
 use rustc_middle::middle::privacy::Level;
 use rustc_middle::ty::TyCtxt;
 use rustc_middle::ty::Visibility;
@@ -11,6 +15,7 @@ use rustc_span::def_id::CRATE_DEF_ID;
 use rustc_span::def_id::LocalDefId;
 
 use super::annotation::VisibilityReach;
+use super::annotation::VisibilitySyntax;
 use super::scan::AllowanceReason;
 use super::scan::CrateKind;
 use super::scan::ModuleLocation;
@@ -19,6 +24,7 @@ use super::scan::SignatureExposure;
 use super::scan::SuspiciousPubAssessment;
 use super::scan::SuspiciousPubInput;
 use super::scan::VisibilityContext;
+use super::use_sites::FacadeChainResolution;
 use super::use_sites::ParentFacadeAnalysis;
 use super::use_sites::ReexportOccurrence;
 use crate::compiler::constants::SOURCE_DIR_BENCHES;
@@ -33,6 +39,7 @@ use crate::compiler::facade::ParentFacadeFixSupport;
 use crate::compiler::facade::ParentFacadeReach;
 use crate::compiler::facade::ParentFacadeSpelling;
 use crate::compiler::facade::ParentFacadeUsage;
+use crate::config::PubInPath;
 use crate::reporting::FixSupport;
 
 pub(super) fn classify_suspicious_pub(
@@ -40,20 +47,43 @@ pub(super) fn classify_suspicious_pub(
     input: &SuspiciousPubInput<'_>,
     parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
 ) -> Result<SuspiciousPubAssessment> {
-    if let Some(allowance) = basic_suspicious_pub_allowance(
-        ctx,
-        input.def_id,
-        input.config_rel_path,
-        input.parent_visibility,
-        input.name,
-    ) {
+    let required_path = if matches!(
+        ctx.settings.visibility_config.pub_in_path,
+        PubInPath::Required
+    ) && matches!(input.visibility_syntax, VisibilitySyntax::Public)
+    {
+        parent_facade_analysis.and_then(|analysis| {
+            let FacadeChainResolution::Resolved { required } = analysis.chain else {
+                return None;
+            };
+            required
+                .to_source(ctx.tcx)
+                .starts_with("pub(in ")
+                .then_some(required)
+        })
+    } else {
+        None
+    };
+    if required_path.is_none()
+        && let Some(allowance) = basic_suspicious_pub_allowance(
+            ctx,
+            input.def_id,
+            input.config_rel_path,
+            input.parent_visibility,
+            input.name,
+            input.visibility_syntax,
+        )
+    {
         return Ok(SuspiciousPubAssessment::Allowed(allowance));
     }
 
     let parent_facade_export =
         parent_facade_export_status(ctx, parent_facade_analysis, input.file_path, input.name)?;
 
-    if let Some(assessment) = assess_parent_facade_usage(parent_facade_export.as_ref()) {
+    if required_path.is_none()
+        && let Some(assessment) =
+            assess_parent_facade_usage(parent_facade_export.as_ref(), input.visibility_syntax)
+    {
         return Ok(assessment);
     }
 
@@ -84,7 +114,10 @@ pub(super) fn classify_suspicious_pub(
         Some((message, status))
     });
 
-    if matches!(input.module_location, ModuleLocation::ShallowPrivate) && stale_result.is_none() {
+    if required_path.is_none()
+        && matches!(input.module_location, ModuleLocation::ShallowPrivate)
+        && stale_result.is_none()
+    {
         return Ok(SuspiciousPubAssessment::Allowed(
             AllowanceReason::ShallowPrivatePolicy,
         ));
@@ -215,14 +248,15 @@ pub(super) const fn forbidden_pub_crate_help(module_location: ModuleLocation) ->
 ///   that exact source spelling is known.
 ///
 /// Otherwise defer to the location-based help.
-pub(super) const fn forbidden_pub_crate_suggestion(
+pub(super) fn forbidden_pub_crate_suggestion(
     module_location: ModuleLocation,
     signature_exposure: SignatureExposure,
     parent_facade_reach: Option<ParentFacadeReach>,
-) -> &'static str {
+    boundary_path: Option<&str>,
+) -> String {
     match (signature_exposure, parent_facade_reach) {
         (SignatureExposure::Present, _) => {
-            "this item is exposed through a public signature; consider using `pub`"
+            String::from("this item is exposed through a public signature; consider using `pub`")
         },
         (
             SignatureExposure::Absent,
@@ -231,22 +265,156 @@ pub(super) const fn forbidden_pub_crate_suggestion(
                 spelling: ParentFacadeSpelling::Super,
                 spelling_conflict: false,
             }),
-        ) => {
-            "the parent module re-exports this with `pub(super) use`; consider using `pub` \
-             (`pub(super)` here would not compile — the re-export would be wider than the item)"
-        },
+        ) => boundary_path.map_or_else(
+            || {
+                String::from(
+                    "the parent module re-exports this with `pub(super) use`; consider using \
+                     `pub` (`pub(super)` here would not compile — the re-export would be wider \
+                     than the item)",
+                )
+            },
+            |path| {
+                format!(
+                    "the parent module re-exports this with `pub(super) use` to `{path}`; \
+                     consider using `pub` (`pub(super)` here would not compile — the re-export \
+                     would be wider than the item)"
+                )
+            },
+        ),
         (
             SignatureExposure::Absent,
             Some(ParentFacadeReach {
                 reaches_parent: true,
                 ..
             }),
-        ) => {
-            "the parent module re-exports this to its own parent; consider using `pub` \
-             (`pub(crate)` and `pub(in ...)` are forbidden by policy)"
-        },
-        (SignatureExposure::Absent, _) => forbidden_pub_crate_help(module_location),
+        ) => boundary_path.map_or_else(
+            || {
+                String::from(
+                    "the parent module re-exports this to its own parent; consider using `pub` \
+                     (`pub(crate)` and `pub(in ...)` are forbidden by policy)",
+                )
+            },
+            |path| {
+                format!(
+                    "the parent module re-exports this to `{path}`; consider using `pub` \
+                     (`pub(crate)` and `pub(in ...)` are forbidden by policy)"
+                )
+            },
+        ),
+        (SignatureExposure::Absent, _) => forbidden_pub_crate_help(module_location).to_string(),
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::compiler) enum NoFacadeAdvice {
+    RemoveAnnotation,
+    SuggestPubSuper,
+    StructuralMigration,
+}
+
+impl NoFacadeAdvice {
+    fn suggestion(self, boundary_path: &str) -> String {
+        match self {
+            Self::RemoveAnnotation => String::from("consider removing the visibility"),
+            Self::SuggestPubSuper => String::from("consider using: `pub(super)`"),
+            Self::StructuralMigration => format!(
+                "move the item into `{boundary_path}`, or add an explicit facade at \
+                 `{boundary_path}` and rerun `cargo mend`"
+            ),
+        }
+    }
+}
+
+pub(in crate::compiler) fn no_facade_suggestion(
+    advice: NoFacadeAdvice,
+    boundary_path: &str,
+) -> String {
+    advice.suggestion(boundary_path)
+}
+
+pub(in crate::compiler) fn classify_no_facade_callers(
+    item_module: &str,
+    parent_scope: &str,
+    callers: &BTreeSet<String>,
+) -> NoFacadeAdvice {
+    if callers
+        .iter()
+        .all(|caller| def_path_is_descendant(caller, item_module))
+    {
+        return NoFacadeAdvice::RemoveAnnotation;
+    }
+    if callers
+        .iter()
+        .all(|caller| def_path_is_descendant(caller, parent_scope))
+    {
+        return NoFacadeAdvice::SuggestPubSuper;
+    }
+    NoFacadeAdvice::StructuralMigration
+}
+
+pub(in crate::compiler) fn parent_scope_def_path(item_module: &str) -> &str {
+    item_module
+        .rsplit_once("::")
+        .map_or("", |(parent, _)| parent)
+}
+
+pub(in crate::compiler) fn canonical_pub_in_boundary(
+    item_module: &str,
+    source: &str,
+) -> Option<String> {
+    let tokens = source.parse::<TokenStream>().ok()?;
+    let mut tokens = tokens.into_iter();
+    let group = loop {
+        let token = tokens.next()?;
+        if matches!(&token, TokenTree::Ident(ident) if ident == "pub") {
+            let TokenTree::Group(group) = tokens.next()? else {
+                return None;
+            };
+            break group;
+        }
+    };
+    if group.delimiter() != Delimiter::Parenthesis {
+        return None;
+    }
+    let mut restricted = group.stream().into_iter();
+    if !matches!(restricted.next(), Some(TokenTree::Ident(ident)) if ident == "in") {
+        return None;
+    }
+    let mut path = restricted.collect::<TokenStream>().to_string();
+    path.retain(|character| !character.is_whitespace());
+    if path == "crate" || path.starts_with("crate::") {
+        return Some(path);
+    }
+
+    let mut module_segments = item_module.split("::").collect::<Vec<_>>();
+    let mut path_segments = path.split("::");
+    match path_segments.next()? {
+        "self" => {},
+        "super" => {
+            module_segments.pop()?;
+            for segment in path_segments.by_ref() {
+                if segment != "super" {
+                    return None;
+                }
+                module_segments.pop()?;
+            }
+        },
+        _ => return None,
+    }
+    let module_path = module_segments.join("::");
+    if module_path.is_empty() {
+        Some(String::from("crate"))
+    } else {
+        Some(format!("crate::{module_path}"))
+    }
+}
+
+fn def_path_is_descendant(caller_path: &str, scope: &str) -> bool {
+    scope.is_empty()
+        || caller_path == scope
+        || caller_path
+            .strip_prefix(scope)
+            .is_some_and(|rest| rest.starts_with("::"))
 }
 
 pub(super) fn suspicious_pub_note(crate_kind: CrateKind, kind_label: &str) -> String {
@@ -266,6 +434,7 @@ fn basic_suspicious_pub_allowance(
     config_rel_path: Option<&str>,
     parent_visibility: ParentVisibility,
     item_name: Option<&str>,
+    visibility_syntax: VisibilitySyntax,
 ) -> Option<AllowanceReason> {
     let item_key = config_rel_path.and_then(|path| item_name.map(|name| format!("{path}::{name}")));
     let allowlisted = item_key.as_ref().is_some_and(|key| {
@@ -277,6 +446,9 @@ fn basic_suspicious_pub_allowance(
     });
     if allowlisted {
         return Some(AllowanceReason::Allowlist);
+    }
+    if !matches!(visibility_syntax, VisibilitySyntax::Public) {
+        return None;
     }
     if parent_visibility == ParentVisibility::Public {
         return Some(AllowanceReason::ParentIsPublic);
@@ -292,8 +464,16 @@ fn basic_suspicious_pub_allowance(
 
 fn assess_parent_facade_usage(
     parent_facade_export: Option<&ParentFacadeExportStatus>,
+    visibility_syntax: VisibilitySyntax,
 ) -> Option<SuspiciousPubAssessment> {
     let status = parent_facade_export?;
+    if !matches!(visibility_syntax, VisibilitySyntax::Public)
+        && !matches!(status.usage, ParentFacadeUsage::Unused)
+    {
+        return Some(SuspiciousPubAssessment::Allowed(
+            AllowanceReason::InternalParentFacadeBoundary,
+        ));
+    }
     if !status.parent_facade_reach.spelling_conflict
         && status.parent_facade_reach.spelling == ParentFacadeSpelling::Super
         && !matches!(status.usage, ParentFacadeUsage::Unused)
@@ -522,15 +702,18 @@ pub(super) fn has_signature_exposure_allowance(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::path::Path;
 
     use super::CrateKind;
     use super::ModuleLocation;
+    use super::NoFacadeAdvice;
     use super::ParentFacadeReach;
     use super::ParentFacadeSpelling;
     use super::ParentVisibility;
     use super::SignatureExposure;
     use super::allow_pub_crate_by_policy;
+    use super::classify_no_facade_callers;
     use super::crate_kind_for_root;
     use super::forbidden_pub_crate_help;
     use super::forbidden_pub_crate_suggestion;
@@ -691,7 +874,8 @@ mod tests {
             forbidden_pub_crate_suggestion(
                 ModuleLocation::Nested,
                 SignatureExposure::Present,
-                None
+                None,
+                None,
             ),
             "this item is exposed through a public signature; consider using `pub`"
         );
@@ -707,9 +891,10 @@ mod tests {
                     reaches_parent:    true,
                     spelling:          ParentFacadeSpelling::Super,
                     spelling_conflict: false,
-                })
+                }),
+                Some("crate::a"),
             ),
-            "the parent module re-exports this with `pub(super) use`; consider using `pub` \
+            "the parent module re-exports this with `pub(super) use` to `crate::a`; consider using `pub` \
              (`pub(super)` here would not compile — the re-export would be wider than the item)"
         );
         assert_eq!(
@@ -720,9 +905,10 @@ mod tests {
                     reaches_parent:    true,
                     spelling:          ParentFacadeSpelling::Other,
                     spelling_conflict: false,
-                })
+                }),
+                Some("crate::a"),
             ),
-            "the parent module re-exports this to its own parent; consider using `pub` \
+            "the parent module re-exports this to `crate::a`; consider using `pub` \
              (`pub(crate)` and `pub(in ...)` are forbidden by policy)"
         );
     }
@@ -730,8 +916,50 @@ mod tests {
     #[test]
     fn forbidden_pub_crate_suggestion_defers_to_location_help_when_not_exposed() {
         assert_eq!(
-            forbidden_pub_crate_suggestion(ModuleLocation::Nested, SignatureExposure::Absent, None),
+            forbidden_pub_crate_suggestion(
+                ModuleLocation::Nested,
+                SignatureExposure::Absent,
+                None,
+                None,
+            ),
             forbidden_pub_crate_help(ModuleLocation::Nested)
+        );
+    }
+
+    #[test]
+    fn no_facade_advice_widens_monotonically_with_added_callers() {
+        let item_module = "a::b::c";
+        let parent_scope = "a::b";
+        let callers = BTreeSet::from([String::from("a::b::c")]);
+        assert_eq!(
+            classify_no_facade_callers(item_module, parent_scope, &callers),
+            NoFacadeAdvice::RemoveAnnotation,
+        );
+
+        let callers = BTreeSet::from([String::from("a::b::c"), String::from("a::b::sibling")]);
+        assert_eq!(
+            classify_no_facade_callers(item_module, parent_scope, &callers),
+            NoFacadeAdvice::SuggestPubSuper,
+        );
+
+        let callers = BTreeSet::from([String::from("a::b::c"), String::from("a::caller")]);
+        let advice = classify_no_facade_callers(item_module, parent_scope, &callers);
+        assert_eq!(advice, NoFacadeAdvice::StructuralMigration);
+        assert_eq!(
+            advice.suggestion("crate::a"),
+            "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun \
+             `cargo mend`",
+        );
+    }
+
+    #[test]
+    fn relative_pub_in_paths_resolve_against_the_item_module() {
+        assert_eq!(
+            super::canonical_pub_in_boundary(
+                "a::b::c",
+                "pub /* policy */ (in super :: super) fn helper() {}",
+            ),
+            Some(String::from("crate::a")),
         );
     }
 

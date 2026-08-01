@@ -69,6 +69,15 @@ impl<'source> VisibilityAnnotation<'source> {
         }
     }
 
+    pub(super) fn display_source(&self) -> String {
+        self.source()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .replace("( ", "(")
+            .replace(" )", ")")
+    }
+
     pub(super) const fn syntax(&self) -> VisibilitySyntax {
         match self {
             Self::Private => VisibilitySyntax::Private,

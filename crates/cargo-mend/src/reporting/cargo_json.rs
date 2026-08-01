@@ -151,14 +151,7 @@ fn rustc_diagnostic(finding: &Finding, span: RustcSpan) -> RustcDiagnostic {
     if let Some(related) = &finding.related {
         children.push(child(RUSTC_LEVEL_NOTE, related.clone(), Vec::new()));
     }
-    if let Some(help) = diagnostics::inline_help_text(finding) {
-        children.push(child(
-            RUSTC_LEVEL_HELP,
-            help.to_string(),
-            vec![span.clone()],
-        ));
-    }
-    if let Some(help) = diagnostics::custom_inline_help_text(finding) {
+    if let Some(help) = diagnostics::resolved_inline_help_text(finding) {
         children.push(child(
             RUSTC_LEVEL_HELP,
             help.to_string(),
@@ -206,8 +199,7 @@ fn render_diagnostic(finding: &Finding, span: &RustcSpan, level: &str) -> String
     let marker_pad = " ".repeat(span.column_start.saturating_sub(1));
     let marker_len = span.column_end.saturating_sub(span.column_start).max(1);
     let marker = "^".repeat(marker_len);
-    let inline_help = diagnostics::inline_help_text(finding)
-        .or_else(|| diagnostics::custom_inline_help_text(finding))
+    let inline_help = diagnostics::resolved_inline_help_text(finding)
         .map_or_else(String::new, |help| format!(" help: {help}"));
     let mut rendered = format!(
         "{level}: {}\n --> {}:{}:{}\n{gutter_pad}|\n{line_label} | {}\n{gutter_pad}| {marker_pad}{marker}{inline_help}\n",

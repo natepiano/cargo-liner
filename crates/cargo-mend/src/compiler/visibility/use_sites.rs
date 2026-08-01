@@ -603,6 +603,7 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
         // only apply to local items.
         if target.is_local() {
             self.push_site(target);
+            self.record_target_modules(target);
         }
         match self.tcx.def_kind(target) {
             // A reference to a type alias also reaches every type the alias
@@ -623,6 +624,24 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
             // `--fix` back.
             DefKind::Fn | DefKind::AssocFn => self.record_fn_signature_components(target),
             _ => {},
+        }
+    }
+
+    /// A path to an item also requires every module segment on the way to
+    /// that item. Record those modules so a restricted module is never
+    /// advised to become private while a caller still reaches a descendant
+    /// through it.
+    fn record_target_modules(&mut self, target: DefId) {
+        let Some(local_target) = target.as_local() else {
+            return;
+        };
+        let mut module: LocalDefId = self.tcx.parent_module_from_def_id(local_target).into();
+        loop {
+            self.push_site(module.to_def_id());
+            if module == CRATE_DEF_ID {
+                return;
+            }
+            module = self.tcx.parent_module_from_def_id(module).into();
         }
     }
 
@@ -865,6 +884,30 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
             self.record_target(def_id);
         }
     }
+
+    fn record_type_dependent_target(&mut self, hir_id: HirId) {
+        let owner = hir_id.owner.def_id;
+        if self.tcx.has_typeck_results(owner)
+            && let Some(def_id) = self.tcx.typeck(owner).type_dependent_def_id(hir_id)
+        {
+            self.record_target(def_id);
+        }
+    }
+
+    fn record_field_target(&mut self, base: &'tcx Expr<'tcx>, hir_id: HirId) {
+        let owner = hir_id.owner.def_id;
+        if !self.tcx.has_typeck_results(owner) {
+            return;
+        }
+        let typeck = self.tcx.typeck(owner);
+        let ty::TyKind::Adt(adt_def, _) = typeck.expr_ty_adjusted(base).kind() else {
+            return;
+        };
+        let Some(field_index) = typeck.opt_field_index(hir_id) else {
+            return;
+        };
+        self.record_target(adt_def.non_enum_variant().fields[field_index].did);
+    }
 }
 
 impl<'tcx> Visitor<'tcx> for UseSiteCollector<'_, 'tcx> {
@@ -912,17 +955,12 @@ impl<'tcx> Visitor<'tcx> for UseSiteCollector<'_, 'tcx> {
     fn visit_expr(&mut self, expr: &'tcx Expr<'tcx>) {
         match &expr.kind {
             ExprKind::Path(qpath) => self.record_qpath(qpath, expr.hir_id),
+            // Method-call dispatch is type-dependent, not path-based. The
+            // callee def-id lives in `TypeckResults`.
             ExprKind::MethodCall(..) => {
-                // Method-call dispatch is type-dependent, not path-based.
-                // The callee def-id lives in TypeckResults, not in any
-                // QPath the visitor descends into.
-                let owner = expr.hir_id.owner.def_id;
-                if self.tcx.has_typeck_results(owner)
-                    && let Some(def_id) = self.tcx.typeck(owner).type_dependent_def_id(expr.hir_id)
-                {
-                    self.record_target(def_id);
-                }
+                self.record_type_dependent_target(expr.hir_id);
             },
+            ExprKind::Field(base, ..) => self.record_field_target(base, expr.hir_id),
             ExprKind::Struct(qpath, ..) => self.record_qpath(qpath, expr.hir_id),
             _ => {},
         }

@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::Path;
@@ -9,11 +10,15 @@ use serde_json::from_str;
 
 use super::StoredReport;
 use super::caller_aware;
+use super::caller_aware::CallerMap;
 use super::intersection;
 use super::visibility_priority;
 use crate::compiler::constants::FINDINGS_SCHEMA_VERSION;
 use crate::compiler::constants::JSON_FILE_EXTENSION;
 use crate::compiler::settings;
+use crate::compiler::visibility;
+use crate::compiler::visibility::NoFacadeAdvice;
+use crate::config::DiagnosticCode;
 use crate::reporting::AllFeaturesCoverage;
 use crate::reporting::CompilerWarningFacts;
 use crate::reporting::Finding;
@@ -79,7 +84,8 @@ pub fn load_report(
     }
 
     intersection::apply_cross_compilation_intersection(&mut matched_reports);
-    caller_aware::apply_caller_aware_suppression(&mut matched_reports);
+    let callers = caller_aware::apply_caller_aware_suppression(&mut matched_reports);
+    refine_no_facade_advice(&mut matched_reports, &callers);
     visibility_priority::apply_visibility_narrowing_priority(&mut matched_reports);
 
     if matched_reports.is_empty() {
@@ -110,6 +116,46 @@ pub fn load_report(
             compiler_warning_facts: CompilerWarningFacts::None,
         },
     })
+}
+
+fn refine_no_facade_advice(reports: &mut [StoredReport], callers: &CallerMap) {
+    let no_callers = BTreeSet::new();
+    for report in reports {
+        let package_root = report.package_root.clone();
+        for finding in &mut report.findings {
+            if finding.diagnostic_code != DiagnosticCode::ForbiddenPubInCrate {
+                continue;
+            }
+            let (Some(item_def_path), Some(item_module)) = (
+                finding.item_def_path.as_deref(),
+                finding.narrower_scope_def_path.as_deref(),
+            ) else {
+                continue;
+            };
+            let Some(boundary_path) =
+                finding
+                    .visibility_annotation
+                    .as_deref()
+                    .and_then(|annotation| {
+                        visibility::canonical_pub_in_boundary(item_module, annotation)
+                    })
+            else {
+                continue;
+            };
+            let item_callers =
+                caller_aware::callers_for_package(callers, &package_root, item_def_path)
+                    .unwrap_or(&no_callers);
+            let advice: NoFacadeAdvice = visibility::classify_no_facade_callers(
+                item_module,
+                visibility::parent_scope_def_path(item_module),
+                item_callers,
+            );
+            let suggestion = visibility::no_facade_suggestion(advice, &boundary_path);
+            if finding.suggestion.as_deref() != Some(suggestion.as_str()) {
+                finding.suggestion = Some(suggestion);
+            }
+        }
+    }
 }
 
 fn sort_and_dedup_findings(findings: &mut Vec<Finding>) {
@@ -554,6 +600,7 @@ mod tests {
             suggestion: Some("use narrower visibility".to_string()),
             fix_support: FixSupport::None,
             related: None,
+            visibility_annotation: None,
             item_def_path: None,
             narrower_scope_def_path: None,
         }

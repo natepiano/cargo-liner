@@ -147,6 +147,7 @@ fn check_field(
             suggestion:              Some(suggested_replacement(&type_visibility_annotation_text)),
             fix_support:             FixSupport::FieldVisibility,
             related:                 None,
+            visibility_annotation:   None,
             item_def_path:           None,
             narrower_scope_def_path: None,
         },

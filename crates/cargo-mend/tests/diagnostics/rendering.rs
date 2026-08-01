@@ -55,6 +55,11 @@ edition = "2024"
     )
     .expect("write fixture manifest");
     fs::write(
+        temp.path().join("mend.toml"),
+        "[visibility]\npub_in_path = \"permitted\"\n",
+    )
+    .expect("write fixture visibility config");
+    fs::write(
         temp.path().join("src/lib.rs"),
         r#"mod private_parent;
 mod internal_parent;
@@ -421,6 +426,112 @@ fn fixture_renders_every_current_diagnostic() {
 
     assert_rendered_diagnostics(&report, &rendered);
     assert_forbidden_visibility_human(&rendered, &report);
+}
+
+#[test]
+fn suspicious_pub_dynamic_help_matches_all_renderers() {
+    let temp = create_stale_restricted_facade_fixture();
+    let expected_help =
+        "remove the parent facade and the now-unneeded `pub(in crate::a)` annotation";
+
+    let json_output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--json")
+        .output()
+        .expect("run JSON suspicious-pub fixture");
+    let stdout = String::from_utf8(json_output.stdout).expect("decode JSON output");
+    let diagnostic = stdout
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("parse cargo JSON line"))
+        .find(|message| {
+            message
+                .pointer("/message/code/code")
+                .and_then(Value::as_str)
+                == Some("suspicious_pub")
+        })
+        .expect("find suspicious-pub cargo diagnostic");
+    let message = diagnostic.get("message").expect("cargo diagnostic message");
+    let help_children = message
+        .get("children")
+        .and_then(Value::as_array)
+        .expect("cargo diagnostic children")
+        .iter()
+        .filter(|child| child.get("level").and_then(Value::as_str) == Some("help"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        help_children.len(),
+        1,
+        "unexpected help children: {message:#?}"
+    );
+    assert_eq!(
+        help_children[0].get("message").and_then(Value::as_str),
+        Some(expected_help),
+    );
+    let cargo_rendered = message
+        .get("rendered")
+        .and_then(Value::as_str)
+        .expect("cargo rendered diagnostic");
+
+    let human_output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .output()
+        .expect("run human suspicious-pub fixture");
+    let human_rendered =
+        strip_ansi(&String::from_utf8(human_output.stdout).expect("decode human output"));
+    assert_eq!(
+        rendered_help_text(cargo_rendered, expected_help),
+        rendered_help_text(&human_rendered, expected_help),
+    );
+    assert_eq!(
+        rendered_help_text(cargo_rendered, expected_help),
+        expected_help
+    );
+    assert!(!human_rendered.contains("help: consider using: `pub(super)`"));
+}
+
+fn create_stale_restricted_facade_fixture() -> TempDir {
+    let temp = tempdir().expect("create stale restricted facade fixture dir");
+    fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "stale_restricted_facade_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::write(
+        temp.path().join("mend.toml"),
+        "[visibility]\npub_in_path = \"permitted\"\n",
+    )
+    .expect("write fixture visibility config");
+    fs::write(temp.path().join("src/lib.rs"), "mod a;\n").expect("write library root");
+    fs::write(temp.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
+    fs::write(
+        temp.path().join("src/a/b.rs"),
+        "mod c;\npub(super) use c::Thing;\n",
+    )
+    .expect("write stale facade");
+    fs::write(
+        temp.path().join("src/a/b/c.rs"),
+        "pub(in crate::a) struct Thing;\n",
+    )
+    .expect("write accepted restricted declaration");
+    temp
+}
+
+fn rendered_help_text<'a>(rendered: &'a str, expected_help: &str) -> &'a str {
+    rendered
+        .lines()
+        .find_map(|line| {
+            line.split_once("help: ")
+                .map(|(_, help)| help)
+                .filter(|help| *help == expected_help)
+        })
+        .unwrap_or_else(|| panic!("missing help {expected_help:?} in:\n{rendered}"))
 }
 
 #[test]

@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::collections::BTreeSet;
 use std::ffi::OsStr;
 
 use anyhow::Result;
@@ -19,6 +20,7 @@ use super::classify::ParentVisibility;
 use super::classify::VisibilityFindingContext;
 use crate::compiler::constants::PRELUDE_MODULE_NAME;
 use crate::compiler::facade;
+use crate::compiler::facade::ParentFacadeExportStatus;
 use crate::compiler::facade::ParentFacadeReach;
 use crate::compiler::persistence::FindingsSink;
 use crate::compiler::persistence::StoredPubUseFixFact;
@@ -34,6 +36,7 @@ use crate::compiler::visibility::use_sites::FacadeChainResolution;
 use crate::compiler::visibility::use_sites::ParentFacadeAnalysis;
 use crate::config::DiagnosticCode;
 use crate::config::PreludePubMod;
+use crate::config::PubInPath;
 use crate::reporting::FixSupport;
 use crate::reporting::Severity;
 
@@ -90,8 +93,10 @@ pub(super) fn record_visibility_findings(
         maybe_record_narrow_to_pub_crate_nested(ctx, item, parent_facade_analysis.as_ref(), sink)?;
     }
 
-    if matches!(annotation.syntax(), VisibilitySyntax::Public)
-        && finding_context.logical_module_depth > 1
+    if matches!(
+        annotation.syntax(),
+        VisibilitySyntax::Public | VisibilitySyntax::InPath(PathSpelling::CrateRooted)
+    ) && finding_context.logical_module_depth > 1
     {
         maybe_record_suspicious_pub(
             ctx,
@@ -105,7 +110,9 @@ pub(super) fn record_visibility_findings(
                 kind_label:        item.kind_label,
                 name:              item.name,
                 highlight_span:    item.highlight_span,
+                visibility_syntax: annotation.syntax(),
             },
+            &annotation,
             parent_facade_analysis.as_ref(),
             sink,
         )?;
@@ -174,6 +181,7 @@ fn maybe_record_unused_pub(
             suggestion:              Some(String::from("consider removing `pub`")),
             fix_support:             FixSupport::UnusedPub,
             related:                 None,
+            visibility_annotation:   None,
             item_def_path:           Some(use_sites::def_path_string(ctx.tcx, item.def_id)),
             narrower_scope_def_path: Some(use_sites::parent_module_def_path(ctx.tcx, item.def_id)),
         },
@@ -215,7 +223,14 @@ pub(super) fn record_forbidden_visibility_annotation(
             sink,
         ),
         VisibilitySyntax::InParent | VisibilitySyntax::InCurrent | VisibilitySyntax::InPath(_) => {
-            record_forbidden_pub_in_crate(ctx, item, annotation, parent_facade_analysis, sink)
+            record_forbidden_pub_in_crate(
+                ctx,
+                item,
+                annotation,
+                finding_context,
+                parent_facade_analysis,
+                sink,
+            )
         },
         VisibilitySyntax::Private
         | VisibilitySyntax::Public
@@ -232,37 +247,78 @@ fn record_forbidden_pub_crate(
     parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
     sink: &mut FindingsSink,
 ) -> Result<bool> {
-    let pub_crate_is_permitted =
-        policy::allow_pub_crate_by_policy(
-            finding_context.crate_kind,
-            finding_context.module_location,
-            finding_context.parent_visibility,
-        ) || parent_facade_chain_reaches_crate(parent_facade_analysis, ctx);
+    let policy_permits_pub_crate = policy::allow_pub_crate_by_policy(
+        finding_context.crate_kind,
+        finding_context.module_location,
+        finding_context.parent_visibility,
+    );
+    let resolved_chain_reach = parent_facade_analysis.and_then(|analysis| {
+        let FacadeChainResolution::Resolved { required } = analysis.chain else {
+            return None;
+        };
+        Some(required)
+    });
+    let pub_crate_is_permitted = resolved_chain_reach
+        .map_or(policy_permits_pub_crate, |required| {
+            reach_is_pub_crate(required, ctx)
+        });
     if matches!(annotation.syntax(), VisibilitySyntax::Crate) && pub_crate_is_permitted {
         return Ok(false);
     }
-    let suggestion = if let Some(blocker_text) =
+
+    let exact_restricted_boundary = resolved_chain_reach.filter(|required| {
+        !reach_is_pub_crate(*required, ctx) && required.to_source(ctx.tcx) != "pub"
+    });
+    let (message, suggestion) = if let Some(blocker_text) =
         parent_facade_blocker_text(ctx, parent_facade_analysis)
     {
-        Some(blocker_text)
+        (
+            format!(
+                "use of `{}` is forbidden by policy",
+                annotation.display_source()
+            ),
+            Some(blocker_text),
+        )
+    } else if let Some(required) = exact_restricted_boundary {
+        let message = match annotation.syntax() {
+            VisibilitySyntax::Crate => {
+                String::from("use of `pub(crate)` does not match the parent facade boundary")
+            },
+            VisibilitySyntax::InCrate => {
+                String::from("`pub(in crate)` is wider than the exact parent facade boundary")
+            },
+            _ => format!(
+                "use of `{}` is forbidden by policy",
+                annotation.display_source()
+            ),
+        };
+        (
+            message,
+            Some(format!("consider using: `{}`", required.to_source(ctx.tcx))),
+        )
+    } else if matches!(annotation.syntax(), VisibilitySyntax::InCrate) && pub_crate_is_permitted {
+        (
+            String::from("`pub(in crate)` is a redundant spelling of `pub(crate)`"),
+            Some(String::from("consider using: `pub(crate)`")),
+        )
     } else {
         let signature_exposure =
             policy::has_signature_exposure_allowance(ctx, item.def_id, item.file_path, item.name)?
                 .into();
-        let repair_text =
-            if matches!(annotation.syntax(), VisibilitySyntax::InCrate) && pub_crate_is_permitted {
-                String::from("consider using: `pub(crate)`")
-            } else {
-                wider_chain_boundary_repair(parent_facade_analysis, ctx).unwrap_or_else(|| {
-                    policy::forbidden_pub_crate_suggestion(
-                        finding_context.module_location,
-                        signature_exposure,
-                        parent_facade_analysis.map(|analysis| parent_facade_reach(analysis, ctx)),
-                    )
-                    .to_string()
-                })
-            };
-        Some(repair_text)
+        let boundary_path = parent_facade_analysis
+            .and_then(|analysis| resolved_facade_boundary_path(analysis, ctx));
+        (
+            format!(
+                "use of `{}` is forbidden by policy",
+                annotation.display_source()
+            ),
+            Some(policy::forbidden_pub_crate_suggestion(
+                finding_context.module_location,
+                signature_exposure,
+                parent_facade_analysis.map(|analysis| parent_facade_reach(analysis, ctx)),
+                boundary_path.as_deref(),
+            )),
+        )
     };
     sink.findings.push(source::build_finding(
         ctx.tcx,
@@ -272,10 +328,11 @@ fn record_forbidden_pub_crate(
             severity: Severity::Error,
             diagnostic_code: DiagnosticCode::ForbiddenPubCrate,
             item: None,
-            message: format!("use of `{}` is forbidden by policy", annotation.source()),
+            message,
             suggestion,
             fix_support: FixSupport::None,
             related: None,
+            visibility_annotation: None,
             item_def_path: None,
             narrower_scope_def_path: None,
         },
@@ -287,28 +344,47 @@ fn record_forbidden_pub_in_crate(
     ctx: &VisibilityContext<'_, '_>,
     item: &ItemInfo<'_>,
     annotation: &VisibilityAnnotation<'_>,
+    finding_context: &VisibilityFindingContext,
     parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
     sink: &mut FindingsSink,
 ) -> Result<bool> {
-    let repair_text = match annotation.syntax() {
-        VisibilitySyntax::InParent => Some(String::from("consider using: `pub(super)`")),
-        VisibilitySyntax::InCurrent => Some(String::from("consider using: `pub(self)`")),
-        VisibilitySyntax::InPath(PathSpelling::CrateRooted) => None,
-        VisibilitySyntax::InPath(PathSpelling::Relative) => Some(format!(
-            "consider using: `{}`",
-            annotation.reach(item.def_id, ctx.tcx).to_source(ctx.tcx)
-        )),
-        VisibilitySyntax::Private
-        | VisibilitySyntax::Public
-        | VisibilitySyntax::Crate
-        | VisibilitySyntax::Parent
-        | VisibilitySyntax::Current
-        | VisibilitySyntax::InCrate => return Ok(false),
+    // `check_field` supplies no `ParentFacadeAnalysis`, so fields cannot satisfy
+    // this declaration-only acceptance path even though their category is `Declaration`.
+    if exact_pub_in_boundary_is_allowed(ctx, item, annotation, parent_facade_analysis) {
+        return Ok(false);
+    }
+
+    if !matches!(
+        annotation.syntax(),
+        VisibilitySyntax::InParent | VisibilitySyntax::InCurrent | VisibilitySyntax::InPath(_)
+    ) {
+        return Ok(false);
+    }
+    let annotation_reach = annotation.reach(item.def_id, ctx.tcx);
+    let advice = match parent_facade_analysis.map(|analysis| analysis.chain) {
+        Some(FacadeChainResolution::Unresolvable {
+            blocker: FacadeChainBlocker::Glob(_),
+        }) => glob_blocked_pub_in_advice(ctx, parent_facade_analysis),
+        Some(FacadeChainResolution::Unresolvable { .. }) => {
+            unresolvable_pub_in_advice(ctx, annotation, annotation_reach, parent_facade_analysis)
+        },
+        Some(FacadeChainResolution::Resolved { required }) => {
+            resolved_pub_in_advice(ctx, item, annotation, annotation_reach, required)
+        },
+        None => no_facade_pub_in_advice(
+            ctx,
+            item,
+            annotation,
+            annotation_reach,
+            finding_context,
+            sink,
+        ),
     };
-    let suggestion = combine_blocker_and_repair(
-        parent_facade_blocker_text(ctx, parent_facade_analysis),
-        repair_text,
-    );
+    let (item_def_path, narrower_scope_def_path) = advice
+        .caller_metadata
+        .map_or((None, None), |(item_def_path, item_module)| {
+            (Some(item_def_path), Some(item_module))
+        });
     sink.findings.push(source::build_finding(
         ctx.tcx,
         item.file_path,
@@ -317,15 +393,270 @@ fn record_forbidden_pub_in_crate(
             severity: Severity::Error,
             diagnostic_code: DiagnosticCode::ForbiddenPubInCrate,
             item: None,
-            message: format!("use of `{}` is forbidden by policy", annotation.source()),
-            suggestion,
+            message: advice.message,
+            suggestion: advice.suggestion,
             fix_support: FixSupport::None,
             related: None,
-            item_def_path: None,
-            narrower_scope_def_path: None,
+            visibility_annotation: Some(annotation.source().to_string()),
+            item_def_path,
+            narrower_scope_def_path,
         },
     )?);
     Ok(true)
+}
+
+struct ForbiddenPubInAdvice {
+    message:         String,
+    suggestion:      Option<String>,
+    caller_metadata: Option<(String, String)>,
+}
+
+fn exact_pub_in_boundary_is_allowed(
+    ctx: &VisibilityContext<'_, '_>,
+    item: &ItemInfo<'_>,
+    annotation: &VisibilityAnnotation<'_>,
+    parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
+) -> bool {
+    matches!(
+        ctx.settings.visibility_config.pub_in_path,
+        PubInPath::Permitted | PubInPath::Required
+    ) && item.category == ItemCategory::Declaration
+        && matches!(
+            annotation.syntax(),
+            VisibilitySyntax::InPath(PathSpelling::CrateRooted)
+        )
+        && parent_facade_analysis.is_some_and(|analysis| {
+            matches!(
+                analysis.chain,
+                FacadeChainResolution::Resolved { required }
+                    if annotation.reach(item.def_id, ctx.tcx).compare(required, ctx.tcx)
+                        == Some(Ordering::Equal)
+            )
+        })
+}
+
+fn default_pub_in_repair(
+    ctx: &VisibilityContext<'_, '_>,
+    annotation: &VisibilityAnnotation<'_>,
+    annotation_reach: VisibilityReach,
+) -> Option<String> {
+    match annotation.syntax() {
+        VisibilitySyntax::InParent => Some(String::from("consider using: `pub(super)`")),
+        VisibilitySyntax::InCurrent => Some(String::from("consider using: `pub(self)`")),
+        VisibilitySyntax::InPath(PathSpelling::Relative) => Some(format!(
+            "consider using: `{}`",
+            annotation_reach.to_source(ctx.tcx)
+        )),
+        VisibilitySyntax::Private
+        | VisibilitySyntax::Public
+        | VisibilitySyntax::Crate
+        | VisibilitySyntax::Parent
+        | VisibilitySyntax::Current
+        | VisibilitySyntax::InCrate
+        | VisibilitySyntax::InPath(PathSpelling::CrateRooted) => None,
+    }
+}
+
+fn glob_blocked_pub_in_advice(
+    ctx: &VisibilityContext<'_, '_>,
+    parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
+) -> ForbiddenPubInAdvice {
+    ForbiddenPubInAdvice {
+        message:         String::from(
+            "parent facade does not provide a resolvable visibility boundary",
+        ),
+        suggestion:      parent_facade_blocker_text(ctx, parent_facade_analysis)
+            .map(|text| format!("{text} before using `pub(in ...)`")),
+        caller_metadata: None,
+    }
+}
+
+fn unresolvable_pub_in_advice(
+    ctx: &VisibilityContext<'_, '_>,
+    annotation: &VisibilityAnnotation<'_>,
+    annotation_reach: VisibilityReach,
+    parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
+) -> ForbiddenPubInAdvice {
+    ForbiddenPubInAdvice {
+        message:         format!(
+            "use of `{}` is forbidden by policy",
+            annotation.display_source()
+        ),
+        suggestion:      combine_blocker_and_repair(
+            parent_facade_blocker_text(ctx, parent_facade_analysis),
+            default_pub_in_repair(ctx, annotation, annotation_reach),
+        ),
+        caller_metadata: None,
+    }
+}
+
+fn resolved_pub_in_advice(
+    ctx: &VisibilityContext<'_, '_>,
+    item: &ItemInfo<'_>,
+    annotation: &VisibilityAnnotation<'_>,
+    annotation_reach: VisibilityReach,
+    required: VisibilityReach,
+) -> ForbiddenPubInAdvice {
+    let comparison = annotation_reach.compare(required, ctx.tcx);
+    let (message, suggestion) =
+        if comparison == Some(Ordering::Equal) && reach_is_pub_crate(required, ctx) {
+            (
+                String::from("parent facade caps reach at `pub(crate)`"),
+                Some(String::from("consider using: `pub(crate)`")),
+            )
+        } else if matches!(
+            annotation.syntax(),
+            VisibilitySyntax::InPath(PathSpelling::CrateRooted)
+        ) && comparison == Some(Ordering::Equal)
+            && item.category == ItemCategory::Declaration
+            && matches!(
+                ctx.settings.visibility_config.pub_in_path,
+                PubInPath::Forbidden
+            )
+        {
+            (
+                format!(
+                    "use of `{}` is disabled by project visibility policy",
+                    annotation.display_source()
+                ),
+                Some(String::from(
+                    "consider using: `pub`; or set `pub_in_path = \"permitted\"`",
+                )),
+            )
+        } else if comparison == Some(Ordering::Equal) {
+            exact_restricted_spelling_advice(ctx, annotation, required)
+        } else {
+            let message = if comparison == Some(Ordering::Greater) {
+                format!(
+                    "`{}` is wider than the exact parent facade boundary",
+                    annotation.display_source()
+                )
+            } else {
+                format!(
+                    "use of `{}` does not match the parent facade boundary",
+                    annotation.display_source()
+                )
+            };
+            (
+                message,
+                Some(format!("consider using: `{}`", required.to_source(ctx.tcx))),
+            )
+        };
+    ForbiddenPubInAdvice {
+        message,
+        suggestion,
+        caller_metadata: None,
+    }
+}
+
+fn exact_restricted_spelling_advice(
+    ctx: &VisibilityContext<'_, '_>,
+    annotation: &VisibilityAnnotation<'_>,
+    required: VisibilityReach,
+) -> (String, Option<String>) {
+    match annotation.syntax() {
+        VisibilitySyntax::InParent => (
+            String::from("`pub(in super)` is a redundant spelling of `pub(super)`"),
+            Some(String::from("consider using: `pub(super)`")),
+        ),
+        VisibilitySyntax::InCurrent => (
+            String::from("`pub(in self)` is a redundant spelling of `pub(self)`"),
+            Some(String::from("consider using: `pub(self)`")),
+        ),
+        VisibilitySyntax::InPath(PathSpelling::Relative) => (
+            format!(
+                "use of `{}` does not use the canonical crate-rooted boundary",
+                annotation.display_source()
+            ),
+            Some(format!("consider using: `{}`", required.to_source(ctx.tcx))),
+        ),
+        VisibilitySyntax::Private
+        | VisibilitySyntax::Public
+        | VisibilitySyntax::Crate
+        | VisibilitySyntax::Parent
+        | VisibilitySyntax::Current
+        | VisibilitySyntax::InCrate
+        | VisibilitySyntax::InPath(PathSpelling::CrateRooted) => (
+            format!(
+                "use of `{}` is forbidden by policy",
+                annotation.display_source()
+            ),
+            None,
+        ),
+    }
+}
+
+fn no_facade_pub_in_advice(
+    ctx: &VisibilityContext<'_, '_>,
+    item: &ItemInfo<'_>,
+    annotation: &VisibilityAnnotation<'_>,
+    annotation_reach: VisibilityReach,
+    finding_context: &VisibilityFindingContext,
+    sink: &FindingsSink,
+) -> ForbiddenPubInAdvice {
+    let default_repair = default_pub_in_repair(ctx, annotation, annotation_reach);
+    if matches!(annotation.syntax(), VisibilitySyntax::InParent) {
+        return ForbiddenPubInAdvice {
+            message:         String::from(
+                "`pub(in super)` is a redundant spelling of `pub(super)`",
+            ),
+            suggestion:      default_repair,
+            caller_metadata: None,
+        };
+    }
+    if matches!(annotation.syntax(), VisibilitySyntax::InCurrent) {
+        return ForbiddenPubInAdvice {
+            message:         String::from("`pub(in self)` is a redundant spelling of `pub(self)`"),
+            suggestion:      default_repair,
+            caller_metadata: None,
+        };
+    }
+
+    if item.category == ItemCategory::Use {
+        // Resolved paths name the imported target, not the local `use` item,
+        // so an empty caller set cannot prove that its alias has no users.
+        return ForbiddenPubInAdvice {
+            message:         format!(
+                "use of `{}` on a `use` item is forbidden by policy",
+                annotation.display_source()
+            ),
+            suggestion:      None,
+            caller_metadata: None,
+        };
+    }
+
+    let item_def_path = use_sites::def_path_string(ctx.tcx, item.def_id);
+    let item_module = use_sites::parent_module_def_path(ctx.tcx, item.def_id);
+    let parent_scope = if finding_context.logical_module_depth == 0 {
+        ""
+    } else {
+        policy::parent_scope_def_path(&item_module)
+    };
+    let boundary_path = policy::canonical_pub_in_boundary(&item_module, annotation.source())
+        .or_else(|| visibility_reach_boundary_path(annotation_reach, ctx))
+        .unwrap_or_else(|| String::from("crate"));
+    let callers = sink
+        .use_sites
+        .iter()
+        .filter(|site| site.target_def_path == item_def_path)
+        .map(|site| site.caller_module_def_path.clone())
+        .collect::<BTreeSet<_>>();
+    let advice = policy::classify_no_facade_callers(&item_module, parent_scope, &callers);
+    let message = if matches!(advice, policy::NoFacadeAdvice::StructuralMigration) {
+        String::from(
+            "no visibility annotation allowed by policy preserves this item's current callers",
+        )
+    } else {
+        format!(
+            "use of `{}` outside an exact facade boundary is forbidden by policy",
+            annotation.display_source()
+        )
+    };
+    ForbiddenPubInAdvice {
+        message,
+        suggestion: Some(policy::no_facade_suggestion(advice, &boundary_path)),
+        caller_metadata: Some((item_def_path, item_module)),
+    }
 }
 
 fn combine_blocker_and_repair(
@@ -351,7 +682,7 @@ fn record_review_pub_mod(
     {
         return Ok(());
     }
-    // A crate-root `pub mod prelude;` is exempt by default (global `allow_prelude_pub_mod`).
+    // A crate-root `pub mod prelude;` follows the resolved `prelude_pub_mod` setting.
     if matches!(
         ctx.settings.visibility_config.prelude_pub_mod,
         PreludePubMod::Allowed
@@ -386,6 +717,7 @@ fn record_review_pub_mod(
             suggestion:              None,
             fix_support:             FixSupport::None,
             related:                 None,
+            visibility_annotation:   None,
             item_def_path:           None,
             narrower_scope_def_path: None,
         },
@@ -428,6 +760,7 @@ fn maybe_record_narrow_to_pub_crate(
             suggestion:              Some(String::from("consider using: `pub(crate)`")),
             fix_support:             FixSupport::NarrowToPubCrate,
             related:                 None,
+            visibility_annotation:   None,
             item_def_path:           None,
             narrower_scope_def_path: None,
         },
@@ -467,6 +800,7 @@ fn maybe_record_narrow_to_pub_crate_nested(
             suggestion:              Some(String::from("consider using: `pub(crate)`")),
             fix_support:             FixSupport::NarrowToPubCrate,
             related:                 None,
+            visibility_annotation:   None,
             item_def_path:           None,
             narrower_scope_def_path: None,
         },
@@ -492,30 +826,29 @@ fn parent_facade_reach(
     )
 }
 
-fn parent_facade_chain_reaches_crate(
-    parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
-    ctx: &VisibilityContext<'_, '_>,
-) -> bool {
-    let Some(parent_facade_analysis) = parent_facade_analysis else {
-        return false;
-    };
-    let FacadeChainResolution::Resolved { required } = parent_facade_analysis.chain else {
-        return false;
-    };
-    reach_is_pub_crate(required, ctx)
-}
-
-fn wider_chain_boundary_repair(
-    parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
+fn resolved_facade_boundary_path(
+    parent_facade_analysis: &ParentFacadeAnalysis<'_>,
     ctx: &VisibilityContext<'_, '_>,
 ) -> Option<String> {
-    let parent_facade_analysis = parent_facade_analysis?;
     let FacadeChainResolution::Resolved { required } = parent_facade_analysis.chain else {
         return None;
     };
-    let nearest = VisibilityReach::from(parent_facade_analysis.nearest.selected.visibility);
-    (required.compare(nearest, ctx.tcx) == Some(Ordering::Greater))
-        .then(|| format!("consider using: `{}`", required.to_source(ctx.tcx)))
+    visibility_reach_boundary_path(required, ctx)
+}
+
+fn visibility_reach_boundary_path(
+    reach: VisibilityReach,
+    ctx: &VisibilityContext<'_, '_>,
+) -> Option<String> {
+    let source = reach.to_source(ctx.tcx);
+    match source.as_str() {
+        "pub" => Some(String::from("crate-external")),
+        "pub(crate)" => Some(String::from("crate")),
+        restricted => restricted
+            .strip_prefix("pub(in ")
+            .and_then(|path| path.strip_suffix(')'))
+            .map(String::from),
+    }
 }
 
 fn reach_is_pub_crate(reach: VisibilityReach, ctx: &VisibilityContext<'_, '_>) -> bool {
@@ -566,6 +899,7 @@ fn facade_chain_fix_support(
 fn maybe_record_suspicious_pub(
     ctx: &VisibilityContext<'_, '_>,
     input: &SuspiciousPubInput<'_>,
+    annotation: &VisibilityAnnotation<'_>,
     parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
     sink: &mut FindingsSink,
 ) -> Result<()> {
@@ -576,96 +910,198 @@ fn maybe_record_suspicious_pub(
     match policy::classify_suspicious_pub(ctx, input, parent_facade_analysis)? {
         SuspiciousPubAssessment::Allowed(_) => {},
         SuspiciousPubAssessment::ReviewInternalParentFacade { related } => {
-            let Some(status) = policy::parent_facade_export_status(
+            record_internal_parent_facade_review(
                 ctx,
+                input,
                 parent_facade_analysis,
-                input.file_path,
-                input.name,
-            )?
-            else {
-                return Ok(());
-            };
-            let facade_use = status.use_syntax();
-            sink.findings.push(source::build_line_finding(
-                ctx.source_cache,
-                &status.parent_path,
-                status.parent_line,
-                FindingParams {
-                    severity: Severity::Warning,
-                    diagnostic_code: DiagnosticCode::InternalParentPubUseFacade,
-                    item: input.name.map(|name| {
-                        facade_use.map_or_else(
-                            || format!("re-export {name}"),
-                            |syntax| format!("{syntax} {name}"),
-                        )
-                    }),
-                    message: facade_use.map_or_else(
-                        || String::from("parent module re-export is acting as an internal facade"),
-                        |syntax| {
-                            format!("parent module `{syntax}` is acting as an internal facade")
-                        },
-                    ),
-                    suggestion: None,
-                    fix_support: FixSupport::InternalParentFacade,
-                    related,
-                    item_def_path: None,
-                    narrower_scope_def_path: None,
-                },
-            )?);
+                related,
+                sink,
+            )?;
         },
         SuspiciousPubAssessment::Warn {
             fix_support,
             related,
             stale_parent_pub_use,
         } => {
-            let fix_support = facade_chain_fix_support(parent_facade_analysis, fix_support);
-            let item_def_path = Some(use_sites::def_path_string(ctx.tcx, input.def_id));
-            let narrower_scope_def_path =
-                Some(use_sites::parent_module_def_path(ctx.tcx, input.def_id));
-            sink.findings.push(source::build_finding(
-                ctx.tcx,
-                input.file_path,
-                input.highlight_span,
-                FindingParams {
-                    severity: Severity::Warning,
-                    diagnostic_code: DiagnosticCode::SuspiciousPub,
-                    item: input.name.map(|name| format!("{kind_label} {name}")),
-                    message: policy::suspicious_pub_note(input.crate_kind, kind_label),
-                    suggestion: None,
+            record_suspicious_pub_warning(
+                ctx,
+                input,
+                kind_label,
+                annotation,
+                parent_facade_analysis,
+                SuspiciousWarning {
                     fix_support,
                     related,
-                    item_def_path,
-                    narrower_scope_def_path,
+                    stale_parent_pub_use,
                 },
-            )?);
-            if let (Some(status), Some(item_name)) = (stale_parent_pub_use, input.name)
-                && fix_support == FixSupport::PubUse
-            {
-                let child_line = ctx
-                    .tcx
-                    .sess
-                    .source_map()
-                    .lookup_char_pos(input.highlight_span.lo())
-                    .line;
-                let Some(child_module) = input
-                    .file_path
-                    .file_stem()
-                    .and_then(OsStr::to_str)
-                    .filter(|stem| *stem != "mod")
-                    .map(String::from)
-                else {
-                    return Ok(());
-                };
-                sink.pub_use_fix_facts.push(StoredPubUseFixFact {
-                    child_path: input.file_path.to_string_lossy().into_owned(),
-                    child_line,
-                    child_item_name: item_name.to_string(),
-                    parent_path: status.parent_path.to_string_lossy().into_owned(),
-                    parent_line: status.parent_line,
-                    child_module,
-                });
-            }
+                sink,
+            )?;
         },
     }
     Ok(())
+}
+
+struct SuspiciousWarning {
+    fix_support:          FixSupport,
+    related:              Option<String>,
+    stale_parent_pub_use: Option<ParentFacadeExportStatus>,
+}
+
+fn record_internal_parent_facade_review(
+    ctx: &VisibilityContext<'_, '_>,
+    input: &SuspiciousPubInput<'_>,
+    parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
+    related: Option<String>,
+    sink: &mut FindingsSink,
+) -> Result<()> {
+    let Some(status) = policy::parent_facade_export_status(
+        ctx,
+        parent_facade_analysis,
+        input.file_path,
+        input.name,
+    )?
+    else {
+        return Ok(());
+    };
+    let facade_use = status.use_syntax();
+    sink.findings.push(source::build_line_finding(
+        ctx.source_cache,
+        &status.parent_path,
+        status.parent_line,
+        FindingParams {
+            severity: Severity::Warning,
+            diagnostic_code: DiagnosticCode::InternalParentPubUseFacade,
+            item: input.name.map(|name| {
+                facade_use.map_or_else(
+                    || format!("re-export {name}"),
+                    |syntax| format!("{syntax} {name}"),
+                )
+            }),
+            message: facade_use.map_or_else(
+                || String::from("parent module re-export is acting as an internal facade"),
+                |syntax| format!("parent module `{syntax}` is acting as an internal facade"),
+            ),
+            suggestion: None,
+            fix_support: FixSupport::InternalParentFacade,
+            related,
+            visibility_annotation: None,
+            item_def_path: None,
+            narrower_scope_def_path: None,
+        },
+    )?);
+    Ok(())
+}
+
+fn record_suspicious_pub_warning(
+    ctx: &VisibilityContext<'_, '_>,
+    input: &SuspiciousPubInput<'_>,
+    kind_label: &str,
+    annotation: &VisibilityAnnotation<'_>,
+    parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
+    warning: SuspiciousWarning,
+    sink: &mut FindingsSink,
+) -> Result<()> {
+    let SuspiciousWarning {
+        fix_support,
+        related,
+        stale_parent_pub_use,
+    } = warning;
+    let restricted_annotation = !matches!(annotation.syntax(), VisibilitySyntax::Public);
+    let fix_support = if restricted_annotation {
+        FixSupport::None
+    } else {
+        facade_chain_fix_support(parent_facade_analysis, fix_support)
+    };
+    let suggestion = suspicious_pub_suggestion(
+        ctx,
+        annotation,
+        parent_facade_analysis,
+        stale_parent_pub_use.as_ref(),
+    );
+    let item_def_path = Some(use_sites::def_path_string(ctx.tcx, input.def_id));
+    let facade_scope = parent_facade_analysis
+        .and_then(|analysis| resolved_facade_boundary_path(analysis, ctx))
+        .and_then(|path| path.strip_prefix("crate::").map(String::from));
+    let narrower_scope_def_path = Some(
+        facade_scope.unwrap_or_else(|| use_sites::parent_module_def_path(ctx.tcx, input.def_id)),
+    );
+    sink.findings.push(source::build_finding(
+        ctx.tcx,
+        input.file_path,
+        input.highlight_span,
+        FindingParams {
+            severity: Severity::Warning,
+            diagnostic_code: DiagnosticCode::SuspiciousPub,
+            item: input.name.map(|name| format!("{kind_label} {name}")),
+            message: policy::suspicious_pub_note(input.crate_kind, kind_label),
+            suggestion: Some(suggestion),
+            fix_support,
+            related,
+            visibility_annotation: None,
+            item_def_path,
+            narrower_scope_def_path,
+        },
+    )?);
+    record_suspicious_pub_use_fact(ctx, input, stale_parent_pub_use.as_ref(), fix_support, sink);
+    Ok(())
+}
+
+fn record_suspicious_pub_use_fact(
+    ctx: &VisibilityContext<'_, '_>,
+    input: &SuspiciousPubInput<'_>,
+    stale_parent_pub_use: Option<&ParentFacadeExportStatus>,
+    fix_support: FixSupport,
+    sink: &mut FindingsSink,
+) {
+    let (Some(status), Some(item_name)) = (stale_parent_pub_use, input.name) else {
+        return;
+    };
+    if fix_support != FixSupport::PubUse
+        || !matches!(input.visibility_syntax, VisibilitySyntax::Public)
+    {
+        return;
+    }
+    let child_line = ctx
+        .tcx
+        .sess
+        .source_map()
+        .lookup_char_pos(input.highlight_span.lo())
+        .line;
+    let Some(child_module) = input
+        .file_path
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .filter(|stem| *stem != "mod")
+        .map(String::from)
+    else {
+        return;
+    };
+    sink.pub_use_fix_facts.push(StoredPubUseFixFact {
+        child_path: input.file_path.to_string_lossy().into_owned(),
+        child_line,
+        child_item_name: item_name.to_string(),
+        parent_path: status.parent_path.to_string_lossy().into_owned(),
+        parent_line: status.parent_line,
+        child_module,
+    });
+}
+
+fn suspicious_pub_suggestion(
+    ctx: &VisibilityContext<'_, '_>,
+    annotation: &VisibilityAnnotation<'_>,
+    parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
+    stale_parent_facade: Option<&ParentFacadeExportStatus>,
+) -> String {
+    if stale_parent_facade.is_some() && !matches!(annotation.syntax(), VisibilitySyntax::Public) {
+        return format!(
+            "remove the parent facade and the now-unneeded `{}` annotation",
+            annotation.display_source()
+        );
+    }
+    if let Some(parent_facade_analysis) = parent_facade_analysis
+        && let FacadeChainResolution::Resolved { required } = parent_facade_analysis.chain
+    {
+        return format!("consider using: `{}`", required.to_source(ctx.tcx));
+    }
+    String::from("consider using: `pub(super)`")
 }
