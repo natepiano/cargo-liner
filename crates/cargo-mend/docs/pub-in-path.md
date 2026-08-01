@@ -866,7 +866,7 @@ Defaulting to `Forbidden` would mean an author who follows the README and writes
 
 ---
 
-### Phase 7 — Acceptance and the advice matrix · status: done (`0784c0c`)
+### Phase 7 — Acceptance and the advice matrix · status: done (`c9b0f62`)
 
 #### Work Order
 
