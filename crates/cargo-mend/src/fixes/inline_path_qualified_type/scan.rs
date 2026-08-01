@@ -17,6 +17,7 @@ use super::scope::ScopeCollectionContext;
 use super::scope::ScopeSpan;
 use super::visitor::InlinePathVisitor;
 use crate::compiler::SOURCE_DIR_SRC;
+use crate::fixes::imports::ConditionalAttributes;
 use crate::fixes::imports::UseFix;
 use crate::fixes::imports::ValidatedFixSet;
 use crate::reporting::Finding;
@@ -86,10 +87,13 @@ fn scan_file(
     );
 
     let mut visitor = InlinePathVisitor {
-        occurrences:     Vec::new(),
-        bare_type_names: BTreeSet::new(),
-        mod_depth:       0,
-        generic_scopes:  Vec::new(),
+        occurrences:            Vec::new(),
+        bare_type_names:        BTreeSet::new(),
+        mod_depth:              0,
+        generic_scopes:         Vec::new(),
+        text:                   &text,
+        offsets:                &offsets,
+        conditional_attributes: ConditionalAttributes::default(),
     };
     visitor.visit_file(&syntax);
 
@@ -124,11 +128,13 @@ fn scan_file(
         scopes: &scopes,
         collision_names: &collision_names,
     };
+    let import_attribute_plan = process::plan_import_attributes(&visitor.occurrences, &ctx);
 
     for occ in &visitor.occurrences {
         process::process_occurrence(
             occ,
             &ctx,
+            &import_attribute_plan,
             &mut inserted_use_paths,
             &mut findings,
             &mut fixes,

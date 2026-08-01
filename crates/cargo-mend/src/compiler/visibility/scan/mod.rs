@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 use super::annotation::VisibilityAnnotation;
-use crate::compiler::facade::ParentFacadeReach;
+use super::use_sites::ParentFacadeAnalysis;
 use crate::compiler::persistence::FindingsSink;
 
 mod classify;
@@ -27,7 +27,7 @@ pub(super) fn record_forbidden_visibility_annotation(
     ctx: &VisibilityContext<'_, '_>,
     item: &ItemInfo<'_>,
     annotation: &VisibilityAnnotation<'_>,
-    parent_facade_reach: Option<ParentFacadeReach>,
+    parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
     sink: &mut FindingsSink,
 ) -> Result<bool> {
     let finding_context = classify::visibility_finding_context(ctx, item);
@@ -36,7 +36,7 @@ pub(super) fn record_forbidden_visibility_annotation(
         item,
         annotation,
         &finding_context,
-        parent_facade_reach,
+        parent_facade_analysis,
         sink,
     )
 }

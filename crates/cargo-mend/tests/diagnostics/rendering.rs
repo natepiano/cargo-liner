@@ -40,6 +40,7 @@ fn create_all_diagnostics_fixture() -> TempDir {
         "src/field_visibility_parent",
         "src/in_body_use",
         "src/unused_pub",
+        "src/bin",
     ] {
         fs::create_dir_all(temp.path().join(dir)).expect("create fixture dir");
     }
@@ -54,9 +55,8 @@ edition = "2024"
     )
     .expect("write fixture manifest");
     fs::write(
-        temp.path().join("src/main.rs"),
-        r#"pub(crate) fn crate_only() {}
-mod private_parent;
+        temp.path().join("src/lib.rs"),
+        r#"mod private_parent;
 mod internal_parent;
 mod stale_parent;
 mod wild_parent;
@@ -70,12 +70,17 @@ mod unused_pub;
 pub mod review_mod;
 pub use private_parent::PublicContainer;
 
-fn main() {
+pub fn entry() {
     narrow_mod::unexported_top_level();
 }
 "#,
     )
-    .expect("write fixture main");
+    .expect("write fixture library");
+    fs::write(
+        temp.path().join("src/bin/policy.rs"),
+        "pub(crate) fn crate_only() {}\nfn main() {}\n",
+    )
+    .expect("write fixture binary");
     fs::write(temp.path().join("src/review_mod.rs"), "\n").expect("write review mod");
     fs::write(
         temp.path().join("src/narrow_mod.rs"),
@@ -638,7 +643,7 @@ fn main() {}
 }
 
 #[test]
-fn workspace_sibling_literal_crate_paths_preserve_parent_pub_use_facade() {
+fn workspace_sibling_literal_crate_paths_do_not_count_as_facade_usage() {
     let temp = tempdir().expect("create temp workspace dir");
     fs::create_dir_all(temp.path().join("app/src/tool")).expect("create app dirs");
     fs::create_dir_all(temp.path().join("macros/src")).expect("create macros dirs");
@@ -705,12 +710,834 @@ edition = "2024"
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert!(
-        !report.findings.iter().any(|finding| {
+        report.findings.iter().all(|finding| {
             finding.code == DiagnosticCode::SuspiciousPub
                 && finding.path == "app/src/tool/field_placement.rs"
         }),
-        "literal workspace sibling crate paths should preserve the parent facade: {:#?}",
+        "workspace sibling crate literals must not count as app facade usage: {:#?}",
         report.findings
     );
-    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
+    assert_eq!(report.findings.len(), 2, "{:#?}", report.findings);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 2);
+}
+
+#[test]
+fn workspace_descendant_macro_literal_counts_as_inside_facade_usage() {
+    let temp = tempdir().expect("create descendant literal workspace dir");
+    fs::create_dir_all(temp.path().join("app/src/a")).expect("create app fixture modules");
+    fs::create_dir_all(temp.path().join("support/src")).expect("create support fixture module");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[workspace]
+members = ["app", "support"]
+resolver = "3"
+"#,
+    )
+    .expect("write workspace manifest");
+    fs::write(
+        temp.path().join("app/Cargo.toml"),
+        r#"[package]
+name = "descendant_literal_app_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write app manifest");
+    fs::write(
+        temp.path().join("app/src/main.rs"),
+        "mod a;\nfn main() {}\n",
+    )
+    .expect("write app main");
+    fs::write(
+        temp.path().join("app/src/a.rs"),
+        "mod child;\nmod descendant;\npub use child::Thing;\n",
+    )
+    .expect("write app facade");
+    fs::write(
+        temp.path().join("app/src/a/child.rs"),
+        "pub struct Thing;\n",
+    )
+    .expect("write facade subject");
+    fs::write(
+        temp.path().join("app/src/a/descendant.rs"),
+        "const _: &str = stringify!(crate::a::Thing);\n",
+    )
+    .expect("write descendant macro literal");
+    fs::write(
+        temp.path().join("support/Cargo.toml"),
+        r#"[package]
+name = "descendant_literal_support_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write support manifest");
+    fs::write(temp.path().join("support/src/lib.rs"), "").expect("write support library root");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let finding = report
+        .findings
+        .iter()
+        .find(|finding| {
+            finding.code == DiagnosticCode::SuspiciousPub && finding.path == "app/src/a/child.rs"
+        })
+        .unwrap_or_else(|| panic!("missing inside-subtree facade finding: {report:#?}"));
+    assert!(
+        finding.help.iter().any(|help| {
+            help.contains("only used through crate-relative paths inside its own subtree")
+        }),
+        "the descendant macro literal must remain inside the facade subtree: {report:#?}"
+    );
+}
+
+#[test]
+fn standalone_descendant_macro_literal_counts_as_inside_facade_usage() {
+    let temp = tempdir().expect("create standalone descendant literal dir");
+    fs::create_dir_all(temp.path().join("src/a")).expect("create standalone fixture modules");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "standalone_descendant_literal_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write standalone fixture manifest");
+    fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
+        .expect("write standalone fixture main");
+    fs::write(
+        temp.path().join("src/a.rs"),
+        "mod child;\nmod descendant;\npub use child::Thing;\n",
+    )
+    .expect("write standalone facade");
+    fs::write(temp.path().join("src/a/child.rs"), "pub struct Thing;\n")
+        .expect("write standalone facade subject");
+    fs::write(
+        temp.path().join("src/a/descendant.rs"),
+        "const _: &str = stringify!(crate::a::Thing);\n",
+    )
+    .expect("write standalone descendant macro literal");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let finding = report
+        .findings
+        .iter()
+        .find(|finding| {
+            finding.code == DiagnosticCode::SuspiciousPub && finding.path == "src/a/child.rs"
+        })
+        .unwrap_or_else(|| panic!("missing standalone inside-subtree facade finding: {report:#?}"));
+    assert!(
+        finding.help.iter().any(|help| {
+            help.contains("only used through crate-relative paths inside its own subtree")
+        }),
+        "the standalone descendant literal must remain inside the facade subtree: {report:#?}"
+    );
+}
+
+#[test]
+fn inactive_nested_module_literal_counts_as_inside_facade_usage() {
+    let temp = tempdir().expect("create inactive nested literal fixture dir");
+    fs::create_dir_all(temp.path().join("src/a")).expect("create fixture modules");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "inactive_nested_literal_fixture"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+hidden = []
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
+        .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/a.rs"),
+        "mod child;\n#[cfg(feature = \"hidden\")]\nmod hidden;\npub use child::Thing;\n",
+    )
+    .expect("write facade module");
+    fs::write(temp.path().join("src/a/child.rs"), "pub struct Thing;\n")
+        .expect("write facade subject");
+    fs::write(
+        temp.path().join("src/a/hidden.rs"),
+        "const _: &str = stringify!(crate::a::Thing);\n",
+    )
+    .expect("write inactive nested module");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let finding = report
+        .findings
+        .iter()
+        .find(|finding| {
+            finding.code == DiagnosticCode::SuspiciousPub && finding.path == "src/a/child.rs"
+        })
+        .unwrap_or_else(|| panic!("missing inactive-subtree facade finding: {report:#?}"));
+    assert!(
+        finding.help.iter().any(|help| {
+            help.contains("only used through crate-relative paths inside its own subtree")
+        }),
+        "the inactive nested literal must be attributed to module a: {report:#?}"
+    );
+}
+
+#[test]
+fn out_of_source_root_macro_literal_counts_as_facade_usage() {
+    let temp = tempdir().expect("create out-of-root literal fixture dir");
+    fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "out_of_root_literal_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod a;\n#[path = \"../shared.rs\"]\nmod shared;\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(temp.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
+    fs::write(
+        temp.path().join("src/a/b.rs"),
+        "mod child;\npub(super) use child::Thing;\n",
+    )
+    .expect("write facade module");
+    fs::write(temp.path().join("src/a/b/child.rs"), "pub struct Thing;\n")
+        .expect("write facade subject");
+    fs::write(
+        temp.path().join("shared.rs"),
+        "macro_rules! mention { () => { stringify!(crate::a::b::Thing) }; }\n\
+         const _: &str = mention!();\n",
+    )
+    .expect("write out-of-root macro literal");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        !report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::SuspiciousPub
+                && finding.path == "src/a/b/child.rs"
+                && finding.item.as_deref() == Some("struct Thing")
+        }),
+        "the current-crate macro literal outside src must count as facade usage: {report:#?}"
+    );
+}
+
+#[test]
+fn out_of_source_root_parsed_path_counts_as_facade_usage() {
+    let temp = tempdir().expect("create out-of-root parsed path fixture dir");
+    fs::create_dir_all(temp.path().join("src/a")).expect("create fixture modules");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "out_of_root_parsed_path_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
+        .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/a.rs"),
+        "mod child;\n#[path = \"../shared.rs\"]\nmod consumer;\npub(super) use child::{ParsedThing, UnusedThing};\n",
+    )
+    .expect("write facade module");
+    fs::write(
+        temp.path().join("src/a/child.rs"),
+        "pub struct ParsedThing;\npub struct UnusedThing;\n",
+    )
+    .expect("write facade subjects");
+    fs::write(
+        temp.path().join("shared.rs"),
+        "fn consume(_: super::ParsedThing) {}\n",
+    )
+    .expect("write out-of-root parsed path");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        !report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::SuspiciousPub
+                && finding.path == "src/a/child.rs"
+                && finding.item.as_deref() == Some("struct ParsedThing")
+        }),
+        "the parsed path outside src must count as facade usage: {report:#?}"
+    );
+    assert!(
+        report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::SuspiciousPub
+                && finding.path == "src/a/child.rs"
+                && finding.item.as_deref() == Some("struct UnusedThing")
+        }),
+        "the unreferenced sibling must retain its stale-facade finding: {report:#?}"
+    );
+
+    let findings_dir = temp.path().join("target/mend-findings");
+    let mut parsed_path_fact = false;
+    let mut unused_fact = false;
+    for entry in fs::read_dir(&findings_dir).expect("read stored findings directory") {
+        let path = entry.expect("read stored finding entry").path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+            continue;
+        }
+        let bytes = fs::read(&path).expect("read stored findings report");
+        let stored_report = serde_json::from_slice::<Value>(&bytes).expect("parse stored report");
+        let fix_facts = stored_report
+            .get("pub_use_fix_facts")
+            .and_then(Value::as_array)
+            .expect("read stored pub-use fix facts");
+        for fact in fix_facts {
+            match fact.get("child_item_name").and_then(Value::as_str) {
+                Some("ParsedThing") => parsed_path_fact = true,
+                Some("UnusedThing") => unused_fact = true,
+                _ => {},
+            }
+        }
+    }
+    assert!(
+        !parsed_path_fact,
+        "the parsed path outside src must prevent a ParsedThing pub-use fix fact"
+    );
+    assert!(
+        unused_fact,
+        "the unreferenced sibling must retain its pub-use fix fact"
+    );
+}
+
+#[test]
+fn cfg_attr_path_candidate_macro_literal_counts_as_facade_usage() {
+    let temp = tempdir().expect("create cfg_attr path fixture dir");
+    fs::create_dir_all(temp.path().join("src/a")).expect("create fixture modules");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "cfg_attr_path_literal_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod a;\n#[cfg_attr(any(), path = \"conditional.rs\")]\nmod consumer;\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/a.rs"),
+        "mod child;\npub use child::Thing;\n",
+    )
+    .expect("write facade module");
+    fs::write(temp.path().join("src/a/child.rs"), "pub struct Thing;\n")
+        .expect("write facade subject");
+    fs::write(temp.path().join("src/consumer.rs"), "")
+        .expect("write conventional module candidate");
+    fs::write(
+        temp.path().join("src/conditional.rs"),
+        "const _: &str = stringify!(crate::a::Thing);\n",
+    )
+    .expect("write conditional path candidate");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        !report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::SuspiciousPub
+                && finding.path == "src/a/child.rs"
+                && finding.item.as_deref() == Some("struct Thing")
+        }),
+        "the conditional path candidate must contribute literal facade usage: {report:#?}"
+    );
+}
+
+#[test]
+fn outside_package_root_macro_literal_counts_as_facade_usage() {
+    let temp = tempdir().expect("create outside-package literal fixture dir");
+    let package_root = temp.path().join("package");
+    fs::create_dir_all(package_root.join("src/a/b")).expect("create fixture modules");
+
+    fs::write(
+        package_root.join("Cargo.toml"),
+        r#"[package]
+name = "outside_package_literal_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::write(
+        package_root.join("src/main.rs"),
+        "mod a;\n#[path = \"../../shared.rs\"]\nmod shared;\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(package_root.join("src/a.rs"), "mod b;\n").expect("write outer module");
+    fs::write(
+        package_root.join("src/a/b.rs"),
+        "mod child;\npub(super) use child::Thing;\n",
+    )
+    .expect("write facade module");
+    fs::write(package_root.join("src/a/b/child.rs"), "pub struct Thing;\n")
+        .expect("write facade subject");
+    fs::write(
+        temp.path().join("shared.rs"),
+        "macro_rules! mention { () => { stringify!(crate::a::b::Thing) }; }\n\
+         const _: &str = mention!();\n",
+    )
+    .expect("write outside-package macro literal");
+
+    let report = run_mend_json(&package_root.join("Cargo.toml"));
+    assert!(
+        !report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::SuspiciousPub
+                && finding.path == "src/a/b/child.rs"
+                && finding.item.as_deref() == Some("struct Thing")
+        }),
+        "the current-crate macro literal outside the package must count as facade usage: \
+         {report:#?}"
+    );
+}
+
+#[test]
+fn macro_only_descendant_literal_counts_as_inside_facade_usage() {
+    let temp = tempdir().expect("create macro-only descendant fixture dir");
+    fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "macro_only_descendant_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
+        .expect("write fixture main");
+    fs::write(temp.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
+    fs::write(
+        temp.path().join("src/a/b.rs"),
+        "macro_rules! swallow { ($($tokens:tt)*) => {}; }\n\
+         mod child;\nmod macro_only;\npub(super) use child::Thing;\n",
+    )
+    .expect("write facade module");
+    fs::write(temp.path().join("src/a/b/child.rs"), "pub struct Thing;\n")
+        .expect("write facade subject");
+    fs::write(
+        temp.path().join("src/a/b/macro_only.rs"),
+        "swallow!(crate::a::b::Thing);\n",
+    )
+    .expect("write macro-only descendant");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        !report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::SuspiciousPub
+                && finding.path == "src/a/b/child.rs"
+                && finding.item.as_deref() == Some("struct Thing")
+        }),
+        "the macro-only descendant must keep its used pub(super) facade: {report:#?}"
+    );
+}
+
+#[test]
+fn foreign_crate_macro_literal_does_not_count_as_facade_usage() {
+    let temp = tempdir().expect("create foreign crate literal fixture dir");
+    fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "foreign_crate_literal_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
+        .expect("write fixture main");
+    fs::write(temp.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
+    fs::write(
+        temp.path().join("src/a/b.rs"),
+        "mod child;\nmod macro_only;\npub(super) use child::Thing;\n",
+    )
+    .expect("write facade module");
+    fs::write(temp.path().join("src/a/b/child.rs"), "pub struct Thing;\n")
+        .expect("write facade subject");
+    fs::write(
+        temp.path().join("src/a/b/macro_only.rs"),
+        "const _: &str = stringify!(some_crate::a::b::Thing);\n",
+    )
+    .expect("write foreign crate macro literal");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::SuspiciousPub
+                && finding.path == "src/a/b/child.rs"
+                && finding.item.as_deref() == Some("struct Thing")
+        }),
+        "a foreign crate macro literal must not count as current-crate facade usage: {report:#?}"
+    );
+}
+
+#[test]
+fn literal_crate_paths_accept_separator_trivia_but_reject_foreign_crates() {
+    let temp = tempdir().expect("create separator trivia fixture dir");
+    fs::create_dir_all(temp.path().join("src/a")).expect("create fixture modules");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "literal_separator_trivia_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod a;\nmod consumer;\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/a.rs"),
+        "mod child;\npub use child::{CommentThing, ForeignThing, SpaceThing};\n",
+    )
+    .expect("write facade module");
+    fs::write(
+        temp.path().join("src/a/child.rs"),
+        "pub struct CommentThing;\npub struct ForeignThing;\npub struct SpaceThing;\n",
+    )
+    .expect("write facade subjects");
+    fs::write(
+        temp.path().join("src/consumer.rs"),
+        r#"const _: &str = stringify!(crate
+    :: a :: SpaceThing);
+const _: &str = stringify!(crate::a /* separator comment */ :: CommentThing);
+const _: &str = stringify!(some_crate :: a :: ForeignThing);
+"#,
+    )
+    .expect("write literal consumers");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    for used_item in ["struct CommentThing", "struct SpaceThing"] {
+        assert!(
+            !report.findings.iter().any(|finding| {
+                finding.code == DiagnosticCode::SuspiciousPub
+                    && finding.path == "src/a/child.rs"
+                    && finding.item.as_deref() == Some(used_item)
+            }),
+            "separator trivia must preserve {used_item}: {report:#?}"
+        );
+    }
+    assert!(
+        report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::SuspiciousPub
+                && finding.path == "src/a/child.rs"
+                && finding.item.as_deref() == Some("struct ForeignThing")
+        }),
+        "a foreign crate path must not preserve ForeignThing: {report:#?}"
+    );
+}
+
+#[test]
+fn literal_crate_paths_ignore_comment_markers_inside_literals() {
+    let temp = tempdir().expect("create literal marker fixture dir");
+    fs::create_dir_all(temp.path().join("src/a")).expect("create fixture modules");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "literal_marker_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod a;\nmod consumer;\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/a.rs"),
+        "mod child;\npub use child::{BlockThing, CharThing, RawThing, UrlThing};\n",
+    )
+    .expect("write facade module");
+    fs::write(
+        temp.path().join("src/a/child.rs"),
+        "pub struct BlockThing;\npub struct CharThing;\npub struct RawThing;\npub struct UrlThing;\n",
+    )
+    .expect("write facade subjects");
+    fs::write(
+        temp.path().join("src/consumer.rs"),
+        r##"const _: (&str, &str) = ("https://example.com", stringify!(crate::a::UrlThing));
+const _: (&str, &str) = (r#"\"//raw.example"#, stringify!(crate::a::RawThing));
+const _: (char, &str, &str) = ('"', "https://char.example", stringify!(crate::a::CharThing));
+const _: (&str, &str) = ("*/", stringify!(crate::a /* separator */ :: BlockThing));
+"##,
+    )
+    .expect("write literal marker consumers");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    for used_item in [
+        "struct BlockThing",
+        "struct CharThing",
+        "struct RawThing",
+        "struct UrlThing",
+    ] {
+        assert!(
+            !report.findings.iter().any(|finding| {
+                finding.code == DiagnosticCode::SuspiciousPub
+                    && finding.path == "src/a/child.rs"
+                    && finding.item.as_deref() == Some(used_item)
+            }),
+            "literal comment markers must preserve {used_item}: {report:#?}"
+        );
+    }
+}
+
+#[test]
+fn unicode_literal_paths_respect_identifier_boundaries() {
+    let temp = tempdir().expect("create Unicode literal fixture dir");
+    fs::create_dir_all(temp.path().join("src/café")).expect("create fixture modules");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "unicode_literal_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "#[path = \"café.rs\"]\nmod café;\nmod consumer;\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/café.rs"),
+        "#[path = \"café/child.rs\"]\nmod child;\npub use child::{Café, Thing};\n",
+    )
+    .expect("write Unicode facade module");
+    fs::write(
+        temp.path().join("src/café/child.rs"),
+        "pub struct Café;\npub struct Thing;\n",
+    )
+    .expect("write Unicode facade subjects");
+    fs::write(
+        temp.path().join("src/consumer.rs"),
+        "macro_rules! swallow { ($($tokens:tt)*) => {}; }\n\
+         swallow!(crate::café::Thing);\n\
+         swallow!(crate::café::Caféø);\n",
+    )
+    .expect("write Unicode literal consumers");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        !report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::SuspiciousPub
+                && finding.path == "src/café/child.rs"
+                && finding.item.as_deref() == Some("struct Thing")
+        }),
+        "the Unicode module path must preserve Thing: {report:#?}"
+    );
+    assert!(
+        report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::SuspiciousPub
+                && finding.path == "src/café/child.rs"
+                && finding.item.as_deref() == Some("struct Café")
+        }),
+        "Café inside the longer Caféø identifier must not count as usage: {report:#?}"
+    );
+}
+
+#[test]
+fn dollar_crate_macro_literal_counts_as_facade_usage() {
+    let temp = tempdir().expect("create dollar crate literal fixture dir");
+    fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "dollar_crate_literal_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
+        .expect("write fixture main");
+    fs::write(temp.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
+    fs::write(
+        temp.path().join("src/a/b.rs"),
+        "mod child;\nmod macro_only;\npub(super) use child::Thing;\n",
+    )
+    .expect("write facade module");
+    fs::write(temp.path().join("src/a/b/child.rs"), "pub struct Thing;\n")
+        .expect("write facade subject");
+    fs::write(
+        temp.path().join("src/a/b/macro_only.rs"),
+        "macro_rules! mention { () => { stringify!($crate::a::b::Thing) }; }\n\
+         const _: &str = mention!();\n",
+    )
+    .expect("write dollar crate macro literal");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        !report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::SuspiciousPub
+                && finding.path == "src/a/b/child.rs"
+                && finding.item.as_deref() == Some("struct Thing")
+        }),
+        "a dollar-crate macro literal must count as current-crate facade usage: {report:#?}"
+    );
+}
+
+#[test]
+fn raw_identifier_macro_literal_counts_as_facade_usage() {
+    let temp = tempdir().expect("create raw identifier literal fixture dir");
+    fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "raw_identifier_literal_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
+        .expect("write fixture main");
+    fs::write(temp.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
+    fs::write(
+        temp.path().join("src/a/b.rs"),
+        "mod child;\nmod macro_only;\npub(super) use child::r#type;\n",
+    )
+    .expect("write raw identifier facade");
+    fs::write(temp.path().join("src/a/b/child.rs"), "pub fn r#type() {}\n")
+        .expect("write raw identifier facade subject");
+    fs::write(
+        temp.path().join("src/a/b/macro_only.rs"),
+        "macro_rules! mention { () => { stringify!(crate::a::b::r#type) }; }\n\
+         const _: &str = mention!();\n",
+    )
+    .expect("write raw identifier macro literal");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        !report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::SuspiciousPub
+                && finding.path == "src/a/b/child.rs"
+                && finding.item.as_deref() == Some("fn r#type")
+        }),
+        "the raw identifier macro literal must keep its used facade: {report:#?}"
+    );
+}
+
+#[test]
+fn inline_descendant_macro_literal_counts_as_inside_facade_usage() {
+    let temp = tempdir().expect("create inline descendant literal dir");
+    fs::create_dir_all(temp.path().join("src")).expect("create inline fixture source dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "inline_descendant_literal_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write inline fixture manifest");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        r#"mod a {
+    mod child {
+        pub struct Thing;
+    }
+
+    mod descendant {
+        const _: &str = stringify!(crate::a::Thing);
+    }
+
+    pub use child::Thing;
+}
+
+fn main() {}
+"#,
+    )
+    .expect("write inline facade fixture");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let finding = report
+        .findings
+        .iter()
+        .find(|finding| {
+            finding.code == DiagnosticCode::SuspiciousPub && finding.path == "src/main.rs"
+        })
+        .unwrap_or_else(|| panic!("missing inline inside-subtree facade finding: {report:#?}"));
+    assert!(
+        finding.help.iter().any(|help| {
+            help.contains("only used through crate-relative paths inside its own subtree")
+        }),
+        "the inline descendant literal must remain inside the facade subtree: {report:#?}"
+    );
+}
+
+#[test]
+fn same_package_binary_literal_does_not_count_as_library_facade_usage() {
+    let temp = tempdir().expect("create package workspace dir");
+    fs::create_dir_all(temp.path().join("app/src/bin")).expect("create binary source dir");
+    fs::create_dir_all(temp.path().join("app/src/tool")).expect("create library module dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[workspace]
+members = ["app"]
+resolver = "3"
+"#,
+    )
+    .expect("write workspace manifest");
+    fs::write(
+        temp.path().join("app/Cargo.toml"),
+        r#"[package]
+name = "same_package_crates_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write package manifest");
+    fs::write(temp.path().join("app/src/lib.rs"), "mod tool;\n").expect("write library root");
+    fs::write(
+        temp.path().join("app/src/tool.rs"),
+        "mod item;\npub use item::Thing;\n",
+    )
+    .expect("write library facade");
+    fs::write(
+        temp.path().join("app/src/tool/item.rs"),
+        "pub struct Thing;\n",
+    )
+    .expect("write library facade subject");
+    fs::write(
+        temp.path().join("app/src/bin/probe.rs"),
+        "const _: &str = stringify!(crate::tool::Thing);\nfn main() {}\n",
+    )
+    .expect("write binary literal");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::SuspiciousPub && finding.path == "app/src/tool/item.rs"
+        }),
+        "a binary target's crate path must not count as library facade usage: {:#?}",
+        report.findings
+    );
 }

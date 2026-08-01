@@ -2,6 +2,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::config::DiagnosticCode;
+use crate::reporting::AllFeaturesCoverage;
 use crate::reporting::CompilerWarningFacts;
 use crate::reporting::FixSupport;
 use crate::reporting::Severity;
@@ -23,6 +24,8 @@ pub struct StoredReport {
     pub findings:               Vec<StoredFinding>,
     #[serde(default)]
     pub pub_use_fix_facts:      Vec<StoredPubUseFixFact>,
+    #[serde(default)]
+    pub all_features_coverage:  AllFeaturesCoverage,
     #[serde(default, rename = "compiler_warnings")]
     pub compiler_warning_facts: CompilerWarningFacts,
     #[serde(default)]

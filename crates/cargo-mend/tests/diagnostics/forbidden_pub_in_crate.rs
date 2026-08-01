@@ -43,6 +43,45 @@ edition = "2024"
     assert_rejected_annotations(&report);
 }
 
+#[test]
+fn glob_blocker_precedes_repair_for_restricted_visibility_annotations() {
+    let temp = tempdir().expect("create temp fixture dir");
+    write_sources(
+        &temp,
+        &[
+            (
+                "Cargo.toml",
+                r#"[package]
+name = "glob_blocker_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+            ),
+            ("src/lib.rs", "mod a;\n"),
+            ("src/a.rs", "mod b;\n"),
+            ("src/a/b.rs", "mod c;\npub(super) use c::*;\n"),
+            (
+                "src/a/b/c.rs",
+                "pub(in super) fn parent_only() {}\npub(in crate::a) fn a_only() {}\n",
+            ),
+        ],
+    );
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert_headline_and_help(
+        &report,
+        "src/a/b/c.rs",
+        "use of `pub(in super)` is forbidden by policy",
+        "facade at a/b.rs:2 uses `*`; replace it with an explicit re-export — consider using: `pub(super)`",
+    );
+    assert_headline_and_help(
+        &report,
+        "src/a/b/c.rs",
+        "use of `pub(in crate::a)` is forbidden by policy",
+        "facade at a/b.rs:2 uses `*`; replace it with an explicit re-export",
+    );
+}
+
 fn assert_rejected_annotations(report: &Report) {
     assert_codes(report, "src/lib.rs", &[DiagnosticCode::ForbiddenPubCrate]);
     assert_codes(

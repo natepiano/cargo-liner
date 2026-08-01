@@ -17,9 +17,12 @@ use serde_json::to_string;
 
 use super::stderr;
 use crate::compiler::constants::CARGO_BIN;
+use crate::compiler::constants::CARGO_FLAG_ALL_FEATURES;
 use crate::compiler::constants::CARGO_FLAG_ALL_TARGETS;
 use crate::compiler::constants::CARGO_FLAG_ALLOW_DIRTY;
 use crate::compiler::constants::CARGO_FLAG_ALLOW_STAGED;
+use crate::compiler::constants::CARGO_FLAG_FEATURES;
+use crate::compiler::constants::CARGO_FLAG_NO_DEFAULT_FEATURES;
 use crate::compiler::constants::CARGO_FLAG_TESTS;
 use crate::compiler::constants::CARGO_SUBCOMMAND_CHECK;
 use crate::compiler::constants::CARGO_SUBCOMMAND_FIX;
@@ -36,6 +39,7 @@ use crate::compiler::constants::SCOPE_FINGERPRINT_ENV;
 use crate::compiler::persistence;
 use crate::config::LoadedConfig;
 use crate::constants::FINGERPRINT_HEX_WIDTH;
+use crate::reporting::AllFeaturesCoverage;
 use crate::reporting::AnalysisFailure;
 use crate::reporting::CARGO_TERM_COLOR_ALWAYS;
 use crate::reporting::CARGO_TERM_COLOR_ENV;
@@ -62,6 +66,12 @@ struct CommandOutcome {
     duration:               Duration,
     compiler_warnings:      usize,
     compiler_fixable:       usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CargoFixFeatures {
+    All,
+    Plan,
 }
 
 pub(crate) struct SelectionResult {
@@ -200,8 +210,46 @@ fn scope_fingerprint_for(cargo_plan: &CargoCheckPlan) -> String {
 pub(crate) fn run_cargo_fix(
     cargo_plan: &CargoCheckPlan,
     color_mode: ColorMode,
+    all_features_coverage: AllFeaturesCoverage,
 ) -> Result<Duration> {
     let start = Instant::now();
+    let cargo_fix_features = cargo_fix_features_for(&cargo_plan.cargo_args, all_features_coverage);
+    let status = run_cargo_fix_command(cargo_plan, color_mode, cargo_fix_features)?;
+    if status.success() {
+        return Ok(start.elapsed());
+    }
+
+    if cargo_fix_features == CargoFixFeatures::All {
+        eprintln!(
+            "cargo fix with --all-features exited with {status}; retrying without --all-features"
+        );
+        let retry_status = run_cargo_fix_command(cargo_plan, color_mode, CargoFixFeatures::Plan)?;
+        if retry_status.success() {
+            return Ok(start.elapsed());
+        }
+    }
+
+    bail!("cargo fix failed");
+}
+
+fn cargo_fix_features_for(
+    cargo_args: &[OsString],
+    all_features_coverage: AllFeaturesCoverage,
+) -> CargoFixFeatures {
+    match (
+        has_explicit_feature_selection(cargo_args),
+        all_features_coverage,
+    ) {
+        (false, AllFeaturesCoverage::Superset) => CargoFixFeatures::All,
+        (true, _) | (false, AllFeaturesCoverage::NotGuaranteed) => CargoFixFeatures::Plan,
+    }
+}
+
+fn run_cargo_fix_command(
+    cargo_plan: &CargoCheckPlan,
+    color_mode: ColorMode,
+    cargo_fix_features: CargoFixFeatures,
+) -> Result<ExitStatus> {
     let mut command = Command::new(CARGO_BIN);
     command
         .arg(CARGO_SUBCOMMAND_FIX)
@@ -216,6 +264,20 @@ pub(crate) fn run_cargo_fix(
     // (E0425 cascade — the original bug). Running with `--tests` only
     // compiles each target in test mode, where every cfg(test)-protected
     // call site is live, so genuinely-needed imports are never removed.
+    // The same loss happens when an import is reached only from a
+    // feature-gated module: default-feature compilation reports it unused
+    // and cargo fix removes it. Add `--all-features` unless the plan already
+    // selects features with `--features`, `--all-features`, or
+    // `--no-default-features`; an explicit user selection must remain intact.
+    // `SourceCache` also withholds `--all-features` when a `cfg` or `cfg_attr`
+    // predicate negates a feature. Enabling that feature can disable its
+    // module, so the plan's feature configuration preserves more source.
+    // Platform gates such as `#[cfg(windows)] mod win;` remain invisible on
+    // macOS because no feature flag can make them active.
+    // Dependency feature unification is another residual limit. `--all-features`
+    // can enable a dependency feature whose `not(feature = "...")` gate removes
+    // an item imported by this crate. `SourceCache` scans only this crate's
+    // sources, so it cannot see that dependency gate.
     // Trade-off: imports that are unused in BOTH lib and test mode (rare)
     // won't be pruned by `--fix-compiler`; users can clean those manually.
     for arg in &cargo_plan.cargo_args {
@@ -225,23 +287,32 @@ pub(crate) fn run_cargo_fix(
             command.arg(arg);
         }
     }
+    if cargo_fix_features == CargoFixFeatures::All {
+        command.arg(CARGO_FLAG_ALL_FEATURES);
+    }
 
     if color_mode.is_enabled() {
         command.env(CARGO_TERM_COLOR_ENV, CARGO_TERM_COLOR_ALWAYS);
     }
 
-    let status = command
+    command
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .status()
-        .context("failed to run cargo fix")?;
+        .context("failed to run cargo fix")
+}
 
-    if !status.success() {
-        bail!("cargo fix failed");
-    }
-
-    Ok(start.elapsed())
+fn has_explicit_feature_selection(cargo_args: &[OsString]) -> bool {
+    cargo_args.iter().any(|arg| {
+        arg == CARGO_FLAG_ALL_FEATURES
+            || arg == CARGO_FLAG_FEATURES
+            || arg == CARGO_FLAG_NO_DEFAULT_FEATURES
+            || arg
+                .to_str()
+                .and_then(|arg| arg.strip_prefix(CARGO_FLAG_FEATURES))
+                .is_some_and(|suffix| suffix.starts_with('='))
+    })
 }
 
 fn run_cargo_command(
@@ -276,4 +347,41 @@ fn run_cargo_command(
         compiler_warnings: stderr_outcome.warning_count,
         compiler_fixable: stderr_outcome.fixable_count,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+
+    use super::has_explicit_feature_selection;
+    use crate::compiler::constants::CARGO_FLAG_ALL_FEATURES;
+    use crate::compiler::constants::CARGO_FLAG_FEATURES;
+    use crate::compiler::constants::CARGO_FLAG_MANIFEST_PATH;
+    use crate::compiler::constants::CARGO_FLAG_NO_DEFAULT_FEATURES;
+
+    #[test]
+    fn detects_explicit_cargo_feature_selections() {
+        let selections = [
+            vec![
+                OsString::from(CARGO_FLAG_FEATURES),
+                OsString::from("hidden"),
+            ],
+            vec![OsString::from(format!("{CARGO_FLAG_FEATURES}=hidden"))],
+            vec![OsString::from(CARGO_FLAG_ALL_FEATURES)],
+            vec![OsString::from(CARGO_FLAG_NO_DEFAULT_FEATURES)],
+        ];
+        for cargo_args in selections {
+            assert!(has_explicit_feature_selection(&cargo_args));
+        }
+    }
+
+    #[test]
+    fn ignores_cargo_arguments_without_feature_selection() {
+        let cargo_args = vec![
+            OsString::from(CARGO_FLAG_MANIFEST_PATH),
+            OsString::from("Cargo.toml"),
+        ];
+
+        assert!(!has_explicit_feature_selection(&cargo_args));
+    }
 }

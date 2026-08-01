@@ -373,6 +373,366 @@ mod tests {
 }
 
 #[test]
+fn synthesized_import_inherits_use_site_cfg() {
+    let temp = tempdir().expect("create cfg-gated inline path fixture dir");
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "cfg_gated_inline_path_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create fixture source directory");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "#![deny(warnings)]\nmod watcher;\nfn main() { watcher::go(); }\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/watcher.rs"),
+        r#"use std::sync::mpsc;
+
+pub fn go() { let (_tx, _rx) = mpsc::sync_channel::<()>(1); }
+
+#[cfg(test)]
+pub(super) struct TestWatcher {
+    pub(super) watcher_sender: mpsc::SyncSender<()>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TestWatcher;
+    use std::sync::mpsc;
+
+    #[test]
+    fn constructs_test_watcher() {
+        let (watcher_sender, _watcher_receiver) = mpsc::sync_channel(1);
+        let watcher = TestWatcher { watcher_sender };
+        let _sender = watcher.watcher_sender;
+    }
+}
+"#,
+    )
+    .expect("write watcher module");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let watcher =
+        fs::read_to_string(temp.path().join("src/watcher.rs")).expect("read fixed watcher");
+    assert!(
+        watcher.contains("#[cfg(test)]\nuse std::sync::mpsc::SyncSender;"),
+        "expected the synthesized import to inherit cfg(test), got:\n{watcher}"
+    );
+    assert!(
+        watcher.contains("watcher_sender: SyncSender<()>"),
+        "expected the field type to use the synthesized import, got:\n{watcher}"
+    );
+
+    for cargo_arguments in [&[][..], &["--tests"][..]] {
+        let check = cargo_command()
+            .arg("check")
+            .args(cargo_arguments)
+            .arg("--manifest-path")
+            .arg(temp.path().join("Cargo.toml"))
+            .output()
+            .expect("check fixed cfg-gated fixture");
+        assert!(
+            check.status.success(),
+            "fixed fixture failed for cargo arguments {cargo_arguments:?}: {}\n{}",
+            String::from_utf8_lossy(&check.stdout),
+            String::from_utf8_lossy(&check.stderr)
+        );
+    }
+}
+
+#[test]
+fn synthesized_import_keeps_only_mixed_cfg_attr_gate() {
+    let temp = tempdir().expect("create mixed cfg_attr fixture dir");
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "mixed_cfg_attr_fixture"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+x = []
+y = []
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create fixture source directory");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        r#"mod types {
+    #[derive(Clone)]
+    pub struct Thing;
+}
+
+#[cfg_attr(feature = "x", cfg(feature = "y"), derive(Clone))]
+struct Holder(crate::types::Thing);
+
+fn main() {}
+"#,
+    )
+    .expect("write fixture main");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let main_source =
+        fs::read_to_string(temp.path().join("src/main.rs")).expect("read fixed fixture");
+    assert!(
+        main_source.contains(
+            "#[cfg_attr(feature = \"x\", cfg(feature = \"y\"))]\nuse crate::types::Thing;"
+        ),
+        "expected the synthesized import to inherit only the cfg gate:\n{main_source}"
+    );
+    assert!(
+        !main_source.contains(
+            "#[cfg_attr(feature = \"x\", cfg(feature = \"y\"), derive(Clone))]\nuse crate::types::Thing;"
+        ),
+        "derive must not be copied onto the synthesized import:\n{main_source}"
+    );
+
+    for cargo_arguments in [
+        &[][..],
+        &["--features", "x"][..],
+        &["--features", "y"][..],
+        &["--all-features"][..],
+    ] {
+        let check = cargo_command()
+            .arg("check")
+            .args(cargo_arguments)
+            .arg("--manifest-path")
+            .arg(temp.path().join("Cargo.toml"))
+            .output()
+            .expect("check fixed mixed cfg_attr fixture");
+        assert!(
+            check.status.success(),
+            "fixed fixture failed for cargo arguments {cargo_arguments:?}: {}\n{}",
+            String::from_utf8_lossy(&check.stdout),
+            String::from_utf8_lossy(&check.stderr)
+        );
+    }
+}
+
+#[test]
+fn synthesized_import_inherits_nested_cfg_attr_gate() {
+    let temp = tempdir().expect("create nested cfg_attr fixture dir");
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "nested_cfg_attr_fixture"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+a = []
+b = []
+c = []
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create fixture source directory");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        r#"mod types {
+    pub struct Thing;
+}
+
+#[cfg_attr(feature = "a", cfg_attr(feature = "b", cfg(feature = "c")))]
+struct Holder(crate::types::Thing);
+
+fn main() {}
+"#,
+    )
+    .expect("write fixture main");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let main_source =
+        fs::read_to_string(temp.path().join("src/main.rs")).expect("read fixed fixture");
+    assert!(
+        main_source.contains(
+            "#[cfg_attr(feature = \"a\", cfg_attr(feature = \"b\", cfg(feature = \"c\")))]\nuse crate::types::Thing;"
+        ),
+        "expected the synthesized import to inherit the nested cfg gate:\n{main_source}"
+    );
+}
+
+#[test]
+fn synthesized_import_ignores_non_gating_cfg_attr() {
+    let temp = tempdir().expect("create non-gating cfg_attr fixture dir");
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "non_gating_cfg_attr_fixture"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+decorate = []
+outer = []
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create fixture source directory");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        r#"mod types {
+    #[derive(Clone)]
+    pub struct Thing;
+}
+
+#[cfg_attr(feature = "outer", cfg_attr(feature = "decorate", derive(Clone)))]
+struct Holder(crate::types::Thing);
+
+fn main() {}
+"#,
+    )
+    .expect("write fixture main");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let main_source =
+        fs::read_to_string(temp.path().join("src/main.rs")).expect("read fixed fixture");
+    assert!(
+        main_source.contains("use crate::types::Thing;"),
+        "expected a synthesized Thing import:\n{main_source}"
+    );
+    assert!(
+        !main_source.contains(
+            "#[cfg_attr(feature = \"outer\", cfg_attr(feature = \"decorate\", derive(Clone)))]\nuse crate::types::Thing;"
+        ),
+        "a nested derive cfg_attr must not be copied onto an import:\n{main_source}"
+    );
+
+    let check = cargo_command()
+        .arg("check")
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--all-features")
+        .output()
+        .expect("check fixed fixture with all features");
+    assert!(
+        check.status.success(),
+        "fixed fixture failed with all features: {}\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
+    );
+}
+
+#[test]
+fn synthesized_import_declines_different_cfg_gates() {
+    let temp = tempdir().expect("create different cfg gate fixture dir");
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "different_cfg_gate_inline_path_fixture"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+first = []
+second = []
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create fixture source directory");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        r#"use std::sync::mpsc;
+
+fn keep_import_used() { let (_sender, _receiver) = mpsc::sync_channel::<()>(1); }
+
+#[cfg(feature = "first")]
+struct FirstWatcher {
+    sender: mpsc::SyncSender<()>,
+}
+
+#[cfg(feature = "second")]
+struct SecondWatcher {
+    sender: mpsc::SyncSender<()>,
+}
+
+fn main() { keep_import_used(); }
+"#,
+    )
+    .expect("write fixture main");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let main_source =
+        fs::read_to_string(temp.path().join("src/main.rs")).expect("read fixed fixture");
+    assert!(
+        !main_source.contains("use std::sync::mpsc::SyncSender;"),
+        "different cfg gates must not produce one synthesized import:\n{main_source}"
+    );
+    assert_eq!(
+        main_source.matches("sender: mpsc::SyncSender<()>").count(),
+        2,
+        "different cfg gates must keep both qualified field types:\n{main_source}"
+    );
+}
+
+#[test]
 fn two_types_same_module() {
     let temp = tempdir().expect("create temp fixture dir");
 
@@ -812,8 +1172,7 @@ fn main() {}
     );
 
     let main_rs = fs::read_to_string(temp.path().join("src/main.rs")).expect("read fixed source");
-    let expected = source.replacen("pub trait CaptureError", "pub(crate) trait CaptureError", 1);
-    assert_eq!(main_rs, expected);
+    assert_eq!(main_rs, source);
 }
 
 #[test]

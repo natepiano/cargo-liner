@@ -130,6 +130,7 @@ mod tests {
     use crate::compiler::persistence::StoredReport;
     use crate::compiler::settings;
     use crate::config::DiagnosticCode;
+    use crate::reporting::AllFeaturesCoverage;
     use crate::reporting::CompilerWarningFacts;
     use crate::reporting::FixSupport;
     use crate::reporting::Severity;
@@ -236,6 +237,7 @@ mod tests {
             source_files:           Vec::new(),
             findings:               Vec::new(),
             pub_use_fix_facts:      Vec::new(),
+            all_features_coverage:  AllFeaturesCoverage::default(),
             compiler_warning_facts: CompilerWarningFacts::None,
             use_sites:              Vec::new(),
         }

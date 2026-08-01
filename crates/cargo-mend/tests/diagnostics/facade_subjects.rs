@@ -1,3 +1,4 @@
+use serde_json::Value;
 use tempfile::TempDir;
 
 use crate::support::*;
@@ -265,7 +266,7 @@ fn inherent_items_follow_their_self_type_facade_subject() {
 }
 
 #[test]
-fn non_applicable_named_facade_falls_back_to_glob() {
+fn non_applicable_named_facade_is_blocked_by_matching_glob() {
     let temp = tempdir().expect("create named and glob fallback fixture dir");
     fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
     write_manifest(&temp, "named_glob_fallback_fixture", false);
@@ -284,16 +285,94 @@ fn non_applicable_named_facade_falls_back_to_glob() {
     .expect("write inherent subject");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert_glob_blocker(&report, "src/a/b/c.rs");
+}
+
+#[test]
+fn ancestor_glob_targeting_descendant_module_is_a_blocker() {
+    let temp = tempdir().expect("create descendant glob target fixture dir");
+    fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
+    write_manifest(&temp, "descendant_glob_target_fixture", false);
+    fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
+        .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/a.rs"),
+        "mod b;\npub(crate) use b::c::*;\n",
+    )
+    .expect("write ancestor glob facade");
+    fs::write(
+        temp.path().join("src/a/b.rs"),
+        "pub(super) mod c;\nmod unused;\n",
+    )
+    .expect("write intermediate module");
+    fs::write(
+        temp.path().join("src/a/b/c.rs"),
+        "pub(crate) struct Globbed;\n",
+    )
+    .expect("write glob subject");
+    fs::write(
+        temp.path().join("src/a/b/unused.rs"),
+        "pub(crate) struct Unused;\n",
+    )
+    .expect("write unused control subject");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert_glob_blocker(&report, "src/a/b/c.rs");
     assert!(
-        !report.findings.iter().any(|finding| {
-            finding.code == DiagnosticCode::ForbiddenPubCrate && finding.path == "src/a/b/c.rs"
-        }),
-        "a named facade above the method cap must fall back to the matching glob: {report:#?}"
+        !has_unused_pub(&report, "src/a/b/c.rs"),
+        "the ancestor glob must suppress unused_pub for Globbed: {report:#?}"
+    );
+    let unused_control = report
+        .findings
+        .iter()
+        .find(|finding| {
+            finding.code == DiagnosticCode::ForbiddenPubCrate && finding.path == "src/a/b/unused.rs"
+        })
+        .unwrap_or_else(|| panic!("missing unused control finding: {report:#?}"));
+    assert!(
+        unused_control
+            .help
+            .iter()
+            .any(|help| help.contains("consider using `pub(super)`")),
+        "the unrelated control subject must not inherit the glob blocker: {report:#?}"
     );
 }
 
 #[test]
-fn inherent_glob_uses_the_self_type_module() {
+fn unused_named_facade_with_outer_glob_has_no_pub_use_fix() {
+    let temp = tempdir().expect("create named facade and outer glob fixture dir");
+    fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
+    write_manifest(&temp, "named_facade_outer_glob_fixture", false);
+    fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
+        .expect("write fixture main");
+    fs::write(temp.path().join("src/a.rs"), "mod b;\npub use b::*;\n")
+        .expect("write outer glob facade");
+    fs::write(
+        temp.path().join("src/a/b.rs"),
+        "mod child;\npub use child::Thing;\n",
+    )
+    .expect("write nearest named facade");
+    fs::write(temp.path().join("src/a/b/child.rs"), "pub struct Thing;\n")
+        .expect("write facade subject");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let finding = report
+        .findings
+        .iter()
+        .find(|finding| {
+            finding.code == DiagnosticCode::SuspiciousPub && finding.path == "src/a/b/child.rs"
+        })
+        .unwrap_or_else(|| panic!("missing stale facade finding: {report:#?}"));
+    assert_eq!(
+        finding.fix_support,
+        FixSupport::None,
+        "an unresolvable chain must not advertise a pub-use rewrite: {report:#?}"
+    );
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 0, "{report:#?}");
+}
+
+#[test]
+fn inherent_glob_uses_the_self_type_module_as_a_blocker() {
     let temp = tempdir().expect("create split inherent fixture dir");
     fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture module");
     write_manifest(&temp, "split_inherent_glob_fixture", false);
@@ -317,16 +396,166 @@ fn inherent_glob_uses_the_self_type_module() {
     .expect("write inherent implementation");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert_glob_blocker(&report, "src/a/b/impls.rs");
+    assert!(!has_unused_pub(&report, "src/a/b/impls.rs"), "{report:#?}");
+}
+
+#[test]
+fn glob_usage_is_attributed_to_the_matching_export_name() {
+    let temp = tempdir().expect("create per-name glob fixture dir");
+    fs::create_dir_all(temp.path().join("src/a/b/c")).expect("create fixture modules");
+    write_manifest(&temp, "per_name_glob_usage_fixture", false);
+    fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
+        .expect("write fixture main");
+    fs::write(temp.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
+    fs::write(temp.path().join("src/a/b.rs"), "mod c;\n").expect("write middle module");
+    fs::write(
+        temp.path().join("src/a/b/c.rs"),
+        "mod consumer;\nmod exports;\npub(super) use exports::*;\n",
+    )
+    .expect("write glob facade");
+    fs::write(
+        temp.path().join("src/a/b/c/consumer.rs"),
+        "macro_rules! mention { () => { stringify!(crate::a::b::c::FirstExtra) }; }\n\
+         const _: &str = mention!();\n",
+    )
+    .expect("write glob consumer");
+    fs::write(
+        temp.path().join("src/a/b/c/exports.rs"),
+        "pub struct First;\npub struct FirstExtra;\n",
+    )
+    .expect("write glob subjects");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::SuspiciousPub
+                && finding.path == "src/a/b/c/exports.rs"
+                && finding.item.as_deref() == Some("struct First")
+        }),
+        "the unused glob export must retain its stale-facade finding: {report:#?}"
+    );
     assert!(
         !report.findings.iter().any(|finding| {
-            finding.code == DiagnosticCode::ForbiddenPubCrate && finding.path == "src/a/b/impls.rs"
+            finding.code == DiagnosticCode::SuspiciousPub
+                && finding.path == "src/a/b/c/exports.rs"
+                && finding.item.as_deref() == Some("struct FirstExtra")
         }),
-        "an inherent item must query globs for its self type module: {report:#?}"
+        "the used glob export must not inherit the unused export's finding: {report:#?}"
     );
 }
 
 #[test]
-fn extern_crate_reexport_matches_the_local_declaration_subject() {
+fn raw_identifier_glob_usage_is_attributed_to_the_unraw_export_name() {
+    let temp = tempdir().expect("create raw glob usage fixture dir");
+    fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
+    write_manifest(&temp, "raw_glob_usage_fixture", false);
+    fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
+        .expect("write fixture main");
+    fs::write(temp.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
+    fs::write(
+        temp.path().join("src/a/b.rs"),
+        "mod child;\nmod macro_only;\npub(super) use child::*;\n",
+    )
+    .expect("write glob facade");
+    fs::write(
+        temp.path().join("src/a/b/child.rs"),
+        "pub fn r#type() {}\npub fn other() {}\n",
+    )
+    .expect("write raw and non-raw facade subjects");
+    fs::write(
+        temp.path().join("src/a/b/macro_only.rs"),
+        "macro_rules! mention { () => { stringify!(crate::a::b::r#type) }; }\n\
+         const _: &str = mention!();\n",
+    )
+    .expect("write raw identifier macro literal");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        !report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::SuspiciousPub
+                && finding.path == "src/a/b/child.rs"
+                && finding.item.as_deref() == Some("fn r#type")
+        }),
+        "the used raw glob export must not receive a stale-facade finding: {report:#?}"
+    );
+    assert!(
+        report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::SuspiciousPub
+                && finding.path == "src/a/b/child.rs"
+                && finding.item.as_deref() == Some("fn other")
+        }),
+        "the unused sibling glob export must retain its stale-facade finding: {report:#?}"
+    );
+}
+
+#[test]
+fn raw_identifier_module_segments_match_literal_and_parsed_paths() {
+    let temp = tempdir().expect("create raw module usage fixture dir");
+    fs::create_dir_all(temp.path().join("src/a/type/inner")).expect("create raw module fixtures");
+    write_manifest(&temp, "raw_module_usage_fixture", false);
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod a;\n#[path = \"../shared.rs\"]\nmod macro_only;\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(temp.path().join("src/a.rs"), "mod r#type;\n").expect("write raw module parent");
+    fs::write(
+        temp.path().join("src/a/type.rs"),
+        "mod consumer;\nmod inner;\n",
+    )
+    .expect("write keyword module");
+    fs::write(
+        temp.path().join("src/a/type/consumer.rs"),
+        "fn use_parsed_path() { super::r#inner::parsed_path(); }\n",
+    )
+    .expect("write parsed raw module reference");
+    fs::write(
+        temp.path().join("src/a/type/inner.rs"),
+        "mod child;\npub(super) use child::*;\n",
+    )
+    .expect("write raw module facade");
+    fs::write(
+        temp.path().join("src/a/type/inner/child.rs"),
+        "pub fn macro_path() {}\npub fn parsed_path() {}\npub fn unused() {}\n",
+    )
+    .expect("write raw module facade subjects");
+    fs::write(
+        temp.path().join("shared.rs"),
+        "macro_rules! mention { () => { stringify!(crate::a::r#type::r#inner::macro_path) }; }\n\
+         const _: &str = mention!();\n",
+    )
+    .expect("write raw module macro literal");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        !report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::SuspiciousPub
+                && finding.path == "src/a/type/inner/child.rs"
+                && finding.item.as_deref() == Some("fn macro_path")
+        }),
+        "the macro literal through a raw module must retain its facade: {report:#?}"
+    );
+    assert!(
+        !report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::SuspiciousPub
+                && finding.path == "src/a/type/inner/child.rs"
+                && finding.item.as_deref() == Some("fn parsed_path")
+        }),
+        "the parsed path through a raw module must retain its facade: {report:#?}"
+    );
+    assert!(
+        report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::SuspiciousPub
+                && finding.path == "src/a/type/inner/child.rs"
+                && finding.item.as_deref() == Some("fn unused")
+        }),
+        "the unmentioned sibling must retain its stale-facade finding: {report:#?}"
+    );
+}
+
+#[test]
+fn extern_crate_declaration_reports_a_foreign_chain_blocker() {
     let temp = tempdir().expect("create temp fixture dir");
     fs::create_dir_all(temp.path().join("src/a/b/c")).expect("create fixture modules");
     write_manifest(&temp, "extern_crate_subject_fixture", false);
@@ -346,22 +575,187 @@ fn extern_crate_reexport_matches_the_local_declaration_subject() {
     .expect("write extern crate declaration");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert!(
-        !report.findings.iter().any(|finding| {
+    let finding = report
+        .findings
+        .iter()
+        .find(|finding| {
             finding.code == DiagnosticCode::ForbiddenPubCrate && finding.path == "src/a/b/c/d.rs"
-        }),
-        "the local extern crate facade must not be treated as foreign: {report:#?}"
+        })
+        .unwrap_or_else(|| panic!("missing extern crate blocker: {report:#?}"));
+    assert!(
+        finding
+            .help
+            .iter()
+            .any(|help| help.contains("facade chain leaves the crate at a/b/c/d.rs:1")),
+        "{report:#?}"
     );
     assert!(
-        !report.findings.iter().any(|finding| {
-            finding.path == "src/a/b/c/d.rs"
-                && finding
-                    .help
-                    .iter()
-                    .any(|help| help.contains("consider using: `pub`"))
-        }),
-        "extern crate subject must never produce a synthetic pub suggestion: {report:#?}"
+        finding
+            .help
+            .iter()
+            .all(|help| !help.contains("consider using")),
+        "an unresolvable foreign chain must not recommend a replacement: {report:#?}"
     );
+}
+
+#[test]
+fn cargo_renamed_extern_crate_reports_a_foreign_chain_blocker() {
+    let temp = tempdir().expect("create renamed dependency fixture dir");
+    fs::create_dir_all(temp.path().join("src/a/b/c")).expect("create fixture modules");
+    fs::create_dir_all(temp.path().join("actual-dependency/src"))
+        .expect("create dependency source directory");
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "renamed_extern_crate_fixture"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+alias = { package = "actual-dependency", path = "actual-dependency" }
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::write(
+        temp.path().join("actual-dependency/Cargo.toml"),
+        r#"[package]
+name = "actual-dependency"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write dependency manifest");
+    fs::write(
+        temp.path().join("actual-dependency/src/lib.rs"),
+        "pub struct DependencyMarker;\n",
+    )
+    .expect("write dependency library");
+    fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
+        .expect("write fixture main");
+    fs::write(temp.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
+    fs::write(temp.path().join("src/a/b.rs"), "mod c;\n").expect("write middle module");
+    fs::write(
+        temp.path().join("src/a/b/c.rs"),
+        "mod d;\npub(crate) use d::alias;\n",
+    )
+    .expect("write renamed extern facade");
+    fs::write(
+        temp.path().join("src/a/b/c/d.rs"),
+        "pub(crate) extern crate alias;\n",
+    )
+    .expect("write renamed extern crate declaration");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--json")
+        .output()
+        .expect("run cargo-mend against renamed dependency fixture");
+    assert!(
+        matches!(output.status.code(), Some(0..=2)),
+        "cargo-mend returned unexpected status {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = parse_mend_json_output(&output.stdout);
+    assert_foreign_boundary_finding(&report, "src/a/b/c/d.rs", "a/b/c/d.rs:1");
+    assert_foreign_boundary_finding(&report, "src/a/b/c.rs", "a/b/c.rs:2");
+    assert_no_stored_pub_use_fix_facts(&temp);
+}
+
+#[test]
+fn foreign_dependency_glob_reports_a_foreign_chain_blocker() {
+    let temp = tempdir().expect("create foreign glob fixture dir");
+    fs::create_dir_all(temp.path().join("src/a/b/c")).expect("create fixture modules");
+    fs::create_dir_all(temp.path().join("actual-dependency/src"))
+        .expect("create dependency source directory");
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "foreign_glob_fixture"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+actual-dependency = { path = "actual-dependency" }
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::write(
+        temp.path().join("actual-dependency/Cargo.toml"),
+        r#"[package]
+name = "actual-dependency"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write dependency manifest");
+    fs::write(
+        temp.path().join("actual-dependency/src/lib.rs"),
+        "pub struct DependencyMarker;\n",
+    )
+    .expect("write dependency library");
+    fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
+        .expect("write fixture main");
+    fs::write(temp.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
+    fs::write(temp.path().join("src/a/b.rs"), "mod c;\n").expect("write middle module");
+    fs::write(temp.path().join("src/a/b/c.rs"), "mod d;\n").expect("write inner module");
+    fs::write(
+        temp.path().join("src/a/b/c/d.rs"),
+        "pub(crate) use actual_dependency::*;\n",
+    )
+    .expect("write foreign glob re-export");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert_foreign_boundary_finding(&report, "src/a/b/c/d.rs", "a/b/c/d.rs:1");
+    assert_no_stored_pub_use_fix_facts(&temp);
+}
+
+fn assert_foreign_boundary_finding(report: &Report, path: &str, blocker_location: &str) {
+    let finding = report
+        .findings
+        .iter()
+        .find(|finding| finding.code == DiagnosticCode::ForbiddenPubCrate && finding.path == path)
+        .unwrap_or_else(|| panic!("missing foreign boundary finding at {path}: {report:#?}"));
+    assert!(
+        finding.help.iter().any(|help| {
+            help.contains(&format!(
+                "facade chain leaves the crate at {blocker_location}"
+            ))
+        }),
+        "the finding at {path} must retain its foreign chain blocker: {report:#?}"
+    );
+    assert!(
+        finding
+            .help
+            .iter()
+            .all(|help| !help.contains("consider using")),
+        "an unresolvable foreign chain must not recommend a replacement: {report:#?}"
+    );
+    assert_eq!(finding.fix_support, FixSupport::None, "{report:#?}");
+}
+
+fn assert_no_stored_pub_use_fix_facts(temp: &TempDir) {
+    let findings_dir = temp.path().join("target/mend-findings");
+    let mut stored_report_count = 0;
+    for entry in fs::read_dir(&findings_dir).expect("read stored findings directory") {
+        let path = entry.expect("read stored finding entry").path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+            continue;
+        }
+        stored_report_count += 1;
+        let bytes = fs::read(&path).expect("read stored findings report");
+        let stored_report = serde_json::from_slice::<Value>(&bytes).expect("parse stored report");
+        let fix_facts = stored_report
+            .get("pub_use_fix_facts")
+            .and_then(Value::as_array)
+            .expect("read stored pub-use fix facts");
+        assert!(
+            fix_facts.is_empty(),
+            "a foreign chain blocker must not write a pub-use fix fact: {stored_report:#?}"
+        );
+    }
+    assert!(stored_report_count > 0, "missing stored findings report");
 }
 
 #[test]
@@ -556,10 +950,10 @@ fn logical_top_level_path_module_uses_top_level_diagnostics() {
     fs::create_dir_all(temp.path().join("src/deep")).expect("create path module directory");
     write_manifest(&temp, "logical_top_level_path_fixture", false);
     fs::write(
-        temp.path().join("src/main.rs"),
-        "#[path = \"deep/odd.rs\"]\nmod facade;\nfn main() { facade::used(); }\n",
+        temp.path().join("src/lib.rs"),
+        "#[path = \"deep/odd.rs\"]\nmod facade;\npub fn entry() { facade::used(); }\n",
     )
-    .expect("write fixture main");
+    .expect("write fixture library");
     fs::write(
         temp.path().join("src/deep/odd.rs"),
         "mod child { pub struct Exported; }\npub use child::*;\npub fn used() {}\n",
@@ -581,6 +975,107 @@ fn logical_top_level_path_module_uses_top_level_diagnostics() {
                 && finding.path == "src/deep/odd.rs"
         }),
         "logical top-level wildcard facades must be reviewed regardless of file layout: {report:#?}"
+    );
+}
+
+#[test]
+fn feature_excluded_module_literal_counts_as_facade_usage() {
+    let temp = tempdir().expect("create feature-excluded module fixture dir");
+    fs::create_dir_all(temp.path().join("src/a")).expect("create fixture modules");
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "feature_excluded_facade_usage_fixture"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+hidden = []
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod a;\n#[cfg(feature = \"hidden\")]\nmod hidden;\nfn main() { #[cfg(feature = \"hidden\")] hidden::use_it(); }\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/a.rs"),
+        "mod child;\npub use child::{Thing, UnusedThing};\n",
+    )
+    .expect("write facade module");
+    fs::write(
+        temp.path().join("src/a/child.rs"),
+        "pub struct Thing;\npub struct UnusedThing;\n",
+    )
+    .expect("write facade subjects");
+    fs::write(
+        temp.path().join("src/hidden.rs"),
+        "pub fn use_it() { let _thing: crate::a::Thing = crate::a::Thing; }\n",
+    )
+    .expect("write feature-excluded consumer");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        report.findings.iter().all(|finding| {
+            finding.path != "src/a/child.rs"
+                || finding.item.as_deref() != Some("struct Thing")
+                || finding.code != DiagnosticCode::SuspiciousPub
+        }),
+        "the feature-excluded crate path must retain Thing's facade: {report:#?}"
+    );
+    assert!(
+        report.findings.iter().any(|finding| {
+            finding.path == "src/a/child.rs"
+                && finding.item.as_deref() == Some("struct UnusedThing")
+                && finding.code == DiagnosticCode::SuspiciousPub
+        }),
+        "the unreferenced sibling must retain its stale-facade finding: {report:#?}"
+    );
+}
+
+#[test]
+fn cfg_test_module_literal_counts_as_facade_usage_in_default_run() {
+    let temp = tempdir().expect("create cfg-test module fixture dir");
+    fs::create_dir_all(temp.path().join("src/a")).expect("create fixture modules");
+    write_manifest(&temp, "cfg_test_facade_usage_fixture", false);
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "mod a;\n#[cfg(test)]\nmod tests;\npub fn entry() {}\n",
+    )
+    .expect("write fixture library");
+    fs::write(
+        temp.path().join("src/a.rs"),
+        "mod child;\npub use child::{Thing, UnusedThing};\n",
+    )
+    .expect("write facade module");
+    fs::write(
+        temp.path().join("src/a/child.rs"),
+        "pub struct Thing;\npub struct UnusedThing;\n",
+    )
+    .expect("write facade subjects");
+    fs::write(
+        temp.path().join("src/tests.rs"),
+        "#[test]\nfn uses_facade() { let _thing: crate::a::Thing = crate::a::Thing; }\n",
+    )
+    .expect("write cfg-test consumer");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        report.findings.iter().all(|finding| {
+            finding.path != "src/a/child.rs"
+                || finding.item.as_deref() != Some("struct Thing")
+                || finding.code != DiagnosticCode::SuspiciousPub
+        }),
+        "the cfg-test crate path must retain Thing's facade: {report:#?}"
+    );
+    assert!(
+        report.findings.iter().any(|finding| {
+            finding.path == "src/a/child.rs"
+                && finding.item.as_deref() == Some("struct UnusedThing")
+                && finding.code == DiagnosticCode::SuspiciousPub
+        }),
+        "the unreferenced sibling must retain its stale-facade finding: {report:#?}"
     );
 }
 
@@ -627,7 +1122,7 @@ fn inline_sibling_signature_exposes_deep_inline_subject() {
 }
 
 #[test]
-fn module_glob_reexports_enum_subjects() {
+fn module_glob_reexports_enum_subjects_as_a_blocker() {
     let temp = tempdir().expect("create enum glob fixture dir");
     fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
     write_manifest(&temp, "module_glob_enum_subject_fixture", false);
@@ -646,11 +1141,28 @@ fn module_glob_reexports_enum_subjects() {
     .expect("write enum subject");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert_glob_blocker(&report, "src/a/b/child.rs");
+}
+
+fn assert_glob_blocker(report: &Report, path: &str) {
+    let finding = report
+        .findings
+        .iter()
+        .find(|finding| finding.code == DiagnosticCode::ForbiddenPubCrate && finding.path == path)
+        .unwrap_or_else(|| panic!("missing glob blocker for {path}: {report:#?}"));
     assert!(
-        !report.findings.iter().any(|finding| {
-            finding.code == DiagnosticCode::ForbiddenPubCrate && finding.path == "src/a/b/child.rs"
-        }),
-        "a module glob must reach the contained enum: {report:#?}"
+        finding
+            .help
+            .iter()
+            .any(|help| help.contains("uses `*`; replace it with an explicit re-export")),
+        "{report:#?}"
+    );
+    assert!(
+        finding
+            .help
+            .iter()
+            .all(|help| !help.contains("consider using")),
+        "{report:#?}"
     );
 }
 
@@ -740,7 +1252,66 @@ fn duplicate_facades_collectively_reject_fixes_and_track_later_alias_usage() {
     let mixed_visibility_report = run_mend_json(&mixed_visibility.path().join("Cargo.toml"));
     assert!(
         has_suspicious_pub(&mixed_visibility_report, "src/a/child.rs"),
-        "usage through a pub(crate) alias must not justify the unused pub facade: {mixed_visibility_report:#?}"
+        "usage through a narrower alias must not hide an unused wider facade: {mixed_visibility_report:#?}"
+    );
+}
+
+#[test]
+fn used_inner_super_alias_keeps_its_allowance_below_a_wider_facade() {
+    let temp = tempdir().expect("create mixed-reach facade fixture dir");
+    fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
+    write_manifest(&temp, "used_inner_super_fixture", false);
+    fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
+        .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/a.rs"),
+        "mod b;\npub(crate) use b::child::thing;\n",
+    )
+    .expect("write wider outer facade");
+    fs::write(
+        temp.path().join("src/a/b.rs"),
+        "pub(super) mod child;\nmod user;\npub(super) use child::thing as parent_thing;\n",
+    )
+    .expect("write used inner facade");
+    fs::write(temp.path().join("src/a/b/child.rs"), "pub fn thing() {}\n")
+        .expect("write facade subject");
+    fs::write(
+        temp.path().join("src/a/b/user.rs"),
+        "fn use_parent_alias() { super::parent_thing(); }\n",
+    )
+    .expect("write super alias use");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        !has_suspicious_pub(&report, "src/a/b/child.rs"),
+        "the used inner pub(super) alias must retain its allowance below the unused wider facade: {report:#?}"
+    );
+}
+
+#[test]
+fn used_super_alias_keeps_its_allowance_at_equal_reach() {
+    let temp = tempdir().expect("create equal-reach facade fixture dir");
+    fs::create_dir_all(temp.path().join("src/a")).expect("create fixture module");
+    write_manifest(&temp, "used_super_equal_reach_fixture", false);
+    fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
+        .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/a.rs"),
+        "mod child;\nmod user;\npub(crate) use child::Thing;\npub(super) use child::Thing as ParentThing;\n",
+    )
+    .expect("write equal-reach facades");
+    fs::write(temp.path().join("src/a/child.rs"), "pub struct Thing;\n")
+        .expect("write facade subject");
+    fs::write(
+        temp.path().join("src/a/user.rs"),
+        "fn use_parent_alias(_: super::ParentThing) {}\n",
+    )
+    .expect("write super alias use");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        !has_suspicious_pub(&report, "src/a/child.rs"),
+        "equal resolved reaches must not erase the used pub(super) spelling: {report:#?}"
     );
 }
 
@@ -790,8 +1361,11 @@ fn equal_reach_usage_stays_attached_to_its_own_spelling() {
         let temp = tempdir().expect("create equal-reach facade fixture dir");
         fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
         write_manifest(&temp, package_name, false);
-        fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
-            .expect("write fixture main");
+        fs::write(
+            temp.path().join("src/lib.rs"),
+            "mod a;\npub fn entry() {}\n",
+        )
+        .expect("write fixture library");
         fs::write(temp.path().join("src/a.rs"), facades).expect("write conflicting facades");
         fs::write(
             temp.path().join("src/a/b.rs"),

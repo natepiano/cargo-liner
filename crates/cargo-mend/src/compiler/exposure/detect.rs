@@ -17,6 +17,7 @@ use syn::Item;
 use super::visitor;
 use crate::compiler::facade;
 use crate::compiler::facade::ModuleSourceMap;
+use crate::compiler::facade::ParentFacadeUsage;
 use crate::compiler::settings::DriverSettings;
 use crate::compiler::source_cache::SourceCache;
 
@@ -300,12 +301,17 @@ pub fn parent_boundary_public_signature_exposes_child_used_outside_parent(
         return Ok(true);
     }
 
-    if facade::workspace_source_mentions_parent_export_literal(
+    if facade::workspace_source_parent_export_literal_usage(
         ctx.source_cache,
         ctx.settings,
+        ctx.tcx,
+        ctx.module_sources,
         &parent_boundary.module_path,
         &exposing_names,
-    )? {
+    )?
+    .values()
+    .any(|usage| matches!(usage, ParentFacadeUsage::UsedOutsideSubtree))
+    {
         return Ok(true);
     }
 

@@ -14,6 +14,7 @@ pub(crate) use constants::CLICOLOR_FORCE_ENV;
 pub(crate) use constants::DIAGNOSTICS_HELP_NAME_COLUMN_WIDTH;
 pub(crate) use constants::EXIT_CODE_ERROR;
 pub(crate) use constants::EXIT_CODE_WARNING;
+pub(crate) use diagnostics::AllFeaturesCoverage;
 pub(crate) use diagnostics::BuildOutcome;
 pub(crate) use diagnostics::CompilerWarningFacts;
 pub(crate) use diagnostics::Finding;

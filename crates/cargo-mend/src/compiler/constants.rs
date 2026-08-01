@@ -9,11 +9,14 @@ pub(super) const BUILD_ID_FALLBACK: &str = "nobuild";
 pub(super) const GIT_HASH_FALLBACK: &str = "nogit";
 
 // cargo cli flags
+pub(crate) const CARGO_FLAG_ALL_FEATURES: &str = "--all-features";
 pub(crate) const CARGO_FLAG_ALL_TARGETS: &str = "--all-targets";
 pub(crate) const CARGO_FLAG_ALLOW_DIRTY: &str = "--allow-dirty";
 pub(crate) const CARGO_FLAG_ALLOW_STAGED: &str = "--allow-staged";
 pub(crate) const CARGO_FLAG_EXCLUDE: &str = "--exclude";
+pub(crate) const CARGO_FLAG_FEATURES: &str = "--features";
 pub(crate) const CARGO_FLAG_MANIFEST_PATH: &str = "--manifest-path";
+pub(crate) const CARGO_FLAG_NO_DEFAULT_FEATURES: &str = "--no-default-features";
 pub(crate) const CARGO_FLAG_PACKAGE: &str = "--package";
 pub(crate) const CARGO_FLAG_TESTS: &str = "--tests";
 pub(crate) const CARGO_FLAG_WORKSPACE: &str = "--workspace";

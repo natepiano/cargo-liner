@@ -1,5 +1,9 @@
 use proc_macro2::LineColumn;
+use proc_macro2::Span;
 use syn::Attribute;
+use syn::Meta;
+use syn::Token;
+use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 
 #[derive(Clone, Default, Eq, Ord, PartialEq, PartialOrd)]
@@ -11,13 +15,7 @@ impl ConditionalAttributes {
     pub fn from_attributes(text: &str, line_offsets: &[usize], attributes: &[Attribute]) -> Self {
         let source = attributes
             .iter()
-            .filter(|attribute| is_conditional(attribute))
-            .map(|attribute| {
-                let span = attribute.span();
-                let start = byte_offset(text, line_offsets, span.start());
-                let end = byte_offset(text, line_offsets, span.end());
-                text[start..end].to_string()
-            })
+            .filter_map(|attribute| conditional_attribute_source(text, line_offsets, attribute))
             .collect();
         Self { source }
     }
@@ -44,7 +42,72 @@ impl ConditionalAttributes {
 }
 
 pub fn is_conditional(attribute: &Attribute) -> bool {
-    attribute.path().is_ident("cfg") || attribute.path().is_ident("cfg_attr")
+    attribute.path().is_ident("cfg") || cfg_attr_applies_cfg(attribute)
+}
+
+fn cfg_attr_applies_cfg(attribute: &Attribute) -> bool {
+    cfg_attr_meta_applies_cfg(&attribute.meta)
+}
+
+fn cfg_attr_meta_applies_cfg(meta: &Meta) -> bool {
+    if !meta.path().is_ident("cfg_attr") {
+        return false;
+    }
+    let Meta::List(list) = meta else {
+        return false;
+    };
+    list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+        .is_ok_and(|metas| metas.iter().skip(1).any(meta_applies_cfg))
+}
+
+fn meta_applies_cfg(meta: &Meta) -> bool {
+    meta.path().is_ident("cfg") || cfg_attr_meta_applies_cfg(meta)
+}
+
+fn conditional_attribute_source(
+    text: &str,
+    line_offsets: &[usize],
+    attribute: &Attribute,
+) -> Option<String> {
+    if attribute.path().is_ident("cfg") {
+        return Some(source_for_span(text, line_offsets, attribute.span()).to_string());
+    }
+    gating_meta_source(text, line_offsets, &attribute.meta).map(|meta| format!("#[{meta}]"))
+}
+
+fn gating_meta_source(text: &str, line_offsets: &[usize], meta: &Meta) -> Option<String> {
+    if meta.path().is_ident("cfg") {
+        return Some(source_for_span(text, line_offsets, meta.span()).to_string());
+    }
+    if !meta.path().is_ident("cfg_attr") {
+        return None;
+    }
+    let Meta::List(list) = meta else {
+        return None;
+    };
+    let metas = list
+        .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+        .ok()?;
+    let predicate = metas.first()?;
+    let gating_attributes = metas
+        .iter()
+        .skip(1)
+        .filter_map(|nested| gating_meta_source(text, line_offsets, nested))
+        .collect::<Vec<_>>();
+    if gating_attributes.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "cfg_attr({}, {})",
+        source_for_span(text, line_offsets, predicate.span()),
+        gating_attributes.join(", ")
+    ))
+}
+
+fn source_for_span<'a>(text: &'a str, line_offsets: &[usize], span: Span) -> &'a str {
+    let start = byte_offset(text, line_offsets, span.start());
+    let end = byte_offset(text, line_offsets, span.end());
+    &text[start..end]
 }
 
 fn byte_offset(text: &str, line_offsets: &[usize], position: LineColumn) -> usize {

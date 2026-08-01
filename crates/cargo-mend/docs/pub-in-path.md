@@ -99,6 +99,7 @@
   - **Fixture depth three or deeper for any `ForbiddenPubCrate`-absence assertion.** `resolve_module_location` (`policy.rs:123-139`) returns `ShallowPrivate` for logical depth **one and two alike**, and `allow_pub_crate_by_policy` (`policy.rs:150-163`) then permits `pub(crate)` independently of anything else — documented at `policy.rs:113-122`. A depth-two fixture therefore passes an absence assertion no matter what the code under test does, proving nothing. Phases 7, 9, and 10 all add fixtures of this shape.
   - **Nearest-facade metadata and chain result stay separate.** Overwriting `ParentFacadeExportStatus::visibility` with the chain-widest value mis-pairs `parent_path`/`child_module`/usage and silently drops fixes.
   - **Cross-crate `crate::` literals must not count as usage** — keep crate identity in any use-site key.
+  - **Resolved decision (user, Phase 5): a textual `crate::<module>::<Item>` match inside the crate under analysis counts as usage, including inside a macro body.** The literal scan in `facade/reference.rs` exists precisely because the HIR walk cannot see into unexpanded macro bodies, and a macro can expand into a genuine use. A mention that is *not* a real use — `stringify!(crate::a::Thing)` — therefore counts too; that false "used" is accepted deliberately, because a false "unused" leads to deleting code a macro depends on. This governs only same-crate matches: the cross-crate rule above is unchanged, and `same_package_binary_literal_does_not_count_as_library_facade_usage` (`tests/diagnostics/rendering.rs`) stays correct because a binary target is a different crate from the library. Do not "fix" the macro-body case by making the scan ignore macro bodies or by requiring a syntactic use.
   - **Config precedence: project `mend.toml` > global > compiled-in default.** The project value deserializes as `Option<_>` so absence stays distinguishable. Fingerprint and serialize only the *resolved* config. One `LoadedConfig` serves the entire Cargo selection — per-member visibility policies cannot coexist in one run.
   - **Clippy is deny-by-default** at `all`/`cargo`/`nursery`/`pedantic`, plus `unwrap_used`, `expect_used`, `panic`, `unreachable`, `allow_attributes_without_reason`. `self_named_module_files = "deny"` — a module with submodules uses `module/mod.rs`, never `module.rs` beside `module/`. `redundant_pub_crate` is allowed on purpose.
   - **cargo-mend must pass on itself:** `RUSTC_BOOTSTRAP=1 cargo +stable run -- --workspace --all-targets --fail-on-warn` reports "No findings". New code is subject to the policy it implements.
@@ -377,7 +378,7 @@ Three shipped-API facts the Spec does not name:
 - **Phases 9 and 10** acceptance gates gained the `rendering.rs` all-16-findings rule.
 - **Phase 10** — the ~51-site estimate is now flagged as a lower bound to re-derive at dispatch; Phase 3's four CLI field conversions added to it.
 - **Phase 11** — corrected the `tests/support/diagnostics.rs` range: the `FixSupport` mirror is `:60-85`, and `:115-140` is the `HeadlineSource` block Phase 3 added.
-- **Deferred to Phase 5** (`**Pending decision:**`) — what an unresolvable-chain finding shows the user. The blocker string would replace the written-form repair advice rather than accompany it, since `suggestion` is the only surviving channel and Phase 3 already occupies it. Recommendation recorded: combine both into one `suggestion`, blocker first.
+- **Deferred to Phase 5, then resolved by the user pre-dispatch** — what an unresolvable-chain finding shows the user. The blocker string would have replaced the written-form repair advice rather than accompanying it, since `suggestion` is the only surviving channel and Phase 3 already occupies it. **Resolved: combine both into one `suggestion`, blocker first**; the composition rule and its wording constraints are in Phase 5's Spec.
 - **Deferred to Phase 7** (`**Pending decision:**`) — whether to split the phase. Phase 3 absorbed its dispatch skeleton, leaving five separable jobs under one number. Recommendation recorded: split into 7a (acceptance) and 7b (matrix), with the renumbering cost to Phases 8-11 stated as the counterweight.
 
 ---
@@ -496,7 +497,7 @@ Every remaining phase was re-read against what Phase 4 actually shipped. The fin
 
 **Phase 5** — shrinks to "keep climbing and join". `ReexportOccurrence.visibility` already *is* the per-hop reach table and `ReexportIndex::parent_facade_occurrences` already walks ancestors; the residual work is to stop returning on the first hit, accumulate, and rewire consumers. The type sketch now maps each role onto a type Phase 4 shipped instead of introducing a parallel shape. **`FacadeVisibility::widest` must not be the chain join** — it is an ordinal that drops `Unrecognized`, so at a boundary holding both `pub(super) use X;` and `pub(in crate::a) use X;` it selects the narrower one; replace it with `VisibilityReach::{compare, join}`. The per-item usage-scan count is worse than estimated and the caching site is `policy.rs:371`, not the two files previously named. The cross-module-visibility paragraph moved to Phase 9, which is the first genuine consumer outside `visibility/`. The unresolvable-chain rendering decision is **not** moot and stays open.
 
-**Phase 7** — the `forbidden_pub_crate_suggestion` instruction was stale in three ways, one load-bearing: the function has three parameters now and **two** `Super` arms, and the spelling-gated split between them must survive the conversion to `String`. The "Restricted `use` blocks resolution" matrix row quotes a modifier and is now conditional on Phase 5's pending decision; if it survives it must be gated on `use_syntax()`. The `VisibilityFindingContext` work is one parameter on one function, not a plumbing chain. The headline-guard test must extend to all three `FindingMessage` specs, not two. The split-the-phase decision gained evidence: Phase 4 was a comparable single-mechanism phase that took eleven fix passes, with the last three spent entirely on rendered wording — 7b's content.
+**Phase 7** — the `forbidden_pub_crate_suggestion` instruction was stale in three ways, one load-bearing: the function has three parameters now and **two** `Super` arms, and the spelling-gated split between them must survive the conversion to `String`. The "Restricted `use` blocks resolution" matrix row quoted a modifier the tool may not have read; it was deleted when Phase 5's pending decision resolved (the blocker it described no longer exists). The `VisibilityFindingContext` work is one parameter on one function, not a plumbing chain. The headline-guard test must extend to all three `FindingMessage` specs, not two. The split-the-phase decision gained evidence: Phase 4 was a comparable single-mechanism phase that took eleven fix passes, with the last three spent entirely on rendered wording — 7b's content.
 
 **Phase 9** — its central premise is now false and it shrinks. The exposing item's `DefId` is no longer discarded; Phase 4 threaded `LocalDefId` through the whole exposure recursion. What remains source- and name-based is only *which* items count as exposing (`public_item_name` matches bare `pub` only). The wording fix this phase scheduled is already shipped, and the one surviving "would not compile" string is factually correct and deliberately spelling-gated — the instruction was deleted and replaced with an explicit do-not-touch note, since following it would have removed a true statement.
 
@@ -511,7 +512,7 @@ Every remaining phase was re-read against what Phase 4 actually shipped. The fin
 
 ---
 
-### Phase 5 — Semantic chain resolution · status: todo
+### Phase 5 — Semantic chain resolution · status: done
 
 #### Work Order
 
@@ -574,7 +575,7 @@ enum FacadeChainResolution {
     Unresolvable { blocker: FacadeChainBlocker },   // path, line, reason
 }
 
-enum FacadeChainBlocker { Glob, ForeignBoundary }   // UnsupportedVisibility — see Pending decision
+enum FacadeChainBlocker { Glob, ForeignBoundary }
 ```
 
 `nearest` is a collection because one boundary can hold several matching `use` declarations with different aliases, visibilities, and usage states — `duplicate_re_exports_take_widest_visibility` (`exports.rs:350`) already covers that. Collapsing them loses metadata each consumer needs, and picking one can miss the widest reach.
@@ -602,7 +603,7 @@ Per consumer:
 
 *Glob-only re-exports* — `pub(super) use camera_panel::*;`. A glob does not force the declaration wider: verified against rustc, that line over a `pub(super) fn bind` compiles clean and the failure surfaces at the call site as E0603 rather than at the facade as E0364. A glob also states intent about a module rather than an item. A glob is a barrier **only when nothing else matches** — a named `pub(super) use c::helper;` stays resolvable even when the same `mod.rs` also contains `pub(super) use c::*;`. `parent_facade_has_glob_export` and `parent_boundary_has_matching_pub_use_glob` no longer exist — Phase 4 moved glob handling inside `ReexportIndex::parent_facade_occurrences` (`use_sites.rs:214-241`), where the item name *is* in scope. Existing `unused_pub` glob suppression rides `parent_facade_exports_item` (`record.rs:143`, defined `:472-475`) and is unchanged.
 
-*Unrecognized facade visibility* — a facade line spelled `pub(in crate::a) use`. **This case's technical basis was removed by Phase 4 — see the Pending decision at the end of this Work Order before implementing anything here.** The whole analysis that used to live in this paragraph (the `else { continue; }` that discarded the visibility, the `unwrap_or(Public)` collapse, and the proposed three-state `Private | Recognized | RestrictedUnrecognized` parse) described `facade/exports.rs` functions that are now all `#[cfg(test)]`: `parent_facade_visibility` (`:239`), `exported_names_from_parent_boundary` (`:266`), `collect_matching_pub_use_exports` (`:300`), `widest_visibility` (`:342`). Production facade parsing is `visibility/use_sites.rs:1021-1099`, and it already resolves `pub(in crate::a) use` to a real `Visibility::Restricted(scope)` on `ReexportOccurrence.visibility`. **A `pub(in crate::a) use` hop is now perfectly joinable** — nothing technical stops the chain from following it.
+*(Resolved — there is no third blocker.)* An earlier draft made a facade line spelled `pub(in crate::a) use` a third blocker, `UnsupportedVisibility`, on the grounds that it could not be parsed. **Phase 4 removed that limitation and the variant is deleted; the chain follows such hops like any other.** Production facade parsing is `visibility/use_sites.rs:905-930`, which resolves `pub(in crate::a) use` to a real `Visibility::Restricted(scope)` on `ReexportOccurrence.visibility` — directly joinable by `VisibilityReach::join` with no new code. The `facade/exports.rs` functions the old analysis named are all `#[cfg(test)]` and read by nothing in production: `parent_facade_visibility` (`:343`), `exported_names_from_parent_boundary` (`:240`), `collect_matching_pub_use_exports` (`:267`), `widest_visibility` (`:301`). Do not reintroduce a policy-grounded refusal here: refusing to compute a boundary the tool can compute correctly produces a worse diagnostic than the one it replaces.
 
 *Foreign boundary* — the chain reaches a subject that is not local to the crate under
 analysis. Ordinary spelling is `pub use <dependency>::Item;`; `extern crate <c> as <alias>`
@@ -638,7 +639,7 @@ Retire `ParentFacadeVisibility` (`exports.rs:31`) and update the `facade/mod.rs`
 
 **Files:**
 - `src/compiler/visibility/use_sites.rs` — **the primary file.** `ReexportIndex::parent_facade_occurrences` (`:171-247`) stops `return`ing on the first matching boundary and instead accumulates across hops; **delete `FacadeVisibility::widest` (`:106-113`) and rebuild `widest_applicable_occurrence` (`:307-333`) on `VisibilityReach::{compare, join}` over `occurrence.visibility`**; `FacadeChainResolution` / `FacadeChainBlocker` land here alongside `ParentFacadeOccurrences` (`:137-141`). The module already calls `super::annotation::VisibilityAnnotation::from_item` (`:1040`), so the reach algebra is in scope with no re-export work
-- `src/compiler/facade/exports.rs` — keep `ParentFacadeReach` (`:59-64`), `ParentFacadeSpelling` (`:51-64`), `use_syntax()` (`:86-96`), and fix-support (`:319`). **Do not add parallel `ParentFacadeOccurrence`/`FacadeSyntax` shapes** — the mapping table in the Spec names the existing type for each role. Whether `ParentFacadeVisibility` (`:44`) can now be retired depends on the Pending decision below
+- `src/compiler/facade/exports.rs` — keep `ParentFacadeReach` (`:59-64`), `ParentFacadeSpelling` (`:51-64`), `use_syntax()` (`:86-96`), and fix-support (`:319`). **Do not add parallel `ParentFacadeOccurrence`/`FacadeSyntax` shapes** — the mapping table in the Spec names the existing type for each role. `ParentFacadeVisibility` (`:44`) is retired, per the Spec
 - `src/compiler/facade/mod.rs` — re-export surface (14 lines today)
 - `src/compiler/facade/reference.rs` — `scan_facade_usage` (`:34`) called once per occurrence; crate identity in `workspace_source_mentions_parent_export_literal` (`:117`)
 - `src/compiler/visibility/policy.rs` — **`parent_facade_export_status` (`:371-422`) is the caching site**: it currently calls `facade::parent_facade_export_status` once per entry in `occurrences.matching`, and each of those scans usage. `assess_parent_facade_usage` (`:290`) reads nearest occurrences, not the chain
@@ -649,39 +650,110 @@ Retire `ParentFacadeVisibility` (`exports.rs:31`) and update the `facade/mod.rs`
 
 **Constraints from prior phases:** Phase 1 supplies `VisibilityReach::{compare, join}` and the free fn `anchored`, all in `src/compiler/visibility/annotation.rs` and all `pub(super)`. **This phase needs no cross-module plumbing to reach them:** Phase 4 put the chain machinery in `visibility/use_sites.rs`, *inside* `visibility/`, already calling `super::annotation::VisibilityAnnotation::from_item` at `:1040`. If the join lands on `ReexportIndex` — which is where the ancestor walk already is — nothing needs re-exporting. (Phase 9 is the first consumer genuinely outside the subtree, since `src/compiler/exposure/` is a sibling; the `pub`-inside-private-module + `pub(super) use` pattern is documented there.) `VisibilityReach` derives only `Clone, Copy` — no `Debug`, no `PartialEq` — so `ParentFacadeOccurrence` cannot carry one and still `#[derive(Debug, Clone, PartialEq, Eq)]` the way its neighbor `ParentFacadeExportStatus` does (`compiler/facade/exports.rs:44`); either hand-write the impls, or keep the reach out of that struct and compute it at the comparison site. `VisibilityReach` deliberately has no `Ord`/`PartialOrd`: `compare` returns `Option<Ordering>` and `None` means two restricted scopes are genuinely incomparable siblings, which is not an error — feed such pairs to `join`, which returns their nearest common ancestor. Phase 4 supplies the two HIR indexes and `ItemInfo::facade_subject: LocalDefId`; facade lookup is by subject, never by item name. Phase 3 established reject-once ordering in `record_visibility_findings`. Phase 2 left the two forbidden diagnostics with **no rendering channel for a blocker location except `suggestion`**: both specs are `DetailMode::None` (`src/reporting/diagnostics.rs:102`, `:111`), so `detail_reasons` returns empty and a `related` string on a forbidden finding is silently dropped, and `finding_message_not_in_headline` (`:387-398`) suppresses the message for any `FindingMessage` spec regardless of whether it differs from the headline. The consumer table's "reject with blocker path/line/reason" therefore puts the path and line in `suggestion`, not in `related`. Phase 4 added two standing invariants this phase must honor — **resolved reach never establishes written syntax** (gate any modifier-quoting string on `ParentFacadeExportStatus::use_syntax()`, render "re-export" on `None`) and **policy forbidding a modifier is not the compiler rejecting it** — both stated in full in the Delegation Context. Phase 4 spent three of its eleven fix passes on violations of the first.
 
-**Pending decision:** does `FacadeChainBlocker::UnsupportedVisibility` survive at all?
+**Resolved decision (user, pre-dispatch):** `FacadeChainBlocker::UnsupportedVisibility` is **deleted**. A `pub(in crate::a) use` hop is joinable from its resolved scope, so the chain follows it; `Glob` and `ForeignBoundary` are the only blockers. Do not reintroduce a policy-grounded refusal for restricted `use` spellings.
 
-Actual problem:
-This phase was written when a `pub(in crate::a) use` facade line could not be parsed, so a chain hitting one had to be abandoned. Phase 4 removed that limitation: production parsing at `visibility/use_sites.rs:1021-1099` resolves such a line to a real `Visibility::Restricted(scope)` on `ReexportOccurrence.visibility` (`:907-909`, `:924`), which `VisibilityReach::join` consumes directly. The blocker now has no technical basis — but the tool's *policy* still forbids `pub(in path)` on a declaration, and one could argue a chain that depends on such a facade should be refused on those grounds rather than followed.
+**Resolved decision (user, pre-dispatch): an unresolvable-chain finding combines blocker and repair into one `suggestion`, blocker first.** `suggestion` is the only channel that survives on these two `DetailMode::None` specs (`src/reporting/diagnostics.rs:96-115`) — `related` is silently dropped — and `record_forbidden_pub_in_crate` (`scan/record.rs:279`, match at `:285-299`) already fills it with written-form repair advice. Do **not** move these specs off `DetailMode::None`; that is Phase 7's reporting work, not Phase 5's.
 
-What exists now:
-- The four `facade/exports.rs` functions the old analysis named — `parent_facade_visibility` (`:239`), `exported_names_from_parent_boundary` (`:266`), `collect_matching_pub_use_exports` (`:300`), `widest_visibility` (`:342`) — are all `#[cfg(test)]`. Nothing in production reads them.
-- A `pub(in crate::a) use` hop is joinable with no new code.
-- The Spec's `FacadeChainBlocker` enum is written as `{ Glob, ForeignBoundary }` pending this decision.
+Compose the two parts at the single point that builds the string:
 
-What should change:
-- Either (a) delete `UnsupportedVisibility` outright and let the chain follow such hops, leaving `Glob` and `ForeignBoundary` as the only blockers; or (b) keep it, re-documented as a **policy** refusal ("this tool does not build advice on top of a facade spelled `pub(in path)`") rather than a parsing limitation.
+```rust
+let suggestion = match (blocker_text, repair_text) {
+    (Some(blocker), Some(repair)) => Some(format!("{blocker} — {repair}")),
+    (Some(blocker), None)         => Some(blocker),
+    (None,          repair)       => repair,
+};
+```
 
-Recommendation:
-Take (a) — delete it. The technical justification is gone, and a policy refusal here would refuse to compute a boundary the tool can compute correctly, producing a worse diagnostic than the one it replaces. This also settles Phase 7's "Restricted `use` blocks resolution" matrix row, which disappears with the blocker; if (b) is chosen instead, that row must be gated on `use_syntax()` returning `Some` and fall back to "re-export" on `None`.
+`repair_text` is exactly today's `match annotation.syntax()` arms, unchanged: `InParent` -> ``consider using: `pub(super)` ``, `InCurrent` -> ``consider using: `pub(self)` ``, `InPath(Relative)` -> the crate-rooted spelling from `annotation.reach(...)` (`:289-292`), `InPath(CrateRooted)` -> `None` (`:288`). `blocker_text` names the blocking re-export's path and line and its reason — for `Glob`, ``facade at <path>:<line> uses `*`; replace it with an explicit re-export``; for `ForeignBoundary`, that the chain leaves the crate at that line. **The glob wording may quote `*` because `FacadeUseKind::Glob` is a HIR use-kind, not a spelling; the foreign-boundary wording must not quote the facade's visibility modifier** — see the Delegation Context invariant on written syntax.
 
-**Pending decision:** what an unresolvable-chain finding actually shows the user.
+Because a finding with no blocker keeps its repair string byte-for-byte, **the ten existing `assert_headline_and_help` pairs in `tests/diagnostics/forbidden_pub_in_crate.rs` do not change.** Only new unresolvable-chain fixtures assert the combined form.
 
-Actual problem:
-Phase 5 must report a blocker (path + line + reason) when a facade chain cannot be resolved, and Phase 2 left `suggestion` as the only rendering channel that survives on the two forbidden diagnostics. But `suggestion` is already occupied: `record_forbidden_pub_in_crate` (`scan/record.rs:285-299`) builds `suggestion: Option<String>` from a `match` on the written form, so a blocker string would **replace** the repair advice rather than accompany it. **Phase 4 did not moot this** — `record.rs:288` confirms the `InPath(CrateRooted)` arm still yields `suggestion: None`.
+**Acceptance gate:** `verify.sh check`, `verify.sh test`, `verify.sh lint` green, **plus `bash ~/.claude/scripts/delegate/verify.sh test cargo-mend diagnostics` — the bare `verify.sh test` line runs only `--lib`/`--bins`, so every fixture under `tests/diagnostics/` is invisible to it and a phase whose only new tests live there would gate green having run none of them,** **and the self-policy gate: `RUSTC_BOOTSTRAP=1 cargo +stable run --release -- --workspace --all-targets --fail-on-warn` reports "No findings" on cargo-mend's own source.** That last check is not redundant with `lint` — Phase 1 shipped `check`/`test`/`lint` all green while the tool rejected its own new file, and two blind reviews missed it, because the only thing that knows cargo-mend's house rules is cargo-mend. The two rules that bite new rustc-facing code are `inline_path_qualified_type` (write `use rustc_middle::ty::Foo;` and then `Foo`, never an inline `rustc_middle::ty::Foo` in a type position) and `imports_at_top`. Fixtures: `Super → Super` chain resolving to a non-root restricted module — the computed boundary compiles; `Super → Crate` chain — the boundary is `pub(crate)`, not `pub(in crate::<inner parent>)`; direct-child facade whose canonical result is `pub(crate)`; the same owner module expressed as `mod.rs` and as a named sibling file; glob-only facade — chain unresolvable, blocker reported, existing `unused_pub` suppression still holds, **and the finding's `suggestion` asserts the combined blocker-first form from the Spec (blocker, ` — `, then the written-form repair) — plus one fixture on the `InPath(CrateRooted)` arm, where there is no repair text and the blocker stands alone**; named export beside a glob — still resolvable; rename facade — resolvable, boundary computed, auto-fix unavailable; facade line spelled `pub(in crate::a) use` — chain **resolvable**, the hop is joined from its resolved scope and the facade is **not** treated as `Public`; two same-subject re-exports at one boundary with different aliases, visibilities, and usage states; a crate-root child holding both `pub(super) use` and `pub(crate) use` of the same item — the `InternalParentFacadeBoundary` allowance still tracks spelling; a two-member workspace where both members contain the same module and item path but only one uses its own facade — no cross-crate usage match. Counter-based performance test keyed by `LocalDefId`, behind a non-default test-only Cargo feature: one structural resolution and one usage scan for a fixture hitting every check; one structural resolution and **zero** usage scans when boundary validation resolves the finding without usage; the `ReviewInternalParentFacade` branch increments neither again.
 
-What exists now:
-- `record_forbidden_pub_in_crate` sets `suggestion` per written form: `InParent` -> ``consider using: `pub(super)` ``, `InCurrent` -> ``consider using: `pub(self)` ``, `InPath(Relative)` -> the crate-rooted spelling computed from `annotation.reach(...)` (`:289-292`), and `InPath(CrateRooted)` -> `None` (`:288`).
-- It passes `related: None`, and `related` is dropped anyway for these `DetailMode::None` specs.
-- So only the `InPath(CrateRooted)` arm has a free `suggestion` slot today.
+### Retrospective
 
-What should change:
-- Either (a) an unresolvable-chain finding shows **only** the blocker, discarding the written-form advice for that finding, or (b) the two are combined into one `suggestion` string (blocker first, then the repair), or (c) Phase 5 also gives the forbidden specs a real detail channel by changing them off `DetailMode::None` in `src/reporting/diagnostics.rs`, which is a wider change than Phase 5 currently scopes.
+**What worked:** The semantic chain walk, the blocker/repair composition, and the
+counter-based performance test all landed as specified. The self-policy gate
+(cargo-mend reporting `No findings.` against its own source) caught issues the
+build and lint gates did not, as the Work Order predicted it would.
 
-Recommendation:
-Take (b) — combine into one `suggestion`, blocker first. It preserves the repair advice the fixture at `tests/diagnostics/forbidden_pub_in_crate.rs:77-130` already pins, and it avoids widening Phase 5 into the reporting layer. Record the chosen format in Phase 5's Spec before dispatch; the fixture's nine `assert_headline_and_help` pairs must be updated to match whichever form is chosen.
+**What deviated from the plan:** The phase needed fourteen fix passes rather than
+the one or two a phase normally takes. Passes 1–9 were spec work; 10–14 were
+corrections to the textual usage matcher, where pass 12 introduced a regression
+(a `//` inside a string read as a comment start) that pass 14 fixed with a proper
+forward lexical state machine over code / string / raw string / char literal /
+line comment / nesting block comment.
 
-**Acceptance gate:** `verify.sh check`, `verify.sh test`, `verify.sh lint` green, **plus `bash ~/.claude/scripts/delegate/verify.sh test cargo-mend diagnostics` — the bare `verify.sh test` line runs only `--lib`/`--bins`, so every fixture under `tests/diagnostics/` is invisible to it and a phase whose only new tests live there would gate green having run none of them,** **and the self-policy gate: `RUSTC_BOOTSTRAP=1 cargo +stable run --release -- --workspace --all-targets --fail-on-warn` reports "No findings" on cargo-mend's own source.** That last check is not redundant with `lint` — Phase 1 shipped `check`/`test`/`lint` all green while the tool rejected its own new file, and two blind reviews missed it, because the only thing that knows cargo-mend's house rules is cargo-mend. The two rules that bite new rustc-facing code are `inline_path_qualified_type` (write `use rustc_middle::ty::Foo;` and then `Foo`, never an inline `rustc_middle::ty::Foo` in a type position) and `imports_at_top`. Fixtures: `Super → Super` chain resolving to a non-root restricted module — the computed boundary compiles; `Super → Crate` chain — the boundary is `pub(crate)`, not `pub(in crate::<inner parent>)`; direct-child facade whose canonical result is `pub(crate)`; the same owner module expressed as `mod.rs` and as a named sibling file; glob-only facade — chain unresolvable, blocker reported, existing `unused_pub` suppression still holds; named export beside a glob — still resolvable; rename facade — resolvable, boundary computed, auto-fix unavailable; facade line spelled `pub(in crate::a) use` — chain unresolvable and the facade is **not** treated as `Public`; two same-subject re-exports at one boundary with different aliases, visibilities, and usage states; a crate-root child holding both `pub(super) use` and `pub(crate) use` of the same item — the `InternalParentFacadeBoundary` allowance still tracks spelling; a two-member workspace where both members contain the same module and item path but only one uses its own facade — no cross-crate usage match. Counter-based performance test keyed by `LocalDefId`, behind a non-default test-only Cargo feature: one structural resolution and one usage scan for a fixture hitting every check; one structural resolution and **zero** usage scans when boundary validation resolves the finding without usage; the `ReviewInternalParentFacade` branch increments neither again.
+**Surprises:**
+- **The fix-pass loop had no reachable exit.** Each pass ended with a fresh blind
+  review over the *entire* 8137-line phase diff, prompted to find defects. A
+  competent reviewer always returns something, so "review comes back clean" could
+  never happen. The ten-item standing-decisions list handed to each reviewer is the
+  accumulated record of refutations that kept being re-reported.
+- **The textual matcher is the risky part of this phase, not the chain walk.** It
+  decides usage for references the compiler cannot see (macro bodies), and a false
+  "unused" invites a rewrite of a facade something depends on. Every pass from 10 on
+  was about that asymmetry.
+- **A finding being real does not make its obvious fix right.** Deferred defect 4
+  below was confirmed, attempted, and reverted: the reviewer's proposed rule failed
+  an existing fixture for a correct reason.
+
+**Implications for remaining phases:**
+- **Scope blind reviews to the incremental diff, not the whole phase.** Re-reviewing
+  the full accumulated diff every pass is what produced the loop.
+- Phase 7 owns moving the two unresolvable-chain specs off `DetailMode::None`; until
+  then `suggestion` stays the only surviving channel and the combined blocker-first
+  string stands.
+- Deferred defects 5 and 6 both live in `src/compiler/facade/reference.rs`. Fix them
+  together, and take a timing baseline first — none exists from before the lexer.
+
+#### Deferred defects — carried out of Phase 5
+
+Six findings from the pass-14 blind review. None produces wrong output on real
+input, so none was fixed in Phase 5. Each is a standalone follow-up; none blocks a
+later phase. Both `assert_eq!(…, 16)` gates in `tests/diagnostics/rendering.rs`
+(`:404`, `:522`) constrain any fixture work here.
+
+1. **Double negation in feature predicates** — `src/compiler/source_cache.rs:501`.
+   Polarity is *set* to `Negated` rather than toggled, so `not(not(feature = "x"))`
+   reads as negated. The trigger is source nobody writes, and it errs toward
+   `AllFeaturesCoverage::NotGuaranteed`, the conservative direction.
+2. **Mixed `cfg_attr` drops non-gating payload when an existing import is moved** —
+   `src/fixes/imports/conditional_attributes.rs:44`, with the move site at
+   `in_body_use_finder.rs:80`. Synthesis correctly keeps only gating attributes,
+   but a *moved* import loses a payload such as `allow(unused_imports)`, which can
+   break a `-D warnings` build. Needs a mixed payload plus a move plus denied
+   warnings to bite.
+3. **Expression-level `cfg` is not inherited** —
+   `src/fixes/imports/inline_path_qualified_type/visitor.rs:235`. `ExprPath` is
+   recorded without its attributes, so a gated expression yields an unconditional
+   import. Same family as the Phase 5 fix that covered items and struct fields but
+   not expressions.
+4. **Ancestor globs over-claim** — `src/compiler/visibility/use_sites.rs`,
+   `glob_containers` (`:456`) feeding `matching_glob_occurrences` (`:415`). Every
+   module between the subject and `child_module` is registered as a glob container,
+   but a glob re-exports only what is in its target module's namespace. The obvious
+   correction — keep only the subject's own module — was tried and is **wrong**: in
+   `pub use b::*` over a `b` that itself writes `pub use child::Thing;`, `Thing` is
+   in `b`'s namespace and the glob does reach it. The correct predicate is whether
+   the intermediate module re-exports the subject, answerable only from the
+   re-export chain. Any fix must keep both
+   `facade_subjects::ancestor_glob_targeting_descendant_module_is_a_blocker` and
+   `facade_subjects::unused_named_facade_with_outer_glob_has_no_pub_use_fix`
+   passing — they pin the two ends. Current behavior over-suppresses findings; it
+   never produces a bad edit.
+5. **Decomposed Unicode identifiers are missed** —
+   `src/compiler/facade/reference.rs:466`. `char::is_alphanumeric` does not cover
+   XID_Continue combining marks, so NFD `cafe\u{301}` fails the boundary check and
+   the path is not matched. This fails in the dangerous direction — a false
+   "unused" — but it is a remaining gap rather than a regression: Phase 5 is what
+   added Unicode support at all.
+6. **Literal matching is quadratic** — `src/compiler/facade/reference.rs:201` and
+   `:286`. The lexical scan restarts at byte 0 for every `::` separator tested, so
+   cost grows with (file length × separators). Fix is a per-file code/trivia mask
+   computed once. **Record a timing baseline before changing the scanner** — none
+   exists from before the lexer landed, so there is nothing to measure a regression
+   against.
 
 ---
 
@@ -799,12 +871,11 @@ Only the first row is new. Still rejected: any `pub(in <path>)` where `<path>` i
 | No facade, all callers in the defining module | ``use of `pub(in crate::a)` outside an exact facade boundary is forbidden by policy`` | `consider removing the visibility` |
 | No facade, all callers within the parent scope | *(same)* | ``consider using: `pub(super)` `` |
 | Glob blocks resolution | `parent facade does not provide a resolvable visibility boundary` | ``facade at <path>:<line> uses `*`; replace it with an explicit re-export before using `pub(in ...)` `` |
-| Restricted `use` blocks resolution — **conditional; see below** | *(same)* | ``facade at <path>:<line> uses `pub(in ...)`; rewrite it as `pub(super)`, `pub(crate)`, or `pub`, then rerun `cargo mend` `` |
 | Redundant spelling, canonical reach valid | ``` `pub(in crate)` is a redundant spelling of `pub(crate)` ``` | ``consider using: `pub(crate)` `` (analogous for `self`/`super`) |
 | Too-wide path | ``` `pub(in crate)` is wider than the exact parent facade boundary ``` | ``consider using: `pub(in crate::video_plane)` `` |
 | No visibility-only rewrite compiles | `no visibility annotation allowed by policy preserves this item's current callers` | ``move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend` `` |
 
-**The "Restricted `use` blocks resolution" row depends on Phase 5's pending decision.** If `FacadeChainBlocker::UnsupportedVisibility` is deleted (Phase 5's recommendation), a `pub(in crate::a) use` hop is joinable and this row disappears entirely. If it survives as a policy refusal, the row **must be gated on `ParentFacadeExportStatus::use_syntax()` (`facade/exports.rs:86-96`) returning `Some`** and fall back to the neutral word "re-export" on `None` — resolved reach alone never establishes that the facade was *written* `pub(in ...)`, and quoting a modifier the tool did not read is exactly the class of defect that consumed three of Phase 4's eleven fix passes. The glob row above is safe as written: `FacadeUseKind::Glob` is a HIR use-kind, not a spelling.
+**There is no "Restricted `use` blocks resolution" row.** It was deleted when Phase 5's pending decision resolved: `FacadeChainBlocker::UnsupportedVisibility` is gone, a `pub(in crate::a) use` hop is joinable, and no advice row is needed for it. Do not add one back — resolved reach alone never establishes that a facade was *written* `pub(in ...)`, so any such row would have to be gated on `ParentFacadeExportStatus::use_syntax()` (`facade/exports.rs:86-96`) returning `Some`, and quoting a modifier the tool did not read is exactly the class of defect that consumed three of Phase 4's eleven fix passes. The glob row above is safe as written: `FacadeUseKind::Glob` is a HIR use-kind, not a spelling.
 
 There is **no public-boundary row**. A declaration narrower than a bare `pub use` facade fails rustc's re-export check, and `run_selection` (`compiler/build/execute.rs:103-107`) returns `CargoCheck` failure on any nonzero `cargo check` status *before* a report is loaded — so mend never renders a finding for it. An already-`pub` declaration behind that facade needs no forbidden-visibility diagnostic either. `Public` remains a legal chain state that produces no advice row.
 

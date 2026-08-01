@@ -1,12 +1,11 @@
+use std::cell::OnceCell;
+#[cfg(feature = "test-counters")]
+use std::cell::RefCell;
+#[cfg(feature = "test-counters")]
+use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 
-#[cfg(test)]
-use ParentFacadeVisibility::Crate;
-#[cfg(test)]
-use ParentFacadeVisibility::Public;
-#[cfg(test)]
-use ParentFacadeVisibility::Super;
 use anyhow::Result;
 use rustc_middle::ty::TyCtxt;
 use rustc_span::Span;
@@ -16,36 +15,115 @@ use syn::File;
 use syn::Item;
 use syn::ItemUse;
 use syn::UseTree;
-#[cfg(test)]
-use syn::Visibility;
 use syn::spanned::Spanned;
 
 use super::boundary;
 use super::boundary::ModuleSourceMap;
 use super::reference;
 use super::reference::ParentFacadeUsage;
+use super::reference::ParentFacadeUsageByName;
 use crate::compiler::settings::DriverSettings;
 #[cfg(test)]
 use crate::compiler::source_cache;
 use crate::compiler::source_cache::SourceCache;
 use crate::fixes;
 use crate::rust_syntax;
-#[cfg(test)]
-use crate::rust_syntax::PathAnchor;
+
+#[cfg(feature = "test-counters")]
+#[derive(Default)]
+struct FacadePerformanceCounters {
+    resolution_requests: HashMap<LocalDefId, usize>,
+    resolutions:         HashMap<LocalDefId, usize>,
+    usage_scans:         HashMap<LocalDefId, usize>,
+}
+
+#[cfg(feature = "test-counters")]
+thread_local! {
+    static PERFORMANCE_COUNTERS: RefCell<FacadePerformanceCounters> =
+        RefCell::new(FacadePerformanceCounters::default());
+}
+
+#[cfg(all(test, feature = "test-counters"))]
+pub fn reset_performance_counters() {
+    PERFORMANCE_COUNTERS.with(|counters| {
+        *counters.borrow_mut() = FacadePerformanceCounters::default();
+    });
+}
+
+#[cfg(feature = "test-counters")]
+pub fn record_facade_resolution(item_def_id: LocalDefId) {
+    PERFORMANCE_COUNTERS.with(|counters| {
+        *counters
+            .borrow_mut()
+            .resolutions
+            .entry(item_def_id)
+            .or_default() += 1;
+    });
+}
+
+#[cfg(feature = "test-counters")]
+pub fn record_facade_resolution_request(item_def_id: LocalDefId) {
+    PERFORMANCE_COUNTERS.with(|counters| {
+        *counters
+            .borrow_mut()
+            .resolution_requests
+            .entry(item_def_id)
+            .or_default() += 1;
+    });
+}
+
+#[cfg(feature = "test-counters")]
+pub fn record_facade_usage_scan(occurrence: LocalDefId) {
+    PERFORMANCE_COUNTERS.with(|counters| {
+        *counters
+            .borrow_mut()
+            .usage_scans
+            .entry(occurrence)
+            .or_default() += 1;
+    });
+}
+
+#[cfg(all(test, feature = "test-counters"))]
+pub fn facade_resolution_count(item_def_id: LocalDefId) -> usize {
+    PERFORMANCE_COUNTERS.with(|counters| {
+        counters
+            .borrow()
+            .resolutions
+            .get(&item_def_id)
+            .copied()
+            .unwrap_or(0)
+    })
+}
+
+#[cfg(all(test, feature = "test-counters"))]
+pub fn facade_resolution_request_count(item_def_id: LocalDefId) -> usize {
+    PERFORMANCE_COUNTERS.with(|counters| {
+        counters
+            .borrow()
+            .resolution_requests
+            .get(&item_def_id)
+            .copied()
+            .unwrap_or(0)
+    })
+}
+
+#[cfg(all(test, feature = "test-counters"))]
+pub fn facade_usage_scan_count(occurrence: LocalDefId) -> usize {
+    PERFORMANCE_COUNTERS.with(|counters| {
+        counters
+            .borrow()
+            .usage_scans
+            .get(&occurrence)
+            .copied()
+            .unwrap_or(0)
+    })
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ParentFacadeFixSupport {
     #[default]
     Unsupported,
     Supported,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ParentFacadeVisibility {
-    Public,
-    Crate,
-    Super,
-    Unrecognized,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,7 +136,7 @@ pub enum ParentFacadeSpelling {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParentFacadeReach {
-    pub visibility:        ParentFacadeVisibility,
+    pub reaches_parent:    bool,
     pub spelling:          ParentFacadeSpelling,
     pub spelling_conflict: bool,
 }
@@ -67,27 +145,24 @@ pub struct ParentFacadeReach {
 pub(super) struct ParentFacadeExports {
     pub explicit:    Vec<String>,
     pub fix_support: ParentFacadeFixSupport,
-    pub visibility:  Option<ParentFacadeVisibility>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParentFacadeExportStatus {
-    pub usage:             ParentFacadeUsage,
-    pub fix_support:       ParentFacadeFixSupport,
-    pub visibility:        ParentFacadeVisibility,
-    pub spelling:          ParentFacadeSpelling,
-    pub spelling_conflict: bool,
-    pub parent_path:       PathBuf,
-    pub parent_rel_path:   String,
-    pub parent_line:       usize,
+    pub usage:               ParentFacadeUsage,
+    pub fix_support:         ParentFacadeFixSupport,
+    pub parent_facade_reach: ParentFacadeReach,
+    pub parent_path:         PathBuf,
+    pub parent_rel_path:     String,
+    pub parent_line:         usize,
 }
 
 impl ParentFacadeExportStatus {
     pub const fn use_syntax(&self) -> Option<&'static str> {
-        if self.spelling_conflict {
+        if self.parent_facade_reach.spelling_conflict {
             return None;
         }
-        match self.spelling {
+        match self.parent_facade_reach.spelling {
             ParentFacadeSpelling::Public => Some("pub use"),
             ParentFacadeSpelling::Crate => Some("pub(crate) use"),
             ParentFacadeSpelling::Super => Some("pub(super) use"),
@@ -96,20 +171,23 @@ impl ParentFacadeExportStatus {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct ParentFacadeExportRequest<'tcx, 'source> {
-    pub source_cache:   &'source SourceCache,
-    pub settings:       &'source DriverSettings,
-    pub source_root:    &'source Path,
-    pub tcx:            TyCtxt<'tcx>,
-    pub module_sources: &'source ModuleSourceMap,
-    pub owner_module:   LocalDefId,
-    pub use_span:       Span,
-    pub visibility:     ParentFacadeVisibility,
-    pub spelling:       ParentFacadeSpelling,
-    pub export_names:   Vec<String>,
-    pub unique_export:  bool,
-    pub child_file:     &'source Path,
-    pub item_name:      &'source str,
+    pub source_cache:        &'source SourceCache,
+    pub settings:            &'source DriverSettings,
+    pub source_root:         &'source Path,
+    pub tcx:                 TyCtxt<'tcx>,
+    pub module_sources:      &'source ModuleSourceMap,
+    #[cfg(feature = "test-counters")]
+    pub use_def_id:          LocalDefId,
+    pub owner_module:        LocalDefId,
+    pub use_span:            Span,
+    pub parent_facade_reach: ParentFacadeReach,
+    pub usage_by_name:       &'source OnceCell<ParentFacadeUsageByName>,
+    pub export_names:        &'source [String],
+    pub unique_export:       bool,
+    pub child_file:          &'source Path,
+    pub item_name:           &'source str,
 }
 
 pub fn parent_facade_export_status(
@@ -121,10 +199,12 @@ pub fn parent_facade_export_status(
         source_root,
         tcx,
         module_sources,
+        #[cfg(feature = "test-counters")]
+        use_def_id,
         owner_module,
         use_span,
-        visibility,
-        spelling,
+        parent_facade_reach,
+        usage_by_name,
         export_names,
         unique_export,
         child_file,
@@ -142,7 +222,7 @@ pub fn parent_facade_export_status(
         .replace('\\', "/");
     let parent_line = tcx.sess.source_map().lookup_char_pos(use_span.lo()).line;
     let exported_names = ParentFacadeExports {
-        explicit:    export_names,
+        explicit:    export_names.to_vec(),
         fix_support: parent_facade_fix_support(
             source_cache,
             &parent_boundary.boundary_file,
@@ -152,25 +232,39 @@ pub fn parent_facade_export_status(
             use_span,
             unique_export,
         ),
-        visibility:  Some(visibility),
     };
-
-    let usage = reference::scan_facade_usage(
-        source_cache,
-        settings,
-        source_root,
-        tcx,
-        module_sources,
-        &parent_boundary,
-        &exported_names,
-    )?;
+    if usage_by_name.get().is_none() {
+        #[cfg(feature = "test-counters")]
+        record_facade_usage_scan(use_def_id);
+        let computed_usage_by_name = reference::scan_facade_usage(
+            source_cache,
+            settings,
+            tcx,
+            module_sources,
+            &parent_boundary,
+            &exported_names,
+        )?;
+        let _ = usage_by_name.set(computed_usage_by_name);
+    }
+    let usage = usage_by_name
+        .get()
+        .and_then(|usage_by_name| {
+            usage_by_name
+                .get(reference::normalized_export_name(item_name))
+                .or_else(|| match export_names {
+                    [export_name] => {
+                        usage_by_name.get(reference::normalized_export_name(export_name))
+                    },
+                    _ => None,
+                })
+        })
+        .copied()
+        .unwrap_or(ParentFacadeUsage::Unused);
 
     Ok(Some(ParentFacadeExportStatus {
         usage,
         fix_support: exported_names.fix_support,
-        visibility,
-        spelling,
-        spelling_conflict: false,
+        parent_facade_reach,
         parent_path: parent_boundary.boundary_file,
         parent_rel_path,
         parent_line,
@@ -247,16 +341,7 @@ pub(super) fn exported_names_from_parent_boundary(
         let Item::Use(item_use) = item else {
             continue;
         };
-        let Some(visibility) = parent_facade_visibility(&item_use.vis) else {
-            continue;
-        };
-        collect_matching_pub_use_exports(
-            item_use,
-            visibility,
-            child_module_name,
-            item_name,
-            &mut exported,
-        );
+        collect_matching_pub_use_exports(item_use, child_module_name, item_name, &mut exported);
     }
     exported.explicit.sort();
     exported.explicit.dedup();
@@ -266,7 +351,6 @@ pub(super) fn exported_names_from_parent_boundary(
 #[cfg(test)]
 fn collect_matching_pub_use_exports(
     item_use: &ItemUse,
-    use_visibility: ParentFacadeVisibility,
     child_module_name: &str,
     item_name: &str,
     exported: &mut ParentFacadeExports,
@@ -285,30 +369,11 @@ fn collect_matching_pub_use_exports(
             matched = true;
         }
     }
-    if matched {
-        if fixes::facade_use_prefix(&item_use.vis).is_some()
-            && pub_use_is_fix_supported(&item_use.tree, child_module_name, item_name)
-        {
-            exported.fix_support = ParentFacadeFixSupport::Supported;
-        }
-        exported.visibility = Some(exported.visibility.map_or(use_visibility, |existing| {
-            widest_visibility(existing, use_visibility)
-        }));
-    }
-}
-
-#[cfg(test)]
-const fn widest_visibility(
-    a: ParentFacadeVisibility,
-    b: ParentFacadeVisibility,
-) -> ParentFacadeVisibility {
-    match (a, b) {
-        (ParentFacadeVisibility::Unrecognized, _) | (_, ParentFacadeVisibility::Unrecognized) => {
-            ParentFacadeVisibility::Unrecognized
-        },
-        (Public, _) | (_, Public) => Public,
-        (Crate, _) | (_, Crate) => Crate,
-        (Super, Super) => Super,
+    if matched
+        && fixes::facade_use_prefix(&item_use.vis).is_some()
+        && pub_use_is_fix_supported(&item_use.tree, child_module_name, item_name)
+    {
+        exported.fix_support = ParentFacadeFixSupport::Supported;
     }
 }
 
@@ -340,23 +405,6 @@ fn pub_use_is_fix_supported_with_prefix(
 }
 
 #[cfg(test)]
-pub(super) fn parent_facade_visibility(vis: &Visibility) -> Option<ParentFacadeVisibility> {
-    match vis {
-        Visibility::Public(_) => Some(ParentFacadeVisibility::Public),
-        Visibility::Restricted(restricted) if restricted.path.segments.len() == 1 => {
-            let path_anchor =
-                PathAnchor::from(restricted.path.segments[0].ident.to_string().as_str());
-            match path_anchor {
-                PathAnchor::Super => Some(ParentFacadeVisibility::Super),
-                PathAnchor::Crate => Some(ParentFacadeVisibility::Crate),
-                PathAnchor::SelfMod | PathAnchor::SelfType | PathAnchor::Name => None,
-            }
-        },
-        _ => None,
-    }
-}
-
-#[cfg(test)]
 #[allow(
     clippy::unwrap_used,
     reason = "tests should panic on unexpected values"
@@ -366,7 +414,6 @@ mod tests {
 
     use super::ParentFacadeExports;
     use super::ParentFacadeFixSupport;
-    use super::ParentFacadeVisibility;
     use super::exported_names_from_parent_boundary;
 
     #[test]
@@ -380,11 +427,10 @@ mod tests {
     }
 
     #[test]
-    fn mixed_pub_uses_pick_visibility_from_matching_re_export() {
+    fn mixed_pub_uses_keep_matching_export_names_separate() {
         // Parent file has both `pub(crate) use` and `pub use` lines pointing at
-        // different children. The visibility on `ParentFacadeExports` must come
-        // from the line that actually re-exports the queried item, not from
-        // whichever pub-ish `use` appears first in the file.
+        // different children. The matching names must come from the line that
+        // re-exports the queried item, not whichever `use` appears first.
         let source = "\
 pub(crate) use first_child::Alpha;
 pub use second_child::Beta;
@@ -393,25 +439,22 @@ pub use second_child::Beta;
 
         let exports = exported_names_from_parent_boundary(&file, "first_child", "Alpha");
         assert_eq!(exports.explicit, vec!["Alpha".to_string()]);
-        assert_eq!(exports.visibility, Some(ParentFacadeVisibility::Crate));
 
         let exports = exported_names_from_parent_boundary(&file, "second_child", "Beta");
         assert_eq!(exports.explicit, vec!["Beta".to_string()]);
-        assert_eq!(exports.visibility, Some(ParentFacadeVisibility::Public));
     }
 
     #[test]
-    fn duplicate_re_exports_take_widest_visibility() {
-        // Same item re-exported with both `pub(crate) use` and `pub use` —
-        // widest reach wins so `narrow-pub-crate` doesn't fire on an item
-        // that's already public.
+    fn duplicate_re_exports_keep_all_export_names() {
+        // Same item re-exported twice. HIR-derived `ReexportIndex` owns
+        // resolved visibility; this parser helper only exposes written names.
         let source = "\
 pub(crate) use child::Thing;
 pub use child::Thing;
 ";
         let file = parse_file(source).unwrap();
         let exports = exported_names_from_parent_boundary(&file, "child", "Thing");
-        assert_eq!(exports.visibility, Some(ParentFacadeVisibility::Public));
+        assert_eq!(exports.explicit, vec!["Thing".to_string()]);
     }
 
     #[test]
@@ -433,7 +476,6 @@ pub use child::Thing;
             ParentFacadeExports {
                 explicit:    vec!["RenamedThing".to_string()],
                 fix_support: ParentFacadeFixSupport::Unsupported,
-                visibility:  Some(ParentFacadeVisibility::Public),
             }
         );
 

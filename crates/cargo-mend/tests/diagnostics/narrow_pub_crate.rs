@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use crate::support::*;
 
 #[test]
@@ -340,7 +342,7 @@ edition = "2024"
 }
 
 #[test]
-fn binary_crate_top_level_module_is_flagged() {
+fn binary_crate_top_level_module_is_not_flagged() {
     let temp = tempdir().expect("create temp fixture dir");
 
     fs::write(
@@ -370,11 +372,9 @@ edition = "2024"
         .iter()
         .filter(|f| f.code == DiagnosticCode::NarrowToPubCrate)
         .collect();
-    assert_eq!(
-        narrow_findings.len(),
-        1,
-        "expected 1 narrow_to_pub_crate finding in binary crate, got {}: {narrow_findings:?}",
-        narrow_findings.len(),
+    assert!(
+        narrow_findings.is_empty(),
+        "binary crates must not receive narrow_to_pub_crate findings: {narrow_findings:?}",
     );
     assert_summary_matches_findings(&report);
 }
@@ -796,6 +796,111 @@ edition = "2024"
 }
 
 #[test]
+fn super_to_crate_chain_narrows_only_the_crate_wide_item() {
+    let temp = tempdir().expect("create super to crate consumer fixture dir");
+    fs::create_dir_all(temp.path().join("src/a/b/c")).expect("create fixture modules");
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "super_to_crate_consumer_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::write(
+        temp.path().join("mend.toml"),
+        r#"[visibility]
+allow_pub_mod = ["src/a/b/c.rs"]
+"#,
+    )
+    .expect("write fixture visibility config");
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "mod a;\nfn use_crate_wide() { a::crate_wide(); }\n",
+    )
+    .expect("write library root");
+    fs::write(
+        temp.path().join("src/a.rs"),
+        "mod b;\npub(crate) use b::crate_wide;\n\
+         fn use_parent_only() { b::parent_only(); }\n",
+    )
+    .expect("write outer crate facade and consumers");
+    fs::write(
+        temp.path().join("src/a/b.rs"),
+        "mod c;\npub(crate) use c::d::crate_wide;\n\
+         pub(super) use c::d::parent_only;\n",
+    )
+    .expect("write crate and parent facade hops");
+    fs::write(
+        temp.path().join("src/a/b/c.rs"),
+        "pub(super) mod d;\npub(super) use d::{crate_wide, parent_only};\n",
+    )
+    .expect("write nearest super facade hops");
+    fs::write(
+        temp.path().join("src/a/b/c/d.rs"),
+        "pub fn crate_wide() {}\npub fn parent_only() {}\n",
+    )
+    .expect("write facade subjects");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::NarrowToPubCrate
+                && finding.path == "src/a/b/c/d.rs"
+                && finding.item.as_deref() == Some("fn crate_wide")
+        }),
+        "the super to crate chain must narrow its crate-wide item: {report:#?}"
+    );
+    assert!(
+        !report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::NarrowToPubCrate
+                && finding.path == "src/a/b/c/d.rs"
+                && finding.item.as_deref() == Some("fn parent_only")
+        }),
+        "the super-only chain must keep its narrower boundary: {report:#?}"
+    );
+}
+
+#[test]
+fn binary_pub_at_depth_3_is_not_narrowed_when_parent_caps_at_pub_crate() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "binary_narrow_nested_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src/foo/bar")).expect("create src/foo/bar");
+    fs::write(temp.path().join("src/main.rs"), "mod foo;\nfn main() {}\n").expect("write main");
+    fs::write(temp.path().join("src/foo/mod.rs"), "mod bar;\n").expect("write foo/mod.rs");
+    fs::write(
+        temp.path().join("src/foo/bar/mod.rs"),
+        "mod baz;\npub(crate) use baz::helper;\n\
+         pub(crate) fn use_helper() { let _ = helper; }\n",
+    )
+    .expect("write foo/bar/mod.rs");
+    fs::write(
+        temp.path().join("src/foo/bar/baz.rs"),
+        "pub fn helper() {}\n",
+    )
+    .expect("write foo/bar/baz.rs");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        !report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::NarrowToPubCrate
+                && finding.path.ends_with("src/foo/bar/baz.rs")
+        }),
+        "a binary parent facade capped at pub(crate) must not request pub(crate): {report:#?}"
+    );
+}
+
+#[test]
 fn fix_compiler_does_not_remove_reexport_used_only_by_cfg_test_code() {
     // The `cargo fix` invocation underneath `cargo mend --fix-compiler`
     // binds a localhost TCP socket for its diagnostic server. Sandboxed
@@ -900,6 +1005,219 @@ edition = "2024"
 }
 
 #[test]
+fn fix_compiler_keeps_reexport_used_only_by_feature_gated_module() {
+    // `cargo fix` starts an internal diagnostic server. Sandboxed runners
+    // can reject its localhost socket, so skip this integration test when
+    // the harness identifies that environment.
+    if std::env::var_os("CARGO_MEND_SKIP_NETWORK_TESTS").is_some() {
+        eprintln!(
+            "skipping fix_compiler_keeps_reexport_used_only_by_feature_gated_module: \
+             CARGO_MEND_SKIP_NETWORK_TESTS is set"
+        );
+        return;
+    }
+
+    let temp = tempdir().expect("create feature-gated re-export fixture dir");
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "cfg_feature_reexport_fixture"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+hidden = []
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src/a")).expect("create src/a");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod a;\n\
+         #[cfg(feature = \"hidden\")]\n\
+         mod hidden;\n\
+         \n\
+         fn main() {\n\
+             #[cfg(feature = \"hidden\")]\n\
+             hidden::use_it();\n\
+         }\n",
+    )
+    .expect("write main");
+    fs::write(
+        temp.path().join("src/a.rs"),
+        "mod child;\npub use child::Thing;\n",
+    )
+    .expect("write a");
+    fs::write(temp.path().join("src/a/child.rs"), "pub struct Thing;\n").expect("write child");
+    fs::write(
+        temp.path().join("src/hidden.rs"),
+        "pub fn use_it() {\n    let _thing: crate::a::Thing = crate::a::Thing;\n}\n",
+    )
+    .expect("write hidden");
+
+    let git_init = std::process::Command::new("git")
+        .arg("init")
+        .current_dir(temp.path())
+        .output()
+        .expect("initialize fixture git repository");
+    assert!(
+        git_init.status.success(),
+        "git init failed:\n{}\n{}",
+        String::from_utf8_lossy(&git_init.stdout),
+        String::from_utf8_lossy(&git_init.stderr)
+    );
+
+    assert_feature_fixture_compiles(
+        temp.path(),
+        &[],
+        "default feature set before --fix-compiler",
+    );
+    assert_feature_fixture_compiles(
+        temp.path(),
+        &["--features", "hidden"],
+        "hidden feature before --fix-compiler",
+    );
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix-compiler")
+        .output()
+        .expect("run cargo-mend --fix-compiler");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix-compiler failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let facade_after = fs::read_to_string(temp.path().join("src/a.rs")).expect("read a");
+    assert!(
+        facade_after.contains("pub use child::Thing"),
+        "the re-export used only by #[cfg(feature = \"hidden\")] must remain; a.rs after:\n{facade_after}",
+    );
+
+    assert_feature_fixture_compiles(temp.path(), &[], "default feature set after --fix-compiler");
+    assert_feature_fixture_compiles(
+        temp.path(),
+        &["--features", "hidden"],
+        "hidden feature after --fix-compiler",
+    );
+}
+
+#[test]
+fn fix_compiler_keeps_reexport_used_by_negated_feature_gate() {
+    if std::env::var_os("CARGO_MEND_SKIP_NETWORK_TESTS").is_some() {
+        eprintln!(
+            "skipping fix_compiler_keeps_reexport_used_by_negated_feature_gate: \
+             CARGO_MEND_SKIP_NETWORK_TESTS is set"
+        );
+        return;
+    }
+
+    let temp = tempdir().expect("create negated-feature re-export fixture dir");
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "cfg_negated_feature_reexport_fixture"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["a"]
+a = []
+b = []
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src/a")).expect("create src/a");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        r#"mod a;
+
+macro_rules! emit_feature_gated_items {
+    () => {
+        #[cfg(all(feature = "a", not(feature = "b")))]
+        mod active_without_b;
+
+        fn main() {
+            #[cfg(all(feature = "a", not(feature = "b")))]
+            active_without_b::use_it();
+        }
+    };
+}
+
+emit_feature_gated_items!();
+"#,
+    )
+    .expect("write main");
+    fs::write(
+        temp.path().join("src/a.rs"),
+        "mod child;\npub use child::Thing;\n",
+    )
+    .expect("write a");
+    fs::write(temp.path().join("src/a/child.rs"), "pub struct Thing;\n").expect("write child");
+    fs::write(
+        temp.path().join("src/active_without_b.rs"),
+        "pub fn use_it() {\n    let _thing: crate::a::Thing = crate::a::Thing;\n}\n",
+    )
+    .expect("write negated-feature module");
+
+    let git_init = std::process::Command::new("git")
+        .arg("init")
+        .current_dir(temp.path())
+        .output()
+        .expect("initialize fixture git repository");
+    assert!(
+        git_init.status.success(),
+        "git init failed:\n{}\n{}",
+        String::from_utf8_lossy(&git_init.stdout),
+        String::from_utf8_lossy(&git_init.stderr)
+    );
+
+    assert_feature_fixture_compiles(
+        temp.path(),
+        &[],
+        "default feature set before --fix-compiler",
+    );
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix-compiler")
+        .output()
+        .expect("run cargo-mend --fix-compiler");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix-compiler failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let facade_after = fs::read_to_string(temp.path().join("src/a.rs")).expect("read a");
+    assert!(
+        facade_after.contains("pub use child::Thing"),
+        "the re-export used by a negated feature gate must remain; a.rs after:\n{facade_after}",
+    );
+    assert_feature_fixture_compiles(temp.path(), &[], "default feature set after --fix-compiler");
+}
+
+fn assert_feature_fixture_compiles(fixture_dir: &Path, cargo_args: &[&str], configuration: &str) {
+    let output = std::process::Command::new("cargo")
+        .arg("check")
+        .args(cargo_args)
+        .current_dir(fixture_dir)
+        .output()
+        .expect("check feature fixture");
+    assert!(
+        output.status.success(),
+        "{configuration} must compile:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn fix_does_not_narrow_pub_fn_used_only_from_cfg_test_caller() {
     // Regression for the cross-compilation merge issue: a `pub fn` whose
     // only outside-of-parent-subtree caller lives in a `#[cfg(test)] mod
@@ -984,11 +1302,10 @@ edition = "2024"
 
 #[test]
 fn fix_does_not_narrow_pub_fn_for_cfg_test_gated_pub_super_reexport() {
-    // Exact reproduction of cargo-port-api-fix's failing case: a binary
-    // crate with a `#[cfg(test)] pub(super) use ...` re-export in the
-    // parent mod and a `#[cfg(test)] mod tests` caller outside the
-    // parent subtree. Mend must NOT flag the underlying `pub fn` as
-    // narrowable nor the re-export as removable.
+    // A `#[cfg(test)] pub(super) use ...` re-export in the parent module
+    // remains reachable from a `#[cfg(test)] mod tests` caller outside the
+    // parent subtree. Mend must not flag the underlying `pub fn` as
+    // narrowable or the re-export as removable.
     let temp = tempdir().expect("create temp fixture dir");
 
     fs::write(
@@ -1002,10 +1319,10 @@ edition = "2024"
     .expect("write manifest");
     fs::create_dir_all(temp.path().join("src/tui/panes")).expect("create dirs");
     fs::write(
-        temp.path().join("src/main.rs"),
-        "mod tui;\nfn main() { tui::entry() }\n",
+        temp.path().join("src/lib.rs"),
+        "mod tui;\npub fn entry() { tui::entry() }\n",
     )
-    .expect("write main");
+    .expect("write lib");
     fs::write(
         temp.path().join("src/tui/mod.rs"),
         "mod panes;\nmod render;\npub(super) fn entry() { panes::entry(); }\n",
@@ -1085,7 +1402,7 @@ edition = "2024"
     )
     .expect("write manifest");
     fs::create_dir_all(temp.path().join("src/tui/panes")).expect("create dirs");
-    fs::write(temp.path().join("src/main.rs"), "mod tui;\nfn main() {}\n").expect("write main");
+    fs::write(temp.path().join("src/lib.rs"), "mod tui;\n").expect("write lib");
     fs::write(
         temp.path().join("src/tui/mod.rs"),
         "mod panes;\nmod render;\n",

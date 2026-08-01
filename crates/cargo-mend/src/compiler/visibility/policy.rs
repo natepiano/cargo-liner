@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::Path;
@@ -5,9 +6,11 @@ use std::path::Path;
 use anyhow::Result;
 use rustc_middle::middle::privacy::Level;
 use rustc_middle::ty::TyCtxt;
+use rustc_middle::ty::Visibility;
 use rustc_span::def_id::CRATE_DEF_ID;
 use rustc_span::def_id::LocalDefId;
 
+use super::annotation::VisibilityReach;
 use super::scan::AllowanceReason;
 use super::scan::CrateKind;
 use super::scan::ModuleLocation;
@@ -16,7 +19,8 @@ use super::scan::SignatureExposure;
 use super::scan::SuspiciousPubAssessment;
 use super::scan::SuspiciousPubInput;
 use super::scan::VisibilityContext;
-use super::use_sites::FacadeVisibility;
+use super::use_sites::ParentFacadeAnalysis;
+use super::use_sites::ReexportOccurrence;
 use crate::compiler::constants::SOURCE_DIR_BENCHES;
 use crate::compiler::constants::SOURCE_DIR_EXAMPLES;
 use crate::compiler::constants::SOURCE_DIR_TESTS;
@@ -29,12 +33,12 @@ use crate::compiler::facade::ParentFacadeFixSupport;
 use crate::compiler::facade::ParentFacadeReach;
 use crate::compiler::facade::ParentFacadeSpelling;
 use crate::compiler::facade::ParentFacadeUsage;
-use crate::compiler::facade::ParentFacadeVisibility;
 use crate::reporting::FixSupport;
 
 pub(super) fn classify_suspicious_pub(
     ctx: &VisibilityContext<'_, '_>,
     input: &SuspiciousPubInput<'_>,
+    parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
 ) -> Result<SuspiciousPubAssessment> {
     if let Some(allowance) = basic_suspicious_pub_allowance(
         ctx,
@@ -46,13 +50,8 @@ pub(super) fn classify_suspicious_pub(
         return Ok(SuspiciousPubAssessment::Allowed(allowance));
     }
 
-    let parent_facade_export = parent_facade_export_status(
-        ctx,
-        input.def_id,
-        input.facade_subject,
-        input.file_path,
-        input.name,
-    )?;
+    let parent_facade_export =
+        parent_facade_export_status(ctx, parent_facade_analysis, input.file_path, input.name)?;
 
     if let Some(assessment) = assess_parent_facade_usage(parent_facade_export.as_ref()) {
         return Ok(assessment);
@@ -162,6 +161,10 @@ pub(super) const fn allow_pub_crate_by_policy(
     }
 }
 
+pub(super) const fn narrow_to_pub_crate_by_policy(crate_kind: CrateKind) -> bool {
+    matches!(crate_kind, CrateKind::Library)
+}
+
 pub(super) fn crate_kind_for_root(root_module: &Path, package_root: &Path) -> CrateKind {
     if root_module.file_name().and_then(OsStr::to_str) == Some("lib.rs") {
         return CrateKind::Library;
@@ -224,7 +227,7 @@ pub(super) const fn forbidden_pub_crate_suggestion(
         (
             SignatureExposure::Absent,
             Some(ParentFacadeReach {
-                visibility: ParentFacadeVisibility::Super,
+                reaches_parent: true,
                 spelling: ParentFacadeSpelling::Super,
                 spelling_conflict: false,
             }),
@@ -235,7 +238,7 @@ pub(super) const fn forbidden_pub_crate_suggestion(
         (
             SignatureExposure::Absent,
             Some(ParentFacadeReach {
-                visibility: ParentFacadeVisibility::Super,
+                reaches_parent: true,
                 ..
             }),
         ) => {
@@ -291,8 +294,8 @@ fn assess_parent_facade_usage(
     parent_facade_export: Option<&ParentFacadeExportStatus>,
 ) -> Option<SuspiciousPubAssessment> {
     let status = parent_facade_export?;
-    if !status.spelling_conflict
-        && status.spelling == ParentFacadeSpelling::Super
+    if !status.parent_facade_reach.spelling_conflict
+        && status.parent_facade_reach.spelling == ParentFacadeSpelling::Super
         && !matches!(status.usage, ParentFacadeUsage::Unused)
     {
         return Some(SuspiciousPubAssessment::Allowed(
@@ -370,50 +373,52 @@ fn assess_signature_exposure_allowance(
 
 pub(super) fn parent_facade_export_status(
     ctx: &VisibilityContext<'_, '_>,
-    item_def_id: LocalDefId,
-    facade_subject: LocalDefId,
+    parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
     child_file: &Path,
     item_name: Option<&str>,
 ) -> Result<Option<ParentFacadeExportStatus>> {
     let Some(item_name) = item_name else {
         return Ok(None);
     };
-    let Some(occurrences) =
-        ctx.reexport_index
-            .parent_facade_occurrences(ctx.tcx, item_def_id, facade_subject)
-    else {
+    let Some(parent_facade_analysis) = parent_facade_analysis else {
         return Ok(None);
     };
-    let selected_visibility = occurrences.selected.facade_visibility;
+    let occurrences = &parent_facade_analysis.nearest;
     let unique_export = occurrences.matching.len() == 1;
-    let spelling_conflict = occurrences.spelling_conflict;
+    let selected_reach = VisibilityReach::from(occurrences.selected.visibility);
     let mut selected_status: Option<ParentFacadeExportStatus> = None;
-    for occurrence in occurrences.matching {
+    for occurrence in &occurrences.matching {
+        if VisibilityReach::from(occurrence.visibility).compare(selected_reach, ctx.tcx)
+            == Some(Ordering::Less)
+        {
+            continue;
+        }
         let status = facade::parent_facade_export_status(ParentFacadeExportRequest {
             source_cache: ctx.source_cache,
             settings: ctx.settings,
             source_root: ctx.source_root,
             tcx: ctx.tcx,
             module_sources: ctx.module_sources,
+            #[cfg(feature = "test-counters")]
+            use_def_id: occurrence.use_def_id,
             owner_module: occurrence.owner_module,
             use_span: occurrence.span,
-            visibility: parent_facade_visibility(occurrence.facade_visibility),
-            spelling: occurrence.facade_spelling,
-            export_names: vec![occurrence.alias.as_deref().unwrap_or(item_name).to_string()],
+            parent_facade_reach: parent_facade_reach_for_occurrence(
+                ctx,
+                occurrence,
+                occurrence.spelling_conflict,
+            ),
+            usage_by_name: &occurrence.usage_by_name,
+            export_names: &occurrence.export_names,
             unique_export,
             child_file,
             item_name,
         })?;
-        let Some(mut status) = status else {
+        let Some(status) = status else {
             continue;
         };
-        status.spelling_conflict = spelling_conflict;
-        if occurrence.facade_visibility != selected_visibility {
-            continue;
-        }
         if selected_status.as_ref().is_none_or(|selected| {
-            parent_facade_usage_priority(status.usage)
-                > parent_facade_usage_priority(selected.usage)
+            parent_facade_status_priority(&status) > parent_facade_status_priority(selected)
         }) {
             selected_status = Some(status);
         }
@@ -421,28 +426,66 @@ pub(super) fn parent_facade_export_status(
     Ok(selected_status)
 }
 
+pub(super) fn parent_facade_reach_for_occurrence(
+    ctx: &VisibilityContext<'_, '_>,
+    occurrence: &ReexportOccurrence,
+    spelling_conflict: bool,
+) -> ParentFacadeReach {
+    let parent_module = ctx
+        .tcx
+        .parent_module_from_def_id(occurrence.owner_module)
+        .to_def_id();
+    let parent_reach = VisibilityReach::from(Visibility::Restricted(parent_module));
+    let occurrence_reach = VisibilityReach::from(occurrence.visibility);
+    ParentFacadeReach {
+        reaches_parent: matches!(
+            occurrence_reach.compare(parent_reach, ctx.tcx),
+            Some(Ordering::Equal | Ordering::Greater)
+        ),
+        spelling: occurrence.facade_spelling,
+        spelling_conflict,
+    }
+}
+
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
-enum ParentFacadeUsagePriority {
+enum ParentFacadeStatusPriority {
     Unused,
     CrateImport,
     CratePath,
     RelativeImport,
     RelativePath,
+    UsedSuper,
     Outside,
 }
 
-const fn parent_facade_usage_priority(usage: ParentFacadeUsage) -> ParentFacadeUsagePriority {
-    match usage {
-        ParentFacadeUsage::Unused => ParentFacadeUsagePriority::Unused,
-        ParentFacadeUsage::UsedInsideSubtreeByCrateImport => ParentFacadeUsagePriority::CrateImport,
-        ParentFacadeUsage::UsedInsideSubtreeByCratePath => ParentFacadeUsagePriority::CratePath,
+const fn parent_facade_status_priority(
+    status: &ParentFacadeExportStatus,
+) -> ParentFacadeStatusPriority {
+    if matches!(status.usage, ParentFacadeUsage::UsedOutsideSubtree) {
+        return ParentFacadeStatusPriority::Outside;
+    }
+    if !status.parent_facade_reach.spelling_conflict
+        && matches!(
+            status.parent_facade_reach.spelling,
+            ParentFacadeSpelling::Super
+        )
+        && !matches!(status.usage, ParentFacadeUsage::Unused)
+    {
+        return ParentFacadeStatusPriority::UsedSuper;
+    }
+    match status.usage {
+        ParentFacadeUsage::Unused => ParentFacadeStatusPriority::Unused,
+        ParentFacadeUsage::UsedInsideSubtreeByCrateImport => {
+            ParentFacadeStatusPriority::CrateImport
+        },
+        ParentFacadeUsage::UsedInsideSubtreeByCratePath => ParentFacadeStatusPriority::CratePath,
         ParentFacadeUsage::UsedInsideSubtreeByRelativeImport => {
-            ParentFacadeUsagePriority::RelativeImport
+            ParentFacadeStatusPriority::RelativeImport
         },
         ParentFacadeUsage::UsedInsideSubtreeByRelativePath => {
-            ParentFacadeUsagePriority::RelativePath
+            ParentFacadeStatusPriority::RelativePath
         },
-        ParentFacadeUsage::UsedOutsideSubtree => ParentFacadeUsagePriority::Outside,
+        ParentFacadeUsage::UsedOutsideSubtree => ParentFacadeStatusPriority::Outside,
     }
 }
 
@@ -453,10 +496,10 @@ fn facade_exposes_item_outside_parent(
     item_name: &str,
 ) -> Result<bool> {
     let facade_subject = ctx.reexport_index.facade_subject(item_def_id);
+    let parent_facade_analysis = ctx.resolve_parent_facade(item_def_id);
     Ok(parent_facade_export_status(
         ctx,
-        item_def_id,
-        facade_subject,
+        parent_facade_analysis.as_ref(),
         child_file,
         Some(item_name),
     )?
@@ -466,15 +509,6 @@ fn facade_exposes_item_outside_parent(
             item_def_id,
             facade_subject,
         ))
-}
-
-const fn parent_facade_visibility(visibility: FacadeVisibility) -> ParentFacadeVisibility {
-    match visibility {
-        FacadeVisibility::Public => ParentFacadeVisibility::Public,
-        FacadeVisibility::Crate => ParentFacadeVisibility::Crate,
-        FacadeVisibility::Super => ParentFacadeVisibility::Super,
-        FacadeVisibility::Unrecognized => ParentFacadeVisibility::Unrecognized,
-    }
 }
 
 pub(super) fn has_signature_exposure_allowance(
@@ -494,7 +528,6 @@ mod tests {
     use super::ModuleLocation;
     use super::ParentFacadeReach;
     use super::ParentFacadeSpelling;
-    use super::ParentFacadeVisibility;
     use super::ParentVisibility;
     use super::SignatureExposure;
     use super::allow_pub_crate_by_policy;
@@ -671,7 +704,7 @@ mod tests {
                 ModuleLocation::Nested,
                 SignatureExposure::Absent,
                 Some(ParentFacadeReach {
-                    visibility:        ParentFacadeVisibility::Super,
+                    reaches_parent:    true,
                     spelling:          ParentFacadeSpelling::Super,
                     spelling_conflict: false,
                 })
@@ -684,7 +717,7 @@ mod tests {
                 ModuleLocation::Nested,
                 SignatureExposure::Absent,
                 Some(ParentFacadeReach {
-                    visibility:        ParentFacadeVisibility::Super,
+                    reaches_parent:    true,
                     spelling:          ParentFacadeSpelling::Other,
                     spelling_conflict: false,
                 })

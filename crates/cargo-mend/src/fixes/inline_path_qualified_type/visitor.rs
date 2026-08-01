@@ -1,11 +1,15 @@
 use std::collections::BTreeSet;
 
 use proc_macro2::LineColumn;
+use syn::Attribute;
 use syn::ExprPath;
 use syn::ExprStruct;
+use syn::Field;
 use syn::GenericParam;
 use syn::Generics;
+use syn::ImplItemConst;
 use syn::ImplItemFn;
+use syn::ImplItemType;
 use syn::ItemConst;
 use syn::ItemEnum;
 use syn::ItemFn;
@@ -16,46 +20,55 @@ use syn::ItemStruct;
 use syn::ItemTrait;
 use syn::ItemType;
 use syn::ItemUse;
+use syn::Local;
 use syn::PatStruct;
 use syn::PatTupleStruct;
 use syn::Path;
+use syn::TraitItemConst;
 use syn::TraitItemFn;
+use syn::TraitItemType;
 use syn::TypePath;
+use syn::Variant;
 use syn::visit;
 use syn::visit::Visit;
 
+use crate::fixes::imports::ConditionalAttributes;
 use crate::rust_syntax::PathAnchor;
 
 pub(super) struct InlinePathOccurrence {
     /// The original fully-qualified path as written (e.g.
     /// `crate::project::RustProject::Package`).
-    pub(super) full_path:   String,
+    pub(super) full_path:              String,
     /// The path we intend to add as a `use` statement (e.g.
     /// `crate::project::RustProject`). For enum variants this is the parent
     /// type, not the variant itself.
-    pub(super) import_path: String,
+    pub(super) import_path:            String,
     /// The bare last-segment of `import_path` — the name brought into scope
     /// by the `use` (e.g. `RustProject`). Used for collision detection.
-    pub(super) import_name: String,
+    pub(super) import_name:            String,
     /// What replaces the inline fully-qualified path in the source. For an
     /// enum variant this is `Enum::Variant`; for a plain type it is `Type`.
-    pub(super) replacement: String,
-    pub(super) span_start:  LineColumn,
-    pub(super) span_end:    LineColumn,
+    pub(super) replacement:            String,
+    pub(super) span_start:             LineColumn,
+    pub(super) span_end:               LineColumn,
+    pub(super) conditional_attributes: ConditionalAttributes,
 }
 
-pub(super) struct InlinePathVisitor {
-    pub(super) occurrences:     Vec<InlinePathOccurrence>,
-    pub(super) bare_type_names: BTreeSet<String>,
-    pub(super) mod_depth:       usize,
+pub(super) struct InlinePathVisitor<'a> {
+    pub(super) occurrences:            Vec<InlinePathOccurrence>,
+    pub(super) bare_type_names:        BTreeSet<String>,
+    pub(super) mod_depth:              usize,
     /// Stack of generic type-parameter names that are in scope at the
     /// current point of traversal. A path whose first segment matches an
     /// active generic (`S::Ok` inside `fn serialize<S>(...)`) is an
     /// associated-item reference, not a crate-qualified path — skip it.
-    pub(super) generic_scopes:  Vec<BTreeSet<String>>,
+    pub(super) generic_scopes:         Vec<BTreeSet<String>>,
+    pub(super) text:                   &'a str,
+    pub(super) offsets:                &'a [usize],
+    pub(super) conditional_attributes: ConditionalAttributes,
 }
 
-impl InlinePathVisitor {
+impl InlinePathVisitor<'_> {
     fn push_generics(&mut self, generics: &Generics) {
         let mut params = BTreeSet::new();
         for param in &generics.params {
@@ -71,9 +84,24 @@ impl InlinePathVisitor {
     fn is_active_generic(&self, name: &str) -> bool {
         self.generic_scopes.iter().any(|scope| scope.contains(name))
     }
+
+    fn push_conditional_attributes(&mut self, attributes: &[Attribute]) -> usize {
+        let previous_len = self.conditional_attributes.len();
+        self.conditional_attributes
+            .extend(ConditionalAttributes::from_attributes(
+                self.text,
+                self.offsets,
+                attributes,
+            ));
+        previous_len
+    }
+
+    fn restore_conditional_attributes(&mut self, previous_len: usize) {
+        self.conditional_attributes.truncate(previous_len);
+    }
 }
 
-impl InlinePathVisitor {
+impl InlinePathVisitor<'_> {
     fn check_path(&mut self, path: &Path) {
         let segments: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
 
@@ -156,11 +184,12 @@ impl InlinePathVisitor {
             replacement,
             span_start: first_ident_span.start(),
             span_end: last_ident_span.end(),
+            conditional_attributes: self.conditional_attributes.clone(),
         });
     }
 }
 
-impl InlinePathVisitor {
+impl InlinePathVisitor<'_> {
     /// Register a path's bare-name footprint for shadow detection.
     ///
     /// A single-segment path (`Result<T, E>`) clearly puts `Result` in use as
@@ -190,7 +219,7 @@ impl InlinePathVisitor {
     }
 }
 
-impl Visit<'_> for InlinePathVisitor {
+impl Visit<'_> for InlinePathVisitor<'_> {
     fn visit_item_use(&mut self, _: &ItemUse) {
         // Skip use statements — they are imports, not inline code
     }
@@ -243,42 +272,51 @@ impl Visit<'_> for InlinePathVisitor {
     }
 
     fn visit_item_struct(&mut self, node: &ItemStruct) {
+        let previous_attributes = self.push_conditional_attributes(&node.attrs);
         if self.mod_depth == 0 {
             self.bare_type_names.insert(node.ident.to_string());
         }
         self.push_generics(&node.generics);
         visit::visit_item_struct(self, node);
         self.pop_generics();
+        self.restore_conditional_attributes(previous_attributes);
     }
 
     fn visit_item_enum(&mut self, node: &ItemEnum) {
+        let previous_attributes = self.push_conditional_attributes(&node.attrs);
         if self.mod_depth == 0 {
             self.bare_type_names.insert(node.ident.to_string());
         }
         self.push_generics(&node.generics);
         visit::visit_item_enum(self, node);
         self.pop_generics();
+        self.restore_conditional_attributes(previous_attributes);
     }
 
     fn visit_item_type(&mut self, node: &ItemType) {
+        let previous_attributes = self.push_conditional_attributes(&node.attrs);
         if self.mod_depth == 0 {
             self.bare_type_names.insert(node.ident.to_string());
         }
         self.push_generics(&node.generics);
         visit::visit_item_type(self, node);
         self.pop_generics();
+        self.restore_conditional_attributes(previous_attributes);
     }
 
     fn visit_item_trait(&mut self, node: &ItemTrait) {
+        let previous_attributes = self.push_conditional_attributes(&node.attrs);
         if self.mod_depth == 0 {
             self.bare_type_names.insert(node.ident.to_string());
         }
         self.push_generics(&node.generics);
         visit::visit_item_trait(self, node);
         self.pop_generics();
+        self.restore_conditional_attributes(previous_attributes);
     }
 
     fn visit_item_fn(&mut self, node: &ItemFn) {
+        let previous_attributes = self.push_conditional_attributes(&node.attrs);
         if self.mod_depth == 0 {
             self.bare_type_names.insert(node.sig.ident.to_string());
         }
@@ -290,35 +328,45 @@ impl Visit<'_> for InlinePathVisitor {
         self.push_generics(&node.sig.generics);
         visit::visit_item_fn(self, node);
         self.pop_generics();
+        self.restore_conditional_attributes(previous_attributes);
     }
 
     fn visit_impl_item_fn(&mut self, node: &ImplItemFn) {
+        let previous_attributes = self.push_conditional_attributes(&node.attrs);
         self.push_generics(&node.sig.generics);
         visit::visit_impl_item_fn(self, node);
         self.pop_generics();
+        self.restore_conditional_attributes(previous_attributes);
     }
 
     fn visit_trait_item_fn(&mut self, node: &TraitItemFn) {
+        let previous_attributes = self.push_conditional_attributes(&node.attrs);
         self.push_generics(&node.sig.generics);
         visit::visit_trait_item_fn(self, node);
         self.pop_generics();
+        self.restore_conditional_attributes(previous_attributes);
     }
 
     fn visit_item_const(&mut self, node: &ItemConst) {
+        let previous_attributes = self.push_conditional_attributes(&node.attrs);
         if self.mod_depth == 0 {
             self.bare_type_names.insert(node.ident.to_string());
         }
         visit::visit_item_const(self, node);
+        self.restore_conditional_attributes(previous_attributes);
     }
 
     fn visit_item_static(&mut self, node: &ItemStatic) {
+        let previous_attributes = self.push_conditional_attributes(&node.attrs);
         if self.mod_depth == 0 {
             self.bare_type_names.insert(node.ident.to_string());
         }
         visit::visit_item_static(self, node);
+        self.restore_conditional_attributes(previous_attributes);
     }
 
     fn visit_item_impl(&mut self, node: &ItemImpl) {
+        let previous_attributes = self.push_conditional_attributes(&node.attrs);
         // `impl Trait for Type` — the trait path is `ItemImpl::trait_`, a bare
         // `syn::Path` not visited as a `TypePath`. Inspect it directly.
         self.push_generics(&node.generics);
@@ -333,6 +381,49 @@ impl Visit<'_> for InlinePathVisitor {
         }
         visit::visit_item_impl(self, node);
         self.pop_generics();
+        self.restore_conditional_attributes(previous_attributes);
+    }
+
+    fn visit_field(&mut self, node: &Field) {
+        let previous_attributes = self.push_conditional_attributes(&node.attrs);
+        visit::visit_field(self, node);
+        self.restore_conditional_attributes(previous_attributes);
+    }
+
+    fn visit_variant(&mut self, node: &Variant) {
+        let previous_attributes = self.push_conditional_attributes(&node.attrs);
+        visit::visit_variant(self, node);
+        self.restore_conditional_attributes(previous_attributes);
+    }
+
+    fn visit_local(&mut self, node: &Local) {
+        let previous_attributes = self.push_conditional_attributes(&node.attrs);
+        visit::visit_local(self, node);
+        self.restore_conditional_attributes(previous_attributes);
+    }
+
+    fn visit_impl_item_const(&mut self, node: &ImplItemConst) {
+        let previous_attributes = self.push_conditional_attributes(&node.attrs);
+        visit::visit_impl_item_const(self, node);
+        self.restore_conditional_attributes(previous_attributes);
+    }
+
+    fn visit_impl_item_type(&mut self, node: &ImplItemType) {
+        let previous_attributes = self.push_conditional_attributes(&node.attrs);
+        visit::visit_impl_item_type(self, node);
+        self.restore_conditional_attributes(previous_attributes);
+    }
+
+    fn visit_trait_item_const(&mut self, node: &TraitItemConst) {
+        let previous_attributes = self.push_conditional_attributes(&node.attrs);
+        visit::visit_trait_item_const(self, node);
+        self.restore_conditional_attributes(previous_attributes);
+    }
+
+    fn visit_trait_item_type(&mut self, node: &TraitItemType) {
+        let previous_attributes = self.push_conditional_attributes(&node.attrs);
+        visit::visit_trait_item_type(self, node);
+        self.restore_conditional_attributes(previous_attributes);
     }
 
     fn visit_pat_tuple_struct(&mut self, node: &PatTupleStruct) {

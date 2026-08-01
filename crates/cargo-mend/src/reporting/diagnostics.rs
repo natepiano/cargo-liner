@@ -250,8 +250,27 @@ pub(crate) struct ReportFacts {
     #[serde(default)]
     #[serde(rename = "pub_use")]
     pub pub_use_fix_facts:      PubUseFixFacts,
+    #[serde(default)]
+    pub all_features_coverage:  AllFeaturesCoverage,
     #[serde(default, rename = "compiler_warnings")]
     pub compiler_warning_facts: CompilerWarningFacts,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AllFeaturesCoverage {
+    #[default]
+    NotGuaranteed,
+    Superset,
+}
+
+impl AllFeaturesCoverage {
+    pub(crate) const fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Superset, Self::Superset) => Self::Superset,
+            (Self::NotGuaranteed, _) | (_, Self::NotGuaranteed) => Self::NotGuaranteed,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

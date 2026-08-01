@@ -24,9 +24,58 @@ pub(super) struct OccurrenceContext<'a> {
     pub(super) collision_names: &'a BTreeSet<String>,
 }
 
+type ImportKey = (usize, String);
+
+pub(super) struct ImportAttributePlan {
+    attributes: BTreeMap<ImportKey, ConditionalAttributes>,
+}
+
+impl ImportAttributePlan {
+    fn get(&self, key: &ImportKey) -> Option<&ConditionalAttributes> { self.attributes.get(key) }
+}
+
+struct ResolvedOccurrence {
+    byte_start:             usize,
+    byte_end:               usize,
+    scope_id:               Option<usize>,
+    import_path:            String,
+    conditional_attributes: ConditionalAttributes,
+}
+
+pub(super) fn plan_import_attributes(
+    occurrences: &[InlinePathOccurrence],
+    ctx: &OccurrenceContext<'_>,
+) -> ImportAttributePlan {
+    let mut grouped: BTreeMap<ImportKey, BTreeSet<ConditionalAttributes>> = BTreeMap::new();
+    for occurrence in occurrences {
+        let resolved = resolve_occurrence(occurrence, ctx);
+        let Some(scope_id) = resolved.scope_id else {
+            continue;
+        };
+        grouped
+            .entry((scope_id, resolved.import_path))
+            .or_default()
+            .insert(resolved.conditional_attributes);
+    }
+
+    let mut attributes = BTreeMap::new();
+    for (key, candidates) in grouped {
+        let ungated = ConditionalAttributes::default();
+        if candidates.contains(&ungated) {
+            attributes.insert(key, ungated);
+        } else if candidates.len() == 1
+            && let Some(candidate) = candidates.first()
+        {
+            attributes.insert(key, candidate.clone());
+        }
+    }
+    ImportAttributePlan { attributes }
+}
+
 pub(super) fn process_occurrence(
     occ: &InlinePathOccurrence,
     ctx: &OccurrenceContext<'_>,
+    import_attribute_plan: &ImportAttributePlan,
     inserted_use_paths: &mut BTreeSet<(usize, String)>,
     findings: &mut Vec<Finding>,
     fixes: &mut Vec<UseFix>,
@@ -45,29 +94,20 @@ pub(super) fn process_occurrence(
         return;
     }
 
-    let byte_start = offsets::offset(ctx.text, ctx.offsets, occ.span_start);
-    let byte_end = offsets::offset(ctx.text, ctx.offsets, occ.span_end);
-
-    let scope_id = scope::find_innermost_scope(ctx.scopes, byte_start);
+    let resolved = resolve_occurrence(occ, ctx);
+    let byte_start = resolved.byte_start;
+    let byte_end = resolved.byte_end;
+    let scope_id = resolved.scope_id;
     let scope = scope_id.map(|id| &ctx.scopes[id]);
+    let import_path = resolved.import_path;
 
-    // Resolve a partial path (`fmt::Display` written because `use std::fmt;`
-    // is in scope) to its absolute form (`std::fmt::Display`) so the inserted
-    // `use` is self-contained — i.e. it doesn't silently break if the parent
-    // module import is later removed or reordered.
-    let import_path = scope.map_or_else(
-        || occ.import_path.clone(),
-        |scope| absolutize_import_path(&occ.import_path, &scope.existing_imports),
-    );
-    let (import_path, conditional_attributes) = if import_path == occ.import_path
-        && let Some(scope_id) = scope_id
-        && let Some(parent_import) =
-            scope::qualify_through_parent_scope(ctx.scopes, scope_id, &import_path)
+    if let Some(scope_id) = scope_id
+        && import_attribute_plan
+            .get(&(scope_id, import_path.clone()))
+            .is_none()
     {
-        (parent_import.path, parent_import.conditional_attributes)
-    } else {
-        (import_path, ConditionalAttributes::default())
-    };
+        return;
+    }
 
     if scope.is_some_and(|scope| scope.has_private_import_conflict(&occ.import_name, &import_path))
     {
@@ -124,7 +164,9 @@ pub(super) fn process_occurrence(
         && inserted_use_paths.insert((scope_id, import_path.clone()))
     {
         let use_path = scope::canonicalize_inserted_use_path(scope, &import_path);
-        let attributes = conditional_attributes.render(&scope.indent);
+        let attributes = import_attribute_plan
+            .get(&(scope_id, import_path))
+            .map_or_else(String::new, |attributes| attributes.render(&scope.indent));
         let use_text = format!("{}{}use {use_path};\n", attributes, scope.indent);
         fixes.push(UseFix {
             path:         ctx.path.to_path_buf(),
@@ -133,6 +175,42 @@ pub(super) fn process_occurrence(
             replacement:  use_text,
             import_group: group,
         });
+    }
+}
+
+fn resolve_occurrence(
+    occurrence: &InlinePathOccurrence,
+    ctx: &OccurrenceContext<'_>,
+) -> ResolvedOccurrence {
+    let byte_start = offsets::offset(ctx.text, ctx.offsets, occurrence.span_start);
+    let byte_end = offsets::offset(ctx.text, ctx.offsets, occurrence.span_end);
+    let scope_id = scope::find_innermost_scope(ctx.scopes, byte_start);
+    let scope = scope_id.map(|id| &ctx.scopes[id]);
+
+    // Resolve a partial path (`fmt::Display` written because `use std::fmt;`
+    // is in scope) to its absolute form (`std::fmt::Display`) so the inserted
+    // `use` does not depend on a sibling module import remaining in place.
+    let import_path = scope.map_or_else(
+        || occurrence.import_path.clone(),
+        |scope| absolutize_import_path(&occurrence.import_path, &scope.existing_imports),
+    );
+    let (import_path, mut conditional_attributes) = if import_path == occurrence.import_path
+        && let Some(scope_id) = scope_id
+        && let Some(parent_import) =
+            scope::qualify_through_parent_scope(ctx.scopes, scope_id, &import_path)
+    {
+        (parent_import.path, parent_import.conditional_attributes)
+    } else {
+        (import_path, ConditionalAttributes::default())
+    };
+    conditional_attributes.extend(occurrence.conditional_attributes.clone());
+
+    ResolvedOccurrence {
+        byte_start,
+        byte_end,
+        scope_id,
+        import_path,
+        conditional_attributes,
     }
 }
 

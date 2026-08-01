@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::Path;
@@ -6,13 +7,26 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use anyhow::Result;
+use proc_macro2::Delimiter;
+use proc_macro2::Group;
+use proc_macro2::TokenStream;
+use proc_macro2::TokenTree;
+use syn::Attribute;
+use syn::Expr;
 use syn::File;
+use syn::Item;
 use syn::ItemMod;
 use syn::ItemUse;
+use syn::Lit;
+use syn::Macro;
+use syn::Meta;
+use syn::MetaList;
 use syn::Path as SynPath;
+use syn::Token;
 use syn::UseTree;
 use syn::ext::IdentExt;
 use syn::parse_file;
+use syn::punctuated::Punctuated;
 use syn::visit;
 use syn::visit::Visit;
 
@@ -20,6 +34,7 @@ use super::constants::SOURCE_DIR_BENCHES;
 use super::constants::SOURCE_DIR_EXAMPLES;
 use super::constants::SOURCE_DIR_SRC;
 use super::constants::SOURCE_DIR_TESTS;
+use crate::reporting::AllFeaturesCoverage;
 use crate::rust_syntax::PathAnchor;
 #[cfg(test)]
 use crate::selection::CARGO_TARGET_KIND_LIB;
@@ -54,23 +69,32 @@ pub(super) struct UseRename {
 }
 
 pub(super) struct SourceCache {
-    contents:        HashMap<PathBuf, String>,
-    files_by_dir:    HashMap<PathBuf, Vec<PathBuf>>,
-    parsed:          HashMap<PathBuf, File>,
-    extracted_paths: HashMap<PathBuf, ExtractedPaths>,
+    contents:                       HashMap<PathBuf, String>,
+    files_by_dir:                   HashMap<PathBuf, Vec<PathBuf>>,
+    parsed:                         HashMap<PathBuf, File>,
+    extracted_paths:                HashMap<PathBuf, ExtractedPaths>,
+    structural_parent_module_paths: HashMap<PathBuf, Vec<Vec<String>>>,
+    all_features_coverage:          AllFeaturesCoverage,
 }
 
 impl SourceCache {
+    #[cfg(test)]
     pub fn build(roots: &[&Path], target_directory: &Path) -> Result<Self> {
-        let mut contents = HashMap::new();
+        let mut source_files = Vec::new();
         for root in roots {
-            for file in rust_source_files(root, target_directory)? {
-                contents
-                    .entry(file.clone())
-                    .or_insert(fs::read_to_string(&file).with_context(|| {
-                        format!("failed to pre-read source file {}", file.display())
-                    })?);
-            }
+            source_files.extend(rust_source_files(root, target_directory)?);
+        }
+        Self::build_files(&source_files)
+    }
+
+    pub fn build_files(source_files: &[PathBuf]) -> Result<Self> {
+        let mut contents = HashMap::new();
+        for file in source_files {
+            contents.entry(file.clone()).or_insert(
+                fs::read_to_string(file).with_context(|| {
+                    format!("failed to pre-read source file {}", file.display())
+                })?,
+            );
         }
         let mut files_by_dir: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
         for path in contents.keys() {
@@ -91,12 +115,43 @@ impl SourceCache {
         for (path, ast) in &parsed {
             extracted_paths.insert(path.clone(), extract_paths(ast));
         }
+        let all_features_coverage = source_all_features_coverage(&contents, &parsed);
         Ok(Self {
             contents,
             files_by_dir,
             parsed,
             extracted_paths,
+            structural_parent_module_paths: HashMap::new(),
+            all_features_coverage,
         })
+    }
+
+    pub fn build_crate(crate_root_file: &Path, compiler_files: &[PathBuf]) -> Result<Self> {
+        let crate_root_file =
+            fs::canonicalize(crate_root_file).unwrap_or_else(|_| crate_root_file.to_path_buf());
+        let mut source_files = compiler_files
+            .iter()
+            .map(|path| fs::canonicalize(path).unwrap_or_else(|_| path.clone()))
+            .collect::<Vec<_>>();
+        let mut visited = HashSet::new();
+        let mut structural_parent_module_paths = HashMap::new();
+        collect_declared_module_files(
+            &crate_root_file,
+            crate_root_file
+                .parent()
+                .unwrap_or(crate_root_file.as_path()),
+            &[],
+            &mut visited,
+            &mut source_files,
+            &mut structural_parent_module_paths,
+        )?;
+        let mut source_cache = Self::build_files(&source_files)?;
+        source_cache.structural_parent_module_paths = structural_parent_module_paths;
+        Ok(source_cache)
+    }
+
+    pub fn source_files(&self) -> Vec<&Path> {
+        self.contents.keys().map(PathBuf::as_path).collect()
     }
 
     pub fn source_files_under(&self, dir: &Path) -> Vec<&Path> {
@@ -119,6 +174,340 @@ impl SourceCache {
     pub fn extracted_paths(&self, path: &Path) -> Option<&ExtractedPaths> {
         self.extracted_paths.get(path)
     }
+
+    pub const fn structural_parent_module_paths(&self) -> &HashMap<PathBuf, Vec<Vec<String>>> {
+        &self.structural_parent_module_paths
+    }
+
+    pub const fn all_features_coverage(&self) -> AllFeaturesCoverage { self.all_features_coverage }
+}
+
+fn collect_declared_module_files(
+    source_file: &Path,
+    module_directory: &Path,
+    module_path: &[String],
+    visited: &mut HashSet<PathBuf>,
+    source_files: &mut Vec<PathBuf>,
+    structural_parent_module_paths: &mut HashMap<PathBuf, Vec<Vec<String>>>,
+) -> Result<()> {
+    let source_file = fs::canonicalize(source_file).unwrap_or_else(|_| source_file.to_path_buf());
+    if !visited.insert(source_file.clone()) {
+        return Ok(());
+    }
+    if !source_files.contains(&source_file) {
+        source_files.push(source_file.clone());
+    }
+
+    let source = fs::read_to_string(&source_file)
+        .with_context(|| format!("failed to read source file {}", source_file.display()))?;
+    let Ok(file) = parse_file(&source) else {
+        return Ok(());
+    };
+    collect_module_items(
+        &file.items,
+        module_directory,
+        module_path,
+        visited,
+        source_files,
+        structural_parent_module_paths,
+    )
+}
+
+fn collect_module_items(
+    items: &[Item],
+    module_directory: &Path,
+    module_path: &[String],
+    visited: &mut HashSet<PathBuf>,
+    source_files: &mut Vec<PathBuf>,
+    structural_parent_module_paths: &mut HashMap<PathBuf, Vec<Vec<String>>>,
+) -> Result<()> {
+    for item in items {
+        let Item::Mod(item_mod) = item else {
+            continue;
+        };
+        let module_name = item_mod.ident.unraw().to_string();
+        let mut child_module_path = module_path.to_vec();
+        child_module_path.push(module_name.clone());
+        if let Some((_, child_items)) = &item_mod.content {
+            collect_module_items(
+                child_items,
+                &module_directory.join(module_name),
+                &child_module_path,
+                visited,
+                source_files,
+                structural_parent_module_paths,
+            )?;
+            continue;
+        }
+
+        for module_file in external_module_files(item_mod, module_directory) {
+            if !module_file.is_file() {
+                continue;
+            }
+            let child_directory =
+                if module_file.file_name().and_then(OsStr::to_str) == Some("mod.rs") {
+                    module_file
+                        .parent()
+                        .map_or_else(|| module_directory.to_path_buf(), Path::to_path_buf)
+                } else {
+                    module_file.with_extension("")
+                };
+            let canonical_module_file =
+                fs::canonicalize(&module_file).unwrap_or_else(|_| module_file.clone());
+            let parent_paths = structural_parent_module_paths
+                .entry(canonical_module_file.clone())
+                .or_default();
+            if !parent_paths.iter().any(|path| path == module_path) {
+                parent_paths.push(module_path.to_vec());
+            }
+            collect_declared_module_files(
+                &canonical_module_file,
+                &child_directory,
+                &child_module_path,
+                visited,
+                source_files,
+                structural_parent_module_paths,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn external_module_files(item_mod: &ItemMod, module_directory: &Path) -> Vec<PathBuf> {
+    let module_name = item_mod.ident.unraw().to_string();
+    let direct_paths = item_mod
+        .attrs
+        .iter()
+        .filter_map(direct_path_attribute)
+        .map(|path| module_directory.join(path))
+        .collect::<Vec<_>>();
+    let mut candidates = if direct_paths.is_empty() {
+        vec![
+            module_directory.join(format!("{module_name}.rs")),
+            module_directory.join(module_name).join("mod.rs"),
+        ]
+    } else {
+        direct_paths
+    };
+    for path in item_mod.attrs.iter().flat_map(conditional_path_attributes) {
+        let candidate = module_directory.join(path);
+        if !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+    }
+    candidates
+}
+
+fn direct_path_attribute(attribute: &Attribute) -> Option<String> {
+    if !attribute.path().is_ident("path") {
+        return None;
+    }
+    path_from_meta(&attribute.meta)
+}
+
+fn conditional_path_attributes(attribute: &Attribute) -> Vec<String> {
+    if !attribute.path().is_ident("cfg_attr") {
+        return Vec::new();
+    }
+    let Meta::List(list) = &attribute.meta else {
+        return Vec::new();
+    };
+    let Ok(metas) = parse_meta_list(list) else {
+        return Vec::new();
+    };
+    let mut paths = Vec::new();
+    for meta in metas.iter().skip(1) {
+        collect_conditional_paths(meta, &mut paths);
+    }
+    paths
+}
+
+fn collect_conditional_paths(meta: &Meta, paths: &mut Vec<String>) {
+    if meta.path().is_ident("path") {
+        if let Some(path) = path_from_meta(meta) {
+            paths.push(path);
+        }
+        return;
+    }
+    if !meta.path().is_ident("cfg_attr") {
+        return;
+    }
+    let Meta::List(list) = meta else {
+        return;
+    };
+    let Ok(metas) = parse_meta_list(list) else {
+        return;
+    };
+    for nested in metas.iter().skip(1) {
+        collect_conditional_paths(nested, paths);
+    }
+}
+
+fn path_from_meta(meta: &Meta) -> Option<String> {
+    let Meta::NameValue(name_value) = meta else {
+        return None;
+    };
+    let Expr::Lit(expr_lit) = &name_value.value else {
+        return None;
+    };
+    let Lit::Str(path) = &expr_lit.lit else {
+        return None;
+    };
+    Some(path.value())
+}
+
+fn parse_meta_list(list: &MetaList) -> syn::Result<Punctuated<Meta, Token![,]>> {
+    list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+}
+
+fn source_all_features_coverage(
+    contents: &HashMap<PathBuf, String>,
+    parsed: &HashMap<PathBuf, File>,
+) -> AllFeaturesCoverage {
+    if contents.len() != parsed.len() {
+        return AllFeaturesCoverage::NotGuaranteed;
+    }
+    let mut visitor = NegatedFeatureGateVisitor {
+        coverage: AllFeaturesCoverage::Superset,
+    };
+    for file in parsed.values() {
+        visitor.visit_file(file);
+    }
+    visitor.coverage
+}
+
+struct NegatedFeatureGateVisitor {
+    coverage: AllFeaturesCoverage,
+}
+
+impl<'ast> Visit<'ast> for NegatedFeatureGateVisitor {
+    fn visit_attribute(&mut self, attribute: &'ast Attribute) {
+        self.coverage = self
+            .coverage
+            .merge(attribute_all_features_coverage(attribute));
+        visit::visit_attribute(self, attribute);
+    }
+
+    fn visit_macro(&mut self, item_macro: &'ast Macro) {
+        self.coverage = self
+            .coverage
+            .merge(macro_tokens_all_features_coverage(&item_macro.tokens));
+        visit::visit_macro(self, item_macro);
+    }
+}
+
+fn macro_tokens_all_features_coverage(tokens: &TokenStream) -> AllFeaturesCoverage {
+    let token_trees = tokens.clone().into_iter().collect::<Vec<_>>();
+    token_trees.iter().enumerate().fold(
+        AllFeaturesCoverage::Superset,
+        |coverage, (index, token_tree)| {
+            let nested_coverage = match token_tree {
+                TokenTree::Group(group) => macro_tokens_all_features_coverage(&group.stream()),
+                TokenTree::Punct(punct) if punct.as_char() == '#' => token_trees
+                    .get(index + 1)
+                    .and_then(token_attribute_group)
+                    .map_or(
+                        AllFeaturesCoverage::Superset,
+                        token_attribute_all_features_coverage,
+                    ),
+                TokenTree::Ident(_) | TokenTree::Punct(_) | TokenTree::Literal(_) => {
+                    AllFeaturesCoverage::Superset
+                },
+            };
+            coverage.merge(nested_coverage)
+        },
+    )
+}
+
+fn token_attribute_group(token_tree: &TokenTree) -> Option<&Group> {
+    let TokenTree::Group(group) = token_tree else {
+        return None;
+    };
+    (group.delimiter() == Delimiter::Bracket).then_some(group)
+}
+
+fn token_attribute_all_features_coverage(group: &Group) -> AllFeaturesCoverage {
+    syn::parse2::<Meta>(group.stream()).map_or(AllFeaturesCoverage::Superset, |meta| {
+        attribute_meta_all_features_coverage(&meta)
+    })
+}
+
+fn attribute_all_features_coverage(attribute: &Attribute) -> AllFeaturesCoverage {
+    attribute_meta_all_features_coverage(&attribute.meta)
+}
+
+fn attribute_meta_all_features_coverage(meta: &Meta) -> AllFeaturesCoverage {
+    let Meta::List(list) = meta else {
+        return AllFeaturesCoverage::Superset;
+    };
+    if meta.path().is_ident("cfg") {
+        return cfg_predicates_all_features_coverage(list);
+    }
+    if meta.path().is_ident("cfg_attr") {
+        return cfg_attr_all_features_coverage(list);
+    }
+    AllFeaturesCoverage::Superset
+}
+
+fn cfg_predicates_all_features_coverage(list: &MetaList) -> AllFeaturesCoverage {
+    let Ok(metas) = parse_meta_list(list) else {
+        return AllFeaturesCoverage::NotGuaranteed;
+    };
+    metas
+        .iter()
+        .fold(AllFeaturesCoverage::Superset, |coverage, meta| {
+            coverage.merge(cfg_predicate_all_features_coverage(
+                meta,
+                PredicatePolarity::Positive,
+            ))
+        })
+}
+
+fn cfg_attr_all_features_coverage(list: &MetaList) -> AllFeaturesCoverage {
+    let Ok(metas) = parse_meta_list(list) else {
+        return AllFeaturesCoverage::NotGuaranteed;
+    };
+    let Some(predicate) = metas.first() else {
+        return AllFeaturesCoverage::NotGuaranteed;
+    };
+    metas.iter().skip(1).fold(
+        cfg_predicate_all_features_coverage(predicate, PredicatePolarity::Positive),
+        |coverage, meta| coverage.merge(attribute_meta_all_features_coverage(meta)),
+    )
+}
+
+#[derive(Clone, Copy)]
+enum PredicatePolarity {
+    Positive,
+    Negated,
+}
+
+fn cfg_predicate_all_features_coverage(
+    meta: &Meta,
+    polarity: PredicatePolarity,
+) -> AllFeaturesCoverage {
+    if meta.path().is_ident("feature") {
+        return match polarity {
+            PredicatePolarity::Positive => AllFeaturesCoverage::Superset,
+            PredicatePolarity::Negated => AllFeaturesCoverage::NotGuaranteed,
+        };
+    }
+    let Meta::List(list) = meta else {
+        return AllFeaturesCoverage::Superset;
+    };
+    let Ok(metas) = parse_meta_list(list) else {
+        return AllFeaturesCoverage::NotGuaranteed;
+    };
+    let nested_polarity = if meta.path().is_ident("not") {
+        PredicatePolarity::Negated
+    } else {
+        polarity
+    };
+    metas
+        .iter()
+        .fold(AllFeaturesCoverage::Superset, |coverage, nested| {
+            coverage.merge(cfg_predicate_all_features_coverage(nested, nested_polarity))
+        })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -284,12 +673,14 @@ pub(super) fn flatten_use_tree(prefix: Vec<String>, tree: &UseTree, out: &mut Ve
     }
 }
 
+#[cfg(test)]
 fn rust_source_files(source_root: &Path, target_directory: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     collect_rust_source_files(source_root, target_directory, &mut files)?;
     Ok(files)
 }
 
+#[cfg(test)]
 fn collect_rust_source_files(
     dir: &Path,
     target_directory: &Path,
@@ -381,6 +772,7 @@ mod tests {
     use super::SourceCache;
     use super::analysis_source_root_for;
     use super::module_path_from_source_file;
+    use crate::reporting::AllFeaturesCoverage;
 
     #[test]
     fn source_cache_excludes_cargo_target_directory() -> Result<()> {
@@ -400,6 +792,91 @@ mod tests {
 
         assert!(source_cache.read_source(&source_file).is_ok());
         assert!(source_cache.read_source(&generated_source_file).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn crate_cache_includes_feature_gated_module_without_sibling_binary() -> Result<()> {
+        assert_crate_cache_includes_declared_module(
+            "#[cfg(feature = \"hidden\")]\nmod hidden;\n",
+            "hidden.rs",
+        )
+    }
+
+    #[test]
+    fn crate_cache_includes_cfg_test_module_without_sibling_binary() -> Result<()> {
+        assert_crate_cache_includes_declared_module("#[cfg(test)]\nmod tests;\n", "tests.rs")
+    }
+
+    #[test]
+    fn macro_body_negated_feature_prevents_all_features_coverage() -> Result<()> {
+        assert_macro_body_coverage(
+            r#"macro_rules! emit {
+    () => {
+        #[cfg(not(feature = "hidden"))]
+        fn generated() {}
+    };
+}
+emit!();
+"#,
+            AllFeaturesCoverage::NotGuaranteed,
+        )
+    }
+
+    #[test]
+    fn macro_body_non_feature_negation_preserves_all_features_coverage() -> Result<()> {
+        assert_macro_body_coverage(
+            r"macro_rules! emit {
+    () => {
+        #[cfg(not(unix))]
+        fn generated() {}
+    };
+}
+emit!();
+",
+            AllFeaturesCoverage::Superset,
+        )
+    }
+
+    fn assert_macro_body_coverage(
+        crate_root_source: &str,
+        expected_coverage: AllFeaturesCoverage,
+    ) -> Result<()> {
+        let temp = tempdir()?;
+        let source_directory = temp.path().join("src");
+        fs::create_dir_all(&source_directory)?;
+        let crate_root = source_directory.join("lib.rs");
+        fs::write(&crate_root, crate_root_source)?;
+
+        let source_cache =
+            SourceCache::build_crate(&crate_root, std::slice::from_ref(&crate_root))?;
+
+        assert_eq!(source_cache.all_features_coverage(), expected_coverage);
+        Ok(())
+    }
+
+    fn assert_crate_cache_includes_declared_module(
+        crate_root_source: &str,
+        module_name: &str,
+    ) -> Result<()> {
+        let temp = tempdir()?;
+        let source_directory = temp.path().join("src");
+        let binary_directory = source_directory.join("bin");
+        fs::create_dir_all(&binary_directory)?;
+        let crate_root = source_directory.join("lib.rs");
+        let declared_module = source_directory.join(module_name);
+        let sibling_binary = binary_directory.join("probe.rs");
+        fs::write(&crate_root, crate_root_source)?;
+        fs::write(&declared_module, "const MARKER: () = ();\n")?;
+        fs::write(&sibling_binary, "fn main() {}\n")?;
+
+        let source_cache =
+            SourceCache::build_crate(&crate_root, std::slice::from_ref(&crate_root))?;
+        let declared_module = fs::canonicalize(declared_module)?;
+        let sibling_binary = fs::canonicalize(sibling_binary)?;
+
+        assert!(source_cache.read_source(&declared_module).is_ok());
+        assert!(source_cache.read_source(&sibling_binary).is_err());
         Ok(())
     }
 

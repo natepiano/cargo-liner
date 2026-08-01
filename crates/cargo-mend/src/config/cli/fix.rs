@@ -26,11 +26,11 @@ pub(crate) enum FixRequest {
 }
 
 impl FixCli {
-    pub(crate) fn includes(&self, requested_fix: FixRequest) -> bool {
+    pub fn includes(&self, requested_fix: FixRequest) -> bool {
         self.requested_fixes.contains(&requested_fix)
     }
 
-    pub(crate) fn runs_compiler_fix(&self) -> bool {
+    pub fn runs_compiler_fix(&self) -> bool {
         match self.execution {
             FixExecution::ApplyAll => true,
             FixExecution::ApplyRequested => self.includes(FixRequest::Compiler),

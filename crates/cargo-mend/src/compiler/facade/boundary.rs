@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -8,6 +9,8 @@ use rustc_span::FileName;
 use rustc_span::Span;
 use rustc_span::def_id::CRATE_DEF_ID;
 use rustc_span::def_id::LocalDefId;
+
+use crate::compiler::source_cache::SourceCache;
 
 #[derive(Debug, Clone)]
 pub struct ParentBoundary {
@@ -22,38 +25,64 @@ pub struct LogicalParentBoundary {
 
 #[derive(Debug, Default)]
 pub struct ModuleSourceMap {
-    modules_by_file: HashMap<PathBuf, Vec<LocalDefId>>,
-    files_by_module: HashMap<LocalDefId, Vec<PathBuf>>,
+    modules_by_file:            HashMap<PathBuf, Vec<LocalDefId>>,
+    files_by_module:            HashMap<LocalDefId, Vec<PathBuf>>,
+    modules_by_path:            HashMap<Vec<String>, LocalDefId>,
+    structural_parents_by_file: HashMap<PathBuf, Vec<Vec<String>>>,
+    crate_files:                HashSet<PathBuf>,
 }
 
 impl ModuleSourceMap {
-    pub fn new(tcx: TyCtxt<'_>) -> Self {
-        let mut module_sources = Self::default();
+    pub fn new(tcx: TyCtxt<'_>, source_cache: &SourceCache) -> Self {
+        let mut module_sources = Self {
+            structural_parents_by_file: source_cache.structural_parent_module_paths().clone(),
+            crate_files: source_cache
+                .source_files()
+                .into_iter()
+                .map(|path| fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()))
+                .collect(),
+            ..Self::default()
+        };
+        module_sources
+            .modules_by_path
+            .insert(Vec::new(), CRATE_DEF_ID);
         for item_id in tcx.hir_crate_items(()).free_items() {
             let item = tcx.hir_item(item_id);
             let Some(source_file) = real_file_path(tcx, item.span) else {
                 continue;
             };
             let module: LocalDefId = tcx.parent_module_from_def_id(item.owner_id.def_id).into();
-            let modules = module_sources
-                .modules_by_file
-                .entry(source_file.clone())
-                .or_default();
-            if !modules.contains(&module) {
-                modules.push(module);
-            }
-            let files = module_sources.files_by_module.entry(module).or_default();
-            if !files.contains(&source_file) {
-                files.push(source_file);
-            }
+            module_sources.insert(module, source_file);
         }
+        tcx.hir_for_each_module(|module| {
+            let module_def_id = module.to_local_def_id();
+            module_sources
+                .modules_by_path
+                .insert(module_path(tcx, module_def_id), module_def_id);
+            let (hir_module, _, _) = tcx.hir_get_module(module);
+            if let Some(source_file) = real_file_path(tcx, hir_module.spans.inner_span) {
+                module_sources.insert(module_def_id, source_file);
+            }
+        });
         module_sources
+    }
+
+    fn insert(&mut self, module: LocalDefId, source_file: PathBuf) {
+        let modules = self.modules_by_file.entry(source_file.clone()).or_default();
+        if !modules.contains(&module) {
+            modules.push(module);
+        }
+        let files = self.files_by_module.entry(module).or_default();
+        if !files.contains(&source_file) {
+            files.push(source_file);
+        }
     }
 
     pub fn root_modules_for_file(&self, tcx: TyCtxt<'_>, source_file: &Path) -> Vec<LocalDefId> {
         let canonical_source_file =
             fs::canonicalize(source_file).unwrap_or_else(|_| source_file.to_path_buf());
-        self.modules_by_file
+        let root_modules = self
+            .modules_by_file
             .get(&canonical_source_file)
             .into_iter()
             .flatten()
@@ -67,7 +96,36 @@ impl ModuleSourceMap {
                     .get(&parent)
                     .is_none_or(|files| !files.contains(&canonical_source_file))
             })
-            .collect()
+            .collect::<Vec<_>>();
+        if !root_modules.is_empty() || !self.crate_files.contains(&canonical_source_file) {
+            return root_modules;
+        }
+        let mut structural_roots = Vec::new();
+        for parent_path in self
+            .structural_parents_by_file
+            .get(&canonical_source_file)
+            .into_iter()
+            .flatten()
+        {
+            let module = self.nearest_active_ancestor(parent_path);
+            if !structural_roots.contains(&module) {
+                structural_roots.push(module);
+            }
+        }
+        if structural_roots.is_empty() {
+            vec![CRATE_DEF_ID]
+        } else {
+            structural_roots
+        }
+    }
+
+    fn nearest_active_ancestor(&self, module_path: &[String]) -> LocalDefId {
+        for path_length in (0..=module_path.len()).rev() {
+            if let Some(module) = self.modules_by_path.get(&module_path[..path_length]) {
+                return *module;
+            }
+        }
+        CRATE_DEF_ID
     }
 
     pub fn source_files(&self, module: LocalDefId) -> &[PathBuf] {

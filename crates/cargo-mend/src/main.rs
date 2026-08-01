@@ -152,8 +152,12 @@ fn run() -> Result<ExitCode, MendFailure> {
             );
 
         if user_asked_for_compiler_fix || pub_use_self_heal {
-            total_compiler_fix_duration += compiler::run_cargo_fix(&cargo_plan, color_mode)
-                .map_err(MendFailure::Unexpected)?;
+            total_compiler_fix_duration += compiler::run_cargo_fix(
+                &cargo_plan,
+                color_mode,
+                outcome.report.facts.all_features_coverage,
+            )
+            .map_err(MendFailure::Unexpected)?;
         }
 
         if !matches!(cli.fix.execution, FixExecution::ApplyAll) || passes >= FIX_ALL_MAX_PASSES {

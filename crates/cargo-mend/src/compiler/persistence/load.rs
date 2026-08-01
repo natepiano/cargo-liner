@@ -14,6 +14,7 @@ use super::visibility_priority;
 use crate::compiler::constants::FINDINGS_SCHEMA_VERSION;
 use crate::compiler::constants::JSON_FILE_EXTENSION;
 use crate::compiler::settings;
+use crate::reporting::AllFeaturesCoverage;
 use crate::reporting::CompilerWarningFacts;
 use crate::reporting::Finding;
 use crate::reporting::PubUseFixFact;
@@ -37,6 +38,7 @@ pub fn load_report(
         .filter_map(|root| fs::canonicalize(root).ok())
         .collect();
     let mut matched_reports: Vec<StoredReport> = Vec::new();
+    let mut all_features_coverage = AllFeaturesCoverage::Superset;
 
     for entry in fs::read_dir(findings_dir).with_context(|| {
         format!(
@@ -44,31 +46,45 @@ pub fn load_report(
             findings_dir.display()
         )
     })? {
-        let entry = entry?;
+        let Ok(entry) = entry else {
+            all_features_coverage = AllFeaturesCoverage::NotGuaranteed;
+            continue;
+        };
         if entry.path().extension().and_then(OsStr::to_str) != Some(JSON_FILE_EXTENSION) {
             continue;
         }
 
-        let text = fs::read_to_string(entry.path())
-            .with_context(|| format!("failed to read findings file {}", entry.path().display()))?;
-        let Ok(stored) = from_str::<StoredReport>(&text) else {
+        let Ok(text) = fs::read_to_string(entry.path()) else {
+            all_features_coverage = AllFeaturesCoverage::NotGuaranteed;
             continue;
         };
-        if !stored_report_matches_selection(
+        let Ok(stored) = from_str::<StoredReport>(&text) else {
+            all_features_coverage = AllFeaturesCoverage::NotGuaranteed;
+            continue;
+        };
+        if !stored_matches_selected_root(
             &stored,
             &selected_roots,
             &selected_root_strings,
             &selected_canonical_roots,
-            config_fingerprint,
         ) {
             continue;
         }
+        if !stored_report_is_compatible(&stored, config_fingerprint) {
+            all_features_coverage = AllFeaturesCoverage::NotGuaranteed;
+            continue;
+        }
+        all_features_coverage = all_features_coverage.merge(stored.all_features_coverage);
         matched_reports.push(stored);
     }
 
     intersection::apply_cross_compilation_intersection(&mut matched_reports);
     caller_aware::apply_caller_aware_suppression(&mut matched_reports);
     visibility_priority::apply_visibility_narrowing_priority(&mut matched_reports);
+
+    if matched_reports.is_empty() {
+        all_features_coverage = AllFeaturesCoverage::default();
+    }
 
     let mut findings = Vec::new();
     let mut pub_use_fix_facts = Vec::new();
@@ -89,7 +105,8 @@ pub fn load_report(
         summary: ReportSummary::default(),
         findings,
         facts: ReportFacts {
-            pub_use_fix_facts:      pub_use_fix_facts.into(),
+            pub_use_fix_facts: pub_use_fix_facts.into(),
+            all_features_coverage,
             compiler_warning_facts: CompilerWarningFacts::None,
         },
     })
@@ -156,23 +173,11 @@ fn sort_and_dedup_pub_use_fix_facts(pub_use_fix_facts: &mut Vec<PubUseFixFact>) 
     });
 }
 
-fn stored_report_matches_selection(
-    stored: &StoredReport,
-    selected_roots: &[PathBuf],
-    selected_root_strings: &[String],
-    selected_canonical_roots: &[PathBuf],
-    config_fingerprint: &str,
-) -> bool {
+fn stored_report_is_compatible(stored: &StoredReport, config_fingerprint: &str) -> bool {
     stored.version == FINDINGS_SCHEMA_VERSION
         && stored.analysis_fingerprint == settings::current_analysis_fingerprint()
         && stored.config_fingerprint == config_fingerprint
         && stored_crate_root_exists(stored)
-        && stored_matches_selected_root(
-            stored,
-            selected_roots,
-            selected_root_strings,
-            selected_canonical_roots,
-        )
 }
 
 fn stored_crate_root_exists(stored: &StoredReport) -> bool {
@@ -272,6 +277,7 @@ mod tests {
     use crate::compiler::persistence::StoredReport;
     use crate::compiler::settings;
     use crate::config::DiagnosticCode;
+    use crate::reporting::AllFeaturesCoverage;
     use crate::reporting::CompilerWarningFacts;
     use crate::reporting::FixSupport;
     use crate::reporting::Severity;
@@ -346,6 +352,7 @@ mod tests {
                 source_files: Vec::new(),
                 findings,
                 pub_use_fix_facts: Vec::new(),
+                all_features_coverage: AllFeaturesCoverage::default(),
                 compiler_warning_facts: CompilerWarningFacts::None,
                 use_sites: Vec::new(),
             }
@@ -353,7 +360,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_json_file_is_ignored() {
+    fn malformed_json_prevents_all_features_coverage() {
         let fixture = PersistenceFixture::new();
         let finding = stored_finding(
             DiagnosticCode::ForbiddenPubCrate,
@@ -361,7 +368,8 @@ mod tests {
             "item",
             1,
         );
-        let report = fixture.report_with_findings(vec![finding]);
+        let mut report = fixture.report_with_findings(vec![finding]);
+        report.all_features_coverage = AllFeaturesCoverage::Superset;
         fixture.write_malformed_json("broken.json");
         fixture.write_report("valid.json", &report);
 
@@ -373,6 +381,10 @@ mod tests {
         .expect("load report");
 
         assert_eq!(loaded.findings.len(), 1);
+        assert_eq!(
+            loaded.facts.all_features_coverage,
+            AllFeaturesCoverage::NotGuaranteed
+        );
     }
 
     #[test]

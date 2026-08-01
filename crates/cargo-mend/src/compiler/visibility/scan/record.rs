@@ -1,7 +1,10 @@
+use std::cmp::Ordering;
 use std::ffi::OsStr;
 
 use anyhow::Result;
 use rustc_middle::middle::privacy::Level;
+use rustc_middle::ty::Visibility;
+use rustc_span::def_id::CRATE_DEF_ID;
 
 use super::FindingParams;
 use super::ItemCategory;
@@ -13,22 +16,22 @@ use super::classify;
 use super::classify::CrateKind;
 use super::classify::ModuleLocation;
 use super::classify::ParentVisibility;
-use super::classify::SignatureExposure;
 use super::classify::VisibilityFindingContext;
 use crate::compiler::constants::PRELUDE_MODULE_NAME;
 use crate::compiler::facade;
 use crate::compiler::facade::ParentFacadeReach;
-use crate::compiler::facade::ParentFacadeSpelling;
-use crate::compiler::facade::ParentFacadeVisibility;
 use crate::compiler::persistence::FindingsSink;
 use crate::compiler::persistence::StoredPubUseFixFact;
 use crate::compiler::visibility::annotation::PathSpelling;
 use crate::compiler::visibility::annotation::VisibilityAnnotation;
+use crate::compiler::visibility::annotation::VisibilityReach;
 use crate::compiler::visibility::annotation::VisibilitySyntax;
 use crate::compiler::visibility::policy;
 use crate::compiler::visibility::source;
 use crate::compiler::visibility::use_sites;
-use crate::compiler::visibility::use_sites::FacadeVisibility;
+use crate::compiler::visibility::use_sites::FacadeChainBlocker;
+use crate::compiler::visibility::use_sites::FacadeChainResolution;
+use crate::compiler::visibility::use_sites::ParentFacadeAnalysis;
 use crate::config::DiagnosticCode;
 use crate::config::PreludePubMod;
 use crate::reporting::FixSupport;
@@ -45,28 +48,34 @@ pub(super) fn record_visibility_findings(
         return Ok(());
     };
     let finding_context = classify::visibility_finding_context(ctx, item);
-    let parent_facade_reach = match annotation.syntax() {
-        VisibilitySyntax::Crate | VisibilitySyntax::InCrate => {
-            resolve_parent_facade_reach(ctx, item)
-        },
-        _ => None,
-    };
+    let parent_facade_analysis = ctx.resolve_parent_facade(item.def_id);
 
     if record_forbidden_visibility_annotation(
         ctx,
         item,
         &annotation,
         &finding_context,
-        parent_facade_reach,
+        parent_facade_analysis.as_ref(),
         sink,
     )? {
         return Ok(());
     }
     record_review_pub_mod(ctx, item, &annotation, &finding_context, sink)?;
-    maybe_record_unused_pub(ctx, item, &annotation, &finding_context, sink)?;
+    maybe_record_unused_pub(
+        ctx,
+        item,
+        &annotation,
+        &finding_context,
+        parent_facade_analysis.as_ref(),
+        sink,
+    )?;
 
-    if matches!(annotation.syntax(), VisibilitySyntax::Public)
-        && finding_context.parent_visibility == ParentVisibility::Private
+    let should_consider_narrow_to_pub_crate =
+        matches!(annotation.syntax(), VisibilitySyntax::Public)
+            && finding_context.parent_visibility == ParentVisibility::Private
+            && policy::narrow_to_pub_crate_by_policy(finding_context.crate_kind);
+
+    if should_consider_narrow_to_pub_crate
         && finding_context.logical_module_depth == 1
         && policy::allow_pub_crate_by_policy(
             finding_context.crate_kind,
@@ -77,12 +86,8 @@ pub(super) fn record_visibility_findings(
         maybe_record_narrow_to_pub_crate(ctx, item, sink)?;
     }
 
-    if matches!(annotation.syntax(), VisibilitySyntax::Public)
-        && finding_context.parent_visibility == ParentVisibility::Private
-        && finding_context.logical_module_depth > 1
-        && finding_context.crate_kind != CrateKind::IntegrationTest
-    {
-        maybe_record_narrow_to_pub_crate_nested(ctx, item, sink)?;
+    if should_consider_narrow_to_pub_crate && finding_context.logical_module_depth > 1 {
+        maybe_record_narrow_to_pub_crate_nested(ctx, item, parent_facade_analysis.as_ref(), sink)?;
     }
 
     if matches!(annotation.syntax(), VisibilitySyntax::Public)
@@ -92,7 +97,6 @@ pub(super) fn record_visibility_findings(
             ctx,
             &SuspiciousPubInput {
                 def_id:            item.def_id,
-                facade_subject:    item.facade_subject,
                 file_path:         item.file_path,
                 config_rel_path:   finding_context.config_rel_path.as_deref(),
                 parent_visibility: finding_context.parent_visibility,
@@ -102,6 +106,7 @@ pub(super) fn record_visibility_findings(
                 name:              item.name,
                 highlight_span:    item.highlight_span,
             },
+            parent_facade_analysis.as_ref(),
             sink,
         )?;
     }
@@ -113,6 +118,7 @@ fn maybe_record_unused_pub(
     item: &ItemInfo<'_>,
     annotation: &VisibilityAnnotation<'_>,
     finding_context: &VisibilityFindingContext,
+    parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
     sink: &mut FindingsSink,
 ) -> Result<()> {
     if !matches!(annotation.syntax(), VisibilitySyntax::Public)
@@ -140,7 +146,7 @@ fn maybe_record_unused_pub(
     {
         return Ok(());
     }
-    if parent_facade_exports_item(ctx, item)
+    if parent_facade_exports_item(parent_facade_analysis)
         || facade::path_exists_outside_child_module(
             ctx.source_cache,
             ctx.source_root,
@@ -196,7 +202,7 @@ pub(super) fn record_forbidden_visibility_annotation(
     item: &ItemInfo<'_>,
     annotation: &VisibilityAnnotation<'_>,
     finding_context: &VisibilityFindingContext,
-    parent_facade_reach: Option<ParentFacadeReach>,
+    parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
     sink: &mut FindingsSink,
 ) -> Result<bool> {
     match annotation.syntax() {
@@ -205,11 +211,11 @@ pub(super) fn record_forbidden_visibility_annotation(
             item,
             annotation,
             finding_context,
-            parent_facade_reach,
+            parent_facade_analysis,
             sink,
         ),
         VisibilitySyntax::InParent | VisibilitySyntax::InCurrent | VisibilitySyntax::InPath(_) => {
-            record_forbidden_pub_in_crate(ctx, item, annotation, sink)
+            record_forbidden_pub_in_crate(ctx, item, annotation, parent_facade_analysis, sink)
         },
         VisibilitySyntax::Private
         | VisibilitySyntax::Public
@@ -223,53 +229,54 @@ fn record_forbidden_pub_crate(
     item: &ItemInfo<'_>,
     annotation: &VisibilityAnnotation<'_>,
     finding_context: &VisibilityFindingContext,
-    parent_facade_reach: Option<ParentFacadeReach>,
+    parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
     sink: &mut FindingsSink,
 ) -> Result<bool> {
-    let pub_crate_is_permitted = policy::allow_pub_crate_by_policy(
-        finding_context.crate_kind,
-        finding_context.module_location,
-        finding_context.parent_visibility,
-    ) || matches!(
-        parent_facade_reach,
-        Some(ParentFacadeReach {
-            visibility: ParentFacadeVisibility::Crate,
-            ..
-        })
-    );
+    let pub_crate_is_permitted =
+        policy::allow_pub_crate_by_policy(
+            finding_context.crate_kind,
+            finding_context.module_location,
+            finding_context.parent_visibility,
+        ) || parent_facade_chain_reaches_crate(parent_facade_analysis, ctx);
     if matches!(annotation.syntax(), VisibilitySyntax::Crate) && pub_crate_is_permitted {
         return Ok(false);
     }
-    let signature_exposure: SignatureExposure =
-        policy::has_signature_exposure_allowance(ctx, item.def_id, item.file_path, item.name)?
-            .into();
-    let suggestion =
-        if matches!(annotation.syntax(), VisibilitySyntax::InCrate) && pub_crate_is_permitted {
-            String::from("consider using: `pub(crate)`")
-        } else {
-            policy::forbidden_pub_crate_suggestion(
-                finding_context.module_location,
-                signature_exposure,
-                parent_facade_reach,
-            )
-            .to_string()
-        };
+    let suggestion = if let Some(blocker_text) =
+        parent_facade_blocker_text(ctx, parent_facade_analysis)
+    {
+        Some(blocker_text)
+    } else {
+        let signature_exposure =
+            policy::has_signature_exposure_allowance(ctx, item.def_id, item.file_path, item.name)?
+                .into();
+        let repair_text =
+            if matches!(annotation.syntax(), VisibilitySyntax::InCrate) && pub_crate_is_permitted {
+                String::from("consider using: `pub(crate)`")
+            } else {
+                wider_chain_boundary_repair(parent_facade_analysis, ctx).unwrap_or_else(|| {
+                    policy::forbidden_pub_crate_suggestion(
+                        finding_context.module_location,
+                        signature_exposure,
+                        parent_facade_analysis.map(|analysis| parent_facade_reach(analysis, ctx)),
+                    )
+                    .to_string()
+                })
+            };
+        Some(repair_text)
+    };
     sink.findings.push(source::build_finding(
         ctx.tcx,
         item.file_path,
         item.highlight_span,
         FindingParams {
-            severity:                Severity::Error,
-            diagnostic_code:         DiagnosticCode::ForbiddenPubCrate,
-            item:                    None,
-            message:                 format!(
-                "use of `{}` is forbidden by policy",
-                annotation.source()
-            ),
-            suggestion:              Some(suggestion),
-            fix_support:             FixSupport::None,
-            related:                 None,
-            item_def_path:           None,
+            severity: Severity::Error,
+            diagnostic_code: DiagnosticCode::ForbiddenPubCrate,
+            item: None,
+            message: format!("use of `{}` is forbidden by policy", annotation.source()),
+            suggestion,
+            fix_support: FixSupport::None,
+            related: None,
+            item_def_path: None,
             narrower_scope_def_path: None,
         },
     )?);
@@ -280,9 +287,10 @@ fn record_forbidden_pub_in_crate(
     ctx: &VisibilityContext<'_, '_>,
     item: &ItemInfo<'_>,
     annotation: &VisibilityAnnotation<'_>,
+    parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
     sink: &mut FindingsSink,
 ) -> Result<bool> {
-    let suggestion = match annotation.syntax() {
+    let repair_text = match annotation.syntax() {
         VisibilitySyntax::InParent => Some(String::from("consider using: `pub(super)`")),
         VisibilitySyntax::InCurrent => Some(String::from("consider using: `pub(self)`")),
         VisibilitySyntax::InPath(PathSpelling::CrateRooted) => None,
@@ -297,6 +305,10 @@ fn record_forbidden_pub_in_crate(
         | VisibilitySyntax::Current
         | VisibilitySyntax::InCrate => return Ok(false),
     };
+    let suggestion = combine_blocker_and_repair(
+        parent_facade_blocker_text(ctx, parent_facade_analysis),
+        repair_text,
+    );
     sink.findings.push(source::build_finding(
         ctx.tcx,
         item.file_path,
@@ -314,6 +326,17 @@ fn record_forbidden_pub_in_crate(
         },
     )?);
     Ok(true)
+}
+
+fn combine_blocker_and_repair(
+    blocker_text: Option<String>,
+    repair_text: Option<String>,
+) -> Option<String> {
+    match (blocker_text, repair_text) {
+        (Some(blocker), Some(repair)) => Some(format!("{blocker} — {repair}")),
+        (Some(blocker), None) => Some(blocker),
+        (None, repair) => repair,
+    }
 }
 
 fn record_review_pub_mod(
@@ -415,22 +438,19 @@ fn maybe_record_narrow_to_pub_crate(
 fn maybe_record_narrow_to_pub_crate_nested(
     ctx: &VisibilityContext<'_, '_>,
     item: &ItemInfo<'_>,
+    parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
     sink: &mut FindingsSink,
 ) -> Result<()> {
     let (Some(name), Some(kind_label)) = (item.name, item.kind_label) else {
         return Ok(());
     };
-    let Some(occurrences) =
-        ctx.reexport_index
-            .parent_facade_occurrences(ctx.tcx, item.def_id, item.facade_subject)
-    else {
+    let Some(parent_facade_analysis) = parent_facade_analysis else {
         return Ok(());
     };
-    let occurrence = occurrences.selected;
-    if occurrences.spelling_conflict
-        || occurrence.facade_visibility != FacadeVisibility::Crate
-        || occurrence.facade_spelling == ParentFacadeSpelling::Super
-    {
+    let FacadeChainResolution::Resolved { required } = parent_facade_analysis.chain else {
+        return Ok(());
+    };
+    if parent_facade_analysis.nearest.spelling_conflict || !reach_is_pub_crate(required, ctx) {
         return Ok(());
     }
     sink.findings.push(source::build_finding(
@@ -454,51 +474,111 @@ fn maybe_record_narrow_to_pub_crate_nested(
     Ok(())
 }
 
-/// Resolved reach and source-spelling metadata for the parent module's `use`
-/// re-export of this item, when the parent re-exports it at all.
-fn resolve_parent_facade_reach(
+const fn parent_facade_exports_item(
+    parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
+) -> bool {
+    parent_facade_analysis.is_some()
+}
+
+fn parent_facade_reach(
+    parent_facade_analysis: &ParentFacadeAnalysis<'_>,
     ctx: &VisibilityContext<'_, '_>,
-    item: &ItemInfo<'_>,
-) -> Option<ParentFacadeReach> {
-    ctx.reexport_index
-        .parent_facade_occurrences(ctx.tcx, item.def_id, item.facade_subject)
-        .map(|occurrences| ParentFacadeReach {
-            visibility:        parent_facade_visibility(occurrences.selected.facade_visibility),
-            spelling:          occurrences.selected.facade_spelling,
-            spelling_conflict: occurrences.spelling_conflict,
-        })
+) -> ParentFacadeReach {
+    let occurrence = parent_facade_analysis.nearest.selected;
+    policy::parent_facade_reach_for_occurrence(
+        ctx,
+        occurrence,
+        parent_facade_analysis.nearest.spelling_conflict,
+    )
 }
 
-fn parent_facade_exports_item(ctx: &VisibilityContext<'_, '_>, item: &ItemInfo<'_>) -> bool {
-    ctx.reexport_index
-        .has_parent_facade(ctx.tcx, item.def_id, item.facade_subject)
+fn parent_facade_chain_reaches_crate(
+    parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
+    ctx: &VisibilityContext<'_, '_>,
+) -> bool {
+    let Some(parent_facade_analysis) = parent_facade_analysis else {
+        return false;
+    };
+    let FacadeChainResolution::Resolved { required } = parent_facade_analysis.chain else {
+        return false;
+    };
+    reach_is_pub_crate(required, ctx)
 }
 
-const fn parent_facade_visibility(visibility: FacadeVisibility) -> ParentFacadeVisibility {
-    match visibility {
-        FacadeVisibility::Public => ParentFacadeVisibility::Public,
-        FacadeVisibility::Crate => ParentFacadeVisibility::Crate,
-        FacadeVisibility::Super => ParentFacadeVisibility::Super,
-        FacadeVisibility::Unrecognized => ParentFacadeVisibility::Unrecognized,
+fn wider_chain_boundary_repair(
+    parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
+    ctx: &VisibilityContext<'_, '_>,
+) -> Option<String> {
+    let parent_facade_analysis = parent_facade_analysis?;
+    let FacadeChainResolution::Resolved { required } = parent_facade_analysis.chain else {
+        return None;
+    };
+    let nearest = VisibilityReach::from(parent_facade_analysis.nearest.selected.visibility);
+    (required.compare(nearest, ctx.tcx) == Some(Ordering::Greater))
+        .then(|| format!("consider using: `{}`", required.to_source(ctx.tcx)))
+}
+
+fn reach_is_pub_crate(reach: VisibilityReach, ctx: &VisibilityContext<'_, '_>) -> bool {
+    let crate_reach = VisibilityReach::from(Visibility::Restricted(CRATE_DEF_ID.to_def_id()));
+    reach.compare(crate_reach, ctx.tcx) == Some(Ordering::Equal)
+}
+
+fn parent_facade_blocker_text(
+    ctx: &VisibilityContext<'_, '_>,
+    parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
+) -> Option<String> {
+    let FacadeChainResolution::Unresolvable { ref blocker } = parent_facade_analysis?.chain else {
+        return None;
+    };
+    let occurrence = blocker.occurrence();
+    let path = source::real_file_path(ctx.tcx, occurrence.span)?;
+    let relative_path = path
+        .strip_prefix(ctx.source_root)
+        .unwrap_or(&path)
+        .to_string_lossy()
+        .replace('\\', "/");
+    let line = ctx
+        .tcx
+        .sess
+        .source_map()
+        .lookup_char_pos(occurrence.span.lo())
+        .line;
+    match blocker {
+        FacadeChainBlocker::Glob(_) => Some(format!(
+            "facade at {relative_path}:{line} uses `*`; replace it with an explicit re-export"
+        )),
+        FacadeChainBlocker::ForeignBoundary(_) => Some(format!(
+            "facade chain leaves the crate at {relative_path}:{line}"
+        )),
+    }
+}
+
+fn facade_chain_fix_support(
+    parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
+    fix_support: FixSupport,
+) -> FixSupport {
+    match parent_facade_analysis.map(|analysis| analysis.chain) {
+        Some(FacadeChainResolution::Resolved { .. }) => fix_support,
+        Some(FacadeChainResolution::Unresolvable { .. }) | None => FixSupport::None,
     }
 }
 
 fn maybe_record_suspicious_pub(
     ctx: &VisibilityContext<'_, '_>,
     input: &SuspiciousPubInput<'_>,
+    parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
     sink: &mut FindingsSink,
 ) -> Result<()> {
     let Some(kind_label) = input.kind_label else {
         return Ok(());
     };
 
-    match policy::classify_suspicious_pub(ctx, input)? {
+    match policy::classify_suspicious_pub(ctx, input, parent_facade_analysis)? {
         SuspiciousPubAssessment::Allowed(_) => {},
         SuspiciousPubAssessment::ReviewInternalParentFacade { related } => {
             let Some(status) = policy::parent_facade_export_status(
                 ctx,
-                input.def_id,
-                input.facade_subject,
+                parent_facade_analysis,
                 input.file_path,
                 input.name,
             )?
@@ -538,6 +618,7 @@ fn maybe_record_suspicious_pub(
             related,
             stale_parent_pub_use,
         } => {
+            let fix_support = facade_chain_fix_support(parent_facade_analysis, fix_support);
             let item_def_path = Some(use_sites::def_path_string(ctx.tcx, input.def_id));
             let narrower_scope_def_path =
                 Some(use_sites::parent_module_def_path(ctx.tcx, input.def_id));

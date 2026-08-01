@@ -10,9 +10,21 @@ pub(super) use exports::ParentFacadeExportStatus;
 pub(super) use exports::ParentFacadeFixSupport;
 pub(super) use exports::ParentFacadeReach;
 pub(super) use exports::ParentFacadeSpelling;
-pub(super) use exports::ParentFacadeVisibility;
+#[cfg(all(test, feature = "test-counters"))]
+pub(super) use exports::facade_resolution_count;
+#[cfg(all(test, feature = "test-counters"))]
+pub(super) use exports::facade_resolution_request_count;
+#[cfg(all(test, feature = "test-counters"))]
+pub(super) use exports::facade_usage_scan_count;
 pub(super) use exports::parent_facade_export_status;
+#[cfg(feature = "test-counters")]
+pub(super) use exports::record_facade_resolution;
+#[cfg(feature = "test-counters")]
+pub(super) use exports::record_facade_resolution_request;
+#[cfg(all(test, feature = "test-counters"))]
+pub(super) use exports::reset_performance_counters;
 pub(super) use reference::ParentFacadeUsage;
+pub(super) use reference::ParentFacadeUsageByName;
 pub(super) use reference::path_exists_outside_child_module;
 pub(super) use reference::path_exists_outside_module;
-pub(super) use reference::workspace_source_mentions_parent_export_literal;
+pub(super) use reference::workspace_source_parent_export_literal_usage;
