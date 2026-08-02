@@ -18,9 +18,15 @@ pub struct ParentBoundary {
     pub module_path:   Vec<String>,
 }
 
-pub struct LogicalParentBoundary {
-    pub module:      LocalDefId,
-    pub module_path: Vec<String>,
+pub(in crate::compiler) struct LogicalParentBoundary {
+    module:      LocalDefId,
+    module_path: Vec<String>,
+}
+
+impl LogicalParentBoundary {
+    pub(in crate::compiler) const fn module(&self) -> LocalDefId { self.module }
+
+    pub(in crate::compiler) fn module_path(&self) -> &[String] { &self.module_path }
 }
 
 #[derive(Debug, Default)]
@@ -176,7 +182,7 @@ pub fn parent_boundary_for_reexport(
     })
 }
 
-pub fn logical_parent_boundary_for_child(
+pub(super) fn logical_parent_boundary_for_child(
     tcx: TyCtxt<'_>,
     child_item: LocalDefId,
 ) -> Option<LogicalParentBoundary> {

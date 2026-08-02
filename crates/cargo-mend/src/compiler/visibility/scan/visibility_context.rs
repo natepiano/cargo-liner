@@ -183,6 +183,8 @@ pub fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) ->
                 && a.item == b.item
         });
     }
+    sink.visibility_constraints.sort();
+    sink.visibility_constraints.dedup();
 
     let report = StoredReport {
         version:                FINDINGS_SCHEMA_VERSION,
@@ -193,6 +195,7 @@ pub fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) ->
         config_fingerprint:     settings.config_fingerprint.clone(),
         source_files:           source_files.into_iter().collect(),
         findings:               sink.findings,
+        visibility_constraints: sink.visibility_constraints,
         pub_use_fix_facts:      sink.pub_use_fix_facts,
         all_features_coverage:  source_cache.all_features_coverage(),
         compiler_warning_facts: CompilerWarningFacts::None,

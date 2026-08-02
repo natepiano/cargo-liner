@@ -15,4 +15,9 @@ pub(super) use import_scan::ImportScan;
 pub(super) use import_scan::UseFix;
 pub(super) use import_scan::ValidatedFixSet;
 pub(super) use scan::scan_selection;
-pub(super) use use_binding::collect_use_bindings;
+use syn::UseTree;
+pub(super) use use_binding::UseBinding;
+
+pub(super) fn collect_use_bindings(tree: &UseTree) -> Vec<UseBinding> {
+    use_binding::collect_use_bindings(tree)
+}

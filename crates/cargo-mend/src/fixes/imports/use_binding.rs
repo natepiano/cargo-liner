@@ -1,31 +1,31 @@
 use syn::UseTree;
 
-pub enum UseBinding {
+pub(in crate::fixes) enum UseBinding {
     Named { name: String, path: String },
     Glob { path: String },
 }
 
 impl UseBinding {
-    pub fn name(&self) -> Option<&str> {
+    pub(in crate::fixes) fn name(&self) -> Option<&str> {
         match self {
             Self::Named { name, .. } => Some(name),
             Self::Glob { .. } => None,
         }
     }
 
-    pub fn path(&self) -> &str {
+    pub(in crate::fixes) fn path(&self) -> &str {
         match self {
             Self::Named { path, .. } | Self::Glob { path } => path,
         }
     }
 
-    pub fn binds_path_leaf(&self) -> bool {
+    pub(in crate::fixes) fn binds_path_leaf(&self) -> bool {
         self.name()
             .is_some_and(|name| self.path().rsplit("::").next() == Some(name))
     }
 }
 
-pub fn collect_use_bindings(tree: &UseTree) -> Vec<UseBinding> {
+pub(super) fn collect_use_bindings(tree: &UseTree) -> Vec<UseBinding> {
     let mut bindings = Vec::new();
     collect(tree, &mut Vec::new(), &mut bindings);
     bindings

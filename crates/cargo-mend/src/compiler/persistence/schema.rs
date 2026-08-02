@@ -1,6 +1,7 @@
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::visibility_constraint::StoredVisibilityConstraint;
 use crate::config::DiagnosticCode;
 use crate::reporting::AllFeaturesCoverage;
 use crate::reporting::CompilerWarningFacts;
@@ -23,6 +24,8 @@ pub struct StoredReport {
     pub source_files:           Vec<String>,
     pub findings:               Vec<StoredFinding>,
     #[serde(default)]
+    pub visibility_constraints: Vec<StoredVisibilityConstraint>,
+    #[serde(default)]
     pub pub_use_fix_facts:      Vec<StoredPubUseFixFact>,
     #[serde(default)]
     pub all_features_coverage:  AllFeaturesCoverage,
@@ -42,7 +45,7 @@ pub struct UseSite {
     pub caller_module_def_path: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredFinding {
     pub severity:                Severity,
     pub diagnostic_code:         DiagnosticCode,

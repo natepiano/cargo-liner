@@ -116,6 +116,7 @@ mod tests {
             config_fingerprint:     CONFIG_FINGERPRINT.to_string(),
             source_files:           Vec::new(),
             findings:               Vec::new(),
+            visibility_constraints: Vec::new(),
             pub_use_fix_facts:      Vec::new(),
             all_features_coverage:  AllFeaturesCoverage::default(),
             compiler_warning_facts: CompilerWarningFacts::None,

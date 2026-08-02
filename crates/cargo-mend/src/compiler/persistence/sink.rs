@@ -8,13 +8,15 @@ use anyhow::Result;
 use super::schema::StoredFinding;
 use super::schema::StoredPubUseFixFact;
 use super::schema::UseSite;
+use super::visibility_constraint::StoredVisibilityConstraint;
 use crate::compiler::constants::FINDINGS_DIR_NAME;
 
 #[derive(Default)]
 pub struct FindingsSink {
-    pub findings:          Vec<StoredFinding>,
-    pub pub_use_fix_facts: Vec<StoredPubUseFixFact>,
-    pub use_sites:         Vec<UseSite>,
+    pub findings:               Vec<StoredFinding>,
+    pub visibility_constraints: Vec<StoredVisibilityConstraint>,
+    pub pub_use_fix_facts:      Vec<StoredPubUseFixFact>,
+    pub use_sites:              Vec<UseSite>,
 }
 
 pub fn prepare_findings_dir(target_directory: &Path) -> Result<PathBuf> {

@@ -1080,7 +1080,7 @@ fn cfg_test_module_literal_counts_as_facade_usage_in_default_run() {
 }
 
 #[test]
-fn inline_sibling_signature_exposes_deep_inline_subject() {
+fn inline_sibling_signature_uses_its_restricted_outward_reach() {
     let temp = tempdir().expect("create inline signature fixture dir");
     fs::create_dir_all(temp.path().join("src/a")).expect("create fixture modules");
     write_manifest(&temp, "inline_sibling_signature_fixture", false);
@@ -1110,14 +1110,32 @@ fn inline_sibling_signature_exposes_deep_inline_subject() {
     assert!(
         forbidden_help
             .iter()
-            .any(|help| help.contains("this item is exposed through a public signature")),
-        "Exposed must receive the inline signature recommendation: {report:#?}"
+            .all(|help| !help.contains("this item is exposed through a public signature")),
+        "the crate-visible make facade must not require public reach: {report:#?}"
     );
     assert!(
         forbidden_help
             .iter()
             .any(|help| help.contains("consider using `pub(super)`")),
         "Hidden must retain the non-exposed recommendation: {report:#?}"
+    );
+    assert!(
+        forbidden_help.iter().any(|help| {
+            help.as_str()
+                == "move the item into `crate`, or add an explicit facade at `crate` and rerun `cargo mend`"
+        }),
+        "Exposed must retain its crate-visible signature boundary: {report:#?}"
+    );
+    assert_eq!(
+        report
+            .findings
+            .iter()
+            .filter(|finding| {
+                finding.code == DiagnosticCode::ForbiddenPubCrate && finding.path == "src/a/b.rs"
+            })
+            .count(),
+        2,
+        "both forbidden annotations remain findings while Exposed keeps its signature floor: {report:#?}",
     );
 }
 

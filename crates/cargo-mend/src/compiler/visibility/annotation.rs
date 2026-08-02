@@ -28,7 +28,7 @@ pub(super) enum VisibilitySyntax {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct VisibilityReach(Visibility<DefId>);
+pub struct VisibilityReach(Visibility<DefId>);
 
 pub(super) enum VisibilityAnnotation<'source> {
     Private,
@@ -171,12 +171,12 @@ impl From<ScopeReach<DefId>> for VisibilityReach {
 }
 
 impl VisibilityReach {
-    pub(super) fn compare(self, other: Self, tcx: TyCtxt<'_>) -> Option<Ordering> {
+    pub fn compare(self, other: Self, tcx: TyCtxt<'_>) -> Option<Ordering> {
         let mut is_at_least = |lhs, rhs| Self::from(lhs).is_at_least(Self::from(rhs), tcx);
         self.reach().compare(other.reach(), &mut is_at_least)
     }
 
-    pub(super) fn join(self, other: Self, tcx: TyCtxt<'_>) -> Self {
+    pub fn join(self, other: Self, tcx: TyCtxt<'_>) -> Self {
         let mut is_at_least = |lhs, rhs| Self::from(lhs).is_at_least(Self::from(rhs), tcx);
         let mut parent_module = |module: DefId| {
             module.as_local().map_or(module, |local_module| {
@@ -204,6 +204,8 @@ impl VisibilityReach {
         self.is_at_least(other, tcx) && !other.is_at_least(self, tcx)
     }
 
+    pub(super) fn is_public(self) -> bool { self.0.is_public() }
+
     pub(super) fn to_source(self, tcx: TyCtxt<'_>) -> String {
         match self.0 {
             Visibility::Public => String::from("pub"),
@@ -224,11 +226,7 @@ impl VisibilityReach {
     }
 }
 
-pub(super) fn anchored(
-    reach: VisibilityReach,
-    target: LocalDefId,
-    tcx: TyCtxt<'_>,
-) -> VisibilityReach {
+pub fn anchored(reach: VisibilityReach, target: LocalDefId, tcx: TyCtxt<'_>) -> VisibilityReach {
     let target_module = tcx.parent_module_from_def_id(target).to_def_id();
     let mut is_at_least =
         |lhs, rhs| VisibilityReach::from(lhs).is_at_least(VisibilityReach::from(rhs), tcx);
@@ -241,6 +239,24 @@ pub(super) fn anchored(
         .reach()
         .anchored(target_module, &mut is_at_least, &mut parent_module)
         .into()
+}
+
+pub fn capped_by_enclosing_modules(
+    mut reach: VisibilityReach,
+    declaration: LocalDefId,
+    tcx: TyCtxt<'_>,
+) -> Option<VisibilityReach> {
+    let mut module = tcx.parent_module_from_def_id(declaration).to_local_def_id();
+    while module != CRATE_DEF_ID {
+        let module_reach = VisibilityReach::from(tcx.visibility(module.to_def_id()));
+        reach = match reach.compare(module_reach, tcx) {
+            Some(Ordering::Equal | Ordering::Less) => reach,
+            Some(Ordering::Greater) => module_reach,
+            None => return None,
+        };
+        module = tcx.parent_module_from_def_id(module).to_local_def_id();
+    }
+    Some(reach)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

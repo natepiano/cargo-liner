@@ -256,6 +256,11 @@ fn finding_from_compiler_message(message: &Value) -> super::report::Finding {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string(),
+        line_start: span
+            .and_then(|span| span.get("line_start"))
+            .and_then(Value::as_u64)
+            .and_then(|line| usize::try_from(line).ok())
+            .unwrap_or_default(),
         item: span
             .and_then(|span| span.get("label"))
             .and_then(Value::as_str)

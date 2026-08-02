@@ -574,7 +574,7 @@ edition = "2024"
 }
 
 #[test]
-fn pub_crate_at_depth_3_suggests_pub_when_structurally_exposed_by_return_type() {
+fn pub_crate_at_depth_3_requires_structure_for_a_crate_visible_method_surface() {
     let temp = tempdir().expect("create temp fixture dir");
 
     fs::write(
@@ -598,11 +598,9 @@ edition = "2024"
         "mod baz;\npub(crate) use baz::Cache;\n",
     )
     .expect("write foo/bar/mod.rs");
-    // `Cache` is a named, re-exported crate export, so its own `pub(crate)` is
-    // capped by the facade and is not flagged. `Storage` is returned by Cache's
-    // public method but never named outside this module: it is exposed only
-    // structurally, so narrowing it to `pub(super)` would fail
-    // `private_interfaces` and the correct modifier is `pub`.
+    // `Cache` is capped by its crate-visible facade. Callers must access both
+    // `Cache` and `Cache::commit`, so the method exposes `Storage` at crate
+    // reach even though the method itself is written as bare `pub`.
     fs::write(
         temp.path().join("src/foo/bar/baz.rs"),
         r#"pub(crate) struct Cache;
@@ -634,22 +632,17 @@ pub(crate) struct Storage {
     let storage_finding = report
         .findings
         .iter()
-        .find(|f| {
-            f.code == DiagnosticCode::ForbiddenPubCrate && f.path.ends_with("src/foo/bar/baz.rs")
+        .find(|finding| {
+            finding.code == DiagnosticCode::ForbiddenPubCrate
+                && finding.path.ends_with("src/foo/bar/baz.rs")
         })
-        .unwrap_or_else(|| {
-            panic!(
-                "expected forbidden_pub_crate on structurally-exposed `Storage`: {:?}",
-                report.findings,
-            )
-        });
+        .unwrap_or_else(|| panic!("missing Storage finding: {report:#?}"));
     assert!(
-        storage_finding
-            .help
-            .iter()
-            .any(|line| line.contains("consider using `pub`")),
-        "a structurally-exposed pub(crate) item must suggest `pub`, not `pub(super)`: {:?}",
-        storage_finding.help,
+        storage_finding.help.iter().any(|help| {
+            help
+                == "move the item into `crate`, or add an explicit facade at `crate` and rerun `cargo mend`"
+        }),
+        "crate-visible method exposure requires structural advice: {report:#?}",
     );
 }
 
@@ -692,8 +685,8 @@ fn mutually_referencing_public_signatures_do_not_overflow_exposure_walk() {
     // Regression: the structural-exposure walk follows public signatures from
     // item to item. `Alpha`'s public field graph mentions `Beta` and `Beta`'s
     // mentions `Alpha`, which used to recurse Alpha -> Beta -> Alpha forever
-    // and overflow the compiler-driver stack. The walk must terminate AND
-    // still find `Storage`'s real exposure through `Cache::commit`.
+    // and overflow the compiler-driver stack. The walk must terminate and
+    // retain `Storage`'s crate-visible exposure through `Cache::commit`.
     let temp = tempdir().expect("create temp fixture dir");
 
     fs::write(
@@ -754,24 +747,15 @@ pub struct Beta {
     .expect("write consumer");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    let storage_finding = report
-        .findings
-        .iter()
-        .find(|f| {
-            f.code == DiagnosticCode::ForbiddenPubCrate && f.path.ends_with("src/foo/bar/baz.rs")
-        })
-        .unwrap_or_else(|| {
-            panic!(
-                "expected forbidden_pub_crate on structurally-exposed `Storage`: {:?}",
-                report.findings,
-            )
-        });
     assert!(
-        storage_finding
-            .help
-            .iter()
-            .any(|line| line.contains("consider using `pub`")),
-        "the cycle guard must not hide Storage's real exposure through Cache::commit: {:?}",
-        storage_finding.help,
+        report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::ForbiddenPubCrate
+                && finding.path.ends_with("src/foo/bar/baz.rs")
+                && finding.help.iter().any(|help| {
+                    help
+                        == "move the item into `crate`, or add an explicit facade at `crate` and rerun `cargo mend`"
+                })
+        }),
+        "the cycle guard must retain Storage's crate-visible structural requirement: {report:#?}",
     );
 }

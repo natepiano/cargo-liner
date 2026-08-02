@@ -2,8 +2,8 @@ mod boundary;
 mod exports;
 mod reference;
 
+pub(super) use boundary::LogicalParentBoundary;
 pub(super) use boundary::ModuleSourceMap;
-pub(super) use boundary::logical_parent_boundary_for_child;
 pub(super) use boundary::module_is_within;
 pub(super) use exports::ParentFacadeExportRequest;
 pub(super) use exports::ParentFacadeExportStatus;
@@ -28,3 +28,12 @@ pub(super) use reference::ParentFacadeUsageByName;
 pub(super) use reference::path_exists_outside_child_module;
 pub(super) use reference::path_exists_outside_module;
 pub(super) use reference::workspace_source_parent_export_literal_usage;
+use rustc_middle::ty::TyCtxt;
+use rustc_span::def_id::LocalDefId;
+
+pub(super) fn logical_parent_boundary_for_child(
+    tcx: TyCtxt<'_>,
+    child_item: LocalDefId,
+) -> Option<LogicalParentBoundary> {
+    boundary::logical_parent_boundary_for_child(tcx, child_item)
+}

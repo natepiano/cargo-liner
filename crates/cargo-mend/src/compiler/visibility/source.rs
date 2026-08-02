@@ -14,6 +14,7 @@ use rustc_span::Span;
 
 use super::scan::FindingParams;
 use crate::compiler::persistence::StoredFinding;
+use crate::compiler::persistence::StoredVisibilitySource;
 use crate::compiler::source_cache::SourceCache;
 
 #[derive(Debug)]
@@ -86,6 +87,19 @@ pub(super) fn build_line_finding(
         item_def_path: params.item_def_path,
         narrower_scope_def_path: params.narrower_scope_def_path,
     })
+}
+
+pub(super) fn stored_visibility_source(
+    tcx: TyCtxt<'_>,
+    file_path: &Path,
+    span: Span,
+) -> StoredVisibilitySource {
+    let start = tcx.sess.source_map().lookup_char_pos(span.lo());
+    StoredVisibilitySource {
+        path:   file_path.to_string_lossy().into_owned(),
+        line:   start.line,
+        column: start.col_display + 1,
+    }
 }
 
 pub(super) fn highlight_span(visibility_span: Span, ident_span: Option<Span>) -> Span {

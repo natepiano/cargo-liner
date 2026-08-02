@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::Path;
@@ -10,15 +9,12 @@ use serde_json::from_str;
 
 use super::StoredReport;
 use super::caller_aware;
-use super::caller_aware::CallerMap;
 use super::intersection;
+use super::visibility_constraint;
 use super::visibility_priority;
 use crate::compiler::constants::FINDINGS_SCHEMA_VERSION;
 use crate::compiler::constants::JSON_FILE_EXTENSION;
 use crate::compiler::settings;
-use crate::compiler::visibility;
-use crate::compiler::visibility::NoFacadeAdvice;
-use crate::config::DiagnosticCode;
 use crate::reporting::AllFeaturesCoverage;
 use crate::reporting::CompilerWarningFacts;
 use crate::reporting::Finding;
@@ -83,10 +79,7 @@ pub fn load_report(
         matched_reports.push(stored);
     }
 
-    intersection::apply_cross_compilation_intersection(&mut matched_reports);
-    let callers = caller_aware::apply_caller_aware_suppression(&mut matched_reports);
-    refine_no_facade_advice(&mut matched_reports, &callers);
-    visibility_priority::apply_visibility_narrowing_priority(&mut matched_reports);
+    reconcile_cross_target_reports(&mut matched_reports);
 
     if matched_reports.is_empty() {
         all_features_coverage = AllFeaturesCoverage::default();
@@ -118,48 +111,11 @@ pub fn load_report(
     })
 }
 
-fn refine_no_facade_advice(reports: &mut [StoredReport], callers: &CallerMap) {
-    let no_callers = BTreeSet::new();
-    for report in reports {
-        let package_root = report.package_root.clone();
-        for finding in &mut report.findings {
-            if finding.diagnostic_code != DiagnosticCode::ForbiddenPubInCrate {
-                continue;
-            }
-            let (Some(item_def_path), Some(item_module)) = (
-                finding.item_def_path.as_deref(),
-                finding.narrower_scope_def_path.as_deref(),
-            ) else {
-                continue;
-            };
-            let Some(boundary_path) =
-                finding
-                    .visibility_annotation
-                    .as_deref()
-                    .and_then(|annotation| {
-                        visibility::canonical_pub_in_boundary(item_module, annotation)
-                    })
-            else {
-                continue;
-            };
-            let item_callers =
-                caller_aware::callers_for_package(callers, &package_root, item_def_path)
-                    .unwrap_or(&no_callers);
-            let advice: NoFacadeAdvice = visibility::classify_no_facade_callers(
-                item_module,
-                visibility::parent_scope_def_path(item_module),
-                item_callers,
-            );
-            let message = visibility::no_facade_headline(advice, finding.message.clone());
-            let suggestion = visibility::no_facade_suggestion(advice, &boundary_path);
-            if finding.message != message {
-                finding.message = message;
-            }
-            if finding.suggestion.as_deref() != Some(suggestion.as_str()) {
-                finding.suggestion = Some(suggestion);
-            }
-        }
-    }
+fn reconcile_cross_target_reports(reports: &mut [StoredReport]) {
+    intersection::apply_cross_compilation_intersection(reports);
+    let callers = caller_aware::apply_caller_aware_suppression(reports);
+    visibility_constraint::reconcile_visibility_constraints(reports, &callers);
+    visibility_priority::apply_visibility_narrowing_priority(reports);
 }
 
 fn sort_and_dedup_findings(findings: &mut Vec<Finding>) {
@@ -401,6 +357,7 @@ mod tests {
                 config_fingerprint: CONFIG_FINGERPRINT.to_string(),
                 source_files: Vec::new(),
                 findings,
+                visibility_constraints: Vec::new(),
                 pub_use_fix_facts: Vec::new(),
                 all_features_coverage: AllFeaturesCoverage::default(),
                 compiler_warning_facts: CompilerWarningFacts::None,

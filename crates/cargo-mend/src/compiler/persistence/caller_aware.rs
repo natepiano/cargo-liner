@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 use super::StoredReport;
+use crate::compiler::visibility;
 use crate::config::DiagnosticCode;
 
 pub(super) type CallerMap = BTreeMap<CallerKey, BTreeSet<String>>;
@@ -38,7 +39,10 @@ pub(super) fn apply_caller_aware_suppression(reports: &mut [StoredReport]) -> Ca
     for report in reports.iter_mut() {
         let package_root = report.package_root.clone();
         report.findings.retain(|finding| {
-            if finding.diagnostic_code == DiagnosticCode::ForbiddenPubInCrate {
+            if matches!(
+                finding.diagnostic_code,
+                DiagnosticCode::ForbiddenPubCrate | DiagnosticCode::ForbiddenPubInCrate
+            ) {
                 return true;
             }
             let Some(item_path) = finding.item_def_path.as_deref() else {
@@ -52,7 +56,7 @@ pub(super) fn apply_caller_aware_suppression(reports: &mut [StoredReport]) -> Ca
             };
             caller_set
                 .iter()
-                .all(|caller| def_path_is_descendant(caller, narrower_scope))
+                .all(|caller| visibility::def_path_is_descendant(caller, narrower_scope))
         });
     }
     callers
@@ -64,18 +68,6 @@ pub(super) fn callers_for_package<'a>(
     item_def_path: &str,
 ) -> Option<&'a BTreeSet<String>> {
     callers.get(&CallerKey::for_package(package_root, item_def_path))
-}
-
-fn def_path_is_descendant(caller_path: &str, narrower_scope: &str) -> bool {
-    if caller_path == narrower_scope {
-        return true;
-    }
-    if let Some(rest) = caller_path.strip_prefix(narrower_scope)
-        && rest.starts_with("::")
-    {
-        return true;
-    }
-    false
 }
 
 #[cfg(test)]
@@ -165,6 +157,7 @@ mod tests {
             config_fingerprint:     CONFIG_FINGERPRINT.to_string(),
             source_files:           Vec::new(),
             findings:               Vec::new(),
+            visibility_constraints: Vec::new(),
             pub_use_fix_facts:      Vec::new(),
             all_features_coverage:  AllFeaturesCoverage::default(),
             compiler_warning_facts: CompilerWarningFacts::None,

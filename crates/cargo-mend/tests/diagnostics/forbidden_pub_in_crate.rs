@@ -91,6 +91,179 @@ edition = "2024"
 }
 
 #[test]
+fn public_signature_requires_bare_pub_for_every_pub_in_spelling() {
+    let temp = tempdir().expect("create public signature fixture dir");
+    write_sources(
+        &temp,
+        &[
+            (
+                "Cargo.toml",
+                r#"[package]
+name = "public_pub_in_glob_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+            ),
+            ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
+            (
+                "src/lib.rs",
+                "mod a;\npub use a::{make_current, make_parent, make_relative, make_rooted};\n",
+            ),
+            (
+                "src/a.rs",
+                "mod b;\npub use b::{make_current, make_parent, make_relative, make_rooted};\n",
+            ),
+            (
+                "src/a/b.rs",
+                "mod c;\npub use c::{make_current, make_parent, make_relative, make_rooted};\n",
+            ),
+            (
+                "src/a/b/c.rs",
+                "pub(in super) struct ParentTarget;\npub(in self) struct CurrentTarget;\npub(in super::super) struct RelativeTarget;\npub(in crate::a) struct RootedTarget;\npub fn make_parent() -> ParentTarget { ParentTarget }\npub fn make_current() -> CurrentTarget { CurrentTarget }\npub fn make_relative() -> RelativeTarget { RelativeTarget }\npub fn make_rooted() -> RootedTarget { RootedTarget }\n",
+            ),
+        ],
+    );
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    for line_start in 1..=4 {
+        let finding = report
+            .findings
+            .iter()
+            .find(|finding| {
+                finding.code == DiagnosticCode::ForbiddenPubInCrate
+                    && finding.path == "src/a/b/c.rs"
+                    && finding.line_start == line_start
+            })
+            .unwrap_or_else(|| {
+                panic!("missing public signature finding at line {line_start}: {report:#?}")
+            });
+        assert!(
+            finding.help.iter().any(|line| {
+                line == "this item is exposed through a public signature; consider using `pub`"
+            }),
+            "public signature advice must require bare pub at line {line_start}: {report:#?}",
+        );
+        assert!(
+            finding
+                .help
+                .iter()
+                .all(|line| !line.contains("replace it with an explicit re-export")),
+            "public signature advice must bypass the glob blocker at line {line_start}: {report:#?}",
+        );
+    }
+}
+
+#[test]
+fn public_signature_precedes_a_constructible_glob_blocker() {
+    let temp = tempdir().expect("create public signature glob fixture dir");
+    write_sources(
+        &temp,
+        &[
+            (
+                "Cargo.toml",
+                r#"[package]
+name = "public_pub_in_glob_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+            ),
+            ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
+            ("src/lib.rs", "mod a;\npub use a::make;\n"),
+            (
+                "src/a.rs",
+                "mod b;\npub use b::make;\npub(in crate::a) use b::*;\n",
+            ),
+            (
+                "src/a/b.rs",
+                "mod c;\npub use c::make;\npub(in crate::a) use c::Target;\n",
+            ),
+            (
+                "src/a/b/c.rs",
+                "pub(in crate::a) struct Target;\npub fn make() -> Target { Target }\n",
+            ),
+        ],
+    );
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let finding = report
+        .findings
+        .iter()
+        .find(|finding| {
+            finding.code == DiagnosticCode::ForbiddenPubInCrate
+                && finding.path == "src/a/b/c.rs"
+                && finding.line_start == 1
+        })
+        .unwrap_or_else(|| panic!("missing public signature glob finding: {report:#?}"));
+    assert!(
+        finding.help.iter().any(|line| {
+            line == "this item is exposed through a public signature; consider using `pub`"
+        }),
+        "public signature advice must require bare pub: {report:#?}",
+    );
+    assert!(
+        finding
+            .help
+            .iter()
+            .all(|line| !line.contains("replace it with an explicit re-export")),
+        "public signature advice must bypass the glob blocker: {report:#?}",
+    );
+}
+
+#[test]
+fn restricted_signature_retains_glob_blocker_for_pub_in_annotation() {
+    let temp = tempdir().expect("create restricted signature glob fixture dir");
+    write_sources(
+        &temp,
+        &[
+            (
+                "Cargo.toml",
+                r#"[package]
+name = "restricted_pub_in_glob_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+            ),
+            ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
+            ("src/lib.rs", "mod a;\npub(crate) use a::make;\n"),
+            (
+                "src/a.rs",
+                "mod b;\npub(crate) use b::make;\npub(in crate::a) use b::*;\n",
+            ),
+            (
+                "src/a/b.rs",
+                "mod c;\npub(crate) use c::make;\npub(in crate::a) use c::Target;\n",
+            ),
+            (
+                "src/a/b/c.rs",
+                "pub(in crate::a) struct Target;\npub(crate) fn make() -> Target { Target }\n",
+            ),
+        ],
+    );
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let target_finding = report
+        .findings
+        .iter()
+        .find(|finding| {
+            finding.code == DiagnosticCode::ForbiddenPubInCrate
+                && finding.path == "src/a/b/c.rs"
+                && finding.line_start == 1
+        })
+        .unwrap_or_else(|| panic!("missing restricted signature glob finding: {report:#?}"));
+    assert_eq!(
+        target_finding.headline,
+        "parent facade does not provide a resolvable visibility boundary"
+    );
+    assert!(
+        target_finding.help.iter().any(|line| {
+            line
+                == "facade at a.rs:3 uses `*`; replace it with an explicit re-export before using `pub(in ...)`"
+        }),
+        "restricted signature advice must retain the glob blocker: {report:#?}",
+    );
+}
+
+#[test]
 fn exact_crate_rooted_boundary_is_accepted_when_enabled() {
     for (pub_in_path, expected_codes) in [
         ("forbidden", vec![DiagnosticCode::ForbiddenPubInCrate]),
@@ -485,7 +658,7 @@ fn no_facade_callers_select_only_compiling_advice() {
 }
 
 #[test]
-fn sibling_binary_callers_refine_no_facade_advice() {
+fn sibling_binary_accepted_reach_preserves_no_facade_violation() {
     let lib_only = create_cross_target_no_facade_fixture(SiblingBinary::Absent);
     let lib_only_report = run_mend_json(&lib_only.path().join("Cargo.toml"));
     assert_headline_and_help(
@@ -502,6 +675,37 @@ fn sibling_binary_callers_refine_no_facade_advice() {
         "src/a/c.rs",
         "no visibility annotation allowed by policy preserves this item's current callers",
         "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend`",
+    );
+}
+
+#[test]
+fn cross_target_resolved_facade_preserves_joined_reexport_boundary() {
+    let signature_only = create_cross_target_facade_signature_fixture(SiblingBinary::Absent);
+    let signature_only_report = run_mend_json(&signature_only.path().join("Cargo.toml"));
+    assert_headline_and_help(
+        &signature_only_report,
+        "src/a/target.rs",
+        "use of `pub(in crate::a)` outside an exact facade boundary is forbidden by policy",
+        "consider using: `pub(super)`",
+    );
+
+    let with_facade = create_cross_target_facade_signature_fixture(SiblingBinary::Present);
+    let with_facade_report = run_mend_json(&with_facade.path().join("Cargo.toml"));
+    assert_headline_and_help(
+        &with_facade_report,
+        "src/a/target.rs",
+        "no visibility annotation allowed by policy preserves this item's current callers",
+        "move the item into `crate::a::b`, or add an explicit facade at `crate::a::b` and rerun `cargo mend`",
+    );
+    assert!(
+        with_facade_report.findings.iter().all(|finding| {
+            finding.path != "src/a/target.rs"
+                || finding
+                    .help
+                    .iter()
+                    .all(|line| line != "consider using: `pub(super)`")
+        }),
+        "`pub(super)` would make the binary facade fail with E0364 or E0365: {with_facade_report:#?}",
     );
 }
 
@@ -717,6 +921,42 @@ edition = "2024"
             &[(
                 "src/bin/probe.rs",
                 "mod a {\n    mod b {\n        mod c { include!(\"../a/c.rs\"); }\n        pub(super) use c::helper;\n    }\n    pub(super) fn caller() { b::helper(); }\n}\nfn main() { a::caller(); }\n",
+            )],
+        );
+    }
+    temp
+}
+
+fn create_cross_target_facade_signature_fixture(sibling_binary: SiblingBinary) -> TempDir {
+    let temp = tempdir().expect("create cross-target facade fixture dir");
+    write_sources(
+        &temp,
+        &[
+            (
+                "Cargo.toml",
+                r#"[package]
+name = "cross_target_facade_signature_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+            ),
+            ("mend.toml", "[visibility]\npub_in_path = \"forbidden\"\n"),
+            (
+                "src/lib.rs",
+                "mod a {\n    mod b {\n        mod c {\n            mod d { include!(\"a/target.rs\"); }\n        }\n    }\n}\n",
+            ),
+            (
+                "src/a/target.rs",
+                "pub(in crate::a) struct Target;\npub(super) fn expose() -> Target { Target }\n",
+            ),
+        ],
+    );
+    if matches!(sibling_binary, SiblingBinary::Present) {
+        write_sources(
+            &temp,
+            &[(
+                "src/bin/probe.rs",
+                "mod a {\n    mod b {\n        mod c {\n            mod d { include!(\"../a/target.rs\"); }\n            pub(super) use d::Target;\n        }\n    }\n}\nfn main() {}\n",
             )],
         );
     }

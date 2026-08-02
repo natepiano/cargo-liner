@@ -62,7 +62,7 @@ pub(crate) const JSON_FILE_EXTENSION: &str = "json";
 
 // findings
 pub(crate) const FINDINGS_DIR_NAME: &str = "mend-findings";
-pub(crate) const FINDINGS_SCHEMA_VERSION: u32 = 19;
+pub(crate) const FINDINGS_SCHEMA_VERSION: u32 = 21;
 
 // progress indicator
 pub(super) const PROGRESS_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];

@@ -115,7 +115,7 @@ pub(super) struct ReexportOccurrence {
 }
 
 #[derive(Default)]
-pub(super) struct ReexportIndex {
+pub(in crate::compiler) struct ReexportIndex {
     named:               HashMap<DefId, Vec<ReexportOccurrence>>,
     globs:               HashMap<DefId, Vec<ReexportOccurrence>>,
     direct_use_subjects: HashMap<LocalDefId, DefId>,
@@ -123,11 +123,29 @@ pub(super) struct ReexportIndex {
     extern_crates:       HashMap<(LocalDefId, String), LocalDefId>,
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum ExactGlobSubjectResolution {
+    Unresolved,
+    Resolved { visibility: Visibility<DefId> },
+}
+
 #[derive(Clone)]
 pub(super) struct ParentFacadeOccurrences<'index> {
     pub(super) selected:          &'index ReexportOccurrence,
     pub(super) matching:          Vec<&'index ReexportOccurrence>,
     pub(super) spelling_conflict: bool,
+}
+
+#[derive(Clone, Copy)]
+struct ApplicableReexportReach<'index> {
+    occurrence:                  &'index ReexportOccurrence,
+    reach:                       VisibilityReach,
+    requires_public_declaration: bool,
+}
+
+enum ExportedAncestorPathReachResolution {
+    Reachable(VisibilityReach),
+    IncomparableVisibility,
 }
 
 /// The resolved visibility required by every named facade boundary between an
@@ -154,15 +172,32 @@ impl FacadeChainBlocker<'_> {
     }
 }
 
+/// Visibility still required by facade boundaries outside the nearest facade.
+#[derive(Clone, Copy)]
+pub(super) enum RetainedFacadeRequirement {
+    Absent,
+    Required(VisibilityReach),
+}
+
+impl RetainedFacadeRequirement {
+    fn join(self, reach: VisibilityReach, tcx: TyCtxt<'_>) -> Self {
+        match self {
+            Self::Absent => Self::Required(reach),
+            Self::Required(current) => Self::Required(current.join(reach, tcx)),
+        }
+    }
+}
+
 /// Nearest-facade metadata and the independently computed full-chain reach.
 #[derive(Clone)]
 pub(super) struct ParentFacadeAnalysis<'index> {
-    pub(super) nearest: ParentFacadeOccurrences<'index>,
-    pub(super) chain:   FacadeChainResolution<'index>,
+    pub(super) nearest:                     ParentFacadeOccurrences<'index>,
+    pub(super) chain:                       FacadeChainResolution<'index>,
+    pub(super) retained_facade_requirement: RetainedFacadeRequirement,
 }
 
 impl ReexportIndex {
-    pub(super) fn facade_subject(&self, item_def_id: LocalDefId) -> LocalDefId {
+    pub(in crate::compiler) fn facade_subject(&self, item_def_id: LocalDefId) -> LocalDefId {
         self.facade_subjects
             .get(&item_def_id)
             .copied()
@@ -200,14 +235,15 @@ impl ReexportIndex {
                 .flatten()
                 .find(|occurrence| occurrence.use_def_id == facade_subject)?;
             return Some(ParentFacadeAnalysis {
-                nearest: ParentFacadeOccurrences {
+                nearest:                     ParentFacadeOccurrences {
                     selected:          occurrence,
                     matching:          vec![occurrence],
                     spelling_conflict: occurrence.spelling_conflict,
                 },
-                chain:   FacadeChainResolution::Unresolvable {
+                chain:                       FacadeChainResolution::Unresolvable {
                     blocker: FacadeChainBlocker::ForeignBoundary(occurrence),
                 },
+                retained_facade_requirement: RetainedFacadeRequirement::Absent,
             });
         }
         if child_module == CRATE_DEF_ID {
@@ -216,6 +252,7 @@ impl ReexportIndex {
 
         let mut nearest = None;
         let mut required: Option<VisibilityReach> = None;
+        let mut retained_facade_requirement = RetainedFacadeRequirement::Absent;
         loop {
             let parent_module: LocalDefId = tcx.parent_module_from_def_id(child_module).into();
             let named_occurrences =
@@ -234,6 +271,9 @@ impl ReexportIndex {
                 let boundary_reach = Self::joined_occurrence_reach(tcx, &occurrences.matching)?;
                 if nearest.is_none() {
                     nearest = Some(occurrences);
+                } else {
+                    retained_facade_requirement =
+                        retained_facade_requirement.join(boundary_reach, tcx);
                 }
                 required = Some(
                     required.map_or(boundary_reach, |current| current.join(boundary_reach, tcx)),
@@ -261,6 +301,7 @@ impl ReexportIndex {
                         chain: FacadeChainResolution::Unresolvable {
                             blocker: FacadeChainBlocker::Glob(blocking_glob),
                         },
+                        retained_facade_requirement,
                     });
                 }
             }
@@ -271,6 +312,7 @@ impl ReexportIndex {
                     chain: FacadeChainResolution::Resolved {
                         required: annotation::anchored(required, item_def_id, tcx),
                     },
+                    retained_facade_requirement,
                 });
             }
             child_module = parent_module;
@@ -283,45 +325,148 @@ impl ReexportIndex {
         item_def_id: LocalDefId,
         facade_subject: LocalDefId,
     ) -> bool {
-        self.public_reexport_occurrences(tcx, item_def_id, facade_subject)
-            .next()
-            .is_some()
+        self.applicable_reexport_reaches(tcx, item_def_id, facade_subject)
+            .any(|reexport| reexport.requires_public_declaration)
     }
 
-    pub(super) fn has_public_reexport_outside_parent(
+    pub(in crate::compiler) fn applicable_reexport_reaches_outside_parent(
         &self,
         tcx: TyCtxt<'_>,
         item_def_id: LocalDefId,
         facade_subject: LocalDefId,
-    ) -> bool {
-        let parent_module: LocalDefId = tcx.parent_module_from_def_id(item_def_id).into();
-        self.public_reexport_occurrences(tcx, item_def_id, facade_subject)
-            .any(|occurrence| !Self::is_module_within(tcx, occurrence.owner_module, parent_module))
+    ) -> impl Iterator<Item = VisibilityReach> {
+        self.applicable_reexports_outside_parent(tcx, item_def_id, facade_subject)
+            .map(|reexport| reexport.reach)
     }
 
-    fn public_reexport_occurrences<'a>(
-        &'a self,
+    fn applicable_reexports_outside_parent<'index>(
+        &'index self,
         tcx: TyCtxt<'_>,
         item_def_id: LocalDefId,
         facade_subject: LocalDefId,
-    ) -> impl Iterator<Item = &'a ReexportOccurrence> {
+    ) -> impl Iterator<Item = ApplicableReexportReach<'index>> {
+        let parent_module: LocalDefId = tcx.parent_module_from_def_id(item_def_id).into();
+        self.applicable_reexport_reaches(tcx, item_def_id, facade_subject)
+            .filter(move |reexport| {
+                !Self::is_module_within(tcx, reexport.occurrence.owner_module, parent_module)
+            })
+    }
+
+    /// Re-export reaches supplied by resolved module ancestors, capped by the
+    /// declaration and every intervening descendant module.
+    pub(in crate::compiler) fn applicable_exported_ancestor_path_reaches(
+        &self,
+        tcx: TyCtxt<'_>,
+        declaration: LocalDefId,
+    ) -> impl Iterator<Item = VisibilityReach> {
+        let mut reaches = Vec::new();
+        let mut exported_ancestor = if matches!(tcx.def_kind(declaration.to_def_id()), DefKind::Mod)
+        {
+            declaration
+        } else {
+            tcx.parent_module_from_def_id(declaration).into()
+        };
+
+        while exported_ancestor != CRATE_DEF_ID {
+            let facade_subject = self.facade_subject(exported_ancestor);
+            for reexport in
+                self.applicable_reexports_outside_parent(tcx, exported_ancestor, facade_subject)
+            {
+                if let ExportedAncestorPathReachResolution::Reachable(reach) =
+                    Self::reach_through_descendant_path(
+                        tcx,
+                        declaration,
+                        exported_ancestor,
+                        reexport.reach,
+                    )
+                {
+                    reaches.push(reach);
+                }
+            }
+            exported_ancestor = tcx.parent_module_from_def_id(exported_ancestor).into();
+        }
+
+        reaches.into_iter()
+    }
+
+    fn reach_through_descendant_path(
+        tcx: TyCtxt<'_>,
+        declaration: LocalDefId,
+        exported_ancestor: LocalDefId,
+        exported_ancestor_reach: VisibilityReach,
+    ) -> ExportedAncestorPathReachResolution {
+        let mut path_segment = declaration;
+        let mut path_reach = exported_ancestor_reach;
+        while path_segment != exported_ancestor {
+            let segment_reach = VisibilityReach::from(tcx.visibility(path_segment.to_def_id()));
+            path_reach = match path_reach.compare(segment_reach, tcx) {
+                Some(Ordering::Equal | Ordering::Less) => path_reach,
+                Some(Ordering::Greater) => segment_reach,
+                None => {
+                    return ExportedAncestorPathReachResolution::IncomparableVisibility;
+                },
+            };
+            path_segment = tcx.parent_module_from_def_id(path_segment).into();
+        }
+        ExportedAncestorPathReachResolution::Reachable(annotation::anchored(
+            path_reach,
+            declaration,
+            tcx,
+        ))
+    }
+
+    fn applicable_reexport_reaches<'index>(
+        &'index self,
+        tcx: TyCtxt<'_>,
+        item_def_id: LocalDefId,
+        facade_subject: LocalDefId,
+    ) -> impl Iterator<Item = ApplicableReexportReach<'index>> {
         let subject = facade_subject.to_def_id();
+        let mut use_def_ids = HashSet::new();
         self.named
             .get(&subject)
             .into_iter()
             .flatten()
-            .chain(
-                Self::glob_containers(
+            .chain(self.globs.values().flatten())
+            .filter_map(move |occurrence| {
+                if !use_def_ids.insert(occurrence.use_def_id) {
+                    return None;
+                }
+                let effective_visibility = match occurrence.use_kind {
+                    FacadeUseKind::Glob => {
+                        let ExactGlobSubjectResolution::Resolved { visibility } =
+                            Self::exact_glob_subject_resolution(tcx, subject, occurrence)
+                        else {
+                            return None;
+                        };
+                        visibility
+                    },
+                    FacadeUseKind::Named | FacadeUseKind::ExternCrate => occurrence.visibility,
+                };
+                let effective_reach = VisibilityReach::from(effective_visibility);
+                let private_reach = VisibilityReach::from(Visibility::Restricted(
+                    occurrence.owner_module.to_def_id(),
+                ));
+                if effective_reach.compare(private_reach, tcx) != Some(Ordering::Greater)
+                    || !Self::occurrence_applies_to_item(tcx, item_def_id, subject, effective_reach)
+                {
+                    return None;
+                }
+                let capped_reach = annotation::capped_by_enclosing_modules(
+                    effective_reach,
+                    occurrence.use_def_id,
                     tcx,
-                    tcx.parent_module_from_def_id(facade_subject).into(),
-                    subject,
-                )
-                .filter_map(|container| self.globs.get(&container))
-                .flatten(),
-            )
-            .filter(move |occurrence| {
-                occurrence.visibility.is_public()
-                    && Self::occurrence_applies_to_item(tcx, item_def_id, subject, occurrence)
+                )?;
+                Some(ApplicableReexportReach {
+                    occurrence,
+                    reach: annotation::anchored(capped_reach, item_def_id, tcx),
+                    requires_public_declaration: match occurrence.use_kind {
+                        FacadeUseKind::Named | FacadeUseKind::ExternCrate => {
+                            occurrence.visibility.is_public()
+                        },
+                        FacadeUseKind::Glob => effective_reach.is_public(),
+                    },
+                })
             })
     }
 
@@ -333,7 +478,12 @@ impl ReexportIndex {
     ) -> Option<&'a ReexportOccurrence> {
         occurrences
             .filter(|occurrence| {
-                Self::occurrence_applies_to_item(tcx, item_def_id, subject, occurrence)
+                Self::occurrence_applies_to_item(
+                    tcx,
+                    item_def_id,
+                    subject,
+                    VisibilityReach::from(occurrence.visibility),
+                )
             })
             .reduce(|widest, occurrence| {
                 match VisibilityReach::from(occurrence.visibility)
@@ -406,7 +556,12 @@ impl ReexportIndex {
                 .flatten()
                 .filter(|occurrence| {
                     occurrence.owner_module == parent_module
-                        && Self::occurrence_applies_to_item(tcx, item_def_id, subject, occurrence)
+                        && Self::occurrence_applies_to_item(
+                            tcx,
+                            item_def_id,
+                            subject,
+                            VisibilityReach::from(occurrence.visibility),
+                        )
                 })
                 .collect(),
         )
@@ -432,17 +587,44 @@ impl ReexportIndex {
         tcx: TyCtxt<'_>,
         item_def_id: LocalDefId,
         subject: DefId,
-        occurrence: &ReexportOccurrence,
+        occurrence_reach: VisibilityReach,
     ) -> bool {
         if item_def_id.to_def_id() == subject {
             return true;
         }
         let item_reach: VisibilityReach = tcx.visibility(item_def_id.to_def_id()).into();
-        let facade_reach: VisibilityReach = tcx
-            .local_visibility(occurrence.use_def_id)
-            .map_id(LocalDefId::to_def_id)
-            .into();
-        item_reach.is_at_least(facade_reach, tcx)
+        item_reach.is_at_least(occurrence_reach, tcx)
+    }
+
+    pub(super) fn exact_glob_subject_resolution(
+        tcx: TyCtxt<'_>,
+        subject: DefId,
+        occurrence: &ReexportOccurrence,
+    ) -> ExactGlobSubjectResolution {
+        tcx.module_children_local(occurrence.owner_module)
+            .iter()
+            .find_map(|child| {
+                let resolves_subject = child.res.opt_def_id().is_some_and(|exported| {
+                    Self::normalized_export_subject(tcx, exported) == subject
+                });
+                let resolves_occurrence = child.reexport_chain.first().is_some_and(|reexport| {
+                    reexport.id() == Some(occurrence.use_def_id.to_def_id())
+                });
+                (resolves_subject && resolves_occurrence).then_some(
+                    ExactGlobSubjectResolution::Resolved {
+                        visibility: child.vis,
+                    },
+                )
+            })
+            .unwrap_or(ExactGlobSubjectResolution::Unresolved)
+    }
+
+    fn normalized_export_subject(tcx: TyCtxt<'_>, exported: DefId) -> DefId {
+        match tcx.def_kind(exported) {
+            DefKind::Variant | DefKind::Ctor(CtorOf::Struct, _) => tcx.parent(exported),
+            DefKind::Ctor(CtorOf::Variant, _) => tcx.parent(tcx.parent(exported)),
+            _ => exported,
+        }
     }
 
     fn distinct_use_occurrences(occurrences: Vec<&ReexportOccurrence>) -> Vec<&ReexportOccurrence> {
@@ -1251,12 +1433,11 @@ fn facade_visibility_decision(
         Some(VisibilitySyntax::Parent) => {
             FacadeVisibilityDecision::reexport(ParentFacadeSpelling::Super)
         },
+        Some(VisibilitySyntax::Current | VisibilitySyntax::InCurrent) => {
+            FacadeVisibilityDecision::private()
+        },
         Some(
-            VisibilitySyntax::Current
-            | VisibilitySyntax::InCrate
-            | VisibilitySyntax::InParent
-            | VisibilitySyntax::InCurrent
-            | VisibilitySyntax::InPath(_),
+            VisibilitySyntax::InCrate | VisibilitySyntax::InParent | VisibilitySyntax::InPath(_),
         ) => FacadeVisibilityDecision::reexport(ParentFacadeSpelling::Other),
         None => fallback_facade_visibility_decision(visibility, owner_module, parent_module),
     }
@@ -1339,6 +1520,7 @@ mod tests {
     use rustc_span::def_id::LocalDefId;
     use tempfile::tempdir;
 
+    use super::ExactGlobSubjectResolution;
     use super::FacadeChainBlocker;
     use super::FacadeChainResolution;
     use super::FacadeUseKind;
@@ -1355,7 +1537,7 @@ mod tests {
         let output = temp.path().join("fixture.rmeta");
         fs::write(
             &source,
-            "mod a {\n    pub(crate) mod self_local { pub(crate) extern crate core as core_alias; }\n    pub(crate) mod parent_local { pub(crate) extern crate core as core_alias; }\n    pub(crate) mod root_local { pub(crate) extern crate core as core_alias; }\n    pub(crate) mod child {\n        pub(crate) mod grandchild {\n            pub(crate) use crate::a::root_local::core_alias as crate_alias;\n        }\n        pub(crate) use super::parent_local::core_alias as super_alias;\n    }\n    pub(crate) use self::self_local::core_alias as self_alias;\n}\nmod facade {\n    pub(crate) mod child {\n        pub(crate) struct Widget;\n        impl Widget {\n            pub(crate) fn accepted_method() {}\n            pub(crate) const ACCEPTED_CONST: usize = 1;\n            pub(super) fn capped_method() {}\n            pub(super) const CAPPED_CONST: usize = 1;\n        }\n    }\n    pub(crate) use child::Widget;\n}\nmod spelling {\n    mod child { pub struct Subject; }\n    pub(super) use child::Subject;\n}\npub use core::fmt::Error as ForeignError;\nfn main() {}\n",
+            "mod a {\n    pub(crate) mod self_local { pub(crate) extern crate core as core_alias; }\n    pub(crate) mod parent_local { pub(crate) extern crate core as core_alias; }\n    pub(crate) mod root_local { pub(crate) extern crate core as core_alias; }\n    pub(crate) mod child {\n        pub(crate) mod grandchild {\n            pub(crate) use crate::a::root_local::core_alias as crate_alias;\n        }\n        pub(crate) use super::parent_local::core_alias as super_alias;\n    }\n    pub(crate) use self::self_local::core_alias as self_alias;\n}\nmod facade {\n    pub(crate) mod child {\n        pub(crate) struct Widget;\n        impl Widget {\n            pub(crate) fn accepted_method() {}\n            pub(crate) const ACCEPTED_CONST: usize = 1;\n            pub(super) fn capped_method() {}\n            pub(super) const CAPPED_CONST: usize = 1;\n        }\n    }\n    pub(crate) use child::Widget;\n}\nmod outward_glob {\n    mod b { pub struct Carrier; }\n    mod hidden { pub use super::b::*; }\n    pub use hidden::*;\n}\nmod shadowed_glob {\n    mod b { pub struct Carrier; }\n    mod hidden { pub struct Carrier; pub use super::b::*; }\n}\nmod visibility_filtered_glob {\n    mod source {\n        pub(super) struct RestrictedCarrier;\n        pub struct PublicCarrier;\n    }\n    pub use source::*;\n}\nmod spelling {\n    mod child { pub struct Subject; }\n    pub(super) use child::Subject;\n}\npub use core::fmt::Error as ForeignError;\nfn main() {}\n",
         )?;
 
         let arguments = vec![
@@ -1405,6 +1587,17 @@ mod tests {
         assert_local_extern_reexport(tcx, &index, a_module, "parent_local", "super_alias")?;
         assert_local_extern_reexport(tcx, &index, a_module, "root_local", "crate_alias")?;
 
+        assert_foreign_reexport_behavior(tcx, &index)?;
+
+        assert_facade_subject_behavior(tcx, &index, crate_module)?;
+
+        assert_outward_glob_behavior(tcx, &index, crate_module)?;
+        assert_shadowed_glob_behavior(tcx, &index, crate_module)?;
+        assert_visibility_filtered_glob_behavior(tcx, &index, crate_module)?;
+        Ok(())
+    }
+
+    fn assert_foreign_reexport_behavior(tcx: TyCtxt<'_>, index: &ReexportIndex) -> Result<()> {
         let foreign_target = foreign_reexport_target(tcx)?;
         let foreign_occurrences = index
             .named
@@ -1426,7 +1619,14 @@ mod tests {
             "pub",
             "a foreign boundary must reach the fixed point without leaving the local crate"
         );
+        Ok(())
+    }
 
+    fn assert_facade_subject_behavior(
+        tcx: TyCtxt<'_>,
+        index: &ReexportIndex,
+        crate_module: LocalDefId,
+    ) -> Result<()> {
         let facade_module = child_module(tcx, crate_module, "facade")?;
         let facade_child_module = child_module(tcx, facade_module, "child")?;
         let widget = child_item(tcx, facade_child_module, "Widget")?;
@@ -1461,6 +1661,124 @@ mod tests {
             spelling_occurrence.facade_spelling,
             ParentFacadeSpelling::Super
         );
+        Ok(())
+    }
+
+    fn assert_outward_glob_behavior(
+        tcx: TyCtxt<'_>,
+        index: &ReexportIndex,
+        crate_module: LocalDefId,
+    ) -> Result<()> {
+        let outward_glob_module = child_module(tcx, crate_module, "outward_glob")?;
+        let glob_container = child_module(tcx, outward_glob_module, "b")?;
+        let hidden_module = child_module(tcx, outward_glob_module, "hidden")?;
+        let carrier = child_item(tcx, glob_container, "Carrier")?;
+        let occurrences = index
+            .applicable_reexports_outside_parent(tcx, carrier, carrier)
+            .collect::<Vec<_>>();
+        assert_eq!(occurrences.len(), 2);
+        assert!(occurrences.iter().all(|reexport| {
+            reexport.occurrence.use_kind == FacadeUseKind::Glob
+                && matches!(
+                    ReexportIndex::exact_glob_subject_resolution(
+                        tcx,
+                        carrier.to_def_id(),
+                        reexport.occurrence,
+                    ),
+                    ExactGlobSubjectResolution::Resolved { .. }
+                )
+        }));
+        let inner_occurrence = occurrences
+            .iter()
+            .find(|reexport| reexport.occurrence.owner_module == hidden_module)
+            .ok_or_else(|| anyhow!("missing inner glob occurrence"))?;
+        let outer_occurrence = occurrences
+            .iter()
+            .find(|reexport| reexport.occurrence.owner_module == outward_glob_module)
+            .ok_or_else(|| anyhow!("missing outer glob occurrence"))?;
+        assert_eq!(
+            inner_occurrence.reach.to_source(tcx),
+            "pub(in crate::outward_glob)"
+        );
+        assert_eq!(outer_occurrence.reach.to_source(tcx), "pub(crate)");
+        assert_eq!(
+            inner_occurrence
+                .reach
+                .join(outer_occurrence.reach, tcx)
+                .to_source(tcx),
+            "pub(crate)"
+        );
+        Ok(())
+    }
+
+    fn assert_shadowed_glob_behavior(
+        tcx: TyCtxt<'_>,
+        index: &ReexportIndex,
+        crate_module: LocalDefId,
+    ) -> Result<()> {
+        let shadowed_glob_module = child_module(tcx, crate_module, "shadowed_glob")?;
+        let shadowed_glob_container = child_module(tcx, shadowed_glob_module, "b")?;
+        let shadowed_carrier = child_item(tcx, shadowed_glob_container, "Carrier")?;
+        assert!(
+            index
+                .applicable_reexport_reaches_outside_parent(
+                    tcx,
+                    shadowed_carrier,
+                    shadowed_carrier,
+                )
+                .next()
+                .is_none(),
+            "the importing module's Carrier must shadow the original glob subject"
+        );
+        Ok(())
+    }
+
+    fn assert_visibility_filtered_glob_behavior(
+        tcx: TyCtxt<'_>,
+        index: &ReexportIndex,
+        crate_module: LocalDefId,
+    ) -> Result<()> {
+        let module = child_module(tcx, crate_module, "visibility_filtered_glob")?;
+        let source = child_module(tcx, module, "source")?;
+        let restricted_carrier = child_item(tcx, source, "RestrictedCarrier")?;
+        let public_carrier = child_item(tcx, source, "PublicCarrier")?;
+        let occurrence = index
+            .globs
+            .get(&source.to_def_id())
+            .into_iter()
+            .flatten()
+            .find(|occurrence| occurrence.owner_module == module)
+            .ok_or_else(|| anyhow!("missing visibility-filtered glob occurrence"))?;
+        let ExactGlobSubjectResolution::Resolved {
+            visibility: restricted_child_visibility,
+        } = ReexportIndex::exact_glob_subject_resolution(
+            tcx,
+            restricted_carrier.to_def_id(),
+            occurrence,
+        )
+        else {
+            return Err(anyhow!("restricted glob child did not resolve"));
+        };
+        assert_eq!(
+            VisibilityReach::from(restricted_child_visibility).to_source(tcx),
+            "pub(in crate::visibility_filtered_glob)"
+        );
+        assert!(
+            index
+                .applicable_reexport_reaches_outside_parent(
+                    tcx,
+                    restricted_carrier,
+                    restricted_carrier,
+                )
+                .next()
+                .is_none(),
+            "a restricted child of a public glob must not count as a public re-export"
+        );
+        let public_occurrences = index
+            .applicable_reexport_reaches_outside_parent(tcx, public_carrier, public_carrier)
+            .collect::<Vec<_>>();
+        assert_eq!(public_occurrences.len(), 1);
+        assert_eq!(public_occurrences[0].to_source(tcx), "pub(crate)");
         Ok(())
     }
 

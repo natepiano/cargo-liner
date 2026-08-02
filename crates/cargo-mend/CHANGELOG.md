@@ -56,11 +56,10 @@ The following two-code matrix applies to `forbidden_pub_in_crate` and `forbidden
 - **Project `[visibility] allow_prelude_pub_mod` now takes effect:** a project `mend.toml` value is
   no longer discarded in favor of the global configuration, so repositories that relied on it being
   ignored change behavior.
-- **Findings schema 18 is invalidated by schema 19:** cached reports from an older build are
-  rejected because findings now include `visibility_annotation`. After upgrading, a fully cached
-  `cargo check` emits nothing fresh, stale reports are discarded, and mend can print `No findings.`
-  exactly as it would for a clean run. Run `rm -rf target/mend-findings` and force a recompile
-  after upgrading.
+- **Findings schema 21 invalidates schema 19:** cached reports are rejected because
+  forbidden-visibility persistence now stores typed signature, facade, caller, and acceptance
+  constraints separately from diagnostics. After upgrading, run
+  `rm -rf target/mend-findings` and force a recompile.
 - **`suspicious_pub` help is now always computed:** the former static
   ``consider using: `pub(super)` `` text is gone, so items behind a facade receive the facade
   boundary instead.

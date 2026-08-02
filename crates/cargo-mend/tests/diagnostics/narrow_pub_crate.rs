@@ -44,6 +44,52 @@ edition = "2024"
 }
 
 #[test]
+fn shallow_public_signature_prevents_pub_crate_narrowing() {
+    let temp = tempdir().expect("create shallow signature fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "shallow_signature_floor_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "mod helpers;\n\
+         pub fn exposed() -> helpers::PublicSignatureType { helpers::PublicSignatureType }\n\
+         pub fn entry() { helpers::safe_to_narrow(); }\n",
+    )
+    .expect("write lib");
+    fs::write(
+        temp.path().join("src/helpers.rs"),
+        "pub struct PublicSignatureType;\npub fn safe_to_narrow() {}\n",
+    )
+    .expect("write helpers");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        report.findings.iter().all(|finding| {
+            finding.item.as_deref() != Some("struct PublicSignatureType")
+                || (finding.code != DiagnosticCode::NarrowToPubCrate
+                    && finding.fix_support != FixSupport::NarrowToPubCrate)
+        }),
+        "a public signature type must not receive pub(crate) narrowing: {report:#?}",
+    );
+    assert!(
+        report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::NarrowToPubCrate
+                && finding.item.as_deref() == Some("fn safe_to_narrow")
+        }),
+        "missing safe shallow narrowing control: {report:#?}",
+    );
+    assert_summary_matches_findings(&report);
+}
+
+#[test]
 fn re_exported_item_is_not_flagged() {
     let temp = tempdir().expect("create temp fixture dir");
 
@@ -793,6 +839,133 @@ edition = "2024"
          as `pub(crate) use`: {:?}",
         report.findings,
     );
+}
+
+#[test]
+fn restricted_facade_and_crate_signature_join_to_pub_crate_narrowing() {
+    let temp = tempdir().expect("create joined reach fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "joined_facade_signature_narrowing_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src/a/b")).expect("create nested modules");
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "mod a;\n\
+         pub use a::public_signature;\n\
+         pub fn exercise() { let _ = a::crate_wide_signature(); a::exercise_equal(); }\n",
+    )
+    .expect("write library root");
+    fs::write(
+        temp.path().join("src/a.rs"),
+        "mod b;\n\
+         pub(crate) use b::crate_wide_signature;\n\
+         pub use b::public_signature;\n\
+         pub(crate) fn exercise_equal() { let _ = b::equal_signature(); }\n",
+    )
+    .expect("write signature carriers");
+    fs::write(
+        temp.path().join("src/a/b.rs"),
+        "mod c;\n\
+         pub(super) use c::{CrateWide, Equal, Public};\n\
+         pub fn crate_wide_signature() -> CrateWide { CrateWide }\n\
+         pub(super) fn equal_signature() -> Equal { Equal }\n\
+         pub fn public_signature() -> Public { Public }\n",
+    )
+    .expect("write restricted facade and equal signature");
+    fs::write(
+        temp.path().join("src/a/b/c.rs"),
+        "pub struct CrateWide;\npub struct Equal;\npub struct Public;\n",
+    )
+    .expect("write facade subjects");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::NarrowToPubCrate
+                && finding.item.as_deref() == Some("struct CrateWide")
+        }),
+        "the joined crate-wide requirement must narrow CrateWide: {report:#?}",
+    );
+    for retained_item in ["struct Equal", "struct Public"] {
+        assert!(
+            report.findings.iter().all(|finding| {
+                finding.code != DiagnosticCode::NarrowToPubCrate
+                    || finding.item.as_deref() != Some(retained_item)
+            }),
+            "the equal and public controls must retain bare pub for {retained_item}: {report:#?}",
+        );
+    }
+    assert_summary_matches_findings(&report);
+}
+
+#[test]
+fn nested_public_signature_exceeds_pub_crate_facade_floor() {
+    let temp = tempdir().expect("create nested signature fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "nested_signature_floor_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src/a/b")).expect("create nested modules");
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "mod a;\n\
+         pub use a::make;\n\
+         fn retain_target(_: a::Target) {}\n\
+         pub fn entry() { a::safe_to_narrow(); }\n",
+    )
+    .expect("write lib");
+    fs::write(
+        temp.path().join("src/a.rs"),
+        "mod b;\n\
+         pub use b::make;\n\
+         pub(crate) use b::{Target, safe_to_narrow};\n",
+    )
+    .expect("write outer module");
+    fs::write(
+        temp.path().join("src/a/b.rs"),
+        "mod c;\n\
+         pub use c::make;\n\
+         pub(crate) use c::{Target, safe_to_narrow};\n",
+    )
+    .expect("write parent module");
+    fs::write(
+        temp.path().join("src/a/b/c.rs"),
+        "pub struct Target;\n\
+         pub fn make() -> Target { Target }\n\
+         pub fn safe_to_narrow() {}\n",
+    )
+    .expect("write facade subjects");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        report.findings.iter().all(|finding| {
+            finding.item.as_deref() != Some("struct Target")
+                || (finding.code != DiagnosticCode::NarrowToPubCrate
+                    && finding.fix_support != FixSupport::NarrowToPubCrate)
+        }),
+        "a public signature type must exceed its pub(crate) facade floor: {report:#?}",
+    );
+    assert!(
+        report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::NarrowToPubCrate
+                && finding.item.as_deref() == Some("fn safe_to_narrow")
+        }),
+        "missing safe nested narrowing control: {report:#?}",
+    );
+    assert_summary_matches_findings(&report);
 }
 
 #[test]

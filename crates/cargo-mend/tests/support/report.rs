@@ -11,6 +11,8 @@ pub struct Finding {
     #[serde(default)]
     pub path:        String,
     #[serde(default)]
+    pub line_start:  usize,
+    #[serde(default)]
     pub item:        Option<String>,
     #[serde(default, rename = "fixability")]
     pub fix_support: FixSupport,

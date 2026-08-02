@@ -23,16 +23,6 @@ pub enum ParentVisibility {
     Private,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SignatureExposure {
-    Present,
-    Absent,
-}
-
-impl From<bool> for SignatureExposure {
-    fn from(value: bool) -> Self { if value { Self::Present } else { Self::Absent } }
-}
-
 pub(super) struct VisibilityFindingContext {
     pub(super) crate_kind:           CrateKind,
     pub(super) config_rel_path:      Option<String>,
