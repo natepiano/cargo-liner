@@ -1197,7 +1197,7 @@ The first three need release-note compatibility bullets, stated as the two-code 
 
 ---
 
-### Phase 9 — Signature exposure returns a level · status: done
+### Phase 9 — Signature exposure returns a level · status: done (`f10d1f9`)
 
 #### Work Order
 
