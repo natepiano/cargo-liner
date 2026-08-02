@@ -38,7 +38,7 @@
 - **Test:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-port`
 - **Lint:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port`
 - **Style:** `zsh ~/.claude/scripts/rust_style/load-rust-style.sh --scope edit --project-root /Users/natemccoy/rust/cargo-port`
-- **Invariants:** Compile visibility starts disabled, is not persisted, and while off owns no compile-specific polling, deadline, command parsing, classification, snapshot, tombstone, generation, or late-result acceptance; existing Running Targets retains its one-second behavior and owned-target Output behavior remains unchanged. One App-owned `ProcessObserver` performs at most one combined due refresh and one App-owned revision-keyed `CargoWorkspaceIndex` serves Running Targets and Build Monitor without launching Cargo when monitoring starts. The shared index explicitly reports `Current`, `RetainedLastAccepted`, or `Uninitialized`; consumers preserve the last accepted index on refresh failure, and only an uninitialized index may use a named fallback. `ProjectListRevision` changes only when visible ownership content changes; selected-row identity is separate monitor-scope input. Scope is a typed row-kind-aware `MonitorScopeKey` over sorted canonical checkout/workspace roots plus metadata/project-list revision; workspace members resolve to their owning workspace, groups differ from primary checkout rows, non-Rust scopes are empty, and a changed key makes old data immediately non-actionable. Build/session and row stability use strong `ProcessIdentity` plus exec-sensitive `ProcessIncarnation`, never a bare PID; weak, stale, inferred, ambiguous, or unattributed evidence is observed-only, and system-wide cache-daemon ambiguity is rendered once without guessing. Process observation and termination are separate: `ProcessObserver` produces immutable evidence and capabilities, while `ProcessTerminator` performs identity-revalidated signaling off the TUI event loop. External termination requires an identity-bound platform capability and opaque frozen scope/identity authorization; never signal an ambient process group, Cargo Port, shell/LLM ancestors, cache daemons, divergent nested sessions, or target-directory-only compiler matches. Selected-scope kill refuses partial actionability, never absorbs builds started after confirmation, and bounded leaf-before-root termination reports already gone, gone after signaling, survivors, and errors truthfully without claiming causation it cannot prove or automatically using `SIGKILL`. `OwnedRun` solely owns lifecycle/output; every message carries `OwnedRunId`; its observed activity is joined, not copied, and pinned owned output can coexist with external columns while remaining outside unrelated scope-wide kills. A single `OutputPresentation` controls rendering, layout, focus, tabbability, labels, copy, and hit testing; typed cursors permit visual selection/Ctrl-A only in owned captured output, while columns/navigation preserve stable identities and Tab/Shift-Tab preflight falls through at session boundaries. Defaults are framework-keymap actions only: global `Shift-C`, Output `alt-k` for selected build, and `alt-shift-k` for all scoped builds; render `Option-K`/`Option-Shift-K` on macOS and `Alt-K`/`Alt-Shift-K` elsewhere, with no raw `KeyCode` dispatch outside the keymap. Open termination confirmation is modal above Output/global input. Preserve one Cargo Port-owned run at a time, strict workspace lints/missing docs, `RUSTC_WRAPPER`, nightly formatting for this `natepiano` origin, and inline focused tests plus 1,000/5,000-process refresh benchmarks proving no persistent monitor-off CPU work.
+- **Invariants:** Compile visibility starts disabled, is not persisted, and while off owns no compile-specific polling, deadline, command parsing, classification, snapshot, tombstone, generation, or late-result acceptance; existing Running Targets retains its one-second behavior and owned-target Output behavior remains unchanged. One App-owned `ProcessRefreshExecutor` owns exactly one `ProcessObserver`, coalesces simultaneous consumer demand into one refresh cycle, and may execute synchronously or on a dedicated worker only as the measured budget permits; one App-owned revision-keyed `CargoWorkspaceIndex` serves Running Targets and Build Monitor without launching Cargo when monitoring starts. The shared index explicitly reports `Current`, `RetainedLastAccepted`, or `Uninitialized`; consumers preserve the last accepted index on refresh failure, and only an uninitialized index may use a named fallback. `ProjectListRevision` changes only when visible ownership content changes; selected-row identity is separate monitor-scope input. Scope is a typed row-kind-aware `MonitorScopeKey` over sorted canonical checkout/workspace roots plus metadata/project-list revision; workspace members resolve to their owning workspace, groups differ from primary checkout rows, non-Rust scopes are empty, and a changed key makes old data immediately non-actionable. Build sessions and activity rows are keyed by exec-sensitive `ProcessIncarnation`, while termination authorization retains strong `ProcessIdentity`; neither uses a bare PID. Weak, stale, inferred, ambiguous, or unattributed evidence is observed-only, and system-wide cache-daemon ambiguity is rendered once without guessing. Process observation and termination are separate: `ProcessObserver` produces immutable evidence and capabilities, while `ProcessTerminator` performs identity-revalidated signaling off the TUI event loop. External termination requires an identity-bound platform capability and opaque frozen scope/identity authorization; never signal an ambient process group, Cargo Port, shell/LLM ancestors, cache daemons, divergent nested sessions, or target-directory-only compiler matches. Selected-scope kill refuses partial actionability, never absorbs builds started after confirmation, and bounded leaf-before-root termination reports already gone, gone after signaling, survivors, and errors truthfully without claiming causation it cannot prove or automatically using `SIGKILL`. `OwnedRun` solely owns lifecycle/output; every message carries `OwnedRunId`; its observed activity is joined, not copied, and pinned owned output can coexist with external columns while remaining outside unrelated scope-wide kills. A single `OutputPresentation` controls rendering, layout, focus, tabbability, labels, copy, and hit testing; typed cursors permit visual selection/Ctrl-A only in owned captured output, while columns/navigation preserve stable identities and Tab/Shift-Tab preflight falls through at session boundaries. Defaults are framework-keymap actions only: global `Shift-C`, Output `alt-k` for selected build, and `alt-shift-k` for all scoped builds; render `Option-K`/`Option-Shift-K` on macOS and `Alt-K`/`Alt-Shift-K` elsewhere, with no raw `KeyCode` dispatch outside the keymap. Open termination confirmation is modal above Output/global input. Preserve one Cargo Port-owned run at a time, strict workspace lints/missing docs, `RUSTC_WRAPPER`, nightly formatting for this `natepiano` origin, and inline focused tests plus 1,000/5,000-process refresh benchmarks proving no persistent monitor-off CPU work.
 
 ## Phases
 
@@ -104,7 +104,7 @@
 - Phases 11–13 now separate observation from nonblocking termination, retain opaque authority through confirmations, and report already-gone, gone-after-signal, survivor, and error outcomes without unprovable kill claims.
 - No user decisions were required; these edits preserve the existing behavior and safety invariants while making each remaining Work Order self-contained.
 
-### Phase 2 — Strong process observation foundation · status: todo
+### Phase 2 — Strong process observation foundation · status: done
 
 #### Work Order
 
@@ -135,42 +135,82 @@
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-port`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-port`, and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` are green; focused tests prove strong versus insufficient identity, unavailable executable/argv/cwd/parent states, exec invalidation, depth-capped parent validation, rejected edges, and cache eviction.
 
+#### Retrospective
+
+**What worked:**
+
+- `ProcessObserver` now owns one private `sysinfo::System` and returns immutable full or targeted snapshots with strong lifetime, exec-sensitive incarnation, named field, and validated ancestry evidence.
+- Platform-focused identity, coherence, parentage, cache, and live same-PID exec coverage passes with 1,094 cargo-port tests; the real TUI started, changed project selection, and quit cleanly.
+
+**What deviated from the plan:**
+
+- macOS needed a native `proc_pid_rusage` monotonic start value, bracketed by processkit lifetime anchors, to supply both the strongest creation token and truthful creation ordering.
+- Full-refresh cache reconciliation required an explicit directly-sampled PID set plus one final direct lookup for each omitted cached PID, independent of parent-only observations.
+
+**Surprises:**
+
+- Direct and reported-parent identities form one chronological evidence stream; later insufficient evidence must block strong admission while distinguishing proven exit from transient identity unavailability.
+- Executable, argv, and cwd coherence must be sampled together, while parent evidence is bracketed and reconciled independently even when those fields are unstable.
+
+**Implications for remaining phases:**
+
+- Every later consumer must use `ProcessIdentity` or `ProcessIncarnation`, never a PID, and must preserve named insufficient, unavailable, invalidated, and rejected states without promoting them to action authority.
+- Phase 3 must schedule one shared full or targeted `ProcessObserver` refresh and consume immutable snapshots without reintroducing a private `sysinfo::System` or merging observation with signaling.
+- Later cache, classification, ownership, and termination work must treat the latest chronological identity evidence and exec fingerprint as the invalidation boundary.
+
+#### Phase 2 Review
+
+- Phase 3 now measures observer-only cost before migrating Running Targets, owns the sole observer behind a semantic synchronous/worker executor, distinguishes completed-empty refreshes from failures, and treats one coalesced consumer cycle separately from Phase 2's internal coherence samples.
+- Phase 3 now preserves identity-bound CPU/history metrics and moves legacy Running Targets signaling into its own typed termination boundary outside `ProcessObserver`.
+- Phase 4 now stores identity and owned-group authority only in lifecycle states where they exist, with every direct consumer included in its Work Order.
+- Phases 6 and 9 now key sessions, activities, and cursor rows by `ProcessIncarnation`, consume Phase 2's sole candidate-incarnation cache, and invalidate prior selection/actionability on same-PID exec.
+- Phase 7 now extends the Phase 3 executor with measured classification cost while preserving sole observer ownership and semantic execution outcomes.
+- Phases 8 and 11 now distinguish executor failure from per-process insufficiency and completed-empty observation, preserve internal coherence sampling, and reject same-PID exec before action.
+- No user decisions were required; these were mechanical consequences of Phase 2's shipped identity, coherence, cache, and observation-only guarantees.
+
 ### Phase 3 — Shared refresh scheduling and Running Targets migration · status: todo
 
 #### Work Order
 
-**Goal:** Running Targets uses the App-owned `ProcessObserver`, preserving its one-second behavior while establishing one combined process-refresh scheduler.
+**Goal:** Running Targets uses the App-owned `ProcessRefreshExecutor`, preserving its one-second behavior while establishing one measured, coalesced process-refresh scheduler over the sole observer.
 
 **Spec:**
 
-- Move the host-facing process-table work out of `RunningTargetsPoller` and onto the App-owned `ProcessObserver`; retain a Running-target facade for view-specific state.
-- Define typed refresh demand for Running, compile monitoring, or both. `ProcessObserver::next_deadline()` and `refresh_due(now)` combine required fields and perform at most one process refresh per due instant.
+- Before moving Running Targets, benchmark Phase 2 full and targeted observer refreshes with repeatable 1,000- and 5,000-process fixtures against a 15 ms event-loop allocation. Define one App-owned `ProcessRefreshExecutor` that owns exactly one `ProcessObserver`; keep synchronous execution only when repeated 5,000-process samples remain at or below 15 ms, otherwise move the observer and its private `System`/incarnation cache behind a dedicated worker and `crossbeam-channel` in this phase.
+- Move the host-facing process-table work out of `RunningTargetsPoller` and onto `ProcessRefreshExecutor`; retain a Running-target facade for view-specific state. Do not expose observer references or mutable cache state that would prevent worker ownership.
+- Define typed refresh demand for Running, compile monitoring, or both. `ProcessRefreshExecutor::next_deadline()` and `refresh_due(now)` combine required fields and perform at most one coalesced refresh cycle per due instant, with no duplicate cycle per consumer. Phase 2's repeated fresh field samples and bracketed identity observations remain internal to that one logical cycle and are not counted as duplicate consumer refreshes.
+- Represent execution as `ProcessRefreshExecutionOutcome::{Completed(ProcessObservationSnapshot), Failed(ProcessRefreshExecutionFailure)}` or an equally semantic aggregate; a completed empty snapshot is not a failure, and no domain-owned API returns a bare `Option<ProcessObservationSnapshot>`.
 - Running CPU/history sampling keeps its current one-second cadence even when a later compile-monitor consumer requests identity refreshes more often.
+- Preserve a separate identity-bound metrics observation for Running Targets name/CPU/memory over the long-lived `System`; execute it once per due Running cycle without weakening Phase 2's repeated executable/argv/cwd coherence sampling.
 - The terminal event loop waits on the minimum animation/process deadline. Process refresh is not represented as an animation.
 - Preserve startup/test suppression semantics in `startup_services.rs` and all existing Running-target visibility, CPU/history, and kill behavior.
 - Preserve `WorkspaceIndexRefreshState::{Current, RetainedLastAccepted, Uninitialized}` exactly. Evaluate the one-second cadence/readiness gate before filesystem attribution, use the last accepted index after refresh failure, allow visible-target fallback only while uninitialized, and continue omitting cross-workspace ambiguous exact owners.
-- Move the existing Running Targets kill path through a typed `RunningTargetTerminationCapability` that revalidates PID plus creation identity. This capability preserves existing behavior only and remains separate from later build-monitor termination authority.
+- Move the existing Running Targets kill path through a typed `RunningTargetTerminationCapability` in `src/tui/running_targets/termination.rs` that consumes strong identity revalidation and owns the existing signaling behavior. Neither an observer snapshot nor a bare PID/create-time pair is action authority; this capability preserves existing behavior only and remains separate from later build-monitor termination authority.
 - Instrument refresh duration through existing frame metrics so Phase 7 can compare the synchronous path against its frame budget.
 
 **Files:**
 
 - `src/process_observation/mod.rs` — add typed consumers, deadlines, and combined refresh plans.
 - `src/process_observation/identity.rs` — expose the strong identity revalidation used by the preserved Running Targets termination capability.
-- `src/process_observation/snapshot.rs` — support field-union refreshes without duplicate process walks.
-- `src/tui/app/mod.rs` — own and expose the observer.
-- `src/tui/app/construct.rs` — initialize it.
+- `src/process_observation/snapshot.rs` — support coalesced consumer demand while preserving repeated coherent field sampling and immutable execution outcomes.
+- `src/process_observation/benchmarks.rs` — repeatable 1,000/5,000-process observer timing fixtures and report harness.
+- `src/tui/app/mod.rs` — own and expose the executor without exposing its observer/cache internals.
+- `src/tui/app/construct.rs` — initialize the measured synchronous or worker-backed executor.
 - `src/tui/running_targets/state.rs` — replace host snapshot ownership with view state over observer records.
 - `src/tui/running_targets/app_tick.rs` — request one-second Running refreshes.
 - `src/tui/running_targets/constants.rs` — retain the current cadence.
 - `src/tui/running_targets/mod.rs` — adapt exports and tests.
+- `src/tui/running_targets/termination.rs` — own identity-revalidated legacy Running Targets signaling outside `ProcessObserver`.
 - `src/tui/panes/system.rs` — preserve Running Targets kill/action routing while process ownership moves.
 - `src/tui/startup_services.rs` — preserve suppression/test effects.
 - `src/tui/terminal/event_loop.rs` — wait on the minimum animation/process deadline.
 - `src/tui/terminal/frame_metrics.rs` — record observer work separately from rendering.
+- `src/tui/background.rs` — own the dedicated observer worker when the 15 ms gate rejects synchronous execution.
+- `src/tui/messages.rs` — carry correlated immutable refresh requests/results when the worker path is selected.
 
-**Constraints from prior phases:** Use Phase 1's exact `CargoWorkspaceIndex` identities and named refresh states for project data and Phase 2's immutable strong/insufficient observations. Preserve the Phase 1 cadence-before-attribution gate, retained accepted index, uninitialized-only fallback, and conservative cross-workspace ambiguity omission. `ProcessObserver` remains host-only; Running Targets must not recover its own `sysinfo::System`, and its termination capability is not build-monitor authority.
+**Constraints from prior phases:** Use Phase 1's exact `CargoWorkspaceIndex` identities and named refresh states for project data. Phase 2's `ProcessObserver` owns one private long-lived `sysinfo::System`, incarnation cache, immutable full/targeted snapshots, chronological direct/reported-parent identity evidence, and independent coherent-field/parent sampling. Preserve the Phase 1 cadence-before-attribution gate, retained accepted index, uninitialized-only fallback, and conservative cross-workspace ambiguity omission. Running Targets must not recover its own `sysinfo::System`; `ProcessObserver` remains observation-only, and the preserved Running termination capability is not build-monitor authority.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-port`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-port`, and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` are green; existing Running Targets tests pass; focused tests prove simultaneous demands cause one refresh, one-second CPU/history cadence and readiness ordering are preserved, retained/uninitialized index paths remain distinct, cross-workspace ambiguous targets stay omitted, PID reuse is rejected before Running Targets termination, and no compile deadline exists yet.
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-port`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-port`, and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` are green; observer-only 1,000/5,000-process timing is recorded and selects synchronous execution only at or below 15 ms; existing Running Targets tests pass; focused tests prove simultaneous demands cause one coalesced cycle, completed-empty and failed execution remain distinct, repeated field coherence remains intact, one-second identity-bound CPU/history cadence and readiness ordering are preserved, retained/uninitialized index paths remain distinct, cross-workspace ambiguous targets stay omitted, PID reuse is rejected before Running Targets termination, and no compile deadline exists yet.
 
 ### Phase 4 — Correlated Cargo Port-owned runs · status: todo
 
@@ -180,8 +220,8 @@
 
 **Spec:**
 
-- Replace anonymous single-run fields in `Inflight` with one `OwnedRun` aggregate carrying monotonic `OwnedRunId`, verified root/process-group identity, launch directory, command, title, captured output, and semantic `OwnedRunLifecycle` variants for queued, starting, running, stopping, retained success, retained gone-after-signal, and retained failure. Do not model these states as a cluster of bare `Option<T>` fields.
-- `OwnedRun` is the sole owner of owned lifecycle, outcome, and output. Other state may retain only `OwnedRunId` plus observations.
+- Replace anonymous single-run fields in `Inflight` with one `OwnedRun` aggregate carrying monotonic `OwnedRunId` and semantic `OwnedRunLifecycle` variants. Queued/starting variants own pending launch data without pretending a root exists; running/stopping variants own the verified root `ProcessIdentity`, isolated process group, and opaque owned-group termination capability; retained success, gone-after-signal, and failure variants own their outcome and retained output. Do not model these states as a cluster of bare `Option<T>` fields.
+- `OwnedRun` is the sole owner of owned lifecycle, state-specific identity/termination authority, outcome, and output. Other state may retain only `OwnedRunId` plus immutable observations.
 - Tag every output, progress, started, and finished message with `OwnedRunId`; reconciliation ignores messages whose ID is not the current run.
 - Preserve the current one-owned-run concurrency limit, isolated process group, clear/close lifecycle, stopping behavior, output retention, visual-selection frozen snapshots, and monitor-off rendering byte-for-byte.
 - Expose owned run identity, lifecycle, and output by reference for later Output presentation; do not copy output into process snapshots.
@@ -194,11 +234,14 @@
 - `src/tui/messages.rs` — add run ID to all owned-run messages.
 - `src/tui/terminal/processes.rs` — return verified root/process-group identity and tag captured output.
 - `src/tui/app/async_tasks/poll.rs` — reconcile only matching run messages.
+- `src/tui/app/mod.rs` — replace direct anonymous run-field consumers with the lifecycle aggregate.
+- `src/tui/terminal/event_loop.rs` — consume state-specific owned lifecycle/deadline data.
 - `src/tui/panes/output/mod.rs` — consume owned output through the new aggregate without changing presentation.
+- `src/tui/panes/output/render.rs` — render retained and live owned states through state-specific lifecycle data.
 
-**Constraints from prior phases:** Use Phase 2 strong identities for the owned root. The isolated process-group termination boundary already exists in `src/tui/terminal/processes.rs`; preserve it while Phase 3 changes shared observation, and do not attribute its ownership to Phase 3.
+**Constraints from prior phases:** Use Phase 2 strong `ProcessIdentity` only in lifecycle variants where the owned root has actually been verified; queued and starting states cannot hide absent identity in `Option`. The isolated process-group termination boundary already exists in `src/tui/terminal/processes.rs`; preserve it while Phase 3 changes shared observation, and do not attribute its ownership to Phase 3.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-port`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-port`, and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` are green; focused tests prove late messages from run N cannot mutate run N+1 and all existing launch, stop, clear, copy, visual-selection, and retained-output behavior remains unchanged.
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-port`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-port`, and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` are green; focused tests prove queued/starting states carry no fabricated root or bare optional authority, only live/stopping states own verified identity and opaque group termination capability, late messages from run N cannot mutate run N+1, and all existing launch, stop, clear, copy, visual-selection, and retained-output behavior remains unchanged.
 
 ### Phase 5 — Typed monitor scope and state shell · status: todo
 
@@ -246,14 +289,15 @@
 
 **Spec:**
 
-- Add domain identifiers and snapshots: `BuildSessionId(ProcessIdentity)`, Phase 5's `MonitorScopeKey`, `ScopeAttribution::{Confirmed, Inferred}`, `CompilerAssociation::{Confirmed, UniqueHeuristic, Ambiguous { candidates }, Unmatched}`, `MonitorSnapshot::{Pending, Fresh, Stale, Unavailable}`, and presentation-only session/activity records. Reuse Phase 1's `cargo_metadata::PackageId`; do not introduce duplicate `BuildScopeId` or `PackageId` wrappers. Raw PIDs never stand alone in an actionable type.
+- Add domain identifiers and snapshots: `BuildSessionId(ProcessIncarnation)`, `CompileActivityId(ProcessIncarnation)`, Phase 5's `MonitorScopeKey`, `ScopeAttribution::{Confirmed, Inferred}`, `CompilerAssociation::{Confirmed, UniqueHeuristic, Ambiguous { candidates }, Unmatched}`, `MonitorSnapshot::{Pending, Fresh, Stale, Unavailable}`, and presentation-only session/activity records. Reuse Phase 1's `cargo_metadata::PackageId`; do not introduce duplicate `BuildScopeId` or `PackageId` wrappers. Raw PIDs never stand alone in an actionable type; `ProcessIdentity` remains available inside later signaling authorization but does not key a session or row across exec.
 - Discover the outermost recognized root build in a validated Cargo process chain. Normalize rustup proxies, built-in/configured aliases, `cargo-*` plugins, and nested Cargo. Immediately recognize `build`, `check`, `clippy`, `fix`, `run`, `rustc`, `rustdoc`, `test`, `nextest`, `bench`, and `doc`; deny known metadata/fetch/management commands unless a live compiler descendant proves a build.
 - Resolve scope for every Cargo node before normalizing. A nested Cargo belongs to the outer root only when confirmed scope and termination boundary match; a plugin/alias entering another checkout becomes a separate session. Discover compatible roots system-wide before filtering the selected scope.
 - Resolve root scope in order: Cargo Port-owned PID/launch directory; `--manifest-path` or absolute manifest argument; cwd plus nearest containing manifest; uniquely matching compiler output directory. Canonicalize both sides and never use string-prefix matching alone.
 - Associate `rustc`, `clippy-driver`, `rustdoc`, build-script, and linker descendants by validated parent chain. For cache-daemon parentage, use `(target directory, profile/build directory, target triple)` only when it selects one compatible live session across the entire system. Render ambiguous units once in a scope-level, non-actionable attribution-unavailable section with candidate sessions.
 - Derive compile units primarily from `--crate-name`, primary input, `--out-dir`, target triple, flags, and strong compiler identity. Resolve workspace packages from the shared index; for dependencies absent from `no_deps`, parse the nearest package manifest once and cache package identity by canonical source root plus manifest stamp. Reparse after change/removal; otherwise use `CompilerCrateIdentity::{WorkspacePackage(cargo_metadata::PackageId), DependencyPackage(DependencyPackageIdentity), CrateNameFallback(CompilerCrateName)}` or an equally semantic fallback type.
 - Keep classification pure. A stateful adapter prepares immutable `BuildClassificationInput` containing the process snapshot, workspace-index view, dependency-manifest snapshot, and first-seen snapshot; caches and the first-seen ledger are updated outside the pure classify call.
-- Use session key `BuildSessionId(ProcessIdentity)`; target directory and profile are attributes. Resolve profile from explicit `--profile`/`--release`, then output directories, then metadata defaults, preserving custom/unknown labels. Order sessions and units by first-seen then process identity.
+- Consume Phase 2's immutable unclassified Cargo/compiler/wrapper candidate-incarnation evidence as part of `BuildClassificationInput`; do not repeat candidate parsing or introduce a second owner for that cache. Classification adds Cargo/build semantics while Phase 2 remains the sole exec-bound candidate-cache owner.
+- Use session key `BuildSessionId(ProcessIncarnation)` and activity key `CompileActivityId(ProcessIncarnation)`; target directory and profile are attributes. Resolve profile from explicit `--profile`/`--release`, then output directories, then metadata defaults, preserving custom/unknown labels. Order sessions and units by first-seen then process incarnation.
 
 **Files:**
 
@@ -261,7 +305,7 @@
 - `src/build_monitor/model.rs` — typed IDs, attribution, activity, snapshots, and non-actionable presentation records.
 - `src/build_monitor/classify.rs` — Cargo root normalization, scope resolution, compiler association, unit/profile/package derivation, and caches.
 - `src/main.rs` — declare the build-monitor domain.
-- `src/process_observation/snapshot.rs` — expose immutable executable, argv, cwd, ancestry, and creation evidence required by pure classification.
+- `src/process_observation/snapshot.rs` — expose immutable executable, argv, cwd, ancestry, creation, and unclassified candidate-incarnation evidence required by pure classification without exposing mutable cache ownership.
 - `src/project/cargo/metadata_store.rs` — expose manifest/source stamps without adding dependency metadata commands.
 - `src/project/cargo/mod.rs` — supply index queries used by classification.
 - `src/project/cargo/workspace_index.rs` — supply exact package, target, workspace, and ambiguity queries used by classification.
@@ -269,22 +313,22 @@
 - `src/tui/workspace_index.rs` — supply named readiness and immutable index views to classification callers.
 - `Cargo.toml` — add only parsing/platform dependencies required by the classifier.
 
-**Constraints from prior phases:** Consume Phase 1's exact `CargoWorkspaceIndex` identities and existing `cargo_metadata::PackageId`, Phase 2's named strong/insufficient immutable observations, Phase 4's owned identity, and Phase 5's canonical `MonitorScopeKey` plus named scope/index readiness. Cross-workspace exact ambiguity remains non-actionable. Classification creates no signal authority, owns no mutable observer/cache state, and launches no Cargo command.
+**Constraints from prior phases:** Consume Phase 1's exact `CargoWorkspaceIndex` identities and existing `cargo_metadata::PackageId`. Phase 2 supplies named strong/insufficient immutable observations, `ProcessIncarnation` as the exec-sensitive classification boundary, and the sole unclassified Cargo/compiler/wrapper candidate cache; a changed executable/argv fingerprint invalidates classification, scope, ancestry, selection, and actionability within the same process lifetime. Consume Phase 4's owned identity and Phase 5's canonical `MonitorScopeKey` plus named scope/index readiness. Cross-workspace exact ambiguity remains non-actionable. Classification creates no signal authority, owns no mutable observer/cache state, and launches no Cargo command.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-port`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-port`, and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` are green; pure tests cover root commands, non-build commands, proxies/aliases/plugins/nested and divergent scopes, sibling roots, direct compiler/build-script/linker children, cache-daemon and cross-workspace ambiguity, debug/release/custom profiles, PID reuse and exec transitions, every named scope/index readiness state, dependency manifest caching/invalidation, exact workspace package IDs, semantic dependency/crate-name fallback, and no-deps fallback.
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-port`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-port`, and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` are green; pure tests cover root commands, non-build commands, proxies/aliases/plugins/nested and divergent scopes, sibling roots, direct compiler/build-script/linker children, cache-daemon and cross-workspace ambiguity, debug/release/custom profiles, PID reuse and exec transitions, same-PID exec producing new session/activity IDs and invalidating prior classification, the sole Phase 2 candidate-cache owner, every named scope/index readiness state, dependency manifest caching/invalidation, exact workspace package IDs, semantic dependency/crate-name fallback, and no-deps fallback.
 
 ### Phase 7 — Process refresh execution budget · status: todo
 
 #### Work Order
 
-**Goal:** Compile monitoring has one measured `ProcessRefreshExecutor` boundary whose synchronous or worker-backed implementation is chosen before lifecycle polling is added.
+**Goal:** The Phase 3 `ProcessRefreshExecutor` incorporates classification within the measured budget before lifecycle polling is added, preserving one observer owner and correlated immutable outcomes.
 
 **Spec:**
 
-- Add repeatable 1,000- and 5,000-process benchmarks covering the combined Phase 2 observer refresh and Phase 6 classification input/classification path, including representative Cargo, compiler, wrapper, and unrelated processes.
-- Measure against `tui_pane::SLOW_FRAME_MS`, currently 30 ms. The synchronous implementation is eligible only when repeated 5,000-process samples remain at or below a 15 ms event-loop allocation and therefore below the 30 ms slow-frame boundary; otherwise implement immutable request/result work behind a dedicated worker and `crossbeam-channel`.
-- Define one semantic `ProcessRefreshExecutor` API used by later phases regardless of the selected implementation. Requests carry refresh correlation plus immutable observation/classification inputs; results carry the matching correlation and immutable output.
-- Record the selected architecture in the implementation and deterministic tests. Benchmark timing is reported evidence, not a flaky CI assertion; tests prove scheduling, correlation, result ordering, and absence of mutable App state in worker inputs.
+- Extend the Phase 3 repeatable 1,000- and 5,000-process benchmarks to cover observer refresh plus Phase 6 classification-input preparation/classification, including representative Cargo, compiler, wrapper, and unrelated processes; report classification's incremental cost separately from the observer-only baseline.
+- Measure against `tui_pane::SLOW_FRAME_MS`, currently 30 ms. The combined synchronous path remains eligible only when repeated 5,000-process samples stay at or below a 15 ms event-loop allocation; if classification pushes it above that boundary, move the already-semantic executor to its dedicated worker path without changing consumers.
+- `ProcessRefreshExecutor` remains the sole owner of `ProcessObserver`, its mutable `System`, and incarnation caches. Requests carry refresh correlation, a semantic refresh plan, and immutable workspace/classification evidence—not an impossible immutable observer input—and results carry the matching `ProcessRefreshExecutionOutcome` plus immutable classified output.
+- Preserve Phase 3's explicit `Completed(snapshot)` versus `Failed(reason)` execution outcome while extending the completed result with classification. Record the selected architecture in deterministic tests; benchmark timing is reported evidence, not a flaky CI assertion, and tests prove scheduling, correlation, result ordering, and absence of mutable App state in worker inputs.
 - This phase adds no compile-monitor deadline or lifecycle. Phase 8 consumes the executor without reopening the architecture choice.
 
 **Files:**
@@ -297,12 +341,14 @@
 - `src/build_monitor/mod.rs` — export `ProcessRefreshExecutor`-facing classification APIs.
 - `src/tui/terminal/frame_metrics.rs` — use the existing 30 ms slow-frame boundary and record refresh cost separately.
 - `src/tui/terminal/event_loop.rs` — host only the selected executor integration, without adding a compile deadline.
-- `src/tui/background.rs` — add a dedicated refresh worker only if the 15 ms synchronous allocation is exceeded.
-- `src/tui/messages.rs` — add immutable correlated refresh results only if the worker path is selected.
+- `src/tui/background.rs` — extend or activate the dedicated refresh worker when the combined 15 ms allocation is exceeded.
+- `src/tui/messages.rs` — extend immutable correlated refresh results when the worker path is selected.
+- `src/tui/app/mod.rs` — keep App ownership at the executor boundary while observer ownership stays inside it.
+- `src/tui/app/construct.rs` — construct the measured synchronous or worker-backed executor without exposing observer references.
 
-**Constraints from prior phases:** Phase 2 supplies named observation evidence and immutable snapshots; Phase 3 supplies one combined refresh plan and separate duration instrumentation; Phase 5 supplies named index/scope readiness; Phase 6 supplies the pure classifier and immutable `BuildClassificationInput`. Preserve Running Targets cadence and add no compile polling yet.
+**Constraints from prior phases:** Phase 2 supplies named observation evidence, exec-sensitive incarnations, immutable snapshots, and one mutable observer/cache owner. Phase 3 already establishes the observer-only 15 ms gate, sole `ProcessRefreshExecutor` ownership, coalesced refresh plans, separate duration instrumentation, and semantic completed/failed outcomes. Phase 5 supplies named index/scope readiness; Phase 6 supplies the pure classifier and immutable `BuildClassificationInput`. Preserve Running Targets cadence and add no compile polling yet.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-port`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-port`, and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` are green; 1,000/5,000-process benchmarks are run and their repeated timing is recorded; the synchronous path is used only at or below the 15 ms allocation, otherwise a worker/channel path is implemented; deterministic tests prove executor correlation, scheduling, and immutable transfer; no compile deadline exists yet.
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-port`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-port`, and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` are green; combined 1,000/5,000-process benchmarks and incremental classification timing are recorded; the synchronous combined path is used only at or below the 15 ms allocation, otherwise the existing executor moves behind its worker/channel path; deterministic tests prove sole observer ownership, semantic refresh plans and failures, executor correlation, scheduling, and immutable transfer; no compile deadline exists yet.
 
 ### Phase 8 — Conditional monitor polling and lifecycle · status: todo
 
@@ -313,12 +359,12 @@
 **Spec:**
 
 - Add `BuildMonitor` state over the pure classifier. It retains only live session/unit identities, explicit owned association, termination tombstones added in later phases, and the latest presentation snapshot; it does not accumulate external history.
-- While enabled, request command-line/process fields through the combined Phase 3 refresh plan and execute through Phase 7's chosen `ProcessRefreshExecutor`; perform one bounded process walk per interval, never one scan per workspace or column.
+- While enabled, request command-line/process fields through the combined Phase 3 refresh plan and execute through Phase 7's chosen `ProcessRefreshExecutor`; perform one coalesced refresh cycle per interval with no duplicate cycle per workspace, column, or consumer. Phase 2's internal repeated field samples and identity brackets remain intact.
 - Track live target-directory resolution as a typed state and revision, rechecked on each due poll. A previously missing target directory appearing, or a symlink being created/retargeted, invalidates affected classification and actionability even when metadata, project-list content, and selected scope are unchanged.
-- `ProcessObserver::next_deadline()` contributes no compile deadline while monitor state is `Off`. On a due instant shared with Running Targets, union fields and perform one refresh while preserving the Running one-second CPU/history sample.
-- A successful result must carry monitor generation and exact `MonitorScopeKey`. Ignore mismatches. On scope change show `Pending`; on one refresh failure retain the last good snapshot as visibly `Stale` and non-actionable for one interval, then `Unavailable`.
+- `ProcessRefreshExecutor::next_deadline()` contributes no compile deadline while monitor state is `Off`. On a due instant shared with Running Targets, union fields into one coalesced cycle while preserving the Running one-second identity-bound CPU/history sample.
+- A completed result must carry monitor generation and exact `MonitorScopeKey`. Ignore mismatches. On scope change show `Pending`; only `ProcessRefreshExecutionOutcome::Failed` (not a completed empty snapshot or per-process insufficient evidence) ages the last good snapshot to visibly `Stale` and non-actionable for one interval, then `Unavailable`.
 - A root Cargo process anchors a session through gaps with no live compiler. Report evidence-backed compiling, build-script, linking, owned Cargo-lock wait, and running-target states; report external no-child gaps only as active.
-- Associate an owned run with exactly one observed session by identity and retain only `OwnedRunId`; never copy owned output into snapshots. External completed sessions disappear.
+- Associate an owned run with exactly one observed session by matching its verified root `ProcessIdentity` to the current exec-sensitive `BuildSessionId(ProcessIncarnation)`, then retain only `OwnedRunId`; never copy owned output into snapshots. External completed sessions disappear.
 - Prove no persistent idle CPU work while off and no compile-specific request/result acceptance after a toggle or scope generation change.
 
 **Files:**
@@ -335,9 +381,9 @@
 - `src/tui/terminal/frame_metrics.rs` — record and assert bounded refresh work.
 - `src/tui/startup_services.rs` — ensure disabled/test startup creates no monitor work.
 
-**Constraints from prior phases:** Phase 1 supplies exact index identities and current/retained/uninitialized readiness; Phase 3 supplies the single combined refresh scheduler and cadence-before-filesystem ordering; Phase 5 owns named scope resolution and enablement/scope generation; Phase 6 supplies pure classification and ambiguity omission; Phase 7 owns the measured executor architecture; Phase 4 owns run output and semantic lifecycle. Do not add rendering or termination authority.
+**Constraints from prior phases:** Phase 1 supplies exact index identities and current/retained/uninitialized readiness; Phase 3 supplies the single coalesced refresh scheduler, cadence-before-filesystem ordering, and semantic completed/failed execution outcome; Phase 5 owns named scope resolution and enablement/scope generation; Phase 6 supplies pure classification, exec-sensitive session/activity IDs, and ambiguity omission; Phase 7 owns the measured executor architecture; Phase 4 owns run output and semantic lifecycle. Do not add rendering or termination authority.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-port`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-port`, and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` are green; tests prove disabled means no compile deadline/refresh/parsing/result acceptance, combined due work performs one process walk through Phase 7's executor, stale data is non-actionable then unavailable, scope/generation changes reject late results, target-directory appearance and symlink retargeting revise live resolution without metadata/list changes, owned activity joins once, and selection changes never affect external processes.
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-port`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-port`, and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` are green; tests prove disabled means no compile deadline/refresh/parsing/result acceptance, combined due work performs one coalesced cycle through Phase 7's executor while preserving internal coherence sampling, only semantic executor failure ages stale data to non-actionable then unavailable, completed empty snapshots do not, scope/generation changes reject late results, target-directory appearance and symlink retargeting revise live resolution without metadata/list changes, same-PID exec invalidates prior session/activity actionability, owned activity joins once, and selection changes never affect external processes.
 
 ### Phase 9 — Output monitor presentation and columns · status: todo
 
@@ -353,7 +399,7 @@
 - One root Cargo invocation is one stable column. A single session uses full width with no divider. Multiple sessions split equally to a readable minimum width; when they do not fit, render a horizontally windowed subset and keep the selected column visible.
 - Column headers show operative Cargo command/selectors, checkout/workspace path, resolved profile, root PID, elapsed time, and state. Render active compiler/build/link rows, plus the scope-level unattributed section, as selectable presentation rows.
 - An owned session body is one sequence: activity rows, a non-selectable Output separator, then captured Cargo/target output. Once the target runs, show running state and output; after completion pin existing output with done/killed marker until existing clear/close removes it, even outside selected scope. Exclude that out-of-scope pin from the selected scope's columns.
-- Introduce typed cursor targets `Empty`, `Header`, `Activity(ProcessIdentity)`, `Unattributed(ProcessIdentity)`, and `CapturedOutput(OutputSelection)`. The captured-output variant is constructible only for an owned column. Output hit results carry session identity plus header/activity/output-row identity; empty monitor has a full-pane focusable hit.
+- Introduce typed cursor targets `Empty`, `Header`, `Activity(CompileActivityId)`, `Unattributed(CompileActivityId)`, and `CapturedOutput(OutputSelection)`. The captured-output variant is constructible only for an owned column. Output hit results carry exec-sensitive `BuildSessionId` plus header/activity/output-row identity; empty monitor has a full-pane focusable hit.
 - Retain per-column selected row by process identity. On unit exit choose the row now at prior index, then previous, then header. On session exit choose the session now at prior ordered index, then preceding, then pinned owned, then empty. Scope invalidation retains only a still-present pinned owned selection.
 - Render only visible columns/rows while retaining off-screen model state. External rows are live samples, never reconstructed output or synthetic logs.
 
@@ -372,9 +418,9 @@
 - `src/tui/render.rs` — render indicator, columns, states, and bottom labels.
 - `src/tui/hit_test.rs` — identity-bearing per-column hits and empty-state focus.
 
-**Constraints from prior phases:** Join Phase 8 immutable monitor snapshots with Phase 4 `OwnedRun` by ID. Phase 6 first-seen ordering and Phase 5 named scope/index readiness plus immediate invalidation bind cursor fallback and empty-state rendering. Do not add key handling or termination.
+**Constraints from prior phases:** Join Phase 8 immutable monitor snapshots with Phase 4 `OwnedRun` by ID. Phase 6 first-seen ordering and exec-sensitive `BuildSessionId`/`CompileActivityId`, plus Phase 5 named scope/index readiness and immediate invalidation, bind cursor fallback and empty-state rendering. A same-PID exec transition creates new session/row identities and invalidates prior cursor/actionability. Do not add key handling or termination.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-port`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-port`, and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` are green; render/state tests prove distinct non-actionable pending-index, empty-non-Rust, ambiguous-ownership, and unresolved-path states; empty enabled focus; full-width single session; readable/windowed multiple columns; selected-column visibility; stable row/session fallback; unattributed section non-actionability; owned output joined once and pinned across scope changes; and monitor-off output matches prior behavior.
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-port`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-port`, and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` are green; render/state tests prove distinct non-actionable pending-index, empty-non-Rust, ambiguous-ownership, and unresolved-path states; empty enabled focus; full-width single session; readable/windowed multiple columns; selected-column visibility; stable row/session fallback; same-PID exec invalidates prior cursor and creates new session/activity identities; unattributed section non-actionability; owned output joined once and pinned across scope changes; and monitor-off output matches prior behavior.
 
 ### Phase 10 — Monitor navigation, toggle, and owned-output coexistence · status: todo
 
@@ -452,9 +498,9 @@
 - `src/tui/app/async_tasks/poll.rs` — reconcile correlated termination results without event-loop blocking.
 - `Cargo.toml` — add only platform dependencies needed for identity-bound external signaling.
 
-**Constraints from prior phases:** Phase 2 defines strong/insufficient identity, named evidence, incarnation, and validated ancestry; Phase 6 defines confirmed exact scope/session association; Phase 8 owns fresh/stale lifecycle; Phase 4 owns isolated process groups. `ProcessObserver` remains observation-only, all signaling runs through `ProcessTerminator` off the event loop, and no UI may synthesize or decompose opaque action authority.
+**Constraints from prior phases:** Phase 2 defines strong/insufficient identity, exec-sensitive incarnation, chronological identity evidence, and validated ancestry; Phase 6 keys confirmed exact scope/session/activity association by `ProcessIncarnation`; Phase 8 owns fresh/stale lifecycle; Phase 4 owns isolated process groups. A same-PID exec transition invalidates classification and actionability, while the opaque authorization retains the current strong `ProcessIdentity` needed for revalidation. `ProcessObserver` remains observation-only, all signaling runs through `ProcessTerminator` off the event loop, and no UI may synthesize or decompose opaque action authority.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-port`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-port`, and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` are green; deterministic process-fixture tests prove PID reuse rejection, safe-adapter or observed-only fallback, opaque authority cannot be reconstructed, exact request/result correlation, termination work stays off the event loop, validated descendant admission, no post-root first admission, leaf-before-root order, continued tracking after root exit, exclusions, owned group/wait serialization, no automatic `SIGKILL`, and truthful already-gone/gone-after-signal/partial-failure outcomes.
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-port`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-port`, and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` are green; deterministic process-fixture tests prove PID reuse and same-PID exec rejection before signaling, safe-adapter or observed-only fallback, opaque authority cannot be reconstructed, exact request/result correlation, termination work stays off the event loop, validated descendant admission, no post-root first admission, leaf-before-root order, continued tracking after root exit, exclusions, owned group/wait serialization, no automatic `SIGKILL`, and truthful already-gone/gone-after-signal/partial-failure outcomes.
 
 ### Phase 12 — Selected-build termination interaction · status: todo
 

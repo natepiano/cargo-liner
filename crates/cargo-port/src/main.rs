@@ -10,6 +10,7 @@ mod constants;
 mod enrichment;
 mod http;
 mod lint;
+mod process_observation;
 mod project;
 mod scan;
 mod sccache;
