@@ -183,6 +183,7 @@ use crate::lint;
 use crate::lint::LintRuns;
 #[cfg(test)]
 use crate::lint::LintStatus;
+use crate::process_observation::ProcessRefreshExecutor;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::CargoWorkspaceIndex;
@@ -203,7 +204,7 @@ pub(super) struct App {
     /// as named methods on `App`.
     pub(super) net:                                         Net,
     /// Panes subsystem. Owns `pane_manager`, `pane_data`,
-    /// `hovered_pane_row`, and `cpu_poller`. App's
+    /// `hovered_pane_row`, and the pane-specific view state. App's
     /// impl-files reach pane state through this handle.
     pub(super) panes:                                       Panes,
     /// Background subsystem. Owns the four mpsc channel pairs plus
@@ -252,6 +253,8 @@ pub(super) struct App {
     /// It rebuilds only after accepted Cargo metadata or the `ProjectList`
     /// revision changes; event-loop wakes retain the current view.
     pub(super) cargo_workspace_index:                       CargoWorkspaceIndex,
+    /// Sole scheduler and owner of the shared host process observer.
+    pub(super) process_refresh_executor:                    ProcessRefreshExecutor,
     /// Number of Running Targets attribution collections performed by this
     /// app. Tests use it to verify the cadence gate precedes filesystem work.
     #[cfg(test)]
@@ -750,13 +753,20 @@ impl App {
     }
 
     /// Open a confirm dialog to `SIGTERM` the running instance named by
-    /// `label`. The PID is verified against `create_time` immediately
-    /// before the signal so a reused PID is never killed.
-    pub fn request_kill_confirm(&mut self, label: String, pid: u32, create_time: u64) {
+    /// `label`. `termination_capability` carries the strong identity authority;
+    /// `pid` and `create_time` are display data.
+    pub fn request_kill_confirm(
+        &mut self,
+        label: String,
+        pid: u32,
+        create_time: u64,
+        termination_capability: super::running_targets::RunningTargetTerminationCapability,
+    ) {
         self.confirm = Some(ConfirmAction::KillTarget {
             label,
             pid,
             create_time,
+            termination_capability,
         });
     }
 

@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 // cargo install paths
 
 pub(super) const CARGO_BIN_DIR: &str = "bin";
@@ -12,3 +14,8 @@ pub(super) const SOURCE_DIR: &str = "src";
 /// Real process trees are nowhere near this deep.
 pub(super) const ANCESTOR_WALK_CAP: usize = 32;
 pub(super) const MIN_HEX_HASH_LEN: usize = 16;
+
+// refresh cadence
+
+/// Running Targets resource and history sampling interval.
+pub(crate) const RUNNING_TARGETS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);

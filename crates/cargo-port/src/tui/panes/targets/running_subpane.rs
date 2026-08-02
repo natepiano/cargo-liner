@@ -5,7 +5,7 @@
 //! `cargo` / `rustc` chains of a `cargo mend` run), as a collapsible
 //! outline.
 //!
-//! `build_running_rows` flattens the poller snapshot into the render order;
+//! `build_running_rows` flattens the observed view state into the render order;
 //! `build_running_list` folds it into the navigable rows for the current
 //! [`CargoGroup`] and outline state; `render_running_subpane` draws the
 //! divider, the column header, and the visible row slice into the box the
@@ -49,23 +49,25 @@ use crate::constants::SECONDS_PER_MINUTE;
 use crate::project::DisplayPath;
 use crate::tui::render;
 use crate::tui::running_targets::RunProfile;
+use crate::tui::running_targets::RunningProcessPlacement;
+use crate::tui::running_targets::RunningTargetTerminationCapability;
 use crate::tui::running_targets::RunningTargets;
 use crate::tui::theme_roles;
 
 /// One process in the Running list: a tracked target instance or an
-/// untracked process one spawned. `parent_pid`/`depth` place the row in
-/// the sub-process outline — children render directly under their parent,
-/// indented.
+/// untracked process one spawned. `placement` and `depth` locate the row in
+/// the process outline; children render directly under their parent, indented.
 pub struct RunningRow {
-    pub name:         String,
-    pub pid:          u32,
-    pub cpu_percent:  f32,
-    pub memory_bytes: u64,
-    pub first_seen:   Instant,
-    pub create_time:  u64,
-    pub parent_pid:   Option<u32>,
-    pub depth:        usize,
-    pub kind:         RunningRowKind,
+    pub name:                   String,
+    pub pid:                    u32,
+    pub cpu_percent:            f32,
+    pub memory_bytes:           u64,
+    pub first_seen:             Instant,
+    pub create_time:            u64,
+    pub termination_capability: RunningTargetTerminationCapability,
+    pub placement:              RunningProcessPlacement,
+    pub depth:                  usize,
+    pub kind:                   RunningRowKind,
 }
 
 /// What a Running row is: a tracked target instance — with its launch
@@ -107,12 +109,12 @@ impl RunningRow {
 }
 
 /// The one instance a kill request terminates: the confirm-dialog label
-/// plus the PID and the create time it is verified against before
-/// `SIGTERM`.
+/// plus display metadata and the identity-bound termination capability.
 pub struct KillRequest {
-    pub label:       String,
-    pub pid:         u32,
-    pub create_time: u64,
+    pub label:                  String,
+    pub pid:                    u32,
+    pub create_time:            u64,
+    pub termination_capability: RunningTargetTerminationCapability,
 }
 
 /// Expansion state of the Running list's `cargo` group. Installed
@@ -147,7 +149,7 @@ pub enum RunningListRow {
     Instance(usize),
 }
 
-/// Flatten the poller snapshot into the Running rows: every tracked
+/// Flatten the observed Running state into rows: every tracked
 /// instance across every workspace, plus every untracked process one
 /// spawned. Installed-`cargo` instances sort first (contiguous, so
 /// [`build_running_list`] can fold their subtrees under the header); the
@@ -161,15 +163,16 @@ pub fn build_running_rows(running: &RunningTargets) -> Vec<RunningRow> {
         .iter_targets()
         .flat_map(|(key, member_dir, instances)| {
             instances.iter().map(|inst| RunningRow {
-                name:         key.name.clone(),
-                pid:          inst.pid,
-                cpu_percent:  inst.cpu_percent,
-                memory_bytes: inst.memory_bytes,
-                first_seen:   inst.first_seen,
-                create_time:  inst.create_time,
-                parent_pid:   inst.parent_pid,
-                depth:        0,
-                kind:         RunningRowKind::Target {
+                name:                   key.name.clone(),
+                pid:                    inst.pid,
+                cpu_percent:            inst.cpu_percent,
+                memory_bytes:           inst.memory_bytes,
+                first_seen:             inst.first_seen,
+                create_time:            inst.create_time,
+                termination_capability: inst.termination_capability.clone(),
+                placement:              inst.placement,
+                depth:                  0,
+                kind:                   RunningRowKind::Target {
                     profile:      inst.profile,
                     display_path: member_dir.display_path(),
                 },
@@ -192,15 +195,18 @@ pub fn build_running_rows(running: &RunningTargets) -> Vec<RunningRow> {
         .child_processes()
         .iter()
         .map(|child| RunningRow {
-            name:         child.name.clone(),
-            pid:          child.pid,
-            cpu_percent:  child.cpu_percent,
-            memory_bytes: child.memory_bytes,
-            first_seen:   child.first_seen,
-            create_time:  child.create_time,
-            parent_pid:   Some(child.parent_pid),
-            depth:        0,
-            kind:         RunningRowKind::Child,
+            name:                   child.name.clone(),
+            pid:                    child.pid,
+            cpu_percent:            child.cpu_percent,
+            memory_bytes:           child.memory_bytes,
+            first_seen:             child.first_seen,
+            create_time:            child.create_time,
+            termination_capability: child.termination_capability.clone(),
+            placement:              RunningProcessPlacement::ChildOf {
+                parent_pid: child.parent_pid,
+            },
+            depth:                  0,
+            kind:                   RunningRowKind::Child,
         })
         .collect();
     children.sort_by_key(|row| row.pid);
@@ -212,27 +218,30 @@ pub fn build_running_rows(running: &RunningTargets) -> Vec<RunningRow> {
 /// the list moves directly under that parent (depth-first) with `depth`
 /// set to its nesting level; top-level rows keep the incoming order. A row
 /// whose parent is absent from the list stays top-level. Children share
-/// their parent's profile (the poller resolves parents within one
-/// profile), so the installed-first prefix stays contiguous.
+/// their parent's profile (the state resolves parents within one profile),
+/// so the installed-first prefix stays contiguous.
 fn tree_ordered(rows: Vec<RunningRow>) -> Vec<RunningRow> {
     let pids: HashSet<u32> = rows.iter().map(|row| row.pid).collect();
     let capacity = rows.len();
     let mut children: HashMap<u32, Vec<RunningRow>> = HashMap::new();
     let mut top_level: Vec<RunningRow> = Vec::new();
     for row in rows {
-        match row
-            .parent_pid
-            .filter(|parent| *parent != row.pid && pids.contains(parent))
-        {
-            Some(parent) => children.entry(parent).or_default().push(row),
-            None => top_level.push(row),
+        match row.placement {
+            RunningProcessPlacement::ChildOf { parent_pid }
+                if parent_pid != row.pid && pids.contains(&parent_pid) =>
+            {
+                children.entry(parent_pid).or_default().push(row);
+            },
+            RunningProcessPlacement::TopLevel | RunningProcessPlacement::ChildOf { .. } => {
+                top_level.push(row)
+            },
         }
     }
     let mut ordered = Vec::with_capacity(capacity);
     for row in top_level {
         append_subtree(row, 0, &mut children, &mut ordered);
     }
-    // Parent links form a forest (the poller's walk validates start-time
+    // Parent links form a forest (the observer walk validates creation-order
     // ordering), so nothing is left stranded; drain defensively anyway.
     debug_assert!(children.is_empty(), "parent links form a forest");
     for orphans in children.into_values() {
@@ -358,6 +367,7 @@ pub fn resolve_kill_request(
         label,
         pid: row.pid,
         create_time: row.create_time,
+        termination_capability: row.termination_capability.clone(),
     })
 }
 

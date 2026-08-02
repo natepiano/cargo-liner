@@ -19,6 +19,7 @@ pub(super) enum ParentCreationOrder {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ProcessCreationOrderUnavailable {
     EqualMonotonicCreationValue,
+    #[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
     PlatformDoesNotExposeMonotonicCreationOrder,
     PlatformQueryFailed,
     PlatformValueInvalid,
@@ -44,7 +45,7 @@ impl ProcessCreationOrderEvidence {
         Self::Monotonic(MonotonicProcessCreationOrder(creation_token.0))
     }
 
-    pub(super) fn parent_relative_to_child(&self, child: &Self) -> ParentCreationOrder {
+    pub(super) const fn parent_relative_to_child(&self, child: &Self) -> ParentCreationOrder {
         match (self, child) {
             (Self::Monotonic(parent), Self::Monotonic(child)) if parent.0 > child.0 => {
                 ParentCreationOrder::CreatedAfterChild
@@ -134,17 +135,64 @@ impl ObservedProcessIdentity {
     }
 }
 
+/// Current host evidence for a previously observed strong process identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum StrongProcessIdentityRevalidation {
+    Current,
+    Replaced(ProcessIdentity),
+    Unavailable(InsufficientProcessIdentity),
+}
+
+/// Re-observe a strong identity immediately before an identity-sensitive action.
+pub(crate) fn revalidate_strong_process_identity(
+    expected_identity: &ProcessIdentity,
+) -> StrongProcessIdentityRevalidation {
+    match PlatformProcessObservation::observe_lifetime(expected_identity.pid())
+        .identity()
+        .clone()
+    {
+        ObservedProcessIdentity::Strong(current_identity)
+            if current_identity == *expected_identity =>
+        {
+            StrongProcessIdentityRevalidation::Current
+        },
+        ObservedProcessIdentity::Strong(replacement_identity) => {
+            StrongProcessIdentityRevalidation::Replaced(replacement_identity)
+        },
+        ObservedProcessIdentity::Insufficient(insufficient_process_identity) => {
+            StrongProcessIdentityRevalidation::Unavailable(insufficient_process_identity)
+        },
+    }
+}
+
 /// Why an observed PID cannot identify one process lifetime.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum InsufficientProcessIdentity {
-    ProcessExitedBeforeIdentityLookup { pid: u32 },
-    ProcessLifetimeAnchorInvalid { pid: u32 },
-    ProcessLifetimeAnchorUnavailable { pid: u32 },
-    PlatformCreationTokenUnavailable { pid: u32 },
-    PlatformIdentityChangedDuringLookup { pid: u32 },
-    PlatformIdentityLookupFailed { pid: u32 },
-    PlatformMonotonicCreationQueryFailed { pid: u32 },
-    PlatformMonotonicCreationValueInvalid { pid: u32 },
+    ProcessExitedBeforeIdentityLookup {
+        pid: u32,
+    },
+    ProcessLifetimeAnchorInvalid {
+        pid: u32,
+    },
+    ProcessLifetimeAnchorUnavailable {
+        pid: u32,
+    },
+    #[cfg(any(test, not(target_os = "macos")))]
+    PlatformCreationTokenUnavailable {
+        pid: u32,
+    },
+    PlatformIdentityChangedDuringLookup {
+        pid: u32,
+    },
+    PlatformIdentityLookupFailed {
+        pid: u32,
+    },
+    PlatformMonotonicCreationQueryFailed {
+        pid: u32,
+    },
+    PlatformMonotonicCreationValueInvalid {
+        pid: u32,
+    },
 }
 
 impl InsufficientProcessIdentity {
@@ -153,11 +201,12 @@ impl InsufficientProcessIdentity {
             Self::ProcessExitedBeforeIdentityLookup { pid }
             | Self::ProcessLifetimeAnchorInvalid { pid }
             | Self::ProcessLifetimeAnchorUnavailable { pid }
-            | Self::PlatformCreationTokenUnavailable { pid }
             | Self::PlatformIdentityChangedDuringLookup { pid }
             | Self::PlatformIdentityLookupFailed { pid }
             | Self::PlatformMonotonicCreationQueryFailed { pid }
             | Self::PlatformMonotonicCreationValueInvalid { pid } => *pid,
+            #[cfg(any(test, not(target_os = "macos")))]
+            Self::PlatformCreationTokenUnavailable { pid } => *pid,
         }
     }
 }
@@ -177,7 +226,7 @@ pub(super) struct PlatformProcessLifetimeEvidence {
 }
 
 impl PlatformProcessLifetimeEvidence {
-    fn strong(
+    const fn strong(
         identity: ProcessIdentity,
         creation_order_evidence: ProcessCreationOrderEvidence,
     ) -> Self {
@@ -187,7 +236,7 @@ impl PlatformProcessLifetimeEvidence {
         }
     }
 
-    fn insufficient(
+    const fn insufficient(
         insufficient_process_identity: InsufficientProcessIdentity,
         process_creation_order_unavailable: ProcessCreationOrderUnavailable,
     ) -> Self {
@@ -208,7 +257,7 @@ impl PlatformProcessLifetimeEvidence {
     }
 
     #[cfg(test)]
-    pub(super) fn for_test(
+    pub(super) const fn for_test(
         identity: ObservedProcessIdentity,
         creation_order_evidence: ProcessCreationOrderEvidence,
     ) -> Self {
@@ -242,7 +291,7 @@ enum MacosMonotonicProcessStartObservation {
 
 #[cfg(any(target_os = "macos", test))]
 impl MacosMonotonicProcessStartObservation {
-    fn validate_successful_query(value: u64) -> Self {
+    const fn validate_successful_query(value: u64) -> Self {
         match value {
             0 => Self::ZeroValue,
             value => Self::Observed(MacosMonotonicProcessStart(value)),
@@ -319,7 +368,7 @@ impl PlatformProcessObservation {
     }
 
     #[cfg(test)]
-    pub(super) fn for_test(
+    pub(super) const fn for_test(
         identity: ObservedProcessIdentity,
         creation_order_evidence: ProcessCreationOrderEvidence,
         parent: ProcessFieldObservation<ReportedParent>,
@@ -330,7 +379,7 @@ impl PlatformProcessObservation {
         }
     }
 
-    fn processkit_lifetime_anchor(
+    const fn processkit_lifetime_anchor(
         pid: u32,
         start_time: Option<u64>,
     ) -> ProcessLifetimeAnchorObservation {
@@ -354,7 +403,7 @@ impl PlatformProcessObservation {
     }
 
     #[cfg(any(target_os = "macos", test))]
-    fn macos_processkit_lifetime_anchor(
+    const fn macos_processkit_lifetime_anchor(
         pid: u32,
         start_time: Option<u64>,
     ) -> ProcessLifetimeAnchorObservation {
@@ -416,7 +465,7 @@ impl PlatformProcessObservation {
         Self::bind_macos_process_lifetime(
             pid,
             initial_anchor,
-            monotonic_process_start,
+            &monotonic_process_start,
             revalidated_anchor,
         )
     }
@@ -451,7 +500,7 @@ impl PlatformProcessObservation {
     fn bind_macos_process_lifetime(
         pid: u32,
         initial_anchor: ProcessLifetimeAnchorObservation,
-        monotonic_process_start: MacosMonotonicProcessStartObservation,
+        monotonic_process_start: &MacosMonotonicProcessStartObservation,
         revalidated_anchor: ProcessLifetimeAnchorObservation,
     ) -> PlatformProcessLifetimeEvidence {
         match (initial_anchor, revalidated_anchor) {
@@ -464,9 +513,9 @@ impl PlatformProcessObservation {
                 )) => PlatformProcessLifetimeEvidence::strong(
                     ProcessIdentity {
                         pid,
-                        creation_token: PlatformCreationToken::from_platform(value),
+                        creation_token: PlatformCreationToken::from_platform(*value),
                     },
-                    ProcessCreationOrderEvidence::Monotonic(MonotonicProcessCreationOrder(value)),
+                    ProcessCreationOrderEvidence::Monotonic(MonotonicProcessCreationOrder(*value)),
                 ),
                 MacosMonotonicProcessStartObservation::QueryFailed => {
                     PlatformProcessLifetimeEvidence::insufficient(
@@ -557,7 +606,7 @@ pub(crate) struct ProcessIncarnation {
 }
 
 impl ProcessIncarnation {
-    pub(super) fn new(
+    pub(super) const fn new(
         identity: ProcessIdentity,
         executable_argv_fingerprint: ProcessFingerprint,
     ) -> Self {
@@ -569,6 +618,7 @@ impl ProcessIncarnation {
 
     pub(crate) const fn identity(&self) -> &ProcessIdentity { &self.identity }
 
+    #[cfg(test)]
     pub(crate) const fn executable_argv_fingerprint(&self) -> &ProcessFingerprint {
         &self.executable_argv_fingerprint
     }
@@ -613,6 +663,9 @@ impl ProcessFingerprint {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStringExt as _;
+
     use super::InsufficientProcessIdentity;
     use super::MacosMonotonicProcessStartObservation;
     use super::ObservedProcessIdentity;
@@ -654,7 +707,7 @@ mod tests {
         let lifetime = PlatformProcessObservation::bind_macos_process_lifetime(
             42,
             lifetime_anchor(100),
-            MacosMonotonicProcessStartObservation::validate_successful_query(700),
+            &MacosMonotonicProcessStartObservation::validate_successful_query(700),
             lifetime_anchor(100),
         );
 
@@ -673,7 +726,7 @@ mod tests {
         let lifetime = PlatformProcessObservation::bind_macos_process_lifetime(
             42,
             PlatformProcessObservation::macos_processkit_lifetime_anchor(42, None),
-            MacosMonotonicProcessStartObservation::validate_successful_query(700),
+            &MacosMonotonicProcessStartObservation::validate_successful_query(700),
             lifetime_anchor(100),
         );
 
@@ -696,7 +749,7 @@ mod tests {
         let lifetime = PlatformProcessObservation::bind_macos_process_lifetime(
             42,
             lifetime_anchor(100),
-            MacosMonotonicProcessStartObservation::validate_successful_query(700),
+            &MacosMonotonicProcessStartObservation::validate_successful_query(700),
             PlatformProcessObservation::macos_processkit_lifetime_anchor(42, None),
         );
 
@@ -755,7 +808,7 @@ mod tests {
         let lifetime = PlatformProcessObservation::bind_macos_process_lifetime(
             42,
             lifetime_anchor(100),
-            MacosMonotonicProcessStartObservation::validate_successful_query(700),
+            &MacosMonotonicProcessStartObservation::validate_successful_query(700),
             lifetime_anchor(101),
         );
 
@@ -778,7 +831,7 @@ mod tests {
         let lifetime = PlatformProcessObservation::bind_macos_process_lifetime(
             42,
             lifetime_anchor(100),
-            MacosMonotonicProcessStartObservation::validate_successful_query(700),
+            &MacosMonotonicProcessStartObservation::validate_successful_query(700),
             ProcessLifetimeAnchorObservation::Insufficient(
                 InsufficientProcessIdentity::ProcessExitedBeforeIdentityLookup { pid: 42 },
             ),
@@ -803,7 +856,7 @@ mod tests {
         let lifetime = PlatformProcessObservation::bind_macos_process_lifetime(
             42,
             lifetime_anchor(100),
-            MacosMonotonicProcessStartObservation::QueryFailed,
+            &MacosMonotonicProcessStartObservation::QueryFailed,
             lifetime_anchor(100),
         );
 
@@ -826,7 +879,7 @@ mod tests {
         let lifetime = PlatformProcessObservation::bind_macos_process_lifetime(
             42,
             lifetime_anchor(100),
-            MacosMonotonicProcessStartObservation::validate_successful_query(0),
+            &MacosMonotonicProcessStartObservation::validate_successful_query(0),
             lifetime_anchor(100),
         );
 
@@ -849,7 +902,7 @@ mod tests {
         let lifetime = PlatformProcessObservation::bind_macos_process_lifetime(
             42,
             PlatformProcessObservation::macos_processkit_lifetime_anchor(42, Some(0)),
-            MacosMonotonicProcessStartObservation::validate_successful_query(700),
+            &MacosMonotonicProcessStartObservation::validate_successful_query(700),
             lifetime_anchor(100),
         );
 
@@ -872,7 +925,7 @@ mod tests {
         let lifetime = PlatformProcessObservation::bind_macos_process_lifetime(
             42,
             lifetime_anchor(100),
-            MacosMonotonicProcessStartObservation::validate_successful_query(700),
+            &MacosMonotonicProcessStartObservation::validate_successful_query(700),
             PlatformProcessObservation::macos_processkit_lifetime_anchor(42, Some(0)),
         );
 
@@ -907,8 +960,6 @@ mod tests {
 
     #[cfg(unix)]
     fn fingerprint_input(executable: &[u8], argv: &[&[u8]]) -> Vec<u8> {
-        use std::os::unix::ffi::OsStringExt as _;
-
         let executable =
             std::path::PathBuf::from(std::ffi::OsString::from_vec(executable.to_vec()));
         let argv: Vec<_> = argv
@@ -930,7 +981,6 @@ mod tests {
 
         assert_ne!(first_input, second_input);
 
-        use std::os::unix::ffi::OsStringExt as _;
         let first_fingerprint = ProcessFingerprint::from_observed_fields(
             &std::path::PathBuf::from(std::ffi::OsString::from_vec(b"a".to_vec())),
             &[std::ffi::OsString::from_vec(b"\xffb".to_vec())],

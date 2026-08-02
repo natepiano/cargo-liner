@@ -7,47 +7,73 @@ use std::path::Path;
 use std::path::PathBuf;
 #[cfg(test)]
 use std::sync::OnceLock;
+#[cfg(test)]
 use std::time::Duration;
 use std::time::Instant;
 
-use sysinfo::Pid;
-use sysinfo::ProcessRefreshKind;
-use sysinfo::ProcessesToUpdate;
-use sysinfo::Signal;
-use sysinfo::System;
-use sysinfo::UpdateKind;
 use tui_pane::RollingMean;
 
+use super::RunningTargetTerminationCapability;
 use super::constants::ANCESTOR_WALK_CAP;
 use super::constants::CARGO_BIN_DIR;
 use super::constants::MIN_HEX_HASH_LEN;
 use crate::constants::CARGO_COMMAND_NAME;
 use crate::constants::DOT_CARGO_DIR;
+use crate::process_observation::identity::ProcessIdentity;
+use crate::process_observation::snapshot::AncestryLookup;
+use crate::process_observation::snapshot::AncestryTerminal;
+use crate::process_observation::snapshot::ParentWalkDepth;
+use crate::process_observation::snapshot::ProcessFieldObservation;
+use crate::process_observation::snapshot::ProcessObservationSnapshot;
+use crate::process_observation::snapshot::RunningProcessMetricsObservation;
+use crate::process_observation::snapshot::RunningProcessMetricsRecord;
 use crate::project::AbsolutePath;
 use crate::tui::panes::RunTargetKind;
-use crate::tui::startup_services::StartupEffect;
-use crate::tui::startup_services::StartupServices;
 
-pub struct RunningTargetsPoller {
-    system:           System,
-    last_poll:        Option<Instant>,
-    poll_interval:    Duration,
-    snapshot:         RunningTargets,
-    startup_services: StartupServices,
-    /// Canonical cargo install bin directory (`~/.cargo/bin` by default).
-    /// Exes living directly here are matched as installed binaries,
-    /// surfaced as the `cargo` profile. `None` when it can't be resolved.
-    install_bin_dir:  Option<AbsolutePath>,
-    /// When each tracked PID was first observed, surviving the per-poll
+/// Whether Cargo's install binary directory can participate in executable matching.
+enum CargoInstallBinDirectory {
+    Resolved(AbsolutePath),
+    Unavailable,
+}
+
+impl From<Option<AbsolutePath>> for CargoInstallBinDirectory {
+    fn from(absolute_path: Option<AbsolutePath>) -> Self {
+        absolute_path.map_or(Self::Unavailable, Self::Resolved)
+    }
+}
+
+/// Where a process appears in the Running Targets process outline.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RunningProcessPlacement {
+    /// The process has no parent row in the outline.
+    TopLevel,
+    /// The process appears directly under the shown parent process.
+    ChildOf { parent_pid: u32 },
+}
+
+impl From<Option<u32>> for RunningProcessPlacement {
+    fn from(parent_pid: Option<u32>) -> Self {
+        parent_pid.map_or(Self::TopLevel, |parent_pid| Self::ChildOf { parent_pid })
+    }
+}
+
+/// Running Targets presentation state derived from immutable observer records.
+pub struct RunningTargetsState {
+    snapshot:                    RunningTargets,
+    /// Canonical Cargo install binary directory (`~/.cargo/bin` by default).
+    /// Executables living directly in a resolved directory are matched as
+    /// installed binaries and surfaced as the `cargo` profile.
+    cargo_install_bin_directory: CargoInstallBinDirectory,
+    /// When each tracked identity was first observed, surviving each view
     /// snapshot rebuild. Drives the Running list's newest-at-bottom
     /// ordering: insert on first sight, retain only live PIDs after each
-    /// poll, and evict on [`Self::drop_instances`].
-    first_seen:       HashMap<u32, Instant>,
-    /// Each tracked PID's [`RollingMean`] window over CPU samples;
+    /// observer result, and evict on [`Self::drop_instance`].
+    first_seen:                  HashMap<ProcessIdentity, Instant>,
+    /// Each tracked identity's [`RollingMean`] window over CPU samples;
     /// instances carry the mean. Same lifecycle as `first_seen`: fed during
-    /// the poll loop, retained against live PIDs, evicted on
-    /// [`Self::drop_instances`].
-    cpu_history:      HashMap<u32, RollingMean>,
+    /// completed Running cycles, retained against live identities, evicted on
+    /// [`Self::drop_instance`].
+    cpu_history:                 HashMap<ProcessIdentity, RollingMean>,
 }
 
 #[derive(Default)]
@@ -70,28 +96,25 @@ struct RunningTarget {
 /// One running OS process for a target. A single target can map to more
 /// than one process (multiple `cargo run` invocations); each gets its own
 /// instance so the pane can list them separately and kill one by PID.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct RunningInstance {
     /// OS process id, used to terminate the instance.
-    pub pid:          u32,
+    pub pid:                    u32,
     /// CPU usage in percent. A busy multi-threaded process can exceed 100.
-    pub cpu_percent:  f32,
+    pub cpu_percent:            f32,
     /// Resident memory in bytes.
-    pub memory_bytes: u64,
+    pub memory_bytes:           u64,
     /// How the target was launched, shown as the row marker.
-    pub profile:      RunProfile,
-    /// When the poller first observed this PID — the Running list sorts by
+    pub profile:                RunProfile,
+    /// When the view state first observed this identity — the Running list sorts by
     /// it so the newest instance is the bottom row.
-    pub first_seen:   Instant,
-    /// The process's start time in seconds since the epoch, from the OS.
-    /// Verified immediately before `SIGTERM` so a kill never lands on a
-    /// reused PID.
-    pub create_time:  u64,
-    /// The direct OS parent, when this instance descends from another
-    /// tracked instance (the parent is then itself shown in the outline —
-    /// a tracked instance or a [`ChildProcess`] on the same chain).
-    /// `None` for an independently started, top-level instance.
-    pub parent_pid:   Option<u32>,
+    pub first_seen:             Instant,
+    /// The process's start time in seconds since the epoch, used for display.
+    pub create_time:            u64,
+    /// Identity-bound authority used by the confirmation transaction.
+    pub termination_capability: RunningTargetTerminationCapability,
+    /// Whether this instance is top-level or nested under a shown process.
+    pub placement:              RunningProcessPlacement,
 }
 
 /// One untracked process descended from a tracked instance — e.g. the
@@ -99,21 +122,22 @@ pub struct RunningInstance {
 /// same live metrics as an instance so its Running row reads the same.
 pub struct ChildProcess {
     /// OS process id, used to terminate the process.
-    pub pid:          u32,
+    pub pid:                    u32,
     /// The process's executable name — the Target cell of its row.
-    pub name:         String,
+    pub name:                   String,
     /// CPU usage in percent, smoothed over the poll window.
-    pub cpu_percent:  f32,
+    pub cpu_percent:            f32,
     /// Resident memory in bytes.
-    pub memory_bytes: u64,
-    /// When the poller first observed this PID.
-    pub first_seen:   Instant,
-    /// The process's start time in seconds since the epoch, for the
-    /// pre-`SIGTERM` reuse check.
-    pub create_time:  u64,
+    pub memory_bytes:           u64,
+    /// When the view state first observed this identity.
+    pub first_seen:             Instant,
+    /// The process's start time in seconds since the epoch, used for display.
+    pub create_time:            u64,
+    /// Identity-bound authority used by the confirmation transaction.
+    pub termination_capability: RunningTargetTerminationCapability,
     /// The direct OS parent — always itself shown in the outline, since
     /// every ancestor up to the tracked root is on the same chain.
-    pub parent_pid:   u32,
+    pub parent_pid:             u32,
 }
 
 /// How a running target's binary was launched — the marker shown in place
@@ -272,115 +296,115 @@ impl RunningTargetProjectAttribution<'_> {
     }
 }
 
-impl RunningTargetsPoller {
-    pub fn new(poll_interval: Duration, startup_services: StartupServices) -> Self {
+impl RunningTargetsState {
+    pub fn new() -> Self {
         Self {
-            system: System::new(),
-            last_poll: None,
-            poll_interval,
-            snapshot: RunningTargets::default(),
-            startup_services,
-            install_bin_dir: cargo_install_bin_dir(),
-            first_seen: HashMap::new(),
-            cpu_history: HashMap::new(),
+            snapshot:                    RunningTargets::default(),
+            cargo_install_bin_directory: cargo_install_bin_directory(),
+            first_seen:                  HashMap::new(),
+            cpu_history:                 HashMap::new(),
         }
     }
 
-    /// Whether process polling is enabled and the cadence is due at `now`.
-    /// This query does not advance [`Self::last_poll`]; [`Self::tick`] remains
-    /// the authoritative state transition and rechecks the cadence.
-    pub fn is_due(&self, now: Instant) -> bool {
-        self.startup_services.running_targets_polling_effect() == StartupEffect::Real
-            && self.cadence_is_due(now)
-    }
-
-    fn cadence_is_due(&self, now: Instant) -> bool {
-        self.last_poll
-            .is_none_or(|last| now.duration_since(last) >= self.poll_interval)
-    }
-
-    /// Refresh if due. Returns the current snapshot regardless of cadence.
-    pub fn tick(
+    /// Rebuild view state from one completed identity and metrics observation.
+    pub fn apply_observation(
         &mut self,
         now: Instant,
+        process_observation_snapshot: &ProcessObservationSnapshot,
         project_attributions: &[RunningTargetProjectAttribution<'_>],
     ) -> &RunningTargets {
-        let effect = self.startup_services.running_targets_polling_effect();
-        if effect == StartupEffect::Suppressed {
-            self.startup_services.record_running_targets_polling(effect);
+        let RunningProcessMetricsObservation::Observed(running_process_metrics) =
+            process_observation_snapshot.running_process_metrics()
+        else {
             return &self.snapshot;
-        }
-        if !self.cadence_is_due(now) {
-            return &self.snapshot;
-        }
-        self.startup_services.record_running_targets_polling(effect);
-        self.last_poll = Some(now);
+        };
 
-        self.system.refresh_processes_specifics(
-            ProcessesToUpdate::All,
-            true,
-            ProcessRefreshKind::nothing()
-                .with_exe(UpdateKind::Always)
-                .with_cwd(UpdateKind::Always)
-                .with_cpu()
-                .with_memory(),
+        let mut by_key = self.collect_instances(
+            now,
+            process_observation_snapshot,
+            running_process_metrics,
+            project_attributions,
         );
-
-        let mut by_key = self.collect_instances(now, project_attributions);
         // Stable per-key order so the pane's instance rows (and the cursor
         // resting on one) don't reshuffle between ticks.
-        let links = |pid: u32| {
-            self.system
-                .process(Pid::from_u32(pid))
-                .map(|process| ParentLink {
-                    parent:     process.parent().map(Pid::as_u32),
-                    start_time: process.start_time(),
-                })
-        };
-        let tracked_keys: HashMap<u32, RunningKey> = by_key
+        let tracked_keys: HashMap<ProcessIdentity, RunningKey> = by_key
             .iter()
-            .flat_map(|(key, target)| target.instances.iter().map(|inst| (inst.pid, key.clone())))
+            .flat_map(|(key, target)| {
+                target.instances.iter().map(|instance| {
+                    (
+                        instance.termination_capability.process_identity().clone(),
+                        key.clone(),
+                    )
+                })
+            })
             .collect();
-        let tracked: HashSet<u32> = tracked_keys.keys().copied().collect();
+        let tracked: HashSet<ProcessIdentity> = tracked_keys.keys().cloned().collect();
         for (key, target) in &mut by_key {
-            target.instances.sort_by_key(|inst| inst.pid);
-            for inst in &mut target.instances {
-                inst.parent_pid =
-                    shown_parent_for_instance(&links, inst.pid, &tracked, &tracked_keys, key);
+            target.instances.sort_by_key(|instance| instance.pid);
+            for instance in &mut target.instances {
+                instance.placement = observed_running_process_placement_for_instance(
+                    process_observation_snapshot,
+                    instance.termination_capability.process_identity(),
+                    &tracked,
+                    &tracked_keys,
+                    key,
+                );
             }
         }
         // Everything a tracked instance spawned, however deep: any process
         // whose ancestor chain reaches a tracked PID joins the outline.
         let mut children = Vec::new();
-        for (pid, process) in self.system.processes() {
-            let pid = pid.as_u32();
-            if tracked.contains(&pid) {
+        for (process_identity, process_metrics) in running_process_metrics {
+            debug_assert_eq!(process_metrics.identity(), process_identity);
+            if tracked.contains(process_identity) {
                 continue;
             }
-            let Some(parent_pid) = shown_parent(&links, pid, &tracked) else {
+            let RunningProcessPlacement::ChildOf { parent_pid } =
+                observed_running_process_placement(
+                    process_observation_snapshot,
+                    process_identity,
+                    &tracked,
+                )
+            else {
                 continue;
             };
-            let first_seen = *self.first_seen.entry(pid).or_insert(now);
-            let cpu = smoothed_cpu(&mut self.cpu_history, pid, process.cpu_usage());
+            let first_seen = *self
+                .first_seen
+                .entry(process_identity.clone())
+                .or_insert(now);
+            let cpu_percent = smoothed_cpu(
+                &mut self.cpu_history,
+                process_identity,
+                process_metrics.cpu_percent().get(),
+            );
             children.push(ChildProcess {
-                pid,
-                name: process.name().to_string_lossy().into_owned(),
-                cpu_percent: cpu,
-                memory_bytes: process.memory(),
+                pid: process_identity.pid(),
+                name: process_metrics.name().to_string(),
+                cpu_percent,
+                memory_bytes: process_metrics.memory_bytes(),
                 first_seen,
-                create_time: process.start_time(),
+                create_time: process_metrics.start_time(),
+                termination_capability: RunningTargetTerminationCapability::from_observed_identity(
+                    process_identity.clone(),
+                ),
                 parent_pid,
             });
         }
         // Retain only PIDs still shown, so an exited PID's slot is fresh
         // when the OS reuses the number.
-        let live: HashSet<u32> = tracked
+        let live: HashSet<ProcessIdentity> = tracked
             .iter()
-            .copied()
-            .chain(children.iter().map(|child| child.pid))
+            .cloned()
+            .chain(
+                children
+                    .iter()
+                    .map(|child| child.termination_capability.process_identity().clone()),
+            )
             .collect();
-        self.first_seen.retain(|pid, _| live.contains(pid));
-        self.cpu_history.retain(|pid, _| live.contains(pid));
+        self.first_seen
+            .retain(|process_identity, _| live.contains(process_identity));
+        self.cpu_history
+            .retain(|process_identity, _| live.contains(process_identity));
         self.snapshot = RunningTargets { by_key, children };
         &self.snapshot
     }
@@ -390,58 +414,91 @@ impl RunningTargetsPoller {
     fn collect_instances(
         &mut self,
         now: Instant,
+        process_observation_snapshot: &ProcessObservationSnapshot,
+        running_process_metrics: &std::collections::BTreeMap<
+            ProcessIdentity,
+            RunningProcessMetricsRecord,
+        >,
         project_attributions: &[RunningTargetProjectAttribution<'_>],
     ) -> HashMap<RunningKey, RunningTarget> {
-        let install_bin_dir = self.install_bin_dir.as_ref().map(AbsolutePath::as_path);
         let mut by_key: HashMap<RunningKey, RunningTarget> = HashMap::new();
-        for (pid, process) in self.system.processes() {
-            let Some(exe) = process.exe() else {
-                tracing::debug!(pid = pid.as_u32(), "running_targets_exe_unavailable");
+        for (process_identity, process_metrics) in running_process_metrics {
+            let Some(process_record) = process_observation_snapshot
+                .strongly_identified_processes()
+                .get(process_identity)
+            else {
+                continue;
+            };
+            let ProcessFieldObservation::Observed(executable) = process_record.executable() else {
+                tracing::debug!(
+                    pid = process_identity.pid(),
+                    "running_targets_exe_unavailable"
+                );
                 continue;
             };
             // `cargo run`/`cargo run --example` exec a path relative to the
             // package dir, so the kernel reports a relative exe. Resolve it
             // against the process cwd so it can be matched against absolute
             // target directories.
-            let exe = if exe.is_absolute() {
-                Cow::Borrowed(exe)
+            let executable = if executable.is_absolute() {
+                Cow::Borrowed(executable.as_path())
             } else {
-                process
-                    .cwd()
-                    .map_or(Cow::Borrowed(exe), |cwd| Cow::Owned(cwd.join(exe)))
+                match process_record.cwd() {
+                    ProcessFieldObservation::Observed(cwd) => Cow::Owned(cwd.join(executable)),
+                    ProcessFieldObservation::Unavailable(_)
+                    | ProcessFieldObservation::Invalidated(_) => {
+                        Cow::Borrowed(executable.as_path())
+                    },
+                }
             };
-            let pid = pid.as_u32();
-            let cpu = process.cpu_usage();
-            let memory = process.memory();
-            let create_time = process.start_time();
-            match classify_exe(&exe, project_attributions) {
+            let pid = process_identity.pid();
+            let cpu_percent = process_metrics.cpu_percent().get();
+            let memory_bytes = process_metrics.memory_bytes();
+            let create_time = process_metrics.start_time();
+            let termination_capability = RunningTargetTerminationCapability::from_observed_identity(
+                process_identity.clone(),
+            );
+            match classify_exe(&executable, project_attributions) {
                 RunningTargetExecutableClassification::Attributed(attribution) => {
-                    let first_seen = *self.first_seen.entry(pid).or_insert(now);
-                    let cpu = smoothed_cpu(&mut self.cpu_history, pid, cpu);
+                    let first_seen = *self
+                        .first_seen
+                        .entry(process_identity.clone())
+                        .or_insert(now);
+                    let cpu_percent =
+                        smoothed_cpu(&mut self.cpu_history, process_identity, cpu_percent);
                     push_instance(
                         &mut by_key,
                         attribution.key,
                         attribution.owner_root,
                         instance(
                             pid,
-                            cpu,
-                            memory,
+                            cpu_percent,
+                            memory_bytes,
                             attribution.profile,
                             first_seen,
                             create_time,
+                            termination_capability,
                         ),
                     );
                 },
                 RunningTargetExecutableClassification::AmbiguousWorkspaceOwnership => {},
                 RunningTargetExecutableClassification::Unrecognized => {
-                    let keys = installed_bin_keys(&exe, project_attributions, install_bin_dir);
+                    let keys = installed_bin_keys(
+                        &executable,
+                        project_attributions,
+                        &self.cargo_install_bin_directory,
+                    );
                     if keys.is_empty() {
                         continue;
                     }
                     // One OS process: feed its sample once, however many
                     // projects the installed binary is attributed to.
-                    let first_seen = *self.first_seen.entry(pid).or_insert(now);
-                    let cpu = smoothed_cpu(&mut self.cpu_history, pid, cpu);
+                    let first_seen = *self
+                        .first_seen
+                        .entry(process_identity.clone())
+                        .or_insert(now);
+                    let cpu_percent =
+                        smoothed_cpu(&mut self.cpu_history, process_identity, cpu_percent);
                     for (key, member_dir) in keys {
                         push_instance(
                             &mut by_key,
@@ -449,11 +506,12 @@ impl RunningTargetsPoller {
                             member_dir,
                             instance(
                                 pid,
-                                cpu,
-                                memory,
+                                cpu_percent,
+                                memory_bytes,
                                 RunProfile::Installed,
                                 first_seen,
                                 create_time,
+                                termination_capability.clone(),
                             ),
                         );
                     }
@@ -470,34 +528,15 @@ impl RunningTargetsPoller {
     #[cfg(test)]
     pub fn set_snapshot_for_test(&mut self, snapshot: RunningTargets) { self.snapshot = snapshot; }
 
-    /// Send `SIGTERM` to `pid` if it is still the process the kill request
-    /// named. Refreshes that one PID and verifies the process's start time
-    /// matches `create_time` first — a PID the OS reassigned between the
-    /// confirm dialog opening and the user pressing `y` fails the check and
-    /// the kill is skipped. Returns `true` when the signal was delivered.
-    pub fn kill(&mut self, pid: u32, create_time: u64) -> bool {
-        self.system.refresh_processes_specifics(
-            ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
-            true,
-            ProcessRefreshKind::nothing(),
-        );
-        self.system
-            .process(Pid::from_u32(pid))
-            .filter(|process| process.start_time() == create_time)
-            .is_some_and(|process| process.kill_with(Signal::Term).unwrap_or(false))
-    }
-
     /// Drop `pids` from the current snapshot without waiting for the next
     /// poll. After killing an instance this collapses its row immediately
     /// so the pane reflects the change on the very next render (the next
     /// poll would do the same once the process exits). Also evicts the
     /// PIDs' first-seen entries so a reused number starts a fresh slot.
-    pub fn drop_instances(&mut self, pids: &[u32]) {
-        self.snapshot.drop_pids(pids);
-        for pid in pids {
-            self.first_seen.remove(pid);
-            self.cpu_history.remove(pid);
-        }
+    pub fn drop_instance(&mut self, capability: &RunningTargetTerminationCapability) {
+        self.snapshot.drop_identity(capability);
+        self.first_seen.remove(capability.process_identity());
+        self.cpu_history.remove(capability.process_identity());
     }
 }
 
@@ -524,12 +563,15 @@ impl RunningTargets {
 
     /// Remove every instance and child process whose PID is in `pids`,
     /// dropping any key left with no instances.
-    fn drop_pids(&mut self, pids: &[u32]) {
+    fn drop_identity(&mut self, capability: &RunningTargetTerminationCapability) {
         for target in self.by_key.values_mut() {
-            target.instances.retain(|inst| !pids.contains(&inst.pid));
+            target
+                .instances
+                .retain(|instance| instance.termination_capability != *capability);
         }
         self.by_key.retain(|_, target| !target.instances.is_empty());
-        self.children.retain(|child| !pids.contains(&child.pid));
+        self.children
+            .retain(|child| child.termination_capability != *capability);
     }
 
     /// Build a snapshot directly from `(key, instances)` pairs, bypassing
@@ -580,6 +622,10 @@ impl ChildProcess {
             memory_bytes: 0,
             first_seen: test_instant_at(pid),
             create_time: u64::from(pid),
+            termination_capability: RunningTargetTerminationCapability::for_test(
+                pid,
+                u64::from(pid),
+            ),
             parent_pid,
         }
     }
@@ -597,13 +643,17 @@ impl RunningInstance {
             profile,
             first_seen: test_instant_at(pid),
             create_time: u64::from(pid),
-            parent_pid: None,
+            termination_capability: RunningTargetTerminationCapability::for_test(
+                pid,
+                u64::from(pid),
+            ),
+            placement: RunningProcessPlacement::TopLevel,
         }
     }
 
     /// The same test instance nested under `parent` in the outline.
     pub const fn with_parent(mut self, parent: u32) -> Self {
-        self.parent_pid = Some(parent);
+        self.placement = RunningProcessPlacement::ChildOf { parent_pid: parent };
         self
     }
 
@@ -632,6 +682,7 @@ const fn instance(
     profile: RunProfile,
     first_seen: Instant,
     create_time: u64,
+    termination_capability: RunningTargetTerminationCapability,
 ) -> RunningInstance {
     RunningInstance {
         pid,
@@ -640,7 +691,107 @@ const fn instance(
         profile,
         first_seen,
         create_time,
-        parent_pid: None,
+        termination_capability,
+        placement: RunningProcessPlacement::TopLevel,
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum NearestTrackedAncestorObservation {
+    Found {
+        process_identity:  ProcessIdentity,
+        direct_parent_pid: u32,
+    },
+    NoTrackedAncestor,
+    AncestryUnavailable,
+}
+
+fn nearest_tracked_ancestor_observation(
+    ancestry_lookup: AncestryLookup,
+    tracked: &HashSet<ProcessIdentity>,
+) -> NearestTrackedAncestorObservation {
+    let AncestryLookup::Observed(validated_ancestry) = ancestry_lookup else {
+        return NearestTrackedAncestorObservation::AncestryUnavailable;
+    };
+    let nearest_tracked_identity = validated_ancestry
+        .edges()
+        .iter()
+        .map(crate::process_observation::snapshot::ValidatedParentEdge::parent)
+        .find(|parent_identity| tracked.contains(*parent_identity));
+    match (nearest_tracked_identity, validated_ancestry.edges().first()) {
+        (Some(process_identity), Some(direct_parent_edge)) => {
+            NearestTrackedAncestorObservation::Found {
+                process_identity:  process_identity.clone(),
+                direct_parent_pid: direct_parent_edge.parent().pid(),
+            }
+        },
+        (Some(_), None) => NearestTrackedAncestorObservation::AncestryUnavailable,
+        (None, _) => match validated_ancestry.terminal() {
+            AncestryTerminal::Root { .. } => NearestTrackedAncestorObservation::NoTrackedAncestor,
+            AncestryTerminal::DepthCapped { .. }
+            | AncestryTerminal::UnavailableParent { .. }
+            | AncestryTerminal::UnavailableIdentifiedParent { .. }
+            | AncestryTerminal::CreationOrderUnavailable { .. }
+            | AncestryTerminal::ParentEvidenceUnavailable { .. }
+            | AncestryTerminal::RejectedEdge { .. }
+            | AncestryTerminal::SnapshotRecordUnavailable { .. } => {
+                NearestTrackedAncestorObservation::AncestryUnavailable
+            },
+        },
+    }
+}
+
+fn observed_nearest_tracked_ancestor(
+    process_observation_snapshot: &ProcessObservationSnapshot,
+    process_identity: &ProcessIdentity,
+    tracked: &HashSet<ProcessIdentity>,
+) -> NearestTrackedAncestorObservation {
+    nearest_tracked_ancestor_observation(
+        process_observation_snapshot
+            .validated_ancestry(process_identity, ParentWalkDepth::new(ANCESTOR_WALK_CAP)),
+        tracked,
+    )
+}
+
+fn observed_running_process_placement(
+    process_observation_snapshot: &ProcessObservationSnapshot,
+    process_identity: &ProcessIdentity,
+    tracked: &HashSet<ProcessIdentity>,
+) -> RunningProcessPlacement {
+    match observed_nearest_tracked_ancestor(process_observation_snapshot, process_identity, tracked)
+    {
+        NearestTrackedAncestorObservation::Found {
+            direct_parent_pid, ..
+        } => RunningProcessPlacement::ChildOf {
+            parent_pid: direct_parent_pid,
+        },
+        NearestTrackedAncestorObservation::NoTrackedAncestor
+        | NearestTrackedAncestorObservation::AncestryUnavailable => {
+            RunningProcessPlacement::TopLevel
+        },
+    }
+}
+
+fn observed_running_process_placement_for_instance(
+    process_observation_snapshot: &ProcessObservationSnapshot,
+    process_identity: &ProcessIdentity,
+    tracked: &HashSet<ProcessIdentity>,
+    tracked_keys: &HashMap<ProcessIdentity, RunningKey>,
+    key: &RunningKey,
+) -> RunningProcessPlacement {
+    match observed_nearest_tracked_ancestor(process_observation_snapshot, process_identity, tracked)
+    {
+        NearestTrackedAncestorObservation::Found {
+            process_identity,
+            direct_parent_pid,
+        } if tracked_keys.get(&process_identity) == Some(key) => RunningProcessPlacement::ChildOf {
+            parent_pid: direct_parent_pid,
+        },
+        NearestTrackedAncestorObservation::Found { .. }
+        | NearestTrackedAncestorObservation::NoTrackedAncestor
+        | NearestTrackedAncestorObservation::AncestryUnavailable => {
+            RunningProcessPlacement::TopLevel
+        },
     }
 }
 
@@ -648,6 +799,7 @@ const fn instance(
 /// start time (seconds since the epoch), used to reject hops into reused
 /// PIDs — a parent never starts after its child.
 #[derive(Clone, Copy)]
+#[cfg(test)]
 struct ParentLink {
     parent:     Option<u32>,
     start_time: u64,
@@ -660,6 +812,7 @@ struct ParentLink {
 /// with a table instead of a live process list. `None` when the chain tops
 /// out, leaves the table, breaks start-time ordering (PID reuse), or
 /// exceeds the depth cap.
+#[cfg(test)]
 fn nearest_tracked_ancestor(
     links: &impl Fn(u32) -> Option<ParentLink>,
     pid: u32,
@@ -688,15 +841,17 @@ fn nearest_tracked_ancestor(
 /// The outline parent of `pid`: its direct OS parent, provided `pid`'s
 /// ancestor chain reaches a tracked instance — the condition for the row
 /// to nest at all. Every ancestor between `pid` and the tracked root is on
-/// that same chain, so the direct parent is always itself shown. `None`
-/// for an independently started process (its row renders top-level).
-fn shown_parent(
+/// that same chain, so the direct parent is always itself shown.
+#[cfg(test)]
+fn running_process_placement(
     links: &impl Fn(u32) -> Option<ParentLink>,
     pid: u32,
     tracked: &HashSet<u32>,
-) -> Option<u32> {
-    nearest_tracked_ancestor(links, pid, tracked)?;
-    links(pid)?.parent
+) -> RunningProcessPlacement {
+    if nearest_tracked_ancestor(links, pid, tracked).is_none() {
+        return RunningProcessPlacement::TopLevel;
+    }
+    links(pid).and_then(|parent_link| parent_link.parent).into()
 }
 
 /// The outline parent for a tracked target instance. Only nest it under
@@ -704,21 +859,34 @@ fn shown_parent(
 /// cargo target. This keeps examples launched by the installed
 /// `cargo-port` process visible as top-level app rows instead of hiding
 /// them inside the collapsed installed-cargo group.
-fn shown_parent_for_instance(
+#[cfg(test)]
+fn running_process_placement_for_instance(
     links: &impl Fn(u32) -> Option<ParentLink>,
     pid: u32,
     tracked: &HashSet<u32>,
     tracked_keys: &HashMap<u32, RunningKey>,
     key: &RunningKey,
-) -> Option<u32> {
-    let ancestor = nearest_tracked_ancestor(links, pid, tracked)?;
-    (tracked_keys.get(&ancestor) == Some(key)).then(|| links(pid)?.parent)?
+) -> RunningProcessPlacement {
+    let Some(ancestor) = nearest_tracked_ancestor(links, pid, tracked) else {
+        return RunningProcessPlacement::TopLevel;
+    };
+    if tracked_keys.get(&ancestor) != Some(key) {
+        return RunningProcessPlacement::TopLevel;
+    }
+    links(pid).and_then(|parent_link| parent_link.parent).into()
 }
 
 /// Fold this poll's CPU sample into `pid`'s [`RollingMean`] window and
 /// return the mean — the value the Running list's CPU column shows.
-fn smoothed_cpu(history: &mut HashMap<u32, RollingMean>, pid: u32, sample: f32) -> f32 {
-    history.entry(pid).or_default().push(sample)
+fn smoothed_cpu(
+    history: &mut HashMap<ProcessIdentity, RollingMean>,
+    process_identity: &ProcessIdentity,
+    sample: f32,
+) -> f32 {
+    history
+        .entry(process_identity.clone())
+        .or_default()
+        .push(sample)
 }
 
 /// Append one process's metrics under `key`, recording the owning member
@@ -796,21 +964,21 @@ fn classify_exe(
     }
 }
 
-/// Keys for a `cargo install`ed binary: an exe living directly in
-/// `install_bin_dir` whose file name is a declared bin target name. A bin
-/// name can be declared by more than one project (e.g. the primary repo
-/// and its worktrees all build `cargo-port`), and we can't tell which one
-/// was installed — so the running process is attributed to *every*
-/// matching project. The render side then matches whichever is selected.
+/// Keys for a `cargo install`ed binary: an executable living directly in a
+/// resolved [`CargoInstallBinDirectory`] whose file name is a declared binary
+/// target name. A binary name can be declared by more than one project (e.g.
+/// the primary repo and its worktrees all build `cargo-port`), and its installed
+/// source cannot be identified, so the running process is attributed to every
+/// matching project. The renderer then matches whichever project is selected.
 fn installed_bin_keys(
     exe: &Path,
     project_attributions: &[RunningTargetProjectAttribution<'_>],
-    install_bin_dir: Option<&Path>,
+    cargo_install_bin_directory: &CargoInstallBinDirectory,
 ) -> Vec<(RunningKey, AbsolutePath)> {
-    let Some(bin_dir) = install_bin_dir else {
+    let CargoInstallBinDirectory::Resolved(bin_directory) = cargo_install_bin_directory else {
         return Vec::new();
     };
-    if exe.parent() != Some(bin_dir) {
+    if exe.parent() != Some(bin_directory.as_path()) {
         return Vec::new();
     }
     let Some(stem) = exe.file_stem().and_then(|s| s.to_str()) else {
@@ -873,14 +1041,17 @@ const fn parse_profile(s: &str) -> Option<RunProfile> {
 /// Resolve the cargo install bin directory, honoring `CARGO_INSTALL_ROOT`
 /// and `CARGO_HOME`, falling back to `~/.cargo/bin`. Canonicalized so it
 /// compares equal to process exe paths reported by the OS.
-fn cargo_install_bin_dir() -> Option<AbsolutePath> {
-    let base = env::var_os("CARGO_INSTALL_ROOT")
+fn cargo_install_bin_directory() -> CargoInstallBinDirectory {
+    env::var_os("CARGO_INSTALL_ROOT")
         .map(PathBuf::from)
         .or_else(|| env::var_os("CARGO_HOME").map(PathBuf::from))
-        .or_else(|| dirs::home_dir().map(|home| home.join(DOT_CARGO_DIR)))?;
-    let bin = base.join(CARGO_BIN_DIR);
-    let canonical = bin.canonicalize().unwrap_or(bin);
-    Some(AbsolutePath::from(canonical))
+        .or_else(|| dirs::home_dir().map(|home| home.join(DOT_CARGO_DIR)))
+        .map(|base| {
+            let bin_directory = base.join(CARGO_BIN_DIR);
+            let canonical_bin_directory = bin_directory.canonicalize().unwrap_or(bin_directory);
+            AbsolutePath::from(canonical_bin_directory)
+        })
+        .into()
 }
 
 /// Parse a `target/<profile>/deps/<basename>` entry as a bench. The basename
@@ -926,6 +1097,9 @@ mod tests {
     use tui_pane::CPU_SMOOTHING_WINDOW_POLLS;
 
     use super::*;
+    use crate::process_observation::snapshot::ParentEdgeRejection;
+    use crate::process_observation::snapshot::StrongParentEdge;
+    use crate::process_observation::snapshot::ValidatedParentEdge;
 
     /// The shared empty exact-owner evidence for tests that exercise project
     /// fallback attribution.
@@ -958,6 +1132,80 @@ mod tests {
     fn exe_path(path: &str) -> PathBuf { crate::project::normalize_test_path(Path::new(path)) }
 
     fn names(names: &[&str]) -> HashSet<String> { names.iter().map(|s| (*s).to_string()).collect() }
+
+    fn process_identity(pid: u32) -> ProcessIdentity {
+        ProcessIdentity::for_test(pid, u64::from(pid))
+    }
+
+    #[test]
+    fn observed_ancestry_reports_nearest_tracked_ancestor() {
+        let parent_identity = process_identity(10);
+        let child_identity = process_identity(20);
+        let ancestry_lookup = AncestryLookup::observed_for_test(
+            vec![ValidatedParentEdge::for_test(
+                parent_identity.clone(),
+                child_identity,
+            )],
+            AncestryTerminal::Root {
+                root: parent_identity.clone(),
+            },
+        );
+
+        assert_eq!(
+            nearest_tracked_ancestor_observation(
+                ancestry_lookup,
+                &HashSet::from([parent_identity.clone()]),
+            ),
+            NearestTrackedAncestorObservation::Found {
+                process_identity:  parent_identity,
+                direct_parent_pid: 10,
+            }
+        );
+    }
+
+    #[test]
+    fn complete_observed_ancestry_reports_no_tracked_ancestor() {
+        let parent_identity = process_identity(30);
+        let child_identity = process_identity(40);
+        let ancestry_lookup = AncestryLookup::observed_for_test(
+            vec![ValidatedParentEdge::for_test(
+                parent_identity.clone(),
+                child_identity.clone(),
+            )],
+            AncestryTerminal::Root {
+                root: parent_identity,
+            },
+        );
+
+        assert_eq!(
+            nearest_tracked_ancestor_observation(ancestry_lookup, &HashSet::from([child_identity]),),
+            NearestTrackedAncestorObservation::NoTrackedAncestor
+        );
+    }
+
+    #[test]
+    fn unavailable_and_rejected_ancestry_report_unavailable() {
+        let parent_identity = process_identity(50);
+        let child_identity = process_identity(60);
+        let tracked = HashSet::from([child_identity.clone()]);
+        let missing_identity_lookup = AncestryLookup::IdentityNotInSnapshot(child_identity.clone());
+        let rejected_lookup = AncestryLookup::observed_for_test(
+            Vec::new(),
+            AncestryTerminal::RejectedEdge {
+                edge:      StrongParentEdge::for_test(parent_identity, child_identity),
+                rejection: ParentEdgeRejection::CreatedAfterChild,
+            },
+        );
+
+        assert_eq!(
+            nearest_tracked_ancestor_observation(missing_identity_lookup, &tracked),
+            NearestTrackedAncestorObservation::AncestryUnavailable
+        );
+        assert_eq!(
+            nearest_tracked_ancestor_observation(rejected_lookup, &tracked),
+            NearestTrackedAncestorObservation::AncestryUnavailable
+        );
+    }
 
     fn attributed_executable(
         classification: RunningTargetExecutableClassification,
@@ -1123,7 +1371,13 @@ mod tests {
         let attribution = project_attribution(&dir, &benches, &bins, &members);
         let bin_dir = exe_path("/home/me/.cargo/bin");
         let exe = exe_path("/home/me/.cargo/bin/cargo-port");
-        let keys = installed_bin_keys(&exe, std::slice::from_ref(&attribution), Some(&bin_dir));
+        let cargo_install_bin_directory =
+            CargoInstallBinDirectory::Resolved(AbsolutePath::from(bin_dir));
+        let keys = installed_bin_keys(
+            &exe,
+            std::slice::from_ref(&attribution),
+            &cargo_install_bin_directory,
+        );
         assert_eq!(keys.len(), 1);
         let (key, member_dir) = &keys[0];
         assert!(matches!(key.run_target_kind, RunTargetKind::Binary));
@@ -1149,8 +1403,10 @@ mod tests {
         ];
         let bin_dir = exe_path("/home/me/.cargo/bin");
         let exe = exe_path("/home/me/.cargo/bin/cargo-port");
+        let cargo_install_bin_directory =
+            CargoInstallBinDirectory::Resolved(AbsolutePath::from(bin_dir));
         let dirs: HashSet<AbsolutePath> =
-            installed_bin_keys(&exe, &project_attributions, Some(&bin_dir))
+            installed_bin_keys(&exe, &project_attributions, &cargo_install_bin_directory)
                 .into_iter()
                 .map(|(key, _)| key.target_dir)
                 .collect();
@@ -1338,14 +1594,28 @@ mod tests {
     }
 
     #[test]
-    fn drop_instances_evicts_the_first_seen_entry() {
-        let mut poller =
-            RunningTargetsPoller::new(Duration::from_secs(1), StartupServices::production());
-        poller.first_seen.insert(42, test_instant_at(0));
-        poller.first_seen.insert(43, test_instant_at(1));
-        poller.drop_instances(&[42]);
-        assert!(!poller.first_seen.contains_key(&42));
-        assert!(poller.first_seen.contains_key(&43));
+    fn drop_instance_evicts_the_first_seen_entry() {
+        let mut running_targets_state = RunningTargetsState::new();
+        let first_identity = process_identity(42);
+        let second_identity = process_identity(43);
+        let termination_capability = RunningTargetTerminationCapability::for_test(42, 42);
+        running_targets_state
+            .first_seen
+            .insert(first_identity.clone(), test_instant_at(0));
+        running_targets_state
+            .first_seen
+            .insert(second_identity.clone(), test_instant_at(1));
+        running_targets_state.drop_instance(&termination_capability);
+        assert!(
+            !running_targets_state
+                .first_seen
+                .contains_key(&first_identity)
+        );
+        assert!(
+            running_targets_state
+                .first_seen
+                .contains_key(&second_identity)
+        );
     }
 
     /// A fixture process table for the ancestor walk: `(pid, parent,
@@ -1421,7 +1691,7 @@ mod tests {
     }
 
     #[test]
-    fn shown_parent_is_the_direct_parent_on_a_tracked_chain() {
+    fn process_placement_uses_the_direct_parent_on_a_tracked_chain() {
         // The wrapper (30) reaches the tracked orchestrator (10) through
         // the untracked cargo shim (20); its outline parent is the shim —
         // the shim itself joins the outline as a descendant.
@@ -1431,17 +1701,26 @@ mod tests {
             (30, Some(20), 200),
         ]);
         let tracked = HashSet::from([10, 30]);
-        assert_eq!(shown_parent(&links, 30, &tracked), Some(20));
-        assert_eq!(shown_parent(&links, 20, &tracked), Some(10));
+        assert_eq!(
+            running_process_placement(&links, 30, &tracked),
+            RunningProcessPlacement::ChildOf { parent_pid: 20 }
+        );
+        assert_eq!(
+            running_process_placement(&links, 20, &tracked),
+            RunningProcessPlacement::ChildOf { parent_pid: 10 }
+        );
     }
 
     #[test]
-    fn shown_parent_is_none_for_an_independently_started_process() {
+    fn independently_started_process_has_top_level_placement() {
         // The chain tops out at the shell (1) without crossing another
         // tracked PID: the row renders top-level.
         let links = links_from(vec![(1, None, 0), (10, Some(1), 100)]);
         let tracked = HashSet::from([10]);
-        assert_eq!(shown_parent(&links, 10, &tracked), None);
+        assert_eq!(
+            running_process_placement(&links, 10, &tracked),
+            RunningProcessPlacement::TopLevel
+        );
     }
 
     #[test]
@@ -1461,8 +1740,8 @@ mod tests {
         let tracked = HashSet::from([10, 20]);
 
         assert_eq!(
-            shown_parent_for_instance(&links, 20, &tracked, &tracked_keys, &child_key),
-            None,
+            running_process_placement_for_instance(&links, 20, &tracked, &tracked_keys, &child_key,),
+            RunningProcessPlacement::TopLevel,
         );
     }
 
@@ -1484,31 +1763,33 @@ mod tests {
         let tracked = HashSet::from([10, 20]);
 
         assert_eq!(
-            shown_parent_for_instance(&links, 20, &tracked, &tracked_keys, &key),
-            Some(15),
+            running_process_placement_for_instance(&links, 20, &tracked, &tracked_keys, &key,),
+            RunningProcessPlacement::ChildOf { parent_pid: 15 },
         );
     }
 
     #[test]
     fn smoothed_cpu_averages_the_window() {
         let mut history = HashMap::new();
+        let process_identity = process_identity(7);
         // First sample is the mean of one — no zero dilution.
-        assert!((smoothed_cpu(&mut history, 7, 20.0) - 20.0).abs() < f32::EPSILON);
+        assert!((smoothed_cpu(&mut history, &process_identity, 20.0) - 20.0).abs() < f32::EPSILON);
         // 20 and 10 average to 15.
-        assert!((smoothed_cpu(&mut history, 7, 10.0) - 15.0).abs() < f32::EPSILON);
+        assert!((smoothed_cpu(&mut history, &process_identity, 10.0) - 15.0).abs() < f32::EPSILON);
     }
 
     #[test]
     fn smoothed_cpu_window_drops_the_oldest_sample() {
         let mut history = HashMap::new();
+        let process_identity = process_identity(7);
         // Fill the window with zeros, then push spikes: once the window
         // holds only the spikes, the zeros no longer drag the mean down.
         for _ in 0..CPU_SMOOTHING_WINDOW_POLLS {
-            smoothed_cpu(&mut history, 7, 0.0);
+            smoothed_cpu(&mut history, &process_identity, 0.0);
         }
         let mut mean = 0.0;
         for _ in 0..CPU_SMOOTHING_WINDOW_POLLS {
-            mean = smoothed_cpu(&mut history, 7, 50.0);
+            mean = smoothed_cpu(&mut history, &process_identity, 50.0);
         }
         assert!((mean - 50.0).abs() < f32::EPSILON);
     }
@@ -1516,20 +1797,40 @@ mod tests {
     #[test]
     fn smoothed_cpu_tracks_pids_independently() {
         let mut history = HashMap::new();
-        smoothed_cpu(&mut history, 7, 40.0);
+        let first_identity = process_identity(7);
+        let second_identity = process_identity(8);
+        smoothed_cpu(&mut history, &first_identity, 40.0);
         // A different PID's first sample is unaffected by PID 7's window.
-        assert!((smoothed_cpu(&mut history, 8, 10.0) - 10.0).abs() < f32::EPSILON);
+        assert!((smoothed_cpu(&mut history, &second_identity, 10.0) - 10.0).abs() < f32::EPSILON);
     }
 
     #[test]
-    fn drop_instances_evicts_the_cpu_history_entry() {
-        let mut poller =
-            RunningTargetsPoller::new(Duration::from_secs(1), StartupServices::production());
-        smoothed_cpu(&mut poller.cpu_history, 42, 10.0);
-        smoothed_cpu(&mut poller.cpu_history, 43, 10.0);
-        poller.drop_instances(&[42]);
-        assert!(!poller.cpu_history.contains_key(&42));
-        assert!(poller.cpu_history.contains_key(&43));
+    fn drop_instance_evicts_the_cpu_history_entry() {
+        let mut running_targets_state = RunningTargetsState::new();
+        let first_identity = process_identity(42);
+        let second_identity = process_identity(43);
+        smoothed_cpu(
+            &mut running_targets_state.cpu_history,
+            &first_identity,
+            10.0,
+        );
+        smoothed_cpu(
+            &mut running_targets_state.cpu_history,
+            &second_identity,
+            10.0,
+        );
+        let termination_capability = RunningTargetTerminationCapability::for_test(42, 42);
+        running_targets_state.drop_instance(&termination_capability);
+        assert!(
+            !running_targets_state
+                .cpu_history
+                .contains_key(&first_identity)
+        );
+        assert!(
+            running_targets_state
+                .cpu_history
+                .contains_key(&second_identity)
+        );
     }
 
     #[test]
@@ -1543,9 +1844,15 @@ mod tests {
         let attribution = project_attribution(&dir, &benches, &bins, &members);
         let bin_dir = exe_path("/home/me/.cargo/bin");
         let exe = exe_path("/home/me/.cargo/bin/ripgrep");
+        let cargo_install_bin_directory =
+            CargoInstallBinDirectory::Resolved(AbsolutePath::from(bin_dir));
         assert!(
-            installed_bin_keys(&exe, std::slice::from_ref(&attribution), Some(&bin_dir),)
-                .is_empty()
+            installed_bin_keys(
+                &exe,
+                std::slice::from_ref(&attribution),
+                &cargo_install_bin_directory,
+            )
+            .is_empty()
         );
     }
 
@@ -1560,9 +1867,15 @@ mod tests {
         let attribution = project_attribution(&dir, &benches, &bins, &members);
         let bin_dir = exe_path("/home/me/.cargo/bin");
         let exe = exe_path("/usr/local/bin/cargo-port");
+        let cargo_install_bin_directory =
+            CargoInstallBinDirectory::Resolved(AbsolutePath::from(bin_dir));
         assert!(
-            installed_bin_keys(&exe, std::slice::from_ref(&attribution), Some(&bin_dir),)
-                .is_empty()
+            installed_bin_keys(
+                &exe,
+                std::slice::from_ref(&attribution),
+                &cargo_install_bin_directory,
+            )
+            .is_empty()
         );
     }
 }

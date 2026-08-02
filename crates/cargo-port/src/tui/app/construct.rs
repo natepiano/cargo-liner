@@ -38,6 +38,10 @@ use crate::channel::Sender;
 use crate::config;
 use crate::config::CargoPortConfig;
 use crate::lint::RuntimeHandle;
+use crate::process_observation::CompileMonitorRefreshSchedule;
+use crate::process_observation::ProcessRefreshExecutionBackendSelection;
+use crate::process_observation::ProcessRefreshExecutor;
+use crate::process_observation::RunningTargetsRefreshSchedule;
 use crate::project::AbsolutePath;
 use crate::project::CargoWorkspaceIndex;
 use crate::project::RootItem;
@@ -52,8 +56,11 @@ use crate::tui::keymap;
 use crate::tui::overlays::Overlays;
 use crate::tui::panes::Panes;
 use crate::tui::project_list::ProjectList;
+use crate::tui::running_targets::RUNNING_TARGETS_REFRESH_INTERVAL;
 use crate::tui::settings::StartupSettings;
+use crate::tui::startup_services::StartupEffect;
 use crate::tui::startup_services::StartupEnvironment;
+use crate::tui::startup_services::StartupServices;
 use crate::tui::startup_services::WatcherHandle;
 use crate::tui::startup_services::WatcherStartup;
 use crate::tui::state::Ci;
@@ -254,17 +261,12 @@ impl AppBuilder<Started> {
             },
         );
         let scan = Scan::new(ScanState::new(scan_started_at), metadata_store);
+        let process_refresh_executor = process_refresh_executor(&startup_services);
         let mut overlays = Overlays::new();
         if let Some(warning) = started.lint_warning {
             overlays.set_status_flash(warning, Instant::now());
         }
-        let mut framework = tui_pane::Framework::new_with_settings(
-            FocusedPane::App(AppPaneId::ProjectList),
-            LoadedSettings {
-                store:          inputs.settings_store,
-                toast_settings: inputs.toast_settings,
-            },
-        );
+        let mut framework = app_framework(inputs.settings_store, inputs.toast_settings);
         let framework_builder = FrameworkKeymap::<App>::builder().vim_mode(
             integration::vim_mode_from_config(config.current().tui.navigation_keys),
         );
@@ -286,6 +288,7 @@ impl AppBuilder<Started> {
             panes,
             project_list: projects,
             cargo_workspace_index,
+            process_refresh_executor,
             #[cfg(test)]
             running_target_attribution_collection_count: 0,
             background,
@@ -317,6 +320,40 @@ impl AppBuilder<Started> {
         app.finish_new();
         Ok(app)
     }
+}
+
+fn process_refresh_executor(startup_services: &StartupServices) -> ProcessRefreshExecutor {
+    let running_targets_polling_effect = startup_services.running_targets_polling_effect();
+    let (backend_selection, running_targets_refresh_schedule) = match running_targets_polling_effect
+    {
+        StartupEffect::Real => (
+            ProcessRefreshExecutionBackendSelection::DedicatedWorker,
+            RunningTargetsRefreshSchedule::Every(RUNNING_TARGETS_REFRESH_INTERVAL),
+        ),
+        StartupEffect::Suppressed => (
+            ProcessRefreshExecutionBackendSelection::Synchronous,
+            RunningTargetsRefreshSchedule::Suppressed,
+        ),
+    };
+    Background::start_process_refresh_executor(
+        backend_selection,
+        running_targets_refresh_schedule,
+        CompileMonitorRefreshSchedule::NotScheduled,
+        Instant::now(),
+    )
+}
+
+fn app_framework(
+    settings_store: SettingsStore,
+    toast_settings: ToastSettings,
+) -> tui_pane::Framework<App> {
+    tui_pane::Framework::new_with_settings(
+        FocusedPane::App(AppPaneId::ProjectList),
+        LoadedSettings {
+            store: settings_store,
+            toast_settings,
+        },
+    )
 }
 
 impl App {

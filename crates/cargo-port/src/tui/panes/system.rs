@@ -8,8 +8,6 @@
 //! `handle_input`-style methods that need cross-subsystem access
 //! remain free functions taking `&mut App`.
 
-use std::time::Instant;
-
 use tui_pane::ResolvedPaneLayout;
 
 use super::CpuPane;
@@ -19,12 +17,10 @@ use super::OutputPane;
 use super::PackagePane;
 use super::ProjectListPane;
 use super::TargetsPane;
-use super::constants::RUNNING_TARGETS_POLL_INTERVAL;
 use super::data::PaneDataStore;
 use crate::config::CpuConfig;
 use crate::tui::app::HoveredPaneRow;
-use crate::tui::running_targets::RunningTargetProjectAttribution;
-use crate::tui::running_targets::RunningTargetsPoller;
+use crate::tui::running_targets::RunningTargetsState;
 use crate::tui::startup_services::StartupServices;
 
 /// Owns every pane-related piece of state. App holds a single `panes:
@@ -44,9 +40,8 @@ pub struct Panes {
     /// render writes it once per draw.
     pub tiled_layout:    ResolvedPaneLayout<super::PaneId>,
     hovered_row:         Option<HoveredPaneRow>,
-    /// Polls running OS processes and matches them against known cargo
-    /// targets. Ticked once per frame from the render thread.
-    pub running_targets: RunningTargetsPoller,
+    /// View state built from App-owned process observer results.
+    pub running_targets: RunningTargetsState,
 
     /// Cached cross-project Details/Git top-row inner height, keyed on the
     /// scan generation and the two top-pane widths. The cross-project scan
@@ -68,7 +63,7 @@ impl Panes {
         Self {
             package:      PackagePane::new(),
             lang:         LangPane::new(),
-            cpu:          CpuPane::new(cpu_cfg, startup_services.clone()),
+            cpu:          CpuPane::new(cpu_cfg, startup_services),
             git:          GitPane::new(),
             output:       OutputPane::new(),
             targets:      TargetsPane::new(),
@@ -77,10 +72,7 @@ impl Panes {
             pane_data:            PaneDataStore::new(),
             tiled_layout:         ResolvedPaneLayout::default(),
             hovered_row:          None,
-            running_targets:      RunningTargetsPoller::new(
-                RUNNING_TARGETS_POLL_INTERVAL,
-                startup_services,
-            ),
+            running_targets:      RunningTargetsState::new(),
             top_row_height_cache: TopRowHeightCache::default(),
         }
     }
@@ -150,28 +142,11 @@ impl Panes {
     /// Drain the CPU pane's background sampler. Delegates to `CpuPane::tick`.
     pub fn cpu_tick(&mut self) { self.cpu.tick(); }
 
-    /// Refresh the running-targets snapshot. The caller supplies project
-    /// attribution from the current workspace index and visible targets.
-    pub fn running_targets_tick(
-        &mut self,
-        now: Instant,
-        project_attributions: &[RunningTargetProjectAttribution<'_>],
-    ) {
-        self.running_targets.tick(now, project_attributions);
-    }
-
-    /// Read-only readiness query for the Running Targets process cadence.
-    /// [`Self::running_targets_tick`] performs the authoritative cadence state
-    /// transition after the caller collects attribution data.
-    pub fn running_targets_poll_is_due(&self, now: Instant) -> bool {
-        self.running_targets.is_due(now)
-    }
-
     /// Reset the CPU pane after a config reload changes CPU poll
     /// behavior. Delegates to `CpuPane::reset`.
     pub fn reset_cpu(&mut self, cpu_config: &CpuConfig) { self.cpu.reset(cpu_config); }
 
-    /// Seed the CPU pane's content with the current poller's
+    /// Seed the CPU pane's content with the current sampler's
     /// placeholder `CpuUsage`. Delegates to
     /// `CpuPane::install_placeholder`. Used from `App::finish_new`.
     pub fn install_cpu_placeholder(&mut self) { self.cpu.install_placeholder(); }

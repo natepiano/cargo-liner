@@ -592,9 +592,10 @@ fn handle_confirm_key(app: &mut App, key: KeyCode) -> bool {
                 }
             },
             ConfirmAction::KillTarget {
-                pid, create_time, ..
+                termination_capability,
+                ..
             } => {
-                panes::execute_target_kill(app, pid, create_time);
+                panes::execute_target_kill(app, termination_capability);
             },
             ConfirmAction::PauseLintProject(project_root) => {
                 app.pause_project_lints(&project_root);

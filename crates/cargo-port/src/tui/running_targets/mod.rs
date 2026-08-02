@@ -1,12 +1,15 @@
 //! Detect which cargo bin/example/bench targets are currently running.
 //!
-//! Each tick refreshes the system process list (exe paths only) and walks
-//! every process whose exe lives under a known workspace `target_directory`.
-//! The path tail is parsed against cargo's filesystem layout to classify
-//! the exe as a bin / example / bench of that workspace.
+//! Each completed shared-observer cycle supplies identity-bound executable,
+//! ancestry, and metrics records. Executables under known workspace
+//! `target_directory` paths are classified as bin, example, or bench targets.
 
 mod app_tick;
 mod constants;
 mod state;
+mod termination;
 
+pub(super) use app_tick::ObserverRefreshTiming;
+pub(super) use constants::RUNNING_TARGETS_REFRESH_INTERVAL;
 pub(super) use state::*;
+pub(super) use termination::*;

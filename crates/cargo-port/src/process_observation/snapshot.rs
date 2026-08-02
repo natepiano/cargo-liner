@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::path::PathBuf;
+use std::time::Duration;
 use std::time::Instant;
 
 use super::identity::InsufficientProcessIdentity;
@@ -83,7 +84,13 @@ pub(crate) struct StrongParentEdge {
 impl StrongParentEdge {
     pub(crate) const fn parent(&self) -> &ProcessIdentity { &self.parent }
 
+    #[cfg(test)]
     pub(crate) const fn child(&self) -> &ProcessIdentity { &self.child }
+
+    #[cfg(test)]
+    pub(crate) const fn for_test(parent: ProcessIdentity, child: ProcessIdentity) -> Self {
+        Self { parent, child }
+    }
 }
 
 /// One direct parent relation accepted after endpoint and lifetime validation.
@@ -95,7 +102,15 @@ pub(crate) struct ValidatedParentEdge {
 impl ValidatedParentEdge {
     pub(crate) const fn parent(&self) -> &ProcessIdentity { self.endpoints.parent() }
 
+    #[cfg(test)]
     pub(crate) const fn child(&self) -> &ProcessIdentity { self.endpoints.child() }
+
+    #[cfg(test)]
+    pub(crate) const fn for_test(parent: ProcessIdentity, child: ProcessIdentity) -> Self {
+        Self {
+            endpoints: StrongParentEdge::for_test(parent, child),
+        }
+    }
 
     const fn endpoints(&self) -> &StrongParentEdge { &self.endpoints }
 }
@@ -134,6 +149,7 @@ pub(crate) struct InsufficientProcessIncarnationEvidence {
     argv:       ProcessFieldObservation<Vec<OsString>>,
 }
 
+#[cfg(test)]
 impl InsufficientProcessIncarnationEvidence {
     pub(crate) const fn executable(&self) -> &ProcessFieldObservation<PathBuf> { &self.executable }
 
@@ -181,18 +197,6 @@ pub(crate) struct InsufficientIdentityProcessRecord {
     parent:     ProcessFieldObservation<ReportedParent>,
 }
 
-impl InsufficientIdentityProcessRecord {
-    pub(crate) const fn identity(&self) -> &InsufficientProcessIdentity { &self.identity }
-
-    pub(crate) const fn executable(&self) -> &ProcessFieldObservation<PathBuf> { &self.executable }
-
-    pub(crate) const fn argv(&self) -> &ProcessFieldObservation<Vec<OsString>> { &self.argv }
-
-    pub(crate) const fn cwd(&self) -> &ProcessFieldObservation<PathBuf> { &self.cwd }
-
-    pub(crate) const fn parent(&self) -> &ProcessFieldObservation<ReportedParent> { &self.parent }
-}
-
 /// The exact process set an observer refreshes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ProcessRefreshInput {
@@ -207,6 +211,137 @@ pub(crate) enum ProcessSnapshotScope {
     TargetedIdentities(BTreeSet<ProcessIdentity>),
 }
 
+/// The process consumers whose due work is served by one observer cycle.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ProcessRefreshConsumerDemand {
+    RunningTargets,
+    CompileMonitor,
+    RunningTargetsAndCompileMonitor,
+}
+
+impl ProcessRefreshConsumerDemand {
+    pub(crate) const fn includes_running_targets(self) -> bool {
+        matches!(
+            self,
+            Self::RunningTargets | Self::RunningTargetsAndCompileMonitor
+        )
+    }
+
+    pub(crate) const fn coalesce(self, other: Self) -> Self {
+        if matches!((self, other), (Self::RunningTargets, Self::RunningTargets)) {
+            Self::RunningTargets
+        } else if matches!((self, other), (Self::CompileMonitor, Self::CompileMonitor)) {
+            Self::CompileMonitor
+        } else {
+            Self::RunningTargetsAndCompileMonitor
+        }
+    }
+}
+
+/// Why a requested observer execution could not produce a snapshot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ProcessRefreshExecutionFailure {
+    RequestChannelDisconnected,
+    ResultChannelDisconnected,
+}
+
+/// The immutable result of one requested observer execution.
+#[derive(Debug, PartialEq)]
+pub(crate) enum ProcessRefreshExecutionOutcome {
+    Completed(CompletedProcessRefreshExecution),
+    Failed(ProcessRefreshExecutionFailure),
+}
+
+/// Snapshot and elapsed observer time from one successfully completed refresh.
+#[derive(Debug, PartialEq)]
+pub(crate) struct CompletedProcessRefreshExecution {
+    process_observation_snapshot: ProcessObservationSnapshot,
+    elapsed:                      Duration,
+}
+
+impl CompletedProcessRefreshExecution {
+    pub(super) const fn new(
+        process_observation_snapshot: ProcessObservationSnapshot,
+        elapsed: Duration,
+    ) -> Self {
+        Self {
+            process_observation_snapshot,
+            elapsed,
+        }
+    }
+
+    pub(crate) const fn elapsed(&self) -> Duration { self.elapsed }
+
+    #[cfg(test)]
+    pub(super) const fn snapshot(&self) -> &ProcessObservationSnapshot {
+        &self.process_observation_snapshot
+    }
+
+    pub(crate) fn into_snapshot(self) -> ProcessObservationSnapshot {
+        self.process_observation_snapshot
+    }
+}
+
+/// CPU usage encoded as IEEE-754 bits so process snapshots retain exact
+/// equality for tests and correlated worker results.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ProcessCpuPercent(u32);
+
+impl ProcessCpuPercent {
+    pub(super) const fn from_sysinfo(cpu_percent: f32) -> Self { Self(cpu_percent.to_bits()) }
+
+    pub(crate) const fn get(self) -> f32 { f32::from_bits(self.0) }
+}
+
+/// Name and resource metrics proven to belong to one strong process identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RunningProcessMetricsRecord {
+    identity:     ProcessIdentity,
+    name:         String,
+    cpu_percent:  ProcessCpuPercent,
+    memory_bytes: u64,
+    start_time:   u64,
+}
+
+impl RunningProcessMetricsRecord {
+    pub(super) const fn new(
+        identity: ProcessIdentity,
+        name: String,
+        cpu_percent: ProcessCpuPercent,
+        memory_bytes: u64,
+        start_time: u64,
+    ) -> Self {
+        Self {
+            identity,
+            name,
+            cpu_percent,
+            memory_bytes,
+            start_time,
+        }
+    }
+
+    pub(crate) const fn identity(&self) -> &ProcessIdentity { &self.identity }
+
+    pub(crate) fn name(&self) -> &str { &self.name }
+
+    pub(crate) const fn cpu_percent(&self) -> ProcessCpuPercent { self.cpu_percent }
+
+    pub(super) fn replace_cpu_percent_for_continuity(&mut self, cpu_percent: ProcessCpuPercent) {
+        self.cpu_percent = cpu_percent;
+    }
+
+    pub(crate) const fn memory_bytes(&self) -> u64 { self.memory_bytes }
+
+    pub(crate) const fn start_time(&self) -> u64 { self.start_time }
+}
+
+/// Whether one refresh requested Running Targets resource metrics.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum RunningProcessMetricsObservation {
+    NotRequested,
+    Observed(BTreeMap<ProcessIdentity, RunningProcessMetricsRecord>),
+}
+
 /// An immutable process observation result.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ProcessObservationSnapshot {
@@ -216,11 +351,26 @@ pub(crate) struct ProcessObservationSnapshot {
     insufficient_identity_processes: Vec<InsufficientIdentityProcessRecord>,
     identity_binding_invalidations:  Vec<ProcessIdentityBindingInvalidation>,
     targeted_process_observations:   TargetedProcessObservations,
+    running_process_metrics:         RunningProcessMetricsObservation,
 }
 
 impl ProcessObservationSnapshot {
-    pub(crate) const fn observed_at(&self) -> Instant { self.observed_at }
+    #[cfg(test)]
+    pub(super) fn empty_for_test() -> Self {
+        Self {
+            observed_at:                     Instant::now(),
+            scope:                           ProcessSnapshotScope::FullSystem,
+            strongly_identified_processes:   BTreeMap::new(),
+            insufficient_identity_processes: Vec::new(),
+            identity_binding_invalidations:  Vec::new(),
+            targeted_process_observations:   TargetedProcessObservations::NotRequested,
+            running_process_metrics:         RunningProcessMetricsObservation::Observed(
+                BTreeMap::new(),
+            ),
+        }
+    }
 
+    #[cfg(test)]
     pub(crate) const fn scope(&self) -> &ProcessSnapshotScope { &self.scope }
 
     pub(crate) const fn strongly_identified_processes(
@@ -229,16 +379,38 @@ impl ProcessObservationSnapshot {
         &self.strongly_identified_processes
     }
 
+    #[cfg(test)]
     pub(crate) fn insufficient_identity_processes(&self) -> &[InsufficientIdentityProcessRecord] {
         &self.insufficient_identity_processes
     }
 
+    #[cfg(test)]
     pub(crate) fn identity_binding_invalidations(&self) -> &[ProcessIdentityBindingInvalidation] {
         &self.identity_binding_invalidations
     }
 
+    #[cfg(test)]
     pub(crate) const fn targeted_process_observations(&self) -> &TargetedProcessObservations {
         &self.targeted_process_observations
+    }
+
+    pub(crate) const fn running_process_metrics(&self) -> &RunningProcessMetricsObservation {
+        &self.running_process_metrics
+    }
+
+    pub(super) fn bind_running_process_metrics(
+        mut self,
+        observed_at: Instant,
+        mut running_process_metrics: BTreeMap<ProcessIdentity, RunningProcessMetricsRecord>,
+    ) -> Self {
+        running_process_metrics.retain(|process_identity, _| {
+            self.strongly_identified_processes
+                .contains_key(process_identity)
+        });
+        self.observed_at = observed_at;
+        self.running_process_metrics =
+            RunningProcessMetricsObservation::Observed(running_process_metrics);
+        self
     }
 
     pub(crate) fn validated_ancestry(
@@ -255,39 +427,34 @@ impl ProcessObservationSnapshot {
         let mut edges = Vec::new();
         loop {
             if edges.len() == parent_walk_depth.0 {
-                return AncestryLookup::Observed(ValidatedAncestry {
+                return AncestryLookup::observed(
                     edges,
-                    terminal: AncestryTerminal::DepthCapped { current_identity },
-                });
+                    AncestryTerminal::DepthCapped { current_identity },
+                );
             }
 
             let Some(current_record) = self.strongly_identified_processes.get(&current_identity)
             else {
-                return AncestryLookup::Observed(ValidatedAncestry {
+                return AncestryLookup::observed(
                     edges,
-                    terminal: AncestryTerminal::SnapshotRecordUnavailable { current_identity },
-                });
+                    AncestryTerminal::SnapshotRecordUnavailable { current_identity },
+                );
             };
             match current_record.parentage_validation_outcome() {
                 ProcessFieldObservation::Observed(ParentageValidationOutcome::Root { child }) => {
-                    return AncestryLookup::Observed(ValidatedAncestry {
-                        edges,
-                        terminal: AncestryTerminal::Root {
-                            root: child.clone(),
-                        },
-                    });
+                    return AncestryLookup::observed(edges, AncestryTerminal::root(child));
                 },
                 ProcessFieldObservation::Observed(ParentageValidationOutcome::ValidatedEdge(
                     edge,
                 )) => {
                     if visited_identities.contains(edge.parent()) {
-                        return AncestryLookup::Observed(ValidatedAncestry {
+                        return AncestryLookup::observed(
                             edges,
-                            terminal: AncestryTerminal::RejectedEdge {
+                            AncestryTerminal::RejectedEdge {
                                 edge:      edge.endpoints().clone(),
                                 rejection: ParentEdgeRejection::Cycle,
                             },
-                        });
+                        );
                     }
                     visited_identities.insert(edge.parent().clone());
                     current_identity = edge.parent().clone();
@@ -299,55 +466,53 @@ impl ProcessObservationSnapshot {
                         parent_identity,
                     },
                 ) => {
-                    return AncestryLookup::Observed(ValidatedAncestry {
+                    return AncestryLookup::observed(
                         edges,
-                        terminal: AncestryTerminal::UnavailableParent {
+                        AncestryTerminal::UnavailableParent {
                             child:           child.clone(),
                             parent_identity: parent_identity.clone(),
                         },
-                    });
+                    );
                 },
                 ProcessFieldObservation::Observed(
                     ParentageValidationOutcome::UnavailableIdentifiedParent { edge },
                 ) => {
-                    return AncestryLookup::Observed(ValidatedAncestry {
+                    return AncestryLookup::observed(
                         edges,
-                        terminal: AncestryTerminal::UnavailableIdentifiedParent {
-                            edge: edge.clone(),
-                        },
-                    });
+                        AncestryTerminal::UnavailableIdentifiedParent { edge: edge.clone() },
+                    );
                 },
                 ProcessFieldObservation::Observed(
                     ParentageValidationOutcome::CreationOrderUnavailable { edge, unavailable },
                 ) => {
-                    return AncestryLookup::Observed(ValidatedAncestry {
+                    return AncestryLookup::observed(
                         edges,
-                        terminal: AncestryTerminal::CreationOrderUnavailable {
+                        AncestryTerminal::CreationOrderUnavailable {
                             edge:        edge.clone(),
                             unavailable: *unavailable,
                         },
-                    });
+                    );
                 },
                 ProcessFieldObservation::Observed(ParentageValidationOutcome::RejectedEdge {
                     edge,
                     rejection,
                 }) => {
-                    return AncestryLookup::Observed(ValidatedAncestry {
+                    return AncestryLookup::observed(
                         edges,
-                        terminal: AncestryTerminal::RejectedEdge {
+                        AncestryTerminal::RejectedEdge {
                             edge:      edge.clone(),
                             rejection: rejection.clone(),
                         },
-                    });
+                    );
                 },
                 ProcessFieldObservation::Unavailable(_)
                 | ProcessFieldObservation::Invalidated(_) => {
-                    return AncestryLookup::Observed(ValidatedAncestry {
+                    return AncestryLookup::observed(
                         edges,
-                        terminal: AncestryTerminal::ParentEvidenceUnavailable {
+                        AncestryTerminal::ParentEvidenceUnavailable {
                             child: current_identity,
                         },
-                    });
+                    );
                 },
             }
         }
@@ -367,6 +532,20 @@ impl ParentWalkDepth {
 pub(crate) enum AncestryLookup {
     Observed(ValidatedAncestry),
     IdentityNotInSnapshot(ProcessIdentity),
+}
+
+impl AncestryLookup {
+    const fn observed(edges: Vec<ValidatedParentEdge>, terminal: AncestryTerminal) -> Self {
+        Self::Observed(ValidatedAncestry { edges, terminal })
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn observed_for_test(
+        edges: Vec<ValidatedParentEdge>,
+        terminal: AncestryTerminal,
+    ) -> Self {
+        Self::observed(edges, terminal)
+    }
 }
 
 /// A depth-capped chain of validated parent edges.
@@ -414,6 +593,14 @@ pub(crate) enum AncestryTerminal {
     },
 }
 
+impl AncestryTerminal {
+    fn root(process_identity: &ProcessIdentity) -> Self {
+        Self::Root {
+            root: process_identity.clone(),
+        }
+    }
+}
+
 /// Why fields sampled from a PID cannot be bound to one strong identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ProcessIdentityBindingInvalidation {
@@ -425,13 +612,13 @@ pub(crate) enum ProcessIdentityBindingInvalidation {
         prior: ObservedProcessIdentity,
         later: ObservedProcessIdentity,
     },
+    #[cfg(test)]
     ProcessFieldSourceIdentityMismatch {
         current: ProcessIdentity,
         source:  ProcessIdentity,
     },
-    ProcessFieldSourceLifetimeUnproven {
-        current: ProcessIdentity,
-    },
+    #[cfg(test)]
+    ProcessFieldSourceLifetimeUnproven { current: ProcessIdentity },
 }
 
 /// Exact results for a requested strong-identity refresh.
@@ -473,23 +660,19 @@ pub(super) struct ProcessFieldSample {
 
 impl ProcessFieldSample {
     pub(super) fn observe(process: &sysinfo::Process) -> Self {
-        let executable = match process.exe() {
-            Some(executable) => ProcessFieldObservation::Observed(executable.to_path_buf()),
-            None => {
-                ProcessFieldObservation::Unavailable(ProcessFieldUnavailable::PlatformDidNotReport)
-            },
-        };
+        let executable = process.exe().map_or(
+            ProcessFieldObservation::Unavailable(ProcessFieldUnavailable::PlatformDidNotReport),
+            |executable| ProcessFieldObservation::Observed(executable.to_path_buf()),
+        );
         let argv = if process.cmd().is_empty() {
             ProcessFieldObservation::Unavailable(ProcessFieldUnavailable::PlatformDidNotReport)
         } else {
             ProcessFieldObservation::Observed(process.cmd().to_vec())
         };
-        let cwd = match process.cwd() {
-            Some(cwd) => ProcessFieldObservation::Observed(cwd.to_path_buf()),
-            None => {
-                ProcessFieldObservation::Unavailable(ProcessFieldUnavailable::PlatformDidNotReport)
-            },
-        };
+        let cwd = process.cwd().map_or(
+            ProcessFieldObservation::Unavailable(ProcessFieldUnavailable::PlatformDidNotReport),
+            |cwd| ProcessFieldObservation::Observed(cwd.to_path_buf()),
+        );
         Self {
             executable,
             argv,
@@ -506,7 +689,7 @@ impl ProcessFieldSample {
     }
 
     #[cfg(test)]
-    pub(super) fn for_test(executable: PathBuf, argv: Vec<OsString>, cwd: PathBuf) -> Self {
+    pub(super) const fn for_test(executable: PathBuf, argv: Vec<OsString>, cwd: PathBuf) -> Self {
         Self {
             executable: ProcessFieldObservation::Observed(executable),
             argv:       ProcessFieldObservation::Observed(argv),
@@ -519,7 +702,9 @@ impl ProcessFieldSample {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum ProcessFieldLifetimeBinding {
     FreshSystemSamplingInterval,
+    #[cfg(test)]
     Strong(ProcessIdentity),
+    #[cfg(test)]
     UnprovenLongLivedSystemSample,
 }
 
@@ -543,9 +728,14 @@ impl ProcessFieldSourceObservation {
         initial: ProcessFieldSample,
         repeated: ProcessFieldSample,
     ) -> Self {
-        let field_sampling_evidence = if initial.executable == repeated.executable
-            && initial.argv == repeated.argv
-            && initial.cwd == repeated.cwd
+        let ProcessFieldSample {
+            executable: initial_executable,
+            argv: initial_argv,
+            cwd: initial_cwd,
+        } = initial;
+        let field_sampling_evidence = if initial_executable == repeated.executable
+            && initial_argv == repeated.argv
+            && initial_cwd == repeated.cwd
         {
             ProcessFieldSamplingEvidence::StableAcrossFreshSamples(repeated)
         } else {
@@ -557,7 +747,7 @@ impl ProcessFieldSourceObservation {
         }
     }
 
-    pub(super) fn fresh_system_stability_unproven() -> Self {
+    pub(super) const fn fresh_system_stability_unproven() -> Self {
         Self {
             lifetime_binding:        ProcessFieldLifetimeBinding::FreshSystemSamplingInterval,
             field_sampling_evidence: ProcessFieldSamplingEvidence::StabilityUnproven,
@@ -576,7 +766,7 @@ impl ProcessFieldSourceObservation {
     }
 
     #[cfg(test)]
-    fn strong_identity(
+    const fn strong_identity(
         source_identity: ProcessIdentity,
         process_field_sample: ProcessFieldSample,
     ) -> Self {
@@ -589,7 +779,7 @@ impl ProcessFieldSourceObservation {
     }
 
     #[cfg(test)]
-    fn unproven_long_lived_system_sample(process_field_sample: ProcessFieldSample) -> Self {
+    const fn unproven_long_lived_system_sample(process_field_sample: ProcessFieldSample) -> Self {
         Self {
             lifetime_binding:        ProcessFieldLifetimeBinding::UnprovenLongLivedSystemSample,
             field_sampling_evidence: ProcessFieldSamplingEvidence::StableAcrossFreshSamples(
@@ -618,7 +808,11 @@ impl ProcessSamplingOutcome {
         process_field_source_observation: ProcessFieldSourceObservation,
         identity_after_fields: PlatformProcessObservation,
     ) -> Self {
-        let identity_before = identity_before_fields.lifetime.identity().clone();
+        let PlatformProcessObservation {
+            lifetime: identity_before_lifetime,
+            parent: identity_before_parent,
+        } = identity_before_fields;
+        let identity_before = identity_before_lifetime.identity().clone();
         let identity_after = identity_after_fields.lifetime.identity().clone();
         match (identity_before, identity_after) {
             (ObservedProcessIdentity::Strong(before), ObservedProcessIdentity::Strong(after))
@@ -629,6 +823,7 @@ impl ProcessSamplingOutcome {
                     field_sampling_evidence,
                 } = process_field_source_observation;
                 match lifetime_binding {
+                    #[cfg(test)]
                     ProcessFieldLifetimeBinding::Strong(source) if source != before => {
                         return Self::IdentityBindingInvalidated(
                             ProcessIdentityBindingInvalidation::ProcessFieldSourceIdentityMismatch {
@@ -637,6 +832,7 @@ impl ProcessSamplingOutcome {
                             },
                         );
                     },
+                    #[cfg(test)]
                     ProcessFieldLifetimeBinding::UnprovenLongLivedSystemSample => {
                         return Self::IdentityBindingInvalidated(
                             ProcessIdentityBindingInvalidation::ProcessFieldSourceLifetimeUnproven {
@@ -644,10 +840,11 @@ impl ProcessSamplingOutcome {
                             },
                         );
                     },
-                    ProcessFieldLifetimeBinding::FreshSystemSamplingInterval
-                    | ProcessFieldLifetimeBinding::Strong(_) => {},
+                    ProcessFieldLifetimeBinding::FreshSystemSamplingInterval => {},
+                    #[cfg(test)]
+                    ProcessFieldLifetimeBinding::Strong(_) => {},
                 }
-                let parent = if identity_before_fields.parent == identity_after_fields.parent {
+                let parent = if identity_before_parent == identity_after_fields.parent {
                     identity_after_fields.parent
                 } else {
                     ProcessFieldObservation::Invalidated(
@@ -661,31 +858,21 @@ impl ProcessSamplingOutcome {
                     ProcessFieldSamplingEvidence::ObservationsDiffered => {
                         let invalidation =
                             ProcessFieldInvalidation::ProcessFieldsDifferedDuringSampling;
-                        return Self::IdentityBound(IdentityBoundProcessObservation {
-                            identity: before,
-                            creation_order_evidence: identity_after_fields
-                                .lifetime
-                                .creation_order_evidence()
-                                .clone(),
-                            executable: ProcessFieldObservation::Invalidated(invalidation.clone()),
-                            argv: ProcessFieldObservation::Invalidated(invalidation.clone()),
-                            cwd: ProcessFieldObservation::Invalidated(invalidation.clone()),
+                        return Self::identity_bound_invalidated_fields(
+                            before,
+                            identity_after_fields.lifetime.creation_order_evidence(),
+                            invalidation,
                             parent,
-                        });
+                        );
                     },
                     ProcessFieldSamplingEvidence::StabilityUnproven => {
                         let invalidation = ProcessFieldInvalidation::ProcessFieldStabilityUnproven;
-                        return Self::IdentityBound(IdentityBoundProcessObservation {
-                            identity: before,
-                            creation_order_evidence: identity_after_fields
-                                .lifetime
-                                .creation_order_evidence()
-                                .clone(),
-                            executable: ProcessFieldObservation::Invalidated(invalidation.clone()),
-                            argv: ProcessFieldObservation::Invalidated(invalidation.clone()),
-                            cwd: ProcessFieldObservation::Invalidated(invalidation.clone()),
+                        return Self::identity_bound_invalidated_fields(
+                            before,
+                            identity_after_fields.lifetime.creation_order_evidence(),
+                            invalidation,
                             parent,
-                        });
+                        );
                     },
                 };
                 Self::IdentityBound(IdentityBoundProcessObservation {
@@ -719,6 +906,22 @@ impl ProcessSamplingOutcome {
         }
     }
 
+    fn identity_bound_invalidated_fields(
+        identity: ProcessIdentity,
+        creation_order_evidence: &ProcessCreationOrderEvidence,
+        invalidation: ProcessFieldInvalidation,
+        parent: ProcessFieldObservation<ReportedParent>,
+    ) -> Self {
+        Self::IdentityBound(IdentityBoundProcessObservation {
+            identity,
+            creation_order_evidence: creation_order_evidence.clone(),
+            executable: ProcessFieldObservation::Invalidated(invalidation.clone()),
+            argv: ProcessFieldObservation::Invalidated(invalidation.clone()),
+            cwd: ProcessFieldObservation::Invalidated(invalidation),
+            parent,
+        })
+    }
+
     pub(super) fn reconcile_later_identity_observation(
         self,
         later_identity: &ObservedProcessIdentity,
@@ -739,6 +942,7 @@ impl ProcessSamplingOutcome {
                     ..
                 },
             ) => later.clone(),
+            #[cfg(test)]
             Self::IdentityBindingInvalidated(
                 ProcessIdentityBindingInvalidation::ProcessFieldSourceIdentityMismatch {
                     current,
@@ -889,7 +1093,7 @@ impl TargetedProcessSamplingResult {
         }
     }
 
-    fn from_insufficient_identity(
+    const fn from_insufficient_identity(
         insufficient_identity: InsufficientProcessIdentity,
     ) -> TargetedProcessObservation {
         match insufficient_identity {
@@ -912,6 +1116,7 @@ impl TargetedProcessSamplingResult {
                 later,
                 ..
             } => later,
+            #[cfg(test)]
             ProcessIdentityBindingInvalidation::ProcessFieldSourceIdentityMismatch { .. }
             | ProcessIdentityBindingInvalidation::ProcessFieldSourceLifetimeUnproven { .. } => {
                 return TargetedProcessObservation::IdentityBindingInvalidated(invalidation);
@@ -1030,6 +1235,7 @@ impl ProcessIncarnationCache {
             insufficient_identity_processes,
             identity_binding_invalidations,
             targeted_process_observations,
+            running_process_metrics: RunningProcessMetricsObservation::NotRequested,
         }
     }
 
@@ -1039,94 +1245,98 @@ impl ProcessIncarnationCache {
         process_observation: &IdentityBoundProcessObservation,
         identity_bound_processes: &BTreeMap<ProcessIdentity, IdentityBoundProcessObservation>,
     ) -> ProcessSnapshotRecord {
-        match (&process_observation.executable, &process_observation.argv) {
-            (
-                ProcessFieldObservation::Observed(executable),
-                ProcessFieldObservation::Observed(argv),
-            ) => {
-                let executable_argv_fingerprint =
-                    ProcessFingerprint::from_observed_fields(executable, argv);
-                let incarnation =
-                    ProcessIncarnation::new(process_identity.clone(), executable_argv_fingerprint);
-                let incarnation_state = self.incarnation_state(&incarnation);
-                match incarnation_state {
-                    ProcessIncarnationState::NewlyObserved | ProcessIncarnationState::Unchanged => {
-                        ProcessSnapshotRecord {
-                            identity:                     process_identity.clone(),
-                            incarnation_evidence:         ProcessIncarnationEvidence::Strong {
-                                incarnation,
-                                incarnation_state,
-                            },
-                            executable:                   process_observation.executable.clone(),
-                            argv:                         process_observation.argv.clone(),
-                            cwd:                          process_observation.cwd.clone(),
-                            parentage_validation_outcome: validate_parentage(
-                                process_identity,
-                                &process_observation.creation_order_evidence,
-                                process_observation.parent.clone(),
-                                identity_bound_processes,
-                            ),
-                        }
-                    },
-                    ProcessIncarnationState::ExecutableOrArgumentsChanged { .. } => {
-                        let invalidation = ProcessFieldInvalidation::ExecutableOrArgumentsChanged;
-                        ProcessSnapshotRecord {
-                            identity:                     process_identity.clone(),
-                            incarnation_evidence:         ProcessIncarnationEvidence::Strong {
-                                incarnation,
-                                incarnation_state,
-                            },
-                            executable:                   ProcessFieldObservation::Invalidated(
-                                invalidation.clone(),
-                            ),
-                            argv:                         ProcessFieldObservation::Invalidated(
-                                invalidation.clone(),
-                            ),
-                            cwd:                          ProcessFieldObservation::Invalidated(
-                                invalidation.clone(),
-                            ),
-                            parentage_validation_outcome: ProcessFieldObservation::Invalidated(
-                                invalidation,
-                            ),
-                        }
-                    },
-                }
-            },
-            _ => {
-                let invalidation =
-                    match (&process_observation.executable, &process_observation.argv) {
-                        (ProcessFieldObservation::Invalidated(invalidation), _)
-                        | (_, ProcessFieldObservation::Invalidated(invalidation)) => {
-                            invalidation.clone()
-                        },
-                        _ => ProcessFieldInvalidation::ExecIncarnationEvidenceInsufficient,
-                    };
-                let parentage_validation_outcome = match &invalidation {
-                    ProcessFieldInvalidation::ProcessFieldsDifferedDuringSampling
-                    | ProcessFieldInvalidation::ProcessFieldStabilityUnproven => {
-                        validate_parentage(
-                            process_identity,
-                            &process_observation.creation_order_evidence,
-                            process_observation.parent.clone(),
-                            identity_bound_processes,
-                        )
-                    },
-                    _ => ProcessFieldObservation::Invalidated(invalidation.clone()),
-                };
+        let (
+            ProcessFieldObservation::Observed(executable),
+            ProcessFieldObservation::Observed(argv),
+        ) = (&process_observation.executable, &process_observation.argv)
+        else {
+            return Self::insufficient_process_snapshot_record(
+                process_identity,
+                process_observation,
+                identity_bound_processes,
+            );
+        };
+        let executable_argv_fingerprint =
+            ProcessFingerprint::from_observed_fields(executable, argv);
+        let incarnation =
+            ProcessIncarnation::new(process_identity.clone(), executable_argv_fingerprint);
+        let incarnation_state = self.incarnation_state(&incarnation);
+        match incarnation_state {
+            ProcessIncarnationState::NewlyObserved | ProcessIncarnationState::Unchanged => {
                 ProcessSnapshotRecord {
-                    identity: process_identity.clone(),
-                    incarnation_evidence: ProcessIncarnationEvidence::Insufficient(
-                        InsufficientProcessIncarnationEvidence {
-                            executable: process_observation.executable.clone(),
-                            argv:       process_observation.argv.clone(),
-                        },
+                    identity:                     process_identity.clone(),
+                    incarnation_evidence:         ProcessIncarnationEvidence::Strong {
+                        incarnation,
+                        incarnation_state,
+                    },
+                    executable:                   process_observation.executable.clone(),
+                    argv:                         process_observation.argv.clone(),
+                    cwd:                          process_observation.cwd.clone(),
+                    parentage_validation_outcome: validate_parentage(
+                        process_identity,
+                        &process_observation.creation_order_evidence,
+                        process_observation.parent.clone(),
+                        identity_bound_processes,
                     ),
-                    executable: process_observation.executable.clone(),
-                    argv: process_observation.argv.clone(),
-                    cwd: ProcessFieldObservation::Invalidated(invalidation),
-                    parentage_validation_outcome,
                 }
             },
+            ProcessIncarnationState::ExecutableOrArgumentsChanged { .. } => {
+                let invalidation = ProcessFieldInvalidation::ExecutableOrArgumentsChanged;
+                ProcessSnapshotRecord {
+                    identity:                     process_identity.clone(),
+                    incarnation_evidence:         ProcessIncarnationEvidence::Strong {
+                        incarnation,
+                        incarnation_state,
+                    },
+                    executable:                   ProcessFieldObservation::Invalidated(
+                        invalidation.clone(),
+                    ),
+                    argv:                         ProcessFieldObservation::Invalidated(
+                        invalidation.clone(),
+                    ),
+                    cwd:                          ProcessFieldObservation::Invalidated(
+                        invalidation.clone(),
+                    ),
+                    parentage_validation_outcome: ProcessFieldObservation::Invalidated(
+                        invalidation,
+                    ),
+                }
+            },
+        }
+    }
+
+    fn insufficient_process_snapshot_record(
+        process_identity: &ProcessIdentity,
+        process_observation: &IdentityBoundProcessObservation,
+        identity_bound_processes: &BTreeMap<ProcessIdentity, IdentityBoundProcessObservation>,
+    ) -> ProcessSnapshotRecord {
+        let invalidation = match (&process_observation.executable, &process_observation.argv) {
+            (ProcessFieldObservation::Invalidated(invalidation), _)
+            | (_, ProcessFieldObservation::Invalidated(invalidation)) => invalidation.clone(),
+            _ => ProcessFieldInvalidation::ExecIncarnationEvidenceInsufficient,
+        };
+        let parentage_validation_outcome = match &invalidation {
+            ProcessFieldInvalidation::ProcessFieldsDifferedDuringSampling
+            | ProcessFieldInvalidation::ProcessFieldStabilityUnproven => validate_parentage(
+                process_identity,
+                &process_observation.creation_order_evidence,
+                process_observation.parent.clone(),
+                identity_bound_processes,
+            ),
+            _ => ProcessFieldObservation::Invalidated(invalidation.clone()),
+        };
+        ProcessSnapshotRecord {
+            identity: process_identity.clone(),
+            incarnation_evidence: ProcessIncarnationEvidence::Insufficient(
+                InsufficientProcessIncarnationEvidence {
+                    executable: process_observation.executable.clone(),
+                    argv:       process_observation.argv.clone(),
+                },
+            ),
+            executable: process_observation.executable.clone(),
+            argv: process_observation.argv.clone(),
+            cwd: ProcessFieldObservation::Invalidated(invalidation),
+            parentage_validation_outcome,
         }
     }
 
@@ -1150,8 +1360,7 @@ impl ProcessIncarnationCache {
                 Some(ObservedProcessIdentity::Insufficient(
                     InsufficientProcessIdentity::ProcessExitedBeforeIdentityLookup { .. },
                 )) => false,
-                Some(ObservedProcessIdentity::Insufficient(_)) => true,
-                None => true,
+                Some(ObservedProcessIdentity::Insufficient(_)) | None => true,
             };
         self.previous_incarnations
             .retain(|process_identity, _| retain_process_identity(process_identity));

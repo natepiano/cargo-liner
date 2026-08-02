@@ -194,8 +194,11 @@ pub(super) fn dispatch_targets_action(action: TargetsAction, app: &mut App) {
     actions::dispatch_targets_action(action, app);
 }
 
-pub(super) fn execute_target_kill(app: &mut App, pid: u32, create_time: u64) {
-    actions::execute_target_kill(app, pid, create_time);
+pub(super) fn execute_target_kill(
+    app: &mut App,
+    termination_capability: crate::tui::running_targets::RunningTargetTerminationCapability,
+) {
+    actions::execute_target_kill(app, termination_capability);
 }
 
 pub(super) fn sync_running_targets_cursor(app: &mut App) { actions::sync_running_cursor_pid(app); }

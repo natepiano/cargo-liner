@@ -1,11 +1,27 @@
 //! Immutable host process observation without process-control operations.
 
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "the timing harness should fail on invalid fixture configuration"
+)]
+mod benchmarks;
+mod executor;
 pub(crate) mod identity;
 pub(crate) mod snapshot;
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
+pub(crate) use executor::CompileMonitorRefreshSchedule;
+pub(crate) use executor::ProcessRefreshDeadline;
+pub(crate) use executor::ProcessRefreshDispatchOutcome;
+pub(crate) use executor::ProcessRefreshExecution;
+pub(crate) use executor::ProcessRefreshExecutionBackendSelection;
+pub(crate) use executor::ProcessRefreshExecutor;
+pub(crate) use executor::ProcessRefreshResultPoll;
+pub(crate) use executor::ProcessRefreshResultReceiver;
+pub(crate) use executor::RunningTargetsRefreshSchedule;
 use identity::ObservedProcessIdentity;
 use identity::PlatformProcessObservation;
 use identity::ProcessIdentity;
@@ -16,6 +32,8 @@ use snapshot::ProcessFieldSourceObservation;
 use snapshot::ProcessFieldUnavailable;
 use snapshot::ProcessIncarnationCache;
 use snapshot::ProcessObservationSnapshot;
+pub(crate) use snapshot::ProcessRefreshConsumerDemand;
+pub(crate) use snapshot::ProcessRefreshExecutionOutcome;
 use snapshot::ProcessRefreshInput;
 use snapshot::ProcessRefreshObservations;
 use snapshot::ProcessSamplingOutcome;
@@ -39,14 +57,14 @@ enum PidProcessFieldObservation {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PidSamplingObservation {
-    identity_before_fields: PlatformProcessObservation,
-    process_fields:         PidProcessFieldObservation,
-    identity_after_fields:  PlatformProcessObservation,
+    identity_before_sampling: PlatformProcessObservation,
+    field_observation:        PidProcessFieldObservation,
+    identity_after_sampling:  PlatformProcessObservation,
 }
 
 impl PidSamplingObservation {
     fn full_sampling_outcome(self) -> ProcessSamplingOutcome {
-        let process_field_source_observation = match self.process_fields {
+        let process_field_source_observation = match self.field_observation {
             PidProcessFieldObservation::Sampled(process_field_source_observation) => {
                 process_field_source_observation
             },
@@ -57,29 +75,29 @@ impl PidSamplingObservation {
             },
         };
         ProcessSamplingOutcome::bind_fields_to_identity(
-            self.identity_before_fields,
+            self.identity_before_sampling,
             process_field_source_observation,
-            self.identity_after_fields,
+            self.identity_after_sampling,
         )
     }
 
     fn targeted_process_presence(&self) -> TargetedProcessPresence {
-        match &self.process_fields {
+        match &self.field_observation {
             PidProcessFieldObservation::Sampled(process_field_source_observation) => {
                 TargetedProcessPresence::Sampled(ProcessSamplingOutcome::bind_fields_to_identity(
-                    self.identity_before_fields.clone(),
+                    self.identity_before_sampling.clone(),
                     process_field_source_observation.clone(),
-                    self.identity_after_fields.clone(),
+                    self.identity_after_sampling.clone(),
                 ))
             },
             PidProcessFieldObservation::Unavailable(process_field_unavailable) => {
                 TargetedProcessPresence::FieldsUnavailable {
                     process_sampling_outcome:  ProcessSamplingOutcome::bind_fields_to_identity(
-                        self.identity_before_fields.clone(),
+                        self.identity_before_sampling.clone(),
                         ProcessFieldSourceObservation::repeated_unavailable_fresh_system_samples(
                             process_field_unavailable.clone(),
                         ),
-                        self.identity_after_fields.clone(),
+                        self.identity_after_sampling.clone(),
                     ),
                     process_field_unavailable: process_field_unavailable.clone(),
                 }
@@ -181,87 +199,1495 @@ struct TargetedPidClassification {
     admission:    TargetedSampleAdmission,
 }
 
-/// Host-only process observation backed by one private `sysinfo::System`.
-#[derive(Default)]
-pub(crate) struct ProcessObserver {
-    system:            System,
-    incarnation_cache: ProcessIncarnationCache,
-}
+mod running_metrics_system {
+    use std::collections::BTreeMap;
+    use std::collections::BTreeSet;
 
-impl ProcessObserver {
-    /// Refresh a full or selected process set and return only immutable evidence.
-    pub(crate) fn refresh(
-        &mut self,
-        process_refresh_input: ProcessRefreshInput,
-    ) -> ProcessObservationSnapshot {
-        let refresh_kind = ProcessRefreshKind::nothing()
-            .with_exe(UpdateKind::Always)
-            .with_cmd(UpdateKind::Always)
-            .with_cwd(UpdateKind::Always);
-        let process_refresh_observations = match &process_refresh_input {
-            ProcessRefreshInput::FullSystemSnapshot => {
-                let cached_process_identities = self.incarnation_cache.cached_process_identities();
-                self.refresh_full_system_observations(refresh_kind, &cached_process_identities)
-            },
-            ProcessRefreshInput::TargetedIdentities(process_identities) => {
-                self.refresh_targeted_observations(process_identities, refresh_kind)
-            },
-        };
+    use sysinfo::Pid;
 
-        let scope = snapshot_scope(&process_refresh_input);
-        self.incarnation_cache.snapshot_from(
-            std::time::Instant::now(),
-            scope,
-            process_refresh_observations,
-        )
+    use super::ObservedProcessIdentity;
+    use super::ProcessIdentity;
+    use super::snapshot::ProcessCpuPercent;
+    use super::snapshot::RunningProcessMetricsRecord;
+
+    #[derive(Debug, Eq, PartialEq)]
+    enum IdentityBoundMetricsRecordObservation {
+        Observed(RunningProcessMetricsRecord),
+        RequestedPidAbsentFromRefreshedCache { pid: Pid },
     }
 
-    fn refresh_full_system_observations(
-        &mut self,
+    mod raw_system {
+        use std::collections::BTreeSet;
+
+        use sysinfo::Pid;
+        use sysinfo::ProcessRefreshKind;
+
+        use super::IdentityBoundMetricsRecordObservation;
+        use super::ProcessIdentity;
+        use super::RunningMetricsCycleRefreshSet;
+
+        mod process_table {
+            use sysinfo::Pid;
+            use sysinfo::ProcessRefreshKind;
+            use sysinfo::ProcessesToUpdate;
+            use sysinfo::System;
+
+            use super::CachedRunningMetricsPids;
+            use super::IdentityBoundMetricsRecordObservation;
+            use super::ProcessIdentity;
+            use super::RunningMetricsCycleRefreshSet;
+            use crate::process_observation::snapshot::ProcessCpuPercent;
+            use crate::process_observation::snapshot::RunningProcessMetricsRecord;
+
+            /// Long-lived process table for Running Targets CPU and memory metrics.
+            #[derive(Default)]
+            pub(super) struct RunningMetricsProcessTable {
+                system:                System,
+                #[cfg(test)]
+                raw_process_refreshes: u64,
+                #[cfg(test)]
+                record_replacements:   u64,
+                #[cfg(test)]
+                refresh_targets:       Vec<Vec<Pid>>,
+            }
+
+            impl RunningMetricsProcessTable {
+                #[cfg(test)]
+                pub(super) fn contains_process(&self, pid: Pid) -> bool {
+                    self.system.process(pid).is_some()
+                }
+
+                pub(super) fn cached_pids(&self) -> CachedRunningMetricsPids {
+                    CachedRunningMetricsPids {
+                        pids: self.system.processes().keys().copied().collect(),
+                    }
+                }
+
+                pub(super) fn metrics_record(
+                    &self,
+                    pid: Pid,
+                    process_identity: &ProcessIdentity,
+                ) -> IdentityBoundMetricsRecordObservation {
+                    self.system.process(pid).map_or(
+                        IdentityBoundMetricsRecordObservation::RequestedPidAbsentFromRefreshedCache {
+                            pid,
+                        },
+                        |process| {
+                            IdentityBoundMetricsRecordObservation::Observed(
+                                RunningProcessMetricsRecord::new(
+                                    process_identity.clone(),
+                                    process.name().to_string_lossy().into_owned(),
+                                    ProcessCpuPercent::from_sysinfo(process.cpu_usage()),
+                                    process.memory(),
+                                    process.start_time(),
+                                ),
+                            )
+                        },
+                    )
+                }
+
+                pub(super) fn replace_all_records(&mut self) {
+                    self.system = System::new();
+                    #[cfg(test)]
+                    {
+                        self.record_replacements += 1;
+                    }
+                }
+
+                /// Performs and observes exactly one raw process-table refresh.
+                pub(super) fn refresh_processes_specifics(
+                    &mut self,
+                    running_metrics_cycle_refresh_set: &RunningMetricsCycleRefreshSet,
+                    process_refresh_kind: ProcessRefreshKind,
+                ) {
+                    #[cfg(test)]
+                    {
+                        self.raw_process_refreshes += 1;
+                        self.refresh_targets
+                            .push(running_metrics_cycle_refresh_set.pids().to_vec());
+                    }
+                    self.system.refresh_processes_specifics(
+                        ProcessesToUpdate::Some(running_metrics_cycle_refresh_set.pids()),
+                        true,
+                        process_refresh_kind,
+                    );
+                }
+
+                #[cfg(test)]
+                pub(super) const fn raw_process_refresh_count(&self) -> u64 {
+                    self.raw_process_refreshes
+                }
+
+                #[cfg(test)]
+                pub(super) const fn record_replacement_count(&self) -> u64 {
+                    self.record_replacements
+                }
+
+                #[cfg(test)]
+                pub(super) fn refresh_targets(&self) -> &[Vec<Pid>] { &self.refresh_targets }
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use sysinfo::ProcessRefreshKind;
+
+                use super::RunningMetricsCycleRefreshSet;
+                use super::RunningMetricsProcessTable;
+
+                #[test]
+                fn each_process_table_refresh_increments_actual_raw_refresh_count() {
+                    let mut process_table = RunningMetricsProcessTable::default();
+                    let refresh_set = RunningMetricsCycleRefreshSet { pids: Vec::new() };
+
+                    process_table.refresh_processes_specifics(
+                        &refresh_set,
+                        ProcessRefreshKind::nothing().with_cpu().with_memory(),
+                    );
+                    process_table.refresh_processes_specifics(
+                        &refresh_set,
+                        ProcessRefreshKind::nothing().with_cpu().with_memory(),
+                    );
+
+                    assert_eq!(process_table.raw_process_refresh_count(), 2);
+                }
+            }
+        }
+
+        use process_table::RunningMetricsProcessTable;
+
+        /// Raw process access for long-lived Running Targets metrics.
+        #[derive(Default)]
+        pub(super) struct RawRunningMetricsSystem {
+            process_table: RunningMetricsProcessTable,
+        }
+
+        impl RawRunningMetricsSystem {
+            #[cfg(test)]
+            pub(super) fn contains_process(&self, pid: Pid) -> bool {
+                self.process_table.contains_process(pid)
+            }
+
+            pub(super) fn cached_pids(&self) -> CachedRunningMetricsPids {
+                self.process_table.cached_pids()
+            }
+
+            pub(super) fn metrics_record(
+                &self,
+                pid: Pid,
+                process_identity: &ProcessIdentity,
+            ) -> IdentityBoundMetricsRecordObservation {
+                self.process_table.metrics_record(pid, process_identity)
+            }
+
+            pub(super) fn replace_all_records(&mut self) {
+                self.process_table.replace_all_records();
+            }
+
+            /// The only raw process-refresh operation exposed by this boundary.
+            pub(super) fn refresh_and_remove_exited_processes(
+                &mut self,
+                running_metrics_cycle_refresh_set: &RunningMetricsCycleRefreshSet,
+            ) {
+                self.process_table.refresh_processes_specifics(
+                    running_metrics_cycle_refresh_set,
+                    ProcessRefreshKind::nothing().with_cpu().with_memory(),
+                );
+            }
+
+            #[cfg(test)]
+            pub(super) const fn raw_process_refresh_count(&self) -> u64 {
+                self.process_table.raw_process_refresh_count()
+            }
+
+            #[cfg(test)]
+            pub(super) const fn record_replacement_count(&self) -> u64 {
+                self.process_table.record_replacement_count()
+            }
+
+            #[cfg(test)]
+            pub(super) fn refresh_targets(&self) -> &[Vec<Pid>] {
+                self.process_table.refresh_targets()
+            }
+        }
+
+        #[derive(Debug, Default, Eq, PartialEq)]
+        pub(super) struct CachedRunningMetricsPids {
+            pub(super) pids: BTreeSet<Pid>,
+        }
+
+        impl CachedRunningMetricsPids {
+            pub(super) fn contains(&self, pid: &Pid) -> bool { self.pids.contains(pid) }
+
+            pub(super) fn iter(&self) -> impl Iterator<Item = &Pid> { self.pids.iter() }
+        }
+    }
+
+    use raw_system::CachedRunningMetricsPids;
+    use raw_system::RawRunningMetricsSystem;
+
+    /// Long-lived sysinfo records that preserve CPU baselines between Running
+    /// Targets refreshes without exposing the raw `System`.
+    #[derive(Default)]
+    struct RunningProcessMetricsCache {
+        raw_running_metrics_system: RawRunningMetricsSystem,
+    }
+
+    impl RunningProcessMetricsCache {
+        #[cfg(test)]
+        fn contains_process(&self, pid: Pid) -> bool {
+            self.raw_running_metrics_system.contains_process(pid)
+        }
+
+        fn cached_pids(&self) -> CachedRunningMetricsPids {
+            self.raw_running_metrics_system.cached_pids()
+        }
+
+        fn metrics_record(
+            &self,
+            pid: Pid,
+            process_identity: &ProcessIdentity,
+        ) -> IdentityBoundMetricsRecordObservation {
+            self.raw_running_metrics_system
+                .metrics_record(pid, process_identity)
+        }
+
+        fn replace_all_records(&mut self) { self.raw_running_metrics_system.replace_all_records(); }
+
+        fn binding_authority(
+            &self,
+            identity_bindings: &RunningMetricsIdentityBindings,
+        ) -> RunningMetricsCacheBindingAuthority {
+            if self
+                .cached_pids()
+                .iter()
+                .all(|pid| identity_bindings.by_pid.contains_key(pid))
+            {
+                RunningMetricsCacheBindingAuthority::EveryRecordStronglyBound
+            } else {
+                RunningMetricsCacheBindingAuthority::UnboundRecordsPresent
+            }
+        }
+
+        fn refresh_and_remove_exited_processes(
+            &mut self,
+            running_metrics_cycle_refresh_set: &RunningMetricsCycleRefreshSet,
+        ) {
+            self.raw_running_metrics_system
+                .refresh_and_remove_exited_processes(running_metrics_cycle_refresh_set);
+        }
+
+        #[cfg(test)]
+        const fn raw_process_refresh_count(&self) -> u64 {
+            self.raw_running_metrics_system.raw_process_refresh_count()
+        }
+
+        #[cfg(test)]
+        const fn record_replacement_count(&self) -> u64 {
+            self.raw_running_metrics_system.record_replacement_count()
+        }
+
+        #[cfg(test)]
+        fn refresh_targets(&self) -> &[Vec<Pid>] {
+            self.raw_running_metrics_system.refresh_targets()
+        }
+    }
+
+    /// Strong identities proven stable across the refresh that populated
+    /// `RunningMetricsSystem::metrics_cache`.
+    #[derive(Debug, Default, Eq, PartialEq)]
+    struct RunningMetricsIdentityBindings {
+        by_pid: BTreeMap<Pid, ProcessIdentity>,
+    }
+
+    impl RunningMetricsIdentityBindings {
+        fn retain_only_safe_before_refresh(
+            &mut self,
+            identities_before_refresh: &BTreeMap<Pid, ObservedProcessIdentity>,
+        ) {
+            self.by_pid.retain(
+                |pid, bound_identity| match identities_before_refresh.get(pid) {
+                    Some(ObservedProcessIdentity::Strong(identity_before_refresh)) => {
+                        bound_identity == identity_before_refresh
+                    },
+                    Some(ObservedProcessIdentity::Insufficient(_)) => false,
+                    None => true,
+                },
+            );
+        }
+
+        fn retain_only_identities_stable_across_refresh(
+            &mut self,
+            identities_before_refresh: &BTreeMap<Pid, ObservedProcessIdentity>,
+            identities_after_refresh: &BTreeMap<Pid, ObservedProcessIdentity>,
+        ) {
+            let previously_bound_absent_identities: BTreeMap<Pid, ProcessIdentity> = self
+                .by_pid
+                .iter()
+                .filter(|(pid, _)| !identities_before_refresh.contains_key(pid))
+                .map(|(pid, process_identity)| (*pid, process_identity.clone()))
+                .collect();
+            self.by_pid = identities_before_refresh
+                .iter()
+                .filter_map(|(pid, observed_identity_before_refresh)| {
+                    match (
+                        observed_identity_before_refresh,
+                        identities_after_refresh.get(pid),
+                    ) {
+                        (
+                            ObservedProcessIdentity::Strong(identity_before_refresh),
+                            Some(ObservedProcessIdentity::Strong(identity_after_refresh)),
+                        ) if identity_before_refresh == identity_after_refresh => {
+                            Some((*pid, identity_after_refresh.clone()))
+                        },
+                        _ => None,
+                    }
+                })
+                .chain(previously_bound_absent_identities)
+                .collect();
+        }
+
+        fn retain_only_cached_processes(
+            &mut self,
+            cached_running_metrics_pids: &CachedRunningMetricsPids,
+        ) {
+            self.by_pid
+                .retain(|pid, _| cached_running_metrics_pids.contains(pid));
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum RunningMetricsCachePreparation {
+        PreserveBaselines,
+        PurgeUnsafeRecords,
+    }
+
+    impl RunningMetricsCachePreparation {
+        fn classify(
+            cached_running_metrics_pids: &CachedRunningMetricsPids,
+            identity_bindings: &RunningMetricsIdentityBindings,
+            identities_before_refresh: &BTreeMap<Pid, ObservedProcessIdentity>,
+        ) -> Self {
+            if cached_running_metrics_pids.iter().any(|pid| {
+                match identity_bindings.by_pid.get(pid) {
+                    None => true,
+                    Some(bound_identity) => match identities_before_refresh.get(pid) {
+                        Some(ObservedProcessIdentity::Strong(identity_before_refresh)) => {
+                            bound_identity != identity_before_refresh
+                        },
+                        Some(ObservedProcessIdentity::Insufficient(_)) => true,
+                        None => false,
+                    },
+                }
+            }) {
+                Self::PurgeUnsafeRecords
+            } else {
+                Self::PreserveBaselines
+            }
+        }
+    }
+
+    #[derive(Debug, Default, Eq, PartialEq)]
+    struct IdentityBoundCpuSamples {
+        by_identity: BTreeMap<ProcessIdentity, ProcessCpuPercent>,
+    }
+
+    impl IdentityBoundCpuSamples {
+        fn retain_only_stable_identities(
+            &self,
+            identities_before_refresh: &BTreeMap<Pid, ObservedProcessIdentity>,
+            identity_bindings: &RunningMetricsIdentityBindings,
+        ) -> Self {
+            Self {
+                by_identity: identities_before_refresh
+                    .iter()
+                    .filter_map(|(pid, observed_process_identity)| {
+                        let ObservedProcessIdentity::Strong(process_identity) =
+                            observed_process_identity
+                        else {
+                            return None;
+                        };
+                        if identity_bindings.by_pid.get(pid) != Some(process_identity) {
+                            return None;
+                        }
+                        self.by_identity
+                            .get(process_identity)
+                            .map(|cpu_percent| (process_identity.clone(), *cpu_percent))
+                    })
+                    .collect(),
+            }
+        }
+
+        fn from_cycle_output(
+            running_process_metrics: &BTreeMap<ProcessIdentity, RunningProcessMetricsRecord>,
+        ) -> Self {
+            Self {
+                by_identity: running_process_metrics
+                    .iter()
+                    .map(|(process_identity, running_process_metrics_record)| {
+                        (
+                            process_identity.clone(),
+                            running_process_metrics_record.cpu_percent(),
+                        )
+                    })
+                    .collect(),
+            }
+        }
+
+        fn continuity_sample(
+            &self,
+            process_identity: &ProcessIdentity,
+            refreshed_cpu_percent: ProcessCpuPercent,
+        ) -> ProcessCpuPercent {
+            self.by_identity
+                .get(process_identity)
+                .copied()
+                .unwrap_or(refreshed_cpu_percent)
+        }
+    }
+
+    /// CPU history availability relative to a rebuilt raw metrics `System`.
+    #[derive(Debug, Eq, PartialEq)]
+    enum RunningMetricsCpuContinuity {
+        Established(IdentityBoundCpuSamples),
+        RebuiltAwaitingBaseline(IdentityBoundCpuSamples),
+        RebuiltBaselineReady(IdentityBoundCpuSamples),
+    }
+
+    impl Default for RunningMetricsCpuContinuity {
+        fn default() -> Self { Self::Established(IdentityBoundCpuSamples::default()) }
+    }
+
+    impl RunningMetricsCpuContinuity {
+        const fn samples(&self) -> &IdentityBoundCpuSamples {
+            match self {
+                Self::Established(identity_bound_cpu_samples)
+                | Self::RebuiltAwaitingBaseline(identity_bound_cpu_samples)
+                | Self::RebuiltBaselineReady(identity_bound_cpu_samples) => {
+                    identity_bound_cpu_samples
+                },
+            }
+        }
+
+        fn begin_rebuild_before_refresh(
+            &mut self,
+            identities_before_refresh: &BTreeMap<Pid, ObservedProcessIdentity>,
+            identity_bindings: &RunningMetricsIdentityBindings,
+        ) {
+            *self = Self::RebuiltAwaitingBaseline(
+                self.samples()
+                    .retain_only_stable_identities(identities_before_refresh, identity_bindings),
+            );
+        }
+
+        fn begin_rebuild_after_refresh(
+            &mut self,
+            running_process_metrics: &BTreeMap<ProcessIdentity, RunningProcessMetricsRecord>,
+        ) {
+            *self = Self::RebuiltAwaitingBaseline(IdentityBoundCpuSamples::from_cycle_output(
+                running_process_metrics,
+            ));
+        }
+
+        fn record_raw_refresh(&mut self) {
+            let prior = std::mem::take(self);
+            *self = match prior {
+                Self::Established(identity_bound_cpu_samples)
+                | Self::RebuiltBaselineReady(identity_bound_cpu_samples) => {
+                    Self::Established(identity_bound_cpu_samples)
+                },
+                Self::RebuiltAwaitingBaseline(identity_bound_cpu_samples) => {
+                    Self::RebuiltBaselineReady(identity_bound_cpu_samples)
+                },
+            };
+        }
+
+        fn cpu_sample(
+            &self,
+            process_identity: &ProcessIdentity,
+            refreshed_cpu_percent: ProcessCpuPercent,
+        ) -> ProcessCpuPercent {
+            match self {
+                Self::RebuiltBaselineReady(identity_bound_cpu_samples) => {
+                    identity_bound_cpu_samples
+                        .continuity_sample(process_identity, refreshed_cpu_percent)
+                },
+                Self::Established(_) | Self::RebuiltAwaitingBaseline(_) => refreshed_cpu_percent,
+            }
+        }
+
+        fn record_cycle_output(
+            &mut self,
+            running_process_metrics: &BTreeMap<ProcessIdentity, RunningProcessMetricsRecord>,
+        ) {
+            let identity_bound_cpu_samples =
+                IdentityBoundCpuSamples::from_cycle_output(running_process_metrics);
+            *self = match self {
+                Self::Established(_) => Self::Established(identity_bound_cpu_samples),
+                Self::RebuiltBaselineReady(_) => {
+                    Self::RebuiltBaselineReady(identity_bound_cpu_samples)
+                },
+                Self::RebuiltAwaitingBaseline(_) => {
+                    Self::RebuiltAwaitingBaseline(identity_bound_cpu_samples)
+                },
+            };
+        }
+
+        #[cfg(test)]
+        fn replace_history_for_test(
+            &mut self,
+            by_identity: BTreeMap<ProcessIdentity, ProcessCpuPercent>,
+        ) {
+            *self = Self::Established(IdentityBoundCpuSamples { by_identity });
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum RunningMetricsCacheBindingAuthority {
+        EveryRecordStronglyBound,
+        UnboundRecordsPresent,
+    }
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct RunningMetricsCycleRefreshSet {
+        pids: Vec<Pid>,
+    }
+
+    impl RunningMetricsCycleRefreshSet {
+        fn for_cycle(
+            identities_before_refresh: &BTreeMap<Pid, ObservedProcessIdentity>,
+            prior_identity_bindings: &RunningMetricsIdentityBindings,
+        ) -> Self {
+            Self {
+                pids: identities_before_refresh
+                    .iter()
+                    .filter_map(|(pid, observed_process_identity)| {
+                        matches!(
+                            observed_process_identity,
+                            ObservedProcessIdentity::Strong(_)
+                        )
+                        .then_some(*pid)
+                    })
+                    .chain(
+                        prior_identity_bindings
+                            .by_pid
+                            .keys()
+                            .filter(|pid| !identities_before_refresh.contains_key(pid))
+                            .copied(),
+                    )
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect(),
+            }
+        }
+
+        fn pids(&self) -> &[Pid] { &self.pids }
+    }
+
+    #[derive(Default)]
+    pub(super) struct RunningMetricsSystem {
+        metrics_cache:     RunningProcessMetricsCache,
+        identity_bindings: RunningMetricsIdentityBindings,
+        cpu_continuity:    RunningMetricsCpuContinuity,
+    }
+
+    impl RunningMetricsSystem {
+        pub(super) fn observe_process_metrics_for_cycle(
+            &mut self,
+            pids: &[Pid],
+            mut observe_identity: impl FnMut(u32) -> ObservedProcessIdentity,
+        ) -> BTreeMap<ProcessIdentity, RunningProcessMetricsRecord> {
+            let identities_before_refresh: BTreeMap<Pid, ObservedProcessIdentity> = pids
+                .iter()
+                .map(|pid| (*pid, observe_identity(pid.as_u32())))
+                .collect();
+            self.purge_unsafe_records_before_refresh(&identities_before_refresh);
+            self.identity_bindings
+                .retain_only_safe_before_refresh(&identities_before_refresh);
+            let running_metrics_cycle_refresh_set = RunningMetricsCycleRefreshSet::for_cycle(
+                &identities_before_refresh,
+                &self.identity_bindings,
+            );
+            self.metrics_cache
+                .refresh_and_remove_exited_processes(&running_metrics_cycle_refresh_set);
+            self.cpu_continuity.record_raw_refresh();
+            let identities_after_refresh: BTreeMap<Pid, ObservedProcessIdentity> = pids
+                .iter()
+                .map(|pid| (*pid, observe_identity(pid.as_u32())))
+                .collect();
+            self.identity_bindings
+                .retain_only_identities_stable_across_refresh(
+                    &identities_before_refresh,
+                    &identities_after_refresh,
+                );
+            self.identity_bindings
+                .retain_only_cached_processes(&self.metrics_cache.cached_pids());
+
+            let running_process_metrics: BTreeMap<ProcessIdentity, RunningProcessMetricsRecord> =
+                pids.iter()
+                .copied()
+                .filter_map(|pid| {
+                    let ObservedProcessIdentity::Strong(identity_before_refresh) =
+                        &identities_before_refresh[&pid]
+                    else {
+                        return None;
+                    };
+                    let ObservedProcessIdentity::Strong(identity_after_refresh) =
+                        &identities_after_refresh[&pid]
+                    else {
+                        return None;
+                    };
+                    if identity_before_refresh != identity_after_refresh {
+                        return None;
+                    }
+                    match self.metrics_cache.metrics_record(pid, identity_after_refresh) {
+                        IdentityBoundMetricsRecordObservation::Observed(
+                            mut running_process_metrics_record,
+                        ) => Some((
+                            identity_after_refresh.clone(),
+                            {
+                                let cpu_percent = self.cpu_continuity.cpu_sample(
+                                    identity_after_refresh,
+                                    running_process_metrics_record.cpu_percent(),
+                                );
+                                running_process_metrics_record
+                                    .replace_cpu_percent_for_continuity(cpu_percent);
+                                running_process_metrics_record
+                            },
+                        )),
+                        IdentityBoundMetricsRecordObservation::RequestedPidAbsentFromRefreshedCache {
+                            ..
+                        } => None,
+                    }
+                })
+                .collect();
+            self.cpu_continuity
+                .record_cycle_output(&running_process_metrics);
+            if self
+                .metrics_cache
+                .binding_authority(&self.identity_bindings)
+                == RunningMetricsCacheBindingAuthority::UnboundRecordsPresent
+            {
+                self.cpu_continuity
+                    .begin_rebuild_after_refresh(&running_process_metrics);
+                self.metrics_cache.replace_all_records();
+            }
+            running_process_metrics
+        }
+
+        fn purge_unsafe_records_before_refresh(
+            &mut self,
+            identities_before_refresh: &BTreeMap<Pid, ObservedProcessIdentity>,
+        ) {
+            match RunningMetricsCachePreparation::classify(
+                &self.metrics_cache.cached_pids(),
+                &self.identity_bindings,
+                identities_before_refresh,
+            ) {
+                RunningMetricsCachePreparation::PreserveBaselines => {},
+                RunningMetricsCachePreparation::PurgeUnsafeRecords => {
+                    self.cpu_continuity.begin_rebuild_before_refresh(
+                        identities_before_refresh,
+                        &self.identity_bindings,
+                    );
+                    self.metrics_cache.replace_all_records();
+                },
+            }
+        }
+
+        #[cfg(test)]
+        pub(super) const fn raw_process_refresh_count(&self) -> u64 {
+            self.metrics_cache.raw_process_refresh_count()
+        }
+
+        #[cfg(test)]
+        fn replace_cpu_history_for_test(
+            &mut self,
+            by_identity: BTreeMap<ProcessIdentity, ProcessCpuPercent>,
+        ) {
+            self.cpu_continuity.replace_history_for_test(by_identity);
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::collections::BTreeMap;
+        use std::collections::BTreeSet;
+
+        use sysinfo::Pid;
+
+        use super::CachedRunningMetricsPids;
+        use super::IdentityBoundMetricsRecordObservation;
+        use super::RunningMetricsCachePreparation;
+        use super::RunningMetricsCycleRefreshSet;
+        use super::RunningMetricsIdentityBindings;
+        use super::RunningMetricsSystem;
+        use super::RunningProcessMetricsCache;
+        use crate::process_observation::identity::InsufficientProcessIdentity;
+        use crate::process_observation::identity::ObservedProcessIdentity;
+        use crate::process_observation::identity::ProcessIdentity;
+        use crate::process_observation::snapshot::ProcessCpuPercent;
+
+        #[cfg(unix)]
+        struct OwnedMetricsTestChild {
+            child: std::process::Child,
+        }
+
+        #[cfg(unix)]
+        impl OwnedMetricsTestChild {
+            fn spawn() -> std::io::Result<Self> {
+                std::process::Command::new("sleep")
+                    .arg("30")
+                    .spawn()
+                    .map(|child| Self { child })
+            }
+
+            fn pid(&self) -> Pid { Pid::from_u32(self.child.id()) }
+        }
+
+        #[cfg(unix)]
+        impl Drop for OwnedMetricsTestChild {
+            fn drop(&mut self) {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+            }
+        }
+
+        #[test]
+        fn metrics_record_observes_record_bound_to_requested_identity() {
+            let pid = Pid::from_u32(std::process::id());
+            let process_identity = ProcessIdentity::for_test(pid.as_u32(), 510);
+            let mut running_process_metrics_cache = RunningProcessMetricsCache::default();
+            running_process_metrics_cache.refresh_and_remove_exited_processes(
+                &RunningMetricsCycleRefreshSet { pids: vec![pid] },
+            );
+
+            let observation = running_process_metrics_cache.metrics_record(pid, &process_identity);
+
+            assert!(matches!(
+                observation,
+                IdentityBoundMetricsRecordObservation::Observed(
+                    running_process_metrics_record
+                ) if running_process_metrics_record.identity() == &process_identity
+            ));
+        }
+
+        #[test]
+        fn metrics_record_names_requested_pid_absent_from_refreshed_cache() {
+            let pid = Pid::from_u32(52);
+            let process_identity = ProcessIdentity::for_test(pid.as_u32(), 520);
+            let mut running_process_metrics_cache = RunningProcessMetricsCache::default();
+            running_process_metrics_cache.refresh_and_remove_exited_processes(
+                &RunningMetricsCycleRefreshSet { pids: Vec::new() },
+            );
+
+            assert_eq!(
+                running_process_metrics_cache.metrics_record(pid, &process_identity),
+                IdentityBoundMetricsRecordObservation::RequestedPidAbsentFromRefreshedCache { pid }
+            );
+        }
+
+        #[test]
+        fn absent_metrics_cache_record_is_omitted_from_cycle_output() {
+            let pid = Pid::from_u32(53);
+            let process_identity = ProcessIdentity::for_test(pid.as_u32(), 530);
+            let observed_process_identity = ObservedProcessIdentity::Strong(process_identity);
+            let mut running_metrics_system = RunningMetricsSystem::default();
+
+            let running_process_metrics = running_metrics_system
+                .observe_process_metrics_for_cycle(&[pid], |_| observed_process_identity.clone());
+
+            assert!(running_process_metrics.is_empty());
+            assert!(running_metrics_system.identity_bindings.by_pid.is_empty());
+            assert_eq!(running_metrics_system.raw_process_refresh_count(), 1);
+        }
+
+        #[test]
+        fn same_pid_identity_replacement_invalidates_metrics_cache_before_refresh() {
+            let pid = Pid::from_u32(61);
+            let prior_identity = ProcessIdentity::for_test(pid.as_u32(), 700);
+            let replacement_identity = ProcessIdentity::for_test(pid.as_u32(), 701);
+            let replacement_identity_observations =
+                BTreeMap::from([(pid, ObservedProcessIdentity::Strong(replacement_identity))]);
+            let cached_running_metrics_pids = CachedRunningMetricsPids {
+                pids: BTreeSet::from([pid]),
+            };
+            let identity_bindings = RunningMetricsIdentityBindings {
+                by_pid: BTreeMap::from([(pid, prior_identity)]),
+            };
+
+            assert_eq!(
+                RunningMetricsCachePreparation::classify(
+                    &cached_running_metrics_pids,
+                    &identity_bindings,
+                    &replacement_identity_observations,
+                ),
+                RunningMetricsCachePreparation::PurgeUnsafeRecords
+            );
+        }
+
+        #[test]
+        fn unbound_cached_record_requires_purge() {
+            let pid = Pid::from_u32(62);
+            let cached_running_metrics_pids = CachedRunningMetricsPids {
+                pids: BTreeSet::from([pid]),
+            };
+
+            assert_eq!(
+                RunningMetricsCachePreparation::classify(
+                    &cached_running_metrics_pids,
+                    &RunningMetricsIdentityBindings::default(),
+                    &BTreeMap::new(),
+                ),
+                RunningMetricsCachePreparation::PurgeUnsafeRecords
+            );
+        }
+
+        #[test]
+        fn metrics_bindings_retain_only_stable_strong_identities() {
+            let stable_pid = Pid::from_u32(71);
+            let exited_pid = Pid::from_u32(72);
+            let changed_pid = Pid::from_u32(73);
+            let insufficient_before_pid = Pid::from_u32(74);
+            let stable_identity = ProcessIdentity::for_test(stable_pid.as_u32(), 710);
+            let exited_identity = ProcessIdentity::for_test(exited_pid.as_u32(), 720);
+            let changed_identity = ProcessIdentity::for_test(changed_pid.as_u32(), 730);
+            let replacement_identity = ProcessIdentity::for_test(changed_pid.as_u32(), 731);
+            let late_identity = ProcessIdentity::for_test(insufficient_before_pid.as_u32(), 740);
+            let identities_before_refresh = BTreeMap::from([
+                (
+                    stable_pid,
+                    ObservedProcessIdentity::Strong(stable_identity.clone()),
+                ),
+                (exited_pid, ObservedProcessIdentity::Strong(exited_identity)),
+                (
+                    changed_pid,
+                    ObservedProcessIdentity::Strong(changed_identity),
+                ),
+                (
+                    insufficient_before_pid,
+                    ObservedProcessIdentity::Insufficient(
+                        InsufficientProcessIdentity::PlatformIdentityLookupFailed {
+                            pid: insufficient_before_pid.as_u32(),
+                        },
+                    ),
+                ),
+            ]);
+            let identities_after_refresh = BTreeMap::from([
+                (
+                    stable_pid,
+                    ObservedProcessIdentity::Strong(stable_identity.clone()),
+                ),
+                (
+                    exited_pid,
+                    ObservedProcessIdentity::Insufficient(
+                        InsufficientProcessIdentity::ProcessExitedBeforeIdentityLookup {
+                            pid: exited_pid.as_u32(),
+                        },
+                    ),
+                ),
+                (
+                    changed_pid,
+                    ObservedProcessIdentity::Strong(replacement_identity),
+                ),
+                (
+                    insufficient_before_pid,
+                    ObservedProcessIdentity::Strong(late_identity),
+                ),
+            ]);
+            let mut running_metrics_identity_bindings = RunningMetricsIdentityBindings::default();
+
+            running_metrics_identity_bindings.retain_only_identities_stable_across_refresh(
+                &identities_before_refresh,
+                &identities_after_refresh,
+            );
+
+            assert_eq!(
+                running_metrics_identity_bindings,
+                RunningMetricsIdentityBindings {
+                    by_pid: BTreeMap::from([(stable_pid, stable_identity)]),
+                }
+            );
+        }
+
+        #[test]
+        fn unrelated_pid_cannot_enter_metrics_cycle_refresh_set() {
+            let discovered_pid = Pid::from_u32(81);
+            let previously_bound_pid = Pid::from_u32(82);
+            let unrelated_pid = Pid::from_u32(83);
+            let identities_before_refresh = BTreeMap::from([(
+                discovered_pid,
+                ObservedProcessIdentity::Strong(ProcessIdentity::for_test(
+                    discovered_pid.as_u32(),
+                    810,
+                )),
+            )]);
+            let prior_identity_bindings = RunningMetricsIdentityBindings {
+                by_pid: BTreeMap::from([(
+                    previously_bound_pid,
+                    ProcessIdentity::for_test(previously_bound_pid.as_u32(), 820),
+                )]),
+            };
+
+            let running_metrics_cycle_refresh_set = RunningMetricsCycleRefreshSet::for_cycle(
+                &identities_before_refresh,
+                &prior_identity_bindings,
+            );
+
+            assert_eq!(
+                running_metrics_cycle_refresh_set.pids(),
+                &[discovered_pid, previously_bound_pid]
+            );
+            assert!(
+                !running_metrics_cycle_refresh_set
+                    .pids()
+                    .contains(&unrelated_pid)
+            );
+        }
+
+        #[test]
+        fn previously_bound_pid_is_refreshed_when_current_discovery_omits_it() {
+            let previously_bound_pid = Pid::from_u32(92);
+            let prior_identity_bindings = RunningMetricsIdentityBindings {
+                by_pid: BTreeMap::from([(
+                    previously_bound_pid,
+                    ProcessIdentity::for_test(previously_bound_pid.as_u32(), 920),
+                )]),
+            };
+
+            let running_metrics_cycle_refresh_set = RunningMetricsCycleRefreshSet::for_cycle(
+                &BTreeMap::new(),
+                &prior_identity_bindings,
+            );
+
+            assert!(
+                running_metrics_cycle_refresh_set
+                    .pids()
+                    .contains(&previously_bound_pid)
+            );
+        }
+
+        #[test]
+        fn strong_current_pids_enter_metrics_cycle_refresh_set_once() {
+            let discovered_pid = Pid::from_u32(101);
+            let identities_before_refresh = BTreeMap::from([(
+                discovered_pid,
+                ObservedProcessIdentity::Strong(ProcessIdentity::for_test(
+                    discovered_pid.as_u32(),
+                    1_010,
+                )),
+            )]);
+            let prior_identity_bindings = RunningMetricsIdentityBindings {
+                by_pid: BTreeMap::from([(
+                    discovered_pid,
+                    ProcessIdentity::for_test(discovered_pid.as_u32(), 1_010),
+                )]),
+            };
+
+            let running_metrics_cycle_refresh_set = RunningMetricsCycleRefreshSet::for_cycle(
+                &identities_before_refresh,
+                &prior_identity_bindings,
+            );
+
+            assert_eq!(running_metrics_cycle_refresh_set.pids(), &[discovered_pid]);
+        }
+
+        #[test]
+        fn insufficient_current_identity_does_not_enter_metrics_refresh_set() {
+            let pid = Pid::from_u32(111);
+            let identities_before_refresh = BTreeMap::from([(
+                pid,
+                ObservedProcessIdentity::Insufficient(
+                    InsufficientProcessIdentity::PlatformIdentityLookupFailed { pid: pid.as_u32() },
+                ),
+            )]);
+
+            let running_metrics_cycle_refresh_set = RunningMetricsCycleRefreshSet::for_cycle(
+                &identities_before_refresh,
+                &RunningMetricsIdentityBindings::default(),
+            );
+
+            assert!(running_metrics_cycle_refresh_set.pids().is_empty());
+        }
+
+        #[test]
+        fn repeated_insufficient_identity_does_not_cache_pid_or_replace_baselines() {
+            let pid = Pid::from_u32(std::process::id());
+            let insufficient_identity = ObservedProcessIdentity::Insufficient(
+                InsufficientProcessIdentity::PlatformIdentityLookupFailed { pid: pid.as_u32() },
+            );
+            let mut running_metrics_system = RunningMetricsSystem::default();
+
+            for _ in 0..2 {
+                let running_process_metrics = running_metrics_system
+                    .observe_process_metrics_for_cycle(&[pid], |_| insufficient_identity.clone());
+                assert!(running_process_metrics.is_empty());
+            }
+
+            assert!(!running_metrics_system.metrics_cache.contains_process(pid));
+            assert_eq!(
+                running_metrics_system
+                    .metrics_cache
+                    .record_replacement_count(),
+                0
+            );
+            assert_eq!(
+                running_metrics_system.metrics_cache.refresh_targets(),
+                &[Vec::new(), Vec::new()]
+            );
+        }
+
+        #[test]
+        fn unrelated_process_churn_preserves_stable_binding_and_cpu_baseline() {
+            let stable_pid = Pid::from_u32(121);
+            let churn_pid = Pid::from_u32(122);
+            let stable_identity = ProcessIdentity::for_test(stable_pid.as_u32(), 1_210);
+            let churn_identity = ProcessIdentity::for_test(churn_pid.as_u32(), 1_220);
+            let cached_running_metrics_pids = CachedRunningMetricsPids {
+                pids: BTreeSet::from([stable_pid]),
+            };
+            let identities_before_refresh = BTreeMap::from([
+                (
+                    stable_pid,
+                    ObservedProcessIdentity::Strong(stable_identity.clone()),
+                ),
+                (
+                    churn_pid,
+                    ObservedProcessIdentity::Strong(churn_identity.clone()),
+                ),
+            ]);
+            let identities_after_refresh = identities_before_refresh.clone();
+            let mut identity_bindings = RunningMetricsIdentityBindings {
+                by_pid: BTreeMap::from([(stable_pid, stable_identity.clone())]),
+            };
+
+            assert_eq!(
+                RunningMetricsCachePreparation::classify(
+                    &cached_running_metrics_pids,
+                    &identity_bindings,
+                    &identities_before_refresh,
+                ),
+                RunningMetricsCachePreparation::PreserveBaselines
+            );
+            identity_bindings.retain_only_identities_stable_across_refresh(
+                &identities_before_refresh,
+                &identities_after_refresh,
+            );
+            identity_bindings.retain_only_cached_processes(&cached_running_metrics_pids);
+            assert_eq!(
+                identity_bindings.by_pid,
+                BTreeMap::from([(stable_pid, stable_identity)])
+            );
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn replaced_pid_is_fresh_and_stable_pid_keeps_cpu_history() -> std::io::Result<()> {
+            let replaced_process = OwnedMetricsTestChild::spawn()?;
+            let stable_pid = Pid::from_u32(std::process::id());
+            let replaced_pid = replaced_process.pid();
+            let stable_identity = ProcessIdentity::for_test(stable_pid.as_u32(), 1_310);
+            let prior_identity = ProcessIdentity::for_test(replaced_pid.as_u32(), 1_320);
+            let replacement_identity = ProcessIdentity::for_test(replaced_pid.as_u32(), 1_321);
+            let mut running_metrics_system = RunningMetricsSystem::default();
+
+            let first_cycle = running_metrics_system.observe_process_metrics_for_cycle(
+                &[stable_pid, replaced_pid],
+                |pid| {
+                    if pid == stable_pid.as_u32() {
+                        ObservedProcessIdentity::Strong(stable_identity.clone())
+                    } else {
+                        ObservedProcessIdentity::Strong(prior_identity.clone())
+                    }
+                },
+            );
+            assert!(first_cycle.contains_key(&stable_identity));
+            assert!(first_cycle.contains_key(&prior_identity));
+
+            let stable_history_sample = ProcessCpuPercent::from_sysinfo(37.5);
+            let prior_history_sample = ProcessCpuPercent::from_sysinfo(91.0);
+            running_metrics_system.replace_cpu_history_for_test(BTreeMap::from([
+                (stable_identity.clone(), stable_history_sample),
+                (prior_identity.clone(), prior_history_sample),
+            ]));
+            let raw_refreshes_before_replacement =
+                running_metrics_system.raw_process_refresh_count();
+
+            let replacement_cycle = running_metrics_system.observe_process_metrics_for_cycle(
+                &[stable_pid, replaced_pid],
+                |pid| {
+                    if pid == stable_pid.as_u32() {
+                        ObservedProcessIdentity::Strong(stable_identity.clone())
+                    } else {
+                        ObservedProcessIdentity::Strong(replacement_identity.clone())
+                    }
+                },
+            );
+
+            assert_eq!(
+                running_metrics_system.raw_process_refresh_count(),
+                raw_refreshes_before_replacement + 1
+            );
+            assert_eq!(
+                running_metrics_system
+                    .metrics_cache
+                    .record_replacement_count(),
+                1
+            );
+            assert_eq!(
+                running_metrics_system
+                    .metrics_cache
+                    .binding_authority(&running_metrics_system.identity_bindings),
+                super::RunningMetricsCacheBindingAuthority::EveryRecordStronglyBound
+            );
+            assert!(!replacement_cycle.contains_key(&prior_identity));
+            assert_eq!(
+                replacement_cycle[&stable_identity].cpu_percent(),
+                stable_history_sample
+            );
+            let replacement_record = &replacement_cycle[&replacement_identity];
+            let IdentityBoundMetricsRecordObservation::Observed(raw_replacement_record) =
+                running_metrics_system
+                    .metrics_cache
+                    .metrics_record(replaced_pid, &replacement_identity)
+            else {
+                return Err(std::io::Error::other(
+                    "replacement PID should have a refreshed raw metrics record",
+                ));
+            };
+            assert_eq!(
+                replacement_record.cpu_percent(),
+                raw_replacement_record.cpu_percent()
+            );
+            assert_eq!(replacement_record.name(), raw_replacement_record.name());
+            assert_eq!(
+                replacement_record.start_time(),
+                raw_replacement_record.start_time()
+            );
+            assert!(
+                !running_metrics_system
+                    .cpu_continuity
+                    .samples()
+                    .by_identity
+                    .contains_key(&prior_identity)
+            );
+            Ok(())
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn insufficient_pid_is_purged_without_stable_cpu_regression() -> std::io::Result<()> {
+            let insufficient_process = OwnedMetricsTestChild::spawn()?;
+            let stable_pid = Pid::from_u32(std::process::id());
+            let insufficient_pid = insufficient_process.pid();
+            let stable_identity = ProcessIdentity::for_test(stable_pid.as_u32(), 1_410);
+            let prior_identity = ProcessIdentity::for_test(insufficient_pid.as_u32(), 1_420);
+            let mut running_metrics_system = RunningMetricsSystem::default();
+
+            let _ = running_metrics_system.observe_process_metrics_for_cycle(
+                &[stable_pid, insufficient_pid],
+                |pid| {
+                    if pid == stable_pid.as_u32() {
+                        ObservedProcessIdentity::Strong(stable_identity.clone())
+                    } else {
+                        ObservedProcessIdentity::Strong(prior_identity.clone())
+                    }
+                },
+            );
+            let stable_history_sample = ProcessCpuPercent::from_sysinfo(42.5);
+            running_metrics_system.replace_cpu_history_for_test(BTreeMap::from([(
+                stable_identity.clone(),
+                stable_history_sample,
+            )]));
+            let raw_refreshes_before_insufficient_identity =
+                running_metrics_system.raw_process_refresh_count();
+            let insufficient_identity = ObservedProcessIdentity::Insufficient(
+                InsufficientProcessIdentity::PlatformIdentityLookupFailed {
+                    pid: insufficient_pid.as_u32(),
+                },
+            );
+
+            let insufficient_cycle = running_metrics_system.observe_process_metrics_for_cycle(
+                &[stable_pid, insufficient_pid],
+                |pid| {
+                    if pid == stable_pid.as_u32() {
+                        ObservedProcessIdentity::Strong(stable_identity.clone())
+                    } else {
+                        insufficient_identity.clone()
+                    }
+                },
+            );
+
+            assert_eq!(
+                running_metrics_system.raw_process_refresh_count(),
+                raw_refreshes_before_insufficient_identity + 1
+            );
+            assert_eq!(
+                running_metrics_system
+                    .metrics_cache
+                    .record_replacement_count(),
+                1
+            );
+            assert_eq!(
+                running_metrics_system
+                    .metrics_cache
+                    .refresh_targets()
+                    .last(),
+                Some(&vec![stable_pid])
+            );
+            assert!(
+                !running_metrics_system
+                    .metrics_cache
+                    .contains_process(insufficient_pid)
+            );
+            assert!(
+                !running_metrics_system
+                    .identity_bindings
+                    .by_pid
+                    .contains_key(&insufficient_pid)
+            );
+            assert_eq!(
+                running_metrics_system
+                    .metrics_cache
+                    .binding_authority(&running_metrics_system.identity_bindings),
+                super::RunningMetricsCacheBindingAuthority::EveryRecordStronglyBound
+            );
+            assert_eq!(insufficient_cycle.len(), 1);
+            assert_eq!(
+                insufficient_cycle[&stable_identity].cpu_percent(),
+                stable_history_sample
+            );
+            Ok(())
+        }
+    }
+}
+
+use running_metrics_system::RunningMetricsSystem;
+
+enum FullProcessDiscoveryOutcome {
+    NoProcessesUpdated,
+    Updated(Vec<Pid>),
+}
+
+trait ProcessRefreshHostSource {
+    fn full_process_discovery(&self) -> FullProcessDiscoveryOutcome;
+
+    fn process_identity_observation(&self, pid: u32) -> PlatformProcessObservation;
+
+    fn repeated_process_field_observations(
+        &self,
+        pids: &[Pid],
         refresh_kind: ProcessRefreshKind,
-        cached_process_identities: &BTreeSet<ProcessIdentity>,
-    ) -> ProcessRefreshObservations {
-        let updated_processes = self.system.refresh_processes_specifics(
+    ) -> BTreeMap<Pid, ProcessFieldSourceObservation>;
+}
+
+struct SysinfoProcessRefreshHostSource;
+
+impl ProcessRefreshHostSource for SysinfoProcessRefreshHostSource {
+    fn full_process_discovery(&self) -> FullProcessDiscoveryOutcome {
+        let mut process_discovery_system = System::new();
+        let updated_processes = process_discovery_system.refresh_processes_specifics(
             ProcessesToUpdate::All,
             true,
             ProcessRefreshKind::nothing(),
         );
         if updated_processes == 0 {
-            return ProcessRefreshObservations {
-                process_sampling_outcomes:     Vec::new(),
-                targeted_process_observations: TargetedProcessObservations::NotRequested,
-                full_process_refresh_evidence: FullProcessRefreshEvidence::NoProcessesUpdated,
-            };
+            FullProcessDiscoveryOutcome::NoProcessesUpdated
+        } else {
+            FullProcessDiscoveryOutcome::Updated(
+                process_discovery_system
+                    .processes()
+                    .keys()
+                    .copied()
+                    .collect(),
+            )
         }
-        let pids: Vec<Pid> = self.system.processes().keys().copied().collect();
-        let process_refresh_sampling_evidence = Self::observe_pids_with(
-            &pids,
-            |pid| PlatformProcessObservation::observe(pid),
-            |pids| Self::refresh_process_field_sources(pids, refresh_kind),
-        );
-        let directly_sampled_pids =
-            FullRefreshDirectlySampledPids::from(&process_refresh_sampling_evidence);
-        let post_sampling_identities =
-            process_refresh_sampling_evidence.latest_post_sampling_identities();
-        let latest_identity_observations = Self::finalize_full_refresh_identity_observations(
-            cached_process_identities,
-            &directly_sampled_pids,
-            post_sampling_identities,
-            |pid| {
-                PlatformProcessObservation::observe_lifetime(pid)
-                    .identity()
-                    .clone()
+    }
+
+    fn process_identity_observation(&self, pid: u32) -> PlatformProcessObservation {
+        PlatformProcessObservation::observe(pid)
+    }
+
+    fn repeated_process_field_observations(
+        &self,
+        pids: &[Pid],
+        refresh_kind: ProcessRefreshKind,
+    ) -> BTreeMap<Pid, ProcessFieldSourceObservation> {
+        ProcessObserver::refresh_process_field_sources(pids, refresh_kind)
+    }
+}
+
+struct RunningMetricsRefreshTargets {
+    pids: Vec<Pid>,
+}
+
+impl From<Vec<Pid>> for RunningMetricsRefreshTargets {
+    fn from(pids: Vec<Pid>) -> Self { Self { pids } }
+}
+
+struct FullSystemSnapshotCycle {
+    process_observation_snapshot:    ProcessObservationSnapshot,
+    running_metrics_refresh_targets: RunningMetricsRefreshTargets,
+}
+
+/// Host-only process observation with one private long-lived metrics `System`.
+#[derive(Default)]
+pub(crate) struct ProcessObserver {
+    running_metrics_system: RunningMetricsSystem,
+    incarnation_cache:      ProcessIncarnationCache,
+}
+
+impl ProcessObserver {
+    /// Execute one coalesced consumer cycle over the observer's private host state.
+    fn refresh_for_consumer_demand(
+        &mut self,
+        process_refresh_consumer_demand: ProcessRefreshConsumerDemand,
+    ) -> ProcessObservationSnapshot {
+        let process_refresh_host_source = SysinfoProcessRefreshHostSource;
+        let process_refresh_input = match process_refresh_consumer_demand {
+            ProcessRefreshConsumerDemand::CompileMonitor => {
+                ProcessRefreshInput::TargetedIdentities(
+                    self.incarnation_cache.cached_process_identities(),
+                )
             },
-        );
-        let process_sampling_outcomes = process_refresh_sampling_evidence
-            .into_reconciled_sampling_outcomes(&latest_identity_observations);
-        let full_process_refresh_evidence = FullProcessRefreshEvidence::UpdatedProcesses {
-            latest_identity_observations,
+            ProcessRefreshConsumerDemand::RunningTargets
+            | ProcessRefreshConsumerDemand::RunningTargetsAndCompileMonitor => {
+                ProcessRefreshInput::FullSystemSnapshot
+            },
         };
-        ProcessRefreshObservations {
-            process_sampling_outcomes,
-            targeted_process_observations: TargetedProcessObservations::NotRequested,
-            full_process_refresh_evidence,
+        match process_refresh_input {
+            ProcessRefreshInput::FullSystemSnapshot => {
+                let FullSystemSnapshotCycle {
+                    process_observation_snapshot,
+                    running_metrics_refresh_targets,
+                } = self.refresh_full_system_snapshot(
+                    process_field_refresh_kind(),
+                    &process_refresh_host_source,
+                );
+                let running_process_metrics = self
+                    .running_metrics_system
+                    .observe_process_metrics_for_cycle(
+                        &running_metrics_refresh_targets.pids,
+                        |pid| {
+                            PlatformProcessObservation::observe_lifetime(pid)
+                                .identity()
+                                .clone()
+                        },
+                    );
+                process_observation_snapshot.bind_running_process_metrics(
+                    std::time::Instant::now(),
+                    running_process_metrics,
+                )
+            },
+            ProcessRefreshInput::TargetedIdentities(_) => {
+                self.refresh_with_host_source(&process_refresh_input, &process_refresh_host_source)
+            },
+        }
+    }
+
+    /// Refresh a full or selected process set and return only immutable evidence.
+    #[cfg(test)]
+    pub(crate) fn refresh(
+        &mut self,
+        process_refresh_input: &ProcessRefreshInput,
+    ) -> ProcessObservationSnapshot {
+        self.refresh_with_host_source(process_refresh_input, &SysinfoProcessRefreshHostSource)
+    }
+
+    fn refresh_with_host_source(
+        &mut self,
+        process_refresh_input: &ProcessRefreshInput,
+        process_refresh_host_source: &impl ProcessRefreshHostSource,
+    ) -> ProcessObservationSnapshot {
+        let refresh_kind = process_field_refresh_kind();
+        match process_refresh_input {
+            ProcessRefreshInput::FullSystemSnapshot => {
+                self.refresh_full_system_snapshot(refresh_kind, process_refresh_host_source)
+                    .process_observation_snapshot
+            },
+            ProcessRefreshInput::TargetedIdentities(process_identities) => {
+                let process_refresh_observations = self.refresh_targeted_observations(
+                    process_identities,
+                    refresh_kind,
+                    process_refresh_host_source,
+                );
+                let scope = snapshot_scope(process_refresh_input);
+                self.incarnation_cache.snapshot_from(
+                    std::time::Instant::now(),
+                    scope,
+                    process_refresh_observations,
+                )
+            },
+        }
+    }
+
+    fn refresh_full_system_snapshot(
+        &mut self,
+        refresh_kind: ProcessRefreshKind,
+        process_refresh_host_source: &impl ProcessRefreshHostSource,
+    ) -> FullSystemSnapshotCycle {
+        let cached_process_identities = self.incarnation_cache.cached_process_identities();
+        let (process_refresh_observations, running_metrics_refresh_targets) =
+            match process_refresh_host_source.full_process_discovery() {
+                FullProcessDiscoveryOutcome::NoProcessesUpdated => (
+                    ProcessRefreshObservations {
+                        process_sampling_outcomes:     Vec::new(),
+                        targeted_process_observations: TargetedProcessObservations::NotRequested,
+                        full_process_refresh_evidence:
+                            FullProcessRefreshEvidence::NoProcessesUpdated,
+                    },
+                    Vec::new().into(),
+                ),
+                FullProcessDiscoveryOutcome::Updated(pids) => {
+                    let process_refresh_sampling_evidence = Self::observe_pids_with(
+                        &pids,
+                        |pid| process_refresh_host_source.process_identity_observation(pid),
+                        |pids| {
+                            process_refresh_host_source
+                                .repeated_process_field_observations(pids, refresh_kind)
+                        },
+                    );
+                    let directly_sampled_pids =
+                        FullRefreshDirectlySampledPids::from(&process_refresh_sampling_evidence);
+                    let post_sampling_identities =
+                        process_refresh_sampling_evidence.latest_post_sampling_identities();
+                    let latest_identity_observations =
+                        Self::finalize_full_refresh_identity_observations(
+                            &cached_process_identities,
+                            &directly_sampled_pids,
+                            post_sampling_identities,
+                            |pid| {
+                                process_refresh_host_source
+                                    .process_identity_observation(pid)
+                                    .lifetime
+                                    .identity()
+                                    .clone()
+                            },
+                        );
+                    let process_sampling_outcomes = process_refresh_sampling_evidence
+                        .into_reconciled_sampling_outcomes(&latest_identity_observations);
+                    let full_process_refresh_evidence =
+                        FullProcessRefreshEvidence::UpdatedProcesses {
+                            latest_identity_observations,
+                        };
+                    (
+                        ProcessRefreshObservations {
+                            process_sampling_outcomes,
+                            targeted_process_observations:
+                                TargetedProcessObservations::NotRequested,
+                            full_process_refresh_evidence,
+                        },
+                        pids.into(),
+                    )
+                },
+            };
+        let process_observation_snapshot = self.incarnation_cache.snapshot_from(
+            std::time::Instant::now(),
+            ProcessSnapshotScope::FullSystem,
+            process_refresh_observations,
+        );
+        FullSystemSnapshotCycle {
+            process_observation_snapshot,
+            running_metrics_refresh_targets,
         }
     }
 
@@ -286,6 +1712,7 @@ impl ProcessObserver {
         &mut self,
         process_identities: &BTreeSet<ProcessIdentity>,
         refresh_kind: ProcessRefreshKind,
+        process_refresh_host_source: &impl ProcessRefreshHostSource,
     ) -> ProcessRefreshObservations {
         let mut requested_identities_by_pid: BTreeMap<u32, Vec<ProcessIdentity>> = BTreeMap::new();
         for process_identity in process_identities {
@@ -299,29 +1726,26 @@ impl ProcessObserver {
             .copied()
             .map(Pid::from_u32)
             .collect();
-        self.system.refresh_processes_specifics(
-            ProcessesToUpdate::Some(&pids),
-            true,
-            ProcessRefreshKind::nothing(),
-        );
         let process_refresh_sampling_evidence = Self::observe_pids_with(
             &pids,
-            |pid| PlatformProcessObservation::observe(pid),
-            |pids| Self::refresh_process_field_sources(pids, refresh_kind),
+            |pid| process_refresh_host_source.process_identity_observation(pid),
+            |pids| {
+                process_refresh_host_source.repeated_process_field_observations(pids, refresh_kind)
+            },
         );
         let post_sampling_identities =
             process_refresh_sampling_evidence.latest_post_sampling_identities();
 
         Self::targeted_process_refresh_observations(
             requested_identities_by_pid,
-            process_refresh_sampling_evidence,
+            &process_refresh_sampling_evidence,
             &post_sampling_identities,
         )
     }
 
     fn targeted_process_refresh_observations(
         requested_identities_by_pid: BTreeMap<u32, Vec<ProcessIdentity>>,
-        process_refresh_sampling_evidence: ProcessRefreshSamplingEvidence,
+        process_refresh_sampling_evidence: &ProcessRefreshSamplingEvidence,
         post_sampling_identities: &BTreeMap<u32, ObservedProcessIdentity>,
     ) -> ProcessRefreshObservations {
         let mut process_sampling_outcomes = Vec::new();
@@ -360,18 +1784,18 @@ impl ProcessObserver {
         let mut identity_timeline = Vec::new();
         let mut identity_observations_before_fields = BTreeMap::new();
         for pid in pids {
-            let identity_before_fields = observe_identity(pid.as_u32());
+            let identity_before_sampling = observe_identity(pid.as_u32());
             Self::record_identity_observation_events(
                 IdentityObservationSamplingPhase::BeforeFields,
-                &identity_before_fields,
+                &identity_before_sampling,
                 &mut identity_timeline,
             );
-            identity_observations_before_fields.insert(*pid, identity_before_fields);
+            identity_observations_before_fields.insert(*pid, identity_before_sampling);
         }
         let process_field_sources = observe_fields(pids);
         let mut pid_observations = BTreeMap::new();
         for pid in pids {
-            let process_fields = process_field_sources.get(pid).map_or_else(
+            let field_observation = process_field_sources.get(pid).map_or_else(
                 || {
                     PidProcessFieldObservation::Unavailable(
                         ProcessFieldUnavailable::PlatformLookupFailed,
@@ -381,18 +1805,18 @@ impl ProcessObserver {
                     PidProcessFieldObservation::Sampled(process_field_source_observation.clone())
                 },
             );
-            let identity_after_fields = observe_identity(pid.as_u32());
+            let identity_after_sampling = observe_identity(pid.as_u32());
             Self::record_identity_observation_events(
                 IdentityObservationSamplingPhase::AfterFields,
-                &identity_after_fields,
+                &identity_after_sampling,
                 &mut identity_timeline,
             );
             pid_observations.insert(
                 *pid,
                 PidSamplingObservation {
-                    identity_before_fields: identity_observations_before_fields[pid].clone(),
-                    process_fields,
-                    identity_after_fields,
+                    identity_before_sampling: identity_observations_before_fields[pid].clone(),
+                    field_observation,
+                    identity_after_sampling,
                 },
             );
         }
@@ -467,9 +1891,9 @@ impl ProcessObserver {
         }
     }
 
-    /// Samples fields through two newly created `System` instances on every platform.
-    /// `ProcessObserver::system` remains available for future CPU history, but
-    /// its command fields never enter `ProcessFieldSourceObservation`.
+    /// Temporary `System` instances provide coherent process-field sampling on every
+    /// platform. `running_metrics_system` is the sole long-lived CPU and memory state;
+    /// it is refreshed once per due Running Targets cycle.
     fn refresh_process_field_sources(
         pids: &[Pid],
         refresh_kind: ProcessRefreshKind,
@@ -478,7 +1902,7 @@ impl ProcessObserver {
         initial_field_system.refresh_processes_specifics(
             ProcessesToUpdate::Some(pids),
             true,
-            refresh_kind.clone(),
+            refresh_kind,
         );
         let mut repeated_field_system = System::new();
         repeated_field_system.refresh_processes_specifics(
@@ -510,6 +1934,13 @@ impl ProcessObserver {
     }
 }
 
+fn process_field_refresh_kind() -> ProcessRefreshKind {
+    ProcessRefreshKind::nothing()
+        .with_exe(UpdateKind::Always)
+        .with_cmd(UpdateKind::Always)
+        .with_cwd(UpdateKind::Always)
+}
+
 fn snapshot_scope(process_refresh_input: &ProcessRefreshInput) -> ProcessSnapshotScope {
     match process_refresh_input {
         ProcessRefreshInput::FullSystemSnapshot => ProcessSnapshotScope::FullSystem,
@@ -539,6 +1970,7 @@ mod tests {
     use super::PidSamplingObservation;
     use super::PlatformProcessObservation;
     use super::ProcessObserver;
+    use super::ProcessRefreshConsumerDemand;
     use super::ProcessRefreshSamplingEvidence;
     use crate::process_observation::identity::InsufficientProcessIdentity;
     use crate::process_observation::identity::ObservedProcessIdentity;
@@ -631,7 +2063,7 @@ mod tests {
 
     fn synthetic_sampling_evidence(
         pids: &[sysinfo::Pid],
-        identity_observations: Vec<PlatformProcessObservation>,
+        identity_observations: &[PlatformProcessObservation],
     ) -> ProcessRefreshSamplingEvidence {
         let next_observation = Cell::new(0);
         ProcessObserver::observe_pids_with(
@@ -673,7 +2105,7 @@ mod tests {
     fn targeted_snapshot_from_sampling_evidence(
         process_observer: &mut ProcessObserver,
         requested_identities: BTreeSet<ProcessIdentity>,
-        process_refresh_sampling_evidence: ProcessRefreshSamplingEvidence,
+        process_refresh_sampling_evidence: &ProcessRefreshSamplingEvidence,
     ) -> ProcessObservationSnapshot {
         let mut requested_identities_by_pid: BTreeMap<u32, Vec<ProcessIdentity>> = BTreeMap::new();
         for process_identity in &requested_identities {
@@ -744,6 +2176,61 @@ mod tests {
             PlatformProcessObservation::observe_lifetime(u32::MAX).identity(),
             ObservedProcessIdentity::Insufficient(_)
         ));
+    }
+
+    #[test]
+    fn running_metrics_execute_once_only_for_cycles_that_request_them() {
+        let mut process_observer = ProcessObserver::default();
+
+        let compile_snapshot = process_observer
+            .refresh_for_consumer_demand(ProcessRefreshConsumerDemand::CompileMonitor);
+        assert!(matches!(
+            compile_snapshot.running_process_metrics(),
+            crate::process_observation::snapshot::RunningProcessMetricsObservation::NotRequested
+        ));
+        assert_eq!(
+            process_observer
+                .running_metrics_system
+                .raw_process_refresh_count(),
+            0
+        );
+
+        let running_snapshot = process_observer
+            .refresh_for_consumer_demand(ProcessRefreshConsumerDemand::RunningTargets);
+        assert!(matches!(
+            running_snapshot.running_process_metrics(),
+            crate::process_observation::snapshot::RunningProcessMetricsObservation::Observed(_)
+        ));
+        assert_eq!(
+            process_observer
+                .running_metrics_system
+                .raw_process_refresh_count(),
+            1
+        );
+
+        process_observer.refresh_for_consumer_demand(
+            ProcessRefreshConsumerDemand::RunningTargetsAndCompileMonitor,
+        );
+        assert_eq!(
+            process_observer
+                .running_metrics_system
+                .raw_process_refresh_count(),
+            2
+        );
+    }
+
+    #[test]
+    fn due_running_cycle_performs_one_actual_raw_cpu_and_memory_refresh() {
+        let mut process_observer = ProcessObserver::default();
+
+        process_observer.refresh_for_consumer_demand(ProcessRefreshConsumerDemand::RunningTargets);
+
+        assert_eq!(
+            process_observer
+                .running_metrics_system
+                .raw_process_refresh_count(),
+            1
+        );
     }
 
     #[test]
@@ -878,7 +2365,7 @@ mod tests {
             .cached_process_identities();
         let process_refresh_sampling_evidence = synthetic_sampling_evidence(
             &[child_pid],
-            vec![
+            &[
                 platform_observation_with_parent(&child_identity, &historical_identity),
                 platform_observation_with_parent(&child_identity, &historical_identity),
             ],
@@ -945,7 +2432,7 @@ mod tests {
             .cached_process_identities();
         let process_refresh_sampling_evidence = synthetic_sampling_evidence(
             &[child_pid],
-            vec![
+            &[
                 platform_observation_with_parent(&child_identity, &current_identity),
                 platform_observation_with_parent(&child_identity, &current_identity),
             ],
@@ -1138,9 +2625,9 @@ mod tests {
         let mut process_observer = ProcessObserver::default();
         prime_incarnation_cache(&mut process_observer, &old_identity);
         let pid_sampling_observation = PidSamplingObservation {
-            identity_before_fields: platform_observation(&old_identity),
-            process_fields:         PidProcessFieldObservation::Sampled(cargo_field_source()),
-            identity_after_fields:  PlatformProcessObservation::for_test(
+            identity_before_sampling: platform_observation(&old_identity),
+            field_observation:        PidProcessFieldObservation::Sampled(cargo_field_source()),
+            identity_after_sampling:  PlatformProcessObservation::for_test(
                 ObservedProcessIdentity::Insufficient(
                     InsufficientProcessIdentity::ProcessExitedBeforeIdentityLookup {
                         pid: pid.as_u32(),
@@ -1153,7 +2640,7 @@ mod tests {
         let post_sampling_identities = BTreeMap::from([(
             pid.as_u32(),
             pid_sampling_observation
-                .identity_after_fields
+                .identity_after_sampling
                 .lifetime
                 .identity()
                 .clone(),
@@ -1193,14 +2680,14 @@ mod tests {
         let mut process_observer = ProcessObserver::default();
         prime_incarnation_cache(&mut process_observer, &old_identity);
         let pid_sampling_observation = PidSamplingObservation {
-            identity_before_fields: platform_observation(&old_identity),
-            process_fields:         PidProcessFieldObservation::Sampled(cargo_field_source()),
-            identity_after_fields:  platform_observation(&replacement_identity),
+            identity_before_sampling: platform_observation(&old_identity),
+            field_observation:        PidProcessFieldObservation::Sampled(cargo_field_source()),
+            identity_after_sampling:  platform_observation(&replacement_identity),
         };
         let post_sampling_identities = BTreeMap::from([(
             pid.as_u32(),
             pid_sampling_observation
-                .identity_after_fields
+                .identity_after_sampling
                 .lifetime
                 .identity()
                 .clone(),
@@ -1255,7 +2742,7 @@ mod tests {
         prime_incarnation_cache(&mut full_process_observer, &sampled_parent_identity);
         let full_snapshot = full_snapshot_from_sampling_evidence(
             &mut full_process_observer,
-            synthetic_sampling_evidence(&[parent_pid, child_pid], identity_observations.clone()),
+            synthetic_sampling_evidence(&[parent_pid, child_pid], &identity_observations),
         );
 
         assert!(
@@ -1297,7 +2784,7 @@ mod tests {
         let targeted_snapshot = targeted_snapshot_from_sampling_evidence(
             &mut targeted_process_observer,
             requested_identities,
-            synthetic_sampling_evidence(&[parent_pid, child_pid], identity_observations),
+            &synthetic_sampling_evidence(&[parent_pid, child_pid], &identity_observations),
         );
 
         assert!(
@@ -1340,7 +2827,7 @@ mod tests {
         prime_incarnation_cache(&mut full_process_observer, &earlier_parent_identity);
         let full_snapshot = full_snapshot_from_sampling_evidence(
             &mut full_process_observer,
-            synthetic_sampling_evidence(&[child_pid, parent_pid], identity_observations.clone()),
+            synthetic_sampling_evidence(&[child_pid, parent_pid], &identity_observations),
         );
 
         assert!(
@@ -1376,7 +2863,7 @@ mod tests {
         let targeted_snapshot = targeted_snapshot_from_sampling_evidence(
             &mut targeted_process_observer,
             requested_identities,
-            synthetic_sampling_evidence(&[child_pid, parent_pid], identity_observations),
+            &synthetic_sampling_evidence(&[child_pid, parent_pid], &identity_observations),
         );
 
         assert!(
@@ -1424,7 +2911,7 @@ mod tests {
         prime_incarnation_cache(&mut full_process_observer, &parent_identity);
         let full_snapshot = full_snapshot_from_sampling_evidence(
             &mut full_process_observer,
-            synthetic_sampling_evidence(&[parent_pid, child_pid], identity_observations.clone()),
+            synthetic_sampling_evidence(&[parent_pid, child_pid], &identity_observations),
         );
 
         assert!(
@@ -1456,7 +2943,7 @@ mod tests {
         let targeted_snapshot = targeted_snapshot_from_sampling_evidence(
             &mut targeted_process_observer,
             requested_identities,
-            synthetic_sampling_evidence(&[parent_pid, child_pid], identity_observations),
+            &synthetic_sampling_evidence(&[parent_pid, child_pid], &identity_observations),
         );
 
         assert!(
@@ -1505,7 +2992,7 @@ mod tests {
         prime_incarnation_cache(&mut full_process_observer, &parent_identity);
         let full_snapshot = full_snapshot_from_sampling_evidence(
             &mut full_process_observer,
-            synthetic_sampling_evidence(&[parent_pid, child_pid], identity_observations.clone()),
+            synthetic_sampling_evidence(&[parent_pid, child_pid], &identity_observations),
         );
 
         assert!(
@@ -1537,7 +3024,7 @@ mod tests {
         let targeted_snapshot = targeted_snapshot_from_sampling_evidence(
             &mut targeted_process_observer,
             requested_identities,
-            synthetic_sampling_evidence(&[parent_pid, child_pid], identity_observations),
+            &synthetic_sampling_evidence(&[parent_pid, child_pid], &identity_observations),
         );
 
         assert!(
@@ -1588,7 +3075,7 @@ mod tests {
         let mut full_process_observer = ProcessObserver::default();
         let full_snapshot = full_snapshot_from_sampling_evidence(
             &mut full_process_observer,
-            synthetic_sampling_evidence(&[child_pid, parent_pid], identity_observations.clone()),
+            synthetic_sampling_evidence(&[child_pid, parent_pid], &identity_observations),
         );
 
         assert!(
@@ -1614,7 +3101,7 @@ mod tests {
         let targeted_snapshot = targeted_snapshot_from_sampling_evidence(
             &mut targeted_process_observer,
             requested_identities,
-            synthetic_sampling_evidence(&[child_pid, parent_pid], identity_observations),
+            &synthetic_sampling_evidence(&[child_pid, parent_pid], &identity_observations),
         );
 
         assert!(
@@ -1642,7 +3129,7 @@ mod tests {
         let process_identity = strong_identity(std::process::id())?;
         let mut process_observer = ProcessObserver::default();
         let snapshot =
-            process_observer.refresh(ProcessRefreshInput::TargetedIdentities(BTreeSet::from([
+            process_observer.refresh(&ProcessRefreshInput::TargetedIdentities(BTreeSet::from([
                 process_identity.clone(),
             ])));
 
@@ -1686,7 +3173,7 @@ mod tests {
             BTreeSet::from([stale_identity.clone(), current_identity.clone()]);
         let mut process_observer = ProcessObserver::default();
 
-        let snapshot = process_observer.refresh(ProcessRefreshInput::TargetedIdentities(
+        let snapshot = process_observer.refresh(&ProcessRefreshInput::TargetedIdentities(
             requested_identities,
         ));
 
@@ -1844,13 +3331,13 @@ mod tests {
     ) -> std::io::Result<ProcessObservationSnapshot> {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            let snapshot = process_observer.refresh(ProcessRefreshInput::TargetedIdentities(
+            let snapshot = process_observer.refresh(&ProcessRefreshInput::TargetedIdentities(
                 BTreeSet::from([process_identity.clone()]),
             ));
             if snapshot
                 .strongly_identified_processes()
                 .get(process_identity)
-                .is_some_and(|process_record| matches_record(process_record))
+                .is_some_and(&matches_record)
             {
                 return Ok(snapshot);
             }
@@ -1864,60 +3351,96 @@ mod tests {
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[derive(Clone, Copy)]
+    enum ObserverIncarnationMilestone {
+        NewlyObserved,
+        Unchanged,
+        ExecutableOrArgumentsChanged,
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    impl ObserverIncarnationMilestone {
+        fn matches(self, incarnation_evidence: &ProcessIncarnationEvidence) -> bool {
+            match self {
+                Self::NewlyObserved => matches!(
+                    incarnation_evidence,
+                    ProcessIncarnationEvidence::Strong {
+                        incarnation_state: ProcessIncarnationState::NewlyObserved,
+                        ..
+                    }
+                ),
+                Self::Unchanged => matches!(
+                    incarnation_evidence,
+                    ProcessIncarnationEvidence::Strong {
+                        incarnation_state: ProcessIncarnationState::Unchanged,
+                        ..
+                    }
+                ),
+                Self::ExecutableOrArgumentsChanged => matches!(
+                    incarnation_evidence,
+                    ProcessIncarnationEvidence::Strong {
+                        incarnation_state: ProcessIncarnationState::ExecutableOrArgumentsChanged { .. },
+                        ..
+                    }
+                ),
+            }
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn refresh_until_incarnation_milestone(
+        process_observer: &mut ProcessObserver,
+        process_identity: &ProcessIdentity,
+        milestone: ObserverIncarnationMilestone,
+    ) -> std::io::Result<ProcessObservationSnapshot> {
+        refresh_target_until(process_observer, process_identity, |process_record| {
+            milestone.matches(process_record.incarnation_evidence())
+        })
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn observed_process_cwd(
+        process_observation_snapshot: &ProcessObservationSnapshot,
+        process_identity: &ProcessIdentity,
+    ) -> std::io::Result<PathBuf> {
+        match process_observation_snapshot.strongly_identified_processes()[process_identity].cwd() {
+            ProcessFieldObservation::Observed(cwd) => Ok(cwd.clone()),
+            _ => Err(std::io::Error::other(
+                "stable snapshot did not contain an observed cwd",
+            )),
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn same_pid_exec_invalidates_then_recovers_observer_evidence() -> std::io::Result<()> {
         let mut child = SamePidExecTestChild::spawn()?;
         let process_identity = strong_identity(child.pid())?;
         let mut process_observer = ProcessObserver::default();
 
-        let initial_snapshot =
-            refresh_target_until(&mut process_observer, &process_identity, |process_record| {
-                matches!(
-                    process_record.incarnation_evidence(),
-                    ProcessIncarnationEvidence::Strong {
-                        incarnation_state: ProcessIncarnationState::NewlyObserved,
-                        ..
-                    }
-                )
-            })?;
+        let initial_snapshot = refresh_until_incarnation_milestone(
+            &mut process_observer,
+            &process_identity,
+            ObserverIncarnationMilestone::NewlyObserved,
+        )?;
         assert!(
             initial_snapshot
                 .strongly_identified_processes()
                 .contains_key(&process_identity)
         );
-        let stable_before_exec =
-            refresh_target_until(&mut process_observer, &process_identity, |process_record| {
-                matches!(
-                    process_record.incarnation_evidence(),
-                    ProcessIncarnationEvidence::Strong {
-                        incarnation_state: ProcessIncarnationState::Unchanged,
-                        ..
-                    }
-                )
-            })?;
-        let ProcessFieldObservation::Observed(cwd_before_exec) =
-            stable_before_exec.strongly_identified_processes()[&process_identity].cwd()
-        else {
-            return Err(std::io::Error::other(
-                "stable pre-exec snapshot did not contain cwd",
-            ));
-        };
-        let cwd_before_exec = cwd_before_exec.clone();
+        let stable_before_exec = refresh_until_incarnation_milestone(
+            &mut process_observer,
+            &process_identity,
+            ObserverIncarnationMilestone::Unchanged,
+        )?;
+        let cwd_before_exec = observed_process_cwd(&stable_before_exec, &process_identity)?;
 
         child.trigger_exec()?;
         child.wait_for_native_executable("sleep")?;
-        let transition_snapshot = refresh_target_until(
+        let transition_snapshot = refresh_until_incarnation_milestone(
             &mut process_observer,
             &process_identity,
-            |process_record| {
-                matches!(
-                    process_record.incarnation_evidence(),
-                    ProcessIncarnationEvidence::Strong {
-                        incarnation_state: ProcessIncarnationState::ExecutableOrArgumentsChanged { .. },
-                        ..
-                    }
-                )
-            },
+            ObserverIncarnationMilestone::ExecutableOrArgumentsChanged,
         )?;
         assert_eq!(
             transition_snapshot.scope(),
@@ -1964,16 +3487,11 @@ mod tests {
                 .remembers_unclassified_candidate(&process_identity)
         );
 
-        let recovered_snapshot =
-            refresh_target_until(&mut process_observer, &process_identity, |process_record| {
-                matches!(
-                    process_record.incarnation_evidence(),
-                    ProcessIncarnationEvidence::Strong {
-                        incarnation_state: ProcessIncarnationState::Unchanged,
-                        ..
-                    }
-                )
-            })?;
+        let recovered_snapshot = refresh_until_incarnation_milestone(
+            &mut process_observer,
+            &process_identity,
+            ObserverIncarnationMilestone::Unchanged,
+        )?;
         let recovered_record =
             &recovered_snapshot.strongly_identified_processes()[&process_identity];
         assert!(matches!(
@@ -1986,12 +3504,8 @@ mod tests {
             ProcessFieldObservation::Observed(argv)
                 if argv.iter().any(|argument| argument == "30")
         ));
-        let ProcessFieldObservation::Observed(recovered_cwd) = recovered_record.cwd() else {
-            return Err(std::io::Error::other(
-                "stable post-exec snapshot did not contain cwd",
-            ));
-        };
-        assert_ne!(recovered_cwd, &cwd_before_exec);
+        let recovered_cwd = observed_process_cwd(&recovered_snapshot, &process_identity)?;
+        assert_ne!(recovered_cwd, cwd_before_exec);
         assert_eq!(
             recovered_cwd.canonicalize()?,
             child.exec_cwd().canonicalize()?
@@ -2013,7 +3527,7 @@ mod tests {
             BTreeSet::from([parent_identity.clone(), child_identity.clone()]);
         let mut process_observer = ProcessObserver::default();
 
-        let snapshot = process_observer.refresh(ProcessRefreshInput::TargetedIdentities(
+        let snapshot = process_observer.refresh(&ProcessRefreshInput::TargetedIdentities(
             requested_identities,
         ));
 
@@ -2038,7 +3552,7 @@ mod tests {
         let process_identity = strong_identity(child.pid())?;
         let mut process_observer = ProcessObserver::default();
 
-        let present_snapshot = process_observer.refresh(ProcessRefreshInput::FullSystemSnapshot);
+        let present_snapshot = process_observer.refresh(&ProcessRefreshInput::FullSystemSnapshot);
         assert!(
             present_snapshot
                 .strongly_identified_processes()
@@ -2051,7 +3565,7 @@ mod tests {
         );
 
         child.terminate()?;
-        let absent_snapshot = process_observer.refresh(ProcessRefreshInput::FullSystemSnapshot);
+        let absent_snapshot = process_observer.refresh(&ProcessRefreshInput::FullSystemSnapshot);
 
         assert!(
             !absent_snapshot

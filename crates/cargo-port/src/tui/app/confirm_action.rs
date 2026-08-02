@@ -1,4 +1,5 @@
 use crate::project::AbsolutePath;
+use crate::tui::running_targets::RunningTargetTerminationCapability;
 
 /// An action waiting for user confirmation (y/n).
 pub(crate) enum ConfirmAction {
@@ -12,14 +13,14 @@ pub(crate) enum ConfirmAction {
         primary: AbsolutePath,
         linked:  Vec<AbsolutePath>,
     },
-    /// Send `SIGTERM` to the running instance named by `label`. The PID
-    /// is verified against `create_time` (the process's start time in
-    /// epoch seconds) immediately before the signal, so a PID the OS
-    /// reassigned while the dialog was open is never killed.
+    /// Send `SIGTERM` to the running instance named by `label`. The opaque
+    /// capability revalidates the strong process identity before signaling;
+    /// `pid` and `create_time` are confirmation display data only.
     KillTarget {
-        label:       String,
-        pid:         u32,
-        create_time: u64,
+        label:                  String,
+        pid:                    u32,
+        create_time:            u64,
+        termination_capability: RunningTargetTerminationCapability,
     },
     /// Pause lint operations for one workspace or standalone package. A
     /// workspace member always resolves to this owning lint root.

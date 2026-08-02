@@ -51,6 +51,7 @@ use crate::tui::keymap::LintsAction;
 use crate::tui::keymap::PackageAction;
 use crate::tui::keymap::TargetsAction;
 use crate::tui::render;
+use crate::tui::running_targets::RunningProcessPlacement;
 
 fn handle_target_action(app: &mut App, mode: BuildMode) {
     let Some(targets_data) = app.panes.targets.content().cloned() else {
@@ -259,7 +260,12 @@ fn handle_target_kill(app: &mut App) {
         app.panes.targets.viewport.pos(),
     );
     if let Some(request) = request {
-        app.request_kill_confirm(request.label, request.pid, request.create_time);
+        app.request_kill_confirm(
+            request.label,
+            request.pid,
+            request.create_time,
+            request.termination_capability,
+        );
     }
 }
 
@@ -418,7 +424,9 @@ fn collapse_running_parent(app: &mut App) -> bool {
         return false;
     };
     let running_rows = build_running_rows(app.panes.running_targets.snapshot());
-    let Some(parent_pid) = running_rows.get(index).and_then(|row| row.parent_pid) else {
+    let Some(RunningProcessPlacement::ChildOf { parent_pid }) =
+        running_rows.get(index).map(|row| row.placement)
+    else {
         return false;
     };
     let Some(parent_index) = running_rows.iter().position(|row| row.pid == parent_pid) else {
@@ -443,14 +451,18 @@ fn collapse_running_parent(app: &mut App) -> bool {
     true
 }
 
-/// Send `SIGTERM` to the confirmed instance — verified against its create
-/// time immediately before the signal — and drop it from the running
-/// snapshot so its row collapses on the next render. The highlight's PID
+/// Send `SIGTERM` through the confirmed identity-bound capability and drop
+/// the identity from Running Targets view state. The highlight's PID
 /// anchor hands the cursor to the adjacent Running row (or back into the
 /// table) on that render.
-pub(super) fn execute_target_kill(app: &mut App, pid: u32, create_time: u64) {
-    app.panes.running_targets.kill(pid, create_time);
-    app.panes.running_targets.drop_instances(&[pid]);
+pub(super) fn execute_target_kill(
+    app: &mut App,
+    termination_capability: crate::tui::running_targets::RunningTargetTerminationCapability,
+) {
+    app.panes
+        .running_targets
+        .drop_instance(&termination_capability);
+    let _ = termination_capability.terminate();
 }
 
 /// Re-derive the Running-box PID anchor from the row the highlight sits

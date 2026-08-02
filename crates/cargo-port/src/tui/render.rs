@@ -314,6 +314,7 @@ fn confirm_action_body(app: &App, action: &ConfirmAction) -> Vec<String> {
             label,
             pid,
             create_time,
+            ..
         } => {
             // The label already carries the profile (`my_app (debug)`);
             // the start age tells apart two otherwise-identical instances

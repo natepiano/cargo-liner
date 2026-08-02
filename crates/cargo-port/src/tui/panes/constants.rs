@@ -13,8 +13,6 @@
 //! are shared by `panes::pane_data` (row building) and
 //! `panes::package` (rendering).
 
-use std::time::Duration;
-
 // Git pane constants
 
 pub(super) const FIT_TEXT_ELLIPSIS: &str = "...";
@@ -160,8 +158,3 @@ pub(super) const TESTS_TITLE: &str = "Tests";
 // src tui panes project_list
 pub(super) const DISMISS_SUFFIX: &str = " [x]";
 pub(super) const TITLE_ELLIPSIS: &str = "\u{2026}";
-
-// src tui panes system
-/// Cadence for the running-targets poller. Hardcoded for v1; moves to
-/// config alongside `CpuConfig` once the feature stabilizes.
-pub(super) const RUNNING_TARGETS_POLL_INTERVAL: Duration = Duration::from_secs(1);
