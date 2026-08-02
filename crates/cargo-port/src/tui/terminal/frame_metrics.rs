@@ -33,7 +33,7 @@ pub(super) struct FrameInstrumentationPlan {
 }
 
 impl FrameMetrics {
-    pub(super) fn instrumentation_plan(&self) -> FrameInstrumentationPlan {
+    pub(super) const fn instrumentation_plan(&self) -> FrameInstrumentationPlan {
         let foreground_frame = if self.frame_elapsed.as_millis() < SLOW_FRAME_MS {
             ForegroundFrameInstrumentation::BelowSlowThreshold
         } else {
@@ -46,7 +46,10 @@ impl FrameMetrics {
     }
 
     #[cfg(test)]
-    fn for_test(frame_elapsed: Duration, observer_refresh_timing: ObserverRefreshTiming) -> Self {
+    const fn for_test(
+        frame_elapsed: Duration,
+        observer_refresh_timing: ObserverRefreshTiming,
+    ) -> Self {
         Self {
             frame_elapsed,
             input_elapsed: Duration::ZERO,

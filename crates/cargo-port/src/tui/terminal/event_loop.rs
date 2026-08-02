@@ -29,6 +29,7 @@ use crate::tui::app::PollBackgroundStats;
 use crate::tui::input;
 use crate::tui::render;
 use crate::tui::running_targets::ObserverRefreshTiming;
+use crate::tui::state::OwnedRunLaunchStart;
 
 pub(super) fn spawn_input_thread() -> Receiver<Event> {
     let (event_sender, event_receiver) = channel::unbounded();
@@ -278,8 +279,8 @@ fn draw_frame(
 }
 
 fn spawn_pending_background_tasks(app: &mut App) {
-    if let Some(run) = app.inflight.take_pending_example_run() {
-        processes::spawn_example_process(app, &run);
+    if let OwnedRunLaunchStart::Starting(owned_run_id) = app.inflight.begin_owned_run_launch() {
+        processes::spawn_owned_run_process(app, owned_run_id);
     }
 
     if let Some(pending) = app.inflight.pending_cleans_mut().pop_front() {

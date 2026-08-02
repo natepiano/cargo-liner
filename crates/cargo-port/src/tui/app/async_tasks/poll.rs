@@ -15,6 +15,7 @@ use crate::tui::app::poll_background_stats::PollBackgroundStats;
 use crate::tui::app::poll_background_stats::RebuildStatus;
 use crate::tui::panes::CiFetchKind;
 use crate::tui::panes::PendingCiFetch;
+use crate::tui::state::OwnedRunMessageUpdate;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
 use crate::tui::terminal::ExampleMsg;
@@ -142,20 +143,28 @@ impl App {
         let mut count = 0;
         while let Ok(msg) = self.background.example_rx().try_recv() {
             match msg {
-                ExampleMsg::Output(line) => self.inflight.example_output_mut().push(line),
-                ExampleMsg::Progress(line) => self.inflight.apply_example_progress(line),
-                ExampleMsg::Finished => self.finish_example_run(),
+                ExampleMsg::Started { owned_run_id } => {
+                    let _ = self.inflight.acknowledge_owned_run_started(owned_run_id);
+                },
+                ExampleMsg::Output { owned_run_id, line } => {
+                    let _ = self.inflight.record_owned_run_output(owned_run_id, line);
+                },
+                ExampleMsg::Progress { owned_run_id, line } => {
+                    let _ = self.inflight.record_owned_run_progress(owned_run_id, line);
+                },
+                ExampleMsg::Finished { owned_run_id } => {
+                    if self.inflight.finish_owned_run(owned_run_id)
+                        == OwnedRunMessageUpdate::Applied
+                    {
+                        // Process exit resumes following the tail so the final output is
+                        // visible — unless a selection is holding the view.
+                        self.panes.output.on_process_exit();
+                    }
+                },
             }
             count += 1;
         }
         count
-    }
-    pub(super) fn finish_example_run(&mut self) {
-        self.inflight.set_example_running(None);
-        self.inflight.append_done_marker();
-        // Process exit resumes following the tail so the final output is
-        // visible — unless a selection is holding the view.
-        self.panes.output.on_process_exit();
     }
     pub(super) fn poll_clean_msgs(&mut self) {
         while let Ok(msg) = self.background.clean_rx().try_recv() {

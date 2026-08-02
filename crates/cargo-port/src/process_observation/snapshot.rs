@@ -326,7 +326,10 @@ impl RunningProcessMetricsRecord {
 
     pub(crate) const fn cpu_percent(&self) -> ProcessCpuPercent { self.cpu_percent }
 
-    pub(super) fn replace_cpu_percent_for_continuity(&mut self, cpu_percent: ProcessCpuPercent) {
+    pub(super) const fn replace_cpu_percent_for_continuity(
+        &mut self,
+        cpu_percent: ProcessCpuPercent,
+    ) {
         self.cpu_percent = cpu_percent;
     }
 

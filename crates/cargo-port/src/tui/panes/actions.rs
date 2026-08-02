@@ -12,6 +12,7 @@ use tui_pane::Viewport;
 
 use super::BuildMode;
 use super::CargoGroup;
+use super::CargoPackageInvocation;
 use super::CiFetchKind;
 use super::GitRow;
 use super::PackageRow;
@@ -61,14 +62,14 @@ fn handle_target_action(app: &mut App, mode: BuildMode) {
     // The table's rows map 1:1 to entries; a highlight in the Running box
     // sits past them and runs nothing.
     if let Some(entry) = entries.get(app.panes.targets.viewport.pos()) {
-        app.inflight.set_pending_example_run(PendingExampleRun {
-            abs_path:          entry.project_path.display().to_string(),
-            target_name:       entry.name.clone(),
-            display_path:      target_display_path(app, entry),
-            package_name:      Some(entry.package_name.clone()),
-            run_target_kind:   entry.run_target_kind,
-            build_mode:        mode,
-            required_features: entry.required_features.clone(),
+        let _ = app.inflight.queue_owned_run(PendingExampleRun {
+            abs_path:                 entry.project_path.display().to_string(),
+            target_name:              entry.name.clone(),
+            display_path:             target_display_path(app, entry),
+            cargo_package_invocation: CargoPackageInvocation::Package(entry.package_name.clone()),
+            run_target_kind:          entry.run_target_kind,
+            build_mode:               mode,
+            required_features:        entry.required_features.clone(),
         });
     }
 }
@@ -800,7 +801,7 @@ fn navigate_output(app: &mut App, action: NavAction) {
     // Plain motions move the single-row selection (or grow it while in
     // vim visual-line mode); `navigate` keeps the anchor, snapshot, and
     // follow state in sync with the cursor.
-    let live = app.inflight.example_output().to_vec();
+    let live = app.inflight.owned_run().output().to_vec();
     app.panes
         .output
         .navigate(&live, |viewport| navigate_viewport(viewport, action));

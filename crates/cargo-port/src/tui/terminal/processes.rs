@@ -1,4 +1,6 @@
 use std::io;
+#[cfg(test)]
+use std::io::BufRead;
 use std::io::BufReader;
 use std::io::Read;
 #[cfg(unix)]
@@ -7,21 +9,14 @@ use std::path::Path;
 use std::process::Command;
 use std::process::Stdio;
 use std::thread;
-
-#[cfg(not(unix))]
-use sysinfo::Pid;
-#[cfg(not(unix))]
-use sysinfo::ProcessRefreshKind;
-#[cfg(not(unix))]
-use sysinfo::ProcessesToUpdate;
-#[cfg(not(unix))]
-use sysinfo::Signal;
-#[cfg(not(unix))]
-use sysinfo::System;
+#[cfg(unix)]
+use std::time::Duration;
 
 use crate::channel::Sender;
 use crate::ci;
 use crate::constants::CARGO_COMMAND_NAME;
+use crate::process_observation::identity::CurrentProcessIdentityObservation;
+use crate::process_observation::identity::observe_current_process_identity;
 use crate::project::AbsolutePath;
 use crate::scan;
 use crate::scan::BackgroundMsg;
@@ -39,99 +34,122 @@ use crate::tui::constants::CARGO_RUN_SUBCOMMAND;
 use crate::tui::messages::CiFetchMsg;
 use crate::tui::messages::CleanMsg;
 use crate::tui::messages::ExampleMsg;
+use crate::tui::panes::CargoPackageInvocation;
 use crate::tui::panes::CiFetchKind;
 use crate::tui::panes::PendingCiFetch;
 use crate::tui::panes::PendingExampleRun;
 use crate::tui::panes::RunTargetKind;
+use crate::tui::state::Inflight;
+use crate::tui::state::OwnedProcessGroupSignalOutcome;
+use crate::tui::state::OwnedRunId;
+use crate::tui::state::OwnedRunStartingRequest;
+use crate::tui::state::OwnedRunTermination;
 
-pub(super) fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
-    let mut command = Command::new(CARGO_COMMAND_NAME);
-    match run.run_target_kind {
-        RunTargetKind::Binary => {
-            command.arg(CARGO_RUN_SUBCOMMAND);
+/// Attempt to signal the current run's identity-bound process group.
+pub(crate) enum OwnedRunStopSignal {
+    Sent(OwnedRunId),
+    NotSignaled,
+}
+
+#[cfg(not(test))]
+pub(crate) fn signal_owned_run(inflight: &Inflight) -> OwnedRunStopSignal {
+    match inflight.owned_run_termination() {
+        OwnedRunTermination::Available {
+            owned_run_id,
+            owned_process_group_termination_capability,
+        } => match owned_process_group_termination_capability.signal() {
+            OwnedProcessGroupSignalOutcome::Sent => OwnedRunStopSignal::Sent(owned_run_id),
+            OwnedProcessGroupSignalOutcome::IdentityNoLongerCurrent
+            | OwnedProcessGroupSignalOutcome::SignalFailed => OwnedRunStopSignal::NotSignaled,
         },
-        RunTargetKind::Example => {
-            command
-                .arg(CARGO_RUN_SUBCOMMAND)
-                .arg(CARGO_EXAMPLE_FLAG)
-                .arg(&run.target_name);
+        OwnedRunTermination::NoRunningRun => OwnedRunStopSignal::NotSignaled,
+    }
+}
+
+#[cfg(test)]
+pub(crate) const fn signal_owned_run(inflight: &Inflight) -> OwnedRunStopSignal {
+    match inflight.owned_run_termination() {
+        OwnedRunTermination::Available {
+            owned_run_id,
+            owned_process_group_termination_capability,
+        } => match owned_process_group_termination_capability.signal() {
+            OwnedProcessGroupSignalOutcome::Sent => OwnedRunStopSignal::Sent(owned_run_id),
+            OwnedProcessGroupSignalOutcome::IdentityNoLongerCurrent
+            | OwnedProcessGroupSignalOutcome::SignalFailed => OwnedRunStopSignal::NotSignaled,
         },
-        RunTargetKind::Bench => {
-            command
-                .arg(CARGO_BENCH_SUBCOMMAND)
-                .arg(CARGO_BENCH_FLAG)
-                .arg(&run.target_name);
-        },
+        OwnedRunTermination::NoRunningRun => OwnedRunStopSignal::NotSignaled,
     }
-    if run.build_mode.is_release() {
-        command.arg(CARGO_RELEASE_FLAG);
-    }
-    if let Some(pkg) = &run.package_name {
-        command.arg(CARGO_PACKAGE_FLAG).arg(pkg);
-    }
-    // Cargo does not auto-enable a target's `required-features`, so a
-    // feature-gated target (e.g. an example with `required-features`)
-    // errors out unless we pass them ourselves.
-    if !run.required_features.is_empty() {
-        command
-            .arg(CARGO_FEATURES_FLAG)
-            .arg(run.required_features.join(","));
-    }
-    command
-        .current_dir(&run.abs_path)
-        .arg(CARGO_COLOR_ALWAYS_FLAG)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    isolate_example_process(&mut command);
+}
+
+/// Spawn the request owned by the current `Starting` lifecycle.
+pub(super) fn spawn_owned_run_process(app: &mut App, owned_run_id: OwnedRunId) {
+    let pending_example_run = match app.inflight.starting_owned_run_request(owned_run_id) {
+        OwnedRunStartingRequest::Starting(pending_example_run) => pending_example_run.clone(),
+        OwnedRunStartingRequest::NoMatchingStartingRun => return,
+    };
+    let mut command = cargo_command_for_owned_run(&pending_example_run);
+    isolate_owned_process(&mut command);
 
     let mut child = match command.spawn() {
-        Ok(c) => c,
-        Err(e) => {
+        Ok(child) => child,
+        Err(error) => {
+            let output_was_empty = app.inflight.owned_run().output_is_empty();
             app.inflight
-                .set_example_title(Some(run.display_path.clone()));
-            app.set_example_output(vec![format!("Failed to start: {e}")]);
-            app.inflight
-                .set_example_running(Some(run.display_path.clone()));
+                .fail_owned_run_start(owned_run_id, format!("Failed to start: {error}"));
+            app.owned_run_output_replaced(output_was_empty);
             return;
         },
     };
 
-    // On Unix, `isolate_example_process` makes the cargo child PID the
-    // process-group id too. `stop_example_process` uses it from the main
-    // thread to terminate the whole launched run without signaling cargo-port.
-    let pid = child.id();
-    *app.inflight
-        .example_child()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pid);
+    // On Unix, `isolate_owned_process` makes the cargo child PID the process
+    // group ID. The child cannot enter a live lifecycle until a strong identity
+    // has been observed and revalidated for that root lifetime.
+    let process_group_id = child.id();
+    let CurrentProcessIdentityObservation::Verified(verified_process_identity) =
+        observe_current_process_identity(process_group_id)
+    else {
+        cleanup_unverified_owned_process_group(&mut child);
+        let output_was_empty = app.inflight.owned_run().output_is_empty();
+        app.inflight.fail_owned_run_start(
+            owned_run_id,
+            "Failed to establish a verified process identity".to_string(),
+        );
+        app.owned_run_output_replaced(output_was_empty);
+        return;
+    };
 
-    let display_path = run.display_path.clone();
-    let target_name = run.target_name.clone();
-    let mode = run.build_mode.label();
-    app.inflight.set_example_title(Some(display_path.clone()));
-    app.set_example_output(vec![format!("Building {target_name}{mode}...")]);
-    app.inflight
-        .set_example_running(Some(format!("{display_path}{mode}")));
+    let owned_process_group_termination_capability =
+        crate::tui::state::OwnedProcessGroupTerminationCapability::from_verified_root(
+            verified_process_identity,
+        );
+    let output_was_empty = app.inflight.owned_run().output_is_empty();
+    if !matches!(
+        app.inflight
+            .activate_owned_run(owned_run_id, owned_process_group_termination_capability,),
+        crate::tui::state::OwnedRunActivation::Activated
+    ) {
+        cleanup_unverified_owned_process_group(&mut child);
+        return;
+    }
+    app.owned_run_output_replaced(output_was_empty);
 
-    // Take ownership of pipes before moving child to thread
+    // Take ownership of pipes before moving child to the completion worker.
     let stderr = child.stderr.take();
     let stdout = child.stdout.take();
-
-    let pid_holder = app.inflight.example_child();
     let example_sender = app.background.example_sender();
+    let _ = example_sender.send(ExampleMsg::Started { owned_run_id });
     thread::spawn(move || {
         let stderr_reader = stderr.map(|stream| {
             let example_sender = example_sender.clone();
-            thread::spawn(move || read_with_progress(&example_sender, stream))
+            thread::spawn(move || read_with_progress(&example_sender, owned_run_id, stream))
         });
         let stdout_reader = stdout.map(|stream| {
             let example_sender = example_sender.clone();
-            thread::spawn(move || read_with_progress(&example_sender, stream))
+            thread::spawn(move || read_with_progress(&example_sender, owned_run_id, stream))
         });
 
-        // Wait for the child to finish and clear the PID.
-        // Disk usage is updated automatically by the filesystem watcher.
+        // The process exit is delivered only after each captured-output reader
+        // has flushed the bytes it observed for this owned-run identity.
         let _ = child.wait();
         if let Some(reader) = stderr_reader {
             let _ = reader.join();
@@ -139,51 +157,104 @@ pub(super) fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
         if let Some(reader) = stdout_reader {
             let _ = reader.join();
         }
-        *pid_holder
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-
-        let _ = example_sender.send(ExampleMsg::Finished);
+        let _ = example_sender.send(ExampleMsg::Finished { owned_run_id });
     });
 }
 
-#[cfg(unix)]
-fn isolate_example_process(cmd: &mut Command) { cmd.process_group(0); }
-
-#[cfg(not(unix))]
-fn isolate_example_process(_: &mut Command) {}
-
-#[cfg(unix)]
-pub(super) fn stop_example_process(pid: u32) -> bool {
-    signal_with_kill("-TERM", format!("-{pid}")) || signal_with_kill("-TERM", pid.to_string())
+fn cargo_command_for_owned_run(pending_example_run: &PendingExampleRun) -> Command {
+    let mut command = Command::new(CARGO_COMMAND_NAME);
+    match pending_example_run.run_target_kind {
+        RunTargetKind::Binary => {
+            command.arg(CARGO_RUN_SUBCOMMAND);
+        },
+        RunTargetKind::Example => {
+            command
+                .arg(CARGO_RUN_SUBCOMMAND)
+                .arg(CARGO_EXAMPLE_FLAG)
+                .arg(&pending_example_run.target_name);
+        },
+        RunTargetKind::Bench => {
+            command
+                .arg(CARGO_BENCH_SUBCOMMAND)
+                .arg(CARGO_BENCH_FLAG)
+                .arg(&pending_example_run.target_name);
+        },
+    }
+    if pending_example_run.build_mode.is_release() {
+        command.arg(CARGO_RELEASE_FLAG);
+    }
+    match &pending_example_run.cargo_package_invocation {
+        CargoPackageInvocation::WorkspaceDefault => {},
+        CargoPackageInvocation::Package(package_name) => {
+            command.arg(CARGO_PACKAGE_FLAG).arg(package_name);
+        },
+    }
+    // Cargo does not auto-enable a target's `required-features`, so a
+    // feature-gated target (e.g. an example with `required-features`)
+    // errors out unless we pass them ourselves.
+    if !pending_example_run.required_features.is_empty() {
+        command
+            .arg(CARGO_FEATURES_FLAG)
+            .arg(pending_example_run.required_features.join(","));
+    }
+    command
+        .current_dir(&pending_example_run.abs_path)
+        .arg(CARGO_COLOR_ALWAYS_FLAG)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
 }
 
 #[cfg(unix)]
-fn signal_with_kill(signal: &str, target: String) -> bool {
+fn isolate_owned_process(command: &mut Command) { command.process_group(0); }
+
+#[cfg(not(unix))]
+fn isolate_owned_process(_: &mut Command) {}
+
+#[cfg(unix)]
+fn cleanup_unverified_owned_process_group(child: &mut std::process::Child) {
+    let process_group_id = child.id();
+    let _ = Command::new("kill")
+        .arg("-TERM")
+        .arg(format!("-{process_group_id}"))
+        .status();
+    let _ = Command::new("kill")
+        .arg("-KILL")
+        .arg(format!("-{process_group_id}"))
+        .status();
+    let _ = child.kill();
+    let _ = child.wait();
+    for _ in 0..100 {
+        if !process_group_exists(process_group_id) {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[cfg(unix)]
+fn process_group_exists(process_group_id: u32) -> bool {
     Command::new("kill")
-        .arg(signal)
-        .arg(target)
+        .arg("-0")
+        .arg(format!("-{process_group_id}"))
         .status()
         .is_ok_and(|status| status.success())
 }
 
 #[cfg(not(unix))]
-pub(super) fn stop_example_process(pid: u32) -> bool {
-    let mut system = System::new();
-    let pid = Pid::from_u32(pid);
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&[pid]),
-        true,
-        ProcessRefreshKind::nothing(),
-    );
-    system
-        .process(pid)
-        .is_some_and(|process| process.kill_with(Signal::Term).unwrap_or(false))
+fn cleanup_unverified_owned_process_group(child: &mut std::process::Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// Read a stream byte-by-byte, splitting on `\n` (new line) and `\r` (progress update).
 /// `\r`-terminated chunks are sent as `Progress` so the UI replaces the last line.
-fn read_with_progress(example_sender: &Sender<ExampleMsg>, stream: impl io::Read) {
+fn read_with_progress(
+    example_sender: &Sender<ExampleMsg>,
+    owned_run_id: OwnedRunId,
+    stream: impl io::Read,
+) {
     let mut reader = BufReader::new(stream);
     let mut buf = Vec::new();
     let mut byte = [0u8; 1];
@@ -192,13 +263,13 @@ fn read_with_progress(example_sender: &Sender<ExampleMsg>, stream: impl io::Read
         match byte[0] {
             b'\n' => {
                 let line = String::from_utf8_lossy(&buf).to_string();
-                let _ = example_sender.send(ExampleMsg::Output(line));
+                let _ = example_sender.send(ExampleMsg::Output { owned_run_id, line });
                 buf.clear();
             },
             b'\r' => {
                 if !buf.is_empty() {
                     let line = String::from_utf8_lossy(&buf).to_string();
-                    let _ = example_sender.send(ExampleMsg::Progress(line));
+                    let _ = example_sender.send(ExampleMsg::Progress { owned_run_id, line });
                     buf.clear();
                 }
             },
@@ -208,7 +279,7 @@ fn read_with_progress(example_sender: &Sender<ExampleMsg>, stream: impl io::Read
     // Flush any remaining data
     if !buf.is_empty() {
         let line = String::from_utf8_lossy(&buf).to_string();
-        let _ = example_sender.send(ExampleMsg::Output(line));
+        let _ = example_sender.send(ExampleMsg::Output { owned_run_id, line });
     }
 }
 
@@ -323,4 +394,95 @@ pub(super) fn spawn_priority_fetch(app: &App, _: &str, abs_path: &str, name: Opt
             let _ = sender.send(BackgroundMsg::CratesIoFetchComplete { name: name.clone() });
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::panes::BuildMode;
+
+    fn pending_example_run(cargo_package_invocation: CargoPackageInvocation) -> PendingExampleRun {
+        PendingExampleRun {
+            abs_path: "/tmp/demo".to_string(),
+            target_name: "demo".to_string(),
+            display_path: "demo".to_string(),
+            cargo_package_invocation,
+            run_target_kind: RunTargetKind::Binary,
+            build_mode: BuildMode::Debug,
+            required_features: Vec::new(),
+        }
+    }
+
+    fn cargo_arguments(command: &Command) -> Vec<String> {
+        command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn workspace_default_invocation_omits_the_package_flag() {
+        let command = cargo_command_for_owned_run(&pending_example_run(
+            CargoPackageInvocation::WorkspaceDefault,
+        ));
+
+        assert_eq!(
+            cargo_arguments(&command),
+            vec![
+                CARGO_RUN_SUBCOMMAND.to_string(),
+                CARGO_COLOR_ALWAYS_FLAG.to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn named_package_invocation_passes_the_package_flag_and_name() {
+        let command = cargo_command_for_owned_run(&pending_example_run(
+            CargoPackageInvocation::Package("demo-member".to_string()),
+        ));
+
+        assert_eq!(
+            cargo_arguments(&command),
+            vec![
+                CARGO_RUN_SUBCOMMAND.to_string(),
+                CARGO_PACKAGE_FLAG.to_string(),
+                "demo-member".to_string(),
+                CARGO_COLOR_ALWAYS_FLAG.to_string(),
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unverified_process_group_cleanup_reaps_the_root_and_descendant() -> io::Result<()> {
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("trap '' TERM; (trap '' TERM; exec sleep 30) & echo $!; wait")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        isolate_owned_process(&mut command);
+        let mut child = command.spawn()?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| io::Error::other("missing descendant PID stream"))?;
+        let mut descendant_pid = String::new();
+        BufReader::new(stdout).read_line(&mut descendant_pid)?;
+        let descendant_pid = descendant_pid.trim();
+
+        cleanup_unverified_owned_process_group(&mut child);
+
+        assert!(child.try_wait()?.is_some());
+        assert!(!process_group_exists(child.id()));
+        assert!(
+            !Command::new("kill")
+                .arg("-0")
+                .arg(descendant_pid)
+                .status()?
+                .success()
+        );
+        Ok(())
+    }
 }

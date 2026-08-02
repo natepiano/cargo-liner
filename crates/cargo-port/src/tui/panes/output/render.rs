@@ -13,6 +13,8 @@ use tui_pane::label_color;
 use super::pane::OutputPane;
 use crate::tui::panes::pane_data;
 use crate::tui::render_context::PaneRenderCtx;
+use crate::tui::state::OwnedRunOutputTitleRef;
+use crate::tui::state::OwnedRunRunningLabelRef;
 
 pub fn render_output_pane_body(
     frame: &mut Frame,
@@ -25,7 +27,7 @@ pub fn render_output_pane_body(
     // while following the tail they read the live buffer. Cloning the
     // `Rc` only bumps the refcount and releases the `&pane` borrow before
     // `sync_viewport`.
-    let live = ctx.inflight.example_output();
+    let live = ctx.inflight.owned_run().output();
     let snapshot: Option<Rc<[String]>> = pane.selection().snapshot().map(Rc::clone);
     let source: &[String] = snapshot.as_deref().unwrap_or(live);
 
@@ -115,7 +117,7 @@ fn parse_output_line(raw: &str) -> Line<'static> {
 /// are selected. There is always a selection; the title only calls it
 /// out once it is more than the single tail line being followed.
 fn output_title(pane: &OutputPane, ctx: &PaneRenderCtx<'_>) -> String {
-    let live = ctx.inflight.example_output();
+    let live = ctx.inflight.owned_run().output();
     let count = pane.selection_line_count(live);
     let lines = if count == 1 { "line" } else { "lines" };
     let focused = pane.focus.is_focused();
@@ -136,15 +138,21 @@ fn output_title(pane: &OutputPane, ctx: &PaneRenderCtx<'_>) -> String {
             " Output — scrolled (End to follow) ".to_string()
         };
     }
-    if let Some(name) = ctx.inflight.example_running() {
-        return format!(" Running: {name} (Esc to stop) ");
+    match ctx.inflight.owned_run().running_label() {
+        OwnedRunRunningLabelRef::Running(name) => {
+            return format!(" Running: {name} (Esc to stop) ");
+        },
+        OwnedRunRunningLabelRef::NotRunning => {},
     }
-    if let Some(name) = ctx.inflight.example_title() {
-        return if focused {
-            format!(" Output: {name} (y copy · Esc close) ")
-        } else {
-            format!(" Output: {name} (Esc close) ")
-        };
+    match ctx.inflight.owned_run().output_title() {
+        OwnedRunOutputTitleRef::Named(name) => {
+            return if focused {
+                format!(" Output: {name} (y copy · Esc close) ")
+            } else {
+                format!(" Output: {name} (Esc close) ")
+            };
+        },
+        OwnedRunOutputTitleRef::Unavailable => {},
     }
     if focused {
         " Output (y copy · Esc close) ".to_string()

@@ -58,6 +58,7 @@ pub use package_data::PackageData;
 pub use package_data::PackagePresence;
 pub use package_data::PackageRow;
 pub use package_data::PackageSection;
+pub use pending::CargoPackageInvocation;
 pub use pending::CiFetchKind;
 pub use pending::PendingCiFetch;
 pub use pending::PendingExampleRun;

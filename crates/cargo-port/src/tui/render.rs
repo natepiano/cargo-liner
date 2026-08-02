@@ -148,7 +148,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
         u16::try_from(app.project_list.cached_fit_widths.total_width() + BLOCK_BORDER_WIDTH + 1)
             .unwrap_or(u16::MAX);
 
-    let bottom_row = if app.inflight.example_output().is_empty() {
+    let bottom_row = if app.inflight.owned_run().output_is_empty() {
         panes::BottomRow::Diagnostics
     } else {
         panes::BottomRow::Output

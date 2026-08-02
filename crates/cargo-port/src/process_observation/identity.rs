@@ -143,6 +143,67 @@ pub(crate) enum StrongProcessIdentityRevalidation {
     Unavailable(InsufficientProcessIdentity),
 }
 
+/// A process identity observed and revalidated as the same current lifetime.
+///
+/// This is the boundary for operations that need to bind authority to a live
+/// process. Its inner [`ProcessIdentity`] remains private so a caller cannot
+/// claim verification from a PID alone.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct VerifiedProcessIdentity(ProcessIdentity);
+
+impl VerifiedProcessIdentity {
+    pub(crate) const fn into_process_identity(self) -> ProcessIdentity { self.0 }
+
+    #[cfg(test)]
+    pub(crate) const fn for_test(process_identity: ProcessIdentity) -> Self {
+        Self(process_identity)
+    }
+}
+
+/// The result of observing a PID and confirming that its strong identity is
+/// still current immediately afterward.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum CurrentProcessIdentityObservation {
+    Verified(VerifiedProcessIdentity),
+    InitialIdentityUnavailable(InsufficientProcessIdentity),
+    ReplacedDuringRevalidation(ProcessIdentity),
+    RevalidationUnavailable(InsufficientProcessIdentity),
+}
+
+/// Observe a strong identity and immediately revalidate it before granting
+/// identity-bound authority.
+pub(crate) fn observe_current_process_identity(pid: u32) -> CurrentProcessIdentityObservation {
+    match PlatformProcessObservation::observe_lifetime(pid)
+        .identity()
+        .clone()
+    {
+        ObservedProcessIdentity::Strong(process_identity) => {
+            match revalidate_strong_process_identity(&process_identity) {
+                StrongProcessIdentityRevalidation::Current => {
+                    CurrentProcessIdentityObservation::Verified(VerifiedProcessIdentity(
+                        process_identity,
+                    ))
+                },
+                StrongProcessIdentityRevalidation::Replaced(replacement_identity) => {
+                    CurrentProcessIdentityObservation::ReplacedDuringRevalidation(
+                        replacement_identity,
+                    )
+                },
+                StrongProcessIdentityRevalidation::Unavailable(insufficient_process_identity) => {
+                    CurrentProcessIdentityObservation::RevalidationUnavailable(
+                        insufficient_process_identity,
+                    )
+                },
+            }
+        },
+        ObservedProcessIdentity::Insufficient(insufficient_process_identity) => {
+            CurrentProcessIdentityObservation::InitialIdentityUnavailable(
+                insufficient_process_identity,
+            )
+        },
+    }
+}
+
 /// Re-observe a strong identity immediately before an identity-sensitive action.
 pub(crate) fn revalidate_strong_process_identity(
     expected_identity: &ProcessIdentity,

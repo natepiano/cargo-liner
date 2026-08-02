@@ -1,8 +1,8 @@
 //! Output pane render body.
 //!
 //! Entry: `OutputPane::render` in `pane.rs` calls
-//! `render_output_pane_body`. The body reads in-flight example
-//! state from `PaneRenderCtx::inflight` and the pane's own cursor /
+//! `render_output_pane_body`. The body reads `OwnedRun` output from
+//! `PaneRenderCtx::inflight` and the pane's own cursor /
 //! selection / follow state from `OutputPane`.
 mod render;
 

@@ -416,7 +416,7 @@ mod running_metrics_system {
         }
 
         impl CachedRunningMetricsPids {
-            pub(super) fn contains(&self, pid: &Pid) -> bool { self.pids.contains(pid) }
+            pub(super) fn contains(&self, pid: Pid) -> bool { self.pids.contains(&pid) }
 
             pub(super) fn iter(&self) -> impl Iterator<Item = &Pid> { self.pids.iter() }
         }
@@ -551,7 +551,7 @@ mod running_metrics_system {
             cached_running_metrics_pids: &CachedRunningMetricsPids,
         ) {
             self.by_pid
-                .retain(|pid, _| cached_running_metrics_pids.contains(pid));
+                .retain(|pid, _| cached_running_metrics_pids.contains(*pid));
         }
     }
 
@@ -568,16 +568,19 @@ mod running_metrics_system {
             identities_before_refresh: &BTreeMap<Pid, ObservedProcessIdentity>,
         ) -> Self {
             if cached_running_metrics_pids.iter().any(|pid| {
-                match identity_bindings.by_pid.get(pid) {
-                    None => true,
-                    Some(bound_identity) => match identities_before_refresh.get(pid) {
-                        Some(ObservedProcessIdentity::Strong(identity_before_refresh)) => {
-                            bound_identity != identity_before_refresh
-                        },
-                        Some(ObservedProcessIdentity::Insufficient(_)) => true,
-                        None => false,
-                    },
-                }
+                identity_bindings
+                    .by_pid
+                    .get(pid)
+                    .is_none_or(|bound_identity| {
+                        identities_before_refresh
+                            .get(pid)
+                            .is_some_and(|identity_before_refresh| match identity_before_refresh {
+                                ObservedProcessIdentity::Strong(identity_before_refresh) => {
+                                    bound_identity != identity_before_refresh
+                                },
+                                ObservedProcessIdentity::Insufficient(_) => true,
+                            })
+                    })
             }) {
                 Self::PurgeUnsafeRecords
             } else {
@@ -1250,10 +1253,7 @@ mod running_metrics_system {
                     stable_pid,
                     ObservedProcessIdentity::Strong(stable_identity.clone()),
                 ),
-                (
-                    churn_pid,
-                    ObservedProcessIdentity::Strong(churn_identity.clone()),
-                ),
+                (churn_pid, ObservedProcessIdentity::Strong(churn_identity)),
             ]);
             let identities_after_refresh = identities_before_refresh.clone();
             let mut identity_bindings = RunningMetricsIdentityBindings {
@@ -1605,7 +1605,7 @@ impl ProcessObserver {
                     .process_observation_snapshot
             },
             ProcessRefreshInput::TargetedIdentities(process_identities) => {
-                let process_refresh_observations = self.refresh_targeted_observations(
+                let process_refresh_observations = Self::refresh_targeted_observations(
                     process_identities,
                     refresh_kind,
                     process_refresh_host_source,
@@ -1709,7 +1709,6 @@ impl ProcessObserver {
     }
 
     fn refresh_targeted_observations(
-        &mut self,
         process_identities: &BTreeSet<ProcessIdentity>,
         refresh_kind: ProcessRefreshKind,
         process_refresh_host_source: &impl ProcessRefreshHostSource,

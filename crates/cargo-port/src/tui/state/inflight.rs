@@ -2,165 +2,1173 @@
 //!
 //! Owns App's in-flight bookkeeping:
 //! - clean: in-flight cargo clean paths plus the running-clean toast slot
-//! - `pending_cleans`, `pending_ci_fetch`, `pending_example_run`
-//! - `example_running`, `example_child`, `example_output`
+//! - `pending_cleans`, `pending_ci_fetch`
+//! - one identity-correlated Cargo Port-owned run and its retained output
 //!
 //! Lint lifecycle (`runtime`, running paths, toast) lives on
 //! [`Lint`](super::Lint); CI fetch lifecycle lives on
 //! [`Ci`](super::Ci).
 
 use std::collections::VecDeque;
-use std::sync::Arc;
-use std::sync::Mutex;
 
+#[cfg(not(unix))]
+use sysinfo::Pid;
+#[cfg(not(unix))]
+use sysinfo::ProcessRefreshKind;
+#[cfg(not(unix))]
+use sysinfo::ProcessesToUpdate;
+#[cfg(not(unix))]
+use sysinfo::Signal;
+#[cfg(not(unix))]
+use sysinfo::System;
 use tui_pane::RunningTracker;
 
+use crate::process_observation::identity::ProcessIdentity;
+#[cfg(not(test))]
+use crate::process_observation::identity::StrongProcessIdentityRevalidation;
+use crate::process_observation::identity::VerifiedProcessIdentity;
+#[cfg(not(test))]
+use crate::process_observation::identity::revalidate_strong_process_identity;
 use crate::project::AbsolutePath;
 use crate::tui::app::PendingClean;
 use crate::tui::panes::PendingCiFetch;
 use crate::tui::panes::PendingExampleRun;
+
+/// A monotonically allocated identity for one Cargo Port-owned run.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) struct OwnedRunId(u64);
+
+/// Opaque authority to signal the isolated group created for one verified
+/// Cargo Port-owned root process.
+#[derive(Debug)]
+pub(crate) struct OwnedProcessGroupTerminationCapability {
+    process_group_id:    u32,
+    process_identity:    ProcessIdentity,
+    #[cfg(test)]
+    test_signal_outcome: OwnedProcessGroupSignalOutcome,
+}
+
+impl OwnedProcessGroupTerminationCapability {
+    /// Consume identity evidence that was observed and revalidated before
+    /// constructing group termination authority.
+    pub(crate) const fn from_verified_root(
+        verified_process_identity: VerifiedProcessIdentity,
+    ) -> Self {
+        let process_identity = verified_process_identity.into_process_identity();
+        let process_group_id = process_identity.pid();
+        Self {
+            process_group_id,
+            process_identity,
+            #[cfg(test)]
+            test_signal_outcome: OwnedProcessGroupSignalOutcome::Sent,
+        }
+    }
+
+    #[cfg(not(test))]
+    pub(crate) fn signal(&self) -> OwnedProcessGroupSignalOutcome {
+        match revalidate_strong_process_identity(&self.process_identity) {
+            StrongProcessIdentityRevalidation::Current => {
+                signal_owned_process_group(self.process_group_id, &self.process_identity)
+            },
+            StrongProcessIdentityRevalidation::Replaced(_)
+            | StrongProcessIdentityRevalidation::Unavailable(_) => {
+                OwnedProcessGroupSignalOutcome::IdentityNoLongerCurrent
+            },
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn signal(&self) -> OwnedProcessGroupSignalOutcome { self.test_signal_outcome }
+
+    const fn root_binding_is_consistent(&self) -> bool {
+        self.process_group_id == self.process_identity.pid()
+    }
+
+    #[cfg(test)]
+    const fn for_test(process_identity: ProcessIdentity) -> Self {
+        Self {
+            process_group_id: process_identity.pid(),
+            process_identity,
+            test_signal_outcome: OwnedProcessGroupSignalOutcome::Sent,
+        }
+    }
+
+    #[cfg(test)]
+    const fn with_test_signal_outcome(
+        process_identity: ProcessIdentity,
+        test_signal_outcome: OwnedProcessGroupSignalOutcome,
+    ) -> Self {
+        Self {
+            process_group_id: process_identity.pid(),
+            process_identity,
+            test_signal_outcome,
+        }
+    }
+}
+
+/// What happened when identity-bound owned-group signaling was attempted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OwnedProcessGroupSignalOutcome {
+    Sent,
+    IdentityNoLongerCurrent,
+    SignalFailed,
+}
+
+#[cfg(all(unix, not(test)))]
+fn signal_owned_process_group(
+    process_group_id: u32,
+    process_identity: &ProcessIdentity,
+) -> OwnedProcessGroupSignalOutcome {
+    let group_signal_sent = std::process::Command::new("kill")
+        .arg("-TERM")
+        .arg(format!("-{process_group_id}"))
+        .status()
+        .is_ok_and(|status| status.success());
+    if group_signal_sent {
+        return OwnedProcessGroupSignalOutcome::Sent;
+    }
+
+    if !matches!(
+        revalidate_strong_process_identity(process_identity),
+        StrongProcessIdentityRevalidation::Current
+    ) {
+        return OwnedProcessGroupSignalOutcome::IdentityNoLongerCurrent;
+    }
+
+    let root_signal_sent = std::process::Command::new("kill")
+        .arg("-TERM")
+        .arg(process_identity.pid().to_string())
+        .status()
+        .is_ok_and(|status| status.success());
+
+    if root_signal_sent {
+        OwnedProcessGroupSignalOutcome::Sent
+    } else {
+        OwnedProcessGroupSignalOutcome::SignalFailed
+    }
+}
+
+#[cfg(all(not(unix), not(test)))]
+fn signal_owned_process_group(
+    _: u32,
+    process_identity: &ProcessIdentity,
+) -> OwnedProcessGroupSignalOutcome {
+    let mut system = System::new();
+    let pid = Pid::from_u32(process_identity.pid());
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        true,
+        ProcessRefreshKind::nothing(),
+    );
+    if !matches!(
+        revalidate_strong_process_identity(process_identity),
+        StrongProcessIdentityRevalidation::Current
+    ) {
+        return OwnedProcessGroupSignalOutcome::IdentityNoLongerCurrent;
+    }
+    let signal_sent = system
+        .process(pid)
+        .is_some_and(|process| process.kill_with(Signal::Term).unwrap_or(false));
+    if signal_sent {
+        OwnedProcessGroupSignalOutcome::Sent
+    } else {
+        OwnedProcessGroupSignalOutcome::SignalFailed
+    }
+}
+
+/// The sole owner of the one Cargo Port-owned run's lifecycle and output.
+pub(crate) struct OwnedRun {
+    next_id:   u64,
+    lifecycle: OwnedRunLifecycle,
+}
+
+impl OwnedRun {
+    pub(crate) const fn new() -> Self {
+        Self {
+            next_id:   1,
+            lifecycle: OwnedRunLifecycle::absent(),
+        }
+    }
+
+    pub(crate) const fn lifecycle(&self) -> &OwnedRunLifecycle { &self.lifecycle }
+
+    pub(crate) const fn identity(&self) -> OwnedRunIdentityRef<'_> { self.lifecycle.identity() }
+
+    pub(crate) fn output(&self) -> &[String] {
+        debug_assert!(
+            self.lifecycle
+                .output_identity_is_valid(self.output_identity())
+        );
+        self.lifecycle.output()
+    }
+
+    pub(crate) const fn output_identity(&self) -> OwnedRunOutputIdentityRef<'_> {
+        self.lifecycle.output_identity()
+    }
+
+    pub(crate) fn output_is_empty(&self) -> bool { self.output().is_empty() }
+
+    pub(crate) fn output_title(&self) -> OwnedRunOutputTitleRef<'_> {
+        self.lifecycle.output_title()
+    }
+
+    pub(crate) fn running_label(&self) -> OwnedRunRunningLabelRef<'_> {
+        self.lifecycle.running_label()
+    }
+
+    pub(crate) const fn is_running(&self) -> bool {
+        matches!(self.lifecycle(), OwnedRunLifecycle::Running(_))
+    }
+
+    const fn allocate_id(&mut self) -> OwnedRunId {
+        let owned_run_id = OwnedRunId(self.next_id);
+        self.next_id = self.next_id.saturating_add(1);
+        owned_run_id
+    }
+
+    fn queue(&mut self, pending_example_run: PendingExampleRun) -> OwnedRunLaunchAdmission {
+        if matches!(
+            self.lifecycle,
+            OwnedRunLifecycle::Queued(_)
+                | OwnedRunLifecycle::Starting(_)
+                | OwnedRunLifecycle::Running(_)
+                | OwnedRunLifecycle::Stopping(_)
+        ) {
+            return OwnedRunLaunchAdmission::AlreadyActive;
+        }
+
+        let retained_output = std::mem::replace(&mut self.lifecycle, OwnedRunLifecycle::absent())
+            .into_retained_output();
+        let owned_run_id = self.allocate_id();
+        self.lifecycle = OwnedRunLifecycle::Queued(QueuedOwnedRun {
+            owned_run_id,
+            pending_example_run,
+            retained_output,
+        });
+        OwnedRunLaunchAdmission::Queued(owned_run_id)
+    }
+
+    fn begin_launch(&mut self) -> OwnedRunLaunchStart {
+        let lifecycle = std::mem::replace(&mut self.lifecycle, OwnedRunLifecycle::absent());
+        match lifecycle {
+            OwnedRunLifecycle::Queued(queued_owned_run) => {
+                let owned_run_id = queued_owned_run.owned_run_id;
+                self.lifecycle =
+                    OwnedRunLifecycle::Starting(StartingOwnedRun::from(queued_owned_run));
+                OwnedRunLaunchStart::Starting(owned_run_id)
+            },
+            lifecycle => {
+                self.lifecycle = lifecycle;
+                OwnedRunLaunchStart::NoQueuedRun
+            },
+        }
+    }
+
+    fn starting_request(&self, owned_run_id: OwnedRunId) -> OwnedRunStartingRequest<'_> {
+        match &self.lifecycle {
+            OwnedRunLifecycle::Starting(starting_owned_run)
+                if starting_owned_run.owned_run_id == owned_run_id =>
+            {
+                OwnedRunStartingRequest::Starting(&starting_owned_run.pending_example_run)
+            },
+            _ => OwnedRunStartingRequest::NoMatchingStartingRun,
+        }
+    }
+
+    fn activate(
+        &mut self,
+        owned_run_id: OwnedRunId,
+        owned_process_group_termination_capability: OwnedProcessGroupTerminationCapability,
+    ) -> OwnedRunActivation {
+        let lifecycle = std::mem::replace(&mut self.lifecycle, OwnedRunLifecycle::absent());
+        match lifecycle {
+            OwnedRunLifecycle::Starting(starting_owned_run)
+                if starting_owned_run.owned_run_id == owned_run_id =>
+            {
+                let mode = starting_owned_run.pending_example_run.build_mode.label();
+                let display_path = starting_owned_run.pending_example_run.display_path;
+                let target_name = starting_owned_run.pending_example_run.target_name;
+                self.lifecycle = OwnedRunLifecycle::Running(RunningOwnedRun {
+                    owned_run_id,
+                    running_label: format!("{display_path}{mode}"),
+                    retained_output: OwnedRunRetainedOutput::named(
+                        owned_run_id,
+                        display_path,
+                        vec![format!("Building {target_name}{mode}...")],
+                    ),
+                    owned_process_group_termination_capability,
+                });
+                OwnedRunActivation::Activated
+            },
+            lifecycle => {
+                self.lifecycle = lifecycle;
+                OwnedRunActivation::NoMatchingStartingRun
+            },
+        }
+    }
+
+    fn fail_starting(&mut self, owned_run_id: OwnedRunId, failure_message: String) {
+        let lifecycle = std::mem::replace(&mut self.lifecycle, OwnedRunLifecycle::absent());
+        match lifecycle {
+            OwnedRunLifecycle::Starting(starting_owned_run)
+                if starting_owned_run.owned_run_id == owned_run_id =>
+            {
+                self.lifecycle = OwnedRunLifecycle::Failed(FailedOwnedRun {
+                    owned_run_id,
+                    retained_output: OwnedRunRetainedOutput::named(
+                        owned_run_id,
+                        starting_owned_run.pending_example_run.display_path,
+                        vec![failure_message],
+                    ),
+                });
+            },
+            lifecycle => self.lifecycle = lifecycle,
+        }
+    }
+
+    fn record_output(&mut self, owned_run_id: OwnedRunId, line: String) -> OwnedRunMessageUpdate {
+        match &mut self.lifecycle {
+            OwnedRunLifecycle::Running(running_owned_run)
+                if running_owned_run.owned_run_id == owned_run_id =>
+            {
+                running_owned_run.retained_output.lines.push(line);
+                OwnedRunMessageUpdate::Applied
+            },
+            OwnedRunLifecycle::Stopping(stopping_owned_run)
+                if stopping_owned_run.owned_run_id == owned_run_id =>
+            {
+                stopping_owned_run.retained_output.lines.push(line);
+                OwnedRunMessageUpdate::Applied
+            },
+            _ => OwnedRunMessageUpdate::Ignored,
+        }
+    }
+
+    fn record_progress(&mut self, owned_run_id: OwnedRunId, line: String) -> OwnedRunMessageUpdate {
+        match &mut self.lifecycle {
+            OwnedRunLifecycle::Running(running_owned_run)
+                if running_owned_run.owned_run_id == owned_run_id =>
+            {
+                replace_progress_line(&mut running_owned_run.retained_output.lines, line);
+                OwnedRunMessageUpdate::Applied
+            },
+            OwnedRunLifecycle::Stopping(stopping_owned_run)
+                if stopping_owned_run.owned_run_id == owned_run_id =>
+            {
+                replace_progress_line(&mut stopping_owned_run.retained_output.lines, line);
+                OwnedRunMessageUpdate::Applied
+            },
+            _ => OwnedRunMessageUpdate::Ignored,
+        }
+    }
+
+    fn acknowledge_started(&self, owned_run_id: OwnedRunId) -> OwnedRunMessageUpdate {
+        match self.identity() {
+            OwnedRunIdentityRef::Current(current_owned_run_id)
+                if *current_owned_run_id == owned_run_id && self.is_running() =>
+            {
+                OwnedRunMessageUpdate::Applied
+            },
+            OwnedRunIdentityRef::Absent | OwnedRunIdentityRef::Current(_) => {
+                OwnedRunMessageUpdate::Ignored
+            },
+        }
+    }
+
+    fn finish(&mut self, owned_run_id: OwnedRunId) -> OwnedRunMessageUpdate {
+        let lifecycle = std::mem::replace(&mut self.lifecycle, OwnedRunLifecycle::absent());
+        match lifecycle {
+            OwnedRunLifecycle::Running(mut running_owned_run)
+                if running_owned_run.owned_run_id == owned_run_id =>
+            {
+                append_marker_if_absent(&mut running_owned_run.retained_output.lines, DONE_MARKER);
+                self.lifecycle = OwnedRunLifecycle::RetainedSuccess(RetainedOwnedRun {
+                    owned_run_id,
+                    retained_output: running_owned_run.retained_output,
+                });
+                OwnedRunMessageUpdate::Applied
+            },
+            OwnedRunLifecycle::Stopping(mut stopping_owned_run)
+                if stopping_owned_run.owned_run_id == owned_run_id =>
+            {
+                debug_assert!(
+                    stopping_owned_run
+                        .owned_process_group_termination_capability
+                        .root_binding_is_consistent()
+                );
+                move_marker_to_end(&mut stopping_owned_run.retained_output.lines, KILLED_MARKER);
+                self.lifecycle = OwnedRunLifecycle::GoneAfterSignal(RetainedOwnedRun {
+                    owned_run_id,
+                    retained_output: stopping_owned_run.retained_output,
+                });
+                OwnedRunMessageUpdate::Applied
+            },
+            lifecycle => {
+                self.lifecycle = lifecycle;
+                OwnedRunMessageUpdate::Ignored
+            },
+        }
+    }
+
+    const fn termination(&self) -> OwnedRunTermination<'_> {
+        match &self.lifecycle {
+            OwnedRunLifecycle::Running(running_owned_run) => OwnedRunTermination::Available {
+                owned_run_id:                               running_owned_run.owned_run_id,
+                owned_process_group_termination_capability: &running_owned_run
+                    .owned_process_group_termination_capability,
+            },
+            _ => OwnedRunTermination::NoRunningRun,
+        }
+    }
+
+    fn begin_stopping(&mut self, owned_run_id: OwnedRunId) -> OwnedRunStopTransition {
+        let lifecycle = std::mem::replace(&mut self.lifecycle, OwnedRunLifecycle::absent());
+        match lifecycle {
+            OwnedRunLifecycle::Running(mut running_owned_run)
+                if running_owned_run.owned_run_id == owned_run_id =>
+            {
+                append_marker_if_absent(
+                    &mut running_owned_run.retained_output.lines,
+                    KILLED_MARKER,
+                );
+                self.lifecycle =
+                    OwnedRunLifecycle::Stopping(StoppingOwnedRun::from(running_owned_run));
+                OwnedRunStopTransition::Stopping
+            },
+            lifecycle => {
+                self.lifecycle = lifecycle;
+                OwnedRunStopTransition::NoMatchingRunningRun
+            },
+        }
+    }
+
+    fn clear_output(&mut self) {
+        match &mut self.lifecycle {
+            OwnedRunLifecycle::Queued(queued_owned_run) => {
+                queued_owned_run.retained_output = OwnedRunRetainedOutput::uncorrelated(Vec::new());
+            },
+            OwnedRunLifecycle::Starting(starting_owned_run) => {
+                starting_owned_run.retained_output =
+                    OwnedRunRetainedOutput::uncorrelated(Vec::new());
+            },
+            OwnedRunLifecycle::Running(running_owned_run) => {
+                running_owned_run.retained_output = OwnedRunRetainedOutput::correlated_unnamed(
+                    running_owned_run.owned_run_id,
+                    Vec::new(),
+                );
+            },
+            OwnedRunLifecycle::Stopping(stopping_owned_run) => {
+                stopping_owned_run.retained_output = OwnedRunRetainedOutput::correlated_unnamed(
+                    stopping_owned_run.owned_run_id,
+                    Vec::new(),
+                );
+            },
+            OwnedRunLifecycle::Absent(_)
+            | OwnedRunLifecycle::RetainedSuccess(_)
+            | OwnedRunLifecycle::GoneAfterSignal(_)
+            | OwnedRunLifecycle::Failed(_) => {
+                self.lifecycle = OwnedRunLifecycle::absent();
+            },
+        }
+    }
+
+    #[cfg(test)]
+    fn set_output_for_test(&mut self, lines: Vec<String>) {
+        let owned_run_id = self.allocate_id();
+        self.lifecycle = OwnedRunLifecycle::RetainedSuccess(RetainedOwnedRun {
+            owned_run_id,
+            retained_output: OwnedRunRetainedOutput::correlated_unnamed(owned_run_id, lines),
+        });
+    }
+
+    #[cfg(test)]
+    const fn output_mut_for_test(&mut self) -> &mut Vec<String> {
+        match &mut self.lifecycle {
+            OwnedRunLifecycle::Absent(retained_output) => &mut retained_output.lines,
+            OwnedRunLifecycle::Queued(queued_owned_run) => {
+                &mut queued_owned_run.retained_output.lines
+            },
+            OwnedRunLifecycle::Starting(starting_owned_run) => {
+                &mut starting_owned_run.retained_output.lines
+            },
+            OwnedRunLifecycle::Running(running_owned_run) => {
+                &mut running_owned_run.retained_output.lines
+            },
+            OwnedRunLifecycle::Stopping(stopping_owned_run) => {
+                &mut stopping_owned_run.retained_output.lines
+            },
+            OwnedRunLifecycle::RetainedSuccess(retained_owned_run)
+            | OwnedRunLifecycle::GoneAfterSignal(retained_owned_run) => {
+                &mut retained_owned_run.retained_output.lines
+            },
+            OwnedRunLifecycle::Failed(failed_owned_run) => {
+                &mut failed_owned_run.retained_output.lines
+            },
+        }
+    }
+
+    #[cfg(test)]
+    fn set_running_for_test(&mut self, running_label: Option<String>) {
+        let Some(running_label) = running_label else {
+            self.set_not_running_for_test();
+            return;
+        };
+        let retained_output = std::mem::replace(&mut self.lifecycle, OwnedRunLifecycle::absent())
+            .into_retained_output();
+        let owned_run_id = self.allocate_id();
+        let mut retained_output = retained_output;
+        retained_output.correlate_to(owned_run_id);
+        let process_identity = ProcessIdentity::for_test(1, owned_run_id.0);
+        let owned_process_group_termination_capability =
+            OwnedProcessGroupTerminationCapability::for_test(process_identity);
+        self.lifecycle = OwnedRunLifecycle::Running(RunningOwnedRun {
+            owned_run_id,
+            running_label: running_label.clone(),
+            retained_output: retained_output.with_missing_title_replaced_by(running_label),
+            owned_process_group_termination_capability,
+        });
+    }
+
+    #[cfg(test)]
+    fn set_not_running_for_test(&mut self) {
+        let lifecycle = std::mem::replace(&mut self.lifecycle, OwnedRunLifecycle::absent());
+        self.lifecycle = match lifecycle {
+            OwnedRunLifecycle::Running(running_owned_run) => {
+                OwnedRunLifecycle::RetainedSuccess(RetainedOwnedRun {
+                    owned_run_id:    running_owned_run.owned_run_id,
+                    retained_output: running_owned_run.retained_output,
+                })
+            },
+            lifecycle => lifecycle,
+        };
+    }
+
+    #[cfg(test)]
+    fn set_title_for_test(&mut self, title: Option<String>) {
+        self.lifecycle.set_title_for_test(title);
+    }
+}
+
+/// The state-specific lifecycle of a Cargo Port-owned run.
+pub(crate) enum OwnedRunLifecycle {
+    Absent(OwnedRunRetainedOutput),
+    Queued(QueuedOwnedRun),
+    Starting(StartingOwnedRun),
+    Running(RunningOwnedRun),
+    Stopping(StoppingOwnedRun),
+    RetainedSuccess(RetainedOwnedRun),
+    GoneAfterSignal(RetainedOwnedRun),
+    Failed(FailedOwnedRun),
+}
+
+impl OwnedRunLifecycle {
+    const fn absent() -> Self { Self::Absent(OwnedRunRetainedOutput::uncorrelated(Vec::new())) }
+
+    const fn identity(&self) -> OwnedRunIdentityRef<'_> {
+        match self {
+            Self::Absent(_) => OwnedRunIdentityRef::Absent,
+            Self::Queued(queued_owned_run) => {
+                OwnedRunIdentityRef::Current(&queued_owned_run.owned_run_id)
+            },
+            Self::Starting(starting_owned_run) => {
+                OwnedRunIdentityRef::Current(&starting_owned_run.owned_run_id)
+            },
+            Self::Running(running_owned_run) => {
+                OwnedRunIdentityRef::Current(&running_owned_run.owned_run_id)
+            },
+            Self::Stopping(stopping_owned_run) => {
+                OwnedRunIdentityRef::Current(&stopping_owned_run.owned_run_id)
+            },
+            Self::RetainedSuccess(retained_owned_run)
+            | Self::GoneAfterSignal(retained_owned_run) => {
+                OwnedRunIdentityRef::Current(&retained_owned_run.owned_run_id)
+            },
+            Self::Failed(failed_owned_run) => {
+                OwnedRunIdentityRef::Current(&failed_owned_run.owned_run_id)
+            },
+        }
+    }
+
+    fn output(&self) -> &[String] {
+        match self {
+            Self::Absent(retained_output) => &retained_output.lines,
+            Self::Queued(queued_owned_run) => &queued_owned_run.retained_output.lines,
+            Self::Starting(starting_owned_run) => &starting_owned_run.retained_output.lines,
+            Self::Running(running_owned_run) => &running_owned_run.retained_output.lines,
+            Self::Stopping(stopping_owned_run) => &stopping_owned_run.retained_output.lines,
+            Self::RetainedSuccess(retained_owned_run)
+            | Self::GoneAfterSignal(retained_owned_run) => {
+                &retained_owned_run.retained_output.lines
+            },
+            Self::Failed(failed_owned_run) => &failed_owned_run.retained_output.lines,
+        }
+    }
+
+    const fn output_identity(&self) -> OwnedRunOutputIdentityRef<'_> {
+        match self {
+            Self::Absent(retained_output) => retained_output.identity.as_ref(),
+            Self::Queued(queued_owned_run) => queued_owned_run.retained_output.identity.as_ref(),
+            Self::Starting(starting_owned_run) => {
+                starting_owned_run.retained_output.identity.as_ref()
+            },
+            Self::Running(running_owned_run) => running_owned_run.retained_output.identity.as_ref(),
+            Self::Stopping(stopping_owned_run) => {
+                stopping_owned_run.retained_output.identity.as_ref()
+            },
+            Self::RetainedSuccess(retained_owned_run)
+            | Self::GoneAfterSignal(retained_owned_run) => {
+                retained_owned_run.retained_output.identity.as_ref()
+            },
+            Self::Failed(failed_owned_run) => failed_owned_run.retained_output.identity.as_ref(),
+        }
+    }
+
+    fn output_identity_is_valid(&self, output_identity: OwnedRunOutputIdentityRef<'_>) -> bool {
+        match (self, output_identity) {
+            (
+                Self::Absent(_) | Self::Queued(_) | Self::Starting(_),
+                OwnedRunOutputIdentityRef::Uncorrelated,
+            ) => true,
+            (
+                Self::Queued(queued_owned_run),
+                OwnedRunOutputIdentityRef::Correlated(output_owned_run_id),
+            ) => output_owned_run_id < &queued_owned_run.owned_run_id,
+            (
+                Self::Starting(starting_owned_run),
+                OwnedRunOutputIdentityRef::Correlated(output_owned_run_id),
+            ) => output_owned_run_id < &starting_owned_run.owned_run_id,
+            (
+                Self::Running(running_owned_run),
+                OwnedRunOutputIdentityRef::Correlated(output_owned_run_id),
+            ) => output_owned_run_id == &running_owned_run.owned_run_id,
+            (
+                Self::Stopping(stopping_owned_run),
+                OwnedRunOutputIdentityRef::Correlated(output_owned_run_id),
+            ) => output_owned_run_id == &stopping_owned_run.owned_run_id,
+            (
+                Self::RetainedSuccess(retained_owned_run)
+                | Self::GoneAfterSignal(retained_owned_run),
+                OwnedRunOutputIdentityRef::Correlated(output_owned_run_id),
+            ) => output_owned_run_id == &retained_owned_run.owned_run_id,
+            (
+                Self::Failed(failed_owned_run),
+                OwnedRunOutputIdentityRef::Correlated(output_owned_run_id),
+            ) => output_owned_run_id == &failed_owned_run.owned_run_id,
+            (
+                Self::Running(_)
+                | Self::Stopping(_)
+                | Self::RetainedSuccess(_)
+                | Self::GoneAfterSignal(_)
+                | Self::Failed(_),
+                OwnedRunOutputIdentityRef::Uncorrelated,
+            )
+            | (Self::Absent(_), OwnedRunOutputIdentityRef::Correlated(_)) => false,
+        }
+    }
+
+    fn output_title(&self) -> OwnedRunOutputTitleRef<'_> {
+        match self {
+            Self::Absent(_) => OwnedRunOutputTitleRef::Unavailable,
+            Self::Queued(queued_owned_run) => queued_owned_run.retained_output.title.as_ref(),
+            Self::Starting(starting_owned_run) => starting_owned_run.retained_output.title.as_ref(),
+            Self::Running(running_owned_run) => running_owned_run.retained_output.title.as_ref(),
+            Self::Stopping(stopping_owned_run) => stopping_owned_run.retained_output.title.as_ref(),
+            Self::RetainedSuccess(retained_owned_run)
+            | Self::GoneAfterSignal(retained_owned_run) => {
+                retained_owned_run.retained_output.title.as_ref()
+            },
+            Self::Failed(failed_owned_run) => failed_owned_run.retained_output.title.as_ref(),
+        }
+    }
+
+    fn running_label(&self) -> OwnedRunRunningLabelRef<'_> {
+        match self {
+            Self::Running(running_owned_run) => {
+                OwnedRunRunningLabelRef::Running(&running_owned_run.running_label)
+            },
+            Self::Absent(_)
+            | Self::Queued(_)
+            | Self::Starting(_)
+            | Self::Stopping(_)
+            | Self::RetainedSuccess(_)
+            | Self::GoneAfterSignal(_)
+            | Self::Failed(_) => OwnedRunRunningLabelRef::NotRunning,
+        }
+    }
+
+    fn into_retained_output(self) -> OwnedRunRetainedOutput {
+        match self {
+            Self::Absent(retained_output) => retained_output,
+            Self::Queued(queued_owned_run) => queued_owned_run.retained_output,
+            Self::Starting(starting_owned_run) => starting_owned_run.retained_output,
+            Self::Running(running_owned_run) => running_owned_run.retained_output,
+            Self::Stopping(stopping_owned_run) => stopping_owned_run.retained_output,
+            Self::RetainedSuccess(retained_owned_run)
+            | Self::GoneAfterSignal(retained_owned_run) => retained_owned_run.retained_output,
+            Self::Failed(failed_owned_run) => failed_owned_run.retained_output,
+        }
+    }
+
+    #[cfg(test)]
+    fn set_title_for_test(&mut self, title: Option<String>) {
+        let title = OwnedRunOutputTitle::from_optional_for_test(title);
+        match self {
+            Self::Absent(_) => {},
+            Self::Queued(queued_owned_run) => queued_owned_run.retained_output.title = title,
+            Self::Starting(starting_owned_run) => starting_owned_run.retained_output.title = title,
+            Self::Running(running_owned_run) => running_owned_run.retained_output.title = title,
+            Self::Stopping(stopping_owned_run) => stopping_owned_run.retained_output.title = title,
+            Self::RetainedSuccess(retained_owned_run)
+            | Self::GoneAfterSignal(retained_owned_run) => {
+                retained_owned_run.retained_output.title = title;
+            },
+            Self::Failed(failed_owned_run) => failed_owned_run.retained_output.title = title,
+        }
+    }
+}
+
+/// A queued owned run has launch data but no observed process root.
+pub(crate) struct QueuedOwnedRun {
+    owned_run_id:        OwnedRunId,
+    pending_example_run: PendingExampleRun,
+    retained_output:     OwnedRunRetainedOutput,
+}
+
+/// A starting owned run has launch data but no observed process root.
+pub(crate) struct StartingOwnedRun {
+    owned_run_id:        OwnedRunId,
+    pending_example_run: PendingExampleRun,
+    retained_output:     OwnedRunRetainedOutput,
+}
+
+impl From<QueuedOwnedRun> for StartingOwnedRun {
+    fn from(queued_owned_run: QueuedOwnedRun) -> Self {
+        Self {
+            owned_run_id:        queued_owned_run.owned_run_id,
+            pending_example_run: queued_owned_run.pending_example_run,
+            retained_output:     queued_owned_run.retained_output,
+        }
+    }
+}
+
+/// A running owned run has a verified root and group termination authority.
+pub(crate) struct RunningOwnedRun {
+    owned_run_id:                               OwnedRunId,
+    running_label:                              String,
+    retained_output:                            OwnedRunRetainedOutput,
+    owned_process_group_termination_capability: OwnedProcessGroupTerminationCapability,
+}
+
+/// A stopped-requested run retains verified root authority until the process
+/// reports completion.
+pub(crate) struct StoppingOwnedRun {
+    owned_run_id:                               OwnedRunId,
+    retained_output:                            OwnedRunRetainedOutput,
+    owned_process_group_termination_capability: OwnedProcessGroupTerminationCapability,
+}
+
+impl From<RunningOwnedRun> for StoppingOwnedRun {
+    fn from(running_owned_run: RunningOwnedRun) -> Self {
+        Self {
+            owned_run_id:                               running_owned_run.owned_run_id,
+            retained_output:                            running_owned_run.retained_output,
+            owned_process_group_termination_capability: running_owned_run
+                .owned_process_group_termination_capability,
+        }
+    }
+}
+
+/// Completed output that remains available after the process lifecycle ends.
+pub(crate) struct RetainedOwnedRun {
+    owned_run_id:    OwnedRunId,
+    retained_output: OwnedRunRetainedOutput,
+}
+
+/// A failed launch retains its diagnostic output without process authority.
+pub(crate) struct FailedOwnedRun {
+    owned_run_id:    OwnedRunId,
+    retained_output: OwnedRunRetainedOutput,
+}
+
+pub(crate) struct OwnedRunRetainedOutput {
+    identity: OwnedRunOutputIdentity,
+    title:    OwnedRunOutputTitle,
+    lines:    Vec<String>,
+}
+
+impl OwnedRunRetainedOutput {
+    const fn named(owned_run_id: OwnedRunId, title: String, lines: Vec<String>) -> Self {
+        Self {
+            identity: OwnedRunOutputIdentity::Correlated(owned_run_id),
+            title: OwnedRunOutputTitle::Named(title),
+            lines,
+        }
+    }
+
+    const fn correlated_unnamed(owned_run_id: OwnedRunId, lines: Vec<String>) -> Self {
+        Self {
+            identity: OwnedRunOutputIdentity::Correlated(owned_run_id),
+            title: OwnedRunOutputTitle::Unavailable,
+            lines,
+        }
+    }
+
+    const fn uncorrelated(lines: Vec<String>) -> Self {
+        Self {
+            identity: OwnedRunOutputIdentity::Uncorrelated,
+            title: OwnedRunOutputTitle::Unavailable,
+            lines,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_missing_title_replaced_by(mut self, title: String) -> Self {
+        if matches!(self.title, OwnedRunOutputTitle::Unavailable) {
+            self.title = OwnedRunOutputTitle::Named(title);
+        }
+        self
+    }
+
+    #[cfg(test)]
+    const fn correlate_to(&mut self, owned_run_id: OwnedRunId) {
+        self.identity = OwnedRunOutputIdentity::Correlated(owned_run_id);
+    }
+}
+
+enum OwnedRunOutputIdentity {
+    Correlated(OwnedRunId),
+    Uncorrelated,
+}
+
+impl OwnedRunOutputIdentity {
+    const fn as_ref(&self) -> OwnedRunOutputIdentityRef<'_> {
+        match self {
+            Self::Correlated(owned_run_id) => OwnedRunOutputIdentityRef::Correlated(owned_run_id),
+            Self::Uncorrelated => OwnedRunOutputIdentityRef::Uncorrelated,
+        }
+    }
+}
+
+enum OwnedRunOutputTitle {
+    Named(String),
+    Unavailable,
+}
+
+impl OwnedRunOutputTitle {
+    fn as_ref(&self) -> OwnedRunOutputTitleRef<'_> {
+        match self {
+            Self::Named(title) => OwnedRunOutputTitleRef::Named(title),
+            Self::Unavailable => OwnedRunOutputTitleRef::Unavailable,
+        }
+    }
+
+    #[cfg(test)]
+    fn from_optional_for_test(title: Option<String>) -> Self {
+        title.map_or(Self::Unavailable, Self::Named)
+    }
+}
+
+/// Borrowed identity availability for the current owned-run lifecycle.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OwnedRunIdentityRef<'a> {
+    Absent,
+    Current(&'a OwnedRunId),
+}
+
+/// The run that produced the currently retained output, when one exists.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OwnedRunOutputIdentityRef<'a> {
+    Correlated(&'a OwnedRunId),
+    Uncorrelated,
+}
+
+/// Borrowed title availability for retained or live owned output.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OwnedRunOutputTitleRef<'a> {
+    Named(&'a str),
+    Unavailable,
+}
+
+/// Borrowed live label availability for the current owned-run lifecycle.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OwnedRunRunningLabelRef<'a> {
+    Running(&'a str),
+    NotRunning,
+}
+
+/// Whether the sole owned-run slot accepted a launch request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OwnedRunLaunchAdmission {
+    Queued(OwnedRunId),
+    AlreadyActive,
+}
+
+/// Whether a queued owned run entered its synchronous launch boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OwnedRunLaunchStart {
+    Starting(OwnedRunId),
+    NoQueuedRun,
+}
+
+/// The launch request present for a matching `Starting` lifecycle.
+pub(crate) enum OwnedRunStartingRequest<'a> {
+    Starting(&'a PendingExampleRun),
+    NoMatchingStartingRun,
+}
+
+/// Whether activation found the starting lifecycle it was asked to promote.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OwnedRunActivation {
+    Activated,
+    NoMatchingStartingRun,
+}
+
+/// Whether one correlated background message changed the current lifecycle.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OwnedRunMessageUpdate {
+    Applied,
+    Ignored,
+}
+
+/// The current run's identity-bound group termination authority.
+pub(crate) enum OwnedRunTermination<'a> {
+    Available {
+        owned_run_id:                               OwnedRunId,
+        owned_process_group_termination_capability: &'a OwnedProcessGroupTerminationCapability,
+    },
+    NoRunningRun,
+}
+
+/// Whether a signaled run entered its stopping lifecycle.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OwnedRunStopTransition {
+    Stopping,
+    NoMatchingRunningRun,
+}
+
+const DONE_MARKER: &str = "── done ──";
+const KILLED_MARKER: &str = "── killed ──";
+
+fn replace_progress_line(lines: &mut Vec<String>, line: String) {
+    if let Some(last) = lines.last_mut() {
+        *last = line;
+    } else {
+        lines.push(line);
+    }
+}
+
+fn append_marker_if_absent(lines: &mut Vec<String>, marker: &str) {
+    if !lines
+        .last()
+        .is_some_and(|line| line == DONE_MARKER || line == KILLED_MARKER)
+    {
+        lines.push(marker.to_string());
+    }
+}
+
+fn move_marker_to_end(lines: &mut Vec<String>, marker: &str) {
+    lines.retain(|line| line != marker);
+    lines.push(marker.to_string());
+}
 
 /// Owns App's in-flight bookkeeping. App holds a single
 /// `inflight: Inflight`.
 pub(crate) struct Inflight {
     /// In-flight cargo clean state — same lifecycle as
     /// `Lint::running` and `Github::running`.
-    clean:               RunningTracker<AbsolutePath>,
-    pending_cleans:      VecDeque<PendingClean>,
-    pending_ci_fetch:    Option<PendingCiFetch>,
-    pending_example_run: Option<PendingExampleRun>,
-    example_running:     Option<String>,
-    example_title:       Option<String>,
-    example_child:       Arc<Mutex<Option<u32>>>,
-    example_output:      Vec<String>,
+    clean:            RunningTracker<AbsolutePath>,
+    pending_cleans:   VecDeque<PendingClean>,
+    pending_ci_fetch: Option<PendingCiFetch>,
+    owned_run:        OwnedRun,
 }
 
 impl Inflight {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            clean:               RunningTracker::new(),
-            pending_cleans:      VecDeque::new(),
-            pending_ci_fetch:    None,
-            pending_example_run: None,
-            example_running:     None,
-            example_title:       None,
-            example_child:       Arc::new(Mutex::new(None)),
-            example_output:      Vec::new(),
+            clean:            RunningTracker::new(),
+            pending_cleans:   VecDeque::new(),
+            pending_ci_fetch: None,
+            owned_run:        OwnedRun::new(),
         }
     }
 
     // ── running clean tracker ───────────────────────────────────────
 
-    pub const fn clean(&self) -> &RunningTracker<AbsolutePath> { &self.clean }
+    pub(crate) const fn clean(&self) -> &RunningTracker<AbsolutePath> { &self.clean }
 
-    pub const fn clean_mut(&mut self) -> &mut RunningTracker<AbsolutePath> { &mut self.clean }
+    pub(crate) const fn clean_mut(&mut self) -> &mut RunningTracker<AbsolutePath> {
+        &mut self.clean
+    }
 
-    /// Whether a cargo clean or an example/bin/bench run is in flight, so
-    /// the render loop should keep ticking to advance their spinners.
-    pub fn needs_animation(&self) -> bool {
-        !self.clean().is_empty() || self.example_running().is_some()
+    /// Whether a cargo clean or owned run is in flight, so the render loop
+    /// should keep ticking to advance their spinners.
+    pub(crate) fn needs_animation(&self) -> bool {
+        !self.clean().is_empty() || self.owned_run.is_running()
     }
 
     // ── pending queues ──────────────────────────────────────────────
 
-    pub const fn pending_cleans_mut(&mut self) -> &mut VecDeque<PendingClean> {
+    pub(crate) const fn pending_cleans_mut(&mut self) -> &mut VecDeque<PendingClean> {
         &mut self.pending_cleans
     }
 
-    pub fn set_pending_ci_fetch(&mut self, fetch: PendingCiFetch) {
+    pub(crate) fn set_pending_ci_fetch(&mut self, fetch: PendingCiFetch) {
         self.pending_ci_fetch = Some(fetch);
     }
 
     /// Test-only inspection accessor — production paths consume
     /// the slot via [`Self::take_pending_ci_fetch`].
     #[cfg(test)]
-    pub const fn pending_ci_fetch_ref(&self) -> Option<&PendingCiFetch> {
+    pub(crate) const fn pending_ci_fetch_ref(&self) -> Option<&PendingCiFetch> {
         self.pending_ci_fetch.as_ref()
     }
 
-    pub const fn take_pending_ci_fetch(&mut self) -> Option<PendingCiFetch> {
+    pub(crate) const fn take_pending_ci_fetch(&mut self) -> Option<PendingCiFetch> {
         self.pending_ci_fetch.take()
     }
 
-    pub fn clear_pending_ci_fetch(&mut self) { self.pending_ci_fetch = None; }
+    pub(crate) fn clear_pending_ci_fetch(&mut self) { self.pending_ci_fetch = None; }
 
-    pub fn set_pending_example_run(&mut self, run: PendingExampleRun) {
-        self.pending_example_run = Some(run);
+    // ── owned run ───────────────────────────────────────────────────
+
+    pub(crate) const fn owned_run(&self) -> &OwnedRun { &self.owned_run }
+
+    pub(crate) fn queue_owned_run(
+        &mut self,
+        pending_example_run: PendingExampleRun,
+    ) -> OwnedRunLaunchAdmission {
+        self.owned_run.queue(pending_example_run)
     }
 
-    pub const fn take_pending_example_run(&mut self) -> Option<PendingExampleRun> {
-        self.pending_example_run.take()
+    pub(crate) fn begin_owned_run_launch(&mut self) -> OwnedRunLaunchStart {
+        self.owned_run.begin_launch()
     }
 
-    // ── example runner ──────────────────────────────────────────────
-
-    pub fn example_running(&self) -> Option<&str> { self.example_running.as_deref() }
-
-    pub fn set_example_running(&mut self, running: Option<String>) {
-        self.example_running = running;
+    pub(crate) fn starting_owned_run_request(
+        &self,
+        owned_run_id: OwnedRunId,
+    ) -> OwnedRunStartingRequest<'_> {
+        self.owned_run.starting_request(owned_run_id)
     }
 
-    pub fn example_title(&self) -> Option<&str> { self.example_title.as_deref() }
+    pub(crate) fn activate_owned_run(
+        &mut self,
+        owned_run_id: OwnedRunId,
+        owned_process_group_termination_capability: OwnedProcessGroupTerminationCapability,
+    ) -> OwnedRunActivation {
+        self.owned_run
+            .activate(owned_run_id, owned_process_group_termination_capability)
+    }
 
-    pub fn set_example_title(&mut self, title: Option<String>) { self.example_title = title; }
+    pub(crate) fn fail_owned_run_start(
+        &mut self,
+        owned_run_id: OwnedRunId,
+        failure_message: String,
+    ) {
+        self.owned_run.fail_starting(owned_run_id, failure_message);
+    }
 
-    pub fn example_child(&self) -> Arc<Mutex<Option<u32>>> { Arc::clone(&self.example_child) }
+    pub(crate) fn record_owned_run_output(
+        &mut self,
+        owned_run_id: OwnedRunId,
+        line: String,
+    ) -> OwnedRunMessageUpdate {
+        self.owned_run.record_output(owned_run_id, line)
+    }
 
-    pub fn example_output(&self) -> &[String] { &self.example_output }
+    pub(crate) fn record_owned_run_progress(
+        &mut self,
+        owned_run_id: OwnedRunId,
+        line: String,
+    ) -> OwnedRunMessageUpdate {
+        self.owned_run.record_progress(owned_run_id, line)
+    }
 
-    pub const fn example_output_mut(&mut self) -> &mut Vec<String> { &mut self.example_output }
+    pub(crate) fn acknowledge_owned_run_started(
+        &self,
+        owned_run_id: OwnedRunId,
+    ) -> OwnedRunMessageUpdate {
+        self.owned_run.acknowledge_started(owned_run_id)
+    }
 
-    pub fn set_example_output(&mut self, output: Vec<String>) {
-        self.example_output = output;
-        if self.example_output.is_empty() {
-            self.example_title = None;
+    pub(crate) fn finish_owned_run(&mut self, owned_run_id: OwnedRunId) -> OwnedRunMessageUpdate {
+        self.owned_run.finish(owned_run_id)
+    }
+
+    pub(crate) const fn owned_run_termination(&self) -> OwnedRunTermination<'_> {
+        self.owned_run.termination()
+    }
+
+    pub(crate) fn mark_owned_run_stopping(
+        &mut self,
+        owned_run_id: OwnedRunId,
+    ) -> OwnedRunStopTransition {
+        self.owned_run.begin_stopping(owned_run_id)
+    }
+
+    pub(crate) fn clear_owned_run_output(&mut self) { self.owned_run.clear_output(); }
+
+    #[cfg(test)]
+    pub(crate) fn take_pending_example_run(&mut self) -> Option<PendingExampleRun> {
+        let OwnedRunLaunchStart::Starting(owned_run_id) = self.begin_owned_run_launch() else {
+            return None;
+        };
+        match self.starting_owned_run_request(owned_run_id) {
+            OwnedRunStartingRequest::Starting(pending_example_run) => {
+                Some(pending_example_run.clone())
+            },
+            OwnedRunStartingRequest::NoMatchingStartingRun => None,
         }
     }
 
-    pub fn clear_example_output(&mut self) {
-        self.example_output.clear();
-        self.example_title = None;
-    }
-
-    pub const fn example_output_is_empty(&self) -> bool { self.example_output.is_empty() }
-
-    pub fn apply_example_progress(&mut self, line: String) {
-        if let Some(last) = self.example_output.last_mut() {
-            *last = line;
-        } else {
-            self.example_output.push(line);
+    #[cfg(test)]
+    pub(crate) fn example_running(&self) -> Option<&str> {
+        match self.owned_run.running_label() {
+            OwnedRunRunningLabelRef::Running(running_label) => Some(running_label),
+            OwnedRunRunningLabelRef::NotRunning => None,
         }
     }
 
-    /// Marker appended when a run finishes on its own.
-    const DONE_MARKER: &'static str = "── done ──";
-    /// Marker appended when the user stops a run with the cancel key.
-    const KILLED_MARKER: &'static str = "── killed ──";
-
-    /// Whether the last output line is already a terminal marker. Guards
-    /// against a second marker when a killed child's `Finished` arrives
-    /// after the kill already recorded its own marker.
-    fn run_already_terminated(&self) -> bool {
-        self.example_output
-            .last()
-            .is_some_and(|line| line == Self::DONE_MARKER || line == Self::KILLED_MARKER)
+    #[cfg(test)]
+    pub(crate) fn set_example_running(&mut self, running: Option<String>) {
+        self.owned_run.set_running_for_test(running);
     }
 
-    /// Record a normal completion: append the done marker unless the run
-    /// was already terminated (e.g. the user killed it first).
-    pub fn append_done_marker(&mut self) {
-        if !self.run_already_terminated() {
-            self.example_output.push(Self::DONE_MARKER.to_string());
-        }
+    #[cfg(test)]
+    pub(crate) fn set_example_title(&mut self, title: Option<String>) {
+        self.owned_run.set_title_for_test(title);
     }
 
-    /// Stop tracking the run as live and record that the user killed it,
-    /// unless a terminal marker is already present.
-    pub fn mark_run_killed(&mut self) {
-        self.example_running = None;
-        if !self.run_already_terminated() {
-            self.example_output.push(Self::KILLED_MARKER.to_string());
-        }
+    #[cfg(test)]
+    pub(crate) fn example_output(&self) -> &[String] { self.owned_run.output() }
+
+    #[cfg(test)]
+    pub(crate) const fn example_output_mut(&mut self) -> &mut Vec<String> {
+        self.owned_run.output_mut_for_test()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_example_output(&mut self, output: Vec<String>) {
+        self.owned_run.set_output_for_test(output);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn apply_example_progress(&mut self, line: String) {
+        replace_progress_line(self.owned_run.output_mut_for_test(), line);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn append_done_marker(&mut self) {
+        append_marker_if_absent(self.owned_run.output_mut_for_test(), DONE_MARKER);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_run_killed(&mut self) {
+        let OwnedRunTermination::Available { owned_run_id, .. } = self.owned_run_termination()
+        else {
+            return;
+        };
+        let _ = self.mark_owned_run_stopping(owned_run_id);
     }
 }
 
@@ -177,28 +1185,249 @@ mod tests {
     use tui_pane::ToastTaskId;
 
     use super::*;
+    use crate::tui::panes::BuildMode;
+    use crate::tui::panes::CargoPackageInvocation;
     use crate::tui::panes::CiFetchKind;
+    use crate::tui::panes::RunTargetKind;
 
     fn fresh() -> Inflight { Inflight::new() }
 
-    fn abs(p: &str) -> AbsolutePath { AbsolutePath::from(PathBuf::from(p)) }
+    fn abs(path: &str) -> AbsolutePath { AbsolutePath::from(PathBuf::from(path)) }
+
+    fn pending_example_run() -> PendingExampleRun {
+        PendingExampleRun {
+            abs_path:                 "/tmp/demo".to_string(),
+            target_name:              "demo".to_string(),
+            display_path:             "demo".to_string(),
+            cargo_package_invocation: CargoPackageInvocation::WorkspaceDefault,
+            run_target_kind:          RunTargetKind::Binary,
+            build_mode:               BuildMode::Debug,
+            required_features:        Vec::new(),
+        }
+    }
+
+    fn queue_owned_run(inflight: &mut Inflight) -> OwnedRunId {
+        let owned_run_launch_admission = inflight.queue_owned_run(pending_example_run());
+        assert!(matches!(
+            owned_run_launch_admission,
+            OwnedRunLaunchAdmission::Queued(_)
+        ));
+        match owned_run_launch_admission {
+            OwnedRunLaunchAdmission::Queued(owned_run_id) => owned_run_id,
+            OwnedRunLaunchAdmission::AlreadyActive => OwnedRunId(0),
+        }
+    }
 
     #[test]
-    fn new_starts_empty() {
-        let inflight = fresh();
-        assert!(inflight.clean().is_empty());
-        assert!(inflight.clean().toast.is_none());
-        assert!(inflight.example_running().is_none());
-        assert!(inflight.example_output_is_empty());
+    fn queued_and_starting_lifecycles_do_not_fabricate_process_authority() {
+        let mut inflight = fresh();
+        let owned_run_id = queue_owned_run(&mut inflight);
+        assert!(matches!(
+            inflight.owned_run().lifecycle(),
+            OwnedRunLifecycle::Queued(_)
+        ));
+        assert!(matches!(
+            inflight.owned_run_termination(),
+            OwnedRunTermination::NoRunningRun
+        ));
+
+        assert_eq!(
+            inflight.begin_owned_run_launch(),
+            OwnedRunLaunchStart::Starting(owned_run_id)
+        );
+        assert!(matches!(
+            inflight.owned_run().lifecycle(),
+            OwnedRunLifecycle::Starting(_)
+        ));
+        assert!(matches!(
+            inflight.owned_run_termination(),
+            OwnedRunTermination::NoRunningRun
+        ));
+    }
+
+    #[test]
+    fn identity_unavailable_launch_keeps_no_live_termination_authority() {
+        let mut inflight = fresh();
+        let owned_run_id = queue_owned_run(&mut inflight);
+        let _ = inflight.begin_owned_run_launch();
+        inflight.fail_owned_run_start(
+            owned_run_id,
+            "Failed to establish a verified process identity".to_string(),
+        );
+
+        assert!(matches!(
+            inflight.owned_run().lifecycle(),
+            OwnedRunLifecycle::Failed(_)
+        ));
+        assert!(matches!(
+            inflight.owned_run_termination(),
+            OwnedRunTermination::NoRunningRun
+        ));
+    }
+
+    #[test]
+    fn owned_group_signal_outcomes_remain_distinct() {
+        let process_identity = ProcessIdentity::for_test(42, 7);
+        let identity_changed = OwnedProcessGroupTerminationCapability::with_test_signal_outcome(
+            process_identity.clone(),
+            OwnedProcessGroupSignalOutcome::IdentityNoLongerCurrent,
+        );
+        let signal_failed = OwnedProcessGroupTerminationCapability::with_test_signal_outcome(
+            process_identity,
+            OwnedProcessGroupSignalOutcome::SignalFailed,
+        );
+
+        assert_eq!(identity_changed.process_group_id, 42);
+        assert_eq!(identity_changed.process_identity.pid(), 42);
+        assert_eq!(
+            identity_changed.signal(),
+            OwnedProcessGroupSignalOutcome::IdentityNoLongerCurrent
+        );
+        assert_eq!(
+            signal_failed.signal(),
+            OwnedProcessGroupSignalOutcome::SignalFailed
+        );
+    }
+
+    #[test]
+    fn messages_from_a_previous_run_do_not_change_a_later_run() {
+        let mut inflight = fresh();
+        let first_run_id = queue_owned_run(&mut inflight);
+        let _ = inflight.begin_owned_run_launch();
+        let process_identity = ProcessIdentity::for_test(42, 7);
+        let verified_process_identity = VerifiedProcessIdentity::for_test(process_identity);
+        let termination_capability =
+            OwnedProcessGroupTerminationCapability::from_verified_root(verified_process_identity);
+        assert_eq!(
+            inflight.activate_owned_run(first_run_id, termination_capability),
+            OwnedRunActivation::Activated
+        );
+        let _ = inflight.finish_owned_run(first_run_id);
+
+        let second_run_id = queue_owned_run(&mut inflight);
+        assert_ne!(first_run_id, second_run_id);
+        assert_eq!(
+            inflight.owned_run().output_identity(),
+            OwnedRunOutputIdentityRef::Correlated(&first_run_id)
+        );
+        assert_eq!(
+            inflight.owned_run().identity(),
+            OwnedRunIdentityRef::Current(&second_run_id)
+        );
+        assert_eq!(
+            inflight.record_owned_run_output(first_run_id, "late output".to_string()),
+            OwnedRunMessageUpdate::Ignored
+        );
+        assert_eq!(
+            inflight.record_owned_run_progress(first_run_id, "late progress".to_string()),
+            OwnedRunMessageUpdate::Ignored
+        );
+        assert_eq!(
+            inflight.acknowledge_owned_run_started(first_run_id),
+            OwnedRunMessageUpdate::Ignored
+        );
+        assert_eq!(
+            inflight.finish_owned_run(first_run_id),
+            OwnedRunMessageUpdate::Ignored
+        );
+        assert!(matches!(
+            inflight.owned_run().lifecycle(),
+            OwnedRunLifecycle::Queued(_)
+        ));
+        assert!(
+            !inflight
+                .owned_run()
+                .output()
+                .iter()
+                .any(|line| line == "late output" || line == "late progress")
+        );
+    }
+
+    #[test]
+    fn running_and_stopping_lifecycles_own_identity_bound_authority() {
+        let mut inflight = fresh();
+        let owned_run_id = queue_owned_run(&mut inflight);
+        let _ = inflight.begin_owned_run_launch();
+        let process_identity = ProcessIdentity::for_test(42, 7);
+        let verified_process_identity = VerifiedProcessIdentity::for_test(process_identity);
+        let termination_capability =
+            OwnedProcessGroupTerminationCapability::from_verified_root(verified_process_identity);
+        let _ = inflight.activate_owned_run(owned_run_id, termination_capability);
+        assert!(matches!(
+            inflight.owned_run_termination(),
+            OwnedRunTermination::Available { .. }
+        ));
+
+        let _ = inflight.mark_owned_run_stopping(owned_run_id);
+        assert!(matches!(
+            inflight.owned_run().lifecycle(),
+            OwnedRunLifecycle::Stopping(_)
+        ));
+    }
+
+    #[test]
+    fn closing_stopping_output_preserves_the_active_run_slot() {
+        let mut inflight = fresh();
+        let owned_run_id = queue_owned_run(&mut inflight);
+        let _ = inflight.begin_owned_run_launch();
+        let process_identity = ProcessIdentity::for_test(42, 7);
+        let verified_process_identity = VerifiedProcessIdentity::for_test(process_identity);
+        let termination_capability =
+            OwnedProcessGroupTerminationCapability::from_verified_root(verified_process_identity);
+        let _ = inflight.activate_owned_run(owned_run_id, termination_capability);
+        let _ = inflight.mark_owned_run_stopping(owned_run_id);
+
+        inflight.clear_owned_run_output();
+
+        assert!(inflight.owned_run().output_is_empty());
+        assert!(matches!(
+            inflight.owned_run().lifecycle(),
+            OwnedRunLifecycle::Stopping(_)
+        ));
+        assert_eq!(
+            inflight.queue_owned_run(pending_example_run()),
+            OwnedRunLaunchAdmission::AlreadyActive
+        );
+    }
+
+    #[test]
+    fn completion_restores_the_killed_marker_after_late_output_and_progress() {
+        let mut inflight = fresh();
+        let owned_run_id = queue_owned_run(&mut inflight);
+        let _ = inflight.begin_owned_run_launch();
+        let process_identity = ProcessIdentity::for_test(42, 7);
+        let verified_process_identity = VerifiedProcessIdentity::for_test(process_identity);
+        let termination_capability =
+            OwnedProcessGroupTerminationCapability::from_verified_root(verified_process_identity);
+        let _ = inflight.activate_owned_run(owned_run_id, termination_capability);
+        let _ = inflight.mark_owned_run_stopping(owned_run_id);
+
+        let _ = inflight.record_owned_run_output(owned_run_id, "late output".to_string());
+        let _ = inflight.record_owned_run_progress(owned_run_id, "late progress".to_string());
+        let _ = inflight.finish_owned_run(owned_run_id);
+
+        assert_eq!(
+            inflight.owned_run().output().last().map(String::as_str),
+            Some(KILLED_MARKER)
+        );
+        assert_eq!(
+            inflight
+                .owned_run()
+                .output()
+                .iter()
+                .filter(|line| line.as_str() == KILLED_MARKER)
+                .count(),
+            1
+        );
     }
 
     #[test]
     fn running_clean_paths_round_trip() {
         let mut inflight = fresh();
-        let p = abs("/tmp/foo");
-        inflight.clean_mut().insert(p.clone(), Instant::now());
-        assert!(inflight.clean().running.contains_key(&p));
-        let removed = inflight.clean_mut().remove(&p);
+        let path = abs("/tmp/foo");
+        inflight.clean_mut().insert(path.clone(), Instant::now());
+        assert!(inflight.clean().running.contains_key(&path));
+        let removed = inflight.clean_mut().remove(&path);
         assert!(removed.is_some());
         assert!(inflight.clean().is_empty());
     }
@@ -235,17 +1464,6 @@ mod tests {
     }
 
     #[test]
-    fn example_output_round_trip() {
-        let mut inflight = fresh();
-        inflight.example_output_mut().push("first line".to_string());
-        assert_eq!(inflight.example_output(), &["first line".to_string()]);
-        assert!(!inflight.example_output_is_empty());
-
-        inflight.set_example_output(vec!["replaced".to_string()]);
-        assert_eq!(inflight.example_output(), &["replaced".to_string()]);
-    }
-
-    #[test]
     fn killed_run_does_not_also_append_done_marker() {
         let mut inflight = fresh();
         inflight.example_output_mut().push("line".to_string());
@@ -255,11 +1473,9 @@ mod tests {
         assert!(inflight.example_running().is_none());
         assert_eq!(
             inflight.example_output().last().map(String::as_str),
-            Some(Inflight::KILLED_MARKER),
+            Some(KILLED_MARKER),
         );
 
-        // The killed child's `Finished` arriving afterward must not stack
-        // a second terminal marker on top of the kill marker.
         inflight.append_done_marker();
         let markers = inflight
             .example_output()
@@ -278,7 +1494,7 @@ mod tests {
         inflight.append_done_marker();
         assert_eq!(
             inflight.example_output(),
-            &["line".to_string(), Inflight::DONE_MARKER.to_string()],
+            &["line".to_string(), DONE_MARKER.to_string()],
         );
     }
 
@@ -304,13 +1520,5 @@ mod tests {
             crate::project::normalize_test_path(std::path::Path::new("/tmp/b")).as_path()
         );
         assert!(inflight.pending_cleans_mut().pop_front().is_none());
-    }
-
-    #[test]
-    fn example_child_arc_clone_shares_state() {
-        let inflight = fresh();
-        let child = inflight.example_child();
-        *child.lock().expect("lock pid slot") = Some(42);
-        assert_eq!(*inflight.example_child().lock().unwrap(), Some(42));
     }
 }

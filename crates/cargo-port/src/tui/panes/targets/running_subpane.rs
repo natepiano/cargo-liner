@@ -233,7 +233,7 @@ fn tree_ordered(rows: Vec<RunningRow>) -> Vec<RunningRow> {
                 children.entry(parent_pid).or_default().push(row);
             },
             RunningProcessPlacement::TopLevel | RunningProcessPlacement::ChildOf { .. } => {
-                top_level.push(row)
+                top_level.push(row);
             },
         }
     }

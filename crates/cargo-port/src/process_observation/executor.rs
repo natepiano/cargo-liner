@@ -317,7 +317,6 @@ impl ProcessRefreshExecutor {
             return ProcessRefreshResultPoll::Pending;
         };
         match worker_poll {
-            ProcessRefreshWorkerResultPoll::Pending => ProcessRefreshResultPoll::Pending,
             ProcessRefreshWorkerResultPoll::Received(process_refresh_execution)
                 if process_refresh_execution.request_id == request_id
                     && process_refresh_execution.demand == demand =>
@@ -325,7 +324,8 @@ impl ProcessRefreshExecutor {
                 self.in_flight = ProcessRefreshInFlight::Idle;
                 ProcessRefreshResultPoll::Ready(process_refresh_execution)
             },
-            ProcessRefreshWorkerResultPoll::Received(_) => ProcessRefreshResultPoll::Pending,
+            ProcessRefreshWorkerResultPoll::Pending
+            | ProcessRefreshWorkerResultPoll::Received(_) => ProcessRefreshResultPoll::Pending,
             ProcessRefreshWorkerResultPoll::Disconnected => {
                 self.in_flight = ProcessRefreshInFlight::Idle;
                 ProcessRefreshResultPoll::Ready(Box::new(ProcessRefreshExecution::failed(

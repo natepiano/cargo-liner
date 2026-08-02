@@ -54,6 +54,7 @@ pub(super) use lints::render_lints_pane_body;
 pub(super) use output::OutputPane;
 pub(super) use package::PackagePane;
 pub(super) use pane_data::BuildMode;
+pub(super) use pane_data::CargoPackageInvocation;
 pub(super) use pane_data::CiData;
 #[cfg(test)]
 pub(super) use pane_data::CiEmptyState;

@@ -4,6 +4,8 @@ mod processes;
 mod run;
 mod tree_state;
 
+pub(super) use processes::OwnedRunStopSignal;
+pub(super) use processes::signal_owned_run;
 pub use run::run;
 
 use super::app::App;
@@ -12,8 +14,6 @@ pub(super) use super::messages::CleanMsg;
 pub(super) use super::messages::ExampleMsg;
 use super::project_list::ExpandTarget;
 use crate::project::AbsolutePath;
-
-pub(super) fn stop_example_process(pid: u32) -> bool { processes::stop_example_process(pid) }
 
 pub(super) fn spawn_priority_fetch(app: &App, path: &str, abs_path: &str, name: Option<&String>) {
     processes::spawn_priority_fetch(app, path, abs_path, name);

@@ -1,5 +1,4 @@
 use std::rc::Rc;
-use std::sync::PoisonError;
 use std::time::Instant;
 
 use crossterm::event::Event;
@@ -205,8 +204,8 @@ fn classify_output_cancel_preflight(
     let output_visual = is_output_cancel
         && app.focus_is(PaneId::Output)
         && app.panes.output.selection().is_visual();
-    let running_example = code == KeyCode::Esc && app.inflight.example_running().is_some();
-    let visible_output = is_output_cancel && !app.inflight.example_output().is_empty();
+    let running_example = code == KeyCode::Esc && app.inflight.owned_run().is_running();
+    let visible_output = is_output_cancel && !app.inflight.owned_run().output_is_empty();
 
     match (output_visual, running_example, visible_output) {
         (true, _, _) => OutputCancelPreflight::ExitVisualSelection,
@@ -223,17 +222,16 @@ fn dispatch_output_cancel_preflight(app: &mut App, preflight: OutputCancelPrefli
             true
         },
         OutputCancelPreflight::StopRunningExample => {
-            let pid_holder = app.inflight.example_child();
-            let pid = *pid_holder.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some(pid) = pid {
-                terminal::stop_example_process(pid);
+            if let terminal::OwnedRunStopSignal::Sent(owned_run_id) =
+                terminal::signal_owned_run(&app.inflight)
+            {
+                let _ = app.inflight.mark_owned_run_stopping(owned_run_id);
             }
-            app.inflight.mark_run_killed();
             true
         },
         OutputCancelPreflight::CloseVisibleOutput => {
             let was_on_output = app.focus_is(PaneId::Output);
-            app.inflight.clear_example_output();
+            app.inflight.clear_owned_run_output();
             if was_on_output {
                 app.set_focus(FocusedPane::App(AppPaneId::Targets));
             }
@@ -273,7 +271,7 @@ fn dispatch_output_selection_gesture(app: &mut App, raw: &KeyEvent) -> bool {
         && !raw.modifiers.contains(KeyModifiers::CONTROL)
         && !raw.modifiers.contains(KeyModifiers::ALT)
     {
-        let live = app.inflight.example_output().to_vec();
+        let live = app.inflight.owned_run().output().to_vec();
         app.panes.output.toggle_visual(&live);
         return true;
     }
@@ -281,7 +279,7 @@ fn dispatch_output_selection_gesture(app: &mut App, raw: &KeyEvent) -> bool {
     let to_edge = raw.modifiers == ctrl_shift;
     let one_row = raw.modifiers == KeyModifiers::SHIFT;
     if (one_row || to_edge) && matches!(code, KeyCode::Up | KeyCode::Down) {
-        let live = app.inflight.example_output().to_vec();
+        let live = app.inflight.owned_run().output().to_vec();
         let output = &mut app.panes.output;
         match (to_edge, code) {
             (false, KeyCode::Up) => output.select_extend_up(&live),
@@ -633,7 +631,7 @@ fn handle_output_drag(app: &mut App, column: u16, row: u16) {
     let Some(row) = app.panes.output.viewport.pos_to_local_row(pos) else {
         return;
     };
-    let live = app.inflight.example_output().to_vec();
+    let live = app.inflight.owned_run().output().to_vec();
     app.panes.output.select_drag_to(&live, row);
 }
 
@@ -763,7 +761,7 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16, mode: ClickMode) {
         && hovered.pane == PaneId::Output
     {
         app.set_focus(FocusedPane::App(AppPaneId::Output));
-        let live = app.inflight.example_output().to_vec();
+        let live = app.inflight.owned_run().output().to_vec();
         app.panes.output.click_select_row(&live, hovered.row);
         return;
     }
@@ -823,12 +821,18 @@ pub fn dispatch_project_list_action(action: ProjectListAction, app: &mut App) {
 pub fn dispatch_output_action(action: OutputAction, app: &mut App) {
     match action {
         OutputAction::SelectAll => {
-            let live = app.inflight.example_output().to_vec();
+            let live = app.inflight.owned_run().output().to_vec();
             app.panes.output.select_all(&live);
         },
         OutputAction::Cancel => {
-            if !app.inflight.example_output().is_empty() {
-                app.inflight.clear_example_output();
+            if app.inflight.owned_run().is_running() {
+                if let terminal::OwnedRunStopSignal::Sent(owned_run_id) =
+                    terminal::signal_owned_run(&app.inflight)
+                {
+                    let _ = app.inflight.mark_owned_run_stopping(owned_run_id);
+                }
+            } else if !app.inflight.owned_run().output_is_empty() {
+                app.inflight.clear_owned_run_output();
                 app.set_focus(FocusedPane::App(AppPaneId::Targets));
             }
         },

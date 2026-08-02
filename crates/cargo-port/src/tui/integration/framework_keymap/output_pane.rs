@@ -50,7 +50,7 @@ impl Shortcuts<App> for OutputPane {
                     // the cursor row rather than stopping a run or closing
                     // the pane. Matches the title's "(y copy · Esc done)".
                     "done"
-                } else if ctx.inflight.example_running().is_some() {
+                } else if ctx.inflight.owned_run().is_running() {
                     "stop"
                 } else {
                     "close"
@@ -65,6 +65,8 @@ impl Shortcuts<App> for OutputPane {
 
 impl CopySelection<App> for OutputPane {
     fn copy_selection(ctx: &App) -> CopySelectionResult {
-        ctx.panes.output.copy_payload(ctx.inflight.example_output())
+        ctx.panes
+            .output
+            .copy_payload(ctx.inflight.owned_run().output())
     }
 }

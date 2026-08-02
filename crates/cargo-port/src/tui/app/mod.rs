@@ -471,7 +471,7 @@ impl App {
         // collapses the selection back to following the tail. The generic
         // CopyOutcome only carries the label, so the count is read here.
         if matches!(outcome, CopyOutcome::Copied { .. }) && self.focus_is(PaneId::Output) {
-            let live = self.inflight.example_output().to_vec();
+            let live = self.inflight.owned_run().output().to_vec();
             let count = self.panes.output.selection_line_count(&live);
             self.panes.output.collapse_to_tail();
             let lines = if count == 1 { "line" } else { "lines" };
@@ -957,13 +957,20 @@ impl App {
 
     pub(super) const fn confirm(&self) -> Option<&ConfirmAction> { self.confirm.as_ref() }
 
-    pub(super) fn set_example_output(&mut self, output: Vec<String>) {
-        let was_empty = self.inflight.example_output_is_empty();
-        self.inflight.set_example_output(output);
-        if was_empty && !self.inflight.example_output_is_empty() {
+    /// Apply the Output-pane focus behavior after `OwnedRun` replaces its
+    /// retained output buffer.
+    pub(super) fn owned_run_output_replaced(&mut self, output_was_empty: bool) {
+        if output_was_empty && !self.inflight.owned_run().output_is_empty() {
             self.panes.output.reset_for_open();
             self.set_focus_to_pane(PaneId::Output);
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_example_output(&mut self, output: Vec<String>) {
+        let output_was_empty = self.inflight.owned_run().output_is_empty();
+        self.inflight.set_example_output(output);
+        self.owned_run_output_replaced(output_was_empty);
     }
 
     /// Borrow `App` for a structural mutation of the project tree.
@@ -1078,7 +1085,7 @@ impl App {
     /// Redirect focus to the visible counterpart so the status bar and
     /// key dispatch match what the user sees.
     pub(super) fn reconcile_bottom_row_focus(&mut self) {
-        let output_active = !self.inflight.example_output_is_empty();
+        let output_active = !self.inflight.owned_run().output_is_empty();
         match (output_active, self.focused_pane_id()) {
             (true, PaneId::Lints | PaneId::CiRuns) => self.set_focus_to_pane(PaneId::Output),
             (false, PaneId::Output) => self.set_focus_to_pane(PaneId::Targets),
@@ -1159,14 +1166,14 @@ impl App {
                     || self.panes.running_targets.snapshot().has_instances()
             },
             PaneBehavior::Lints => {
-                self.inflight.example_output_is_empty()
+                self.inflight.owned_run().output_is_empty()
                     && self.lint.content().is_some_and(panes::LintsData::has_runs)
             },
             PaneBehavior::CiRuns => {
-                self.inflight.example_output_is_empty()
+                self.inflight.owned_run().output_is_empty()
                     && self.ci.content().is_some_and(panes::CiData::has_runs)
             },
-            PaneBehavior::Output => !self.inflight.example_output_is_empty(),
+            PaneBehavior::Output => !self.inflight.owned_run().output_is_empty(),
             PaneBehavior::Toasts => !self.framework.toasts.active_now().is_empty(),
             PaneBehavior::Overlay => false,
         }
@@ -1174,7 +1181,7 @@ impl App {
 
     /// All currently-tabbable panes, in tab order.
     pub(super) fn tabbable_panes(&self) -> Vec<PaneId> {
-        panes::tab_order(if self.inflight.example_output_is_empty() {
+        panes::tab_order(if self.inflight.owned_run().output_is_empty() {
             BottomRow::Diagnostics
         } else {
             BottomRow::Output
@@ -14403,8 +14410,66 @@ mod tests {
                 .take_pending_example_run()
                 .expect("example run should be pending");
             assert_eq!(pending.abs_path, linked_path.display().to_string());
-            assert_eq!(pending.package_name.as_deref(), Some("hana"));
+            assert_eq!(
+                pending.cargo_package_invocation,
+                panes::CargoPackageInvocation::Package("hana".to_string())
+            );
             assert!(pending.build_mode.is_release());
+        }
+
+        #[test]
+        fn workspace_root_target_launch_selects_owning_package() {
+            let workspace_root = test_path("/__cargo_port_never_real/hana");
+            let hana_member = test_path("/__cargo_port_never_real/hana/crates/hana");
+            let demo_member = test_path("/__cargo_port_never_real/hana/demos/wasm_node_demo");
+            let root = make_workspace_with_members(
+                Some("hana"),
+                "/__cargo_port_never_real/hana",
+                vec![
+                    inline_group(vec![make_member(
+                        Some("hana"),
+                        "/__cargo_port_never_real/hana/crates/hana",
+                    )]),
+                    inline_group(vec![make_member(
+                        Some("wasm_node_demo"),
+                        "/__cargo_port_never_real/hana/demos/wasm_node_demo",
+                    )]),
+                ],
+            );
+            let mut app = make_app(&[root]);
+
+            deliver_metadata(
+                &mut app,
+                metadata_with_member_packages(
+                    &workspace_root,
+                    &[("hana", &hana_member), ("wasm_node_demo", &demo_member)],
+                ),
+            );
+            app.project_list.set_cursor(0);
+            app.sync_selected_project();
+            app.ensure_detail_cached();
+
+            let target_index = app
+                .panes
+                .targets
+                .content()
+                .expect("workspace targets should be loaded")
+                .examples
+                .iter()
+                .position(|entry| entry.package_name == "wasm_node_demo")
+                .expect("member example should be listed");
+            app.panes.targets.viewport.set_pos(target_index);
+            panes::dispatch_targets_action(TargetsAction::ReleaseBuild, &mut app);
+
+            let pending = app
+                .inflight
+                .take_pending_example_run()
+                .expect("example run should be pending");
+            assert_eq!(pending.abs_path, workspace_root.display().to_string());
+            assert_eq!(
+                pending.cargo_package_invocation,
+                panes::CargoPackageInvocation::Package("wasm_node_demo".to_string())
+            );
         }
 
         #[test]
