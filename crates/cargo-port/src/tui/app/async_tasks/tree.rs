@@ -83,7 +83,7 @@ impl App {
         self.overlays.close_settings();
         self.overlays.close_finder();
         self.reset_project_panes();
-        self.project_list.paths.selected_project = None;
+        self.project_list.clear_selected_project();
         self.inflight.clear_pending_ci_fetch();
         self.project_list.expanded.clear();
         self.project_list.paths.pending_expanded = preserved_expanded;

@@ -75,6 +75,7 @@ impl App {
             }
         }
         if lint_runtime_changed {
+            self.project_list.mark_visible_ownership_changed();
             if let Some(runtime) = self.lint.runtime()
                 && bytes == 0
             {

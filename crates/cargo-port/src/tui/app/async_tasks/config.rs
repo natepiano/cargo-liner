@@ -403,8 +403,8 @@ impl App {
                 if actions.refresh_lint_runtime.should_apply() {
                     self.respawn_watcher_and_register_existing_projects();
                 }
-                self.project_list
-                    .regroup_members(&self.config.current().tui.inline_dirs);
+                let inline_dirs = self.config.current().tui.inline_dirs.clone();
+                self.mutate_tree().regroup_members(&inline_dirs);
                 self.scan.bump_generation();
             },
             TreeReaction::None => {

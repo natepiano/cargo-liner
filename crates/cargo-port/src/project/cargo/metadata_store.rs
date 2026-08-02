@@ -1,4 +1,4 @@
-//! Typed cache of `cargo metadata` output, keyed by workspace root.
+//! Typed cache of `cargo metadata` output, keyed by checkout root.
 //!
 //! Holds one [`WorkspaceMetadata`] per detected workspace. Defines
 //! the structure and read-side access for the `cargo_metadata`
@@ -27,7 +27,15 @@ use crate::constants::RUST_TOOLCHAIN;
 use crate::constants::RUST_TOOLCHAIN_TOML;
 use crate::project::AbsolutePath;
 
-/// Process-wide cache of `cargo metadata` results, keyed by workspace root.
+/// Revision of the accepted `cargo metadata` set.
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) struct AcceptedCargoMetadataRevision(u64);
+
+impl AcceptedCargoMetadataRevision {
+    const fn advance(&mut self) { self.0 = self.0.saturating_add(1); }
+}
+
+/// Process-wide cache of `cargo metadata` results, keyed by checkout root.
 ///
 /// Populated by [`BackgroundMsg::CargoMetadata`](crate::scan::BackgroundMsg)
 /// arrivals. Callers that want read-only access should go through
@@ -35,29 +43,36 @@ use crate::project::AbsolutePath;
 /// this type directly.
 #[derive(Debug, Default)]
 pub(crate) struct WorkspaceMetadataStore {
-    pub by_root:              HashMap<AbsolutePath, WorkspaceMetadata>,
+    by_checkout_root:                 HashMap<AbsolutePath, WorkspaceMetadata>,
+    /// Monotonic revision of accepted `cargo metadata` results. Consumers
+    /// that cache immutable views rebuild only when this value changes.
+    accepted_cargo_metadata_revision: AcceptedCargoMetadataRevision,
     /// Per-workspace monotonic counter. Every dispatch bumps the counter
     /// and stamps the spawned work with the new value; arrivals only
     /// commit if their stamp still matches the current counter. This
     /// coalesces rapid edits to a single accepted result.
-    pub dispatch_generations: HashMap<AbsolutePath, u64>,
+    pub dispatch_generations:         HashMap<AbsolutePath, u64>,
 }
 
 impl WorkspaceMetadataStore {
     pub fn new() -> Self { Self::default() }
 
-    /// Look up the metadata for the workspace whose root is `workspace_root`.
-    pub fn get(&self, workspace_root: &AbsolutePath) -> Option<&WorkspaceMetadata> {
-        self.by_root.get(workspace_root)
+    /// Look up the metadata keyed by `checkout_root`.
+    pub fn get(&self, checkout_root: &AbsolutePath) -> Option<&WorkspaceMetadata> {
+        self.by_checkout_root.get(checkout_root)
     }
 
-    /// Walk `path`'s ancestors and return the first one that has metadata.
+    /// Walk `path`'s ancestors and return the first checkout root with metadata.
     /// Enables callers to resolve `target_directory` from any path inside a
-    /// known workspace without having to find the workspace root themselves.
-    pub fn containing_workspace_root(&self, path: &AbsolutePath) -> Option<&AbsolutePath> {
+    /// known checkout without locating the checkout root themselves.
+    pub fn containing_checkout_root(&self, path: &AbsolutePath) -> Option<&AbsolutePath> {
         let mut cursor: Option<&Path> = Some(path.as_path());
         while let Some(p) = cursor {
-            if let Some((root, _)) = self.by_root.iter().find(|(root, _)| root.as_path() == p) {
+            if let Some((root, _)) = self
+                .by_checkout_root
+                .iter()
+                .find(|(root, _)| root.as_path() == p)
+            {
                 return Some(root);
             }
             cursor = p.parent();
@@ -65,59 +80,76 @@ impl WorkspaceMetadataStore {
         None
     }
 
-    /// Resolve the owning workspace's `target_directory` for any `path`
-    /// inside a known workspace. Returns `None` when no metadata covers
+    /// Resolve the owning checkout's `target_directory` for any `path`
+    /// inside a known checkout. Returns `None` when no metadata covers
     /// `path` yet; callers should fall back to `<project_root>/target`.
     /// This is the lock-free core of `App::resolve_target_dir`.
     pub fn resolved_target_dir(&self, path: &AbsolutePath) -> Option<&AbsolutePath> {
-        let root = self.containing_workspace_root(path)?;
-        self.by_root.get(root).map(|snap| &snap.target_directory)
+        let checkout_root = self.containing_checkout_root(path)?;
+        self.by_checkout_root
+            .get(checkout_root)
+            .map(|workspace_metadata| &workspace_metadata.target_directory)
     }
 
     /// Look up the [`PackageRecord`] whose manifest sits at
     /// `<path>/Cargo.toml` — i.e. the package whose root directory is
     /// `path`. Works for standalone packages (where `path` is the
-    /// workspace root) and for workspace members (where `path` is a
-    /// member dir under the workspace root). Returns `None` when no
+    /// checkout root) and for workspace members (where `path` is a
+    /// member dir under the checkout root). Returns `None` when no
     /// metadata covers `path` or when no package in that metadata
     /// matches — the latter happens transiently when a manifest has
     /// been edited and the follow-up `cargo metadata` hasn't landed
     /// yet, so callers should treat `None` as "Loading…".
     pub fn package_for_path(&self, path: &AbsolutePath) -> Option<&PackageRecord> {
-        let root = self.containing_workspace_root(path)?;
-        let snap = self.by_root.get(root)?;
+        let checkout_root = self.containing_checkout_root(path)?;
+        let workspace_metadata = self.by_checkout_root.get(checkout_root)?;
         let expected_manifest = path.as_path().join(CARGO_TOML);
-        snap.packages
+        workspace_metadata
+            .packages
             .values()
             .find(|pkg| pkg.manifest_path.as_path() == expected_manifest)
     }
 
-    /// Insert or replace the metadata for `workspace_root`.
+    /// Revision of the accepted metadata set. Dispatches and rejected
+    /// arrivals do not change this value.
+    pub const fn accepted_cargo_metadata_revision(&self) -> AcceptedCargoMetadataRevision {
+        self.accepted_cargo_metadata_revision
+    }
+
+    /// Accepted workspace metadata. `cargo metadata --no-deps` provides
+    /// workspace packages and targets only; registry and Git dependency
+    /// records are intentionally not represented here.
+    pub fn accepted_metadata(&self) -> impl Iterator<Item = &WorkspaceMetadata> {
+        self.by_checkout_root.values()
+    }
+
+    /// Insert or replace the metadata for `declared_checkout_root`.
     pub fn upsert(&mut self, workspace_metadata: WorkspaceMetadata) {
-        self.by_root.insert(
-            workspace_metadata.workspace_root.clone(),
+        self.by_checkout_root.insert(
+            workspace_metadata.declared_checkout_root.clone(),
             workspace_metadata,
         );
+        self.accepted_cargo_metadata_revision.advance();
     }
 
     /// Stamp the cached out-of-tree target size onto an existing metadata
-    /// entry. No-op when `workspace_root` has no metadata (it may have
+    /// entry. No-op when `checkout_root` has no metadata (it may have
     /// been replaced between dispatch and arrival) or when the entry's
     /// current `target_directory` no longer matches `target_dir` (a follow-
     /// up `cargo metadata` redirected the target before the walk landed).
     pub fn set_out_of_tree_target_bytes(
         &mut self,
-        workspace_root: &AbsolutePath,
+        checkout_root: &AbsolutePath,
         target_dir: &AbsolutePath,
         bytes: u64,
     ) -> bool {
-        let Some(snap) = self.by_root.get_mut(workspace_root) else {
+        let Some(workspace_metadata) = self.by_checkout_root.get_mut(checkout_root) else {
             return false;
         };
-        if snap.target_directory != *target_dir {
+        if workspace_metadata.target_directory != *target_dir {
             return false;
         }
-        snap.out_of_tree_target_bytes = Some(bytes);
+        workspace_metadata.out_of_tree_target_bytes = Some(bytes);
         true
     }
 
@@ -144,12 +176,15 @@ impl WorkspaceMetadataStore {
 /// A single workspace's resolved `cargo metadata` output.
 #[derive(Clone, Debug)]
 pub(crate) struct WorkspaceMetadata {
-    pub workspace_root:           AbsolutePath,
+    /// Dispatch root used as the stable metadata-store key and checkout owner.
+    pub declared_checkout_root:   AbsolutePath,
+    /// Workspace root reported by the accepted `cargo metadata` result.
+    pub cargo_workspace_root:     AbsolutePath,
     pub target_directory:         AbsolutePath,
     pub packages:                 HashMap<PackageId, PackageRecord>,
     pub fingerprint:              ManifestFingerprint,
     /// Byte size of `target_directory` when it lives *outside*
-    /// `workspace_root` (a sharer — e.g. redirected by
+    /// `declared_checkout_root` (a sharer — e.g. redirected by
     /// `CARGO_TARGET_DIR` or an ancestor `.cargo/config.toml`).
     /// `None` for in-tree targets (the scan walker's
     /// `in_project_target` covers those) and until the
@@ -481,11 +516,12 @@ mod tests {
     }
 
     fn fake_metadata(
-        workspace_root: AbsolutePath,
+        checkout_root: AbsolutePath,
         target_directory: AbsolutePath,
     ) -> WorkspaceMetadata {
         WorkspaceMetadata {
-            workspace_root,
+            cargo_workspace_root: checkout_root.clone(),
+            declared_checkout_root: checkout_root,
             target_directory,
             packages: std::collections::HashMap::new(),
             fingerprint: ManifestFingerprint {
@@ -511,7 +547,7 @@ mod tests {
     }
 
     #[test]
-    fn resolved_target_dir_returns_target_for_workspace_root() {
+    fn resolved_target_dir_returns_target_for_checkout_root() {
         let mut store = WorkspaceMetadataStore::new();
         let root = AbsolutePath::from(PathBuf::from("/ws"));
         let target = AbsolutePath::from(PathBuf::from("/tmp/out-of-tree-target"));
@@ -520,7 +556,7 @@ mod tests {
         assert_eq!(
             store.resolved_target_dir(&root).cloned(),
             Some(target),
-            "exact-match workspace root resolves its own target_directory"
+            "exact-match checkout root resolves its own target_directory"
         );
     }
 
@@ -535,7 +571,7 @@ mod tests {
         assert_eq!(
             store.resolved_target_dir(&member).cloned(),
             Some(target),
-            "member paths resolve via ancestor walk up to the workspace root"
+            "member paths resolve via ancestor walk up to the checkout root"
         );
     }
 

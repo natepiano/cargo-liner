@@ -87,6 +87,7 @@ impl Drop for TreeMutation<'_> {
     ///    tree.
     fn drop(&mut self) {
         self.panes.clear_for_tree_change();
+        self.projects.mark_visible_ownership_changed();
         self.projects
             .recompute_visibility(self.non_rust.includes_non_rust());
     }

@@ -185,6 +185,7 @@ use crate::lint::LintRuns;
 use crate::lint::LintStatus;
 use crate::project;
 use crate::project::AbsolutePath;
+use crate::project::CargoWorkspaceIndex;
 #[cfg(test)]
 use crate::project::GitStatus;
 use crate::project::RootItem;
@@ -200,107 +201,115 @@ pub(super) struct App {
     /// (availability). App orchestration that touches Net plus
     /// other subsystems (toast push/dismiss, retry spawn) stays
     /// as named methods on `App`.
-    pub(super) net:                  Net,
+    pub(super) net:                                         Net,
     /// Panes subsystem. Owns `pane_manager`, `pane_data`,
     /// `hovered_pane_row`, and `cpu_poller`. App's
     /// impl-files reach pane state through this handle.
-    pub(super) panes:                Panes,
+    pub(super) panes:                                       Panes,
     /// Background subsystem. Owns the four mpsc channel pairs plus
     /// the watcher handle. The `background_*` pair is replaced wholesale on every
     /// rescan via [`Background::swap_background_channel`]; the others outlive
     /// any single rescan.
-    pub(super) background:           Background,
+    pub(super) background:                                  Background,
     /// Inflight subsystem. Owns the running-paths maps, toast
     /// slots, pending queues, and example-runner state.
-    pub(super) inflight:             Inflight,
+    pub(super) inflight:                                    Inflight,
     /// Lint subsystem. Owns the lint runtime, in-flight lint
     /// state, the disk cache stat counter, and the startup-pass
     /// trackers.
-    pub(super) lint:                 Lint,
+    pub(super) lint:                                        Lint,
     /// Ci subsystem. Owns `fetch_tracker`, `fetch_toast`, and
     /// per-project `display_modes`, plus `Ci::package_display`
     /// which returns the typed [`CiDisplay`](crate::tui::state::CiDisplay) for the package
     /// detail row.
-    pub(super) ci:                   Ci,
+    pub(super) ci:                                          Ci,
     /// Config subsystem. Owns `current_config`, `config_path`,
     /// and `config_last_seen`. Composes `WatchedFile<CargoPortConfig>`.
-    pub(super) config:               Config,
+    pub(super) config:                                      Config,
     /// Keymap subsystem. Owns `current_keymap`, `keymap_path`,
     /// `keymap_last_seen`, `keymap_diagnostics_id`. Composes
     /// `WatchedFile<ResolvedKeymap>`.
-    pub(super) keymap:               Keymap,
+    pub(super) keymap:                                      Keymap,
     /// Themes subsystem. Owns the user-themes directory watch and the
     /// parse-error toast slot used to dismiss prior diagnostics when
     /// the registry reloads cleanly. The active theme + registry
     /// themselves live in `tui_pane`'s `THEME_STATE`.
-    pub(super) themes:               ThemeRuntime,
+    pub(super) themes:                                      ThemeRuntime,
     /// Per-project ahead/behind tracker. Holds the eligibility flag,
     /// last-seen value, and the in-flight "Sync changes" task-toast
     /// id used to accumulate transitions within the linger window.
-    pub(super) sync_tracker:         SyncTracker,
+    pub(super) sync_tracker:                                SyncTracker,
     /// Per-project `GitStatus` tracker. Holds the last-seen value and
     /// the in-flight "Git status changes" task-toast id used to
     /// accumulate transitions within the linger window.
-    pub(super) git_status_tracker:   GitStatusTracker,
+    pub(super) git_status_tracker:                          GitStatusTracker,
     /// The central per-project data store. Lint runs, CI info, git
     /// info, language stats, package/workspace fields, and disk usage
     /// all live inside the tree. Every subsystem that produces
     /// per-project data writes into it.
-    pub(super) project_list:         ProjectList,
+    pub(super) project_list:                                ProjectList,
+    /// Immutable workspace ownership view used by process features.
+    /// It rebuilds only after accepted Cargo metadata or the `ProjectList`
+    /// revision changes; event-loop wakes retain the current view.
+    pub(super) cargo_workspace_index:                       CargoWorkspaceIndex,
+    /// Number of Running Targets attribution collections performed by this
+    /// app. Tests use it to verify the cadence gate precedes filesystem work.
+    #[cfg(test)]
+    pub(super) running_target_attribution_collection_count: u64,
     /// Scan subsystem. Owns `scan` (`ScanState`),
     /// `dirty`, `data_generation`, `discovery_shimmers`,
     /// `pending_git_first_commit`, `metadata_store`,
     /// `target_dir_index`, `priority_fetch_path`,
     /// `confirm_verifying`, `lint_cache_usage`, and (test-only)
     /// `retry_spawn_mode`.
-    pub(super) scan:                 Scan,
+    pub(super) scan:                                        Scan,
     /// Startup-phase orchestrator. Owns the per-phase trackers
     /// (`disk`, `git`, `repo`, `metadata`, `lint_phase`,
     /// `lint_count`) plus the phase state that decides when the
     /// umbrella "Startup" toast may enter its close countdown.
-    pub(super) startup:              Startup,
-    pub(super) startup_services:     StartupServices,
-    pub(super) visited_panes:        HashSet<AppPaneId>,
+    pub(super) startup:                                     Startup,
+    pub(super) startup_services:                            StartupServices,
+    pub(super) visited_panes:                               HashSet<AppPaneId>,
     /// Overlays subsystem. Owns the overlay-mode enums
     /// (`FinderMode`, `KeymapMode`),
     /// the transient `inline_error` UI feedback, and the
     /// `status_flash` slot.
-    pub(super) overlays:             Overlays,
-    confirm:                         Option<ConfirmAction>,
-    pub(super) animation_started:    Instant,
+    pub(super) overlays:                                    Overlays,
+    confirm:                                                Option<ConfirmAction>,
+    pub(super) animation_started:                           Instant,
     /// Time the project-volume capacity was last requested. This refreshes on
     /// disk-watch updates and at a low fixed cadence for external disk use.
-    pub(super) storage_refresh_at:   Instant,
+    pub(super) storage_refresh_at:                          Instant,
     /// Time the last background crates.io refresh request was issued —
     /// the gap that keeps `App::refresh_crates_io_if_due` to one query
     /// per `CRATES_IO_REFRESH_INTERVAL_SECS`.
-    pub(super) crates_io_refresh_at: Instant,
+    pub(super) crates_io_refresh_at:                        Instant,
     /// Time each publishable crate name was last queried on crates.io,
     /// stamped by every fetch path (startup, watcher, priority, the
     /// background refresh). `refresh_crates_io_if_due` re-queries the
     /// oldest entry; a name absent from the map has never been queried
     /// and goes first.
-    pub(super) crates_io_checked_at: HashMap<String, Instant>,
-    pub(super) mouse_pos:            Option<Position>,
+    pub(super) crates_io_checked_at:                        HashMap<String, Instant>,
+    pub(super) mouse_pos:                                   Option<Position>,
     /// Framework aggregator from `tui_pane`. Owns the focused-pane id,
     /// quit/restart flags, the per-pane mode-query registry, and the
     /// framework-side `Toasts`/`KeymapPane`/`SettingsPane` overlays.
     /// Stored alongside the legacy keymap path; dispatch routes
     /// through it for targeted structural lookups.
-    pub(super) framework:            Framework<Self>,
+    pub(super) framework:                                   Framework<Self>,
     /// Framework keymap built at startup from
     /// [`tui_pane::Keymap::builder`]. Held in parallel with the legacy
     /// `keymap` field; the legacy path remains authoritative for broad
     /// key dispatch.
-    pub(super) framework_keymap:     Rc<FrameworkKeymap<Self>>,
-    pub(super) pending_nav_chord:    Vec<KeyBind>,
+    pub(super) framework_keymap:                            Rc<FrameworkKeymap<Self>>,
+    pub(super) pending_nav_chord:                           Vec<KeyBind>,
     /// Temp directories backing the config, keymap, themes, and cache paths
     /// this `App` was built against, handed over by
     /// [`test_support::TestApp::into_quiet_app`] when a fixture returns a bare
     /// `App`. Declared last so the directories are removed only after every
     /// field that reads from them has dropped.
     #[cfg(test)]
-    pub(super) fixture_dirs:         Option<FixtureDirs>,
+    pub(super) fixture_dirs:                                Option<FixtureDirs>,
 }
 
 impl App {
@@ -1202,10 +1211,14 @@ impl App {
             return;
         }
 
-        self.project_list
-            .paths
-            .selected_project
-            .clone_from(&current);
+        match current.clone() {
+            Some(selected_project_path) => {
+                self.project_list.select_project_path(selected_project_path);
+            },
+            None => {
+                self.project_list.clear_selected_project();
+            },
+        }
         self.reset_project_panes();
 
         let panes = self.tabbable_panes();
@@ -5951,7 +5964,8 @@ mod tests {
                 .lock()
                 .expect("lock test store")
                 .upsert(WorkspaceMetadata {
-                    workspace_root: AbsolutePath::from(project_dir.clone()),
+                    declared_checkout_root: AbsolutePath::from(project_dir.clone()),
+                    cargo_workspace_root: AbsolutePath::from(project_dir.clone()),
                     target_directory: AbsolutePath::from(project_dir.join("target")),
                     packages,
                     fingerprint: ManifestFingerprint {
@@ -6269,7 +6283,8 @@ mod tests {
                 .lock()
                 .expect("lock test store")
                 .upsert(WorkspaceMetadata {
-                    workspace_root:           AbsolutePath::from(project_dir.clone()),
+                    declared_checkout_root:   AbsolutePath::from(project_dir.clone()),
+                    cargo_workspace_root:     AbsolutePath::from(project_dir.clone()),
                     target_directory:         AbsolutePath::from(custom_target.clone()),
                     packages:                 std::collections::HashMap::new(),
                     fingerprint:              ManifestFingerprint {
@@ -6324,7 +6339,8 @@ mod tests {
             let mut packages = std::collections::HashMap::new();
             packages.insert(pkg_id, pkg);
             let workspace_metadata = WorkspaceMetadata {
-                workspace_root: root,
+                declared_checkout_root: root.clone(),
+                cargo_workspace_root: root,
                 target_directory: AbsolutePath::from(project_dir.join("target")),
                 packages,
                 fingerprint: ManifestFingerprint {
@@ -6466,7 +6482,8 @@ mod tests {
                 let store = app.scan.metadata_store_handle();
                 let mut guard = store.lock().expect("lock test store");
                 guard.upsert(WorkspaceMetadata {
-                    workspace_root:           root,
+                    declared_checkout_root:   root.clone(),
+                    cargo_workspace_root:     root,
                     target_directory:         target,
                     packages:                 std::collections::HashMap::new(),
                     fingerprint:              ManifestFingerprint {
@@ -6526,7 +6543,8 @@ mod tests {
                 let mut packages = std::collections::HashMap::new();
                 packages.insert(pkg_id, pkg);
                 let workspace_metadata = WorkspaceMetadata {
-                    workspace_root: root.clone(),
+                    declared_checkout_root: root.clone(),
+                    cargo_workspace_root: root.clone(),
                     target_directory: AbsolutePath::from(target_dir),
                     packages,
                     fingerprint: ManifestFingerprint {
@@ -7609,7 +7627,8 @@ mod tests {
                 .lock()
                 .expect("lock test store")
                 .upsert(WorkspaceMetadata {
-                    workspace_root: project_path.clone(),
+                    declared_checkout_root: project_path.clone(),
+                    cargo_workspace_root: project_path.clone(),
                     target_directory: AbsolutePath::from(project_path.as_path().join("target")),
                     packages,
                     fingerprint: ManifestFingerprint {
@@ -7795,7 +7814,8 @@ mod tests {
             let mut packages = std::collections::HashMap::new();
             packages.insert(pkg_id, pkg);
             let workspace_metadata = WorkspaceMetadata {
-                workspace_root: workspace_root.clone(),
+                declared_checkout_root: workspace_root.clone(),
+                cargo_workspace_root: workspace_root.clone(),
                 target_directory: AbsolutePath::from("/never-real/demo/target"),
                 packages,
                 fingerprint: ManifestFingerprint {
@@ -11090,7 +11110,8 @@ mod tests {
             let mut packages = HashMap::new();
             packages.insert(record_id, record);
             let workspace_metadata = WorkspaceMetadata {
-                workspace_root: workspace_path,
+                declared_checkout_root: workspace_path.clone(),
+                cargo_workspace_root: workspace_path,
                 target_directory: test_path("~/app/target"),
                 packages,
                 fingerprint: fake_fingerprint(),
@@ -12454,7 +12475,8 @@ mod tests {
 
         fn fake_metadata(workspace_root: &AbsolutePath) -> WorkspaceMetadata {
             WorkspaceMetadata {
-                workspace_root:           workspace_root.clone(),
+                declared_checkout_root:   workspace_root.clone(),
+                cargo_workspace_root:     workspace_root.clone(),
                 target_directory:         AbsolutePath::from(
                     workspace_root.as_path().join("target"),
                 ),
@@ -12734,7 +12756,8 @@ mod tests {
                 .lock()
                 .expect("store")
                 .upsert(WorkspaceMetadata {
-                    workspace_root:           project_path.clone(),
+                    declared_checkout_root:   project_path.clone(),
+                    cargo_workspace_root:     project_path.clone(),
                     target_directory:         custom_target,
                     packages:                 HashMap::new(),
                     fingerprint:              fake_fingerprint(),
@@ -12776,7 +12799,8 @@ mod tests {
                 .lock()
                 .expect("store")
                 .upsert(WorkspaceMetadata {
-                    workspace_root:           project_path.clone(),
+                    declared_checkout_root:   project_path.clone(),
+                    cargo_workspace_root:     project_path.clone(),
                     target_directory:         custom_target,
                     packages:                 HashMap::new(),
                     fingerprint:              fake_fingerprint(),
@@ -13786,7 +13810,8 @@ mod tests {
                 let store = app.scan.metadata_store_handle();
                 let mut guard = store.lock().expect("lock test metadata store");
                 guard.upsert(WorkspaceMetadata {
-                    workspace_root:           workspace_root.clone(),
+                    declared_checkout_root:   workspace_root.clone(),
+                    cargo_workspace_root:     workspace_root.clone(),
                     target_directory:         target_dir.clone(),
                     packages:                 HashMap::new(),
                     fingerprint:              fake_fingerprint(),
@@ -13864,7 +13889,8 @@ mod tests {
             packages.insert(record_id, record);
 
             let workspace_metadata = WorkspaceMetadata {
-                workspace_root: project_path.clone(),
+                declared_checkout_root: project_path.clone(),
+                cargo_workspace_root: project_path.clone(),
                 target_directory: AbsolutePath::from(project_path.as_path().join("target")),
                 packages,
                 fingerprint: fake_fingerprint(),
@@ -14018,7 +14044,8 @@ mod tests {
             );
 
             WorkspaceMetadata {
-                workspace_root: root.clone(),
+                declared_checkout_root: root.clone(),
+                cargo_workspace_root: root.clone(),
                 target_directory: AbsolutePath::from(root.as_path().join("target")),
                 packages,
                 fingerprint: ManifestFingerprint {
@@ -14073,7 +14100,8 @@ mod tests {
                 .collect();
 
             WorkspaceMetadata {
-                workspace_root: workspace_root.clone(),
+                declared_checkout_root: workspace_root.clone(),
+                cargo_workspace_root: workspace_root.clone(),
                 target_directory: AbsolutePath::from(workspace_root.as_path().join("target")),
                 packages,
                 fingerprint: ManifestFingerprint {
@@ -14089,7 +14117,7 @@ mod tests {
         }
 
         fn deliver_metadata(app: &mut App, metadata: WorkspaceMetadata) {
-            let workspace_root = metadata.workspace_root.clone();
+            let workspace_root = metadata.declared_checkout_root.clone();
             let generation = app
                 .scan
                 .metadata_store_handle()

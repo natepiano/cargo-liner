@@ -175,14 +175,14 @@ impl Scan {
         let Ok(store) = self.metadata_store.lock() else {
             return false;
         };
-        let Some(workspace_root) = store.containing_workspace_root(project_path) else {
+        let Some(checkout_root) = store.containing_checkout_root(project_path) else {
             // No metadata covers this path — nothing to verify against.
             return true;
         };
-        let Some(metadata) = store.get(workspace_root) else {
+        let Some(metadata) = store.get(checkout_root) else {
             return true;
         };
-        let Ok(current) = ManifestFingerprint::capture(workspace_root.as_path()) else {
+        let Ok(current) = ManifestFingerprint::capture(checkout_root.as_path()) else {
             return false;
         };
         current != metadata.fingerprint

@@ -237,9 +237,9 @@ impl TargetsData {
         metadata: &WorkspaceMetadata,
         selected_path: &AbsolutePath,
     ) -> Self {
-        let workspace_root = metadata.workspace_root.as_path();
+        let checkout_root = metadata.declared_checkout_root.as_path();
         let selected_path = selected_path.as_path();
-        let include_all_members = selected_path == workspace_root;
+        let include_all_members = selected_path == checkout_root;
         let is_real_workspace = metadata.packages.len() > 1;
         let project_path = AbsolutePath::from(selected_path);
         let mut binaries: Vec<TargetEntry> = Vec::new();
@@ -251,7 +251,7 @@ impl TargetsData {
             if !include_all_members && manifest_dir != Some(selected_path) {
                 continue;
             }
-            let source = if is_real_workspace && manifest_dir == Some(workspace_root) {
+            let source = if is_real_workspace && manifest_dir == Some(checkout_root) {
                 TargetSource::workspace_root(record.name.clone())
             } else {
                 TargetSource::member(record.name.clone())
@@ -359,7 +359,7 @@ fn lookup_targets_data_for_path(app: &App, abs_path: &AbsolutePath) -> TargetsDa
     let Ok(store) = handle.lock() else {
         return TargetsData::default();
     };
-    let Some(root) = store.containing_workspace_root(abs_path) else {
+    let Some(root) = store.containing_checkout_root(abs_path) else {
         return TargetsData::default();
     };
     let Some(metadata) = store.get(root) else {
@@ -533,7 +533,8 @@ mod targets_from_metadata {
             map.insert(id, pkg);
         }
         WorkspaceMetadata {
-            workspace_root:           root.clone(),
+            declared_checkout_root:   root.clone(),
+            cargo_workspace_root:     root.clone(),
             target_directory:         AbsolutePath::from(root.as_path().join("target")),
             packages:                 map,
             fingerprint:              ManifestFingerprint {

@@ -143,8 +143,9 @@ impl RunProfile {
     pub const fn is_installed(self) -> bool { matches!(self, Self::Installed) }
 }
 
-/// Key identifying a running target. Matched against `(target_dir, run_target_kind, name)`
-/// derived from the project's metadata at render time.
+/// Key identifying a running target. Matched against
+/// `(target_dir, run_target_kind, name)`, where `target_dir` is the
+/// target-directory path used for executable matching.
 #[derive(Hash, Eq, PartialEq, Clone, Debug)]
 pub struct RunningKey {
     pub target_dir:      AbsolutePath,
@@ -152,31 +153,122 @@ pub struct RunningKey {
     pub name:            String,
 }
 
-/// One workspace's slice fed to the poller per tick. `target_dir` is the
-/// canonicalized `target_directory`; `bench_names` is the union of bench
-/// target names (the safety net for classifying `deps/<name>-<hash>`
-/// exes); `bin_names` is the union of bin target names (used to match
-/// `cargo install`ed binaries in the cargo bin directory); `member_dirs`
-/// maps each `(run_target_kind, name)` target to the manifest dir of the workspace
-/// member that owns it, with `workspace_root` as the fallback for exes
-/// whose target the metadata no longer declares.
-pub struct ProjectTargetSlice<'a> {
-    pub target_dir:     &'a AbsolutePath,
-    pub workspace_root: &'a AbsolutePath,
-    pub bench_names:    &'a HashSet<String>,
-    pub bin_names:      &'a HashSet<String>,
-    pub member_dirs:    &'a HashMap<(RunTargetKind, String), AbsolutePath>,
+/// Borrowed Running Targets attribution for one workspace or unindexed
+/// visible project.
+pub struct RunningTargetProjectAttribution<'a> {
+    /// Target-directory path used as the executable-matching boundary.
+    /// This is canonical when live canonical resolution succeeds and is the
+    /// declared target-directory path when canonical resolution is unavailable.
+    pub executable_match_target_directory:  &'a AbsolutePath,
+    /// Project or checkout root used when no declared target owner matches.
+    pub fallback_owner_root:                &'a AbsolutePath,
+    /// Bench target names used to recognize `deps/<name>-<hash>` executables.
+    pub bench_names:                        &'a HashSet<String>,
+    /// Binary target names used to recognize `cargo install`ed executables.
+    pub bin_names:                          &'a HashSet<String>,
+    /// Declared owner evidence for each exact `(RunTargetKind, name)` identity.
+    pub(super) exact_target_owner_evidence:
+        &'a HashMap<(RunTargetKind, String), ExactRunningTargetOwnerEvidence>,
 }
 
-impl ProjectTargetSlice<'_> {
-    /// Manifest dir of the member that owns `(run_target_kind, name)`, falling back to
-    /// the workspace root when the metadata no longer declares the target
-    /// (a stale build artifact).
-    fn member_dir(&self, run_target_kind: RunTargetKind, name: &str) -> AbsolutePath {
-        self.member_dirs
+/// Declared member ownership evidence for one exact target identity within a
+/// workspace.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum ExactRunningTargetOwnerEvidence {
+    /// Every declaration and visible-target observation names this member.
+    Unique(AbsolutePath),
+    /// Distinct members declare or visibly own the same target identity.
+    Ambiguous,
+}
+
+impl ExactRunningTargetOwnerEvidence {
+    pub(super) fn include(&mut self, declared_member_root: &AbsolutePath) {
+        match self {
+            Self::Unique(existing_root) if existing_root == declared_member_root => {},
+            Self::Unique(_) => *self = Self::Ambiguous,
+            Self::Ambiguous => {},
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RunningTargetOwnerAttribution<'a> {
+    DeclaredMember(&'a AbsolutePath),
+    AmbiguousTarget(&'a AbsolutePath),
+    UndeclaredTarget(&'a AbsolutePath),
+}
+
+impl<'a> RunningTargetOwnerAttribution<'a> {
+    const fn owner_root(self) -> &'a AbsolutePath {
+        match self {
+            Self::DeclaredMember(owner_root)
+            | Self::AmbiguousTarget(owner_root)
+            | Self::UndeclaredTarget(owner_root) => owner_root,
+        }
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct AttributedRunningTargetExecutable {
+    key:        RunningKey,
+    profile:    RunProfile,
+    owner_root: AbsolutePath,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum RunningTargetExecutableClassification {
+    Attributed(AttributedRunningTargetExecutable),
+    AmbiguousWorkspaceOwnership,
+    Unrecognized,
+}
+
+enum CrossWorkspaceExactOwnerMatch {
+    None,
+    One(AttributedRunningTargetExecutable),
+    Multiple,
+}
+
+impl CrossWorkspaceExactOwnerMatch {
+    fn include(&mut self, attribution: AttributedRunningTargetExecutable) {
+        match self {
+            Self::None => *self = Self::One(attribution),
+            Self::One(_) => *self = Self::Multiple,
+            Self::Multiple => {},
+        }
+    }
+}
+
+enum UndeclaredTargetFallback {
+    Missing,
+    First(AttributedRunningTargetExecutable),
+}
+
+impl UndeclaredTargetFallback {
+    fn include_first(&mut self, attribution: AttributedRunningTargetExecutable) {
+        if matches!(self, Self::Missing) {
+            *self = Self::First(attribution);
+        }
+    }
+}
+
+impl RunningTargetProjectAttribution<'_> {
+    fn owner_attribution(
+        &self,
+        run_target_kind: RunTargetKind,
+        name: &str,
+    ) -> RunningTargetOwnerAttribution<'_> {
+        match self
+            .exact_target_owner_evidence
             .get(&(run_target_kind, name.to_string()))
-            .unwrap_or(self.workspace_root)
-            .clone()
+        {
+            Some(ExactRunningTargetOwnerEvidence::Unique(owner_root)) => {
+                RunningTargetOwnerAttribution::DeclaredMember(owner_root)
+            },
+            Some(ExactRunningTargetOwnerEvidence::Ambiguous) => {
+                RunningTargetOwnerAttribution::AmbiguousTarget(self.fallback_owner_root)
+            },
+            None => RunningTargetOwnerAttribution::UndeclaredTarget(self.fallback_owner_root),
+        }
     }
 }
 
@@ -194,17 +286,31 @@ impl RunningTargetsPoller {
         }
     }
 
+    /// Whether process polling is enabled and the cadence is due at `now`.
+    /// This query does not advance [`Self::last_poll`]; [`Self::tick`] remains
+    /// the authoritative state transition and rechecks the cadence.
+    pub fn is_due(&self, now: Instant) -> bool {
+        self.startup_services.running_targets_polling_effect() == StartupEffect::Real
+            && self.cadence_is_due(now)
+    }
+
+    fn cadence_is_due(&self, now: Instant) -> bool {
+        self.last_poll
+            .is_none_or(|last| now.duration_since(last) >= self.poll_interval)
+    }
+
     /// Refresh if due. Returns the current snapshot regardless of cadence.
-    pub fn tick(&mut self, now: Instant, projects: &[ProjectTargetSlice<'_>]) -> &RunningTargets {
+    pub fn tick(
+        &mut self,
+        now: Instant,
+        project_attributions: &[RunningTargetProjectAttribution<'_>],
+    ) -> &RunningTargets {
         let effect = self.startup_services.running_targets_polling_effect();
         if effect == StartupEffect::Suppressed {
             self.startup_services.record_running_targets_polling(effect);
             return &self.snapshot;
         }
-        if self
-            .last_poll
-            .is_some_and(|last| now.duration_since(last) < self.poll_interval)
-        {
+        if !self.cadence_is_due(now) {
             return &self.snapshot;
         }
         self.startup_services.record_running_targets_polling(effect);
@@ -220,7 +326,7 @@ impl RunningTargetsPoller {
                 .with_memory(),
         );
 
-        let mut by_key = self.collect_instances(now, projects);
+        let mut by_key = self.collect_instances(now, project_attributions);
         // Stable per-key order so the pane's instance rows (and the cursor
         // resting on one) don't reshuffle between ticks.
         let links = |pid: u32| {
@@ -284,7 +390,7 @@ impl RunningTargetsPoller {
     fn collect_instances(
         &mut self,
         now: Instant,
-        projects: &[ProjectTargetSlice<'_>],
+        project_attributions: &[RunningTargetProjectAttribution<'_>],
     ) -> HashMap<RunningKey, RunningTarget> {
         let install_bin_dir = self.install_bin_dir.as_ref().map(AbsolutePath::as_path);
         let mut by_key: HashMap<RunningKey, RunningTarget> = HashMap::new();
@@ -308,39 +414,50 @@ impl RunningTargetsPoller {
             let cpu = process.cpu_usage();
             let memory = process.memory();
             let create_time = process.start_time();
-            if let Some((key, profile, member_dir)) = classify_exe(&exe, projects) {
-                let first_seen = *self.first_seen.entry(pid).or_insert(now);
-                let cpu = smoothed_cpu(&mut self.cpu_history, pid, cpu);
-                push_instance(
-                    &mut by_key,
-                    key,
-                    member_dir,
-                    instance(pid, cpu, memory, profile, first_seen, create_time),
-                );
-            } else {
-                let keys = installed_bin_keys(&exe, projects, install_bin_dir);
-                if keys.is_empty() {
-                    continue;
-                }
-                // One OS process: feed its sample once, however many
-                // projects the installed binary is attributed to.
-                let first_seen = *self.first_seen.entry(pid).or_insert(now);
-                let cpu = smoothed_cpu(&mut self.cpu_history, pid, cpu);
-                for (key, member_dir) in keys {
+            match classify_exe(&exe, project_attributions) {
+                RunningTargetExecutableClassification::Attributed(attribution) => {
+                    let first_seen = *self.first_seen.entry(pid).or_insert(now);
+                    let cpu = smoothed_cpu(&mut self.cpu_history, pid, cpu);
                     push_instance(
                         &mut by_key,
-                        key,
-                        member_dir,
+                        attribution.key,
+                        attribution.owner_root,
                         instance(
                             pid,
                             cpu,
                             memory,
-                            RunProfile::Installed,
+                            attribution.profile,
                             first_seen,
                             create_time,
                         ),
                     );
-                }
+                },
+                RunningTargetExecutableClassification::AmbiguousWorkspaceOwnership => {},
+                RunningTargetExecutableClassification::Unrecognized => {
+                    let keys = installed_bin_keys(&exe, project_attributions, install_bin_dir);
+                    if keys.is_empty() {
+                        continue;
+                    }
+                    // One OS process: feed its sample once, however many
+                    // projects the installed binary is attributed to.
+                    let first_seen = *self.first_seen.entry(pid).or_insert(now);
+                    let cpu = smoothed_cpu(&mut self.cpu_history, pid, cpu);
+                    for (key, member_dir) in keys {
+                        push_instance(
+                            &mut by_key,
+                            key,
+                            member_dir,
+                            instance(
+                                pid,
+                                cpu,
+                                memory,
+                                RunProfile::Installed,
+                                first_seen,
+                                create_time,
+                            ),
+                        );
+                    }
+                },
             }
         }
         by_key
@@ -622,30 +739,61 @@ fn push_instance(
         .push(inst);
 }
 
-/// Classify an exe that lives under a project's `target_dir` as a bin /
-/// example / bench, returning the unique `(RunningKey, RunProfile)` plus
-/// the manifest dir of the workspace member that owns the target. `None`
-/// for anything not under a known `target_dir` or not a runnable target
-/// (`deps/<test>-<hash>`, `build/`, ...). Installed binaries are handled
-/// separately by [`installed_bin_keys`].
+/// Classify an executable under a project's matching target directory as a
+/// binary, example, or bench. One workspace's exact `(RunTargetKind, name)`
+/// owner takes precedence over undeclared fallbacks. Exact evidence from
+/// multiple workspaces is ambiguous. If no workspace declares the target,
+/// the first matching attribution supplies the deterministic fallback owner.
+/// Installed binaries are handled by [`installed_bin_keys`].
 fn classify_exe(
     exe: &Path,
-    projects: &[ProjectTargetSlice<'_>],
-) -> Option<(RunningKey, RunProfile, AbsolutePath)> {
-    for slice in projects {
-        if let Ok(rest) = exe.strip_prefix(slice.target_dir.as_path())
-            && let Some((run_target_kind, name, profile)) = classify_tail(rest, slice.bench_names)
+    project_attributions: &[RunningTargetProjectAttribution<'_>],
+) -> RunningTargetExecutableClassification {
+    let mut exact_owner_match = CrossWorkspaceExactOwnerMatch::None;
+    let mut undeclared_fallback = UndeclaredTargetFallback::Missing;
+    for attribution in project_attributions {
+        if let Ok(rest) = exe.strip_prefix(attribution.executable_match_target_directory.as_path())
+            && let Some((run_target_kind, name, profile)) =
+                classify_tail(rest, attribution.bench_names)
         {
-            let member_dir = slice.member_dir(run_target_kind, &name);
             let key = RunningKey {
-                target_dir: slice.target_dir.clone(),
+                target_dir: attribution.executable_match_target_directory.clone(),
                 run_target_kind,
                 name,
             };
-            return Some((key, profile, member_dir));
+            let owner_attribution = attribution.owner_attribution(run_target_kind, &key.name);
+            let executable_attribution = AttributedRunningTargetExecutable {
+                key,
+                profile,
+                owner_root: owner_attribution.owner_root().clone(),
+            };
+            match owner_attribution {
+                RunningTargetOwnerAttribution::DeclaredMember(_)
+                | RunningTargetOwnerAttribution::AmbiguousTarget(_) => {
+                    exact_owner_match.include(executable_attribution);
+                },
+                RunningTargetOwnerAttribution::UndeclaredTarget(_) => {
+                    undeclared_fallback.include_first(executable_attribution);
+                },
+            }
         }
     }
-    None
+    match exact_owner_match {
+        CrossWorkspaceExactOwnerMatch::None => match undeclared_fallback {
+            UndeclaredTargetFallback::Missing => {
+                RunningTargetExecutableClassification::Unrecognized
+            },
+            UndeclaredTargetFallback::First(attribution) => {
+                RunningTargetExecutableClassification::Attributed(attribution)
+            },
+        },
+        CrossWorkspaceExactOwnerMatch::One(attribution) => {
+            RunningTargetExecutableClassification::Attributed(attribution)
+        },
+        CrossWorkspaceExactOwnerMatch::Multiple => {
+            RunningTargetExecutableClassification::AmbiguousWorkspaceOwnership
+        },
+    }
 }
 
 /// Keys for a `cargo install`ed binary: an exe living directly in
@@ -656,7 +804,7 @@ fn classify_exe(
 /// matching project. The render side then matches whichever is selected.
 fn installed_bin_keys(
     exe: &Path,
-    projects: &[ProjectTargetSlice<'_>],
+    project_attributions: &[RunningTargetProjectAttribution<'_>],
     install_bin_dir: Option<&Path>,
 ) -> Vec<(RunningKey, AbsolutePath)> {
     let Some(bin_dir) = install_bin_dir else {
@@ -668,17 +816,20 @@ fn installed_bin_keys(
     let Some(stem) = exe.file_stem().and_then(|s| s.to_str()) else {
         return Vec::new();
     };
-    projects
+    project_attributions
         .iter()
-        .filter(|slice| slice.bin_names.contains(stem))
-        .map(|slice| {
+        .filter(|attribution| attribution.bin_names.contains(stem))
+        .map(|attribution| {
             (
                 RunningKey {
-                    target_dir:      slice.target_dir.clone(),
+                    target_dir:      attribution.executable_match_target_directory.clone(),
                     run_target_kind: RunTargetKind::Binary,
                     name:            stem.to_string(),
                 },
-                slice.member_dir(RunTargetKind::Binary, stem),
+                attribution
+                    .owner_attribution(RunTargetKind::Binary, stem)
+                    .owner_root()
+                    .clone(),
             )
         })
         .collect()
@@ -776,22 +927,28 @@ mod tests {
 
     use super::*;
 
-    /// The shared empty member-dir map for slices whose tests don't exercise
-    /// member resolution — every lookup falls back to the workspace root.
-    fn no_member_dirs() -> HashMap<(RunTargetKind, String), AbsolutePath> { HashMap::new() }
+    /// The shared empty exact-owner evidence for tests that exercise project
+    /// fallback attribution.
+    fn no_exact_target_owner_evidence()
+    -> HashMap<(RunTargetKind, String), ExactRunningTargetOwnerEvidence> {
+        HashMap::new()
+    }
 
-    fn slice<'a>(
-        dir: &'a AbsolutePath,
+    fn project_attribution<'a>(
+        executable_match_target_directory: &'a AbsolutePath,
         bench_names: &'a HashSet<String>,
         bin_names: &'a HashSet<String>,
-        member_dirs: &'a HashMap<(RunTargetKind, String), AbsolutePath>,
-    ) -> ProjectTargetSlice<'a> {
-        ProjectTargetSlice {
-            target_dir: dir,
-            workspace_root: dir,
+        exact_target_owner_evidence: &'a HashMap<
+            (RunTargetKind, String),
+            ExactRunningTargetOwnerEvidence,
+        >,
+    ) -> RunningTargetProjectAttribution<'a> {
+        RunningTargetProjectAttribution {
+            executable_match_target_directory,
+            fallback_owner_root: executable_match_target_directory,
             bench_names,
             bin_names,
-            member_dirs,
+            exact_target_owner_evidence,
         }
     }
 
@@ -801,6 +958,20 @@ mod tests {
     fn exe_path(path: &str) -> PathBuf { crate::project::normalize_test_path(Path::new(path)) }
 
     fn names(names: &[&str]) -> HashSet<String> { names.iter().map(|s| (*s).to_string()).collect() }
+
+    fn attributed_executable(
+        classification: RunningTargetExecutableClassification,
+    ) -> Result<AttributedRunningTargetExecutable, &'static str> {
+        match classification {
+            RunningTargetExecutableClassification::Attributed(attribution) => Ok(attribution),
+            RunningTargetExecutableClassification::AmbiguousWorkspaceOwnership => {
+                Err("workspace ownership should not be ambiguous")
+            },
+            RunningTargetExecutableClassification::Unrecognized => {
+                Err("executable should be recognized")
+            },
+        }
+    }
 
     fn running_key(target_dir: &str, run_target_kind: RunTargetKind, name: &str) -> RunningKey {
         RunningKey {
@@ -813,103 +984,153 @@ mod tests {
     #[test]
     fn debug_bin() {
         let dir = AbsolutePath::from(PathBuf::from("/tmp/ws/target"));
-        let (benches, bins, members) = (names(&[]), names(&[]), no_member_dirs());
-        let s = slice(&dir, &benches, &bins, &members);
+        let (benches, bins, members) = (names(&[]), names(&[]), no_exact_target_owner_evidence());
+        let attribution = project_attribution(&dir, &benches, &bins, &members);
         let exe = exe_path("/tmp/ws/target/debug/foo");
-        let (key, profile, _member) =
-            classify_exe(&exe, std::slice::from_ref(&s)).expect("matches");
-        assert!(matches!(key.run_target_kind, RunTargetKind::Binary));
-        assert_eq!(key.name, "foo");
-        assert_eq!(key.target_dir, dir);
-        assert_eq!(profile, RunProfile::Debug);
+        let attributed =
+            attributed_executable(classify_exe(&exe, std::slice::from_ref(&attribution)))
+                .expect("matches");
+        assert!(matches!(
+            attributed.key.run_target_kind,
+            RunTargetKind::Binary
+        ));
+        assert_eq!(attributed.key.name, "foo");
+        assert_eq!(attributed.key.target_dir, dir);
+        assert_eq!(attributed.profile, RunProfile::Debug);
     }
 
     #[test]
     fn release_example() {
         let dir = AbsolutePath::from(PathBuf::from("/tmp/ws/target"));
-        let (benches, bins, members) = (names(&[]), names(&[]), no_member_dirs());
-        let s = slice(&dir, &benches, &bins, &members);
+        let (benches, bins, members) = (names(&[]), names(&[]), no_exact_target_owner_evidence());
+        let attribution = project_attribution(&dir, &benches, &bins, &members);
         let exe = exe_path("/tmp/ws/target/release/examples/bar");
-        let (key, profile, _member) =
-            classify_exe(&exe, std::slice::from_ref(&s)).expect("matches");
-        assert!(matches!(key.run_target_kind, RunTargetKind::Example));
-        assert_eq!(key.name, "bar");
-        assert_eq!(profile, RunProfile::Release);
+        let attributed =
+            attributed_executable(classify_exe(&exe, std::slice::from_ref(&attribution)))
+                .expect("matches");
+        assert!(matches!(
+            attributed.key.run_target_kind,
+            RunTargetKind::Example
+        ));
+        assert_eq!(attributed.key.name, "bar");
+        assert_eq!(attributed.profile, RunProfile::Release);
     }
 
     #[test]
     fn bench_with_known_name() {
         let dir = AbsolutePath::from(PathBuf::from("/tmp/ws/target"));
-        let (benches, bins, members) = (names(&["baz"]), names(&[]), no_member_dirs());
-        let s = slice(&dir, &benches, &bins, &members);
+        let (benches, bins, members) = (
+            names(&["baz"]),
+            names(&[]),
+            no_exact_target_owner_evidence(),
+        );
+        let attribution = project_attribution(&dir, &benches, &bins, &members);
         let exe = exe_path("/tmp/ws/target/debug/deps/baz-0123456789abcdef");
-        let (key, _, _) = classify_exe(&exe, std::slice::from_ref(&s)).expect("matches");
-        assert!(matches!(key.run_target_kind, RunTargetKind::Bench));
-        assert_eq!(key.name, "baz");
+        let attributed =
+            attributed_executable(classify_exe(&exe, std::slice::from_ref(&attribution)))
+                .expect("matches");
+        assert!(matches!(
+            attributed.key.run_target_kind,
+            RunTargetKind::Bench
+        ));
+        assert_eq!(attributed.key.name, "baz");
     }
 
     #[test]
     fn bench_rejects_short_hash() {
         let dir = AbsolutePath::from(PathBuf::from("/tmp/ws/target"));
-        let (benches, bins, members) = (names(&["baz"]), names(&[]), no_member_dirs());
-        let s = slice(&dir, &benches, &bins, &members);
+        let (benches, bins, members) = (
+            names(&["baz"]),
+            names(&[]),
+            no_exact_target_owner_evidence(),
+        );
+        let attribution = project_attribution(&dir, &benches, &bins, &members);
         let exe = exe_path("/tmp/ws/target/debug/deps/baz-shorthash");
-        assert!(classify_exe(&exe, std::slice::from_ref(&s)).is_none());
+        assert!(matches!(
+            classify_exe(&exe, std::slice::from_ref(&attribution)),
+            RunningTargetExecutableClassification::Unrecognized
+        ));
     }
 
     #[test]
     fn deps_entry_not_in_bench_set_is_unrecognized() {
         let dir = AbsolutePath::from(PathBuf::from("/tmp/ws/target"));
-        let (benches, bins, members) = (names(&["baz"]), names(&[]), no_member_dirs());
-        let s = slice(&dir, &benches, &bins, &members);
+        let (benches, bins, members) = (
+            names(&["baz"]),
+            names(&[]),
+            no_exact_target_owner_evidence(),
+        );
+        let attribution = project_attribution(&dir, &benches, &bins, &members);
         let exe = exe_path("/tmp/ws/target/debug/deps/other-0123456789abcdef");
-        assert!(classify_exe(&exe, std::slice::from_ref(&s)).is_none());
+        assert!(matches!(
+            classify_exe(&exe, std::slice::from_ref(&attribution)),
+            RunningTargetExecutableClassification::Unrecognized
+        ));
     }
 
     #[test]
     fn longest_bench_name_wins() {
         let dir = AbsolutePath::from(PathBuf::from("/tmp/ws/target"));
-        let (benches, bins, members) = (names(&["my", "my-bench"]), names(&[]), no_member_dirs());
-        let s = slice(&dir, &benches, &bins, &members);
+        let (benches, bins, members) = (
+            names(&["my", "my-bench"]),
+            names(&[]),
+            no_exact_target_owner_evidence(),
+        );
+        let attribution = project_attribution(&dir, &benches, &bins, &members);
         let exe = exe_path("/tmp/ws/target/debug/deps/my-bench-0123456789abcdef");
-        let (key, _, _) = classify_exe(&exe, std::slice::from_ref(&s)).expect("matches");
-        assert!(matches!(key.run_target_kind, RunTargetKind::Bench));
-        assert_eq!(key.name, "my-bench");
+        let attributed =
+            attributed_executable(classify_exe(&exe, std::slice::from_ref(&attribution)))
+                .expect("matches");
+        assert!(matches!(
+            attributed.key.run_target_kind,
+            RunTargetKind::Bench
+        ));
+        assert_eq!(attributed.key.name, "my-bench");
     }
 
     #[test]
     fn outside_target_dir_does_not_match() {
         let dir = AbsolutePath::from(PathBuf::from("/tmp/ws/target"));
-        let (benches, bins, members) = (names(&[]), names(&[]), no_member_dirs());
-        let s = slice(&dir, &benches, &bins, &members);
+        let (benches, bins, members) = (names(&[]), names(&[]), no_exact_target_owner_evidence());
+        let attribution = project_attribution(&dir, &benches, &bins, &members);
         let exe = exe_path("/usr/bin/ls");
-        assert!(classify_exe(&exe, std::slice::from_ref(&s)).is_none());
+        assert!(matches!(
+            classify_exe(&exe, std::slice::from_ref(&attribution)),
+            RunningTargetExecutableClassification::Unrecognized
+        ));
     }
 
     #[test]
     fn build_artifact_under_target_ignored() {
         let dir = AbsolutePath::from(PathBuf::from("/tmp/ws/target"));
-        let (benches, bins, members) = (names(&[]), names(&[]), no_member_dirs());
-        let s = slice(&dir, &benches, &bins, &members);
+        let (benches, bins, members) = (names(&[]), names(&[]), no_exact_target_owner_evidence());
+        let attribution = project_attribution(&dir, &benches, &bins, &members);
         let exe = exe_path("/tmp/ws/target/debug/build/foo-1234567890abcdef/build-script-build");
-        assert!(classify_exe(&exe, std::slice::from_ref(&s)).is_none());
+        assert!(matches!(
+            classify_exe(&exe, std::slice::from_ref(&attribution)),
+            RunningTargetExecutableClassification::Unrecognized
+        ));
     }
 
     #[test]
     fn installed_bin_in_cargo_dir_matches_as_cargo_profile() {
         let dir = AbsolutePath::from(PathBuf::from("/tmp/ws/target"));
-        let (benches, bins, members) = (names(&[]), names(&["cargo-port"]), no_member_dirs());
-        let s = slice(&dir, &benches, &bins, &members);
+        let (benches, bins, members) = (
+            names(&[]),
+            names(&["cargo-port"]),
+            no_exact_target_owner_evidence(),
+        );
+        let attribution = project_attribution(&dir, &benches, &bins, &members);
         let bin_dir = exe_path("/home/me/.cargo/bin");
         let exe = exe_path("/home/me/.cargo/bin/cargo-port");
-        let keys = installed_bin_keys(&exe, std::slice::from_ref(&s), Some(&bin_dir));
+        let keys = installed_bin_keys(&exe, std::slice::from_ref(&attribution), Some(&bin_dir));
         assert_eq!(keys.len(), 1);
         let (key, member_dir) = &keys[0];
         assert!(matches!(key.run_target_kind, RunTargetKind::Binary));
         assert_eq!(key.name, "cargo-port");
         assert_eq!(key.target_dir, dir);
-        // No member-dir entry: attribution falls back to the slice's
-        // workspace root (the fixture points it at the target dir).
+        // No declared owner: attribution uses the project's fallback owner
+        // root (the fixture points it at the target directory).
         assert_eq!(*member_dir, dir);
     }
 
@@ -917,17 +1138,22 @@ mod tests {
     fn installed_bin_attributed_to_every_project_declaring_it() {
         let primary = AbsolutePath::from(PathBuf::from("/tmp/main/target"));
         let worktree = AbsolutePath::from(PathBuf::from("/tmp/wt/target"));
-        let (benches, bins, members) = (names(&[]), names(&["cargo-port"]), no_member_dirs());
-        let slices = [
-            slice(&primary, &benches, &bins, &members),
-            slice(&worktree, &benches, &bins, &members),
+        let (benches, bins, members) = (
+            names(&[]),
+            names(&["cargo-port"]),
+            no_exact_target_owner_evidence(),
+        );
+        let project_attributions = [
+            project_attribution(&primary, &benches, &bins, &members),
+            project_attribution(&worktree, &benches, &bins, &members),
         ];
         let bin_dir = exe_path("/home/me/.cargo/bin");
         let exe = exe_path("/home/me/.cargo/bin/cargo-port");
-        let dirs: HashSet<AbsolutePath> = installed_bin_keys(&exe, &slices, Some(&bin_dir))
-            .into_iter()
-            .map(|(key, _)| key.target_dir)
-            .collect();
+        let dirs: HashSet<AbsolutePath> =
+            installed_bin_keys(&exe, &project_attributions, Some(&bin_dir))
+                .into_iter()
+                .map(|(key, _)| key.target_dir)
+                .collect();
         assert_eq!(dirs, HashSet::from([primary, worktree]));
     }
 
@@ -936,23 +1162,179 @@ mod tests {
         let dir = AbsolutePath::from(PathBuf::from("/tmp/ws/target"));
         let member = AbsolutePath::from(PathBuf::from("/tmp/ws/crates/foo"));
         let (benches, bins) = (names(&[]), names(&[]));
-        let members = HashMap::from([((RunTargetKind::Binary, "foo".to_string()), member.clone())]);
-        let s = slice(&dir, &benches, &bins, &members);
+        let members = HashMap::from([(
+            (RunTargetKind::Binary, "foo".to_string()),
+            ExactRunningTargetOwnerEvidence::Unique(member.clone()),
+        )]);
+        let attribution = project_attribution(&dir, &benches, &bins, &members);
         let exe = exe_path("/tmp/ws/target/debug/foo");
-        let (_, _, member_dir) = classify_exe(&exe, std::slice::from_ref(&s)).expect("matches");
-        assert_eq!(member_dir, member);
+        let attributed =
+            attributed_executable(classify_exe(&exe, std::slice::from_ref(&attribution)))
+                .expect("matches");
+        assert_eq!(attributed.owner_root, member);
     }
 
     #[test]
-    fn unknown_target_falls_back_to_the_workspace_root() {
-        // A stale artifact of a renamed target: nothing in the member map,
-        // so the path attribution falls back to the workspace root.
+    fn unknown_target_uses_the_project_fallback_owner_root() {
+        // A stale artifact of a renamed target: nothing in the declared owner
+        // map, so path attribution uses the project fallback owner root.
         let dir = AbsolutePath::from(PathBuf::from("/tmp/ws/target"));
-        let (benches, bins, members) = (names(&[]), names(&[]), no_member_dirs());
-        let s = slice(&dir, &benches, &bins, &members);
+        let (benches, bins, members) = (names(&[]), names(&[]), no_exact_target_owner_evidence());
+        let attribution = project_attribution(&dir, &benches, &bins, &members);
         let exe = exe_path("/tmp/ws/target/debug/stale");
-        let (_, _, member_dir) = classify_exe(&exe, std::slice::from_ref(&s)).expect("matches");
-        assert_eq!(member_dir, dir);
+        let attributed =
+            attributed_executable(classify_exe(&exe, std::slice::from_ref(&attribution)))
+                .expect("matches");
+        assert_eq!(attributed.owner_root, dir);
+    }
+
+    #[test]
+    fn shared_target_directory_prefers_later_declared_target_owner() {
+        let target_directory = AbsolutePath::from(PathBuf::from("/tmp/shared/target"));
+        let first_fallback = AbsolutePath::from(PathBuf::from("/tmp/first-checkout"));
+        let later_fallback = AbsolutePath::from(PathBuf::from("/tmp/later-checkout"));
+        let later_member = AbsolutePath::from(PathBuf::from("/tmp/later-checkout/crates/owned"));
+        let (benches, bins) = (names(&[]), names(&[]));
+        let first_target_owners = no_exact_target_owner_evidence();
+        let later_target_owners = HashMap::from([(
+            (RunTargetKind::Binary, "owned".to_string()),
+            ExactRunningTargetOwnerEvidence::Unique(later_member.clone()),
+        )]);
+        let project_attributions = [
+            RunningTargetProjectAttribution {
+                executable_match_target_directory: &target_directory,
+                fallback_owner_root:               &first_fallback,
+                bench_names:                       &benches,
+                bin_names:                         &bins,
+                exact_target_owner_evidence:       &first_target_owners,
+            },
+            RunningTargetProjectAttribution {
+                executable_match_target_directory: &target_directory,
+                fallback_owner_root:               &later_fallback,
+                bench_names:                       &benches,
+                bin_names:                         &bins,
+                exact_target_owner_evidence:       &later_target_owners,
+            },
+        ];
+        let exe = exe_path("/tmp/shared/target/debug/owned");
+
+        let attributed =
+            attributed_executable(classify_exe(&exe, &project_attributions)).expect("matches");
+
+        assert_eq!(attributed.owner_root, later_member);
+    }
+
+    #[test]
+    fn shared_target_directory_exact_owners_are_ambiguous_in_both_orders() {
+        let target_directory = AbsolutePath::from(PathBuf::from("/tmp/shared/target"));
+        let first_fallback = AbsolutePath::from(PathBuf::from("/tmp/first-checkout"));
+        let second_fallback = AbsolutePath::from(PathBuf::from("/tmp/second-checkout"));
+        let first_member = AbsolutePath::from(PathBuf::from("/tmp/first-checkout/crates/shared"));
+        let second_member = AbsolutePath::from(PathBuf::from("/tmp/second-checkout/crates/shared"));
+        let (benches, bins) = (names(&[]), names(&[]));
+        let first_target_owners = HashMap::from([(
+            (RunTargetKind::Binary, "shared".to_string()),
+            ExactRunningTargetOwnerEvidence::Unique(first_member),
+        )]);
+        let second_target_owners = HashMap::from([(
+            (RunTargetKind::Binary, "shared".to_string()),
+            ExactRunningTargetOwnerEvidence::Unique(second_member),
+        )]);
+        let first_attribution = RunningTargetProjectAttribution {
+            executable_match_target_directory: &target_directory,
+            fallback_owner_root:               &first_fallback,
+            bench_names:                       &benches,
+            bin_names:                         &bins,
+            exact_target_owner_evidence:       &first_target_owners,
+        };
+        let second_attribution = RunningTargetProjectAttribution {
+            executable_match_target_directory: &target_directory,
+            fallback_owner_root:               &second_fallback,
+            bench_names:                       &benches,
+            bin_names:                         &bins,
+            exact_target_owner_evidence:       &second_target_owners,
+        };
+        let exe = exe_path("/tmp/shared/target/debug/shared");
+
+        let mut project_attributions = [first_attribution, second_attribution];
+        let forward = classify_exe(&exe, &project_attributions);
+        project_attributions.reverse();
+        let reverse = classify_exe(&exe, &project_attributions);
+
+        assert_eq!(
+            forward,
+            RunningTargetExecutableClassification::AmbiguousWorkspaceOwnership
+        );
+        assert_eq!(
+            reverse,
+            RunningTargetExecutableClassification::AmbiguousWorkspaceOwnership
+        );
+    }
+
+    #[test]
+    fn shared_target_directory_prefers_ambiguous_exact_evidence_over_generic_fallback() {
+        let target_directory = AbsolutePath::from(PathBuf::from("/tmp/shared/target"));
+        let first_fallback = AbsolutePath::from(PathBuf::from("/tmp/first-checkout"));
+        let later_fallback = AbsolutePath::from(PathBuf::from("/tmp/later-checkout"));
+        let (benches, bins) = (names(&[]), names(&[]));
+        let first_target_owners = no_exact_target_owner_evidence();
+        let later_target_owners = HashMap::from([(
+            (RunTargetKind::Binary, "shared".to_string()),
+            ExactRunningTargetOwnerEvidence::Ambiguous,
+        )]);
+        let project_attributions = [
+            RunningTargetProjectAttribution {
+                executable_match_target_directory: &target_directory,
+                fallback_owner_root:               &first_fallback,
+                bench_names:                       &benches,
+                bin_names:                         &bins,
+                exact_target_owner_evidence:       &first_target_owners,
+            },
+            RunningTargetProjectAttribution {
+                executable_match_target_directory: &target_directory,
+                fallback_owner_root:               &later_fallback,
+                bench_names:                       &benches,
+                bin_names:                         &bins,
+                exact_target_owner_evidence:       &later_target_owners,
+            },
+        ];
+        let exe = exe_path("/tmp/shared/target/debug/shared");
+
+        let attributed =
+            attributed_executable(classify_exe(&exe, &project_attributions)).expect("matches");
+
+        assert_eq!(attributed.owner_root, later_fallback);
+    }
+
+    #[test]
+    fn shared_target_directory_stale_artifact_uses_first_project_fallback() {
+        let target_directory = AbsolutePath::from(PathBuf::from("/tmp/shared/target"));
+        let first_fallback = AbsolutePath::from(PathBuf::from("/tmp/first-checkout"));
+        let later_fallback = AbsolutePath::from(PathBuf::from("/tmp/later-checkout"));
+        let (benches, bins, target_owners) =
+            (names(&[]), names(&[]), no_exact_target_owner_evidence());
+        let project_attributions = [
+            RunningTargetProjectAttribution {
+                executable_match_target_directory: &target_directory,
+                fallback_owner_root:               &first_fallback,
+                bench_names:                       &benches,
+                bin_names:                         &bins,
+                exact_target_owner_evidence:       &target_owners,
+            },
+            RunningTargetProjectAttribution {
+                executable_match_target_directory: &target_directory,
+                fallback_owner_root:               &later_fallback,
+                bench_names:                       &benches,
+                bin_names:                         &bins,
+                exact_target_owner_evidence:       &target_owners,
+            },
+        ];
+        let exe = exe_path("/tmp/shared/target/debug/stale");
+
+        let attributed =
+            attributed_executable(classify_exe(&exe, &project_attributions)).expect("matches");
+
+        assert_eq!(attributed.owner_root, first_fallback);
     }
 
     #[test]
@@ -1153,20 +1535,34 @@ mod tests {
     #[test]
     fn installed_bin_not_in_bin_set_does_not_match() {
         let dir = AbsolutePath::from(PathBuf::from("/tmp/ws/target"));
-        let (benches, bins, members) = (names(&[]), names(&["cargo-port"]), no_member_dirs());
-        let s = slice(&dir, &benches, &bins, &members);
+        let (benches, bins, members) = (
+            names(&[]),
+            names(&["cargo-port"]),
+            no_exact_target_owner_evidence(),
+        );
+        let attribution = project_attribution(&dir, &benches, &bins, &members);
         let bin_dir = exe_path("/home/me/.cargo/bin");
         let exe = exe_path("/home/me/.cargo/bin/ripgrep");
-        assert!(installed_bin_keys(&exe, std::slice::from_ref(&s), Some(&bin_dir)).is_empty());
+        assert!(
+            installed_bin_keys(&exe, std::slice::from_ref(&attribution), Some(&bin_dir),)
+                .is_empty()
+        );
     }
 
     #[test]
     fn bin_outside_cargo_dir_does_not_match_as_installed() {
         let dir = AbsolutePath::from(PathBuf::from("/tmp/ws/target"));
-        let (benches, bins, members) = (names(&[]), names(&["cargo-port"]), no_member_dirs());
-        let s = slice(&dir, &benches, &bins, &members);
+        let (benches, bins, members) = (
+            names(&[]),
+            names(&["cargo-port"]),
+            no_exact_target_owner_evidence(),
+        );
+        let attribution = project_attribution(&dir, &benches, &bins, &members);
         let bin_dir = exe_path("/home/me/.cargo/bin");
         let exe = exe_path("/usr/local/bin/cargo-port");
-        assert!(installed_bin_keys(&exe, std::slice::from_ref(&s), Some(&bin_dir)).is_empty());
+        assert!(
+            installed_bin_keys(&exe, std::slice::from_ref(&attribution), Some(&bin_dir),)
+                .is_empty()
+        );
     }
 }

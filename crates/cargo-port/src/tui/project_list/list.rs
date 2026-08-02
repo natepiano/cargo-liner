@@ -923,7 +923,12 @@ impl ProjectList {
 
     // -- Vec-like operations -------------------------------------------------
 
-    pub fn clear(&mut self) { self.roots.clear(); }
+    pub fn clear(&mut self) {
+        if !self.roots.is_empty() {
+            self.roots.clear();
+            self.advance_revision();
+        }
+    }
 
     #[cfg(test)]
     pub fn push(&mut self, item: RootItem) {
@@ -972,6 +977,26 @@ impl ProjectList {
     pub const fn cursor(&self) -> usize { self.cursor }
 
     pub const fn set_cursor(&mut self, cursor: usize) { self.cursor = cursor; }
+
+    /// Revision consumed by caches whose ownership follows visible project-list
+    /// content.
+    pub const fn revision(&self) -> crate::project::ProjectListRevision { self.revision }
+
+    /// Record a tree, membership, row-kind, or project-visibility change even
+    /// when the resulting visible paths remain identical.
+    pub const fn mark_visible_ownership_changed(&mut self) { self.advance_revision(); }
+
+    pub fn select_project_path(&mut self, selected_project_path: AbsolutePath) {
+        if self.paths.selected_project.as_ref() != Some(&selected_project_path) {
+            self.paths.selected_project = Some(selected_project_path);
+        }
+    }
+
+    pub fn clear_selected_project(&mut self) {
+        if self.paths.selected_project.is_some() {
+            self.paths.selected_project = None;
+        }
+    }
 
     // ── path tracking ───────────────────────────────────────────────
 
@@ -1045,7 +1070,11 @@ impl ProjectList {
     /// `TreeMutation::drop` so externally-driven tree mutations also
     /// keep the visible-rows cache fresh.
     pub fn recompute_visibility(&mut self, include_non_rust: bool) {
-        self.cached_visible_rows = self.compute_visible_rows(&self.expanded, include_non_rust);
+        let visible_rows = self.compute_visible_rows(&self.expanded, include_non_rust);
+        if self.cached_visible_rows != visible_rows {
+            self.cached_visible_rows = visible_rows;
+            self.advance_revision();
+        }
         let len = self.cached_visible_rows.len();
         if len == 0 {
             self.cursor = 0;
@@ -1105,6 +1134,8 @@ impl ProjectList {
             },
         }
     }
+
+    const fn advance_revision(&mut self) { self.revision.advance(); }
 }
 
 // ── Row-navigation read-side ─────────────────────────────────────────────
@@ -2378,7 +2409,7 @@ fn sync_workspace_members_from_metadata(
     metadata: &WorkspaceMetadata,
     inline_dirs: &[String],
 ) -> bool {
-    if ws.path() != &metadata.workspace_root {
+    if ws.path() != &metadata.declared_checkout_root {
         return false;
     }
 

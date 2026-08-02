@@ -23,7 +23,7 @@ use super::constants::RUNNING_TARGETS_POLL_INTERVAL;
 use super::data::PaneDataStore;
 use crate::config::CpuConfig;
 use crate::tui::app::HoveredPaneRow;
-use crate::tui::running_targets::ProjectTargetSlice;
+use crate::tui::running_targets::RunningTargetProjectAttribution;
 use crate::tui::running_targets::RunningTargetsPoller;
 use crate::tui::startup_services::StartupServices;
 
@@ -150,11 +150,21 @@ impl Panes {
     /// Drain the CPU pane's background sampler. Delegates to `CpuPane::tick`.
     pub fn cpu_tick(&mut self) { self.cpu.tick(); }
 
-    /// Refresh the running-targets snapshot. Caller builds `projects`
-    /// from cached `cargo metadata` results. The poller gates its own
-    /// cadence — calling on every frame is cheap when not due.
-    pub fn running_targets_tick(&mut self, now: Instant, projects: &[ProjectTargetSlice<'_>]) {
-        self.running_targets.tick(now, projects);
+    /// Refresh the running-targets snapshot. The caller supplies project
+    /// attribution from the current workspace index and visible targets.
+    pub fn running_targets_tick(
+        &mut self,
+        now: Instant,
+        project_attributions: &[RunningTargetProjectAttribution<'_>],
+    ) {
+        self.running_targets.tick(now, project_attributions);
+    }
+
+    /// Read-only readiness query for the Running Targets process cadence.
+    /// [`Self::running_targets_tick`] performs the authoritative cadence state
+    /// transition after the caller collects attribution data.
+    pub fn running_targets_poll_is_due(&self, now: Instant) -> bool {
+        self.running_targets.is_due(now)
     }
 
     /// Reset the CPU pane after a config reload changes CPU poll

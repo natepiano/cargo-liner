@@ -257,8 +257,26 @@ impl App {
     /// the path resolves to a known leaf. Extracted from the dispatch
     /// match so each arm stays a single call.
     fn handle_submodules_msg(&mut self, path: &Path, submodules: Vec<Submodule>) {
-        if let Some(info) = self.project_list.at_path_mut(path) {
+        let submodule_list_changed = self.project_list.at_path_mut(path).is_some_and(|info| {
+            let declarations_match = info.submodules.len() == submodules.len()
+                && info
+                    .submodules
+                    .iter()
+                    .zip(&submodules)
+                    .all(|(current, accepted)| {
+                        current.name == accepted.name
+                            && current.path == accepted.path
+                            && current.relative_path == accepted.relative_path
+                            && current.url == accepted.url
+                            && current.branch == accepted.branch
+                            && current.commit == accepted.commit
+                    });
             info.submodules = submodules;
+            !declarations_match
+        });
+        if submodule_list_changed {
+            self.project_list.mark_visible_ownership_changed();
+            self.rebuild_visible_rows_now();
         }
     }
     /// Stash the OS appearance and re-resolve the active theme against
@@ -266,5 +284,64 @@ impl App {
     fn apply_os_appearance(&mut self, appearance: Appearance) {
         self.themes.set_os_appearance(Some(appearance));
         self.resolve_and_apply_active_theme();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+    use crate::project::Package;
+    use crate::project::ProjectInfo;
+    use crate::project::RustProject;
+    use crate::tui::project_list::ExpandKey;
+
+    fn submodule(name: &str, path: &str) -> Submodule {
+        Submodule {
+            name:          name.to_string(),
+            path:          AbsolutePath::from(path),
+            relative_path: name.to_string(),
+            url:           None,
+            branch:        None,
+            commit:        None,
+            project_info:  ProjectInfo::default(),
+            git_repo:      None,
+        }
+    }
+
+    #[test]
+    fn same_length_submodule_replacement_advances_visible_ownership() {
+        let project_path = AbsolutePath::from("/tmp/project");
+        let project = RootItem::Rust(RustProject::Package(Package {
+            path: project_path.clone(),
+            ..Package::default()
+        }));
+        let mut app = crate::tui::test_support::make_app(&[project]);
+        app.project_list.expanded.insert(ExpandKey::Node(0));
+
+        let _ = app.handle_bg_msg(BackgroundMsg::Submodules {
+            path:       project_path.clone(),
+            submodules: vec![submodule("first", "/tmp/project/first")],
+        });
+        app.project_list.set_cursor(1);
+        let visible_rows = app.project_list.visible_rows().to_vec();
+        let project_list_revision = app.project_list.revision();
+        assert_eq!(
+            app.project_list.selected_project_path(),
+            Some(Path::new("/tmp/project/first"))
+        );
+
+        let _ = app.handle_bg_msg(BackgroundMsg::Submodules {
+            path:       project_path,
+            submodules: vec![submodule("second", "/tmp/project/second")],
+        });
+
+        assert_eq!(app.project_list.visible_rows(), visible_rows);
+        assert!(app.project_list.revision() > project_list_revision);
+        assert_eq!(
+            app.project_list.selected_project_path(),
+            Some(Path::new("/tmp/project/second"))
+        );
     }
 }

@@ -132,6 +132,7 @@ impl App {
             .apply_cargo_fields_from_workspace_metadata(&workspace_metadata);
         if tree_changed {
             self.panes.clear_for_tree_change();
+            self.project_list.mark_visible_ownership_changed();
             self.rebuild_visible_rows_now();
             if let Some(path) = selected_path {
                 self.project_list.select_project_in_tree(

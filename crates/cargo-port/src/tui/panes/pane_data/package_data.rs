@@ -437,12 +437,12 @@ pub(super) fn lookup_out_of_tree_target_bytes(app: &App, abs_path: &AbsolutePath
     let store = app.scan.metadata_store_handle();
     let guard = store.lock().ok()?;
     let snap = guard
-        .containing_workspace_root(abs_path)
+        .containing_checkout_root(abs_path)
         .and_then(|root| guard.get(root))?;
     let is_in_tree = snap
         .target_directory
         .as_path()
-        .starts_with(snap.workspace_root.as_path());
+        .starts_with(snap.declared_checkout_root.as_path());
     let bytes = (!is_in_tree).then_some(snap.out_of_tree_target_bytes)?;
     drop(guard);
     bytes

@@ -39,6 +39,7 @@ use crate::config;
 use crate::config::CargoPortConfig;
 use crate::lint::RuntimeHandle;
 use crate::project::AbsolutePath;
+use crate::project::CargoWorkspaceIndex;
 use crate::project::RootItem;
 use crate::scan;
 use crate::scan::BackgroundMsg;
@@ -246,6 +247,12 @@ impl AppBuilder<Started> {
             .map(|p| p.as_path().to_path_buf());
         let keymap = Keymap::new(keymap_path_buf.clone(), keymap::ResolvedKeymap::defaults());
         let themes = ThemeRuntime::new(started.themes_dir);
+        let cargo_workspace_index = metadata_store.lock().map_or_else(
+            |_| CargoWorkspaceIndex::default(),
+            |metadata_store| {
+                CargoWorkspaceIndex::from_metadata_store(&metadata_store, projects.revision())
+            },
+        );
         let scan = Scan::new(ScanState::new(scan_started_at), metadata_store);
         let mut overlays = Overlays::new();
         if let Some(warning) = started.lint_warning {
@@ -278,6 +285,9 @@ impl AppBuilder<Started> {
             net: Net::new(http_client),
             panes,
             project_list: projects,
+            cargo_workspace_index,
+            #[cfg(test)]
+            running_target_attribution_collection_count: 0,
             background,
             inflight,
             lint,

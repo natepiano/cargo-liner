@@ -1,188 +1,315 @@
-//! `App` glue for the running-targets poller. Builds per-workspace slices
-//! from cached `cargo metadata` and drives the `Panes` poller tick.
+//! `App` glue for the running-targets poller. Builds per-workspace attribution
+//! from the App-owned workspace index and drives the `Panes` poller tick.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::hash_map::Entry;
 use std::time::Instant;
 
 use cargo_metadata::TargetKind;
 
-use super::ProjectTargetSlice;
+use super::ExactRunningTargetOwnerEvidence;
+use super::RunningTargetProjectAttribution;
 use super::constants::BENCHES_DIR;
 use super::constants::EXAMPLES_DIR;
 use super::constants::SOURCE_DIR;
 use crate::project::AbsolutePath;
-use crate::project::WorkspaceMetadata;
+use crate::project::CanonicalPathResolution;
+use crate::project::CargoWorkspaceIndexRevisionState;
+use crate::project::CargoWorkspaceView;
+use crate::project::VisibleTargetWorkspaceOwnership;
 use crate::tui::app::App;
 use crate::tui::panes;
 use crate::tui::panes::RunTargetKind;
 use crate::tui::panes::TargetEntry;
 
-/// One owned slice entry per known workspace. Lives across the tick call
-/// so `ProjectTargetSlice<'_>` views can borrow from its fields.
-struct OwnedSlice {
-    target_dir:     AbsolutePath,
-    workspace_root: AbsolutePath,
-    bench_names:    HashSet<String>,
-    bin_names:      HashSet<String>,
-    /// Manifest dir of the workspace member that owns each `(run_target_kind, name)`
-    /// target, so a running instance's Path column shows the member, not
-    /// the shared workspace root.
-    member_dirs:    HashMap<(RunTargetKind, String), AbsolutePath>,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkspaceIndexRefreshState {
+    Current,
+    RetainedLastAccepted,
+    Uninitialized,
+}
+
+/// Owned Running Targets attribution for one project or workspace. The value
+/// lives across a poller tick so [`RunningTargetProjectAttribution`] can borrow
+/// its fields.
+struct OwnedRunningTargetProjectAttribution {
+    /// Target-directory path used for executable matching. Canonical when
+    /// live resolution succeeds, otherwise the declared path.
+    executable_match_target_directory: AbsolutePath,
+    fallback_owner_root:               AbsolutePath,
+    bench_names:                       HashSet<String>,
+    bin_names:                         HashSet<String>,
+    /// Declared owner evidence for each exact `(RunTargetKind, name)` identity.
+    exact_target_owner_evidence: HashMap<(RunTargetKind, String), ExactRunningTargetOwnerEvidence>,
+}
+
+/// An indexed workspace paired with the Running Targets attribution that
+/// receives visible targets owned by that exact [`CargoWorkspaceView`].
+struct IndexedRunningTargetProjectAttribution<'a> {
+    workspace:           &'a CargoWorkspaceView,
+    project_attribution: OwnedRunningTargetProjectAttribution,
 }
 
 impl App {
-    /// Refresh the running-targets snapshot. Builds slices from the
-    /// current `cargo metadata` cache, canonicalizing each
-    /// `target_directory` so exe-path comparisons match symlinked
-    /// entries. The poller gates its own cadence — calling on every
-    /// frame is cheap when not due.
+    /// Refresh the running-targets snapshot when its process cadence is due.
+    /// Each due poll builds attribution from the current workspace-index view
+    /// and resolves the declared `target_directory` again so executable-path
+    /// comparisons follow a retargeted symlink without rebuilding the index.
     pub fn running_targets_tick(&mut self, now: Instant) {
-        let owned = self.collect_running_target_slices();
-        let slices: Vec<ProjectTargetSlice<'_>> = owned
-            .iter()
-            .map(|entry| ProjectTargetSlice {
-                target_dir:     &entry.target_dir,
-                workspace_root: &entry.workspace_root,
-                bench_names:    &entry.bench_names,
-                bin_names:      &entry.bin_names,
-                member_dirs:    &entry.member_dirs,
-            })
-            .collect();
-        self.panes.running_targets_tick(now, &slices);
-    }
-
-    fn collect_running_target_slices(&self) -> Vec<OwnedSlice> {
-        let mut owned = Vec::new();
-        let Ok(store) = self.scan.metadata_store().lock() else {
-            return self
-                .collect_visible_target_slice(None)
-                .into_iter()
-                .collect();
-        };
-        owned.extend(store.by_root.values().map(|meta| {
-            let target_dir = canonicalize_path(&meta.target_directory);
-            let mut bench_names = HashSet::new();
-            let mut bin_names = HashSet::new();
-            let mut member_dirs = HashMap::new();
-            for record in meta.packages.values() {
-                let member_dir = record
-                    .manifest_path
-                    .as_path()
-                    .parent()
-                    .map_or_else(|| meta.workspace_root.clone(), AbsolutePath::from);
-                for target in &record.targets {
-                    for (cargo_kind, kind) in [
-                        (TargetKind::Bin, RunTargetKind::Binary),
-                        (TargetKind::Example, RunTargetKind::Example),
-                        (TargetKind::Bench, RunTargetKind::Bench),
-                    ] {
-                        if target.kinds.contains(&cargo_kind) {
-                            member_dirs.insert((kind, target.name.clone()), member_dir.clone());
-                        }
-                    }
-                    if target.kinds.contains(&TargetKind::Bench) {
-                        bench_names.insert(target.name.clone());
-                    }
-                    if target.kinds.contains(&TargetKind::Bin) {
-                        bin_names.insert(target.name.clone());
-                    }
-                }
-            }
-            OwnedSlice {
-                target_dir,
-                workspace_root: meta.workspace_root.clone(),
-                bench_names,
-                bin_names,
-                member_dirs,
-            }
-        }));
-        if let Some(visible) = self.collect_visible_target_slice(Some(&store.by_root)) {
-            if let Some(existing) = owned
-                .iter_mut()
-                .find(|slice| slice.target_dir == visible.target_dir)
-            {
-                existing.merge_visible_targets(visible);
-            } else {
-                owned.push(visible);
-            }
+        if !self.panes.running_targets_poll_is_due(now) {
+            return;
         }
-        owned
+        let owned_project_attributions = self.collect_running_target_attributions();
+        let project_attributions: Vec<RunningTargetProjectAttribution<'_>> =
+            owned_project_attributions
+                .iter()
+                .map(|entry| RunningTargetProjectAttribution {
+                    executable_match_target_directory: &entry.executable_match_target_directory,
+                    fallback_owner_root:               &entry.fallback_owner_root,
+                    bench_names:                       &entry.bench_names,
+                    bin_names:                         &entry.bin_names,
+                    exact_target_owner_evidence:       &entry.exact_target_owner_evidence,
+                })
+                .collect();
+        self.panes.running_targets_tick(now, &project_attributions);
     }
 
-    fn collect_visible_target_slice(
+    fn collect_running_target_attributions(&mut self) -> Vec<OwnedRunningTargetProjectAttribution> {
+        #[cfg(test)]
+        {
+            self.running_target_attribution_collection_count += 1;
+        }
+        let workspace_index_refresh_state = self.refresh_cargo_workspace_index();
+        self.collect_running_target_attributions_with_index_refresh_state(
+            workspace_index_refresh_state,
+        )
+    }
+
+    fn collect_running_target_attributions_with_index_refresh_state(
         &self,
-        metadata: Option<&HashMap<AbsolutePath, WorkspaceMetadata>>,
-    ) -> Option<OwnedSlice> {
-        let entries = self
+        workspace_index_refresh_state: WorkspaceIndexRefreshState,
+    ) -> Vec<OwnedRunningTargetProjectAttribution> {
+        let visible_entries = self
             .panes
             .targets
             .content()
-            .map(panes::build_target_list_from_data)?;
-        let first = entries.first()?;
-        let workspace = metadata.and_then(|store| workspace_for_target_entry(first, store));
-        let target_dir = workspace
-            .as_ref()
-            .and_then(|workspace| {
-                metadata.and_then(|store| {
-                    store
-                        .get(workspace)
-                        .map(|meta| meta.target_directory.clone())
-                })
+            .map(panes::build_target_list_from_data)
+            .unwrap_or_default();
+        match workspace_index_refresh_state {
+            WorkspaceIndexRefreshState::Current
+            | WorkspaceIndexRefreshState::RetainedLastAccepted => {
+                self.collect_indexed_running_target_attributions(visible_entries)
+            },
+            WorkspaceIndexRefreshState::Uninitialized => {
+                collect_unindexed_visible_target_attributions(visible_entries)
+            },
+        }
+    }
+
+    fn refresh_cargo_workspace_index(&mut self) -> WorkspaceIndexRefreshState {
+        let Ok(metadata_store) = self.scan.metadata_store().lock() else {
+            return match self.cargo_workspace_index.revision() {
+                CargoWorkspaceIndexRevisionState::Accepted(_) => {
+                    WorkspaceIndexRefreshState::RetainedLastAccepted
+                },
+                CargoWorkspaceIndexRevisionState::Uninitialized => {
+                    WorkspaceIndexRefreshState::Uninitialized
+                },
+            };
+        };
+        self.cargo_workspace_index
+            .rebuild_if_changed(&metadata_store, self.project_list.revision());
+        WorkspaceIndexRefreshState::Current
+    }
+
+    fn collect_indexed_running_target_attributions(
+        &self,
+        visible_entries: Vec<TargetEntry>,
+    ) -> Vec<OwnedRunningTargetProjectAttribution> {
+        let mut indexed_project_attributions: Vec<_> = self
+            .cargo_workspace_index
+            .workspaces()
+            .map(|workspace| IndexedRunningTargetProjectAttribution {
+                workspace,
+                project_attribution: OwnedRunningTargetProjectAttribution::from_workspace(
+                    workspace,
+                ),
             })
-            .unwrap_or_else(|| AbsolutePath::from(first.project_path.as_path().join("target")));
-        let workspace_root = workspace.unwrap_or_else(|| first.project_path.clone());
+            .collect();
+        let mut unindexed_project_attributions = Vec::new();
+
+        for entry in visible_entries {
+            match self
+                .cargo_workspace_index
+                .workspace_for_visible_target(&entry.src_path, &entry.project_path)
+            {
+                VisibleTargetWorkspaceOwnership::Indexed(workspace) => {
+                    if let Some(indexed_project_attribution) = indexed_project_attributions
+                        .iter_mut()
+                        .find(|candidate| std::ptr::eq(candidate.workspace, workspace))
+                    {
+                        indexed_project_attribution
+                            .project_attribution
+                            .add_visible_target(entry);
+                    } else {
+                        let mut project_attribution =
+                            OwnedRunningTargetProjectAttribution::from_workspace(workspace);
+                        project_attribution.add_visible_target(entry);
+                        indexed_project_attributions.push(IndexedRunningTargetProjectAttribution {
+                            workspace,
+                            project_attribution,
+                        });
+                    }
+                },
+                VisibleTargetWorkspaceOwnership::Ambiguous
+                | VisibleTargetWorkspaceOwnership::NotIndexed => {
+                    add_unindexed_visible_target(&mut unindexed_project_attributions, entry);
+                },
+            }
+        }
+
+        indexed_project_attributions
+            .into_iter()
+            .map(|indexed_project_attribution| indexed_project_attribution.project_attribution)
+            .chain(unindexed_project_attributions)
+            .collect()
+    }
+}
+
+impl OwnedRunningTargetProjectAttribution {
+    fn from_workspace(workspace: &CargoWorkspaceView) -> Self {
         let mut bench_names = HashSet::new();
         let mut bin_names = HashSet::new();
-        let mut member_dirs = HashMap::new();
-        for entry in entries {
-            match entry.run_target_kind {
-                RunTargetKind::Bench => {
-                    bench_names.insert(entry.name.clone());
-                },
-                RunTargetKind::Binary => {
-                    bin_names.insert(entry.name.clone());
-                },
-                RunTargetKind::Example => {},
+        let mut exact_target_owner_evidence = HashMap::new();
+        for package in workspace.packages() {
+            for target_identity in package.targets() {
+                for (cargo_kind, kind) in [
+                    (TargetKind::Bin, RunTargetKind::Binary),
+                    (TargetKind::Example, RunTargetKind::Example),
+                    (TargetKind::Bench, RunTargetKind::Bench),
+                ] {
+                    if target_identity.kinds().contains(&cargo_kind) {
+                        include_exact_target_owner(
+                            &mut exact_target_owner_evidence,
+                            kind,
+                            target_identity.name().to_string(),
+                            package.declared_member_root_path().clone(),
+                        );
+                    }
+                }
+                if target_identity.kinds().contains(&TargetKind::Bench) {
+                    bench_names.insert(target_identity.name().to_string());
+                }
+                if target_identity.kinds().contains(&TargetKind::Bin) {
+                    bin_names.insert(target_identity.name().to_string());
+                }
             }
-            let member_dir = member_dir_for_target_entry(&entry);
-            member_dirs.insert((entry.run_target_kind, entry.name), member_dir);
         }
-        Some(OwnedSlice {
-            target_dir: canonicalize_path(&target_dir),
-            workspace_root,
+        Self {
+            executable_match_target_directory: indexed_workspace_running_target_directory_path(
+                workspace,
+            ),
+            fallback_owner_root: workspace.declared_checkout_root_path().clone(),
             bench_names,
             bin_names,
-            member_dirs,
-        })
+            exact_target_owner_evidence,
+        }
+    }
+
+    fn add_visible_target(&mut self, entry: TargetEntry) {
+        match entry.run_target_kind {
+            RunTargetKind::Bench => {
+                self.bench_names.insert(entry.name.clone());
+            },
+            RunTargetKind::Binary => {
+                self.bin_names.insert(entry.name.clone());
+            },
+            RunTargetKind::Example => {},
+        }
+        let target_owner_root = target_owner_root_for_entry(&entry);
+        include_exact_target_owner(
+            &mut self.exact_target_owner_evidence,
+            entry.run_target_kind,
+            entry.name,
+            target_owner_root,
+        );
     }
 }
 
-impl OwnedSlice {
-    fn merge_visible_targets(&mut self, visible: Self) {
-        self.bench_names.extend(visible.bench_names);
-        self.bin_names.extend(visible.bin_names);
-        self.member_dirs.extend(visible.member_dirs);
+fn include_exact_target_owner(
+    exact_target_owner_evidence: &mut HashMap<
+        (RunTargetKind, String),
+        ExactRunningTargetOwnerEvidence,
+    >,
+    run_target_kind: RunTargetKind,
+    name: String,
+    declared_member_root: AbsolutePath,
+) {
+    match exact_target_owner_evidence.entry((run_target_kind, name)) {
+        Entry::Occupied(mut entry) => entry.get_mut().include(&declared_member_root),
+        Entry::Vacant(entry) => {
+            entry.insert(ExactRunningTargetOwnerEvidence::Unique(
+                declared_member_root,
+            ));
+        },
     }
 }
 
-fn canonicalize_path(path: &AbsolutePath) -> AbsolutePath {
-    path.as_path()
+fn collect_unindexed_visible_target_attributions(
+    visible_entries: Vec<TargetEntry>,
+) -> Vec<OwnedRunningTargetProjectAttribution> {
+    let mut project_attributions = Vec::new();
+    for entry in visible_entries {
+        add_unindexed_visible_target(&mut project_attributions, entry);
+    }
+    project_attributions
+}
+
+fn add_unindexed_visible_target(
+    project_attributions: &mut Vec<OwnedRunningTargetProjectAttribution>,
+    entry: TargetEntry,
+) {
+    let fallback_owner_root = entry.project_path.clone();
+    let declared_target_directory =
+        AbsolutePath::from(fallback_owner_root.as_path().join("target"));
+    let executable_match_target_directory =
+        unindexed_visible_running_target_directory_path(&declared_target_directory);
+    if let Some(project_attribution) = project_attributions.iter_mut().find(|candidate| {
+        candidate.executable_match_target_directory == executable_match_target_directory
+            && candidate.fallback_owner_root == fallback_owner_root
+    }) {
+        project_attribution.add_visible_target(entry);
+    } else {
+        let mut project_attribution = OwnedRunningTargetProjectAttribution {
+            executable_match_target_directory,
+            fallback_owner_root,
+            bench_names: HashSet::new(),
+            bin_names: HashSet::new(),
+            exact_target_owner_evidence: HashMap::new(),
+        };
+        project_attribution.add_visible_target(entry);
+        project_attributions.push(project_attribution);
+    }
+}
+
+fn indexed_workspace_running_target_directory_path(workspace: &CargoWorkspaceView) -> AbsolutePath {
+    match workspace.target_directory_resolution() {
+        CanonicalPathResolution::Resolved(target_directory) => target_directory.path().clone(),
+        CanonicalPathResolution::Unresolved => workspace.declared_target_directory_path().clone(),
+    }
+}
+
+fn unindexed_visible_running_target_directory_path(
+    declared_target_directory: &AbsolutePath,
+) -> AbsolutePath {
+    declared_target_directory
+        .as_path()
         .canonicalize()
-        .map_or_else(|_| path.clone(), AbsolutePath::from)
+        .map_or_else(|_| declared_target_directory.clone(), AbsolutePath::from)
 }
 
-fn workspace_for_target_entry(
-    entry: &TargetEntry,
-    metadata: &HashMap<AbsolutePath, WorkspaceMetadata>,
-) -> Option<AbsolutePath> {
-    metadata
-        .iter()
-        .find(|(root, _)| entry.src_path.as_path().starts_with(root.as_path()))
-        .map(|(root, _)| root.clone())
-}
-
-fn member_dir_for_target_entry(entry: &TargetEntry) -> AbsolutePath {
+fn target_owner_root_for_entry(entry: &TargetEntry) -> AbsolutePath {
     let dir_name = match entry.run_target_kind {
         RunTargetKind::Binary => SOURCE_DIR,
         RunTargetKind::Example => EXAMPLES_DIR,
@@ -201,17 +328,57 @@ fn member_dir_for_target_entry(entry: &TargetEntry) -> AbsolutePath {
 #[allow(clippy::expect_used, reason = "tests should fail on invalid fixtures")]
 mod tests {
     use std::collections::BTreeMap;
-    use std::path::PathBuf;
+    #[cfg(unix)]
+    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
+    use std::path::Path;
+    use std::time::Duration;
+
+    use cargo_metadata::PackageId;
+    use cargo_metadata::semver::Version;
 
     use super::*;
     use crate::project::FileStamp;
     use crate::project::ManifestFingerprint;
+    use crate::project::Package;
+    use crate::project::PackageRecord;
+    use crate::project::PublishPolicy;
+    use crate::project::RootItem;
+    use crate::project::RustProject;
+    use crate::project::TargetRecord;
+    use crate::project::Visibility;
+    use crate::project::Workspace;
+    use crate::project::WorkspaceMetadata;
     use crate::tui::panes::TargetSource;
     use crate::tui::panes::TargetsData;
+    use crate::tui::project_list::ProjectList;
+    use crate::tui::running_targets::RunningTargetsPoller;
+    use crate::tui::startup_services::StartupServices;
 
-    fn path(path: &str) -> AbsolutePath { AbsolutePath::from(PathBuf::from(path)) }
+    fn path(path: impl AsRef<Path>) -> AbsolutePath {
+        AbsolutePath::from(path.as_ref().to_path_buf())
+    }
 
-    fn example_entry(project_path: &str, member_path: &str, name: &str) -> TargetEntry {
+    fn package_root(project_path: impl AsRef<Path>) -> RootItem {
+        RootItem::Rust(RustProject::Package(Package {
+            path: path(project_path),
+            ..Package::default()
+        }))
+    }
+
+    fn workspace_root(project_path: impl AsRef<Path>) -> RootItem {
+        RootItem::Rust(RustProject::Workspace(Workspace {
+            path: path(project_path),
+            ..Workspace::default()
+        }))
+    }
+
+    fn example_entry(
+        project_path: impl AsRef<Path>,
+        member_path: impl AsRef<Path>,
+        name: &str,
+    ) -> TargetEntry {
         TargetEntry {
             name:              name.to_string(),
             display_name:      name.to_string(),
@@ -219,14 +386,37 @@ mod tests {
             source:            TargetSource::member("fake_widgets".to_string()),
             project_path:      path(project_path),
             package_name:      "fake_widgets".to_string(),
-            src_path:          path(&format!("{member_path}/examples/{name}.rs")),
+            src_path:          path(
+                member_path
+                    .as_ref()
+                    .join("examples")
+                    .join(format!("{name}.rs")),
+            ),
             required_features: Vec::new(),
         }
     }
 
-    fn metadata(workspace_root: &str, target_directory: &str) -> WorkspaceMetadata {
+    fn worktree_example_entry(project_path: &Path, member_path: &Path, name: &str) -> TargetEntry {
+        let mut entry = example_entry(project_path, member_path, name);
+        entry.source = TargetSource::worktree("member".to_string());
+        entry.package_name = "member".to_string();
+        entry
+    }
+
+    fn create_example_fixture(source_path: &Path, target_directory: &Path) {
+        std::fs::create_dir_all(source_path.parent().expect("source parent should exist"))
+            .expect("create member source directory");
+        std::fs::create_dir_all(target_directory).expect("create target directory");
+        std::fs::write(source_path, "fn main() {}").expect("write target source fixture");
+    }
+
+    fn metadata(
+        checkout_root: impl AsRef<Path>,
+        target_directory: impl AsRef<Path>,
+    ) -> WorkspaceMetadata {
         WorkspaceMetadata {
-            workspace_root:           path(workspace_root),
+            declared_checkout_root:   path(checkout_root.as_ref()),
+            cargo_workspace_root:     path(checkout_root.as_ref()),
             target_directory:         path(target_directory),
             packages:                 HashMap::new(),
             fingerprint:              ManifestFingerprint {
@@ -241,8 +431,91 @@ mod tests {
         }
     }
 
+    fn metadata_with_example(
+        checkout_root: &Path,
+        target_directory: &Path,
+        member_root: &Path,
+        target_name: &str,
+        source_path: &Path,
+    ) -> WorkspaceMetadata {
+        let mut workspace_metadata = metadata(checkout_root, target_directory);
+        workspace_metadata.packages.insert(
+            PackageId {
+                repr: format!("member 0.1.0 (path+file://{})", checkout_root.display()),
+            },
+            example_package_record("member", member_root, target_name, source_path),
+        );
+        workspace_metadata
+    }
+
+    fn example_package_record(
+        package_name: &str,
+        member_root: &Path,
+        target_name: &str,
+        source_path: &Path,
+    ) -> PackageRecord {
+        PackageRecord {
+            name:          package_name.to_string(),
+            version:       Version::new(0, 1, 0),
+            edition:       "2024".to_string(),
+            description:   None,
+            license:       None,
+            homepage:      None,
+            repository:    None,
+            manifest_path: path(member_root.join("Cargo.toml")),
+            targets:       vec![TargetRecord {
+                name:              target_name.to_string(),
+                kinds:             vec![TargetKind::Example],
+                src_path:          path(source_path),
+                required_features: Vec::new(),
+            }],
+            publish:       PublishPolicy::Any,
+        }
+    }
+
+    fn upsert_two_workspace_metadata(
+        app: &App,
+        first_metadata: WorkspaceMetadata,
+        second_metadata: WorkspaceMetadata,
+    ) {
+        let metadata_store_handle = app.scan.metadata_store_handle();
+        let mut metadata_store = metadata_store_handle
+            .lock()
+            .expect("metadata store lock should be available");
+        metadata_store.upsert(first_metadata);
+        metadata_store.upsert(second_metadata);
+    }
+
+    fn poison_metadata_store(app: &App) {
+        let metadata_store_handle = app.scan.metadata_store_handle();
+        let poisoning_thread = std::thread::spawn(move || {
+            let _metadata_store = metadata_store_handle
+                .lock()
+                .expect("metadata store lock should be available before poisoning");
+            std::panic::resume_unwind(Box::new("poison metadata store"));
+        });
+        assert!(poisoning_thread.join().is_err());
+    }
+
+    fn attribution_for_target_directory<'a>(
+        project_attributions: &'a [OwnedRunningTargetProjectAttribution],
+        target_directory: &Path,
+    ) -> &'a OwnedRunningTargetProjectAttribution {
+        let canonical_target_directory = path(
+            target_directory
+                .canonicalize()
+                .expect("canonicalize target directory"),
+        );
+        project_attributions
+            .iter()
+            .find(|attribution| {
+                attribution.executable_match_target_directory == canonical_target_directory
+            })
+            .expect("workspace attribution should exist")
+    }
+
     #[test]
-    fn visible_targets_supply_a_slice_before_metadata_lands() {
+    fn visible_targets_supply_attribution_before_metadata_lands() {
         let mut app = crate::tui::test_support::make_app(&[]);
         app.panes.targets.set_content(TargetsData {
             binaries: Vec::new(),
@@ -254,43 +527,785 @@ mod tests {
             benches:  Vec::new(),
         });
 
-        let slices = app.collect_running_target_slices();
-        let slice = &slices[0];
+        let project_attributions = app.collect_running_target_attributions();
+        let project_attribution = &project_attributions[0];
         let key = (RunTargetKind::Example, "oit_resize_repro".to_string());
 
-        assert_eq!(slices.len(), 1);
-        assert_eq!(slice.target_dir, path("/tmp/hana/target"));
+        assert_eq!(project_attributions.len(), 1);
         assert_eq!(
-            slice.member_dirs.get(&key),
-            Some(&path("/tmp/hana/crates/fake_widgets"))
+            project_attribution.executable_match_target_directory,
+            path("/tmp/hana/target")
+        );
+        assert_eq!(
+            project_attribution.exact_target_owner_evidence.get(&key),
+            Some(&ExactRunningTargetOwnerEvidence::Unique(path(
+                "/tmp/hana/crates/fake_widgets"
+            )))
         );
     }
 
     #[test]
+    fn subsecond_app_ticks_skip_attribution_collection_until_due() {
+        let mut app = crate::tui::test_support::make_app(&[]);
+        let poll_interval = Duration::from_secs(1);
+        app.panes.running_targets =
+            RunningTargetsPoller::new(poll_interval, StartupServices::production());
+        let first_poll = Instant::now();
+
+        app.running_targets_tick(first_poll);
+        let rebuild_count = app.cargo_workspace_index.rebuild_count();
+        assert_eq!(app.running_target_attribution_collection_count, 1);
+
+        app.running_targets_tick(first_poll + poll_interval / 4);
+        app.running_targets_tick(
+            first_poll + poll_interval.saturating_sub(Duration::from_millis(1)),
+        );
+
+        assert_eq!(app.running_target_attribution_collection_count, 1);
+        assert_eq!(app.cargo_workspace_index.rebuild_count(), rebuild_count);
+
+        app.running_targets_tick(first_poll + poll_interval);
+
+        assert_eq!(app.running_target_attribution_collection_count, 2);
+        assert_eq!(app.cargo_workspace_index.rebuild_count(), rebuild_count);
+    }
+
+    #[test]
+    fn moving_selection_between_existing_rows_keeps_content_revision_and_index() {
+        let first_path = Path::new("/tmp/first-project");
+        let second_path = Path::new("/tmp/second-project");
+        let mut app = crate::tui::test_support::make_app(&[
+            package_root(first_path),
+            package_root(second_path),
+        ]);
+        let _ = app.collect_running_target_attributions();
+        let rebuild_count = app.cargo_workspace_index.rebuild_count();
+        let project_list_revision = app.project_list.revision();
+
+        app.project_list.select_project_path(path(second_path));
+        let _ = app.collect_running_target_attributions();
+        app.project_list.select_project_path(path(first_path));
+        let _ = app.collect_running_target_attributions();
+        app.project_list.clear_selected_project();
+        let _ = app.collect_running_target_attributions();
+
+        assert_eq!(app.project_list.revision(), project_list_revision);
+        assert_eq!(app.cargo_workspace_index.rebuild_count(), rebuild_count);
+    }
+
+    #[test]
+    fn visible_row_revision_rebuilds_with_unchanged_selected_path() {
+        let temp_dir = tempfile::tempdir().expect("create temporary directory");
+        let first_path = temp_dir.path().join("first");
+        let second_path = temp_dir.path().join("second");
+        let first = package_root(&first_path);
+        let second = package_root(&second_path);
+        let mut app = crate::tui::test_support::make_app(&[first, second]);
+        let _ = app.collect_running_target_attributions();
+        let rebuild_count = app.cargo_workspace_index.rebuild_count();
+        let selected_path = app
+            .project_list
+            .selected_project_path()
+            .map(AbsolutePath::from);
+
+        app.handle_disk_usage(second_path.as_path(), 0);
+        app.ensure_visible_rows_cached();
+        assert_eq!(
+            app.project_list
+                .at_path(second_path.as_path())
+                .expect("second project should exist")
+                .visibility,
+            Visibility::Deleted
+        );
+        assert_eq!(
+            app.project_list
+                .selected_project_path()
+                .map(AbsolutePath::from),
+            selected_path
+        );
+
+        let _ = app.collect_running_target_attributions();
+
+        assert_eq!(app.cargo_workspace_index.rebuild_count(), rebuild_count + 1);
+    }
+
+    #[test]
+    fn same_path_package_to_workspace_replacement_rebuilds_the_index_once() {
+        let mut app = crate::tui::test_support::make_app(&[package_root("/tmp/project")]);
+        let _ = app.collect_running_target_attributions();
+        let rebuild_count = app.cargo_workspace_index.rebuild_count();
+        let project_list_revision = app.project_list.revision();
+
+        app.mutate_tree()
+            .replace_all(ProjectList::new(vec![workspace_root("/tmp/project")]));
+        app.sync_selected_project();
+
+        assert!(app.project_list.revision() > project_list_revision);
+        assert_eq!(
+            app.project_list.selected_project_path(),
+            Some(Path::new("/tmp/project"))
+        );
+        let _ = app.collect_running_target_attributions();
+        assert_eq!(app.cargo_workspace_index.rebuild_count(), rebuild_count + 1);
+        let _ = app.collect_running_target_attributions();
+        assert_eq!(app.cargo_workspace_index.rebuild_count(), rebuild_count + 1);
+    }
+
+    #[test]
     fn visible_targets_augment_a_matching_metadata_slice() {
+        let temp_dir = tempfile::tempdir().expect("create temporary directory");
+        let checkout_root = temp_dir.path().join("hana");
+        let member_root = checkout_root.join("crates/fake_widgets");
+        let target_directory = checkout_root.join("custom-target");
+        std::fs::create_dir_all(&member_root).expect("create member directory");
+        std::fs::create_dir_all(&target_directory).expect("create target directory");
         let mut app = crate::tui::test_support::make_app(&[]);
         app.scan
             .metadata_store_handle()
             .lock()
             .expect("metadata store lock should be available")
-            .upsert(metadata("/tmp/hana", "/tmp/hana/target"));
+            .upsert(metadata(&checkout_root, &target_directory));
         app.panes.targets.set_content(TargetsData {
             binaries: Vec::new(),
             examples: vec![example_entry(
-                "/tmp/hana",
-                "/tmp/hana/crates/fake_widgets",
+                &checkout_root,
+                &member_root,
                 "oit_resize_repro",
             )],
             benches:  Vec::new(),
         });
 
-        let slices = app.collect_running_target_slices();
+        let project_attributions = app.collect_running_target_attributions();
         let key = (RunTargetKind::Example, "oit_resize_repro".to_string());
 
-        assert_eq!(slices.len(), 1);
+        assert_eq!(project_attributions.len(), 1);
         assert_eq!(
-            slices[0].member_dirs.get(&key),
-            Some(&path("/tmp/hana/crates/fake_widgets"))
+            project_attributions[0]
+                .exact_target_owner_evidence
+                .get(&key),
+            Some(&ExactRunningTargetOwnerEvidence::Unique(path(&member_root)))
+        );
+    }
+
+    #[test]
+    fn duplicate_package_target_names_produce_ambiguous_member_evidence() {
+        let checkout_root = Path::new("/tmp/duplicate-workspace");
+        let target_directory = checkout_root.join("target");
+        let first_member_root = checkout_root.join("crates/first");
+        let second_member_root = checkout_root.join("crates/second");
+        let mut workspace_metadata = metadata(checkout_root, &target_directory);
+        workspace_metadata.packages.insert(
+            PackageId {
+                repr: "first-package-id".to_string(),
+            },
+            example_package_record(
+                "first",
+                &first_member_root,
+                "duplicate",
+                &first_member_root.join("examples/duplicate.rs"),
+            ),
+        );
+        workspace_metadata.packages.insert(
+            PackageId {
+                repr: "second-package-id".to_string(),
+            },
+            example_package_record(
+                "second",
+                &second_member_root,
+                "duplicate",
+                &second_member_root.join("examples/duplicate.rs"),
+            ),
+        );
+        let mut app = crate::tui::test_support::make_app(&[]);
+        app.scan
+            .metadata_store_handle()
+            .lock()
+            .expect("metadata store lock should be available")
+            .upsert(workspace_metadata);
+
+        let project_attributions = app.collect_running_target_attributions();
+        let key = (RunTargetKind::Example, "duplicate".to_string());
+
+        assert_eq!(
+            project_attributions[0]
+                .exact_target_owner_evidence
+                .get(&key),
+            Some(&ExactRunningTargetOwnerEvidence::Ambiguous)
+        );
+    }
+
+    #[test]
+    fn visible_target_agreement_keeps_unique_member_evidence() {
+        let temp_dir = tempfile::tempdir().expect("create temporary directory");
+        let checkout_root = temp_dir.path().join("workspace");
+        let member_root = checkout_root.join("crates/member");
+        let source_path = member_root.join("examples/agreed.rs");
+        let target_directory = checkout_root.join("target");
+        std::fs::create_dir_all(source_path.parent().expect("source parent should exist"))
+            .expect("create member source directory");
+        std::fs::create_dir_all(&target_directory).expect("create target directory");
+        std::fs::write(&source_path, "fn main() {}").expect("write target source fixture");
+        let mut app = crate::tui::test_support::make_app(&[]);
+        app.scan
+            .metadata_store_handle()
+            .lock()
+            .expect("metadata store lock should be available")
+            .upsert(metadata_with_example(
+                &checkout_root,
+                &target_directory,
+                &member_root,
+                "agreed",
+                &source_path,
+            ));
+        app.panes.targets.set_content(TargetsData {
+            binaries: Vec::new(),
+            examples: vec![example_entry(&checkout_root, &member_root, "agreed")],
+            benches:  Vec::new(),
+        });
+
+        let project_attributions = app.collect_running_target_attributions();
+        let key = (RunTargetKind::Example, "agreed".to_string());
+
+        assert_eq!(
+            project_attributions[0]
+                .exact_target_owner_evidence
+                .get(&key),
+            Some(&ExactRunningTargetOwnerEvidence::Unique(path(&member_root)))
+        );
+    }
+
+    #[test]
+    fn retained_visible_target_keeps_its_indexed_member_owner() {
+        let temp_dir = tempfile::tempdir().expect("create temporary directory");
+        let workspace_root = temp_dir.path().join("workspace");
+        let member_root = workspace_root.join("crates/member");
+        let current_source = member_root.join("examples/current.rs");
+        let removed_source = member_root.join("examples/removed.rs");
+        let shared_target = temp_dir.path().join("shared-target");
+        std::fs::create_dir_all(current_source.parent().expect("source parent should exist"))
+            .expect("create member source directory");
+        std::fs::create_dir_all(&shared_target).expect("create shared target directory");
+        std::fs::write(&current_source, "fn main() {}")
+            .expect("write current target source fixture");
+
+        let mut workspace_metadata = metadata(&workspace_root, &shared_target);
+        workspace_metadata.packages.insert(
+            PackageId {
+                repr: "member 0.1.0 (path+file:///member)".to_string(),
+            },
+            PackageRecord {
+                name:          "member".to_string(),
+                version:       Version::new(0, 1, 0),
+                edition:       "2024".to_string(),
+                description:   None,
+                license:       None,
+                homepage:      None,
+                repository:    None,
+                manifest_path: path(member_root.join("Cargo.toml")),
+                targets:       vec![TargetRecord {
+                    name:              "current".to_string(),
+                    kinds:             vec![TargetKind::Example],
+                    src_path:          path(&current_source),
+                    required_features: Vec::new(),
+                }],
+                publish:       PublishPolicy::Any,
+            },
+        );
+        let mut app = crate::tui::test_support::make_app(&[]);
+        app.scan
+            .metadata_store_handle()
+            .lock()
+            .expect("metadata store lock should be available")
+            .upsert(workspace_metadata);
+        app.panes.targets.set_content(TargetsData {
+            binaries: Vec::new(),
+            examples: vec![TargetEntry {
+                name:              "removed".to_string(),
+                display_name:      "removed".to_string(),
+                run_target_kind:   RunTargetKind::Example,
+                source:            TargetSource::member("member".to_string()),
+                project_path:      path(&member_root),
+                package_name:      "member".to_string(),
+                src_path:          path(&removed_source),
+                required_features: Vec::new(),
+            }],
+            benches:  Vec::new(),
+        });
+
+        let project_attributions = app.collect_running_target_attributions();
+        let key = (RunTargetKind::Example, "removed".to_string());
+        let declared_member_root = path(&member_root);
+
+        assert_eq!(project_attributions.len(), 1);
+        assert_eq!(
+            project_attributions[0]
+                .executable_match_target_directory
+                .as_path(),
+            shared_target
+                .canonicalize()
+                .expect("canonicalize shared target directory")
+        );
+        assert_eq!(
+            project_attributions[0].fallback_owner_root.as_path(),
+            workspace_root.as_path()
+        );
+        assert_eq!(
+            project_attributions[0]
+                .exact_target_owner_evidence
+                .get(&key),
+            Some(&ExactRunningTargetOwnerEvidence::Unique(
+                declared_member_root
+            ))
+        );
+    }
+
+    #[test]
+    fn ambiguous_workspace_ownership_uses_the_unindexed_visible_target_fallback() {
+        let temp_dir = tempfile::tempdir().expect("create temporary directory");
+        let first_checkout_root = temp_dir.path().join("first-checkout");
+        let second_checkout_root = temp_dir.path().join("second-checkout");
+        let visible_project_root = temp_dir.path().join("visible-project");
+        let shared_source = temp_dir.path().join("shared-source/examples/demo.rs");
+        std::fs::create_dir_all(&first_checkout_root).expect("create first checkout directory");
+        std::fs::create_dir_all(&second_checkout_root).expect("create second checkout directory");
+        std::fs::create_dir_all(&visible_project_root).expect("create visible project directory");
+        std::fs::create_dir_all(
+            shared_source
+                .parent()
+                .expect("shared source parent should exist"),
+        )
+        .expect("create shared source directory");
+        std::fs::write(&shared_source, "fn main() {}").expect("write shared source fixture");
+
+        let first_metadata = metadata_with_example(
+            &first_checkout_root,
+            &first_checkout_root.join("target"),
+            &first_checkout_root,
+            "demo",
+            &shared_source,
+        );
+        let second_metadata = metadata_with_example(
+            &second_checkout_root,
+            &second_checkout_root.join("target"),
+            &second_checkout_root,
+            "demo",
+            &shared_source,
+        );
+        let mut app = crate::tui::test_support::make_app(&[]);
+        {
+            let metadata_store_handle = app.scan.metadata_store_handle();
+            let mut metadata_store = metadata_store_handle
+                .lock()
+                .expect("metadata store lock should be available");
+            metadata_store.upsert(first_metadata);
+            metadata_store.upsert(second_metadata);
+        }
+        app.panes.targets.set_content(TargetsData {
+            binaries: Vec::new(),
+            examples: vec![TargetEntry {
+                name:              "demo".to_string(),
+                display_name:      "demo".to_string(),
+                run_target_kind:   RunTargetKind::Example,
+                source:            TargetSource::member("member".to_string()),
+                project_path:      path(&visible_project_root),
+                package_name:      "member".to_string(),
+                src_path:          path(&shared_source),
+                required_features: Vec::new(),
+            }],
+            benches:  Vec::new(),
+        });
+
+        let project_attributions = app.collect_running_target_attributions();
+        let fallback_attribution = project_attributions
+            .iter()
+            .find(|attribution| attribution.fallback_owner_root == path(&visible_project_root))
+            .expect("ambiguous target should use visible project fallback");
+
+        assert_eq!(
+            fallback_attribution.executable_match_target_directory,
+            path(visible_project_root.join("target"))
+        );
+    }
+
+    #[test]
+    fn visible_worktree_targets_join_exact_indexed_workspace_attributions() {
+        let temp_dir = tempfile::tempdir().expect("create temporary directory");
+        let first_checkout_root = temp_dir.path().join("first-checkout");
+        let first_member_root = first_checkout_root.join("crates/member");
+        let first_source = first_member_root.join("examples/first-visible.rs");
+        let first_target_directory = temp_dir.path().join("first-custom-target");
+        let second_checkout_root = temp_dir.path().join("second-checkout");
+        let second_member_root = second_checkout_root.join("crates/member");
+        let second_current_source = second_member_root.join("examples/current.rs");
+        let second_target_directory = temp_dir.path().join("second-custom-target");
+        create_example_fixture(&first_source, &first_target_directory);
+        create_example_fixture(&second_current_source, &second_target_directory);
+
+        let first_metadata = metadata_with_example(
+            &first_checkout_root,
+            &first_target_directory,
+            &first_member_root,
+            "first-visible",
+            &first_source,
+        );
+        let second_metadata = metadata_with_example(
+            &second_checkout_root,
+            &second_target_directory,
+            &second_member_root,
+            "current",
+            &second_current_source,
+        );
+        let mut app = crate::tui::test_support::make_app(&[]);
+        upsert_two_workspace_metadata(&app, first_metadata, second_metadata);
+        app.panes.targets.set_content(TargetsData {
+            binaries: Vec::new(),
+            examples: vec![
+                worktree_example_entry(&first_checkout_root, &first_member_root, "first-visible"),
+                worktree_example_entry(&second_checkout_root, &second_member_root, "retained"),
+            ],
+            benches:  Vec::new(),
+        });
+
+        let project_attributions = app.collect_running_target_attributions();
+        let first_attribution =
+            attribution_for_target_directory(&project_attributions, &first_target_directory);
+        let second_attribution =
+            attribution_for_target_directory(&project_attributions, &second_target_directory);
+        let first_key = (RunTargetKind::Example, "first-visible".to_string());
+        let retained_key = (RunTargetKind::Example, "retained".to_string());
+
+        assert_eq!(project_attributions.len(), 2);
+        assert_eq!(
+            first_attribution.fallback_owner_root,
+            path(&first_checkout_root)
+        );
+        assert_eq!(
+            first_attribution
+                .exact_target_owner_evidence
+                .get(&first_key),
+            Some(&ExactRunningTargetOwnerEvidence::Unique(path(
+                &first_member_root
+            )))
+        );
+        assert!(
+            !first_attribution
+                .exact_target_owner_evidence
+                .contains_key(&retained_key)
+        );
+        assert_eq!(
+            second_attribution.fallback_owner_root,
+            path(&second_checkout_root)
+        );
+        assert_eq!(
+            second_attribution
+                .exact_target_owner_evidence
+                .get(&retained_key),
+            Some(&ExactRunningTargetOwnerEvidence::Unique(path(
+                &second_member_root
+            )))
+        );
+        assert!(
+            !second_attribution
+                .exact_target_owner_evidence
+                .contains_key(&first_key)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_checkout_keeps_declared_running_target_fallback()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let canonical_checkout_root = temp_dir.path().join("canonical-checkout");
+        let declared_checkout_root = temp_dir.path().join("declared-checkout");
+        let target_directory = canonical_checkout_root.join("target");
+        fs::create_dir_all(&target_directory)?;
+        symlink(&canonical_checkout_root, &declared_checkout_root)?;
+        let mut app = crate::tui::test_support::make_app(&[]);
+        app.scan
+            .metadata_store_handle()
+            .lock()
+            .expect("metadata store lock should be available")
+            .upsert(metadata(
+                &declared_checkout_root,
+                declared_checkout_root.join("target"),
+            ));
+        app.panes.targets.set_content(TargetsData {
+            binaries: Vec::new(),
+            examples: vec![TargetEntry {
+                name:              "stale".to_string(),
+                display_name:      "stale".to_string(),
+                run_target_kind:   RunTargetKind::Example,
+                source:            TargetSource::member("removed".to_string()),
+                project_path:      path(&declared_checkout_root),
+                package_name:      "removed".to_string(),
+                src_path:          path(declared_checkout_root.join("examples/stale.rs")),
+                required_features: Vec::new(),
+            }],
+            benches:  Vec::new(),
+        });
+
+        let project_attributions = app.collect_running_target_attributions();
+        let workspace = app
+            .cargo_workspace_index
+            .workspaces()
+            .next()
+            .ok_or("indexed workspace should exist")?;
+
+        assert!(matches!(
+            workspace.checkout_root_resolution(),
+            CanonicalPathResolution::Resolved(root)
+                if root.path().as_path() == canonical_checkout_root.canonicalize()?
+        ));
+        assert_eq!(
+            workspace.declared_checkout_root_path().as_path(),
+            declared_checkout_root.as_path()
+        );
+        assert_eq!(project_attributions.len(), 1);
+        assert_eq!(
+            project_attributions[0].fallback_owner_root.as_path(),
+            declared_checkout_root.as_path()
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_member_keeps_canonical_identity_and_declared_running_target_path()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let workspace_root = temp_dir.path().join("workspace");
+        let canonical_member_root = temp_dir.path().join("canonical-member");
+        let declared_member_root = workspace_root.join("crates/member");
+        let declared_source = declared_member_root.join("examples/demo.rs");
+        let canonical_source = canonical_member_root.join("examples/demo.rs");
+        let target_directory = workspace_root.join("target");
+        fs::create_dir_all(&workspace_root)?;
+        fs::create_dir_all(
+            declared_member_root
+                .parent()
+                .ok_or("declared member parent should exist")?,
+        )?;
+        fs::create_dir_all(
+            canonical_source
+                .parent()
+                .ok_or("canonical source parent should exist")?,
+        )?;
+        fs::create_dir_all(&target_directory)?;
+        fs::write(&canonical_source, "fn main() {}")?;
+        symlink(&canonical_member_root, &declared_member_root)?;
+
+        let mut workspace_metadata = metadata(&workspace_root, &target_directory);
+        workspace_metadata.packages.insert(
+            PackageId {
+                repr: "member 0.1.0 (path+file:///declared-member)".to_string(),
+            },
+            PackageRecord {
+                name:          "member".to_string(),
+                version:       Version::new(0, 1, 0),
+                edition:       "2024".to_string(),
+                description:   None,
+                license:       None,
+                homepage:      None,
+                repository:    None,
+                manifest_path: path(declared_member_root.join("Cargo.toml")),
+                targets:       vec![TargetRecord {
+                    name:              "demo".to_string(),
+                    kinds:             vec![TargetKind::Example],
+                    src_path:          path(&declared_source),
+                    required_features: Vec::new(),
+                }],
+                publish:       PublishPolicy::Any,
+            },
+        );
+        let mut app = crate::tui::test_support::make_app(&[]);
+        app.scan
+            .metadata_store_handle()
+            .lock()
+            .expect("metadata store lock should be available")
+            .upsert(workspace_metadata);
+
+        let project_attributions = app.collect_running_target_attributions();
+        let package = app
+            .cargo_workspace_index
+            .workspaces()
+            .flat_map(CargoWorkspaceView::packages)
+            .next()
+            .ok_or("indexed package should exist")?;
+        let key = (RunTargetKind::Example, "demo".to_string());
+
+        assert!(matches!(
+            package.member_root_resolution(),
+            CanonicalPathResolution::Resolved(root)
+                if root.path().as_path() == canonical_member_root.canonicalize()?
+        ));
+        assert_eq!(
+            package.declared_member_root_path().as_path(),
+            declared_member_root
+        );
+        assert_eq!(
+            project_attributions[0]
+                .exact_target_owner_evidence
+                .get(&key),
+            Some(&ExactRunningTargetOwnerEvidence::Unique(path(
+                &declared_member_root
+            )))
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn target_directory_symlink_retargets_without_index_rebuild()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let workspace_root = temp_dir.path().join("workspace");
+        let first_target = temp_dir.path().join("first-target");
+        let second_target = temp_dir.path().join("second-target");
+        let target_link = temp_dir.path().join("target-link");
+        fs::create_dir_all(&workspace_root)?;
+        fs::create_dir_all(&first_target)?;
+        fs::create_dir_all(&second_target)?;
+        symlink(&first_target, &target_link)?;
+        let mut app = crate::tui::test_support::make_app(&[]);
+        app.scan
+            .metadata_store_handle()
+            .lock()
+            .expect("metadata store lock should be available")
+            .upsert(metadata(&workspace_root, &target_link));
+
+        let first_attributions = app.collect_running_target_attributions();
+        let rebuild_count = app.cargo_workspace_index.rebuild_count();
+        assert_eq!(
+            first_attributions[0]
+                .executable_match_target_directory
+                .as_path(),
+            first_target.canonicalize()?
+        );
+
+        fs::remove_file(&target_link)?;
+        symlink(&second_target, &target_link)?;
+        let second_attributions = app.collect_running_target_attributions();
+
+        assert_eq!(
+            second_attributions[0]
+                .executable_match_target_directory
+                .as_path(),
+            second_target.canonicalize()?
+        );
+        assert_eq!(app.cargo_workspace_index.rebuild_count(), rebuild_count);
+        Ok(())
+    }
+
+    #[test]
+    fn lock_failure_retains_last_accepted_workspace_index() {
+        let temp_dir = tempfile::tempdir().expect("create temporary directory");
+        let checkout_root = temp_dir.path().join("workspace");
+        let member_root = checkout_root.join("crates/member");
+        let source_path = member_root.join("examples/metadata-only.rs");
+        let target_directory = temp_dir.path().join("custom-target");
+        create_example_fixture(&source_path, &target_directory);
+        let mut app = crate::tui::test_support::make_app(&[]);
+        app.scan
+            .metadata_store_handle()
+            .lock()
+            .expect("metadata store lock should be available")
+            .upsert(metadata_with_example(
+                &checkout_root,
+                &target_directory,
+                &member_root,
+                "metadata-only",
+                &source_path,
+            ));
+        let _ = app.collect_running_target_attributions();
+        poison_metadata_store(&app);
+
+        let workspace_index_refresh_state = app.refresh_cargo_workspace_index();
+        let project_attributions = app
+            .collect_running_target_attributions_with_index_refresh_state(
+                workspace_index_refresh_state,
+            );
+        let project_attribution =
+            attribution_for_target_directory(&project_attributions, &target_directory);
+        let key = (RunTargetKind::Example, "metadata-only".to_string());
+
+        assert_eq!(
+            workspace_index_refresh_state,
+            WorkspaceIndexRefreshState::RetainedLastAccepted
+        );
+        assert_eq!(project_attributions.len(), 1);
+        assert_eq!(
+            project_attribution.fallback_owner_root,
+            path(&checkout_root)
+        );
+        assert_eq!(
+            project_attribution.exact_target_owner_evidence.get(&key),
+            Some(&ExactRunningTargetOwnerEvidence::Unique(path(&member_root)))
+        );
+    }
+
+    #[test]
+    fn uninitialized_workspace_index_uses_only_the_default_visible_slice() {
+        let visible_entry = example_entry(
+            "/tmp/visible-project",
+            "/tmp/stale-checkout/crates/fake_widgets",
+            "example",
+        );
+        let mut stale_metadata = metadata("/tmp/stale-checkout", "/tmp/stale-target");
+        stale_metadata.packages.insert(
+            PackageId {
+                repr: "stale-package-id".to_string(),
+            },
+            PackageRecord {
+                name:          "fake_widgets".to_string(),
+                version:       Version::new(0, 1, 0),
+                edition:       "2024".to_string(),
+                description:   None,
+                license:       None,
+                homepage:      None,
+                repository:    None,
+                manifest_path: path("/tmp/stale-checkout/crates/fake_widgets/Cargo.toml"),
+                targets:       vec![TargetRecord {
+                    name:              visible_entry.name.clone(),
+                    kinds:             vec![TargetKind::Example],
+                    src_path:          visible_entry.src_path.clone(),
+                    required_features: Vec::new(),
+                }],
+                publish:       PublishPolicy::Any,
+            },
+        );
+        let mut app = crate::tui::test_support::make_app(&[]);
+        app.scan
+            .metadata_store_handle()
+            .lock()
+            .expect("metadata store lock should be available")
+            .upsert(stale_metadata);
+        app.panes.targets.set_content(TargetsData {
+            binaries: Vec::new(),
+            examples: vec![visible_entry],
+            benches:  Vec::new(),
+        });
+        app.cargo_workspace_index = crate::project::CargoWorkspaceIndex::default();
+        poison_metadata_store(&app);
+
+        let workspace_index_refresh_state = app.refresh_cargo_workspace_index();
+        let project_attributions = app
+            .collect_running_target_attributions_with_index_refresh_state(
+                workspace_index_refresh_state,
+            );
+
+        assert_eq!(
+            workspace_index_refresh_state,
+            WorkspaceIndexRefreshState::Uninitialized
+        );
+        assert_eq!(project_attributions.len(), 1);
+        assert_eq!(
+            project_attributions[0].executable_match_target_directory,
+            path("/tmp/visible-project/target")
+        );
+        assert_eq!(
+            project_attributions[0].fallback_owner_root,
+            path("/tmp/visible-project")
         );
     }
 }

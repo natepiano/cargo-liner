@@ -11,6 +11,7 @@ use super::project_list::ExpandKey;
 use super::project_list::VisibleRow;
 use crate::project::AbsolutePath;
 use crate::project::ProjectEntry;
+use crate::project::ProjectListRevision;
 use crate::scan::ProjectStorage;
 
 /// Whether a project's primary ahead/behind sync value is known yet.
@@ -51,6 +52,8 @@ pub(super) struct ProjectList {
     pub(super) cached_root_sorted:  Vec<u64>,
     pub(super) cached_child_sorted: HashMap<usize, Vec<u64>>,
     pub(super) cached_fit_widths:   ProjectListWidths,
+    /// Monotonic revision of visible project-list ownership content.
+    pub(super) revision:            ProjectListRevision,
     pub(super) storage:             ProjectStorage,
     pub(super) cursor:              usize,
 }
