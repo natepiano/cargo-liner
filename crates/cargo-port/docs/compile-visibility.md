@@ -442,7 +442,7 @@ User decisions:
   generation or revision stamps — those advance on any background ownership
   change, which would blank the display on a 500 ms cadence during a scan.
 
-### Phase 6 — Cargo build and compiler classification · status: todo
+### Phase 6 — Cargo build and compiler classification · status: done
 
 #### Work Order
 
@@ -500,6 +500,119 @@ User decisions:
 
 Dead-code suppressions: this phase deletes only the ones it actually consumes, and states the disposition of the rest. Consumed by the `From` conversion: `canonical_checkout_roots`, `canonical_workspace_roots`, `accepted_cargo_metadata_revision`, and `project_list_revision` on `MonitorScopeKey`. Not consumed, and not consumable by this phase's own design — `monitor_selected_row_identity` (`src/tui/compile_visibility/scope.rs:88`) and `selected_row_kind` (`:93`), because the Spec above states that `BuildScopeKey` carries no row identity; and `required_features` (`src/project/cargo/workspace_index.rs:164`), `declared_source_path` (`:167`), and `declared_workspace_root_path` (`:199`), because the Spec mandates canonicalized comparison and the canonical accessors are already live. Delete those five, or narrow them to `#[cfg(test)]` where a test is their only caller; do not invent a production consumer and do not widen `BuildScopeKey` to manufacture one — that is the coupling the Phase 5 decision rejected. The Spec fixes the conversion's home as `src/tui/compile_visibility/mod.rs`, which is outside `scope.rs` and so cannot read the private fields — the four canonical accessors are therefore genuinely consumed and their suppressions come out. Writing the conversion inside `scope.rs` instead would read the fields directly and consume none of the six, which is why the home is fixed rather than left to the implementer. The two suppressions at `scope.rs:168` and `:175` — `MonitorScopeActionability` and `MonitorScopeResolution::actionability()` — are consumed by that entry point and come out with the other four. The gate is not green while a suppression this phase named survives without its stated disposition.
 
+### Retrospective
+
+**What worked:**
+
+- Purity enforced by the signature rather than by prose: `classify` is a free
+  function in `classify.rs` while the caches live in `build_classifier.rs`, so
+  there was no interior-mutability escape hatch to review for. The blind review
+  confirmed `classify` is a function of its immutable input.
+- Opaque `BuildSessionId`/`CompileActivityId` with private inner fields stopped
+  same-PID-exec collisions at compile time rather than at test time.
+- The two-pass recognize-then-associate order with sticky promotion landed as
+  specified and needed no rework.
+
+**What deviated from the plan:**
+
+- `src/main.rs` declares `#[cfg(test)] mod build_monitor;`. The whole module
+  compiles into the test binary only, because this phase deliberately assigns
+  classification no runtime owner and a plain `mod` would be entirely dead code
+  in the shipping binary. The Files entry said only "declare the build-monitor
+  domain" and did not anticipate the gate. **Phase 7 removes it** when the worker
+  takes ownership.
+
+**Surprises:**
+
+- Build profile needed a sticky per-session ledger that the Spec did not name.
+  `observed_build_directories` is rebuilt each cycle from live compilers only, so
+  a build whose profile comes from `.cargo/config.toml` or an alias reported
+  `Release` on cycles with a live compiler child and reverted to `Dev` on cycles
+  without one. `BuildDirectoryLedger` (`build_classifier.rs:232`, LRU-capped)
+  holds the last observation per session. The Spec specified stickiness for
+  first-seen ordering and for promotion, but not for profile.
+- The linker name table had to be consolidated into `LinkerRecognition` in
+  `process_observation/snapshot.rs` and consumed cross-module from `classify.rs`.
+  Two copies keyed differently — `Path::file_stem()` splits at the last dot —
+  made `ld64.lld` match nothing and render as a rustc compile.
+- An unreadable working directory must degrade the cycle, not skip the
+  candidate: skipping removed a live build from the pane for that cycle, which
+  contradicts the promotion guarantee. Scope resolution then simply yields
+  `Unresolved` rather than a wrong scope.
+- rustc passes `@<response-file>` instead of an argument list once the command
+  line would exceed the OS limit — the default path for `link.exe` — so an
+  argument-only linker test missed the entire Windows link path.
+
+**Implications for remaining phases:**
+
+- Phase 7 removes the `#[cfg(test)]` module gate. That also dissolves the one
+  open non-gating finding: the shipping binary currently computes
+  `build_candidate_incarnations` (`process_observation/snapshot.rs:1356`) about
+  twenty times a minute with no reader, because every reader is inside the gated
+  module.
+- The classifier now owns **three** support structures, not two: the
+  dependency-manifest cache, the first-seen ledger, and the build-directory
+  ledger. Phase 7's Constraints paragraph named only the first two; the worker
+  takes ownership of all three.
+- Two test-quality gaps carry forward rather than blocking this phase: the
+  cohort-ordering test (`classify_tests.rs:1228`) cannot fail if the tie-breaker
+  at `classify.rs:640` were deleted, because the `BTreeMap` input already arrives
+  in tie-break order; and `classifying_the_same_snapshot_twice_produces_the_same_result`
+  (`classify_tests.rs:493`) uses `cargo build --release`, which returns at the
+  `Argument` early-return and never exercises the build-directory ledger. The
+  ledger applies a newly-learned build directory one cycle late — it converges
+  and never produces a wrong attribution, but no test covers that path.
+
+### Phase 6 Review
+
+An architect pass over the remaining phases returned fifteen findings. Ten were
+applied directly; five merged into three decisions deferred into the phases they
+affect.
+
+Applied without a gate:
+
+- Phase 7's benchmark now charges the path canonicalization and target-directory
+  resolution that `classify_cycle` performs before the pure call to
+  classification rather than to the observer baseline, and builds its fixtures
+  on the snapshot assembler Phase 6 shipped instead of a second one.
+- Phase 7 now states that the classifier instance lives in the background
+  worker, not inside the process-observation module — the classifier already
+  reads types from that module, so hosting it there would make the dependency
+  circular against Phase 2's neutrality constraint.
+- Phase 7 records that the completed-refresh payload is boxed and must stay
+  boxed once the classification result joins it.
+- Phase 7 gains the collapse of the build session's two independently-unresolved
+  scope fields into one exhaustive value, so "actionable implies a resolved
+  root" becomes a type fact before any termination phase reads it.
+- Phase 8's refresh-schedule type is renamed: Phase 3 already shipped a
+  different type under the name the plan chose, exported and threaded through
+  three call sites.
+- Phase 8 drops a file entry that Phase 3 already satisfied.
+- Phase 8's session states now require one exhaustive type of this phase's own —
+  Phase 6 shipped only a per-activity compiler kind — and the Cargo-lock wait
+  state is dropped rather than inferred if its only evidence source stays
+  off-limits to polling.
+- Phase 8's acceptance gate takes ownership of the four snapshot-and-deadline
+  suppressions that no phase claimed, since it is their first reader.
+- Phase 8's and Phase 9's dead-code clauses are corrected: the items they name
+  carry test-only gates, not suppressions, so both gates now say what actually
+  has to be removed.
+- Three drifted source line references were corrected across Phases 7 and 8.
+
+Deferred as decisions in the phase they affect:
+
+- Phase 7 — how much of Phase 6's test-only gate this phase removes, and which
+  phase proves no suppression is left. The gate is 68 attributes across ten
+  files, not one module declaration, and removing it without a production caller
+  converts test-gating into dead-code suppression.
+- Phase 7 — what the build session exposes to the presentation and termination
+  phases. It carries no operative command, no root process id, and a cycle
+  counter rather than an instant, while Phases 9 and 12 specify all three, and
+  Phase 11 needs a root identity the opaque session id does not expose.
+- Phase 8 — which phase narrows the host-wide classification to the selected
+  scope's roots. No remaining phase owns it, so the set the user sees and the
+  set a scope-wide termination acts on would be computed separately.
+
 ### Phase 7 — Worker-side classification integration · status: todo
 
 #### Work Order
@@ -508,13 +621,14 @@ Dead-code suppressions: this phase deletes only the ones it actually consumes, a
 
 **Spec:**
 
-- Extend the Phase 3 repeatable 1,000- and 5,000-process benchmarks to cover observer refresh plus Phase 6 classification-input preparation/classification, including representative Cargo, compiler, wrapper, and unrelated processes; report classification's incremental cost separately from the observer-only baseline. Timing remains recorded evidence rather than a flaky CI threshold.
-- Keep the architecture Phase 3 selected: one App-owned `ProcessRefreshExecutor` uses its dedicated worker, and the worker owns the sole `ProcessObserver` plus the sole runtime `BuildClassifier`. Do not add a synchronous production branch, another observer, another classifier-support owner, or another timing channel.
-- Requests carry refresh correlation, the semantic refresh plan, immutable scope/generation/owned-run evidence, and `CompileClassificationDemand::{NotRequested, Requested { generation, scope, cancellation }}` (or an equally semantic exhaustive request state). The workspace-index evidence is an `Arc<CargoWorkspaceIndex>` clone taken at request time — **this phase** converts `App::cargo_workspace_index` (`src/tui/app/mod.rs:260`) from a by-value `CargoWorkspaceIndex` to an `Arc<CargoWorkspaceIndex>` and makes `rebuild_if_changed` swap in a fresh index rather than mutate in place, precisely so a request can hold the accepted index across the thread boundary without borrowing `App`. One allocation per accepted-metadata change; the index type still derives only `Debug, Default` and gains no `Clone`. `WorkspaceIndexReadiness` keeps its three variants and its `Clone, Copy` derive, and its two payload variants change from `&'a CargoWorkspaceIndex` to `&'a Arc<CargoWorkspaceIndex>` — a view onto the handle, not the handle. Do not make the variants own an `Arc`: that drops `Copy`, and `resolve_nested_workspace_scope` (`src/tui/compile_visibility/scope.rs:365-397`) destructures the readiness value at `:372` and passes the same value again at `:393`, which compiles only because it is `Copy`. With `&'a Arc<…>` the app field is already the handle, so `&self.cargo_workspace_index` produces the reference directly and every existing call site is unchanged — method calls and argument positions both deref through it. The single explicit `Arc::clone` happens here, where the request is built. A rebuild landing mid-flight leaves the in-flight request on the older index; that is safe because the request's revision stamps and generation already say which index it was asked under. `scope` is Phase 6's `BuildScopeKey`, never `MonitorScopeKey` — the latter is `pub(super)`-reachable only inside `crate::tui`. Its generation-bound cancellation capability cannot cancel another scope or generation. Mutable App state and observer internals never cross into the worker.
-- Extend `CompletedProcessRefreshExecution` with `CompileClassificationExecution::{NotRequested, Completed(BuildClassification), Failed(BuildClassificationExecutionFailure), Cancelled(CompileMonitorGeneration)}` or an equally semantic product. A successful process observation remains available to Running Targets when compile classification fails or is cancelled; only `ProcessRefreshExecutionOutcome::Failed(NoCompletedRefresh)` represents a cycle with no completed observation.
+- Extend the Phase 3 repeatable 1,000- and 5,000-process benchmarks to cover observer refresh plus Phase 6 classification-input preparation/classification, including representative Cargo, compiler, wrapper, and unrelated processes; report classification's incremental cost separately from the observer-only baseline. `classify_cycle` (`src/build_monitor/build_classifier.rs:456`) canonicalizes process paths and resolves indexed target directories **before** the pure `classify` call, so that filesystem work is classification cost and must be charged to the classification measurement, not left inside the observer baseline. Build the fixtures on Phase 6's `src/process_observation/snapshot_builder.rs`, which is exactly the snapshot assembler these benchmarks need; widen its `#[cfg(test)]` gate if the benchmarks are to run outside `cargo test`. Timing remains recorded evidence rather than a flaky CI threshold.
+- Keep the architecture Phase 3 selected: one App-owned `ProcessRefreshExecutor` uses its dedicated worker, and the worker owns the sole `ProcessObserver` plus the sole runtime `BuildClassifier`. The `BuildClassifier` instance lives in the worker in `src/tui/background.rs`, **not** inside `src/process_observation`: `src/build_monitor/classify.rs` already imports `LinkerRecognition`, `ProcessObservationSnapshot`, `AncestryLookup`, and `ProcessIncarnation` from `process_observation`, so hosting the classifier there would complete a bidirectional dependency against Phase 2's observation-stays-neutral constraint. Do not add a synchronous production branch, another observer, another classifier-support owner, or another timing channel.
+- Requests carry refresh correlation, the semantic refresh plan, immutable scope/generation/owned-run evidence, and `CompileClassificationDemand::{NotRequested, Requested { generation, scope, cancellation }}` (or an equally semantic exhaustive request state). The workspace-index evidence is an `Arc<CargoWorkspaceIndex>` clone taken at request time — **this phase** converts `App::cargo_workspace_index` (`src/tui/app/mod.rs:260`) from a by-value `CargoWorkspaceIndex` to an `Arc<CargoWorkspaceIndex>` and makes `rebuild_if_changed` swap in a fresh index rather than mutate in place, precisely so a request can hold the accepted index across the thread boundary without borrowing `App`. One allocation per accepted-metadata change; the index type still derives only `Debug, Default` and gains no `Clone`. `WorkspaceIndexReadiness` keeps its three variants and its `Clone, Copy` derive, and its two payload variants change from `&'a CargoWorkspaceIndex` to `&'a Arc<CargoWorkspaceIndex>` — a view onto the handle, not the handle. Do not make the variants own an `Arc`: that drops `Copy`, and `resolve_nested_workspace_scope` (`src/tui/compile_visibility/scope.rs:377-410`) destructures the readiness value at `:384-389` and passes the same value again at `:406`, which compiles only because it is `Copy`. With `&'a Arc<…>` the app field is already the handle, so `&self.cargo_workspace_index` produces the reference directly and every existing call site is unchanged — method calls and argument positions both deref through it. The single explicit `Arc::clone` happens here, where the request is built. A rebuild landing mid-flight leaves the in-flight request on the older index; that is safe because the request's revision stamps and generation already say which index it was asked under. `scope` is Phase 6's `BuildScopeKey`, never `MonitorScopeKey` — the latter is `pub(super)`-reachable only inside `crate::tui`. Its generation-bound cancellation capability cannot cancel another scope or generation. Mutable App state and observer internals never cross into the worker.
+- Extend `CompletedProcessRefreshExecution` with `CompileClassificationExecution::{NotRequested, Completed(BuildClassification), Failed(BuildClassificationExecutionFailure), Cancelled(CompileMonitorGeneration)}` or an equally semantic product. A successful process observation remains available to Running Targets when compile classification fails or is cancelled; only `ProcessRefreshExecutionOutcome::Failed(NoCompletedRefresh)` represents a cycle with no completed observation. Phase 6 boxed `ProcessRefreshExecutionOutcome::Completed`'s payload; `BuildClassification` carries eight `Vec`s and lands in that same value, so **the box stays** — do not unbox it while adding the compile outcome.
 - Check compile cancellation after process observation and immediately before classification-input preparation/parsing. Toggle or scope invalidation cancels the matching monitor generation so an in-flight combined request skips compile parsing/classification while retaining and returning any due Running result.
 - Move shared executor deadline access, request dispatch, receiver access, result correlation, and consumer-outcome reconciliation from `running_targets/app_tick.rs` into a neutral App adapter in `src/tui/process_refresh.rs`. Leave Running-specific cadence, index readiness, attribution, metrics, and view-state application in `running_targets/app_tick.rs`.
-- Replace Phase 4's saturating owned-run allocation with an explicit `OwnedRunIdAllocation::{Allocated(OwnedRunId), Exhausted}` boundary, and update the launch sites that create runs to handle rejection. Exhaustion rejects a new run instead of repeating an ID, so late-message, join, cursor, and later termination correlation remain unique — Phase 6's classification already relies on that uniqueness. Make the counter `NonZeroU64` so `OwnedRunId(0)` is unrepresentable and the type gains a niche. Exhaustion itself is unreachable — at one run per millisecond a `u64` lasts ~584 million years — so also close the reuse path that *is* reachable: `OwnedRun::new()` (`src/tui/state/inflight.rs:186`) is `pub(crate)` and restarts `next_id` at 1, so a second `Inflight` construction reissues IDs while messages tagged run 1 may still be in the channel, which is the exact collision `OwnedRunId` exists to prevent. Gate that `Inflight::new`/`OwnedRun::new` has exactly one production call site and the counter is never reset for the process lifetime.
+- Replace Phase 4's saturating owned-run allocation with an explicit `OwnedRunIdAllocation::{Allocated(OwnedRunId), Exhausted}` boundary, and update the launch sites that create runs to handle rejection. Exhaustion rejects a new run instead of repeating an ID, so late-message, join, cursor, and later termination correlation remain unique — Phase 6's classification already relies on that uniqueness. Make the counter `NonZeroU64` so `OwnedRunId(0)` is unrepresentable and the type gains a niche. Exhaustion itself is unreachable — at one run per millisecond a `u64` lasts ~584 million years — so also close the reuse path that *is* reachable: `OwnedRun::new()` (`src/tui/state/inflight.rs:206`) is `pub(crate)` and restarts `next_id` at 1, so a second `Inflight` construction reissues IDs while messages tagged run 1 may still be in the channel, which is the exact collision `OwnedRunId` exists to prevent. Gate that `Inflight::new`/`OwnedRun::new` has exactly one production call site and the counter is never reset for the process lifetime.
+- Collapse `BuildSession`'s two independently-`Unresolved` scope fields into one exhaustive `SessionScope::{Resolved { method, root }, Unresolved}` (or an equally semantic product). Phase 6 shipped `ScopeAttribution` and `SessionScopeRoot` as separate fields that each carry their own `Unresolved`, so a session can currently represent a resolved attribution method with no resolved root. Phase 13 derives destructive authority from resolved roots, so making "actionable implies a root" a type fact belongs before any termination phase reads it.
 - Preserve Phase 3's `CompletedProcessRefreshExecution` duration, named no-completion failure timing, and one-counted raw Running metrics refresh boundary. This phase adds no compile-monitor deadline or lifecycle; Phase 8 schedules compile demand through this adapter without reopening architecture.
 
 **Files:**
@@ -523,8 +637,11 @@ Dead-code suppressions: this phase deletes only the ones it actually consumes, a
 - `src/process_observation/executor.rs` — extend the existing dedicated worker request/result and cooperative cancellation boundary.
 - `src/process_observation/snapshot.rs` — build immutable refresh inputs/results for measurement or worker transfer.
 - `src/build_monitor/classify.rs` — accept the immutable classification input measured by the executor.
-- `src/build_monitor/build_classifier.rs` — move the sole runtime classification-support state beside the worker-owned observer.
-- `src/build_monitor/benchmarks.rs` — repeatable 1,000/5,000-process fixtures and timing report harness.
+- `src/build_monitor/build_classifier.rs` — move the sole runtime classification-support state beside the worker-owned observer: the dependency-manifest cache, the first-seen ledger, and the `BuildDirectoryLedger`.
+- `src/main.rs` — remove `#[cfg(test)]` from `mod build_monitor;` and its explanatory comment now that the worker is the module's runtime owner.
+- `src/build_monitor/benchmarks.rs` — repeatable 1,000/5,000-process fixtures and timing report harness, built on `src/process_observation/snapshot_builder.rs`.
+- `src/process_observation/snapshot_builder.rs` — widen its `#[cfg(test)]` gate only if the benchmarks must run outside `cargo test`; otherwise reuse it as-is.
+- `src/build_monitor/session.rs` — replace the two independently-`Unresolved` scope fields on `BuildSession` with one exhaustive `SessionScope`.
 - `src/build_monitor/execution.rs` — carry semantic compile-classification outcomes, generation cancellation, and immutable results.
 - `src/build_monitor/mod.rs` — export `ProcessRefreshExecutor`-facing classification APIs.
 - `src/tui/process_refresh.rs` — neutral App adapter for shared deadline, dispatch, receiver, correlation, and consumer reconciliation.
@@ -541,9 +658,48 @@ Dead-code suppressions: this phase deletes only the ones it actually consumes, a
 - `src/tui/workspace_index.rs` — change the readiness payload variants to `&'a Arc<CargoWorkspaceIndex>` while keeping the enum `Copy`.
 - `src/tui/input/dispatch.rs` and `src/tui/panes/actions.rs` — the launch sites that create owned runs; `Exhausted` forces each to handle rejection instead of receiving an ID unconditionally.
 
-**Constraints from prior phases:** Phase 2 supplies named observation evidence, exec-sensitive incarnations, immutable snapshots, and one mutable observer/cache owner. Phase 3's measurements selected the dedicated worker and shipped sole `ProcessRefreshExecutor` ownership, coalesced refresh plans, `CompletedProcessRefreshExecution`, named `NoCompletedRefresh` failure timing, and exactly one raw Running metrics refresh per due cycle. Phase 4 supplies distinct current lifecycle, live/stopping verified-root, and retained-output producer identities; worker requests may carry immutable current/live evidence but never the opaque termination capability or captured output. Phase 5 supplies named index/scope readiness. Phase 6 supplies the pure classifier, immutable `BuildClassificationInput`, `BuildCandidateIncarnations`, and `BuildClassifier`; the worker owns the classifier's dependency cache and first-seen ledger beside `ProcessObserver`, while requests contain only immutable consumer evidence. Preserve Running Targets cadence/readiness and add no compile polling yet.
+**Constraints from prior phases:** Phase 2 supplies named observation evidence, exec-sensitive incarnations, immutable snapshots, and one mutable observer/cache owner. Phase 3's measurements selected the dedicated worker and shipped sole `ProcessRefreshExecutor` ownership, coalesced refresh plans, `CompletedProcessRefreshExecution`, named `NoCompletedRefresh` failure timing, and exactly one raw Running metrics refresh per due cycle. Phase 4 supplies distinct current lifecycle, live/stopping verified-root, and retained-output producer identities; worker requests may carry immutable current/live evidence but never the opaque termination capability or captured output. Phase 5 supplies named index/scope readiness. Phase 6 supplies the pure classifier, immutable `BuildClassificationInput`, `BuildCandidateIncarnations`, and `BuildClassifier`; the worker owns **all three** of the classifier's support structures beside `ProcessObserver` — the dependency-manifest cache, the first-seen ledger, and the `BuildDirectoryLedger` (`src/build_monitor/build_classifier.rs:232`) that keeps a session's build profile stable when no live compiler child reveals the build directory this cycle — while requests contain only immutable consumer evidence. Phase 6 shipped `src/build_monitor` behind `#[cfg(test)] mod build_monitor;` in `src/main.rs` because classification had no runtime owner; **this phase removes that gate** when the worker takes ownership. Removing it also resolves the standing cost that `build_candidate_incarnations` (`src/process_observation/snapshot.rs:1356`) is computed on every non-test refresh with no reader — the readers are all inside the gated module. Preserve Running Targets cadence/readiness and add no compile polling yet.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-port`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-port`, and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` are green; combined 1,000/5,000-process benchmarks and incremental classification timing are recorded; deterministic tests prove the dedicated worker solely owns `ProcessObserver` and `BuildClassifier`, requests carry no mutable App/observer state, result correlation/order is exact, successful Running observation survives compile-classification failure, cancellation after observation skips compile parsing/classification while preserving a due Running result, one combined due cycle performs one counted raw Running metrics refresh, neutral reconciliation does not depend on the Running Targets adapter, `OwnedRunId` exhaustion is reachable from a test through a `#[cfg(test)]` allocator seed and rejects the run without reusing an ID, and no compile deadline exists yet.
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-port`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-port`, and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` are green; combined 1,000/5,000-process benchmarks and incremental classification timing are recorded; deterministic tests prove the dedicated worker solely owns `ProcessObserver` and `BuildClassifier`, requests carry no mutable App/observer state, result correlation/order is exact, successful Running observation survives compile-classification failure, cancellation after observation skips compile parsing/classification while preserving a due Running result, one combined due cycle performs one counted raw Running metrics refresh, neutral reconciliation does not depend on the Running Targets adapter, `OwnedRunId` exhaustion is reachable from a test through a `#[cfg(test)]` allocator seed and rejects the run without reusing an ID, and no compile deadline exists yet; `src/main.rs` declares `mod build_monitor;` with no `#[cfg(test)]` gate and the module is free of `dead_code` suppressions, proving the worker is a real runtime consumer rather than the test binary.
+
+**Pending decision:** How much of the Phase 6 module gate does Phase 7 remove, and which phase proves no suppression is left?
+
+Actual problem:
+The Phase 6 → runtime gate is not one module declaration. It is 68 `#[cfg(test)]` attributes across ten files: `src/main.rs`, `src/tui/compile_visibility/mod.rs` (6, including the `From<&MonitorScopeKey>` impl and `build_scope_actionability`), `src/tui/compile_visibility/scope.rs` (11, including all four canonical-root accessors and `actionability()`), `src/tui/state/inflight.rs` (12, including `owned_root_evidence()`), `src/project/cargo/workspace_index.rs` (16), plus `src/project/mod.rs`, `src/project/cargo/mod.rs`, and `src/tui/project_list/mod.rs`. Phase 7's Files list names none of them. Worse, removing the gate without a production caller creates dead code: this phase's gate ends "no compile deadline exists yet" and Phase 8 owns scheduling, so if production only ever sends `CompileClassificationDemand::NotRequested`, then `classify_cycle`, `build_scope_actionability`, the `From` conversion, and `owned_root_evidence()` have no non-test caller and the un-gate simply converts `#[cfg(test)]` into `#[allow(dead_code)]` — which Phase 10's "no `dead_code` suppression added by the compile-visibility work may remain" would then inherit without ever naming it.
+
+What exists now:
+- Phase 6 shipped `#[cfg(test)] mod build_monitor;` in `src/main.rs` plus 67 further `#[cfg(test)]` attributes on the supporting items in the nine other files listed above.
+- This phase's Constraints say "this phase removes that gate", and its Acceptance gate requires `src/main.rs` to declare `mod build_monitor;` ungated with the module free of `dead_code` suppressions.
+- No phase before Phase 8 constructs `Requested` demand in production.
+
+What should change:
+- (a) Phase 7 constructs `Requested` demand in production whenever monitor state is `On`, pulling part of Phase 8's trigger earlier and removing the whole gate here.
+- (b) Phase 7 removes the gate only from the subset the worker actually calls, names the ten files in its Files list, and the full un-gate plus the no-suppression proof moves into Phase 8's acceptance gate, where the first real `Requested` demand exists.
+- (c) The gate stays untouched through Phase 7 and Phase 8 removes all of it.
+
+Recommendation:
+Option (b). It keeps this phase's "no compile deadline exists yet" boundary intact, keeps each removal tied to a real caller, and puts the "no suppression remains" proof in the phase that creates the demand. Applying it means editing this phase's Files list to name the ten gated files, softening its Constraints sentence from "this phase removes that gate" to "this phase removes the gate from the items the worker calls", moving the final clause of its Acceptance gate into Phase 8's, and leaving Phase 10's blanket no-suppression rule unchanged.
+
+Approve this direction, or modify it?
+
+**Pending decision:** What does `BuildSession` expose to the presentation and termination phases, and which phase adds it?
+
+Actual problem:
+`BuildSession` carries none of the data later phases render or act on, and `BuildSessionId` is opaque with no reach-through, so none of it is recoverable downstream. Phase 9's column header specifies operative Cargo command, root PID, and elapsed time; Phase 12's confirmation specifies command, PID, and start age. `BuildSession` has no operative command, no root PID, and its `first_seen` is a `BuildClassificationCycle` counter rather than an instant. Separately, Phase 11 needs strong root identity to revalidate before signalling, and this phase's own Phase 8 successor needs to re-resolve a retained ID against a fresh snapshot — but `BuildSession` stores no root `ProcessIdentity` and the ID exposes no accessor, so the only route the shipped code offers is re-classifying and comparing `Eq` on reconstructed IDs.
+
+What exists now:
+- `BuildSession` (`src/build_monitor/session.rs`) holds the opaque `BuildSessionId(ProcessIncarnation)`, scope fields, profile, and a `first_seen` cycle counter.
+- Phase 9's Spec requires "operative Cargo command/selectors, checkout/workspace path, resolved profile, root PID, elapsed time, and state" in the column header.
+- Phase 11's Constraints require immediate strong-identity revalidation before any signal.
+
+What should change:
+- Add the display fields (operative command, root PID, an observation instant for elapsed/start age) and one authorization-scoped accessor from `BuildSessionId` to the root `ProcessIdentity`, in this phase, since it is the first phase to touch `src/build_monitor` at runtime and can extend the classifier output without a second migration.
+- Or leave `BuildSession` as shipped and require Phase 11 to name re-classify-and-compare explicitly as its identity route, with Phase 9 sourcing header data from a parallel lookup.
+
+Recommendation:
+Add the fields and the authorization-scoped accessor in this phase. The alternative makes every downstream reader pay for a reconstruction that classification already performed, and it leaves Phase 9's specified header data with no source at all. Applying it means adding a Spec bullet and a `src/build_monitor/session.rs` Files entry here, and a matching Acceptance-gate clause proving the accessor is reachable only through authorization-scoped code.
+
+Approve this direction, or modify it?
 
 ### Phase 8 — Conditional monitor polling and lifecycle · status: todo
 
@@ -554,14 +710,14 @@ Dead-code suppressions: this phase deletes only the ones it actually consumes, a
 **Spec:**
 
 - Add `BuildMonitor` state over the pure classifier. It retains only live session/unit identities, explicit owned association, termination tombstones added in later phases, and the latest presentation snapshot; it does not accumulate external history.
-- Define `COMPILE_MONITOR_REFRESH_INTERVAL` as 500 ms in `src/tui/compile_visibility/constants.rs`. Model scheduling as `CompileMonitorRefreshSchedule::{DueAt(Instant), InFlight { generation: CompileMonitorGeneration, rearm_at: Instant }}` or equally semantic due/in-flight states, and store it **inside `ActiveMonitorState`** — Phase 5 shipped `CompileVisibilityState::{Off, On(ActiveMonitorState)}`, which drops the whole aggregate on toggle-off, so "disabled owns no schedule" is already a type-level guarantee. Do not add a parallel `Disabled` variant (it reintroduces two sources of truth that can disagree with `Off`), and do not use one `NotScheduled` state for consumed and pending work. Rearm from the interval boundary, coalescing missed instants into one next demand rather than building a queue.
+- Define `COMPILE_MONITOR_REFRESH_INTERVAL` as 500 ms in `src/tui/compile_visibility/constants.rs`. Model scheduling as `MonitorRefreshSchedule::{DueAt(Instant), InFlight { generation: CompileMonitorGeneration, rearm_at: Instant }}` or equally semantic due/in-flight states, and store it **inside `ActiveMonitorState`**. The name must not be `CompileMonitorRefreshSchedule`: Phase 3 already shipped that type at `src/process_observation/executor.rs:32` as `{At(Instant), NotScheduled}` for the shared executor deadline, exported and threaded through `app_tick.rs`, `background.rs`, and `construct.rs`. This is a second, monitor-owned concept, not a replacement for that one — Phase 5 shipped `CompileVisibilityState::{Off, On(ActiveMonitorState)}`, which drops the whole aggregate on toggle-off, so "disabled owns no schedule" is already a type-level guarantee. Do not add a parallel `Disabled` variant (it reintroduces two sources of truth that can disagree with `Off`), and do not use one `NotScheduled` state for consumed and pending work. Rearm from the interval boundary, coalescing missed instants into one next demand rather than building a queue.
 - `poll_background` (`src/tui/app/async_tasks/poll.rs:58-64`) calls `refresh_compile_monitor_scope_if_on` directly, unlike the selection and metadata triggers, which reach it after `ensure_visible_rows_cached()` via `sync_selected_project`. Of the four `mark_visible_ownership_changed` sites, `dispatch.rs` and `tree_mutation.rs` rebuild rows first and `metadata_handlers.rs` routes through `sync_selected_project`, but `disk_handlers.rs:78` advances the revision without recomputing — so that batch resolves scope from a `cached_visible_rows` that no longer matches the visibility filter. It self-corrects on the next frame today, but Phases 11–13 make scope authoritative for destructive termination: require `ensure_visible_rows_cached()` before the `poll_background` refresh, and test it.
 - While enabled, request command-line/process fields through the combined Phase 3 refresh plan and execute through Phase 7's dedicated-worker `ProcessRefreshExecutor`; perform one coalesced refresh cycle per interval with no duplicate cycle per workspace, column, or consumer. Phase 2's internal repeated field samples and identity brackets remain intact.
 - Track live target-directory resolution as a typed state and revision, rechecked on each due poll. A previously missing target directory appearing, or a symlink being created/retargeted, invalidates affected classification and actionability even when metadata, project-list content, and selected scope are unchanged.
 - The neutral Phase 7 App adapter contributes no compile deadline while monitor state is `Off`. On a due instant shared with Running Targets, union fields into one coalesced cycle while preserving the Running one-second identity-bound CPU/history sample and one-counted raw metrics refresh.
 - A completed compile-classification result must carry monitor generation and the exact `BuildScopeKey` it was computed under. Ignore mismatches. On scope change, **retain the last good monitor snapshot when the new `MonitorScopeKey`'s canonical checkout roots and canonical workspace roots both equal the old key's; show `Pending` only when the roots actually differ.** Retention needs its own state, because it is simultaneously "no snapshot for this generation yet" and "prior data still on screen", which neither `Pending` (carries nothing) nor `Stale` (data that matched the current generation and then aged) can say. Add `PendingWithRetained(RetainedMonitorData)` and do not widen `Pending` with an optional payload — during a scan the generation advances every refresh, so retention is the normal display state, not an edge one, and an optional payload would make every match site re-decide the display rule. Compare the roots directly — never infer retention from the generation or the revision stamps, which advance on any `mark_visible_ownership_changed` bump. Without this, a background discovery scan or a disk-usage visibility flip (`disk_handlers.rs:78`) blanks the display on the 500 ms cadence, exactly while the user is waiting to see something. Carry the observation instant in every data-bearing variant so age can be re-derived at render time and at the moment a kill is authorized, rather than being implied by which variant holds the data. Retained data **is** actionable: `alt-k` keeps working while the pane shows it, because the termination path already re-resolves a retained ID against the current process snapshot before signalling — a session that ended meanwhile is simply not found. Refusing on retention would add no protection that re-resolution is not already giving, and would disable the action for the whole duration of a background scan, which is exactly when a runaway build is most likely to be the thing the user wants to stop. `CompileClassificationExecution::Failed` and whole-cycle `ProcessRefreshExecutionOutcome::Failed(NoCompletedRefresh)` age the last good monitor snapshot to visibly `Stale` and non-actionable for one interval, then `Unavailable`; completed empty classification and per-process insufficient evidence do not. A compile-classification failure inside `CompletedProcessRefreshExecution` must not discard or suppress its successful Running snapshot/metrics outcome.
 - On toggle off or scope/generation replacement, cancel matching in-flight compile work. The worker checks cancellation after shared process observation and before classification-input preparation/parsing, returns the cancelled compile outcome for rejection, and still returns any coalesced due Running outcome; no later compile result is accepted and no new compile demand is scheduled.
-- A root Cargo process anchors a session through gaps with no live compiler. Report evidence-backed compiling, build-script, linking, owned Cargo-lock wait, and running-target states; report external no-child gaps only as active.
+- A root Cargo process anchors a session through gaps with no live compiler. Report evidence-backed compiling, build-script, linking, owned Cargo-lock wait, and running-target states through one exhaustive session-state type defined by this phase; Phase 6 shipped only per-activity `CompilerKind`, which names none of them. Owned Cargo-lock wait has exactly one evidence source — the owned run's captured Cargo output — and polling may not copy that output, so the owned lifecycle must surface a semantic "blocked on the Cargo lock" state that polling reads without reaching into the captured lines. If that evidence cannot be produced under those constraints, drop the lock-wait state rather than inferring it; report external no-child gaps only as active.
 - Associate an owned run with exactly one observed session by matching its verified root `ProcessIdentity` to the current exec-sensitive `BuildSessionId(ProcessIncarnation)`, then retain only `OwnedRunId`; never copy owned output into snapshots. External completed sessions disappear.
 - Keep three owned identities distinct: the current lifecycle `OwnedRunId`, immutable live/stopping verified-root evidence used for the session join, and `OwnedRunOutputIdentity` for captured output that may still belong to run N while run N+1 is queued or starting. Polling joins only the live/stopping root; presentation later reads captured output by its producer identity.
 - Prove no persistent idle CPU work while off and no compile-specific request/result acceptance after a toggle or scope generation change.
@@ -571,7 +727,6 @@ Dead-code suppressions: this phase deletes only the ones it actually consumes, a
 - `src/build_monitor/mod.rs` — `BuildMonitor` lifecycle and snapshot API.
 - `src/build_monitor/poll.rs` — conditional refresh requests, classification, failure aging, and generation correlation.
 - `src/build_monitor/snapshot.rs` — define `MonitorSnapshot::{Pending, PendingWithRetained, Fresh, Stale, Unavailable}` here rather than in Phase 6: three of its four variants are only reachable from this phase's aging logic, so defining it earlier ships it as another dead-code suppression. Fresh/stale/unavailable presentation states and stable first-seen ordering.
-- `src/process_observation/mod.rs` — add optional compile consumer/deadline.
 - `src/tui/compile_visibility/mod.rs` — connect enabled scope/generation to monitor polling.
 - `src/tui/compile_visibility/constants.rs` — own the 500 ms compile refresh interval.
 - `src/tui/process_refresh.rs` — combine compile/Running demand, deadlines, cancellation, and independent result reconciliation.
@@ -586,7 +741,27 @@ Dead-code suppressions: this phase deletes only the ones it actually consumes, a
 
 **Constraints from prior phases:** Phase 1 supplies exact index identities and current/retained/uninitialized readiness. Phase 3 supplies cadence-before-filesystem ordering, the dedicated executor, `CompletedProcessRefreshExecution`, named no-completion failures, and one-counted raw Running metrics refresh. Phase 5 owns named scope resolution and enablement/scope generation; because `ActiveMonitorState::new` is private, adding snapshots, tombstones, or deadlines to that struct forces matching signature changes in `CompileVisibilityState::enable`, `CompileVisibilityState::replace_scope`, and `App::toggle_compile_visibility` — those three are the only ways to construct or replace it. Phase 6 supplies pure classification, `BuildClassifier`, exec-sensitive session/activity IDs, immutable owned-root/candidate evidence, and ambiguity omission. Phase 7 owns worker-side classification, generation-bound cancellation, separate `CompileClassificationExecution`, and the neutral shared App adapter; extend those boundaries rather than introducing another observer, classifier, result receiver, or timing channel. Phase 4 owns semantic lifecycle and captured output, whose producer ID may differ from the current queued/starting ID; polling never copies output or infers its producer from current lifecycle identity. Do not add rendering or termination authority.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-port`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-port`, and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` are green; tests prove disabled means no compile deadline/new refresh/parsing/result acceptance; 500 ms deadlines rearm exactly without queued catch-up; simultaneous Running one-second and compile due work performs one coalesced cycle and one counted raw Running metrics refresh; compile-classification failure ages monitor data without discarding a successful Running result; whole-cycle failure ages stale data to non-actionable then unavailable; completed empty classification does not; a `ProjectListRevision` bump that leaves both canonical root sets unchanged advances the generation into `PendingWithRetained` without blanking the display, while one that changes a root shows `Pending`; retained data remains actionable and a termination requested against it re-resolves the retained ID against the current process snapshot, signalling the live session and signalling nothing when that session has already exited; every data-bearing variant carries the observation instant and age is re-derived from it rather than inferred from the variant; toggle/scope cancellation during an in-flight combined request skips compile parsing/classification, preserves due Running output, and rejects the cancelled generation; target-directory appearance and symlink retargeting revise live resolution without metadata/list changes; same-PID exec invalidates prior session/activity actionability; owned activity joins once by verified live/stopping root; run N retained output can coexist with queued/starting run N+1 without being joined to N+1; and selection changes never affect external processes. This phase also deletes the `#[allow(dead_code, reason = "…")]` on `CompileVisibilityState::accepts_generation` — late-result acceptance is this phase's mechanism. The two scope-authorization suppressions in `src/tui/compile_visibility/scope.rs` are Phase 6's: its scope-actionability entry point consumes both. The other three suppressions sharing the enablement-lifecycle reason string (the `On` variant, `enable`, `disable`) belong to Phase 10 and stay.
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-port`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-port`, and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` are green; tests prove disabled means no compile deadline/new refresh/parsing/result acceptance; 500 ms deadlines rearm exactly without queued catch-up; simultaneous Running one-second and compile due work performs one coalesced cycle and one counted raw Running metrics refresh; compile-classification failure ages monitor data without discarding a successful Running result; whole-cycle failure ages stale data to non-actionable then unavailable; completed empty classification does not; a `ProjectListRevision` bump that leaves both canonical root sets unchanged advances the generation into `PendingWithRetained` without blanking the display, while one that changes a root shows `Pending`; retained data remains actionable and a termination requested against it re-resolves the retained ID against the current process snapshot, signalling the live session and signalling nothing when that session has already exited; every data-bearing variant carries the observation instant and age is re-derived from it rather than inferred from the variant; toggle/scope cancellation during an in-flight combined request skips compile parsing/classification, preserves due Running output, and rejects the cancelled generation; target-directory appearance and symlink retargeting revise live resolution without metadata/list changes; same-PID exec invalidates prior session/activity actionability; owned activity joins once by verified live/stopping root; run N retained output can coexist with queued/starting run N+1 without being joined to N+1; and selection changes never affect external processes. This phase also deletes the `#[allow(dead_code, reason = "…")]` on `CompileVisibilityState::accepts_generation` — late-result acceptance is this phase's mechanism — and the four suppressions sharing the "Reserved for Build Monitor snapshot and deadline state" reason: `ActiveMonitorState::new` (`src/tui/compile_visibility/mod.rs:37`), `monitor_selected_row()` (`:69`), `monitor_scope_resolution()` (`:77`), and `compile_monitor_generation()` (`:85`). This phase extends `ActiveMonitorState` and is their first reader, so they have no earlier owner. The scope-authorization items in `src/tui/compile_visibility/scope.rs` — `MonitorScopeActionability` (`:177`) and `actionability()` (`:186`) — carry `#[cfg(test)]` gates rather than `dead_code` suppressions; removing those gates is Phase 6's scope-actionability entry point's job, not this phase's. The three suppressions sharing the enablement-lifecycle reason string (the `On` variant, `enable`, `disable`) belong to Phase 10 and stay.
+
+**Pending decision:** Which phase filters the host-wide classification down to the selected scope's roots?
+
+Actual problem:
+Classification is deliberately host-wide — `BuildClassification::build_sessions()` returns every live Cargo session on the machine, which is what lets an out-of-scope owned run stay pinned. No remaining phase narrows that set to the selected scope. This phase's Spec says the monitor retains "the latest presentation snapshot" without saying whose sessions are in it; Phase 9 only excludes the out-of-scope owned pin; Phase 13 builds its scope-wide kill set from `MonitorScopeKey` independently. As written, the Output pane would show every Cargo build running anywhere on the host, and scope-wide termination would derive its target set from a different computation than the one the user is looking at.
+
+What exists now:
+- `BuildClassification::build_sessions()` is host-wide by Phase 6's explicit design.
+- This phase's Spec: "It retains only live session/unit identities, explicit owned association, termination tombstones added in later phases, and the latest presentation snapshot."
+- Phase 9's Constraints exclude only "an out-of-scope or completed producer" pin.
+- Phase 13's Constraints: "Phase 11's aggregate/transaction semantics plus Phase 5 exact scope generations bind the frozen set."
+
+What should change:
+- Assign the filter to this phase: `BuildMonitor` narrows the classification to the sessions whose resolved roots fall under the current `BuildScopeKey` before storing the presentation snapshot, so columns and destructive authority both derive from one filtered value.
+- Or leave the snapshot host-wide and require each consumer — Phase 9's columns, Phase 12's selected termination, Phase 13's scope-wide set — to filter for itself.
+
+Recommendation:
+Filter here. One filter means the set the user sees and the set a kill acts on cannot diverge, which is the property Phases 11–13 depend on. Applying it means adding a Spec bullet and an Acceptance-gate clause to this phase proving an out-of-scope live Cargo session is absent from the snapshot while the out-of-scope owned pin survives, and adding a Constraints line to Phases 9, 12, and 13 saying the snapshot is already scope-filtered.
+
+Approve this direction, or modify it?
 
 ### Phase 9 — Output monitor presentation and columns · status: todo
 
@@ -625,7 +800,7 @@ Dead-code suppressions: this phase deletes only the ones it actually consumes, a
 
 **Constraints from prior phases:** Join Phase 8 immutable monitor snapshots with Phase 4 `OwnedRun` by the retained output producer ID, never by `OwnedRun::identity()`: run N output may remain while run N+1 is queued or starting. Live activity joins by Phase 8's verified-root association, while an out-of-scope or completed producer remains pinned independently. Phase 6 first-seen ordering and exec-sensitive `BuildSessionId`/`CompileActivityId`, plus Phase 5 named scope/index readiness and immediate invalidation, bind cursor fallback and empty-state rendering. A same-PID exec transition creates new session/row identities and invalidates prior cursor/actionability. Do not add key handling or termination.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-port`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-port`, and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` are green; render/state tests prove distinct non-actionable pending-index, empty-non-Rust, ambiguous-ownership, and unresolved-path states; semantic absent versus retained-output producer states; run N retained output remains attributed to N while N+1 is queued/starting; empty enabled focus; full-width single session; readable/windowed multiple columns; selected-column visibility; stable row/session fallback; same-PID exec invalidates prior cursor and creates new session/activity identities; unattributed section non-actionability; owned output joined once and pinned across scope changes; and monitor-off output matches prior behavior. This phase also deletes the one `#[allow(dead_code, reason = "Reserved for Build Monitor readiness reporting")]` on `MonitorScopeResolutionRevision::monitor_workspace_index_readiness`, whose empty-state rendering is specified above.
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-port`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-port`, and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` are green; render/state tests prove distinct non-actionable pending-index, empty-non-Rust, ambiguous-ownership, and unresolved-path states; semantic absent versus retained-output producer states; run N retained output remains attributed to N while N+1 is queued/starting; empty enabled focus; full-width single session; readable/windowed multiple columns; selected-column visibility; stable row/session fallback; same-PID exec invalidates prior cursor and creates new session/activity identities; unattributed section non-actionability; owned output joined once and pinned across scope changes; and monitor-off output matches prior behavior. This phase also removes the `#[cfg(test)]` gate — not a `dead_code` suppression, which is what Phase 6 shipped there — from `MonitorScopeResolutionRevision::monitor_workspace_index_readiness` (`src/tui/compile_visibility/scope.rs:163`), whose empty-state rendering is specified above.
 
 ### Phase 10 — Monitor navigation, toggle, and owned-output coexistence · status: todo
 
@@ -638,7 +813,7 @@ that reaches `App::workspace_index_readiness`, a `&mut self` method that runs
 
 Phase 5's blind review filed this as a blocker claiming a full `canonicalize()`
 sweep per keystroke; verification showed that is wrong.
-`rebuild_if_changed` (`src/project/cargo/workspace_index.rs:315`) early-returns
+`rebuild_if_changed` (`src/project/cargo/workspace_index.rs:323`) early-returns
 unless *both* the accepted-metadata and project-list revisions changed, all four
 `mark_visible_ownership_changed` call sites are background, and `poll.rs:63`
 absorbs their revision bumps during the tick. Two facts bound the cost further:

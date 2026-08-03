@@ -36,8 +36,12 @@ pub(crate) use vendored_package::VendoredPackage;
 pub(crate) use workspace::Workspace;
 pub(crate) use workspace_index::CanonicalCheckoutRoot;
 pub(crate) use workspace_index::CanonicalMemberRoot;
+#[cfg(test)]
+pub(crate) use workspace_index::CanonicalPackageOwnership;
 pub(crate) use workspace_index::CanonicalPathResolution;
 pub(crate) use workspace_index::CanonicalTargetDirectory;
+#[cfg(test)]
+pub(crate) use workspace_index::CanonicalTargetOwnership;
 pub(crate) use workspace_index::CanonicalTargetSource;
 pub(crate) use workspace_index::CanonicalWorkspaceRoot;
 pub(crate) use workspace_index::CargoPackageIdentity;

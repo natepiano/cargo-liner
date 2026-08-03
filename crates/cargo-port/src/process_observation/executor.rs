@@ -460,9 +460,8 @@ fn execute_refresh(
     ProcessRefreshExecution {
         request_id,
         demand: plan.demand,
-        outcome: ProcessRefreshExecutionOutcome::Completed(CompletedProcessRefreshExecution::new(
-            process_observation_snapshot,
-            started.elapsed(),
+        outcome: ProcessRefreshExecutionOutcome::Completed(Box::new(
+            CompletedProcessRefreshExecution::new(process_observation_snapshot, started.elapsed()),
         )),
     }
 }
@@ -491,20 +490,20 @@ mod tests {
         process_refresh_executor
     }
 
-    fn completed_execution(
+    fn received_completed_execution(
         request_id: ProcessRefreshRequestId,
         demand: ProcessRefreshConsumerDemand,
-    ) -> Box<ProcessRefreshExecution> {
-        Box::new(ProcessRefreshExecution {
+    ) -> ProcessRefreshWorkerResultPoll {
+        ProcessRefreshWorkerResultPoll::Received(Box::new(ProcessRefreshExecution {
             request_id,
             demand,
-            outcome: ProcessRefreshExecutionOutcome::Completed(
+            outcome: ProcessRefreshExecutionOutcome::Completed(Box::new(
                 CompletedProcessRefreshExecution::new(
                     ProcessObservationSnapshot::empty_for_test(),
                     Duration::ZERO,
                 ),
-            ),
-        })
+            )),
+        }))
     }
 
     fn disconnected_worker() -> DedicatedProcessRefreshWorker {
@@ -594,11 +593,12 @@ mod tests {
 
     #[test]
     fn completed_empty_snapshot_is_not_a_failed_execution() {
-        let completed_empty =
-            ProcessRefreshExecutionOutcome::Completed(CompletedProcessRefreshExecution::new(
+        let completed_empty = ProcessRefreshExecutionOutcome::Completed(Box::new(
+            CompletedProcessRefreshExecution::new(
                 ProcessObservationSnapshot::empty_for_test(),
                 Duration::ZERO,
-            ));
+            ),
+        ));
         let failed = ProcessRefreshExecutionOutcome::Failed(
             ProcessRefreshExecutionFailure::ResultChannelDisconnected,
         );
@@ -730,12 +730,10 @@ mod tests {
         let mut process_refresh_executor = executor_awaiting(current_request_id, demand);
 
         assert_eq!(
-            process_refresh_executor.handle_worker_result_poll(
-                ProcessRefreshWorkerResultPoll::Received(completed_execution(
-                    ProcessRefreshRequestId(6),
-                    demand,
-                )),
-            ),
+            process_refresh_executor.handle_worker_result_poll(received_completed_execution(
+                ProcessRefreshRequestId(6),
+                demand
+            ),),
             ProcessRefreshResultPoll::Pending
         );
         assert_eq!(
@@ -747,9 +745,7 @@ mod tests {
         );
 
         let ProcessRefreshResultPoll::Ready(process_refresh_execution) = process_refresh_executor
-            .handle_worker_result_poll(ProcessRefreshWorkerResultPoll::Received(
-                completed_execution(current_request_id, demand),
-            ))
+            .handle_worker_result_poll(received_completed_execution(current_request_id, demand))
         else {
             panic!("matching request result should complete the current request");
         };
@@ -767,12 +763,10 @@ mod tests {
         let mut process_refresh_executor = executor_awaiting(request_id, current_demand);
 
         assert_eq!(
-            process_refresh_executor.handle_worker_result_poll(
-                ProcessRefreshWorkerResultPoll::Received(completed_execution(
-                    request_id,
-                    ProcessRefreshConsumerDemand::CompileMonitor,
-                )),
-            ),
+            process_refresh_executor.handle_worker_result_poll(received_completed_execution(
+                request_id,
+                ProcessRefreshConsumerDemand::CompileMonitor
+            ),),
             ProcessRefreshResultPoll::Pending
         );
         assert_eq!(
@@ -784,9 +778,7 @@ mod tests {
         );
 
         let ProcessRefreshResultPoll::Ready(process_refresh_execution) = process_refresh_executor
-            .handle_worker_result_poll(ProcessRefreshWorkerResultPoll::Received(
-                completed_execution(request_id, current_demand),
-            ))
+            .handle_worker_result_poll(received_completed_execution(request_id, current_demand))
         else {
             panic!("matching demand result should complete the current request");
         };

@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 
+#[cfg(test)]
 use cargo_metadata::PackageId;
 use cargo_metadata::TargetKind;
 
@@ -65,6 +66,12 @@ pub(crate) struct CanonicalTargetDirectory(AbsolutePath);
 
 impl CanonicalTargetDirectory {
     pub(crate) const fn path(&self) -> &AbsolutePath { &self.0 }
+
+    /// Name a target directory from a path the caller already canonicalized.
+    #[cfg(test)]
+    pub(crate) const fn from_canonical_path(canonical_path: AbsolutePath) -> Self {
+        Self(canonical_path)
+    }
 }
 
 /// Canonical source-file identity of a Cargo target.
@@ -125,7 +132,7 @@ pub(crate) enum CargoWorkspaceIndexRevisionState {
 pub(crate) struct CargoPackageIdentity {
     declared_member_root:   AbsolutePath,
     member_root_resolution: CanonicalPathResolution<CanonicalMemberRoot>,
-    #[allow(dead_code, reason = "Reserved for Build Monitor package attribution")]
+    #[cfg(test)]
     package_id:             PackageId,
     targets:                Vec<CargoTargetIdentity>,
 }
@@ -141,7 +148,7 @@ impl CargoPackageIdentity {
         &self.member_root_resolution
     }
 
-    #[allow(dead_code, reason = "Reserved for Build Monitor package attribution")]
+    #[cfg(test)]
     pub(crate) const fn package_id(&self) -> &PackageId { &self.package_id }
 
     pub(crate) fn targets(&self) -> impl Iterator<Item = &crate::project::CargoTargetIdentity> {
@@ -161,10 +168,10 @@ impl CargoTargetIdentity {
 
     pub(crate) fn kinds(&self) -> &[TargetKind] { &self.record.kinds }
 
-    #[allow(dead_code, reason = "Reserved for Build Monitor target attribution")]
+    #[cfg(test)]
     pub(crate) fn required_features(&self) -> &[String] { &self.record.required_features }
 
-    #[allow(dead_code, reason = "Reserved for Build Monitor target attribution")]
+    #[cfg(test)]
     pub(crate) const fn declared_source_path(&self) -> &AbsolutePath { &self.record.src_path }
 
     pub(crate) const fn canonical_source_resolution(
@@ -179,6 +186,7 @@ impl CargoTargetIdentity {
 pub(crate) struct CargoWorkspaceView {
     declared_checkout_root:    AbsolutePath,
     checkout_root_resolution:  CanonicalPathResolution<CanonicalCheckoutRoot>,
+    #[cfg(test)]
     declared_workspace_root:   AbsolutePath,
     workspace_root_resolution: CanonicalPathResolution<CanonicalWorkspaceRoot>,
     declared_target_directory: AbsolutePath,
@@ -196,7 +204,7 @@ impl CargoWorkspaceView {
         &self.checkout_root_resolution
     }
 
-    #[allow(dead_code, reason = "Reserved for Build Monitor workspace attribution")]
+    #[cfg(test)]
     pub(crate) const fn declared_workspace_root_path(&self) -> &AbsolutePath {
         &self.declared_workspace_root
     }
@@ -392,6 +400,22 @@ impl CargoWorkspaceIndex {
         self.visible_project_workspace_ownership(project_evidence)
     }
 
+    /// Resolve an already-canonical checkout, workspace, or member path
+    /// through its exact canonical ownership record. The path is not
+    /// canonicalized again, so this performs no filesystem work and is safe to
+    /// call from pure classification, which resolves every path it compares
+    /// before the call.
+    #[cfg(test)]
+    pub(crate) fn workspace_for_canonical_owner(
+        &self,
+        canonical_owner: &AbsolutePath,
+    ) -> VisibleProjectWorkspaceOwnership<'_> {
+        self.visible_project_workspace_ownership(exact_workspace_ownership_evidence(
+            &self.workspaces_by_owner,
+            canonical_owner,
+        ))
+    }
+
     /// Resolve a path only when it is itself an indexed Cargo checkout or
     /// workspace root. This proves a vendored package or submodule owns a
     /// nested workspace instead of merely belonging to its containing
@@ -448,6 +472,7 @@ impl CargoWorkspaceIndex {
             self.workspaces.push(CargoWorkspaceView {
                 declared_checkout_root: metadata.declared_checkout_root.clone(),
                 checkout_root_resolution,
+                #[cfg(test)]
                 declared_workspace_root: metadata.cargo_workspace_root.clone(),
                 workspace_root_resolution,
                 declared_target_directory: metadata.target_directory.clone(),
@@ -550,7 +575,8 @@ fn cargo_package_identities(metadata: &WorkspaceMetadata) -> Vec<CargoPackageIde
     });
     packages
         .into_iter()
-        .map(|(package_id, record)| {
+        .map(|indexed_package| {
+            let record = &indexed_package.1;
             let declared_member_root = manifest_directory(&record.manifest_path);
             let member_root_resolution =
                 resolve_canonical_path(&declared_member_root, CanonicalMemberRoot);
@@ -568,7 +594,8 @@ fn cargo_package_identities(metadata: &WorkspaceMetadata) -> Vec<CargoPackageIde
             CargoPackageIdentity {
                 declared_member_root,
                 member_root_resolution,
-                package_id: package_id.clone(),
+                #[cfg(test)]
+                package_id: indexed_package.0.clone(),
                 targets,
             }
         })
@@ -1179,5 +1206,121 @@ mod tests {
                 if target.path().as_path() == target_directory.canonicalize()?
         ));
         Ok(())
+    }
+}
+
+/// Whether one canonical package member root identifies exactly one indexed
+/// package.
+///
+/// The three states mirror [`VisibleProjectWorkspaceOwnership`]: a caller that
+/// must not act on a guess can tell "no such package" apart from "more than one
+/// package claims this root".
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum CanonicalPackageOwnership<'a> {
+    /// Exactly one indexed package has this canonical member root.
+    Indexed(&'a CargoPackageIdentity),
+    /// More than one indexed package claims this canonical member root.
+    Ambiguous,
+    /// No indexed package has this canonical member root.
+    NotIndexed,
+}
+
+/// Whether one canonical target source file identifies exactly one indexed
+/// package.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum CanonicalTargetOwnership<'a> {
+    /// Exactly one indexed package declares a target with this source file.
+    Indexed(&'a CargoPackageIdentity),
+    /// More than one indexed package declares a target with this source file.
+    Ambiguous,
+    /// No indexed package declares a target with this source file.
+    NotIndexed,
+}
+
+/// Indexed packages identified by one exact canonical path.
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct CanonicalPackageCandidates<'a>(Vec<&'a CargoPackageIdentity>);
+
+#[cfg(test)]
+impl<'a> CanonicalPackageCandidates<'a> {
+    fn include(&mut self, cargo_package_identity: &'a CargoPackageIdentity) {
+        if !self
+            .0
+            .iter()
+            .any(|candidate| std::ptr::eq(*candidate, cargo_package_identity))
+        {
+            self.0.push(cargo_package_identity);
+        }
+    }
+
+    fn package_ownership(self) -> CanonicalPackageOwnership<'a> {
+        match self.0.as_slice() {
+            [] => CanonicalPackageOwnership::NotIndexed,
+            [cargo_package_identity] => CanonicalPackageOwnership::Indexed(cargo_package_identity),
+            [_, _, ..] => CanonicalPackageOwnership::Ambiguous,
+        }
+    }
+
+    fn target_ownership(self) -> CanonicalTargetOwnership<'a> {
+        match self.0.as_slice() {
+            [] => CanonicalTargetOwnership::NotIndexed,
+            [cargo_package_identity] => CanonicalTargetOwnership::Indexed(cargo_package_identity),
+            [_, _, ..] => CanonicalTargetOwnership::Ambiguous,
+        }
+    }
+}
+
+#[cfg(test)]
+impl CargoWorkspaceIndex {
+    /// Resolve an already-canonical package root to its indexed package. The
+    /// path is not canonicalized again, so this performs no filesystem work and
+    /// is safe to call from pure classification.
+    pub(crate) fn package_for_canonical_member_root(
+        &self,
+        canonical_member_root: &AbsolutePath,
+    ) -> CanonicalPackageOwnership<'_> {
+        let mut candidates = CanonicalPackageCandidates::default();
+        for package in self
+            .workspaces
+            .iter()
+            .flat_map(CargoWorkspaceView::packages)
+        {
+            if matches!(
+                package.member_root_resolution(),
+                CanonicalPathResolution::Resolved(member_root)
+                    if member_root.path() == canonical_member_root
+            ) {
+                candidates.include(package);
+            }
+        }
+        candidates.package_ownership()
+    }
+
+    /// Resolve an already-canonical target source file to the indexed package
+    /// that declares it. Performs no filesystem work.
+    pub(crate) fn package_for_canonical_target_source(
+        &self,
+        canonical_target_source: &AbsolutePath,
+    ) -> CanonicalTargetOwnership<'_> {
+        let mut candidates = CanonicalPackageCandidates::default();
+        for package in self
+            .workspaces
+            .iter()
+            .flat_map(CargoWorkspaceView::packages)
+        {
+            if package.targets().any(|target| {
+                matches!(
+                    target.canonical_source_resolution(),
+                    CanonicalPathResolution::Resolved(target_source)
+                        if target_source.path() == canonical_target_source
+                )
+            }) {
+                candidates.include(package);
+            }
+        }
+        candidates.target_ownership()
     }
 }

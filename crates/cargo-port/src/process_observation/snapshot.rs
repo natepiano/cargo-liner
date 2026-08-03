@@ -168,6 +168,27 @@ pub(crate) struct ProcessSnapshotRecord {
 }
 
 impl ProcessSnapshotRecord {
+    /// Assemble one strongly identified record from fields a test states
+    /// directly, so classification can be exercised without a host refresh.
+    #[cfg(test)]
+    pub(super) const fn for_test(
+        identity: ProcessIdentity,
+        incarnation_evidence: ProcessIncarnationEvidence,
+        executable: ProcessFieldObservation<PathBuf>,
+        argv: ProcessFieldObservation<Vec<OsString>>,
+        cwd: ProcessFieldObservation<PathBuf>,
+        parentage_validation_outcome: ProcessFieldObservation<ParentageValidationOutcome>,
+    ) -> Self {
+        Self {
+            identity,
+            incarnation_evidence,
+            executable,
+            argv,
+            cwd,
+            parentage_validation_outcome,
+        }
+    }
+
     pub(crate) const fn identity(&self) -> &ProcessIdentity { &self.identity }
 
     pub(crate) const fn incarnation_evidence(&self) -> &ProcessIncarnationEvidence {
@@ -246,9 +267,14 @@ pub(crate) enum ProcessRefreshExecutionFailure {
 }
 
 /// The immutable result of one requested observer execution.
+///
+/// The completed variant is boxed because it carries the whole observation
+/// snapshot while the failed variant carries two words, and every outcome —
+/// including the failures — would otherwise be moved through the result
+/// channel at the snapshot's size.
 #[derive(Debug, PartialEq)]
 pub(crate) enum ProcessRefreshExecutionOutcome {
-    Completed(CompletedProcessRefreshExecution),
+    Completed(Box<CompletedProcessRefreshExecution>),
     Failed(ProcessRefreshExecutionFailure),
 }
 
@@ -345,6 +371,74 @@ pub(crate) enum RunningProcessMetricsObservation {
     Observed(BTreeMap<ProcessIdentity, RunningProcessMetricsRecord>),
 }
 
+/// Which Cargo-related executable one candidate incarnation runs, before any
+/// build semantics are applied to it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BuildCandidateRole {
+    /// A `cargo` or `cargo.exe` executable.
+    Cargo,
+    /// A `rustc` or `rustc.exe` executable.
+    Compiler,
+    /// An `sccache`, `clippy-driver`, or argument-declared compiler wrapper.
+    Wrapper,
+}
+
+impl BuildCandidateRole {
+    /// Project one parsed candidate onto the exported role, dropping the
+    /// non-candidate state that [`BuildCandidateIncarnations`] does not carry.
+    const fn from_cargo_process_candidate(
+        cargo_process_candidate: CargoProcessCandidate,
+    ) -> BuildCandidateEvidence {
+        match cargo_process_candidate {
+            CargoProcessCandidate::NotCandidate => BuildCandidateEvidence::NotCandidate,
+            CargoProcessCandidate::Cargo => BuildCandidateEvidence::Candidate(Self::Cargo),
+            CargoProcessCandidate::Compiler => BuildCandidateEvidence::Candidate(Self::Compiler),
+            CargoProcessCandidate::Wrapper => BuildCandidateEvidence::Candidate(Self::Wrapper),
+        }
+    }
+}
+
+/// Whether one process incarnation is a Cargo, compiler, or wrapper candidate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BuildCandidateEvidence {
+    /// Executable and argument evidence identifies this Cargo-related role.
+    Candidate(BuildCandidateRole),
+    /// The incarnation runs no Cargo-related executable.
+    NotCandidate,
+}
+
+/// Immutable Cargo, compiler, and wrapper candidate incarnations observed in
+/// one refresh cycle.
+///
+/// This is the exported projection of the observer-owned candidate cache.
+/// Consumers read roles from it; only [`ProcessIncarnationCache`] mutates the
+/// cache that produces it.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct BuildCandidateIncarnations {
+    candidates: BTreeMap<ProcessIncarnation, BuildCandidateRole>,
+}
+
+impl BuildCandidateIncarnations {
+    /// Name the candidate roles directly, so a classification test does not
+    /// have to drive the observer-owned candidate cache to state them.
+    #[cfg(test)]
+    pub(super) const fn for_test(
+        candidates: BTreeMap<ProcessIncarnation, BuildCandidateRole>,
+    ) -> Self {
+        Self { candidates }
+    }
+
+    /// Every candidate incarnation in ascending incarnation order.
+    #[cfg(test)]
+    pub(crate) fn iter(
+        &self,
+    ) -> impl Iterator<Item = (&ProcessIncarnation, BuildCandidateRole)> + '_ {
+        self.candidates
+            .iter()
+            .map(|(incarnation, build_candidate_role)| (incarnation, *build_candidate_role))
+    }
+}
+
 /// An immutable process observation result.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ProcessObservationSnapshot {
@@ -355,9 +449,30 @@ pub(crate) struct ProcessObservationSnapshot {
     identity_binding_invalidations:  Vec<ProcessIdentityBindingInvalidation>,
     targeted_process_observations:   TargetedProcessObservations,
     running_process_metrics:         RunningProcessMetricsObservation,
+    build_candidate_incarnations:    BuildCandidateIncarnations,
 }
 
 impl ProcessObservationSnapshot {
+    /// Assemble one full-system snapshot from records and candidate roles a
+    /// test states directly.
+    #[cfg(test)]
+    pub(super) const fn from_parts_for_test(
+        observed_at: Instant,
+        strongly_identified_processes: BTreeMap<ProcessIdentity, ProcessSnapshotRecord>,
+        build_candidate_incarnations: BuildCandidateIncarnations,
+    ) -> Self {
+        Self {
+            observed_at,
+            scope: ProcessSnapshotScope::FullSystem,
+            strongly_identified_processes,
+            insufficient_identity_processes: Vec::new(),
+            identity_binding_invalidations: Vec::new(),
+            targeted_process_observations: TargetedProcessObservations::NotRequested,
+            running_process_metrics: RunningProcessMetricsObservation::Observed(BTreeMap::new()),
+            build_candidate_incarnations,
+        }
+    }
+
     #[cfg(test)]
     pub(super) fn empty_for_test() -> Self {
         Self {
@@ -370,7 +485,14 @@ impl ProcessObservationSnapshot {
             running_process_metrics:         RunningProcessMetricsObservation::Observed(
                 BTreeMap::new(),
             ),
+            build_candidate_incarnations:    BuildCandidateIncarnations::default(),
         }
+    }
+
+    /// Cargo, compiler, and wrapper candidates observed in this refresh.
+    #[cfg(test)]
+    pub(crate) const fn build_candidate_incarnations(&self) -> &BuildCandidateIncarnations {
+        &self.build_candidate_incarnations
     }
 
     #[cfg(test)]
@@ -1231,6 +1353,9 @@ impl ProcessIncarnationCache {
             }
         }
 
+        let build_candidate_incarnations =
+            self.build_candidate_incarnations(&strongly_identified_processes);
+
         ProcessObservationSnapshot {
             observed_at,
             scope,
@@ -1239,7 +1364,36 @@ impl ProcessIncarnationCache {
             identity_binding_invalidations,
             targeted_process_observations,
             running_process_metrics: RunningProcessMetricsObservation::NotRequested,
+            build_candidate_incarnations,
         }
+    }
+
+    /// Project the cached Cargo candidates onto the immutable evidence the
+    /// snapshot exports, dropping identities that no longer carry a strong
+    /// record in this refresh.
+    fn build_candidate_incarnations(
+        &self,
+        strongly_identified_processes: &BTreeMap<ProcessIdentity, ProcessSnapshotRecord>,
+    ) -> BuildCandidateIncarnations {
+        let candidates = self
+            .unclassified_cargo_candidates
+            .iter()
+            .filter(|(process_identity, _)| {
+                strongly_identified_processes.contains_key(*process_identity)
+            })
+            .filter_map(|(_, unclassified_cargo_candidate)| {
+                match BuildCandidateRole::from_cargo_process_candidate(
+                    unclassified_cargo_candidate.candidate,
+                ) {
+                    BuildCandidateEvidence::Candidate(build_candidate_role) => Some((
+                        unclassified_cargo_candidate.incarnation.clone(),
+                        build_candidate_role,
+                    )),
+                    BuildCandidateEvidence::NotCandidate => None,
+                }
+            })
+            .collect();
+        BuildCandidateIncarnations { candidates }
     }
 
     fn process_snapshot_record(
@@ -1436,6 +1590,58 @@ impl ProcessIncarnationCache {
     }
 }
 
+/// Whether an executable is one of the names Cargo invokes as the final link
+/// step.
+///
+/// One table, keyed one way, for every caller: build classification renders the
+/// same executables as [`crate::build_monitor::CompilerKind::Linker`], and a
+/// second table keyed differently let `ld64.lld` be admitted here and rendered
+/// there as a compiler.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LinkerRecognition {
+    /// The executable name is one Cargo's link step runs.
+    Linker,
+    /// The executable name is not a known linker.
+    NotLinker,
+}
+
+impl LinkerRecognition {
+    /// Executable names Cargo invokes as the final link step beneath a compiler
+    /// or a build script. A name alone does not make one a candidate — every C
+    /// and C++ build on the machine runs these — so a linker is admitted only
+    /// when its own arguments name a Rust link artifact.
+    const LINKER_EXECUTABLES: &'static [&'static str] = &[
+        "c++", "cc", "clang", "clang++", "g++", "gcc", "gold", "ld", "ld.bfd", "ld.gold", "ld.lld",
+        "ld.mold", "ld64.lld", "link", "lld", "lld-link", "mold", "rust-lld", "wild",
+    ];
+    const WINDOWS_EXECUTABLE_SUFFIX: &'static str = ".exe";
+
+    /// Recognize a linker by its whole file name minus a Windows `.exe` suffix,
+    /// so one table covers both platforms.
+    ///
+    /// `ld.lld`, `ld64.lld`, `ld.mold`, and `ld.bfd` carry a dot inside the
+    /// name, so a [`std::path::Path::file_stem`] split at the last dot would
+    /// reduce them to `ld`, `ld64`, and `ld` and miss every name that is not
+    /// coincidentally another entry in the same table.
+    pub(crate) fn of_executable(executable: &std::path::Path) -> Self {
+        executable
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .map_or(Self::NotLinker, Self::of_executable_name)
+    }
+
+    fn of_executable_name(file_name: &str) -> Self {
+        let executable_name = file_name
+            .strip_suffix(Self::WINDOWS_EXECUTABLE_SUFFIX)
+            .unwrap_or(file_name);
+        if Self::LINKER_EXECUTABLES.contains(&executable_name) {
+            Self::Linker
+        } else {
+            Self::NotLinker
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct UnclassifiedCargoCandidateIncarnation {
     incarnation: ProcessIncarnation,
@@ -1459,6 +1665,23 @@ impl CargoProcessCandidate {
     const SCCACHE_WINDOWS_EXECUTABLE: &'static str = "sccache.exe";
     const CLIPPY_DRIVER_EXECUTABLE: &'static str = "clippy-driver";
     const CLIPPY_DRIVER_WINDOWS_EXECUTABLE: &'static str = "clippy-driver.exe";
+    const RUSTDOC_EXECUTABLE: &'static str = "rustdoc";
+    const RUSTDOC_WINDOWS_EXECUTABLE: &'static str = "rustdoc.exe";
+    /// Cargo names every build-script executable it compiles with this prefix.
+    const BUILD_SCRIPT_PREFIX: &'static str = "build-script-";
+    /// Suffix of the object files `rustc` emits per codegen unit.
+    const CODEGEN_UNIT_OBJECT_SUFFIX: &'static str = ".rcgu.o";
+    /// File name `rustc` gives the response file it passes as `@<path>` in
+    /// place of an argument list whenever the link command line would exceed
+    /// the operating system's limit. That is the default path for `link.exe`.
+    const LINKER_RESPONSE_FILE_NAME: &'static str = "linker-arguments";
+    /// Directory separators of both platforms, so a response-file path is split
+    /// the way the host that wrote it spells paths.
+    const PATH_SEPARATORS: [char; 2] = ['/', '\\'];
+    /// Marks an argument that names a response file rather than a link input.
+    const RESPONSE_FILE_PREFIX: char = '@';
+    /// Extension of the Rust libraries a linker receives on its command line.
+    const RUST_LIBRARY_SUFFIX: &'static str = ".rlib";
 
     fn parse(
         executable: &ProcessFieldObservation<PathBuf>,
@@ -1469,15 +1692,63 @@ impl CargoProcessCandidate {
         };
         match executable.file_name().and_then(std::ffi::OsStr::to_str) {
             Some(Self::CARGO_EXECUTABLE | Self::CARGO_WINDOWS_EXECUTABLE) => Self::Cargo,
-            Some(Self::COMPILER_EXECUTABLE | Self::COMPILER_WINDOWS_EXECUTABLE) => Self::Compiler,
+            Some(
+                Self::COMPILER_EXECUTABLE
+                | Self::COMPILER_WINDOWS_EXECUTABLE
+                | Self::RUSTDOC_EXECUTABLE
+                | Self::RUSTDOC_WINDOWS_EXECUTABLE,
+            ) => Self::Compiler,
             Some(
                 Self::SCCACHE_EXECUTABLE
                 | Self::SCCACHE_WINDOWS_EXECUTABLE
                 | Self::CLIPPY_DRIVER_EXECUTABLE
                 | Self::CLIPPY_DRIVER_WINDOWS_EXECUTABLE,
             ) => Self::Wrapper,
+            Some(file_name) if file_name.starts_with(Self::BUILD_SCRIPT_PREFIX) => Self::Compiler,
+            Some(_)
+                if LinkerRecognition::of_executable(executable) == LinkerRecognition::Linker =>
+            {
+                Self::linker_from_arguments(argv)
+            },
             _ => Self::wrapper_from_arguments(argv),
         }
+    }
+
+    /// A linker is a compile candidate only when its command line names a Rust
+    /// codegen-unit object, a Rust library, or the response file `rustc` writes
+    /// in place of them. No unrelated C build passes any of the three.
+    fn linker_from_arguments(argv: &ProcessFieldObservation<Vec<OsString>>) -> Self {
+        let ProcessFieldObservation::Observed(argv) = argv else {
+            return Self::NotCandidate;
+        };
+        if argv
+            .iter()
+            .filter_map(|argument| argument.to_str())
+            .any(Self::names_rust_link_input)
+        {
+            Self::Compiler
+        } else {
+            Self::NotCandidate
+        }
+    }
+
+    /// Whether one linker argument names a Rust link input directly or names
+    /// the response file holding them.
+    ///
+    /// The response file is written by the Windows host that needs it, so its
+    /// path is split on either platform's separator rather than the running
+    /// platform's: a Unix test and a Unix cross-link both read a backslash
+    /// path.
+    fn names_rust_link_input(argument: &str) -> bool {
+        if argument.ends_with(Self::CODEGEN_UNIT_OBJECT_SUFFIX)
+            || argument.ends_with(Self::RUST_LIBRARY_SUFFIX)
+        {
+            return true;
+        }
+        argument
+            .strip_prefix(Self::RESPONSE_FILE_PREFIX)
+            .and_then(|response_file| response_file.rsplit(Self::PATH_SEPARATORS).next())
+            .is_some_and(|file_name| file_name == Self::LINKER_RESPONSE_FILE_NAME)
     }
 
     fn wrapper_from_arguments(argv: &ProcessFieldObservation<Vec<OsString>>) -> Self {
@@ -3340,6 +3611,127 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn cargo_candidate_parser_admits_rustdoc_and_build_scripts_as_compilers() {
+        for executable in [
+            "/usr/bin/rustdoc",
+            "rustdoc.exe",
+            "/checkout/target/debug/build/demo-1a2b/build-script-build",
+            "/checkout/target/debug/build/demo-1a2b/build-script-main.exe",
+        ] {
+            assert_eq!(
+                CargoProcessCandidate::parse(
+                    &ProcessFieldObservation::Observed(PathBuf::from(executable)),
+                    &ProcessFieldObservation::Observed(Vec::new()),
+                ),
+                CargoProcessCandidate::Compiler,
+                "{executable} runs as part of a Cargo build"
+            );
+        }
+    }
+
+    #[test]
+    fn a_linker_is_admitted_only_when_its_arguments_name_a_rust_link_artifact() {
+        for argument in [
+            "/checkout/target/debug/deps/demo.demo.rcgu.o",
+            "/checkout/target/debug/deps/libserde.rlib",
+        ] {
+            assert_eq!(
+                CargoProcessCandidate::parse(
+                    &ProcessFieldObservation::Observed(PathBuf::from("/usr/bin/cc")),
+                    &ProcessFieldObservation::Observed(vec![
+                        OsString::from("cc"),
+                        OsString::from(argument),
+                    ]),
+                ),
+                CargoProcessCandidate::Compiler
+            );
+        }
+        // Every C and C++ build on the machine runs these executables.
+        assert_eq!(
+            CargoProcessCandidate::parse(
+                &ProcessFieldObservation::Observed(PathBuf::from("/usr/bin/cc")),
+                &ProcessFieldObservation::Observed(vec![
+                    OsString::from("cc"),
+                    OsString::from("-o"),
+                    OsString::from("/tmp/unrelated"),
+                    OsString::from("/tmp/unrelated.o"),
+                ]),
+            ),
+            CargoProcessCandidate::NotCandidate
+        );
+        assert_eq!(
+            CargoProcessCandidate::parse(
+                &ProcessFieldObservation::Observed(PathBuf::from("/usr/bin/ld.lld")),
+                &ProcessFieldObservation::Unavailable(
+                    ProcessFieldUnavailable::PlatformLookupFailed
+                ),
+            ),
+            CargoProcessCandidate::NotCandidate,
+            "an unreadable command line cannot prove a Rust link"
+        );
+    }
+
+    #[test]
+    fn every_linker_cargo_runs_is_recognized_by_its_whole_file_name() {
+        for executable in [
+            "/usr/bin/ld",
+            "/usr/bin/ld.bfd",
+            "/usr/bin/ld.gold",
+            "/usr/bin/ld.lld",
+            "/usr/bin/ld.mold",
+            "/usr/bin/ld64.lld",
+            "/usr/bin/gold",
+            "/usr/bin/mold",
+            "/usr/bin/wild",
+            "/usr/bin/rust-lld",
+            "/usr/bin/lld-link",
+            "link.exe",
+            "lld-link.exe",
+        ] {
+            assert_eq!(
+                CargoProcessCandidate::parse(
+                    &ProcessFieldObservation::Observed(PathBuf::from(executable)),
+                    &ProcessFieldObservation::Observed(vec![
+                        OsString::from("linker"),
+                        OsString::from("/checkout/target/debug/deps/demo.demo.rcgu.o"),
+                    ]),
+                ),
+                CargoProcessCandidate::Compiler,
+                "{executable} is a linker Cargo's link step runs"
+            );
+        }
+    }
+
+    #[test]
+    fn a_linker_reading_rustc_response_file_is_admitted_but_an_unrelated_one_is_not() {
+        assert_eq!(
+            CargoProcessCandidate::parse(
+                &ProcessFieldObservation::Observed(PathBuf::from("link.exe")),
+                &ProcessFieldObservation::Observed(vec![
+                    OsString::from("link.exe"),
+                    OsString::from(
+                        "@C:\\checkout\\target\\debug\\deps\\demo-1a2b\\linker-arguments"
+                    ),
+                ]),
+            ),
+            CargoProcessCandidate::Compiler,
+            "rustc passes its link inputs in a response file whenever the command line is too long"
+        );
+        // A C or C++ build uses response files of its own, and none of them is
+        // evidence of a Rust link.
+        assert_eq!(
+            CargoProcessCandidate::parse(
+                &ProcessFieldObservation::Observed(PathBuf::from("link.exe")),
+                &ProcessFieldObservation::Observed(vec![
+                    OsString::from("link.exe"),
+                    OsString::from("@C:\\build\\objects.rsp"),
+                ]),
+            ),
+            CargoProcessCandidate::NotCandidate
+        );
     }
 
     #[test]

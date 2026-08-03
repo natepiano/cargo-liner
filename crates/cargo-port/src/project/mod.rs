@@ -12,8 +12,12 @@ mod root_item;
 pub(crate) use cargo::AcceptedCargoMetadataRevision;
 pub(crate) use cargo::CanonicalCheckoutRoot;
 pub(crate) use cargo::CanonicalMemberRoot;
+#[cfg(test)]
+pub(crate) use cargo::CanonicalPackageOwnership;
 pub(crate) use cargo::CanonicalPathResolution;
 pub(crate) use cargo::CanonicalTargetDirectory;
+#[cfg(test)]
+pub(crate) use cargo::CanonicalTargetOwnership;
 pub(crate) use cargo::CanonicalTargetSource;
 pub(crate) use cargo::CanonicalWorkspaceRoot;
 pub(crate) use cargo::Cargo;

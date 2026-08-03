@@ -11,8 +11,10 @@ use crate::project::AbsolutePath;
 use crate::project::AcceptedCargoMetadataRevision;
 use crate::project::CanonicalCheckoutRoot;
 use crate::project::CanonicalMemberRoot;
+use crate::project::CanonicalPackageOwnership;
 use crate::project::CanonicalPathResolution;
 use crate::project::CanonicalTargetDirectory;
+use crate::project::CanonicalTargetOwnership;
 use crate::project::CanonicalTargetSource;
 use crate::project::CanonicalWorkspaceRoot;
 use crate::project::CargoPackageIdentity;
@@ -113,6 +115,93 @@ fn project_scope_queries_preserve_exact_and_ambiguous_workspace_ownership() -> T
         cargo_workspace_index
             .workspace_for_workspace_root(&AbsolutePath::from(shared_workspace_root.as_path())),
         VisibleProjectWorkspaceOwnership::Ambiguous
+    ));
+    Ok(())
+}
+
+#[test]
+fn canonical_package_queries_preserve_exact_ambiguous_and_unindexed_ownership() -> TestResult {
+    let temp_dir = tempfile::tempdir()?;
+    let shared_member_root = temp_dir.path().join("shared-member");
+    let shared_source = shared_member_root.join("src/main.rs");
+    let sole_member_root = temp_dir.path().join("sole-member");
+    let sole_source = sole_member_root.join("src/main.rs");
+    for source in [&shared_source, &sole_source] {
+        fs::create_dir_all(source.parent().ok_or("source parent should exist")?)?;
+        fs::write(source, "fn main() {}")?;
+    }
+
+    let sole_package_id = PackageId {
+        repr: "sole-member 0.1.0 (path+file:///sole-member)".to_string(),
+    };
+    let mut first_packages = HashMap::new();
+    first_packages.insert(
+        sole_package_id.clone(),
+        package_record("sole-member", &sole_member_root, &sole_source),
+    );
+    first_packages.insert(
+        PackageId {
+            repr: "shared-member 0.1.0 (path+file:///first/shared-member)".to_string(),
+        },
+        package_record("shared-member", &shared_member_root, &shared_source),
+    );
+    let mut second_packages = HashMap::new();
+    second_packages.insert(
+        PackageId {
+            repr: "shared-member 0.1.0 (path+file:///second/shared-member)".to_string(),
+        },
+        package_record("shared-member", &shared_member_root, &shared_source),
+    );
+
+    let mut workspace_metadata_store = WorkspaceMetadataStore::new();
+    for (checkout_name, packages) in [("first", first_packages), ("second", second_packages)] {
+        let checkout_root = temp_dir.path().join(checkout_name);
+        let mut workspace_metadata =
+            scope_workspace_metadata(&checkout_root, checkout_root.as_path());
+        workspace_metadata.packages = packages;
+        workspace_metadata_store.upsert(workspace_metadata);
+    }
+    let cargo_workspace_index = CargoWorkspaceIndex::from_metadata_store(
+        &workspace_metadata_store,
+        ProjectListRevision::default(),
+    );
+
+    let canonical_sole_member_root = AbsolutePath::from(fs::canonicalize(&sole_member_root)?);
+    assert!(matches!(
+        cargo_workspace_index.package_for_canonical_member_root(&canonical_sole_member_root),
+        CanonicalPackageOwnership::Indexed(package) if package.package_id() == &sole_package_id
+    ));
+    assert!(matches!(
+        cargo_workspace_index.package_for_canonical_target_source(&AbsolutePath::from(
+            fs::canonicalize(&sole_source)?
+        )),
+        CanonicalTargetOwnership::Indexed(package) if package.package_id() == &sole_package_id
+    ));
+
+    // Two indexed workspaces declare the same member root and source file, so
+    // neither query may name one of them.
+    let canonical_shared_member_root = AbsolutePath::from(fs::canonicalize(&shared_member_root)?);
+    assert!(matches!(
+        cargo_workspace_index.package_for_canonical_member_root(&canonical_shared_member_root),
+        CanonicalPackageOwnership::Ambiguous
+    ));
+    assert!(matches!(
+        cargo_workspace_index.package_for_canonical_target_source(&AbsolutePath::from(
+            fs::canonicalize(&shared_source)?
+        )),
+        CanonicalTargetOwnership::Ambiguous
+    ));
+
+    let unindexed_member_root = AbsolutePath::from(temp_dir.path().join("unindexed-member"));
+    assert!(matches!(
+        cargo_workspace_index.package_for_canonical_member_root(&unindexed_member_root),
+        CanonicalPackageOwnership::NotIndexed
+    ));
+    assert!(matches!(
+        cargo_workspace_index.package_for_canonical_target_source(&AbsolutePath::from(
+            unindexed_member_root.as_path().join("src/main.rs")
+        )),
+        CanonicalTargetOwnership::NotIndexed
     ));
     Ok(())
 }

@@ -30,4 +30,6 @@ mod test_support;
 mod theme_roles;
 mod workspace_index;
 
+#[cfg(test)]
+pub(crate) use state::OwnedRunId;
 pub use terminal::run;

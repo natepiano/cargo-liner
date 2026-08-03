@@ -2,11 +2,20 @@
 
 mod scope;
 
+#[cfg(test)]
+pub(crate) use scope::MonitorScopeActionability;
+#[cfg(test)]
+pub(crate) use scope::MonitorScopeKey;
 pub(crate) use scope::MonitorScopeResolution;
 pub(crate) use scope::MonitorScopeUpdate;
 pub(crate) use scope::MonitorSelectedRow;
 pub(crate) use scope::monitor_scope_input;
 pub(crate) use scope::resolve_monitor_scope;
+
+#[cfg(test)]
+use crate::build_monitor::BuildScopeActionability;
+#[cfg(test)]
+use crate::build_monitor::BuildScopeKey;
 
 /// Monotonic identity for one compile-monitor scope lifetime.
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
@@ -142,5 +151,39 @@ impl CompileVisibilityState {
                 active_monitor_state.compile_monitor_generation() == compile_monitor_generation
             },
         }
+    }
+}
+
+/// Drop the selected-row identity and keep the roots and revisions build
+/// classification is allowed to see.
+///
+/// The conversion lives here rather than beside [`BuildScopeKey`] because
+/// [`MonitorScopeKey`] never leaves `crate::tui`. It reads the canonical roots
+/// through their accessors, which already carry the sort-and-dedup invariant
+/// established when the scope was resolved, so it must not re-sort them.
+#[cfg(test)]
+impl From<&MonitorScopeKey> for BuildScopeKey {
+    fn from(monitor_scope_key: &MonitorScopeKey) -> Self {
+        Self::from_sorted_scope_roots(
+            monitor_scope_key.canonical_checkout_roots().to_vec(),
+            monitor_scope_key.canonical_workspace_roots().to_vec(),
+            monitor_scope_key.accepted_cargo_metadata_revision(),
+            monitor_scope_key.project_list_revision(),
+        )
+    }
+}
+
+/// The one entry point through which a monitor scope reaches build
+/// classification. Routing through [`MonitorScopeResolution::actionability`]
+/// keeps the five resolution states from being restated anywhere downstream.
+#[cfg(test)]
+pub(crate) fn build_scope_actionability(
+    monitor_scope_resolution: &MonitorScopeResolution,
+) -> BuildScopeActionability {
+    match monitor_scope_resolution.actionability() {
+        MonitorScopeActionability::Actionable(monitor_scope_key) => {
+            BuildScopeActionability::Actionable(BuildScopeKey::from(monitor_scope_key))
+        },
+        MonitorScopeActionability::NotActionable => BuildScopeActionability::NotActionable,
     }
 }

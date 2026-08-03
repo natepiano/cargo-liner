@@ -102,6 +102,7 @@ pub enum VisibleRow {
 /// The row kind is separate from the row's indices so consumers can make
 /// ownership decisions without treating two structurally different rows as
 /// interchangeable merely because they currently resolve to the same path.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum VisibleRowKind {
     Root,
@@ -126,6 +127,7 @@ pub enum CurrentVisibleRow {
 }
 
 impl VisibleRow {
+    #[cfg(test)]
     pub const fn kind(self) -> VisibleRowKind {
         match self {
             Self::Root { .. } => VisibleRowKind::Root,

@@ -9,6 +9,7 @@ pub(super) use expand_state::ExpandTarget;
 pub(super) use visible_rows::CurrentVisibleRow;
 pub(super) use visible_rows::ExpandKey;
 pub(super) use visible_rows::VisibleRow;
+#[cfg(test)]
 pub(super) use visible_rows::VisibleRowKind;
 
 pub(super) use super::project_list_state::LintRuntimeRootEntry;

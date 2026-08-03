@@ -667,6 +667,17 @@ pub(crate) struct ProcessIncarnation {
 }
 
 impl ProcessIncarnation {
+    /// Build one incarnation from a name that stands in for observed
+    /// executable and argument fields, so classification tests can key
+    /// sessions and activities without a host refresh.
+    #[cfg(test)]
+    pub(crate) fn for_test(process_identity: ProcessIdentity, fingerprint_source: &str) -> Self {
+        Self::new(
+            process_identity,
+            ProcessFingerprint::from_observed_fields(std::path::Path::new(fingerprint_source), &[]),
+        )
+    }
+
     pub(super) const fn new(
         identity: ProcessIdentity,
         executable_argv_fingerprint: ProcessFingerprint,

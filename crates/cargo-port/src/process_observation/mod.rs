@@ -9,6 +9,8 @@ mod benchmarks;
 mod executor;
 pub(crate) mod identity;
 pub(crate) mod snapshot;
+#[cfg(test)]
+pub(crate) mod snapshot_builder;
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -25,6 +27,8 @@ pub(crate) use executor::RunningTargetsRefreshSchedule;
 use identity::ObservedProcessIdentity;
 use identity::PlatformProcessObservation;
 use identity::ProcessIdentity;
+#[cfg(test)]
+pub(crate) use snapshot::BuildCandidateRole;
 use snapshot::FullProcessRefreshEvidence;
 use snapshot::ProcessFieldObservation;
 use snapshot::ProcessFieldSample;

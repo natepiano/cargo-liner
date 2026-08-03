@@ -15,6 +15,7 @@ use crate::project::VisibleProjectWorkspaceOwnership;
 use crate::tui::project_list::CurrentVisibleRow;
 use crate::tui::project_list::ProjectList;
 use crate::tui::project_list::VisibleRow;
+#[cfg(test)]
 use crate::tui::project_list::VisibleRowKind;
 use crate::tui::workspace_index::WorkspaceIndexReadiness;
 
@@ -27,6 +28,7 @@ pub(crate) struct MonitorSelectedRowIdentity {
 impl MonitorSelectedRowIdentity {
     pub(crate) const fn visible_row(&self) -> VisibleRow { self.visible_row }
 
+    #[cfg(test)]
     pub(crate) const fn visible_row_kind(&self) -> VisibleRowKind { self.visible_row.kind() }
 }
 
@@ -85,32 +87,40 @@ impl MonitorScopeKey {
         }
     }
 
-    #[allow(dead_code, reason = "Reserved for Build Monitor scope attribution")]
+    /// The selected row this key was resolved for. `BuildScopeKey` carries no
+    /// row identity, so only the scope tests read this.
+    #[cfg(test)]
     pub(crate) const fn monitor_selected_row_identity(&self) -> &MonitorSelectedRowIdentity {
         &self.monitor_selected_row_identity
     }
 
-    #[allow(dead_code, reason = "Reserved for Build Monitor scope attribution")]
+    /// Which display row kind the selection resolved through. `BuildScopeKey`
+    /// carries no row identity, so only the scope tests read this.
+    #[cfg(test)]
     pub(crate) const fn selected_row_kind(&self) -> VisibleRowKind {
         self.monitor_selected_row_identity.visible_row_kind()
     }
 
-    #[allow(dead_code, reason = "Reserved for Build Monitor scope attribution")]
+    /// Sorted canonical checkout roots this scope covers.
+    #[cfg(test)]
     pub(crate) fn canonical_checkout_roots(&self) -> &[CanonicalCheckoutRoot] {
         &self.canonical_checkout_roots
     }
 
-    #[allow(dead_code, reason = "Reserved for Build Monitor scope attribution")]
+    /// Sorted canonical Cargo workspace roots this scope covers.
+    #[cfg(test)]
     pub(crate) fn canonical_workspace_roots(&self) -> &[CanonicalWorkspaceRoot] {
         &self.canonical_workspace_roots
     }
 
-    #[allow(dead_code, reason = "Reserved for Build Monitor scope attribution")]
+    /// Accepted `cargo metadata` revision this scope was resolved against.
+    #[cfg(test)]
     pub(crate) const fn accepted_cargo_metadata_revision(&self) -> AcceptedCargoMetadataRevision {
         self.accepted_cargo_metadata_revision
     }
 
-    #[allow(dead_code, reason = "Reserved for Build Monitor scope attribution")]
+    /// Visible project-list revision this scope was resolved against.
+    #[cfg(test)]
     pub(crate) const fn project_list_revision(&self) -> ProjectListRevision {
         self.project_list_revision
     }
@@ -147,7 +157,9 @@ impl MonitorScopeResolutionRevision {
         self.project_list_revision
     }
 
-    #[allow(dead_code, reason = "Reserved for Build Monitor readiness reporting")]
+    /// Which index readiness state produced this resolution, so a non-actionable
+    /// scope reports why rather than only that it is unavailable.
+    #[cfg(test)]
     pub(crate) const fn monitor_workspace_index_readiness(&self) -> MonitorWorkspaceIndexReadiness {
         self.monitor_workspace_index_readiness
     }
@@ -164,15 +176,15 @@ pub(crate) enum MonitorScopeResolution {
 }
 
 /// Whether a resolved scope can authorize monitoring work.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code, reason = "Reserved for Build Monitor scope authorization")]
 pub(crate) enum MonitorScopeActionability<'a> {
     Actionable(&'a MonitorScopeKey),
     NotActionable,
 }
 
 impl MonitorScopeResolution {
-    #[allow(dead_code, reason = "Reserved for Build Monitor scope authorization")]
+    #[cfg(test)]
     pub(crate) const fn actionability(&self) -> MonitorScopeActionability<'_> {
         match self {
             Self::Ready(monitor_scope_key) => {
@@ -785,6 +797,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::build_monitor::BuildScopeActionability;
+    use crate::build_monitor::BuildScopeKey;
     use crate::project::FileStamp;
     use crate::project::ManifestFingerprint;
     use crate::project::MemberGroup;
@@ -1666,6 +1680,107 @@ mod tests {
         let mut absolute_paths: Vec<_> = absolute_paths.into_iter().cloned().collect();
         absolute_paths.sort_by(|left, right| left.as_path().cmp(right.as_path()));
         absolute_paths
+    }
+
+    #[test]
+    fn an_actionable_resolution_yields_a_build_scope_key_without_the_row_identity() -> TestResult {
+        let mut scope_fixture = scope_fixture()?;
+        scope_fixture.project_list.expand_all(true);
+        scope_fixture.project_list.recompute_visibility(true);
+        let monitor_scope_key = ready_scope_key_for_row(
+            &mut scope_fixture.project_list,
+            &scope_fixture.cargo_workspace_index,
+            |visible_row| matches!(visible_row, VisibleRow::Root { node_index: 1 }),
+        )?;
+        let monitor_scope_resolution = MonitorScopeResolution::Ready(monitor_scope_key.clone());
+
+        let BuildScopeActionability::Actionable(build_scope_key) =
+            crate::tui::compile_visibility::build_scope_actionability(&monitor_scope_resolution)
+        else {
+            return Err("a ready resolution is actionable".into());
+        };
+        assert_eq!(
+            build_scope_key.canonical_checkout_roots(),
+            monitor_scope_key.canonical_checkout_roots(),
+            "the conversion must not re-sort the roots"
+        );
+        assert_eq!(
+            build_scope_key.canonical_workspace_roots(),
+            monitor_scope_key.canonical_workspace_roots()
+        );
+        assert_eq!(
+            build_scope_key.accepted_cargo_metadata_revision(),
+            monitor_scope_key.accepted_cargo_metadata_revision()
+        );
+        assert_eq!(
+            build_scope_key.project_list_revision(),
+            monitor_scope_key.project_list_revision()
+        );
+        assert_eq!(
+            build_scope_key,
+            BuildScopeKey::from(&monitor_scope_key),
+            "two conversions of the same scope produce equal keys"
+        );
+        let uninitialized_revision = MonitorScopeResolutionRevision::new(
+            ProjectListRevision::default(),
+            MonitorWorkspaceIndexReadiness::Uninitialized,
+        );
+        assert_eq!(
+            uninitialized_revision.monitor_workspace_index_readiness(),
+            MonitorWorkspaceIndexReadiness::Uninitialized
+        );
+        assert!(matches!(
+            crate::tui::compile_visibility::build_scope_actionability(
+                &MonitorScopeResolution::EmptyNonRust(uninitialized_revision)
+            ),
+            BuildScopeActionability::NotActionable
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn two_rows_over_the_same_roots_produce_one_build_scope_key() -> TestResult {
+        let mut scope_fixture = scope_fixture()?;
+        scope_fixture.project_list.expand_all(true);
+        scope_fixture.project_list.recompute_visibility(true);
+        // A root row and a member row inside it resolve to the same checkout,
+        // so the build monitor must see one scope rather than restart on every
+        // move of the selection inside a checkout.
+        let root_scope_key = ready_scope_key_for_row(
+            &mut scope_fixture.project_list,
+            &scope_fixture.cargo_workspace_index,
+            |visible_row| matches!(visible_row, VisibleRow::Root { node_index: 0 }),
+        )?;
+        let member_scope_key = ready_scope_key_for_row(
+            &mut scope_fixture.project_list,
+            &scope_fixture.cargo_workspace_index,
+            |visible_row| {
+                matches!(
+                    visible_row,
+                    VisibleRow::Member {
+                        node_index:   0,
+                        group_index:  0,
+                        member_index: 0,
+                    }
+                )
+            },
+        )?;
+
+        assert_ne!(
+            root_scope_key.monitor_selected_row_identity(),
+            member_scope_key.monitor_selected_row_identity(),
+            "the two rows are different selections"
+        );
+        assert_ne!(
+            root_scope_key, member_scope_key,
+            "the monitor scope key still distinguishes the selected row"
+        );
+        assert_eq!(
+            BuildScopeKey::from(&root_scope_key),
+            BuildScopeKey::from(&member_scope_key),
+            "the build scope key drops the row identity, so both rows build the same scope"
+        );
+        Ok(())
     }
 
     fn ready_scope_key_for_row(
