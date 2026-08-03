@@ -38,6 +38,7 @@ pub struct ModuleSourceMap {
     structural_parents_by_file: HashMap<PathBuf, Vec<Vec<String>>>,
     crate_files:                HashSet<PathBuf>,
     canonical_by_source_file:   HashMap<PathBuf, PathBuf>,
+    canonical_by_span_file:     HashMap<PathBuf, PathBuf>,
 }
 
 impl ModuleSourceMap {
@@ -54,6 +55,7 @@ impl ModuleSourceMap {
             structural_parents_by_file: source_cache.structural_parent_module_paths().clone(),
             crate_files: canonical_by_source_file.values().cloned().collect(),
             canonical_by_source_file,
+            canonical_by_span_file: canonical_span_files(tcx),
             ..Self::default()
         };
         module_sources
@@ -61,7 +63,7 @@ impl ModuleSourceMap {
             .insert(Vec::new(), CRATE_DEF_ID);
         for item_id in tcx.hir_crate_items(()).free_items() {
             let item = tcx.hir_item(item_id);
-            let Some(source_file) = real_file_path(tcx, item.span) else {
+            let Some(source_file) = module_sources.canonical_span_file(tcx, item.span) else {
                 continue;
             };
             let module: LocalDefId = tcx.parent_module_from_def_id(item.owner_id.def_id).into();
@@ -73,7 +75,9 @@ impl ModuleSourceMap {
                 .modules_by_path
                 .insert(module_path(tcx, module_def_id), module_def_id);
             let (hir_module, _, _) = tcx.hir_get_module(module);
-            if let Some(source_file) = real_file_path(tcx, hir_module.spans.inner_span) {
+            if let Some(source_file) =
+                module_sources.canonical_span_file(tcx, hir_module.spans.inner_span)
+            {
                 module_sources.insert(module_def_id, source_file);
             }
         });
@@ -96,8 +100,10 @@ impl ModuleSourceMap {
     ///
     /// The exposure walk calls `root_modules_for_file` once per evaluated item
     /// per source file, so canonicalizing there runs `realpath` — one
-    /// `getattrlist` syscall per path component — in the innermost loop.
-    fn canonical_source_file<'path>(&'path self, source_file: &'path Path) -> Cow<'path, Path> {
+    /// `getattrlist` syscall per path component — in the innermost loop. The
+    /// declaration searches in `exposure::detect` sit in the same loop and
+    /// canonicalize the same paths, so they share this table.
+    pub fn canonical_source_file<'path>(&'path self, source_file: &'path Path) -> Cow<'path, Path> {
         self.canonical_by_source_file.get(source_file).map_or_else(
             || {
                 Cow::Owned(
@@ -106,6 +112,41 @@ impl ModuleSourceMap {
             },
             |canonical| Cow::Borrowed(canonical.as_path()),
         )
+    }
+
+    /// Canonical path of the file `span` originates in, or `None` for a span
+    /// with no real file behind it.
+    ///
+    /// Resolving a span's file is otherwise a `realpath` call per span, and the
+    /// exposure walk resolves one span per candidate declaration and one per
+    /// struct field. Spans in a file all report the same path, so the table
+    /// built in `new` answers from memory; a file that entered the source map
+    /// after that (external crate sources are loaded on demand) falls back to
+    /// the syscall.
+    pub fn canonical_span_file(&self, tcx: TyCtxt<'_>, span: Span) -> Option<PathBuf> {
+        let file = tcx.sess.source_map().lookup_char_pos(span.lo()).file;
+        let FileName::Real(real) = &file.name else {
+            return None;
+        };
+        let local_path = real.local_path()?;
+        Some(
+            self.canonical_by_span_file
+                .get(local_path)
+                .cloned()
+                .unwrap_or_else(|| {
+                    fs::canonicalize(local_path).unwrap_or_else(|_| local_path.to_path_buf())
+                }),
+        )
+    }
+
+    /// Whether `span` originates in `canonical_file`.
+    ///
+    /// `canonical_file` must already be canonical: `canonical_span_file`
+    /// canonicalizes what it returns, so an uncanonical argument never compares
+    /// equal.
+    pub fn span_is_in_file(&self, tcx: TyCtxt<'_>, span: Span, canonical_file: &Path) -> bool {
+        self.canonical_span_file(tcx, span)
+            .is_some_and(|file| file == canonical_file)
     }
 
     pub fn root_modules_for_file(&self, tcx: TyCtxt<'_>, source_file: &Path) -> Vec<LocalDefId> {
@@ -170,10 +211,9 @@ impl ModuleSourceMap {
         source_file: &Path,
         expected: &[String],
     ) -> bool {
-        let canonical_source_file =
-            fs::canonicalize(source_file).unwrap_or_else(|_| source_file.to_path_buf());
+        let canonical_source_file = self.canonical_source_file(source_file);
         self.modules_by_file
-            .get(&canonical_source_file)
+            .get(canonical_source_file.as_ref())
             .is_some_and(|modules| {
                 modules
                     .iter()
@@ -244,6 +284,28 @@ pub fn module_is_within(tcx: TyCtxt<'_>, mut candidate: LocalDefId, ancestor: Lo
         }
         candidate = tcx.parent_module_from_def_id(candidate).into();
     }
+}
+
+/// Canonical form of every real file the compiler has loaded, keyed by the path
+/// the compiler reports for it.
+///
+/// Canonicalizing once per file here replaces canonicalizing once per span
+/// resolved during the exposure walk, which is many thousands of `realpath`
+/// calls over the same few hundred paths.
+fn canonical_span_files(tcx: TyCtxt<'_>) -> HashMap<PathBuf, PathBuf> {
+    tcx.sess
+        .source_map()
+        .files()
+        .iter()
+        .filter_map(|file| match &file.name {
+            FileName::Real(real) => real.local_path().map(Path::to_path_buf),
+            _ => None,
+        })
+        .map(|path| {
+            let canonical = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+            (path, canonical)
+        })
+        .collect()
 }
 
 fn real_file_path(tcx: TyCtxt<'_>, span: Span) -> Option<PathBuf> {

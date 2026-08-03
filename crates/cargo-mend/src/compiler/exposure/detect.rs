@@ -1,6 +1,5 @@
 use std::cmp::Ordering;
 use std::collections::HashSet;
-use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -12,7 +11,6 @@ use rustc_hir::def::Res;
 use rustc_middle::ty;
 use rustc_middle::ty::TyCtxt;
 use rustc_middle::ty::Visibility;
-use rustc_span::FileName;
 use rustc_span::Span;
 use rustc_span::def_id::DefId;
 use rustc_span::def_id::LocalDefId;
@@ -495,7 +493,10 @@ pub fn impl_item_is_exposed_by_exported_self_type(
     else {
         return Ok(None);
     };
-    let Some(definition_file) = real_file_path(ctx.tcx, ctx.tcx.def_span(self_type_def_id)) else {
+    let Some(definition_file) = ctx
+        .module_sources
+        .canonical_span_file(ctx.tcx, ctx.tcx.def_span(self_type_def_id))
+    else {
         return Ok(None);
     };
     let self_type_name = ctx.tcx.item_name(self_type_def_id.to_def_id()).to_string();
@@ -958,8 +959,7 @@ fn resolve_active_declaration(
         return None;
     };
     let source_byte_position = source_byte_position(source, source_declaration.identifier_span)?;
-    let canonical_source_file =
-        fs::canonicalize(source_file).unwrap_or_else(|_| source_file.to_path_buf());
+    let canonical_source_file = ctx.module_sources.canonical_source_file(source_file);
     let (active_module, _, _) = ctx.tcx.hir_get_module(LocalModDefId::new_unchecked(module));
     for item_id in active_module.item_ids {
         let declaration_item = ctx.tcx.hir_item(*item_id);
@@ -980,8 +980,11 @@ fn resolve_active_declaration(
         let Some(declaration_span) = ctx.tcx.def_ident_span(local_def_id.to_def_id()) else {
             continue;
         };
-        if !span_is_in_file(ctx.tcx, declaration_span, &canonical_source_file)
-            || rustc_source_byte_position(ctx.tcx, declaration_span) != source_byte_position
+        if !ctx.module_sources.span_is_in_file(
+            ctx.tcx,
+            declaration_span,
+            canonical_source_file.as_ref(),
+        ) || rustc_source_byte_position(ctx.tcx, declaration_span) != source_byte_position
         {
             continue;
         }
@@ -1029,8 +1032,7 @@ fn resolve_impl_signature_carrier(
         return None;
     };
     let source_byte_position = source_byte_position(source, source_span)?;
-    let canonical_source_file =
-        fs::canonicalize(source_file).unwrap_or_else(|_| source_file.to_path_buf());
+    let canonical_source_file = ctx.module_sources.canonical_source_file(source_file);
     for item_id in ctx.tcx.hir_crate_items(()).impl_items() {
         let item = ctx.tcx.hir_impl_item(item_id);
         let item_module: LocalDefId = ctx
@@ -1043,10 +1045,13 @@ fn resolve_impl_signature_carrier(
         {
             continue;
         }
-        // Resolving a span's file is a filesystem syscall, so it is tested last:
+        // Resolving a span's file is the widest test, so it is applied last:
         // only a candidate already matching on module, name, and byte offset
         // reaches it.
-        if !span_is_in_file(ctx.tcx, item.span, &canonical_source_file) {
+        if !ctx
+            .module_sources
+            .span_is_in_file(ctx.tcx, item.span, canonical_source_file.as_ref())
+        {
             continue;
         }
         let associated_item = item.owner_id.def_id;
@@ -1090,7 +1095,9 @@ fn resolve_impl_signature_surface(
         .ty_adt_def()
         .map(ty::AdtDef::did)
         .and_then(DefId::as_local)?;
-    let definition_file = real_file_path(ctx.tcx, ctx.tcx.def_span(self_type_def_id))?;
+    let definition_file = ctx
+        .module_sources
+        .canonical_span_file(ctx.tcx, ctx.tcx.def_span(self_type_def_id))?;
     Some(ResolvedImplSignatureSurface {
         self_type: ResolvedImplSelfType {
             item_def_id: self_type_def_id,
@@ -1143,10 +1150,11 @@ fn resolve_field_signature_carrier(
     else {
         return None;
     };
-    let canonical_source_file =
-        fs::canonicalize(source_file).unwrap_or_else(|_| source_file.to_path_buf());
+    let canonical_source_file = ctx.module_sources.canonical_source_file(source_file);
     for field in variant_data.fields() {
-        if !span_is_in_file(ctx.tcx, field.span, &canonical_source_file)
+        if !ctx
+            .module_sources
+            .span_is_in_file(ctx.tcx, field.span, canonical_source_file.as_ref())
             || !source_identity.matches_hir_field(ctx.tcx, field)
         {
             continue;
@@ -1275,23 +1283,4 @@ fn module_def_id(tcx: TyCtxt<'_>, module: LocalDefId, module_name: &str) -> Opti
             _ => None,
         }
     })
-}
-
-/// Whether `span` originates in `canonical_file`.
-///
-/// `canonical_file` must already be canonical: `real_file_path` canonicalizes
-/// what it returns, so an uncanonical argument never compares equal.
-fn span_is_in_file(tcx: TyCtxt<'_>, span: Span, canonical_file: &Path) -> bool {
-    real_file_path(tcx, span).is_some_and(|file| file == canonical_file)
-}
-
-fn real_file_path(tcx: TyCtxt<'_>, span: Span) -> Option<PathBuf> {
-    let source_map = tcx.sess.source_map();
-    let file = source_map.lookup_char_pos(span.lo()).file;
-    match file.name.clone() {
-        FileName::Real(real) => real
-            .local_path()
-            .map(|path| fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())),
-        _ => None,
-    }
 }
