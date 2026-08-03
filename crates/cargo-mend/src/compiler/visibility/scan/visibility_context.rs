@@ -112,7 +112,7 @@ pub fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) ->
     let reexport_index = use_sites::reexport_index(tcx);
     let module_sources = ModuleSourceMap::new(tcx, &source_cache);
     let mut public_visibility_targets = HashSet::new();
-    use_sites::collect_use_sites(tcx, &mut sink.use_sites, &mut public_visibility_targets);
+    sink.use_sites = use_sites::collect_use_sites(tcx, &mut public_visibility_targets);
     let ctx = VisibilityContext {
         tcx,
         settings,
@@ -199,7 +199,7 @@ pub fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) ->
         pub_use_fix_facts:      sink.pub_use_fix_facts,
         all_features_coverage:  source_cache.all_features_coverage(),
         compiler_warning_facts: CompilerWarningFacts::None,
-        use_sites:              sink.use_sites,
+        use_sites:              sink.use_sites.into_use_sites(),
     };
     fs::write(&output_path, to_vec_pretty(&report)?)
         .with_context(|| format!("failed to write findings file {}", output_path.display()))?;

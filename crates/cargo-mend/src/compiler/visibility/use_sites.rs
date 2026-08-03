@@ -57,7 +57,7 @@ use super::annotation::VisibilityReach;
 use super::annotation::VisibilitySyntax;
 use crate::compiler::facade::ParentFacadeSpelling;
 use crate::compiler::facade::ParentFacadeUsageByName;
-use crate::compiler::persistence::UseSite;
+use crate::compiler::persistence::UseSiteIndex;
 use crate::rust_syntax::PathAnchor;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -764,7 +764,12 @@ struct UseSiteCollector<'a, 'tcx> {
     /// module path it lives in (not the function or impl that contains
     /// it).
     current_module:            DefId,
-    out:                       &'a mut Vec<UseSite>,
+    /// Distinct `(referenced item, calling module)` pairs. Def-ids, not
+    /// rendered paths: the same pair recurs once per syntactic reference,
+    /// so deduplicating here and rendering in [`collect_use_sites`] pays
+    /// `def_path_str` once per distinct def-id instead of twice per
+    /// occurrence.
+    out:                       &'a mut HashSet<(DefId, DefId)>,
     public_visibility_targets: &'a mut HashSet<LocalDefId>,
 }
 
@@ -1041,12 +1046,7 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
         }
     }
 
-    fn push_site(&mut self, target: DefId) {
-        self.out.push(UseSite {
-            target_def_path:        self.tcx.def_path_str(target),
-            caller_module_def_path: self.tcx.def_path_str(self.current_module),
-        });
-    }
+    fn push_site(&mut self, target: DefId) { self.out.insert((target, self.current_module)); }
 
     fn record_qpath(&mut self, qpath: &QPath<'_>, hir_id: HirId) {
         let res = match qpath {
@@ -1166,18 +1166,19 @@ impl<'tcx> Visitor<'tcx> for UseSiteCollector<'_, 'tcx> {
     }
 }
 
-/// Walk the entire crate's HIR and append every resolved
-/// expression/type/pattern path reference to `out`. The caller module is
-/// the nearest enclosing module def (defaults to the crate root).
+/// Walk the entire crate's HIR and index every resolved
+/// expression/type/pattern path reference by the referenced item. The
+/// caller module is the nearest enclosing module def (defaults to the
+/// crate root).
 pub(super) fn collect_use_sites(
     tcx: TyCtxt<'_>,
-    out: &mut Vec<UseSite>,
     public_visibility_targets: &mut HashSet<LocalDefId>,
-) {
+) -> UseSiteIndex {
+    let mut pairs = HashSet::new();
     let mut collector = UseSiteCollector {
         tcx,
         current_module: CRATE_DEF_ID.to_def_id(),
-        out,
+        out: &mut pairs,
         public_visibility_targets,
     };
     let crate_items = tcx.hir_crate_items(());
@@ -1193,6 +1194,21 @@ pub(super) fn collect_use_sites(
         let trait_item = tcx.hir_trait_item(trait_item_id);
         collector.visit_trait_item(trait_item);
     }
+
+    let mut index = UseSiteIndex::default();
+    let mut def_paths: HashMap<DefId, String> = HashMap::new();
+    for (target, caller_module) in pairs {
+        let target_def_path = def_paths
+            .entry(target)
+            .or_insert_with(|| tcx.def_path_str(target))
+            .clone();
+        let caller_module_def_path = def_paths
+            .entry(caller_module)
+            .or_insert_with(|| tcx.def_path_str(caller_module))
+            .clone();
+        index.insert(target_def_path, caller_module_def_path);
+    }
+    index
 }
 
 /// Build an active-HIR index of re-export occurrences.

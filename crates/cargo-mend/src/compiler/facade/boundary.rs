@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
@@ -36,17 +37,23 @@ pub struct ModuleSourceMap {
     modules_by_path:            HashMap<Vec<String>, LocalDefId>,
     structural_parents_by_file: HashMap<PathBuf, Vec<Vec<String>>>,
     crate_files:                HashSet<PathBuf>,
+    canonical_by_source_file:   HashMap<PathBuf, PathBuf>,
 }
 
 impl ModuleSourceMap {
     pub fn new(tcx: TyCtxt<'_>, source_cache: &SourceCache) -> Self {
+        let canonical_by_source_file: HashMap<PathBuf, PathBuf> = source_cache
+            .source_files()
+            .into_iter()
+            .map(|path| {
+                let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+                (path.to_path_buf(), canonical)
+            })
+            .collect();
         let mut module_sources = Self {
             structural_parents_by_file: source_cache.structural_parent_module_paths().clone(),
-            crate_files: source_cache
-                .source_files()
-                .into_iter()
-                .map(|path| fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()))
-                .collect(),
+            crate_files: canonical_by_source_file.values().cloned().collect(),
+            canonical_by_source_file,
             ..Self::default()
         };
         module_sources
@@ -84,12 +91,29 @@ impl ModuleSourceMap {
         }
     }
 
+    /// Canonical form of `source_file`, taken from the table built in `new`
+    /// when the path came from the `SourceCache`.
+    ///
+    /// The exposure walk calls `root_modules_for_file` once per evaluated item
+    /// per source file, so canonicalizing there runs `realpath` — one
+    /// `getattrlist` syscall per path component — in the innermost loop.
+    fn canonical_source_file<'path>(&'path self, source_file: &'path Path) -> Cow<'path, Path> {
+        self.canonical_by_source_file.get(source_file).map_or_else(
+            || {
+                Cow::Owned(
+                    fs::canonicalize(source_file).unwrap_or_else(|_| source_file.to_path_buf()),
+                )
+            },
+            |canonical| Cow::Borrowed(canonical.as_path()),
+        )
+    }
+
     pub fn root_modules_for_file(&self, tcx: TyCtxt<'_>, source_file: &Path) -> Vec<LocalDefId> {
-        let canonical_source_file =
-            fs::canonicalize(source_file).unwrap_or_else(|_| source_file.to_path_buf());
+        let canonical = self.canonical_source_file(source_file);
+        let canonical_source_file: &Path = canonical.as_ref();
         let root_modules = self
             .modules_by_file
-            .get(&canonical_source_file)
+            .get(canonical_source_file)
             .into_iter()
             .flatten()
             .copied()
@@ -98,18 +122,20 @@ impl ModuleSourceMap {
                     return true;
                 }
                 let parent: LocalDefId = tcx.parent_module_from_def_id(*module).into();
-                self.files_by_module
-                    .get(&parent)
-                    .is_none_or(|files| !files.contains(&canonical_source_file))
+                self.files_by_module.get(&parent).is_none_or(|files| {
+                    !files
+                        .iter()
+                        .any(|file| file.as_path() == canonical_source_file)
+                })
             })
             .collect::<Vec<_>>();
-        if !root_modules.is_empty() || !self.crate_files.contains(&canonical_source_file) {
+        if !root_modules.is_empty() || !self.crate_files.contains(canonical_source_file) {
             return root_modules;
         }
         let mut structural_roots = Vec::new();
         for parent_path in self
             .structural_parents_by_file
-            .get(&canonical_source_file)
+            .get(canonical_source_file)
             .into_iter()
             .flatten()
         {

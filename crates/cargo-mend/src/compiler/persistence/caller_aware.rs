@@ -78,7 +78,7 @@ mod tests {
     use crate::compiler::constants::FINDINGS_SCHEMA_VERSION;
     use crate::compiler::persistence::StoredFinding;
     use crate::compiler::persistence::StoredReport;
-    use crate::compiler::persistence::UseSite;
+    use crate::compiler::persistence::schema::UseSite;
     use crate::compiler::settings;
     use crate::config::DiagnosticCode;
     use crate::reporting::AllFeaturesCoverage;
