@@ -411,6 +411,230 @@ edition = "2024"
 }
 
 #[test]
+fn fix_pub_use_narrows_child_declared_with_pub_on_its_own_line() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "fix_pub_use_wrapped_pub_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/actor")).expect("create src/actor");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod actor;\n\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/actor/mod.rs"),
+        "mod child;\npub use child::SpawnStats;\n",
+    )
+    .expect("write actor mod");
+    fs::write(
+        temp.path().join("src/actor/child.rs"),
+        "pub\nstruct SpawnStats;\n",
+    )
+    .expect("write child");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix-pub-use")
+        .output()
+        .expect("run cargo-mend --fix-pub-use");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix-pub-use failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let child =
+        fs::read_to_string(temp.path().join("src/actor/child.rs")).expect("read fixed child");
+    assert_eq!(
+        child, "pub(super)\nstruct SpawnStats;\n",
+        "a `pub` with no trailing space on its line must still be narrowed"
+    );
+    let parent =
+        fs::read_to_string(temp.path().join("src/actor/mod.rs")).expect("read fixed parent");
+    assert!(
+        !parent.contains("pub use child::SpawnStats"),
+        "stale facade should have been removed: {parent}"
+    );
+}
+
+#[test]
+fn fix_pub_use_edits_the_intended_facade_when_two_share_a_line() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "fix_pub_use_shared_line_facade_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/actor")).expect("create src/actor");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod actor;\n\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/actor/mod.rs"),
+        "mod child;\npub use child::Alpha; pub use child::Beta;\n",
+    )
+    .expect("write actor mod");
+    fs::write(
+        temp.path().join("src/actor/child.rs"),
+        "pub struct Alpha;\npub struct Beta;\n",
+    )
+    .expect("write child");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix-pub-use")
+        .output()
+        .expect("run cargo-mend --fix-pub-use");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix-pub-use failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let child =
+        fs::read_to_string(temp.path().join("src/actor/child.rs")).expect("read fixed child");
+    assert!(
+        child.contains("pub(super) struct Alpha;"),
+        "first same-line facade should have been narrowed: {child}"
+    );
+    assert!(
+        child.contains("pub(super) struct Beta;"),
+        "second same-line facade should have been narrowed: {child}"
+    );
+    let parent =
+        fs::read_to_string(temp.path().join("src/actor/mod.rs")).expect("read fixed parent");
+    assert!(
+        !parent.contains("pub use child::"),
+        "both same-line facades should have been removed: {parent}"
+    );
+}
+
+#[test]
+fn fix_pub_use_skips_child_whose_finding_lost_cross_target_reconciliation() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "fix_pub_use_cross_target_suppression_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    // The lib root's `pub mod actor;` is what exposes the module to both
+    // targets; allowlist it so `review_pub_mod` does not fail the run before
+    // the pub-use fixer gets to it.
+    fs::write(
+        temp.path().join("mend.toml"),
+        "[visibility]\nallow_pub_mod = [\"src/lib.rs\"]\n",
+    )
+    .expect("write fixture visibility config");
+    fs::create_dir_all(temp.path().join("src/actor")).expect("create src/actor");
+    // The lib and the bin both compile `src/actor/child.rs`. Only the bin sees
+    // the facade as internal, so `apply_shared_source_intersection` drops the
+    // `suspicious_pub` finding that authorized the narrowing.
+    fs::write(temp.path().join("src/lib.rs"), "pub mod actor;\n").expect("write fixture lib root");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod actor;\n\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/actor/mod.rs"),
+        "mod child;\npub use child::SpawnStats;\n",
+    )
+    .expect("write actor mod");
+    let child_path = temp.path().join("src/actor/child.rs");
+    let child_source = "pub struct SpawnStats;\n";
+    fs::write(&child_path, child_source).expect("write child");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix-pub-use")
+        .output()
+        .expect("run cargo-mend --fix-pub-use");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix-pub-use failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert_stored_pub_use_fix_fact_exists(&temp);
+    assert_eq!(
+        fs::read_to_string(&child_path).expect("read child"),
+        child_source,
+        "a fact whose finding lost cross-target reconciliation must not be applied"
+    );
+    // An unchanged child alone does not prove the load-time prune: a
+    // `CandidateScreening::Skip` or an unresolved parent export also leaves the
+    // child alone, but both count into `PubUseNotice`'s `skipped_unsupported`
+    // and print the skip clause. A pruned fact never reaches the scan, so the
+    // notice must carry no skip clause at all.
+    let stderr = String::from_utf8(output.stderr).expect("decode stderr");
+    assert!(
+        stderr.contains("mend: no `pub use` fixes available"),
+        "the pruned fact should leave no pub-use fix candidates: {stderr}"
+    );
+    assert!(
+        !stderr.contains("unsupported `pub use` candidate"),
+        "the fact must be pruned at load, not skipped during the scan: {stderr}"
+    );
+    let parent =
+        fs::read_to_string(temp.path().join("src/actor/mod.rs")).expect("read parent module");
+    assert!(
+        parent.contains("pub use child::SpawnStats;"),
+        "the parent facade must survive alongside the unapplied child narrowing: {parent}"
+    );
+}
+
+/// Confirms the driver did persist a pub-use fix fact, so a test that then sees
+/// no edit is observing the load-time prune rather than a fact that was never
+/// written.
+fn assert_stored_pub_use_fix_fact_exists(temp: &TempDir) {
+    let findings_dir = temp.path().join("target/mend-findings");
+    let mut stored_fact_count = 0;
+    for entry in fs::read_dir(&findings_dir).expect("read stored findings directory") {
+        let path = entry.expect("read stored finding entry").path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+            continue;
+        }
+        let bytes = fs::read(&path).expect("read stored findings report");
+        let stored_report = serde_json::from_slice::<Value>(&bytes).expect("parse stored report");
+        stored_fact_count += stored_report
+            .get("pub_use_fix_facts")
+            .and_then(Value::as_array)
+            .expect("read stored pub-use fix facts")
+            .len();
+    }
+    assert!(
+        stored_fact_count > 0,
+        "fixture must persist a pub-use fix fact for the prune to discard"
+    );
+}
+
+#[test]
 fn fix_pub_use_rolls_back_on_failed_cargo_check() {
     let temp = tempdir().expect("create temp fixture dir");
 

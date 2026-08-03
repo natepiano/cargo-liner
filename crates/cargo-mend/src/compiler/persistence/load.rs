@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::Path;
@@ -7,6 +8,8 @@ use anyhow::Context;
 use anyhow::Result;
 use serde_json::from_str;
 
+use super::StoredFinding;
+use super::StoredPubUseFixFact;
 use super::StoredReport;
 use super::caller_aware;
 use super::intersection;
@@ -18,11 +21,37 @@ use crate::compiler::settings;
 use crate::reporting::AllFeaturesCoverage;
 use crate::reporting::CompilerWarningFacts;
 use crate::reporting::Finding;
+use crate::reporting::FixSupport;
 use crate::reporting::PubUseFixFact;
 use crate::reporting::Report;
 use crate::reporting::ReportFacts;
 use crate::reporting::ReportSummary;
 use crate::selection::Selection;
+
+/// The child declaration a `--fix pub-use` narrowing would rewrite.
+///
+/// The driver writes a `StoredPubUseFixFact` next to the `SuspiciousPub`
+/// finding that authorizes it, so both name the same declaration. The four
+/// suppression stages inside `reconcile_cross_target_reports` can drop that
+/// finding afterwards; a fact whose site no longer appears in
+/// `StoredReport::findings` would let the fixer apply a narrowing the
+/// cross-target analysis already rejected.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct PubUseNarrowingSite {
+    path:      String,
+    line:      usize,
+    item_name: String,
+}
+
+impl From<&StoredPubUseFixFact> for PubUseNarrowingSite {
+    fn from(fact: &StoredPubUseFixFact) -> Self {
+        Self {
+            path:      fact.child_path.clone(),
+            line:      fact.child_line,
+            item_name: fact.child_item_name.clone(),
+        }
+    }
+}
 
 pub fn load_report(
     findings_dir: &Path,
@@ -80,6 +109,7 @@ pub fn load_report(
     }
 
     reconcile_cross_target_reports(&mut matched_reports);
+    discard_fix_facts_for_suppressed_findings(&mut matched_reports);
 
     if matched_reports.is_empty() {
         all_features_coverage = AllFeaturesCoverage::default();
@@ -116,6 +146,32 @@ fn reconcile_cross_target_reports(reports: &mut [StoredReport]) {
     let callers = caller_aware::apply_caller_aware_suppression(reports);
     visibility_constraint::reconcile_visibility_constraints(reports, &callers);
     visibility_priority::apply_visibility_narrowing_priority(reports);
+}
+
+/// Drops every stored fix fact whose authorizing finding did not survive
+/// `reconcile_cross_target_reports`. Pruning happens once, at that boundary:
+/// the surviving finding set is settled the moment those four stages return,
+/// and the facts are still untouched here.
+fn discard_fix_facts_for_suppressed_findings(reports: &mut [StoredReport]) {
+    for report in reports {
+        let narrowing_sites: BTreeSet<PubUseNarrowingSite> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.fix_support == FixSupport::PubUse)
+            .filter_map(|finding| {
+                finding.item.as_deref().map(|item| PubUseNarrowingSite {
+                    path:      finding.path.clone(),
+                    line:      finding.line,
+                    // `StoredFinding::item` is a rendering; the fact stores the
+                    // bare name, so recover it the sanctioned way.
+                    item_name: StoredFinding::item_name(item).to_string(),
+                })
+            })
+            .collect();
+        report
+            .pub_use_fix_facts
+            .retain(|fact| narrowing_sites.contains(&PubUseNarrowingSite::from(fact)));
+    }
 }
 
 fn sort_and_dedup_findings(findings: &mut Vec<Finding>) {
@@ -511,12 +567,16 @@ mod tests {
     #[test]
     fn serialized_driver_report_loads_back_through_load_report() {
         let fixture = PersistenceFixture::new();
-        let finding = stored_finding(
-            DiagnosticCode::ForbiddenPubCrate,
+        // The fact rides with the finding that authorizes it: same file, same
+        // line, same item name.
+        let mut finding = stored_finding(
+            DiagnosticCode::SuspiciousPub,
             &fixture.crate_root,
-            "item",
-            1,
+            "Child",
+            2,
         );
+        finding.item = Some(StoredFinding::render_item("struct", "Child"));
+        finding.fix_support = FixSupport::PubUse;
         let mut report = fixture.report_with_findings(vec![finding]);
         report.pub_use_fix_facts.push(StoredPubUseFixFact {
             child_path:      fixture.crate_root.to_string_lossy().into_owned(),
@@ -540,6 +600,82 @@ mod tests {
         assert_eq!(loaded.findings[0].path, "src/lib.rs");
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].child_path, "src/lib.rs");
+    }
+
+    #[test]
+    fn suppressed_finding_leaves_no_applicable_pub_use_fix_fact() {
+        let fixture = PersistenceFixture::new();
+        let mut suspicious = stored_finding(
+            DiagnosticCode::SuspiciousPub,
+            &fixture.crate_root,
+            "Child",
+            2,
+        );
+        suspicious.item = Some(StoredFinding::render_item("struct", "Child"));
+        suspicious.fix_support = FixSupport::PubUse;
+        // `apply_visibility_narrowing_priority` drops a `suspicious_pub`
+        // finding that shares its path/line/column with an `unused_pub` one.
+        let unused = stored_finding(DiagnosticCode::UnusedPub, &fixture.crate_root, "Child", 2);
+        let mut report = fixture.report_with_findings(vec![suspicious, unused]);
+        report.pub_use_fix_facts.push(StoredPubUseFixFact {
+            child_path:      fixture.crate_root.to_string_lossy().into_owned(),
+            child_line:      2,
+            child_item_name: "Child".to_string(),
+            parent_path:     fixture.crate_root.to_string_lossy().into_owned(),
+            parent_line:     3,
+            child_module:    "child".to_string(),
+        });
+        fixture.write_report("suppressed.json", &report);
+
+        let loaded = load_report(
+            &fixture.findings_dir,
+            &fixture.selection(),
+            CONFIG_FINGERPRINT,
+        )
+        .expect("load report");
+
+        assert_eq!(loaded.findings.len(), 1);
+        assert_eq!(
+            loaded.findings[0].diagnostic_code,
+            DiagnosticCode::UnusedPub
+        );
+        assert!(
+            loaded.facts.pub_use_fix_facts.iter().next().is_none(),
+            "a suppressed finding must not leave its pub-use fix fact behind"
+        );
+    }
+
+    #[test]
+    fn surviving_finding_keeps_its_pub_use_fix_fact() {
+        let fixture = PersistenceFixture::new();
+        let mut suspicious = stored_finding(
+            DiagnosticCode::SuspiciousPub,
+            &fixture.crate_root,
+            "Child",
+            2,
+        );
+        suspicious.item = Some(StoredFinding::render_item("struct", "Child"));
+        suspicious.fix_support = FixSupport::PubUse;
+        let mut report = fixture.report_with_findings(vec![suspicious]);
+        report.pub_use_fix_facts.push(StoredPubUseFixFact {
+            child_path:      fixture.crate_root.to_string_lossy().into_owned(),
+            child_line:      2,
+            child_item_name: "Child".to_string(),
+            parent_path:     fixture.crate_root.to_string_lossy().into_owned(),
+            parent_line:     3,
+            child_module:    "child".to_string(),
+        });
+        fixture.write_report("surviving.json", &report);
+
+        let loaded = load_report(
+            &fixture.findings_dir,
+            &fixture.selection(),
+            CONFIG_FINGERPRINT,
+        )
+        .expect("load report");
+
+        assert_eq!(loaded.findings.len(), 1);
+        assert_eq!(loaded.facts.pub_use_fix_facts.iter().count(), 1);
     }
 
     fn stored_finding(

@@ -216,12 +216,20 @@ impl VisibilityConstraintKey {
         }
     }
 
-    fn matches_finding(&self, package_root: &str, finding: &StoredFinding) -> bool {
-        self.package_root == package_root
-            && self.diagnostic_code == finding.diagnostic_code
-            && self.source.path == finding.path
-            && self.source.line == finding.line
-            && self.source.column == finding.column
+    /// The key a finding would carry if it were a constraint, so a finding can
+    /// be matched against constraints by lookup instead of by scanning. A
+    /// constraint and a finding correspond exactly when their package root,
+    /// diagnostic code, and source position agree, which is precisely this key.
+    fn for_finding(package_root: &str, finding: &StoredFinding) -> Self {
+        Self {
+            package_root:    package_root.to_string(),
+            diagnostic_code: finding.diagnostic_code,
+            source:          StoredVisibilitySource {
+                path:   finding.path.clone(),
+                line:   finding.line,
+                column: finding.column,
+            },
+        }
     }
 }
 
@@ -443,14 +451,23 @@ fn caller_repair(
 pub(super) fn reconcile_visibility_constraints(reports: &mut [StoredReport], callers: &CallerMap) {
     let mut groups: BTreeMap<VisibilityConstraintKey, VisibilityConstraintGroup> = BTreeMap::new();
     for (report_index, report) in reports.iter().enumerate() {
+        // Index the findings once per report rather than searching them for
+        // every constraint: both counts grow with project size, so the search
+        // costs the product of the two.
+        let mut findings_by_key: BTreeMap<VisibilityConstraintKey, &StoredFinding> =
+            BTreeMap::new();
+        for finding in &report.findings {
+            findings_by_key
+                .entry(VisibilityConstraintKey::for_finding(
+                    &report.package_root,
+                    finding,
+                ))
+                .or_insert(finding);
+        }
         for constraint in &report.visibility_constraints {
             let key = VisibilityConstraintKey::new(&report.package_root, constraint);
             let finding = if constraint.outcome == StoredConstraintOutcome::Finding {
-                report
-                    .findings
-                    .iter()
-                    .find(|finding| key.matches_finding(&report.package_root, finding))
-                    .cloned()
+                findings_by_key.get(&key).copied().cloned()
             } else {
                 None
             };
@@ -469,9 +486,10 @@ pub(super) fn reconcile_visibility_constraints(reports: &mut [StoredReport], cal
     for report in reports.iter_mut() {
         let package_root = report.package_root.clone();
         report.findings.retain(|finding| {
-            !reconciled_keys
-                .iter()
-                .any(|key| key.matches_finding(&package_root, finding))
+            !reconciled_keys.contains(&VisibilityConstraintKey::for_finding(
+                &package_root,
+                finding,
+            ))
         });
     }
 

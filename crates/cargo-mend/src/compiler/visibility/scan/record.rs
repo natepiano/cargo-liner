@@ -29,6 +29,7 @@ use crate::compiler::persistence::StoredCallerReconciliation;
 use crate::compiler::persistence::StoredConstraintOutcome;
 use crate::compiler::persistence::StoredExactBoundaryAcceptance;
 use crate::compiler::persistence::StoredFacadeConstraint;
+use crate::compiler::persistence::StoredFinding;
 use crate::compiler::persistence::StoredPubUseFixFact;
 use crate::compiler::persistence::StoredVisibilityConstraint;
 use crate::compiler::persistence::StoredVisibilityDeclaration;
@@ -212,7 +213,7 @@ fn maybe_record_unused_pub(
         FindingParams {
             severity:                Severity::Warning,
             diagnostic_code:         DiagnosticCode::UnusedPub,
-            item:                    Some(format!("{kind_label} {name}")),
+            item:                    Some(StoredFinding::render_item(kind_label, name)),
             message:                 format!(
                 "{kind_label} is not used outside its defining module"
             ),
@@ -1524,7 +1525,7 @@ fn record_narrow_to_pub_crate(
         FindingParams {
             severity:                Severity::Warning,
             diagnostic_code:         DiagnosticCode::NarrowToPubCrate,
-            item:                    Some(format!("{kind_label} {name}")),
+            item:                    Some(StoredFinding::render_item(kind_label, name)),
             message:                 String::from(message),
             suggestion:              Some(policy::consider_using("pub(crate)")),
             fix_support:             FixSupport::NarrowToPubCrate,
@@ -1758,12 +1759,9 @@ fn record_internal_parent_facade_review(
         FindingParams {
             severity: Severity::Warning,
             diagnostic_code: DiagnosticCode::InternalParentPubUseFacade,
-            item: input.name.map(|name| {
-                facade_use.map_or_else(
-                    || format!("re-export {name}"),
-                    |syntax| format!("{syntax} {name}"),
-                )
-            }),
+            item: input
+                .name
+                .map(|name| StoredFinding::render_item(facade_use.unwrap_or("re-export"), name)),
             message: facade_use.map_or_else(
                 || String::from("parent module re-export is acting as an internal facade"),
                 |syntax| format!("parent module `{syntax}` is acting as an internal facade"),
@@ -1837,7 +1835,9 @@ fn record_suspicious_pub_warning(
         FindingParams {
             severity: Severity::Warning,
             diagnostic_code: DiagnosticCode::SuspiciousPub,
-            item: input.name.map(|name| format!("{kind_label} {name}")),
+            item: input
+                .name
+                .map(|name| StoredFinding::render_item(kind_label, name)),
             message,
             suggestion: Some(suggestion),
             fix_support,

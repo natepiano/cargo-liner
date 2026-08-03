@@ -27,6 +27,7 @@ use super::scan::ItemInfo;
 use super::scan::VisibilityContext;
 use super::source;
 use crate::compiler::persistence::FindingsSink;
+use crate::compiler::persistence::StoredFinding;
 use crate::config::DiagnosticCode;
 use crate::reporting::FixSupport;
 use crate::reporting::Severity;
@@ -139,7 +140,7 @@ fn check_field(
         FindingParams {
             severity:                Severity::Warning,
             diagnostic_code:         DiagnosticCode::FieldVisibilityWiderThanType,
-            item:                    Some(format!("field {field_name}")),
+            item:                    Some(StoredFinding::render_item("field", &field_name)),
             message:                 format_message(
                 &field_visibility_text,
                 &type_visibility_annotation_text,

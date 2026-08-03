@@ -54,6 +54,11 @@ pub struct StoredFinding {
     pub column:                  usize,
     pub highlight_len:           usize,
     pub source_line:             String,
+    /// A rendering of the item this finding is about, not structured data:
+    /// `"{kind_label} {name}"`. Build it with [`StoredFinding::render_item`]
+    /// and read the bare name back with [`StoredFinding::item_name`] — those
+    /// two are the only sanctioned way to cross this format, so a change to
+    /// one side cannot silently break a consumer of the other.
     pub item:                    Option<String>,
     pub message:                 String,
     pub suggestion:              Option<String>,
@@ -78,6 +83,19 @@ pub struct StoredFinding {
     /// this scope.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub narrower_scope_def_path: Option<String>,
+}
+
+impl StoredFinding {
+    /// Composes [`StoredFinding::item`] from the pieces every producer has on
+    /// hand: the item's kind label (`"struct"`, `"fn"`, `"field"`, …) and its
+    /// name.
+    pub fn render_item(kind_label: &str, name: &str) -> String { format!("{kind_label} {name}") }
+
+    /// Recovers the bare item name from an [`StoredFinding::item`] rendering
+    /// built by [`StoredFinding::render_item`]. `load::discard_fix_facts_for_suppressed_findings`
+    /// joins findings to `StoredPubUseFixFact::child_item_name` through this,
+    /// so it must stay the exact inverse of `render_item`.
+    pub fn item_name(item: &str) -> &str { item.rsplit_once(' ').map_or(item, |(_, name)| name) }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

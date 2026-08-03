@@ -6,7 +6,6 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use anyhow::Result;
-use anyhow::bail;
 
 use super::parent_boundary;
 use super::parent_boundary::ParentBoundaryKey;
@@ -48,7 +47,7 @@ struct PubUseAnalysis {
 }
 
 enum CandidateScreening {
-    Accept(PubUseCandidate),
+    Accept(NarrowablePubUseCandidate),
     Skip,
 }
 
@@ -57,9 +56,28 @@ enum CandidateExportMatch {
     Mismatch,
 }
 
+/// Byte range of a bare `pub` keyword inside a child source file — exactly the
+/// text `--fix-pub-use` replaces with `pub(super)`.
+struct BarePubKeyword {
+    start: usize,
+    end:   usize,
+}
+
 enum ChildVisibilityState {
-    PlainPub,
-    AlreadyNarrowed,
+    /// The declaration is annotated bare `pub`, so narrowing it to
+    /// `pub(super)` is a single keyword rewrite.
+    PlainPub(BarePubKeyword),
+    /// The declaration is already reachable from less than bare `pub` — either
+    /// a restricted annotation (`pub(crate)`, `pub(super)`, `pub(in …)`) or no
+    /// `pub` at all. The pub-use fixer never rewrites those.
+    NarrowerThanPub,
+}
+
+/// A candidate whose child declaration was confirmed rewritable, carrying the
+/// keyword range the narrowing edit will replace.
+struct NarrowablePubUseCandidate {
+    candidate:        PubUseCandidate,
+    bare_pub_keyword: BarePubKeyword,
 }
 
 pub(crate) fn scan_selection(selection: &Selection, report: &Report) -> Result<PubUseFixScan> {
@@ -157,10 +175,13 @@ fn analyze_pub_use_candidates(facts: &[PubUseFixFact]) -> Result<PubUseAnalysis>
             target_item_path,
         };
         match screen_candidate(candidate, &fact.child_item_name, &child_source)? {
-            CandidateScreening::Accept(candidate) => {
-                supported_plans.push(build_validated_plan(candidate, parent_boundary)?);
+            CandidateScreening::Accept(narrowable) => {
+                supported_plans.push(build_validated_plan(narrowable, parent_boundary));
             },
-            CandidateScreening::Skip => {},
+            // A screened-out candidate still reaches the user as a skip: the
+            // finding advertised `FixSupport::PubUse`, so silently dropping it
+            // would report "applied 0 pub use fix(es)" with no explanation.
+            CandidateScreening::Skip => skipped += 1,
         }
     }
 
@@ -180,26 +201,35 @@ fn screen_candidate(
     } else {
         CandidateExportMatch::Mismatch
     };
-    let child_visibility = if line_contains_plain_pub(child_source, candidate.child_line)? {
-        ChildVisibilityState::PlainPub
-    } else {
-        ChildVisibilityState::AlreadyNarrowed
-    };
+    let child_visibility = child_visibility_state(child_source, candidate.child_line)?;
 
     Ok(match (export_match, child_visibility) {
-        (CandidateExportMatch::Matches, ChildVisibilityState::PlainPub) => {
-            CandidateScreening::Accept(candidate)
+        (CandidateExportMatch::Matches, ChildVisibilityState::PlainPub(bare_pub_keyword)) => {
+            CandidateScreening::Accept(NarrowablePubUseCandidate {
+                candidate,
+                bare_pub_keyword,
+            })
         },
         _ => CandidateScreening::Skip,
     })
 }
 
 fn build_validated_plan(
-    candidate: PubUseCandidate,
+    narrowable: NarrowablePubUseCandidate,
     parent_boundary: ParentBoundaryKey,
-) -> Result<ValidatedPubUsePlan> {
-    let child_narrowing = build_child_pub_super_fix(&candidate)?;
-    Ok(ValidatedPubUsePlan {
+) -> ValidatedPubUsePlan {
+    let NarrowablePubUseCandidate {
+        candidate,
+        bare_pub_keyword,
+    } = narrowable;
+    let child_narrowing = UseFix {
+        path:         candidate.child_file.clone(),
+        start:        bare_pub_keyword.start,
+        end:          bare_pub_keyword.end,
+        replacement:  "pub(super)".to_string(),
+        import_group: None,
+    };
+    ValidatedPubUsePlan {
         parent_boundary,
         child_file: candidate.child_file,
         child_module: candidate.child_module,
@@ -207,34 +237,48 @@ fn build_validated_plan(
         parent_module_path: candidate.parent_module_path,
         target_item_path: candidate.target_item_path,
         child_narrowing,
-    })
+    }
 }
 
-fn build_child_pub_super_fix(candidate: &PubUseCandidate) -> Result<UseFix> {
-    let source = fs::read_to_string(&candidate.child_file)
-        .with_context(|| format!("failed to read {}", candidate.child_file.display()))?;
-    let line_span = validated_plan::line_span(&source, candidate.child_line)
-        .context("failed to compute child visibility line span")?;
-    let line_text = &source[line_span.0..line_span.1];
-    let Some(relative_start) = line_text.find("pub ") else {
-        bail!(
-            "child item line {} does not contain a plain `pub ` prefix",
-            candidate.child_line
-        );
-    };
-    Ok(UseFix {
-        path:         candidate.child_file.clone(),
-        start:        line_span.0 + relative_start,
-        end:          line_span.0 + relative_start + "pub ".len(),
-        replacement:  "pub(super) ".to_string(),
-        import_group: None,
-    })
-}
-
-fn line_contains_plain_pub(source: &str, line: usize) -> Result<bool> {
+fn child_visibility_state(source: &str, line: usize) -> Result<ChildVisibilityState> {
     let line_span = validated_plan::line_span(source, line)
         .context("failed to compute child item line span")?;
-    Ok(source[line_span.0..line_span.1].contains("pub "))
+    Ok(
+        find_bare_pub_keyword(&source[line_span.0..line_span.1], line_span.0)
+            .map_or(ChildVisibilityState::NarrowerThanPub, |bare_pub_keyword| {
+                ChildVisibilityState::PlainPub(bare_pub_keyword)
+            }),
+    )
+}
+
+/// Locates a `pub` keyword that stands alone as the whole visibility
+/// annotation. A following `(` means the declaration is already restricted,
+/// whether it is written tight (`pub(crate)`) or spaced (`pub (crate)`), and
+/// nothing at all after the keyword means the item body starts on the next
+/// line — `pub\nstruct Thing;` is still a bare `pub` declaration.
+fn find_bare_pub_keyword(line_text: &str, line_start: usize) -> Option<BarePubKeyword> {
+    let mut search_from = 0usize;
+    while let Some(offset) = line_text[search_from..].find("pub") {
+        let start = search_from + offset;
+        let end = start + "pub".len();
+        let extends_a_longer_identifier = line_text[..start]
+            .chars()
+            .next_back()
+            .is_some_and(|character| character.is_alphanumeric() || character == '_');
+        let keyword_ends_here = line_text[end..]
+            .chars()
+            .next()
+            .is_none_or(char::is_whitespace);
+        let restriction_follows = line_text[end..].trim_start().starts_with('(');
+        if !extends_a_longer_identifier && keyword_ends_here && !restriction_follows {
+            return Some(BarePubKeyword {
+                start: line_start + start,
+                end:   line_start + end,
+            });
+        }
+        search_from = end;
+    }
+    None
 }
 
 fn group_parent_pub_use_plans(

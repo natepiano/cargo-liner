@@ -97,18 +97,21 @@ pub(super) fn resolve_parent_pub_use_export(
         if !(start_line..=end_line).contains(&line) {
             continue;
         }
-        if parent_pub_use_exports_item(&item_use.tree, child_module_name, item_name) {
-            let (item_start, item_end) = item_use_byte_range(source, &offsets, &item_use);
-            return Ok(Some(ParentExportResolution {
-                exported_name:   item_name.to_string(),
-                parent_boundary: ParentBoundaryKey {
-                    parent_module: PathBuf::new(),
-                    item_start,
-                    item_end,
-                },
-            }));
+        if !parent_pub_use_exports_item(&item_use.tree, child_module_name, item_name) {
+            // Two `use` declarations can share one physical line, so keep
+            // scanning the rest of the line rather than treating the first
+            // textual match as authoritative.
+            continue;
         }
-        return Ok(None);
+        let (item_start, item_end) = item_use_byte_range(source, &offsets, &item_use);
+        return Ok(Some(ParentExportResolution {
+            exported_name:   item_name.to_string(),
+            parent_boundary: ParentBoundaryKey {
+                parent_module: PathBuf::new(),
+                item_start,
+                item_end,
+            },
+        }));
     }
     Ok(None)
 }
