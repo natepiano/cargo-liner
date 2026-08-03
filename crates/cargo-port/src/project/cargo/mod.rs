@@ -47,4 +47,5 @@ pub(crate) use workspace_index::CargoWorkspaceIndexRevision;
 pub(crate) use workspace_index::CargoWorkspaceIndexRevisionState;
 pub(crate) use workspace_index::CargoWorkspaceView;
 pub(crate) use workspace_index::ProjectListRevision;
+pub(crate) use workspace_index::VisibleProjectWorkspaceOwnership;
 pub(crate) use workspace_index::VisibleTargetWorkspaceOwnership;

@@ -130,6 +130,14 @@ impl App {
         // The workspace metadata is authoritative.
         self.project_list
             .apply_cargo_fields_from_workspace_metadata(&workspace_metadata);
+        // Publish the accepted metadata before anything below resolves a
+        // monitor scope. `sync_selected_project` resolves one, so upserting
+        // after it would resolve against the revision this call replaces and
+        // then rebuild the workspace index a second time to correct it.
+        let metadata_store = self.scan.metadata_store_handle();
+        if let Ok(mut store) = metadata_store.lock() {
+            store.upsert(workspace_metadata);
+        }
         if tree_changed {
             self.panes.clear_for_tree_change();
             self.project_list.mark_visible_ownership_changed();
@@ -142,9 +150,7 @@ impl App {
             }
             self.sync_selected_project();
         }
-        if let Ok(mut store) = self.scan.metadata_store().lock() {
-            store.upsert(workspace_metadata);
-        }
+        self.refresh_compile_monitor_scope_if_on();
         if needs_out_of_tree_walk {
             scan::spawn_out_of_tree_target_walk(
                 &self.net.http_client.handle,

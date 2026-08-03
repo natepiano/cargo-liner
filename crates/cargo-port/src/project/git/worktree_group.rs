@@ -107,6 +107,21 @@ impl WorktreeGroup {
         self.iter_entries().map(ProjectFields::path)
     }
 
+    /// Checkout roots of entries whose `Visibility` is `Visible`.
+    ///
+    /// Narrower than the group's live entries: `live_entry_count`,
+    /// `single_live`, and `renders_as_group` count `Deleted` entries as live,
+    /// and `emit_worktree_group` emits a `VisibleRow::WorktreeEntry` for them.
+    /// A monitor scope excludes them because a deleted checkout path no longer
+    /// canonicalizes, which would make the whole group scope unresolved.
+    pub(crate) fn represented_visible_checkout_roots(
+        &self,
+    ) -> impl Iterator<Item = &AbsolutePath> + '_ {
+        self.iter_entries()
+            .filter(|entry| entry.visibility() == Visibility::Visible)
+            .map(ProjectFields::path)
+    }
+
     /// Iterate the visibility of every entry (primary + linked) in canonical
     /// order.
     fn iter_visibility(&self) -> impl Iterator<Item = Visibility> + '_ {

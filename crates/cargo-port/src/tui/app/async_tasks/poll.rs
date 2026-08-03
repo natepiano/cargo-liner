@@ -26,6 +26,7 @@ impl App {
         let mut msg_count = 0;
         let started = Instant::now();
         let mut stats = PollBackgroundStats::default();
+        let project_list_revision_before = self.project_list.revision();
 
         while msg_count < MAX_MSGS_PER_FRAME {
             let Ok(msg) = self.background.background_receiver().try_recv() else {
@@ -53,6 +54,14 @@ impl App {
             self.maybe_priority_fetch();
         }
         stats.rebuild_status = rebuild_status;
+
+        // Background handlers can advance `ProjectList::revision` without
+        // routing through `sync_selected_project` (discovery, refresh, disk,
+        // and submodule mutations), so re-resolve the enabled monitor scope
+        // whenever this batch changed visible ownership.
+        if self.project_list.revision() != project_list_revision_before {
+            self.refresh_compile_monitor_scope_if_on();
+        }
 
         let elapsed = started.elapsed();
         if elapsed.as_millis() >= SLOW_BG_BATCH_MS {

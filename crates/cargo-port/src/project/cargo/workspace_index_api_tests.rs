@@ -27,6 +27,7 @@ use crate::project::PackageRecord;
 use crate::project::ProjectListRevision;
 use crate::project::PublishPolicy;
 use crate::project::TargetRecord;
+use crate::project::VisibleProjectWorkspaceOwnership;
 use crate::project::VisibleTargetWorkspaceOwnership;
 use crate::project::WorkspaceMetadata;
 use crate::project::WorkspaceMetadataStore;
@@ -63,6 +64,56 @@ fn shared_workspace_index_surface_exposes_resolutions_identities_and_revision_co
     assert_workspace_root_resolutions(workspace, &fixture)?;
     assert_package_identities(workspace, &fixture)?;
     assert_live_target_directory_resolution(workspace, &fixture.target_directory)?;
+    Ok(())
+}
+
+#[test]
+fn project_scope_queries_preserve_exact_and_ambiguous_workspace_ownership() -> TestResult {
+    let temp_dir = tempfile::tempdir()?;
+    let first_checkout_root = temp_dir.path().join("first-checkout");
+    let second_checkout_root = temp_dir.path().join("second-checkout");
+    let shared_workspace_root = temp_dir.path().join("shared-workspace");
+    fs::create_dir_all(&first_checkout_root)?;
+    fs::create_dir_all(&second_checkout_root)?;
+    fs::create_dir_all(&shared_workspace_root)?;
+    let mut workspace_metadata_store = WorkspaceMetadataStore::new();
+    workspace_metadata_store.upsert(scope_workspace_metadata(
+        &first_checkout_root,
+        &shared_workspace_root,
+    ));
+    workspace_metadata_store.upsert(scope_workspace_metadata(
+        &second_checkout_root,
+        &shared_workspace_root,
+    ));
+    let cargo_workspace_index = CargoWorkspaceIndex::from_metadata_store(
+        &workspace_metadata_store,
+        ProjectListRevision::default(),
+    );
+
+    assert!(matches!(
+        cargo_workspace_index.workspace_for_visible_project(&AbsolutePath::from(
+            first_checkout_root.as_path()
+        )),
+        VisibleProjectWorkspaceOwnership::Indexed(workspace)
+            if workspace.declared_checkout_root_path().as_path() == first_checkout_root
+    ));
+    assert!(matches!(
+        cargo_workspace_index.workspace_for_workspace_root(&AbsolutePath::from(
+            first_checkout_root.as_path()
+        )),
+        VisibleProjectWorkspaceOwnership::Indexed(workspace)
+            if workspace.declared_checkout_root_path().as_path() == first_checkout_root
+    ));
+    assert!(matches!(
+        cargo_workspace_index
+            .workspace_for_visible_project(&AbsolutePath::from(shared_workspace_root.as_path())),
+        VisibleProjectWorkspaceOwnership::Ambiguous
+    ));
+    assert!(matches!(
+        cargo_workspace_index
+            .workspace_for_workspace_root(&AbsolutePath::from(shared_workspace_root.as_path())),
+        VisibleProjectWorkspaceOwnership::Ambiguous
+    ));
     Ok(())
 }
 
@@ -308,5 +359,26 @@ fn package_record(
             required_features: Vec::new(),
         }],
         publish:       PublishPolicy::Any,
+    }
+}
+
+fn scope_workspace_metadata(
+    checkout_root: &std::path::Path,
+    cargo_workspace_root: &std::path::Path,
+) -> WorkspaceMetadata {
+    WorkspaceMetadata {
+        declared_checkout_root:   AbsolutePath::from(checkout_root),
+        cargo_workspace_root:     AbsolutePath::from(cargo_workspace_root),
+        target_directory:         AbsolutePath::from(checkout_root.join("target")),
+        packages:                 HashMap::new(),
+        fingerprint:              ManifestFingerprint {
+            manifest:       FileStamp {
+                content_hash: [0_u8; 32],
+            },
+            lockfile:       None,
+            rust_toolchain: None,
+            configs:        BTreeMap::new(),
+        },
+        out_of_tree_target_bytes: None,
     }
 }

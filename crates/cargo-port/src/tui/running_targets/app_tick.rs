@@ -20,7 +20,7 @@ use crate::process_observation::ProcessRefreshResultPoll;
 use crate::process_observation::ProcessRefreshResultReceiver;
 use crate::project::AbsolutePath;
 use crate::project::CanonicalPathResolution;
-use crate::project::CargoWorkspaceIndexRevisionState;
+use crate::project::CargoWorkspaceIndex;
 use crate::project::CargoWorkspaceView;
 use crate::project::VisibleTargetWorkspaceOwnership;
 use crate::tui::app::App;
@@ -29,6 +29,7 @@ use crate::tui::panes;
 use crate::tui::panes::RunTargetKind;
 use crate::tui::panes::TargetEntry;
 use crate::tui::startup_services::StartupEffect;
+use crate::tui::workspace_index::WorkspaceIndexReadiness;
 
 /// Whether the foreground tick received one completed observer refresh and
 /// therefore has an observer duration to instrument.
@@ -37,13 +38,6 @@ pub(crate) enum ObserverRefreshTiming {
     #[default]
     NoCompletedRefresh,
     Completed(Duration),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum WorkspaceIndexRefreshState {
-    Current,
-    RetainedLastAccepted,
-    Uninitialized,
 }
 
 /// Owned Running Targets attribution for one project or workspace. The value
@@ -157,101 +151,86 @@ impl App {
         {
             self.running_target_attribution_collection_count += 1;
         }
-        let workspace_index_refresh_state = self.refresh_cargo_workspace_index();
-        self.collect_running_target_attributions_with_index_refresh_state(
-            workspace_index_refresh_state,
-        )
-    }
-
-    fn collect_running_target_attributions_with_index_refresh_state(
-        &self,
-        workspace_index_refresh_state: WorkspaceIndexRefreshState,
-    ) -> Vec<OwnedRunningTargetProjectAttribution> {
         let visible_entries = self
             .panes
             .targets
             .content()
             .map(panes::build_target_list_from_data)
             .unwrap_or_default();
-        match workspace_index_refresh_state {
-            WorkspaceIndexRefreshState::Current
-            | WorkspaceIndexRefreshState::RetainedLastAccepted => {
-                self.collect_indexed_running_target_attributions(visible_entries)
+        let workspace_index_readiness = self.workspace_index_readiness();
+        Self::collect_running_target_attributions_with_index_readiness(
+            visible_entries,
+            workspace_index_readiness,
+        )
+    }
+
+    fn collect_running_target_attributions_with_index_readiness(
+        visible_entries: Vec<TargetEntry>,
+        workspace_index_readiness: WorkspaceIndexReadiness<'_>,
+    ) -> Vec<OwnedRunningTargetProjectAttribution> {
+        match workspace_index_readiness {
+            WorkspaceIndexReadiness::Current {
+                cargo_workspace_index,
+            }
+            | WorkspaceIndexReadiness::RetainedLastAccepted {
+                cargo_workspace_index,
+            } => {
+                collect_indexed_running_target_attributions(cargo_workspace_index, visible_entries)
             },
-            WorkspaceIndexRefreshState::Uninitialized => {
+            WorkspaceIndexReadiness::Uninitialized => {
                 collect_unindexed_visible_target_attributions(visible_entries)
             },
         }
     }
+}
 
-    fn refresh_cargo_workspace_index(&mut self) -> WorkspaceIndexRefreshState {
-        let Ok(metadata_store) = self.scan.metadata_store().lock() else {
-            return match self.cargo_workspace_index.revision() {
-                CargoWorkspaceIndexRevisionState::Accepted(_) => {
-                    WorkspaceIndexRefreshState::RetainedLastAccepted
-                },
-                CargoWorkspaceIndexRevisionState::Uninitialized => {
-                    WorkspaceIndexRefreshState::Uninitialized
-                },
-            };
-        };
-        self.cargo_workspace_index
-            .rebuild_if_changed(&metadata_store, self.project_list.revision());
-        WorkspaceIndexRefreshState::Current
-    }
+fn collect_indexed_running_target_attributions(
+    cargo_workspace_index: &CargoWorkspaceIndex,
+    visible_entries: Vec<TargetEntry>,
+) -> Vec<OwnedRunningTargetProjectAttribution> {
+    let mut indexed_project_attributions: Vec<_> = cargo_workspace_index
+        .workspaces()
+        .map(|workspace| IndexedRunningTargetProjectAttribution {
+            workspace,
+            project_attribution: OwnedRunningTargetProjectAttribution::from_workspace(workspace),
+        })
+        .collect();
+    let mut unindexed_project_attributions = Vec::new();
 
-    fn collect_indexed_running_target_attributions(
-        &self,
-        visible_entries: Vec<TargetEntry>,
-    ) -> Vec<OwnedRunningTargetProjectAttribution> {
-        let mut indexed_project_attributions: Vec<_> = self
-            .cargo_workspace_index
-            .workspaces()
-            .map(|workspace| IndexedRunningTargetProjectAttribution {
-                workspace,
-                project_attribution: OwnedRunningTargetProjectAttribution::from_workspace(
-                    workspace,
-                ),
-            })
-            .collect();
-        let mut unindexed_project_attributions = Vec::new();
-
-        for entry in visible_entries {
-            match self
-                .cargo_workspace_index
-                .workspace_for_visible_target(&entry.src_path, &entry.project_path)
-            {
-                VisibleTargetWorkspaceOwnership::Indexed(workspace) => {
-                    if let Some(indexed_project_attribution) = indexed_project_attributions
-                        .iter_mut()
-                        .find(|candidate| std::ptr::eq(candidate.workspace, workspace))
-                    {
-                        indexed_project_attribution
-                            .project_attribution
-                            .add_visible_target(entry);
-                    } else {
-                        let mut project_attribution =
-                            OwnedRunningTargetProjectAttribution::from_workspace(workspace);
-                        project_attribution.add_visible_target(entry);
-                        indexed_project_attributions.push(IndexedRunningTargetProjectAttribution {
-                            workspace,
-                            project_attribution,
-                        });
-                    }
-                },
-                VisibleTargetWorkspaceOwnership::Ambiguous
-                | VisibleTargetWorkspaceOwnership::NotIndexed => {
-                    add_unindexed_visible_target(&mut unindexed_project_attributions, entry);
-                },
-            }
+    for entry in visible_entries {
+        match cargo_workspace_index
+            .workspace_for_visible_target(&entry.src_path, &entry.project_path)
+        {
+            VisibleTargetWorkspaceOwnership::Indexed(workspace) => {
+                if let Some(indexed_project_attribution) = indexed_project_attributions
+                    .iter_mut()
+                    .find(|candidate| std::ptr::eq(candidate.workspace, workspace))
+                {
+                    indexed_project_attribution
+                        .project_attribution
+                        .add_visible_target(entry);
+                } else {
+                    let mut project_attribution =
+                        OwnedRunningTargetProjectAttribution::from_workspace(workspace);
+                    project_attribution.add_visible_target(entry);
+                    indexed_project_attributions.push(IndexedRunningTargetProjectAttribution {
+                        workspace,
+                        project_attribution,
+                    });
+                }
+            },
+            VisibleTargetWorkspaceOwnership::Ambiguous
+            | VisibleTargetWorkspaceOwnership::NotIndexed => {
+                add_unindexed_visible_target(&mut unindexed_project_attributions, entry);
+            },
         }
-
-        indexed_project_attributions
-            .into_iter()
-            .map(|indexed_project_attribution| indexed_project_attribution.project_attribution)
-            .chain(unindexed_project_attributions)
-            .collect()
     }
+
+    indexed_project_attributions
+        .into_iter()
+        .map(|indexed_project_attribution| indexed_project_attribution.project_attribution)
+        .chain(unindexed_project_attributions)
+        .collect()
 }
 
 impl OwnedRunningTargetProjectAttribution {
@@ -1344,19 +1323,15 @@ mod tests {
         let _ = app.collect_running_target_attributions();
         poison_metadata_store(&app);
 
-        let workspace_index_refresh_state = app.refresh_cargo_workspace_index();
-        let project_attributions = app
-            .collect_running_target_attributions_with_index_refresh_state(
-                workspace_index_refresh_state,
-            );
+        assert!(matches!(
+            app.workspace_index_readiness(),
+            WorkspaceIndexReadiness::RetainedLastAccepted { .. }
+        ));
+        let project_attributions = app.collect_running_target_attributions();
         let project_attribution =
             attribution_for_target_directory(&project_attributions, &target_directory);
         let key = (RunTargetKind::Example, "metadata-only".to_string());
 
-        assert_eq!(
-            workspace_index_refresh_state,
-            WorkspaceIndexRefreshState::RetainedLastAccepted
-        );
         assert_eq!(project_attributions.len(), 1);
         assert_eq!(
             project_attribution.fallback_owner_root,
@@ -1412,16 +1387,12 @@ mod tests {
         app.cargo_workspace_index = crate::project::CargoWorkspaceIndex::default();
         poison_metadata_store(&app);
 
-        let workspace_index_refresh_state = app.refresh_cargo_workspace_index();
-        let project_attributions = app
-            .collect_running_target_attributions_with_index_refresh_state(
-                workspace_index_refresh_state,
-            );
+        assert!(matches!(
+            app.workspace_index_readiness(),
+            WorkspaceIndexReadiness::Uninitialized
+        ));
+        let project_attributions = app.collect_running_target_attributions();
 
-        assert_eq!(
-            workspace_index_refresh_state,
-            WorkspaceIndexRefreshState::Uninitialized
-        );
         assert_eq!(project_attributions.len(), 1);
         assert_eq!(
             project_attributions[0].executable_match_target_directory,

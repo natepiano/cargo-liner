@@ -50,6 +50,8 @@ use crate::scan::BackgroundMsg;
 use crate::scan::ExcludeDirs;
 use crate::tui::background::Background;
 use crate::tui::background::BackgroundChannels;
+use crate::tui::compile_visibility::CompileMonitorGeneration;
+use crate::tui::compile_visibility::CompileVisibilityState;
 use crate::tui::integration;
 use crate::tui::integration::AppPaneId;
 use crate::tui::keymap;
@@ -288,6 +290,8 @@ impl AppBuilder<Started> {
             panes,
             project_list: projects,
             cargo_workspace_index,
+            compile_visibility_state: CompileVisibilityState::Off,
+            compile_monitor_generation: CompileMonitorGeneration::default(),
             process_refresh_executor,
             #[cfg(test)]
             running_target_attribution_collection_count: 0,

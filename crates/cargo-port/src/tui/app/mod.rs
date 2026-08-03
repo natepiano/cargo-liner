@@ -194,6 +194,11 @@ use crate::project::WorkspaceMetadataStore;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::MetadataDispatchContext;
+use crate::tui::compile_visibility::CompileMonitorGeneration;
+use crate::tui::compile_visibility::CompileVisibilityState;
+use crate::tui::compile_visibility::MonitorScopeUpdate;
+use crate::tui::compile_visibility::monitor_scope_input;
+use crate::tui::compile_visibility::resolve_monitor_scope;
 
 pub(super) struct App {
     /// Net subsystem. Owns the shared `HttpClient`, the GitHub
@@ -253,6 +258,11 @@ pub(super) struct App {
     /// It rebuilds only after accepted Cargo metadata or the `ProjectList`
     /// revision changes; event-loop wakes retain the current view.
     pub(super) cargo_workspace_index:                       CargoWorkspaceIndex,
+    /// Selected-scope state for the optional compile monitor. `Off` owns no
+    /// monitor snapshot, deadline, tombstone, or process-refresh demand.
+    pub(super) compile_visibility_state:                    CompileVisibilityState,
+    /// App-owned monotonic source for active compile-monitor generations.
+    pub(super) compile_monitor_generation:                  CompileMonitorGeneration,
     /// Sole scheduler and owner of the shared host process observer.
     pub(super) process_refresh_executor:                    ProcessRefreshExecutor,
     /// Number of Running Targets attribution collections performed by this
@@ -1210,6 +1220,7 @@ impl App {
 
     pub fn sync_selected_project(&mut self) {
         self.ensure_visible_rows_cached();
+        self.refresh_compile_monitor_scope_if_on();
         let current = self
             .project_list
             .selected_project_path()
@@ -1258,6 +1269,52 @@ impl App {
             self.project_list.mark_sync_changed();
             self.maybe_priority_fetch();
         }
+    }
+
+    /// Toggle compile-monitor visibility for the current selected project-list
+    /// row. Enabling resolves only the accepted workspace index; it never
+    /// launches Cargo or requests process observation.
+    #[allow(
+        dead_code,
+        reason = "Reserved for the Build Monitor visibility keybinding"
+    )]
+    pub(crate) fn toggle_compile_visibility(&mut self) {
+        if self.compile_visibility_state.is_on() {
+            self.advance_compile_monitor_generation();
+            self.compile_visibility_state.disable();
+            return;
+        }
+        self.ensure_visible_rows_cached();
+        let monitor_scope_update = self.resolve_compile_monitor_scope();
+        let compile_monitor_generation = self.advance_compile_monitor_generation();
+        self.compile_visibility_state
+            .enable(monitor_scope_update, compile_monitor_generation);
+    }
+
+    fn refresh_compile_monitor_scope_if_on(&mut self) {
+        if !self.compile_visibility_state.is_on() {
+            return;
+        }
+        let monitor_scope_update = self.resolve_compile_monitor_scope();
+        if self
+            .compile_visibility_state
+            .requires_scope_replacement(&monitor_scope_update)
+        {
+            let compile_monitor_generation = self.advance_compile_monitor_generation();
+            self.compile_visibility_state
+                .replace_scope(monitor_scope_update, compile_monitor_generation);
+        }
+    }
+
+    fn resolve_compile_monitor_scope(&mut self) -> MonitorScopeUpdate {
+        let monitor_scope_input = monitor_scope_input(&self.project_list);
+        let workspace_index_readiness = self.workspace_index_readiness();
+        resolve_monitor_scope(monitor_scope_input, workspace_index_readiness)
+    }
+
+    const fn advance_compile_monitor_generation(&mut self) -> CompileMonitorGeneration {
+        self.compile_monitor_generation.advance();
+        self.compile_monitor_generation
     }
 }
 
@@ -2589,6 +2646,7 @@ mod tests {
         use crate::project::Submodule;
         use crate::test_support;
         use crate::tui::app::CargoPortToastAction;
+        use crate::tui::compile_visibility::CompileVisibilityState;
         use crate::tui::input;
         use crate::tui::integration::AppGlobalAction;
         use crate::tui::integration::AppPaneId;
@@ -2726,6 +2784,26 @@ mod tests {
         fn app_returned_from_keymap_helper() -> KeymapFixture<impl Sized + use<>> {
             let project = super::make_project(Some("demo"), "~/demo");
             make_app_with_keymap_toml(&[project], "[output]\ncancel = \"Esc\"\n")
+        }
+
+        #[test]
+        fn compile_visibility_starts_off_and_drops_enabled_scope_on_toggle() {
+            let mut app = make_app(&[]);
+
+            assert!(matches!(
+                &app.compile_visibility_state,
+                CompileVisibilityState::Off
+            ));
+            app.toggle_compile_visibility();
+            assert!(matches!(
+                &app.compile_visibility_state,
+                CompileVisibilityState::On(_)
+            ));
+            app.toggle_compile_visibility();
+            assert!(matches!(
+                &app.compile_visibility_state,
+                CompileVisibilityState::Off
+            ));
         }
 
         #[test]
@@ -9752,6 +9830,7 @@ mod tests {
         use crate::lint::LintRunPhase;
         use crate::lint::LintRunStatus;
         use crate::project::AbsolutePath;
+        use crate::project::AcceptedCargoMetadataRevision;
         use crate::project::FileStamp;
         use crate::project::HeadState;
         use crate::project::ManifestFingerprint;
@@ -9772,6 +9851,9 @@ mod tests {
         use crate::scan::CargoMetadataError;
         use crate::tui::app::phase_state::Denominator;
         use crate::tui::app::target_index::CleanSelection;
+        use crate::tui::compile_visibility::CompileMonitorGeneration;
+        use crate::tui::compile_visibility::CompileVisibilityState;
+        use crate::tui::compile_visibility::MonitorScopeResolution;
         use crate::tui::constants::STARTUP_ROW_MIN_VISIBLE;
         use crate::tui::keymap::CiRunsAction;
         use crate::tui::keymap::LintsAction;
@@ -12584,6 +12666,119 @@ mod tests {
             assert!(
                 app.startup.metadata.complete_at.is_some(),
                 "with only one expected root, the phase completes on arrival"
+            );
+        }
+
+        /// Accepted-metadata revision and monitor generation currently carried
+        /// by an enabled compile monitor with an actionable scope.
+        fn enabled_monitor_scope_facts(
+            app: &App,
+        ) -> (AcceptedCargoMetadataRevision, CompileMonitorGeneration) {
+            let CompileVisibilityState::On(active_monitor_state) = &app.compile_visibility_state
+            else {
+                panic!("compile monitor must be enabled");
+            };
+            let MonitorScopeResolution::Ready(monitor_scope_key) =
+                active_monitor_state.monitor_scope_resolution()
+            else {
+                panic!("enabled monitor must have an actionable scope");
+            };
+            (
+                monitor_scope_key.accepted_cargo_metadata_revision(),
+                active_monitor_state.compile_monitor_generation(),
+            )
+        }
+
+        #[test]
+        fn accepted_metadata_refreshes_enabled_monitor_scope_without_tree_change() {
+            let temp_dir = tempfile::tempdir().expect("create test workspace");
+            let workspace_root = AbsolutePath::from(temp_dir.path().join("workspace"));
+            std::fs::create_dir_all(workspace_root.as_path()).expect("create workspace directory");
+            std::fs::write(
+                workspace_root.as_path().join("Cargo.toml"),
+                "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            )
+            .expect("write workspace manifest");
+            let project = RootItem::Rust(RustProject::Package(Package {
+                path: workspace_root.clone(),
+                name: Some("demo".to_string()),
+                ..Package::default()
+            }));
+            let mut app = make_app(&[project]);
+            app.project_list.set_cursor(0);
+
+            let fingerprint = ManifestFingerprint::capture(workspace_root.as_path())
+                .expect("capture workspace fingerprint");
+            let mut initial_metadata = fake_metadata(&workspace_root);
+            initial_metadata.fingerprint = fingerprint.clone();
+            let initial_generation = app
+                .scan
+                .metadata_store_handle()
+                .lock()
+                .expect("lock metadata store")
+                .next_generation(&workspace_root);
+            app.handle_bg_msg(BackgroundMsg::CargoMetadata {
+                workspace_root: workspace_root.clone(),
+                generation:     initial_generation,
+                fingerprint:    fingerprint.clone(),
+                result:         Ok(initial_metadata),
+            });
+
+            app.toggle_compile_visibility();
+            let (accepted_metadata_revision_before, compile_monitor_generation_before) =
+                enabled_monitor_scope_facts(&app);
+            let selected_project_before = app
+                .project_list
+                .selected_project_path()
+                .map(Path::to_path_buf);
+            let visible_rows_before = app.project_list.visible_rows().to_vec();
+
+            let mut refreshed_metadata = fake_metadata(&workspace_root);
+            refreshed_metadata.fingerprint = fingerprint.clone();
+            refreshed_metadata.target_directory =
+                AbsolutePath::from(workspace_root.as_path().join("refreshed-target"));
+            let refreshed_generation = app
+                .scan
+                .metadata_store_handle()
+                .lock()
+                .expect("lock metadata store")
+                .next_generation(&workspace_root);
+            app.handle_bg_msg(BackgroundMsg::CargoMetadata {
+                workspace_root,
+                generation: refreshed_generation,
+                fingerprint,
+                result: Ok(refreshed_metadata),
+            });
+
+            assert_eq!(
+                app.project_list.selected_project_path(),
+                selected_project_before.as_deref(),
+                "accepted metadata leaves the selected project unchanged"
+            );
+            assert_eq!(
+                app.project_list.visible_rows(),
+                visible_rows_before,
+                "accepted metadata leaves visible project-list content unchanged"
+            );
+            let accepted_metadata_revision = app
+                .scan
+                .metadata_store_handle()
+                .lock()
+                .expect("lock metadata store")
+                .accepted_cargo_metadata_revision();
+            let (accepted_metadata_revision_after, compile_monitor_generation_after) =
+                enabled_monitor_scope_facts(&app);
+            assert_ne!(
+                accepted_metadata_revision_after, accepted_metadata_revision_before,
+                "accepted metadata immediately replaces the monitor scope"
+            );
+            assert_eq!(
+                accepted_metadata_revision_after, accepted_metadata_revision,
+                "monitor scope carries the metadata revision accepted by this arrival"
+            );
+            assert_ne!(
+                compile_monitor_generation_after, compile_monitor_generation_before,
+                "accepted metadata immediately advances the monitor generation"
             );
         }
 

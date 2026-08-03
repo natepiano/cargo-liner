@@ -42,6 +42,7 @@ pub(crate) use cargo::RustInfo;
 pub(crate) use cargo::RustProject;
 pub(crate) use cargo::TargetRecord;
 pub(crate) use cargo::VendoredPackage;
+pub(crate) use cargo::VisibleProjectWorkspaceOwnership;
 pub(crate) use cargo::VisibleTargetWorkspaceOwnership;
 pub(crate) use cargo::Workspace;
 pub(crate) use cargo::WorkspaceMetadata;
@@ -105,5 +106,6 @@ pub(crate) use paths::DisplayPath;
 pub(crate) use paths::home_relative_path;
 #[cfg(test)]
 pub(crate) use paths::normalize_test_path;
+pub(crate) use root_item::RootCheckoutOwnership;
 pub(crate) use root_item::RootItem;
 pub(crate) use root_item::strip_worktree_badge_suffix;

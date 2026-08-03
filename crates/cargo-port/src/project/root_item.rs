@@ -32,7 +32,23 @@ pub(crate) enum RootItem {
     Worktrees(WorktreeGroup),
 }
 
+/// Checkout ownership carried by one top-level project-list item.
+pub(crate) enum RootCheckoutOwnership<'a> {
+    RustCheckout(&'a RustProject),
+    NonRust,
+    WorktreeGroup(&'a WorktreeGroup),
+}
+
 impl RootItem {
+    /// Rust checkout or worktree-group ownership for scope consumers.
+    pub(crate) const fn checkout_ownership(&self) -> RootCheckoutOwnership<'_> {
+        match self {
+            Self::Rust(rust_project) => RootCheckoutOwnership::RustCheckout(rust_project),
+            Self::NonRust(_) => RootCheckoutOwnership::NonRust,
+            Self::Worktrees(worktree_group) => RootCheckoutOwnership::WorktreeGroup(worktree_group),
+        }
+    }
+
     pub(crate) fn visibility(&self) -> Visibility {
         match self {
             Self::Rust(p) => p.visibility(),

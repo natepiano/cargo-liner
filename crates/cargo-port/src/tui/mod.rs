@@ -2,6 +2,7 @@ mod app;
 mod app_render_state;
 mod background;
 mod columns;
+mod compile_visibility;
 mod constants;
 mod dismiss_target;
 mod finder;
@@ -27,5 +28,6 @@ mod terminal;
 #[cfg(test)]
 mod test_support;
 mod theme_roles;
+mod workspace_index;
 
 pub use terminal::run;

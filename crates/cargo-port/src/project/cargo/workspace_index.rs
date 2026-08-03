@@ -235,6 +235,19 @@ pub(crate) enum VisibleTargetWorkspaceOwnership<'a> {
     NotIndexed,
 }
 
+/// Whether one visible project path has exact workspace ownership in the
+/// shared index.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum VisibleProjectWorkspaceOwnership<'a> {
+    /// One canonical checkout, workspace, or member root identifies this
+    /// workspace.
+    Indexed(&'a CargoWorkspaceView),
+    /// More than one workspace claims the canonical path.
+    Ambiguous,
+    /// The path has no canonical ownership record in this index.
+    NotIndexed,
+}
+
 /// Number of indexed workspaces identified by one exact canonical path.
 #[derive(Clone, Copy, Debug)]
 enum ExactWorkspaceOwnershipEvidence<'a> {
@@ -279,6 +292,7 @@ impl CanonicalWorkspaceCandidates {
 pub(crate) struct CargoWorkspaceIndex {
     revision:             CargoWorkspaceIndexRevisionState,
     workspaces:           Vec<CargoWorkspaceView>,
+    workspaces_by_root:   HashMap<AbsolutePath, CanonicalWorkspaceCandidates>,
     workspaces_by_source: HashMap<AbsolutePath, CanonicalWorkspaceCandidates>,
     workspaces_by_owner:  HashMap<AbsolutePath, CanonicalWorkspaceCandidates>,
     #[cfg(test)]
@@ -359,6 +373,46 @@ impl CargoWorkspaceIndex {
         }
     }
 
+    /// Resolve a visible checkout, workspace, or member path through its
+    /// exact canonical ownership record.
+    pub(crate) fn workspace_for_visible_project(
+        &self,
+        project_path: &AbsolutePath,
+    ) -> VisibleProjectWorkspaceOwnership<'_> {
+        let project_evidence =
+            match resolve_canonical_path(project_path, CanonicalVisibleProjectOwner) {
+                CanonicalPathResolution::Resolved(project_owner) => {
+                    exact_workspace_ownership_evidence(
+                        &self.workspaces_by_owner,
+                        project_owner.path(),
+                    )
+                },
+                CanonicalPathResolution::Unresolved => ExactWorkspaceOwnershipEvidence::Unavailable,
+            };
+        self.visible_project_workspace_ownership(project_evidence)
+    }
+
+    /// Resolve a path only when it is itself an indexed Cargo checkout or
+    /// workspace root. This proves a vendored package or submodule owns a
+    /// nested workspace instead of merely belonging to its containing
+    /// checkout.
+    pub(crate) fn workspace_for_workspace_root(
+        &self,
+        workspace_root: &AbsolutePath,
+    ) -> VisibleProjectWorkspaceOwnership<'_> {
+        let workspace_evidence =
+            match resolve_canonical_path(workspace_root, CanonicalVisibleProjectOwner) {
+                CanonicalPathResolution::Resolved(canonical_workspace_root) => {
+                    exact_workspace_ownership_evidence(
+                        &self.workspaces_by_root,
+                        canonical_workspace_root.path(),
+                    )
+                },
+                CanonicalPathResolution::Unresolved => ExactWorkspaceOwnershipEvidence::Unavailable,
+            };
+        self.visible_project_workspace_ownership(workspace_evidence)
+    }
+
     #[cfg(test)]
     pub(crate) const fn rebuild_count(&self) -> u64 { self.rebuild_count }
 
@@ -379,6 +433,7 @@ impl CargoWorkspaceIndex {
         });
 
         self.workspaces.clear();
+        self.workspaces_by_root.clear();
         self.workspaces_by_source.clear();
         self.workspaces_by_owner.clear();
 
@@ -418,6 +473,11 @@ impl CargoWorkspaceIndex {
             workspace.checkout_root_resolution()
         {
             include_workspace_candidate(
+                &mut self.workspaces_by_root,
+                checkout_root.path().clone(),
+                index,
+            );
+            include_workspace_candidate(
                 &mut self.workspaces_by_owner,
                 checkout_root.path().clone(),
                 index,
@@ -426,6 +486,11 @@ impl CargoWorkspaceIndex {
         if let CanonicalPathResolution::Resolved(workspace_root) =
             workspace.workspace_root_resolution()
         {
+            include_workspace_candidate(
+                &mut self.workspaces_by_root,
+                workspace_root.path().clone(),
+                index,
+            );
             include_workspace_candidate(
                 &mut self.workspaces_by_owner,
                 workspace_root.path().clone(),
@@ -452,6 +517,26 @@ impl CargoWorkspaceIndex {
                     );
                 }
             }
+        }
+    }
+
+    fn visible_project_workspace_ownership(
+        &self,
+        workspace_evidence: ExactWorkspaceOwnershipEvidence<'_>,
+    ) -> VisibleProjectWorkspaceOwnership<'_> {
+        match workspace_evidence {
+            ExactWorkspaceOwnershipEvidence::Unique(workspace_index) => self
+                .workspaces
+                .get(workspace_index)
+                .map_or(VisibleProjectWorkspaceOwnership::Ambiguous, |workspace| {
+                    VisibleProjectWorkspaceOwnership::Indexed(workspace)
+                }),
+            ExactWorkspaceOwnershipEvidence::Ambiguous(_) => {
+                VisibleProjectWorkspaceOwnership::Ambiguous
+            },
+            ExactWorkspaceOwnershipEvidence::Unavailable => {
+                VisibleProjectWorkspaceOwnership::NotIndexed
+            },
         }
     }
 }

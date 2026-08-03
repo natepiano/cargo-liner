@@ -14,6 +14,7 @@ use super::expand_state::ExpandTarget;
 use super::grouping;
 use super::selection::SelectionMutation;
 use super::visible_rows;
+use super::visible_rows::CurrentVisibleRow;
 use super::visible_rows::ExpandKey;
 use super::visible_rows::LegacyRootExpansion;
 use super::visible_rows::LegacyRootExpansionKind;
@@ -1148,6 +1149,13 @@ impl ProjectList {
         let rows = self.visible_rows();
         let selected = self.cursor();
         rows.get(selected).copied()
+    }
+
+    /// Current typed row for consumers that must distinguish an empty list
+    /// from a selected row without treating both states as `None`.
+    pub(crate) fn current_visible_row(&self) -> CurrentVisibleRow {
+        self.selected_row()
+            .map_or(CurrentVisibleRow::NoVisibleRow, CurrentVisibleRow::Selected)
     }
 
     pub fn selected_project_path(&self) -> Option<&Path> {

@@ -31,7 +31,7 @@ pub enum ExpandKey {
 }
 
 /// What a visible row represents.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum VisibleRow {
     /// A top-level project/workspace root.
     Root { node_index: usize },
@@ -95,6 +95,69 @@ pub enum VisibleRow {
         node_index:      usize,
         submodule_index: usize,
     },
+}
+
+/// Stable category of a [`VisibleRow`].
+///
+/// The row kind is separate from the row's indices so consumers can make
+/// ownership decisions without treating two structurally different rows as
+/// interchangeable merely because they currently resolve to the same path.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum VisibleRowKind {
+    Root,
+    GroupHeader,
+    Member,
+    MemberVendored,
+    Vendored,
+    WorktreeEntry,
+    WorktreeGroupHeader,
+    WorktreeMember,
+    WorktreeMemberVendored,
+    WorktreeVendored,
+    Submodule,
+}
+
+/// The current project-list cursor state expressed without an ambiguous
+/// optional row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CurrentVisibleRow {
+    Selected(VisibleRow),
+    NoVisibleRow,
+}
+
+impl VisibleRow {
+    pub const fn kind(self) -> VisibleRowKind {
+        match self {
+            Self::Root { .. } => VisibleRowKind::Root,
+            Self::GroupHeader { .. } => VisibleRowKind::GroupHeader,
+            Self::Member { .. } => VisibleRowKind::Member,
+            Self::MemberVendored { .. } => VisibleRowKind::MemberVendored,
+            Self::Vendored { .. } => VisibleRowKind::Vendored,
+            Self::WorktreeEntry { .. } => VisibleRowKind::WorktreeEntry,
+            Self::WorktreeGroupHeader { .. } => VisibleRowKind::WorktreeGroupHeader,
+            Self::WorktreeMember { .. } => VisibleRowKind::WorktreeMember,
+            Self::WorktreeMemberVendored { .. } => VisibleRowKind::WorktreeMemberVendored,
+            Self::WorktreeVendored { .. } => VisibleRowKind::WorktreeVendored,
+            Self::Submodule { .. } => VisibleRowKind::Submodule,
+        }
+    }
+
+    /// Index of the project-list root entry this row was emitted under.
+    pub const fn node_index(self) -> usize {
+        match self {
+            Self::Root { node_index }
+            | Self::GroupHeader { node_index, .. }
+            | Self::Member { node_index, .. }
+            | Self::MemberVendored { node_index, .. }
+            | Self::Vendored { node_index, .. }
+            | Self::WorktreeEntry { node_index, .. }
+            | Self::WorktreeGroupHeader { node_index, .. }
+            | Self::WorktreeMember { node_index, .. }
+            | Self::WorktreeMemberVendored { node_index, .. }
+            | Self::WorktreeVendored { node_index, .. }
+            | Self::Submodule { node_index, .. } => node_index,
+        }
+    }
 }
 
 impl ProjectList {
