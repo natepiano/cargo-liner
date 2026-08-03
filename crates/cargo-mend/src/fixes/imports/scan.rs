@@ -19,6 +19,7 @@ use crate::compiler::SOURCE_DIR_SRC;
 use crate::config::DiagnosticCode;
 use crate::reporting::Finding;
 use crate::reporting::FixSupport;
+use crate::reporting::ItemVisibility;
 use crate::reporting::Severity;
 use crate::rust_syntax;
 use crate::selection::Selection;
@@ -57,6 +58,7 @@ impl From<ShortenImportFact> for Finding {
             suggestion:      Some(format!("consider using: `{replacement}`")),
             fix_support:     FixSupport::ShortenImport,
             related:         None,
+            item_visibility: ItemVisibility::default(),
         }
     }
 }

@@ -12,6 +12,7 @@ use crate::fixes::inline_path_qualified_type;
 use crate::fixes::narrow_pub_crate;
 use crate::fixes::prefer_module_import;
 use crate::fixes::pub_use_fixes;
+use crate::fixes::restricted_annotation;
 use crate::fixes::unused_pub;
 use crate::reporting::MendFailure;
 use crate::reporting::OutputFormat;
@@ -60,6 +61,13 @@ impl MendRunner<'_> {
             .then(|| narrow_pub_crate::scan_from_report(&report))
             .transpose()
             .map_err(MendFailure::Unexpected)?;
+        let restricted_annotation_scan =
+            (operation_mode.fixes.contains(FixKind::RestrictedAnnotation)
+                && diagnostics_config.is_enabled(DiagnosticCode::SuspiciousPub)
+                    == DiagnosticStatus::Enabled)
+                .then(|| restricted_annotation::scan_from_report(&report))
+                .transpose()
+                .map_err(MendFailure::Unexpected)?;
         let unused_pub_scan = (operation_mode.fixes.contains(FixKind::UnusedPub)
             && diagnostics_config.is_enabled(DiagnosticCode::UnusedPub)
                 == DiagnosticStatus::Enabled)
@@ -93,6 +101,7 @@ impl MendRunner<'_> {
             inline_path_scan,
             unused_pub_scan,
             narrow_pub_crate_scan,
+            restricted_annotation_scan,
             field_visibility_fix_scan,
             imports_at_top_scan,
             pub_use_scan,

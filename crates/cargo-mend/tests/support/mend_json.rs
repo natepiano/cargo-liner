@@ -9,6 +9,7 @@ use super::DiagnosticCode;
 use super::FixSummaryBucket;
 use super::FixSupport;
 use super::diagnostic_spec;
+use super::diagnostics::AdvertisedFix;
 use super::report::ExpectedFinding;
 use super::report::Report;
 use super::report::Summary;
@@ -65,15 +66,13 @@ fn expected_summary(report: &Report) -> Summary {
             _ => summary.warnings += 1,
         }
 
-        let fix_support = if matches!(finding.fix_support, FixSupport::None) {
-            diagnostic_spec(finding.code).fix_support
-        } else {
-            finding.fix_support
-        };
-        match fix_support.summary_bucket() {
-            Some(FixSummaryBucket::Standard) => summary.fixable_with_fix += 1,
-            Some(FixSummaryBucket::PubUse) => summary.fixable_with_fix_pub_use += 1,
-            None => {},
+        // Count what the diagnostic advertised, not what its code defaults to:
+        // a per-finding route such as `suspicious_pub`'s exact-boundary rewrite
+        // is invisible in `DiagnosticSpec::fix_support`.
+        match AdvertisedFix::from_notes(finding.help.iter().map(String::as_str)) {
+            AdvertisedFix::NotOffered => {},
+            AdvertisedFix::WithFix => summary.fixable_with_fix += 1,
+            AdvertisedFix::WithFixPubUse => summary.fixable_with_fix_pub_use += 1,
         }
     }
 
@@ -301,6 +300,9 @@ fn code_from_str(code: &str) -> DiagnosticCode {
     }
 }
 
+/// The one `FixSupport` variant a rendered diagnostic names outright. Every
+/// other fixable route renders the same `--fix` note, so it comes back as
+/// `FixSupport::None` here and is recovered through `AdvertisedFix` instead.
 fn fix_support_from_diagnostic_children(diagnostic: &Value) -> FixSupport {
     let child_messages = diagnostic
         .get("children")

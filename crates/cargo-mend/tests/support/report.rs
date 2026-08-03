@@ -14,6 +14,10 @@ pub struct Finding {
     pub line_start:  usize,
     #[serde(default)]
     pub item:        Option<String>,
+    /// `FixSupport::PubUse` when the diagnostic advertised the `--fix-pub-use`
+    /// route, `FixSupport::None` otherwise — including for a finding the tool
+    /// offers to plain `--fix`, whose note names no variant. Assert fixability
+    /// through `AdvertisedFix`, which reads the note itself.
     #[serde(default, rename = "fixability")]
     pub fix_support: FixSupport,
     /// Child help/note messages attached to the diagnostic (the rendered

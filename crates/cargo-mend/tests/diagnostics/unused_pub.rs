@@ -515,6 +515,50 @@ impl LocalHelper {
 }
 
 #[test]
+fn fix_never_strips_a_restricted_annotation() {
+    // `unused_pub`'s fix deletes the annotation outright. That is only ever
+    // correct for a bare `pub`: deleting a `pub(crate)` would discard a narrower
+    // visibility the author wrote. The bare sibling in the same file proves the
+    // fixer did run over this source rather than skipping it wholesale.
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "unused_pub_restricted_annotation_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(temp.path().join("src/lib.rs"), "mod helpers;\n").expect("write lib");
+    fs::write(
+        temp.path().join("src/helpers.rs"),
+        "pub(crate) struct RestrictedHelper;\npub struct BareHelper;\n",
+    )
+    .expect("write helpers");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert_eq!(
+        fs::read_to_string(temp.path().join("src/helpers.rs")).expect("read fixed helpers"),
+        "pub(crate) struct RestrictedHelper;\nstruct BareHelper;\n",
+    );
+}
+
+#[test]
 fn type_named_in_trait_impl_interface_is_not_flagged_unused() {
     // Regression for the `TextExtensionKey`-style false positive.
     // `ExtensionKey` appears only inside `impl Iterator for Extension` —

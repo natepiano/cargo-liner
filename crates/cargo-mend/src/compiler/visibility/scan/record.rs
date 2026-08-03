@@ -1723,10 +1723,24 @@ struct SuspiciousWarningInput<'borrow, 'syntax, 'facade> {
     warning:                SuspiciousWarning,
 }
 
+/// Whether the narrowing advice resolved an exact module boundary that `--fix`
+/// can write in place of a bare `pub`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NarrowingReplacement {
+    /// `narrower_scope_def_path` is the exact boundary the item needs, so
+    /// `pub(in crate::<path>)` is a correct rewrite.
+    ExactBoundary,
+    /// The advice names no writable annotation — `narrower_scope_def_path` is
+    /// the enclosing module recorded for caller-aware suppression, not a
+    /// boundary to write.
+    Unavailable,
+}
+
 enum SuspiciousPubAdvice {
     Narrowing {
         suggestion:              String,
         narrower_scope_def_path: String,
+        replacement:             NarrowingReplacement,
     },
     Structural {
         message:    String,
@@ -1803,16 +1817,35 @@ fn record_suspicious_pub_warning(
         signature_exposure,
         stale_parent_pub_use.as_ref(),
     );
-    let restricted_annotation = !matches!(annotation.syntax(), VisibilitySyntax::Public);
+    let bare_pub = matches!(annotation.syntax(), VisibilitySyntax::Public);
     let (message, suggestion, fix_support, item_def_path, narrower_scope_def_path) = match advice {
         SuspiciousPubAdvice::Narrowing {
             suggestion,
             narrower_scope_def_path,
+            replacement,
         } => {
-            let fix_support = if restricted_annotation {
-                FixSupport::None
-            } else {
+            // A bare `pub` whose exact boundary resolved is rewritten in place,
+            // but only when no facade line has to move with it: a stale facade
+            // makes the repair a multi-file edit this fixer does not perform.
+            //
+            // The rewrite spells `pub(in crate::<path>)`, so it is confined to
+            // `PubInPath::Required`. Under `Forbidden` that annotation is what
+            // `forbidden_pub_in_crate` reports as an error on the next run, and
+            // under `Permitted` it is one accepted spelling among several
+            // rather than the one the policy asks for.
+            let rewrites_annotation_only = bare_pub
+                && replacement == NarrowingReplacement::ExactBoundary
+                && stale_parent_pub_use.is_none()
+                && matches!(
+                    ctx.settings.visibility_config.pub_in_path,
+                    PubInPath::Required
+                );
+            let fix_support = if rewrites_annotation_only {
+                FixSupport::RestrictedAnnotation
+            } else if bare_pub {
                 facade_chain_fix_support(parent_facade_analysis, fix_support)
+            } else {
+                FixSupport::None
             };
             (
                 policy::suspicious_pub_note(input.crate_kind, kind_label),
@@ -1841,7 +1874,7 @@ fn record_suspicious_pub_warning(
             suggestion: Some(suggestion),
             fix_support,
             related,
-            visibility_annotation: None,
+            visibility_annotation: Some(annotation.source().to_string()),
             item_def_path,
             narrower_scope_def_path,
         },
@@ -1926,6 +1959,7 @@ fn suspicious_pub_advice(
                     annotation.display_source()
                 ),
                 narrower_scope_def_path: parent_scope_def_path,
+                replacement:             NarrowingReplacement::Unavailable,
             };
         }
         let pub_super_reach = VisibilityAnnotation::Parent.reach(input.def_id, ctx.tcx);
@@ -1940,6 +1974,7 @@ fn suspicious_pub_advice(
         return SuspiciousPubAdvice::Narrowing {
             suggestion:              policy::consider_using("pub(super)"),
             narrower_scope_def_path: parent_scope_def_path,
+            replacement:             NarrowingReplacement::Unavailable,
         };
     }
     if let Some(parent_facade_analysis) = parent_facade_analysis
@@ -1948,18 +1983,31 @@ fn suspicious_pub_advice(
         let required = signature_exposure.map_or(required, |exposure_reach| {
             required.join(exposure_reach, ctx.tcx)
         });
-        let narrower_scope_def_path = visibility_reach_boundary_path(required, ctx)
-            .and_then(|path| path.strip_prefix("crate::").map(String::from))
-            .unwrap_or_else(|| parent_scope_def_path.clone());
+        // Only a `pub(in crate::<path>)` reach yields a boundary a fixer can
+        // spell out. `pub` and `pub(crate)` fall back to the enclosing module,
+        // which is a suppression key, not a rewrite target.
+        let exact_boundary = visibility_reach_boundary_path(required, ctx)
+            .and_then(|path| path.strip_prefix("crate::").map(String::from));
+        let (narrower_scope_def_path, replacement) = exact_boundary.map_or_else(
+            || {
+                (
+                    parent_scope_def_path.clone(),
+                    NarrowingReplacement::Unavailable,
+                )
+            },
+            |boundary| (boundary, NarrowingReplacement::ExactBoundary),
+        );
         return SuspiciousPubAdvice::Narrowing {
             suggestion: policy::consider_using(&required.to_source(ctx.tcx)),
             narrower_scope_def_path,
+            replacement,
         };
     }
     let Some(required) = signature_exposure else {
         return SuspiciousPubAdvice::Narrowing {
             suggestion:              policy::consider_using("pub(super)"),
             narrower_scope_def_path: parent_scope_def_path,
+            replacement:             NarrowingReplacement::Unavailable,
         };
     };
     let parent_reach = VisibilityAnnotation::Parent.reach(input.def_id, ctx.tcx);
@@ -1970,6 +2018,7 @@ fn suspicious_pub_advice(
         return SuspiciousPubAdvice::Narrowing {
             suggestion:              policy::consider_using("pub(super)"),
             narrower_scope_def_path: parent_scope_def_path,
+            replacement:             NarrowingReplacement::Unavailable,
         };
     }
     structural_signature_advice(ctx, kind_label, required)

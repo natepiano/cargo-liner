@@ -1,6 +1,11 @@
 // fix runner
 pub(crate) const FIX_ALL_MAX_PASSES: usize = 5;
 
+// rustc display columns
+/// Columns rustc charges a tab when it computes `SourceMap::lookup_char_pos`'s
+/// `col_display`, which is the column `Finding` carries.
+pub(super) const TAB_DISPLAY_WIDTH: usize = 4;
+
 // rustc lint suggestion protocol
 pub(crate) const RUSTC_FIELD_VIS_REMOVE_SUGGESTION: &str =
     "remove the field's visibility annotation";

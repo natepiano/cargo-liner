@@ -350,6 +350,190 @@ edition = "2024"
 }
 
 #[test]
+fn fix_rewrites_a_required_bare_pub_to_the_exact_boundary() {
+    let temp = tempdir().expect("create required-path fix fixture dir");
+    write_sources(
+        &temp,
+        &[
+            (
+                "Cargo.toml",
+                r#"[package]
+name = "required_path_fix_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+            ),
+            ("mend.toml", "[visibility]\npub_in_path = \"required\"\n"),
+            ("src/lib.rs", "mod a;\n"),
+            ("src/a.rs", "mod b;\nfn use_exact() { b::exact(); }\n"),
+            ("src/a/b.rs", "mod c;\npub(super) use c::exact;\n"),
+            ("src/a/b/c.rs", "pub fn exact() {}\n"),
+        ],
+    );
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert_codes(&report, "src/a/b/c.rs", &[DiagnosticCode::SuspiciousPub]);
+    assert_eq!(
+        report.summary.fixable_with_fix, 1,
+        "a required-mode bare `pub` with a resolved boundary must be offered to `--fix`: {report:#?}"
+    );
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert_eq!(
+        fs::read_to_string(temp.path().join("src/a/b/c.rs")).expect("read fixed declaration"),
+        "pub(in crate::a) fn exact() {}\n",
+        "only the annotation may change, and it must name the resolved boundary"
+    );
+    assert_eq!(
+        fs::read_to_string(temp.path().join("src/a/b.rs")).expect("read facade"),
+        "mod c;\npub(super) use c::exact;\n",
+        "the facade line must be left byte-identical"
+    );
+}
+
+#[test]
+fn fix_leaves_an_accepted_restricted_annotation_alone() {
+    // The mirror of the rewrite above: once the declaration already spells the
+    // exact boundary, nothing is fixable and `--fix` must not edit the file.
+    // A fixer that matched `pub` textually would strip the `(in crate::a)`.
+    let temp = tempdir().expect("create accepted-boundary fix fixture dir");
+    let declaration = "pub(in crate::a) fn exact() {}\n";
+    write_sources(
+        &temp,
+        &[
+            (
+                "Cargo.toml",
+                r#"[package]
+name = "accepted_boundary_fix_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+            ),
+            ("mend.toml", "[visibility]\npub_in_path = \"required\"\n"),
+            ("src/lib.rs", "mod a;\n"),
+            ("src/a.rs", "mod b;\nfn use_exact() { b::exact(); }\n"),
+            ("src/a/b.rs", "mod c;\npub(super) use c::exact;\n"),
+            ("src/a/b/c.rs", declaration),
+        ],
+    );
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert_codes(&report, "src/a/b/c.rs", &[]);
+    assert_eq!(report.summary.fixable_with_fix, 0, "{report:#?}");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert_eq!(
+        fs::read_to_string(temp.path().join("src/a/b/c.rs")).expect("read declaration"),
+        declaration,
+    );
+}
+
+#[test]
+fn the_exact_boundary_rewrite_is_offered_only_under_required() {
+    // One fixture across all three settings, with nothing varying but
+    // `pub_in_path`. The rewrite spells `pub(in crate::a)`: under `forbidden`
+    // that is exactly what `forbidden_pub_in_crate` reports as an error on the
+    // next run, and under `permitted` it is one accepted spelling rather than
+    // the one the policy asks for, so only `required` may hand the declaration
+    // to `--fix`.
+    //
+    // Two independent gates produce that outcome, and keeping the `required`
+    // arm alongside the other two is what makes their absence meaningful:
+    // `policy::required_pub_in_path` elevates a bare `pub` behind a resolved
+    // facade only under `required`, so the other settings report nothing at all
+    // for this declaration, and `rewrites_annotation_only` in `scan/record.rs`
+    // re-checks the setting before granting `FixSupport::RestrictedAnnotation`.
+    // If the elevation ever stops depending on the setting, the two quiet arms
+    // start seeing a finding and fail on the declaration bytes below instead of
+    // writing an annotation the same run rejects.
+    let declaration = "pub fn exact() {}\n";
+    for (pub_in_path, expected_codes, expected_declaration) in [
+        ("forbidden", Vec::new(), declaration),
+        ("permitted", Vec::new(), declaration),
+        (
+            "required",
+            vec![DiagnosticCode::SuspiciousPub],
+            "pub(in crate::a) fn exact() {}\n",
+        ),
+    ] {
+        let temp = tempdir().expect("create pub-in-path mode fix fixture dir");
+        write_sources(
+            &temp,
+            &[
+                (
+                    "Cargo.toml",
+                    r#"[package]
+name = "pub_in_path_mode_fix_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+                ),
+                (
+                    "mend.toml",
+                    &format!("[visibility]\npub_in_path = \"{pub_in_path}\"\n"),
+                ),
+                ("src/lib.rs", "mod a;\n"),
+                ("src/a.rs", "mod b;\nfn use_exact() { b::exact(); }\n"),
+                ("src/a/b.rs", "mod c;\npub(super) use c::exact;\n"),
+                ("src/a/b/c.rs", declaration),
+            ],
+        );
+
+        let report = run_mend_json(&temp.path().join("Cargo.toml"));
+        assert_codes(&report, "src/a/b/c.rs", &expected_codes);
+        assert_eq!(
+            report.summary.fixable_with_fix,
+            usize::from(expected_declaration != declaration),
+            "`pub_in_path = \"{pub_in_path}\"` advertised the wrong `--fix` route count: {report:#?}"
+        );
+
+        let output = mend_command()
+            .arg("--manifest-path")
+            .arg(temp.path().join("Cargo.toml"))
+            .arg("--fix")
+            .output()
+            .expect("run cargo-mend --fix");
+
+        assert_eq!(
+            fs::read_to_string(temp.path().join("src/a/b/c.rs")).expect("read declaration"),
+            expected_declaration,
+            "`pub_in_path = \"{pub_in_path}\"` left the wrong declaration: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            fs::read_to_string(temp.path().join("src/a/b.rs")).expect("read facade"),
+            "mod c;\npub(super) use c::exact;\n",
+            "`pub_in_path = \"{pub_in_path}\"` must leave the facade line byte-identical"
+        );
+    }
+}
+
+#[test]
 fn boundary_mismatch_precedes_redundant_spelling_at_every_setting() {
     for pub_in_path in ["forbidden", "permitted", "required"] {
         let temp = tempdir().expect("create boundary-mismatch fixture dir");

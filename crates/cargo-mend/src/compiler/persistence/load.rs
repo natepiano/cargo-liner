@@ -22,6 +22,8 @@ use crate::reporting::AllFeaturesCoverage;
 use crate::reporting::CompilerWarningFacts;
 use crate::reporting::Finding;
 use crate::reporting::FixSupport;
+use crate::reporting::ItemVisibility;
+use crate::reporting::NarrowerScope;
 use crate::reporting::PubUseFixFact;
 use crate::reporting::Report;
 use crate::reporting::ReportFacts;
@@ -204,6 +206,27 @@ fn sort_and_dedup_findings(findings: &mut Vec<Finding>) {
             && a.message == b.message
             && a.item == b.item
     });
+    retain_one_restricted_annotation_fix_per_site(findings);
+}
+
+/// Leaves one `restricted_annotation` fix advertised per declaration site.
+///
+/// `suspicious_pub` words its message differently for a binary than for a
+/// library, so a declaration compiled into both targets keeps two findings
+/// through the dedup above — correctly, since they are two distinct
+/// diagnostics. Both would otherwise claim the fix, and the summary would
+/// advertise two available fixes where `fixes::restricted_annotation` rewrites
+/// the declaration once. The findings are already sorted by position, so the
+/// duplicates of a site are adjacent.
+fn retain_one_restricted_annotation_fix_per_site(findings: &mut [Finding]) {
+    let sites =
+        findings.chunk_by_mut(|a, b| a.path == b.path && a.line == b.line && a.column == b.column);
+    for site in sites {
+        site.iter_mut()
+            .filter(|finding| finding.fix_support == FixSupport::RestrictedAnnotation)
+            .skip(1)
+            .for_each(|finding| finding.fix_support = FixSupport::None);
+    }
 }
 
 fn sort_and_dedup_pub_use_fix_facts(pub_use_fix_facts: &mut Vec<PubUseFixFact>) {
@@ -294,6 +317,13 @@ fn extend_report_from_stored(
             related:         finding
                 .related
                 .map(|related| relativize_path(&related, analysis_root)),
+            item_visibility: ItemVisibility {
+                written:        finding.visibility_annotation.into(),
+                narrower_scope: NarrowerScope::resolve(
+                    finding.narrower_scope_def_path,
+                    finding.fix_support,
+                ),
+            },
         });
     }
     for fact in stored.pub_use_fix_facts {

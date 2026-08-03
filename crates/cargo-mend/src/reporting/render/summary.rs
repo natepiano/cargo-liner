@@ -185,6 +185,7 @@ mod tests {
     use crate::reporting;
     use crate::reporting::ColorMode;
     use crate::reporting::CompilerStats;
+    use crate::reporting::ItemVisibility;
     use crate::reporting::constants::CARGO_MEND_FIX;
     use crate::reporting::constants::CARGO_MEND_FIX_ALL;
     use crate::reporting::constants::CARGO_MEND_FIX_COMPILER;
@@ -221,6 +222,7 @@ mod tests {
                 suggestion:      Some("pub(crate) fn example() {}".to_string()),
                 fix_support:     FixSupport::NarrowToPubCrate,
                 related:         None,
+                item_visibility: ItemVisibility::default(),
             }],
             ..Report::default()
         }
@@ -340,6 +342,7 @@ mod tests {
                 suggestion:      None,
                 fix_support:     FixSupport::PubUse,
                 related:         None,
+                item_visibility: ItemVisibility::default(),
             }],
             ..Report::default()
         }
@@ -365,6 +368,7 @@ mod tests {
                 suggestion:      None,
                 fix_support:     FixSupport::None,
                 related:         None,
+                item_visibility: ItemVisibility::default(),
             }],
             ..Report::default()
         }

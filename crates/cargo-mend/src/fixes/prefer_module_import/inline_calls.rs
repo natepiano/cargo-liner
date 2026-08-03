@@ -18,6 +18,7 @@ use crate::fixes::imports::ImportGroup;
 use crate::fixes::imports::UseFix;
 use crate::reporting::Finding;
 use crate::reporting::FixSupport;
+use crate::reporting::ItemVisibility;
 use crate::reporting::Severity;
 use crate::rust_syntax::PathAnchor;
 
@@ -137,6 +138,7 @@ pub(super) fn build_inline_call_findings_and_fixes(
             suggestion,
             fix_support: FixSupport::PreferModuleImport,
             related: None,
+            item_visibility: ItemVisibility::default(),
         });
 
         let group = Some(ImportGroup {

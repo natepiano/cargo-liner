@@ -15,6 +15,7 @@ impl FixScans<'_> {
             self.inline_types.map(|scan| scan.findings.len()),
             self.unused_pub.map(|scan| scan.fixes.len()),
             self.narrowed_pub.map(|scan| scan.fixes.len()),
+            self.restricted_annotation.map(|scan| scan.fixes.len()),
             self.field_visibility.map(|scan| scan.fixes.len()),
             self.imports_at_top.map(|scan| scan.findings.len()),
         ]
@@ -71,14 +72,15 @@ mod tests {
 
     fn fix_scans_with_field_visibility(field_visibility: &FieldVisibilityFixScan) -> FixScans<'_> {
         FixScans {
-            imports:          None,
-            module_imports:   None,
-            inline_types:     None,
-            unused_pub:       None,
-            narrowed_pub:     None,
-            field_visibility: Some(field_visibility),
-            imports_at_top:   None,
-            pub_use:          None,
+            imports:               None,
+            module_imports:        None,
+            inline_types:          None,
+            unused_pub:            None,
+            narrowed_pub:          None,
+            restricted_annotation: None,
+            field_visibility:      Some(field_visibility),
+            imports_at_top:        None,
+            pub_use:               None,
         }
     }
 

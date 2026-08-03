@@ -7,6 +7,7 @@ use anyhow::Result;
 use super::constants::RUSTC_FIELD_VIS_REMOVE_SUGGESTION;
 use super::constants::RUSTC_LINT_SUGGESTION_PREFIX;
 use super::imports::UseFix;
+use super::visibility_annotation_site::VisibilityAnnotationSite;
 use crate::config::DiagnosticCode;
 use crate::reporting::Report;
 
@@ -29,31 +30,14 @@ pub(crate) fn scan_from_report(report: &Report) -> Result<FieldVisibilityFixScan
         let absolute_path = root.join(&finding.path);
         let source = fs::read_to_string(&absolute_path)
             .with_context(|| format!("failed to read {}", absolute_path.display()))?;
-        let Some(line_start) = line_byte_offset(&source, finding.line) else {
-            continue;
-        };
-        let line_end = source[line_start..]
-            .find('\n')
-            .map_or(source.len(), |pos| line_start + pos);
-        let line_text = &source[line_start..line_end];
-        // finding.column is 1-based; the field's `pub` annotation begins there.
-        let column_offset = finding.column.saturating_sub(1);
-        if column_offset > line_text.len() {
-            continue;
-        }
-        let Some(visibility_len) = visibility_annotation_byte_len(&line_text[column_offset..])
+        // A field's annotation is rewritten in place, so both a bare `pub` and
+        // a restricted one are in scope here. The edit covers the whitespace
+        // run after the annotation so the replacement collapses cleanly when
+        // the new visibility is empty.
+        let Some(site) = VisibilityAnnotationSite::locate(&source, finding.line, finding.column)
         else {
             continue;
         };
-        // Include the single space (or whitespace run) following the annotation
-        // so the replacement collapses cleanly when the new vis is empty.
-        let trailing_whitespace_len = line_text[column_offset + visibility_len..]
-            .chars()
-            .take_while(|c| c.is_whitespace() && *c != '\n')
-            .map(char::len_utf8)
-            .sum::<usize>();
-        let absolute_start = line_start + column_offset;
-        let absolute_end = absolute_start + visibility_len + trailing_whitespace_len;
         let replacement_text = if replacement_visibility.is_empty() {
             String::new()
         } else {
@@ -61,8 +45,8 @@ pub(crate) fn scan_from_report(report: &Report) -> Result<FieldVisibilityFixScan
         };
         fixes.push(UseFix {
             path:         absolute_path,
-            start:        absolute_start,
-            end:          absolute_end,
+            start:        site.start,
+            end:          site.end_with_separator,
             replacement:  replacement_text,
             import_group: None,
         });
@@ -83,44 +67,11 @@ fn parse_replacement_from_suggestion(suggestion: Option<&str>) -> Option<String>
     Some(rest[..end].to_string())
 }
 
-/// Return the byte length of a `pub`, `pub(crate)`, `pub(super)`, `pub(self)`,
-/// or `pub(in <path>)` annotation at the start of `text`. Returns `None` when
-/// `text` does not begin with `pub`.
-fn visibility_annotation_byte_len(text: &str) -> Option<usize> {
-    let rest = text.strip_prefix("pub")?;
-    let mut chars = rest.char_indices();
-    match chars.next() {
-        Some((_, '(')) => {
-            // Walk to the matching `)`. `pub(in crate::foo)` may contain
-            // colons and identifiers but never nested parens.
-            let close = rest.find(')')?;
-            Some("pub".len() + close + 1)
-        },
-        Some((_, c)) if c.is_whitespace() || c == ':' => Some("pub".len()),
-        None => Some("pub".len()),
-        _ => None,
-    }
-}
-
-fn line_byte_offset(source: &str, line: usize) -> Option<usize> {
-    if line == 0 {
-        return None;
-    }
-    if line == 1 {
-        return Some(0);
-    }
-    source
-        .match_indices('\n')
-        .nth(line - 2)
-        .map(|(pos, _)| pos + 1)
-}
-
 #[cfg(test)]
 mod tests {
     use super::RUSTC_FIELD_VIS_REMOVE_SUGGESTION;
     use super::RUSTC_LINT_SUGGESTION_PREFIX;
     use super::parse_replacement_from_suggestion;
-    use super::visibility_annotation_byte_len;
 
     #[test]
     fn parses_consider_using_with_pub_crate() {
@@ -157,33 +108,5 @@ mod tests {
             None
         );
         assert_eq!(parse_replacement_from_suggestion(None), None);
-    }
-
-    #[test]
-    fn visibility_len_bare_pub() {
-        assert_eq!(visibility_annotation_byte_len("pub leaked: u32"), Some(3));
-    }
-
-    #[test]
-    fn visibility_len_pub_crate() {
-        assert_eq!(visibility_annotation_byte_len("pub(crate) x"), Some(10));
-    }
-
-    #[test]
-    fn visibility_len_pub_super() {
-        assert_eq!(visibility_annotation_byte_len("pub(super) name"), Some(10));
-    }
-
-    #[test]
-    fn visibility_len_pub_in_path() {
-        assert_eq!(
-            visibility_annotation_byte_len("pub(in crate::foo::bar) y"),
-            Some("pub(in crate::foo::bar)".len())
-        );
-    }
-
-    #[test]
-    fn visibility_len_no_pub() {
-        assert_eq!(visibility_annotation_byte_len("private_field: u32"), None);
     }
 }

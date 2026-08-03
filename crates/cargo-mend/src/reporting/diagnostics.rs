@@ -23,6 +23,7 @@ pub(crate) enum FixSupport {
     InternalParentFacade,
     UnusedPub,
     NarrowToPubCrate,
+    RestrictedAnnotation,
     #[serde(rename = "fix_field_visibility")]
     FieldVisibility,
     #[serde(rename = "fix_imports_at_top")]
@@ -44,6 +45,7 @@ impl FixSupport {
             | Self::InlinePathQualifiedType
             | Self::UnusedPub
             | Self::NarrowToPubCrate
+            | Self::RestrictedAnnotation
             | Self::FieldVisibility
             | Self::ImportsAtTop => Some(HINT_FIXABLE_WITH_FIX),
             Self::PubUse => Some(HINT_FIXABLE_WITH_FIX_PUB_USE),
@@ -58,6 +60,7 @@ impl FixSupport {
             | Self::InlinePathQualifiedType
             | Self::UnusedPub
             | Self::NarrowToPubCrate
+            | Self::RestrictedAnnotation
             | Self::FieldVisibility
             | Self::ImportsAtTop => Some(FixSummaryBucket::Standard),
             Self::PubUse => Some(FixSummaryBucket::PubUse),
@@ -206,6 +209,71 @@ static IMPORTS_AT_TOP: DiagnosticSpec = DiagnosticSpec {
     fix_support: FixSupport::ImportsAtTop,
 };
 
+/// The visibility annotation the compiler pass read off the item this finding
+/// is about. A fixer rewrites only [`Self::Bare`]: replacing a
+/// [`Self::Restricted`] annotation would discard a narrower visibility the
+/// author wrote deliberately, and [`Self::Unknown`] means the pass captured no
+/// annotation text, so there is nothing for a fixer to verify its edit against.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) enum WrittenVisibility {
+    #[default]
+    Unknown,
+    Bare,
+    /// A `pub(crate)`, `pub(super)`, `pub(self)`, or `pub(in <path>)`
+    /// annotation, held as the exact source text — which may span lines.
+    Restricted(String),
+}
+
+impl From<Option<String>> for WrittenVisibility {
+    fn from(visibility_annotation: Option<String>) -> Self {
+        match visibility_annotation {
+            None => Self::Unknown,
+            Some(source) if source == "pub" => Self::Bare,
+            Some(source) => Self::Restricted(source),
+        }
+    }
+}
+
+/// The scope a finding proposes narrowing its item to, and what a fixer is
+/// allowed to do with it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) enum NarrowerScope {
+    /// The finding proposes no narrowing.
+    #[default]
+    Unproposed,
+    /// Canonical def-path of the item's enclosing module, recorded so
+    /// cross-compilation merge can drop the finding when a caller lives outside
+    /// that module. It is a suppression key, not an annotation to write.
+    SuppressionKey(String),
+    /// Canonical def-path of the exact module boundary the item needs, without
+    /// the leading `crate::`. `pub(in crate::<path>)` built from this is a
+    /// correct rewrite of the item's bare `pub`.
+    ExactBoundary(String),
+}
+
+impl NarrowerScope {
+    /// Rebuilds the scope from the two stored fields that carry it. The
+    /// def-path alone cannot say which kind of scope it is; the compiler pass
+    /// records that by attaching [`FixSupport::RestrictedAnnotation`] to the
+    /// same finding, which it does only for a resolved exact boundary.
+    pub(crate) fn resolve(def_path: Option<String>, fix_support: FixSupport) -> Self {
+        match (def_path, fix_support) {
+            (None, _) => Self::Unproposed,
+            (Some(def_path), FixSupport::RestrictedAnnotation) => Self::ExactBoundary(def_path),
+            (Some(def_path), _) => Self::SuppressionKey(def_path),
+        }
+    }
+}
+
+/// What the compiler pass resolved about the visibility of the item a finding
+/// is about. Findings about import shape carry the [`Default`] value, which
+/// says exactly that: no annotation was read and no narrowing was proposed.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ItemVisibility {
+    pub written:        WrittenVisibility,
+    pub narrower_scope: NarrowerScope,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Finding {
     pub severity:        Severity,
@@ -222,6 +290,11 @@ pub(crate) struct Finding {
     pub fix_support:     FixSupport,
     #[serde(default)]
     pub related:         Option<String>,
+    /// Skipped by serde on purpose: the fixers need this in-process and nothing
+    /// outside cargo-mend reads it, so publishing it would create a JSON
+    /// contract with no consumer.
+    #[serde(skip)]
+    pub item_visibility: ItemVisibility,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -460,6 +533,7 @@ pub(crate) fn finding_help_url(finding: &Finding) -> String {
 mod tests {
     use super::Finding;
     use super::FixSupport;
+    use super::ItemVisibility;
     use super::Severity;
     use super::finding_headline;
     use crate::config::DiagnosticCode;
@@ -493,6 +567,7 @@ mod tests {
                 suggestion: None,
                 fix_support: FixSupport::None,
                 related: None,
+                item_visibility: ItemVisibility::default(),
             };
 
             assert_eq!(
@@ -551,6 +626,7 @@ mod tests {
                 suggestion: None,
                 fix_support: FixSupport::None,
                 related: None,
+                item_visibility: ItemVisibility::default(),
             };
 
             assert_eq!(finding_headline(&finding), message);

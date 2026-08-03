@@ -522,6 +522,100 @@ edition = "2024"
 }
 
 #[test]
+fn fix_narrows_a_pub_written_on_its_own_line() {
+    // The annotation and the item it applies to need not share a line. The fix
+    // must still land, and must replace only the annotation: advertising a fix
+    // and then editing nothing is the failure this pins.
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "narrow_own_line_pub_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "mod helpers;\n\npub fn entry() {\n    helpers::internal_fn();\n}\n",
+    )
+    .expect("write lib");
+    fs::write(
+        temp.path().join("src/helpers.rs"),
+        "pub\nfn internal_fn() {}\n",
+    )
+    .expect("write helpers");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert_eq!(
+        fs::read_to_string(temp.path().join("src/helpers.rs")).expect("read fixed helpers"),
+        "pub(crate)\nfn internal_fn() {}\n",
+    );
+}
+
+#[test]
+fn fix_narrows_a_tab_indented_pub() {
+    // A finding's column is rustc's display column, which charges a tab four
+    // columns. Reading it as a byte offset lands past the `pub` and the fix
+    // silently never lands.
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "narrow_tab_indented_pub_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "mod helpers;\n\npub fn entry() {\n    helpers::Helper::internal_fn();\n}\n",
+    )
+    .expect("write lib");
+    fs::write(
+        temp.path().join("src/helpers.rs"),
+        "pub struct Helper;\n\nimpl Helper {\n\tpub fn internal_fn() {}\n}\n",
+    )
+    .expect("write helpers");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert_eq!(
+        fs::read_to_string(temp.path().join("src/helpers.rs")).expect("read fixed helpers"),
+        "pub(crate) struct Helper;\n\nimpl Helper {\n\tpub(crate) fn internal_fn() {}\n}\n",
+    );
+}
+
+#[test]
 fn methods_on_re_exported_type_are_not_flagged() {
     let temp = tempdir().expect("create temp fixture dir");
 

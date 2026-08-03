@@ -33,6 +33,7 @@ use crate::fixes::imports::UseFix;
 use crate::fixes::imports::ValidatedFixSet;
 use crate::reporting::Finding;
 use crate::reporting::FixSupport;
+use crate::reporting::ItemVisibility;
 use crate::reporting::Severity;
 use crate::rust_syntax;
 use crate::selection::Selection;
@@ -494,6 +495,7 @@ fn build_function_finding(
         suggestion,
         fix_support: FixSupport::PreferModuleImport,
         related: None,
+        item_visibility: ItemVisibility::default(),
     }
 }
 

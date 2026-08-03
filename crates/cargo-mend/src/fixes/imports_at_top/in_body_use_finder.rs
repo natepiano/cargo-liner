@@ -25,6 +25,7 @@ use crate::fixes::imports::ImportGroup;
 use crate::fixes::imports::UseFix;
 use crate::reporting::Finding;
 use crate::reporting::FixSupport;
+use crate::reporting::ItemVisibility;
 use crate::reporting::Severity;
 
 /// What the scope already exposes under a given bare name. Use-imports
@@ -201,6 +202,7 @@ impl InBodyUseFinder<'_> {
             suggestion: Some(IMPORTS_AT_TOP_SUGGESTION.to_string()),
             fix_support: FixSupport::ImportsAtTop,
             related: None,
+            item_visibility: ItemVisibility::default(),
         });
 
         if !all_duplicates {

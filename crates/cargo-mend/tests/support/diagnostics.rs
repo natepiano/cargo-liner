@@ -1,5 +1,10 @@
 use serde::Deserialize;
 
+// fix notes
+const NOTE_FIXABLE_WITH_FIX: &str = "this warning is auto-fixable with `cargo mend --fix`";
+const NOTE_FIXABLE_WITH_FIX_PUB_USE: &str =
+    "this warning is auto-fixable with `cargo mend --fix-pub-use`";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DiagnosticCode {
@@ -71,6 +76,7 @@ pub enum FixSupport {
     InternalParentFacade,
     UnusedPub,
     NarrowToPubCrate,
+    RestrictedAnnotation,
     #[serde(rename = "fix_field_visibility")]
     FieldVisibility,
     #[serde(rename = "fix_imports_at_top")]
@@ -92,9 +98,10 @@ impl FixSupport {
             | Self::InlinePathQualifiedType
             | Self::UnusedPub
             | Self::NarrowToPubCrate
+            | Self::RestrictedAnnotation
             | Self::FieldVisibility
-            | Self::ImportsAtTop => Some("this warning is auto-fixable with `cargo mend --fix`"),
-            Self::PubUse => Some("this warning is auto-fixable with `cargo mend --fix-pub-use`"),
+            | Self::ImportsAtTop => Some(NOTE_FIXABLE_WITH_FIX),
+            Self::PubUse => Some(NOTE_FIXABLE_WITH_FIX_PUB_USE),
         }
     }
 
@@ -106,10 +113,43 @@ impl FixSupport {
             | Self::InlinePathQualifiedType
             | Self::UnusedPub
             | Self::NarrowToPubCrate
+            | Self::RestrictedAnnotation
             | Self::FieldVisibility
             | Self::ImportsAtTop => Some(FixSummaryBucket::Standard),
             Self::PubUse => Some(FixSummaryBucket::PubUse),
         }
+    }
+}
+
+/// The `--fix` route a rendered diagnostic advertised, read back from its fix
+/// note. The cargo JSON a parsed `Finding` comes from carries that note and
+/// never the `FixSupport` variant behind it, so this is the whole fixability
+/// fact the harness can recover: `DiagnosticSpec::fix_support` states only the
+/// per-code default, and a route a single finding earns on its own — a
+/// `suspicious_pub` whose bare `pub` narrows to an exact module boundary —
+/// reaches the JSON as this note and nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdvertisedFix {
+    NotOffered,
+    WithFix,
+    WithFixPubUse,
+}
+
+impl AdvertisedFix {
+    pub fn from_notes<'note>(notes: impl IntoIterator<Item = &'note str>) -> Self {
+        let mut advertised = Self::NotOffered;
+        for note in notes {
+            // `--fix-pub-use` is the more specific claim and wins: the two note
+            // texts differ past `--fix`, so test each note against the longer
+            // one first.
+            if note.contains(NOTE_FIXABLE_WITH_FIX_PUB_USE) {
+                return Self::WithFixPubUse;
+            }
+            if note.contains(NOTE_FIXABLE_WITH_FIX) {
+                advertised = Self::WithFix;
+            }
+        }
+        advertised
     }
 }
 

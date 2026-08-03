@@ -42,6 +42,9 @@ impl MendRunner<'_> {
         if let Some(scan) = fix_scans.narrowed_pub {
             fixes.extend(scan.fixes.iter().cloned());
         }
+        if let Some(scan) = fix_scans.restricted_annotation {
+            fixes.extend(scan.fixes.iter().cloned());
+        }
         if let Some(scan) = fix_scans.field_visibility {
             fixes.extend(scan.fixes.iter().cloned());
         }
@@ -142,14 +145,15 @@ mod tests {
         module_imports: &'a PreferModuleImportScan,
     ) -> FixScans<'a> {
         FixScans {
-            imports:          Some(imports),
-            module_imports:   Some(module_imports),
-            inline_types:     None,
-            unused_pub:       None,
-            narrowed_pub:     None,
-            field_visibility: None,
-            imports_at_top:   None,
-            pub_use:          None,
+            imports:               Some(imports),
+            module_imports:        Some(module_imports),
+            inline_types:          None,
+            unused_pub:            None,
+            narrowed_pub:          None,
+            restricted_annotation: None,
+            field_visibility:      None,
+            imports_at_top:        None,
+            pub_use:               None,
         }
     }
 

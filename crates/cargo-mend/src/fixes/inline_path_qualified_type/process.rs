@@ -12,6 +12,7 @@ use crate::fixes::imports::ImportGroup;
 use crate::fixes::imports::UseFix;
 use crate::reporting::Finding;
 use crate::reporting::FixSupport;
+use crate::reporting::ItemVisibility;
 use crate::reporting::Severity;
 use crate::rust_syntax::PathAnchor;
 
@@ -137,6 +138,7 @@ pub(super) fn process_occurrence(
         suggestion: Some(format!("consider adding: `use {import_path};`")),
         fix_support: FixSupport::InlinePathQualifiedType,
         related: None,
+        item_visibility: ItemVisibility::default(),
     });
 
     // Group the rewrite and its companion `use` insertion so the combining
