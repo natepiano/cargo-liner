@@ -814,7 +814,7 @@ fn no_facade_callers_select_only_compiling_advice() {
             "mod b;\nfn above_parent() { b::c::helper(); }\n",
             "pub(super) mod c;\n",
             "pub(in crate::a) fn helper() {}\n",
-            "no visibility annotation allowed by policy preserves this item's current callers",
+            "no policy-allowed visibility keeps this item reachable where it is used: private and `pub(super)` are too narrow, and no facade caps `pub`",
             "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend`",
         ),
     ] {
@@ -860,7 +860,7 @@ fn a_caller_naming_the_item_still_demands_a_facade() {
     assert_headline_and_help(
         &report,
         "src/a/b/c.rs",
-        "no visibility annotation allowed by policy preserves this item's current callers",
+        "no policy-allowed visibility keeps this item reachable where it is used: private and `pub(super)` are too narrow, and no facade caps `pub`",
         "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo \
          mend`",
     );
@@ -877,7 +877,7 @@ fn a_sibling_binary_keeps_a_signature_only_boundary_reported() {
     assert_headline_and_help(
         &with_binary_report,
         "src/a/target.rs",
-        "no visibility annotation allowed by policy preserves this item's current callers",
+        "no policy-allowed visibility keeps this item reachable where it is used: private and `pub(super)` are too narrow, and no facade caps `pub`",
         "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo \
          mend`",
     );
@@ -899,7 +899,7 @@ fn sibling_binary_accepted_reach_preserves_no_facade_violation() {
     assert_headline_and_help(
         &with_binary_report,
         "src/a/c.rs",
-        "no visibility annotation allowed by policy preserves this item's current callers",
+        "no policy-allowed visibility keeps this item reachable where it is used: private and `pub(super)` are too narrow, and no facade caps `pub`",
         "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend`",
     );
 }
@@ -920,7 +920,7 @@ fn cross_target_resolved_facade_preserves_joined_reexport_boundary() {
     assert_headline_and_help(
         &with_facade_report,
         "src/a/target.rs",
-        "no visibility annotation allowed by policy preserves this item's current callers",
+        "no policy-allowed visibility keeps this item reachable where it is used: private and `pub(super)` are too narrow, and no facade caps `pub`",
         "move the item into `crate::a::b`, or add an explicit facade at `crate::a::b` and rerun `cargo mend`",
     );
     assert!(

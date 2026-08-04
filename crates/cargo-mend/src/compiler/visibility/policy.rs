@@ -461,8 +461,8 @@ pub(in crate::compiler) enum NoFacadeVisibilityRepair {
 
 impl NoFacadeVisibilityRepair {
     const REMOVE_ANNOTATION_SUGGESTION: &str = "consider removing the visibility";
-    const STRUCTURAL_HEADLINE: &str =
-        "no visibility annotation allowed by policy preserves this item's current callers";
+    const STRUCTURAL_HEADLINE: &str = "no policy-allowed visibility keeps this item reachable where it is used: private and \
+         `pub(super)` are too narrow, and no facade caps `pub`";
 
     fn suggestion(self, boundary_path: &str) -> String {
         match self {

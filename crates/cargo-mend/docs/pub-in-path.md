@@ -909,7 +909,7 @@ Only the first row is new. Still rejected: any `pub(in <path>)` where `<path>` i
 | Glob blocks resolution | `parent facade does not provide a resolvable visibility boundary` | ``facade at <path>:<line> uses `*`; replace it with an explicit re-export before using `pub(in ...)` `` |
 | Redundant spelling, canonical reach valid | ``` `pub(in crate)` is a redundant spelling of `pub(crate)` ``` | ``consider using: `pub(crate)` `` (analogous for `self`/`super`) |
 | Too-wide path | ``` `pub(in crate)` is wider than the exact parent facade boundary ``` | ``consider using: `pub(in crate::video_plane)` `` |
-| No visibility-only rewrite compiles | `no visibility annotation allowed by policy preserves this item's current callers` | ``move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend` `` |
+| No visibility-only rewrite compiles | ``no policy-allowed visibility keeps this item reachable where it is used: private and `pub(super)` are too narrow, and no facade caps `pub` `` | ``move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend` `` |
 
 **There is no "Restricted `use` blocks resolution" row.** It was deleted when Phase 5's pending decision resolved: `FacadeChainBlocker::UnsupportedVisibility` is gone, a `pub(in crate::a) use` hop is joinable, and no advice row is needed for it. Do not add one back — resolved reach alone never establishes that a facade was *written* `pub(in ...)`, so any such row would have to be gated on `ParentFacadeExportStatus::use_syntax()` (`facade/exports.rs:86-96`) returning `Some`, and quoting a modifier the tool did not read is exactly the class of defect that consumed three of Phase 4's eleven fix passes. The glob row above is safe as written: `FacadeUseKind::Glob` is a HIR use-kind, not a spelling.
 
@@ -1081,7 +1081,7 @@ Three test obligations this phase inherits from Phase 3:
 
 **Spec:**
 
-First, make the cross-target refinement keep each diagnostic's headline and help in agreement. `no_facade_pub_in_advice` and `refine_no_facade_advice` must use one shared headline selector. When the combined caller set reaches `NoFacadeAdvice::StructuralMigration`, the load pass rewrites `finding.message` to `no visibility annotation allowed by policy preserves this item's current callers` alongside the structural-migration suggestion. For the other two branches, preserve the existing generic headline; do not reconstruct it from the persisted raw annotation text. Update the sibling-binary regression test to assert the structural headline and help together, while the library-only case keeps its current generic headline and removal suggestion.
+First, make the cross-target refinement keep each diagnostic's headline and help in agreement. `no_facade_pub_in_advice` and `refine_no_facade_advice` must use one shared headline selector. When the combined caller set reaches `NoFacadeAdvice::StructuralMigration`, the load pass rewrites `finding.message` to ``no policy-allowed visibility keeps this item reachable where it is used: private and `pub(super)` are too narrow, and no facade caps `pub` `` alongside the structural-migration suggestion. For the other two branches, preserve the existing generic headline; do not reconstruct it from the persisted raw annotation text. Update the sibling-binary regression test to assert the structural headline and help together, while the library-only case keeps its current generic headline and removal suggestion.
 
 `README.md`:
 

@@ -610,7 +610,7 @@ mod tests {
             ),
             (
                 DiagnosticCode::ForbiddenPubInCrate,
-                "no visibility annotation allowed by policy preserves this item's current callers",
+                "no policy-allowed visibility keeps this item reachable where it is used: private and `pub(super)` are too narrow, and no facade caps `pub`",
             ),
         ] {
             let finding = Finding {
