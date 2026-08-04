@@ -5080,3 +5080,135 @@ fn assert_declaration_identity_findings(report: &Report) {
         "ValueTarget must retain the same-named const's crate reach: {report:#?}",
     );
 }
+
+// An attribute argument is metadata, not a signature. `#[require(Target)]`
+// names a type in token position, and whether that type reaches public API
+// depends on what the macro expands to — which only the post-expansion HIR
+// knows. Bevy's real `#[require]` registers the named component from a function
+// body and never places it in a signature.
+#[test]
+fn attribute_metadata_alone_does_not_expose_a_child_through_a_public_signature() {
+    let temp = tempdir().expect("create attribute exposure fixture dir");
+    write_allowance_sources(
+        &temp,
+        &[
+            (
+                "Cargo.toml",
+                r#"[workspace]
+members = ["app", "macros"]
+resolver = "3"
+"#,
+            ),
+            ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
+            (
+                "app/Cargo.toml",
+                r#"[package]
+name = "attribute_exposure_fixture"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+macros_fixture = { path = "../macros" }
+"#,
+            ),
+            (
+                "app/src/lib.rs",
+                "mod consumer;\nmod hidden;\n\npub use hidden::api;\n\npub(crate) fn retain_controls() {\n    consumer::touch();\n    let _ = hidden::api::make();\n}\n",
+            ),
+            (
+                "app/src/consumer.rs",
+                "pub(crate) fn touch() {\n    let _ = crate::hidden::api::AttributeTarget;\n}\n",
+            ),
+            ("app/src/hidden.rs", "pub mod api;\n"),
+            (
+                "app/src/hidden/api.rs",
+                r#"mod attribute_target;
+mod signature_target;
+
+use macros_fixture::require;
+use signature_target::SignatureTarget;
+
+pub(crate) use attribute_target::AttributeTarget;
+
+#[require(AttributeTarget)]
+pub struct Marker;
+
+pub fn make() -> SignatureTarget {
+    SignatureTarget
+}
+"#,
+            ),
+            (
+                "app/src/hidden/api/attribute_target.rs",
+                "pub(crate) struct AttributeTarget;\n",
+            ),
+            (
+                "app/src/hidden/api/signature_target.rs",
+                "pub(crate) struct SignatureTarget;\n",
+            ),
+            (
+                "macros/Cargo.toml",
+                r#"[package]
+name = "macros_fixture"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+proc-macro = true
+"#,
+            ),
+            (
+                "macros/src/lib.rs",
+                r#"use proc_macro::TokenStream;
+
+#[proc_macro_attribute]
+pub fn require(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
+}
+"#,
+            ),
+        ],
+    );
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let target_finding = |path: &str| {
+        report
+            .findings
+            .iter()
+            .find(|finding| {
+                finding.path == path && finding.code == DiagnosticCode::ForbiddenPubCrate
+            })
+            .unwrap_or_else(|| panic!("missing forbidden_pub_crate finding at {path}: {report:#?}"))
+    };
+    // The attribute-named target may keep a forbidden_pub_crate finding for an
+    // unrelated reason, or lose it entirely once the false exposure is gone.
+    // What must never appear is the claim that a public signature carries it.
+    let claims_public_signature_exposure = |path: &str| {
+        report
+            .findings
+            .iter()
+            .filter(|finding| finding.path == path)
+            .flat_map(|finding| finding.help.iter())
+            .any(|line| {
+                line == "this item is exposed through a public signature; consider using `pub`"
+            })
+    };
+    assert!(
+        target_finding("app/src/hidden/api/signature_target.rs")
+            .help
+            .iter()
+            .any(|line| {
+                line == "this item is exposed through a public signature; consider using `pub`"
+            }),
+        "the return type of the exported api::make must keep its public signature reach: {report:#?}",
+    );
+    for path in [
+        "app/src/hidden/api/attribute_target.rs",
+        "app/src/hidden/api.rs",
+    ] {
+        assert!(
+            !claims_public_signature_exposure(path),
+            "a type named only by attribute metadata must not count as publicly exposed at {path}: {report:#?}",
+        );
+    }
+}

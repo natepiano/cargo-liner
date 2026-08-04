@@ -138,6 +138,20 @@ The following two-code matrix applies to `forbidden_pub_in_crate` and `forbidden
   run to run instead of varying with the standard library's per-process random seed.
 
 ### Fixed
+- Naming a type inside an attribute no longer counts as putting that type in a public signature.
+  Previously mend searched the attributes on every `pub` item for the name of the type it was
+  judging, and a match was taken as proof that the item's signature carried that type — which meant
+  the type had to be `pub` too. Nothing narrowed the search: any attribute qualified, and the name
+  could appear anywhere inside it, including in a string. `#[derive(...)]`, `#[reflect(...)]`, and
+  even `#[doc = "TypeName"]` all counted. The search also ran first and replaced the real check, so
+  a match ended the analysis before the item's actual fields and signatures were read.
+
+  In Bevy this hit the standard pattern for required components. A `pub` component that lists its
+  internal components in `#[require(...)]` had every one of them reported as exposed through a
+  public signature, with advice to widen them to `pub` — the opposite of the right answer, since
+  `#[require]` registers those components from inside a function body and never places them in a
+  signature. Attributes describe the source before macros run; whether a macro actually puts a type
+  in public API is answered by the expanded code, which mend already reads.
 - `--fix` no longer narrows a declaration that a `pub use` in another module re-exports. rustc's
   E0364 is syntactic: a `pub use` requires the item it names to be `pub`, whether or not the
   re-export is itself reachable from outside. A `pub use` in one of the item's ancestor modules is
