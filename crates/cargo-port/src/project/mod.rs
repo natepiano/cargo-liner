@@ -12,11 +12,9 @@ mod root_item;
 pub(crate) use cargo::AcceptedCargoMetadataRevision;
 pub(crate) use cargo::CanonicalCheckoutRoot;
 pub(crate) use cargo::CanonicalMemberRoot;
-#[cfg(test)]
 pub(crate) use cargo::CanonicalPackageOwnership;
 pub(crate) use cargo::CanonicalPathResolution;
 pub(crate) use cargo::CanonicalTargetDirectory;
-#[cfg(test)]
 pub(crate) use cargo::CanonicalTargetOwnership;
 pub(crate) use cargo::CanonicalTargetSource;
 pub(crate) use cargo::CanonicalWorkspaceRoot;
@@ -49,6 +47,7 @@ pub(crate) use cargo::VendoredPackage;
 pub(crate) use cargo::VisibleProjectWorkspaceOwnership;
 pub(crate) use cargo::VisibleTargetWorkspaceOwnership;
 pub(crate) use cargo::Workspace;
+pub(crate) use cargo::WorkspaceIndexRebuild;
 pub(crate) use cargo::WorkspaceMetadata;
 pub(crate) use cargo::WorkspaceMetadataStore;
 pub(crate) use cargo::from_cargo_toml;

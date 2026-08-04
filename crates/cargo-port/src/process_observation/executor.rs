@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -5,6 +6,7 @@ use std::time::Instant;
 
 use super::ProcessObserver;
 use super::snapshot::CompletedProcessRefreshExecution;
+use super::snapshot::ProcessObservationSnapshot;
 use super::snapshot::ProcessRefreshConsumerDemand;
 use super::snapshot::ProcessRefreshExecutionFailure;
 use super::snapshot::ProcessRefreshExecutionOutcome;
@@ -12,6 +14,44 @@ use crate::channel;
 use crate::channel::Receiver;
 use crate::channel::Sender;
 use crate::channel::TryRecvError;
+
+/// How a refresh consumer classifies the cycle the observer just produced.
+///
+/// This is the one point where observation hands a completed snapshot to code
+/// that knows what a build is. Observation moves the consumer's own demand in
+/// and its own outcome back out without naming either type, which is what keeps
+/// `process_observation` free of any dependency on `build_monitor` while the
+/// sole runtime classifier still lives beside the sole observer.
+pub(crate) trait RefreshCycleClassifier: Send + 'static {
+    /// Immutable consumer evidence attached to one refresh request.
+    type CycleDemand: Send + 'static;
+    /// What classifying one refresh cycle produced for that consumer.
+    type CycleOutcome: Debug + PartialEq + Send + 'static;
+
+    fn classify_refresh_cycle(
+        &mut self,
+        process_observation_snapshot: &ProcessObservationSnapshot,
+        cycle_demand: Self::CycleDemand,
+    ) -> Self::CycleOutcome;
+}
+
+/// The single mutable owner of everything one refresh cycle runs against.
+///
+/// Whichever backend executes the cycle holds exactly one of these, so the
+/// observer and the classifier can never be reached from two places.
+struct ProcessRefreshCycleOwner<C> {
+    process_observer:         ProcessObserver,
+    refresh_cycle_classifier: C,
+}
+
+impl<C> ProcessRefreshCycleOwner<C> {
+    fn new(refresh_cycle_classifier: C) -> Self {
+        Self {
+            process_observer: ProcessObserver::default(),
+            refresh_cycle_classifier,
+        }
+    }
+}
 
 /// The benchmark-selected location for observer work.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -54,9 +94,9 @@ impl ProcessRefreshRequestId {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ProcessRefreshPlan {
-    demand: ProcessRefreshConsumerDemand,
+struct ProcessRefreshPlan<CycleDemand> {
+    demand:       ProcessRefreshConsumerDemand,
+    cycle_demand: CycleDemand,
 }
 
 enum DueProcessRefreshDemand {
@@ -64,32 +104,39 @@ enum DueProcessRefreshDemand {
     NotDue,
 }
 
-impl ProcessRefreshPlan {
-    const fn new(demand: ProcessRefreshConsumerDemand) -> Self { Self { demand } }
+impl<CycleDemand> ProcessRefreshPlan<CycleDemand> {
+    const fn new(demand: ProcessRefreshConsumerDemand, cycle_demand: CycleDemand) -> Self {
+        Self {
+            demand,
+            cycle_demand,
+        }
+    }
 }
 
-struct ProcessRefreshWorkerRequest {
+struct ProcessRefreshWorkerRequest<CycleDemand> {
     request_id: ProcessRefreshRequestId,
-    plan:       ProcessRefreshPlan,
+    plan:       ProcessRefreshPlan<CycleDemand>,
 }
 
-enum ProcessRefreshWorkerCommand {
-    Execute(ProcessRefreshWorkerRequest),
+enum ProcessRefreshWorkerCommand<CycleDemand> {
+    Execute(ProcessRefreshWorkerRequest<CycleDemand>),
     Shutdown,
 }
 
 /// One correlated observer execution result.
 #[derive(Debug, PartialEq)]
-pub(crate) struct ProcessRefreshExecution {
+pub(crate) struct ProcessRefreshExecution<CycleOutcome> {
     request_id: ProcessRefreshRequestId,
     demand:     ProcessRefreshConsumerDemand,
-    outcome:    ProcessRefreshExecutionOutcome,
+    outcome:    ProcessRefreshExecutionOutcome<CycleOutcome>,
 }
 
-impl ProcessRefreshExecution {
+impl<CycleOutcome> ProcessRefreshExecution<CycleOutcome> {
     pub(crate) const fn demand(&self) -> ProcessRefreshConsumerDemand { self.demand }
 
-    pub(crate) fn into_outcome(self) -> ProcessRefreshExecutionOutcome { self.outcome }
+    pub(crate) fn into_outcome(self) -> ProcessRefreshExecutionOutcome<CycleOutcome> {
+        self.outcome
+    }
 
     const fn failed(
         request_id: ProcessRefreshRequestId,
@@ -110,11 +157,32 @@ impl ProcessRefreshExecution {
     ) -> Self {
         Self::failed(ProcessRefreshRequestId(0), demand, failure)
     }
+
+    /// A correlated completed execution over an empty observation, so a
+    /// consumer's reconciliation can be tested against any cycle outcome.
+    #[cfg(test)]
+    pub(crate) fn completed_for_test(
+        demand: ProcessRefreshConsumerDemand,
+        cycle_outcome: CycleOutcome,
+    ) -> Self {
+        Self {
+            request_id: ProcessRefreshRequestId(0),
+            demand,
+            outcome: ProcessRefreshExecutionOutcome::Completed(Box::new(
+                CompletedProcessRefreshExecution::new(
+                    crate::process_observation::snapshot::ProcessObservationSnapshot::empty_for_test(
+                    ),
+                    Duration::ZERO,
+                    cycle_outcome,
+                ),
+            )),
+        }
+    }
 }
 
-struct DedicatedProcessRefreshWorker {
-    command_sender:  Sender<ProcessRefreshWorkerCommand>,
-    result_receiver: Receiver<Box<ProcessRefreshExecution>>,
+struct DedicatedProcessRefreshWorker<C: RefreshCycleClassifier> {
+    command_sender:  Sender<ProcessRefreshWorkerCommand<C::CycleDemand>>,
+    result_receiver: Receiver<Box<ProcessRefreshExecution<C::CycleOutcome>>>,
     thread_state:    ProcessRefreshWorkerThreadState,
 }
 
@@ -123,12 +191,18 @@ enum ProcessRefreshWorkerThreadState {
     Joined,
 }
 
-impl DedicatedProcessRefreshWorker {
-    fn spawn() -> Self {
+impl<C: RefreshCycleClassifier> DedicatedProcessRefreshWorker<C> {
+    fn spawn(refresh_cycle_classifier: C) -> Self {
         let (command_sender, command_receiver) = channel::unbounded();
         let (result_sender, result_receiver) = channel::unbounded();
         let join_handle = thread::spawn(move || {
-            process_refresh_worker(&command_receiver, &result_sender);
+            let mut process_refresh_cycle_owner =
+                ProcessRefreshCycleOwner::new(refresh_cycle_classifier);
+            process_refresh_worker(
+                &mut process_refresh_cycle_owner,
+                &command_receiver,
+                &result_sender,
+            );
         });
         Self {
             command_sender,
@@ -139,7 +213,7 @@ impl DedicatedProcessRefreshWorker {
 
     fn dispatch(
         &self,
-        process_refresh_worker_request: ProcessRefreshWorkerRequest,
+        process_refresh_worker_request: ProcessRefreshWorkerRequest<C::CycleDemand>,
     ) -> Result<(), ProcessRefreshExecutionFailure> {
         self.command_sender
             .send(ProcessRefreshWorkerCommand::Execute(
@@ -148,7 +222,7 @@ impl DedicatedProcessRefreshWorker {
             .map_err(|_| ProcessRefreshExecutionFailure::RequestChannelDisconnected)
     }
 
-    fn poll(&self) -> ProcessRefreshWorkerResultPoll {
+    fn poll(&self) -> ProcessRefreshWorkerResultPoll<C::CycleOutcome> {
         match self.result_receiver.try_recv() {
             Ok(process_refresh_execution) => {
                 ProcessRefreshWorkerResultPoll::Received(process_refresh_execution)
@@ -158,12 +232,12 @@ impl DedicatedProcessRefreshWorker {
         }
     }
 
-    const fn result_receiver(&self) -> &Receiver<Box<ProcessRefreshExecution>> {
+    const fn result_receiver(&self) -> &Receiver<Box<ProcessRefreshExecution<C::CycleOutcome>>> {
         &self.result_receiver
     }
 }
 
-impl Drop for DedicatedProcessRefreshWorker {
+impl<C: RefreshCycleClassifier> Drop for DedicatedProcessRefreshWorker<C> {
     fn drop(&mut self) {
         let _ = self
             .command_sender
@@ -178,9 +252,9 @@ impl Drop for DedicatedProcessRefreshWorker {
     }
 }
 
-enum ProcessRefreshExecutionBackend {
-    Synchronous(Box<ProcessObserver>),
-    DedicatedWorker(DedicatedProcessRefreshWorker),
+enum ProcessRefreshExecutionBackend<C: RefreshCycleClassifier> {
+    Synchronous(Box<ProcessRefreshCycleOwner<C>>),
+    DedicatedWorker(DedicatedProcessRefreshWorker<C>),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -194,28 +268,28 @@ enum ProcessRefreshInFlight {
 
 /// Result of asking the executor to perform due work.
 #[derive(Debug, PartialEq)]
-pub(crate) enum ProcessRefreshDispatchOutcome {
+pub(crate) enum ProcessRefreshDispatchOutcome<CycleOutcome> {
     NotDue,
     AwaitingWorker(ProcessRefreshRequestId),
-    Finished(Box<ProcessRefreshExecution>),
+    Finished(Box<ProcessRefreshExecution<CycleOutcome>>),
 }
 
 /// Nonblocking state of the dedicated worker result channel.
 #[derive(Debug, PartialEq)]
-pub(crate) enum ProcessRefreshResultPoll {
+pub(crate) enum ProcessRefreshResultPoll<CycleOutcome> {
     Pending,
-    Ready(Box<ProcessRefreshExecution>),
+    Ready(Box<ProcessRefreshExecution<CycleOutcome>>),
 }
 
-enum ProcessRefreshWorkerResultPoll {
+enum ProcessRefreshWorkerResultPoll<CycleOutcome> {
     Pending,
-    Received(Box<ProcessRefreshExecution>),
+    Received(Box<ProcessRefreshExecution<CycleOutcome>>),
     Disconnected,
 }
 
 /// App-owned scheduler and execution backend for the sole `ProcessObserver`.
-pub(crate) struct ProcessRefreshExecutor {
-    backend:                  ProcessRefreshExecutionBackend,
+pub(crate) struct ProcessRefreshExecutor<C: RefreshCycleClassifier> {
+    backend:                  ProcessRefreshExecutionBackend<C>,
     running_targets_schedule: RunningTargetsRefreshSchedule,
     running_targets_deadline: ProcessRefreshDeadline,
     compile_monitor_schedule: CompileMonitorRefreshSchedule,
@@ -223,20 +297,23 @@ pub(crate) struct ProcessRefreshExecutor {
     next_request_id:          ProcessRefreshRequestId,
 }
 
-impl ProcessRefreshExecutor {
+impl<C: RefreshCycleClassifier> ProcessRefreshExecutor<C> {
     pub(crate) fn new(
         backend_selection: ProcessRefreshExecutionBackendSelection,
+        refresh_cycle_classifier: C,
         running_targets_schedule: RunningTargetsRefreshSchedule,
         compile_monitor_schedule: CompileMonitorRefreshSchedule,
         started_at: Instant,
     ) -> Self {
         let backend = match backend_selection {
             ProcessRefreshExecutionBackendSelection::Synchronous => {
-                ProcessRefreshExecutionBackend::Synchronous(Box::default())
+                ProcessRefreshExecutionBackend::Synchronous(Box::new(
+                    ProcessRefreshCycleOwner::new(refresh_cycle_classifier),
+                ))
             },
             ProcessRefreshExecutionBackendSelection::DedicatedWorker => {
                 ProcessRefreshExecutionBackend::DedicatedWorker(
-                    DedicatedProcessRefreshWorker::spawn(),
+                    DedicatedProcessRefreshWorker::spawn(refresh_cycle_classifier),
                 )
             },
         };
@@ -261,7 +338,14 @@ impl ProcessRefreshExecutor {
         minimum_deadline(self.running_targets_deadline, self.compile_monitor_schedule)
     }
 
-    pub(crate) fn refresh_due(&mut self, now: Instant) -> ProcessRefreshDispatchOutcome {
+    /// Dispatch a due cycle, asking the consumer for its per-cycle demand only
+    /// once a cycle is actually going out. A tick that finds nothing due costs
+    /// no demand construction.
+    pub(crate) fn refresh_due(
+        &mut self,
+        now: Instant,
+        cycle_demand: impl FnOnce(ProcessRefreshConsumerDemand) -> C::CycleDemand,
+    ) -> ProcessRefreshDispatchOutcome<C::CycleOutcome> {
         if matches!(self.in_flight, ProcessRefreshInFlight::Awaiting { .. }) {
             return ProcessRefreshDispatchOutcome::NotDue;
         }
@@ -271,11 +355,11 @@ impl ProcessRefreshExecutor {
         };
         let request_id = self.next_request_id.next();
         self.advance_dispatched_deadlines(now, demand);
-        let plan = ProcessRefreshPlan::new(demand);
+        let plan = ProcessRefreshPlan::new(demand, cycle_demand(demand));
         match &mut self.backend {
-            ProcessRefreshExecutionBackend::Synchronous(process_observer) => {
+            ProcessRefreshExecutionBackend::Synchronous(process_refresh_cycle_owner) => {
                 ProcessRefreshDispatchOutcome::Finished(Box::new(execute_refresh(
-                    process_observer,
+                    process_refresh_cycle_owner,
                     request_id,
                     plan,
                 )))
@@ -296,7 +380,7 @@ impl ProcessRefreshExecutor {
         }
     }
 
-    pub(crate) fn poll_result(&mut self) -> ProcessRefreshResultPoll {
+    pub(crate) fn poll_result(&mut self) -> ProcessRefreshResultPoll<C::CycleOutcome> {
         if matches!(self.in_flight, ProcessRefreshInFlight::Idle) {
             return ProcessRefreshResultPoll::Pending;
         }
@@ -311,8 +395,8 @@ impl ProcessRefreshExecutor {
 
     fn handle_worker_result_poll(
         &mut self,
-        worker_poll: ProcessRefreshWorkerResultPoll,
-    ) -> ProcessRefreshResultPoll {
+        worker_poll: ProcessRefreshWorkerResultPoll<C::CycleOutcome>,
+    ) -> ProcessRefreshResultPoll<C::CycleOutcome> {
         let ProcessRefreshInFlight::Awaiting { request_id, demand } = self.in_flight else {
             return ProcessRefreshResultPoll::Pending;
         };
@@ -337,7 +421,9 @@ impl ProcessRefreshExecutor {
         }
     }
 
-    pub(crate) const fn result_receiver(&self) -> ProcessRefreshResultReceiver<'_> {
+    pub(crate) const fn result_receiver(
+        &self,
+    ) -> ProcessRefreshResultReceiver<'_, C::CycleOutcome> {
         match (&self.backend, self.in_flight) {
             (
                 ProcessRefreshExecutionBackend::DedicatedWorker(worker),
@@ -395,9 +481,9 @@ impl ProcessRefreshExecutor {
 }
 
 /// Borrowed worker receiver used only to register event-loop wakeups.
-pub(crate) enum ProcessRefreshResultReceiver<'a> {
+pub(crate) enum ProcessRefreshResultReceiver<'a, CycleOutcome> {
     NoWorkerResultExpected,
-    DedicatedWorker(&'a Receiver<Box<ProcessRefreshExecution>>),
+    DedicatedWorker(&'a Receiver<Box<ProcessRefreshExecution<CycleOutcome>>>),
 }
 
 fn minimum_deadline(
@@ -425,16 +511,16 @@ fn minimum_deadline(
     }
 }
 
-fn process_refresh_worker(
-    command_receiver: &Receiver<ProcessRefreshWorkerCommand>,
-    result_sender: &Sender<Box<ProcessRefreshExecution>>,
+fn process_refresh_worker<C: RefreshCycleClassifier>(
+    process_refresh_cycle_owner: &mut ProcessRefreshCycleOwner<C>,
+    command_receiver: &Receiver<ProcessRefreshWorkerCommand<C::CycleDemand>>,
+    result_sender: &Sender<Box<ProcessRefreshExecution<C::CycleOutcome>>>,
 ) {
-    let mut process_observer = ProcessObserver::default();
     while let Ok(command) = command_receiver.recv() {
         match command {
             ProcessRefreshWorkerCommand::Execute(process_refresh_worker_request) => {
                 let process_refresh_execution = execute_refresh(
-                    &mut process_observer,
+                    process_refresh_cycle_owner,
                     process_refresh_worker_request.request_id,
                     process_refresh_worker_request.plan,
                 );
@@ -450,18 +536,30 @@ fn process_refresh_worker(
     }
 }
 
-fn execute_refresh(
-    process_observer: &mut ProcessObserver,
+/// Observe, then classify. The observer timing stops before classification so
+/// the recorded duration stays the observer-only boundary Phase 3 established.
+fn execute_refresh<C: RefreshCycleClassifier>(
+    process_refresh_cycle_owner: &mut ProcessRefreshCycleOwner<C>,
     request_id: ProcessRefreshRequestId,
-    plan: ProcessRefreshPlan,
-) -> ProcessRefreshExecution {
+    plan: ProcessRefreshPlan<C::CycleDemand>,
+) -> ProcessRefreshExecution<C::CycleOutcome> {
     let started = Instant::now();
-    let process_observation_snapshot = process_observer.refresh_for_consumer_demand(plan.demand);
+    let process_observation_snapshot = process_refresh_cycle_owner
+        .process_observer
+        .refresh_for_consumer_demand(plan.demand);
+    let elapsed = started.elapsed();
+    let cycle_outcome = process_refresh_cycle_owner
+        .refresh_cycle_classifier
+        .classify_refresh_cycle(&process_observation_snapshot, plan.cycle_demand);
     ProcessRefreshExecution {
         request_id,
         demand: plan.demand,
         outcome: ProcessRefreshExecutionOutcome::Completed(Box::new(
-            CompletedProcessRefreshExecution::new(process_observation_snapshot, started.elapsed()),
+            CompletedProcessRefreshExecution::new(
+                process_observation_snapshot,
+                elapsed,
+                cycle_outcome,
+            ),
         )),
     }
 }
@@ -475,12 +573,61 @@ mod tests {
     use super::*;
     use crate::process_observation::snapshot::ProcessObservationSnapshot;
 
+    /// The demand and the outcome of a cycle nothing classified.
+    ///
+    /// These tests cover the executor's own scheduling, correlation and backend
+    /// behavior, all of which must hold whatever a consumer classifies.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum UnclassifiedRefreshCycle {
+        NotClassified,
+    }
+
+    /// Classifier that leaves every cycle unclassified.
+    #[derive(Debug)]
+    struct NoRefreshCycleClassification;
+
+    impl RefreshCycleClassifier for NoRefreshCycleClassification {
+        type CycleDemand = UnclassifiedRefreshCycle;
+        type CycleOutcome = UnclassifiedRefreshCycle;
+
+        fn classify_refresh_cycle(
+            &mut self,
+            _process_observation_snapshot: &ProcessObservationSnapshot,
+            _cycle_demand: Self::CycleDemand,
+        ) -> Self::CycleOutcome {
+            UnclassifiedRefreshCycle::NotClassified
+        }
+    }
+
+    /// Classifier that reports the thread the cycle was classified on, so the
+    /// worker's sole ownership of classification is observable.
+    #[derive(Debug)]
+    struct ClassifyingThreadRecord;
+
+    impl RefreshCycleClassifier for ClassifyingThreadRecord {
+        type CycleDemand = UnclassifiedRefreshCycle;
+        type CycleOutcome = thread::ThreadId;
+
+        fn classify_refresh_cycle(
+            &mut self,
+            _process_observation_snapshot: &ProcessObservationSnapshot,
+            _cycle_demand: Self::CycleDemand,
+        ) -> Self::CycleOutcome {
+            thread::current().id()
+        }
+    }
+
+    fn unclassified_cycle(_demand: ProcessRefreshConsumerDemand) -> UnclassifiedRefreshCycle {
+        UnclassifiedRefreshCycle::NotClassified
+    }
+
     fn executor_awaiting(
         request_id: ProcessRefreshRequestId,
         demand: ProcessRefreshConsumerDemand,
-    ) -> ProcessRefreshExecutor {
+    ) -> ProcessRefreshExecutor<NoRefreshCycleClassification> {
         let mut process_refresh_executor = ProcessRefreshExecutor::new(
             ProcessRefreshExecutionBackendSelection::Synchronous,
+            NoRefreshCycleClassification,
             RunningTargetsRefreshSchedule::Suppressed,
             CompileMonitorRefreshSchedule::NotScheduled,
             Instant::now(),
@@ -493,7 +640,7 @@ mod tests {
     fn received_completed_execution(
         request_id: ProcessRefreshRequestId,
         demand: ProcessRefreshConsumerDemand,
-    ) -> ProcessRefreshWorkerResultPoll {
+    ) -> ProcessRefreshWorkerResultPoll<UnclassifiedRefreshCycle> {
         ProcessRefreshWorkerResultPoll::Received(Box::new(ProcessRefreshExecution {
             request_id,
             demand,
@@ -501,12 +648,13 @@ mod tests {
                 CompletedProcessRefreshExecution::new(
                     ProcessObservationSnapshot::empty_for_test(),
                     Duration::ZERO,
+                    UnclassifiedRefreshCycle::NotClassified,
                 ),
             )),
         }))
     }
 
-    fn disconnected_worker() -> DedicatedProcessRefreshWorker {
+    fn disconnected_worker() -> DedicatedProcessRefreshWorker<NoRefreshCycleClassification> {
         let (command_sender, command_receiver) = channel::unbounded();
         let (result_sender, result_receiver) = channel::unbounded();
         drop(command_receiver);
@@ -523,13 +671,14 @@ mod tests {
         let now = Instant::now();
         let mut process_refresh_executor = ProcessRefreshExecutor::new(
             ProcessRefreshExecutionBackendSelection::Synchronous,
+            NoRefreshCycleClassification,
             RunningTargetsRefreshSchedule::Every(Duration::from_secs(1)),
             CompileMonitorRefreshSchedule::At(now),
             now,
         );
 
         let ProcessRefreshDispatchOutcome::Finished(process_refresh_execution) =
-            process_refresh_executor.refresh_due(now)
+            process_refresh_executor.refresh_due(now, unclassified_cycle)
         else {
             panic!("coalesced synchronous refresh should complete");
         };
@@ -543,7 +692,7 @@ mod tests {
             ProcessRefreshExecutionOutcome::Completed(_)
         ));
         assert_eq!(
-            process_refresh_executor.refresh_due(now),
+            process_refresh_executor.refresh_due(now, unclassified_cycle),
             ProcessRefreshDispatchOutcome::NotDue
         );
     }
@@ -553,6 +702,7 @@ mod tests {
         let now = Instant::now();
         let process_refresh_executor = ProcessRefreshExecutor::new(
             ProcessRefreshExecutionBackendSelection::Synchronous,
+            NoRefreshCycleClassification,
             RunningTargetsRefreshSchedule::Suppressed,
             CompileMonitorRefreshSchedule::NotScheduled,
             now,
@@ -569,13 +719,14 @@ mod tests {
         let now = Instant::now();
         let mut process_refresh_executor = ProcessRefreshExecutor::new(
             ProcessRefreshExecutionBackendSelection::Synchronous,
+            NoRefreshCycleClassification,
             RunningTargetsRefreshSchedule::Every(Duration::from_secs(1)),
             CompileMonitorRefreshSchedule::NotScheduled,
             now,
         );
 
         let ProcessRefreshDispatchOutcome::Finished(process_refresh_execution) =
-            process_refresh_executor.refresh_due(now)
+            process_refresh_executor.refresh_due(now, unclassified_cycle)
         else {
             panic!("synchronous refresh should finish in the dispatch call");
         };
@@ -597,11 +748,13 @@ mod tests {
             CompletedProcessRefreshExecution::new(
                 ProcessObservationSnapshot::empty_for_test(),
                 Duration::ZERO,
+                UnclassifiedRefreshCycle::NotClassified,
             ),
         ));
-        let failed = ProcessRefreshExecutionOutcome::Failed(
-            ProcessRefreshExecutionFailure::ResultChannelDisconnected,
-        );
+        let failed: ProcessRefreshExecutionOutcome<UnclassifiedRefreshCycle> =
+            ProcessRefreshExecutionOutcome::Failed(
+                ProcessRefreshExecutionFailure::ResultChannelDisconnected,
+            );
 
         assert!(matches!(
             completed_empty,
@@ -616,11 +769,12 @@ mod tests {
 
     #[test]
     fn failure_outcome_retains_its_correlated_request() {
-        let process_refresh_execution = ProcessRefreshExecution::failed(
-            ProcessRefreshRequestId(7),
-            ProcessRefreshConsumerDemand::RunningTargets,
-            ProcessRefreshExecutionFailure::RequestChannelDisconnected,
-        );
+        let process_refresh_execution: ProcessRefreshExecution<UnclassifiedRefreshCycle> =
+            ProcessRefreshExecution::failed(
+                ProcessRefreshRequestId(7),
+                ProcessRefreshConsumerDemand::RunningTargets,
+                ProcessRefreshExecutionFailure::RequestChannelDisconnected,
+            );
 
         assert_eq!(
             process_refresh_execution.request_id,
@@ -639,12 +793,13 @@ mod tests {
         let now = Instant::now();
         let mut process_refresh_executor = ProcessRefreshExecutor::new(
             ProcessRefreshExecutionBackendSelection::DedicatedWorker,
+            NoRefreshCycleClassification,
             RunningTargetsRefreshSchedule::Every(Duration::from_secs(1)),
             CompileMonitorRefreshSchedule::NotScheduled,
             now,
         );
         assert!(matches!(
-            process_refresh_executor.refresh_due(now),
+            process_refresh_executor.refresh_due(now, unclassified_cycle),
             ProcessRefreshDispatchOutcome::AwaitingWorker(_)
         ));
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -676,10 +831,50 @@ mod tests {
     }
 
     #[test]
+    fn a_dedicated_worker_cycle_classifies_off_the_dispatching_thread() {
+        let now = Instant::now();
+        let mut process_refresh_executor = ProcessRefreshExecutor::new(
+            ProcessRefreshExecutionBackendSelection::DedicatedWorker,
+            ClassifyingThreadRecord,
+            RunningTargetsRefreshSchedule::Every(Duration::from_secs(1)),
+            CompileMonitorRefreshSchedule::NotScheduled,
+            now,
+        );
+        assert!(matches!(
+            process_refresh_executor.refresh_due(now, unclassified_cycle),
+            ProcessRefreshDispatchOutcome::AwaitingWorker(_)
+        ));
+        let deadline = Instant::now() + Duration::from_secs(5);
+
+        let classifying_thread = loop {
+            match process_refresh_executor.poll_result() {
+                ProcessRefreshResultPoll::Ready(process_refresh_execution) => {
+                    let ProcessRefreshExecutionOutcome::Completed(
+                        completed_process_refresh_execution,
+                    ) = process_refresh_execution.into_outcome()
+                    else {
+                        panic!("worker refresh should complete successfully");
+                    };
+                    break completed_process_refresh_execution.into_parts().1;
+                },
+                ProcessRefreshResultPoll::Pending if Instant::now() < deadline => {
+                    thread::yield_now();
+                },
+                ProcessRefreshResultPoll::Pending => {
+                    panic!("worker refresh should finish before the test deadline");
+                },
+            }
+        };
+
+        assert_ne!(classifying_thread, thread::current().id());
+    }
+
+    #[test]
     fn request_channel_failure_has_no_completed_execution_timing() {
         let now = Instant::now();
         let mut process_refresh_executor = ProcessRefreshExecutor::new(
             ProcessRefreshExecutionBackendSelection::Synchronous,
+            NoRefreshCycleClassification,
             RunningTargetsRefreshSchedule::Every(Duration::from_secs(1)),
             CompileMonitorRefreshSchedule::NotScheduled,
             now,
@@ -688,7 +883,7 @@ mod tests {
             ProcessRefreshExecutionBackend::DedicatedWorker(disconnected_worker());
 
         let ProcessRefreshDispatchOutcome::Finished(process_refresh_execution) =
-            process_refresh_executor.refresh_due(now)
+            process_refresh_executor.refresh_due(now, unclassified_cycle)
         else {
             panic!("disconnected request channel should return a failed execution");
         };

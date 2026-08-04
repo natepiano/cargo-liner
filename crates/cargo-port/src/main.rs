@@ -2,10 +2,6 @@
 
 use std::process::ExitCode;
 
-// Classification has no runtime caller yet, so the module is built for the test
-// binary only — the whole graph stays exercised without claiming a caller that
-// does not exist.
-#[cfg(test)]
 mod build_monitor;
 mod cache_paths;
 mod channel;

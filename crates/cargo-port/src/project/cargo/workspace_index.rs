@@ -6,8 +6,8 @@
 //! not a complete source of workspace ownership.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
-#[cfg(test)]
 use cargo_metadata::PackageId;
 use cargo_metadata::TargetKind;
 
@@ -34,6 +34,11 @@ pub(crate) struct CanonicalCheckoutRoot(AbsolutePath);
 
 impl CanonicalCheckoutRoot {
     pub(crate) const fn path(&self) -> &AbsolutePath { &self.0 }
+
+    /// Name one canonical checkout root directly, for tests that need a scope
+    /// without a live index behind it.
+    #[cfg(test)]
+    pub(crate) const fn for_test(canonical_path: AbsolutePath) -> Self { Self(canonical_path) }
 }
 
 /// Canonical root reported by Cargo for a workspace.
@@ -42,6 +47,11 @@ pub(crate) struct CanonicalWorkspaceRoot(AbsolutePath);
 
 impl CanonicalWorkspaceRoot {
     pub(crate) const fn path(&self) -> &AbsolutePath { &self.0 }
+
+    /// Name one canonical workspace root directly, for tests that need a scope
+    /// without a live index behind it.
+    #[cfg(test)]
+    pub(crate) const fn for_test(canonical_path: AbsolutePath) -> Self { Self(canonical_path) }
 }
 
 /// Canonical root directory of a package in an indexed workspace.
@@ -68,7 +78,6 @@ impl CanonicalTargetDirectory {
     pub(crate) const fn path(&self) -> &AbsolutePath { &self.0 }
 
     /// Name a target directory from a path the caller already canonicalized.
-    #[cfg(test)]
     pub(crate) const fn from_canonical_path(canonical_path: AbsolutePath) -> Self {
         Self(canonical_path)
     }
@@ -132,7 +141,6 @@ pub(crate) enum CargoWorkspaceIndexRevisionState {
 pub(crate) struct CargoPackageIdentity {
     declared_member_root:   AbsolutePath,
     member_root_resolution: CanonicalPathResolution<CanonicalMemberRoot>,
-    #[cfg(test)]
     package_id:             PackageId,
     targets:                Vec<CargoTargetIdentity>,
 }
@@ -148,7 +156,6 @@ impl CargoPackageIdentity {
         &self.member_root_resolution
     }
 
-    #[cfg(test)]
     pub(crate) const fn package_id(&self) -> &PackageId { &self.package_id }
 
     pub(crate) fn targets(&self) -> impl Iterator<Item = &crate::project::CargoTargetIdentity> {
@@ -295,6 +302,19 @@ impl CanonicalWorkspaceCandidates {
     }
 }
 
+/// Whether an accepted-metadata or project-list change produced a fresh index.
+///
+/// A rebuild replaces the handle instead of mutating the shared index, so an
+/// in-flight worker request that already cloned the old handle keeps reading
+/// the exact index its revision stamps name.
+#[derive(Clone, Debug)]
+pub(crate) enum WorkspaceIndexRebuild {
+    /// The inputs moved; this fresh index supersedes the previous handle.
+    Replaced(Arc<CargoWorkspaceIndex>),
+    /// Neither accepted metadata nor the visible project list changed.
+    Unchanged,
+}
+
 /// App-owned cache of immutable workspace ownership views.
 #[derive(Debug, Default)]
 pub(crate) struct CargoWorkspaceIndex {
@@ -320,11 +340,16 @@ impl CargoWorkspaceIndex {
     /// Rebuild only when accepted metadata or the visible project-list input
     /// changes. Calling this from an ordinary event-loop wake leaves the
     /// immutable view intact.
+    ///
+    /// A change produces a whole fresh index rather than mutating this one, so
+    /// a worker request holding an [`Arc`] clone keeps the exact index it was
+    /// asked under across the thread boundary. The cost is one allocation per
+    /// accepted-metadata change.
     pub(crate) fn rebuild_if_changed(
-        &mut self,
+        &self,
         metadata_store: &WorkspaceMetadataStore,
         project_list_revision: ProjectListRevision,
-    ) -> bool {
+    ) -> WorkspaceIndexRebuild {
         let accepted_cargo_metadata_revision = metadata_store.accepted_cargo_metadata_revision();
         if matches!(
             self.revision(),
@@ -333,10 +358,15 @@ impl CargoWorkspaceIndex {
                     == accepted_cargo_metadata_revision
                     && revision.project_list_revision() == project_list_revision
         ) {
-            return false;
+            return WorkspaceIndexRebuild::Unchanged;
         }
-        self.rebuild(metadata_store, project_list_revision);
-        true
+        let mut rebuilt = Self::default();
+        #[cfg(test)]
+        {
+            rebuilt.rebuild_count = self.rebuild_count;
+        }
+        rebuilt.rebuild(metadata_store, project_list_revision);
+        WorkspaceIndexRebuild::Replaced(Arc::new(rebuilt))
     }
 
     pub(crate) fn workspaces(&self) -> impl Iterator<Item = &CargoWorkspaceView> {
@@ -405,7 +435,6 @@ impl CargoWorkspaceIndex {
     /// canonicalized again, so this performs no filesystem work and is safe to
     /// call from pure classification, which resolves every path it compares
     /// before the call.
-    #[cfg(test)]
     pub(crate) fn workspace_for_canonical_owner(
         &self,
         canonical_owner: &AbsolutePath,
@@ -594,7 +623,6 @@ fn cargo_package_identities(metadata: &WorkspaceMetadata) -> Vec<CargoPackageIde
             CargoPackageIdentity {
                 declared_member_root,
                 member_root_resolution,
-                #[cfg(test)]
                 package_id: indexed_package.0.clone(),
                 targets,
             }
@@ -689,6 +717,7 @@ fn manifest_directory(manifest_path: &AbsolutePath) -> AbsolutePath {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic, reason = "tests should fail on unexpected index states")]
 mod tests {
     use std::collections::BTreeMap;
     use std::collections::HashMap;
@@ -823,16 +852,26 @@ mod tests {
     fn accepted_cargo_metadata_revision_rebuilds_the_index_once() {
         let mut metadata_store = WorkspaceMetadataStore::new();
         let project_list_revision = ProjectListRevision::default();
-        let mut cargo_workspace_index =
-            CargoWorkspaceIndex::from_metadata_store(&metadata_store, project_list_revision);
+        let mut cargo_workspace_index = Arc::new(CargoWorkspaceIndex::from_metadata_store(
+            &metadata_store,
+            project_list_revision,
+        ));
         let rebuild_count = cargo_workspace_index.rebuild_count();
 
-        assert!(!cargo_workspace_index.rebuild_if_changed(&metadata_store, project_list_revision));
+        assert!(matches!(
+            cargo_workspace_index.rebuild_if_changed(&metadata_store, project_list_revision),
+            WorkspaceIndexRebuild::Unchanged
+        ));
         assert_eq!(cargo_workspace_index.rebuild_count(), rebuild_count);
 
         metadata_store.upsert(metadata("/workspace", "/workspace/target"));
 
-        assert!(cargo_workspace_index.rebuild_if_changed(&metadata_store, project_list_revision));
+        let WorkspaceIndexRebuild::Replaced(rebuilt) =
+            cargo_workspace_index.rebuild_if_changed(&metadata_store, project_list_revision)
+        else {
+            panic!("accepted metadata should replace the index");
+        };
+        cargo_workspace_index = rebuilt;
         assert_eq!(cargo_workspace_index.rebuild_count(), rebuild_count + 1);
         assert_eq!(cargo_workspace_index.workspaces().count(), 1);
     }
@@ -842,12 +881,19 @@ mod tests {
         let mut metadata_store = WorkspaceMetadataStore::new();
         metadata_store.upsert(metadata("/workspace", "/workspace/target"));
         let mut project_list_revision = ProjectListRevision::default();
-        let mut cargo_workspace_index =
-            CargoWorkspaceIndex::from_metadata_store(&metadata_store, project_list_revision);
+        let mut cargo_workspace_index = Arc::new(CargoWorkspaceIndex::from_metadata_store(
+            &metadata_store,
+            project_list_revision,
+        ));
         let rebuild_count = cargo_workspace_index.rebuild_count();
 
         project_list_revision.advance();
-        assert!(cargo_workspace_index.rebuild_if_changed(&metadata_store, project_list_revision));
+        let WorkspaceIndexRebuild::Replaced(rebuilt) =
+            cargo_workspace_index.rebuild_if_changed(&metadata_store, project_list_revision)
+        else {
+            panic!("a project-list revision change should replace the index");
+        };
+        cargo_workspace_index = rebuilt;
         assert_eq!(cargo_workspace_index.rebuild_count(), rebuild_count + 1);
         assert_eq!(
             cargo_workspace_index.revision(),
@@ -1215,7 +1261,6 @@ mod tests {
 /// The three states mirror [`VisibleProjectWorkspaceOwnership`]: a caller that
 /// must not act on a guess can tell "no such package" apart from "more than one
 /// package claims this root".
-#[cfg(test)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum CanonicalPackageOwnership<'a> {
     /// Exactly one indexed package has this canonical member root.
@@ -1228,7 +1273,6 @@ pub(crate) enum CanonicalPackageOwnership<'a> {
 
 /// Whether one canonical target source file identifies exactly one indexed
 /// package.
-#[cfg(test)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum CanonicalTargetOwnership<'a> {
     /// Exactly one indexed package declares a target with this source file.
@@ -1240,11 +1284,9 @@ pub(crate) enum CanonicalTargetOwnership<'a> {
 }
 
 /// Indexed packages identified by one exact canonical path.
-#[cfg(test)]
 #[derive(Debug, Default)]
 struct CanonicalPackageCandidates<'a>(Vec<&'a CargoPackageIdentity>);
 
-#[cfg(test)]
 impl<'a> CanonicalPackageCandidates<'a> {
     fn include(&mut self, cargo_package_identity: &'a CargoPackageIdentity) {
         if !self
@@ -1273,7 +1315,6 @@ impl<'a> CanonicalPackageCandidates<'a> {
     }
 }
 
-#[cfg(test)]
 impl CargoWorkspaceIndex {
     /// Resolve an already-canonical package root to its indexed package. The
     /// path is not canonicalized again, so this performs no filesystem work and

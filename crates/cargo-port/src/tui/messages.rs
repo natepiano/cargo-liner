@@ -4,7 +4,9 @@ use crate::scan::CiFetchResult;
 use crate::tui::state::OwnedRunId;
 
 /// Correlated immutable result sent by the process observer worker.
-pub(super) type ProcessRefreshMsg = crate::process_observation::ProcessRefreshExecution;
+pub(super) type ProcessRefreshMsg = crate::process_observation::ProcessRefreshExecution<
+    crate::build_monitor::CompileClassificationExecution,
+>;
 
 pub(super) enum ExampleMsg {
     Started {

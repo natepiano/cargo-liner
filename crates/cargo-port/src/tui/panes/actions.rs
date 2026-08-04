@@ -53,6 +53,7 @@ use crate::tui::keymap::PackageAction;
 use crate::tui::keymap::TargetsAction;
 use crate::tui::render;
 use crate::tui::running_targets::RunningProcessPlacement;
+use crate::tui::state::OwnedRunLaunchAdmission;
 
 fn handle_target_action(app: &mut App, mode: BuildMode) {
     let Some(targets_data) = app.panes.targets.content().cloned() else {
@@ -62,7 +63,7 @@ fn handle_target_action(app: &mut App, mode: BuildMode) {
     // The table's rows map 1:1 to entries; a highlight in the Running box
     // sits past them and runs nothing.
     if let Some(entry) = entries.get(app.panes.targets.viewport.pos()) {
-        let _ = app.inflight.queue_owned_run(PendingExampleRun {
+        let pending_example_run = PendingExampleRun {
             abs_path:                 entry.project_path.display().to_string(),
             target_name:              entry.name.clone(),
             display_path:             target_display_path(app, entry),
@@ -70,7 +71,18 @@ fn handle_target_action(app: &mut App, mode: BuildMode) {
             run_target_kind:          entry.run_target_kind,
             build_mode:               mode,
             required_features:        entry.required_features.clone(),
-        });
+        };
+        match app.inflight.queue_owned_run(pending_example_run) {
+            OwnedRunLaunchAdmission::Queued(_) => {},
+            OwnedRunLaunchAdmission::AlreadyActive => app.show_timed_toast(
+                "Run refused",
+                "A Cargo Port-owned run is already active; stop it first",
+            ),
+            OwnedRunLaunchAdmission::IdentitiesExhausted => app.show_timed_toast(
+                "Run refused",
+                "Owned-run identities are exhausted; restart Cargo Port to launch again",
+            ),
+        }
     }
 }
 

@@ -10,7 +10,7 @@
 //! [`Ci`](super::Ci).
 
 use std::collections::VecDeque;
-#[cfg(test)]
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 
 #[cfg(not(unix))]
@@ -25,11 +25,8 @@ use sysinfo::Signal;
 use sysinfo::System;
 use tui_pane::RunningTracker;
 
-#[cfg(test)]
 use crate::build_monitor::LiveOwnedRoot;
-#[cfg(test)]
 use crate::build_monitor::OwnedRootEvidence;
-#[cfg(test)]
 use crate::build_monitor::OwnedRootLifecycle;
 use crate::process_observation::identity::ProcessIdentity;
 #[cfg(not(test))]
@@ -43,14 +40,31 @@ use crate::tui::panes::PendingCiFetch;
 use crate::tui::panes::PendingExampleRun;
 
 /// A monotonically allocated identity for one Cargo Port-owned run.
+///
+/// The counter is [`NonZeroU64`], so a zero identity is unrepresentable and the
+/// type carries a niche: no launch path can hand out a placeholder that later
+/// correlates against a real run.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(crate) struct OwnedRunId(u64);
+pub(crate) struct OwnedRunId(NonZeroU64);
 
 impl OwnedRunId {
     /// Name one owned-run identity directly, so classification tests can state
     /// owned-root evidence without driving a launch.
     #[cfg(test)]
-    pub(crate) const fn for_test(owned_run_id: u64) -> Self { Self(owned_run_id) }
+    pub(crate) const fn for_test(owned_run_id: NonZeroU64) -> Self { Self(owned_run_id) }
+}
+
+/// Whether the monotonic counter still had an unused owned-run identity.
+///
+/// Exhaustion rejects the run rather than repeating an identity: late
+/// messages, output joins, and cursors all correlate on [`OwnedRunId`], so a
+/// reissued value would attach one run's output to another.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OwnedRunIdAllocation {
+    /// A fresh identity no earlier run has held.
+    Allocated(OwnedRunId),
+    /// Every identity the counter can represent has already been issued.
+    Exhausted,
 }
 
 /// Opaque authority to signal the isolated group created for one verified
@@ -81,7 +95,6 @@ impl OwnedProcessGroupTerminationCapability {
 
     /// The verified root identity, as observation. Handing this out does not
     /// hand out signaling authority: the capability itself never leaves.
-    #[cfg(test)]
     const fn root_identity(&self) -> &ProcessIdentity { &self.process_identity }
 
     #[cfg(not(test))]
@@ -198,14 +211,20 @@ fn signal_owned_process_group(
 
 /// The sole owner of the one Cargo Port-owned run's lifecycle and output.
 pub(crate) struct OwnedRun {
-    next_id:   u64,
+    next_id:   NonZeroU64,
     lifecycle: OwnedRunLifecycle,
 }
 
 impl OwnedRun {
-    pub(crate) const fn new() -> Self {
+    /// Construct the single process-lifetime owned-run slot.
+    ///
+    /// The counter starts at one and is never reset, so a second construction
+    /// would reissue identities that messages still in the channel carry.
+    /// Private visibility is what keeps [`Inflight::new`] the sole call site:
+    /// no other module can construct a second slot.
+    const fn new() -> Self {
         Self {
-            next_id:   1,
+            next_id:   NonZeroU64::MIN,
             lifecycle: OwnedRunLifecycle::absent(),
         }
     }
@@ -240,11 +259,19 @@ impl OwnedRun {
         matches!(self.lifecycle(), OwnedRunLifecycle::Running(_))
     }
 
-    const fn allocate_id(&mut self) -> OwnedRunId {
+    const fn allocate_id(&mut self) -> OwnedRunIdAllocation {
+        let Some(next_id) = self.next_id.checked_add(1) else {
+            return OwnedRunIdAllocation::Exhausted;
+        };
         let owned_run_id = OwnedRunId(self.next_id);
-        self.next_id = self.next_id.saturating_add(1);
-        owned_run_id
+        self.next_id = next_id;
+        OwnedRunIdAllocation::Allocated(owned_run_id)
     }
+
+    /// Start the counter near its ceiling so a test can reach exhaustion
+    /// without issuing `u64::MAX` identities.
+    #[cfg(test)]
+    const fn seed_next_id_for_test(&mut self, next_id: NonZeroU64) { self.next_id = next_id; }
 
     fn queue(&mut self, pending_example_run: PendingExampleRun) -> OwnedRunLaunchAdmission {
         if matches!(
@@ -257,9 +284,11 @@ impl OwnedRun {
             return OwnedRunLaunchAdmission::AlreadyActive;
         }
 
+        let OwnedRunIdAllocation::Allocated(owned_run_id) = self.allocate_id() else {
+            return OwnedRunLaunchAdmission::IdentitiesExhausted;
+        };
         let retained_output = std::mem::replace(&mut self.lifecycle, OwnedRunLifecycle::absent())
             .into_retained_output();
-        let owned_run_id = self.allocate_id();
         self.lifecycle = OwnedRunLifecycle::Queued(QueuedOwnedRun {
             owned_run_id,
             pending_example_run,
@@ -299,7 +328,6 @@ impl OwnedRun {
     /// classification. A stopping run still has live compiler descendants, so
     /// it is reported as an owned root with a stopping lifecycle rather than as
     /// no root at all.
-    #[cfg(test)]
     pub(crate) fn owned_root_evidence(&self) -> OwnedRootEvidence {
         match &self.lifecycle {
             OwnedRunLifecycle::Running(running_owned_run) => {
@@ -344,7 +372,6 @@ impl OwnedRun {
                 if starting_owned_run.owned_run_id == owned_run_id =>
             {
                 let mode = starting_owned_run.pending_example_run.build_mode.label();
-                #[cfg(test)]
                 let launch_directory =
                     PathBuf::from(starting_owned_run.pending_example_run.abs_path);
                 let display_path = starting_owned_run.pending_example_run.display_path;
@@ -352,7 +379,6 @@ impl OwnedRun {
                 self.lifecycle = OwnedRunLifecycle::Running(RunningOwnedRun {
                     owned_run_id,
                     running_label: format!("{display_path}{mode}"),
-                    #[cfg(test)]
                     launch_directory,
                     retained_output: OwnedRunRetainedOutput::named(
                         owned_run_id,
@@ -536,8 +562,14 @@ impl OwnedRun {
     }
 
     #[cfg(test)]
+    #[allow(
+        clippy::panic,
+        reason = "a test helper should fail loudly on an exhausted counter"
+    )]
     fn set_output_for_test(&mut self, lines: Vec<String>) {
-        let owned_run_id = self.allocate_id();
+        let OwnedRunIdAllocation::Allocated(owned_run_id) = self.allocate_id() else {
+            panic!("owned-run identities should not be exhausted in tests");
+        };
         self.lifecycle = OwnedRunLifecycle::RetainedSuccess(RetainedOwnedRun {
             owned_run_id,
             retained_output: OwnedRunRetainedOutput::correlated_unnamed(owned_run_id, lines),
@@ -571,6 +603,10 @@ impl OwnedRun {
     }
 
     #[cfg(test)]
+    #[allow(
+        clippy::panic,
+        reason = "a test helper should fail loudly on an exhausted counter"
+    )]
     fn set_running_for_test(&mut self, running_label: Option<String>) {
         let Some(running_label) = running_label else {
             self.set_not_running_for_test();
@@ -578,10 +614,12 @@ impl OwnedRun {
         };
         let retained_output = std::mem::replace(&mut self.lifecycle, OwnedRunLifecycle::absent())
             .into_retained_output();
-        let owned_run_id = self.allocate_id();
+        let OwnedRunIdAllocation::Allocated(owned_run_id) = self.allocate_id() else {
+            panic!("owned-run identities should not be exhausted in tests");
+        };
         let mut retained_output = retained_output;
         retained_output.correlate_to(owned_run_id);
-        let process_identity = ProcessIdentity::for_test(1, owned_run_id.0);
+        let process_identity = ProcessIdentity::for_test(1, owned_run_id.0.get());
         let owned_process_group_termination_capability =
             OwnedProcessGroupTerminationCapability::for_test(process_identity);
         self.lifecycle = OwnedRunLifecycle::Running(RunningOwnedRun {
@@ -819,7 +857,6 @@ impl From<QueuedOwnedRun> for StartingOwnedRun {
 pub(crate) struct RunningOwnedRun {
     owned_run_id:                               OwnedRunId,
     running_label:                              String,
-    #[cfg(test)]
     launch_directory:                           PathBuf,
     retained_output:                            OwnedRunRetainedOutput,
     owned_process_group_termination_capability: OwnedProcessGroupTerminationCapability,
@@ -829,7 +866,6 @@ pub(crate) struct RunningOwnedRun {
 /// reports completion.
 pub(crate) struct StoppingOwnedRun {
     owned_run_id:                               OwnedRunId,
-    #[cfg(test)]
     launch_directory:                           PathBuf,
     retained_output:                            OwnedRunRetainedOutput,
     owned_process_group_termination_capability: OwnedProcessGroupTerminationCapability,
@@ -839,7 +875,6 @@ impl From<RunningOwnedRun> for StoppingOwnedRun {
     fn from(running_owned_run: RunningOwnedRun) -> Self {
         Self {
             owned_run_id:                               running_owned_run.owned_run_id,
-            #[cfg(test)]
             launch_directory:                           running_owned_run.launch_directory,
             retained_output:                            running_owned_run.retained_output,
             owned_process_group_termination_capability: running_owned_run
@@ -968,9 +1003,13 @@ pub(crate) enum OwnedRunRunningLabelRef<'a> {
 
 /// Whether the sole owned-run slot accepted a launch request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[must_use]
 pub(crate) enum OwnedRunLaunchAdmission {
     Queued(OwnedRunId),
     AlreadyActive,
+    /// The monotonic identity counter has no unused value left, so the launch
+    /// is refused rather than correlated against an identity already in use.
+    IdentitiesExhausted,
 }
 
 /// Whether a queued owned run entered its synchronous launch boundary.
@@ -1245,6 +1284,7 @@ impl Inflight {
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
+    clippy::panic,
     clippy::unwrap_used,
     reason = "tests should panic on unexpected values"
 )]
@@ -1262,6 +1302,29 @@ mod tests {
     use crate::tui::panes::RunTargetKind;
 
     fn fresh() -> Inflight { Inflight::new() }
+
+    #[test]
+    fn exhausted_owned_run_identities_reject_the_launch_without_reissuing_one() {
+        let mut owned_run = OwnedRun::new();
+        owned_run.seed_next_id_for_test(
+            NonZeroU64::new(u64::MAX - 1).expect("a seeded counter should be non-zero"),
+        );
+
+        owned_run.set_running_for_test(Some("last allocatable run".to_string()));
+        owned_run.set_not_running_for_test();
+        let last_owned_run_id =
+            OwnedRunId(NonZeroU64::new(u64::MAX - 1).expect("the issued identity is non-zero"));
+
+        assert_eq!(
+            owned_run.queue(pending_example_run()),
+            OwnedRunLaunchAdmission::IdentitiesExhausted
+        );
+        assert!(matches!(
+            owned_run.identity(),
+            OwnedRunIdentityRef::Current(current_owned_run_id)
+                if *current_owned_run_id == last_owned_run_id
+        ));
+    }
 
     fn abs(path: &str) -> AbsolutePath { AbsolutePath::from(PathBuf::from(path)) }
 
@@ -1285,7 +1348,10 @@ mod tests {
         ));
         match owned_run_launch_admission {
             OwnedRunLaunchAdmission::Queued(owned_run_id) => owned_run_id,
-            OwnedRunLaunchAdmission::AlreadyActive => OwnedRunId(0),
+            OwnedRunLaunchAdmission::AlreadyActive
+            | OwnedRunLaunchAdmission::IdentitiesExhausted => {
+                panic!("a fresh owned-run slot should queue a launch")
+            },
         }
     }
 

@@ -29,29 +29,49 @@ use super::build_classifier::DependencyManifestLookup;
 use super::build_classifier::DependencyManifestSnapshot;
 use super::build_classifier::FirstSeenLedger;
 use super::build_classifier::FirstSeenLookup;
+use super::build_classifier::FirstSighting;
 use super::build_classifier::ObservedBuildDirectoryLookup;
+use super::constants::ALL_BENCHMARKS_ARGUMENT;
+use super::constants::ALL_BINARIES_ARGUMENT;
+use super::constants::ALL_EXAMPLES_ARGUMENT;
+use super::constants::ALL_PACKAGES_ARGUMENT;
+use super::constants::ALL_TARGETS_ARGUMENT;
+use super::constants::ALL_TESTS_ARGUMENT;
+use super::constants::BENCHMARK_ARGUMENT;
+use super::constants::BINARY_ARGUMENT;
 use super::constants::BUILD_SCRIPT_PREFIX;
 use super::constants::CARGO_PLUGIN_PREFIX;
 use super::constants::CLIPPY_DRIVER_EXECUTABLE;
 use super::constants::CRATE_NAME_ARGUMENT;
+use super::constants::EXAMPLE_ARGUMENT;
+use super::constants::LIBRARY_ARGUMENT;
 use super::constants::MANIFEST_PATH_ARGUMENT;
 use super::constants::MAX_DESCENDANT_WALK_DEPTH;
 use super::constants::MAX_MEMBER_ROOT_SEARCH_DEPTH;
 use super::constants::OUT_DIRECTORY_ARGUMENT;
+use super::constants::PACKAGE_ARGUMENT;
+use super::constants::PACKAGE_SHORT_ARGUMENT;
 use super::constants::PROFILE_ARGUMENT;
 use super::constants::RELEASE_ARGUMENT;
 use super::constants::RUSTC_EXECUTABLE;
 use super::constants::RUSTDOC_EXECUTABLE;
 use super::constants::TARGET_ARGUMENT;
 use super::constants::TARGET_DIRECTORY_ARGUMENT;
+use super::constants::TEST_ARGUMENT;
+use super::constants::WORKSPACE_ARGUMENT;
 use super::session::BuildProfile;
 use super::session::BuildProfileAttribution;
 use super::session::BuildProfileLabel;
 use super::session::BuildSession;
 use super::session::BuildSessionId;
+use super::session::CargoCommandSelector;
+use super::session::CargoSubcommand;
 use super::session::LiveOwnedRoot;
+use super::session::OperativeCargoCommand;
 use super::session::OwnedRootEvidence;
 use super::session::ScopeAttribution;
+use super::session::SessionRootObservation;
+use super::session::SessionScope;
 use super::session::SessionScopeRoot;
 use super::session::SessionTargetDirectory;
 use super::session::TargetDirectoryEvidence;
@@ -511,21 +531,23 @@ impl BuildClassification {
     }
 
     /// The cycle counter this classification was produced with.
+    #[cfg(test)]
     pub(crate) const fn build_classification_cycle(&self) -> BuildClassificationCycle {
         self.classification_cycle
     }
 
     /// When this cycle was taken.
+    #[cfg(test)]
     pub(crate) const fn cycle_instant(&self) -> Instant { self.cycle_instant }
 }
 
 /// One validated Cargo root process and everything argv says about it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RecognizedCargoRoot {
-    incarnation:                  ProcessIncarnation,
-    cargo_subcommand_recognition: CargoSubcommandRecognition,
-    build_profile:                BuildProfile,
-    compilation_target:           CompilationTarget,
+    incarnation:             ProcessIncarnation,
+    operative_cargo_command: OperativeCargoCommand,
+    build_profile:           BuildProfile,
+    compilation_target:      CompilationTarget,
 }
 
 impl RecognizedCargoRoot {
@@ -567,8 +589,7 @@ enum CycleIdentityCompleteness {
 struct CargoRootUnderClassification {
     identity:                 ProcessIdentity,
     recognized_cargo_root:    RecognizedCargoRoot,
-    scope_attribution:        ScopeAttribution,
-    session_scope_root:       SessionScopeRoot,
+    session_scope:            SessionScope,
     session_target_directory: SessionTargetDirectory,
     /// The profile argv or the ledger names, resolved before compilers are
     /// attached so an orphan compiler's output directory is compared against
@@ -600,40 +621,12 @@ pub(super) fn classify(input: BuildClassificationInput<'_>) -> BuildClassificati
         cycle_identity_completeness,
     );
 
-    let mut build_sessions: Vec<BuildSession> = cargo_roots
-        .iter()
-        .filter(|cargo_root| {
-            cargo_root
-                .recognized_cargo_root
-                .cargo_subcommand_recognition
-                .compiles_from_argv()
-                || promoted_root_incarnations
-                    .contains(&cargo_root.recognized_cargo_root.incarnation)
-                || input
-                    .first_seen_ledger
-                    .is_promoted(&cargo_root.recognized_cargo_root.incarnation)
-        })
-        .map(|cargo_root| {
-            let build_session_id =
-                BuildSessionId::from_recognized_root(&cargo_root.recognized_cargo_root);
-            let build_profile = resolve_build_profile(
-                &cargo_root.build_profile,
-                &build_session_id,
-                &observed_build_directories,
-            );
-            BuildSession::new(
-                build_session_id,
-                cargo_root
-                    .recognized_cargo_root
-                    .cargo_subcommand_recognition,
-                cargo_root.scope_attribution,
-                cargo_root.session_scope_root.clone(),
-                cargo_root.session_target_directory.clone(),
-                build_profile,
-                first_seen_for(&input, &cargo_root.recognized_cargo_root.incarnation),
-            )
-        })
-        .collect();
+    let mut build_sessions = build_sessions_for_compiling_roots(
+        &input,
+        &cargo_roots,
+        &promoted_root_incarnations,
+        &observed_build_directories,
+    );
 
     build_sessions.sort_by(|left, right| {
         left.first_seen()
@@ -678,6 +671,60 @@ pub(super) fn classify(input: BuildClassificationInput<'_>) -> BuildClassificati
         classification_cycle: input.build_classification_cycle,
         cycle_instant: input.cycle_instant,
     }
+}
+
+/// One `BuildSession` per Cargo root that is compiling this cycle — a root
+/// whose argv compiles, a root a compiler was attached to, or a root the
+/// `first_seen_ledger` already promoted. Each session carries the profile
+/// resolved against `observed_build_directories` and the root's first sighting,
+/// so a session keeps the instant it was first observed across later cycles.
+fn build_sessions_for_compiling_roots(
+    input: &BuildClassificationInput<'_>,
+    cargo_roots: &[CargoRootUnderClassification],
+    promoted_root_incarnations: &[ProcessIncarnation],
+    observed_build_directories: &[SessionBuildDirectory],
+) -> Vec<BuildSession> {
+    cargo_roots
+        .iter()
+        .filter(|cargo_root| {
+            cargo_root
+                .recognized_cargo_root
+                .operative_cargo_command
+                .recognition()
+                .compiles_from_argv()
+                || promoted_root_incarnations
+                    .contains(&cargo_root.recognized_cargo_root.incarnation)
+                || input
+                    .first_seen_ledger
+                    .is_promoted(&cargo_root.recognized_cargo_root.incarnation)
+        })
+        .map(|cargo_root| {
+            let build_session_id =
+                BuildSessionId::from_recognized_root(&cargo_root.recognized_cargo_root);
+            let first_sighting =
+                first_sighting_for(input, &cargo_root.recognized_cargo_root.incarnation);
+            let build_profile = resolve_build_profile(
+                &cargo_root.build_profile,
+                &build_session_id,
+                observed_build_directories,
+            );
+            BuildSession::new(
+                build_session_id,
+                cargo_root
+                    .recognized_cargo_root
+                    .operative_cargo_command
+                    .clone(),
+                cargo_root.session_scope.clone(),
+                cargo_root.session_target_directory.clone(),
+                build_profile,
+                SessionRootObservation::new(
+                    cargo_root.identity.clone(),
+                    first_sighting.first_observed_at(),
+                ),
+                first_sighting.first_seen(),
+            )
+        })
+        .collect()
 }
 
 /// Everything one cycle's compiler pass established.
@@ -939,15 +986,14 @@ fn collect_candidates(input: &BuildClassificationInput<'_>) -> CollectedCandidat
             BuildCandidateRole::Cargo => {
                 let cargo_invocation = CargoInvocation::parse(executable, argv);
                 let recognized_cargo_root = RecognizedCargoRoot {
-                    incarnation:                  incarnation.clone(),
-                    cargo_subcommand_recognition: cargo_invocation.cargo_subcommand_recognition,
-                    build_profile:                cargo_invocation.build_profile(),
-                    compilation_target:           cargo_invocation.compilation_target.clone(),
+                    incarnation:             incarnation.clone(),
+                    operative_cargo_command: cargo_invocation.operative_cargo_command(),
+                    build_profile:           cargo_invocation.build_profile(),
+                    compilation_target:      cargo_invocation.compilation_target.clone(),
                 };
-                let (scope_attribution, session_scope_root) =
-                    resolve_cargo_root_scope(input, record.identity(), incarnation);
+                let session_scope = resolve_cargo_root_scope(input, record.identity(), incarnation);
                 let session_target_directory =
-                    resolve_session_target_directory(input, incarnation, &session_scope_root);
+                    resolve_session_target_directory(input, incarnation, &session_scope);
                 let build_profile = sticky_build_profile(
                     &recognized_cargo_root.build_profile,
                     &BuildSessionId::from_recognized_root(&recognized_cargo_root),
@@ -956,8 +1002,7 @@ fn collect_candidates(input: &BuildClassificationInput<'_>) -> CollectedCandidat
                 cargo_roots.push(CargoRootUnderClassification {
                     identity: record.identity().clone(),
                     recognized_cargo_root,
-                    scope_attribution,
-                    session_scope_root,
+                    session_scope,
                     session_target_directory,
                     build_profile,
                 });
@@ -986,14 +1031,26 @@ fn collect_candidates(input: &BuildClassificationInput<'_>) -> CollectedCandidat
     }
 }
 
+/// When this incarnation was first observed. An incarnation the ledger has not
+/// recorded yet is being seen for the first time in this cycle, so this cycle's
+/// stamp is its first sighting.
+fn first_sighting_for(
+    input: &BuildClassificationInput<'_>,
+    incarnation: &ProcessIncarnation,
+) -> FirstSighting {
+    match input.first_seen_ledger.lookup(incarnation) {
+        FirstSeenLookup::Recorded(first_sighting) => first_sighting,
+        FirstSeenLookup::NotRecorded => {
+            FirstSighting::new(input.build_classification_cycle, input.cycle_instant)
+        },
+    }
+}
+
 fn first_seen_for(
     input: &BuildClassificationInput<'_>,
     incarnation: &ProcessIncarnation,
 ) -> BuildClassificationCycle {
-    match input.first_seen_ledger.lookup(incarnation) {
-        FirstSeenLookup::Recorded(build_classification_cycle) => build_classification_cycle,
-        FirstSeenLookup::NotRecorded => input.build_classification_cycle,
-    }
+    first_sighting_for(input, incarnation).first_seen()
 }
 
 /// A nested Cargo belongs to the outer root only when confirmed scope and
@@ -1023,9 +1080,9 @@ fn drop_nested_cargo_roots(
             !cargo_roots.iter().any(|outer| {
                 outer.identity != cargo_root.identity
                     && ancestors.contains(&outer.identity)
-                    && outer.session_scope_root == cargo_root.session_scope_root
-                    && outer.scope_attribution.is_resolved()
-                    && cargo_root.scope_attribution.is_resolved()
+                    && outer
+                        .session_scope
+                        .shares_resolved_root(&cargo_root.session_scope)
             })
         })
         .map(|(_, cargo_root)| cargo_root)
@@ -1054,31 +1111,30 @@ fn resolve_cargo_root_scope(
     input: &BuildClassificationInput<'_>,
     process_identity: &ProcessIdentity,
     incarnation: &ProcessIncarnation,
-) -> (ScopeAttribution, SessionScopeRoot) {
+) -> SessionScope {
     if let OwnedRootEvidence::Root(live_owned_root) = input.owned_root_evidence
         && live_owned_root.root_identity() == process_identity
-        && let SessionScopeRoot::Checkout(checkout_root) =
+        && let SessionScopeRoot::Checkout(root) =
             checkout_root_for_owned_launch(input, live_owned_root)
     {
-        return (
-            ScopeAttribution::OwnedRoot,
-            SessionScopeRoot::Checkout(checkout_root),
-        );
+        return SessionScope::Resolved {
+            method: ScopeAttribution::OwnedRoot,
+            root,
+        };
     }
 
     let Some(canonical_process_path_set) = input.canonical_process_paths.get(incarnation) else {
-        return (ScopeAttribution::Unresolved, SessionScopeRoot::Unresolved);
+        return SessionScope::Unresolved;
     };
 
     if let CanonicalPathResolution::Resolved(manifest_directory) =
         &canonical_process_path_set.manifest_directory
-        && let SessionScopeRoot::Checkout(checkout_root) =
-            checkout_root_for_path(input, manifest_directory)
+        && let SessionScopeRoot::Checkout(root) = checkout_root_for_path(input, manifest_directory)
     {
-        return (
-            ScopeAttribution::ManifestArgument,
-            SessionScopeRoot::Checkout(checkout_root),
-        );
+        return SessionScope::Resolved {
+            method: ScopeAttribution::ManifestArgument,
+            root,
+        };
     }
 
     if let CanonicalPathResolution::Resolved(working_directory) =
@@ -1086,13 +1142,13 @@ fn resolve_cargo_root_scope(
     {
         let mut candidate = working_directory.as_path();
         loop {
-            if let SessionScopeRoot::Checkout(checkout_root) =
+            if let SessionScopeRoot::Checkout(root) =
                 checkout_root_for_path(input, &AbsolutePath::from(candidate.to_path_buf()))
             {
-                return (
-                    ScopeAttribution::WorkingDirectoryManifest,
-                    SessionScopeRoot::Checkout(checkout_root),
-                );
+                return SessionScope::Resolved {
+                    method: ScopeAttribution::WorkingDirectoryManifest,
+                    root,
+                };
             }
             let Some(parent) = candidate.parent() else {
                 break;
@@ -1103,18 +1159,18 @@ fn resolve_cargo_root_scope(
 
     if let CanonicalPathResolution::Resolved(target_directory_argument) =
         &canonical_process_path_set.target_directory_argument
-        && let SessionScopeRoot::Checkout(checkout_root) = checkout_root_for_target_directory(
+        && let SessionScopeRoot::Checkout(root) = checkout_root_for_target_directory(
             input,
             &CanonicalTargetDirectory::from_canonical_path(target_directory_argument.clone()),
         )
     {
-        return (
-            ScopeAttribution::UniqueOutputDirectory,
-            SessionScopeRoot::Checkout(checkout_root),
-        );
+        return SessionScope::Resolved {
+            method: ScopeAttribution::UniqueOutputDirectory,
+            root,
+        };
     }
 
-    (ScopeAttribution::Unresolved, SessionScopeRoot::Unresolved)
+    SessionScope::Unresolved
 }
 
 fn checkout_root_for_owned_launch(
@@ -1179,7 +1235,7 @@ fn checkout_root_for_target_directory(
 fn resolve_session_target_directory(
     input: &BuildClassificationInput<'_>,
     incarnation: &ProcessIncarnation,
-    session_scope_root: &SessionScopeRoot,
+    session_scope: &SessionScope,
 ) -> SessionTargetDirectory {
     if let Some(canonical_process_path_set) = input.canonical_process_paths.get(incarnation)
         && let CanonicalPathResolution::Resolved(target_directory_argument) =
@@ -1189,11 +1245,11 @@ fn resolve_session_target_directory(
             target_directory_argument.clone(),
         ));
     }
-    match session_scope_root {
-        SessionScopeRoot::Checkout(checkout_root) => {
+    match session_scope {
+        SessionScope::Resolved { root, .. } => {
             match input
                 .indexed_workspace_target_directories
-                .target_directory_for(checkout_root)
+                .target_directory_for(root)
             {
                 TargetDirectoryEvidence::Determined(canonical_target_directory) => {
                     SessionTargetDirectory::Indexed(canonical_target_directory.clone())
@@ -1201,7 +1257,7 @@ fn resolve_session_target_directory(
                 TargetDirectoryEvidence::Unobservable => SessionTargetDirectory::Unobservable,
             }
         },
-        SessionScopeRoot::Unresolved => SessionTargetDirectory::Unobservable,
+        SessionScope::Unresolved => SessionTargetDirectory::Unobservable,
     }
 }
 
@@ -1335,7 +1391,11 @@ fn primary_input_candidates(
     };
 
     for cargo_root in cargo_roots {
-        let SessionScopeRoot::Checkout(checkout_root) = &cargo_root.session_scope_root else {
+        let SessionScope::Resolved {
+            root: checkout_root,
+            ..
+        } = &cargo_root.session_scope
+        else {
             continue;
         };
         if primary_input
@@ -1444,7 +1504,9 @@ fn package_for_containing_member_root<'a>(
 /// Everything one Cargo command line says, after rustup-proxy, plugin, and
 /// built-in-alias normalization.
 struct CargoInvocation {
+    subcommand:                   CargoSubcommand,
     cargo_subcommand_recognition: CargoSubcommandRecognition,
+    selectors:                    Vec<CargoCommandSelector>,
     build_profile_label:          BuildProfileLabel,
     build_profile_attribution:    BuildProfileAttribution,
     compilation_target:           CompilationTarget,
@@ -1460,6 +1522,7 @@ impl CargoInvocation {
             .map(str::to_owned);
 
         let mut subcommand = plugin_subcommand;
+        let mut selectors = Vec::new();
         let mut build_profile_label = BuildProfileLabel::Dev;
         let mut build_profile_attribution = BuildProfileAttribution::MetadataDefault;
         let mut compilation_target = CompilationTarget::Host;
@@ -1468,7 +1531,9 @@ impl CargoInvocation {
             let Some(argument) = argument.to_str() else {
                 continue;
             };
-            if argument == RELEASE_ARGUMENT {
+            if let Some(selector) = selector_argument(argument, &mut arguments) {
+                selectors.push(selector);
+            } else if argument == RELEASE_ARGUMENT {
                 build_profile_label = BuildProfileLabel::Release;
                 build_profile_attribution = BuildProfileAttribution::Argument;
             } else if let Some(value) = argument_value(argument, PROFILE_ARGUMENT, &mut arguments) {
@@ -1489,10 +1554,22 @@ impl CargoInvocation {
                 CargoSubcommandRecognition::Unrecognized,
                 CargoSubcommandRecognition::from_subcommand,
             ),
+            subcommand: subcommand.map_or(CargoSubcommand::Absent, CargoSubcommand::Named),
+            selectors,
             build_profile_label,
             build_profile_attribution,
             compilation_target,
         }
+    }
+
+    /// The command the pane shows and the classifier decides from, as one
+    /// value.
+    fn operative_cargo_command(&self) -> OperativeCargoCommand {
+        OperativeCargoCommand::new(
+            self.subcommand.clone(),
+            self.cargo_subcommand_recognition,
+            self.selectors.clone(),
+        )
     }
 
     fn build_profile(&self) -> BuildProfile {
@@ -1562,6 +1639,43 @@ impl CompilerInvocation {
 }
 
 /// Read `--name value` or `--name=value`, consuming the separate value form.
+/// Recognize one selector argument, consuming its value when it takes a
+/// separate one. Selectors are recorded as argv spelled them; nothing here
+/// resolves a name against the workspace.
+fn selector_argument<'a>(
+    argument: &str,
+    arguments: &mut std::iter::Peekable<impl Iterator<Item = &'a OsString>>,
+) -> Option<CargoCommandSelector> {
+    match argument {
+        WORKSPACE_ARGUMENT | ALL_PACKAGES_ARGUMENT => {
+            return Some(CargoCommandSelector::AllPackages);
+        },
+        LIBRARY_ARGUMENT => return Some(CargoCommandSelector::Library),
+        ALL_BINARIES_ARGUMENT => return Some(CargoCommandSelector::AllBinaries),
+        ALL_EXAMPLES_ARGUMENT => return Some(CargoCommandSelector::AllExamples),
+        ALL_TESTS_ARGUMENT => return Some(CargoCommandSelector::AllTests),
+        ALL_BENCHMARKS_ARGUMENT => return Some(CargoCommandSelector::AllBenchmarks),
+        ALL_TARGETS_ARGUMENT => return Some(CargoCommandSelector::AllTargets),
+        _ => {},
+    }
+
+    if let Some(package) = argument_value(argument, PACKAGE_ARGUMENT, arguments)
+        .or_else(|| argument_value(argument, PACKAGE_SHORT_ARGUMENT, arguments))
+    {
+        return Some(CargoCommandSelector::Package(package));
+    }
+    if let Some(binary) = argument_value(argument, BINARY_ARGUMENT, arguments) {
+        return Some(CargoCommandSelector::Binary(binary));
+    }
+    if let Some(example) = argument_value(argument, EXAMPLE_ARGUMENT, arguments) {
+        return Some(CargoCommandSelector::Example(example));
+    }
+    if let Some(test) = argument_value(argument, TEST_ARGUMENT, arguments) {
+        return Some(CargoCommandSelector::Test(test));
+    }
+    argument_value(argument, BENCHMARK_ARGUMENT, arguments).map(CargoCommandSelector::Benchmark)
+}
+
 fn argument_value<'a>(
     argument: &str,
     name: &str,

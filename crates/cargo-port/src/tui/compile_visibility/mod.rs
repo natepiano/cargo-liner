@@ -2,9 +2,7 @@
 
 mod scope;
 
-#[cfg(test)]
 pub(crate) use scope::MonitorScopeActionability;
-#[cfg(test)]
 pub(crate) use scope::MonitorScopeKey;
 pub(crate) use scope::MonitorScopeResolution;
 pub(crate) use scope::MonitorScopeUpdate;
@@ -12,18 +10,9 @@ pub(crate) use scope::MonitorSelectedRow;
 pub(crate) use scope::monitor_scope_input;
 pub(crate) use scope::resolve_monitor_scope;
 
-#[cfg(test)]
 use crate::build_monitor::BuildScopeActionability;
-#[cfg(test)]
 use crate::build_monitor::BuildScopeKey;
-
-/// Monotonic identity for one compile-monitor scope lifetime.
-#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) struct CompileMonitorGeneration(u64);
-
-impl CompileMonitorGeneration {
-    pub(crate) const fn advance(&mut self) { self.0 = self.0.saturating_add(1); }
-}
+pub(crate) use crate::build_monitor::CompileMonitorGeneration;
 
 /// Compile-monitor state owned while visibility is enabled.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -34,10 +23,6 @@ pub(crate) struct ActiveMonitorState {
 }
 
 impl ActiveMonitorState {
-    #[allow(
-        dead_code,
-        reason = "Reserved for Build Monitor snapshot and deadline state"
-    )]
     fn new(
         monitor_scope_update: MonitorScopeUpdate,
         compile_monitor_generation: CompileMonitorGeneration,
@@ -48,6 +33,12 @@ impl ActiveMonitorState {
             monitor_scope_resolution,
             compile_monitor_generation,
         }
+    }
+
+    /// Whether this scope authorizes build classification, and the roots and
+    /// revisions it authorizes it over.
+    pub(crate) fn build_scope_actionability(&self) -> BuildScopeActionability {
+        build_scope_actionability(&self.monitor_scope_resolution)
     }
 
     fn requires_replacement(&self, monitor_scope_update: &MonitorScopeUpdate) -> bool {
@@ -74,18 +65,11 @@ impl ActiveMonitorState {
         &self.monitor_selected_row
     }
 
-    #[allow(
-        dead_code,
-        reason = "Reserved for Build Monitor snapshot and deadline state"
-    )]
+    #[cfg(test)]
     pub(crate) const fn monitor_scope_resolution(&self) -> &MonitorScopeResolution {
         &self.monitor_scope_resolution
     }
 
-    #[allow(
-        dead_code,
-        reason = "Reserved for Build Monitor snapshot and deadline state"
-    )]
     pub(crate) const fn compile_monitor_generation(&self) -> CompileMonitorGeneration {
         self.compile_monitor_generation
     }
@@ -96,14 +80,12 @@ impl ActiveMonitorState {
 pub(crate) enum CompileVisibilityState {
     #[default]
     Off,
-    #[allow(dead_code, reason = "Reserved for Build Monitor enablement lifecycle")]
     On(ActiveMonitorState),
 }
 
 impl CompileVisibilityState {
     pub(crate) const fn is_on(&self) -> bool { matches!(self, Self::On(_)) }
 
-    #[allow(dead_code, reason = "Reserved for Build Monitor enablement lifecycle")]
     pub(crate) fn enable(
         &mut self,
         monitor_scope_update: MonitorScopeUpdate,
@@ -115,7 +97,6 @@ impl CompileVisibilityState {
         ));
     }
 
-    #[allow(dead_code, reason = "Reserved for Build Monitor enablement lifecycle")]
     pub(crate) fn disable(&mut self) { *self = Self::Off; }
 
     pub(crate) fn requires_scope_replacement(
@@ -161,12 +142,10 @@ impl CompileVisibilityState {
 /// [`MonitorScopeKey`] never leaves `crate::tui`. It reads the canonical roots
 /// through their accessors, which already carry the sort-and-dedup invariant
 /// established when the scope was resolved, so it must not re-sort them.
-#[cfg(test)]
 impl From<&MonitorScopeKey> for BuildScopeKey {
     fn from(monitor_scope_key: &MonitorScopeKey) -> Self {
-        Self::from_sorted_scope_roots(
-            monitor_scope_key.canonical_checkout_roots().to_vec(),
-            monitor_scope_key.canonical_workspace_roots().to_vec(),
+        Self::from_covered_scope_roots(
+            monitor_scope_key.covered_scope_roots().clone(),
             monitor_scope_key.accepted_cargo_metadata_revision(),
             monitor_scope_key.project_list_revision(),
         )
@@ -176,7 +155,6 @@ impl From<&MonitorScopeKey> for BuildScopeKey {
 /// The one entry point through which a monitor scope reaches build
 /// classification. Routing through [`MonitorScopeResolution::actionability`]
 /// keeps the five resolution states from being restated anywhere downstream.
-#[cfg(test)]
 pub(crate) fn build_scope_actionability(
     monitor_scope_resolution: &MonitorScopeResolution,
 ) -> BuildScopeActionability {

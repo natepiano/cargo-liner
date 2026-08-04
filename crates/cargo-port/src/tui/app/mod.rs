@@ -183,7 +183,6 @@ use crate::lint;
 use crate::lint::LintRuns;
 #[cfg(test)]
 use crate::lint::LintStatus;
-use crate::process_observation::ProcessRefreshExecutor;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::CargoWorkspaceIndex;
@@ -199,6 +198,8 @@ use crate::tui::compile_visibility::CompileVisibilityState;
 use crate::tui::compile_visibility::MonitorScopeUpdate;
 use crate::tui::compile_visibility::monitor_scope_input;
 use crate::tui::compile_visibility::resolve_monitor_scope;
+use crate::tui::process_refresh::AppProcessRefreshExecutor;
+use crate::tui::process_refresh::CompileClassificationInFlight;
 
 pub(super) struct App {
     /// Net subsystem. Owns the shared `HttpClient`, the GitHub
@@ -257,14 +258,15 @@ pub(super) struct App {
     /// Immutable workspace ownership view used by process features.
     /// It rebuilds only after accepted Cargo metadata or the `ProjectList`
     /// revision changes; event-loop wakes retain the current view.
-    pub(super) cargo_workspace_index:                       CargoWorkspaceIndex,
+    pub(super) cargo_workspace_index:                       Arc<CargoWorkspaceIndex>,
     /// Selected-scope state for the optional compile monitor. `Off` owns no
     /// monitor snapshot, deadline, tombstone, or process-refresh demand.
     pub(super) compile_visibility_state:                    CompileVisibilityState,
     /// App-owned monotonic source for active compile-monitor generations.
     pub(super) compile_monitor_generation:                  CompileMonitorGeneration,
     /// Sole scheduler and owner of the shared host process observer.
-    pub(super) process_refresh_executor:                    ProcessRefreshExecutor,
+    pub(super) process_refresh_executor:                    AppProcessRefreshExecutor,
+    pub(super) compile_classification_in_flight:            CompileClassificationInFlight,
     /// Number of Running Targets attribution collections performed by this
     /// app. Tests use it to verify the cadence gate precedes filesystem work.
     #[cfg(test)]
@@ -1279,7 +1281,9 @@ impl App {
         reason = "Reserved for the Build Monitor visibility keybinding"
     )]
     pub(crate) fn toggle_compile_visibility(&mut self) {
-        if self.compile_visibility_state.is_on() {
+        if let CompileVisibilityState::On(active_monitor_state) = &self.compile_visibility_state {
+            let compile_monitor_generation = active_monitor_state.compile_monitor_generation();
+            self.cancel_compile_classification(compile_monitor_generation);
             self.advance_compile_monitor_generation();
             self.compile_visibility_state.disable();
             return;
@@ -1300,6 +1304,11 @@ impl App {
             .compile_visibility_state
             .requires_scope_replacement(&monitor_scope_update)
         {
+            if let CompileVisibilityState::On(active_monitor_state) = &self.compile_visibility_state
+            {
+                let superseded_generation = active_monitor_state.compile_monitor_generation();
+                self.cancel_compile_classification(superseded_generation);
+            }
             let compile_monitor_generation = self.advance_compile_monitor_generation();
             self.compile_visibility_state
                 .replace_scope(monitor_scope_update, compile_monitor_generation);

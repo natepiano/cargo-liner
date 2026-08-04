@@ -40,7 +40,6 @@ use crate::config::CargoPortConfig;
 use crate::lint::RuntimeHandle;
 use crate::process_observation::CompileMonitorRefreshSchedule;
 use crate::process_observation::ProcessRefreshExecutionBackendSelection;
-use crate::process_observation::ProcessRefreshExecutor;
 use crate::process_observation::RunningTargetsRefreshSchedule;
 use crate::project::AbsolutePath;
 use crate::project::CargoWorkspaceIndex;
@@ -57,6 +56,8 @@ use crate::tui::integration::AppPaneId;
 use crate::tui::keymap;
 use crate::tui::overlays::Overlays;
 use crate::tui::panes::Panes;
+use crate::tui::process_refresh::AppProcessRefreshExecutor;
+use crate::tui::process_refresh::CompileClassificationInFlight;
 use crate::tui::project_list::ProjectList;
 use crate::tui::running_targets::RUNNING_TARGETS_REFRESH_INTERVAL;
 use crate::tui::settings::StartupSettings;
@@ -256,12 +257,12 @@ impl AppBuilder<Started> {
             .map(|p| p.as_path().to_path_buf());
         let keymap = Keymap::new(keymap_path_buf.clone(), keymap::ResolvedKeymap::defaults());
         let themes = ThemeRuntime::new(started.themes_dir);
-        let cargo_workspace_index = metadata_store.lock().map_or_else(
+        let cargo_workspace_index = Arc::new(metadata_store.lock().map_or_else(
             |_| CargoWorkspaceIndex::default(),
             |metadata_store| {
                 CargoWorkspaceIndex::from_metadata_store(&metadata_store, projects.revision())
             },
-        );
+        ));
         let scan = Scan::new(ScanState::new(scan_started_at), metadata_store);
         let process_refresh_executor = process_refresh_executor(&startup_services);
         let mut overlays = Overlays::new();
@@ -293,6 +294,7 @@ impl AppBuilder<Started> {
             compile_visibility_state: CompileVisibilityState::Off,
             compile_monitor_generation: CompileMonitorGeneration::default(),
             process_refresh_executor,
+            compile_classification_in_flight: CompileClassificationInFlight::default(),
             #[cfg(test)]
             running_target_attribution_collection_count: 0,
             background,
@@ -326,7 +328,7 @@ impl AppBuilder<Started> {
     }
 }
 
-fn process_refresh_executor(startup_services: &StartupServices) -> ProcessRefreshExecutor {
+fn process_refresh_executor(startup_services: &StartupServices) -> AppProcessRefreshExecutor {
     let running_targets_polling_effect = startup_services.running_targets_polling_effect();
     let (backend_selection, running_targets_refresh_schedule) = match running_targets_polling_effect
     {

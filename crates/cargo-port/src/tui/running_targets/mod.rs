@@ -9,7 +9,6 @@ mod constants;
 mod state;
 mod termination;
 
-pub(super) use app_tick::ObserverRefreshTiming;
 pub(super) use constants::RUNNING_TARGETS_REFRESH_INTERVAL;
 pub(super) use state::*;
 pub(super) use termination::*;

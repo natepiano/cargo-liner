@@ -1,8 +1,8 @@
+use crate::build_monitor::CoveredScopeRoots;
+use crate::build_monitor::ScopeRootCoverage;
 use crate::project::AbsolutePath;
 use crate::project::AcceptedCargoMetadataRevision;
-use crate::project::CanonicalCheckoutRoot;
 use crate::project::CanonicalPathResolution;
-use crate::project::CanonicalWorkspaceRoot;
 use crate::project::CargoWorkspaceIndex;
 use crate::project::CargoWorkspaceIndexRevision;
 use crate::project::CargoWorkspaceIndexRevisionState;
@@ -58,33 +58,30 @@ impl From<CurrentVisibleRow> for MonitorSelectedRow {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MonitorScopeKey {
     monitor_selected_row_identity:    MonitorSelectedRowIdentity,
-    canonical_checkout_roots:         Vec<CanonicalCheckoutRoot>,
-    canonical_workspace_roots:        Vec<CanonicalWorkspaceRoot>,
+    covered_scope_roots:              CoveredScopeRoots,
     accepted_cargo_metadata_revision: AcceptedCargoMetadataRevision,
     project_list_revision:            ProjectListRevision,
 }
 
 impl MonitorScopeKey {
-    fn new(
+    const fn new(
         monitor_selected_row_identity: MonitorSelectedRowIdentity,
-        mut canonical_checkout_roots: Vec<CanonicalCheckoutRoot>,
-        mut canonical_workspace_roots: Vec<CanonicalWorkspaceRoot>,
+        covered_scope_roots: CoveredScopeRoots,
         accepted_cargo_metadata_revision: AcceptedCargoMetadataRevision,
         project_list_revision: ProjectListRevision,
     ) -> Self {
-        canonical_checkout_roots
-            .sort_by(|left, right| left.path().as_path().cmp(right.path().as_path()));
-        canonical_checkout_roots.dedup();
-        canonical_workspace_roots
-            .sort_by(|left, right| left.path().as_path().cmp(right.path().as_path()));
-        canonical_workspace_roots.dedup();
         Self {
             monitor_selected_row_identity,
-            canonical_checkout_roots,
-            canonical_workspace_roots,
+            covered_scope_roots,
             accepted_cargo_metadata_revision,
             project_list_revision,
         }
+    }
+
+    /// The covered roots themselves, for the conversion that hands them to
+    /// build classification without re-establishing the invariant.
+    pub(crate) const fn covered_scope_roots(&self) -> &CoveredScopeRoots {
+        &self.covered_scope_roots
     }
 
     /// The selected row this key was resolved for. `BuildScopeKey` carries no
@@ -101,26 +98,12 @@ impl MonitorScopeKey {
         self.monitor_selected_row_identity.visible_row_kind()
     }
 
-    /// Sorted canonical checkout roots this scope covers.
-    #[cfg(test)]
-    pub(crate) fn canonical_checkout_roots(&self) -> &[CanonicalCheckoutRoot] {
-        &self.canonical_checkout_roots
-    }
-
-    /// Sorted canonical Cargo workspace roots this scope covers.
-    #[cfg(test)]
-    pub(crate) fn canonical_workspace_roots(&self) -> &[CanonicalWorkspaceRoot] {
-        &self.canonical_workspace_roots
-    }
-
     /// Accepted `cargo metadata` revision this scope was resolved against.
-    #[cfg(test)]
     pub(crate) const fn accepted_cargo_metadata_revision(&self) -> AcceptedCargoMetadataRevision {
         self.accepted_cargo_metadata_revision
     }
 
     /// Visible project-list revision this scope was resolved against.
-    #[cfg(test)]
     pub(crate) const fn project_list_revision(&self) -> ProjectListRevision {
         self.project_list_revision
     }
@@ -176,7 +159,6 @@ pub(crate) enum MonitorScopeResolution {
 }
 
 /// Whether a resolved scope can authorize monitoring work.
-#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MonitorScopeActionability<'a> {
     Actionable(&'a MonitorScopeKey),
@@ -184,7 +166,6 @@ pub(crate) enum MonitorScopeActionability<'a> {
 }
 
 impl MonitorScopeResolution {
-    #[cfg(test)]
     pub(crate) const fn actionability(&self) -> MonitorScopeActionability<'_> {
         match self {
             Self::Ready(monitor_scope_key) => {
@@ -458,10 +439,14 @@ fn monitor_scope_key(
         canonical_checkout_roots.push(canonical_checkout_root.clone());
         canonical_workspace_roots.push(canonical_workspace_root.clone());
     }
+    let ScopeRootCoverage::Covered(covered_scope_roots) =
+        CoveredScopeRoots::from_roots(canonical_checkout_roots, canonical_workspace_roots)
+    else {
+        return MonitorScopeResolution::UnresolvedPath(monitor_scope_resolution_revision);
+    };
     MonitorScopeResolution::Ready(MonitorScopeKey::new(
         monitor_selected_row_identity.clone(),
-        canonical_checkout_roots,
-        canonical_workspace_roots,
+        covered_scope_roots,
         cargo_workspace_index_revision.accepted_cargo_metadata_revision(),
         monitor_scope_resolution_revision.project_list_revision(),
     ))
@@ -795,6 +780,7 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     use super::*;
     use crate::build_monitor::BuildScopeActionability;
@@ -878,8 +864,8 @@ mod tests {
 
     struct ScopeFixture {
         temp_dir:                            tempfile::TempDir,
-        cargo_workspace_index:               CargoWorkspaceIndex,
-        containing_checkout_workspace_index: CargoWorkspaceIndex,
+        cargo_workspace_index:               Arc<CargoWorkspaceIndex>,
+        containing_checkout_workspace_index: Arc<CargoWorkspaceIndex>,
         checkout_roots:                      FixtureCheckoutRoots,
         nested_workspace_roots:              FixtureNestedWorkspaceRoots,
         project_list:                        ProjectList,
@@ -1286,12 +1272,20 @@ mod tests {
             panic!("both rows must resolve to actionable scopes");
         };
         assert_eq!(
-            first_monitor_scope_key.canonical_checkout_roots(),
-            second_monitor_scope_key.canonical_checkout_roots()
+            first_monitor_scope_key
+                .covered_scope_roots()
+                .canonical_checkout_roots(),
+            second_monitor_scope_key
+                .covered_scope_roots()
+                .canonical_checkout_roots()
         );
         assert_eq!(
-            first_monitor_scope_key.canonical_workspace_roots(),
-            second_monitor_scope_key.canonical_workspace_roots()
+            first_monitor_scope_key
+                .covered_scope_roots()
+                .canonical_workspace_roots(),
+            second_monitor_scope_key
+                .covered_scope_roots()
+                .canonical_workspace_roots()
         );
         assert_ne!(
             first_monitor_scope_key.monitor_selected_row_identity(),
@@ -1350,10 +1344,10 @@ mod tests {
         ));
 
         let empty_workspace_metadata_store = WorkspaceMetadataStore::new();
-        let empty_cargo_workspace_index = CargoWorkspaceIndex::from_metadata_store(
+        let empty_cargo_workspace_index = Arc::new(CargoWorkspaceIndex::from_metadata_store(
             &empty_workspace_metadata_store,
             scope_fixture.project_list.revision(),
-        );
+        ));
         let unresolved_monitor_scope_update = resolve_monitor_scope(
             monitor_scope_input(&scope_fixture.project_list),
             WorkspaceIndexReadiness::Current {
@@ -1365,7 +1359,8 @@ mod tests {
             MonitorScopeResolution::UnresolvedPath(_)
         ));
 
-        let ambiguous_cargo_workspace_index = ambiguous_cargo_workspace_index(&scope_fixture)?;
+        let ambiguous_cargo_workspace_index =
+            Arc::new(ambiguous_cargo_workspace_index(&scope_fixture)?);
         let ambiguous_monitor_scope_update = resolve_monitor_scope(
             monitor_scope_input(&scope_fixture.project_list),
             WorkspaceIndexReadiness::Current {
@@ -1445,10 +1440,13 @@ mod tests {
             )),
             RootItem::NonRust(NonRustProject::new(AbsolutePath::from(non_rust_root), None)),
         ]);
-        let cargo_workspace_index =
-            nested_workspace_index(&project_list, &checkout_roots, &nested_workspace_roots);
+        let cargo_workspace_index = Arc::new(nested_workspace_index(
+            &project_list,
+            &checkout_roots,
+            &nested_workspace_roots,
+        ));
         let containing_checkout_workspace_index =
-            containing_checkout_index(&project_list, &checkout_roots);
+            Arc::new(containing_checkout_index(&project_list, &checkout_roots));
         Ok(ScopeFixture {
             temp_dir,
             cargo_workspace_index,
@@ -1642,11 +1640,13 @@ mod tests {
                     panic!("fixture Rust row should resolve to an actionable monitor scope");
                 };
                 let canonical_checkout_roots: Vec<_> = monitor_scope_key
+                    .covered_scope_roots()
                     .canonical_checkout_roots()
                     .iter()
                     .map(|canonical_checkout_root| canonical_checkout_root.path().clone())
                     .collect();
                 let canonical_workspace_roots: Vec<_> = monitor_scope_key
+                    .covered_scope_roots()
                     .canonical_workspace_roots()
                     .iter()
                     .map(|canonical_workspace_root| canonical_workspace_root.path().clone())
@@ -1670,6 +1670,7 @@ mod tests {
 
     fn canonical_checkout_root_paths(monitor_scope_key: &MonitorScopeKey) -> Vec<AbsolutePath> {
         monitor_scope_key
+            .covered_scope_roots()
             .canonical_checkout_roots()
             .iter()
             .map(|canonical_checkout_root| canonical_checkout_root.path().clone())
@@ -1701,12 +1702,16 @@ mod tests {
         };
         assert_eq!(
             build_scope_key.canonical_checkout_roots(),
-            monitor_scope_key.canonical_checkout_roots(),
+            monitor_scope_key
+                .covered_scope_roots()
+                .canonical_checkout_roots(),
             "the conversion must not re-sort the roots"
         );
         assert_eq!(
             build_scope_key.canonical_workspace_roots(),
-            monitor_scope_key.canonical_workspace_roots()
+            monitor_scope_key
+                .covered_scope_roots()
+                .canonical_workspace_roots()
         );
         assert_eq!(
             build_scope_key.accepted_cargo_metadata_revision(),
@@ -1785,7 +1790,7 @@ mod tests {
 
     fn ready_scope_key_for_row(
         project_list: &mut ProjectList,
-        cargo_workspace_index: &CargoWorkspaceIndex,
+        cargo_workspace_index: &Arc<CargoWorkspaceIndex>,
         row_matches: impl Fn(VisibleRow) -> bool,
     ) -> TestResult<MonitorScopeKey> {
         let monitor_scope_update =
@@ -1803,7 +1808,7 @@ mod tests {
 
     fn monitor_scope_update_for_row(
         project_list: &mut ProjectList,
-        cargo_workspace_index: &CargoWorkspaceIndex,
+        cargo_workspace_index: &Arc<CargoWorkspaceIndex>,
         row_matches: impl Fn(VisibleRow) -> bool,
     ) -> TestResult<MonitorScopeUpdate> {
         let row_index = project_list

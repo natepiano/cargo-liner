@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -18,15 +19,22 @@ use super::classify::ArgumentPath;
 use super::classify::BuildClassification;
 use super::classify::CargoSubcommandRecognition;
 use super::classify::observed_process_path_arguments;
+use super::execution::CompileClassificationCancellation;
+use super::execution::CompileClassificationDemand;
+use super::execution::CompileClassificationExecution;
+use super::execution::CompileMonitorGeneration;
+use super::scope::BuildScopeKey;
 use super::session::BuildProfileAttribution;
 use super::session::BuildProfileLabel;
 use super::session::BuildSession;
 use super::session::BuildSessionId;
+use super::session::CargoCommandSelector;
+use super::session::CargoSubcommand;
 use super::session::LiveOwnedRoot;
 use super::session::OwnedRootEvidence;
 use super::session::OwnedRootLifecycle;
 use super::session::ScopeAttribution;
-use super::session::SessionScopeRoot;
+use super::session::SessionScope;
 use super::session::SessionTargetDirectory;
 use super::session::TargetDirectoryEvidence;
 use crate::process_observation::BuildCandidateRole;
@@ -398,17 +406,90 @@ fn a_building_cargo_root_in_an_indexed_checkout_opens_one_resolved_session()
     let [build_session] = build_classification.build_sessions() else {
         return Err("one build session should be classified".into());
     };
-    assert_eq!(
-        build_session.scope_attribution(),
-        ScopeAttribution::WorkingDirectoryManifest
-    );
     assert!(matches!(
-        build_session.session_scope_root(),
-        SessionScopeRoot::Checkout(_)
+        build_session.session_scope(),
+        SessionScope::Resolved {
+            method: ScopeAttribution::WorkingDirectoryManifest,
+            ..
+        }
     ));
     assert_eq!(
         build_session.build_profile().label(),
         &BuildProfileLabel::Dev
+    );
+    Ok(())
+}
+
+#[test]
+fn a_session_records_the_operative_command_and_the_root_it_was_observed_on()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut fixture = ClassificationFixture::new()?;
+    let cargo_root = fixture.cargo_root(&[
+        "cargo",
+        "build",
+        "--workspace",
+        "-p",
+        "demo",
+        "--bin",
+        "demo",
+        "--tests",
+        "--benches",
+        "--all-targets",
+    ]);
+
+    let build_classification = fixture.classify(&[cargo_root]);
+
+    let [build_session] = build_classification.build_sessions() else {
+        return Err("one build session should be classified".into());
+    };
+    let operative_cargo_command = build_session.operative_cargo_command();
+    assert_eq!(
+        operative_cargo_command.subcommand(),
+        &CargoSubcommand::Named("build".to_string())
+    );
+    assert_eq!(
+        operative_cargo_command.selectors().to_vec(),
+        vec![
+            CargoCommandSelector::AllPackages,
+            CargoCommandSelector::Package("demo".to_string()),
+            CargoCommandSelector::Binary("demo".to_string()),
+            CargoCommandSelector::AllTests,
+            CargoCommandSelector::AllBenchmarks,
+            CargoCommandSelector::AllTargets,
+        ]
+    );
+    assert_eq!(build_session.root_observation().root_pid(), 101);
+    assert_eq!(
+        build_session.root_identity(),
+        build_session.root_observation().root_identity()
+    );
+    Ok(())
+}
+
+/// Classification rebuilds every session from scratch each cycle, so the root
+/// observation must carry the ledger's first sighting rather than the current
+/// cycle's instant. Re-stamping it would make a ten-minute build report the age
+/// of one refresh interval forever.
+#[test]
+fn a_session_keeps_its_first_observed_instant_across_cycles()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut fixture = ClassificationFixture::new()?;
+    let cargo_root = fixture.cargo_root(&["cargo", "build"]);
+
+    let first_cycle = fixture.classify(std::slice::from_ref(&cargo_root));
+    let [first_session] = first_cycle.build_sessions() else {
+        return Err("one build session should be classified".into());
+    };
+    let first_observed_at = first_session.root_observation().first_observed_at();
+
+    let second_cycle = fixture.classify(std::slice::from_ref(&cargo_root));
+    let [second_session] = second_cycle.build_sessions() else {
+        return Err("the same build session should be classified again".into());
+    };
+
+    assert_eq!(
+        second_session.root_observation().first_observed_at(),
+        first_observed_at
     );
     Ok(())
 }
@@ -531,7 +612,7 @@ fn a_verified_owned_root_is_attributed_to_the_owned_run() -> Result<(), Box<dyn 
     let mut fixture = ClassificationFixture::new()?;
     let cargo_root = fixture.cargo_root(&["cargo", "build"]);
     let owned_root_evidence = OwnedRootEvidence::Root(LiveOwnedRoot::new(
-        OwnedRunId::for_test(1),
+        OwnedRunId::for_test(NonZeroU64::MIN),
         cargo_root.identity().clone(),
         std::fs::canonicalize(&fixture.checkout_root)?,
         OwnedRootLifecycle::Live,
@@ -544,10 +625,13 @@ fn a_verified_owned_root_is_attributed_to_the_owned_run() -> Result<(), Box<dyn 
         Instant::now(),
     );
 
-    assert_eq!(
-        build_classification.build_sessions()[0].scope_attribution(),
-        ScopeAttribution::OwnedRoot
-    );
+    assert!(matches!(
+        build_classification.build_sessions()[0].session_scope(),
+        SessionScope::Resolved {
+            method: ScopeAttribution::OwnedRoot,
+            ..
+        }
+    ));
     Ok(())
 }
 
@@ -879,9 +963,10 @@ fn two_sibling_cargo_roots_in_different_checkouts_stay_two_sessions()
     let [first_session, second_session] = build_classification.build_sessions() else {
         return Err("neither sibling root is nested under the other".into());
     };
-    assert_ne!(
-        first_session.session_scope_root(),
-        second_session.session_scope_root(),
+    assert!(
+        !first_session
+            .session_scope()
+            .shares_resolved_root(second_session.session_scope()),
         "each sibling session builds its own checkout"
     );
     Ok(())
@@ -1391,4 +1476,58 @@ fn a_process_whose_arguments_are_unreadable_is_observed_without_a_session()
             .contains(blinded_root.incarnation())
     );
     Ok(())
+}
+
+// --- demand-driven classification -----------------------------------------
+
+fn requested_demand(
+    compile_monitor_generation: CompileMonitorGeneration,
+    cancellation: CompileClassificationCancellation,
+) -> CompileClassificationDemand {
+    CompileClassificationDemand::Requested {
+        compile_monitor_generation,
+        build_scope_key: BuildScopeKey::for_test(AbsolutePath::from(std::path::Path::new("/"))),
+        cargo_workspace_index: std::sync::Arc::new(CargoWorkspaceIndex::from_metadata_store(
+            &WorkspaceMetadataStore::new(),
+            ProjectListRevision::default(),
+        )),
+        owned_root_evidence: OwnedRootEvidence::NoLiveRoot,
+        cancellation,
+    }
+}
+
+#[test]
+fn a_cycle_that_owes_the_monitor_nothing_runs_no_classification() {
+    let mut build_classifier = BuildClassifier::default();
+
+    assert_eq!(
+        build_classifier.classify_demand(
+            &snapshot_of(&[]),
+            CompileClassificationDemand::NotRequested,
+            Instant::now(),
+        ),
+        CompileClassificationExecution::NotRequested
+    );
+}
+
+/// Cancellation is read after the observation the cycle already paid for, so a
+/// cancelled cycle names the generation it belonged to and does no compile
+/// parsing or classification at all.
+#[test]
+fn a_cancelled_demand_skips_classification_and_names_its_generation() {
+    let mut build_classifier = BuildClassifier::default();
+    let mut compile_monitor_generation = CompileMonitorGeneration::default();
+    compile_monitor_generation.advance();
+    let cancellation =
+        CompileClassificationCancellation::for_generation(compile_monitor_generation);
+    let _ = cancellation.cancel(compile_monitor_generation);
+
+    assert_eq!(
+        build_classifier.classify_demand(
+            &snapshot_of(&[]),
+            requested_demand(compile_monitor_generation, cancellation),
+            Instant::now(),
+        ),
+        CompileClassificationExecution::Cancelled(compile_monitor_generation)
+    );
 }

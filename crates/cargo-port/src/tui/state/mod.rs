@@ -21,6 +21,7 @@ pub(crate) use inflight::OwnedProcessGroupSignalOutcome;
 pub(crate) use inflight::OwnedProcessGroupTerminationCapability;
 pub(crate) use inflight::OwnedRunActivation;
 pub(crate) use inflight::OwnedRunId;
+pub(crate) use inflight::OwnedRunLaunchAdmission;
 pub(crate) use inflight::OwnedRunLaunchStart;
 pub(crate) use inflight::OwnedRunMessageUpdate;
 pub(crate) use inflight::OwnedRunOutputTitleRef;

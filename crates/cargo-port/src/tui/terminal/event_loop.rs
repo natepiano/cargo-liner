@@ -22,13 +22,13 @@ use crate::channel::Receiver;
 use crate::channel::Select;
 use crate::channel::TryRecvError;
 use crate::process_observation::ProcessRefreshDeadline;
-use crate::process_observation::ProcessRefreshResultReceiver;
 use crate::project::AbsolutePath;
 use crate::tui::app::App;
 use crate::tui::app::PollBackgroundStats;
 use crate::tui::input;
+use crate::tui::process_refresh::AppProcessRefreshResultReceiver;
+use crate::tui::process_refresh::ObserverRefreshTiming;
 use crate::tui::render;
-use crate::tui::running_targets::ObserverRefreshTiming;
 use crate::tui::state::OwnedRunLaunchStart;
 
 pub(super) fn spawn_input_thread() -> Receiver<Event> {
@@ -173,7 +173,7 @@ fn wait_for_event(app: &App, input_rx: &Receiver<Event>) {
     if app.panes.cpu.is_sampling() {
         select.recv(app.panes.cpu.sample_rx());
     }
-    if let ProcessRefreshResultReceiver::DedicatedWorker(process_refresh_result_receiver) =
+    if let AppProcessRefreshResultReceiver::DedicatedWorker(process_refresh_result_receiver) =
         app.process_refresh_result_receiver()
     {
         select.recv(process_refresh_result_receiver);

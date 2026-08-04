@@ -32,6 +32,9 @@ use super::constants::MAX_BUILD_DIRECTORY_ENTRIES;
 use super::constants::MAX_DEPENDENCY_MANIFEST_ENTRIES;
 use super::constants::MAX_FIRST_SEEN_ENTRIES;
 use super::constants::MAX_MANIFEST_SEARCH_DEPTH;
+use super::execution::CompileClassificationDemand;
+use super::execution::CompileClassificationExecution;
+use super::execution::CompileClassificationProgress;
 use super::session::BuildSession;
 use super::session::BuildSessionId;
 use super::session::OwnedRootEvidence;
@@ -315,18 +318,48 @@ enum RootPromotion {
     NotPromoted,
 }
 
-/// One incarnation's ordering and promotion history.
+/// When one incarnation was first observed, in both the cycle counter that
+/// orders classification and the clock that measures elapsed build time.
+///
+/// The two are not interchangeable: the cycle counter is a sequence number, so
+/// only the instant can answer how long a build has been running.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct FirstSighting {
+    first_seen:        BuildClassificationCycle,
+    first_observed_at: Instant,
+}
+
+impl FirstSighting {
+    pub(super) const fn new(
+        first_seen: BuildClassificationCycle,
+        first_observed_at: Instant,
+    ) -> Self {
+        Self {
+            first_seen,
+            first_observed_at,
+        }
+    }
+
+    /// The cycle the incarnation was first observed in.
+    pub(super) const fn first_seen(&self) -> BuildClassificationCycle { self.first_seen }
+
+    /// The instant the incarnation was first observed at, which never moves for
+    /// as long as the ledger holds the incarnation.
+    pub(super) const fn first_observed_at(&self) -> Instant { self.first_observed_at }
+}
+
+/// One incarnation's first sighting and promotion history.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct FirstSeenEntry {
-    first_seen:     BuildClassificationCycle,
+    first_sighting: FirstSighting,
     root_promotion: RootPromotion,
 }
 
-/// Whether the ledger already holds a first-seen cycle for an incarnation.
+/// Whether the ledger already holds a first sighting for an incarnation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum FirstSeenLookup {
-    /// The incarnation was first observed in this cycle.
-    Recorded(BuildClassificationCycle),
+    /// The incarnation was first observed in this cycle, at this instant.
+    Recorded(FirstSighting),
     /// The incarnation has not been observed before.
     NotRecorded,
 }
@@ -339,12 +372,13 @@ pub(super) struct FirstSeenLedger {
 }
 
 impl FirstSeenLedger {
-    /// The cycle this incarnation was first observed in, when known.
+    /// The cycle and instant this incarnation was first observed at, when
+    /// known.
     pub(super) fn lookup(&self, incarnation: &ProcessIncarnation) -> FirstSeenLookup {
         self.entries
             .get(incarnation)
             .map_or(FirstSeenLookup::NotRecorded, |entry| {
-                FirstSeenLookup::Recorded(entry.first_seen)
+                FirstSeenLookup::Recorded(entry.first_sighting)
             })
     }
 
@@ -358,13 +392,13 @@ impl FirstSeenLedger {
     fn record_observed(
         &mut self,
         observed_incarnations: &[ProcessIncarnation],
-        build_classification_cycle: BuildClassificationCycle,
+        first_sighting: FirstSighting,
     ) {
         for incarnation in observed_incarnations {
             self.entries
                 .entry(incarnation.clone())
                 .or_insert(FirstSeenEntry {
-                    first_seen:     build_classification_cycle,
+                    first_sighting,
                     root_promotion: RootPromotion::NotPromoted,
                 });
         }
@@ -373,14 +407,14 @@ impl FirstSeenLedger {
     fn record_promotions(
         &mut self,
         promoted_root_incarnations: &[ProcessIncarnation],
-        build_classification_cycle: BuildClassificationCycle,
+        first_sighting: FirstSighting,
     ) {
         for incarnation in promoted_root_incarnations {
             let entry = self
                 .entries
                 .entry(incarnation.clone())
                 .or_insert(FirstSeenEntry {
-                    first_seen:     build_classification_cycle,
+                    first_sighting,
                     root_promotion: RootPromotion::NotPromoted,
                 });
             entry.root_promotion = RootPromotion::Promoted;
@@ -399,7 +433,7 @@ impl FirstSeenLedger {
         let mut order: Vec<(ProcessIncarnation, BuildClassificationCycle)> = self
             .entries
             .iter()
-            .map(|(incarnation, entry)| (incarnation.clone(), entry.first_seen))
+            .map(|(incarnation, entry)| (incarnation.clone(), entry.first_sighting.first_seen()))
             .collect();
         order.sort_by_key(|(_, first_seen)| *first_seen);
         let excess = self.entries.len().saturating_sub(MAX_FIRST_SEEN_ENTRIES);
@@ -423,6 +457,53 @@ pub(crate) struct BuildClassifier {
 }
 
 impl BuildClassifier {
+    /// Turn one refresh cycle's [`CompileClassificationDemand`] into the
+    /// outcome the compile monitor receives.
+    ///
+    /// Cancellation is read twice: once on entry, which is the moment process
+    /// observation finished, and once immediately before [`Self::classify_cycle`]
+    /// prepares the classification input and parses observed command lines. A
+    /// cancelled or failed demand costs the cycle nothing beyond those checks,
+    /// so the observation stays available to Running Targets either way.
+    pub(crate) fn classify_demand(
+        &mut self,
+        process_observation_snapshot: &ProcessObservationSnapshot,
+        compile_classification_demand: CompileClassificationDemand,
+        cycle_instant: Instant,
+    ) -> CompileClassificationExecution {
+        let CompileClassificationDemand::Requested {
+            compile_monitor_generation,
+            build_scope_key,
+            cargo_workspace_index,
+            owned_root_evidence,
+            cancellation,
+        } = compile_classification_demand
+        else {
+            return CompileClassificationExecution::NotRequested;
+        };
+
+        if cancellation.progress() == CompileClassificationProgress::Cancelled {
+            return CompileClassificationExecution::Cancelled(compile_monitor_generation);
+        }
+
+        tracing::debug!(
+            checkout_roots = build_scope_key.canonical_checkout_roots().len(),
+            workspace_roots = build_scope_key.canonical_workspace_roots().len(),
+            "compile_classification_scope"
+        );
+
+        if cancellation.progress() == CompileClassificationProgress::Cancelled {
+            return CompileClassificationExecution::Cancelled(compile_monitor_generation);
+        }
+
+        CompileClassificationExecution::Completed(Box::new(self.classify_cycle(
+            process_observation_snapshot,
+            &cargo_workspace_index,
+            &owned_root_evidence,
+            cycle_instant,
+        )))
+    }
+
     /// Prepare one cycle's input, run the pure classification, then apply what
     /// it asked for. Every filesystem read happens on one side or the other of
     /// the [`classify`] call, never inside it.
@@ -463,13 +544,12 @@ impl BuildClassifier {
             self.build_classification_cycle,
         );
 
-        self.first_seen_ledger.record_observed(
-            build_classification.observed_incarnations(),
-            self.build_classification_cycle,
-        );
+        let first_sighting = FirstSighting::new(self.build_classification_cycle, cycle_instant);
+        self.first_seen_ledger
+            .record_observed(build_classification.observed_incarnations(), first_sighting);
         self.first_seen_ledger.record_promotions(
             build_classification.promoted_root_incarnations(),
-            self.build_classification_cycle,
+            first_sighting,
         );
         self.first_seen_ledger
             .prune(build_classification.observed_incarnations());

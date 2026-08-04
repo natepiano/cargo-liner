@@ -248,6 +248,13 @@ impl ProcessRefreshConsumerDemand {
         )
     }
 
+    pub(crate) const fn includes_compile_monitor(self) -> bool {
+        matches!(
+            self,
+            Self::CompileMonitor | Self::RunningTargetsAndCompileMonitor
+        )
+    }
+
     pub(crate) const fn coalesce(self, other: Self) -> Self {
         if matches!((self, other), (Self::RunningTargets, Self::RunningTargets)) {
             Self::RunningTargets
@@ -273,26 +280,34 @@ pub(crate) enum ProcessRefreshExecutionFailure {
 /// including the failures — would otherwise be moved through the result
 /// channel at the snapshot's size.
 #[derive(Debug, PartialEq)]
-pub(crate) enum ProcessRefreshExecutionOutcome {
-    Completed(Box<CompletedProcessRefreshExecution>),
+pub(crate) enum ProcessRefreshExecutionOutcome<CycleOutcome> {
+    Completed(Box<CompletedProcessRefreshExecution<CycleOutcome>>),
     Failed(ProcessRefreshExecutionFailure),
 }
 
-/// Snapshot and elapsed observer time from one successfully completed refresh.
+/// Snapshot, elapsed observer time, and the consumer outcome from one
+/// successfully completed refresh.
+///
+/// `elapsed` stays observer-only: it is the boundary the event loop
+/// instruments and the benchmarks report a classification cost against, so
+/// consumer work done after the observation must not be folded into it.
 #[derive(Debug, PartialEq)]
-pub(crate) struct CompletedProcessRefreshExecution {
+pub(crate) struct CompletedProcessRefreshExecution<CycleOutcome> {
     process_observation_snapshot: ProcessObservationSnapshot,
     elapsed:                      Duration,
+    cycle_outcome:                CycleOutcome,
 }
 
-impl CompletedProcessRefreshExecution {
+impl<CycleOutcome> CompletedProcessRefreshExecution<CycleOutcome> {
     pub(super) const fn new(
         process_observation_snapshot: ProcessObservationSnapshot,
         elapsed: Duration,
+        cycle_outcome: CycleOutcome,
     ) -> Self {
         Self {
             process_observation_snapshot,
             elapsed,
+            cycle_outcome,
         }
     }
 
@@ -303,8 +318,10 @@ impl CompletedProcessRefreshExecution {
         &self.process_observation_snapshot
     }
 
-    pub(crate) fn into_snapshot(self) -> ProcessObservationSnapshot {
-        self.process_observation_snapshot
+    /// Split the observation from the consumer outcome so each reaches the
+    /// consumer that asked for it.
+    pub(crate) fn into_parts(self) -> (ProcessObservationSnapshot, CycleOutcome) {
+        (self.process_observation_snapshot, self.cycle_outcome)
     }
 }
 
@@ -429,7 +446,6 @@ impl BuildCandidateIncarnations {
     }
 
     /// Every candidate incarnation in ascending incarnation order.
-    #[cfg(test)]
     pub(crate) fn iter(
         &self,
     ) -> impl Iterator<Item = (&ProcessIncarnation, BuildCandidateRole)> + '_ {
@@ -490,7 +506,6 @@ impl ProcessObservationSnapshot {
     }
 
     /// Cargo, compiler, and wrapper candidates observed in this refresh.
-    #[cfg(test)]
     pub(crate) const fn build_candidate_incarnations(&self) -> &BuildCandidateIncarnations {
         &self.build_candidate_incarnations
     }

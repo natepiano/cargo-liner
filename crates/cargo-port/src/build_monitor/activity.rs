@@ -183,6 +183,7 @@ pub(crate) struct CompiledCrateName(String);
 
 impl CompiledCrateName {
     /// The crate name as the compiler reported it.
+    #[cfg(test)]
     pub(crate) fn as_str(&self) -> &str { &self.0 }
 }
 
@@ -205,9 +206,11 @@ impl ManifestPackageIdentity {
     pub(crate) const fn new(name: String, version: String) -> Self { Self { name, version } }
 
     /// The package name declared in the manifest.
+    #[cfg(test)]
     pub(crate) fn name(&self) -> &str { &self.name }
 
     /// The package version declared in the manifest.
+    #[cfg(test)]
     pub(crate) fn version(&self) -> &str { &self.version }
 }
 
@@ -257,19 +260,23 @@ impl CompileActivity {
     pub(crate) const fn compile_activity_id(&self) -> &CompileActivityId { &self.activity_id }
 
     /// Which compiler executable this activity runs.
+    #[cfg(test)]
     pub(crate) const fn compiler_kind(&self) -> CompilerKind { self.compiler_kind }
 
     /// Which session this activity belongs to, and on what evidence.
+    #[cfg(test)]
     pub(crate) const fn compiler_attribution(&self) -> &CompilerAttribution {
         &self.compiler_attribution
     }
 
     /// What this activity is compiling.
+    #[cfg(test)]
     pub(crate) const fn compiled_crate_identity(&self) -> &CompiledCrateIdentity {
         &self.compiled_crate_identity
     }
 
     /// The target triple this activity compiles for.
+    #[cfg(test)]
     pub(crate) const fn compilation_target(&self) -> &CompilationTarget { &self.compilation_target }
 
     /// The cycle in which this activity was first observed.
@@ -316,14 +323,17 @@ impl UnattributedCompileActivity {
     pub(crate) const fn compile_activity_id(&self) -> &CompileActivityId { &self.activity_id }
 
     /// Which compiler executable this activity runs.
+    #[cfg(test)]
     pub(crate) const fn compiler_kind(&self) -> CompilerKind { self.compiler_kind }
 
     /// What this activity is compiling, as far as argv reveals.
+    #[cfg(test)]
     pub(crate) const fn compiled_crate_identity(&self) -> &CompiledCrateIdentity {
         &self.compiled_crate_identity
     }
 
     /// The ambiguous or unattributed evidence, including candidate sessions.
+    #[cfg(test)]
     pub(crate) const fn compiler_attribution(&self) -> &CompilerAttribution {
         &self.compiler_attribution
     }

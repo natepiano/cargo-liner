@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use tui_pane::SLOW_FRAME_MS;
 
-use crate::tui::running_targets::ObserverRefreshTiming;
+use crate::tui::process_refresh::ObserverRefreshTiming;
 
 #[derive(Clone, Copy)]
 pub(super) struct FrameMetrics {

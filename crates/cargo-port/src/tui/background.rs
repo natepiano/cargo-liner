@@ -22,17 +22,23 @@ use super::startup_services::WatcherHandle;
 use super::terminal::CiFetchMsg;
 use super::terminal::CleanMsg;
 use super::terminal::ExampleMsg;
+use crate::build_monitor::BuildClassifier;
+use crate::build_monitor::CompileClassificationDemand;
+use crate::build_monitor::CompileClassificationExecution;
 use crate::channel::Receiver;
 use crate::channel::SendError;
 use crate::channel::Sender;
 use crate::process_observation::CompileMonitorRefreshSchedule;
 use crate::process_observation::ProcessRefreshExecutionBackendSelection;
 use crate::process_observation::ProcessRefreshExecutor;
+use crate::process_observation::RefreshCycleClassifier;
 use crate::process_observation::RunningTargetsRefreshSchedule;
+use crate::process_observation::snapshot::ProcessObservationSnapshot;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
 use crate::scan::BackgroundMsg;
+use crate::tui::process_refresh::AppProcessRefreshExecutor;
 use crate::watcher::WatchRequest;
 use crate::watcher::WatcherMsg;
 
@@ -88,9 +94,10 @@ impl Background {
         running_targets_refresh_schedule: RunningTargetsRefreshSchedule,
         compile_monitor_refresh_schedule: CompileMonitorRefreshSchedule,
         started_at: Instant,
-    ) -> ProcessRefreshExecutor {
+    ) -> AppProcessRefreshExecutor {
         ProcessRefreshExecutor::new(
             backend_selection,
+            BuildClassifyingRefreshCycle::default(),
             running_targets_refresh_schedule,
             compile_monitor_refresh_schedule,
             started_at,
@@ -280,5 +287,35 @@ mod tests {
             .expect("disabled watcher accepts completion");
 
         assert!(!background.watcher_is_active());
+    }
+}
+
+/// The sole runtime [`BuildClassifier`], handed to the dedicated
+/// process-refresh worker at spawn.
+///
+/// It lives here rather than in `process_observation` because
+/// `build_monitor::classify` already reads observation's snapshot, incarnation,
+/// and ancestry types; owning the classifier inside observation would point the
+/// dependency both ways. Owning it here keeps observation neutral while the
+/// worker still holds the classifier and the observer as one unit.
+#[derive(Debug, Default)]
+pub(crate) struct BuildClassifyingRefreshCycle {
+    build_classifier: BuildClassifier,
+}
+
+impl RefreshCycleClassifier for BuildClassifyingRefreshCycle {
+    type CycleDemand = CompileClassificationDemand;
+    type CycleOutcome = CompileClassificationExecution;
+
+    fn classify_refresh_cycle(
+        &mut self,
+        process_observation_snapshot: &ProcessObservationSnapshot,
+        compile_classification_demand: CompileClassificationDemand,
+    ) -> CompileClassificationExecution {
+        self.build_classifier.classify_demand(
+            process_observation_snapshot,
+            compile_classification_demand,
+            Instant::now(),
+        )
     }
 }

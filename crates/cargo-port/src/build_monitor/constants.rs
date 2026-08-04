@@ -21,6 +21,22 @@ pub(super) const RELEASE_ARGUMENT: &str = "--release";
 pub(super) const TARGET_ARGUMENT: &str = "--target";
 pub(super) const TARGET_DIRECTORY_ARGUMENT: &str = "--target-dir";
 
+// cargo selector spellings, in the order `cargo --help` lists them
+pub(super) const PACKAGE_ARGUMENT: &str = "--package";
+pub(super) const PACKAGE_SHORT_ARGUMENT: &str = "-p";
+pub(super) const WORKSPACE_ARGUMENT: &str = "--workspace";
+pub(super) const ALL_PACKAGES_ARGUMENT: &str = "--all";
+pub(super) const LIBRARY_ARGUMENT: &str = "--lib";
+pub(super) const BINARY_ARGUMENT: &str = "--bin";
+pub(super) const ALL_BINARIES_ARGUMENT: &str = "--bins";
+pub(super) const EXAMPLE_ARGUMENT: &str = "--example";
+pub(super) const ALL_EXAMPLES_ARGUMENT: &str = "--examples";
+pub(super) const TEST_ARGUMENT: &str = "--test";
+pub(super) const ALL_TESTS_ARGUMENT: &str = "--tests";
+pub(super) const BENCHMARK_ARGUMENT: &str = "--bench";
+pub(super) const ALL_BENCHMARKS_ARGUMENT: &str = "--benches";
+pub(super) const ALL_TARGETS_ARGUMENT: &str = "--all-targets";
+
 // cargo profiles
 /// The build directory Cargo writes under for the `dev` profile.
 pub(super) const DEBUG_BUILD_DIRECTORY: &str = "debug";

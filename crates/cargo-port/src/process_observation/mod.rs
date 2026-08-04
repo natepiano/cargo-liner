@@ -23,11 +23,11 @@ pub(crate) use executor::ProcessRefreshExecutionBackendSelection;
 pub(crate) use executor::ProcessRefreshExecutor;
 pub(crate) use executor::ProcessRefreshResultPoll;
 pub(crate) use executor::ProcessRefreshResultReceiver;
+pub(crate) use executor::RefreshCycleClassifier;
 pub(crate) use executor::RunningTargetsRefreshSchedule;
 use identity::ObservedProcessIdentity;
 use identity::PlatformProcessObservation;
 use identity::ProcessIdentity;
-#[cfg(test)]
 pub(crate) use snapshot::BuildCandidateRole;
 use snapshot::FullProcessRefreshEvidence;
 use snapshot::ProcessFieldObservation;

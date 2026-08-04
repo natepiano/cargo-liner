@@ -2,6 +2,7 @@
 //! records the monitor pane renders.
 
 use std::path::PathBuf;
+use std::time::Instant;
 
 use super::classify::BuildClassificationCycle;
 use super::classify::CargoSubcommandRecognition;
@@ -38,9 +39,11 @@ impl BuildSessionId {
 
 /// Which method resolved a session's scope.
 ///
-/// Every resolution method is actionable; only [`Self::Unresolved`] is not. The
-/// method is recorded so a misattribution is diagnosable from the pane and so
-/// one method can be demoted later without restructuring the record.
+/// Every method here is actionable; a session that no method related to the
+/// project list carries no method at all, because it is [`SessionScope::
+/// Unresolved`]. The method is recorded so a misattribution is diagnosable from
+/// the pane and so one method can be demoted later without restructuring the
+/// record.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ScopeAttribution {
     /// The root is the verified Cargo Port-owned run's own Cargo process.
@@ -51,13 +54,40 @@ pub(crate) enum ScopeAttribution {
     WorkingDirectoryManifest,
     /// Exactly one indexed workspace writes to the observed output directory.
     UniqueOutputDirectory,
+}
+
+/// The checkout a session builds in, together with the method that related it
+/// there.
+///
+/// Method and root are one value because they are one fact: no method names a
+/// checkout without resolving one, and a session nothing related to the project
+/// list has no method to record. Held as two independently unresolvable fields
+/// they could disagree — a method with no root, or a root no method named.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum SessionScope {
+    /// This method related the session to this canonical checkout.
+    Resolved {
+        method: ScopeAttribution,
+        root:   CanonicalCheckoutRoot,
+    },
     /// No method related this Cargo process to anything in the project list.
     Unresolved,
 }
 
-impl ScopeAttribution {
-    /// Whether the scope resolved by any method.
-    pub(crate) const fn is_resolved(self) -> bool { !matches!(self, Self::Unresolved) }
+impl SessionScope {
+    /// Whether both sessions resolved to the same checkout. An unresolved scope
+    /// shares its root with nothing, including another unresolved scope.
+    pub(crate) fn shares_resolved_root(&self, other: &Self) -> bool {
+        matches!(
+            (self, other),
+            (
+                Self::Resolved { root, .. },
+                Self::Resolved {
+                    root: other_root, ..
+                },
+            ) if root == other_root
+        )
+    }
 }
 
 /// The canonical checkout a resolved session builds in.
@@ -230,6 +260,7 @@ impl LiveOwnedRoot {
     }
 
     /// The current owned-run lifecycle identity.
+    #[cfg(test)]
     pub(crate) const fn owned_run_id(&self) -> OwnedRunId { self.owned_run_id }
 
     /// The verified live or stopping root process identity.
@@ -239,6 +270,7 @@ impl LiveOwnedRoot {
     pub(crate) fn launch_directory(&self) -> &std::path::Path { &self.launch_directory }
 
     /// Whether the owned root is running or stopping.
+    #[cfg(test)]
     pub(crate) const fn owned_root_lifecycle(&self) -> OwnedRootLifecycle {
         self.owned_root_lifecycle
     }
@@ -253,36 +285,154 @@ pub(crate) enum OwnedRootEvidence {
     Root(LiveOwnedRoot),
 }
 
+/// The Cargo command a session is executing, as the observed argv named it.
+///
+/// The recognition travels with the command it was decided from: a pane row
+/// that shows `cargo xtask` and a classifier that treats it as
+/// [`CargoSubcommandRecognition::Unrecognized`] must not be able to drift apart.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct OperativeCargoCommand {
+    subcommand:  CargoSubcommand,
+    recognition: CargoSubcommandRecognition,
+    selectors:   Vec<CargoCommandSelector>,
+}
+
+impl OperativeCargoCommand {
+    /// Record one observed Cargo command.
+    pub(crate) const fn new(
+        subcommand: CargoSubcommand,
+        recognition: CargoSubcommandRecognition,
+        selectors: Vec<CargoCommandSelector>,
+    ) -> Self {
+        Self {
+            subcommand,
+            recognition,
+            selectors,
+        }
+    }
+
+    /// The subcommand argv named, if it named one.
+    #[cfg(test)]
+    pub(crate) const fn subcommand(&self) -> &CargoSubcommand { &self.subcommand }
+
+    /// How the subcommand was recognized.
+    pub(crate) const fn recognition(&self) -> CargoSubcommandRecognition { self.recognition }
+
+    /// The selector arguments that narrow what this command builds, in the
+    /// order argv gave them.
+    #[cfg(test)]
+    pub(crate) fn selectors(&self) -> &[CargoCommandSelector] { &self.selectors }
+}
+
+/// The subcommand word on an observed Cargo command line.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum CargoSubcommand {
+    /// Argv named this subcommand, either directly or through a `cargo-` plugin
+    /// executable.
+    Named(String),
+    /// Argv named no subcommand, as with a bare `cargo` or `cargo --version`.
+    Absent,
+}
+
+/// One selector argument narrowing what the operative command builds.
+///
+/// Selectors are recorded verbatim rather than resolved against the workspace:
+/// resolving them would need the manifest, and the pane's purpose here is to
+/// show what the user actually typed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum CargoCommandSelector {
+    /// `-p`/`--package` named one package.
+    Package(String),
+    /// `--workspace` or `--all` selected every package.
+    AllPackages,
+    /// `--lib` selected the library target.
+    Library,
+    /// `--bin` named one binary target.
+    Binary(String),
+    /// `--bins` selected every binary target.
+    AllBinaries,
+    /// `--example` named one example target.
+    Example(String),
+    /// `--examples` selected every example target.
+    AllExamples,
+    /// `--test` named one test target.
+    Test(String),
+    /// `--tests` selected every test target.
+    AllTests,
+    /// `--bench` named one benchmark target.
+    Benchmark(String),
+    /// `--benches` selected every benchmark target.
+    AllBenchmarks,
+    /// `--all-targets` selected every target kind.
+    AllTargets,
+}
+
+/// The Cargo root process a session was classified from, as this cycle saw it.
+///
+/// The identity is the strong one, so a same-PID exec cannot make a stale row
+/// look live; the PID is exposed only for display and is never the thing a
+/// signal is aimed at.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SessionRootObservation {
+    root_identity:     ProcessIdentity,
+    first_observed_at: Instant,
+}
+
+impl SessionRootObservation {
+    /// Record one Cargo root's first sighting. The instant is the one the
+    /// first-seen ledger recorded when the root was first observed, so it does
+    /// not move while the root lives and elapsed build time is computable from
+    /// it.
+    pub(crate) const fn new(root_identity: ProcessIdentity, first_observed_at: Instant) -> Self {
+        Self {
+            root_identity,
+            first_observed_at,
+        }
+    }
+
+    /// The strong identity of the session's Cargo root process.
+    #[cfg(test)]
+    pub(crate) const fn root_identity(&self) -> &ProcessIdentity { &self.root_identity }
+
+    /// The Cargo root's PID, for display only.
+    #[cfg(test)]
+    pub(crate) const fn root_pid(&self) -> u32 { self.root_identity.pid() }
+
+    /// When the root was first observed, not when this cycle re-observed it.
+    #[cfg(test)]
+    pub(crate) const fn first_observed_at(&self) -> Instant { self.first_observed_at }
+}
+
 /// One classified Cargo build session.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BuildSession {
-    session_id:                   BuildSessionId,
-    cargo_subcommand_recognition: CargoSubcommandRecognition,
-    scope_attribution:            ScopeAttribution,
-    session_scope_root:           SessionScopeRoot,
-    session_target_directory:     SessionTargetDirectory,
-    build_profile:                BuildProfile,
-    first_seen:                   BuildClassificationCycle,
+    session_id:               BuildSessionId,
+    operative_cargo_command:  OperativeCargoCommand,
+    session_scope:            SessionScope,
+    session_target_directory: SessionTargetDirectory,
+    build_profile:            BuildProfile,
+    root_observation:         SessionRootObservation,
+    first_seen:               BuildClassificationCycle,
 }
 
 impl BuildSession {
     /// Assemble one immutable session record.
     pub(crate) const fn new(
         build_session_id: BuildSessionId,
-        cargo_subcommand_recognition: CargoSubcommandRecognition,
-        scope_attribution: ScopeAttribution,
-        session_scope_root: SessionScopeRoot,
+        operative_cargo_command: OperativeCargoCommand,
+        session_scope: SessionScope,
         session_target_directory: SessionTargetDirectory,
         build_profile: BuildProfile,
+        root_observation: SessionRootObservation,
         first_seen: BuildClassificationCycle,
     ) -> Self {
         Self {
             session_id: build_session_id,
-            cargo_subcommand_recognition,
-            scope_attribution,
-            session_scope_root,
+            operative_cargo_command,
+            session_scope,
             session_target_directory,
             build_profile,
+            root_observation,
             first_seen,
         }
     }
@@ -290,23 +440,42 @@ impl BuildSession {
     /// This session's stable key.
     pub(crate) const fn build_session_id(&self) -> &BuildSessionId { &self.session_id }
 
-    /// How the session's Cargo subcommand was recognized.
-    pub(crate) const fn cargo_subcommand_recognition(&self) -> CargoSubcommandRecognition {
-        self.cargo_subcommand_recognition
+    /// The Cargo command this session is executing.
+    #[cfg(test)]
+    pub(crate) const fn operative_cargo_command(&self) -> &OperativeCargoCommand {
+        &self.operative_cargo_command
     }
 
-    /// Which method resolved this session's scope.
-    pub(crate) const fn scope_attribution(&self) -> ScopeAttribution { self.scope_attribution }
+    /// How the session's Cargo subcommand was recognized.
+    #[cfg(test)]
+    pub(crate) const fn cargo_subcommand_recognition(&self) -> CargoSubcommandRecognition {
+        self.operative_cargo_command.recognition()
+    }
 
-    /// The canonical checkout this session builds in.
-    pub(crate) const fn session_scope_root(&self) -> &SessionScopeRoot { &self.session_scope_root }
+    /// The checkout this session builds in, and the method that resolved it.
+    #[cfg(test)]
+    pub(crate) const fn session_scope(&self) -> &SessionScope { &self.session_scope }
+
+    /// The strong identity of this session's Cargo root process.
+    #[cfg(test)]
+    pub(crate) const fn root_identity(&self) -> &ProcessIdentity {
+        self.root_observation.root_identity()
+    }
+
+    /// This cycle's observation of the session's Cargo root.
+    #[cfg(test)]
+    pub(crate) const fn root_observation(&self) -> &SessionRootObservation {
+        &self.root_observation
+    }
 
     /// Where this session writes, and how that was determined.
+    #[cfg(test)]
     pub(crate) const fn session_target_directory(&self) -> &SessionTargetDirectory {
         &self.session_target_directory
     }
 
     /// The profile this session builds.
+    #[cfg(test)]
     pub(crate) const fn build_profile(&self) -> &BuildProfile { &self.build_profile }
 
     /// The cycle in which this session was first observed.
