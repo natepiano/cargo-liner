@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::path::Path;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -205,6 +206,17 @@ impl CratesIoFetchPlan {
 
     /// The deduplicated name set — the startup row's denominator.
     pub(super) fn names(&self) -> HashSet<String> { self.by_name.keys().cloned().collect() }
+
+    /// The crates.io name published from `path`. Callers that already hold
+    /// a path and need the name to query for it must resolve it here, so
+    /// the pair always comes from one project — a version fetched under
+    /// one name is written back to that name's paths and no others.
+    pub(super) fn name_for_path(&self, path: &Path) -> Option<&str> {
+        self.by_name
+            .iter()
+            .find(|(_, paths)| paths.iter().any(|candidate| candidate.as_path() == path))
+            .map(|(name, _)| name.as_str())
+    }
 
     /// Drop every path failing `keep`, then every name left with no
     /// paths. The recovery refetch uses this to re-dispatch only the
