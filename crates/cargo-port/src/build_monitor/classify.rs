@@ -490,6 +490,24 @@ pub(crate) struct BuildClassification {
 }
 
 impl BuildClassification {
+    /// A classification that observed nothing, for tests that need a completed
+    /// cycle without a fixture behind it.
+    #[cfg(test)]
+    pub(super) fn empty_for_test(cycle_instant: Instant) -> Self {
+        Self {
+            build_sessions: Vec::new(),
+            compile_activities: Vec::new(),
+            unattributed_compile_activities: Vec::new(),
+            dependency_manifest_lookup_requests: Vec::new(),
+            observed_incarnations: Vec::new(),
+            promoted_root_incarnations: Vec::new(),
+            observed_session_build_directories: Vec::new(),
+            dependency_source_roots_in_use: Vec::new(),
+            classification_cycle: BuildClassificationCycle::default(),
+            cycle_instant,
+        }
+    }
+
     /// Sessions ordered by first-seen cycle, then process incarnation.
     pub(crate) fn build_sessions(&self) -> &[BuildSession] { &self.build_sessions }
 
@@ -537,7 +555,6 @@ impl BuildClassification {
     }
 
     /// When this cycle was taken.
-    #[cfg(test)]
     pub(crate) const fn cycle_instant(&self) -> Instant { self.cycle_instant }
 }
 

@@ -8,6 +8,8 @@
 
 use crate::project::AcceptedCargoMetadataRevision;
 use crate::project::CanonicalCheckoutRoot;
+use crate::project::CanonicalPathResolution;
+use crate::project::CanonicalTargetDirectory;
 use crate::project::CanonicalWorkspaceRoot;
 use crate::project::ProjectListRevision;
 
@@ -66,6 +68,36 @@ impl CoveredScopeRoots {
     }
 }
 
+/// The live target-directory resolutions one scope resolve observed, in the
+/// order that resolve visited the scope's workspaces.
+///
+/// [`crate::project::CargoWorkspaceView::target_directory_resolution`] reads the
+/// filesystem on every call, so a target directory that was missing when the
+/// scope was last resolved and now exists — or a `target` symlink created or
+/// retargeted at a different directory — produces a different value here while
+/// [`AcceptedCargoMetadataRevision`] and [`ProjectListRevision`] are both
+/// unchanged. Carrying it in [`BuildScopeKey`] is what makes that filesystem
+/// change invalidate the classification and the actionability that were
+/// resolved under the old resolution.
+///
+/// Order is resolve order rather than a sort: two resolves of the same selected
+/// row visit the same workspaces in the same order, and a different selected row
+/// is already a different `crate::tui::compile_visibility::MonitorScopeKey`.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct LiveTargetDirectoryRevision {
+    target_directory_resolutions: Vec<CanonicalPathResolution<CanonicalTargetDirectory>>,
+}
+
+impl From<Vec<CanonicalPathResolution<CanonicalTargetDirectory>>> for LiveTargetDirectoryRevision {
+    fn from(
+        target_directory_resolutions: Vec<CanonicalPathResolution<CanonicalTargetDirectory>>,
+    ) -> Self {
+        Self {
+            target_directory_resolutions,
+        }
+    }
+}
+
 /// Covered canonical roots plus the revisions that make them non-actionable
 /// once either input changes.
 ///
@@ -77,6 +109,7 @@ pub(crate) struct BuildScopeKey {
     covered_scope_roots:              CoveredScopeRoots,
     accepted_cargo_metadata_revision: AcceptedCargoMetadataRevision,
     project_list_revision:            ProjectListRevision,
+    live_target_directory_revision:   LiveTargetDirectoryRevision,
 }
 
 impl BuildScopeKey {
@@ -87,12 +120,20 @@ impl BuildScopeKey {
         covered_scope_roots: CoveredScopeRoots,
         accepted_cargo_metadata_revision: AcceptedCargoMetadataRevision,
         project_list_revision: ProjectListRevision,
+        live_target_directory_revision: LiveTargetDirectoryRevision,
     ) -> Self {
         Self {
             covered_scope_roots,
             accepted_cargo_metadata_revision,
             project_list_revision,
+            live_target_directory_revision,
         }
+    }
+
+    /// The covered roots as one value, for the retention rule that keeps prior
+    /// rows on screen when a new scope covers exactly the same roots.
+    pub(crate) const fn covered_scope_roots(&self) -> &CoveredScopeRoots {
+        &self.covered_scope_roots
     }
 
     /// Sorted canonical checkout roots the scope covers.
@@ -118,6 +159,7 @@ impl BuildScopeKey {
             },
             accepted_cargo_metadata_revision: AcceptedCargoMetadataRevision::default(),
             project_list_revision:            ProjectListRevision::default(),
+            live_target_directory_revision:   LiveTargetDirectoryRevision::default(),
         }
     }
 

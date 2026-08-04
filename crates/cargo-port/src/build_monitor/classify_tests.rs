@@ -306,16 +306,16 @@ fn an_unobservable_target_directory_never_matches_output() {
 // --- whole-cycle classification -------------------------------------------
 
 /// One indexed workspace on disk, plus the classifier that reads it.
-struct ClassificationFixture {
-    temp_dir:                 tempfile::TempDir,
-    checkout_root:            std::path::PathBuf,
-    workspace_metadata_store: WorkspaceMetadataStore,
-    cargo_workspace_index:    CargoWorkspaceIndex,
-    build_classifier:         BuildClassifier,
+pub(super) struct ClassificationFixture {
+    temp_dir:                         tempfile::TempDir,
+    pub(super) checkout_root:         std::path::PathBuf,
+    workspace_metadata_store:         WorkspaceMetadataStore,
+    pub(super) cargo_workspace_index: CargoWorkspaceIndex,
+    pub(super) build_classifier:      BuildClassifier,
 }
 
 impl ClassificationFixture {
-    fn new() -> Result<Self, Box<dyn std::error::Error>> {
+    pub(super) fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let temp_dir = tempfile::tempdir()?;
         let mut fixture = Self {
             checkout_root: temp_dir.path().join("checkout"),
@@ -362,7 +362,10 @@ impl ClassificationFixture {
         Ok(checkout_root)
     }
 
-    fn classify(&mut self, observed_processes: &[ObservedProcess]) -> BuildClassification {
+    pub(super) fn classify(
+        &mut self,
+        observed_processes: &[ObservedProcess],
+    ) -> BuildClassification {
         self.build_classifier.classify_cycle(
             &snapshot_of(observed_processes),
             &self.cargo_workspace_index,
@@ -388,7 +391,7 @@ impl ClassificationFixture {
         Ok(dependency_root)
     }
 
-    fn cargo_root(&self, arguments: &[&str]) -> ObservedProcess {
+    pub(super) fn cargo_root(&self, arguments: &[&str]) -> ObservedProcess {
         ObservedProcess::new(101, 1, &arguments.join(" "), "/usr/bin/cargo", arguments)
             .with_cwd(&self.checkout_root)
             .with_candidate_role(ObservedCandidateRole::Cargo)

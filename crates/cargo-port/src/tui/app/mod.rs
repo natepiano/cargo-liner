@@ -173,6 +173,8 @@ use super::state::Scan;
 use super::state::SyncTracker;
 #[cfg(test)]
 use super::test_support::FixtureDirs;
+use crate::build_monitor::BuildMonitor;
+use crate::build_monitor::BuildScopeActionability;
 use crate::channel::Receiver;
 use crate::channel::Sender;
 use crate::ci::OwnerRepo;
@@ -259,6 +261,10 @@ pub(super) struct App {
     /// It rebuilds only after accepted Cargo metadata or the `ProjectList`
     /// revision changes; event-loop wakes retain the current view.
     pub(super) cargo_workspace_index:                       Arc<CargoWorkspaceIndex>,
+    /// What the compile monitor has classified and still has to show. It is
+    /// held whether or not visibility is enabled; `MonitorSnapshot::Off` is the
+    /// state it holds while off.
+    pub(super) build_monitor:                               BuildMonitor,
     /// Selected-scope state for the optional compile monitor. `Off` owns no
     /// monitor snapshot, deadline, tombstone, or process-refresh demand.
     pub(super) compile_visibility_state:                    CompileVisibilityState,
@@ -1280,19 +1286,23 @@ impl App {
         dead_code,
         reason = "Reserved for the Build Monitor visibility keybinding"
     )]
-    pub(crate) fn toggle_compile_visibility(&mut self) {
+    pub(crate) fn toggle_compile_visibility(&mut self, now: Instant) {
         if let CompileVisibilityState::On(active_monitor_state) = &self.compile_visibility_state {
             let compile_monitor_generation = active_monitor_state.compile_monitor_generation();
             self.cancel_compile_classification(compile_monitor_generation);
             self.advance_compile_monitor_generation();
             self.compile_visibility_state.disable();
+            self.build_monitor.switch_off();
+            self.push_compile_monitor_schedule();
             return;
         }
         self.ensure_visible_rows_cached();
         let monitor_scope_update = self.resolve_compile_monitor_scope();
         let compile_monitor_generation = self.advance_compile_monitor_generation();
         self.compile_visibility_state
-            .enable(monitor_scope_update, compile_monitor_generation);
+            .enable(monitor_scope_update, compile_monitor_generation, now);
+        self.build_monitor.switch_on();
+        self.push_compile_monitor_schedule();
     }
 
     fn refresh_compile_monitor_scope_if_on(&mut self) {
@@ -1310,8 +1320,25 @@ impl App {
                 self.cancel_compile_classification(superseded_generation);
             }
             let compile_monitor_generation = self.advance_compile_monitor_generation();
-            self.compile_visibility_state
-                .replace_scope(monitor_scope_update, compile_monitor_generation);
+            self.compile_visibility_state.replace_scope(
+                monitor_scope_update,
+                compile_monitor_generation,
+                Instant::now(),
+            );
+            let build_scope_actionability = self.build_scope_actionability();
+            self.build_monitor.replace_scope(&build_scope_actionability);
+            self.push_compile_monitor_schedule();
+        }
+    }
+
+    /// Whether the enabled monitor's current scope authorizes monitoring, and
+    /// the roots it authorizes it over.
+    fn build_scope_actionability(&self) -> BuildScopeActionability {
+        match &self.compile_visibility_state {
+            CompileVisibilityState::Off => BuildScopeActionability::NotActionable,
+            CompileVisibilityState::On(active_monitor_state) => {
+                active_monitor_state.build_scope_actionability()
+            },
         }
     }
 
@@ -1346,6 +1373,7 @@ mod tests {
     use std::path::Path;
     use std::path::PathBuf;
     use std::process::Command;
+    use std::time::Instant;
 
     use chrono::DateTime;
     use chrono::FixedOffset;
@@ -2614,6 +2642,7 @@ mod tests {
         use std::ops::DerefMut;
         use std::path::Path;
         use std::rc::Rc;
+        use std::time::Instant;
 
         use crossterm::event::Event;
         use crossterm::event::KeyCode;
@@ -2803,12 +2832,12 @@ mod tests {
                 &app.compile_visibility_state,
                 CompileVisibilityState::Off
             ));
-            app.toggle_compile_visibility();
+            app.toggle_compile_visibility(Instant::now());
             assert!(matches!(
                 &app.compile_visibility_state,
                 CompileVisibilityState::On(_)
             ));
-            app.toggle_compile_visibility();
+            app.toggle_compile_visibility(Instant::now());
             assert!(matches!(
                 &app.compile_visibility_state,
                 CompileVisibilityState::Off
@@ -12733,7 +12762,7 @@ mod tests {
                 result:         Ok(initial_metadata),
             });
 
-            app.toggle_compile_visibility();
+            app.toggle_compile_visibility(Instant::now());
             let (accepted_metadata_revision_before, compile_monitor_generation_before) =
                 enabled_monitor_scope_facts(&app);
             let selected_project_before = app

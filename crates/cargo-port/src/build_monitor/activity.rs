@@ -260,11 +260,9 @@ impl CompileActivity {
     pub(crate) const fn compile_activity_id(&self) -> &CompileActivityId { &self.activity_id }
 
     /// Which compiler executable this activity runs.
-    #[cfg(test)]
     pub(crate) const fn compiler_kind(&self) -> CompilerKind { self.compiler_kind }
 
     /// Which session this activity belongs to, and on what evidence.
-    #[cfg(test)]
     pub(crate) const fn compiler_attribution(&self) -> &CompilerAttribution {
         &self.compiler_attribution
     }

@@ -70,7 +70,6 @@ pub(crate) enum RunningTargetsRefreshSchedule {
 /// Whether compile monitoring contributes a process deadline.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CompileMonitorRefreshSchedule {
-    #[cfg(test)]
     At(Instant),
     NotScheduled,
 }
@@ -331,6 +330,16 @@ impl<C: RefreshCycleClassifier> ProcessRefreshExecutor<C> {
         }
     }
 
+    /// Hand the executor the compile monitor's current dispatch deadline. The
+    /// monitor owns the scheduling intent; this deadline is derived from it and
+    /// is never read back as truth.
+    pub(crate) const fn rearm_compile_monitor(
+        &mut self,
+        compile_monitor_schedule: CompileMonitorRefreshSchedule,
+    ) {
+        self.compile_monitor_schedule = compile_monitor_schedule;
+    }
+
     pub(crate) fn next_deadline(&self) -> ProcessRefreshDeadline {
         if matches!(self.in_flight, ProcessRefreshInFlight::Awaiting { .. }) {
             return ProcessRefreshDeadline::AwaitingWorker;
@@ -442,7 +451,6 @@ impl<C: RefreshCycleClassifier> ProcessRefreshExecutor<C> {
             ProcessRefreshDeadline::At(deadline) if deadline <= now
         );
         let compile_monitor_due = match self.compile_monitor_schedule {
-            #[cfg(test)]
             CompileMonitorRefreshSchedule::At(deadline) => deadline <= now,
             CompileMonitorRefreshSchedule::NotScheduled => false,
         };
@@ -491,7 +499,6 @@ fn minimum_deadline(
     compile_monitor_schedule: CompileMonitorRefreshSchedule,
 ) -> ProcessRefreshDeadline {
     let compile_monitor_deadline = match compile_monitor_schedule {
-        #[cfg(test)]
         CompileMonitorRefreshSchedule::At(deadline) => ProcessRefreshDeadline::At(deadline),
         CompileMonitorRefreshSchedule::NotScheduled => ProcessRefreshDeadline::NotScheduled,
     };

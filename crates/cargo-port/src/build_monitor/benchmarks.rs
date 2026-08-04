@@ -45,45 +45,73 @@ const EVENT_LOOP_PROCESS_REFRESH_BUDGET: Duration = Duration::from_millis(15);
 const FIXTURE_PROCESS_CREATION_TOKEN_OFFSET: u64 = 10_000;
 const INDEXED_CHECKOUT_COUNT: usize = 4;
 const LARGE_FIXTURE_PROCESS_COUNT: usize = 5_000;
-const PROCESS_COUNTS: [usize; 2] = [SMALL_FIXTURE_PROCESS_COUNT, LARGE_FIXTURE_PROCESS_COUNT];
+/// The population the enabled monitor actually runs under: the
+/// `CARGO_ROOTS_PER_HUNDRED + COMPILERS_PER_HUNDRED + WRAPPERS_PER_HUNDRED`
+/// build candidates one hundred processes produce, a few dozen in total. The
+/// thousand- and five-thousand-process rows are both far above the refresh
+/// budget, so a change in per-candidate cost moves neither of them; this row is
+/// the one that can still cross the budget when it regresses.
+const MONITOR_SCALE_FIXTURE_PROCESS_COUNT: usize = 100;
+const PROCESS_COUNTS: [usize; 3] = [
+    MONITOR_SCALE_FIXTURE_PROCESS_COUNT,
+    SMALL_FIXTURE_PROCESS_COUNT,
+    LARGE_FIXTURE_PROCESS_COUNT,
+];
 const RECORDED_FIXTURE_BACKED_CLASSIFICATION_TIMINGS: [FixtureBackedClassificationTimingSamples;
-    2] = [
+    3] = [
+    FixtureBackedClassificationTimingSamples {
+        process_count:         MONITOR_SCALE_FIXTURE_PROCESS_COUNT,
+        snapshot_assemblies:   [
+            Duration::from_nanos(91_791),
+            Duration::from_nanos(87_667),
+            Duration::from_nanos(84_584),
+            Duration::from_nanos(85_916),
+            Duration::from_nanos(84_375),
+        ],
+        classification_cycles: [
+            Duration::from_nanos(776_083),
+            Duration::from_nanos(755_792),
+            Duration::from_nanos(742_875),
+            Duration::from_nanos(764_542),
+            Duration::from_nanos(869_625),
+        ],
+    },
     FixtureBackedClassificationTimingSamples {
         process_count:         SMALL_FIXTURE_PROCESS_COUNT,
         snapshot_assemblies:   [
-            Duration::from_nanos(1_333_666),
-            Duration::from_nanos(1_304_167),
-            Duration::from_nanos(1_307_417),
-            Duration::from_nanos(1_301_666),
-            Duration::from_nanos(29_234_625),
+            Duration::from_nanos(1_047_667),
+            Duration::from_nanos(1_010_791),
+            Duration::from_nanos(1_041_125),
+            Duration::from_nanos(1_118_792),
+            Duration::from_nanos(1_049_709),
         ],
         classification_cycles: [
-            Duration::from_nanos(11_520_459),
-            Duration::from_micros(16_246),
-            Duration::from_nanos(11_614_917),
-            Duration::from_nanos(23_609_500),
-            Duration::from_nanos(44_975_584),
+            Duration::from_nanos(7_876_416),
+            Duration::from_nanos(8_479_500),
+            Duration::from_nanos(7_800_541),
+            Duration::from_nanos(8_199_333),
+            Duration::from_micros(8107),
         ],
     },
     FixtureBackedClassificationTimingSamples {
         process_count:         LARGE_FIXTURE_PROCESS_COUNT,
         snapshot_assemblies:   [
-            Duration::from_nanos(37_464_166),
-            Duration::from_nanos(10_144_083),
-            Duration::from_nanos(8_536_875),
-            Duration::from_nanos(12_308_500),
-            Duration::from_nanos(9_676_333),
+            Duration::from_nanos(5_612_625),
+            Duration::from_nanos(5_795_042),
+            Duration::from_nanos(5_961_125),
+            Duration::from_nanos(5_794_083),
+            Duration::from_nanos(5_458_125),
         ],
         classification_cycles: [
-            Duration::from_nanos(74_470_125),
-            Duration::from_nanos(78_912_042),
-            Duration::from_nanos(88_712_958),
-            Duration::from_nanos(81_325_250),
-            Duration::from_nanos(131_038_875),
+            Duration::from_nanos(49_287_750),
+            Duration::from_nanos(46_792_875),
+            Duration::from_nanos(46_903_416),
+            Duration::from_nanos(45_833_500),
+            Duration::from_nanos(46_539_709),
         ],
     },
 ];
-const RECORDED_TIMING_DATE: &str = "2026-08-03";
+const RECORDED_TIMING_DATE: &str = "2026-08-04";
 const REPEATED_SAMPLE_COUNT: usize = 5;
 const SMALL_FIXTURE_PROCESS_COUNT: usize = 1_000;
 /// Compiler-wrapper processes per hundred fixture processes.
@@ -416,6 +444,24 @@ fn the_fixture_population_produces_classified_build_sessions() {
     assert!(
         !build_classification.compile_activities().is_empty(),
         "the fixture compilers must be attributed to their own root's session"
+    );
+}
+
+/// The load the monitor actually runs under must classify inside the same
+/// event-loop refresh budget the backend selection is made against. This is the
+/// only row whose measurement a per-candidate regression — an added
+/// `fs::canonicalize` per build candidate, say — can push over that budget.
+#[test]
+fn the_monitor_scale_population_classifies_inside_the_refresh_budget() {
+    let samples = measure_fixture(MONITOR_SCALE_FIXTURE_PROCESS_COUNT);
+
+    assert_eq!(
+        samples.classification_cycle_placement(),
+        ClassificationCyclePlacement::EventLoopAffordable,
+        "slowest classification increment over {} build candidates was {:?}",
+        MONITOR_SCALE_FIXTURE_PROCESS_COUNT / 100
+            * (CARGO_ROOTS_PER_HUNDRED + COMPILERS_PER_HUNDRED + WRAPPERS_PER_HUNDRED),
+        samples.slowest_classification_cycle(),
     );
 }
 

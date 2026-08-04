@@ -1,4 +1,5 @@
 use crate::build_monitor::CoveredScopeRoots;
+use crate::build_monitor::LiveTargetDirectoryRevision;
 use crate::build_monitor::ScopeRootCoverage;
 use crate::project::AbsolutePath;
 use crate::project::AcceptedCargoMetadataRevision;
@@ -61,6 +62,7 @@ pub(crate) struct MonitorScopeKey {
     covered_scope_roots:              CoveredScopeRoots,
     accepted_cargo_metadata_revision: AcceptedCargoMetadataRevision,
     project_list_revision:            ProjectListRevision,
+    live_target_directory_revision:   LiveTargetDirectoryRevision,
 }
 
 impl MonitorScopeKey {
@@ -69,12 +71,14 @@ impl MonitorScopeKey {
         covered_scope_roots: CoveredScopeRoots,
         accepted_cargo_metadata_revision: AcceptedCargoMetadataRevision,
         project_list_revision: ProjectListRevision,
+        live_target_directory_revision: LiveTargetDirectoryRevision,
     ) -> Self {
         Self {
             monitor_selected_row_identity,
             covered_scope_roots,
             accepted_cargo_metadata_revision,
             project_list_revision,
+            live_target_directory_revision,
         }
     }
 
@@ -106,6 +110,13 @@ impl MonitorScopeKey {
     /// Visible project-list revision this scope was resolved against.
     pub(crate) const fn project_list_revision(&self) -> ProjectListRevision {
         self.project_list_revision
+    }
+
+    /// The target-directory resolutions observed when this scope was resolved,
+    /// so a directory that appears or a symlink that is retargeted makes the
+    /// key — and everything classified under it — non-current.
+    pub(crate) const fn live_target_directory_revision(&self) -> &LiveTargetDirectoryRevision {
+        &self.live_target_directory_revision
     }
 }
 
@@ -425,6 +436,7 @@ fn monitor_scope_key(
     };
     let mut canonical_checkout_roots = Vec::new();
     let mut canonical_workspace_roots = Vec::new();
+    let mut target_directory_resolutions = Vec::new();
     for workspace in workspaces {
         let CanonicalPathResolution::Resolved(canonical_checkout_root) =
             workspace.checkout_root_resolution()
@@ -438,6 +450,7 @@ fn monitor_scope_key(
         };
         canonical_checkout_roots.push(canonical_checkout_root.clone());
         canonical_workspace_roots.push(canonical_workspace_root.clone());
+        target_directory_resolutions.push(workspace.target_directory_resolution());
     }
     let ScopeRootCoverage::Covered(covered_scope_roots) =
         CoveredScopeRoots::from_roots(canonical_checkout_roots, canonical_workspace_roots)
@@ -449,6 +462,7 @@ fn monitor_scope_key(
         covered_scope_roots,
         cargo_workspace_index_revision.accepted_cargo_metadata_revision(),
         monitor_scope_resolution_revision.project_list_revision(),
+        LiveTargetDirectoryRevision::from(target_directory_resolutions),
     ))
 }
 
@@ -781,10 +795,13 @@ mod tests {
     use std::path::Path;
     use std::path::PathBuf;
     use std::sync::Arc;
+    use std::time::Duration;
+    use std::time::Instant;
 
     use super::*;
     use crate::build_monitor::BuildScopeActionability;
     use crate::build_monitor::BuildScopeKey;
+    use crate::process_observation::CompileMonitorRefreshSchedule;
     use crate::project::FileStamp;
     use crate::project::ManifestFingerprint;
     use crate::project::MemberGroup;
@@ -798,6 +815,7 @@ mod tests {
     use crate::project::WorktreeGroup;
     use crate::tui::compile_visibility::CompileMonitorGeneration;
     use crate::tui::compile_visibility::CompileVisibilityState;
+    use crate::tui::compile_visibility::constants::COMPILE_MONITOR_REFRESH_INTERVAL;
 
     type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
@@ -1292,13 +1310,21 @@ mod tests {
             second_monitor_scope_key.monitor_selected_row_identity()
         );
 
-        compile_visibility_state.enable(first_monitor_scope_update, first_generation);
+        compile_visibility_state.enable(
+            first_monitor_scope_update,
+            first_generation,
+            Instant::now(),
+        );
 
         assert!(compile_visibility_state.requires_scope_replacement(&second_monitor_scope_update));
         assert_eq!(scope_fixture.project_list.revision(), project_list_revision);
         compile_monitor_generation.advance();
         let second_generation = compile_monitor_generation;
-        compile_visibility_state.replace_scope(second_monitor_scope_update, second_generation);
+        compile_visibility_state.replace_scope(
+            second_monitor_scope_update,
+            second_generation,
+            Instant::now(),
+        );
 
         assert!(!compile_visibility_state.accepts_generation(first_generation));
         assert!(compile_visibility_state.accepts_generation(second_generation));
@@ -1311,7 +1337,11 @@ mod tests {
             &scope_fixture.cargo_workspace_index,
             |visible_row| matches!(visible_row, VisibleRow::Root { node_index: 0 }),
         )?;
-        compile_visibility_state.enable(replacement_monitor_scope_update, third_generation);
+        compile_visibility_state.enable(
+            replacement_monitor_scope_update,
+            third_generation,
+            Instant::now(),
+        );
         assert!(!compile_visibility_state.accepts_generation(second_generation));
         assert!(compile_visibility_state.accepts_generation(third_generation));
         Ok(())
@@ -1788,6 +1818,109 @@ mod tests {
         Ok(())
     }
 
+    /// The declared target directory is resolved on every scope resolve, so a
+    /// directory that was missing and now exists — or a `target` symlink created
+    /// and then retargeted at a different directory — makes the scope key, and
+    /// everything classified under it, non-current. Accepted `cargo metadata`,
+    /// project-list content, and the selected row are all held constant here, so
+    /// the live target-directory resolution is the only input that moved.
+    #[test]
+    fn a_target_directory_that_appears_or_is_retargeted_invalidates_the_scope() -> TestResult<()> {
+        let mut scope_fixture = scope_fixture()?;
+        scope_fixture.project_list.recompute_visibility(true);
+        let checkout_root = scope_fixture
+            .project_list
+            .get(0)
+            .ok_or("standard root should exist")?
+            .root_item
+            .path()
+            .as_path()
+            .to_path_buf();
+        let target_directory = checkout_root.join("target");
+        let retargeted_directory = scope_fixture.temp_dir.path().join("retargeted-target");
+        fs::create_dir_all(&retargeted_directory)?;
+        let root_row =
+            |visible_row: VisibleRow| matches!(visible_row, VisibleRow::Root { node_index: 0 });
+
+        let missing = monitor_scope_update_for_row(
+            &mut scope_fixture.project_list,
+            &scope_fixture.cargo_workspace_index,
+            root_row,
+        )?;
+        fs::create_dir_all(&target_directory)?;
+        let present = monitor_scope_update_for_row(
+            &mut scope_fixture.project_list,
+            &scope_fixture.cargo_workspace_index,
+            root_row,
+        )?;
+        fs::remove_dir(&target_directory)?;
+        std::os::unix::fs::symlink(&retargeted_directory, &target_directory)?;
+        let retargeted = monitor_scope_update_for_row(
+            &mut scope_fixture.project_list,
+            &scope_fixture.cargo_workspace_index,
+            root_row,
+        )?;
+
+        let missing_scope_key = ready_scope_key(&missing)?;
+        let present_scope_key = ready_scope_key(&present)?;
+        let retargeted_scope_key = ready_scope_key(&retargeted)?;
+        assert_eq!(
+            missing_scope_key.monitor_selected_row_identity(),
+            present_scope_key.monitor_selected_row_identity(),
+            "the same row stays selected across all three resolves"
+        );
+        assert_eq!(
+            missing_scope_key.accepted_cargo_metadata_revision(),
+            present_scope_key.accepted_cargo_metadata_revision(),
+            "no metadata was accepted between the two resolves"
+        );
+        assert_eq!(
+            missing_scope_key.project_list_revision(),
+            present_scope_key.project_list_revision(),
+            "no visible ownership changed between the two resolves"
+        );
+        assert_ne!(
+            missing_scope_key.live_target_directory_revision(),
+            present_scope_key.live_target_directory_revision(),
+            "the target directory appearing is a new live resolution"
+        );
+        assert_ne!(
+            BuildScopeKey::from(missing_scope_key),
+            BuildScopeKey::from(present_scope_key),
+            "classification stamped before the target directory existed is not current"
+        );
+        assert_ne!(
+            present_scope_key.live_target_directory_revision(),
+            retargeted_scope_key.live_target_directory_revision(),
+            "a symlink pointing the target directory elsewhere is a new live resolution"
+        );
+
+        let mut compile_visibility_state = CompileVisibilityState::default();
+        compile_visibility_state.enable(
+            missing,
+            CompileMonitorGeneration::default(),
+            Instant::now(),
+        );
+
+        assert!(
+            compile_visibility_state.requires_scope_replacement(&present),
+            "the appeared target directory makes the resolved scope non-actionable"
+        );
+        Ok(())
+    }
+
+    fn ready_scope_key(monitor_scope_update: &MonitorScopeUpdate) -> TestResult<&MonitorScopeKey> {
+        match monitor_scope_update.monitor_scope_resolution() {
+            MonitorScopeResolution::Ready(monitor_scope_key) => Ok(monitor_scope_key),
+            MonitorScopeResolution::EmptyNonRust(_)
+            | MonitorScopeResolution::PendingIndex(_)
+            | MonitorScopeResolution::AmbiguousOwnership(_)
+            | MonitorScopeResolution::UnresolvedPath(_) => {
+                Err("row should resolve to an actionable monitor scope".into())
+            },
+        }
+    }
+
     fn ready_scope_key_for_row(
         project_list: &mut ProjectList,
         cargo_workspace_index: &Arc<CargoWorkspaceIndex>,
@@ -1861,5 +1994,142 @@ mod tests {
             &workspace_metadata_store,
             scope_fixture.project_list.revision(),
         ))
+    }
+
+    /// A disabled monitor owns no schedule at all: it contributes no dispatch
+    /// deadline, records nothing, and refuses every result, so nothing
+    /// compile-specific wakes the event loop while visibility is off.
+    #[test]
+    fn a_disabled_monitor_owns_no_refresh_deadline() {
+        let mut compile_visibility_state = CompileVisibilityState::Off;
+        let now = Instant::now();
+
+        compile_visibility_state.record_refresh_dispatch(now);
+        compile_visibility_state.record_refresh_settled(now);
+
+        assert_eq!(compile_visibility_state, CompileVisibilityState::Off);
+        assert_eq!(
+            compile_visibility_state.compile_monitor_refresh_schedule(),
+            CompileMonitorRefreshSchedule::NotScheduled
+        );
+        assert!(!compile_visibility_state.accepts_generation(CompileMonitorGeneration::default()));
+    }
+
+    /// A scope that authorizes no classification owes no dispatch deadline.
+    /// The cycle it would dispatch requests nothing, so nothing would record
+    /// the dispatch or the settle: the deadline would stay in the past and wake
+    /// the event loop with a zero timeout on every tick for as long as the row
+    /// stayed selected.
+    #[test]
+    fn a_non_actionable_scope_owes_no_refresh_deadline() -> TestResult {
+        let mut scope_fixture = scope_fixture()?;
+        scope_fixture.project_list.expand_all(true);
+        scope_fixture.project_list.recompute_visibility(true);
+        let monitor_scope_update = monitor_scope_update_for_row(
+            &mut scope_fixture.project_list,
+            &scope_fixture.cargo_workspace_index,
+            |visible_row| matches!(visible_row, VisibleRow::Root { node_index: 2 }),
+        )?;
+        let mut compile_visibility_state = CompileVisibilityState::Off;
+        let enabled_at = Instant::now();
+
+        compile_visibility_state.enable(
+            monitor_scope_update,
+            CompileMonitorGeneration::default(),
+            enabled_at,
+        );
+
+        assert!(
+            compile_visibility_state.is_on(),
+            "the non-Rust row is still a selected scope the monitor is enabled over"
+        );
+        for elapsed_ticks in 0..4_u32 {
+            assert_eq!(
+                compile_visibility_state.compile_monitor_refresh_schedule(),
+                CompileMonitorRefreshSchedule::NotScheduled,
+                "tick {elapsed_ticks} over a non-actionable scope owes no deadline"
+            );
+        }
+        Ok(())
+    }
+
+    /// An enabled monitor owes its first refresh at once, owes none while one
+    /// is with the worker, and owes the next one interval after the one that
+    /// went out.
+    #[test]
+    fn an_enabled_monitor_rearms_one_interval_after_its_refresh_settles() -> TestResult {
+        let mut scope_fixture = scope_fixture()?;
+        scope_fixture.project_list.expand_all(true);
+        scope_fixture.project_list.recompute_visibility(true);
+        let monitor_scope_update = monitor_scope_update_for_row(
+            &mut scope_fixture.project_list,
+            &scope_fixture.cargo_workspace_index,
+            |visible_row| matches!(visible_row, VisibleRow::Root { node_index: 0 }),
+        )?;
+        let mut compile_monitor_generation = CompileMonitorGeneration::default();
+        compile_monitor_generation.advance();
+        let mut compile_visibility_state = CompileVisibilityState::Off;
+        let enabled_at = Instant::now();
+
+        compile_visibility_state.enable(
+            monitor_scope_update,
+            compile_monitor_generation,
+            enabled_at,
+        );
+
+        assert_eq!(
+            compile_visibility_state.compile_monitor_refresh_schedule(),
+            CompileMonitorRefreshSchedule::At(enabled_at)
+        );
+
+        compile_visibility_state.record_refresh_dispatch(enabled_at);
+
+        assert_eq!(
+            compile_visibility_state.compile_monitor_refresh_schedule(),
+            CompileMonitorRefreshSchedule::NotScheduled
+        );
+
+        compile_visibility_state.record_refresh_settled(enabled_at + Duration::from_millis(120));
+
+        assert_eq!(
+            compile_visibility_state.compile_monitor_refresh_schedule(),
+            CompileMonitorRefreshSchedule::At(enabled_at + COMPILE_MONITOR_REFRESH_INTERVAL)
+        );
+        Ok(())
+    }
+
+    /// A refresh that settles several intervals late owes exactly one next
+    /// refresh, at the next interval boundary, rather than one queued demand
+    /// per interval that elapsed while it was out.
+    #[test]
+    fn a_late_settlement_coalesces_the_intervals_it_missed() -> TestResult {
+        let mut scope_fixture = scope_fixture()?;
+        scope_fixture.project_list.expand_all(true);
+        scope_fixture.project_list.recompute_visibility(true);
+        let monitor_scope_update = monitor_scope_update_for_row(
+            &mut scope_fixture.project_list,
+            &scope_fixture.cargo_workspace_index,
+            |visible_row| matches!(visible_row, VisibleRow::Root { node_index: 0 }),
+        )?;
+        let mut compile_monitor_generation = CompileMonitorGeneration::default();
+        compile_monitor_generation.advance();
+        let mut compile_visibility_state = CompileVisibilityState::Off;
+        let enabled_at = Instant::now();
+        compile_visibility_state.enable(
+            monitor_scope_update,
+            compile_monitor_generation,
+            enabled_at,
+        );
+        compile_visibility_state.record_refresh_dispatch(enabled_at);
+
+        compile_visibility_state.record_refresh_settled(
+            enabled_at + COMPILE_MONITOR_REFRESH_INTERVAL * 3 + Duration::from_millis(200),
+        );
+
+        assert_eq!(
+            compile_visibility_state.compile_monitor_refresh_schedule(),
+            CompileMonitorRefreshSchedule::At(enabled_at + COMPILE_MONITOR_REFRESH_INTERVAL * 4)
+        );
+        Ok(())
     }
 }

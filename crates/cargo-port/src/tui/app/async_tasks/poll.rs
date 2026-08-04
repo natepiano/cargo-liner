@@ -60,6 +60,11 @@ impl App {
         // and submodule mutations), so re-resolve the enabled monitor scope
         // whenever this batch changed visible ownership.
         if self.project_list.revision() != project_list_revision_before {
+            // The scope is resolved from the cached rows and termination
+            // authority reads it, so the cache is brought current first. Every
+            // handler that changes the rows already rebuilds them, which makes
+            // this a guard rather than the rebuild those paths depend on.
+            self.ensure_visible_rows_cached();
             self.refresh_compile_monitor_scope_if_on();
         }
 
@@ -264,4 +269,80 @@ pub(super) fn log_saturated_background_batch(stats: &PollBackgroundStats) {
         language_progress_msgs = stats.language_progress_msgs,
         "poll_background_saturated"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use crate::project::AbsolutePath;
+    use crate::project::Package;
+    use crate::project::RootItem;
+    use crate::project::RustProject;
+    use crate::scan::BackgroundMsg;
+    use crate::tui::test_support::make_app;
+
+    fn make_package(path: &Path) -> RootItem {
+        RootItem::Rust(RustProject::Package(Package {
+            path: AbsolutePath::from(path),
+            name: path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned()),
+            ..Package::default()
+        }))
+    }
+
+    /// `disk_handlers` flips a project to deleted and advances the project-list
+    /// revision without routing through `sync_selected_project`, so the batch
+    /// that ends in such a flip has to re-resolve the monitor scope itself. The
+    /// revision is stamped into the scope key, so a batch that skipped the
+    /// re-resolve would leave the enabled monitor — and the termination
+    /// authority that reads its scope — holding a scope the very next resolve
+    /// declares non-current, tearing classification down every frame.
+    #[test]
+    fn a_background_revision_bump_leaves_the_monitor_holding_a_current_scope()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        // Never created on disk: `apply_disk_usage` only flips a project to
+        // deleted when a zero-byte report meets a path that no longer exists.
+        let removed_root = temp_dir.path().join("removed");
+        let retained_root = temp_dir.path().join("retained");
+        std::fs::create_dir_all(&retained_root)?;
+        let mut app = make_app(&[make_package(&removed_root), make_package(&retained_root)]);
+        app.ensure_visible_rows_cached();
+        app.project_list
+            .set_cursor(app.project_list.visible_rows().len().saturating_sub(1));
+        app.toggle_compile_visibility(std::time::Instant::now());
+        let scope_before_flip = app.resolve_compile_monitor_scope();
+
+        app.background
+            .background_sender()
+            .send(BackgroundMsg::DiskUsage {
+                path:  AbsolutePath::from(removed_root.as_path()),
+                bytes: 0,
+            })?;
+        app.poll_background();
+
+        assert!(
+            app.project_list.is_deleted(&removed_root),
+            "the zero-byte report against a missing path flipped the project to deleted"
+        );
+        let scope_after_flip = app.resolve_compile_monitor_scope();
+        assert_ne!(
+            scope_before_flip.monitor_scope_resolution(),
+            scope_after_flip.monitor_scope_resolution(),
+            "the flip stamped a new project-list revision into the resolved scope"
+        );
+        assert_eq!(
+            scope_before_flip.monitor_selected_row(),
+            scope_after_flip.monitor_selected_row(),
+            "a deleted project keeps its row, so the cursor still names the same one"
+        );
+        assert!(
+            !app.compile_visibility_state
+                .requires_scope_replacement(&scope_after_flip),
+            "the batch already moved the monitor onto the scope the flip resolves to"
+        );
+        Ok(())
+    }
 }

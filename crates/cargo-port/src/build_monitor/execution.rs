@@ -103,16 +103,85 @@ pub(crate) enum CompileClassificationDemand {
 }
 
 /// Why a requested compile classification produced no classification.
-///
-/// No cause is reachable today: classification reports whatever the cycle
-/// observed, and a scope it is asked for can no longer name zero roots. The
-/// type and its outcome variant stay gated to tests until a reachable cause
-/// exists, which is what keeps them free of a `dead_code` suppression.
-#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum BuildClassificationExecutionFailure {
-    /// Placeholder for the scope-narrowing phase's reachable cause.
-    AwaitingReachableCause,
+    /// The workspace index the request captured names no workspace at all, so
+    /// nothing observed could be attributed to a scope root. The index is
+    /// rebuilt by replacement, so a request dispatched against an actionable
+    /// scope can still reach the worker holding an emptied index.
+    NoIndexedWorkspace,
+}
+
+/// One completed classification, together with the monitor generation, the
+/// exact scope, and the owned-root evidence it was computed under.
+///
+/// A reader learns all three from the result itself instead of having to consult
+/// the request that produced it; the sibling [`CompileClassificationExecution::
+/// Cancelled`] already names its generation the same way. The owned-root
+/// evidence travels with the result because re-reading the live evidence at
+/// reconcile time would label this cycle's sessions with whichever owned run is
+/// current then, not the one they were classified against.
+#[derive(Debug, PartialEq)]
+pub(crate) struct CompletedBuildClassification {
+    compile_monitor_generation: CompileMonitorGeneration,
+    build_scope_key:            BuildScopeKey,
+    owned_root_evidence:        OwnedRootEvidence,
+    classification:             Box<BuildClassification>,
+}
+
+impl CompletedBuildClassification {
+    /// Stamp one classification with the generation, scope, and owned-root
+    /// evidence it ran under.
+    pub(crate) const fn new(
+        compile_monitor_generation: CompileMonitorGeneration,
+        build_scope_key: BuildScopeKey,
+        owned_root_evidence: OwnedRootEvidence,
+        classification: Box<BuildClassification>,
+    ) -> Self {
+        Self {
+            compile_monitor_generation,
+            build_scope_key,
+            owned_root_evidence,
+            classification,
+        }
+    }
+
+    /// A completion carrying no classified session, for reconcile tests that
+    /// exercise the generation gate rather than what the cycle observed.
+    #[cfg(test)]
+    pub(crate) fn empty_for_test(
+        compile_monitor_generation: CompileMonitorGeneration,
+        build_scope_key: BuildScopeKey,
+        cycle_instant: std::time::Instant,
+    ) -> Self {
+        Self::new(
+            compile_monitor_generation,
+            build_scope_key,
+            OwnedRootEvidence::NoLiveRoot,
+            Box::new(BuildClassification::empty_for_test(cycle_instant)),
+        )
+    }
+
+    /// The monitor generation this classification belongs to.
+    pub(crate) const fn compile_monitor_generation(&self) -> CompileMonitorGeneration {
+        self.compile_monitor_generation
+    }
+
+    /// The classification itself, for reporting what one cycle observed.
+    pub(crate) const fn classification(&self) -> &BuildClassification { &self.classification }
+
+    /// The scope, the owned-root evidence the cycle was classified against, and
+    /// the classification itself, for the one consumer that narrows the
+    /// host-wide result to that scope.
+    pub(crate) fn into_scoped_classification(
+        self,
+    ) -> (BuildScopeKey, OwnedRootEvidence, Box<BuildClassification>) {
+        (
+            self.build_scope_key,
+            self.owned_root_evidence,
+            self.classification,
+        )
+    }
 }
 
 /// What classifying one refresh cycle produced for the compile monitor.
@@ -125,9 +194,14 @@ pub(crate) enum BuildClassificationExecutionFailure {
 #[derive(Debug, PartialEq)]
 pub(crate) enum CompileClassificationExecution {
     NotRequested,
-    Completed(Box<BuildClassification>),
-    #[cfg(test)]
-    Failed(BuildClassificationExecutionFailure),
+    Completed(CompletedBuildClassification),
+    /// The cycle ran and produced no classification. The generation is carried
+    /// so a failure arriving after the scope moved on is dropped instead of
+    /// aging the data the new generation is showing.
+    Failed {
+        compile_monitor_generation:             CompileMonitorGeneration,
+        build_classification_execution_failure: BuildClassificationExecutionFailure,
+    },
     Cancelled(CompileMonitorGeneration),
 }
 

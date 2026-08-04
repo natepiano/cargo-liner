@@ -32,9 +32,11 @@ use super::constants::MAX_BUILD_DIRECTORY_ENTRIES;
 use super::constants::MAX_DEPENDENCY_MANIFEST_ENTRIES;
 use super::constants::MAX_FIRST_SEEN_ENTRIES;
 use super::constants::MAX_MANIFEST_SEARCH_DEPTH;
+use super::execution::BuildClassificationExecutionFailure;
 use super::execution::CompileClassificationDemand;
 use super::execution::CompileClassificationExecution;
 use super::execution::CompileClassificationProgress;
+use super::execution::CompletedBuildClassification;
 use super::session::BuildSession;
 use super::session::BuildSessionId;
 use super::session::OwnedRootEvidence;
@@ -496,12 +498,26 @@ impl BuildClassifier {
             return CompileClassificationExecution::Cancelled(compile_monitor_generation);
         }
 
-        CompileClassificationExecution::Completed(Box::new(self.classify_cycle(
+        if cargo_workspace_index.workspaces().next().is_none() {
+            return CompileClassificationExecution::Failed {
+                compile_monitor_generation,
+                build_classification_execution_failure:
+                    BuildClassificationExecutionFailure::NoIndexedWorkspace,
+            };
+        }
+
+        let build_classification = self.classify_cycle(
             process_observation_snapshot,
             &cargo_workspace_index,
             &owned_root_evidence,
             cycle_instant,
-        )))
+        );
+        CompileClassificationExecution::Completed(CompletedBuildClassification::new(
+            compile_monitor_generation,
+            build_scope_key,
+            owned_root_evidence,
+            Box::new(build_classification),
+        ))
     }
 
     /// Prepare one cycle's input, run the pure classification, then apply what

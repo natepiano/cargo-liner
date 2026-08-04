@@ -88,6 +88,18 @@ impl SessionScope {
             ) if root == other_root
         )
     }
+
+    /// Whether this session resolved into one of a scope's checkout roots.
+    ///
+    /// Containment is one-sided: a session names a checkout root and never a
+    /// workspace root, so this is not the two-sided comparison that decides
+    /// whether two scope keys are equal. An unresolved scope is inside nothing.
+    pub(crate) fn is_within(&self, canonical_checkout_roots: &[CanonicalCheckoutRoot]) -> bool {
+        match self {
+            Self::Resolved { root, .. } => canonical_checkout_roots.contains(root),
+            Self::Unresolved => false,
+        }
+    }
 }
 
 /// The canonical checkout a resolved session builds in.
@@ -260,7 +272,6 @@ impl LiveOwnedRoot {
     }
 
     /// The current owned-run lifecycle identity.
-    #[cfg(test)]
     pub(crate) const fn owned_run_id(&self) -> OwnedRunId { self.owned_run_id }
 
     /// The verified live or stopping root process identity.
@@ -453,7 +464,6 @@ impl BuildSession {
     }
 
     /// The checkout this session builds in, and the method that resolved it.
-    #[cfg(test)]
     pub(crate) const fn session_scope(&self) -> &SessionScope { &self.session_scope }
 
     /// The strong identity of this session's Cargo root process.

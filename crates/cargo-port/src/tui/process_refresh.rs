@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
+use crate::build_monitor::BuildClassificationExecutionFailure;
 use crate::build_monitor::BuildScopeActionability;
 use crate::build_monitor::CompileClassificationCancellation;
 use crate::build_monitor::CompileClassificationDemand;
@@ -23,9 +24,11 @@ use crate::process_observation::ProcessRefreshExecutionOutcome;
 use crate::process_observation::ProcessRefreshExecutor;
 use crate::process_observation::ProcessRefreshResultPoll;
 use crate::process_observation::ProcessRefreshResultReceiver;
+use crate::process_observation::snapshot::ProcessRefreshExecutionFailure;
 use crate::tui::app::App;
 use crate::tui::background::BuildClassifyingRefreshCycle;
 use crate::tui::compile_visibility::CompileVisibilityState;
+use crate::tui::compile_visibility::InFlightMonitorGeneration;
 use crate::tui::messages::ProcessRefreshMsg;
 use crate::tui::startup_services::StartupEffect;
 
@@ -45,6 +48,15 @@ pub(crate) enum ObserverRefreshTiming {
     Completed(Duration),
 }
 
+/// Why one refresh cycle left the compile monitor without a classification.
+#[derive(Clone, Copy, Debug)]
+enum CompileMonitorCycleFailure<'a> {
+    /// The whole refresh cycle failed, so classification never ran.
+    ProcessRefresh(&'a ProcessRefreshExecutionFailure),
+    /// The cycle completed and the classification it carried did not.
+    BuildClassification(&'a BuildClassificationExecutionFailure),
+}
+
 /// Whether the shared worker currently holds a compile classification, and the
 /// capability that stops it.
 ///
@@ -62,6 +74,7 @@ impl App {
     /// Dispatch due process work and reconcile completed immutable results.
     pub fn process_refresh_tick(&mut self, now: Instant) -> ObserverRefreshTiming {
         let mut observer_refresh_timing = ObserverRefreshTiming::NoCompletedRefresh;
+        self.push_compile_monitor_schedule();
         match self.process_refresh_executor.poll_result() {
             ProcessRefreshResultPoll::Ready(process_refresh_execution) => {
                 observer_refresh_timing =
@@ -91,6 +104,17 @@ impl App {
             ProcessRefreshDispatchOutcome::NotDue => {},
         }
         observer_refresh_timing
+    }
+
+    /// Hand the executor whatever deadline the monitor's own scheduling intent
+    /// currently implies. A disabled monitor pushes `NotScheduled`, so no
+    /// compile-specific wakeup survives a toggle off.
+    pub(crate) fn push_compile_monitor_schedule(&mut self) {
+        let compile_monitor_refresh_schedule = self
+            .compile_visibility_state
+            .compile_monitor_refresh_schedule();
+        self.process_refresh_executor
+            .rearm_compile_monitor(compile_monitor_refresh_schedule);
     }
 
     pub fn process_refresh_next_deadline(&self) -> ProcessRefreshDeadline {
@@ -145,6 +169,13 @@ impl App {
             process_refresh_dispatch_outcome,
             ProcessRefreshDispatchOutcome::NotDue
         ) {
+            if matches!(
+                requested_cancellation,
+                CompileClassificationInFlight::Requested(_)
+            ) {
+                self.compile_visibility_state.record_refresh_dispatch(now);
+                self.push_compile_monitor_schedule();
+            }
             self.compile_classification_in_flight = requested_cancellation;
         }
         process_refresh_dispatch_outcome
@@ -166,6 +197,15 @@ impl App {
             ProcessRefreshExecutionOutcome::Failed(failure) => {
                 tracing::warn!(?failure, "process_refresh_execution_failed");
                 self.compile_classification_in_flight = CompileClassificationInFlight::NotRequested;
+                if let InFlightMonitorGeneration::InFlight(compile_monitor_generation) =
+                    self.compile_visibility_state.in_flight_generation()
+                {
+                    self.age_compile_monitor_for_failed_cycle(
+                        now,
+                        compile_monitor_generation,
+                        CompileMonitorCycleFailure::ProcessRefresh(&failure),
+                    );
+                }
                 return ObserverRefreshTiming::NoCompletedRefresh;
             },
         };
@@ -175,42 +215,113 @@ impl App {
             completed_process_refresh_execution.into_parts();
 
         self.compile_classification_in_flight = CompileClassificationInFlight::NotRequested;
-        record_compile_classification_execution(compile_classification_execution);
+        self.store_compile_classification_execution(now, compile_classification_execution);
 
         if demand.includes_running_targets() {
             self.apply_running_targets_observation(now, &process_observation_snapshot);
         }
         observer_refresh_timing
     }
-}
 
-/// Report what the cycle's classification produced. The monitor's own snapshot
-/// state arrives with the first scheduled compile demand, so this phase records
-/// the outcome rather than storing it.
-fn record_compile_classification_execution(
-    compile_classification_execution: CompileClassificationExecution,
-) {
-    match compile_classification_execution {
-        CompileClassificationExecution::NotRequested => {},
-        CompileClassificationExecution::Completed(build_classification) => {
+    /// Store what the cycle's classification produced, refusing any result
+    /// whose generation the monitor has already moved past. A cancelled or
+    /// superseded generation neither updates the snapshot nor rearms the
+    /// cadence, which is what stops a cancelled cycle from scheduling more.
+    fn store_compile_classification_execution(
+        &mut self,
+        now: Instant,
+        compile_classification_execution: CompileClassificationExecution,
+    ) {
+        match compile_classification_execution {
+            CompileClassificationExecution::NotRequested => {},
+            CompileClassificationExecution::Completed(completed_build_classification) => {
+                if !self
+                    .compile_visibility_state
+                    .accepts_generation(completed_build_classification.compile_monitor_generation())
+                {
+                    tracing::debug!("compile_classification_superseded");
+                    return;
+                }
+                tracing::debug!(
+                    build_sessions = completed_build_classification
+                        .classification()
+                        .build_sessions()
+                        .len(),
+                    compile_activities = completed_build_classification
+                        .classification()
+                        .compile_activities()
+                        .len(),
+                    unattributed_compile_activities = completed_build_classification
+                        .classification()
+                        .unattributed_compile_activities()
+                        .len(),
+                    "compile_classification_completed"
+                );
+                self.build_monitor
+                    .record_classification(completed_build_classification);
+                self.compile_visibility_state.record_refresh_settled(now);
+                self.push_compile_monitor_schedule();
+            },
+            CompileClassificationExecution::Failed {
+                compile_monitor_generation,
+                build_classification_execution_failure,
+            } => {
+                self.age_compile_monitor_for_failed_cycle(
+                    now,
+                    compile_monitor_generation,
+                    CompileMonitorCycleFailure::BuildClassification(
+                        &build_classification_execution_failure,
+                    ),
+                );
+            },
+            CompileClassificationExecution::Cancelled(compile_monitor_generation) => {
+                tracing::debug!(
+                    ?compile_monitor_generation,
+                    "compile_classification_cancelled"
+                );
+            },
+        }
+    }
+
+    /// Age what the monitor shows for a cycle that produced no classification,
+    /// but only when the monitor is still waiting on the generation that cycle
+    /// ran under. A failure the monitor has moved past would otherwise blank the
+    /// rows the new generation is retaining.
+    fn age_compile_monitor_for_failed_cycle(
+        &mut self,
+        now: Instant,
+        compile_monitor_generation: CompileMonitorGeneration,
+        compile_monitor_cycle_failure: CompileMonitorCycleFailure<'_>,
+    ) {
+        if !self
+            .compile_visibility_state
+            .accepts_generation(compile_monitor_generation)
+        {
             tracing::debug!(
-                build_sessions = build_classification.build_sessions().len(),
-                compile_activities = build_classification.compile_activities().len(),
-                unattributed_compile_activities =
-                    build_classification.unattributed_compile_activities().len(),
-                "compile_classification_completed"
+                ?compile_monitor_cycle_failure,
+                "compile_classification_failure_superseded"
             );
-        },
-        #[cfg(test)]
-        CompileClassificationExecution::Failed(failure) => {
-            tracing::warn!(?failure, "compile_classification_failed");
-        },
-        CompileClassificationExecution::Cancelled(compile_monitor_generation) => {
-            tracing::debug!(
-                ?compile_monitor_generation,
-                "compile_classification_cancelled"
-            );
-        },
+            return;
+        }
+        match compile_monitor_cycle_failure {
+            CompileMonitorCycleFailure::ProcessRefresh(process_refresh_execution_failure) => {
+                tracing::warn!(
+                    ?process_refresh_execution_failure,
+                    "compile_monitor_cycle_failed"
+                );
+            },
+            CompileMonitorCycleFailure::BuildClassification(
+                build_classification_execution_failure,
+            ) => {
+                tracing::warn!(
+                    ?build_classification_execution_failure,
+                    "compile_classification_failed"
+                );
+            },
+        }
+        self.build_monitor.record_classification_failure();
+        self.compile_visibility_state.record_refresh_settled(now);
+        self.push_compile_monitor_schedule();
     }
 }
 
@@ -252,8 +363,9 @@ fn compile_classification_demand(
 )]
 mod tests {
     use super::*;
-    use crate::build_monitor::BuildClassificationExecutionFailure;
     use crate::build_monitor::BuildScopeKey;
+    use crate::build_monitor::CompletedBuildClassification;
+    use crate::build_monitor::MonitorSnapshot;
     use crate::process_observation::CompileMonitorRefreshSchedule;
     use crate::process_observation::ProcessRefreshExecution;
     use crate::process_observation::ProcessRefreshExecutionBackendSelection;
@@ -332,21 +444,124 @@ mod tests {
         assert_eq!(app.running_target_attribution_collection_count, 0);
     }
 
+    /// Enable the monitor and hand back the generation the toggle advanced to.
+    fn enable_compile_monitor(app: &mut App, now: Instant) -> CompileMonitorGeneration {
+        app.toggle_compile_visibility(now);
+        match &app.compile_visibility_state {
+            CompileVisibilityState::On(active_monitor_state) => {
+                active_monitor_state.compile_monitor_generation()
+            },
+            CompileVisibilityState::Off => panic!("the toggle enables the monitor"),
+        }
+    }
+
+    /// The failure belongs to the classification alone: Running Targets still
+    /// applies the same cycle's observation, and the monitor the failure does
+    /// belong to ages what it was showing by one step.
     #[test]
     fn a_failed_compile_classification_still_delivers_the_running_observation() {
         let mut app = crate::tui::test_support::make_app(&[]);
+        let now = Instant::now();
+        let compile_monitor_generation = enable_compile_monitor(&mut app, now);
         let process_refresh_execution = ProcessRefreshExecution::completed_for_test(
             ProcessRefreshConsumerDemand::RunningTargetsAndCompileMonitor,
-            CompileClassificationExecution::Failed(
-                BuildClassificationExecutionFailure::AwaitingReachableCause,
-            ),
+            CompileClassificationExecution::Failed {
+                compile_monitor_generation,
+                build_classification_execution_failure:
+                    BuildClassificationExecutionFailure::NoIndexedWorkspace,
+            },
         );
 
         assert!(matches!(
-            app.reconcile_process_refresh_execution(Instant::now(), process_refresh_execution),
+            app.reconcile_process_refresh_execution(now, process_refresh_execution),
             ObserverRefreshTiming::Completed(_)
         ));
         assert_eq!(app.running_target_attribution_collection_count, 1);
+        assert_eq!(
+            *app.build_monitor.monitor_snapshot(),
+            MonitorSnapshot::Unavailable,
+            "a failure the monitor is still waiting on ages what it shows"
+        );
+    }
+
+    /// A failure from a generation the monitor has moved past leaves the new
+    /// generation's snapshot alone: it would otherwise blank rows the current
+    /// scope is still waiting to fill.
+    #[test]
+    fn a_superseded_compile_classification_failure_ages_nothing() {
+        let mut app = crate::tui::test_support::make_app(&[]);
+        let now = Instant::now();
+        let superseded_generation = enable_compile_monitor(&mut app, now);
+        app.toggle_compile_visibility(now);
+        let current_generation = enable_compile_monitor(&mut app, now);
+        let process_refresh_execution = ProcessRefreshExecution::completed_for_test(
+            ProcessRefreshConsumerDemand::RunningTargetsAndCompileMonitor,
+            CompileClassificationExecution::Failed {
+                compile_monitor_generation:             superseded_generation,
+                build_classification_execution_failure:
+                    BuildClassificationExecutionFailure::NoIndexedWorkspace,
+            },
+        );
+
+        assert_ne!(superseded_generation, current_generation);
+        app.reconcile_process_refresh_execution(now, process_refresh_execution);
+
+        assert_eq!(
+            *app.build_monitor.monitor_snapshot(),
+            MonitorSnapshot::Pending,
+            "the monitor has moved past the generation that failed"
+        );
+    }
+
+    /// A completion carries the generation it was classified under, so one that
+    /// arrives after a toggle is dropped rather than shown under the scope the
+    /// monitor moved to.
+    #[test]
+    fn a_superseded_completed_classification_is_refused() {
+        let mut app = crate::tui::test_support::make_app(&[]);
+        let now = Instant::now();
+        let superseded_generation = enable_compile_monitor(&mut app, now);
+        app.toggle_compile_visibility(now);
+        let current_generation = enable_compile_monitor(&mut app, now);
+        let superseded_completion = ProcessRefreshExecution::completed_for_test(
+            ProcessRefreshConsumerDemand::RunningTargetsAndCompileMonitor,
+            CompileClassificationExecution::Completed(
+                CompletedBuildClassification::empty_for_test(
+                    superseded_generation,
+                    BuildScopeKey::for_test(AbsolutePath::from(std::path::Path::new("/"))),
+                    now,
+                ),
+            ),
+        );
+
+        app.reconcile_process_refresh_execution(now, superseded_completion);
+
+        assert_eq!(
+            *app.build_monitor.monitor_snapshot(),
+            MonitorSnapshot::Pending,
+            "a completion from a superseded generation records nothing"
+        );
+
+        let current_completion = ProcessRefreshExecution::completed_for_test(
+            ProcessRefreshConsumerDemand::RunningTargetsAndCompileMonitor,
+            CompileClassificationExecution::Completed(
+                CompletedBuildClassification::empty_for_test(
+                    current_generation,
+                    BuildScopeKey::for_test(AbsolutePath::from(std::path::Path::new("/"))),
+                    now,
+                ),
+            ),
+        );
+
+        app.reconcile_process_refresh_execution(now, current_completion);
+
+        assert!(
+            matches!(
+                app.build_monitor.monitor_snapshot(),
+                MonitorSnapshot::Fresh(_)
+            ),
+            "the generation the monitor accepts is the one it stores"
+        );
     }
 
     #[test]
