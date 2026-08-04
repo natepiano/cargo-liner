@@ -55,11 +55,74 @@ pub(super) enum PathOrigin {
 
 pub(super) struct ExtractedPaths {
     /// Flattened use-tree paths with their origin and lexical inline module.
-    pub use_paths:   Vec<ExtractedPath>,
+    pub use_paths:         Vec<ExtractedPath>,
     /// All `syn::Path` nodes with their origin and lexical inline module.
-    pub expr_paths:  Vec<ExtractedPath>,
+    pub expr_paths:        Vec<ExtractedPath>,
     /// Module-level renames (`use path::to::module as alias`): maps alias → original path.
-    pub use_renames: Vec<UseRename>,
+    pub use_renames:       Vec<UseRename>,
+    /// `use_paths` and `expr_paths` grouped by the name each could resolve to.
+    pub export_candidates: ExportCandidateIndex,
+}
+
+/// The file's paths grouped by the export name each one could name.
+///
+/// A facade scan asks whether a file references one of a parent module's
+/// exports, and runs once per re-export occurrence in the crate. Answering by
+/// walking every path in the file costs `re-exports × files × paths-per-file`,
+/// which dominated whole-crate runs. Grouping by final segment turns each
+/// answer into one lookup per exported name.
+pub(super) struct ExportCandidateIndex {
+    pub use_paths:  PathsByFinalSegment,
+    pub expr_paths: PathsByFinalSegment,
+}
+
+/// Indices into one of [`ExtractedPaths`]'s path lists, grouped by the final
+/// segment of each path.
+pub(super) struct PathsByFinalSegment {
+    by_segment:   FxHashMap<String, Vec<usize>>,
+    /// Indices whose path is empty or ends in `crate`, `self`, or `super`.
+    /// Resolution replaces that segment with one taken from the current module
+    /// path, so the name such a path reaches is not visible here and every
+    /// lookup has to include them.
+    anchor_final: Vec<usize>,
+}
+
+impl PathsByFinalSegment {
+    /// The indices of every path that could name one of `segments`.
+    ///
+    /// A path can appear twice when two of `segments` reach it — through its own
+    /// final segment and through a `use ... as` alias. Callers merge by name, so
+    /// visiting one twice yields the same result as visiting it once.
+    pub fn candidates<'index>(
+        &'index self,
+        segments: impl Iterator<Item = &'index str> + 'index,
+    ) -> impl Iterator<Item = usize> + 'index {
+        segments
+            .filter_map(|segment| self.by_segment.get(segment))
+            .flatten()
+            .chain(&self.anchor_final)
+            .copied()
+    }
+
+    fn insert(&mut self, index: usize, final_segment: Option<&str>) {
+        match final_segment.map(PathAnchor::from) {
+            Some(PathAnchor::SelfType | PathAnchor::Name) => {
+                // `Self` is retained by resolution like any other name, so it is
+                // grouped rather than treated as an anchor; no export can be
+                // named `Self`, so its group is never looked up.
+                let Some(segment) = final_segment else {
+                    return;
+                };
+                self.by_segment
+                    .entry(normalized_name(segment).to_string())
+                    .or_default()
+                    .push(index);
+            },
+            Some(PathAnchor::Crate | PathAnchor::Super | PathAnchor::SelfMod) | None => {
+                self.anchor_final.push(index);
+            },
+        }
+    }
 }
 
 pub(super) struct ExtractedPath {
@@ -817,11 +880,48 @@ pub(super) fn extract_paths(file: &File) -> ExtractedPaths {
     };
     extractor.visit_file(file);
 
+    let export_candidates = ExportCandidateIndex {
+        use_paths:  index_by_final_segment(&extractor.use_paths, &[]),
+        expr_paths: index_by_final_segment(&extractor.expr_paths, &extractor.use_renames),
+    };
     ExtractedPaths {
-        use_paths:   extractor.use_paths,
-        expr_paths:  extractor.expr_paths,
+        use_paths: extractor.use_paths,
+        expr_paths: extractor.expr_paths,
         use_renames: extractor.use_renames,
+        export_candidates,
     }
+}
+
+/// `name` with any raw-identifier `r#` prefix removed, so that `r#type` and
+/// `type` group and compare as the same name.
+pub(super) fn normalized_name(name: &str) -> &str { name.strip_prefix("r#").unwrap_or(name) }
+
+/// Groups `paths` by the final segment each one could resolve to.
+///
+/// A single-segment path that is a module alias also reaches the final segment
+/// of the path the alias stands for, so it is grouped under both. A longer
+/// aliased path keeps its own final segment — the alias only rewrites the first.
+fn index_by_final_segment(paths: &[ExtractedPath], renames: &[UseRename]) -> PathsByFinalSegment {
+    let mut index = PathsByFinalSegment {
+        by_segment:   FxHashMap::default(),
+        anchor_final: Vec::new(),
+    };
+    for (path_index, path) in paths.iter().enumerate() {
+        index.insert(path_index, path.segments.last().map(String::as_str));
+        let [alias] = path.segments.as_slice() else {
+            continue;
+        };
+        let aliased_final = renames
+            .iter()
+            .find(|rename| rename.module_suffix == path.module_suffix && rename.alias == *alias)
+            .map(|rename| rename.original_path.last().map(String::as_str));
+        if let Some(aliased_final) = aliased_final
+            && aliased_final != Some(alias.as_str())
+        {
+            index.insert(path_index, aliased_final);
+        }
+    }
+    index
 }
 
 fn extract_use_renames(

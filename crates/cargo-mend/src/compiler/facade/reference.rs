@@ -24,6 +24,7 @@ use crate::compiler::source_cache::NameMention;
 use crate::compiler::source_cache::PathOrigin;
 use crate::compiler::source_cache::SourceCache;
 use crate::compiler::source_cache::UseRename;
+use crate::compiler::source_cache::normalized_name;
 use crate::rust_syntax::LexicalRegions;
 use crate::rust_syntax::PathAnchor;
 use crate::rust_syntax::identifier_character;
@@ -40,7 +41,7 @@ pub(in crate::compiler) enum ParentFacadeUsage {
 
 pub(in crate::compiler) type ParentFacadeUsageByName = FxHashMap<String, ParentFacadeUsage>;
 
-pub(super) fn normalized_export_name(name: &str) -> &str { name.strip_prefix("r#").unwrap_or(name) }
+pub(super) fn normalized_export_name(name: &str) -> &str { normalized_name(name) }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ParentFacadeReferenceUsage {
@@ -487,7 +488,9 @@ fn source_references_parent_exports(
     exported_names: &ExportNameIndex<'_>,
 ) -> FxHashMap<String, ParentFacadeReferenceUsage> {
     let mut usage_by_name = FxHashMap::default();
-    for extracted_path in &extracted.expr_paths {
+    let candidates = &extracted.export_candidates;
+    for path_index in candidates.expr_paths.candidates(exported_names.iter()) {
+        let extracted_path = &extracted.expr_paths[path_index];
         if extracted_path.module_suffix != module_suffix {
             continue;
         }
@@ -521,7 +524,8 @@ fn source_references_parent_exports(
         }
     }
 
-    for extracted_path in &extracted.use_paths {
+    for path_index in candidates.use_paths.candidates(exported_names.iter()) {
+        let extracted_path = &extracted.use_paths[path_index];
         if extracted_path.module_suffix != module_suffix {
             continue;
         }
