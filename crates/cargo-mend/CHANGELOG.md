@@ -94,6 +94,16 @@ The following two-code matrix applies to `forbidden_pub_in_crate` and `forbidden
   `--message-format=json` now agree for diagnostics carrying both values. Consumers pinned to the
   former JSON string will see a change.
 
+### Fixed
+- A run that analyzed nothing no longer reports a clean crate. mend only sees source that cargo
+  recompiles; when cargo has nothing to rebuild *and* no cached report under
+  `target/mend-findings` survives the schema, analysis, and configuration compatibility checks, the
+  run ends holding an empty findings list. That was indistinguishable from "no problems found" and
+  printed as `No findings.` with exit 0. `load_report` now returns whether any stored report reached
+  the run, and a run with none fails with "no analysis was produced for this crate" plus
+  instructions to force a rebuild. Deleting `target/mend-findings` without touching sources is the
+  way to reach this; a repeat run that replays the cache is unaffected.
+
 ## [0.17.6] - 2026-07-27
 
 ### Fixed

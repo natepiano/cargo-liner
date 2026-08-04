@@ -93,6 +93,10 @@ pub(crate) enum MendFailure {
 #[derive(Debug)]
 pub(crate) enum CompilerFailureCause {
     CargoCheck,
+    /// No stored report reached `load_report`, so nothing was analyzed. Reported
+    /// as a failure because an empty findings list would otherwise print as a
+    /// clean crate.
+    NoAnalysisProduced,
     DriverSetup(Error),
     DriverExecution(Error),
     Unexpected(Error),
@@ -138,6 +142,12 @@ impl Display for AnalysisFailure {
                     "compiler failed while validating this crate\n\nmend: did not run due to compiler errors"
                 )
             },
+            CompilerFailureCause::NoAnalysisProduced => {
+                write!(
+                    f,
+                    "no analysis was produced for this crate\n\nmend: cargo had nothing to rebuild and no compatible cached findings were available, so no code was examined; force a rebuild (touch a source file, or `cargo clean -p <package>`) and run again"
+                )
+            },
             CompilerFailureCause::DriverSetup(error)
             | CompilerFailureCause::DriverExecution(error)
             | CompilerFailureCause::Unexpected(error) => write!(f, "{error:#}"),
@@ -150,6 +160,9 @@ impl Display for FixValidationFailure {
         let source = match &self.cause {
             CompilerFailureCause::CargoCheck => {
                 "compiler failed after applying mend fixes".to_string()
+            },
+            CompilerFailureCause::NoAnalysisProduced => {
+                "no analysis was produced after applying mend fixes".to_string()
             },
             CompilerFailureCause::DriverSetup(error)
             | CompilerFailureCause::DriverExecution(error)
@@ -358,6 +371,16 @@ mod tests {
             failure.to_string(),
             "compiler failed while validating this crate\n\nmend: did not run due to compiler errors"
         );
+    }
+
+    #[test]
+    fn no_analysis_failure_message_tells_the_user_to_force_a_rebuild() {
+        let failure = AnalysisFailure {
+            cause: CompilerFailureCause::NoAnalysisProduced,
+        };
+        let message = failure.to_string();
+        assert!(message.starts_with("no analysis was produced for this crate"));
+        assert!(message.contains("force a rebuild"));
     }
 
     #[test]

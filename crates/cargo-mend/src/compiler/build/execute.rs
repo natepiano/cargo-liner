@@ -37,6 +37,7 @@ use crate::compiler::constants::RUSTC_WORKSPACE_WRAPPER_ENV;
 use crate::compiler::constants::RUSTC_WRAPPER_ENV;
 use crate::compiler::constants::SCOPE_FINGERPRINT_ENV;
 use crate::compiler::persistence;
+use crate::compiler::persistence::AnalysisEvidence;
 use crate::config::LoadedConfig;
 use crate::constants::FINGERPRINT_HEX_WIDTH;
 use crate::reporting::AllFeaturesCoverage;
@@ -116,14 +117,23 @@ pub(crate) fn run_selection(
         }));
     }
 
-    let report = persistence::load_report(&findings_dir, selection, &loaded_config.fingerprint)
+    let loaded = persistence::load_report(&findings_dir, selection, &loaded_config.fingerprint)
         .map_err(|err| {
             MendFailure::Analysis(AnalysisFailure {
                 cause: CompilerFailureCause::DriverExecution(err),
             })
         })?;
 
-    let mut report = report;
+    match loaded.analysis_evidence {
+        AnalysisEvidence::Absent => {
+            return Err(MendFailure::Analysis(AnalysisFailure {
+                cause: CompilerFailureCause::NoAnalysisProduced,
+            }));
+        },
+        AnalysisEvidence::Present => {},
+    }
+
+    let mut report = loaded.report;
     report.facts.compiler_warning_facts = command_outcome.compiler_warning_facts;
     Ok(SelectionResult {
         report,

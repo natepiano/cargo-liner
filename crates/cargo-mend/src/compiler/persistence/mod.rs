@@ -9,6 +9,7 @@ mod visibility_priority;
 
 pub(super) use cache::CacheBuildKind;
 pub(super) use cache::cache_filename_for;
+pub(super) use load::AnalysisEvidence;
 pub(super) use load::load_report;
 pub(super) use schema::StoredFinding;
 pub(super) use schema::StoredPubUseFixFact;

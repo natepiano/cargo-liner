@@ -30,6 +30,26 @@ use crate::reporting::ReportFacts;
 use crate::reporting::ReportSummary;
 use crate::selection::Selection;
 
+/// Whether any stored report reached this run.
+///
+/// An empty `Report::findings` means the code is clean only when at least one
+/// `StoredReport` matched the selection and passed `stored_report_is_compatible`.
+/// With none, the compiler examined no code at all — cargo found nothing to
+/// rebuild, so the driver never ran, and no cached report survived the
+/// compatibility check — and the empty findings list is indistinguishable from a
+/// clean crate without this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::compiler) enum AnalysisEvidence {
+    Present,
+    Absent,
+}
+
+/// `load_report`'s result: the merged report, and whether anything produced it.
+pub(in crate::compiler) struct LoadedReport {
+    pub report:            Report,
+    pub analysis_evidence: AnalysisEvidence,
+}
+
 /// The child declaration a `--fix pub-use` narrowing would rewrite.
 ///
 /// The driver writes a `StoredPubUseFixFact` next to the `SuspiciousPub`
@@ -59,7 +79,7 @@ pub(in crate::compiler) fn load_report(
     findings_dir: &Path,
     selection: &Selection,
     config_fingerprint: &str,
-) -> Result<Report> {
+) -> Result<LoadedReport> {
     let selected_roots: Vec<PathBuf> = selection.package_roots.clone();
     let selected_root_strings: Vec<String> = selected_roots
         .iter()
@@ -113,9 +133,12 @@ pub(in crate::compiler) fn load_report(
     reconcile_cross_target_reports(&mut matched_reports);
     discard_fix_facts_for_suppressed_findings(&mut matched_reports);
 
-    if matched_reports.is_empty() {
+    let analysis_evidence = if matched_reports.is_empty() {
         all_features_coverage = AllFeaturesCoverage::default();
-    }
+        AnalysisEvidence::Absent
+    } else {
+        AnalysisEvidence::Present
+    };
 
     let mut findings = Vec::new();
     let mut pub_use_fix_facts = Vec::new();
@@ -131,15 +154,18 @@ pub(in crate::compiler) fn load_report(
     sort_and_dedup_findings(&mut findings);
     sort_and_dedup_pub_use_fix_facts(&mut pub_use_fix_facts);
 
-    Ok(Report {
-        root: selection_root_string(selection.analysis_root.as_path()),
-        summary: ReportSummary::default(),
-        findings,
-        facts: ReportFacts {
-            pub_use_fix_facts: pub_use_fix_facts.into(),
-            all_features_coverage,
-            compiler_warning_facts: CompilerWarningFacts::None,
+    Ok(LoadedReport {
+        report: Report {
+            root: selection_root_string(selection.analysis_root.as_path()),
+            summary: ReportSummary::default(),
+            findings,
+            facts: ReportFacts {
+                pub_use_fix_facts: pub_use_fix_facts.into(),
+                all_features_coverage,
+                compiler_warning_facts: CompilerWarningFacts::None,
+            },
         },
+        analysis_evidence,
     })
 }
 
@@ -362,6 +388,7 @@ mod tests {
     use tempfile::TempDir;
     use tempfile::tempdir;
 
+    use super::AnalysisEvidence;
     use super::load_report;
     use crate::compiler::constants::FINDINGS_SCHEMA_VERSION;
     use crate::compiler::persistence::StoredFinding;
@@ -473,10 +500,29 @@ mod tests {
         )
         .expect("load report");
 
-        assert_eq!(loaded.findings.len(), 1);
+        assert_eq!(loaded.report.findings.len(), 1);
         assert_eq!(
-            loaded.facts.all_features_coverage,
+            loaded.report.facts.all_features_coverage,
             AllFeaturesCoverage::NotGuaranteed
+        );
+    }
+
+    #[test]
+    fn a_findings_directory_with_no_report_is_not_a_clean_crate() {
+        let fixture = PersistenceFixture::new();
+
+        let loaded = load_report(
+            &fixture.findings_dir,
+            &fixture.selection(),
+            CONFIG_FINGERPRINT,
+        )
+        .expect("load report");
+
+        assert!(loaded.report.findings.is_empty());
+        assert_eq!(
+            loaded.analysis_evidence,
+            AnalysisEvidence::Absent,
+            "no stored report means nothing was analyzed, not that the crate is clean"
         );
     }
 
@@ -523,8 +569,17 @@ mod tests {
         )
         .expect("load report");
 
-        assert!(loaded.findings.is_empty());
-        assert!(loaded.facts.pub_use_fix_facts.iter().next().is_none());
+        assert!(loaded.report.findings.is_empty());
+        assert!(
+            loaded
+                .report
+                .facts
+                .pub_use_fix_facts
+                .iter()
+                .next()
+                .is_none()
+        );
+        assert_eq!(loaded.analysis_evidence, AnalysisEvidence::Absent);
     }
 
     #[test]
@@ -547,7 +602,8 @@ mod tests {
         )
         .expect("load report");
 
-        assert!(loaded.findings.is_empty());
+        assert!(loaded.report.findings.is_empty());
+        assert_eq!(loaded.analysis_evidence, AnalysisEvidence::Absent);
     }
 
     #[test]
@@ -567,7 +623,7 @@ mod tests {
         let loaded = load_report(&fixture.findings_dir, &selection, CONFIG_FINGERPRINT)
             .expect("load report");
 
-        assert_eq!(loaded.findings.len(), 1);
+        assert_eq!(loaded.report.findings.len(), 1);
     }
 
     #[test]
@@ -591,7 +647,7 @@ mod tests {
         )
         .expect("load report");
 
-        assert_eq!(loaded.findings.len(), 1);
+        assert_eq!(loaded.report.findings.len(), 1);
     }
 
     #[test]
@@ -624,10 +680,16 @@ mod tests {
             CONFIG_FINGERPRINT,
         )
         .expect("load report");
-        let facts = loaded.facts.pub_use_fix_facts.iter().collect::<Vec<_>>();
+        let facts = loaded
+            .report
+            .facts
+            .pub_use_fix_facts
+            .iter()
+            .collect::<Vec<_>>();
 
-        assert_eq!(loaded.findings.len(), 1);
-        assert_eq!(loaded.findings[0].path, "src/lib.rs");
+        assert_eq!(loaded.analysis_evidence, AnalysisEvidence::Present);
+        assert_eq!(loaded.report.findings.len(), 1);
+        assert_eq!(loaded.report.findings[0].path, "src/lib.rs");
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].child_path, "src/lib.rs");
     }
@@ -664,13 +726,19 @@ mod tests {
         )
         .expect("load report");
 
-        assert_eq!(loaded.findings.len(), 1);
+        assert_eq!(loaded.report.findings.len(), 1);
         assert_eq!(
-            loaded.findings[0].diagnostic_code,
+            loaded.report.findings[0].diagnostic_code,
             DiagnosticCode::UnusedPub
         );
         assert!(
-            loaded.facts.pub_use_fix_facts.iter().next().is_none(),
+            loaded
+                .report
+                .facts
+                .pub_use_fix_facts
+                .iter()
+                .next()
+                .is_none(),
             "a suppressed finding must not leave its pub-use fix fact behind"
         );
     }
@@ -704,8 +772,8 @@ mod tests {
         )
         .expect("load report");
 
-        assert_eq!(loaded.findings.len(), 1);
-        assert_eq!(loaded.facts.pub_use_fix_facts.iter().count(), 1);
+        assert_eq!(loaded.report.findings.len(), 1);
+        assert_eq!(loaded.report.facts.pub_use_fix_facts.iter().count(), 1);
     }
 
     fn stored_finding(
