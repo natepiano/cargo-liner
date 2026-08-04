@@ -12,6 +12,8 @@ use proc_macro2::Delimiter;
 use proc_macro2::Group;
 use proc_macro2::TokenStream;
 use proc_macro2::TokenTree;
+use rayon::iter::IntoParallelRefIterator;
+use rayon::iter::ParallelIterator;
 use rustc_hash::FxHashMap;
 use rustc_hash::FxHashSet;
 use syn::Attribute;
@@ -131,9 +133,21 @@ impl SourceCache {
         for (path, ast) in &parsed {
             extracted_paths.insert(path.clone(), extract_paths(ast));
         }
+        // Only the name index crosses threads: it reads `&str` and returns owned
+        // hashes. `syn::File` is not `Send` — `proc_macro2` embeds a
+        // `PhantomData<Rc<()>>` marker in its spans and builds token streams on
+        // `Rc<Vec<TokenTree>>`, both unconditional — so parsing and path
+        // extraction stay sequential. Walking a `Vec` snapshot and zipping the
+        // results back keeps the insertion order identical to the sequential
+        // build, because rayon's indexed `collect()` preserves order.
+        let content_entries: Vec<(&PathBuf, &String)> = contents.iter().collect();
+        let name_sets: Vec<FxHashSet<u64>> = content_entries
+            .par_iter()
+            .map(|(_, source)| mentionable_names_in(source))
+            .collect();
         let mut mentionable_names = FxHashMap::default();
-        for (path, source) in &contents {
-            mentionable_names.insert(path.clone(), mentionable_names_in(source));
+        for ((path, _), names) in content_entries.iter().zip(name_sets) {
+            mentionable_names.insert((*path).clone(), names);
         }
         let all_features_coverage = source_all_features_coverage(&contents, &parsed);
         Ok(Self {

@@ -4944,7 +4944,7 @@ pub(super) fn outer_surface(_: OuterTarget) {}
     let outer_target = finding_at(2);
     assert_eq!(
         outer_target.headline,
-        "no visibility annotation allowed by policy preserves this item's current callers",
+        "no policy-allowed visibility keeps this item reachable where it is used: private and `pub(super)` are too narrow, and no facade caps `pub`",
         "a caller above the parent must require structural advice: {report:#?}",
     );
     assert!(
@@ -5046,7 +5046,7 @@ fn assert_declaration_identity_findings(report: &Report) {
     let active_target = finding_at(2);
     assert_eq!(
         active_target.headline,
-        "no visibility annotation allowed by policy preserves this item's current callers",
+        "no policy-allowed visibility keeps this item reachable where it is used: private and `pub(super)` are too narrow, and no facade caps `pub`",
         "the active parent-boundary declaration and its above-parent caller require structure: {report:#?}",
     );
     assert!(
@@ -5069,7 +5069,7 @@ fn assert_declaration_identity_findings(report: &Report) {
     let value_target = finding_at(4);
     assert_eq!(
         value_target.headline,
-        "no visibility annotation allowed by policy preserves this item's current callers",
+        "no policy-allowed visibility keeps this item reachable where it is used: private and `pub(super)` are too narrow, and no facade caps `pub`",
         "the value namespace must retain its crate-visible const reach: {report:#?}",
     );
     assert!(
@@ -5081,16 +5081,9 @@ fn assert_declaration_identity_findings(report: &Report) {
     );
 }
 
-// An attribute argument is metadata, not a signature. `#[require(Target)]`
-// names a type in token position, and whether that type reaches public API
-// depends on what the macro expands to — which only the post-expansion HIR
-// knows. Bevy's real `#[require]` registers the named component from a function
-// body and never places it in a signature.
-#[test]
-fn attribute_metadata_alone_does_not_expose_a_child_through_a_public_signature() {
-    let temp = tempdir().expect("create attribute exposure fixture dir");
+fn write_attribute_exposure_fixture(temp: &TempDir) {
     write_allowance_sources(
-        &temp,
+        temp,
         &[
             (
                 "Cargo.toml",
@@ -5169,6 +5162,17 @@ pub fn require(_attr: TokenStream, item: TokenStream) -> TokenStream {
             ),
         ],
     );
+}
+
+// An attribute argument is metadata, not a signature. `#[require(Target)]`
+// names a type in token position, and whether that type reaches public API
+// depends on what the macro expands to — which only the post-expansion HIR
+// knows. Bevy's real `#[require]` registers the named component from a function
+// body and never places it in a signature.
+#[test]
+fn attribute_metadata_alone_does_not_expose_a_child_through_a_public_signature() {
+    let temp = tempdir().expect("create attribute exposure fixture dir");
+    write_attribute_exposure_fixture(&temp);
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     let target_finding = |path: &str| {

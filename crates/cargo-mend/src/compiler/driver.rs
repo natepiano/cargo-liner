@@ -115,7 +115,13 @@ fn driver_main_impl() -> Result<ExitCode> {
     let Ok(driver_settings) = DriverSettings::from_env() else {
         return passthrough_to_rustc(&wrapper_args);
     };
-    if should_passthrough_with_existing_wrapper() {
+    // Cargo sets `CARGO_PRIMARY_PACKAGE` only on units belonging to a selected
+    // package, so its absence marks a workspace member the run did not ask for.
+    // Those compile through the ambient wrapper named by
+    // `PASSTHROUGH_RUSTC_WRAPPER_ENV`, or bare `rustc` when none is set.
+    // Requiring that wrapper before honoring the variable tied the analyzed
+    // crate set to whether a caching wrapper happened to be installed.
+    if env::var_os(CARGO_PRIMARY_PACKAGE_ENV).is_none() {
         return passthrough_to_rustc(&wrapper_args);
     }
 
@@ -140,10 +146,6 @@ fn driver_main_impl() -> Result<ExitCode> {
     });
 
     Ok(exit_code)
-}
-
-fn should_passthrough_with_existing_wrapper() -> bool {
-    passthrough_rustc_wrapper().is_some() && env::var_os(CARGO_PRIMARY_PACKAGE_ENV).is_none()
 }
 
 fn passthrough_to_rustc(wrapper_args: &[OsString]) -> Result<ExitCode> {
