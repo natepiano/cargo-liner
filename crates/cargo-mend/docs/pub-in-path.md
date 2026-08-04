@@ -1481,7 +1481,7 @@ An architect pass over the one remaining phase produced sixteen findings; fiftee
 
 ---
 
-### Phase 12 — `required` mode · status: done
+### Phase 12 — `required` mode · status: done (`fdc367b`)
 
 #### Work Order
 
