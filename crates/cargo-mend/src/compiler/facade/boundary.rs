@@ -45,6 +45,12 @@ pub(in crate::compiler) struct ModuleSourceMap {
     modules_by_file:            FxHashMap<PathBuf, Vec<LocalDefId>>,
     files_by_module:            FxHashMap<LocalDefId, Vec<PathBuf>>,
     modules_by_path:            FxHashMap<Vec<String>, LocalDefId>,
+    /// Each module's enclosing module, so an ancestry walk is a map lookup per
+    /// level instead of a `parent_module_from_def_id` query per level. The
+    /// exposure scan walks ancestry once per item per file per module scope,
+    /// which made that query the single most expensive thing mend asked the
+    /// compiler for.
+    parent_by_module:           FxHashMap<LocalDefId, LocalDefId>,
     structural_parents_by_file: FxHashMap<PathBuf, Vec<Vec<String>>>,
     crate_files:                FxHashSet<PathBuf>,
     canonical_by_source_file:   FxHashMap<PathBuf, PathBuf>,
@@ -116,6 +122,12 @@ impl ModuleSourceMap {
             module_sources
                 .modules_by_path
                 .insert(module_path(tcx, module_def_id), module_def_id);
+            if module_def_id != CRATE_DEF_ID {
+                module_sources.parent_by_module.insert(
+                    module_def_id,
+                    tcx.parent_module_from_def_id(module_def_id).into(),
+                );
+            }
             let (hir_module, _, _) = tcx.hir_get_module(module);
             if let Some(source_file) =
                 module_sources.canonical_span_file(tcx, hir_module.spans.inner_span)
@@ -220,7 +232,7 @@ impl ModuleSourceMap {
                 if *module == CRATE_DEF_ID {
                     return true;
                 }
-                let parent: LocalDefId = tcx.parent_module_from_def_id(*module).into();
+                let parent = self.parent_module(tcx, *module);
                 self.files_by_module.get(&parent).is_none_or(|files| {
                     !files
                         .iter()
@@ -247,6 +259,36 @@ impl ModuleSourceMap {
             vec![CRATE_DEF_ID]
         } else {
             structural_roots
+        }
+    }
+
+    /// The module enclosing `module`.
+    ///
+    /// Served from the table built in `new`, falling back to the compiler query
+    /// for a def id that table does not cover — every module does, but items and
+    /// synthesized def ids reach this too.
+    fn parent_module(&self, tcx: TyCtxt<'_>, module: LocalDefId) -> LocalDefId {
+        self.parent_by_module
+            .get(&module)
+            .copied()
+            .unwrap_or_else(|| tcx.parent_module_from_def_id(module).into())
+    }
+
+    /// Whether `candidate` is `ancestor` or is nested inside it.
+    pub(in crate::compiler) fn module_is_within(
+        &self,
+        tcx: TyCtxt<'_>,
+        mut candidate: LocalDefId,
+        ancestor: LocalDefId,
+    ) -> bool {
+        loop {
+            if candidate == ancestor {
+                return true;
+            }
+            if candidate == CRATE_DEF_ID {
+                return false;
+            }
+            candidate = self.parent_module(tcx, candidate);
         }
     }
 
@@ -330,22 +372,6 @@ pub fn module_path(tcx: TyCtxt<'_>, module: LocalDefId) -> Vec<String> {
         .filter(|segment| !segment.is_empty())
         .map(String::from)
         .collect()
-}
-
-pub(in crate::compiler) fn module_is_within(
-    tcx: TyCtxt<'_>,
-    mut candidate: LocalDefId,
-    ancestor: LocalDefId,
-) -> bool {
-    loop {
-        if candidate == ancestor {
-            return true;
-        }
-        if candidate == CRATE_DEF_ID {
-            return false;
-        }
-        candidate = tcx.parent_module_from_def_id(candidate).into();
-    }
 }
 
 /// Canonical form of every real file the compiler has loaded, keyed by the path

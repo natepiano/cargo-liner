@@ -521,8 +521,14 @@ fn sibling_boundary_signature_exposes_item(
         for &module_scope in module_scopes(ctx, candidate_file).iter() {
             let candidate_module = module_scope.module;
             if candidate_module == parent_boundary.module()
-                || facade::module_is_within(ctx.tcx, candidate_module, child_module)
-                || !facade::module_is_within(ctx.tcx, candidate_module, parent_boundary.module())
+                || ctx
+                    .module_sources
+                    .module_is_within(ctx.tcx, candidate_module, child_module)
+                || !ctx.module_sources.module_is_within(
+                    ctx.tcx,
+                    candidate_module,
+                    parent_boundary.module(),
+                )
             {
                 continue;
             }

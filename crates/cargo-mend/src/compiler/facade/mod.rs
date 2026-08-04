@@ -4,7 +4,6 @@ mod reference;
 
 pub(super) use boundary::LogicalParentBoundary;
 pub(super) use boundary::ModuleSourceMap;
-pub(super) use boundary::module_is_within;
 pub(super) use exports::ParentFacadeExportRequest;
 pub(super) use exports::ParentFacadeExportStatus;
 pub(super) use exports::ParentFacadeFixSupport;
