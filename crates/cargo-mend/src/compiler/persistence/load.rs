@@ -55,7 +55,7 @@ impl From<&StoredPubUseFixFact> for PubUseNarrowingSite {
     }
 }
 
-pub fn load_report(
+pub(in crate::compiler) fn load_report(
     findings_dir: &Path,
     selection: &Selection,
     config_fingerprint: &str,

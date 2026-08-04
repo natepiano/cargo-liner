@@ -7,12 +7,16 @@ use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 
 #[derive(Clone, Default, Eq, Ord, PartialEq, PartialOrd)]
-pub struct ConditionalAttributes {
+pub(in crate::fixes) struct ConditionalAttributes {
     source: Vec<String>,
 }
 
 impl ConditionalAttributes {
-    pub fn from_attributes(text: &str, line_offsets: &[usize], attributes: &[Attribute]) -> Self {
+    pub(in crate::fixes) fn from_attributes(
+        text: &str,
+        line_offsets: &[usize],
+        attributes: &[Attribute],
+    ) -> Self {
         let source = attributes
             .iter()
             .filter_map(|attribute| conditional_attribute_source(text, line_offsets, attribute))
@@ -20,15 +24,17 @@ impl ConditionalAttributes {
         Self { source }
     }
 
-    pub fn contains(attributes: &[Attribute]) -> bool { attributes.iter().any(is_conditional) }
+    pub(in crate::fixes) fn contains(attributes: &[Attribute]) -> bool {
+        attributes.iter().any(is_conditional)
+    }
 
-    pub fn extend(&mut self, other: Self) { self.source.extend(other.source); }
+    pub(in crate::fixes) fn extend(&mut self, other: Self) { self.source.extend(other.source); }
 
-    pub const fn is_empty(&self) -> bool { self.source.is_empty() }
+    pub(in crate::fixes) const fn is_empty(&self) -> bool { self.source.is_empty() }
 
-    pub const fn len(&self) -> usize { self.source.len() }
+    pub(in crate::fixes) const fn len(&self) -> usize { self.source.len() }
 
-    pub fn render(&self, indent: &str) -> String {
+    pub(in crate::fixes) fn render(&self, indent: &str) -> String {
         let mut rendered = String::new();
         for attribute in &self.source {
             rendered.push_str(indent);
@@ -38,10 +44,10 @@ impl ConditionalAttributes {
         rendered
     }
 
-    pub fn truncate(&mut self, len: usize) { self.source.truncate(len); }
+    pub(in crate::fixes) fn truncate(&mut self, len: usize) { self.source.truncate(len); }
 }
 
-pub fn is_conditional(attribute: &Attribute) -> bool {
+pub(in crate::fixes) fn is_conditional(attribute: &Attribute) -> bool {
     attribute.path().is_ident("cfg") || cfg_attr_applies_cfg(attribute)
 }
 

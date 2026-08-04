@@ -41,7 +41,7 @@ pub(super) enum ReachBoundary {
 }
 
 #[derive(Clone, Copy)]
-pub struct VisibilityReach(Visibility<DefId>);
+pub(in crate::compiler) struct VisibilityReach(Visibility<DefId>);
 
 pub(super) enum VisibilityAnnotation<'source> {
     Private,
@@ -184,12 +184,12 @@ impl From<ScopeReach<DefId>> for VisibilityReach {
 }
 
 impl VisibilityReach {
-    pub fn compare(self, other: Self, tcx: TyCtxt<'_>) -> Option<Ordering> {
+    pub(in crate::compiler) fn compare(self, other: Self, tcx: TyCtxt<'_>) -> Option<Ordering> {
         let mut is_at_least = |lhs, rhs| Self::from(lhs).is_at_least(Self::from(rhs), tcx);
         self.reach().compare(other.reach(), &mut is_at_least)
     }
 
-    pub fn join(self, other: Self, tcx: TyCtxt<'_>) -> Self {
+    pub(in crate::compiler) fn join(self, other: Self, tcx: TyCtxt<'_>) -> Self {
         let mut is_at_least = |lhs, rhs| Self::from(lhs).is_at_least(Self::from(rhs), tcx);
         let mut parent_module = |module: DefId| {
             module.as_local().map_or(module, |local_module| {
@@ -249,7 +249,11 @@ impl VisibilityReach {
     }
 }
 
-pub fn anchored(reach: VisibilityReach, target: LocalDefId, tcx: TyCtxt<'_>) -> VisibilityReach {
+pub(in crate::compiler) fn anchored(
+    reach: VisibilityReach,
+    target: LocalDefId,
+    tcx: TyCtxt<'_>,
+) -> VisibilityReach {
     let target_module = tcx.parent_module_from_def_id(target).to_def_id();
     let mut is_at_least =
         |lhs, rhs| VisibilityReach::from(lhs).is_at_least(VisibilityReach::from(rhs), tcx);
@@ -264,7 +268,7 @@ pub fn anchored(reach: VisibilityReach, target: LocalDefId, tcx: TyCtxt<'_>) -> 
         .into()
 }
 
-pub fn capped_by_enclosing_modules(
+pub(in crate::compiler) fn capped_by_enclosing_modules(
     mut reach: VisibilityReach,
     declaration: LocalDefId,
     tcx: TyCtxt<'_>,

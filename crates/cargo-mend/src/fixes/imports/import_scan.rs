@@ -9,7 +9,7 @@ use anyhow::bail;
 
 use crate::reporting::Finding;
 
-pub struct ImportScan {
+pub(in crate::fixes) struct ImportScan {
     pub findings: Vec<Finding>,
     pub fixes:    ValidatedFixSet,
 }
@@ -20,7 +20,7 @@ pub struct ImportScan {
 /// file, the combining layer drops every fix that carries a conflicting
 /// `ImportGroup`, keeping rewrites and the `use` insertion in sync.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ImportGroup {
+pub(in crate::fixes) struct ImportGroup {
     /// The bare name that the `use` brings into scope (e.g. `Package`).
     pub bare_name: String,
     /// The full path the `use` resolves (e.g. `crate::project::Package`).
@@ -28,7 +28,7 @@ pub struct ImportGroup {
 }
 
 #[derive(Debug, Clone)]
-pub struct UseFix {
+pub(in crate::fixes) struct UseFix {
     pub path:         PathBuf,
     pub start:        usize,
     pub end:          usize,
@@ -39,14 +39,14 @@ pub struct UseFix {
 }
 
 #[derive(Debug, Clone)]
-pub struct ValidatedFixSet {
+pub(in crate::fixes) struct ValidatedFixSet {
     fixes: Vec<UseFix>,
 }
 
 impl ValidatedFixSet {
-    pub const fn is_empty(&self) -> bool { self.fixes.is_empty() }
+    pub(in crate::fixes) const fn is_empty(&self) -> bool { self.fixes.is_empty() }
 
-    pub fn iter(&self) -> impl Iterator<Item = &UseFix> { self.fixes.iter() }
+    pub(in crate::fixes) fn iter(&self) -> impl Iterator<Item = &UseFix> { self.fixes.iter() }
 }
 
 impl TryFrom<Vec<UseFix>> for ValidatedFixSet {

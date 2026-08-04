@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- An exact, crate-rooted `pub(in crate::path)` declaration whose boundary is demanded only by a
+  signature that crosses it — a type named in another item's return type, parameter, or public
+  field, and never written by any caller — is no longer a `forbidden_pub_in_crate` error, and no
+  facade is required for it. A caller that writes the item's own path across the boundary still is
+  one: only the exposing item's path reaches a signature-exposed type, so a facade re-exporting it
+  would have no user and would fail `unused_imports`.
 - Exact, crate-rooted `pub(in crate::path)` declaration boundaries that match a parent facade are
   now accepted when `[visibility] pub_in_path` is `"permitted"` or `"required"` (the default).
   `required` also revises `suspicious_pub` advice for a bare `pub` behind such a facade. There is no

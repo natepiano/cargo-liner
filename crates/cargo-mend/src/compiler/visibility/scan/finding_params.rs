@@ -12,7 +12,7 @@ use crate::config::DiagnosticCode;
 use crate::reporting::FixSupport;
 use crate::reporting::Severity;
 
-pub struct FindingParams {
+pub(in crate::compiler::visibility) struct FindingParams {
     pub severity:                Severity,
     pub diagnostic_code:         DiagnosticCode,
     pub item:                    Option<String>,
@@ -25,7 +25,7 @@ pub struct FindingParams {
     pub narrower_scope_def_path: Option<String>,
 }
 
-pub struct SuspiciousPubInput<'a> {
+pub(in crate::compiler::visibility) struct SuspiciousPubInput<'a> {
     pub def_id:            LocalDefId,
     pub file_path:         &'a Path,
     pub config_rel_path:   Option<&'a str>,
@@ -39,7 +39,7 @@ pub struct SuspiciousPubInput<'a> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AllowanceReason {
+pub(in crate::compiler::visibility) enum AllowanceReason {
     Allowlist,
     ParentIsPublic,
     ShallowPrivatePolicy,
@@ -50,7 +50,7 @@ pub enum AllowanceReason {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SuspiciousPubAssessment {
+pub(in crate::compiler::visibility) enum SuspiciousPubAssessment {
     Allowed(AllowanceReason),
     ReviewInternalParentFacade {
         related: Option<String>,

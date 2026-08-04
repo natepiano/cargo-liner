@@ -6,12 +6,12 @@ use std::path::Path;
 use crate::constants::FINGERPRINT_HEX_WIDTH;
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub enum CacheBuildKind {
+pub(in crate::compiler) enum CacheBuildKind {
     Library,
     Test,
 }
 
-pub fn cache_filename_for(
+pub(in crate::compiler) fn cache_filename_for(
     package_root: &Path,
     crate_root_file: &Path,
     build_kind: CacheBuildKind,

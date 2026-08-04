@@ -13,6 +13,7 @@ pub(super) use load::load_report;
 pub(super) use schema::StoredFinding;
 pub(super) use schema::StoredPubUseFixFact;
 pub(super) use schema::StoredReport;
+pub(super) use schema::UseSiteReference;
 pub(super) use sink::FindingsSink;
 pub(super) use sink::UseSiteIndex;
 pub(super) use sink::prepare_findings_dir;

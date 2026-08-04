@@ -4,21 +4,21 @@ use crate::compiler::settings;
 use crate::compiler::visibility::policy;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CrateKind {
+pub(in crate::compiler::visibility) enum CrateKind {
     Binary,
     Library,
     IntegrationTest,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ModuleLocation {
+pub(in crate::compiler::visibility) enum ModuleLocation {
     CrateRoot,
     ShallowPrivate,
     Nested,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ParentVisibility {
+pub(in crate::compiler::visibility) enum ParentVisibility {
     Public,
     Private,
 }

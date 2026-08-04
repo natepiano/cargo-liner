@@ -193,6 +193,20 @@ impl VisibilityConstraintSet {
         reaches.all(|reach| *reach == first).then_some(first)
     }
 
+    /// Every constraint in the group spells an exact crate-rooted
+    /// `pub(in crate::…)` that matches the reach its own signature demands, and
+    /// no target in the group has a facade. Nothing but the caller map can
+    /// still demand the boundary.
+    fn declares_exactly_its_signature_reach(&self) -> bool {
+        !self.constraints.is_empty()
+            && self.all_exact_boundaries_are_eligible()
+            && self.constraints.iter().all(|constraint| {
+                constraint.spelling == StoredVisibilitySpelling::ExactPath
+                    && matches!(constraint.facade, StoredFacadeConstraint::Absent)
+                    && constraint.signature_requirement.as_ref() == Some(&constraint.declared_reach)
+            })
+    }
+
     fn uses_caller_reconciliation(&self) -> bool {
         self.constraints.iter().any(|constraint| {
             constraint.caller_reconciliation == StoredCallerReconciliation::CallerAware
@@ -239,6 +253,19 @@ struct VisibilityFindingCandidate {
     finding:    StoredFinding,
 }
 
+/// What demands the boundary a declaration spells. A type named only in
+/// another item's signature is reached through that item's path, never through
+/// its own, so no facade can re-export it and none is required. A caller that
+/// writes the item's own path across the boundary does need one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BoundaryDemand {
+    /// Signatures alone cross the boundary — the declaration stands as written.
+    SignatureAlone,
+    /// A facade, a declaration wider than its signature, or a caller naming the
+    /// item demands the boundary.
+    BeyondSignature,
+}
+
 #[derive(Default)]
 struct VisibilityConstraintGroup {
     constraints:  VisibilityConstraintSet,
@@ -281,6 +308,11 @@ impl VisibilityConstraintGroup {
         let mut finding = self.preferred_candidate()?.finding.clone();
         if !self.constraints.uses_caller_reconciliation() {
             return Some(finding);
+        }
+        if self.boundary_demand(callers, package_root, required_reach.as_ref())
+            == BoundaryDemand::SignatureAlone
+        {
+            return None;
         }
         let repair = self.no_facade_repair(callers, package_root, required_reach.as_ref());
         let repair_reach = required_reach.or_else(|| self.constraints.uniform_declared_reach());
@@ -348,6 +380,50 @@ impl VisibilityConstraintGroup {
         })
     }
 
+    /// Decided here rather than during the scan because the scan sees only the
+    /// callers of the compilation target it is walking, while `callers` is the
+    /// union across every target in the package. An acceptance is also
+    /// unrecoverable: [`Self::render`] can suppress or reword a finding but
+    /// never create one, so a scan that accepted in every target would leave
+    /// nothing for the union to correct.
+    fn boundary_demand(
+        &self,
+        callers: &CallerMap,
+        package_root: &str,
+        required_reach: Option<&StoredVisibilityReach>,
+    ) -> BoundaryDemand {
+        if !self.constraints.declares_exactly_its_signature_reach()
+            || self.constraints.uniform_declared_reach().as_ref() != required_reach
+        {
+            return BoundaryDemand::BeyondSignature;
+        }
+        let demanded_beyond_signature = self.constraints.constraints.iter().any(|constraint| {
+            // A boundary a narrower canonical annotation already reaches is a
+            // spelling finding, not a facade demand, so it stays reported.
+            if !matches!(
+                requirement_repair(&constraint.declaration, required_reach),
+                NoFacadeVisibilityRepair::StructuralMigrationForCallerLocations
+            ) {
+                return true;
+            }
+            let naming_callers = caller_aware::callers_for_package(
+                callers,
+                package_root,
+                &constraint.declaration.item_def_path,
+            )
+            .map(|item_callers| &item_callers.naming);
+            matches!(
+                caller_repair(&constraint.declaration, naming_callers),
+                NoFacadeVisibilityRepair::StructuralMigrationForCallerLocations
+            )
+        });
+        if demanded_beyond_signature {
+            BoundaryDemand::BeyondSignature
+        } else {
+            BoundaryDemand::SignatureAlone
+        }
+    }
+
     fn no_facade_repair(
         &self,
         callers: &CallerMap,
@@ -358,12 +434,13 @@ impl VisibilityConstraintGroup {
         for constraint in &self.constraints.constraints {
             repair =
                 repair.most_invasive(requirement_repair(&constraint.declaration, required_reach));
-            let item_callers = caller_aware::callers_for_package(
+            let reaching_callers = caller_aware::callers_for_package(
                 callers,
                 package_root,
                 &constraint.declaration.item_def_path,
-            );
-            repair = repair.most_invasive(caller_repair(&constraint.declaration, item_callers));
+            )
+            .map(|item_callers| &item_callers.reaching);
+            repair = repair.most_invasive(caller_repair(&constraint.declaration, reaching_callers));
         }
         repair
     }

@@ -11,7 +11,7 @@ use anyhow::Result;
 use super::UseFix;
 use super::ValidatedFixSet;
 
-pub fn apply_fixes(fixes: &ValidatedFixSet) -> Result<usize> {
+pub(in crate::fixes) fn apply_fixes(fixes: &ValidatedFixSet) -> Result<usize> {
     let mut by_file: BTreeMap<&Path, Vec<&UseFix>> = BTreeMap::new();
     for fix in fixes.iter() {
         by_file.entry(fix.path.as_path()).or_default().push(fix);
@@ -37,7 +37,7 @@ pub fn apply_fixes(fixes: &ValidatedFixSet) -> Result<usize> {
     Ok(applied)
 }
 
-pub fn snapshot_files(fixes: &ValidatedFixSet) -> Result<Vec<(PathBuf, String)>> {
+pub(in crate::fixes) fn snapshot_files(fixes: &ValidatedFixSet) -> Result<Vec<(PathBuf, String)>> {
     let mut unique_paths = BTreeSet::new();
     for fix in fixes.iter() {
         unique_paths.insert(fix.path.clone());
@@ -52,7 +52,7 @@ pub fn snapshot_files(fixes: &ValidatedFixSet) -> Result<Vec<(PathBuf, String)>>
     Ok(snapshots)
 }
 
-pub fn restore_files(snapshots: &[(PathBuf, String)]) -> Result<()> {
+pub(in crate::fixes) fn restore_files(snapshots: &[(PathBuf, String)]) -> Result<()> {
     for (path, text) in snapshots {
         fs::write(path, text).with_context(|| format!("failed to restore {}", path.display()))?;
     }

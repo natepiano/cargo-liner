@@ -3167,19 +3167,13 @@ edition = "2024"
         }),
         "the independent public glob must require bare pub: {report:#?}",
     );
-    let restricted_target_finding = report
-        .findings
-        .iter()
-        .find(|finding| {
-            finding.path == "src/a/b/restricted/target.rs"
-                && finding.code == DiagnosticCode::ForbiddenPubInCrate
-        })
-        .unwrap_or_else(|| panic!("missing restricted-only control finding: {report:#?}"));
-    assert_eq!(restricted_target_finding.fix_support, FixSupport::None);
+    // The control: `RestrictedCarrier` reaches only `crate::a`, so its field type
+    // declares exactly the reach its signature demands and stands as written. Only
+    // the independent public glob above pushes a target past `crate::a`.
     assert!(
-        restricted_target_finding.help.iter().any(|line| {
-            line
-                == "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend`"
+        report.findings.iter().all(|finding| {
+            finding.path != "src/a/b/restricted/target.rs"
+                || finding.code != DiagnosticCode::ForbiddenPubInCrate
         }),
         "the used restricted facade alone must retain its crate::a reach: {report:#?}",
     );
@@ -3588,69 +3582,6 @@ edition = "2024"
             .iter()
             .all(|finding| finding.fix_support == FixSupport::None),
         "same-line target findings must remain structural: {report:#?}",
-    );
-}
-
-#[test]
-fn signature_exposure_does_not_admit_pub_in_without_a_facade() {
-    let temp = tempdir().expect("create no-facade exposure fixture dir");
-    write_allowance_sources(
-        &temp,
-        &[
-            (
-                "Cargo.toml",
-                r#"[package]
-name = "signature_exposure_without_facade_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-            ),
-            ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
-            ("src/main.rs", "mod a;\nfn main() { a::run(); }\n"),
-            (
-                "src/a.rs",
-                "mod b;\npub(crate) fn run() { let _ = b::expose(); }\n",
-            ),
-            (
-                "src/a/b.rs",
-                "mod c;\npub(super) fn expose() -> c::Target { c::Target }\n",
-            ),
-            ("src/a/b/c.rs", "pub(in crate::a) struct Target;\n"),
-        ],
-    );
-
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    let target_findings = report
-        .findings
-        .iter()
-        .filter(|finding| finding.path == "src/a/b/c.rs")
-        .collect::<Vec<_>>();
-    assert_eq!(
-        target_findings.len(),
-        1,
-        "signature exposure without a facade must be rejected: {report:#?}",
-    );
-    let target_finding = target_findings[0];
-    assert_eq!(target_finding.code, DiagnosticCode::ForbiddenPubInCrate);
-    assert_eq!(target_finding.fix_support, FixSupport::None);
-    assert!(
-        target_finding.help.iter().any(|line| {
-            line
-                == "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend`"
-        }),
-        "floor-constrained pub(in ...) advice must be structural: {report:#?}",
-    );
-    assert_stored_forbidden_visibility_advice(
-        &temp,
-        "forbidden_pub_in_crate",
-        "src/a/b/c.rs",
-        1,
-        ForbiddenVisibilityPersistenceExpectation::Restricted {
-            visibility_annotation:       "pub(in crate::a)",
-            item_def_path:               "a::b::c::Target",
-            item_module_def_path:        "a::b::c",
-            signature_boundary_def_path: "crate::a",
-        },
     );
 }
 
@@ -4387,41 +4318,32 @@ fn restricted_sibling_reexports_add_common_ancestor_signature_reach() {
 
         let report = run_mend_json(&temp.path().join("Cargo.toml"));
         let target_finding = |line_start| {
-            report
-                .findings
-                .iter()
-                .find(|finding| {
-                    finding.code == DiagnosticCode::ForbiddenPubInCrate
-                        && finding.path == "src/api/carriers/targets.rs"
-                        && finding.line_start == line_start
-                })
-                .unwrap_or_else(|| {
-                    panic!("missing restricted sibling target at line {line_start}: {report:#?}")
-                })
+            report.findings.iter().find(|finding| {
+                finding.code == DiagnosticCode::ForbiddenPubInCrate
+                    && finding.path == "src/api/carriers/targets.rs"
+                    && finding.line_start == line_start
+            })
         };
-        assert_eq!(
-            target_finding(1).headline,
-            "no visibility annotation allowed by policy preserves this item's current callers"
-        );
+        // The reach each re-export contributes is read off whether the
+        // declaration is left alone. Lines 1 and 3 declare exactly the
+        // `crate::api` reach their carriers' public fields demand, so they stand;
+        // line 2 has no reach at all and must lose its annotation. Were the
+        // `pub(super)` sibling re-export to contribute nothing, line 1 would be
+        // told to remove its annotation too.
         assert!(
-            target_finding(1).help.iter().any(|line| {
-                line
-                    == "move the item into `crate::api`, or add an explicit facade at `crate::api` and rerun `cargo mend`"
-            }),
+            target_finding(1).is_none(),
             "the restricted sibling re-export must contribute crate::api reach: {report:#?}",
         );
         assert!(
             target_finding(2)
+                .unwrap_or_else(|| panic!("missing private-equivalent target: {report:#?}"))
                 .help
                 .iter()
                 .any(|line| line == "consider removing the visibility"),
             "the private-equivalent re-export must contribute no reach: {report:#?}",
         );
         assert!(
-            target_finding(3).help.iter().any(|line| {
-                line
-                    == "move the item into `crate::api`, or add an explicit facade at `crate::api` and rerun `cargo mend`"
-            }),
+            target_finding(3).is_none(),
             "the unrelated carrier must retain only its own re-export reach: {report:#?}",
         );
     }

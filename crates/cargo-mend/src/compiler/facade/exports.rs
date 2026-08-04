@@ -120,14 +120,14 @@ pub fn facade_usage_scan_count(occurrence: LocalDefId) -> usize {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum ParentFacadeFixSupport {
+pub(in crate::compiler) enum ParentFacadeFixSupport {
     #[default]
     Unsupported,
     Supported,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ParentFacadeSpelling {
+pub(in crate::compiler) enum ParentFacadeSpelling {
     Public,
     Crate,
     Super,
@@ -135,7 +135,7 @@ pub enum ParentFacadeSpelling {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ParentFacadeReach {
+pub(in crate::compiler) struct ParentFacadeReach {
     pub reaches_parent:    bool,
     pub spelling:          ParentFacadeSpelling,
     pub spelling_conflict: bool,
@@ -148,7 +148,7 @@ pub(super) struct ParentFacadeExports {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParentFacadeExportStatus {
+pub(in crate::compiler) struct ParentFacadeExportStatus {
     pub usage:               ParentFacadeUsage,
     pub fix_support:         ParentFacadeFixSupport,
     pub parent_facade_reach: ParentFacadeReach,
@@ -158,7 +158,7 @@ pub struct ParentFacadeExportStatus {
 }
 
 impl ParentFacadeExportStatus {
-    pub const fn use_syntax(&self) -> Option<&'static str> {
+    pub(in crate::compiler) const fn use_syntax(&self) -> Option<&'static str> {
         if self.parent_facade_reach.spelling_conflict {
             return None;
         }
@@ -172,7 +172,7 @@ impl ParentFacadeExportStatus {
 }
 
 #[derive(Clone, Copy)]
-pub struct ParentFacadeExportRequest<'tcx, 'source> {
+pub(in crate::compiler) struct ParentFacadeExportRequest<'tcx, 'source> {
     pub source_cache:        &'source SourceCache,
     pub settings:            &'source DriverSettings,
     pub source_root:         &'source Path,
@@ -190,7 +190,7 @@ pub struct ParentFacadeExportRequest<'tcx, 'source> {
     pub item_name:           &'source str,
 }
 
-pub fn parent_facade_export_status(
+pub(in crate::compiler) fn parent_facade_export_status(
     request: ParentFacadeExportRequest<'_, '_>,
 ) -> Result<Option<ParentFacadeExportStatus>> {
     let ParentFacadeExportRequest {

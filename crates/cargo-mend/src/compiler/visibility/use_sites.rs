@@ -58,6 +58,7 @@ use super::annotation::VisibilitySyntax;
 use crate::compiler::facade::ParentFacadeSpelling;
 use crate::compiler::facade::ParentFacadeUsageByName;
 use crate::compiler::persistence::UseSiteIndex;
+use crate::compiler::persistence::UseSiteReference;
 use crate::rust_syntax::PathAnchor;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -769,7 +770,7 @@ struct UseSiteCollector<'a, 'tcx> {
     /// so deduplicating here and rendering in [`collect_use_sites`] pays
     /// `def_path_str` once per distinct def-id instead of twice per
     /// occurrence.
-    out:                       &'a mut HashSet<(DefId, DefId)>,
+    out:                       &'a mut HashSet<(DefId, DefId, UseSiteReference)>,
     public_visibility_targets: &'a mut HashSet<LocalDefId>,
 }
 
@@ -789,7 +790,7 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
         // Skip references to items in other crates — narrowing decisions
         // only apply to local items.
         if target.is_local() {
-            self.push_site(target);
+            self.push_site(target, UseSiteReference::Named);
             self.record_target_modules(target);
         }
         match self.tcx.def_kind(target) {
@@ -824,7 +825,7 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
         };
         let mut module: LocalDefId = self.tcx.parent_module_from_def_id(local_target).into();
         loop {
-            self.push_site(module.to_def_id());
+            self.push_site(module.to_def_id(), UseSiteReference::Named);
             if module == CRATE_DEF_ID {
                 return;
             }
@@ -883,7 +884,7 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
         if !seen.insert(did) {
             return;
         }
-        self.push_site(did);
+        self.push_site(did, UseSiteReference::ThroughSignature);
         let owning_module = self.tcx.parent_module_from_def_id(local).to_def_id();
         for field in self.tcx.adt_def(did).all_fields() {
             if !self.field_escapes_module(field.did, owning_module) {
@@ -1030,7 +1031,7 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
                     self.public_visibility_targets
                         .insert(adt_def.did().expect_local());
                 }
-                self.push_site(adt_def.did());
+                self.push_site(adt_def.did(), UseSiteReference::ThroughSignature);
             }
         }
     }
@@ -1046,7 +1047,9 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
         }
     }
 
-    fn push_site(&mut self, target: DefId) { self.out.insert((target, self.current_module)); }
+    fn push_site(&mut self, target: DefId, reference: UseSiteReference) {
+        self.out.insert((target, self.current_module, reference));
+    }
 
     fn record_qpath(&mut self, qpath: &QPath<'_>, hir_id: HirId) {
         let res = match qpath {
@@ -1197,7 +1200,7 @@ pub(super) fn collect_use_sites(
 
     let mut index = UseSiteIndex::default();
     let mut def_paths: HashMap<DefId, String> = HashMap::new();
-    for (target, caller_module) in pairs {
+    for (target, caller_module, reference) in pairs {
         let target_def_path = def_paths
             .entry(target)
             .or_insert_with(|| tcx.def_path_str(target))
@@ -1206,7 +1209,7 @@ pub(super) fn collect_use_sites(
             .entry(caller_module)
             .or_insert_with(|| tcx.def_path_str(caller_module))
             .clone();
-        index.insert(target_def_path, caller_module_def_path);
+        index.insert(target_def_path, caller_module_def_path, reference);
     }
     index
 }

@@ -46,7 +46,7 @@ type VisitedItems = HashSet<LocalDefId>;
 type FacadeExposure<'a> =
     dyn FnMut(LocalDefId, &Path, &str) -> Result<Option<VisibilityReach>> + 'a;
 
-pub struct ExposureContext<'source, 'tcx> {
+pub(in crate::compiler) struct ExposureContext<'source, 'tcx> {
     pub source_cache:   &'source SourceCache,
     pub settings:       &'source DriverSettings,
     pub source_root:    &'source Path,
@@ -198,7 +198,7 @@ impl ImplSignatureCarrierReachSource<'_> {
     }
 }
 
-pub fn child_item_is_exposed_by_other_crate_visible_signature(
+pub(in crate::compiler) fn child_item_is_exposed_by_other_crate_visible_signature(
     ctx: &ExposureContext<'_, '_>,
     item_def_id: LocalDefId,
     child_file: &Path,
@@ -401,7 +401,7 @@ fn module_impl_signature_exposes_item(
     Ok(exposure_reach)
 }
 
-pub fn child_item_is_exposed_by_sibling_boundary_signature(
+pub(in crate::compiler) fn child_item_is_exposed_by_sibling_boundary_signature(
     ctx: &ExposureContext<'_, '_>,
     item_def_id: LocalDefId,
     item_name: &str,
@@ -466,7 +466,7 @@ fn sibling_boundary_signature_exposes_item(
     Ok(exposure_reach)
 }
 
-pub fn impl_item_is_exposed_by_exported_self_type(
+pub(in crate::compiler) fn impl_item_is_exposed_by_exported_self_type(
     ctx: &ExposureContext<'_, '_>,
     item_def_id: LocalDefId,
     _: &str,
@@ -525,7 +525,7 @@ pub fn impl_item_is_exposed_by_exported_self_type(
         .map(|reach| visibility::anchored(reach, item_def_id, ctx.tcx)))
 }
 
-pub fn parent_boundary_public_signature_exposes_child_used_outside_parent(
+pub(in crate::compiler) fn parent_boundary_public_signature_exposes_child_used_outside_parent(
     ctx: &ExposureContext<'_, '_>,
     item_def_id: LocalDefId,
     item_name: &str,

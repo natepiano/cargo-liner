@@ -37,7 +37,7 @@ use crate::compiler::visibility::use_sites::ParentFacadeAnalysis;
 use crate::compiler::visibility::use_sites::ReexportIndex;
 use crate::reporting::CompilerWarningFacts;
 
-pub struct VisibilityContext<'a, 'tcx> {
+pub(in crate::compiler::visibility) struct VisibilityContext<'a, 'tcx> {
     pub tcx:                       TyCtxt<'tcx>,
     pub settings:                  &'a DriverSettings,
     pub source_root:               &'a Path,
@@ -51,7 +51,7 @@ pub struct VisibilityContext<'a, 'tcx> {
 }
 
 impl<'a> VisibilityContext<'a, '_> {
-    pub fn resolve_parent_facade(
+    pub(in crate::compiler::visibility) fn resolve_parent_facade(
         &self,
         item_def_id: LocalDefId,
     ) -> Option<ParentFacadeAnalysis<'a>> {
@@ -80,13 +80,13 @@ impl<'a> VisibilityContext<'a, '_> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ItemCategory {
+pub(in crate::compiler::visibility) enum ItemCategory {
     Module,
     Declaration,
     Use,
 }
 
-pub struct ItemInfo<'a> {
+pub(in crate::compiler::visibility) struct ItemInfo<'a> {
     pub def_id:          LocalDefId,
     pub file_path:       &'a Path,
     pub visibility_text: &'a str,
@@ -97,7 +97,10 @@ pub struct ItemInfo<'a> {
     pub facade_subject:  LocalDefId,
 }
 
-pub fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) -> Result<bool> {
+pub(in crate::compiler::visibility) fn collect_and_store_findings(
+    tcx: TyCtxt<'_>,
+    settings: &DriverSettings,
+) -> Result<bool> {
     let crate_root_file = source::real_file_path(tcx, tcx.def_span(CRATE_DEF_ID))
         .context("failed to determine local crate root file")?;
     let Some(source_root) =

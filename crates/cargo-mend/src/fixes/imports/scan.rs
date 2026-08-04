@@ -130,7 +130,7 @@ impl Visit<'_> for UseVisitor<'_> {
     }
 }
 
-pub fn scan_selection(selection: &Selection) -> Result<ImportScan> {
+pub(in crate::fixes) fn scan_selection(selection: &Selection) -> Result<ImportScan> {
     let findings_with_fixes = scan_selection_with_fixes(selection)?;
     let fixes = ValidatedFixSet::try_from(
         findings_with_fixes

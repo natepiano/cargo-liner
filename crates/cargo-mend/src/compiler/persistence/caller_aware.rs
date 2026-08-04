@@ -2,10 +2,23 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 use super::StoredReport;
+use super::schema::UseSiteReference;
 use crate::compiler::visibility;
 use crate::config::DiagnosticCode;
 
-pub(super) type CallerMap = BTreeMap<CallerKey, BTreeSet<String>>;
+pub(super) type CallerMap = BTreeMap<CallerKey, ItemCallers>;
+
+/// The modules reaching one item across every compilation target, split by
+/// whether a re-export of the item could serve them. `naming` is a subset of
+/// `reaching`: a module that writes the item's path also reaches it.
+#[derive(Default)]
+pub(super) struct ItemCallers {
+    /// Modules that write a path to the item.
+    pub naming:   BTreeSet<String>,
+    /// Every module that reaches the item, including those that reach it only
+    /// through the signature of some other item they named.
+    pub reaching: BTreeSet<String>,
+}
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct CallerKey {
@@ -26,13 +39,20 @@ pub(super) fn apply_caller_aware_suppression(reports: &mut [StoredReport]) -> Ca
     let mut callers = CallerMap::new();
     for report in reports.iter() {
         for site in &report.use_sites {
-            callers
+            let item_callers = callers
                 .entry(CallerKey::for_package(
                     &report.package_root,
                     &site.target_def_path,
                 ))
-                .or_default()
+                .or_default();
+            item_callers
+                .reaching
                 .insert(site.caller_module_def_path.clone());
+            if site.reference == UseSiteReference::Named {
+                item_callers
+                    .naming
+                    .insert(site.caller_module_def_path.clone());
+            }
         }
     }
 
@@ -51,10 +71,11 @@ pub(super) fn apply_caller_aware_suppression(reports: &mut [StoredReport]) -> Ca
             let Some(narrower_scope) = finding.narrower_scope_def_path.as_deref() else {
                 return true;
             };
-            let Some(caller_set) = callers_for_package(&callers, &package_root, item_path) else {
+            let Some(item_callers) = callers_for_package(&callers, &package_root, item_path) else {
                 return true;
             };
-            caller_set
+            item_callers
+                .reaching
                 .iter()
                 .all(|caller| visibility::def_path_is_descendant(caller, narrower_scope))
         });
@@ -66,7 +87,7 @@ pub(super) fn callers_for_package<'a>(
     callers: &'a CallerMap,
     package_root: &str,
     item_def_path: &str,
-) -> Option<&'a BTreeSet<String>> {
+) -> Option<&'a ItemCallers> {
     callers.get(&CallerKey::for_package(package_root, item_def_path))
 }
 
@@ -79,6 +100,7 @@ mod tests {
     use crate::compiler::persistence::StoredFinding;
     use crate::compiler::persistence::StoredReport;
     use crate::compiler::persistence::schema::UseSite;
+    use crate::compiler::persistence::schema::UseSiteReference;
     use crate::compiler::settings;
     use crate::config::DiagnosticCode;
     use crate::reporting::AllFeaturesCoverage;
@@ -101,6 +123,7 @@ mod tests {
             use_sites: vec![UseSite {
                 target_def_path:        item_path.to_string(),
                 caller_module_def_path: "crate::other".to_string(),
+                reference:              UseSiteReference::Named,
             }],
             ..report_for_test()
         }];

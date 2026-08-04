@@ -23,7 +23,7 @@ use crate::compiler::source_cache::UseRename;
 use crate::rust_syntax::PathAnchor;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ParentFacadeUsage {
+pub(in crate::compiler) enum ParentFacadeUsage {
     Unused,
     UsedInsideSubtreeByRelativeImport,
     UsedInsideSubtreeByRelativePath,
@@ -32,7 +32,7 @@ pub enum ParentFacadeUsage {
     UsedOutsideSubtree,
 }
 
-pub type ParentFacadeUsageByName = HashMap<String, ParentFacadeUsage>;
+pub(in crate::compiler) type ParentFacadeUsageByName = HashMap<String, ParentFacadeUsage>;
 
 pub(super) fn normalized_export_name(name: &str) -> &str { name.strip_prefix("r#").unwrap_or(name) }
 
@@ -164,7 +164,7 @@ pub(super) fn scan_facade_usage(
     Ok(usage_by_name)
 }
 
-pub fn workspace_source_parent_export_literal_usage(
+pub(in crate::compiler) fn workspace_source_parent_export_literal_usage(
     source_cache: &SourceCache,
     settings: &DriverSettings,
     tcx: TyCtxt<'_>,
@@ -775,7 +775,7 @@ fn merge_usage_for_name(
     usage_by_name.insert(name, merge_parent_facade_usage(current, next));
 }
 
-pub fn path_exists_outside_child_module(
+pub(in crate::compiler) fn path_exists_outside_child_module(
     source_cache: &SourceCache,
     source_root: &Path,
     tcx: TyCtxt<'_>,
@@ -808,7 +808,7 @@ pub fn path_exists_outside_child_module(
     false
 }
 
-pub fn path_exists_outside_module(
+pub(in crate::compiler) fn path_exists_outside_module(
     source_cache: &SourceCache,
     source_root: &Path,
     tcx: TyCtxt<'_>,

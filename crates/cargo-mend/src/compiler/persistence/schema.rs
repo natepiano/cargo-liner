@@ -9,7 +9,7 @@ use crate::reporting::FixSupport;
 use crate::reporting::Severity;
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct StoredReport {
+pub(in crate::compiler) struct StoredReport {
     pub version:                u32,
     #[serde(default)]
     pub analysis_fingerprint:   String,
@@ -35,6 +35,17 @@ pub struct StoredReport {
     pub use_sites:              Vec<UseSite>,
 }
 
+/// How a caller reaches the target. A caller that writes a path to the item can
+/// be served by a re-export of it; a caller that reaches it only through the
+/// signature of some other item it named cannot, because that reach travels the
+/// exposing item's path and a re-export of the target would have no user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(in crate::compiler) enum UseSiteReference {
+    Named,
+    ThroughSignature,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(in crate::compiler) struct UseSite {
     /// Canonical def-path of the referenced item, e.g.
@@ -43,10 +54,11 @@ pub(in crate::compiler) struct UseSite {
     /// Canonical def-path of the module containing the call site, e.g.
     /// `crate::tui::render::tests`.
     pub caller_module_def_path: String,
+    pub reference:              UseSiteReference,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StoredFinding {
+pub(in crate::compiler) struct StoredFinding {
     pub severity:                Severity,
     pub diagnostic_code:         DiagnosticCode,
     pub path:                    String,
@@ -89,17 +101,21 @@ impl StoredFinding {
     /// Composes [`StoredFinding::item`] from the pieces every producer has on
     /// hand: the item's kind label (`"struct"`, `"fn"`, `"field"`, …) and its
     /// name.
-    pub fn render_item(kind_label: &str, name: &str) -> String { format!("{kind_label} {name}") }
+    pub(in crate::compiler) fn render_item(kind_label: &str, name: &str) -> String {
+        format!("{kind_label} {name}")
+    }
 
     /// Recovers the bare item name from an [`StoredFinding::item`] rendering
     /// built by [`StoredFinding::render_item`]. `load::discard_fix_facts_for_suppressed_findings`
     /// joins findings to `StoredPubUseFixFact::child_item_name` through this,
     /// so it must stay the exact inverse of `render_item`.
-    pub fn item_name(item: &str) -> &str { item.rsplit_once(' ').map_or(item, |(_, name)| name) }
+    pub(in crate::compiler) fn item_name(item: &str) -> &str {
+        item.rsplit_once(' ').map_or(item, |(_, name)| name)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct StoredPubUseFixFact {
+pub(in crate::compiler) struct StoredPubUseFixFact {
     pub child_path:      String,
     pub child_line:      usize,
     pub child_item_name: String,

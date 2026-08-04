@@ -1362,10 +1362,7 @@ fn no_facade_pub_in_advice(
 }
 
 fn current_pass_callers(sink: &FindingsSink, item_def_path: &str) -> BTreeSet<String> {
-    sink.use_sites
-        .callers(item_def_path)
-        .cloned()
-        .unwrap_or_default()
+    sink.use_sites.callers(item_def_path)
 }
 
 fn record_review_pub_mod(

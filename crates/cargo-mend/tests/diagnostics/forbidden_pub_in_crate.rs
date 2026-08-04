@@ -842,6 +842,48 @@ fn no_facade_callers_select_only_compiling_advice() {
 }
 
 #[test]
+fn signature_only_exact_boundary_needs_no_facade() {
+    let temp = create_signature_only_boundary_fixture(NamingCaller::Absent);
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert_codes(&report, "src/a/b/c.rs", &[]);
+}
+
+#[test]
+fn a_caller_naming_the_item_still_demands_a_facade() {
+    let temp = create_signature_only_boundary_fixture(NamingCaller::Present);
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert_codes(
+        &report,
+        "src/a/b/c.rs",
+        &[DiagnosticCode::ForbiddenPubInCrate],
+    );
+    assert_headline_and_help(
+        &report,
+        "src/a/b/c.rs",
+        "no visibility annotation allowed by policy preserves this item's current callers",
+        "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo \
+         mend`",
+    );
+}
+
+#[test]
+fn a_sibling_binary_keeps_a_signature_only_boundary_reported() {
+    let lib_only = create_cross_target_signature_only_fixture(SiblingBinary::Absent);
+    let lib_only_report = run_mend_json(&lib_only.path().join("Cargo.toml"));
+    assert_codes(&lib_only_report, "src/a/target.rs", &[]);
+
+    let with_binary = create_cross_target_signature_only_fixture(SiblingBinary::Present);
+    let with_binary_report = run_mend_json(&with_binary.path().join("Cargo.toml"));
+    assert_headline_and_help(
+        &with_binary_report,
+        "src/a/target.rs",
+        "no visibility annotation allowed by policy preserves this item's current callers",
+        "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo \
+         mend`",
+    );
+}
+
+#[test]
 fn sibling_binary_accepted_reach_preserves_no_facade_violation() {
     let lib_only = create_cross_target_no_facade_fixture(SiblingBinary::Absent);
     let lib_only_report = run_mend_json(&lib_only.path().join("Cargo.toml"));
@@ -1076,6 +1118,84 @@ edition = "2024"
 enum SiblingBinary {
     Absent,
     Present,
+}
+
+/// Whether a caller writes `Target`'s own path across the `crate::a` boundary.
+/// The two fixtures differ in nothing else: `expose` names `Target` in its
+/// signature either way, so the declared reach stays exactly what the signature
+/// demands.
+#[derive(Clone, Copy)]
+enum NamingCaller {
+    Absent,
+    Present,
+}
+
+fn create_signature_only_boundary_fixture(naming_caller: NamingCaller) -> TempDir {
+    let temp = tempdir().expect("create signature-only boundary fixture dir");
+    let a_source = match naming_caller {
+        NamingCaller::Absent => "mod b;\nfn calls_expose() { let _ = b::expose(); }\n",
+        NamingCaller::Present => "mod b;\nfn names_target() { let _ = b::c::Target; }\n",
+    };
+    write_sources(
+        &temp,
+        &[
+            (
+                "Cargo.toml",
+                r#"[package]
+name = "signature_only_boundary_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+            ),
+            ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
+            ("src/lib.rs", "mod a;\n"),
+            ("src/a.rs", a_source),
+            (
+                "src/a/b.rs",
+                "pub(super) mod c;\npub(super) fn expose() -> c::Target { c::Target }\n",
+            ),
+            ("src/a/b/c.rs", "pub(in crate::a) struct Target;\n"),
+        ],
+    );
+    temp
+}
+
+fn create_cross_target_signature_only_fixture(sibling_binary: SiblingBinary) -> TempDir {
+    let temp = tempdir().expect("create cross-target signature-only fixture dir");
+    write_sources(
+        &temp,
+        &[
+            (
+                "Cargo.toml",
+                r#"[package]
+name = "cross_target_signature_only_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+            ),
+            ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
+            (
+                "src/lib.rs",
+                "mod a {\n    mod b {\n        mod c { include!(\"a/target.rs\"); }\n        \
+                 pub(super) fn expose() -> c::Target { c::Target }\n    }\n    pub(crate) fn run() \
+                 { let _ = b::expose(); }\n}\n",
+            ),
+            ("src/a/target.rs", "pub(in crate::a) struct Target;\n"),
+        ],
+    );
+    if matches!(sibling_binary, SiblingBinary::Present) {
+        write_sources(
+            &temp,
+            &[(
+                "src/bin/probe.rs",
+                "mod a {\n    mod b {\n        mod c { include!(\"../a/target.rs\"); }\n        \
+                 pub(super) use c::Target;\n        pub(super) fn expose() -> c::Target { \
+                 c::Target }\n    }\n    pub(super) fn names_target() { let _ = b::Target; }\n}\nfn \
+                 main() { a::names_target(); }\n",
+            )],
+        );
+    }
+    temp
 }
 
 fn create_cross_target_no_facade_fixture(sibling_binary: SiblingBinary) -> TempDir {

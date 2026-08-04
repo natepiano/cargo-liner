@@ -31,7 +31,7 @@ impl LogicalParentBoundary {
 }
 
 #[derive(Debug, Default)]
-pub struct ModuleSourceMap {
+pub(in crate::compiler) struct ModuleSourceMap {
     modules_by_file:            HashMap<PathBuf, Vec<LocalDefId>>,
     files_by_module:            HashMap<LocalDefId, Vec<PathBuf>>,
     modules_by_path:            HashMap<Vec<String>, LocalDefId>,
@@ -42,7 +42,7 @@ pub struct ModuleSourceMap {
 }
 
 impl ModuleSourceMap {
-    pub fn new(tcx: TyCtxt<'_>, source_cache: &SourceCache) -> Self {
+    pub(in crate::compiler) fn new(tcx: TyCtxt<'_>, source_cache: &SourceCache) -> Self {
         let canonical_by_source_file: HashMap<PathBuf, PathBuf> = source_cache
             .source_files()
             .into_iter()
@@ -103,7 +103,10 @@ impl ModuleSourceMap {
     /// `getattrlist` syscall per path component — in the innermost loop. The
     /// declaration searches in `exposure::detect` sit in the same loop and
     /// canonicalize the same paths, so they share this table.
-    pub fn canonical_source_file<'path>(&'path self, source_file: &'path Path) -> Cow<'path, Path> {
+    pub(in crate::compiler) fn canonical_source_file<'path>(
+        &'path self,
+        source_file: &'path Path,
+    ) -> Cow<'path, Path> {
         self.canonical_by_source_file.get(source_file).map_or_else(
             || {
                 Cow::Owned(
@@ -123,7 +126,11 @@ impl ModuleSourceMap {
     /// built in `new` answers from memory; a file that entered the source map
     /// after that (external crate sources are loaded on demand) falls back to
     /// the syscall.
-    pub fn canonical_span_file(&self, tcx: TyCtxt<'_>, span: Span) -> Option<PathBuf> {
+    pub(in crate::compiler) fn canonical_span_file(
+        &self,
+        tcx: TyCtxt<'_>,
+        span: Span,
+    ) -> Option<PathBuf> {
         let file = tcx.sess.source_map().lookup_char_pos(span.lo()).file;
         let FileName::Real(real) = &file.name else {
             return None;
@@ -144,12 +151,21 @@ impl ModuleSourceMap {
     /// `canonical_file` must already be canonical: `canonical_span_file`
     /// canonicalizes what it returns, so an uncanonical argument never compares
     /// equal.
-    pub fn span_is_in_file(&self, tcx: TyCtxt<'_>, span: Span, canonical_file: &Path) -> bool {
+    pub(in crate::compiler) fn span_is_in_file(
+        &self,
+        tcx: TyCtxt<'_>,
+        span: Span,
+        canonical_file: &Path,
+    ) -> bool {
         self.canonical_span_file(tcx, span)
             .is_some_and(|file| file == canonical_file)
     }
 
-    pub fn root_modules_for_file(&self, tcx: TyCtxt<'_>, source_file: &Path) -> Vec<LocalDefId> {
+    pub(in crate::compiler) fn root_modules_for_file(
+        &self,
+        tcx: TyCtxt<'_>,
+        source_file: &Path,
+    ) -> Vec<LocalDefId> {
         let canonical = self.canonical_source_file(source_file);
         let canonical_source_file: &Path = canonical.as_ref();
         let root_modules = self
@@ -201,11 +217,11 @@ impl ModuleSourceMap {
         CRATE_DEF_ID
     }
 
-    pub fn source_files(&self, module: LocalDefId) -> &[PathBuf] {
+    pub(in crate::compiler) fn source_files(&self, module: LocalDefId) -> &[PathBuf] {
         self.files_by_module.get(&module).map_or(&[], Vec::as_slice)
     }
 
-    pub fn file_contains_module_path(
+    pub(in crate::compiler) fn file_contains_module_path(
         &self,
         tcx: TyCtxt<'_>,
         source_file: &Path,
@@ -274,7 +290,11 @@ pub fn module_path(tcx: TyCtxt<'_>, module: LocalDefId) -> Vec<String> {
         .collect()
 }
 
-pub fn module_is_within(tcx: TyCtxt<'_>, mut candidate: LocalDefId, ancestor: LocalDefId) -> bool {
+pub(in crate::compiler) fn module_is_within(
+    tcx: TyCtxt<'_>,
+    mut candidate: LocalDefId,
+    ancestor: LocalDefId,
+) -> bool {
     loop {
         if candidate == ancestor {
             return true;
