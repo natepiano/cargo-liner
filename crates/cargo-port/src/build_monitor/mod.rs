@@ -33,7 +33,14 @@ mod snapshot;
 
 use std::collections::BTreeSet;
 
+pub(crate) use activity::CompileActivity;
+pub(crate) use activity::CompileActivityId;
+pub(crate) use activity::CompiledCrateIdentity;
+pub(crate) use activity::CompilerAttribution;
+pub(crate) use activity::CompilerKind;
+pub(crate) use activity::UnattributedCompileActivity;
 pub(crate) use build_classifier::BuildClassifier;
+pub(crate) use classify::CargoSubcommandRecognition;
 pub(crate) use execution::BuildClassificationExecutionFailure;
 pub(crate) use execution::CompileClassificationCancellation;
 pub(crate) use execution::CompileClassificationDemand;
@@ -49,11 +56,21 @@ pub(crate) use scope::BuildScopeKey;
 pub(crate) use scope::CoveredScopeRoots;
 pub(crate) use scope::LiveTargetDirectoryRevision;
 pub(crate) use scope::ScopeRootCoverage;
+pub(crate) use session::BuildProfileLabel;
 pub(crate) use session::BuildSessionId;
+pub(crate) use session::CargoCommandSelector;
+pub(crate) use session::CargoSubcommand;
 pub(crate) use session::LiveOwnedRoot;
 pub(crate) use session::OwnedRootEvidence;
 pub(crate) use session::OwnedRootLifecycle;
+pub(crate) use session::SessionScope;
+pub(crate) use session::TargetDirectoryEvidence;
+pub(crate) use snapshot::BuildSessionActivity;
+pub(crate) use snapshot::MonitorDisplay;
+pub(crate) use snapshot::MonitorSessionOwnership;
+pub(crate) use snapshot::MonitorSessionRow;
 pub(crate) use snapshot::MonitorSnapshot;
+pub(crate) use snapshot::MonitorStaleness;
 
 /// The compile monitor's own classification results and their lifetime.
 ///
@@ -69,7 +86,6 @@ pub(crate) struct BuildMonitor {
 
 impl BuildMonitor {
     /// What the monitor currently has to show.
-    #[cfg(test)]
     pub(crate) const fn monitor_snapshot(&self) -> &MonitorSnapshot { &self.monitor_snapshot }
 
     /// The session identities the last stored cycle showed within scope.
@@ -91,4 +107,53 @@ impl BuildMonitor {
         self.monitor_snapshot = MonitorSnapshot::Pending;
         self.live_session_ids.clear();
     }
+}
+
+/// One root Cargo invocation the classification fixture stages, together with
+/// the compilers running under it.
+#[cfg(test)]
+pub(crate) struct ClassifiedRoot {
+    /// The pid the root Cargo process is observed under.
+    pub(crate) root_pid:      u32,
+    /// The pids of the compilers this root spawned, each attributed to this
+    /// root's session and to no other.
+    pub(crate) compiler_pids: &'static [u32],
+}
+
+/// One fresh snapshot holding a session per root in `classified_roots`, built
+/// by running the real classifier over an indexed checkout and storing the
+/// cycle under the scope that covers it.
+///
+/// The renderer's own tests need columns that came from classification rather
+/// than from hand-assembled rows, and [`MonitorData`](snapshot::MonitorData)
+/// owns its rows, so the returned snapshot outlives the fixture's temporary
+/// checkout.
+#[cfg(test)]
+pub(crate) fn classified_monitor_snapshot(
+    classified_roots: &[ClassifiedRoot],
+) -> Result<MonitorSnapshot, Box<dyn std::error::Error>> {
+    let mut classification_fixture = classify_tests::ClassificationFixture::new()?;
+    let mut observed_processes = Vec::new();
+    for classified_root in classified_roots {
+        let cargo_root = classification_fixture
+            .cargo_root_with_pid(classified_root.root_pid, &["cargo", "build"]);
+        for compiler_pid in classified_root.compiler_pids {
+            observed_processes
+                .push(classification_fixture.compiler_under(*compiler_pid, &cargo_root));
+        }
+        observed_processes.push(cargo_root);
+    }
+    let build_classification = classification_fixture.classify(&observed_processes);
+    let canonical_checkout_root = std::fs::canonicalize(&classification_fixture.checkout_root)?;
+
+    let mut build_monitor = BuildMonitor::default();
+    build_monitor.record_classification(execution::CompletedBuildClassification::new(
+        CompileMonitorGeneration::default(),
+        BuildScopeKey::for_test(crate::project::AbsolutePath::from(
+            canonical_checkout_root.as_path(),
+        )),
+        OwnedRootEvidence::NoLiveRoot,
+        Box::new(build_classification),
+    ));
+    Ok(build_monitor.monitor_snapshot().clone())
 }

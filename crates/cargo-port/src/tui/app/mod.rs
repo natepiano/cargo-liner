@@ -143,6 +143,9 @@ use super::keymap;
 use super::overlays::Overlays;
 use super::panes;
 use super::panes::BottomRow;
+use super::panes::OutputCopyAvailability;
+use super::panes::OutputPaneVisibility;
+use super::panes::OutputPresentation;
 use super::panes::PaneBehavior;
 use super::panes::PaneId;
 use super::panes::Panes;
@@ -648,7 +651,7 @@ impl App {
     /// requires `&self` (multi-subsystem queries / a clone of CI
     /// display-mode state), which has to be released before the
     /// `&mut` split here.
-    pub(super) const fn split_for_render<'a>(
+    pub(super) fn split_for_render<'a>(
         &'a mut self,
         selected_project_path: Option<&'a Path>,
         animation_elapsed: Duration,
@@ -665,9 +668,18 @@ impl App {
             inflight,
             scan,
             framework,
+            compile_visibility_state,
+            build_monitor,
             ..
         } = self;
         let running_targets = panes.running_targets.snapshot();
+        let output_presentation = OutputPresentation::derive(
+            compile_visibility_state,
+            build_monitor.monitor_snapshot(),
+            inflight.owned_run().output_state(),
+            inflight.owned_run().running_label(),
+            inflight.owned_run().completion_marker(),
+        );
         let registry = RenderRegistry {
             package: &mut panes.package,
             lang: &mut panes.lang,
@@ -685,12 +697,12 @@ impl App {
             config,
             project_list,
             selected_project_path,
-            inflight,
             scan,
             ci_status_lookup,
             settings_render_inputs: overlay_inputs.settings,
             synced_description_height,
             running_targets,
+            output_presentation,
         };
         RenderBorrows {
             registry,
@@ -703,14 +715,21 @@ impl App {
     /// disjoint borrow of `&self.config` and `&self.project_list`
     /// is sound. Finder sits outside the tiled render loop because
     /// the popup sizes itself off the whole frame area.
-    pub(super) const fn split_finder_for_render(&mut self) -> FinderSplit<'_> {
+    pub(super) fn split_finder_for_render(&mut self) -> FinderSplit<'_> {
+        let output_presentation = OutputPresentation::derive(
+            &self.compile_visibility_state,
+            self.build_monitor.monitor_snapshot(),
+            self.inflight.owned_run().output_state(),
+            self.inflight.owned_run().running_label(),
+            self.inflight.owned_run().completion_marker(),
+        );
         FinderSplit {
-            finder_pane:     &mut self.overlays.finder_pane,
-            config:          &self.config,
-            project_list:    &self.project_list,
-            inflight:        &self.inflight,
-            scan:            &self.scan,
+            finder_pane: &mut self.overlays.finder_pane,
+            config: &self.config,
+            project_list: &self.project_list,
+            scan: &self.scan,
             running_targets: self.panes.running_targets.snapshot(),
+            output_presentation,
         }
     }
 
@@ -1103,12 +1122,41 @@ impl App {
     /// Redirect focus to the visible counterpart so the status bar and
     /// key dispatch match what the user sees.
     pub(super) fn reconcile_bottom_row_focus(&mut self) {
-        let output_active = !self.inflight.owned_run().output_is_empty();
-        match (output_active, self.focused_pane_id()) {
-            (true, PaneId::Lints | PaneId::CiRuns) => self.set_focus_to_pane(PaneId::Output),
-            (false, PaneId::Output) => self.set_focus_to_pane(PaneId::Targets),
+        match (self.output_pane_visibility(), self.focused_pane_id()) {
+            (OutputPaneVisibility::Visible, PaneId::Lints | PaneId::CiRuns) => {
+                self.set_focus_to_pane(PaneId::Output);
+            },
+            (OutputPaneVisibility::Hidden, PaneId::Output) => {
+                self.set_focus_to_pane(PaneId::Targets);
+            },
             _ => {},
         }
+    }
+
+    /// Whether the Output pane occupies the bottom row this frame.
+    ///
+    /// Derived from the same [`OutputPresentation`] the renderer draws, so
+    /// visibility, tabbability, focus, and what is on screen cannot disagree.
+    /// An enabled build monitor keeps the pane visible even with no captured
+    /// output of its own.
+    pub(super) fn output_pane_visibility(&self) -> OutputPaneVisibility {
+        self.output_presentation().pane_visibility()
+    }
+
+    /// Whether a copy gesture has captured output to read.
+    pub(super) fn output_copy_availability(&self) -> OutputCopyAvailability {
+        self.output_presentation().copy_availability()
+    }
+
+    /// What the Output pane shows, from the two inputs the renderer takes.
+    fn output_presentation(&self) -> OutputPresentation<'_> {
+        OutputPresentation::derive(
+            &self.compile_visibility_state,
+            self.build_monitor.monitor_snapshot(),
+            self.inflight.owned_run().output_state(),
+            self.inflight.owned_run().running_label(),
+            self.inflight.owned_run().completion_marker(),
+        )
     }
 
     pub(super) fn base_focus(&self) -> PaneId {
@@ -1184,14 +1232,16 @@ impl App {
                     || self.panes.running_targets.snapshot().has_instances()
             },
             PaneBehavior::Lints => {
-                self.inflight.owned_run().output_is_empty()
+                matches!(self.output_pane_visibility(), OutputPaneVisibility::Hidden)
                     && self.lint.content().is_some_and(panes::LintsData::has_runs)
             },
             PaneBehavior::CiRuns => {
-                self.inflight.owned_run().output_is_empty()
+                matches!(self.output_pane_visibility(), OutputPaneVisibility::Hidden)
                     && self.ci.content().is_some_and(panes::CiData::has_runs)
             },
-            PaneBehavior::Output => !self.inflight.owned_run().output_is_empty(),
+            PaneBehavior::Output => {
+                matches!(self.output_pane_visibility(), OutputPaneVisibility::Visible)
+            },
             PaneBehavior::Toasts => !self.framework.toasts.active_now().is_empty(),
             PaneBehavior::Overlay => false,
         }
@@ -1199,10 +1249,9 @@ impl App {
 
     /// All currently-tabbable panes, in tab order.
     pub(super) fn tabbable_panes(&self) -> Vec<PaneId> {
-        panes::tab_order(if self.inflight.owned_run().output_is_empty() {
-            BottomRow::Diagnostics
-        } else {
-            BottomRow::Output
+        panes::tab_order(match self.output_pane_visibility() {
+            OutputPaneVisibility::Hidden => BottomRow::Diagnostics,
+            OutputPaneVisibility::Visible => BottomRow::Output,
         })
         .into_iter()
         .filter(|pane| self.is_pane_tabbable(*pane))
@@ -4827,7 +4876,7 @@ mod tests {
         }
 
         /// The output pane's inclusive selection range against the live buffer.
-        fn output_range(app: &App) -> Option<(usize, usize)> {
+        fn output_range(app: &App) -> crate::tui::panes::OutputSelectionRange {
             app.panes
                 .output
                 .selected_range(app.inflight.example_output())
@@ -6865,16 +6914,25 @@ mod tests {
             drag(&mut app, x3, y3);
 
             assert!(app.panes.output.selection().is_visual());
-            assert_eq!(output_range(&app), Some((1, 3)));
+            assert_eq!(
+                output_range(&app),
+                crate::tui::panes::OutputSelectionRange::Rows { first: 1, last: 3 }
+            );
 
             // Dragging back up past the anchor flips the range without losing it.
             let (x0, y0) = output_point(&app, 0);
             drag(&mut app, x0, y0);
-            assert_eq!(output_range(&app), Some((0, 1)));
+            assert_eq!(
+                output_range(&app),
+                crate::tui::panes::OutputSelectionRange::Rows { first: 0, last: 1 }
+            );
 
             // Drag down again, then yank the selected lines.
             drag(&mut app, x3, y3);
-            assert_eq!(output_range(&app), Some((1, 3)));
+            assert_eq!(
+                output_range(&app),
+                crate::tui::panes::OutputSelectionRange::Rows { first: 1, last: 3 }
+            );
 
             let mut clipboard = RecordingClipboard::default();
             app.copy_focused_selection_with_backend(&mut clipboard);
@@ -6893,7 +6951,10 @@ mod tests {
             let (x3, y3) = output_point(&app, 3);
             drag(&mut app, x3, y3);
             assert!(app.panes.output.selection().is_visual());
-            assert_eq!(output_range(&app), Some((1, 3)));
+            assert_eq!(
+                output_range(&app),
+                crate::tui::panes::OutputSelectionRange::Rows { first: 1, last: 3 }
+            );
 
             // A fresh click (no drag) collapses the range to just the clicked
             // line and leaves visual mode, so it does not extend from the old
@@ -6901,12 +6962,18 @@ mod tests {
             let (x0, y0) = output_point(&app, 0);
             click(&mut app, x0, y0);
             assert!(!app.panes.output.selection().is_visual());
-            assert_eq!(output_range(&app), Some((0, 0)));
+            assert_eq!(
+                output_range(&app),
+                crate::tui::panes::OutputSelectionRange::Rows { first: 0, last: 0 }
+            );
 
             // Dragging again anchors at the new click, not the stale one.
             let (x2, y2) = output_point(&app, 2);
             drag(&mut app, x2, y2);
-            assert_eq!(output_range(&app), Some((0, 2)));
+            assert_eq!(
+                output_range(&app),
+                crate::tui::panes::OutputSelectionRange::Rows { first: 0, last: 2 }
+            );
         }
 
         #[test]
@@ -6996,7 +7063,10 @@ mod tests {
             press_shift_key(&mut app, KeyCode::Up); // extend up one row, freezing
             press_shift_key(&mut app, KeyCode::Up); // extend up another row
 
-            assert_eq!(output_range(&app), Some((2, 4)));
+            assert_eq!(
+                output_range(&app),
+                crate::tui::panes::OutputSelectionRange::Rows { first: 2, last: 4 }
+            );
 
             // Streaming output after the snapshot must not drift the frozen range.
             app.inflight
@@ -7032,7 +7102,7 @@ mod tests {
 
             assert_eq!(
                 output_range(&app),
-                Some((0, 3)),
+                crate::tui::panes::OutputSelectionRange::Rows { first: 0, last: 3 },
                 "Ctrl-A selects every line",
             );
             assert_eq!(output_count(&app), 4, "the selection spans every line");
@@ -7055,7 +7125,10 @@ mod tests {
             press_key(&mut app, KeyCode::Char('V'));
             press_key(&mut app, KeyCode::Up);
             let _ = buffer_text_sized(&mut app, 120, 40);
-            assert_eq!(output_range(&app), Some((3, 4)));
+            assert_eq!(
+                output_range(&app),
+                crate::tui::panes::OutputSelectionRange::Rows { first: 3, last: 4 }
+            );
 
             // Esc leaves visual mode, collapsing the selection back to the single
             // cursor row where the user was reading — not snapping to the tail.
@@ -7087,7 +7160,7 @@ mod tests {
             press_shift_key(&mut app, KeyCode::Up);
             assert_eq!(
                 output_range(&app),
-                Some((3, 4)),
+                crate::tui::panes::OutputSelectionRange::Rows { first: 3, last: 4 },
                 "the selection spans the anchor row and the row above",
             );
             assert!(
@@ -7097,7 +7170,10 @@ mod tests {
 
             // Shift+Down shrinks it back toward the anchor.
             press_shift_key(&mut app, KeyCode::Down);
-            assert_eq!(output_range(&app), Some((4, 4)));
+            assert_eq!(
+                output_range(&app),
+                crate::tui::panes::OutputSelectionRange::Rows { first: 4, last: 4 }
+            );
         }
 
         #[test]
@@ -7141,7 +7217,10 @@ mod tests {
 
             // Ctrl+Shift+Up extends the selection from here to row 0.
             press_ctrl_shift_key(&mut app, KeyCode::Up);
-            assert_eq!(output_range(&app), Some((0, 2)));
+            assert_eq!(
+                output_range(&app),
+                crate::tui::panes::OutputSelectionRange::Rows { first: 0, last: 2 }
+            );
         }
 
         #[test]
@@ -7156,7 +7235,10 @@ mod tests {
 
             // Ctrl+Shift+Down extends the selection from here to the last row.
             press_ctrl_shift_key(&mut app, KeyCode::Down);
-            assert_eq!(output_range(&app), Some((2, 4)));
+            assert_eq!(
+                output_range(&app),
+                crate::tui::panes::OutputSelectionRange::Rows { first: 2, last: 4 }
+            );
         }
 
         #[test]
@@ -7166,13 +7248,16 @@ mod tests {
             open_output(&mut app, &["alpha", "beta", "gamma", "delta", "epsilon"]);
 
             // The at-rest selection is the tail row; grow it upward with Shift+Up.
-            assert_eq!(output_range(&app), Some((4, 4)));
+            assert_eq!(
+                output_range(&app),
+                crate::tui::panes::OutputSelectionRange::Rows { first: 4, last: 4 }
+            );
 
             press_shift_key(&mut app, KeyCode::Up);
             press_shift_key(&mut app, KeyCode::Up);
             assert_eq!(
                 output_range(&app),
-                Some((2, 4)),
+                crate::tui::panes::OutputSelectionRange::Rows { first: 2, last: 4 },
                 "Shift+Up extends the selection from the anchor",
             );
 
@@ -7180,7 +7265,7 @@ mod tests {
             press_shift_key(&mut app, KeyCode::Down);
             assert_eq!(
                 output_range(&app),
-                Some((3, 4)),
+                crate::tui::panes::OutputSelectionRange::Rows { first: 3, last: 4 },
                 "Shift+Down shrinks the selection",
             );
         }
@@ -15698,12 +15783,18 @@ mod tests {
             config:                    &app.config,
             project_list:              &app.project_list,
             selected_project_path:     app.selected_project_path_for_render(),
-            inflight:                  &app.inflight,
             scan:                      &app.scan,
             ci_status_lookup:          &holder.ci_status_lookup,
             settings_render_inputs:    None,
             synced_description_height: crate::tui::panes::SyncedDescriptionHeight::default(),
             running_targets:           app.panes.running_targets.snapshot(),
+            output_presentation:       crate::tui::panes::OutputPresentation::derive(
+                &app.compile_visibility_state,
+                app.build_monitor.monitor_snapshot(),
+                app.inflight.owned_run().output_state(),
+                app.inflight.owned_run().running_label(),
+                app.inflight.owned_run().completion_marker(),
+            ),
         }
     }
 

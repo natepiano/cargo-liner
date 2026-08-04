@@ -82,6 +82,21 @@ impl MonitorScopeKey {
         }
     }
 
+    /// A key covering one checkout and workspace root, for tests that need an
+    /// actionable resolution without resolving one from a live index.
+    #[cfg(test)]
+    pub(crate) fn for_test(canonical_root: AbsolutePath) -> Self {
+        Self::new(
+            MonitorSelectedRowIdentity::from(VisibleRow::Root { node_index: 0 }),
+            crate::build_monitor::BuildScopeKey::for_test(canonical_root)
+                .covered_scope_roots()
+                .clone(),
+            AcceptedCargoMetadataRevision::default(),
+            ProjectListRevision::default(),
+            LiveTargetDirectoryRevision::from(Vec::new()),
+        )
+    }
+
     /// The covered roots themselves, for the conversion that hands them to
     /// build classification without re-establishing the invariant.
     pub(crate) const fn covered_scope_roots(&self) -> &CoveredScopeRoots {
@@ -151,9 +166,19 @@ impl MonitorScopeResolutionRevision {
         self.project_list_revision
     }
 
+    /// A revision naming only the index readiness a message renders.
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        monitor_workspace_index_readiness: MonitorWorkspaceIndexReadiness,
+    ) -> Self {
+        Self::new(
+            ProjectListRevision::default(),
+            monitor_workspace_index_readiness,
+        )
+    }
+
     /// Which index readiness state produced this resolution, so a non-actionable
     /// scope reports why rather than only that it is unavailable.
-    #[cfg(test)]
     pub(crate) const fn monitor_workspace_index_readiness(&self) -> MonitorWorkspaceIndexReadiness {
         self.monitor_workspace_index_readiness
     }

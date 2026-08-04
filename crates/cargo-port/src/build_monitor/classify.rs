@@ -24,6 +24,7 @@ use super::activity::CompilerKind;
 use super::activity::CompilerSessionCandidates;
 use super::activity::ResolvedCompilerAttribution;
 use super::activity::UnattributedCompileActivity;
+use super::activity::UnattributedScopeEvidence;
 use super::build_classifier::BuildDirectoryLedger;
 use super::build_classifier::DependencyManifestLookup;
 use super::build_classifier::DependencyManifestSnapshot;
@@ -834,6 +835,7 @@ fn attach_compilers(
                     recognized_compiler_process.compiler_kind,
                     compiled_crate_identity,
                     compiler_attribution,
+                    unattributed_scope_evidence(input, recognized_compiler_process),
                 ));
             },
         }
@@ -846,6 +848,27 @@ fn attach_compilers(
         dependency_manifest_lookup_requests,
         dependency_source_roots_in_use,
         observed_build_directories,
+    }
+}
+
+/// The evidence a scope can place an unattributed compiler by. Cargo sets a
+/// spawned compiler's working directory to the workspace root it is building,
+/// so that directory is what `record_classification` tests against the covered
+/// checkout roots; a compiler whose `--out-dir` was relocated by `--target-dir`
+/// is still placed correctly, which an output-directory test would not be.
+fn unattributed_scope_evidence(
+    input: &BuildClassificationInput<'_>,
+    recognized_compiler_process: &RecognizedCompilerProcess,
+) -> UnattributedScopeEvidence {
+    match input
+        .canonical_process_paths
+        .get(&recognized_compiler_process.incarnation)
+        .map(|canonical_process_path_set| &canonical_process_path_set.working_directory)
+    {
+        Some(CanonicalPathResolution::Resolved(working_directory)) => {
+            UnattributedScopeEvidence::WorkingDirectory(working_directory.clone())
+        },
+        Some(CanonicalPathResolution::Unresolved) | None => UnattributedScopeEvidence::Unplaceable,
     }
 }
 

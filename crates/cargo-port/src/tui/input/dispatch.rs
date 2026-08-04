@@ -44,6 +44,7 @@ use crate::tui::keymap::OutputAction;
 use crate::tui::keymap::ProjectListAction;
 use crate::tui::keymap_ui;
 use crate::tui::panes;
+use crate::tui::panes::OutputCopyAvailability;
 use crate::tui::panes::PaneBehavior;
 use crate::tui::panes::PaneId;
 use crate::tui::sccache;
@@ -205,7 +206,11 @@ fn classify_output_cancel_preflight(
         && app.focus_is(PaneId::Output)
         && app.panes.output.selection().is_visual();
     let running_example = code == KeyCode::Esc && app.inflight.owned_run().is_running();
-    let visible_output = is_output_cancel && !app.inflight.owned_run().output_is_empty();
+    let visible_output = is_output_cancel
+        && matches!(
+            app.output_copy_availability(),
+            OutputCopyAvailability::CapturedOutput
+        );
 
     match (output_visual, running_example, visible_output) {
         (true, _, _) => OutputCancelPreflight::ExitVisualSelection,
@@ -621,14 +626,20 @@ fn handle_mouse_event(app: &mut App, kind: MouseEventKind, column: u16, row: u16
 
 /// Extend the output pane's linewise selection to the row under the
 /// pointer while the left button is held. Gated on output focus, so a
-/// drag that began in another pane never reaches here. Off-pane motion
-/// (above/below the body) yields no row and leaves the range as-is.
+/// drag that began in another pane never reaches here, and on the cursor
+/// sitting in captured output, so a drag never extends a selection the
+/// monitor's rows cannot take part in. Motion off the captured-output
+/// rows yields no row and leaves the range as-is.
 fn handle_output_drag(app: &mut App, column: u16, row: u16) {
     if !app.focus_is(PaneId::Output) {
         return;
     }
+    match app.panes.output.visual_selection_permission() {
+        panes::VisualSelectionPermission::Denied => return,
+        panes::VisualSelectionPermission::CapturedOutput => {},
+    }
     let pos = Position::new(column, row);
-    let Some(row) = app.panes.output.viewport.pos_to_local_row(pos) else {
+    let panes::CapturedOutputRow::Row(row) = app.panes.output.captured_output_row_at(pos) else {
         return;
     };
     let live = app.inflight.owned_run().output().to_vec();
@@ -820,9 +831,15 @@ pub fn dispatch_project_list_action(action: ProjectListAction, app: &mut App) {
 
 pub fn dispatch_output_action(action: OutputAction, app: &mut App) {
     match action {
-        OutputAction::SelectAll => {
-            let live = app.inflight.owned_run().output().to_vec();
-            app.panes.output.select_all(&live);
+        // Select-all covers the captured-output buffer, so it only applies
+        // while the cursor is in it; on a monitor row there is nothing of
+        // Cargo Port's own to select.
+        OutputAction::SelectAll => match app.panes.output.visual_selection_permission() {
+            panes::VisualSelectionPermission::Denied => {},
+            panes::VisualSelectionPermission::CapturedOutput => {
+                let live = app.inflight.owned_run().output().to_vec();
+                app.panes.output.select_all(&live);
+            },
         },
         OutputAction::Cancel => {
             if app.inflight.owned_run().is_running() {
@@ -831,7 +848,10 @@ pub fn dispatch_output_action(action: OutputAction, app: &mut App) {
                 {
                     let _ = app.inflight.mark_owned_run_stopping(owned_run_id);
                 }
-            } else if !app.inflight.owned_run().output_is_empty() {
+            } else if matches!(
+                app.output_copy_availability(),
+                OutputCopyAvailability::CapturedOutput
+            ) {
                 app.inflight.clear_owned_run_output();
                 app.set_focus(FocusedPane::App(AppPaneId::Targets));
             }

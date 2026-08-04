@@ -6,9 +6,9 @@
 
 use std::time::Instant;
 
-use super::activity::AttributedSession;
 use super::activity::CompileActivity;
 use super::activity::CompilerKind;
+use super::activity::UnattributedCompileActivity;
 use super::scope::BuildScopeKey;
 use super::session::BuildSession;
 use super::session::BuildSessionId;
@@ -46,25 +46,15 @@ pub(crate) enum BuildSessionActivity {
 }
 
 impl BuildSessionActivity {
-    /// Decide one session's state from the compile activities attributed to it.
+    /// Decide one session's state from the compile activities already
+    /// attributed to it by [`MonitorData::session_row`].
     ///
     /// Compilers outrank the build script and linker children they spawn, so a
     /// session that is compiling reads as compiling even while one crate's
     /// linker is running.
-    fn from_attributed_activities<'a>(
-        build_session_id: &BuildSessionId,
-        compile_activities: impl Iterator<Item = &'a CompileActivity>,
-    ) -> Self {
+    fn from_attributed_activities(compile_activities: &[CompileActivity]) -> Self {
         let mut build_session_activity = Self::ActiveWithoutCompiler;
         for compile_activity in compile_activities {
-            let AttributedSession::Session(attributed_session_id) =
-                compile_activity.compiler_attribution().attributed_session()
-            else {
-                continue;
-            };
-            if attributed_session_id != build_session_id {
-                continue;
-            }
             let observed = match compile_activity.compiler_kind() {
                 CompilerKind::Rustc
                 | CompilerKind::ClippyDriver
@@ -110,16 +100,20 @@ pub(crate) enum MonitorSessionOwnership {
 }
 
 /// One build session as the monitor pane shows it.
+///
+/// The attributed activities travel with the row rather than being looked back
+/// up from the classification: the classification is dropped once the cycle is
+/// recorded, and the pane draws one selectable row per activity.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MonitorSessionRow {
     build_session:          BuildSession,
     build_session_activity: BuildSessionActivity,
+    compile_activities:     Vec<CompileActivity>,
     session_ownership:      MonitorSessionOwnership,
 }
 
 impl MonitorSessionRow {
     /// The immutable session record this row renders.
-    #[cfg(test)]
     pub(crate) const fn build_session(&self) -> &BuildSession { &self.build_session }
 
     /// This session's stable key.
@@ -128,13 +122,15 @@ impl MonitorSessionRow {
     }
 
     /// What this session is doing, as attributed activities name it.
-    #[cfg(test)]
     pub(crate) const fn build_session_activity(&self) -> BuildSessionActivity {
         self.build_session_activity
     }
 
+    /// The activities this cycle attributed to this session, in classification
+    /// order, one selectable pane row each.
+    pub(crate) fn compile_activities(&self) -> &[CompileActivity] { &self.compile_activities }
+
     /// Whether Cargo Port owns the run behind this session.
-    #[cfg(test)]
     pub(crate) const fn session_ownership(&self) -> MonitorSessionOwnership {
         self.session_ownership
     }
@@ -147,9 +143,10 @@ impl MonitorSessionRow {
 /// different sets.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MonitorData {
-    build_scope_key: BuildScopeKey,
-    session_rows:    Vec<MonitorSessionRow>,
-    observed_at:     Instant,
+    build_scope_key:         BuildScopeKey,
+    session_rows:            Vec<MonitorSessionRow>,
+    unattributed_activities: Vec<UnattributedCompileActivity>,
+    observed_at:             Instant,
 }
 
 impl MonitorData {
@@ -158,11 +155,13 @@ impl MonitorData {
     pub(super) const fn new(
         build_scope_key: BuildScopeKey,
         session_rows: Vec<MonitorSessionRow>,
+        unattributed_activities: Vec<UnattributedCompileActivity>,
         observed_at: Instant,
     ) -> Self {
         Self {
             build_scope_key,
             session_rows,
+            unattributed_activities,
             observed_at,
         }
     }
@@ -171,27 +170,33 @@ impl MonitorData {
     pub(crate) const fn build_scope_key(&self) -> &BuildScopeKey { &self.build_scope_key }
 
     /// Sessions in first-seen order, as classification produced them.
-    #[cfg(test)]
     pub(crate) fn session_rows(&self) -> &[MonitorSessionRow] { &self.session_rows }
+
+    /// Ambiguous and unattributed activities this scope covers, drawn once in
+    /// the scope-level section rather than under a session they may not belong
+    /// to. Narrowed by the same filter as [`Self::session_rows`], so the pane
+    /// never re-derives the set.
+    pub(crate) fn unattributed_activities(&self) -> &[UnattributedCompileActivity] {
+        &self.unattributed_activities
+    }
 
     /// When the evidence behind these rows was observed.
     #[cfg(test)]
     pub(crate) const fn observed_at(&self) -> Instant { self.observed_at }
 
-    /// Build one session row from a classified session and the cycle's
-    /// activities.
-    pub(super) fn session_row<'a>(
+    /// Build one session row from a classified session and the activities this
+    /// cycle attributed to it.
+    pub(super) fn session_row(
         build_session: BuildSession,
-        compile_activities: impl Iterator<Item = &'a CompileActivity>,
+        compile_activities: Vec<CompileActivity>,
         session_ownership: MonitorSessionOwnership,
     ) -> MonitorSessionRow {
-        let build_session_activity = BuildSessionActivity::from_attributed_activities(
-            build_session.build_session_id(),
-            compile_activities,
-        );
+        let build_session_activity =
+            BuildSessionActivity::from_attributed_activities(&compile_activities);
         MonitorSessionRow {
             build_session,
             build_session_activity,
+            compile_activities,
             session_ownership,
         }
     }
@@ -207,7 +212,6 @@ pub(crate) struct RetainedMonitorData(MonitorData);
 
 impl RetainedMonitorData {
     /// The prior cycle's rows, still current enough to render and act on.
-    #[cfg(test)]
     pub(crate) const fn monitor_data(&self) -> &MonitorData { &self.0 }
 }
 
@@ -231,6 +235,11 @@ pub(crate) enum MonitorSnapshot {
     /// Data that matched the current generation and then aged past one refresh
     /// interval without a replacement.
     Stale(MonitorData),
+    /// Rows that had already aged to [`Self::Stale`] when the scope moved to a
+    /// new generation over the same roots. They stay on screen with the
+    /// staleness marker and stay non-actionable: a scope replacement is not
+    /// evidence that a failed cycle's data became live again.
+    StaleWithRetained(RetainedMonitorData),
     /// Nothing observable is left to show.
     Unavailable,
 }
@@ -239,7 +248,8 @@ pub(crate) enum MonitorSnapshot {
 ///
 /// Retained data is actionable: the termination path re-resolves a retained
 /// identity against the live process snapshot before it signals, so a session
-/// that ended meanwhile is simply not found.
+/// that ended meanwhile is simply not found. Data that a failed cycle already
+/// aged is not, however it was retained afterwards.
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MonitorDataActionability<'a> {
@@ -259,6 +269,36 @@ pub(crate) enum MonitorObservation {
     NoObservation,
 }
 
+/// Whether the rows the pane draws carry the visible staleness marker.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MonitorStaleness {
+    /// The rows are the monitor's current answer for this scope.
+    Live,
+    /// A cycle failed after these rows were classified; they are shown with the
+    /// staleness marker and cannot authorize a termination.
+    Stale,
+}
+
+/// What the monitor pane draws for the snapshot it holds.
+///
+/// Every [`MonitorSnapshot`] variant maps here, so the pane never has to decide
+/// what an unhandled state should look like. [`Self::AwaitingFirstCycle`] is the
+/// enabled-but-empty message and is distinct from [`Self::SwitchedOff`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MonitorDisplay<'a> {
+    /// Visibility is switched off; the monitor draws nothing at all.
+    SwitchedOff,
+    /// Enabled with no rows for this scope yet.
+    AwaitingFirstCycle,
+    /// Rows to draw, and whether they carry the staleness marker.
+    Rows {
+        monitor_data:      &'a MonitorData,
+        monitor_staleness: MonitorStaleness,
+    },
+    /// Enabled with nothing observable left to show, and no rows to retain.
+    Unavailable,
+}
+
 impl MonitorSnapshot {
     /// The rows a termination may act on.
     #[cfg(test)]
@@ -268,9 +308,36 @@ impl MonitorSnapshot {
             Self::PendingWithRetained(retained_monitor_data) => {
                 MonitorDataActionability::Actionable(retained_monitor_data.monitor_data())
             },
-            Self::Off | Self::Pending | Self::Stale(_) | Self::Unavailable => {
-                MonitorDataActionability::NotActionable
+            Self::Off
+            | Self::Pending
+            | Self::Stale(_)
+            | Self::StaleWithRetained(_)
+            | Self::Unavailable => MonitorDataActionability::NotActionable,
+        }
+    }
+
+    /// What the pane draws for this snapshot.
+    pub(crate) const fn monitor_display(&self) -> MonitorDisplay<'_> {
+        match self {
+            Self::Off => MonitorDisplay::SwitchedOff,
+            Self::Pending => MonitorDisplay::AwaitingFirstCycle,
+            Self::Fresh(monitor_data) => MonitorDisplay::Rows {
+                monitor_data,
+                monitor_staleness: MonitorStaleness::Live,
             },
+            Self::PendingWithRetained(retained_monitor_data) => MonitorDisplay::Rows {
+                monitor_data:      retained_monitor_data.monitor_data(),
+                monitor_staleness: MonitorStaleness::Live,
+            },
+            Self::Stale(monitor_data) => MonitorDisplay::Rows {
+                monitor_data,
+                monitor_staleness: MonitorStaleness::Stale,
+            },
+            Self::StaleWithRetained(retained_monitor_data) => MonitorDisplay::Rows {
+                monitor_data:      retained_monitor_data.monitor_data(),
+                monitor_staleness: MonitorStaleness::Stale,
+            },
+            Self::Unavailable => MonitorDisplay::Unavailable,
         }
     }
 
@@ -281,7 +348,8 @@ impl MonitorSnapshot {
             Self::Fresh(monitor_data) | Self::Stale(monitor_data) => {
                 MonitorObservation::Observed(monitor_data.observed_at())
             },
-            Self::PendingWithRetained(retained_monitor_data) => {
+            Self::PendingWithRetained(retained_monitor_data)
+            | Self::StaleWithRetained(retained_monitor_data) => {
                 MonitorObservation::Observed(retained_monitor_data.monitor_data().observed_at())
             },
             Self::Off | Self::Pending | Self::Unavailable => MonitorObservation::NoObservation,
@@ -296,24 +364,39 @@ impl MonitorSnapshot {
             Self::PendingWithRetained(retained_monitor_data) => {
                 Self::Stale(retained_monitor_data.0)
             },
-            Self::Pending | Self::Stale(_) | Self::Unavailable => Self::Unavailable,
+            Self::Pending | Self::Stale(_) | Self::StaleWithRetained(_) | Self::Unavailable => {
+                Self::Unavailable
+            },
             Self::Off => Self::Off,
         }
     }
 
     /// Keep the prior rows on screen when the new scope covers the same roots,
     /// and show nothing when it does not.
+    ///
+    /// Staleness survives the replacement. Rows a failed cycle already aged stay
+    /// stale and non-actionable, because moving the cursor between two rows of
+    /// one workspace observes nothing about the processes those rows describe.
     pub(super) fn superseded_by_scope(self, build_scope_key: &BuildScopeKey) -> Self {
-        let retained = match self {
-            Self::Fresh(monitor_data) | Self::Stale(monitor_data) => monitor_data,
-            Self::PendingWithRetained(retained_monitor_data) => retained_monitor_data.0,
+        let (retained, monitor_staleness) = match self {
+            Self::Fresh(monitor_data) => (monitor_data, MonitorStaleness::Live),
+            Self::PendingWithRetained(retained_monitor_data) => {
+                (retained_monitor_data.0, MonitorStaleness::Live)
+            },
+            Self::Stale(monitor_data) => (monitor_data, MonitorStaleness::Stale),
+            Self::StaleWithRetained(retained_monitor_data) => {
+                (retained_monitor_data.0, MonitorStaleness::Stale)
+            },
             Self::Off | Self::Pending | Self::Unavailable => return Self::Pending,
         };
-        if retained.build_scope_key().covered_scope_roots() == build_scope_key.covered_scope_roots()
+        if retained.build_scope_key().covered_scope_roots() != build_scope_key.covered_scope_roots()
         {
-            Self::PendingWithRetained(RetainedMonitorData(retained))
-        } else {
-            Self::Pending
+            return Self::Pending;
+        }
+        let retained_monitor_data = RetainedMonitorData(retained);
+        match monitor_staleness {
+            MonitorStaleness::Live => Self::PendingWithRetained(retained_monitor_data),
+            MonitorStaleness::Stale => Self::StaleWithRetained(retained_monitor_data),
         }
     }
 }

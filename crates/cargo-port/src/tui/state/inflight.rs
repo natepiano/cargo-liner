@@ -245,10 +245,35 @@ impl OwnedRun {
         self.lifecycle.output_identity()
     }
 
+    /// The retained output together with the run that produced it.
+    ///
+    /// Output that names no producer carries no lines, so a caller can never
+    /// draw output it cannot attribute. The producer is the retaining run, not
+    /// [`Self::identity`]: run N's output stays labelled N while run N+1 is
+    /// queued or starting.
+    pub(crate) fn output_state(&self) -> OwnedRunOutputStateRef<'_> {
+        debug_assert!(
+            self.lifecycle
+                .output_identity_is_valid(self.output_identity())
+        );
+        match self.lifecycle.output_identity() {
+            OwnedRunOutputIdentityRef::Uncorrelated => OwnedRunOutputStateRef::Absent,
+            OwnedRunOutputIdentityRef::Correlated(producer) => OwnedRunOutputStateRef::Retained {
+                producer: *producer,
+                title:    self.lifecycle.output_title(),
+                lines:    self.lifecycle.output(),
+            },
+        }
+    }
+
     pub(crate) fn output_is_empty(&self) -> bool { self.output().is_empty() }
 
-    pub(crate) fn output_title(&self) -> OwnedRunOutputTitleRef<'_> {
-        self.lifecycle.output_title()
+    /// How the run behind the retained output ended.
+    ///
+    /// The Output pane keeps that output pinned after the run is gone, so the
+    /// marker has to survive the lifecycle it describes.
+    pub(crate) const fn completion_marker(&self) -> OwnedRunCompletionMarker {
+        self.lifecycle.completion_marker()
     }
 
     pub(crate) fn running_label(&self) -> OwnedRunRunningLabelRef<'_> {
@@ -534,11 +559,10 @@ impl OwnedRun {
     fn clear_output(&mut self) {
         match &mut self.lifecycle {
             OwnedRunLifecycle::Queued(queued_owned_run) => {
-                queued_owned_run.retained_output = OwnedRunRetainedOutput::uncorrelated(Vec::new());
+                queued_owned_run.retained_output = OwnedRunRetainedOutput::absent();
             },
             OwnedRunLifecycle::Starting(starting_owned_run) => {
-                starting_owned_run.retained_output =
-                    OwnedRunRetainedOutput::uncorrelated(Vec::new());
+                starting_owned_run.retained_output = OwnedRunRetainedOutput::absent();
             },
             OwnedRunLifecycle::Running(running_owned_run) => {
                 running_owned_run.retained_output = OwnedRunRetainedOutput::correlated_unnamed(
@@ -577,7 +601,14 @@ impl OwnedRun {
     }
 
     #[cfg(test)]
-    const fn output_mut_for_test(&mut self) -> &mut Vec<String> {
+    fn output_mut_for_test(&mut self) -> &mut Vec<String> {
+        // Seeding lines onto a slot that never ran would leave output naming no
+        // producer, which presentation reads as absent. Promote the slot to a
+        // retained run first so the seeded output is attributable.
+        if let OwnedRunLifecycle::Absent(retained_output) = &mut self.lifecycle {
+            let lines = std::mem::take(&mut retained_output.lines);
+            self.set_output_for_test(lines);
+        }
         match &mut self.lifecycle {
             OwnedRunLifecycle::Absent(retained_output) => &mut retained_output.lines,
             OwnedRunLifecycle::Queued(queued_owned_run) => {
@@ -664,7 +695,7 @@ pub(crate) enum OwnedRunLifecycle {
 }
 
 impl OwnedRunLifecycle {
-    const fn absent() -> Self { Self::Absent(OwnedRunRetainedOutput::uncorrelated(Vec::new())) }
+    const fn absent() -> Self { Self::Absent(OwnedRunRetainedOutput::absent()) }
 
     const fn identity(&self) -> OwnedRunIdentityRef<'_> {
         match self {
@@ -765,6 +796,20 @@ impl OwnedRunLifecycle {
                 OwnedRunOutputIdentityRef::Uncorrelated,
             )
             | (Self::Absent(_), OwnedRunOutputIdentityRef::Correlated(_)) => false,
+        }
+    }
+
+    /// Which end state the retained output was captured from, if any.
+    const fn completion_marker(&self) -> OwnedRunCompletionMarker {
+        match self {
+            Self::Absent(_)
+            | Self::Queued(_)
+            | Self::Starting(_)
+            | Self::Running(_)
+            | Self::Stopping(_) => OwnedRunCompletionMarker::NotCompleted,
+            Self::RetainedSuccess(_) => OwnedRunCompletionMarker::Done,
+            Self::GoneAfterSignal(_) => OwnedRunCompletionMarker::Killed,
+            Self::Failed(_) => OwnedRunCompletionMarker::Failed,
         }
     }
 
@@ -918,11 +963,14 @@ impl OwnedRunRetainedOutput {
         }
     }
 
-    const fn uncorrelated(lines: Vec<String>) -> Self {
+    /// Output with no producer to attribute it to. It takes no lines: the
+    /// state that would let uncorrelated output still be drawn is the one this
+    /// constructor exists to make unbuildable.
+    const fn absent() -> Self {
         Self {
             identity: OwnedRunOutputIdentity::Uncorrelated,
-            title: OwnedRunOutputTitle::Unavailable,
-            lines,
+            title:    OwnedRunOutputTitle::Unavailable,
+            lines:    Vec::new(),
         }
     }
 
@@ -987,11 +1035,44 @@ pub(crate) enum OwnedRunOutputIdentityRef<'a> {
     Uncorrelated,
 }
 
+/// The owned run's retained output as presentation reads it.
+///
+/// [`Self::Absent`] is the only state without lines, so visible output always
+/// names the run that produced it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OwnedRunOutputStateRef<'a> {
+    /// No run has produced output that is still retained.
+    Absent,
+    /// This run's output is retained and drawable.
+    Retained {
+        producer: OwnedRunId,
+        title:    OwnedRunOutputTitleRef<'a>,
+        lines:    &'a [String],
+    },
+}
+
 /// Borrowed title availability for retained or live owned output.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OwnedRunOutputTitleRef<'a> {
     Named(&'a str),
     Unavailable,
+}
+
+/// How the run that produced the retained output ended.
+///
+/// The Output pane pins completed output with this marker even after the
+/// monitored scope moves away from the run, so the marker is a property of the
+/// retained output rather than of the current lifecycle slot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OwnedRunCompletionMarker {
+    /// Nothing has completed: the slot is empty or a run is still live.
+    NotCompleted,
+    /// The run finished on its own.
+    Done,
+    /// The run ended after Cargo Port signalled its process group.
+    Killed,
+    /// The launch never produced a running process.
+    Failed,
 }
 
 /// Borrowed live label availability for the current owned-run lifecycle.
@@ -1091,6 +1172,38 @@ pub(crate) struct Inflight {
     owned_run:        OwnedRun,
 }
 
+/// Whether the owned-run fixture reached the state it drives toward.
+#[cfg(test)]
+pub(crate) enum OwnedRunFixture {
+    /// A fresh slot refused the launch, so there is no run to retain output
+    /// from.
+    Unbuilt,
+    /// One finished run's output, retained under the run that wrote it.
+    Built {
+        inflight: Box<Inflight>,
+        producer: OwnedRunId,
+    },
+}
+
+/// One queued run's launch request, for tests that drive the owned-run
+/// lifecycle rather than assemble its result.
+#[cfg(test)]
+fn pending_run_for_test() -> PendingExampleRun {
+    use crate::tui::panes::BuildMode;
+    use crate::tui::panes::CargoPackageInvocation;
+    use crate::tui::panes::RunTargetKind;
+
+    PendingExampleRun {
+        abs_path:                 "/tmp/demo".to_string(),
+        target_name:              "demo".to_string(),
+        display_path:             "demo".to_string(),
+        cargo_package_invocation: CargoPackageInvocation::WorkspaceDefault,
+        run_target_kind:          RunTargetKind::Binary,
+        build_mode:               BuildMode::Debug,
+        required_features:        Vec::new(),
+    }
+}
+
 impl Inflight {
     pub(crate) fn new() -> Self {
         Self {
@@ -1141,6 +1254,45 @@ impl Inflight {
     // ── owned run ───────────────────────────────────────────────────
 
     pub(crate) const fn owned_run(&self) -> &OwnedRun { &self.owned_run }
+
+    /// An `Inflight` driven through one whole owned run — queued, started,
+    /// activated, one line of output, finished — with the next run already
+    /// queued behind it.
+    ///
+    /// This is the state a retained body is drawn in, and only the lifecycle
+    /// can produce it: the retaining run and the current lifecycle identity
+    /// differ here, and a hand-assembled state can put them in combinations
+    /// the lifecycle never reaches.
+    #[cfg(test)]
+    pub(crate) fn with_retained_output_and_next_run_queued(line: &str) -> OwnedRunFixture {
+        let mut inflight = Self::new();
+        let producer = match inflight.queue_owned_run(pending_run_for_test()) {
+            OwnedRunLaunchAdmission::Queued(owned_run_id) => owned_run_id,
+            OwnedRunLaunchAdmission::AlreadyActive
+            | OwnedRunLaunchAdmission::IdentitiesExhausted => return OwnedRunFixture::Unbuilt,
+        };
+        assert_eq!(
+            inflight.begin_owned_run_launch(),
+            OwnedRunLaunchStart::Starting(producer)
+        );
+        assert_eq!(
+            inflight.activate_owned_run(
+                producer,
+                OwnedProcessGroupTerminationCapability::with_test_signal_outcome(
+                    ProcessIdentity::for_test(4242, 7),
+                    OwnedProcessGroupSignalOutcome::Sent,
+                ),
+            ),
+            OwnedRunActivation::Activated
+        );
+        let _ = inflight.record_owned_run_output(producer, line.to_string());
+        let _ = inflight.finish_owned_run(producer);
+        let _ = inflight.queue_owned_run(pending_run_for_test());
+        OwnedRunFixture::Built {
+            inflight: Box::new(inflight),
+            producer,
+        }
+    }
 
     pub(crate) fn queue_owned_run(
         &mut self,
@@ -1252,7 +1404,7 @@ impl Inflight {
     pub(crate) fn example_output(&self) -> &[String] { self.owned_run.output() }
 
     #[cfg(test)]
-    pub(crate) const fn example_output_mut(&mut self) -> &mut Vec<String> {
+    pub(crate) fn example_output_mut(&mut self) -> &mut Vec<String> {
         self.owned_run.output_mut_for_test()
     }
 
@@ -1296,10 +1448,7 @@ mod tests {
     use tui_pane::ToastTaskId;
 
     use super::*;
-    use crate::tui::panes::BuildMode;
-    use crate::tui::panes::CargoPackageInvocation;
     use crate::tui::panes::CiFetchKind;
-    use crate::tui::panes::RunTargetKind;
 
     fn fresh() -> Inflight { Inflight::new() }
 
@@ -1316,7 +1465,7 @@ mod tests {
             OwnedRunId(NonZeroU64::new(u64::MAX - 1).expect("the issued identity is non-zero"));
 
         assert_eq!(
-            owned_run.queue(pending_example_run()),
+            owned_run.queue(pending_run_for_test()),
             OwnedRunLaunchAdmission::IdentitiesExhausted
         );
         assert!(matches!(
@@ -1328,20 +1477,8 @@ mod tests {
 
     fn abs(path: &str) -> AbsolutePath { AbsolutePath::from(PathBuf::from(path)) }
 
-    fn pending_example_run() -> PendingExampleRun {
-        PendingExampleRun {
-            abs_path:                 "/tmp/demo".to_string(),
-            target_name:              "demo".to_string(),
-            display_path:             "demo".to_string(),
-            cargo_package_invocation: CargoPackageInvocation::WorkspaceDefault,
-            run_target_kind:          RunTargetKind::Binary,
-            build_mode:               BuildMode::Debug,
-            required_features:        Vec::new(),
-        }
-    }
-
     fn queue_owned_run(inflight: &mut Inflight) -> OwnedRunId {
-        let owned_run_launch_admission = inflight.queue_owned_run(pending_example_run());
+        let owned_run_launch_admission = inflight.queue_owned_run(pending_run_for_test());
         assert!(matches!(
             owned_run_launch_admission,
             OwnedRunLaunchAdmission::Queued(_)
@@ -1569,7 +1706,7 @@ mod tests {
             OwnedRunLifecycle::Stopping(_)
         ));
         assert_eq!(
-            inflight.queue_owned_run(pending_example_run()),
+            inflight.queue_owned_run(pending_run_for_test()),
             OwnedRunLaunchAdmission::AlreadyActive
         );
     }

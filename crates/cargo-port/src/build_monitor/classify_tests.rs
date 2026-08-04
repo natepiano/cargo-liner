@@ -392,9 +392,31 @@ impl ClassificationFixture {
     }
 
     pub(super) fn cargo_root(&self, arguments: &[&str]) -> ObservedProcess {
-        ObservedProcess::new(101, 1, &arguments.join(" "), "/usr/bin/cargo", arguments)
+        self.cargo_root_with_pid(101, arguments)
+    }
+
+    /// A Cargo root under a caller-chosen pid, so a test can state several live
+    /// roots in one checkout and get one session per root.
+    pub(super) fn cargo_root_with_pid(&self, pid: u32, arguments: &[&str]) -> ObservedProcess {
+        ObservedProcess::new(pid, 1, &arguments.join(" "), "/usr/bin/cargo", arguments)
             .with_cwd(&self.checkout_root)
             .with_candidate_role(ObservedCandidateRole::Cargo)
+    }
+
+    /// One `rustc` under `cargo_root`'s validated parentage, so classification
+    /// attributes it to that root's session and no other.
+    pub(super) fn compiler_under(&self, pid: u32, cargo_root: &ObservedProcess) -> ObservedProcess {
+        let compiled_crate_name = format!("crate{pid}");
+        ObservedProcess::new(
+            pid,
+            1,
+            &format!("rustc {compiled_crate_name}"),
+            "/usr/bin/rustc",
+            &["rustc", "--crate-name", &compiled_crate_name, "src/lib.rs"],
+        )
+        .with_cwd(&self.checkout_root)
+        .with_validated_parent(cargo_root.identity())
+        .with_candidate_role(ObservedCandidateRole::Compiler)
     }
 }
 

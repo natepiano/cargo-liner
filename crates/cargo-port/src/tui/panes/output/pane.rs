@@ -9,25 +9,36 @@ use tui_pane::RenderFocus;
 use tui_pane::Renderable;
 use tui_pane::Viewport;
 
+use super::hit_map::MonitorHitMap;
+use super::hit_map::OutputMonitorHit;
+use super::presentation::OutputPresentation;
+use super::selection::OutputCursor;
 use super::selection::OutputSelection;
+use super::selection::OutputSelectionRange;
 use super::selection::SelectionMode;
+use super::selection::VisualSelectionPermission;
+use super::selection::VisualSelectionSource;
 use crate::tui::hit_test::HoverTarget;
 use crate::tui::panes;
 use crate::tui::panes::PaneId;
 use crate::tui::render_context::PaneRenderCtx;
 
 pub struct OutputPane {
-    pub viewport: Viewport,
-    pub focus:    RenderFocus,
-    selection:    OutputSelection,
+    pub viewport:    Viewport,
+    pub focus:       RenderFocus,
+    selection:       OutputSelection,
+    cursor:          OutputCursor,
+    monitor_hit_map: MonitorHitMap,
 }
 
 impl OutputPane {
     pub const fn new() -> Self {
         Self {
-            viewport:  Viewport::new(),
-            focus:     RenderFocus::inactive(),
-            selection: OutputSelection::new(),
+            viewport:        Viewport::new(),
+            focus:           RenderFocus::inactive(),
+            selection:       OutputSelection::new(),
+            cursor:          OutputCursor::empty(),
+            monitor_hit_map: MonitorHitMap::new(),
         }
     }
 
@@ -49,18 +60,105 @@ impl OutputPane {
         self.viewport.end();
     }
 
-    /// The source the selection reads from: the frozen snapshot once
+    /// The source the selection reads from: the frozen buffer once
     /// pinned, otherwise the live buffer it is following.
     fn source<'a>(&'a self, live: &'a [String]) -> &'a [String] {
-        self.selection.snapshot.as_deref().unwrap_or(live)
+        self.selection.visual_selection_source.lines(live)
     }
 
-    /// Freeze the live buffer into the snapshot if it is not already
-    /// frozen — called whenever the selection stops following the tail.
+    /// Freeze the live buffer if the selection is not already pinned —
+    /// called whenever the selection stops following the tail.
     fn freeze(&mut self, live: &[String]) {
-        if self.selection.snapshot.is_none() {
-            self.selection.snapshot = Some(Rc::from(live.to_vec()));
+        if matches!(
+            self.selection.visual_selection_source,
+            VisualSelectionSource::LiveOutput
+        ) {
+            self.selection.visual_selection_source =
+                VisualSelectionSource::Frozen(Rc::from(live.to_vec()));
         }
+    }
+
+    /// Resume reading the live buffer, which the collapsed selection does
+    /// whenever it lands back on the streaming tail.
+    fn follow_live(&mut self) {
+        self.selection.visual_selection_source = VisualSelectionSource::LiveOutput;
+    }
+
+    /// Where the cursor is and what it falls back to.
+    pub(super) const fn cursor(&self) -> &OutputCursor { &self.cursor }
+
+    /// Whether the row the cursor names can take part in a visual selection.
+    /// Only Cargo Port's own captured output can: the monitor's rows describe
+    /// host processes and hold no text the pane owns.
+    pub const fn visual_selection_permission(&self) -> VisualSelectionPermission {
+        self.cursor.target().visual_selection_permission()
+    }
+
+    /// Take the rows this frame drew, so a click can only ever name something
+    /// that was on screen.
+    pub(super) fn set_monitor_hit_map(&mut self, monitor_hit_map: MonitorHitMap) {
+        self.monitor_hit_map = monitor_hit_map;
+    }
+
+    /// Forget the recorded rows, for a frame that did not draw the pane at all.
+    /// Without this the last drawn frame's rows keep answering clicks while the
+    /// pane is hidden.
+    pub fn clear_monitor_hit_map(&mut self) { self.monitor_hit_map.clear(); }
+
+    /// The captured-output row under `pos`, or [`CapturedOutputRow::Outside`]
+    /// when the position is over monitor chrome rather than Cargo Port's own
+    /// output. With the monitor on only the owned column's recorded rows
+    /// answer; with it off there are no recorded rows and the viewport
+    /// resolves the row across the whole pane.
+    pub fn captured_output_row_at(&self, pos: Position) -> CapturedOutputRow {
+        if !self.monitor_hit_map.is_empty() {
+            return match self.monitor_hit_map.hit_at(pos) {
+                Some(&OutputMonitorHit::CapturedOutput { row, .. }) => CapturedOutputRow::Row(row),
+                Some(_) | None => CapturedOutputRow::Outside,
+            };
+        }
+        self.viewport
+            .pos_to_local_row(pos)
+            .map_or(CapturedOutputRow::Outside, CapturedOutputRow::Row)
+    }
+
+    /// Move the cursor onto the row a click landed on.
+    pub fn focus_hit(&mut self, output_monitor_hit: &OutputMonitorHit) {
+        match output_monitor_hit {
+            OutputMonitorHit::Header {
+                build_session_id,
+                column_index,
+            } => self
+                .cursor
+                .focus_header(build_session_id.clone(), *column_index),
+            OutputMonitorHit::Activity {
+                compile_activity_id,
+                build_session_id,
+                column_index,
+                row_index,
+            } => self.cursor.focus_activity(
+                compile_activity_id.clone(),
+                build_session_id.clone(),
+                *column_index,
+                *row_index,
+            ),
+            OutputMonitorHit::Unattributed {
+                compile_activity_id,
+                row_index,
+            } => self
+                .cursor
+                .focus_unattributed(compile_activity_id.clone(), *row_index),
+            OutputMonitorHit::CapturedOutput { producer, row } => {
+                self.cursor.focus_captured_output(*producer);
+                self.viewport.set_pos(*row);
+            },
+            OutputMonitorHit::EmptyMonitor => {},
+        }
+    }
+
+    /// Move the cursor to whatever survived this frame's model.
+    pub fn reconcile_cursor(&mut self, output_presentation: &OutputPresentation<'_>) {
+        self.cursor.reconcile(output_presentation);
     }
 
     /// Enter visual mode from the cursor: anchor the fixed end at the
@@ -113,7 +211,7 @@ impl OutputPane {
             SelectionMode::Visual => self.freeze(live),
             SelectionMode::Normal => {
                 if self.viewport.pos() >= self.viewport.len().saturating_sub(1) {
-                    self.selection.snapshot = None;
+                    self.follow_live();
                 } else {
                     self.freeze(live);
                 }
@@ -161,7 +259,7 @@ impl OutputPane {
         self.viewport.set_pos(row);
         self.selection.anchor = row;
         if self.viewport.pos() >= self.viewport.len().saturating_sub(1) {
-            self.selection.snapshot = None;
+            self.follow_live();
         } else {
             self.freeze(live);
         }
@@ -188,33 +286,39 @@ impl OutputPane {
     /// Number of lines the selection spans against `live` (the frozen
     /// snapshot when pinned). At rest this is `1` — the cursor row.
     pub fn selection_line_count(&self, live: &[String]) -> usize {
-        self.selected_range(live).map_or(0, |(lo, hi)| hi - lo + 1)
+        self.selected_range(live).line_count()
     }
 
-    /// Inclusive `[lo, hi]` row range of the selection, clamped to the
-    /// source bounds (the frozen snapshot when pinned, else `live`).
-    /// Outside visual mode the range is the single cursor row; the
-    /// `anchor` is read only in visual mode. `None` only when the buffer
-    /// is empty.
-    pub fn selected_range(&self, live: &[String]) -> Option<(usize, usize)> {
-        let last = self.source(live).len().checked_sub(1)?;
+    /// The rows the selection covers, clamped to the source bounds (the frozen
+    /// buffer when pinned, else `live`). Outside visual mode the range is the
+    /// single cursor row; the `anchor` is read only in visual mode.
+    pub fn selected_range(&self, live: &[String]) -> OutputSelectionRange {
+        let Some(last) = self.source(live).len().checked_sub(1) else {
+            return OutputSelectionRange::Empty;
+        };
         let cursor = self.viewport.pos().min(last);
         match self.selection.selection_mode {
             SelectionMode::Visual => {
                 let anchor = self.selection.anchor.min(last);
-                Some((anchor.min(cursor), anchor.max(cursor)))
+                OutputSelectionRange::Rows {
+                    first: anchor.min(cursor),
+                    last:  anchor.max(cursor),
+                }
             },
-            SelectionMode::Normal => Some((cursor, cursor)),
+            SelectionMode::Normal => OutputSelectionRange::Rows {
+                first: cursor,
+                last:  cursor,
+            },
         }
     }
 
     /// Build the clipboard payload for the current selection, reading the
     /// frozen snapshot when pinned or `live` while following the tail.
     pub fn copy_payload(&self, live: &[String]) -> CopySelectionResult {
-        let Some((lo, hi)) = self.selected_range(live) else {
+        let OutputSelectionRange::Rows { first, last } = self.selected_range(live) else {
             return CopySelectionResult::Nothing;
         };
-        panes::copy_payload_for_output(self.source(live), lo, hi)
+        panes::copy_payload_for_output(self.source(live), first, last)
     }
 
     /// Resume following the tail when a process exits, unless the user is
@@ -223,7 +327,7 @@ impl OutputPane {
     /// new tail so the final output shows.
     pub fn on_process_exit(&mut self) {
         if matches!(self.selection.selection_mode, SelectionMode::Normal) {
-            self.selection.snapshot = None;
+            self.follow_live();
             self.viewport.end();
         }
     }
@@ -275,6 +379,18 @@ const fn scroll_to_show_cursor(
     }
 }
 
+/// What a screen position names in Cargo Port's own captured output. Anything
+/// the monitor drew — headers, activity rows, the unattributed section — is
+/// [`Outside`](Self::Outside), so a drag over monitor chrome cannot select
+/// captured-output rows it never covered.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CapturedOutputRow {
+    /// The position is not over a captured-output row.
+    Outside,
+    /// The buffer index of the captured-output row under the position.
+    Row(usize),
+}
+
 impl Renderable<PaneRenderCtx<'_>> for OutputPane {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
         super::render_output_pane_body(frame, area, self, ctx);
@@ -283,6 +399,15 @@ impl Renderable<PaneRenderCtx<'_>> for OutputPane {
 
 impl Hittable<HoverTarget> for OutputPane {
     fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
+        // With the monitor on, every drawn row names the model row behind it;
+        // with it off there are no recorded rows and the pane falls back to the
+        // captured-output row the viewport resolves.
+        if let Some(output_monitor_hit) = self.monitor_hit_map.hit_at(pos) {
+            return Some(HoverTarget::OutputMonitorRow(output_monitor_hit.clone()));
+        }
+        if !self.monitor_hit_map.is_empty() {
+            return None;
+        }
         let row = self.viewport.pos_to_local_row(pos)?;
         Some(HoverTarget::PaneRow {
             pane: PaneId::Output,

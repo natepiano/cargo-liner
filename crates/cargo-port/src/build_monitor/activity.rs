@@ -8,6 +8,7 @@ use super::classify::BuildClassificationCycle;
 use super::classify::RecognizedCompilerProcess;
 use super::session::BuildSessionId;
 use crate::process_observation::identity::ProcessIncarnation;
+use crate::project::AbsolutePath;
 
 /// Stable identity of one compile activity row.
 ///
@@ -19,6 +20,11 @@ use crate::process_observation::identity::ProcessIncarnation;
 pub(crate) struct CompileActivityId(ProcessIncarnation);
 
 impl CompileActivityId {
+    /// Key an activity directly from an incarnation, for tests that need an
+    /// activity key without a full classification cycle.
+    #[cfg(test)]
+    pub(crate) const fn for_test(incarnation: ProcessIncarnation) -> Self { Self(incarnation) }
+
     /// Key an activity from the validated compiler process that produced it.
     pub(crate) fn from_recognized_compiler(
         recognized_compiler_process: &RecognizedCompilerProcess,
@@ -183,7 +189,6 @@ pub(crate) struct CompiledCrateName(String);
 
 impl CompiledCrateName {
     /// The crate name as the compiler reported it.
-    #[cfg(test)]
     pub(crate) fn as_str(&self) -> &str { &self.0 }
 }
 
@@ -206,11 +211,9 @@ impl ManifestPackageIdentity {
     pub(crate) const fn new(name: String, version: String) -> Self { Self { name, version } }
 
     /// The package name declared in the manifest.
-    #[cfg(test)]
     pub(crate) fn name(&self) -> &str { &self.name }
 
     /// The package version declared in the manifest.
-    #[cfg(test)]
     pub(crate) fn version(&self) -> &str { &self.version }
 }
 
@@ -268,7 +271,6 @@ impl CompileActivity {
     }
 
     /// What this activity is compiling.
-    #[cfg(test)]
     pub(crate) const fn compiled_crate_identity(&self) -> &CompiledCrateIdentity {
         &self.compiled_crate_identity
     }
@@ -290,6 +292,21 @@ pub(crate) enum CompilationTarget {
     Host,
 }
 
+/// The only evidence that can place an unattributed compile activity in a
+/// scope, since attribution named no session to place it by.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum UnattributedScopeEvidence {
+    /// Cargo sets a compiler it spawns to work in the workspace root it is
+    /// building, so a scope whose covered checkout roots contain this directory
+    /// is the scope that has to explain the activity.
+    WorkingDirectory(AbsolutePath),
+    /// The working directory did not canonicalize, so no scope can claim or
+    /// disclaim the activity. Every scope keeps it visible: the section exists
+    /// to surface compilers the system could not place, and dropping one
+    /// because its path was unreadable hides exactly that.
+    Unplaceable,
+}
+
 /// One compile activity the classifier could not attribute, rendered once in
 /// the scope-level attribution-unavailable section rather than under a session
 /// it might not belong to.
@@ -299,6 +316,7 @@ pub(crate) struct UnattributedCompileActivity {
     compiler_kind:           CompilerKind,
     compiled_crate_identity: CompiledCrateIdentity,
     compiler_attribution:    CompilerAttribution,
+    scope_evidence:          UnattributedScopeEvidence,
 }
 
 impl UnattributedCompileActivity {
@@ -308,12 +326,14 @@ impl UnattributedCompileActivity {
         compiler_kind: CompilerKind,
         compiled_crate_identity: CompiledCrateIdentity,
         compiler_attribution: CompilerAttribution,
+        scope_evidence: UnattributedScopeEvidence,
     ) -> Self {
         Self {
             activity_id: compile_activity_id,
             compiler_kind,
             compiled_crate_identity,
             compiler_attribution,
+            scope_evidence,
         }
     }
 
@@ -321,18 +341,19 @@ impl UnattributedCompileActivity {
     pub(crate) const fn compile_activity_id(&self) -> &CompileActivityId { &self.activity_id }
 
     /// Which compiler executable this activity runs.
-    #[cfg(test)]
     pub(crate) const fn compiler_kind(&self) -> CompilerKind { self.compiler_kind }
 
     /// What this activity is compiling, as far as argv reveals.
-    #[cfg(test)]
     pub(crate) const fn compiled_crate_identity(&self) -> &CompiledCrateIdentity {
         &self.compiled_crate_identity
     }
 
     /// The ambiguous or unattributed evidence, including candidate sessions.
-    #[cfg(test)]
     pub(crate) const fn compiler_attribution(&self) -> &CompilerAttribution {
         &self.compiler_attribution
     }
+
+    /// Where this activity was observed working, which is what the scope filter
+    /// narrows an otherwise sessionless activity by.
+    pub(crate) const fn scope_evidence(&self) -> &UnattributedScopeEvidence { &self.scope_evidence }
 }

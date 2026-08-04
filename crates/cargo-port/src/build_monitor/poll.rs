@@ -7,11 +7,19 @@
 //! classifiable; the narrowing happens here so the set the pane renders and the
 //! set a scope-wide termination acts on are one value.
 
+use std::collections::BTreeSet;
+
 use super::BuildMonitor;
+use super::activity::AttributedSession;
+use super::activity::CompileActivity;
+use super::activity::CompilerAttribution;
+use super::activity::UnattributedCompileActivity;
+use super::activity::UnattributedScopeEvidence;
 use super::classify::BuildClassification;
 use super::execution::CompletedBuildClassification;
 use super::scope::BuildScopeActionability;
 use super::scope::BuildScopeKey;
+use super::session::BuildSessionId;
 use super::session::LiveOwnedRoot;
 use super::session::OwnedRootEvidence;
 use super::session::ScopeAttribution;
@@ -20,6 +28,7 @@ use super::snapshot::MonitorData;
 use super::snapshot::MonitorSessionOwnership;
 use super::snapshot::MonitorSessionRow;
 use super::snapshot::MonitorSnapshot;
+use crate::project::CanonicalCheckoutRoot;
 
 impl BuildMonitor {
     /// Store one completed classification as the latest presentation snapshot.
@@ -36,18 +45,14 @@ impl BuildMonitor {
     ) {
         let (build_scope_key, owned_root_evidence, build_classification) =
             completed_build_classification.into_scoped_classification();
-        let observed_at = build_classification.cycle_instant();
-        let session_rows = scoped_session_rows(
-            &build_scope_key,
-            &build_classification,
-            &owned_root_evidence,
-        );
-        self.live_session_ids = session_rows
+        let monitor_data =
+            scoped_monitor_data(build_scope_key, &build_classification, &owned_root_evidence);
+        self.live_session_ids = monitor_data
+            .session_rows()
             .iter()
             .map(|monitor_session_row| monitor_session_row.build_session_id().clone())
             .collect();
-        self.monitor_snapshot =
-            MonitorSnapshot::Fresh(MonitorData::new(build_scope_key, session_rows, observed_at));
+        self.monitor_snapshot = MonitorSnapshot::Fresh(monitor_data);
     }
 
     /// Age what is shown by one step because a cycle produced no
@@ -88,17 +93,24 @@ impl BuildMonitor {
 }
 
 /// Keep the sessions this scope covers, plus the Cargo Port-owned session
-/// wherever it is building.
+/// wherever it is building, together with each surviving session's attributed
+/// activities and the unattributed activities this scope still explains.
+///
+/// This is the one narrowing site. The unattributed set is filtered here from
+/// the same surviving-session identities the rows were built from, so the pane
+/// never re-derives it: an ambiguous activity survives when at least one of its
+/// candidate sessions did, and an activity that named no candidate at all
+/// survives because nothing observed places it anywhere else.
 ///
 /// Scope containment is one-sided: a session carries a canonical checkout root
 /// and nothing else, so this is not the two-sided root comparison that decides
 /// scope-key equality.
-fn scoped_session_rows(
-    build_scope_key: &BuildScopeKey,
+fn scoped_monitor_data(
+    build_scope_key: BuildScopeKey,
     build_classification: &BuildClassification,
     owned_root_evidence: &OwnedRootEvidence,
-) -> Vec<MonitorSessionRow> {
-    build_classification
+) -> MonitorData {
+    let session_rows: Vec<MonitorSessionRow> = build_classification
         .build_sessions()
         .iter()
         .filter_map(|build_session| {
@@ -110,13 +122,103 @@ fn scoped_session_rows(
             if !within_scope && session_ownership == MonitorSessionOwnership::External {
                 return None;
             }
+            let compile_activities = attributed_activities(
+                build_session.build_session_id(),
+                build_classification.compile_activities(),
+            );
             Some(MonitorData::session_row(
                 build_session.clone(),
-                build_classification.compile_activities().iter(),
+                compile_activities,
                 session_ownership,
             ))
         })
+        .collect();
+    let scoped_session_ids: BTreeSet<&BuildSessionId> = session_rows
+        .iter()
+        .map(MonitorSessionRow::build_session_id)
+        .collect();
+    let unattributed_activities = build_classification
+        .unattributed_compile_activities()
+        .iter()
+        .filter(|unattributed_compile_activity| {
+            scope_explains_unattributed(
+                unattributed_compile_activity,
+                &build_scope_key,
+                &scoped_session_ids,
+            )
+        })
+        .cloned()
+        .collect();
+    MonitorData::new(
+        build_scope_key,
+        session_rows,
+        unattributed_activities,
+        build_classification.cycle_instant(),
+    )
+}
+
+/// The activities this cycle resolved to one session, in classification order.
+fn attributed_activities(
+    build_session_id: &BuildSessionId,
+    compile_activities: &[CompileActivity],
+) -> Vec<CompileActivity> {
+    compile_activities
+        .iter()
+        .filter(|compile_activity| {
+            matches!(
+                compile_activity.compiler_attribution().attributed_session(),
+                AttributedSession::Session(attributed_session_id)
+                    if attributed_session_id == build_session_id
+            )
+        })
+        .cloned()
         .collect()
+}
+
+/// Whether the narrowed scope still has to explain one unattributed activity.
+///
+/// An ambiguous activity is placed by its candidate sessions, which is the
+/// stronger evidence. One that named no candidate at all is placed by where it
+/// was observed working, and stays visible when that directory could not be
+/// read at all.
+fn scope_explains_unattributed(
+    unattributed_compile_activity: &UnattributedCompileActivity,
+    build_scope_key: &BuildScopeKey,
+    scoped_session_ids: &BTreeSet<&BuildSessionId>,
+) -> bool {
+    match unattributed_compile_activity.compiler_attribution() {
+        CompilerAttribution::Ambiguous { candidates } => candidates
+            .candidates()
+            .iter()
+            .any(|build_session_id| scoped_session_ids.contains(build_session_id)),
+        CompilerAttribution::Unattributed => scope_covers_working_directory(
+            unattributed_compile_activity.scope_evidence(),
+            build_scope_key.canonical_checkout_roots(),
+        ),
+        CompilerAttribution::Confirmed(_) | CompilerAttribution::UniqueOutputMatch(_) => false,
+    }
+}
+
+/// Whether one covered checkout root contains the directory an unattributed
+/// compiler was working in.
+///
+/// Containment, not equality: Cargo runs a compiler in the workspace root it is
+/// building, which for a nested workspace sits under the checkout root the
+/// scope names rather than at it.
+fn scope_covers_working_directory(
+    unattributed_scope_evidence: &UnattributedScopeEvidence,
+    canonical_checkout_roots: &[CanonicalCheckoutRoot],
+) -> bool {
+    match unattributed_scope_evidence {
+        UnattributedScopeEvidence::WorkingDirectory(working_directory) => canonical_checkout_roots
+            .iter()
+            .any(|canonical_checkout_root| {
+                working_directory
+                    .as_path()
+                    .starts_with(canonical_checkout_root.path().as_path())
+            }),
+        UnattributedScopeEvidence::Unplaceable => true,
+    }
 }
 
 /// Associate the one Cargo Port-owned run with the one session classification

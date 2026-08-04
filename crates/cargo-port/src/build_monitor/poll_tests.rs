@@ -5,6 +5,8 @@ use std::num::NonZeroU64;
 use std::time::Instant;
 
 use super::BuildMonitor;
+use super::activity::CompileActivityId;
+use super::activity::UnattributedScopeEvidence;
 use super::classify::BuildClassification;
 use super::classify_tests::ClassificationFixture;
 use super::execution::CompileMonitorGeneration;
@@ -16,9 +18,13 @@ use super::session::OwnedRootEvidence;
 use super::session::OwnedRootLifecycle;
 use super::snapshot::BuildSessionActivity;
 use super::snapshot::MonitorDataActionability;
+use super::snapshot::MonitorDisplay;
 use super::snapshot::MonitorObservation;
 use super::snapshot::MonitorSessionOwnership;
 use super::snapshot::MonitorSnapshot;
+use super::snapshot::MonitorStaleness;
+use crate::process_observation::snapshot_builder::ObservedCandidateRole;
+use crate::process_observation::snapshot_builder::ObservedProcess;
 use crate::process_observation::snapshot_builder::snapshot_of;
 use crate::project::AbsolutePath;
 use crate::tui::OwnedRunId;
@@ -275,5 +281,248 @@ fn clearing_the_monitor_drops_what_it_was_showing() -> Result<(), Box<dyn std::e
 
     assert_eq!(*build_monitor.monitor_snapshot(), MonitorSnapshot::Off);
     assert!(build_monitor.live_session_ids().is_empty());
+    Ok(())
+}
+
+/// The staleness marker survives a scope replacement over the same roots: rows
+/// a failed cycle already aged stay stale and stay unable to authorize a
+/// termination, because moving the cursor between two rows of one workspace
+/// observes nothing about the processes those rows describe.
+#[test]
+fn staleness_survives_a_scope_replacement_over_the_same_roots()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut fixture = ClassificationFixture::new()?;
+    let cargo_root = fixture.cargo_root(&["cargo", "build"]);
+    let build_classification = fixture.classify(std::slice::from_ref(&cargo_root));
+    let canonical_checkout_root = std::fs::canonicalize(&fixture.checkout_root)?;
+    let mut build_monitor = BuildMonitor::default();
+    build_monitor.record_classification(completed(
+        scope_key_for(&canonical_checkout_root),
+        OwnedRootEvidence::NoLiveRoot,
+        build_classification,
+    ));
+    build_monitor.record_classification_failure();
+
+    build_monitor.replace_scope(&BuildScopeActionability::Actionable(scope_key_for(
+        &canonical_checkout_root,
+    )));
+
+    assert!(matches!(
+        build_monitor.monitor_snapshot(),
+        MonitorSnapshot::StaleWithRetained(_)
+    ));
+    assert!(matches!(
+        build_monitor.monitor_snapshot().actionability(),
+        MonitorDataActionability::NotActionable
+    ));
+    assert_eq!(
+        drawn_staleness(build_monitor.monitor_snapshot()),
+        MonitorStaleness::Stale
+    );
+    Ok(())
+}
+
+/// Every snapshot the monitor can hold names what the pane draws, so the pane
+/// never has to decide what an unhandled state should look like.
+#[test]
+fn every_snapshot_variant_names_what_the_pane_draws() -> Result<(), Box<dyn std::error::Error>> {
+    let mut fixture = ClassificationFixture::new()?;
+    let cargo_root = fixture.cargo_root(&["cargo", "build"]);
+    let build_classification = fixture.classify(std::slice::from_ref(&cargo_root));
+    let canonical_checkout_root = std::fs::canonicalize(&fixture.checkout_root)?;
+    let mut build_monitor = BuildMonitor::default();
+
+    assert!(matches!(
+        MonitorSnapshot::Off.monitor_display(),
+        MonitorDisplay::SwitchedOff
+    ));
+    assert!(matches!(
+        MonitorSnapshot::Pending.monitor_display(),
+        MonitorDisplay::AwaitingFirstCycle
+    ));
+    assert!(matches!(
+        build_monitor.monitor_snapshot().monitor_display(),
+        MonitorDisplay::SwitchedOff
+    ));
+
+    build_monitor.record_classification(completed(
+        scope_key_for(&canonical_checkout_root),
+        OwnedRootEvidence::NoLiveRoot,
+        build_classification,
+    ));
+    assert_eq!(
+        drawn_staleness(build_monitor.monitor_snapshot()),
+        MonitorStaleness::Live
+    );
+
+    build_monitor.replace_scope(&BuildScopeActionability::Actionable(scope_key_for(
+        &canonical_checkout_root,
+    )));
+    assert_eq!(
+        drawn_staleness(build_monitor.monitor_snapshot()),
+        MonitorStaleness::Live
+    );
+
+    build_monitor.record_classification_failure();
+    assert_eq!(
+        drawn_staleness(build_monitor.monitor_snapshot()),
+        MonitorStaleness::Stale
+    );
+
+    build_monitor.replace_scope(&BuildScopeActionability::Actionable(scope_key_for(
+        &canonical_checkout_root,
+    )));
+    assert_eq!(
+        drawn_staleness(build_monitor.monitor_snapshot()),
+        MonitorStaleness::Stale
+    );
+
+    build_monitor.record_classification_failure();
+    assert!(matches!(
+        build_monitor.monitor_snapshot().monitor_display(),
+        MonitorDisplay::Unavailable
+    ));
+    Ok(())
+}
+
+/// The staleness marker the pane draws for a snapshot that has rows.
+fn drawn_staleness(monitor_snapshot: &MonitorSnapshot) -> MonitorStaleness {
+    let MonitorDisplay::Rows {
+        monitor_staleness, ..
+    } = monitor_snapshot.monitor_display()
+    else {
+        panic!("this snapshot has rows to draw");
+    };
+    monitor_staleness
+}
+
+/// The scope-level section holds the activities no session claims, and only
+/// those: a compiler the classifier confirmed under a session renders as that
+/// session's row instead.
+///
+/// A compiler no session claims is narrowed here by the directory it was
+/// observed working in, so a scope covering other checkouts does not inherit
+/// another checkout's orphan.
+#[test]
+fn the_unattributed_section_holds_only_what_no_session_claims()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut fixture = ClassificationFixture::new()?;
+    let cargo_root = fixture.cargo_root(&["cargo", "build"]);
+    let confirmed_compiler = ObservedProcess::new(
+        202,
+        2,
+        "rustc lib",
+        "/usr/bin/rustc",
+        &["rustc", "--crate-name", "demo", "src/lib.rs"],
+    )
+    .with_cwd(&fixture.checkout_root)
+    .with_validated_parent(cargo_root.identity())
+    .with_candidate_role(ObservedCandidateRole::Compiler);
+    // No validated parent, so nothing attributes it to the open session.
+    let orphan_compiler = ObservedProcess::new(
+        303,
+        3,
+        "rustc orphan",
+        "/usr/bin/rustc",
+        &["rustc", "--crate-name", "orphan", "src/lib.rs"],
+    )
+    .with_cwd(&fixture.checkout_root)
+    .with_candidate_role(ObservedCandidateRole::Compiler);
+
+    let build_classification = fixture.classify(&[
+        cargo_root.clone(),
+        confirmed_compiler.clone(),
+        orphan_compiler.clone(),
+    ]);
+    let canonical_checkout_root = std::fs::canonicalize(&fixture.checkout_root)?;
+    let mut build_monitor = BuildMonitor::default();
+    build_monitor.record_classification(completed(
+        scope_key_for(&canonical_checkout_root),
+        OwnedRootEvidence::NoLiveRoot,
+        build_classification,
+    ));
+
+    let MonitorSnapshot::Fresh(monitor_data) = build_monitor.monitor_snapshot() else {
+        panic!("a stored cycle is fresh");
+    };
+    assert_eq!(monitor_data.session_rows().len(), 1);
+    assert_eq!(
+        monitor_data.session_rows()[0].compile_activities().len(),
+        1,
+        "the confirmed compiler renders as the session's own row"
+    );
+    let unattributed_activities = monitor_data.unattributed_activities();
+    assert_eq!(
+        unattributed_activities.len(),
+        1,
+        "only the compiler no session claims reaches the scope-level section"
+    );
+    assert_eq!(
+        unattributed_activities[0].compile_activity_id(),
+        &CompileActivityId::for_test(orphan_compiler.incarnation().clone())
+    );
+    assert_eq!(
+        unattributed_activities[0].scope_evidence(),
+        &UnattributedScopeEvidence::WorkingDirectory(AbsolutePath::from(
+            canonical_checkout_root.as_path()
+        ))
+    );
+
+    // The same cycle stored under a scope that covers no root drops the
+    // sessions, and drops the orphan with them: it was working inside a
+    // checkout this scope does not cover.
+    let build_classification = fixture.classify(&[cargo_root, confirmed_compiler, orphan_compiler]);
+    let mut out_of_scope_monitor = BuildMonitor::default();
+    out_of_scope_monitor.record_classification(completed(
+        unrelated_scope_key(),
+        OwnedRootEvidence::NoLiveRoot,
+        build_classification,
+    ));
+
+    let MonitorSnapshot::Fresh(out_of_scope_data) = out_of_scope_monitor.monitor_snapshot() else {
+        panic!("a stored cycle is fresh");
+    };
+    assert!(out_of_scope_data.session_rows().is_empty());
+    assert!(
+        out_of_scope_data.unattributed_activities().is_empty(),
+        "an orphan working inside another checkout is not this scope's to explain"
+    );
+    Ok(())
+}
+
+/// An orphan whose working directory could not be read is placeable by nothing,
+/// so every scope keeps it visible rather than hiding a compiler on the
+/// strength of a path the observer never resolved.
+#[test]
+fn an_unplaceable_unattributed_activity_survives_every_scope()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut fixture = ClassificationFixture::new()?;
+    let unreadable_orphan = ObservedProcess::new(
+        404,
+        4,
+        "rustc orphan",
+        "/usr/bin/rustc",
+        &["rustc", "--crate-name", "orphan", "src/lib.rs"],
+    )
+    .with_unreadable_cwd()
+    .with_candidate_role(ObservedCandidateRole::Compiler);
+
+    let build_classification = fixture.classify(std::slice::from_ref(&unreadable_orphan));
+    let mut build_monitor = BuildMonitor::default();
+    build_monitor.record_classification(completed(
+        unrelated_scope_key(),
+        OwnedRootEvidence::NoLiveRoot,
+        build_classification,
+    ));
+
+    let MonitorSnapshot::Fresh(monitor_data) = build_monitor.monitor_snapshot() else {
+        panic!("a stored cycle is fresh");
+    };
+    let unattributed_activities = monitor_data.unattributed_activities();
+    assert_eq!(unattributed_activities.len(), 1);
+    assert_eq!(
+        unattributed_activities[0].scope_evidence(),
+        &UnattributedScopeEvidence::Unplaceable
+    );
     Ok(())
 }

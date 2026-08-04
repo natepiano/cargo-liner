@@ -29,7 +29,7 @@ impl BuildSessionId {
     /// Key a session directly from an incarnation, for tests that need a
     /// session key without a full classification cycle.
     #[cfg(test)]
-    pub(super) const fn for_test(incarnation: ProcessIncarnation) -> Self { Self(incarnation) }
+    pub(crate) const fn for_test(incarnation: ProcessIncarnation) -> Self { Self(incarnation) }
 
     /// Key a session from the validated Cargo root that established it.
     pub(crate) fn from_recognized_root(recognized_cargo_root: &RecognizedCargoRoot) -> Self {
@@ -323,7 +323,6 @@ impl OperativeCargoCommand {
     }
 
     /// The subcommand argv named, if it named one.
-    #[cfg(test)]
     pub(crate) const fn subcommand(&self) -> &CargoSubcommand { &self.subcommand }
 
     /// How the subcommand was recognized.
@@ -331,7 +330,6 @@ impl OperativeCargoCommand {
 
     /// The selector arguments that narrow what this command builds, in the
     /// order argv gave them.
-    #[cfg(test)]
     pub(crate) fn selectors(&self) -> &[CargoCommandSelector] { &self.selectors }
 }
 
@@ -406,11 +404,9 @@ impl SessionRootObservation {
     pub(crate) const fn root_identity(&self) -> &ProcessIdentity { &self.root_identity }
 
     /// The Cargo root's PID, for display only.
-    #[cfg(test)]
     pub(crate) const fn root_pid(&self) -> u32 { self.root_identity.pid() }
 
     /// When the root was first observed, not when this cycle re-observed it.
-    #[cfg(test)]
     pub(crate) const fn first_observed_at(&self) -> Instant { self.first_observed_at }
 }
 
@@ -452,13 +448,11 @@ impl BuildSession {
     pub(crate) const fn build_session_id(&self) -> &BuildSessionId { &self.session_id }
 
     /// The Cargo command this session is executing.
-    #[cfg(test)]
     pub(crate) const fn operative_cargo_command(&self) -> &OperativeCargoCommand {
         &self.operative_cargo_command
     }
 
     /// How the session's Cargo subcommand was recognized.
-    #[cfg(test)]
     pub(crate) const fn cargo_subcommand_recognition(&self) -> CargoSubcommandRecognition {
         self.operative_cargo_command.recognition()
     }
@@ -473,19 +467,16 @@ impl BuildSession {
     }
 
     /// This cycle's observation of the session's Cargo root.
-    #[cfg(test)]
     pub(crate) const fn root_observation(&self) -> &SessionRootObservation {
         &self.root_observation
     }
 
     /// Where this session writes, and how that was determined.
-    #[cfg(test)]
     pub(crate) const fn session_target_directory(&self) -> &SessionTargetDirectory {
         &self.session_target_directory
     }
 
     /// The profile this session builds.
-    #[cfg(test)]
     pub(crate) const fn build_profile(&self) -> &BuildProfile { &self.build_profile }
 
     /// The cycle in which this session was first observed.

@@ -2,13 +2,22 @@ use strum::EnumIter;
 use tui_pane::ToastId;
 
 use super::dismiss_target::DismissTarget;
+use super::panes::OutputMonitorHit;
 use super::panes::PaneId;
 
 /// Result of a single pane's hit-test at a screen position.
 #[derive(Clone, Debug)]
 pub enum HoverTarget {
-    PaneRow { pane: PaneId, row: usize },
-    GlobalShortcutRow { row: usize },
+    PaneRow {
+        pane: PaneId,
+        row:  usize,
+    },
+    /// A row of the Output pane's build monitor, carrying the exec-sensitive
+    /// identity of what was drawn there.
+    OutputMonitorRow(OutputMonitorHit),
+    GlobalShortcutRow {
+        row: usize,
+    },
     Dismiss(DismissTarget),
     ToastCard(ToastId),
 }

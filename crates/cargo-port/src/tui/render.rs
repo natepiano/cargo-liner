@@ -148,10 +148,14 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
         u16::try_from(app.project_list.cached_fit_widths.total_width() + BLOCK_BORDER_WIDTH + 1)
             .unwrap_or(u16::MAX);
 
-    let bottom_row = if app.inflight.owned_run().output_is_empty() {
-        panes::BottomRow::Diagnostics
-    } else {
-        panes::BottomRow::Output
+    let bottom_row = match app.output_pane_visibility() {
+        panes::OutputPaneVisibility::Hidden => {
+            // The hit map answers clicks from the rows the last frame drew, so
+            // a frame that does not draw the pane at all must leave none behind.
+            app.panes.output.clear_monitor_hit_map();
+            panes::BottomRow::Diagnostics
+        },
+        panes::OutputPaneVisibility::Visible => panes::BottomRow::Output,
     };
     let tiled = resolve_tiled_layout(app, outer_layout[0], left_width, bottom_row);
 
@@ -505,12 +509,12 @@ fn dispatch_finder_render(app: &mut App, frame: &mut Frame) {
         config: split.config,
         project_list: split.project_list,
         selected_project_path: selected_project_path.as_deref(),
-        inflight: split.inflight,
         scan: split.scan,
         ci_status_lookup: &ci_status_lookup,
         settings_render_inputs: None,
         synced_description_height: panes::SyncedDescriptionHeight::default(),
         running_targets: split.running_targets,
+        output_presentation: split.output_presentation,
     };
     // Finder body sizes the popup itself; area arg is unused.
     Renderable::render(split.finder_pane, frame, frame.area(), &pane_render_context);

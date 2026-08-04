@@ -9,8 +9,11 @@ use constants::COMPILE_MONITOR_REFRESH_INTERVAL;
 pub(crate) use scope::MonitorScopeActionability;
 pub(crate) use scope::MonitorScopeKey;
 pub(crate) use scope::MonitorScopeResolution;
+#[cfg(test)]
+pub(crate) use scope::MonitorScopeResolutionRevision;
 pub(crate) use scope::MonitorScopeUpdate;
 pub(crate) use scope::MonitorSelectedRow;
+pub(crate) use scope::MonitorWorkspaceIndexReadiness;
 pub(crate) use scope::monitor_scope_input;
 pub(crate) use scope::resolve_monitor_scope;
 
@@ -169,6 +172,17 @@ pub(crate) enum CompileVisibilityState {
 
 impl CompileVisibilityState {
     pub(crate) const fn is_on(&self) -> bool { matches!(self, Self::On(_)) }
+
+    /// A monitor switched on over the scope resolution a test names.
+    #[cfg(test)]
+    pub(crate) fn on_for_test(monitor_scope_resolution: MonitorScopeResolution) -> Self {
+        Self::On(Box::new(ActiveMonitorState {
+            monitor_selected_row: MonitorSelectedRow::NoVisibleRow,
+            monitor_scope_resolution,
+            compile_monitor_generation: CompileMonitorGeneration::default(),
+            monitor_refresh_schedule: MonitorRefreshSchedule::DueAt(Instant::now()),
+        }))
+    }
 
     pub(crate) fn enable(
         &mut self,

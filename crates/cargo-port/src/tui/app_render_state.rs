@@ -5,6 +5,7 @@ use super::panes::CpuPane;
 use super::panes::GitPane;
 use super::panes::LangPane;
 use super::panes::OutputPane;
+use super::panes::OutputPresentation;
 use super::panes::PackagePane;
 use super::panes::ProjectListPane;
 use super::panes::TargetsPane;
@@ -14,7 +15,6 @@ use super::running_targets::RunningTargets;
 use super::settings::SettingsRenderInputs;
 use super::state::Ci;
 use super::state::Config;
-use super::state::Inflight;
 use super::state::Lint;
 use super::state::Scan;
 
@@ -63,10 +63,10 @@ pub(super) struct RenderRegistry<'a> {
 
 /// Result of `App::split_finder_for_render`.
 pub(super) struct FinderSplit<'a> {
-    pub(super) finder_pane:     &'a mut FinderPane,
-    pub(super) config:          &'a Config,
-    pub(super) project_list:    &'a ProjectList,
-    pub(super) inflight:        &'a Inflight,
-    pub(super) scan:            &'a Scan,
-    pub(super) running_targets: &'a RunningTargets,
+    pub(super) finder_pane:         &'a mut FinderPane,
+    pub(super) config:              &'a Config,
+    pub(super) project_list:        &'a ProjectList,
+    pub(super) scan:                &'a Scan,
+    pub(super) running_targets:     &'a RunningTargets,
+    pub(super) output_presentation: OutputPresentation<'a>,
 }
