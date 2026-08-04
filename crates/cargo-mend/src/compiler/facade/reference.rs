@@ -24,7 +24,9 @@ use crate::compiler::source_cache::NameMention;
 use crate::compiler::source_cache::PathOrigin;
 use crate::compiler::source_cache::SourceCache;
 use crate::compiler::source_cache::UseRename;
+use crate::rust_syntax::LexicalRegions;
 use crate::rust_syntax::PathAnchor;
+use crate::rust_syntax::identifier_character;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::compiler) enum ParentFacadeUsage {
@@ -210,6 +212,7 @@ pub(in crate::compiler) fn workspace_source_parent_export_literal_usage(
             continue;
         }
         let source = source_cache.read_source(file)?;
+        let lexical_regions = source_cache.lexical_regions(file)?;
         let mut matches = Vec::new();
         for export in &export_spellings {
             if source_cache.name_mention(file, export.name) == NameMention::Absent {
@@ -218,8 +221,12 @@ pub(in crate::compiler) fn workspace_source_parent_export_literal_usage(
             for item_spelling in &export.spellings {
                 matches.extend(source.match_indices(item_spelling.as_str()).filter_map(
                     |(item_offset, matched_item)| {
-                        let path_offset =
-                            literal_crate_path_start(source, item_offset, module_path)?;
+                        let path_offset = literal_crate_path_start(
+                            source,
+                            lexical_regions,
+                            item_offset,
+                            module_path,
+                        )?;
                         let path_length = item_offset + matched_item.len() - path_offset;
                         literal_match_has_identifier_boundaries(source, path_offset, path_length)
                             .then_some((path_offset, export.name))
@@ -337,27 +344,32 @@ fn export_spellings(exported_names: &[String]) -> Vec<ExportSpellings<'_>> {
 
 fn literal_crate_path_start(
     source: &str,
+    lexical_regions: &LexicalRegions,
     item_start: usize,
     module_path: &[String],
 ) -> Option<usize> {
-    let mut separator_offset = path_separator_before(source, item_start)?;
+    let mut separator_offset = path_separator_before(source, lexical_regions, item_start)?;
     for expected_segment in module_path.iter().rev() {
-        let segment_end = skip_rust_trivia_backward(source, separator_offset);
+        let segment_end = lexical_regions.trivia_start_before(source, separator_offset);
         let segment_start = literal_identifier_start(source, segment_end);
         let source_segment = source.get(segment_start..segment_end)?.trim();
         if normalized_export_name(source_segment) != normalized_export_name(expected_segment) {
             return None;
         }
-        separator_offset = path_separator_before(source, segment_start)?;
+        separator_offset = path_separator_before(source, lexical_regions, segment_start)?;
     }
 
-    let crate_end = skip_rust_trivia_backward(source, separator_offset);
+    let crate_end = lexical_regions.trivia_start_before(source, separator_offset);
     let crate_start = literal_identifier_start(source, crate_end);
     (source.get(crate_start..crate_end)? == "crate").then_some(crate_start)
 }
 
-fn path_separator_before(source: &str, segment_start: usize) -> Option<usize> {
-    let separator_end = skip_rust_trivia_backward(source, segment_start);
+fn path_separator_before(
+    source: &str,
+    lexical_regions: &LexicalRegions,
+    segment_start: usize,
+) -> Option<usize> {
+    let separator_end = lexical_regions.trivia_start_before(source, segment_start);
     source
         .get(..separator_end)?
         .strip_suffix("::")
@@ -379,179 +391,6 @@ fn literal_identifier_start(source: &str, segment_end: usize) -> usize {
     }
 }
 
-#[derive(Clone, Copy)]
-enum RustLexicalState {
-    Code,
-    NormalString,
-    RawString { hashes: usize },
-    CharLiteral,
-    LineComment,
-    BlockComment { depth: usize },
-}
-
-fn skip_rust_trivia_backward(source: &str, end: usize) -> usize {
-    let bytes = source.as_bytes();
-    let mut state = RustLexicalState::Code;
-    let mut offset = 0;
-    let mut trivia_start = None;
-    while offset < end {
-        state = match state {
-            RustLexicalState::Code => {
-                let character = source[offset..end].chars().next().unwrap_or_default();
-                if character.is_whitespace() {
-                    trivia_start.get_or_insert(offset);
-                    offset += character.len_utf8();
-                    RustLexicalState::Code
-                } else if bytes.get(offset..offset + 2) == Some(b"//") {
-                    trivia_start.get_or_insert(offset);
-                    offset += 2;
-                    RustLexicalState::LineComment
-                } else if bytes.get(offset..offset + 2) == Some(b"/*") {
-                    trivia_start.get_or_insert(offset);
-                    offset += 2;
-                    RustLexicalState::BlockComment { depth: 1 }
-                } else if let Some((hashes, content_start)) = raw_string_opening(bytes, offset, end)
-                {
-                    trivia_start = None;
-                    offset = content_start;
-                    RustLexicalState::RawString { hashes }
-                } else if bytes.get(offset) == Some(&b'"') {
-                    trivia_start = None;
-                    offset += 1;
-                    RustLexicalState::NormalString
-                } else if bytes.get(offset) == Some(&b'\'')
-                    && starts_char_literal(source, offset, end)
-                {
-                    trivia_start = None;
-                    offset += 1;
-                    RustLexicalState::CharLiteral
-                } else {
-                    trivia_start = None;
-                    offset += character.len_utf8();
-                    RustLexicalState::Code
-                }
-            },
-            RustLexicalState::NormalString => match bytes.get(offset) {
-                Some(b'\\') => {
-                    offset = (offset + 2).min(end);
-                    RustLexicalState::NormalString
-                },
-                Some(b'"') => {
-                    offset += 1;
-                    RustLexicalState::Code
-                },
-                Some(_) => {
-                    offset += 1;
-                    RustLexicalState::NormalString
-                },
-                None => RustLexicalState::NormalString,
-            },
-            RustLexicalState::RawString { hashes } => {
-                if raw_string_closes(bytes, offset, end, hashes) {
-                    offset += hashes + 1;
-                    RustLexicalState::Code
-                } else {
-                    offset += 1;
-                    RustLexicalState::RawString { hashes }
-                }
-            },
-            RustLexicalState::CharLiteral => match bytes.get(offset) {
-                Some(b'\\') => {
-                    offset = (offset + 2).min(end);
-                    RustLexicalState::CharLiteral
-                },
-                Some(b'\'') => {
-                    offset += 1;
-                    RustLexicalState::Code
-                },
-                Some(_) => {
-                    offset += 1;
-                    RustLexicalState::CharLiteral
-                },
-                None => RustLexicalState::CharLiteral,
-            },
-            RustLexicalState::LineComment => {
-                if bytes.get(offset) == Some(&b'\n') {
-                    offset += 1;
-                    RustLexicalState::Code
-                } else {
-                    offset += 1;
-                    RustLexicalState::LineComment
-                }
-            },
-            RustLexicalState::BlockComment { depth } => {
-                if bytes.get(offset..offset + 2) == Some(b"/*") {
-                    offset += 2;
-                    RustLexicalState::BlockComment { depth: depth + 1 }
-                } else if bytes.get(offset..offset + 2) == Some(b"*/") {
-                    offset += 2;
-                    if depth == 1 {
-                        RustLexicalState::Code
-                    } else {
-                        RustLexicalState::BlockComment { depth: depth - 1 }
-                    }
-                } else {
-                    offset += 1;
-                    RustLexicalState::BlockComment { depth }
-                }
-            },
-        };
-    }
-    trivia_start.unwrap_or(end)
-}
-
-fn raw_string_opening(bytes: &[u8], offset: usize, end: usize) -> Option<(usize, usize)> {
-    if bytes.get(offset) != Some(&b'r') {
-        return None;
-    }
-    let mut quote_offset = offset + 1;
-    while quote_offset < end && bytes.get(quote_offset) == Some(&b'#') {
-        quote_offset += 1;
-    }
-    (bytes.get(quote_offset) == Some(&b'"'))
-        .then_some((quote_offset.saturating_sub(offset + 1), quote_offset + 1))
-}
-
-fn raw_string_closes(bytes: &[u8], offset: usize, end: usize, hashes: usize) -> bool {
-    bytes.get(offset) == Some(&b'"')
-        && offset + hashes < end
-        && bytes
-            .get(offset + 1..offset + hashes + 1)
-            .is_some_and(|closing_hashes| closing_hashes.iter().all(|byte| *byte == b'#'))
-}
-
-fn starts_char_literal(source: &str, quote_offset: usize, end: usize) -> bool {
-    let content_start = quote_offset + 1;
-    let line_end = source[content_start..end]
-        .find('\n')
-        .map_or(end, |offset| content_start + offset);
-    let Some(first_character) = source[content_start..line_end].chars().next() else {
-        return false;
-    };
-    if identifier_character(first_character) {
-        let identifier_end = source[content_start..line_end]
-            .char_indices()
-            .take_while(|(_, character)| identifier_character(*character))
-            .last()
-            .map_or(content_start, |(offset, character)| {
-                content_start + offset + character.len_utf8()
-            });
-        return source
-            .get(identifier_end..line_end)
-            .is_some_and(|tail| tail.starts_with('\''));
-    }
-
-    let mut characters = source[content_start..line_end].chars();
-    while let Some(character) = characters.next() {
-        if character == '\\' {
-            characters.next();
-        } else if character == '\'' {
-            return true;
-        }
-    }
-    false
-}
-
 fn literal_match_has_identifier_boundaries(source: &str, offset: usize, length: usize) -> bool {
     let Some(before) = source.get(..offset) else {
         return false;
@@ -568,8 +407,6 @@ fn literal_match_has_identifier_boundaries(source: &str, offset: usize, length: 
             .next()
             .is_none_or(|character| !identifier_character(character))
 }
-
-fn identifier_character(character: char) -> bool { character.is_alphanumeric() || character == '_' }
 
 fn literal_module_contexts(
     module_sources: &ModuleSourceMap,
@@ -724,31 +561,102 @@ fn resolve_alias_expr_path(
     Some(resolved)
 }
 
+/// A resolution of a source path, held as the two borrowed halves it is built
+/// from — a prefix of the current module path and a tail of the raw path.
+///
+/// [`resolve_module_relative_paths`] materializes the same resolutions as owned
+/// `Vec<String>`s for callers that need to keep them. The whole-crate sweep in
+/// [`source_references_parent_exports`] only compares them, so it borrows
+/// instead: cloning every segment of every candidate dominated the sweep.
+struct ResolvedPathParts<'segments> {
+    prefix: &'segments [String],
+    tail:   &'segments [String],
+}
+
+impl ResolvedPathParts<'_> {
+    const fn len(&self) -> usize { self.prefix.len() + self.tail.len() }
+
+    fn segment(&self, index: usize) -> Option<&String> {
+        self.prefix
+            .get(index)
+            .or_else(|| self.tail.get(index - self.prefix.len()))
+    }
+}
+
 fn matching_export_name_indexed<'name>(
     raw: &[String],
     current_module_path: &[String],
     module_path: &[String],
     exported_names: &ExportNameIndex<'name>,
 ) -> Option<&'name str> {
-    // Rejecting here keeps `resolve_module_relative_paths` — which clones the
-    // whole path once per module-prefix length — off every path that cannot name
-    // an export, the overwhelming majority on a whole-crate sweep.
+    // Rejecting here keeps path resolution off every path that cannot name an
+    // export, the overwhelming majority on a whole-crate sweep.
     if !exported_names.could_match_final_segment(raw) {
         return None;
     }
-    resolve_module_relative_paths(raw, current_module_path)
-        .into_iter()
-        .find_map(|segments| {
-            (segments.len() == module_path.len() + 1
-                && segments[..module_path.len()].iter().zip(module_path).all(
-                    |(source_segment, compiler_segment)| {
-                        normalized_export_name(source_segment)
-                            == normalized_export_name(compiler_segment)
-                    },
-                ))
-            .then(|| exported_names.matching(&segments[module_path.len()]))
-            .flatten()
+    let candidate = resolved_path_of_len(raw, current_module_path, module_path.len() + 1)?;
+    module_path
+        .iter()
+        .enumerate()
+        .all(|(index, compiler_segment)| {
+            candidate.segment(index).is_some_and(|source_segment| {
+                normalized_export_name(source_segment) == normalized_export_name(compiler_segment)
+            })
         })
+        .then(|| candidate.segment(module_path.len()))
+        .flatten()
+        .and_then(|segment| exported_names.matching(segment))
+}
+
+/// The one resolution of `raw` whose segment count is `candidate_len`, or `None`
+/// when no resolution has that length.
+///
+/// A `crate`, `self`, or `super` anchor resolves to a single path. A plain
+/// [`PathAnchor::Name`] resolves to one path per prefix of
+/// `current_module_path`, but each has length `prefix_len + raw.len()`, so at
+/// most one can be `candidate_len` — solving for that prefix length skips
+/// building the rest.
+fn resolved_path_of_len<'segments>(
+    raw: &'segments [String],
+    current_module_path: &'segments [String],
+    candidate_len: usize,
+) -> Option<ResolvedPathParts<'segments>> {
+    let parts = match PathAnchor::first(raw)? {
+        PathAnchor::Crate => ResolvedPathParts {
+            prefix: &[],
+            tail:   raw.get(1..)?,
+        },
+        PathAnchor::SelfMod => ResolvedPathParts {
+            prefix: current_module_path,
+            tail:   raw.get(1..)?,
+        },
+        PathAnchor::Super => {
+            let mut index = 0usize;
+            let mut retained = current_module_path.len();
+            while raw
+                .get(index)
+                .is_some_and(|segment| PathAnchor::from(segment.as_str()) == PathAnchor::Super)
+            {
+                retained = retained.checked_sub(1)?;
+                index += 1;
+            }
+            if raw
+                .get(index)
+                .is_some_and(|segment| PathAnchor::from(segment.as_str()) == PathAnchor::SelfMod)
+            {
+                index += 1;
+            }
+            ResolvedPathParts {
+                prefix: current_module_path.get(..retained)?,
+                tail:   raw.get(index..)?,
+            }
+        },
+        PathAnchor::SelfType | PathAnchor::Name => ResolvedPathParts {
+            prefix: current_module_path.get(..candidate_len.checked_sub(raw.len())?)?,
+            tail:   raw,
+        },
+    };
+    (parts.len() == candidate_len).then_some(parts)
 }
 
 fn merge_reference_usage_for_name(

@@ -1,5 +1,14 @@
+mod lexical_regions;
+
 use std::ffi::OsStr;
 use std::path::Path;
+
+pub(crate) use lexical_regions::LexicalRegions;
+
+/// Whether `character` can appear inside a Rust identifier.
+pub(crate) fn identifier_character(character: char) -> bool {
+    character.is_alphanumeric() || character == '_'
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PathAnchor {

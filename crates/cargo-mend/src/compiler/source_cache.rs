@@ -40,6 +40,7 @@ use super::constants::SOURCE_DIR_EXAMPLES;
 use super::constants::SOURCE_DIR_SRC;
 use super::constants::SOURCE_DIR_TESTS;
 use crate::reporting::AllFeaturesCoverage;
+use crate::rust_syntax::LexicalRegions;
 use crate::rust_syntax::PathAnchor;
 #[cfg(test)]
 use crate::selection::CARGO_TARGET_KIND_LIB;
@@ -91,6 +92,7 @@ pub(super) struct SourceCache {
     parsed:                         FxHashMap<PathBuf, File>,
     extracted_paths:                FxHashMap<PathBuf, ExtractedPaths>,
     mentionable_names:              FxHashMap<PathBuf, FxHashSet<u64>>,
+    lexical_regions:                FxHashMap<PathBuf, LexicalRegions>,
     structural_parent_module_paths: FxHashMap<PathBuf, Vec<Vec<String>>>,
     all_features_coverage:          AllFeaturesCoverage,
 }
@@ -133,21 +135,29 @@ impl SourceCache {
         for (path, ast) in &parsed {
             extracted_paths.insert(path.clone(), extract_paths(ast));
         }
-        // Only the name index crosses threads: it reads `&str` and returns owned
-        // hashes. `syn::File` is not `Send` — `proc_macro2` embeds a
-        // `PhantomData<Rc<()>>` marker in its spans and builds token streams on
-        // `Rc<Vec<TokenTree>>`, both unconditional — so parsing and path
-        // extraction stay sequential. Walking a `Vec` snapshot and zipping the
-        // results back keeps the insertion order identical to the sequential
-        // build, because rayon's indexed `collect()` preserves order.
+        // Only the name index and the lexical scan cross threads: both read
+        // `&str` and return owned data. `syn::File` is not `Send` —
+        // `proc_macro2` embeds a `PhantomData<Rc<()>>` marker in its spans and
+        // builds token streams on `Rc<Vec<TokenTree>>`, both unconditional — so
+        // parsing and path extraction stay sequential. Walking a `Vec` snapshot
+        // and zipping the results back keeps the insertion order identical to
+        // the sequential build, because rayon's indexed `collect()` preserves
+        // order.
         let content_entries: Vec<(&PathBuf, &String)> = contents.iter().collect();
-        let name_sets: Vec<FxHashSet<u64>> = content_entries
+        let scans: Vec<(FxHashSet<u64>, LexicalRegions)> = content_entries
             .par_iter()
-            .map(|(_, source)| mentionable_names_in(source))
+            .map(|(_, source)| {
+                (
+                    mentionable_names_in(source),
+                    LexicalRegions::from(source.as_str()),
+                )
+            })
             .collect();
         let mut mentionable_names = FxHashMap::default();
-        for ((path, _), names) in content_entries.iter().zip(name_sets) {
+        let mut lexical_regions = FxHashMap::default();
+        for ((path, _), (names, regions)) in content_entries.iter().zip(scans) {
             mentionable_names.insert((*path).clone(), names);
+            lexical_regions.insert((*path).clone(), regions);
         }
         let all_features_coverage = source_all_features_coverage(&contents, &parsed);
         Ok(Self {
@@ -156,6 +166,7 @@ impl SourceCache {
             parsed,
             extracted_paths,
             mentionable_names,
+            lexical_regions,
             structural_parent_module_paths: FxHashMap::default(),
             all_features_coverage,
         })
@@ -205,6 +216,20 @@ impl SourceCache {
     }
 
     pub fn parsed_file(&self, path: &Path) -> Option<&File> { self.parsed.get(path) }
+
+    /// Where the comments and literals in `path` are, scanned once at build
+    /// time.
+    ///
+    /// A text scan that walks backward out of a match — over `::` separators and
+    /// the whitespace around them — needs to know whether a byte is code, and
+    /// that answer only comes from a lex that starts at the front of the file.
+    /// Sharing one scan keeps the whole-crate sweep from re-lexing a file per
+    /// question asked of it.
+    pub fn lexical_regions(&self, path: &Path) -> Result<&LexicalRegions> {
+        self.lexical_regions
+            .get(path)
+            .with_context(|| format!("source file not in cache: {}", path.display()))
+    }
 
     /// Whether `name` can be mentioned anywhere in `path`.
     ///
