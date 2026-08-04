@@ -1756,3 +1756,109 @@ edition = "2024"
     );
     assert_summary_matches_findings(&report);
 }
+
+/// A `pub use` in a sibling module pins its target at `pub`: rustc's E0364
+/// requires a re-exported item to be at least as visible as the re-export,
+/// whether or not the re-export itself is reachable from outside. Only a parent
+/// facade travels with the declaration when the narrowing fixers rewrite it, so
+/// a sibling `pub use` must leave the declaration alone while a sibling with no
+/// such re-export still narrows.
+#[test]
+fn fix_preserves_pub_required_by_sibling_reexport_in_nested_module() {
+    let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Required);
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "sibling_reexport_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src/tui/columns")).expect("create src/tui/columns");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod tui;\n\nfn main() { println!(\"{}\", tui::total()); }\n",
+    )
+    .expect("write binary root");
+    fs::write(
+        temp.path().join("src/tui/mod.rs"),
+        "mod columns;\nmod render;\n\npub(crate) fn total() -> usize { render::width() }\n",
+    )
+    .expect("write tui module");
+    fs::write(
+        temp.path().join("src/tui/render.rs"),
+        "use super::columns::DOUBLE_PINNED;\nuse super::columns::NARROWABLE;\nuse super::columns::PINNED;\n\npub(super) fn width() -> usize { NARROWABLE + PINNED + DOUBLE_PINNED }\n",
+    )
+    .expect("write render module");
+    fs::write(
+        temp.path().join("src/tui/columns/mod.rs"),
+        "mod constants;\nmod project;\n\npub(super) use self::constants::NARROWABLE;\npub(super) use self::constants::PINNED;\npub(super) use self::project::DOUBLE_PINNED;\n",
+    )
+    .expect("write columns module");
+    fs::write(
+        temp.path().join("src/tui/columns/constants.rs"),
+        "pub const NARROWABLE: usize = 1;\npub const PINNED: usize = 7;\n",
+    )
+    .expect("write columns constants");
+    fs::write(
+        temp.path().join("src/tui/columns/project.rs"),
+        "pub use super::constants::PINNED;\n\npub(in crate::tui) const DOUBLE_PINNED: usize = PINNED * 2;\n",
+    )
+    .expect("write columns project module");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let pinned = report
+        .findings
+        .iter()
+        .find(|finding| {
+            finding.code == DiagnosticCode::SuspiciousPub
+                && finding.item.as_deref() == Some("const PINNED")
+        })
+        .unwrap_or_else(|| panic!("pinned constant should still be reported: {report:#?}"));
+    assert_eq!(
+        AdvertisedFix::from_notes(pinned.help.iter().map(String::as_str)),
+        AdvertisedFix::NotOffered,
+        "sibling `pub use` pins the declaration, so no fix may be advertised: {pinned:#?}"
+    );
+
+    let narrowable = report
+        .findings
+        .iter()
+        .find(|finding| {
+            finding.code == DiagnosticCode::SuspiciousPub
+                && finding.item.as_deref() == Some("const NARROWABLE")
+        })
+        .unwrap_or_else(|| panic!("unpinned sibling should still be reported: {report:#?}"));
+    assert_eq!(
+        AdvertisedFix::from_notes(narrowable.help.iter().map(String::as_str)),
+        AdvertisedFix::WithFix,
+        "sibling without a public re-export should still be fixable: {narrowable:#?}"
+    );
+    assert_summary_matches_findings(&report);
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let constants = fs::read_to_string(temp.path().join("src/tui/columns/constants.rs"))
+        .expect("read columns constants");
+    assert!(
+        constants.contains("pub const PINNED: usize = 7;"),
+        "sibling `pub use` target should retain pub: {constants}"
+    );
+    assert!(
+        !constants.contains("pub const NARROWABLE"),
+        "unpinned sibling should still be narrowed: {constants}"
+    );
+}

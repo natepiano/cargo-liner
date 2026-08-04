@@ -330,6 +330,28 @@ impl ReexportIndex {
             .any(|reexport| reexport.requires_public_declaration)
     }
 
+    /// Whether a `pub use` that rustc requires a `pub` declaration for sits
+    /// outside the item's own ancestor modules.
+    ///
+    /// A re-export in an ancestor is the parent facade, and the narrowing
+    /// fixers rewrite that line together with the declaration. One anywhere
+    /// else — a sibling module, say — has no facade line to move with it, so
+    /// narrowing the declaration alone leaves the `pub use` naming an item that
+    /// is no longer `pub` and the crate stops compiling with E0364.
+    pub(super) fn has_public_reexport_outside_ancestors(
+        &self,
+        tcx: TyCtxt<'_>,
+        item_def_id: LocalDefId,
+        facade_subject: LocalDefId,
+    ) -> bool {
+        let parent_module: LocalDefId = tcx.parent_module_from_def_id(item_def_id).into();
+        self.applicable_reexport_reaches(tcx, item_def_id, facade_subject)
+            .any(|reexport| {
+                reexport.requires_public_declaration
+                    && !Self::is_module_within(tcx, parent_module, reexport.occurrence.owner_module)
+            })
+    }
+
     pub(in crate::compiler) fn applicable_reexport_reaches_outside_parent(
         &self,
         tcx: TyCtxt<'_>,

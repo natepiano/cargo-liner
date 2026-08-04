@@ -20,6 +20,7 @@ use serde_json::to_vec_pretty;
 
 use super::visit;
 use crate::compiler::constants::FINDINGS_SCHEMA_VERSION;
+use crate::compiler::exposure::SignatureExposureCache;
 #[cfg(feature = "test-counters")]
 use crate::compiler::facade;
 use crate::compiler::facade::ModuleSourceMap;
@@ -48,6 +49,10 @@ pub(in crate::compiler::visibility) struct VisibilityContext<'a, 'tcx> {
     pub reexport_index:            &'a ReexportIndex,
     pub module_sources:            &'a ModuleSourceMap,
     parent_facade_analyses:        RefCell<FxHashMap<LocalDefId, Option<ParentFacadeAnalysis<'a>>>>,
+    /// Shared by every `ExposureContext` built during the scan, so the exposure
+    /// walk answers each item once for the whole crate rather than once per
+    /// analyzed item.
+    pub signature_exposure_cache:  SignatureExposureCache,
 }
 
 impl<'a> VisibilityContext<'a, '_> {
@@ -127,6 +132,7 @@ pub(in crate::compiler::visibility) fn collect_and_store_findings(
         reexport_index: &reexport_index,
         module_sources: &module_sources,
         parent_facade_analyses: RefCell::new(FxHashMap::default()),
+        signature_exposure_cache: SignatureExposureCache::default(),
     };
 
     let mut source_files = BTreeSet::new();
@@ -158,36 +164,7 @@ pub(in crate::compiler::visibility) fn collect_and_store_findings(
     } else {
         settings.config_root.join(&crate_root_file)
     };
-    if !sink.findings.is_empty() {
-        sink.findings.sort_by(|a, b| {
-            (
-                &a.path,
-                a.line,
-                a.column,
-                &a.diagnostic_code,
-                &a.item,
-                &a.message,
-            )
-                .cmp(&(
-                    &b.path,
-                    b.line,
-                    b.column,
-                    &b.diagnostic_code,
-                    &b.item,
-                    &b.message,
-                ))
-        });
-        sink.findings.dedup_by(|a, b| {
-            a.diagnostic_code == b.diagnostic_code
-                && a.path == b.path
-                && a.line == b.line
-                && a.column == b.column
-                && a.message == b.message
-                && a.item == b.item
-        });
-    }
-    sink.visibility_constraints.sort();
-    sink.visibility_constraints.dedup();
+    sort_and_dedupe(&mut sink);
 
     let report = StoredReport {
         version:                FINDINGS_SCHEMA_VERSION,
@@ -207,6 +184,40 @@ pub(in crate::compiler::visibility) fn collect_and_store_findings(
     fs::write(&output_path, to_vec_pretty(&report)?)
         .with_context(|| format!("failed to write findings file {}", output_path.display()))?;
     Ok(true)
+}
+
+/// Orders the sink's findings by source position so the stored report is
+/// reproducible, then drops the duplicates that separate scans of the same
+/// item produce.
+fn sort_and_dedupe(sink: &mut FindingsSink) {
+    sink.findings.sort_by(|a, b| {
+        (
+            &a.path,
+            a.line,
+            a.column,
+            &a.diagnostic_code,
+            &a.item,
+            &a.message,
+        )
+            .cmp(&(
+                &b.path,
+                b.line,
+                b.column,
+                &b.diagnostic_code,
+                &b.item,
+                &b.message,
+            ))
+    });
+    sink.findings.dedup_by(|a, b| {
+        a.diagnostic_code == b.diagnostic_code
+            && a.path == b.path
+            && a.line == b.line
+            && a.column == b.column
+            && a.message == b.message
+            && a.item == b.item
+    });
+    sink.visibility_constraints.sort();
+    sink.visibility_constraints.dedup();
 }
 
 fn cache_build_kind(tcx: TyCtxt<'_>) -> CacheBuildKind {

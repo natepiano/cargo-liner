@@ -11,6 +11,12 @@ Indirections that count as reachability — each has a regression test; keep the
 
 - **Re-exports** (`pub use` / `pub(crate) use`) —
   `narrow_pub_crate::re_exported_item_is_not_flagged`
+- **A `pub use` outside the item's ancestors** — rustc's E0364 is syntactic: a
+  `pub use` requires a `pub` declaration even when the re-export itself is
+  unreachable from outside. Only a parent facade is rewritten together with the
+  declaration, so a sibling `pub use` pins it and the finding must be reported
+  without a fix —
+  `narrow_pub_crate::fix_preserves_pub_required_by_sibling_reexport_in_nested_module`
 - **Enum variant payloads** of a reachable enum —
   `narrow_pub_crate::type_reachable_via_reexported_enum_variant_is_not_flagged`
 - **`cfg(test)` callers** (lib compilation strips them) —

@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::path::Path;
@@ -51,14 +52,72 @@ type FacadeExposure<'a> =
     dyn FnMut(LocalDefId, &Path, &str) -> Result<Option<VisibilityReach>> + 'a;
 
 pub(in crate::compiler) struct ExposureContext<'source, 'tcx> {
-    pub source_cache:       &'source SourceCache,
-    pub settings:           &'source DriverSettings,
-    pub source_root:        &'source Path,
-    pub tcx:                TyCtxt<'tcx>,
-    pub module_sources:     &'source ModuleSourceMap,
-    pub reexport_index:     &'source ReexportIndex,
+    pub source_cache:             &'source SourceCache,
+    pub settings:                 &'source DriverSettings,
+    pub source_root:              &'source Path,
+    pub tcx:                      TyCtxt<'tcx>,
+    pub module_sources:           &'source ModuleSourceMap,
+    pub reexport_index:           &'source ReexportIndex,
     /// Memoizes [`module_scopes`] — see that function for why.
-    pub module_scope_cache: ModuleScopeCache<'source>,
+    pub module_scope_cache:       ModuleScopeCache<'source>,
+    /// Memoizes [`type_is_exposed_outside_parent`] across every analyzed item.
+    pub signature_exposure_cache: &'source SignatureExposureCache,
+}
+
+/// The exterior reach [`type_is_exposed_outside_parent`] found for an item,
+/// keyed by that item and reused for the rest of the crate's analysis.
+///
+/// The walk reaches the same item through every signature that mentions it, and
+/// the answer depends only on the item: the callback
+/// `assess_signature_exposure_allowance` supplies captures the crate-wide
+/// `VisibilityContext` and nothing about the item being scanned. One cache
+/// therefore serves every item in the crate.
+///
+/// `cycle_cuts` is what makes reuse sound. `type_is_exposed_outside_parent`
+/// answers `None` for an item already on the walk's stack, which under-reports
+/// that item's exposure; a result computed while such a cut happened beneath it
+/// is an under-approximation, correct only for the stack that produced it.
+/// Counting cuts lets a completed call tell whether any occurred within it, and
+/// only a call that saw none is stored.
+#[derive(Default)]
+pub(in crate::compiler) struct SignatureExposureCache {
+    exterior_reaches: RefCell<FxHashMap<LocalDefId, Option<VisibilityReach>>>,
+    cycle_cuts:       Cell<u64>,
+}
+
+/// The result of a [`SignatureExposureCache`] lookup: no memoized answer yet,
+/// or the memoized exterior reach — itself either nothing or a
+/// [`VisibilityReach`].
+#[derive(Clone, Copy)]
+enum CachedExteriorReach {
+    Absent,
+    Unexposed,
+    Exposed(VisibilityReach),
+}
+
+impl SignatureExposureCache {
+    fn exterior_reach(&self, item_def_id: LocalDefId) -> CachedExteriorReach {
+        let Some(exterior_reach) = self.exterior_reaches.borrow().get(&item_def_id).copied() else {
+            return CachedExteriorReach::Absent;
+        };
+        exterior_reach.map_or(CachedExteriorReach::Unexposed, CachedExteriorReach::Exposed)
+    }
+
+    fn store_exterior_reach(
+        &self,
+        item_def_id: LocalDefId,
+        exterior_reach: Option<VisibilityReach>,
+    ) {
+        self.exterior_reaches
+            .borrow_mut()
+            .insert(item_def_id, exterior_reach);
+    }
+
+    /// Records that the cycle guard cut a branch, marking every call currently
+    /// on the stack as holding an under-approximation.
+    fn record_cycle_cut(&self) { self.cycle_cuts.set(self.cycle_cuts.get() + 1); }
+
+    const fn cycle_cuts(&self) -> u64 { self.cycle_cuts.get() }
 }
 
 /// The per-file results of [`module_scopes`], keyed by source path.
@@ -746,9 +805,16 @@ fn type_is_exposed_outside_parent(
     visited: &mut VisitedItems,
     facade_exposes: &mut FacadeExposure<'_>,
 ) -> Result<Option<VisibilityReach>> {
+    match ctx.signature_exposure_cache.exterior_reach(item_def_id) {
+        CachedExteriorReach::Absent => {},
+        CachedExteriorReach::Unexposed => return Ok(None),
+        CachedExteriorReach::Exposed(exterior_reach) => return Ok(Some(exterior_reach)),
+    }
     if !visited.insert(item_def_id) {
+        ctx.signature_exposure_cache.record_cycle_cut();
         return Ok(None);
     }
+    let cycle_cuts_before = ctx.signature_exposure_cache.cycle_cuts();
 
     let result = (|| {
         let mut exterior_reach = None;
@@ -799,6 +865,12 @@ fn type_is_exposed_outside_parent(
         Ok(exterior_reach)
     })();
     visited.remove(&item_def_id);
+    if let Ok(exterior_reach) = result.as_ref()
+        && ctx.signature_exposure_cache.cycle_cuts() == cycle_cuts_before
+    {
+        ctx.signature_exposure_cache
+            .store_exterior_reach(item_def_id, *exterior_reach);
+    }
     result
 }
 

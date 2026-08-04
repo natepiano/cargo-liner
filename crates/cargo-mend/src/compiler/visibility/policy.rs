@@ -714,13 +714,14 @@ fn assess_signature_exposure_allowance(
         return Ok(None);
     };
     let exposure_ctx = ExposureContext {
-        source_cache:       ctx.source_cache,
-        settings:           ctx.settings,
-        source_root:        ctx.source_root,
-        tcx:                ctx.tcx,
-        module_sources:     ctx.module_sources,
-        reexport_index:     ctx.reexport_index,
-        module_scope_cache: ModuleScopeCache::default(),
+        source_cache:             ctx.source_cache,
+        settings:                 ctx.settings,
+        source_root:              ctx.source_root,
+        tcx:                      ctx.tcx,
+        module_sources:           ctx.module_sources,
+        reexport_index:           ctx.reexport_index,
+        module_scope_cache:       ModuleScopeCache::default(),
+        signature_exposure_cache: &ctx.signature_exposure_cache,
     };
     let mut facade_exposes =
         |exposing_item_def_id: LocalDefId, child_file: &Path, exposing_item_name: &str| {

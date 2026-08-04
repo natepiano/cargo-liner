@@ -103,6 +103,13 @@ The following two-code matrix applies to `forbidden_pub_in_crate` and `forbidden
   former JSON string will see a change.
 
 ### Performance
+- Signature-exposure analysis is now memoized per item instead of recomputed once per signature that
+  mentions it. Whether a type escapes its parent module depends only on that type, so the walk was
+  answering the same question repeatedly on crates where one type appears in many signatures. The
+  cache stores a result only when no cycle cut occurred beneath it: the walk answers "not exposed"
+  for an item already on its own stack, which under-reports that item and is correct only for the
+  stack that produced it, so a counter of cuts lets a completed call tell whether it saw one. On
+  `hana_lagrange` this took a full run from about 160s to about 32s with identical findings.
 - Facade scanning no longer rebuilds the same two results over and over on large crates. Its cost was
   `occurrences × Σ_files(path expressions × module contexts)`, so a crate with many `pub use`
   declarations *and* many path expressions paid the product of the two, not the sum. Two changes:
@@ -131,6 +138,13 @@ The following two-code matrix applies to `forbidden_pub_in_crate` and `forbidden
   run to run instead of varying with the standard library's per-process random seed.
 
 ### Fixed
+- `--fix` no longer narrows a declaration that a `pub use` in another module re-exports. rustc's
+  E0364 is syntactic: a `pub use` requires the item it names to be `pub`, whether or not the
+  re-export is itself reachable from outside. A `pub use` in one of the item's ancestor modules is
+  the parent facade, and `--fix-pub-use` rewrites it together with the declaration; a `pub use`
+  anywhere else — a sibling module — has no such coordinated edit, so narrowing the declaration
+  alone stopped the crate compiling and rolled the whole `--fix` batch back. `suspicious_pub` still
+  reports these items, since the finding itself is true; it no longer offers to fix them.
 - A run that analyzed nothing no longer reports a clean crate. mend only sees source that cargo
   recompiles; when cargo has nothing to rebuild *and* no cached report under
   `target/mend-findings` survives the schema, analysis, and configuration compatibility checks, the

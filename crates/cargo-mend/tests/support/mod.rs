@@ -23,6 +23,7 @@ use std::process::Command;
 
 pub(super) use tempfile::tempdir;
 
+pub(super) use self::diagnostics::AdvertisedFix;
 pub(super) use self::diagnostics::DiagnosticCode;
 pub(super) use self::diagnostics::FixSummaryBucket;
 pub(super) use self::diagnostics::FixSupport;

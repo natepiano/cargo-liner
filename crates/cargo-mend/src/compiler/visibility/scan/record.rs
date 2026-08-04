@@ -1769,6 +1769,16 @@ fn record_suspicious_pub_warning(
         stale_parent_pub_use.as_ref(),
     );
     let bare_pub = matches!(annotation.syntax(), VisibilitySyntax::Public);
+    // A `pub use` outside this item's ancestors names it, and rustc requires a
+    // re-exported declaration to be at least as visible as the re-export
+    // (E0364) whether or not that re-export is reachable from outside. Only a
+    // parent facade travels with the declaration when the fixers rewrite it, so
+    // the finding is reported here without a fix.
+    let pinned_by_public_reexport = ctx.reexport_index.has_public_reexport_outside_ancestors(
+        ctx.tcx,
+        input.def_id,
+        ctx.reexport_index.facade_subject(input.def_id),
+    );
     let (message, suggestion, fix_support, item_def_path, narrower_scope_def_path) = match advice {
         SuspiciousPubAdvice::Narrowing {
             suggestion,
@@ -1791,7 +1801,9 @@ fn record_suspicious_pub_warning(
                     ctx.settings.visibility_config.pub_in_path,
                     PubInPath::Required
                 );
-            let fix_support = if rewrites_annotation_only {
+            let fix_support = if pinned_by_public_reexport {
+                FixSupport::None
+            } else if rewrites_annotation_only {
                 FixSupport::RestrictedAnnotation
             } else if bare_pub {
                 facade_chain_fix_support(parent_facade_analysis, fix_support)
