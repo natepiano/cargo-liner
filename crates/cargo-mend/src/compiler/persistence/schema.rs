@@ -36,7 +36,7 @@ pub struct StoredReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct UseSite {
+pub(in crate::compiler) struct UseSite {
     /// Canonical def-path of the referenced item, e.g.
     /// `crate::tui::panes::cpu::cpu_required_pane_height`.
     pub target_def_path:        String,

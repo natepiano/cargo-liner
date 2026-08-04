@@ -99,6 +99,8 @@ fn fix_pub_use_reports_import_cleanup_suggestion_after_summary() {
 
     let temp = tempdir().expect("create temp fixture dir");
 
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+
     fs::write(
         temp.path().join("Cargo.toml"),
         r#"[package]
@@ -151,6 +153,7 @@ edition = "2024"
 #[test]
 fn fix_pub_use_rewrites_sibling_imports_and_narrows_child() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -199,6 +202,7 @@ edition = "2024"
 #[test]
 fn fix_pub_use_suppresses_targeted_unused_import_warning_during_discovery() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -258,6 +262,7 @@ edition = "2024"
 #[test]
 fn dry_run_reports_pub_use_fixes_without_editing_files() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -310,6 +315,7 @@ edition = "2024"
 #[test]
 fn fix_pub_use_rewrites_nested_descendant_imports() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -366,6 +372,7 @@ edition = "2024"
 #[test]
 fn fix_pub_use_handles_child_items_with_attributes() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -413,6 +420,7 @@ edition = "2024"
 #[test]
 fn fix_pub_use_narrows_child_declared_with_pub_on_its_own_line() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -470,6 +478,7 @@ edition = "2024"
 #[test]
 fn fix_pub_use_edits_the_intended_facade_when_two_share_a_line() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -531,6 +540,7 @@ edition = "2024"
 #[test]
 fn fix_pub_use_skips_child_whose_finding_lost_cross_target_reconciliation() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -637,6 +647,7 @@ fn assert_stored_pub_use_fix_fact_exists(temp: &TempDir) {
 #[test]
 fn fix_pub_use_rolls_back_on_failed_cargo_check() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -698,6 +709,7 @@ edition = "2024"
 #[test]
 fn fix_pub_use_reports_when_nothing_is_fixable() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -745,6 +757,7 @@ edition = "2024"
 #[test]
 fn fix_pub_use_rewrites_grouped_pub_use_in_dry_run() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -792,6 +805,7 @@ edition = "2024"
 #[test]
 fn fix_pub_use_rewrites_grouped_pub_use_in_apply_mode() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -855,6 +869,7 @@ edition = "2024"
 #[test]
 fn fix_pub_use_rewrites_multiline_grouped_pub_use_in_dry_run() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -920,6 +935,7 @@ edition = "2024"
 #[test]
 fn fix_pub_use_rewrites_grouped_pub_use_in_file_parent_apply_mode() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/private_parent")).expect("create nested fixture dir");
 
     fs::write(
@@ -989,6 +1005,7 @@ fn main() {}
 #[test]
 fn fix_pub_use_rewrites_obsidian_style_grouped_file_facades_in_apply_mode() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/utils")).expect("create src/utils");
     fs::create_dir_all(temp.path().join("src/report")).expect("create src/report");
 
@@ -1101,6 +1118,7 @@ pub fn touch(_: CacheEntryStatus) {}
 #[test]
 fn fix_pub_use_rewrites_grouped_in_subtree_imports_in_apply_mode() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1150,6 +1168,7 @@ edition = "2024"
 #[test]
 fn fix_pub_use_rewrites_mixed_grouped_subtree_imports_in_apply_mode() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1199,6 +1218,7 @@ edition = "2024"
 #[test]
 fn fix_pub_use_preserves_parent_local_access_with_private_use() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1239,6 +1259,7 @@ edition = "2024"
 
 fn create_preserve_exports_fixture() -> TempDir {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/utils")).expect("create src/utils");
 
     fs::write(
@@ -1363,6 +1384,7 @@ fn fix_pub_use_preserves_exports_used_outside_parent_via_normal_paths() {
 #[test]
 fn fix_pub_use_rewrites_obsidian_report_style_private_parent_use_in_apply_mode() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1417,6 +1439,7 @@ edition = "2024"
 #[test]
 fn fix_pub_use_skips_grouped_pub_use_with_rename_in_dry_run() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1476,6 +1499,7 @@ edition = "2024"
 #[test]
 fn fix_pub_use_rewrites_pub_super_parent_facade_in_apply_mode() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1554,6 +1578,7 @@ fn fix_pub_use_self_heals_unused_imports_left_behind() {
     // `CompilerWarningFacts::UnusedImportWarnings` and every fixable category
     // are empty in a single invocation.
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1630,6 +1655,7 @@ fn fix_all_converges_in_one_invocation() {
     // leaves an unused import (caught by chained cargo fix), with no further
     // mend findings expected on the second scan.
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1695,6 +1721,7 @@ fn fix_pub_use_self_heal_does_not_run_cargo_fix_when_no_unused_imports() {
     // pass observes no `unused import` warnings, the orchestrator must NOT
     // chain cargo fix (which would be a no-op compile cost).
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),

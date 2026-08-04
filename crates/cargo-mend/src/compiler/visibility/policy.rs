@@ -15,6 +15,7 @@ use rustc_span::def_id::CRATE_DEF_ID;
 use rustc_span::def_id::LocalDefId;
 
 use super::annotation;
+use super::annotation::ReachBoundary;
 use super::annotation::VisibilityReach;
 use super::annotation::VisibilitySyntax;
 use super::scan::AllowanceReason;
@@ -45,54 +46,155 @@ use crate::compiler::facade::ParentFacadeUsage;
 use crate::config::PubInPath;
 use crate::reporting::FixSupport;
 
-fn joined_visibility_requirement(
-    tcx: TyCtxt<'_>,
-    facade_reach: Option<VisibilityReach>,
-    signature_reach: Option<VisibilityReach>,
-) -> Option<VisibilityReach> {
-    match (facade_reach, signature_reach) {
-        (Some(facade), Some(signature)) => Some(facade.join(signature, tcx)),
-        (Some(required), None) | (None, Some(required)) => Some(required),
-        (None, None) => None,
+/// What a resolved parent-facade chain grants the item. `Unresolved` covers both
+/// "no facade analysis" and "the chain stopped at a boundary it could not
+/// resolve".
+#[derive(Clone, Copy)]
+enum FacadeChainReach {
+    Unresolved,
+    ExportedAt(VisibilityReach),
+}
+
+/// How far the item's own signature forces it to stay reachable. `Contained`
+/// means no signature names it outside its own module, so the signature places
+/// no floor under the declaration.
+#[derive(Clone, Copy)]
+pub(super) enum SignatureExposure {
+    Contained,
+    ExposedAt(VisibilityReach),
+}
+
+/// The narrowest reach the declaration may take once the facade chain and the
+/// signature are both satisfied. `Unconstrained` means neither places a floor
+/// under it.
+#[derive(Clone, Copy)]
+enum VisibilityRequirement {
+    Unconstrained,
+    AtLeast(VisibilityReach),
+}
+
+/// Whether `pub_in_path = "required"` says this declaration must be rewritten to
+/// an exact `pub(in crate::…)` boundary.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ExactBoundaryNarrowing {
+    Required,
+    NotRequired,
+}
+
+impl From<Option<VisibilityReach>> for SignatureExposure {
+    fn from(signature_exposure: Option<VisibilityReach>) -> Self {
+        signature_exposure.map_or(Self::Contained, Self::ExposedAt)
     }
 }
 
-fn required_pub_in_path(
+impl SignatureExposure {
+    /// Whether a signature names the item from outside the crate, which no
+    /// crate-internal annotation can satisfy.
+    pub(super) fn reaches_outside_crate(self) -> bool {
+        match self {
+            Self::Contained => false,
+            Self::ExposedAt(reach) => reach.is_public(),
+        }
+    }
+
+    /// Whether `candidate` is at least as wide as the reach the signature
+    /// forces. A `Contained` signature places no floor, so anything satisfies
+    /// it.
+    pub(super) fn is_satisfied_by(
+        self,
+        candidate: VisibilityReach,
+        ctx: &VisibilityContext<'_, '_>,
+    ) -> bool {
+        match self {
+            Self::Contained => true,
+            Self::ExposedAt(required) => matches!(
+                candidate.compare(required, ctx.tcx),
+                Some(Ordering::Equal | Ordering::Greater)
+            ),
+        }
+    }
+
+    /// Widens `required` to also cover the signature's own reach.
+    pub(super) fn combined_with(
+        self,
+        required: VisibilityReach,
+        ctx: &VisibilityContext<'_, '_>,
+    ) -> VisibilityReach {
+        match self {
+            Self::Contained => required,
+            Self::ExposedAt(signature_reach) => required.join(signature_reach, ctx.tcx),
+        }
+    }
+}
+
+fn joined_visibility_requirement(
+    tcx: TyCtxt<'_>,
+    facade_chain_reach: FacadeChainReach,
+    signature_exposure: SignatureExposure,
+) -> VisibilityRequirement {
+    match (facade_chain_reach, signature_exposure) {
+        (FacadeChainReach::ExportedAt(facade), SignatureExposure::ExposedAt(signature)) => {
+            VisibilityRequirement::AtLeast(facade.join(signature, tcx))
+        },
+        (FacadeChainReach::ExportedAt(required), SignatureExposure::Contained)
+        | (FacadeChainReach::Unresolved, SignatureExposure::ExposedAt(required)) => {
+            VisibilityRequirement::AtLeast(required)
+        },
+        (FacadeChainReach::Unresolved, SignatureExposure::Contained) => {
+            VisibilityRequirement::Unconstrained
+        },
+    }
+}
+
+/// Answers whether this declaration has a resolved exact boundary it must be
+/// narrowed to. Only a bare `pub` under `pub_in_path = "required"` qualifies, and
+/// only when the facade chain resolved and the joined requirement lands on a
+/// module below the crate root — `pub` and `pub(crate)` requirements are not
+/// exact boundaries.
+fn exact_boundary_narrowing(
     ctx: &VisibilityContext<'_, '_>,
     input: &SuspiciousPubInput<'_>,
-    resolved_facade_reach: Option<VisibilityReach>,
-    required_reach: Option<VisibilityReach>,
-) -> Option<VisibilityReach> {
+    facade_chain_reach: FacadeChainReach,
+    visibility_requirement: VisibilityRequirement,
+) -> ExactBoundaryNarrowing {
     if !matches!(
         ctx.settings.visibility_config.pub_in_path,
         PubInPath::Required
     ) || !matches!(input.visibility_syntax, VisibilitySyntax::Public)
     {
-        return None;
+        return ExactBoundaryNarrowing::NotRequired;
     }
-    resolved_facade_reach?;
-    required_reach?
-        .to_source(ctx.tcx)
-        .starts_with("pub(in ")
-        .then_some(required_reach?)
+    let (FacadeChainReach::ExportedAt(_), VisibilityRequirement::AtLeast(required)) =
+        (facade_chain_reach, visibility_requirement)
+    else {
+        return ExactBoundaryNarrowing::NotRequired;
+    };
+    match required.boundary() {
+        ReachBoundary::Module => ExactBoundaryNarrowing::Required,
+        ReachBoundary::Everywhere | ReachBoundary::CrateRoot => ExactBoundaryNarrowing::NotRequired,
+    }
 }
 
 pub(super) fn classify_suspicious_pub(
     ctx: &VisibilityContext<'_, '_>,
     input: &SuspiciousPubInput<'_>,
     parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
-    signature_exposure: Option<VisibilityReach>,
+    signature_exposure: SignatureExposure,
 ) -> Result<SuspiciousPubAssessment> {
-    let resolved_facade_reach = parent_facade_analysis.and_then(|analysis| {
-        let FacadeChainResolution::Resolved { required } = analysis.chain else {
-            return None;
-        };
-        Some(required)
-    });
-    let required_reach =
-        joined_visibility_requirement(ctx.tcx, resolved_facade_reach, signature_exposure);
-    let required_path = required_pub_in_path(ctx, input, resolved_facade_reach, required_reach);
-    if required_path.is_none()
+    let facade_chain_reach =
+        parent_facade_analysis.map_or(FacadeChainReach::Unresolved, |analysis| {
+            match analysis.chain {
+                FacadeChainResolution::Resolved { required } => {
+                    FacadeChainReach::ExportedAt(required)
+                },
+                FacadeChainResolution::Unresolvable { .. } => FacadeChainReach::Unresolved,
+            }
+        });
+    let visibility_requirement =
+        joined_visibility_requirement(ctx.tcx, facade_chain_reach, signature_exposure);
+    let narrowing =
+        exact_boundary_narrowing(ctx, input, facade_chain_reach, visibility_requirement);
+    if narrowing == ExactBoundaryNarrowing::NotRequired
         && let Some(allowance) = basic_suspicious_pub_allowance(
             ctx,
             input.def_id,
@@ -108,7 +210,7 @@ pub(super) fn classify_suspicious_pub(
     let parent_facade_export =
         parent_facade_export_status(ctx, parent_facade_analysis, input.file_path, input.name)?;
 
-    if required_path.is_none()
+    if narrowing == ExactBoundaryNarrowing::NotRequired
         && let Some(assessment) =
             assess_parent_facade_usage(parent_facade_export.as_ref(), input.visibility_syntax)
     {
@@ -137,18 +239,18 @@ pub(super) fn classify_suspicious_pub(
     });
 
     let declared_reach = VisibilityReach::from(ctx.tcx.visibility(input.def_id.to_def_id()));
-    if stale_result.is_none()
-        && signature_exposure.is_some()
-        && required_reach.is_some_and(|required| {
-            declared_reach.compare(required, ctx.tcx) == Some(Ordering::Equal)
-        })
+    if narrowing == ExactBoundaryNarrowing::NotRequired
+        && stale_result.is_none()
+        && matches!(signature_exposure, SignatureExposure::ExposedAt(_))
+        && matches!(visibility_requirement, VisibilityRequirement::AtLeast(required)
+            if declared_reach.compare(required, ctx.tcx) == Some(Ordering::Equal))
     {
         return Ok(SuspiciousPubAssessment::Allowed(
             AllowanceReason::ExposedByOtherCrateVisibleSignature,
         ));
     }
 
-    if required_path.is_none()
+    if narrowing == ExactBoundaryNarrowing::NotRequired
         && matches!(input.module_location, ModuleLocation::ShallowPrivate)
         && stale_result.is_none()
     {
@@ -859,8 +961,9 @@ pub(super) fn signature_exposure_reach(
     item_def_id: LocalDefId,
     file_path: &Path,
     item_name: Option<&str>,
-) -> Result<Option<VisibilityReach>> {
+) -> Result<SignatureExposure> {
     assess_signature_exposure_allowance(ctx, item_def_id, file_path, item_name)
+        .map(SignatureExposure::from)
 }
 
 #[cfg(test)]

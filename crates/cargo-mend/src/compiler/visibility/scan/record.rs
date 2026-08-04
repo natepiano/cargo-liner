@@ -42,6 +42,7 @@ use crate::compiler::visibility::annotation::VisibilitySyntax;
 use crate::compiler::visibility::policy;
 use crate::compiler::visibility::policy::ForbiddenPubCrateSuggestionReason;
 use crate::compiler::visibility::policy::NoFacadeVisibilityRepair;
+use crate::compiler::visibility::policy::SignatureExposure;
 use crate::compiler::visibility::source;
 use crate::compiler::visibility::use_sites;
 use crate::compiler::visibility::use_sites::FacadeChainBlocker;
@@ -72,7 +73,6 @@ pub(super) fn record_visibility_findings(
         &annotation,
         ExposureConsumers::AllVisibilityFindings,
     )?;
-    let signature_visibility_requirement = SignatureVisibilityRequirement::from(signature_exposure);
 
     if record_forbidden_visibility_annotation(
         ctx,
@@ -109,7 +109,7 @@ pub(super) fn record_visibility_findings(
             finding_context.parent_visibility,
         )
     {
-        maybe_record_narrow_to_pub_crate(ctx, item, signature_visibility_requirement, sink)?;
+        maybe_record_narrow_to_pub_crate(ctx, item, signature_exposure, sink)?;
     }
 
     if should_consider_narrow_to_pub_crate && finding_context.logical_module_depth > 1 {
@@ -117,7 +117,7 @@ pub(super) fn record_visibility_findings(
             ctx,
             item,
             parent_facade_analysis.as_ref(),
-            signature_visibility_requirement,
+            signature_exposure,
             sink,
         )?;
     }
@@ -156,7 +156,7 @@ fn maybe_record_unused_pub(
     annotation: &VisibilityAnnotation<'_>,
     finding_context: &VisibilityFindingContext,
     parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
-    signature_exposure: Option<VisibilityReach>,
+    signature_exposure: SignatureExposure,
     sink: &mut FindingsSink,
 ) -> Result<()> {
     if !matches!(annotation.syntax(), VisibilitySyntax::Public)
@@ -184,14 +184,12 @@ fn maybe_record_unused_pub(
     {
         return Ok(());
     }
-    let annotation_reaches_signature = signature_exposure.is_some_and(|required| {
-        matches!(
-            annotation
-                .reach(item.def_id, ctx.tcx)
-                .compare(required, ctx.tcx),
-            Some(Ordering::Equal | Ordering::Greater)
-        )
-    });
+    // `Contained` is not a reason to keep the `pub`: nothing names the item
+    // from outside, so an unreachable annotation is exactly what this
+    // diagnostic reports.
+    let annotation_reaches_signature =
+        matches!(signature_exposure, SignatureExposure::ExposedAt(_))
+            && signature_exposure.is_satisfied_by(annotation.reach(item.def_id, ctx.tcx), ctx);
     if parent_facade_exports_item(parent_facade_analysis)
         || facade::path_exists_outside_child_module(
             ctx.source_cache,
@@ -250,7 +248,7 @@ pub(super) fn record_forbidden_visibility_annotation(
     annotation: &VisibilityAnnotation<'_>,
     finding_context: &VisibilityFindingContext,
     parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
-    signature_exposure: Option<VisibilityReach>,
+    signature_exposure: SignatureExposure,
     sink: &mut FindingsSink,
 ) -> Result<bool> {
     match annotation.syntax() {
@@ -294,7 +292,7 @@ fn resolved_facade_reach(
 struct VisibilityConstraintInput<'analysis, 'facade> {
     diagnostic_code:        DiagnosticCode,
     parent_facade_analysis: Option<&'analysis ParentFacadeAnalysis<'facade>>,
-    signature_exposure:     Option<VisibilityReach>,
+    signature_exposure:     SignatureExposure,
     outcome:                StoredConstraintOutcome,
 }
 
@@ -315,8 +313,10 @@ fn record_visibility_constraint(
     else {
         return;
     };
-    let signature_requirement =
-        signature_exposure.and_then(|reach| stored_visibility_reach(reach, ctx));
+    let signature_requirement = match signature_exposure {
+        SignatureExposure::Contained => None,
+        SignatureExposure::ExposedAt(reach) => stored_visibility_reach(reach, ctx),
+    };
     let facade = match parent_facade_analysis.map(|analysis| analysis.chain) {
         Some(FacadeChainResolution::Resolved { required }) => {
             let Some(required) = stored_visibility_reach(required, ctx) else {
@@ -438,7 +438,7 @@ fn record_forbidden_pub_crate(
     annotation: &VisibilityAnnotation<'_>,
     finding_context: &VisibilityFindingContext,
     parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
-    signature_exposure: Option<VisibilityReach>,
+    signature_exposure: SignatureExposure,
     sink: &mut FindingsSink,
 ) -> Result<bool> {
     let policy_permits_pub_crate = policy::allow_pub_crate_by_policy(
@@ -450,15 +450,7 @@ fn record_forbidden_pub_crate(
     let required_reach = joined_required_reach(ctx, resolved_chain_reach, signature_exposure);
     let annotation_reach = annotation.reach(item.def_id, ctx.tcx);
     let pub_crate_is_permitted = resolved_chain_reach.map_or_else(
-        || {
-            policy_permits_pub_crate
-                && signature_exposure.is_none_or(|required| {
-                    matches!(
-                        annotation_reach.compare(required, ctx.tcx),
-                        Some(Ordering::Equal | Ordering::Greater)
-                    )
-                })
-        },
+        || policy_permits_pub_crate && signature_exposure.is_satisfied_by(annotation_reach, ctx),
         |_| {
             required_reach.is_some_and(|required| {
                 annotation_reach.compare(required, ctx.tcx) == Some(Ordering::Equal)
@@ -562,7 +554,7 @@ enum ForbiddenPubCrateRepairContext {
 struct ForbiddenPubCrateAdviceInput<'borrow, 'facade> {
     finding_context:        &'borrow VisibilityFindingContext,
     parent_facade_analysis: Option<&'borrow ParentFacadeAnalysis<'facade>>,
-    signature_exposure:     Option<VisibilityReach>,
+    signature_exposure:     SignatureExposure,
     repair_context:         ForbiddenPubCrateRepairContext,
     sink:                   &'borrow FindingsSink,
 }
@@ -580,7 +572,7 @@ fn forbidden_pub_crate_advice(
         repair_context,
         sink,
     } = input;
-    if signature_exposure.is_some_and(VisibilityReach::is_public) {
+    if signature_exposure.reaches_outside_crate() {
         let suggestion_reason = ForbiddenPubCrateSuggestionReason::PublicSignatureExposure;
         let generic_message = format!(
             "use of `{}` is forbidden by policy",
@@ -687,11 +679,11 @@ fn forbidden_pub_crate_parent_facade_reason(
 fn forbidden_pub_crate_no_facade_advice(
     ctx: &VisibilityContext<'_, '_>,
     item: &ItemInfo<'_>,
-    signature_exposure: Option<VisibilityReach>,
+    signature_exposure: SignatureExposure,
     module_location: ModuleLocation,
     sink: &FindingsSink,
 ) -> ForbiddenPubCrateNoFacadeAdvice {
-    let Some(signature_exposure) = signature_exposure else {
+    let SignatureExposure::ExposedAt(signature_exposure) = signature_exposure else {
         return ForbiddenPubCrateNoFacadeAdvice {
             suggestion_reason: ForbiddenPubCrateSuggestionReason::LocationPolicy {
                 module_location,
@@ -714,8 +706,12 @@ fn forbidden_pub_crate_no_facade_advice(
         policy::parent_scope_def_path(&item_module),
         &callers,
     );
-    let repair =
-        merge_no_facade_signature_reach(ctx, item, caller_repair, Some(signature_exposure));
+    let repair = merge_no_facade_signature_reach(
+        ctx,
+        item,
+        caller_repair,
+        SignatureExposure::ExposedAt(signature_exposure),
+    );
     let boundary_path = match repair {
         NoFacadeVisibilityRepair::StructuralMigrationForSignatureReach { required } => {
             visibility_reach_boundary_path(required, ctx).unwrap_or(signature_boundary_path)
@@ -740,7 +736,7 @@ fn record_forbidden_pub_in_crate(
     annotation: &VisibilityAnnotation<'_>,
     finding_context: &VisibilityFindingContext,
     parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
-    signature_exposure: Option<VisibilityReach>,
+    signature_exposure: SignatureExposure,
     sink: &mut FindingsSink,
 ) -> Result<bool> {
     let resolved_chain_reach = resolved_facade_reach(parent_facade_analysis);
@@ -911,12 +907,11 @@ fn forbidden_pub_in_advice(
     annotation: &VisibilityAnnotation<'_>,
     finding_context: &VisibilityFindingContext,
     parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
-    signature_exposure: Option<VisibilityReach>,
+    signature_exposure: SignatureExposure,
     sink: &FindingsSink,
 ) -> ForbiddenPubInAdvice {
     let annotation_reach = annotation.reach(item.def_id, ctx.tcx);
-    let public_signature_bypasses_blocker = signature_exposure
-        .is_some_and(VisibilityReach::is_public)
+    let public_signature_bypasses_blocker = signature_exposure.reaches_outside_crate()
         && parent_facade_analysis.is_some_and(|analysis| {
             matches!(analysis.chain, FacadeChainResolution::Unresolvable { .. })
         });
@@ -941,7 +936,7 @@ fn forbidden_pub_in_advice(
             annotation,
             annotation_reach,
             required,
-            SignatureVisibilityRequirement::from(signature_exposure),
+            signature_exposure,
         ),
         None => no_facade_pub_in_advice(
             ctx,
@@ -982,15 +977,14 @@ fn exact_pub_in_boundary_is_allowed(
 fn joined_required_reach(
     ctx: &VisibilityContext<'_, '_>,
     facade_reach: Option<VisibilityReach>,
-    signature_exposure: Option<VisibilityReach>,
+    signature_exposure: SignatureExposure,
 ) -> Option<VisibilityReach> {
     match (facade_reach, signature_exposure) {
-        (Some(facade_reach), Some(signature_exposure)) => {
-            Some(facade_reach.join(signature_exposure, ctx.tcx))
+        (Some(facade_reach), signature_exposure) => {
+            Some(signature_exposure.combined_with(facade_reach, ctx))
         },
-        (Some(facade_reach), None) => Some(facade_reach),
-        (None, Some(signature_exposure)) => Some(signature_exposure),
-        (None, None) => None,
+        (None, SignatureExposure::ExposedAt(signature_reach)) => Some(signature_reach),
+        (None, SignatureExposure::Contained) => None,
     }
 }
 
@@ -998,7 +992,7 @@ fn merge_no_facade_signature_reach(
     ctx: &VisibilityContext<'_, '_>,
     item: &ItemInfo<'_>,
     caller_repair: NoFacadeVisibilityRepair,
-    signature_exposure: Option<VisibilityReach>,
+    signature_exposure: SignatureExposure,
 ) -> NoFacadeVisibilityRepair {
     let caller_reach = match caller_repair {
         NoFacadeVisibilityRepair::RemoveAnnotation => {
@@ -1009,19 +1003,19 @@ fn merge_no_facade_signature_reach(
         },
         NoFacadeVisibilityRepair::StructuralMigrationForCallerLocations => {
             let repair = match signature_exposure {
-                Some(required_reach)
-                    if !matches!(
-                        VisibilityAnnotation::Parent
-                            .reach(item.def_id, ctx.tcx)
-                            .compare(required_reach, ctx.tcx),
-                        Some(Ordering::Equal | Ordering::Greater)
+                SignatureExposure::ExposedAt(required_reach)
+                    if !signature_exposure.is_satisfied_by(
+                        VisibilityAnnotation::Parent.reach(item.def_id, ctx.tcx),
+                        ctx,
                     ) =>
                 {
                     NoFacadeVisibilityRepair::StructuralMigrationForSignatureReach {
                         required: required_reach,
                     }
                 },
-                Some(_) | None => NoFacadeVisibilityRepair::StructuralMigrationForCallerLocations,
+                SignatureExposure::ExposedAt(_) | SignatureExposure::Contained => {
+                    NoFacadeVisibilityRepair::StructuralMigrationForCallerLocations
+                },
             };
             return repair;
         },
@@ -1029,9 +1023,7 @@ fn merge_no_facade_signature_reach(
             return NoFacadeVisibilityRepair::StructuralMigrationForSignatureReach { required };
         },
     };
-    let required_reach = signature_exposure.map_or(caller_reach, |signature_reach| {
-        caller_reach.join(signature_reach, ctx.tcx)
-    });
+    let required_reach = signature_exposure.combined_with(caller_reach, ctx);
     let private_reach = VisibilityAnnotation::Private.reach(item.def_id, ctx.tcx);
     if matches!(
         private_reach.compare(required_reach, ctx.tcx),
@@ -1107,7 +1099,7 @@ fn unresolvable_pub_in_advice(
     annotation: &VisibilityAnnotation<'_>,
     annotation_reach: VisibilityReach,
     parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
-    signature_exposure: Option<VisibilityReach>,
+    signature_exposure: SignatureExposure,
 ) -> ForbiddenPubInAdvice {
     let advice = match annotation.syntax() {
         VisibilitySyntax::InParent => canonical_pub_in_spelling_advice(
@@ -1134,18 +1126,15 @@ fn canonical_pub_in_spelling_advice(
     ctx: &VisibilityContext<'_, '_>,
     item: &ItemInfo<'_>,
     spelling: CanonicalPubInSpelling,
-    signature_exposure: Option<VisibilityReach>,
+    signature_exposure: SignatureExposure,
 ) -> ForbiddenPubInAdvice {
     let (original_source, canonical_annotation) = match spelling {
         CanonicalPubInSpelling::Parent => ("pub(in super)", VisibilityAnnotation::Parent),
         CanonicalPubInSpelling::Current => ("pub(in self)", VisibilityAnnotation::Current),
     };
     let canonical_reach = canonical_annotation.reach(item.def_id, ctx.tcx);
-    if let Some(required) = signature_exposure
-        && !matches!(
-            canonical_reach.compare(required, ctx.tcx),
-            Some(Ordering::Equal | Ordering::Greater)
-        )
+    if let SignatureExposure::ExposedAt(required) = signature_exposure
+        && !signature_exposure.is_satisfied_by(canonical_reach, ctx)
     {
         let boundary_path = visibility_reach_boundary_path(required, ctx)
             .unwrap_or_else(|| String::from("crate-external"));
@@ -1174,9 +1163,9 @@ fn resolved_pub_in_advice(
     annotation: &VisibilityAnnotation<'_>,
     annotation_reach: VisibilityReach,
     facade_reach: VisibilityReach,
-    signature_visibility_requirement: SignatureVisibilityRequirement,
+    signature_exposure: SignatureExposure,
 ) -> ForbiddenPubInAdvice {
-    let required = signature_visibility_requirement.combined_with(facade_reach, ctx);
+    let required = signature_exposure.combined_with(facade_reach, ctx);
     let comparison = annotation_reach.compare(required, ctx.tcx);
     if comparison == Some(Ordering::Equal) && reach_is_pub_crate(required, ctx) {
         return ForbiddenPubInAdvice::SuggestionWithoutCallerRefinement {
@@ -1277,10 +1266,10 @@ fn no_facade_pub_in_advice(
     annotation: &VisibilityAnnotation<'_>,
     annotation_reach: VisibilityReach,
     finding_context: &VisibilityFindingContext,
-    signature_exposure: Option<VisibilityReach>,
+    signature_exposure: SignatureExposure,
     sink: &FindingsSink,
 ) -> ForbiddenPubInAdvice {
-    if signature_exposure.is_some_and(VisibilityReach::is_public) {
+    if signature_exposure.reaches_outside_crate() {
         let suggestion_reason = ForbiddenPubCrateSuggestionReason::PublicSignatureExposure;
         let generic_message = format!(
             "use of `{}` outside an exact facade boundary is forbidden by policy",
@@ -1437,7 +1426,7 @@ fn record_review_pub_mod(
 fn maybe_record_narrow_to_pub_crate(
     ctx: &VisibilityContext<'_, '_>,
     item: &ItemInfo<'_>,
-    signature_visibility_requirement: SignatureVisibilityRequirement,
+    signature_exposure: SignatureExposure,
     sink: &mut FindingsSink,
 ) -> Result<()> {
     let (Some(name), Some(kind_label)) = (item.name, item.kind_label) else {
@@ -1457,7 +1446,7 @@ fn maybe_record_narrow_to_pub_crate(
         return Ok(());
     }
     let crate_reach = VisibilityAnnotation::Crate.reach(item.def_id, ctx.tcx);
-    if !signature_visibility_requirement.is_satisfied_by(crate_reach, ctx) {
+    if !signature_exposure.is_satisfied_by(crate_reach, ctx) {
         return Ok(());
     }
     record_narrow_to_pub_crate(
@@ -1474,7 +1463,7 @@ fn maybe_record_narrow_to_pub_crate_nested(
     ctx: &VisibilityContext<'_, '_>,
     item: &ItemInfo<'_>,
     parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
-    signature_visibility_requirement: SignatureVisibilityRequirement,
+    signature_exposure: SignatureExposure,
     sink: &mut FindingsSink,
 ) -> Result<()> {
     let (Some(name), Some(kind_label)) = (item.name, item.kind_label) else {
@@ -1486,7 +1475,7 @@ fn maybe_record_narrow_to_pub_crate_nested(
     let FacadeChainResolution::Resolved { required } = parent_facade_analysis.chain else {
         return Ok(());
     };
-    let combined_required_reach = signature_visibility_requirement.combined_with(required, ctx);
+    let combined_required_reach = signature_exposure.combined_with(required, ctx);
     let crate_reach = VisibilityAnnotation::Crate.reach(item.def_id, ctx.tcx);
     if parent_facade_analysis.nearest.spelling_conflict
         || !reach_is_pub_crate(combined_required_reach, ctx)
@@ -1585,41 +1574,6 @@ fn reach_is_pub_crate(reach: VisibilityReach, ctx: &VisibilityContext<'_, '_>) -
     reach.compare(crate_reach, ctx.tcx) == Some(Ordering::Equal)
 }
 
-#[derive(Clone, Copy)]
-enum SignatureVisibilityRequirement {
-    Absent,
-    Required(VisibilityReach),
-}
-
-impl From<Option<VisibilityReach>> for SignatureVisibilityRequirement {
-    fn from(signature_exposure: Option<VisibilityReach>) -> Self {
-        signature_exposure.map_or(Self::Absent, Self::Required)
-    }
-}
-
-impl SignatureVisibilityRequirement {
-    fn is_satisfied_by(self, candidate: VisibilityReach, ctx: &VisibilityContext<'_, '_>) -> bool {
-        match self {
-            Self::Absent => true,
-            Self::Required(required) => matches!(
-                candidate.compare(required, ctx.tcx),
-                Some(Ordering::Equal | Ordering::Greater)
-            ),
-        }
-    }
-
-    fn combined_with(
-        self,
-        required: VisibilityReach,
-        ctx: &VisibilityContext<'_, '_>,
-    ) -> VisibilityReach {
-        match self {
-            Self::Absent => required,
-            Self::Required(signature_reach) => required.join(signature_reach, ctx.tcx),
-        }
-    }
-}
-
 fn parent_facade_blocker_text(
     ctx: &VisibilityContext<'_, '_>,
     parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
@@ -1665,7 +1619,7 @@ fn maybe_record_suspicious_pub(
     input: &SuspiciousPubInput<'_>,
     annotation: &VisibilityAnnotation<'_>,
     parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
-    signature_exposure: Option<VisibilityReach>,
+    signature_exposure: SignatureExposure,
     sink: &mut FindingsSink,
 ) -> Result<()> {
     let Some(kind_label) = input.kind_label else {
@@ -1719,7 +1673,7 @@ struct SuspiciousWarningInput<'borrow, 'syntax, 'facade> {
     kind_label:             &'borrow str,
     annotation:             &'borrow VisibilityAnnotation<'syntax>,
     parent_facade_analysis: Option<&'borrow ParentFacadeAnalysis<'facade>>,
-    signature_exposure:     Option<VisibilityReach>,
+    signature_exposure:     SignatureExposure,
     warning:                SuspiciousWarning,
 }
 
@@ -1929,7 +1883,7 @@ fn suspicious_pub_advice(
     kind_label: &str,
     annotation: &VisibilityAnnotation<'_>,
     parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
-    signature_exposure: Option<VisibilityReach>,
+    signature_exposure: SignatureExposure,
     stale_parent_facade: Option<&ParentFacadeExportStatus>,
 ) -> SuspiciousPubAdvice {
     let parent_scope_def_path = use_sites::parent_module_def_path(ctx.tcx, input.def_id);
@@ -1980,9 +1934,7 @@ fn suspicious_pub_advice(
     if let Some(parent_facade_analysis) = parent_facade_analysis
         && let FacadeChainResolution::Resolved { required } = parent_facade_analysis.chain
     {
-        let required = signature_exposure.map_or(required, |exposure_reach| {
-            required.join(exposure_reach, ctx.tcx)
-        });
+        let required = signature_exposure.combined_with(required, ctx);
         // Only a `pub(in crate::<path>)` reach yields a boundary a fixer can
         // spell out. `pub` and `pub(crate)` fall back to the enclosing module,
         // which is a suppression key, not a rewrite target.
@@ -2003,7 +1955,7 @@ fn suspicious_pub_advice(
             replacement,
         };
     }
-    let Some(required) = signature_exposure else {
+    let SignatureExposure::ExposedAt(required) = signature_exposure else {
         return SuspiciousPubAdvice::Narrowing {
             suggestion:              policy::consider_using("pub(super)"),
             narrower_scope_def_path: parent_scope_def_path,

@@ -27,6 +27,19 @@ pub(super) enum VisibilitySyntax {
     InPath(PathSpelling),
 }
 
+/// How far a reach extends, independent of how any annotation spells it. The
+/// three variants are exactly the three forms `VisibilityReach::to_source`
+/// renders, so policy can ask the question without reading rendered text back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ReachBoundary {
+    /// Reachable from other crates — `pub`.
+    Everywhere,
+    /// Capped at the crate root — `pub(crate)`.
+    CrateRoot,
+    /// Capped at a module below the crate root — `pub(in crate::…)`.
+    Module,
+}
+
 #[derive(Clone, Copy)]
 pub struct VisibilityReach(Visibility<DefId>);
 
@@ -205,6 +218,16 @@ impl VisibilityReach {
     }
 
     pub(super) fn is_public(self) -> bool { self.0.is_public() }
+
+    pub(super) fn boundary(self) -> ReachBoundary {
+        match self.0 {
+            Visibility::Public => ReachBoundary::Everywhere,
+            Visibility::Restricted(boundary) if boundary == CRATE_DEF_ID.to_def_id() => {
+                ReachBoundary::CrateRoot
+            },
+            Visibility::Restricted(_) => ReachBoundary::Module,
+        }
+    }
 
     pub(super) fn to_source(self, tcx: TyCtxt<'_>) -> String {
         match self.0 {

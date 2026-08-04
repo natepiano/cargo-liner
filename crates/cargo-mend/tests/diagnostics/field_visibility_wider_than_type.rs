@@ -43,6 +43,7 @@ fn pub_field_on_private_struct_is_flagged() {
     // No `pub` on the struct → no convention defends `pub` on its fields.
     // The `pub` annotation grants nothing because the type itself is private.
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -79,6 +80,7 @@ fn pub_crate_field_on_private_struct_is_flagged() {
     // `pub(crate)` on a field of a private struct is also dead — the type
     // caps the field at private regardless.
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -116,6 +118,7 @@ fn pub_field_on_pub_crate_struct_is_not_flagged() {
     // is the dominant idiom. Do NOT flag — the cap is implicit and readers
     // understand it.
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -149,6 +152,7 @@ edition = "2024"
 fn pub_field_on_pub_super_struct_is_not_flagged() {
     // Same convention applies to `pub(super)` structs.
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -183,6 +187,7 @@ edition = "2024"
 fn opaque_handle_pattern_is_not_flagged() {
     // Field visibility narrower than type — intentional, never flagged.
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -216,6 +221,7 @@ edition = "2024"
 #[test]
 fn private_field_on_any_struct_is_not_flagged() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -248,6 +254,7 @@ edition = "2024"
 #[test]
 fn fix_removes_dead_pub_annotation() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),

@@ -7,10 +7,22 @@ pub(crate) enum PubInPath {
     /// `pub(in ...)` produces an error everywhere.
     Forbidden,
     /// Exact-boundary `pub(in ...)` and `pub` are both accepted.
-    #[default]
     Permitted,
     /// Exact-boundary `pub(in ...)` is accepted while `pub` is reviewed.
+    #[default]
     Required,
+}
+
+impl PubInPath {
+    /// The spelling this variant takes in a config file, matching the
+    /// `rename_all = "lowercase"` serde representation.
+    pub(crate) const fn config_value(self) -> &'static str {
+        match self {
+            Self::Forbidden => "forbidden",
+            Self::Permitted => "permitted",
+            Self::Required => "required",
+        }
+    }
 }
 
 #[cfg(test)]
@@ -30,8 +42,8 @@ mod tests {
     }
 
     #[test]
-    fn default_is_permitted() {
-        assert_eq!(PubInPath::default(), PubInPath::Permitted);
+    fn default_is_required() {
+        assert_eq!(PubInPath::default(), PubInPath::Required);
     }
 
     #[test]

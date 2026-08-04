@@ -33,6 +33,39 @@ pub(super) use self::mend_json::parse_mend_json_output;
 pub(super) use self::report::ExpectedFinding;
 pub(super) use self::report::Report;
 
+/// Mirrors `src/config/pub_in_path.rs`. Fixtures pin the setting explicitly
+/// because project `mend.toml` beats the machine-global config: a fixture that
+/// writes none inherits whatever the developer configured, so its result would
+/// depend on who runs the suite.
+#[derive(Clone, Copy)]
+pub(super) enum PubInPath {
+    Permitted,
+    Required,
+}
+
+impl PubInPath {
+    pub(super) const fn config_value(self) -> &'static str {
+        match self {
+            Self::Permitted => "permitted",
+            Self::Required => "required",
+        }
+    }
+}
+
+/// Writes the fixture's `mend.toml` pinning `pub_in_path`. A fixture that needs
+/// more `mend.toml` content writes its own file afterwards and must carry the
+/// pin in that literal.
+pub(super) fn pin_pub_in_path(project_root: &Path, pub_in_path: PubInPath) {
+    fs::write(
+        project_root.join("mend.toml"),
+        format!(
+            "[visibility]\npub_in_path = \"{}\"\n",
+            pub_in_path.config_value()
+        ),
+    )
+    .expect("write fixture mend.toml");
+}
+
 pub(super) fn assert_summary_matches_findings(report: &Report) {
     mend_json::assert_summary_matches_findings(report);
 }

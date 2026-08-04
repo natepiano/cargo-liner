@@ -381,6 +381,7 @@ fn assert_no_stored_pub_use_fix_facts(temp: &TempDir) {
 #[test]
 fn pub_use_fix_does_not_trigger_when_child_type_is_exposed_by_other_crate_visible_signature() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/utils")).expect("create src/utils");
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -444,6 +445,7 @@ pub fn collect_repository_files() -> RepositoryFiles {
 #[test]
 fn pub_use_fix_does_not_trigger_when_child_type_is_exposed_by_sibling_boundary_field() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/app_tools")).expect("create src/app_tools");
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -513,6 +515,7 @@ pub struct LaunchParams {
 #[test]
 fn pub_use_fix_does_not_trigger_when_child_type_is_exposed_by_ancestor_boundary_reexport() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/brp_tools/tools")).expect("create nested fixture");
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -592,6 +595,7 @@ pub struct ClickParams {
 #[test]
 fn suspicious_pub_is_suppressed_for_cross_file_public_field_exposure_via_ancestor_reexport() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/brp_tools/tools")).expect("create nested fixture");
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -670,6 +674,7 @@ pub struct ClickParams {
 #[test]
 fn suspicious_pub_is_suppressed_when_grandparent_reexports_through_pub_super_module() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/brp_tools/tools")).expect("create nested fixture");
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -737,6 +742,7 @@ pub use tools::brp_execute::BrpExecute;
 #[test]
 fn suspicious_pub_is_suppressed_for_cross_file_public_field_exposure() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/guide")).expect("create nested fixture");
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -801,6 +807,7 @@ pub struct TypeGuideSummary {
 #[test]
 fn pub_use_fix_does_not_trigger_when_child_type_is_exposed_by_exported_method_signatures() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/utils")).expect("create src/utils");
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -885,6 +892,7 @@ impl Sha256Cache {
 #[test]
 fn pub_use_fix_does_not_trigger_when_child_type_is_exposed_by_parent_boundary_signature() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/wikilink")).expect("create src/wikilink");
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -955,6 +963,7 @@ pub struct ParsedInvalidWikilink;
 #[test]
 fn suspicious_pub_is_suppressed_for_parent_facade_used_outside_parent() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/private_parent")).expect("create nested fixture dir");
 
     fs::write(
@@ -1000,6 +1009,7 @@ fn main() {
 #[test]
 fn suspicious_pub_still_warns_for_parent_facade_unused_outside_parent() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/private_parent")).expect("create nested fixture dir");
 
     fs::write(
@@ -1044,6 +1054,7 @@ edition = "2024"
 #[test]
 fn internal_parent_pub_use_facade_warns_for_parent_facade_used_inside_parent_subtree() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/private_parent")).expect("create nested fixture dir");
 
     fs::write(
@@ -1092,6 +1103,7 @@ edition = "2024"
 #[test]
 fn internal_parent_pub_use_facade_warns_for_parent_facade_imported_inside_parent_subtree() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/private_parent")).expect("create nested fixture dir");
 
     fs::write(
@@ -1140,6 +1152,7 @@ edition = "2024"
 #[test]
 fn parent_facade_is_allowed_for_function_local_use_outside_parent_subtree() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/private_parent")).expect("create nested fixture dir");
     fs::create_dir_all(temp.path().join("src/consumer")).expect("create consumer dir");
 
@@ -1184,6 +1197,7 @@ edition = "2024"
 #[test]
 fn suspicious_pub_is_suppressed_for_internal_parent_super_facade_in_mod_rs() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/private_parent")).expect("create nested fixture dir");
 
     fs::write(
@@ -1227,6 +1241,7 @@ edition = "2024"
 #[test]
 fn suspicious_pub_is_suppressed_when_child_boundary_file_is_mod_rs_and_parent_facade_is_used() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/parent/child")).expect("create nested fixture dir");
 
     fs::write(
@@ -1266,6 +1281,7 @@ edition = "2024"
 #[test]
 fn suspicious_pub_is_suppressed_for_internal_parent_super_facade_in_file_module() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/private_parent")).expect("create nested fixture dir");
 
     fs::write(
@@ -1309,6 +1325,7 @@ edition = "2024"
 #[test]
 fn crate_relative_parent_facade_use_inside_parent_subtree_stays_fixable() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/private_parent")).expect("create nested fixture dir");
 
     fs::write(
@@ -1363,6 +1380,7 @@ edition = "2024"
 #[test]
 fn suspicious_pub_is_suppressed_for_file_parent_facade_used_outside_parent() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/private_parent")).expect("create nested fixture dir");
 
     fs::write(
@@ -1408,6 +1426,7 @@ fn main() {
 #[test]
 fn suspicious_pub_is_suppressed_for_tool_contract_attribute_output_type() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("app/src/tools")).expect("create app fixture dirs");
     fs::create_dir_all(temp.path().join("macros/src")).expect("create macros dirs");
 
@@ -1498,6 +1517,7 @@ pub fn tool_fn(_attr: TokenStream, item: TokenStream) -> TokenStream {
 #[test]
 fn suspicious_pub_is_suppressed_for_explicit_trait_impl_output_type() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/tools")).expect("create tool fixture dirs");
 
     fs::write(
@@ -1554,6 +1574,7 @@ impl super::ToolFn for ListThings {
 #[test]
 fn suspicious_pub_is_suppressed_for_methods_on_type_exposed_by_public_enum_variant() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/api")).expect("create api fixture dirs");
 
     fs::write(
@@ -1614,6 +1635,7 @@ pub enum ResponseStatus {
 #[test]
 fn suspicious_pub_still_warns_for_file_parent_facade_unused_outside_parent() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/private_parent")).expect("create nested fixture dir");
 
     fs::write(
@@ -1658,6 +1680,7 @@ edition = "2024"
 #[test]
 fn wildcard_parent_pub_use_warns() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/private_parent")).expect("create nested fixture dir");
 
     fs::write(
@@ -1697,6 +1720,7 @@ edition = "2024"
 #[test]
 fn suspicious_pub_not_triggered_for_impl_methods_on_type_defined_in_sibling_child_module() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/tui/app")).expect("create src/tui/app");
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1781,6 +1805,7 @@ impl App {
 
 fn assert_path_sibling_signature_exposure_uses_logical_identity() {
     let sibling = tempdir().expect("create path sibling exposure fixture dir");
+    pin_pub_in_path(sibling.path(), PubInPath::Permitted);
     fs::create_dir_all(sibling.path().join("src/a/odd")).expect("create fixture modules");
     write_minimal_manifest(&sibling, "path_sibling_signature_exposure_fixture");
     fs::write(sibling.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
@@ -1825,6 +1850,7 @@ fn assert_path_sibling_signature_exposure_uses_logical_identity() {
 
 fn assert_split_definition_lookup_uses_hir_identity() {
     let split_definition = tempdir().expect("create split definition fixture dir");
+    pin_pub_in_path(split_definition.path(), PubInPath::Permitted);
     fs::create_dir_all(split_definition.path().join("src/a/types"))
         .expect("create type fixture module");
     fs::create_dir_all(split_definition.path().join("src/a/impls"))
@@ -1868,6 +1894,7 @@ fn assert_split_definition_lookup_uses_hir_identity() {
 
 fn assert_parent_signature_exposure_uses_logical_identity() {
     let parent_signature = tempdir().expect("create parent signature fixture dir");
+    pin_pub_in_path(parent_signature.path(), PubInPath::Permitted);
     fs::create_dir_all(parent_signature.path().join("src/a/odd"))
         .expect("create parent signature modules");
     write_minimal_manifest(&parent_signature, "path_parent_signature_exposure_fixture");
@@ -1987,6 +2014,7 @@ fn restricted_signature_exposure_accepts_its_exact_facade_boundary() {
 #[test]
 fn crate_wide_signature_requirement_is_persisted_without_rendering_a_finding() {
     let temp = tempdir().expect("create accepted crate reach fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     write_allowance_sources(
         &temp,
         &[
@@ -4928,6 +4956,7 @@ fn restricted_struct_and_union_fields_remain_forbidden_without_facades() {
 #[test]
 fn no_facade_pub_crate_advice_uses_current_pass_callers() {
     let temp = tempdir().expect("create current-pass caller fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::write(
         temp.path().join("Cargo.toml"),
         r#"[package]

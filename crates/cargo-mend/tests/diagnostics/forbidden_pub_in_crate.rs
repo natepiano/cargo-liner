@@ -463,7 +463,7 @@ fn the_exact_boundary_rewrite_is_offered_only_under_required() {
     //
     // Two independent gates produce that outcome, and keeping the `required`
     // arm alongside the other two is what makes their absence meaningful:
-    // `policy::required_pub_in_path` elevates a bare `pub` behind a resolved
+    // `policy::exact_boundary_narrowing` elevates a bare `pub` behind a resolved
     // facade only under `required`, so the other settings report nothing at all
     // for this declaration, and `rewrites_annotation_only` in `scan/record.rs`
     // re-checks the setting before granting `FixSupport::RestrictedAnnotation`.
@@ -1231,6 +1231,69 @@ fn assert_rejected_annotations(report: &Report) {
         "src/fields/inner.rs",
         "use of `pub(in super::super)` outside an exact facade boundary is forbidden by policy",
         "consider removing the visibility",
+    );
+}
+
+#[test]
+fn a_lib_and_bin_target_pair_advertises_and_applies_one_rewrite() {
+    // `src/a/b/c.rs` is compiled twice — once for the library, once for the
+    // binary — so the same declaration produces two analysis passes over one
+    // byte range. The finding must be advertised once, and `--fix` must edit the
+    // site once: a second edit would append a second annotation to the same
+    // line. No other Required-mode fixture declares both targets.
+    let temp = tempdir().expect("create lib and bin required-mode fixture dir");
+    write_sources(
+        &temp,
+        &[
+            (
+                "Cargo.toml",
+                r#"[package]
+name = "required_lib_and_bin_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+            ),
+            ("src/lib.rs", "mod a;\n"),
+            ("src/main.rs", "mod a;\n\nfn main() {}\n"),
+            ("src/a.rs", "mod b;\nfn use_exact() { b::exact(); }\n"),
+            ("src/a/b.rs", "mod c;\npub(super) use c::exact;\n"),
+            ("src/a/b/c.rs", "pub fn exact() {}\n"),
+        ],
+    );
+    pin_pub_in_path(temp.path(), PubInPath::Required);
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    // Each target reports the declaration once — the library and the binary are
+    // separate crates that happen to share the file. What must not double is the
+    // advertised fix: `retain_one_restricted_annotation_fix_per_site` demotes the
+    // duplicate so only one finding carries the `--fix` note.
+    assert_codes(
+        &report,
+        "src/a/b/c.rs",
+        &[DiagnosticCode::SuspiciousPub, DiagnosticCode::SuspiciousPub],
+    );
+    assert_eq!(
+        report.summary.fixable_with_fix, 1,
+        "two compilations of one declaration must advertise one fix: {report:#?}"
+    );
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert_eq!(
+        fs::read_to_string(temp.path().join("src/a/b/c.rs")).expect("read fixed declaration"),
+        "pub(in crate::a) fn exact() {}\n",
+        "the shared declaration must be rewritten exactly once"
     );
 }
 

@@ -1,9 +1,9 @@
 use anyhow::Result;
 
 use super::annotation::VisibilityAnnotation;
-use super::annotation::VisibilityReach;
 use super::annotation::VisibilitySyntax;
 use super::policy;
+use super::policy::SignatureExposure;
 use super::use_sites::ParentFacadeAnalysis;
 use crate::compiler::persistence::FindingsSink;
 
@@ -36,9 +36,9 @@ pub(super) fn signature_exposure_for_annotation(
     item: &ItemInfo<'_>,
     annotation: &VisibilityAnnotation<'_>,
     consumers: ExposureConsumers,
-) -> Result<Option<VisibilityReach>> {
+) -> Result<SignatureExposure> {
     if !annotation_consumes_signature_exposure(annotation.syntax(), consumers) {
-        return Ok(None);
+        return Ok(SignatureExposure::Contained);
     }
     policy::signature_exposure_reach(ctx, item.def_id, item.file_path, item.name)
 }

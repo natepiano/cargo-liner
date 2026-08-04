@@ -32,12 +32,37 @@ pub(crate) struct ExecutionNotice {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NoticeKind {
-    ImportFixes(FixNotice),
+    Fixes(FixNotice),
     PubUseFixes(PubUseNotice),
 }
 
+/// Which family of edits a `FixNotice` counts. Every fixer that moves no import
+/// gets its own kind, because calling a `pub` removal or a `pub` →
+/// `pub(in crate::…)` rewrite an "import fix" names the wrong edit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FixKind {
+    /// `imports`, `module_imports`, `inline_types`, and `imports_at_top` — the
+    /// fixers that actually move or rewrite a `use` item.
+    Import,
+    /// `unused_pub` — strips a `pub` that nothing outside the module uses.
+    PubRemoval,
+    /// `narrowed_pub` — rewrites `pub` to `pub(crate)`.
+    Narrowing,
+    /// `restricted_annotation` — rewrites `pub` to an exact
+    /// `pub(in crate::…)` boundary.
+    Annotation,
+    /// `field_visibility` — rewrites a field's visibility annotation.
+    FieldVisibility,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum FixNotice {
+pub(crate) struct FixNotice {
+    fix_kind: FixKind,
+    outcome:  FixOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FixOutcome {
     NoneAvailable,
     PreviewApplied(usize),
     Applied(usize),
@@ -169,39 +194,72 @@ impl From<Vec<NoticeKind>> for ExecutionNotice {
 impl NoticeKind {
     fn render_part(&self) -> String {
         match self {
-            Self::ImportFixes(notice) => notice.render(),
+            Self::Fixes(notice) => notice.render(),
             Self::PubUseFixes(notice) => notice.render(),
+        }
+    }
+}
+
+impl FixKind {
+    /// The noun for a bare count of edits, e.g. "applied 3 import fix(es)".
+    const fn counted(self) -> &'static str {
+        match self {
+            Self::Import => "import fix(es)",
+            Self::PubRemoval => "`pub` removal(s)",
+            Self::Narrowing => "visibility narrowing(s)",
+            Self::Annotation => "annotation rewrite(s)",
+            Self::FieldVisibility => "field visibility rewrite(s)",
+        }
+    }
+
+    /// The plural noun used when nothing was available.
+    const fn plural(self) -> &'static str {
+        match self {
+            Self::Import => "import fixes",
+            Self::PubRemoval => "`pub` removals",
+            Self::Narrowing => "visibility narrowings",
+            Self::Annotation => "annotation rewrites",
+            Self::FieldVisibility => "field visibility rewrites",
         }
     }
 }
 
 impl FixNotice {
     fn render(&self) -> String {
-        match self {
-            Self::NoneAvailable => "no import fixes available".to_string(),
-            Self::PreviewApplied(count) => format!("would apply {count} import fix(es) in dry run"),
-            Self::Applied(count) => format!("applied {count} import fix(es)"),
+        match self.outcome {
+            FixOutcome::NoneAvailable => format!("no {} available", self.fix_kind.plural()),
+            FixOutcome::PreviewApplied(count) => {
+                format!("would apply {count} {} in dry run", self.fix_kind.counted())
+            },
+            FixOutcome::Applied(count) => {
+                format!("applied {count} {}", self.fix_kind.counted())
+            },
         }
     }
 
-    pub(crate) const fn from_intent(intent: OperationIntent, count: usize) -> Self {
-        match intent {
-            OperationIntent::ReadOnly => Self::NoneAvailable,
+    pub(crate) const fn from_intent(
+        intent: OperationIntent,
+        fix_kind: FixKind,
+        count: usize,
+    ) -> Self {
+        let outcome = match intent {
+            OperationIntent::ReadOnly => FixOutcome::NoneAvailable,
             OperationIntent::DryRun => {
                 if count == 0 {
-                    Self::NoneAvailable
+                    FixOutcome::NoneAvailable
                 } else {
-                    Self::PreviewApplied(count)
+                    FixOutcome::PreviewApplied(count)
                 }
             },
             OperationIntent::Apply => {
                 if count == 0 {
-                    Self::NoneAvailable
+                    FixOutcome::NoneAvailable
                 } else {
-                    Self::Applied(count)
+                    FixOutcome::Applied(count)
                 }
             },
-        }
+        };
+        Self { fix_kind, outcome }
     }
 }
 
@@ -283,6 +341,7 @@ mod tests {
     use super::AnalysisFailure;
     use super::CompilerFailureCause;
     use super::ExecutionNotice;
+    use super::FixKind;
     use super::FixNotice;
     use super::FixValidationFailure;
     use super::NoticeKind;
@@ -329,14 +388,47 @@ mod tests {
 
     #[test]
     fn import_fix_notice_respects_operation_intent() {
-        let preview = FixNotice::from_intent(OperationIntent::DryRun, 2);
+        let preview = FixNotice::from_intent(OperationIntent::DryRun, FixKind::Import, 2);
         assert_eq!(preview.render(), "would apply 2 import fix(es) in dry run");
+    }
+
+    #[test]
+    fn annotation_fix_notice_names_the_rewrite_rather_than_an_import() {
+        let applied = FixNotice::from_intent(OperationIntent::Apply, FixKind::Annotation, 3);
+        assert_eq!(applied.render(), "applied 3 annotation rewrite(s)");
+
+        let none = FixNotice::from_intent(OperationIntent::Apply, FixKind::Annotation, 0);
+        assert_eq!(none.render(), "no annotation rewrites available");
+    }
+
+    #[test]
+    fn visibility_fix_notices_name_their_own_edit() {
+        let removals = FixNotice::from_intent(OperationIntent::Apply, FixKind::PubRemoval, 2);
+        assert_eq!(removals.render(), "applied 2 `pub` removal(s)");
+
+        let narrowings = FixNotice::from_intent(OperationIntent::DryRun, FixKind::Narrowing, 1);
+        assert_eq!(
+            narrowings.render(),
+            "would apply 1 visibility narrowing(s) in dry run"
+        );
+
+        let fields = FixNotice::from_intent(OperationIntent::Apply, FixKind::FieldVisibility, 0);
+        assert_eq!(fields.render(), "no field visibility rewrites available");
     }
 
     #[test]
     fn combined_notice_renders_all_parts() {
         let notice = ExecutionNotice::from(vec![
-            NoticeKind::ImportFixes(FixNotice::Applied(2)),
+            NoticeKind::Fixes(FixNotice::from_intent(
+                OperationIntent::Apply,
+                FixKind::Import,
+                2,
+            )),
+            NoticeKind::Fixes(FixNotice::from_intent(
+                OperationIntent::Apply,
+                FixKind::Annotation,
+                1,
+            )),
             NoticeKind::PubUseFixes(PubUseNotice::Applied {
                 applied:             1,
                 skipped_unsupported: 0,
@@ -344,7 +436,7 @@ mod tests {
         ]);
         assert_eq!(
             notice.render(),
-            "mend: applied 2 import fix(es); applied 1 `pub use` fix(es)"
+            "mend: applied 2 import fix(es); applied 1 annotation rewrite(s); applied 1 `pub use` fix(es)"
         );
     }
 }

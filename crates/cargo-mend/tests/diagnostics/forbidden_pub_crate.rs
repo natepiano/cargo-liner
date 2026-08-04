@@ -9,6 +9,7 @@ use crate::support::*;
 #[test]
 fn integration_test_support_module_pub_crate_is_rejected() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -62,6 +63,7 @@ edition = "2024"
 #[test]
 fn pub_crate_at_depth_1_is_allowed() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -95,6 +97,7 @@ edition = "2024"
 #[test]
 fn pub_crate_at_depth_2_is_allowed() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -133,6 +136,7 @@ edition = "2024"
 #[test]
 fn pub_crate_at_depth_3_is_allowed_when_parent_caps_at_pub_crate() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -285,6 +289,7 @@ edition = "2024"
 #[test]
 fn restricted_facade_chain_renders_the_resolved_boundary_exactly() {
     let temp = tempdir().expect("create restricted facade chain fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a/b/c")).expect("create fixture modules");
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -333,6 +338,7 @@ edition = "2024"
 #[test]
 fn pub_crate_at_depth_3_fires_when_parent_does_not_reexport() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -371,6 +377,7 @@ edition = "2024"
 #[test]
 fn named_reexport_beside_glob_keeps_chain_resolvable() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -473,6 +480,7 @@ edition = "2024"
 #[test]
 fn renamed_facades_resolve_the_chain_without_advertising_an_auto_fix() {
     let temp = tempdir().expect("create renamed facade fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a/b/c")).expect("create fixture modules");
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -536,6 +544,7 @@ edition = "2024"
 #[test]
 fn super_to_crate_chain_permits_the_pub_crate_boundary() {
     let temp = tempdir().expect("create super to crate facade fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a/b/c")).expect("create fixture modules");
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -576,6 +585,7 @@ edition = "2024"
 #[test]
 fn pub_crate_at_depth_3_requires_structure_for_a_crate_visible_method_surface() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -649,6 +659,7 @@ pub(crate) struct Storage {
 #[test]
 fn pub_crate_in_library_pub_mod_fires() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -688,6 +699,7 @@ fn mutually_referencing_public_signatures_do_not_overflow_exposure_walk() {
     // and overflow the compiler-driver stack. The walk must terminate and
     // retain `Storage`'s crate-visible exposure through `Cache::commit`.
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),

@@ -13,6 +13,7 @@ fn write_inline_fixture(root: &std::path::Path, package_name: &str, source: &str
 #[test]
 fn basic_inline_type_adds_use() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -79,6 +80,7 @@ edition = "2024"
 #[test]
 fn function_return_type() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -142,6 +144,7 @@ edition = "2024"
 #[test]
 fn multiple_occurrences_one_use() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -206,6 +209,7 @@ fn third(_x: crate::parent::types::MyType) {}
 #[test]
 fn nested_module_inserts_use_in_containing_scope() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -274,6 +278,7 @@ mod tests {
 #[test]
 fn nested_module_uses_parent_import_for_partial_path() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -375,6 +380,7 @@ mod tests {
 #[test]
 fn synthesized_import_inherits_use_site_cfg() {
     let temp = tempdir().expect("create cfg-gated inline path fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::write(
         temp.path().join("Cargo.toml"),
         r#"[package]
@@ -461,6 +467,7 @@ mod tests {
 #[test]
 fn synthesized_import_keeps_only_mixed_cfg_attr_gate() {
     let temp = tempdir().expect("create mixed cfg_attr fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::write(
         temp.path().join("Cargo.toml"),
         r#"[package]
@@ -543,6 +550,7 @@ fn main() {}
 #[test]
 fn synthesized_import_inherits_nested_cfg_attr_gate() {
     let temp = tempdir().expect("create nested cfg_attr fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::write(
         temp.path().join("Cargo.toml"),
         r#"[package]
@@ -598,6 +606,7 @@ fn main() {}
 #[test]
 fn synthesized_import_ignores_non_gating_cfg_attr() {
     let temp = tempdir().expect("create non-gating cfg_attr fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::write(
         temp.path().join("Cargo.toml"),
         r#"[package]
@@ -671,6 +680,7 @@ fn main() {}
 #[test]
 fn synthesized_import_declines_different_cfg_gates() {
     let temp = tempdir().expect("create different cfg gate fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::write(
         temp.path().join("Cargo.toml"),
         r#"[package]
@@ -735,6 +745,7 @@ fn main() { keep_import_used(); }
 #[test]
 fn two_types_same_module() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -796,6 +807,7 @@ edition = "2024"
 #[test]
 fn name_collision_skips_both() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -852,6 +864,7 @@ edition = "2024"
 #[test]
 fn flags_std_paths() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -885,6 +898,7 @@ edition = "2024"
 #[test]
 fn skips_use_statements() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -930,6 +944,7 @@ edition = "2024"
 #[test]
 fn super_path() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -990,6 +1005,7 @@ edition = "2024"
 #[test]
 fn existing_use_no_duplicate() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1058,6 +1074,7 @@ fn example(_x: MyType, _y: crate::parent::types::MyType) {}
 #[test]
 fn conflicting_private_import_keeps_qualified_type() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     let source = r#"use std::error::Error;
 use std::io;
 
@@ -1103,6 +1120,7 @@ fn main() {}
 #[test]
 fn grouped_private_import_keeps_qualified_type() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     let source = r#"use std::{error::Error, io};
 
 fn completed_capture() -> Result<(), io::Error> {
@@ -1138,6 +1156,7 @@ fn main() {}
 #[test]
 fn renamed_private_import_keeps_qualified_type() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     let source = r#"mod capture {
     pub trait CaptureError {}
 }
@@ -1178,6 +1197,7 @@ fn main() {}
 #[test]
 fn renamed_import_does_not_hide_required_bare_import() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     write_inline_fixture(
         temp.path(),
         "inline_renamed_existing_import_fixture",
@@ -1223,6 +1243,7 @@ fn main() {}
 #[test]
 fn sibling_scope_import_does_not_block_fix() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     write_inline_fixture(
         temp.path(),
         "inline_sibling_scope_fixture",
@@ -1274,6 +1295,7 @@ fn main() {}
 #[test]
 fn existing_pub_use_binding_no_duplicate() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1335,6 +1357,7 @@ fn main() {
 #[test]
 fn dry_run_no_edits() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1392,6 +1415,7 @@ edition = "2024"
 #[test]
 fn read_only_reports_findings() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1437,6 +1461,7 @@ edition = "2024"
 #[test]
 fn nothing_to_fix() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1463,6 +1488,7 @@ edition = "2024"
 #[test]
 fn generic_type_params_preserved() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1528,6 +1554,7 @@ edition = "2024"
 #[test]
 fn bare_name_shadowing_skipped() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1597,6 +1624,7 @@ fn uses_inline() -> crate::error::Result<String> {
 #[test]
 fn struct_literal_and_pattern_paths_get_rewritten() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1707,6 +1735,7 @@ pub struct TupleType(pub i32);
 #[test]
 fn enum_variant_and_same_named_struct_do_not_collide() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1820,6 +1849,7 @@ mod tests {
 #[test]
 fn multi_byte_chars_do_not_corrupt_replacement_span() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1885,6 +1915,7 @@ edition = "2024"
 #[test]
 fn multi_segment_path_with_pascal_first_segment_blocks_shadowing_import() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1938,6 +1969,7 @@ fn main() {
 #[test]
 fn impl_trait_path_is_rewritten() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -2007,6 +2039,7 @@ impl crate::pane::Hittable for Manager {
 #[test]
 fn does_not_import_prelude_names() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -2065,6 +2098,7 @@ fn main() {}
 #[test]
 fn partial_path_import_is_resolved_to_absolute() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -2124,6 +2158,7 @@ fn main() {
 #[test]
 fn generic_type_param_associated_items_are_not_flagged() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -2206,6 +2241,7 @@ fn main() {}
 #[test]
 fn generic_type_param_in_fn_body_is_not_flagged() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -2273,6 +2309,7 @@ fn main() {}
 #[test]
 fn enum_variant_two_segment_path_is_not_flagged() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -2326,6 +2363,7 @@ fn main() {}
 #[test]
 fn external_crate_enum_variant_path_is_rewritten() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -2392,6 +2430,7 @@ fn main() {
 #[test]
 fn external_crate_path_in_argument_is_rewritten() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),

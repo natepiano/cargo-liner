@@ -9,10 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Exact, crate-rooted `pub(in crate::path)` declaration boundaries that match a parent facade are
-  now accepted when `[visibility] pub_in_path` is `"permitted"` (the default) or `"required"`.
+  now accepted when `[visibility] pub_in_path` is `"permitted"` or `"required"` (the default).
   `required` also revises `suspicious_pub` advice for a bare `pub` behind such a facade. There is no
   warning-first grace mode: `[diagnostics]` supports enable/disable, not severity levels, and the
   required annotation change is a one-line edit.
+- The global configuration is migrated once to the new default. A global `config.toml` written before
+  this release carries no `config_version`, so its `[visibility] pub_in_path = "permitted"` is
+  rewritten to `"required"` on the first run and then stamped with the version; every later run
+  reads the stamp and leaves the value alone. To keep the previous behavior, set
+  `pub_in_path = "permitted"` in the global configuration *after the first run of the upgraded
+  binary* — that first run is what writes the stamp, and a config that carries the stamp is never
+  revisited, so the value sticks from then on. Setting it before that first run does not work: the
+  file still has no stamp, so the migration rewrites the value. A project `mend.toml` is never
+  rewritten.
 
 #### Visibility-policy upgrade contract
 
@@ -34,6 +43,16 @@ The following two-code matrix applies to `forbidden_pub_in_crate` and `forbidden
   the headline, and `render_diagnostic` no longer repeats it in `rendered`. Consumers of mend's
   cargo JSON therefore see one fewer child on every forbidden-visibility finding, including when
   the finding itself is otherwise unchanged.
+- **The `--fix` summary now names the kind of edit it applied:** every fixer except `pub use` was
+  previously counted into one "import fix(es)" total, so a run that removed a `pub` or rewrote an
+  annotation announced an import fix it had not made. Removing a `pub`, narrowing one to
+  `pub(crate)`, rewriting a `pub` to an exact `pub(in crate::...)` boundary, and rewriting a field
+  annotation now each report under their own noun — "`pub` removal(s)", "visibility narrowing(s)",
+  "annotation rewrite(s)", and "field visibility rewrite(s)" — with one clause per kind when a run
+  applies more than one. Only the kinds that applied something are named — a kind with nothing to
+  do is left out rather than reporting a zero — and a run that applied nothing at all still reports
+  a single "nothing available" line. "import fix(es)" now counts only the fixers that move or
+  rewrite a `use` item. Consumers matching the old text will see different output.
 - **Struct and union fields now follow the `pub(crate)` location policy:** a `pub(crate)` field now
   reaches the same rejection rule as a `pub(crate)` item wherever that policy does not permit it.
   This does not make every `pub(crate)` field an error: permitted locations remain green, and

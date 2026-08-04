@@ -21,7 +21,7 @@ fn crate_root_prelude_is_not_flagged_when_project_allows_it() {
     write_manifest(temp.path(), "prelude_fixture");
     fs::write(
         temp.path().join("mend.toml"),
-        "[visibility]\nallow_prelude_pub_mod = true\n",
+        "[visibility]\nallow_prelude_pub_mod = true\npub_in_path = \"permitted\"\n",
     )
     .expect("write mend.toml");
     fs::write(
@@ -48,7 +48,7 @@ fn crate_root_prelude_is_flagged_when_project_requires_review() {
     write_manifest(temp.path(), "prelude_review_fixture");
     fs::write(
         temp.path().join("mend.toml"),
-        "[visibility]\nallow_prelude_pub_mod = false\n",
+        "[visibility]\nallow_prelude_pub_mod = false\npub_in_path = \"permitted\"\n",
     )
     .expect("write mend.toml");
     fs::write(
@@ -71,6 +71,7 @@ fn crate_root_prelude_is_flagged_when_project_requires_review() {
 #[test]
 fn nested_prelude_is_still_flagged() {
     let temp = tempdir().expect("create temp project dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/inner")).expect("create src/inner");
     write_manifest(temp.path(), "nested_prelude_fixture");
     fs::write(
@@ -98,6 +99,7 @@ fn nested_prelude_is_still_flagged() {
 #[test]
 fn crate_root_non_prelude_pub_mod_is_still_flagged() {
     let temp = tempdir().expect("create temp project dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src")).expect("create src");
     write_manifest(temp.path(), "non_prelude_fixture");
     fs::write(

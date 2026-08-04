@@ -31,6 +31,7 @@ pub(crate) use outcome::AnalysisFailure;
 pub(crate) use outcome::CompilerFailureCause;
 pub(crate) use outcome::ExecutionNotice;
 pub(crate) use outcome::ExecutionOutcome;
+pub(crate) use outcome::FixKind;
 pub(crate) use outcome::FixNotice;
 pub(crate) use outcome::FixValidationFailure;
 pub(crate) use outcome::MendFailure;

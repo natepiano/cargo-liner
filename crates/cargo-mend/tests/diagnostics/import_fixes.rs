@@ -3,6 +3,7 @@ use crate::support::*;
 #[test]
 fn fix_rewrites_local_crate_import() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -53,6 +54,7 @@ pub struct Thing;
 #[test]
 fn fix_does_not_introduce_self_for_same_module_child_imports() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -102,6 +104,7 @@ edition = "2024"
 #[test]
 fn fix_preserves_pub_use_visibility() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -151,6 +154,7 @@ edition = "2024"
 #[test]
 fn fix_preserves_pub_crate_use_visibility() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -196,6 +200,7 @@ edition = "2024"
 #[test]
 fn fix_rolls_back_on_failed_cargo_check() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -252,6 +257,7 @@ pub struct Thing;
 #[test]
 fn fix_reports_when_nothing_is_fixable() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -290,6 +296,7 @@ edition = "2024"
 #[test]
 fn fix_reports_noop_notice_after_summary() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -330,6 +337,7 @@ edition = "2024"
 #[test]
 fn fix_reports_applied_notice_after_summary() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -386,6 +394,7 @@ edition = "2024"
 #[test]
 fn dry_run_reports_import_fixes_without_editing_files() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -429,7 +438,10 @@ edition = "2024"
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("mend: would apply 2 import fix(es) in dry run"));
+    // One edit moves the import and the other strips an unreachable `pub`, so
+    // each is counted under its own fix kind rather than as two import fixes.
+    assert!(stderr.contains("mend: would apply 1 import fix(es) in dry run"));
+    assert!(stderr.contains("would apply 1 `pub` removal(s) in dry run"));
 
     let consumer = fs::read_to_string(temp.path().join("src/parent/consumer.rs"))
         .expect("read consumer after dry-run");
@@ -439,6 +451,7 @@ edition = "2024"
 #[test]
 fn already_local_imports_are_not_reported() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -489,6 +502,7 @@ edition = "2024"
 #[test]
 fn top_level_peer_imports_are_not_reported() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -529,6 +543,7 @@ edition = "2024"
 #[test]
 fn grouped_imports_are_ignored_safely() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -574,6 +589,7 @@ edition = "2024"
 #[test]
 fn deep_super_is_flagged_and_fixed() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -638,6 +654,7 @@ edition = "2024"
 #[test]
 fn triple_super_is_flagged_and_fixed() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -697,6 +714,7 @@ edition = "2024"
 #[test]
 fn single_super_is_not_flagged_as_deep() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),

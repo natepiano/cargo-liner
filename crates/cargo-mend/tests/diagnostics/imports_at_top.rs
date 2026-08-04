@@ -17,6 +17,7 @@ edition = "2024"
 #[test]
 fn moves_use_from_fn_body_to_file_top() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     write_manifest(temp.path(), "imports_at_top_basic");
     fs::create_dir_all(temp.path().join("src")).expect("create src");
     fs::write(
@@ -65,6 +66,7 @@ fn example() {
 #[test]
 fn moves_use_in_inline_mod_to_top_of_inline_mod() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     write_manifest(temp.path(), "imports_at_top_inline_mod");
     fs::create_dir_all(temp.path().join("src")).expect("create src");
     fs::write(
@@ -128,6 +130,7 @@ fn moves_cfg_gated_use_carrying_its_gate() {
     // traits share the `ext` method name so exactly one is in scope per target
     // and the call site stays unconditional.
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     write_manifest(temp.path(), "imports_at_top_cfg");
     fs::create_dir_all(temp.path().join("src")).expect("create src");
     fs::write(
@@ -204,6 +207,7 @@ fn moves_use_from_cfg_gated_block_carrying_the_gate() {
     // (minus the `use`). Traits live in a submodule so the moved imports are
     // not redundant self-imports at the crate root.
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     write_manifest(temp.path(), "imports_at_top_cfg_block");
     fs::create_dir_all(temp.path().join("src")).expect("create src");
     fs::write(
@@ -281,6 +285,7 @@ pub fn native_id(handle: &Handle) -> u64 {
 #[test]
 fn skips_when_bare_name_collides_with_existing_top_import() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     write_manifest(temp.path(), "imports_at_top_collision");
     fs::create_dir_all(temp.path().join("src")).expect("create src");
     fs::write(
@@ -327,6 +332,7 @@ fn example() {
 #[test]
 fn dedupes_when_use_already_at_top() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     write_manifest(temp.path(), "imports_at_top_dedupe");
     fs::create_dir_all(temp.path().join("src")).expect("create src");
     fs::write(

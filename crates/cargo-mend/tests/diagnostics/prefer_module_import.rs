@@ -3,6 +3,7 @@ use crate::support::*;
 #[test]
 fn basic_function_import_rewrite() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -72,6 +73,7 @@ fn example() -> i32 {
 #[test]
 fn multiple_references_all_qualified() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -131,6 +133,7 @@ fn third() -> i32 { do_thing() }
 #[test]
 fn super_path_rewrite() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -210,6 +213,7 @@ fn example() -> i32 { do_thing() }
 #[test]
 fn multiple_functions_same_module() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -283,6 +287,7 @@ fn example() -> i32 { func_a() + func_b() }
 #[test]
 fn skips_type_imports() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -328,6 +333,7 @@ edition = "2024"
 #[test]
 fn skips_constant_imports() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -373,6 +379,7 @@ edition = "2024"
 #[test]
 fn skips_grouped_imports() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -418,6 +425,7 @@ edition = "2024"
 #[test]
 fn skips_renamed_imports() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -463,6 +471,7 @@ edition = "2024"
 #[test]
 fn skips_std_imports() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -500,6 +509,7 @@ fn main() {
 #[test]
 fn dry_run_no_edits() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -561,6 +571,7 @@ fn example() -> i32 { do_thing() }
 #[test]
 fn read_only_reports_findings() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -617,6 +628,7 @@ fn example() -> i32 { do_thing() }
 #[test]
 fn nothing_to_fix() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -643,6 +655,7 @@ edition = "2024"
 #[test]
 fn function_used_as_value() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -710,6 +723,7 @@ fn example() -> i32 {
 #[test]
 fn super_path_multiple_functions_same_module() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -803,6 +817,7 @@ fn example(obs: &[Obstacle]) -> bool {
 #[test]
 fn two_segment_super_module_import_not_flagged() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -851,6 +866,7 @@ fn example() -> i32 { utils::do_thing() }
 #[test]
 fn project_config_disables_prefer_module_import() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -865,6 +881,9 @@ edition = "2024"
         temp.path().join("mend.toml"),
         r#"[diagnostics]
 prefer_module_import = false
+
+[visibility]
+pub_in_path = "permitted"
 "#,
     )
     .expect("write mend.toml");
@@ -906,6 +925,7 @@ fn example() -> i32 { do_thing() }
 #[test]
 fn skips_super_super_module_import() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -963,6 +983,7 @@ fn example(_basis: CameraBasis) -> i32 { support::helper() }
 #[test]
 fn skips_function_import_when_mod_declared_in_same_file() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1003,6 +1024,7 @@ fn main() { button_zoom_just_pressed(); }
 #[test]
 fn skips_crate_path_module_import() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1069,6 +1091,7 @@ edition = "2024"
 #[test]
 fn fix_qualifies_bare_refs_inside_macros() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1140,6 +1163,7 @@ fn example() -> bool {
 #[test]
 fn deletes_function_import_when_module_already_imported() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1227,6 +1251,7 @@ fn skips_function_import_when_name_collides_with_other_module() {
     // the existing `geometry` import (E0252) and misroute the call (E0425), so
     // mend must leave the function import untouched.
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1312,6 +1337,7 @@ fn example() -> (Edge, i32) {
 #[test]
 fn inline_call_inserts_use_and_qualifies() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1391,6 +1417,7 @@ edition = "2024"
 #[test]
 fn inline_call_reuses_existing_module_use() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1461,6 +1488,7 @@ fn example() {
 #[test]
 fn inline_call_skipped_when_mod_declared_same_file() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1506,6 +1534,7 @@ fn inline_call_skipped_inside_nested_mod_block() {
     // means a different module than inside the nested `mod tests`, so the
     // inserted use is unused and the nested call site loses its binding.
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1593,6 +1622,7 @@ fn function_use_inside_nested_mod_shortens_against_nested_path() {
     // `super` resolved to the wrong parent at the use site, producing
     // E0432: unresolved import.
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1675,6 +1705,7 @@ fn skips_bare_ref_shadowed_by_local_binding() {
     // ident match to `module::NAME`, producing `fn item` where `f32` was
     // expected and triggering rollback on compile.
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1763,6 +1794,7 @@ fn skips_struct_literal_field_shorthand() {
     // leave shorthand inits alone (or expand them to `name: module::name`),
     // not blindly rewrite the bare token.
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1844,6 +1876,7 @@ fn build(font_size: f32, scale: f32, origin_y: f32) -> ArrowGeometry {
 #[test]
 fn inline_call_to_parent_module_uses_super() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1927,6 +1960,7 @@ edition = "2024"
 #[test]
 fn function_import_from_parent_module_drops_use() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -2013,6 +2047,7 @@ fn second() -> i32 { do_thing() + 1 }
 #[test]
 fn parent_module_reference_inside_inline_test_mod() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -2088,6 +2123,7 @@ mod tests {
 #[test]
 fn parent_module_multiple_function_imports() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -2160,6 +2196,7 @@ fn example() -> i32 { do_thing() + other_thing() }
 #[test]
 fn parent_and_sibling_inline_calls_in_same_file() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -2247,6 +2284,7 @@ edition = "2024"
 #[test]
 fn skips_import_of_inline_mod_in_parent_file() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -2300,6 +2338,7 @@ pub fn run() -> &'static str {
 #[test]
 fn inline_call_into_inline_mod_rewrites_with_module_import() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -2314,6 +2353,9 @@ edition = "2024"
         temp.path().join("mend.toml"),
         r#"[diagnostics]
 review_pub_mod = false
+
+[visibility]
+pub_in_path = "permitted"
 "#,
     )
     .expect("write mend.toml");
@@ -2373,6 +2415,7 @@ review_pub_mod = false
 #[test]
 fn inline_call_use_inserted_when_nested_mod_rewrites_same_module() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -2450,6 +2493,7 @@ mod tests {
 #[test]
 fn function_imports_same_module_top_level_and_in_nested_mod() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -2529,6 +2573,7 @@ mod tests {
 #[test]
 fn nested_mod_function_import_rewrites_when_module_imported_at_top_level() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -2604,6 +2649,7 @@ mod tests {
 #[test]
 fn skips_functions_named_by_an_attribute() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),

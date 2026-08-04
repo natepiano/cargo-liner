@@ -5,6 +5,7 @@ use crate::support::*;
 #[test]
 fn pub_in_private_top_level_module_is_flagged() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -46,6 +47,7 @@ edition = "2024"
 #[test]
 fn shallow_public_signature_prevents_pub_crate_narrowing() {
     let temp = tempdir().expect("create shallow signature fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -92,6 +94,7 @@ edition = "2024"
 #[test]
 fn re_exported_item_is_not_flagged() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -140,6 +143,7 @@ edition = "2024"
 #[test]
 fn fix_preserves_pub_required_by_private_module_reexport() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -228,6 +232,7 @@ edition = "2024"
 #[test]
 fn fix_preserves_pub_required_by_public_trait_interface() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -314,6 +319,7 @@ define_public_tool!();
 #[test]
 fn mixed_items_only_non_exported_flagged() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -350,6 +356,7 @@ edition = "2024"
 #[test]
 fn mod_rs_top_level_module_is_flagged() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -390,6 +397,7 @@ edition = "2024"
 #[test]
 fn binary_crate_top_level_module_is_not_flagged() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -428,6 +436,7 @@ edition = "2024"
 #[test]
 fn dry_run_reports_fix_count() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -472,6 +481,7 @@ edition = "2024"
 #[test]
 fn fix_replaces_pub_with_pub_crate() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -527,6 +537,7 @@ fn fix_narrows_a_pub_written_on_its_own_line() {
     // must still land, and must replace only the annotation: advertising a fix
     // and then editing nothing is the failure this pins.
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -574,6 +585,7 @@ fn fix_narrows_a_tab_indented_pub() {
     // columns. Reading it as a byte offset lands past the `pub` and the fix
     // silently never lands.
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -618,6 +630,7 @@ edition = "2024"
 #[test]
 fn methods_on_re_exported_type_are_not_flagged() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -689,6 +702,7 @@ impl InternalHelper {
 #[test]
 fn type_reachable_via_reexported_enum_variant_is_not_flagged() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -779,6 +793,7 @@ impl InternalFrame {
 #[test]
 fn methods_on_non_exported_type_are_flagged() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -825,6 +840,7 @@ impl InternalHelper {
 #[test]
 fn integration_test_support_module_is_not_narrowed() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -890,6 +906,7 @@ edition = "2024"
 #[test]
 fn pub_at_depth_3_is_narrowed_when_parent_caps_at_pub_crate() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -938,6 +955,7 @@ edition = "2024"
 #[test]
 fn restricted_facade_and_crate_signature_join_to_pub_crate_narrowing() {
     let temp = tempdir().expect("create joined reach fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1002,6 +1020,7 @@ edition = "2024"
 #[test]
 fn nested_public_signature_exceeds_pub_crate_facade_floor() {
     let temp = tempdir().expect("create nested signature fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1079,6 +1098,7 @@ edition = "2024"
         temp.path().join("mend.toml"),
         r#"[visibility]
 allow_pub_mod = ["src/a/b/c.rs"]
+pub_in_path = "permitted"
 "#,
     )
     .expect("write fixture visibility config");
@@ -1132,6 +1152,7 @@ allow_pub_mod = ["src/a/b/c.rs"]
 #[test]
 fn binary_pub_at_depth_3_is_not_narrowed_when_parent_caps_at_pub_crate() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1193,6 +1214,7 @@ fn fix_compiler_does_not_remove_reexport_used_only_by_cfg_test_code() {
     // `--all-targets` so the test caller is visible and rustc does NOT emit
     // the `unused_imports` warning. The re-export must survive.
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1285,6 +1307,8 @@ fn fix_compiler_keeps_reexport_used_only_by_feature_gated_module() {
     }
 
     let temp = tempdir().expect("create feature-gated re-export fixture dir");
+
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::write(
         temp.path().join("Cargo.toml"),
         r#"[package]
@@ -1383,6 +1407,8 @@ fn fix_compiler_keeps_reexport_used_by_negated_feature_gate() {
     }
 
     let temp = tempdir().expect("create negated-feature re-export fixture dir");
+
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::write(
         temp.path().join("Cargo.toml"),
         r#"[package]
@@ -1499,6 +1525,7 @@ fn fix_does_not_narrow_pub_fn_used_only_from_cfg_test_caller() {
     // the test caller via `super::panes::cpu_required_pane_height(...)`,
     // so it must NOT be flagged as a stale internal facade.
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1574,6 +1601,7 @@ fn fix_does_not_narrow_pub_fn_for_cfg_test_gated_pub_super_reexport() {
     // parent subtree. Mend must not flag the underlying `pub fn` as
     // narrowable or the re-export as removable.
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1658,6 +1686,7 @@ fn fix_does_not_narrow_pub_fn_called_only_from_cfg_test_assert_macro() {
     // This test passes when either (a) the source-level scanner walks
     // macro token streams, or (b) HIR-level reachability is used.
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),

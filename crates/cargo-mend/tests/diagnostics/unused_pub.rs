@@ -3,6 +3,7 @@ use crate::support::*;
 #[test]
 fn pub_item_used_only_inside_module_subtree_is_flagged() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -57,6 +58,7 @@ edition = "2024"
 #[test]
 fn parent_caller_suppresses_unused_pub_and_keeps_pub_crate_narrowing() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -98,6 +100,7 @@ edition = "2024"
 #[test]
 fn library_root_pub_item_is_not_flagged() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -131,6 +134,7 @@ fn type_reachable_only_through_pub_crate_alias_is_not_flagged_unused() {
     // and `Secret` (reachable only through `Inner`'s private field) stay
     // genuinely unused.
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -223,6 +227,7 @@ fn fix_narrows_alias_exposed_types_instead_of_breaking_the_build() {
     // type (E0446) and the whole batch rolled back. The fix narrows them to
     // `pub(crate)` and the build stays green.
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -312,6 +317,7 @@ fn type_reachable_only_through_pub_crate_fn_return_is_not_flagged_unused() {
     // `Secret` (reachable only through `Returned`'s private field) stay
     // genuinely unused.
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -396,6 +402,7 @@ fn fix_narrows_fn_return_exposed_type_instead_of_breaking_the_build() {
     // private type (E0446) and the whole batch rolled back. The fix narrows
     // it to `pub(crate)` and the build stays green.
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -464,6 +471,7 @@ pub(crate) fn make() -> Returned {
 #[test]
 fn fix_removes_pub_from_items_and_methods() {
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -521,6 +529,7 @@ fn fix_never_strips_a_restricted_annotation() {
     // visibility the author wrote. The bare sibling in the same file proves the
     // fixer did run over this source rather than skipping it wholesale.
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -569,6 +578,7 @@ fn type_named_in_trait_impl_interface_is_not_flagged_unused() {
     // `#[bind_group_data(...)]` in bevy), which exist only in expanded HIR.
     // `Orphan` has no interface mention and stays flagged.
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -641,6 +651,7 @@ fn fix_keeps_trait_impl_interface_type_compiling() {
     // `ExtensionKey`, the `impl Iterator for Extension` interface then
     // leaked a private type (E0446), and the whole batch rolled back.
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),

@@ -196,14 +196,14 @@ mod tests {
     }
 
     #[test]
-    fn absent_project_and_global_pub_in_path_uses_permitted() -> Result<()> {
+    fn absent_project_and_global_pub_in_path_uses_required() -> Result<()> {
         let temp = tempdir()?;
 
         let loaded_config = load_config(temp.path(), temp.path(), None, &GlobalConfig::default())?;
 
         assert_eq!(
             loaded_config.visibility_config.pub_in_path,
-            PubInPath::Permitted
+            PubInPath::Required
         );
         Ok(())
     }

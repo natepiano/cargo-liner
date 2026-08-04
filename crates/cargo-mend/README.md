@@ -75,7 +75,7 @@ allow_pub_items = [
   "src/example/private_child.rs::SomeIntentionalFacadeItem",
 ]
 # exact declaration-only parent-facade boundaries: forbidden | permitted | required
-pub_in_path = "permitted"
+pub_in_path = "required"
 ```
 
 Use the allowlists sparingly. The default assumption should be that the code structure is wrong before
@@ -84,8 +84,9 @@ the policy is wrong.
 `pub_in_path` controls exact crate-rooted `pub(in crate::path)` boundaries on declarations:
 
 - `forbidden` rejects them
-- `permitted` (the default) accepts them when they exactly match a parent-facade boundary
-- `required` also asks `suspicious_pub` to recommend that boundary instead of bare `pub`
+- `permitted` accepts them when they exactly match a parent-facade boundary
+- `required` (the default) also asks `suspicious_pub` to recommend that boundary instead of bare
+  `pub`, and `cargo mend --fix` rewrites the declaration
 
 Other restricted spellings, such as `pub(in crate)`, relative `pub(in super::...)` paths, and
 boundaries that do not match the facade remain diagnostics.
@@ -109,8 +110,8 @@ review_pub_mod = true
 [visibility]
 # default-on; set false to review crate-root prelude modules too
 allow_prelude_pub_mod = true
-# exact declaration-only parent-facade boundaries
-pub_in_path = "permitted"
+# required (default) reviews pub; permitted also accepts it; forbidden rejects pub(in ...)
+pub_in_path = "required"
 ```
 
 For `allow_prelude_pub_mod` and `pub_in_path`, a project `mend.toml` value overrides the global

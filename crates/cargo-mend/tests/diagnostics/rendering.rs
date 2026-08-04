@@ -546,6 +546,7 @@ fn cached_findings_reused_across_different_target_selections() {
     // already tracks) plus the diagnostic config — not on the user's
     // target-selection flags.
     let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -663,6 +664,7 @@ edition = "2024"
         temp.path().join("mend.toml"),
         r#"[visibility]
 allow_pub_mod = ["src/private_tools/mod.rs"]
+pub_in_path = "permitted"
 "#,
     )
     .expect("write local mend config");
@@ -712,6 +714,7 @@ resolver = "3"
         temp.path().join("mend.toml"),
         r#"[visibility]
 allow_pub_mod = ["mcp/src/private_tools/mod.rs"]
+pub_in_path = "permitted"
 "#,
     )
     .expect("write workspace mend config");
@@ -756,6 +759,7 @@ fn main() {}
 #[test]
 fn workspace_sibling_literal_crate_paths_do_not_count_as_facade_usage() {
     let temp = tempdir().expect("create temp workspace dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("app/src/tool")).expect("create app dirs");
     fs::create_dir_all(temp.path().join("macros/src")).expect("create macros dirs");
 
@@ -835,6 +839,7 @@ edition = "2024"
 #[test]
 fn workspace_descendant_macro_literal_counts_as_inside_facade_usage() {
     let temp = tempdir().expect("create descendant literal workspace dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("app/src/a")).expect("create app fixture modules");
     fs::create_dir_all(temp.path().join("support/src")).expect("create support fixture module");
 
@@ -905,6 +910,7 @@ edition = "2024"
 #[test]
 fn standalone_descendant_macro_literal_counts_as_inside_facade_usage() {
     let temp = tempdir().expect("create standalone descendant literal dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a")).expect("create standalone fixture modules");
 
     fs::write(
@@ -950,6 +956,7 @@ edition = "2024"
 #[test]
 fn inactive_nested_module_literal_counts_as_inside_facade_usage() {
     let temp = tempdir().expect("create inactive nested literal fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a")).expect("create fixture modules");
 
     fs::write(
@@ -998,6 +1005,7 @@ hidden = []
 #[test]
 fn out_of_source_root_macro_literal_counts_as_facade_usage() {
     let temp = tempdir().expect("create out-of-root literal fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
 
     fs::write(
@@ -1043,6 +1051,7 @@ edition = "2024"
 #[test]
 fn out_of_source_root_parsed_path_counts_as_facade_usage() {
     let temp = tempdir().expect("create out-of-root parsed path fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a")).expect("create fixture modules");
 
     fs::write(
@@ -1125,6 +1134,7 @@ edition = "2024"
 #[test]
 fn cfg_attr_path_candidate_macro_literal_counts_as_facade_usage() {
     let temp = tempdir().expect("create cfg_attr path fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a")).expect("create fixture modules");
 
     fs::write(
@@ -1172,6 +1182,9 @@ fn outside_package_root_macro_literal_counts_as_facade_usage() {
     let temp = tempdir().expect("create outside-package literal fixture dir");
     let package_root = temp.path().join("package");
     fs::create_dir_all(package_root.join("src/a/b")).expect("create fixture modules");
+    // The package root is a subdirectory here, and config discovery does not
+    // climb above it — the pin has to land beside the manifest, not beside it.
+    pin_pub_in_path(&package_root, PubInPath::Permitted);
 
     fs::write(
         package_root.join("Cargo.toml"),
@@ -1217,6 +1230,7 @@ edition = "2024"
 #[test]
 fn macro_only_descendant_literal_counts_as_inside_facade_usage() {
     let temp = tempdir().expect("create macro-only descendant fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
 
     fs::write(
@@ -1259,6 +1273,7 @@ edition = "2024"
 #[test]
 fn foreign_crate_macro_literal_does_not_count_as_facade_usage() {
     let temp = tempdir().expect("create foreign crate literal fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
 
     fs::write(
@@ -1300,6 +1315,7 @@ edition = "2024"
 #[test]
 fn literal_crate_paths_accept_separator_trivia_but_reject_foreign_crates() {
     let temp = tempdir().expect("create separator trivia fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a")).expect("create fixture modules");
 
     fs::write(
@@ -1360,6 +1376,7 @@ const _: &str = stringify!(some_crate :: a :: ForeignThing);
 #[test]
 fn literal_crate_paths_ignore_comment_markers_inside_literals() {
     let temp = tempdir().expect("create literal marker fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a")).expect("create fixture modules");
 
     fs::write(
@@ -1417,6 +1434,7 @@ const _: (&str, &str) = ("*/", stringify!(crate::a /* separator */ :: BlockThing
 #[test]
 fn unicode_literal_paths_respect_identifier_boundaries() {
     let temp = tempdir().expect("create Unicode literal fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/café")).expect("create fixture modules");
 
     fs::write(
@@ -1473,6 +1491,7 @@ edition = "2024"
 #[test]
 fn dollar_crate_macro_literal_counts_as_facade_usage() {
     let temp = tempdir().expect("create dollar crate literal fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
 
     fs::write(
@@ -1515,6 +1534,7 @@ edition = "2024"
 #[test]
 fn raw_identifier_macro_literal_counts_as_facade_usage() {
     let temp = tempdir().expect("create raw identifier literal fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
 
     fs::write(
@@ -1557,6 +1577,7 @@ edition = "2024"
 #[test]
 fn inline_descendant_macro_literal_counts_as_inside_facade_usage() {
     let temp = tempdir().expect("create inline descendant literal dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src")).expect("create inline fixture source dir");
 
     fs::write(
@@ -1606,6 +1627,7 @@ fn main() {}
 #[test]
 fn same_package_binary_literal_does_not_count_as_library_facade_usage() {
     let temp = tempdir().expect("create package workspace dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("app/src/bin")).expect("create binary source dir");
     fs::create_dir_all(temp.path().join("app/src/tool")).expect("create library module dir");
 

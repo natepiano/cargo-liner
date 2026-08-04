@@ -14,6 +14,8 @@ use toml_edit::Table;
 use toml_edit::value;
 
 use super::constants::APP_NAME;
+use super::constants::CONFIG_VERSION;
+use super::constants::CONFIG_VERSION_KEY;
 use super::constants::DIAGNOSTICS_TABLE_KEY;
 use super::constants::GLOBAL_CONFIG_FILE;
 use super::constants::PRELUDE_COMMENT;
@@ -80,9 +82,10 @@ pub(crate) fn load_global_config() -> GlobalConfig {
         .map_or_else(|_| GlobalConfig::default(), GlobalConfig::from)
 }
 
-/// Ensure the global config file exists and lists every known key. Missing keys are
-/// inserted with their defaults; existing keys, comments, and ordering are preserved.
-/// Writes only when a key was inserted.
+/// Ensure the global config file exists, lists every known key, and carries the
+/// current `config_version`. Missing keys are inserted with their defaults;
+/// existing keys, comments, and ordering are preserved. Writes only when
+/// something changed.
 fn reconcile_global_config(path: &Path) -> Result<()> {
     if !path.exists() {
         return create_default_global_config(path);
@@ -94,13 +97,13 @@ fn reconcile_global_config(path: &Path) -> Result<()> {
         .parse::<DocumentMut>()
         .with_context(|| format!("failed to parse global config {}", path.display()))?;
 
-    let mut inserted = false;
+    let mut edit = ConfigEdit::Unchanged;
 
     if let Some(diagnostics) = ensure_table(doc.as_table_mut(), DIAGNOSTICS_TABLE_KEY) {
         for code in DiagnosticCode::ALL {
             if !diagnostics.contains_key(code.as_str()) {
                 diagnostics.insert(code.as_str(), value(true));
-                inserted = true;
+                edit = ConfigEdit::Rewritten;
             }
         }
     }
@@ -112,24 +115,61 @@ fn reconcile_global_config(path: &Path) -> Result<()> {
         if let Some(mut key) = visibility.key_mut(PRELUDE_KEY) {
             key.leaf_decor_mut().set_prefix(PRELUDE_COMMENT);
         }
-        inserted = true;
+        edit = ConfigEdit::Rewritten;
     }
 
     if let Some(visibility) = ensure_table(doc.as_table_mut(), VISIBILITY_TABLE_KEY)
         && !visibility.contains_key(PUB_IN_PATH_KEY)
     {
-        visibility.insert(PUB_IN_PATH_KEY, value("permitted"));
+        visibility.insert(PUB_IN_PATH_KEY, value(PubInPath::Required.config_value()));
         if let Some(mut key) = visibility.key_mut(PUB_IN_PATH_KEY) {
             key.leaf_decor_mut().set_prefix(PUB_IN_PATH_COMMENT);
         }
-        inserted = true;
+        edit = ConfigEdit::Rewritten;
     }
 
-    if inserted {
+    if matches!(migrate_unversioned_config(&mut doc), ConfigEdit::Rewritten) {
+        edit = ConfigEdit::Rewritten;
+    }
+
+    if matches!(edit, ConfigEdit::Rewritten) {
         fs::write(path, doc.to_string())
             .with_context(|| format!("failed to write global config {}", path.display()))?;
     }
     Ok(())
+}
+
+/// Whether reconciliation touched the parsed document and the file must be
+/// written back.
+#[derive(Clone, Copy)]
+enum ConfigEdit {
+    Unchanged,
+    Rewritten,
+}
+
+/// A config with no `config_version` predates the `pub_in_path` default flip, so
+/// the `permitted` this tool inserted on its behalf is not a user choice —
+/// rewrite it to the new default and refresh its comment. Any other value is a
+/// deliberate setting and is kept. Stamping the version is what keeps this a
+/// one-time migration: an explicit `permitted` written afterwards survives every
+/// later run.
+fn migrate_unversioned_config(doc: &mut DocumentMut) -> ConfigEdit {
+    if doc.contains_key(CONFIG_VERSION_KEY) {
+        return ConfigEdit::Unchanged;
+    }
+
+    if let Some(visibility) = ensure_table(doc.as_table_mut(), VISIBILITY_TABLE_KEY)
+        && visibility.get(PUB_IN_PATH_KEY).and_then(Item::as_str)
+            == Some(PubInPath::Permitted.config_value())
+    {
+        visibility.insert(PUB_IN_PATH_KEY, value(PubInPath::Required.config_value()));
+        if let Some(mut key) = visibility.key_mut(PUB_IN_PATH_KEY) {
+            key.leaf_decor_mut().set_prefix(PUB_IN_PATH_COMMENT);
+        }
+    }
+
+    doc.insert(CONFIG_VERSION_KEY, value(CONFIG_VERSION));
+    ConfigEdit::Rewritten
 }
 
 /// Returns the named table, inserting an empty one if absent. `None` only when the
@@ -149,6 +189,7 @@ fn default_global_config_toml() -> String {
         "# cargo-mend global configuration\n\
          # See {HELP_URL_BASE}#diagnostics for details on each rule.\n\
          # Per-project overrides go in mend.toml at your project or workspace root.\n\
+         {CONFIG_VERSION_KEY} = {CONFIG_VERSION}\n\
          \n\
          [diagnostics]\n"
     );
@@ -159,7 +200,11 @@ fn default_global_config_toml() -> String {
     out.push_str(PRELUDE_COMMENT);
     let _ = writeln!(out, "{PRELUDE_KEY} = true");
     out.push_str(PUB_IN_PATH_COMMENT);
-    let _ = writeln!(out, "{PUB_IN_PATH_KEY} = \"permitted\"");
+    let _ = writeln!(
+        out,
+        "{PUB_IN_PATH_KEY} = \"{}\"",
+        PubInPath::Required.config_value()
+    );
     out
 }
 
@@ -181,6 +226,8 @@ fn create_default_global_config(path: &Path) -> Result<()> {
 mod tests {
     use toml::from_str;
 
+    use super::CONFIG_VERSION;
+    use super::CONFIG_VERSION_KEY;
     use super::GlobalConfig;
     use super::GlobalConfigFile;
     use super::PRELUDE_KEY;
@@ -207,7 +254,7 @@ mod tests {
         }
         let global = GlobalConfig::from(global_config_file);
         assert_eq!(global.prelude_pub_mod, PreludePubMod::Allowed);
-        assert_eq!(global.pub_in_path, PubInPath::Permitted);
+        assert_eq!(global.pub_in_path, PubInPath::Required);
     }
 
     #[test]
@@ -231,7 +278,7 @@ prefer_module_import = false
         ));
         let global = GlobalConfig::from(global_config_file);
         assert_eq!(global.prelude_pub_mod, PreludePubMod::Allowed);
-        assert_eq!(global.pub_in_path, PubInPath::Permitted);
+        assert_eq!(global.pub_in_path, PubInPath::Required);
     }
 
     #[test]
@@ -310,18 +357,82 @@ prefer_module_import = false
     fn reconcile_inserts_pub_in_path_without_disturbing_existing_visibility_content() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("config.toml");
-        let existing = default_global_config_toml().replace(
-            &format!("{PUB_IN_PATH_COMMENT}{PUB_IN_PATH_KEY} = \"permitted\"\n"),
-            "",
+        let pub_in_path_line = format!(
+            "{PUB_IN_PATH_COMMENT}{PUB_IN_PATH_KEY} = \"{}\"\n",
+            PubInPath::Required.config_value()
         );
+        let existing = default_global_config_toml().replace(&pub_in_path_line, "");
         std::fs::write(&path, &existing).unwrap();
 
         reconcile_global_config(&path).unwrap();
 
         let after = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(
-            after,
-            format!("{existing}{PUB_IN_PATH_COMMENT}{PUB_IN_PATH_KEY} = \"permitted\"\n")
+        assert_eq!(after, format!("{existing}{pub_in_path_line}"));
+    }
+
+    /// Writes `contents`, reconciles it once, and returns the file as it stands
+    /// afterwards.
+    fn reconciled(contents: &str) -> String {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.toml");
+        std::fs::write(&path, contents).unwrap();
+        reconcile_global_config(&path).unwrap();
+        std::fs::read_to_string(&path).unwrap()
+    }
+
+    fn visibility_table(pub_in_path: PubInPath) -> String {
+        format!(
+            "[visibility]\n{PUB_IN_PATH_KEY} = \"{}\"\n",
+            pub_in_path.config_value()
+        )
+    }
+
+    fn resolved_pub_in_path(contents: &str) -> PubInPath {
+        GlobalConfig::from(from_str::<GlobalConfigFile>(contents).unwrap()).pub_in_path
+    }
+
+    #[test]
+    fn unversioned_config_migrates_permitted_to_required() {
+        let after = reconciled(&visibility_table(PubInPath::Permitted));
+
+        assert_eq!(resolved_pub_in_path(&after), PubInPath::Required);
+        assert!(after.contains(CONFIG_VERSION_KEY), "version stamp added");
+        assert!(
+            after.contains(PUB_IN_PATH_COMMENT.trim_end()),
+            "comment refreshed alongside the value"
         );
+    }
+
+    #[test]
+    fn unversioned_config_keeps_an_explicitly_chosen_value() {
+        for pub_in_path in [PubInPath::Forbidden, PubInPath::Required] {
+            let after = reconciled(&visibility_table(pub_in_path));
+
+            assert_eq!(resolved_pub_in_path(&after), pub_in_path);
+            assert!(after.contains(CONFIG_VERSION_KEY), "version stamp added");
+        }
+    }
+
+    #[test]
+    fn versioned_config_keeps_permitted_forever() {
+        let versioned = format!(
+            "{CONFIG_VERSION_KEY} = {CONFIG_VERSION}\n{}",
+            visibility_table(PubInPath::Permitted)
+        );
+
+        let after = reconciled(&versioned);
+        assert_eq!(resolved_pub_in_path(&after), PubInPath::Permitted);
+
+        let twice = reconciled(&after);
+        assert_eq!(resolved_pub_in_path(&twice), PubInPath::Permitted);
+    }
+
+    #[test]
+    fn unversioned_config_without_visibility_table_lands_on_the_default() {
+        let after = reconciled("[diagnostics]\nreview_pub_mod = false\n");
+
+        assert_eq!(resolved_pub_in_path(&after), PubInPath::Required);
+        assert!(after.contains(CONFIG_VERSION_KEY), "version stamp added");
+        assert!(after.contains(PRELUDE_KEY), "prelude key inserted");
     }
 }
