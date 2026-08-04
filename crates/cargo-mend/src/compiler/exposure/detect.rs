@@ -1,9 +1,12 @@
+use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use anyhow::Result;
+use rustc_hash::FxHashMap;
+use rustc_hash::FxHashSet;
 use rustc_hir::FieldDef;
 use rustc_hir::ItemKind;
 use rustc_hir::def::DefKind;
@@ -30,6 +33,7 @@ use crate::compiler::facade;
 use crate::compiler::facade::ModuleSourceMap;
 use crate::compiler::facade::ParentFacadeUsage;
 use crate::compiler::settings::DriverSettings;
+use crate::compiler::source_cache::NameMention;
 use crate::compiler::source_cache::SourceCache;
 use crate::compiler::visibility;
 use crate::compiler::visibility::ReexportIndex;
@@ -42,19 +46,40 @@ use crate::compiler::visibility::VisibilityReach;
 /// through `type_is_exposed_outside_parent` forever and overflow the stack.
 /// A revisited item contributes no new exposure path, so it evaluates to
 /// `None` and any real exposure is found on another branch of the walk.
-type VisitedItems = HashSet<LocalDefId>;
+type VisitedItems = FxHashSet<LocalDefId>;
 type FacadeExposure<'a> =
     dyn FnMut(LocalDefId, &Path, &str) -> Result<Option<VisibilityReach>> + 'a;
 
 pub(in crate::compiler) struct ExposureContext<'source, 'tcx> {
-    pub source_cache:   &'source SourceCache,
-    pub settings:       &'source DriverSettings,
-    pub source_root:    &'source Path,
-    pub tcx:            TyCtxt<'tcx>,
-    pub module_sources: &'source ModuleSourceMap,
-    pub reexport_index: &'source ReexportIndex,
+    pub source_cache:       &'source SourceCache,
+    pub settings:           &'source DriverSettings,
+    pub source_root:        &'source Path,
+    pub tcx:                TyCtxt<'tcx>,
+    pub module_sources:     &'source ModuleSourceMap,
+    pub reexport_index:     &'source ReexportIndex,
+    /// Memoizes [`module_scopes`] — see that function for why.
+    pub module_scope_cache: ModuleScopeCache<'source>,
 }
 
+/// The per-file results of [`module_scopes`], keyed by source path.
+#[derive(Default)]
+pub(in crate::compiler) struct ModuleScopeCache<'syntax> {
+    by_file: RefCell<FxHashMap<PathBuf, Rc<[ModuleScope<'syntax>]>>>,
+}
+
+impl<'syntax> ModuleScopeCache<'syntax> {
+    fn get(&self, source_file: &Path) -> Option<Rc<[ModuleScope<'syntax>]>> {
+        self.by_file.borrow().get(source_file).map(Rc::clone)
+    }
+
+    fn insert(&self, source_file: &Path, scopes: &Rc<[ModuleScope<'syntax>]>) {
+        self.by_file
+            .borrow_mut()
+            .insert(source_file.to_path_buf(), Rc::clone(scopes));
+    }
+}
+
+#[derive(Clone, Copy)]
 struct ModuleScope<'syntax> {
     module: LocalDefId,
     items:  &'syntax [Item],
@@ -210,7 +235,7 @@ pub(in crate::compiler) fn child_item_is_exposed_by_other_crate_visible_signatur
         item_def_id,
         child_file,
         item_name,
-        &mut VisitedItems::new(),
+        &mut VisitedItems::default(),
         facade_exposes,
     )
 }
@@ -223,13 +248,13 @@ fn crate_visible_signature_exposes_item(
     visited: &mut VisitedItems,
     facade_exposes: &mut FacadeExposure<'_>,
 ) -> Result<Option<VisibilityReach>> {
-    let Some(file) = ctx.source_cache.parsed_file(child_file) else {
+    if ctx.source_cache.name_mention(child_file, item_name) == NameMention::Absent {
         return Ok(None);
-    };
+    }
     let item_module: LocalDefId = ctx.tcx.parent_module_from_def_id(item_def_id).into();
 
     let mut exposure_reach = None;
-    for module_scope in module_scopes(ctx, child_file, &file.items) {
+    for &module_scope in module_scopes(ctx, child_file).iter() {
         if module_scope.module != item_module {
             continue;
         }
@@ -411,7 +436,7 @@ pub(in crate::compiler) fn child_item_is_exposed_by_sibling_boundary_signature(
         ctx,
         item_def_id,
         item_name,
-        &mut VisitedItems::new(),
+        &mut VisitedItems::default(),
         facade_exposes,
     )
 }
@@ -431,10 +456,10 @@ fn sibling_boundary_signature_exposes_item(
     let mut exposure_reach = None;
 
     for candidate_file in ctx.source_cache.source_files_under(ctx.source_root) {
-        let Some(file) = ctx.source_cache.parsed_file(candidate_file) else {
+        if ctx.source_cache.name_mention(candidate_file, item_name) == NameMention::Absent {
             continue;
-        };
-        for module_scope in module_scopes(ctx, candidate_file, &file.items) {
+        }
+        for &module_scope in module_scopes(ctx, candidate_file).iter() {
             let candidate_module = module_scope.module;
             if candidate_module == parent_boundary.module()
                 || facade::module_is_within(ctx.tcx, candidate_module, child_module)
@@ -505,7 +530,7 @@ pub(in crate::compiler) fn impl_item_is_exposed_by_exported_self_type(
         self_type_def_id,
         &definition_file,
         &self_type_name,
-        &mut VisitedItems::new(),
+        &mut VisitedItems::default(),
         facade_exposes,
     )?
     else {
@@ -535,7 +560,7 @@ pub(in crate::compiler) fn parent_boundary_public_signature_exposes_child_used_o
         ctx,
         item_def_id,
         item_name,
-        &mut VisitedItems::new(),
+        &mut VisitedItems::default(),
         facade_exposes,
     )
 }
@@ -555,10 +580,10 @@ fn parent_boundary_signature_exposes_child(
     let mut exposing_items = Vec::new();
     let mut impl_exposure_reach = None;
     for boundary_file in ctx.module_sources.source_files(parent_boundary.module()) {
-        let Some(file) = ctx.source_cache.parsed_file(boundary_file) else {
+        if ctx.source_cache.name_mention(boundary_file, item_name) == NameMention::Absent {
             continue;
-        };
-        for module_scope in module_scopes(ctx, boundary_file, &file.items) {
+        }
+        for &module_scope in module_scopes(ctx, boundary_file).iter() {
             if module_scope.module != parent_boundary.module() {
                 continue;
             }
@@ -582,50 +607,24 @@ fn parent_boundary_signature_exposes_child(
                 )?,
             );
             for item in module_scope.items {
-                let OutwardDeclarationClassification::Outward(exposing_declaration) =
-                    visitor::classify_outward_declaration(item)
-                else {
-                    continue;
-                };
-                let source_signature_carriers =
-                    visitor::potentially_outward_item_surface_carriers_mentioning_name(
-                        exposing_declaration.item,
-                        item_name,
-                    );
-                if source_signature_carriers.is_empty() {
-                    continue;
-                }
-                let Some(exposing_item_def_id) = resolve_active_declaration(
+                let Some(exposer) = parent_boundary_exposer_for_item(
                     ctx,
                     parent_boundary.module(),
                     boundary_file,
-                    &exposing_declaration,
+                    item,
+                    item_name,
                 ) else {
                     continue;
                 };
-                let signature_carriers = resolve_item_signature_carriers(
-                    ctx,
-                    boundary_file,
-                    source_signature_carriers,
-                    exposing_item_def_id,
-                );
-                if signature_carriers.is_empty() {
-                    continue;
-                }
                 if exposing_items
                     .iter()
-                    .any(|exposer: &ParentBoundaryExposer| {
-                        exposer.item_def_id == exposing_item_def_id
+                    .any(|existing: &ParentBoundaryExposer| {
+                        existing.item_def_id == exposer.item_def_id
                     })
                 {
                     continue;
                 }
-                exposing_items.push(ParentBoundaryExposer {
-                    name: exposing_declaration.name,
-                    item_def_id: exposing_item_def_id,
-                    definition_file: boundary_file.clone(),
-                    signature_carriers,
-                });
+                exposing_items.push(exposer);
             }
         }
     }
@@ -648,6 +647,50 @@ fn parent_boundary_signature_exposes_child(
     }
 
     Ok(exposure_reach)
+}
+
+/// The exposer `item` becomes when its signature mentions `item_name`.
+///
+/// `None` covers every way an item declines to expose: it is not an outward
+/// declaration, its surface never names `item_name`, its source declaration has
+/// no active definition in `module`, or none of the named carriers resolve.
+fn parent_boundary_exposer_for_item(
+    ctx: &ExposureContext<'_, '_>,
+    module: LocalDefId,
+    definition_file: &Path,
+    item: &Item,
+    item_name: &str,
+) -> Option<ParentBoundaryExposer> {
+    let OutwardDeclarationClassification::Outward(exposing_declaration) =
+        visitor::classify_outward_declaration(item)
+    else {
+        return None;
+    };
+    let source_signature_carriers =
+        visitor::potentially_outward_item_surface_carriers_mentioning_name(
+            exposing_declaration.item,
+            item_name,
+        );
+    if source_signature_carriers.is_empty() {
+        return None;
+    }
+    let exposing_item_def_id =
+        resolve_active_declaration(ctx, module, definition_file, &exposing_declaration)?;
+    let signature_carriers = resolve_item_signature_carriers(
+        ctx,
+        definition_file,
+        source_signature_carriers,
+        exposing_item_def_id,
+    );
+    if signature_carriers.is_empty() {
+        return None;
+    }
+    Some(ParentBoundaryExposer {
+        name: exposing_declaration.name,
+        item_def_id: exposing_item_def_id,
+        definition_file: definition_file.to_path_buf(),
+        signature_carriers,
+    })
 }
 
 fn parent_boundary_exposer_reach(
@@ -1235,18 +1278,36 @@ fn source_byte_position(source: &str, source_span: proc_macro2::Span) -> Option<
         .then_some(byte_position)
 }
 
-fn module_scopes<'syntax>(
-    ctx: &ExposureContext<'_, '_>,
+/// The module scopes of `source_file`, built once per file and reused.
+///
+/// Building them walks the file's whole item tree, and every analyzed item asks
+/// for the same files again — a whole-crate sweep runs once per item, so the
+/// repeat rate is the item count. The parsed cache is immutable for the run, so
+/// the file path alone identifies the result.
+///
+/// Callers get an [`Rc`] rather than a borrow of the cache: the loop bodies that
+/// walk these scopes call back into analysis, which reaches this function again
+/// and would hit an outstanding [`RefCell`] borrow.
+fn module_scopes<'source>(
+    ctx: &ExposureContext<'source, '_>,
     source_file: &Path,
-    items: &'syntax [Item],
-) -> Vec<ModuleScope<'syntax>> {
-    let mut scopes = Vec::new();
-    for root_module in ctx
-        .module_sources
-        .root_modules_for_file(ctx.tcx, source_file)
-    {
-        collect_module_scopes(ctx.tcx, root_module, items, &mut scopes);
+) -> Rc<[ModuleScope<'source>]> {
+    if let Some(scopes) = ctx.module_scope_cache.get(source_file) {
+        return scopes;
     }
+
+    let mut scopes = Vec::new();
+    if let Some(file) = ctx.source_cache.parsed_file(source_file) {
+        for root_module in ctx
+            .module_sources
+            .root_modules_for_file(ctx.tcx, source_file)
+        {
+            collect_module_scopes(ctx.tcx, root_module, &file.items, &mut scopes);
+        }
+    }
+
+    let scopes: Rc<[ModuleScope<'source>]> = scopes.into();
+    ctx.module_scope_cache.insert(source_file, &scopes);
     scopes
 }
 

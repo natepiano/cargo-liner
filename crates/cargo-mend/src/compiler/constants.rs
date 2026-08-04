@@ -53,7 +53,6 @@ pub(crate) const DRIVER_ENV_ENABLED: &str = "1";
 pub(crate) const FINDINGS_DIR_ENV: &str = "MEND_FINDINGS_DIR";
 pub(crate) const PASSTHROUGH_RUSTC_WRAPPER_ENV: &str = "MEND_PASSTHROUGH_RUSTC_WRAPPER";
 pub(crate) const PACKAGE_ROOT_ENV: &str = "CARGO_MANIFEST_DIR";
-pub(crate) const RUSTC_WRAPPER_ENV: &str = "RUSTC_WRAPPER";
 pub(crate) const RUSTC_WORKSPACE_WRAPPER_ENV: &str = "RUSTC_WORKSPACE_WRAPPER";
 pub(crate) const SCOPE_FINGERPRINT_ENV: &str = "MEND_SCOPE_FINGERPRINT";
 
@@ -76,3 +75,7 @@ pub(crate) const SOURCE_DIR_TESTS: &str = "tests";
 
 // visibility policy
 pub(crate) const PRELUDE_MODULE_NAME: &str = "prelude";
+
+// wrapper alias
+pub(super) const WRAPPER_DIR_NAME: &str = "mend-wrapper";
+pub(super) const WRAPPER_ALIAS_STAGING_EXTENSION: &str = "staging";

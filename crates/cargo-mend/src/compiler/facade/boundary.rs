@@ -1,10 +1,12 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::cell::RefCell;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
+use std::rc::Rc;
 
+use rustc_hash::FxHashMap;
+use rustc_hash::FxHashSet;
 use rustc_middle::ty::TyCtxt;
 use rustc_span::FileName;
 use rustc_span::Span;
@@ -30,20 +32,60 @@ impl LogicalParentBoundary {
     pub(in crate::compiler) fn module_path(&self) -> &[String] { &self.module_path }
 }
 
+/// One module a source file defines: its full path from the crate root, and the
+/// suffix of that path below the file's own root module.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::compiler) struct ModuleContext {
+    pub path:   Vec<String>,
+    pub suffix: Vec<String>,
+}
+
 #[derive(Debug, Default)]
 pub(in crate::compiler) struct ModuleSourceMap {
-    modules_by_file:            HashMap<PathBuf, Vec<LocalDefId>>,
-    files_by_module:            HashMap<LocalDefId, Vec<PathBuf>>,
-    modules_by_path:            HashMap<Vec<String>, LocalDefId>,
-    structural_parents_by_file: HashMap<PathBuf, Vec<Vec<String>>>,
-    crate_files:                HashSet<PathBuf>,
-    canonical_by_source_file:   HashMap<PathBuf, PathBuf>,
-    canonical_by_span_file:     HashMap<PathBuf, PathBuf>,
+    modules_by_file:            FxHashMap<PathBuf, Vec<LocalDefId>>,
+    files_by_module:            FxHashMap<LocalDefId, Vec<PathBuf>>,
+    modules_by_path:            FxHashMap<Vec<String>, LocalDefId>,
+    structural_parents_by_file: FxHashMap<PathBuf, Vec<Vec<String>>>,
+    crate_files:                FxHashSet<PathBuf>,
+    canonical_by_source_file:   FxHashMap<PathBuf, PathBuf>,
+    canonical_by_span_file:     FxHashMap<PathBuf, PathBuf>,
+    module_contexts_by_file:    RefCell<FxHashMap<PathBuf, Rc<[ModuleContext]>>>,
 }
 
 impl ModuleSourceMap {
+    /// The modules `source_file` defines, computed once per file per run.
+    ///
+    /// The contexts depend only on the file — `tcx` and this map are fixed for a
+    /// run — but the facade scans ask for them once per file *per re-export
+    /// occurrence*, which on a crate with many re-exports repeats
+    /// `root_modules_for_file` and the whole-file suffix scan thousands of times
+    /// over.
+    ///
+    /// Returns `Rc`, not a borrow: callers iterate the contexts while calling
+    /// back into this map, and an outstanding `RefCell` borrow across that loop
+    /// would panic.
+    pub(in crate::compiler) fn module_contexts(
+        &self,
+        source_file: &Path,
+        compute: impl FnOnce() -> Vec<ModuleContext>,
+    ) -> Rc<[ModuleContext]> {
+        let cached = self
+            .module_contexts_by_file
+            .borrow()
+            .get(source_file)
+            .map(Rc::clone);
+        if let Some(cached) = cached {
+            return cached;
+        }
+        let computed: Rc<[ModuleContext]> = compute().into();
+        self.module_contexts_by_file
+            .borrow_mut()
+            .insert(source_file.to_path_buf(), Rc::clone(&computed));
+        computed
+    }
+
     pub(in crate::compiler) fn new(tcx: TyCtxt<'_>, source_cache: &SourceCache) -> Self {
-        let canonical_by_source_file: HashMap<PathBuf, PathBuf> = source_cache
+        let canonical_by_source_file: FxHashMap<PathBuf, PathBuf> = source_cache
             .source_files()
             .into_iter()
             .map(|path| {
@@ -312,7 +354,7 @@ pub(in crate::compiler) fn module_is_within(
 /// Canonicalizing once per file here replaces canonicalizing once per span
 /// resolved during the exposure walk, which is many thousands of `realpath`
 /// calls over the same few hundred paths.
-fn canonical_span_files(tcx: TyCtxt<'_>) -> HashMap<PathBuf, PathBuf> {
+fn canonical_span_files(tcx: TyCtxt<'_>) -> FxHashMap<PathBuf, PathBuf> {
     tcx.sess
         .source_map()
         .files()

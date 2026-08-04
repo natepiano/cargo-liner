@@ -36,6 +36,7 @@ use crate::compiler::constants::SOURCE_DIR_EXAMPLES;
 use crate::compiler::constants::SOURCE_DIR_TESTS;
 use crate::compiler::exposure;
 use crate::compiler::exposure::ExposureContext;
+use crate::compiler::exposure::ModuleScopeCache;
 use crate::compiler::facade;
 use crate::compiler::facade::ParentFacadeExportRequest;
 use crate::compiler::facade::ParentFacadeExportStatus;
@@ -713,12 +714,13 @@ fn assess_signature_exposure_allowance(
         return Ok(None);
     };
     let exposure_ctx = ExposureContext {
-        source_cache:   ctx.source_cache,
-        settings:       ctx.settings,
-        source_root:    ctx.source_root,
-        tcx:            ctx.tcx,
-        module_sources: ctx.module_sources,
-        reexport_index: ctx.reexport_index,
+        source_cache:       ctx.source_cache,
+        settings:           ctx.settings,
+        source_root:        ctx.source_root,
+        tcx:                ctx.tcx,
+        module_sources:     ctx.module_sources,
+        reexport_index:     ctx.reexport_index,
+        module_scope_cache: ModuleScopeCache::default(),
     };
     let mut facade_exposes =
         |exposing_item_def_id: LocalDefId, child_file: &Path, exposing_item_name: &str| {

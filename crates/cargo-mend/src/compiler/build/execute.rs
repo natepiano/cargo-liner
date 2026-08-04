@@ -1,9 +1,13 @@
 use std::collections::hash_map::DefaultHasher;
 use std::env;
 use std::ffi::OsString;
+use std::fs;
 use std::hash::Hash;
 use std::hash::Hasher;
+use std::io;
 use std::path::Path;
+use std::path::PathBuf;
+use std::process;
 use std::process::Command;
 use std::process::ExitStatus;
 use std::process::Stdio;
@@ -34,10 +38,12 @@ use crate::compiler::constants::DRIVER_ENV_ENABLED;
 use crate::compiler::constants::FINDINGS_DIR_ENV;
 use crate::compiler::constants::PASSTHROUGH_RUSTC_WRAPPER_ENV;
 use crate::compiler::constants::RUSTC_WORKSPACE_WRAPPER_ENV;
-use crate::compiler::constants::RUSTC_WRAPPER_ENV;
 use crate::compiler::constants::SCOPE_FINGERPRINT_ENV;
+use crate::compiler::constants::WRAPPER_ALIAS_STAGING_EXTENSION;
+use crate::compiler::constants::WRAPPER_DIR_NAME;
 use crate::compiler::persistence;
 use crate::compiler::persistence::AnalysisEvidence;
+use crate::compiler::settings;
 use crate::config::LoadedConfig;
 use crate::constants::FINGERPRINT_HEX_WIDTH;
 use crate::reporting::AllFeaturesCoverage;
@@ -168,7 +174,9 @@ fn run_cargo_check(
     command.arg(CARGO_SUBCOMMAND_CHECK);
     command.args(&cargo_plan.cargo_args);
 
-    configure_rustc_wrapper(&mut command, &current_exe);
+    let wrapper =
+        wrapper_alias(cargo_plan.target_directory.as_path(), &current_exe).unwrap_or(current_exe);
+    configure_rustc_wrapper(&mut command, &wrapper);
 
     command
         .env(DRIVER_ENV, DRIVER_ENV_ENABLED)
@@ -187,21 +195,91 @@ fn run_cargo_check(
         .context("failed to run cargo check for mend")
 }
 
-fn configure_rustc_wrapper(command: &mut Command, current_exe: &Path) {
-    if let Some(rustc_wrapper) = non_empty_env_var(RUSTC_WRAPPER_ENV) {
-        command
-            .env(RUSTC_WRAPPER_ENV, current_exe)
-            .env(PASSTHROUGH_RUSTC_WRAPPER_ENV, rustc_wrapper)
-            .env_remove(RUSTC_WORKSPACE_WRAPPER_ENV);
-    } else {
-        command
-            .env(RUSTC_WORKSPACE_WRAPPER_ENV, current_exe)
-            .env_remove(PASSTHROUGH_RUSTC_WRAPPER_ENV);
+/// Names a per-build alias of the mend binary for cargo to invoke as the
+/// wrapper, in place of the binary's own path.
+///
+/// Cargo keys a unit's fingerprint on the wrapper's path and reads nothing else
+/// about the file — neither mtime nor contents. Installing a new mend over the
+/// old one therefore leaves every workspace member fresh, so the driver never
+/// runs and writes no report. Every report already on disk names the previous
+/// build in its `analysis_fingerprint` and fails `stored_report_is_compatible`,
+/// so the run reaches [`CompilerFailureCause::NoAnalysisProduced`] and tells the
+/// user to touch a source file.
+///
+/// Naming the alias directory after that same `analysis_fingerprint` turns a new
+/// mend build into a new wrapper path, which is the one input cargo does rebuild
+/// for. Re-running the same build reuses the alias and stays fresh, and two mend
+/// builds keep separate alias paths, so cargo keeps both artifact sets and
+/// switching between them costs nothing.
+///
+/// Returns `None` when the alias cannot be created; the caller then passes the
+/// binary's own path and behaves as before.
+fn wrapper_alias(target_directory: &Path, current_exe: &Path) -> Option<PathBuf> {
+    let alias_dir = target_directory
+        .join(WRAPPER_DIR_NAME)
+        .join(settings::current_analysis_fingerprint());
+    fs::create_dir_all(&alias_dir).ok()?;
+    let alias = alias_dir.join(current_exe.file_name()?);
+    if alias_points_at(&alias, current_exe) {
+        return Some(alias);
     }
+    replace_wrapper_alias(current_exe, &alias).ok()?;
+    Some(alias)
 }
 
-fn non_empty_env_var(name: &str) -> Option<OsString> {
-    env::var_os(name).filter(|value| !value.is_empty())
+/// Whether `alias` already resolves to `current_exe`, making a rewrite needless.
+fn alias_points_at(alias: &Path, current_exe: &Path) -> bool {
+    let Ok(resolved) = fs::canonicalize(alias) else {
+        return false;
+    };
+    fs::canonicalize(current_exe).is_ok_and(|target| resolved == target)
+}
+
+/// Points `alias` at `current_exe` without ever leaving the alias path absent.
+///
+/// Cargo bakes this path into a unit fingerprint and executes it once per
+/// compilation unit, so unlinking before relinking opens a window in which those
+/// executions fail with `ENOENT` and the build aborts before any code is
+/// checked. Renaming a staged link over the alias closes the window: the path
+/// resolves to the old binary or the new one and is never missing. The staging
+/// name carries the process id so two mend runs on one target directory cannot
+/// stage onto each other.
+fn replace_wrapper_alias(current_exe: &Path, alias: &Path) -> io::Result<()> {
+    let staged = alias.with_extension(format!(
+        "{WRAPPER_ALIAS_STAGING_EXTENSION}-{}",
+        process::id()
+    ));
+    drop(fs::remove_file(&staged));
+    link_wrapper_alias(current_exe, &staged)?;
+    fs::rename(&staged, alias).inspect_err(|_| drop(fs::remove_file(&staged)))
+}
+
+#[cfg(unix)]
+fn link_wrapper_alias(current_exe: &Path, alias: &Path) -> io::Result<()> {
+    std::os::unix::fs::symlink(current_exe, alias)
+}
+
+#[cfg(not(unix))]
+fn link_wrapper_alias(current_exe: &Path, alias: &Path) -> io::Result<()> {
+    fs::copy(current_exe, alias).map(drop)
+}
+
+/// Installs mend as the workspace wrapper, leaving any ambient `RUSTC_WRAPPER`
+/// in place.
+///
+/// The workspace slot is the one cargo records in a unit's fingerprint, so it is
+/// the only slot in which [`wrapper_alias`] can do its job. Taking the plain
+/// `RUSTC_WRAPPER` slot instead leaves the alias unfingerprinted, and a freshly
+/// installed mend then finds every unit up to date and produces no analysis.
+///
+/// It is also the narrower slot: it wraps workspace members and not their
+/// dependencies, which are the only crates mend analyzes. Cargo invokes the two
+/// wrappers outermost-first, so a user's `RUSTC_WRAPPER` keeps caching
+/// dependency builds and mend runs beneath it for workspace members.
+fn configure_rustc_wrapper(command: &mut Command, current_exe: &Path) {
+    command
+        .env(RUSTC_WORKSPACE_WRAPPER_ENV, current_exe)
+        .env_remove(PASSTHROUGH_RUSTC_WRAPPER_ENV);
 }
 
 fn scope_fingerprint_for(cargo_plan: &CargoCheckPlan) -> String {

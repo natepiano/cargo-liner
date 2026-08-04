@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- mend now always takes cargo's `RUSTC_WORKSPACE_WRAPPER` slot and leaves an ambient `RUSTC_WRAPPER`
+  in place. Previously, a set `RUSTC_WRAPPER` was displaced into `MEND_PASSTHROUGH_RUSTC_WRAPPER` and
+  mend took that slot instead. Cargo records the workspace wrapper's path in a unit's fingerprint and
+  does not record `RUSTC_WRAPPER`'s, so under a wrapper such as sccache a newly installed mend left
+  every unit fresh and the run produced no analysis. The workspace slot is also the narrower one: it
+  wraps workspace members and not their dependencies, which are the only crates mend analyzes, and
+  cargo invokes the two wrappers outermost-first, so a caching wrapper keeps serving dependency
+  builds and mend runs beneath it.
 - An exact, crate-rooted `pub(in crate::path)` declaration whose boundary is demanded only by a
   signature that crosses it — a type named in another item's return type, parameter, or public
   field, and never written by any caller — is no longer a `forbidden_pub_in_crate` error, and no
@@ -94,6 +102,34 @@ The following two-code matrix applies to `forbidden_pub_in_crate` and `forbidden
   `--message-format=json` now agree for diagnostics carrying both values. Consumers pinned to the
   former JSON string will see a change.
 
+### Performance
+- Facade scanning no longer rebuilds the same two results over and over on large crates. Its cost was
+  `occurrences × Σ_files(path expressions × module contexts)`, so a crate with many `pub use`
+  declarations *and* many path expressions paid the product of the two, not the sum. Two changes:
+  a path is now rejected before any allocation happens, and the set of modules a source file defines
+  is computed once per file instead of once per file per re-export.
+
+  The first matters because resolving a plain path against the enclosing module cloned the whole
+  path once per module-prefix length — every segment copied — before anything tested whether the
+  path could match. A candidate is only ever accepted at one length, so the segment compared against
+  the export set is always the path's last one, and `crate`/`self`/`super` resolution rewrites only
+  the prefix ahead of it. A final segment that names no export therefore cannot match under any
+  prefix, and is now discarded without allocating. Paths whose final segment is itself an anchor
+  (`super::super`) name no candidate on their own and still fall through to the full scan.
+
+  On a crate with roughly 29,000 path expressions and 900 `pub use` declarations, a full check went
+  from 1019s to 254s. Findings are unchanged.
+- The maps keyed by file path and by `DefId` now hash with `rustc-hash` rather than the standard
+  library's default. The default hasher is chosen to resist hash flooding from untrusted keys, and
+  pays several mixing rounds per eight bytes to get it; an absolute source path is 60 to 100 bytes,
+  and `Path`'s own hashing walks it component by component, so every lookup mixed the whole path.
+  These keys come from the local source tree and from the compiler, so that resistance buys nothing
+  here. Worth roughly 2% on a crate with 9,000 path expressions — the earlier caching had already
+  removed most of the lookups this makes cheaper, so the two changes overlap rather than add.
+
+  One visible consequence: this hasher has a fixed seed, so map iteration order is now stable from
+  run to run instead of varying with the standard library's per-process random seed.
+
 ### Fixed
 - A run that analyzed nothing no longer reports a clean crate. mend only sees source that cargo
   recompiles; when cargo has nothing to rebuild *and* no cached report under
@@ -103,6 +139,19 @@ The following two-code matrix applies to `forbidden_pub_in_crate` and `forbidden
   the run, and a run with none fails with "no analysis was produced for this crate" plus
   instructions to force a rebuild. Deleting `target/mend-findings` without touching sources is the
   way to reach this; a repeat run that replays the cache is unaffected.
+- Installing a new mend build no longer leaves the next run with nothing to analyze. Cargo keys a
+  unit's fingerprint on the wrapper's path and reads nothing else about the file — neither mtime nor
+  contents — so overwriting the mend binary in place left every workspace member fresh, the driver
+  never ran, and the run ended at "no analysis was produced for this crate". Cargo is now pointed at
+  a per-build alias of mend under `target/mend-wrapper/<analysis fingerprint>/`, so a new build is a
+  new path and cargo rebuilds against it. Two mend builds keep separate alias paths, so cargo retains
+  both artifact sets and switching between them costs no rebuild.
+- Two mend runs sharing one target directory no longer break each other's build. Cargo executes the
+  wrapper alias once per compilation unit, and recreating that link on every run unlinked it first; a
+  run compiling through the gap failed with a missing file and reported crates as never executed. The
+  alias is now left alone when it already points at the running binary, and otherwise replaced by
+  renaming a staged link over it, so the path resolves to one binary or the other and is never
+  absent.
 
 ## [0.17.6] - 2026-07-27
 

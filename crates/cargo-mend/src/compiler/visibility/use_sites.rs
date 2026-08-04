@@ -13,10 +13,10 @@
 
 use std::cell::OnceCell;
 use std::cmp::Ordering;
-use std::collections::HashMap;
-use std::collections::HashSet;
 use std::rc::Rc;
 
+use rustc_hash::FxHashMap;
+use rustc_hash::FxHashSet;
 use rustc_hir::AmbigArg;
 use rustc_hir::Expr;
 use rustc_hir::ExprKind;
@@ -117,11 +117,11 @@ pub(super) struct ReexportOccurrence {
 
 #[derive(Default)]
 pub(in crate::compiler) struct ReexportIndex {
-    named:               HashMap<DefId, Vec<ReexportOccurrence>>,
-    globs:               HashMap<DefId, Vec<ReexportOccurrence>>,
-    direct_use_subjects: HashMap<LocalDefId, DefId>,
-    facade_subjects:     HashMap<LocalDefId, LocalDefId>,
-    extern_crates:       HashMap<(LocalDefId, String), LocalDefId>,
+    named:               FxHashMap<DefId, Vec<ReexportOccurrence>>,
+    globs:               FxHashMap<DefId, Vec<ReexportOccurrence>>,
+    direct_use_subjects: FxHashMap<LocalDefId, DefId>,
+    facade_subjects:     FxHashMap<LocalDefId, LocalDefId>,
+    extern_crates:       FxHashMap<(LocalDefId, String), LocalDefId>,
 }
 
 #[derive(Clone, Copy)]
@@ -423,7 +423,7 @@ impl ReexportIndex {
         facade_subject: LocalDefId,
     ) -> impl Iterator<Item = ApplicableReexportReach<'index>> {
         let subject = facade_subject.to_def_id();
-        let mut use_def_ids = HashSet::new();
+        let mut use_def_ids = FxHashSet::default();
         self.named
             .get(&subject)
             .into_iter()
@@ -629,7 +629,7 @@ impl ReexportIndex {
     }
 
     fn distinct_use_occurrences(occurrences: Vec<&ReexportOccurrence>) -> Vec<&ReexportOccurrence> {
-        let mut use_def_ids = HashSet::new();
+        let mut use_def_ids = FxHashSet::default();
         occurrences
             .into_iter()
             .filter(|occurrence| use_def_ids.insert(occurrence.use_def_id))
@@ -721,7 +721,7 @@ impl From<ParentFacadeSpelling> for FacadeSpellingPriority {
 
 struct SubjectNormalizer<'tcx> {
     tcx:                 TyCtxt<'tcx>,
-    inherent_self_types: HashMap<DefId, DefId>,
+    inherent_self_types: FxHashMap<DefId, DefId>,
 }
 
 impl SubjectNormalizer<'_> {
@@ -770,8 +770,8 @@ struct UseSiteCollector<'a, 'tcx> {
     /// so deduplicating here and rendering in [`collect_use_sites`] pays
     /// `def_path_str` once per distinct def-id instead of twice per
     /// occurrence.
-    out:                       &'a mut HashSet<(DefId, DefId, UseSiteReference)>,
-    public_visibility_targets: &'a mut HashSet<LocalDefId>,
+    out:                       &'a mut FxHashSet<(DefId, DefId, UseSiteReference)>,
+    public_visibility_targets: &'a mut FxHashSet<LocalDefId>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -840,7 +840,7 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
     /// internal types stay flagged.
     fn record_fn_signature_components(&mut self, func: DefId) {
         let signature = self.tcx.fn_sig(func).instantiate_identity();
-        let mut seen = HashSet::new();
+        let mut seen = FxHashSet::default();
         for input_or_output in signature.skip_binder().inputs_and_output {
             for arg in input_or_output.walk() {
                 if let Some(component) = arg.as_type()
@@ -862,7 +862,7 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
             .type_of(alias)
             .instantiate_identity()
             .skip_normalization();
-        let mut seen = HashSet::new();
+        let mut seen = FxHashSet::default();
         for arg in aliased.walk() {
             if let Some(component) = arg.as_type()
                 && let ty::TyKind::Adt(adt_def, _) = component.kind()
@@ -877,7 +877,7 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
     /// the field's type reachable wherever the alias is used, so those types
     /// must keep matching visibility too. Fields that do not escape the
     /// type's own module are not followed — they expose nothing further.
-    fn record_exposed_adt(&mut self, did: DefId, seen: &mut HashSet<DefId>) {
+    fn record_exposed_adt(&mut self, did: DefId, seen: &mut FxHashSet<DefId>) {
         let Some(local) = did.as_local() else {
             return;
         };
@@ -933,7 +933,7 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
         let interface_reach = self.interface_reach(trait_ref.def_id, self_adt);
         self.current_module = interface_reach.module;
 
-        let mut seen = HashSet::new();
+        let mut seen = FxHashSet::default();
         for arg in trait_ref.args {
             if let Some(arg_type) = arg.as_type() {
                 self.record_interface_component_types(
@@ -1018,7 +1018,7 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
         component_type: ty::Ty<'tcx>,
         self_adt: Option<DefId>,
         interface_visibility: InterfaceVisibility,
-        seen: &mut HashSet<DefId>,
+        seen: &mut FxHashSet<DefId>,
     ) {
         for arg in component_type.walk() {
             if let Some(component) = arg.as_type()
@@ -1175,9 +1175,9 @@ impl<'tcx> Visitor<'tcx> for UseSiteCollector<'_, 'tcx> {
 /// crate root).
 pub(super) fn collect_use_sites(
     tcx: TyCtxt<'_>,
-    public_visibility_targets: &mut HashSet<LocalDefId>,
+    public_visibility_targets: &mut FxHashSet<LocalDefId>,
 ) -> UseSiteIndex {
-    let mut pairs = HashSet::new();
+    let mut pairs = FxHashSet::default();
     let mut collector = UseSiteCollector {
         tcx,
         current_module: CRATE_DEF_ID.to_def_id(),
@@ -1199,7 +1199,7 @@ pub(super) fn collect_use_sites(
     }
 
     let mut index = UseSiteIndex::default();
-    let mut def_paths: HashMap<DefId, String> = HashMap::new();
+    let mut def_paths: FxHashMap<DefId, String> = FxHashMap::default();
     for (target, caller_module, reference) in pairs {
         let target_def_path = def_paths
             .entry(target)
@@ -1224,7 +1224,7 @@ pub(super) fn reexport_index(tcx: TyCtxt<'_>) -> ReexportIndex {
     let mut index = ReexportIndex::default();
     let mut normalizer = SubjectNormalizer {
         tcx,
-        inherent_self_types: HashMap::new(),
+        inherent_self_types: FxHashMap::default(),
     };
 
     for item_id in crate_items.free_items() {

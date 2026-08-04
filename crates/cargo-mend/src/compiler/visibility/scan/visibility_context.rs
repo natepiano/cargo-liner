@@ -1,7 +1,5 @@
 use std::cell::RefCell;
 use std::collections::BTreeSet;
-use std::collections::HashMap;
-use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::Path;
@@ -9,6 +7,8 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use anyhow::Result;
+use rustc_hash::FxHashMap;
+use rustc_hash::FxHashSet;
 use rustc_middle::middle::privacy::EffectiveVisibilities;
 use rustc_middle::ty::TyCtxt;
 use rustc_span::FileName;
@@ -44,10 +44,10 @@ pub(in crate::compiler::visibility) struct VisibilityContext<'a, 'tcx> {
     pub root_module:               &'a Path,
     pub effective_visibilities:    &'a EffectiveVisibilities,
     pub source_cache:              &'a SourceCache,
-    pub public_visibility_targets: &'a HashSet<LocalDefId>,
+    pub public_visibility_targets: &'a FxHashSet<LocalDefId>,
     pub reexport_index:            &'a ReexportIndex,
     pub module_sources:            &'a ModuleSourceMap,
-    parent_facade_analyses:        RefCell<HashMap<LocalDefId, Option<ParentFacadeAnalysis<'a>>>>,
+    parent_facade_analyses:        RefCell<FxHashMap<LocalDefId, Option<ParentFacadeAnalysis<'a>>>>,
 }
 
 impl<'a> VisibilityContext<'a, '_> {
@@ -114,7 +114,7 @@ pub(in crate::compiler::visibility) fn collect_and_store_findings(
     let source_cache = build_source_cache(tcx, &crate_root_file)?;
     let reexport_index = use_sites::reexport_index(tcx);
     let module_sources = ModuleSourceMap::new(tcx, &source_cache);
-    let mut public_visibility_targets = HashSet::new();
+    let mut public_visibility_targets = FxHashSet::default();
     sink.use_sites = use_sites::collect_use_sites(tcx, &mut public_visibility_targets);
     let ctx = VisibilityContext {
         tcx,
@@ -126,7 +126,7 @@ pub(in crate::compiler::visibility) fn collect_and_store_findings(
         public_visibility_targets: &public_visibility_targets,
         reexport_index: &reexport_index,
         module_sources: &module_sources,
-        parent_facade_analyses: RefCell::new(HashMap::new()),
+        parent_facade_analyses: RefCell::new(FxHashMap::default()),
     };
 
     let mut source_files = BTreeSet::new();

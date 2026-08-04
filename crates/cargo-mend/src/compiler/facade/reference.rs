@@ -1,10 +1,12 @@
 use std::cmp::Reverse;
-use std::collections::HashMap;
 use std::fs;
 use std::ops::Range;
 use std::path::Path;
+use std::rc::Rc;
 
 use anyhow::Result;
+use rustc_hash::FxHashMap;
+use rustc_hash::FxHashSet;
 use rustc_middle::ty::TyCtxt;
 use rustc_span::FileName;
 use rustc_span::Span;
@@ -12,11 +14,13 @@ use rustc_span::def_id::LocalDefId;
 use rustc_span::def_id::LocalModDefId;
 
 use super::boundary;
+use super::boundary::ModuleContext;
 use super::boundary::ModuleSourceMap;
 use super::boundary::ParentBoundary;
 use super::exports::ParentFacadeExports;
 use crate::compiler::settings::DriverSettings;
 use crate::compiler::source_cache::ExtractedPaths;
+use crate::compiler::source_cache::NameMention;
 use crate::compiler::source_cache::PathOrigin;
 use crate::compiler::source_cache::SourceCache;
 use crate::compiler::source_cache::UseRename;
@@ -32,7 +36,7 @@ pub(in crate::compiler) enum ParentFacadeUsage {
     UsedOutsideSubtree,
 }
 
-pub(in crate::compiler) type ParentFacadeUsageByName = HashMap<String, ParentFacadeUsage>;
+pub(in crate::compiler) type ParentFacadeUsageByName = FxHashMap<String, ParentFacadeUsage>;
 
 pub(super) fn normalized_export_name(name: &str) -> &str { name.strip_prefix("r#").unwrap_or(name) }
 
@@ -91,27 +95,31 @@ pub(super) fn scan_facade_usage(
             )
         })
         .collect::<ParentFacadeUsageByName>();
+    let explicit_names = ExportNameIndex::new(&exported_names.explicit);
+
     for source_path in source_cache.source_files() {
+        if file_mentions_no_export(source_cache, source_path, &explicit_names) {
+            continue;
+        }
         let Some(extracted) = source_cache.extracted_paths(source_path) else {
             continue;
         };
-        for (current_module_path, module_suffix) in
-            active_module_contexts(extracted, module_sources, tcx, source_path)
-        {
+        let module_contexts = active_module_contexts(extracted, module_sources, tcx, source_path);
+        for module_context in module_contexts.iter() {
             if source_path == parent_boundary.boundary_file
-                && current_module_path == parent_boundary.module_path
+                && module_context.path == parent_boundary.module_path
             {
                 continue;
             }
             let reference_usage_by_name = source_references_parent_exports(
                 extracted,
-                &current_module_path,
-                &module_suffix,
+                &module_context.path,
+                &module_context.suffix,
                 &parent_boundary.module_path,
-                &exported_names.explicit,
+                &explicit_names,
             );
             let inside_subtree =
-                module_path_is_descendant(&current_module_path, &parent_boundary.module_path);
+                module_path_is_descendant(&module_context.path, &parent_boundary.module_path);
             for (name, reference_usage) in reference_usage_by_name {
                 let next_usage = match reference_usage {
                     ParentFacadeReferenceUsage::None => ParentFacadeUsage::Unused,
@@ -144,7 +152,7 @@ pub(super) fn scan_facade_usage(
                         }
                     },
                 };
-                merge_usage_for_name(&mut usage_by_name, name, next_usage);
+                merge_usage_for_name(&mut usage_by_name, &name, next_usage);
             }
         }
     }
@@ -158,7 +166,7 @@ pub(super) fn scan_facade_usage(
         &exported_names.explicit,
     )?;
     for (name, literal_usage) in literal_usage_by_name {
-        merge_usage_for_name(&mut usage_by_name, name, literal_usage);
+        merge_usage_for_name(&mut usage_by_name, &name, literal_usage);
     }
 
     Ok(usage_by_name)
@@ -185,8 +193,16 @@ pub(in crate::compiler) fn workspace_source_parent_export_literal_usage(
         return Ok(usage_by_name);
     }
 
+    let export_spellings = export_spellings(exported_names);
+
     for file in source_cache.source_files() {
         if file.starts_with(&settings.findings_dir) {
+            continue;
+        }
+        if export_spellings
+            .iter()
+            .all(|export| source_cache.name_mention(file, export.name) == NameMention::Absent)
+        {
             continue;
         }
         let root_modules = module_sources.root_modules_for_file(tcx, file);
@@ -195,16 +211,18 @@ pub(in crate::compiler) fn workspace_source_parent_export_literal_usage(
         }
         let source = source_cache.read_source(file)?;
         let mut matches = Vec::new();
-        for name in exported_names {
-            let name = normalized_export_name(name);
-            for item_spelling in [name.to_string(), format!("r#{name}")] {
-                matches.extend(source.match_indices(&item_spelling).filter_map(
+        for export in &export_spellings {
+            if source_cache.name_mention(file, export.name) == NameMention::Absent {
+                continue;
+            }
+            for item_spelling in &export.spellings {
+                matches.extend(source.match_indices(item_spelling.as_str()).filter_map(
                     |(item_offset, matched_item)| {
                         let path_offset =
                             literal_crate_path_start(source, item_offset, module_path)?;
                         let path_length = item_offset + matched_item.len() - path_offset;
                         literal_match_has_identifier_boundaries(source, path_offset, path_length)
-                            .then_some((path_offset, name))
+                            .then_some((path_offset, export.name))
                     },
                 ));
             }
@@ -221,12 +239,100 @@ pub(in crate::compiler) fn workspace_source_parent_export_literal_usage(
                 } else {
                     ParentFacadeUsage::UsedOutsideSubtree
                 };
-                merge_usage_for_name(&mut usage_by_name, name.to_string(), literal_usage);
+                merge_usage_for_name(&mut usage_by_name, name, literal_usage);
             }
         }
     }
 
     Ok(usage_by_name)
+}
+
+/// The exported names of one facade, with any `r#` prefix stripped, indexed for
+/// constant-time lookup.
+///
+/// [`matching_export_name_indexed`] accepts a resolved path only when its final
+/// segment is one of these names, so the index also answers that test before
+/// [`resolve_module_relative_paths`] allocates a single candidate path.
+struct ExportNameIndex<'name> {
+    normalized: FxHashSet<&'name str>,
+}
+
+impl<'name> ExportNameIndex<'name> {
+    fn new(exported_names: &'name [String]) -> Self {
+        Self {
+            normalized: exported_names
+                .iter()
+                .map(|name| normalized_export_name(name))
+                .collect(),
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &'name str> + '_ { self.normalized.iter().copied() }
+
+    /// The exported name equal to `segment`, ignoring any `r#` prefix.
+    fn matching(&self, segment: &str) -> Option<&'name str> {
+        self.normalized
+            .get(normalized_export_name(segment))
+            .copied()
+    }
+
+    /// Whether any path [`resolve_module_relative_paths`] derives from `raw`
+    /// could name an export.
+    ///
+    /// [`matching_export_name_indexed`] keeps a candidate only when its length is
+    /// `module_path.len() + 1`, so the segment it compares against this index is
+    /// always the candidate's final one. Every resolution of `raw` ends in
+    /// `raw`'s own final segment whenever that segment is a plain
+    /// [`PathAnchor::Name`] — `crate`/`self`/`super` resolution only rewrites the
+    /// prefix. A final segment absent from the index therefore cannot match, and
+    /// the caller can skip resolving `raw` entirely.
+    ///
+    /// Returns `true` for an anchor-final path such as `super::super`, where
+    /// resolution drops the anchor and the final segment comes from the current
+    /// module path instead. Those fall through to the full scan.
+    fn could_match_final_segment(&self, raw: &[String]) -> bool {
+        raw.last().is_none_or(|segment| {
+            PathAnchor::from(segment.as_str()) != PathAnchor::Name
+                || self.normalized.contains(normalized_export_name(segment))
+        })
+    }
+}
+
+/// Whether `source_file` can be skipped without changing the scan's result.
+///
+/// A name reaches a facade scan only as a path segment or an identifier-bounded
+/// literal, both of which are verbatim words of the source, so a file the name
+/// index does not list cannot contribute a match. Skipping it avoids parsing its
+/// module contexts and resolving its paths — the dominant cost of a whole-crate
+/// sweep that runs once per re-export occurrence.
+fn file_mentions_no_export(
+    source_cache: &SourceCache,
+    source_file: &Path,
+    export_names: &ExportNameIndex<'_>,
+) -> bool {
+    export_names
+        .iter()
+        .all(|name| source_cache.name_mention(source_file, name) == NameMention::Absent)
+}
+
+/// One exported name and the two ways source can spell it.
+struct ExportSpellings<'name> {
+    name:      &'name str,
+    spellings: [String; 2],
+}
+
+/// The spellings to search for, built once instead of once per scanned file.
+fn export_spellings(exported_names: &[String]) -> Vec<ExportSpellings<'_>> {
+    exported_names
+        .iter()
+        .map(|name| {
+            let name = normalized_export_name(name);
+            ExportSpellings {
+                name,
+                spellings: [name.to_string(), format!("r#{name}")],
+            }
+        })
+        .collect()
 }
 
 fn literal_crate_path_start(
@@ -541,9 +647,9 @@ fn source_references_parent_exports(
     current_module_path: &[String],
     module_suffix: &[String],
     module_path: &[String],
-    exported_names: &[String],
-) -> HashMap<String, ParentFacadeReferenceUsage> {
-    let mut usage_by_name = HashMap::new();
+    exported_names: &ExportNameIndex<'_>,
+) -> FxHashMap<String, ParentFacadeReferenceUsage> {
+    let mut usage_by_name = FxHashMap::default();
     for extracted_path in &extracted.expr_paths {
         if extracted_path.module_suffix != module_suffix {
             continue;
@@ -622,8 +728,14 @@ fn matching_export_name_indexed<'name>(
     raw: &[String],
     current_module_path: &[String],
     module_path: &[String],
-    exported_names: &'name [String],
+    exported_names: &ExportNameIndex<'name>,
 ) -> Option<&'name str> {
+    // Rejecting here keeps `resolve_module_relative_paths` — which clones the
+    // whole path once per module-prefix length — off every path that cannot name
+    // an export, the overwhelming majority on a whole-crate sweep.
+    if !exported_names.could_match_final_segment(raw) {
+        return None;
+    }
     resolve_module_relative_paths(raw, current_module_path)
         .into_iter()
         .find_map(|segments| {
@@ -634,21 +746,13 @@ fn matching_export_name_indexed<'name>(
                             == normalized_export_name(compiler_segment)
                     },
                 ))
-            .then(|| {
-                exported_names
-                    .iter()
-                    .find(|name| {
-                        normalized_export_name(name)
-                            == normalized_export_name(&segments[module_path.len()])
-                    })
-                    .map(|name| normalized_export_name(name))
-            })
+            .then(|| exported_names.matching(&segments[module_path.len()]))
             .flatten()
         })
 }
 
 fn merge_reference_usage_for_name(
-    usage_by_name: &mut HashMap<String, ParentFacadeReferenceUsage>,
+    usage_by_name: &mut FxHashMap<String, ParentFacadeReferenceUsage>,
     name: &str,
     next: ParentFacadeReferenceUsage,
 ) {
@@ -765,14 +869,17 @@ const fn merge_parent_facade_usage(
 
 fn merge_usage_for_name(
     usage_by_name: &mut ParentFacadeUsageByName,
-    name: String,
+    name: &str,
     next: ParentFacadeUsage,
 ) {
-    let current = usage_by_name
-        .get(&name)
-        .copied()
-        .unwrap_or(ParentFacadeUsage::Unused);
-    usage_by_name.insert(name, merge_parent_facade_usage(current, next));
+    if let Some(current) = usage_by_name.get_mut(name) {
+        *current = merge_parent_facade_usage(*current, next);
+        return;
+    }
+    usage_by_name.insert(
+        name.to_string(),
+        merge_parent_facade_usage(ParentFacadeUsage::Unused, next),
+    );
 }
 
 pub(in crate::compiler) fn path_exists_outside_child_module(
@@ -787,16 +894,15 @@ pub(in crate::compiler) fn path_exists_outside_child_module(
         let Some(extracted) = source_cache.extracted_paths(source_file) else {
             continue;
         };
-        for (current_module_path, module_suffix) in
-            active_module_contexts(extracted, module_sources, tcx, source_file)
-        {
-            if module_path_is_descendant(&current_module_path, child_module_path) {
+        let module_contexts = active_module_contexts(extracted, module_sources, tcx, source_file);
+        for module_context in module_contexts.iter() {
+            if module_path_is_descendant(&module_context.path, child_module_path) {
                 continue;
             }
             if extracted_paths_mention_child_item(
                 extracted,
-                &current_module_path,
-                &module_suffix,
+                &module_context.path,
+                &module_context.suffix,
                 child_module_path,
                 item_name,
             ) {
@@ -816,22 +922,22 @@ pub(in crate::compiler) fn path_exists_outside_module(
     module_path: &[String],
     item_names: &[String],
 ) -> bool {
+    let item_names = ExportNameIndex::new(item_names);
     for source_file in source_cache.source_files_under(source_root) {
         let Some(extracted) = source_cache.extracted_paths(source_file) else {
             continue;
         };
-        for (current_module_path, module_suffix) in
-            active_module_contexts(extracted, module_sources, tcx, source_file)
-        {
-            if module_path_is_descendant(&current_module_path, module_path) {
+        let module_contexts = active_module_contexts(extracted, module_sources, tcx, source_file);
+        for module_context in module_contexts.iter() {
+            if module_path_is_descendant(&module_context.path, module_path) {
                 continue;
             }
             if source_references_parent_exports(
                 extracted,
-                &current_module_path,
-                &module_suffix,
+                &module_context.path,
+                &module_context.suffix,
                 module_path,
-                item_names,
+                &item_names,
             )
             .values()
             .any(|usage| !matches!(usage, ParentFacadeReferenceUsage::None))
@@ -886,23 +992,28 @@ fn active_module_contexts(
     module_sources: &ModuleSourceMap,
     tcx: TyCtxt<'_>,
     source_file: &Path,
-) -> Vec<(Vec<String>, Vec<String>)> {
-    let mut contexts = Vec::new();
-    for root_module in module_sources.root_modules_for_file(tcx, source_file) {
-        let root_path = boundary::module_path(tcx, root_module);
-        for module_suffix in lexical_module_suffixes(extracted) {
-            let mut current_module_path = root_path.clone();
-            current_module_path.extend(module_suffix.iter().cloned());
-            if module_sources.file_contains_module_path(tcx, source_file, &current_module_path)
-                && !contexts
-                    .iter()
-                    .any(|(path, _)| path == &current_module_path)
-            {
-                contexts.push((current_module_path, module_suffix.to_vec()));
+) -> Rc<[ModuleContext]> {
+    module_sources.module_contexts(source_file, || {
+        let mut contexts: Vec<ModuleContext> = Vec::new();
+        for root_module in module_sources.root_modules_for_file(tcx, source_file) {
+            let root_path = boundary::module_path(tcx, root_module);
+            for module_suffix in lexical_module_suffixes(extracted) {
+                let mut current_module_path = root_path.clone();
+                current_module_path.extend(module_suffix.iter().cloned());
+                if module_sources.file_contains_module_path(tcx, source_file, &current_module_path)
+                    && !contexts
+                        .iter()
+                        .any(|context| context.path == current_module_path)
+                {
+                    contexts.push(ModuleContext {
+                        path:   current_module_path,
+                        suffix: module_suffix.to_vec(),
+                    });
+                }
             }
         }
-    }
-    contexts
+        contexts
+    })
 }
 
 fn lexical_module_suffixes(extracted: &ExtractedPaths) -> Vec<&[String]> {
@@ -943,6 +1054,7 @@ fn module_path_is_descendant(candidate: &[String], parent: &[String]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::ExportNameIndex;
     use super::matching_export_name_indexed;
 
     #[test]
@@ -956,9 +1068,61 @@ mod tests {
                 &source_segments,
                 &[],
                 &compiler_segments,
-                &exported_names,
+                &ExportNameIndex::new(&exported_names),
             ),
             Some("Thing")
+        );
+    }
+
+    #[test]
+    fn raw_identifier_export_matches_a_plainly_spelled_final_segment() {
+        let source_segments = ["crate", "a", "Thing"].map(String::from);
+        let compiler_segments = ["a"].map(String::from);
+        let exported_names = [String::from("r#Thing")];
+
+        assert_eq!(
+            matching_export_name_indexed(
+                &source_segments,
+                &[],
+                &compiler_segments,
+                &ExportNameIndex::new(&exported_names),
+            ),
+            Some("Thing")
+        );
+    }
+
+    #[test]
+    fn super_relative_path_resolves_against_the_current_module() {
+        let source_segments = ["super", "Thing"].map(String::from);
+        let current_module_path = ["a", "b"].map(String::from);
+        let compiler_segments = ["a"].map(String::from);
+        let exported_names = [String::from("Thing")];
+
+        assert_eq!(
+            matching_export_name_indexed(
+                &source_segments,
+                &current_module_path,
+                &compiler_segments,
+                &ExportNameIndex::new(&exported_names),
+            ),
+            Some("Thing")
+        );
+    }
+
+    #[test]
+    fn path_whose_final_segment_is_not_exported_does_not_match() {
+        let source_segments = ["crate", "a", "Other"].map(String::from);
+        let compiler_segments = ["a"].map(String::from);
+        let exported_names = [String::from("Thing")];
+
+        assert_eq!(
+            matching_export_name_indexed(
+                &source_segments,
+                &[],
+                &compiler_segments,
+                &ExportNameIndex::new(&exported_names),
+            ),
+            None
         );
     }
 }

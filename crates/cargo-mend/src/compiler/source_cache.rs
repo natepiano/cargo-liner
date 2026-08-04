@@ -1,7 +1,8 @@
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
 use std::ffi::OsStr;
 use std::fs;
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -11,6 +12,8 @@ use proc_macro2::Delimiter;
 use proc_macro2::Group;
 use proc_macro2::TokenStream;
 use proc_macro2::TokenTree;
+use rustc_hash::FxHashMap;
+use rustc_hash::FxHashSet;
 use syn::Attribute;
 use syn::Expr;
 use syn::File;
@@ -68,12 +71,25 @@ pub(super) struct UseRename {
     pub module_suffix: Vec<String>,
 }
 
+/// Whether a name can appear anywhere in a source file.
+///
+/// The answer comes from a hash set, so `Present` is approximate — a hash
+/// collision reports it for a name the file does not contain, and the caller
+/// still has to run the real scan. `Absent` is exact: the name occurs nowhere in
+/// the file's text, so no scan of that file can match it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum NameMention {
+    Present,
+    Absent,
+}
+
 pub(super) struct SourceCache {
-    contents:                       HashMap<PathBuf, String>,
-    files_by_dir:                   HashMap<PathBuf, Vec<PathBuf>>,
-    parsed:                         HashMap<PathBuf, File>,
-    extracted_paths:                HashMap<PathBuf, ExtractedPaths>,
-    structural_parent_module_paths: HashMap<PathBuf, Vec<Vec<String>>>,
+    contents:                       FxHashMap<PathBuf, String>,
+    files_by_dir:                   FxHashMap<PathBuf, Vec<PathBuf>>,
+    parsed:                         FxHashMap<PathBuf, File>,
+    extracted_paths:                FxHashMap<PathBuf, ExtractedPaths>,
+    mentionable_names:              FxHashMap<PathBuf, FxHashSet<u64>>,
+    structural_parent_module_paths: FxHashMap<PathBuf, Vec<Vec<String>>>,
     all_features_coverage:          AllFeaturesCoverage,
 }
 
@@ -88,7 +104,7 @@ impl SourceCache {
     }
 
     pub fn build_files(source_files: &[PathBuf]) -> Result<Self> {
-        let mut contents = HashMap::new();
+        let mut contents = FxHashMap::default();
         for file in source_files {
             contents.entry(file.clone()).or_insert(
                 fs::read_to_string(file).with_context(|| {
@@ -96,7 +112,7 @@ impl SourceCache {
                 })?,
             );
         }
-        let mut files_by_dir: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+        let mut files_by_dir: FxHashMap<PathBuf, Vec<PathBuf>> = FxHashMap::default();
         for path in contents.keys() {
             if let Some(parent) = path.parent() {
                 files_by_dir
@@ -105,15 +121,19 @@ impl SourceCache {
                     .push(path.clone());
             }
         }
-        let mut parsed = HashMap::new();
+        let mut parsed = FxHashMap::default();
         for (path, source) in &contents {
             if let Ok(ast) = parse_file(source) {
                 parsed.insert(path.clone(), ast);
             }
         }
-        let mut extracted_paths = HashMap::new();
+        let mut extracted_paths = FxHashMap::default();
         for (path, ast) in &parsed {
             extracted_paths.insert(path.clone(), extract_paths(ast));
+        }
+        let mut mentionable_names = FxHashMap::default();
+        for (path, source) in &contents {
+            mentionable_names.insert(path.clone(), mentionable_names_in(source));
         }
         let all_features_coverage = source_all_features_coverage(&contents, &parsed);
         Ok(Self {
@@ -121,7 +141,8 @@ impl SourceCache {
             files_by_dir,
             parsed,
             extracted_paths,
-            structural_parent_module_paths: HashMap::new(),
+            mentionable_names,
+            structural_parent_module_paths: FxHashMap::default(),
             all_features_coverage,
         })
     }
@@ -133,8 +154,8 @@ impl SourceCache {
             .iter()
             .map(|path| fs::canonicalize(path).unwrap_or_else(|_| path.clone()))
             .collect::<Vec<_>>();
-        let mut visited = HashSet::new();
-        let mut structural_parent_module_paths = HashMap::new();
+        let mut visited = FxHashSet::default();
+        let mut structural_parent_module_paths = FxHashMap::default();
         collect_declared_module_files(
             &crate_root_file,
             crate_root_file
@@ -171,24 +192,60 @@ impl SourceCache {
 
     pub fn parsed_file(&self, path: &Path) -> Option<&File> { self.parsed.get(path) }
 
+    /// Whether `name` can be mentioned anywhere in `path`.
+    ///
+    /// Callers that scan a file's syntax tree for one name use this first: the
+    /// scan walks every item in the file, so skipping a file that cannot match
+    /// turns a whole-crate sweep into a handful of files. A path the cache never
+    /// indexed answers [`NameMention::Present`] so the caller still scans it.
+    pub fn name_mention(&self, path: &Path, name: &str) -> NameMention {
+        self.mentionable_names
+            .get(path)
+            .filter(|names| !names.contains(&name_hash(name)))
+            .map_or(NameMention::Present, |_| NameMention::Absent)
+    }
+
     pub fn extracted_paths(&self, path: &Path) -> Option<&ExtractedPaths> {
         self.extracted_paths.get(path)
     }
 
-    pub const fn structural_parent_module_paths(&self) -> &HashMap<PathBuf, Vec<Vec<String>>> {
+    pub const fn structural_parent_module_paths(&self) -> &FxHashMap<PathBuf, Vec<Vec<String>>> {
         &self.structural_parent_module_paths
     }
 
     pub const fn all_features_coverage(&self) -> AllFeaturesCoverage { self.all_features_coverage }
 }
 
+/// Hash every name that a scan of `source` could compare an item name against.
+///
+/// Two forms reach such a comparison. A path segment or attribute identifier is
+/// spelled verbatim, so the identifier-shaped words of the text cover it. A
+/// literal is compared after
+/// `to_string().trim_matches('"').trim_matches('r').trim_matches('#')`, and only
+/// the `'r'` trim can reach inside a word — `"error"` is compared as `erro` —
+/// so each word contributes its trimmed form as well.
+fn mentionable_names_in(source: &str) -> FxHashSet<u64> {
+    source
+        .split(|character: char| !character.is_alphanumeric() && character != '_')
+        .filter(|word| !word.is_empty())
+        .flat_map(|word| [word, word.trim_matches('r')])
+        .map(name_hash)
+        .collect()
+}
+
+fn name_hash(name: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    name.hash(&mut hasher);
+    hasher.finish()
+}
+
 fn collect_declared_module_files(
     source_file: &Path,
     module_directory: &Path,
     module_path: &[String],
-    visited: &mut HashSet<PathBuf>,
+    visited: &mut FxHashSet<PathBuf>,
     source_files: &mut Vec<PathBuf>,
-    structural_parent_module_paths: &mut HashMap<PathBuf, Vec<Vec<String>>>,
+    structural_parent_module_paths: &mut FxHashMap<PathBuf, Vec<Vec<String>>>,
 ) -> Result<()> {
     let source_file = fs::canonicalize(source_file).unwrap_or_else(|_| source_file.to_path_buf());
     if !visited.insert(source_file.clone()) {
@@ -217,9 +274,9 @@ fn collect_module_items(
     items: &[Item],
     module_directory: &Path,
     module_path: &[String],
-    visited: &mut HashSet<PathBuf>,
+    visited: &mut FxHashSet<PathBuf>,
     source_files: &mut Vec<PathBuf>,
-    structural_parent_module_paths: &mut HashMap<PathBuf, Vec<Vec<String>>>,
+    structural_parent_module_paths: &mut FxHashMap<PathBuf, Vec<Vec<String>>>,
 ) -> Result<()> {
     for item in items {
         let Item::Mod(item_mod) = item else {
@@ -361,8 +418,8 @@ fn parse_meta_list(list: &MetaList) -> syn::Result<Punctuated<Meta, Token![,]>> 
 }
 
 fn source_all_features_coverage(
-    contents: &HashMap<PathBuf, String>,
-    parsed: &HashMap<PathBuf, File>,
+    contents: &FxHashMap<PathBuf, String>,
+    parsed: &FxHashMap<PathBuf, File>,
 ) -> AllFeaturesCoverage {
     if contents.len() != parsed.len() {
         return AllFeaturesCoverage::NotGuaranteed;
