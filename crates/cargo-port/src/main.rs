@@ -12,6 +12,7 @@ mod enrichment;
 mod http;
 mod lint;
 mod process_observation;
+mod process_termination;
 mod project;
 mod scan;
 mod sccache;

@@ -3943,7 +3943,7 @@ mod tests {
         }
 
         #[test]
-        fn output_stop_consumes_esc_even_if_global_quit_is_esc() {
+        fn output_stop_submission_consumes_esc_even_if_global_quit_is_esc() {
             let project = super::make_project(Some("demo"), "~/demo");
             let mut app = make_app_with_keymap_toml(&[project], "[global]\nquit = \"Esc\"\n");
             app.inflight
@@ -3956,10 +3956,16 @@ mod tests {
                 !app.framework.quit_requested(),
                 "stopping output must not also request cargo-port quit",
             );
-            assert!(app.inflight.example_running().is_none());
-            assert_eq!(
-                app.inflight.example_output().last().map(String::as_str),
-                Some("── killed ──"),
+            assert!(matches!(
+                app.inflight.owned_run_termination(),
+                crate::tui::state::OwnedRunTermination::RequestPending { .. }
+            ));
+            assert!(
+                !app.inflight
+                    .example_output()
+                    .iter()
+                    .any(|line| line == "── killed ──"),
+                "submission alone must not claim the actor sent a signal",
             );
         }
 
@@ -7348,7 +7354,7 @@ mod tests {
         }
 
         #[test]
-        fn output_esc_collapses_vim_visual_before_stopping_the_run() {
+        fn output_esc_collapses_vim_visual_before_requesting_termination() {
             let project = make_package("demo", Path::new("/tmp/demo"));
             let mut app = make_app_vim(&[project]);
             open_output(&mut app, &["alpha", "beta", "gamma"]);
@@ -7366,12 +7372,20 @@ mod tests {
                 "leaving visual mode must not stop the running process",
             );
 
-            // Second Esc stops the run and records a single kill marker.
+            // Second Esc submits termination but leaves the run live until the actor
+            // reports whether it sent the signal.
             press_key(&mut app, KeyCode::Esc);
-            assert!(app.inflight.example_running().is_none());
-            assert_eq!(
-                app.inflight.example_output().last().map(String::as_str),
-                Some("── killed ──"),
+            assert!(app.inflight.example_running().is_some());
+            assert!(matches!(
+                app.inflight.owned_run_termination(),
+                crate::tui::state::OwnedRunTermination::RequestPending { .. }
+            ));
+            assert!(
+                !app.inflight
+                    .example_output()
+                    .iter()
+                    .any(|line| line == "── killed ──"),
+                "submission alone must not claim the actor sent a signal",
             );
         }
 

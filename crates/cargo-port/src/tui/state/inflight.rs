@@ -13,27 +13,17 @@ use std::collections::VecDeque;
 use std::num::NonZeroU64;
 use std::path::PathBuf;
 
-#[cfg(not(unix))]
-use sysinfo::Pid;
-#[cfg(not(unix))]
-use sysinfo::ProcessRefreshKind;
-#[cfg(not(unix))]
-use sysinfo::ProcessesToUpdate;
-#[cfg(not(unix))]
-use sysinfo::Signal;
-#[cfg(not(unix))]
-use sysinfo::System;
 use tui_pane::RunningTracker;
 
+use super::owned_run_process_actor::OwnedProcessGroupSignalOutcome;
+use super::owned_run_process_actor::OwnedRunProcessActor;
+use super::owned_run_process_actor::OwnedRunTerminationOutcome;
+use super::owned_run_process_actor::OwnedRunTerminationSubmission;
+use super::owned_run_process_actor::OwnedRunTerminationToken;
 use crate::build_monitor::LiveOwnedRoot;
 use crate::build_monitor::OwnedRootEvidence;
 use crate::build_monitor::OwnedRootLifecycle;
 use crate::process_observation::identity::ProcessIdentity;
-#[cfg(not(test))]
-use crate::process_observation::identity::StrongProcessIdentityRevalidation;
-use crate::process_observation::identity::VerifiedProcessIdentity;
-#[cfg(not(test))]
-use crate::process_observation::identity::revalidate_strong_process_identity;
 use crate::project::AbsolutePath;
 use crate::tui::app::PendingClean;
 use crate::tui::panes::PendingCiFetch;
@@ -65,148 +55,6 @@ pub(crate) enum OwnedRunIdAllocation {
     Allocated(OwnedRunId),
     /// Every identity the counter can represent has already been issued.
     Exhausted,
-}
-
-/// Opaque authority to signal the isolated group created for one verified
-/// Cargo Port-owned root process.
-#[derive(Debug)]
-pub(crate) struct OwnedProcessGroupTerminationCapability {
-    process_group_id:    u32,
-    process_identity:    ProcessIdentity,
-    #[cfg(test)]
-    test_signal_outcome: OwnedProcessGroupSignalOutcome,
-}
-
-impl OwnedProcessGroupTerminationCapability {
-    /// Consume identity evidence that was observed and revalidated before
-    /// constructing group termination authority.
-    pub(crate) const fn from_verified_root(
-        verified_process_identity: VerifiedProcessIdentity,
-    ) -> Self {
-        let process_identity = verified_process_identity.into_process_identity();
-        let process_group_id = process_identity.pid();
-        Self {
-            process_group_id,
-            process_identity,
-            #[cfg(test)]
-            test_signal_outcome: OwnedProcessGroupSignalOutcome::Sent,
-        }
-    }
-
-    /// The verified root identity, as observation. Handing this out does not
-    /// hand out signaling authority: the capability itself never leaves.
-    const fn root_identity(&self) -> &ProcessIdentity { &self.process_identity }
-
-    #[cfg(not(test))]
-    pub(crate) fn signal(&self) -> OwnedProcessGroupSignalOutcome {
-        match revalidate_strong_process_identity(&self.process_identity) {
-            StrongProcessIdentityRevalidation::Current => {
-                signal_owned_process_group(self.process_group_id, &self.process_identity)
-            },
-            StrongProcessIdentityRevalidation::Replaced(_)
-            | StrongProcessIdentityRevalidation::Unavailable(_) => {
-                OwnedProcessGroupSignalOutcome::IdentityNoLongerCurrent
-            },
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) const fn signal(&self) -> OwnedProcessGroupSignalOutcome { self.test_signal_outcome }
-
-    const fn root_binding_is_consistent(&self) -> bool {
-        self.process_group_id == self.process_identity.pid()
-    }
-
-    #[cfg(test)]
-    const fn for_test(process_identity: ProcessIdentity) -> Self {
-        Self {
-            process_group_id: process_identity.pid(),
-            process_identity,
-            test_signal_outcome: OwnedProcessGroupSignalOutcome::Sent,
-        }
-    }
-
-    #[cfg(test)]
-    const fn with_test_signal_outcome(
-        process_identity: ProcessIdentity,
-        test_signal_outcome: OwnedProcessGroupSignalOutcome,
-    ) -> Self {
-        Self {
-            process_group_id: process_identity.pid(),
-            process_identity,
-            test_signal_outcome,
-        }
-    }
-}
-
-/// What happened when identity-bound owned-group signaling was attempted.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum OwnedProcessGroupSignalOutcome {
-    Sent,
-    IdentityNoLongerCurrent,
-    SignalFailed,
-}
-
-#[cfg(all(unix, not(test)))]
-fn signal_owned_process_group(
-    process_group_id: u32,
-    process_identity: &ProcessIdentity,
-) -> OwnedProcessGroupSignalOutcome {
-    let group_signal_sent = std::process::Command::new("kill")
-        .arg("-TERM")
-        .arg(format!("-{process_group_id}"))
-        .status()
-        .is_ok_and(|status| status.success());
-    if group_signal_sent {
-        return OwnedProcessGroupSignalOutcome::Sent;
-    }
-
-    if !matches!(
-        revalidate_strong_process_identity(process_identity),
-        StrongProcessIdentityRevalidation::Current
-    ) {
-        return OwnedProcessGroupSignalOutcome::IdentityNoLongerCurrent;
-    }
-
-    let root_signal_sent = std::process::Command::new("kill")
-        .arg("-TERM")
-        .arg(process_identity.pid().to_string())
-        .status()
-        .is_ok_and(|status| status.success());
-
-    if root_signal_sent {
-        OwnedProcessGroupSignalOutcome::Sent
-    } else {
-        OwnedProcessGroupSignalOutcome::SignalFailed
-    }
-}
-
-#[cfg(all(not(unix), not(test)))]
-fn signal_owned_process_group(
-    _: u32,
-    process_identity: &ProcessIdentity,
-) -> OwnedProcessGroupSignalOutcome {
-    let mut system = System::new();
-    let pid = Pid::from_u32(process_identity.pid());
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&[pid]),
-        true,
-        ProcessRefreshKind::nothing(),
-    );
-    if !matches!(
-        revalidate_strong_process_identity(process_identity),
-        StrongProcessIdentityRevalidation::Current
-    ) {
-        return OwnedProcessGroupSignalOutcome::IdentityNoLongerCurrent;
-    }
-    let signal_sent = system
-        .process(pid)
-        .is_some_and(|process| process.kill_with(Signal::Term).unwrap_or(false));
-    if signal_sent {
-        OwnedProcessGroupSignalOutcome::Sent
-    } else {
-        OwnedProcessGroupSignalOutcome::SignalFailed
-    }
 }
 
 /// The sole owner of the one Cargo Port-owned run's lifecycle and output.
@@ -281,7 +129,10 @@ impl OwnedRun {
     }
 
     pub(crate) const fn is_running(&self) -> bool {
-        matches!(self.lifecycle(), OwnedRunLifecycle::Running(_))
+        matches!(
+            self.lifecycle(),
+            OwnedRunLifecycle::Running(_) | OwnedRunLifecycle::TerminationRequestPending(_)
+        )
     }
 
     const fn allocate_id(&mut self) -> OwnedRunIdAllocation {
@@ -304,6 +155,7 @@ impl OwnedRun {
             OwnedRunLifecycle::Queued(_)
                 | OwnedRunLifecycle::Starting(_)
                 | OwnedRunLifecycle::Running(_)
+                | OwnedRunLifecycle::TerminationRequestPending(_)
                 | OwnedRunLifecycle::Stopping(_)
         ) {
             return OwnedRunLaunchAdmission::AlreadyActive;
@@ -358,10 +210,16 @@ impl OwnedRun {
             OwnedRunLifecycle::Running(running_owned_run) => {
                 OwnedRootEvidence::Root(LiveOwnedRoot::new(
                     running_owned_run.owned_run_id,
-                    running_owned_run
-                        .owned_process_group_termination_capability
-                        .root_identity()
-                        .clone(),
+                    running_owned_run.root_identity.clone(),
+                    running_owned_run.launch_directory.clone(),
+                    OwnedRootLifecycle::Live,
+                ))
+            },
+            OwnedRunLifecycle::TerminationRequestPending(termination_request_pending_owned_run) => {
+                let running_owned_run = &termination_request_pending_owned_run.running_owned_run;
+                OwnedRootEvidence::Root(LiveOwnedRoot::new(
+                    running_owned_run.owned_run_id,
+                    running_owned_run.root_identity.clone(),
                     running_owned_run.launch_directory.clone(),
                     OwnedRootLifecycle::Live,
                 ))
@@ -369,10 +227,7 @@ impl OwnedRun {
             OwnedRunLifecycle::Stopping(stopping_owned_run) => {
                 OwnedRootEvidence::Root(LiveOwnedRoot::new(
                     stopping_owned_run.owned_run_id,
-                    stopping_owned_run
-                        .owned_process_group_termination_capability
-                        .root_identity()
-                        .clone(),
+                    stopping_owned_run.root_identity.clone(),
                     stopping_owned_run.launch_directory.clone(),
                     OwnedRootLifecycle::Stopping,
                 ))
@@ -389,7 +244,8 @@ impl OwnedRun {
     fn activate(
         &mut self,
         owned_run_id: OwnedRunId,
-        owned_process_group_termination_capability: OwnedProcessGroupTerminationCapability,
+        owned_run_process_actor: OwnedRunProcessActor,
+        root_identity: ProcessIdentity,
     ) -> OwnedRunActivation {
         let lifecycle = std::mem::replace(&mut self.lifecycle, OwnedRunLifecycle::absent());
         match lifecycle {
@@ -410,14 +266,23 @@ impl OwnedRun {
                         display_path,
                         vec![format!("Building {target_name}{mode}...")],
                     ),
-                    owned_process_group_termination_capability,
+                    owned_run_process_actor,
+                    root_identity,
                 });
                 OwnedRunActivation::Activated
             },
             lifecycle => {
                 self.lifecycle = lifecycle;
-                OwnedRunActivation::NoMatchingStartingRun
+                OwnedRunActivation::NoMatchingStartingRun(owned_run_process_actor)
             },
+        }
+    }
+
+    fn start_process_actor(&mut self, owned_run_id: OwnedRunId) {
+        if let OwnedRunLifecycle::Running(running_owned_run) = &mut self.lifecycle
+            && running_owned_run.owned_run_id == owned_run_id
+        {
+            running_owned_run.owned_run_process_actor.start_worker();
         }
     }
 
@@ -448,6 +313,19 @@ impl OwnedRun {
                 running_owned_run.retained_output.lines.push(line);
                 OwnedRunMessageUpdate::Applied
             },
+            OwnedRunLifecycle::TerminationRequestPending(termination_request_pending_owned_run)
+                if termination_request_pending_owned_run
+                    .running_owned_run
+                    .owned_run_id
+                    == owned_run_id =>
+            {
+                termination_request_pending_owned_run
+                    .running_owned_run
+                    .retained_output
+                    .lines
+                    .push(line);
+                OwnedRunMessageUpdate::Applied
+            },
             OwnedRunLifecycle::Stopping(stopping_owned_run)
                 if stopping_owned_run.owned_run_id == owned_run_id =>
             {
@@ -464,6 +342,21 @@ impl OwnedRun {
                 if running_owned_run.owned_run_id == owned_run_id =>
             {
                 replace_progress_line(&mut running_owned_run.retained_output.lines, line);
+                OwnedRunMessageUpdate::Applied
+            },
+            OwnedRunLifecycle::TerminationRequestPending(termination_request_pending_owned_run)
+                if termination_request_pending_owned_run
+                    .running_owned_run
+                    .owned_run_id
+                    == owned_run_id =>
+            {
+                replace_progress_line(
+                    &mut termination_request_pending_owned_run
+                        .running_owned_run
+                        .retained_output
+                        .lines,
+                    line,
+                );
                 OwnedRunMessageUpdate::Applied
             },
             OwnedRunLifecycle::Stopping(stopping_owned_run)
@@ -502,14 +395,30 @@ impl OwnedRun {
                 });
                 OwnedRunMessageUpdate::Applied
             },
+            OwnedRunLifecycle::TerminationRequestPending(
+                mut termination_request_pending_owned_run,
+            ) if termination_request_pending_owned_run
+                .running_owned_run
+                .owned_run_id
+                == owned_run_id =>
+            {
+                append_marker_if_absent(
+                    &mut termination_request_pending_owned_run
+                        .running_owned_run
+                        .retained_output
+                        .lines,
+                    DONE_MARKER,
+                );
+                let running_owned_run = termination_request_pending_owned_run.running_owned_run;
+                self.lifecycle = OwnedRunLifecycle::RetainedSuccess(RetainedOwnedRun {
+                    owned_run_id,
+                    retained_output: running_owned_run.retained_output,
+                });
+                OwnedRunMessageUpdate::Applied
+            },
             OwnedRunLifecycle::Stopping(mut stopping_owned_run)
                 if stopping_owned_run.owned_run_id == owned_run_id =>
             {
-                debug_assert!(
-                    stopping_owned_run
-                        .owned_process_group_termination_capability
-                        .root_binding_is_consistent()
-                );
                 move_marker_to_end(&mut stopping_owned_run.retained_output.lines, KILLED_MARKER);
                 self.lifecycle = OwnedRunLifecycle::GoneAfterSignal(RetainedOwnedRun {
                     owned_run_id,
@@ -524,17 +433,114 @@ impl OwnedRun {
         }
     }
 
-    const fn termination(&self) -> OwnedRunTermination<'_> {
+    const fn termination(&self) -> OwnedRunTermination {
         match &self.lifecycle {
             OwnedRunLifecycle::Running(running_owned_run) => OwnedRunTermination::Available {
-                owned_run_id:                               running_owned_run.owned_run_id,
-                owned_process_group_termination_capability: &running_owned_run
-                    .owned_process_group_termination_capability,
+                owned_run_id:                running_owned_run.owned_run_id,
+                owned_run_termination_token: running_owned_run
+                    .owned_run_process_actor
+                    .termination_token(),
+            },
+            OwnedRunLifecycle::TerminationRequestPending(termination_request_pending_owned_run) => {
+                OwnedRunTermination::RequestPending {
+                    owned_run_id: termination_request_pending_owned_run
+                        .running_owned_run
+                        .owned_run_id,
+                }
             },
             _ => OwnedRunTermination::NoRunningRun,
         }
     }
 
+    fn submit_termination(
+        &mut self,
+        owned_run_termination_token: OwnedRunTerminationToken,
+    ) -> OwnedRunTerminationSubmission {
+        let owned_run_termination_submission = match &self.lifecycle {
+            OwnedRunLifecycle::Running(running_owned_run) => running_owned_run
+                .owned_run_process_actor
+                .submit_termination(owned_run_termination_token),
+            OwnedRunLifecycle::TerminationRequestPending(_) => {
+                OwnedRunTerminationSubmission::RequestAlreadyPending
+            },
+            _ => OwnedRunTerminationSubmission::ActorUnavailable,
+        };
+        if let OwnedRunTerminationSubmission::Submitted(owned_run_id) =
+            owned_run_termination_submission
+        {
+            self.begin_termination_request(owned_run_id);
+        }
+        owned_run_termination_submission
+    }
+
+    fn begin_termination_request(&mut self, owned_run_id: OwnedRunId) {
+        let lifecycle = std::mem::replace(&mut self.lifecycle, OwnedRunLifecycle::absent());
+        self.lifecycle = match lifecycle {
+            OwnedRunLifecycle::Running(running_owned_run)
+                if running_owned_run.owned_run_id == owned_run_id =>
+            {
+                OwnedRunLifecycle::TerminationRequestPending(TerminationRequestPendingOwnedRun {
+                    running_owned_run,
+                })
+            },
+            lifecycle => lifecycle,
+        };
+    }
+
+    fn reconcile_termination_outcome(
+        &mut self,
+        owned_run_termination_outcome: OwnedRunTerminationOutcome,
+    ) -> OwnedRunStopTransition {
+        let owned_run_id = match owned_run_termination_outcome {
+            OwnedRunTerminationOutcome::Honored { owned_run_id, .. }
+            | OwnedRunTerminationOutcome::Refused { owned_run_id } => owned_run_id,
+        };
+        let lifecycle = std::mem::replace(&mut self.lifecycle, OwnedRunLifecycle::absent());
+        let OwnedRunLifecycle::TerminationRequestPending(termination_request_pending_owned_run) =
+            lifecycle
+        else {
+            self.lifecycle = lifecycle;
+            return OwnedRunStopTransition::NoMatchingTerminationRequest;
+        };
+        if termination_request_pending_owned_run
+            .running_owned_run
+            .owned_run_id
+            != owned_run_id
+        {
+            self.lifecycle =
+                OwnedRunLifecycle::TerminationRequestPending(termination_request_pending_owned_run);
+            return OwnedRunStopTransition::NoMatchingTerminationRequest;
+        }
+
+        let mut running_owned_run = termination_request_pending_owned_run.running_owned_run;
+        match owned_run_termination_outcome {
+            OwnedRunTerminationOutcome::Honored {
+                signal: OwnedProcessGroupSignalOutcome::Sent,
+                ..
+            } => {
+                append_marker_if_absent(
+                    &mut running_owned_run.retained_output.lines,
+                    KILLED_MARKER,
+                );
+                self.lifecycle =
+                    OwnedRunLifecycle::Stopping(StoppingOwnedRun::from(running_owned_run));
+                OwnedRunStopTransition::Stopping
+            },
+            OwnedRunTerminationOutcome::Honored {
+                signal:
+                    OwnedProcessGroupSignalOutcome::ProcessAlreadyReaped
+                    | OwnedProcessGroupSignalOutcome::IdentityNoLongerCurrent
+                    | OwnedProcessGroupSignalOutcome::SignalFailed,
+                ..
+            }
+            | OwnedRunTerminationOutcome::Refused { .. } => {
+                self.lifecycle = OwnedRunLifecycle::Running(running_owned_run);
+                OwnedRunStopTransition::RetryableRunning
+            },
+        }
+    }
+
+    #[cfg(test)]
     fn begin_stopping(&mut self, owned_run_id: OwnedRunId) -> OwnedRunStopTransition {
         let lifecycle = std::mem::replace(&mut self.lifecycle, OwnedRunLifecycle::absent());
         match lifecycle {
@@ -551,7 +557,7 @@ impl OwnedRun {
             },
             lifecycle => {
                 self.lifecycle = lifecycle;
-                OwnedRunStopTransition::NoMatchingRunningRun
+                OwnedRunStopTransition::NoMatchingTerminationRequest
             },
         }
     }
@@ -565,6 +571,14 @@ impl OwnedRun {
                 starting_owned_run.retained_output = OwnedRunRetainedOutput::absent();
             },
             OwnedRunLifecycle::Running(running_owned_run) => {
+                running_owned_run.retained_output = OwnedRunRetainedOutput::correlated_unnamed(
+                    running_owned_run.owned_run_id,
+                    Vec::new(),
+                );
+            },
+            OwnedRunLifecycle::TerminationRequestPending(termination_request_pending_owned_run) => {
+                let running_owned_run =
+                    &mut termination_request_pending_owned_run.running_owned_run;
                 running_owned_run.retained_output = OwnedRunRetainedOutput::correlated_unnamed(
                     running_owned_run.owned_run_id,
                     Vec::new(),
@@ -620,6 +634,12 @@ impl OwnedRun {
             OwnedRunLifecycle::Running(running_owned_run) => {
                 &mut running_owned_run.retained_output.lines
             },
+            OwnedRunLifecycle::TerminationRequestPending(termination_request_pending_owned_run) => {
+                &mut termination_request_pending_owned_run
+                    .running_owned_run
+                    .retained_output
+                    .lines
+            },
             OwnedRunLifecycle::Stopping(stopping_owned_run) => {
                 &mut stopping_owned_run.retained_output.lines
             },
@@ -651,14 +671,19 @@ impl OwnedRun {
         let mut retained_output = retained_output;
         retained_output.correlate_to(owned_run_id);
         let process_identity = ProcessIdentity::for_test(1, owned_run_id.0.get());
-        let owned_process_group_termination_capability =
-            OwnedProcessGroupTerminationCapability::for_test(process_identity);
+        let mut owned_run_process_actor = OwnedRunProcessActor::for_test(
+            owned_run_id,
+            process_identity.clone(),
+            OwnedProcessGroupSignalOutcome::Sent,
+        );
+        owned_run_process_actor.start_worker();
         self.lifecycle = OwnedRunLifecycle::Running(RunningOwnedRun {
             owned_run_id,
             running_label: running_label.clone(),
             launch_directory: PathBuf::new(),
             retained_output: retained_output.with_missing_title_replaced_by(running_label),
-            owned_process_group_termination_capability,
+            root_identity: process_identity,
+            owned_run_process_actor,
         });
     }
 
@@ -667,6 +692,13 @@ impl OwnedRun {
         let lifecycle = std::mem::replace(&mut self.lifecycle, OwnedRunLifecycle::absent());
         self.lifecycle = match lifecycle {
             OwnedRunLifecycle::Running(running_owned_run) => {
+                OwnedRunLifecycle::RetainedSuccess(RetainedOwnedRun {
+                    owned_run_id:    running_owned_run.owned_run_id,
+                    retained_output: running_owned_run.retained_output,
+                })
+            },
+            OwnedRunLifecycle::TerminationRequestPending(termination_request_pending_owned_run) => {
+                let running_owned_run = termination_request_pending_owned_run.running_owned_run;
                 OwnedRunLifecycle::RetainedSuccess(RetainedOwnedRun {
                     owned_run_id:    running_owned_run.owned_run_id,
                     retained_output: running_owned_run.retained_output,
@@ -688,6 +720,7 @@ pub(crate) enum OwnedRunLifecycle {
     Queued(QueuedOwnedRun),
     Starting(StartingOwnedRun),
     Running(RunningOwnedRun),
+    TerminationRequestPending(TerminationRequestPendingOwnedRun),
     Stopping(StoppingOwnedRun),
     RetainedSuccess(RetainedOwnedRun),
     GoneAfterSignal(RetainedOwnedRun),
@@ -709,6 +742,13 @@ impl OwnedRunLifecycle {
             Self::Running(running_owned_run) => {
                 OwnedRunIdentityRef::Current(&running_owned_run.owned_run_id)
             },
+            Self::TerminationRequestPending(termination_request_pending_owned_run) => {
+                OwnedRunIdentityRef::Current(
+                    &termination_request_pending_owned_run
+                        .running_owned_run
+                        .owned_run_id,
+                )
+            },
             Self::Stopping(stopping_owned_run) => {
                 OwnedRunIdentityRef::Current(&stopping_owned_run.owned_run_id)
             },
@@ -728,6 +768,12 @@ impl OwnedRunLifecycle {
             Self::Queued(queued_owned_run) => &queued_owned_run.retained_output.lines,
             Self::Starting(starting_owned_run) => &starting_owned_run.retained_output.lines,
             Self::Running(running_owned_run) => &running_owned_run.retained_output.lines,
+            Self::TerminationRequestPending(termination_request_pending_owned_run) => {
+                &termination_request_pending_owned_run
+                    .running_owned_run
+                    .retained_output
+                    .lines
+            },
             Self::Stopping(stopping_owned_run) => &stopping_owned_run.retained_output.lines,
             Self::RetainedSuccess(retained_owned_run)
             | Self::GoneAfterSignal(retained_owned_run) => {
@@ -745,6 +791,13 @@ impl OwnedRunLifecycle {
                 starting_owned_run.retained_output.identity.as_ref()
             },
             Self::Running(running_owned_run) => running_owned_run.retained_output.identity.as_ref(),
+            Self::TerminationRequestPending(termination_request_pending_owned_run) => {
+                termination_request_pending_owned_run
+                    .running_owned_run
+                    .retained_output
+                    .identity
+                    .as_ref()
+            },
             Self::Stopping(stopping_owned_run) => {
                 stopping_owned_run.retained_output.identity.as_ref()
             },
@@ -775,6 +828,15 @@ impl OwnedRunLifecycle {
                 OwnedRunOutputIdentityRef::Correlated(output_owned_run_id),
             ) => output_owned_run_id == &running_owned_run.owned_run_id,
             (
+                Self::TerminationRequestPending(termination_request_pending_owned_run),
+                OwnedRunOutputIdentityRef::Correlated(output_owned_run_id),
+            ) => {
+                output_owned_run_id
+                    == &termination_request_pending_owned_run
+                        .running_owned_run
+                        .owned_run_id
+            },
+            (
                 Self::Stopping(stopping_owned_run),
                 OwnedRunOutputIdentityRef::Correlated(output_owned_run_id),
             ) => output_owned_run_id == &stopping_owned_run.owned_run_id,
@@ -789,6 +851,7 @@ impl OwnedRunLifecycle {
             ) => output_owned_run_id == &failed_owned_run.owned_run_id,
             (
                 Self::Running(_)
+                | Self::TerminationRequestPending(_)
                 | Self::Stopping(_)
                 | Self::RetainedSuccess(_)
                 | Self::GoneAfterSignal(_)
@@ -806,6 +869,7 @@ impl OwnedRunLifecycle {
             | Self::Queued(_)
             | Self::Starting(_)
             | Self::Running(_)
+            | Self::TerminationRequestPending(_)
             | Self::Stopping(_) => OwnedRunCompletionMarker::NotCompleted,
             Self::RetainedSuccess(_) => OwnedRunCompletionMarker::Done,
             Self::GoneAfterSignal(_) => OwnedRunCompletionMarker::Killed,
@@ -819,6 +883,13 @@ impl OwnedRunLifecycle {
             Self::Queued(queued_owned_run) => queued_owned_run.retained_output.title.as_ref(),
             Self::Starting(starting_owned_run) => starting_owned_run.retained_output.title.as_ref(),
             Self::Running(running_owned_run) => running_owned_run.retained_output.title.as_ref(),
+            Self::TerminationRequestPending(termination_request_pending_owned_run) => {
+                termination_request_pending_owned_run
+                    .running_owned_run
+                    .retained_output
+                    .title
+                    .as_ref()
+            },
             Self::Stopping(stopping_owned_run) => stopping_owned_run.retained_output.title.as_ref(),
             Self::RetainedSuccess(retained_owned_run)
             | Self::GoneAfterSignal(retained_owned_run) => {
@@ -832,6 +903,13 @@ impl OwnedRunLifecycle {
         match self {
             Self::Running(running_owned_run) => {
                 OwnedRunRunningLabelRef::Running(&running_owned_run.running_label)
+            },
+            Self::TerminationRequestPending(termination_request_pending_owned_run) => {
+                OwnedRunRunningLabelRef::Running(
+                    &termination_request_pending_owned_run
+                        .running_owned_run
+                        .running_label,
+                )
             },
             Self::Absent(_)
             | Self::Queued(_)
@@ -849,6 +927,11 @@ impl OwnedRunLifecycle {
             Self::Queued(queued_owned_run) => queued_owned_run.retained_output,
             Self::Starting(starting_owned_run) => starting_owned_run.retained_output,
             Self::Running(running_owned_run) => running_owned_run.retained_output,
+            Self::TerminationRequestPending(termination_request_pending_owned_run) => {
+                termination_request_pending_owned_run
+                    .running_owned_run
+                    .retained_output
+            },
             Self::Stopping(stopping_owned_run) => stopping_owned_run.retained_output,
             Self::RetainedSuccess(retained_owned_run)
             | Self::GoneAfterSignal(retained_owned_run) => retained_owned_run.retained_output,
@@ -864,6 +947,12 @@ impl OwnedRunLifecycle {
             Self::Queued(queued_owned_run) => queued_owned_run.retained_output.title = title,
             Self::Starting(starting_owned_run) => starting_owned_run.retained_output.title = title,
             Self::Running(running_owned_run) => running_owned_run.retained_output.title = title,
+            Self::TerminationRequestPending(termination_request_pending_owned_run) => {
+                termination_request_pending_owned_run
+                    .running_owned_run
+                    .retained_output
+                    .title = title;
+            },
             Self::Stopping(stopping_owned_run) => stopping_owned_run.retained_output.title = title,
             Self::RetainedSuccess(retained_owned_run)
             | Self::GoneAfterSignal(retained_owned_run) => {
@@ -898,32 +987,39 @@ impl From<QueuedOwnedRun> for StartingOwnedRun {
     }
 }
 
-/// A running owned run has a verified root and group termination authority.
+/// A running owned run has immutable root evidence and one actor endpoint.
 pub(crate) struct RunningOwnedRun {
-    owned_run_id:                               OwnedRunId,
-    running_label:                              String,
-    launch_directory:                           PathBuf,
-    retained_output:                            OwnedRunRetainedOutput,
-    owned_process_group_termination_capability: OwnedProcessGroupTerminationCapability,
+    owned_run_id:            OwnedRunId,
+    running_label:           String,
+    launch_directory:        PathBuf,
+    retained_output:         OwnedRunRetainedOutput,
+    root_identity:           ProcessIdentity,
+    owned_run_process_actor: OwnedRunProcessActor,
 }
 
-/// A stopped-requested run retains verified root authority until the process
-/// reports completion.
+/// A running owned run whose actor has accepted one termination request but
+/// has not yet reported whether it sent a signal.
+pub(crate) struct TerminationRequestPendingOwnedRun {
+    running_owned_run: RunningOwnedRun,
+}
+
+/// A stop-requested run retains live-root evidence until completion. Dropping
+/// the command endpoint makes the detached actor worker wait for and reap its
+/// child while retaining the worker-owned termination capability.
 pub(crate) struct StoppingOwnedRun {
-    owned_run_id:                               OwnedRunId,
-    launch_directory:                           PathBuf,
-    retained_output:                            OwnedRunRetainedOutput,
-    owned_process_group_termination_capability: OwnedProcessGroupTerminationCapability,
+    owned_run_id:     OwnedRunId,
+    launch_directory: PathBuf,
+    retained_output:  OwnedRunRetainedOutput,
+    root_identity:    ProcessIdentity,
 }
 
 impl From<RunningOwnedRun> for StoppingOwnedRun {
     fn from(running_owned_run: RunningOwnedRun) -> Self {
         Self {
-            owned_run_id:                               running_owned_run.owned_run_id,
-            launch_directory:                           running_owned_run.launch_directory,
-            retained_output:                            running_owned_run.retained_output,
-            owned_process_group_termination_capability: running_owned_run
-                .owned_process_group_termination_capability,
+            owned_run_id:     running_owned_run.owned_run_id,
+            launch_directory: running_owned_run.launch_directory,
+            retained_output:  running_owned_run.retained_output,
+            root_identity:    running_owned_run.root_identity,
         }
     }
 }
@@ -1106,11 +1202,10 @@ pub(crate) enum OwnedRunStartingRequest<'a> {
     NoMatchingStartingRun,
 }
 
-/// Whether activation found the starting lifecycle it was asked to promote.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Whether activation accepted the actor that owns the newly spawned child.
 pub(crate) enum OwnedRunActivation {
     Activated,
-    NoMatchingStartingRun,
+    NoMatchingStartingRun(OwnedRunProcessActor),
 }
 
 /// Whether one correlated background message changed the current lifecycle.
@@ -1120,20 +1215,27 @@ pub(crate) enum OwnedRunMessageUpdate {
     Ignored,
 }
 
-/// The current run's identity-bound group termination authority.
-pub(crate) enum OwnedRunTermination<'a> {
+/// The current run's opaque termination authorization, when one is live.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OwnedRunTermination {
     Available {
-        owned_run_id:                               OwnedRunId,
-        owned_process_group_termination_capability: &'a OwnedProcessGroupTerminationCapability,
+        owned_run_id:                OwnedRunId,
+        owned_run_termination_token: OwnedRunTerminationToken,
+    },
+    /// The actor has accepted one request, so retry authority remains withheld
+    /// until that request reports whether it sent a signal.
+    RequestPending {
+        owned_run_id: OwnedRunId,
     },
     NoRunningRun,
 }
 
-/// Whether a signaled run entered its stopping lifecycle.
+/// How a correlated termination outcome changed the owned-run lifecycle.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OwnedRunStopTransition {
     Stopping,
-    NoMatchingRunningRun,
+    RetryableRunning,
+    NoMatchingTerminationRequest,
 }
 
 const DONE_MARKER: &str = "── done ──";
@@ -1275,16 +1377,18 @@ impl Inflight {
             inflight.begin_owned_run_launch(),
             OwnedRunLaunchStart::Starting(producer)
         );
-        assert_eq!(
+        assert!(matches!(
             inflight.activate_owned_run(
                 producer,
-                OwnedProcessGroupTerminationCapability::with_test_signal_outcome(
+                OwnedRunProcessActor::for_test(
+                    producer,
                     ProcessIdentity::for_test(4242, 7),
                     OwnedProcessGroupSignalOutcome::Sent,
                 ),
+                ProcessIdentity::for_test(4242, 7),
             ),
             OwnedRunActivation::Activated
-        );
+        ));
         let _ = inflight.record_owned_run_output(producer, line.to_string());
         let _ = inflight.finish_owned_run(producer);
         let _ = inflight.queue_owned_run(pending_run_for_test());
@@ -1315,10 +1419,15 @@ impl Inflight {
     pub(crate) fn activate_owned_run(
         &mut self,
         owned_run_id: OwnedRunId,
-        owned_process_group_termination_capability: OwnedProcessGroupTerminationCapability,
+        owned_run_process_actor: OwnedRunProcessActor,
+        root_identity: ProcessIdentity,
     ) -> OwnedRunActivation {
         self.owned_run
-            .activate(owned_run_id, owned_process_group_termination_capability)
+            .activate(owned_run_id, owned_run_process_actor, root_identity)
+    }
+
+    pub(crate) fn start_owned_run_process_actor(&mut self, owned_run_id: OwnedRunId) {
+        self.owned_run.start_process_actor(owned_run_id);
     }
 
     pub(crate) fn fail_owned_run_start(
@@ -1356,10 +1465,27 @@ impl Inflight {
         self.owned_run.finish(owned_run_id)
     }
 
-    pub(crate) const fn owned_run_termination(&self) -> OwnedRunTermination<'_> {
+    pub(crate) const fn owned_run_termination(&self) -> OwnedRunTermination {
         self.owned_run.termination()
     }
 
+    pub(crate) fn submit_owned_run_termination(
+        &mut self,
+        owned_run_termination_token: OwnedRunTerminationToken,
+    ) -> OwnedRunTerminationSubmission {
+        self.owned_run
+            .submit_termination(owned_run_termination_token)
+    }
+
+    pub(crate) fn reconcile_owned_run_termination(
+        &mut self,
+        owned_run_termination_outcome: OwnedRunTerminationOutcome,
+    ) -> OwnedRunStopTransition {
+        self.owned_run
+            .reconcile_termination_outcome(owned_run_termination_outcome)
+    }
+
+    #[cfg(test)]
     pub(crate) fn mark_owned_run_stopping(
         &mut self,
         owned_run_id: OwnedRunId,
@@ -1492,6 +1618,260 @@ mod tests {
         }
     }
 
+    fn activate_owned_run(
+        inflight: &mut Inflight,
+        signal_outcome: OwnedProcessGroupSignalOutcome,
+    ) -> (OwnedRunId, OwnedRunTerminationToken) {
+        let owned_run_id = queue_owned_run(inflight);
+        assert_eq!(
+            inflight.begin_owned_run_launch(),
+            OwnedRunLaunchStart::Starting(owned_run_id)
+        );
+        let process_identity = ProcessIdentity::for_test(42, 7);
+        assert!(matches!(
+            inflight.activate_owned_run(
+                owned_run_id,
+                OwnedRunProcessActor::for_test(
+                    owned_run_id,
+                    process_identity.clone(),
+                    signal_outcome,
+                ),
+                process_identity,
+            ),
+            OwnedRunActivation::Activated
+        ));
+        inflight.start_owned_run_process_actor(owned_run_id);
+        let OwnedRunTermination::Available {
+            owned_run_termination_token,
+            ..
+        } = inflight.owned_run_termination()
+        else {
+            panic!("an activated owned run should expose termination authority");
+        };
+        (owned_run_id, owned_run_termination_token)
+    }
+
+    fn submit_termination_request(inflight: &mut Inflight) -> OwnedRunId {
+        let (owned_run_id, owned_run_termination_token) =
+            activate_owned_run(inflight, OwnedProcessGroupSignalOutcome::Sent);
+        assert_eq!(
+            inflight.submit_owned_run_termination(owned_run_termination_token),
+            OwnedRunTerminationSubmission::Submitted(owned_run_id)
+        );
+        owned_run_id
+    }
+
+    fn assert_failed_termination_restores_retryable_running(
+        owned_run_termination_outcome: impl FnOnce(OwnedRunId) -> OwnedRunTerminationOutcome,
+    ) {
+        let mut inflight = fresh();
+        let (owned_run_id, owned_run_termination_token) =
+            activate_owned_run(&mut inflight, OwnedProcessGroupSignalOutcome::Sent);
+        let _ = inflight.record_owned_run_output(owned_run_id, "preserved output".to_string());
+        assert_eq!(
+            inflight.submit_owned_run_termination(owned_run_termination_token),
+            OwnedRunTerminationSubmission::Submitted(owned_run_id)
+        );
+
+        assert_eq!(
+            inflight.reconcile_owned_run_termination(owned_run_termination_outcome(owned_run_id)),
+            OwnedRunStopTransition::RetryableRunning
+        );
+        assert!(matches!(
+            inflight.owned_run().lifecycle(),
+            OwnedRunLifecycle::Running(_)
+        ));
+        assert!(
+            inflight
+                .owned_run()
+                .output()
+                .iter()
+                .any(|line| line == "preserved output")
+        );
+        let OwnedRootEvidence::Root(live_owned_root) = inflight.owned_run().owned_root_evidence()
+        else {
+            panic!("a failed termination request should preserve its live root");
+        };
+        assert_eq!(live_owned_root.owned_run_id(), owned_run_id);
+        assert_eq!(live_owned_root.launch_directory(), Path::new("/tmp/demo"));
+        assert_eq!(
+            live_owned_root.owned_root_lifecycle(),
+            OwnedRootLifecycle::Live
+        );
+        let OwnedRunTermination::Available {
+            owned_run_id: retryable_owned_run_id,
+            owned_run_termination_token,
+        } = inflight.owned_run_termination()
+        else {
+            panic!("a failed termination request should restore retry authority");
+        };
+        assert_eq!(retryable_owned_run_id, owned_run_id);
+        assert_eq!(
+            inflight.submit_owned_run_termination(owned_run_termination_token),
+            OwnedRunTerminationSubmission::Submitted(owned_run_id),
+            "the same actor should accept the retry"
+        );
+    }
+
+    #[test]
+    fn termination_submission_enters_pending_without_claiming_a_signal_was_sent() {
+        let mut inflight = fresh();
+        let (owned_run_id, owned_run_termination_token) =
+            activate_owned_run(&mut inflight, OwnedProcessGroupSignalOutcome::Sent);
+
+        assert_eq!(
+            inflight.submit_owned_run_termination(owned_run_termination_token),
+            OwnedRunTerminationSubmission::Submitted(owned_run_id)
+        );
+
+        assert!(matches!(
+            inflight.owned_run().lifecycle(),
+            OwnedRunLifecycle::TerminationRequestPending(_)
+        ));
+        assert_eq!(
+            inflight.owned_run_termination(),
+            OwnedRunTermination::RequestPending { owned_run_id }
+        );
+        assert!(matches!(
+            inflight.owned_run().running_label(),
+            OwnedRunRunningLabelRef::Running(_)
+        ));
+        assert!(
+            !inflight
+                .owned_run()
+                .output()
+                .iter()
+                .any(|line| line == KILLED_MARKER)
+        );
+        assert_eq!(
+            inflight.submit_owned_run_termination(owned_run_termination_token),
+            OwnedRunTerminationSubmission::RequestAlreadyPending
+        );
+    }
+
+    #[test]
+    fn sent_termination_outcome_enters_stopping_and_appends_the_killed_marker() {
+        let mut inflight = fresh();
+        let owned_run_id = submit_termination_request(&mut inflight);
+        let output_before_signal = inflight.owned_run().output().to_vec();
+
+        assert_eq!(
+            inflight.reconcile_owned_run_termination(OwnedRunTerminationOutcome::Honored {
+                owned_run_id,
+                signal: OwnedProcessGroupSignalOutcome::Sent,
+            }),
+            OwnedRunStopTransition::Stopping
+        );
+
+        assert!(matches!(
+            inflight.owned_run().lifecycle(),
+            OwnedRunLifecycle::Stopping(_)
+        ));
+        assert_eq!(
+            &inflight.owned_run().output()[..output_before_signal.len()],
+            output_before_signal
+        );
+        assert_eq!(
+            inflight.owned_run().output().last().map(String::as_str),
+            Some(KILLED_MARKER)
+        );
+    }
+
+    #[test]
+    fn identity_no_longer_current_outcome_restores_retryable_running() {
+        assert_failed_termination_restores_retryable_running(|owned_run_id| {
+            OwnedRunTerminationOutcome::Honored {
+                owned_run_id,
+                signal: OwnedProcessGroupSignalOutcome::IdentityNoLongerCurrent,
+            }
+        });
+    }
+
+    #[test]
+    fn process_already_reaped_outcome_restores_retryable_running() {
+        assert_failed_termination_restores_retryable_running(|owned_run_id| {
+            OwnedRunTerminationOutcome::Honored {
+                owned_run_id,
+                signal: OwnedProcessGroupSignalOutcome::ProcessAlreadyReaped,
+            }
+        });
+    }
+
+    #[test]
+    fn signal_failed_outcome_restores_retryable_running() {
+        assert_failed_termination_restores_retryable_running(|owned_run_id| {
+            OwnedRunTerminationOutcome::Honored {
+                owned_run_id,
+                signal: OwnedProcessGroupSignalOutcome::SignalFailed,
+            }
+        });
+    }
+
+    #[test]
+    fn refused_termination_outcome_restores_retryable_running() {
+        assert_failed_termination_restores_retryable_running(|owned_run_id| {
+            OwnedRunTerminationOutcome::Refused { owned_run_id }
+        });
+    }
+
+    #[test]
+    fn stale_termination_outcome_cannot_change_the_pending_run() {
+        let mut inflight = fresh();
+        let owned_run_id = submit_termination_request(&mut inflight);
+        let stale_owned_run_id = OwnedRunId::for_test(
+            owned_run_id
+                .0
+                .checked_add(1)
+                .expect("the stale identity should be representable"),
+        );
+
+        assert_eq!(
+            inflight.reconcile_owned_run_termination(OwnedRunTerminationOutcome::Honored {
+                owned_run_id: stale_owned_run_id,
+                signal:       OwnedProcessGroupSignalOutcome::Sent,
+            }),
+            OwnedRunStopTransition::NoMatchingTerminationRequest
+        );
+        assert!(matches!(
+            inflight.owned_run().lifecycle(),
+            OwnedRunLifecycle::TerminationRequestPending(_)
+        ));
+        assert_eq!(
+            inflight.owned_run_termination(),
+            OwnedRunTermination::RequestPending { owned_run_id }
+        );
+        assert!(
+            !inflight
+                .owned_run()
+                .output()
+                .iter()
+                .any(|line| line == KILLED_MARKER)
+        );
+    }
+
+    #[test]
+    fn child_completion_while_termination_is_pending_finishes_the_matching_run_normally() {
+        let mut inflight = fresh();
+        let owned_run_id = submit_termination_request(&mut inflight);
+
+        assert_eq!(
+            inflight.finish_owned_run(owned_run_id),
+            OwnedRunMessageUpdate::Applied
+        );
+        assert!(matches!(
+            inflight.owned_run().lifecycle(),
+            OwnedRunLifecycle::RetainedSuccess(_)
+        ));
+        assert_eq!(
+            inflight.owned_run().completion_marker(),
+            OwnedRunCompletionMarker::Done
+        );
+        assert_eq!(
+            inflight.owned_run().output().last().map(String::as_str),
+            Some(DONE_MARKER)
+        );
+    }
+
     #[test]
     fn queued_and_starting_lifecycles_do_not_fabricate_process_authority() {
         let mut inflight = fresh();
@@ -1540,42 +1920,23 @@ mod tests {
     }
 
     #[test]
-    fn owned_group_signal_outcomes_remain_distinct() {
-        let process_identity = ProcessIdentity::for_test(42, 7);
-        let identity_changed = OwnedProcessGroupTerminationCapability::with_test_signal_outcome(
-            process_identity.clone(),
-            OwnedProcessGroupSignalOutcome::IdentityNoLongerCurrent,
-        );
-        let signal_failed = OwnedProcessGroupTerminationCapability::with_test_signal_outcome(
-            process_identity,
-            OwnedProcessGroupSignalOutcome::SignalFailed,
-        );
-
-        assert_eq!(identity_changed.process_group_id, 42);
-        assert_eq!(identity_changed.process_identity.pid(), 42);
-        assert_eq!(
-            identity_changed.signal(),
-            OwnedProcessGroupSignalOutcome::IdentityNoLongerCurrent
-        );
-        assert_eq!(
-            signal_failed.signal(),
-            OwnedProcessGroupSignalOutcome::SignalFailed
-        );
-    }
-
-    #[test]
     fn messages_from_a_previous_run_do_not_change_a_later_run() {
         let mut inflight = fresh();
         let first_run_id = queue_owned_run(&mut inflight);
         let _ = inflight.begin_owned_run_launch();
         let process_identity = ProcessIdentity::for_test(42, 7);
-        let verified_process_identity = VerifiedProcessIdentity::for_test(process_identity);
-        let termination_capability =
-            OwnedProcessGroupTerminationCapability::from_verified_root(verified_process_identity);
-        assert_eq!(
-            inflight.activate_owned_run(first_run_id, termination_capability),
+        assert!(matches!(
+            inflight.activate_owned_run(
+                first_run_id,
+                OwnedRunProcessActor::for_test(
+                    first_run_id,
+                    process_identity.clone(),
+                    OwnedProcessGroupSignalOutcome::Sent,
+                ),
+                process_identity,
+            ),
             OwnedRunActivation::Activated
-        );
+        ));
         let _ = inflight.finish_owned_run(first_run_id);
 
         let second_run_id = queue_owned_run(&mut inflight);
@@ -1618,15 +1979,20 @@ mod tests {
     }
 
     #[test]
-    fn running_and_stopping_lifecycles_own_identity_bound_authority() {
+    fn running_and_stopping_lifecycles_own_actor_termination_authority() {
         let mut inflight = fresh();
         let owned_run_id = queue_owned_run(&mut inflight);
         let _ = inflight.begin_owned_run_launch();
         let process_identity = ProcessIdentity::for_test(42, 7);
-        let verified_process_identity = VerifiedProcessIdentity::for_test(process_identity);
-        let termination_capability =
-            OwnedProcessGroupTerminationCapability::from_verified_root(verified_process_identity);
-        let _ = inflight.activate_owned_run(owned_run_id, termination_capability);
+        let _ = inflight.activate_owned_run(
+            owned_run_id,
+            OwnedRunProcessActor::for_test(
+                owned_run_id,
+                process_identity.clone(),
+                OwnedProcessGroupSignalOutcome::Sent,
+            ),
+            process_identity,
+        );
         assert!(matches!(
             inflight.owned_run_termination(),
             OwnedRunTermination::Available { .. }
@@ -1652,10 +2018,15 @@ mod tests {
         let owned_run_id = queue_owned_run(&mut inflight);
         let _ = inflight.begin_owned_run_launch();
         let process_identity = ProcessIdentity::for_test(42, 7);
-        let verified_process_identity = VerifiedProcessIdentity::for_test(process_identity.clone());
-        let termination_capability =
-            OwnedProcessGroupTerminationCapability::from_verified_root(verified_process_identity);
-        let _ = inflight.activate_owned_run(owned_run_id, termination_capability);
+        let _ = inflight.activate_owned_run(
+            owned_run_id,
+            OwnedRunProcessActor::for_test(
+                owned_run_id,
+                process_identity.clone(),
+                OwnedProcessGroupSignalOutcome::Sent,
+            ),
+            process_identity.clone(),
+        );
 
         let OwnedRootEvidence::Root(live_owned_root) = inflight.owned_run().owned_root_evidence()
         else {
@@ -1692,10 +2063,15 @@ mod tests {
         let owned_run_id = queue_owned_run(&mut inflight);
         let _ = inflight.begin_owned_run_launch();
         let process_identity = ProcessIdentity::for_test(42, 7);
-        let verified_process_identity = VerifiedProcessIdentity::for_test(process_identity);
-        let termination_capability =
-            OwnedProcessGroupTerminationCapability::from_verified_root(verified_process_identity);
-        let _ = inflight.activate_owned_run(owned_run_id, termination_capability);
+        let _ = inflight.activate_owned_run(
+            owned_run_id,
+            OwnedRunProcessActor::for_test(
+                owned_run_id,
+                process_identity.clone(),
+                OwnedProcessGroupSignalOutcome::Sent,
+            ),
+            process_identity,
+        );
         let _ = inflight.mark_owned_run_stopping(owned_run_id);
 
         inflight.clear_owned_run_output();
@@ -1717,10 +2093,15 @@ mod tests {
         let owned_run_id = queue_owned_run(&mut inflight);
         let _ = inflight.begin_owned_run_launch();
         let process_identity = ProcessIdentity::for_test(42, 7);
-        let verified_process_identity = VerifiedProcessIdentity::for_test(process_identity);
-        let termination_capability =
-            OwnedProcessGroupTerminationCapability::from_verified_root(verified_process_identity);
-        let _ = inflight.activate_owned_run(owned_run_id, termination_capability);
+        let _ = inflight.activate_owned_run(
+            owned_run_id,
+            OwnedRunProcessActor::for_test(
+                owned_run_id,
+                process_identity.clone(),
+                OwnedProcessGroupSignalOutcome::Sent,
+            ),
+            process_identity,
+        );
         let _ = inflight.mark_owned_run_stopping(owned_run_id);
 
         let _ = inflight.record_owned_run_output(owned_run_id, "late output".to_string());

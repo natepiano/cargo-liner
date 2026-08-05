@@ -101,6 +101,16 @@ impl ProcessIdentity {
             creation_token: PlatformCreationToken::for_test(creation_token),
         }
     }
+
+    /// Model this observed lifetime after a process-table fixture assigns its
+    /// creation token to a reused PID.
+    #[cfg(test)]
+    pub(crate) fn with_pid_for_test(&self, pid: u32) -> Self {
+        Self {
+            pid,
+            creation_token: self.creation_token.clone(),
+        }
+    }
 }
 
 /// An opaque OS token fixed at process creation.
@@ -153,11 +163,6 @@ pub(crate) struct VerifiedProcessIdentity(ProcessIdentity);
 
 impl VerifiedProcessIdentity {
     pub(crate) const fn into_process_identity(self) -> ProcessIdentity { self.0 }
-
-    #[cfg(test)]
-    pub(crate) const fn for_test(process_identity: ProcessIdentity) -> Self {
-        Self(process_identity)
-    }
 }
 
 /// The result of observing a PID and confirming that its strong identity is
@@ -208,10 +213,21 @@ pub(crate) fn observe_current_process_identity(pid: u32) -> CurrentProcessIdenti
 pub(crate) fn revalidate_strong_process_identity(
     expected_identity: &ProcessIdentity,
 ) -> StrongProcessIdentityRevalidation {
-    match PlatformProcessObservation::observe_lifetime(expected_identity.pid())
-        .identity()
-        .clone()
-    {
+    classify_strong_process_identity_revalidation(
+        expected_identity,
+        PlatformProcessObservation::observe_lifetime(expected_identity.pid())
+            .identity()
+            .clone(),
+    )
+}
+
+/// Classify raw identity lookup evidence against a previously observed
+/// process lifetime.
+pub(crate) fn classify_strong_process_identity_revalidation(
+    expected_identity: &ProcessIdentity,
+    current_identity_observation: ObservedProcessIdentity,
+) -> StrongProcessIdentityRevalidation {
+    match current_identity_observation {
         ObservedProcessIdentity::Strong(current_identity)
             if current_identity == *expected_identity =>
         {
@@ -693,6 +709,51 @@ impl ProcessIncarnation {
     #[cfg(test)]
     pub(crate) const fn executable_argv_fingerprint(&self) -> &ProcessFingerprint {
         &self.executable_argv_fingerprint
+    }
+}
+
+/// Whether a PID still runs the executable image and arguments that were
+/// observed when authority over it was established.
+///
+/// A [`ProcessIdentity`] cannot answer this: `exec` keeps the PID and the
+/// creation token, so a process that replaced its image is still the same
+/// lifetime. Only the [`ProcessIncarnation`] fingerprint separates them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ProcessImageContinuity {
+    SameImage,
+    ReplacedImage,
+    ProcessGone,
+    Unobservable,
+}
+
+/// Re-observe a PID's executable image and arguments and compare them with the
+/// incarnation that authority over it was bound to.
+///
+/// This is observation only: it produces evidence and never signals.
+pub(crate) fn observe_process_image_continuity(
+    authorized_incarnation: &ProcessIncarnation,
+) -> ProcessImageContinuity {
+    let pid = sysinfo::Pid::from_u32(authorized_incarnation.identity.pid());
+    let mut system = sysinfo::System::new();
+    system.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(&[pid]),
+        true,
+        sysinfo::ProcessRefreshKind::nothing()
+            .with_exe(sysinfo::UpdateKind::Always)
+            .with_cmd(sysinfo::UpdateKind::Always),
+    );
+    let Some(process) = system.process(pid) else {
+        return ProcessImageContinuity::ProcessGone;
+    };
+    let Some(executable) = process.exe() else {
+        return ProcessImageContinuity::Unobservable;
+    };
+    if ProcessFingerprint::from_observed_fields(executable, process.cmd())
+        == authorized_incarnation.executable_argv_fingerprint
+    {
+        ProcessImageContinuity::SameImage
+    } else {
+        ProcessImageContinuity::ReplacedImage
     }
 }
 

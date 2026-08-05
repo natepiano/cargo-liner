@@ -18,7 +18,7 @@ use crate::tui::panes::PendingCiFetch;
 use crate::tui::state::OwnedRunMessageUpdate;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
-use crate::tui::terminal::ExampleMsg;
+use crate::tui::terminal::OwnedRunEvent;
 
 impl App {
     pub fn poll_background(&mut self) -> PollBackgroundStats {
@@ -39,6 +39,7 @@ impl App {
         stats.bg_msgs = msg_count;
         log_saturated_background_batch(&stats);
         stats.ci_msgs = self.poll_ci_fetches();
+        self.background.poll_process_termination_worker_readiness();
         stats.example_msgs = self.poll_example_msgs();
         self.poll_clean_msgs();
         let now = Instant::now();
@@ -157,16 +158,21 @@ impl App {
         let mut count = 0;
         while let Ok(msg) = self.background.example_rx().try_recv() {
             match msg {
-                ExampleMsg::Started { owned_run_id } => {
+                OwnedRunEvent::Started { owned_run_id } => {
                     let _ = self.inflight.acknowledge_owned_run_started(owned_run_id);
                 },
-                ExampleMsg::Output { owned_run_id, line } => {
+                OwnedRunEvent::Output { owned_run_id, line } => {
                     let _ = self.inflight.record_owned_run_output(owned_run_id, line);
                 },
-                ExampleMsg::Progress { owned_run_id, line } => {
+                OwnedRunEvent::Progress { owned_run_id, line } => {
                     let _ = self.inflight.record_owned_run_progress(owned_run_id, line);
                 },
-                ExampleMsg::Finished { owned_run_id } => {
+                OwnedRunEvent::TerminationOutcome(owned_run_termination_outcome) => {
+                    let _ = self
+                        .inflight
+                        .reconcile_owned_run_termination(owned_run_termination_outcome);
+                },
+                OwnedRunEvent::Finished { owned_run_id } => {
                     if self.inflight.finish_owned_run(owned_run_id)
                         == OwnedRunMessageUpdate::Applied
                     {
@@ -280,6 +286,14 @@ mod tests {
     use crate::project::RootItem;
     use crate::project::RustProject;
     use crate::scan::BackgroundMsg;
+    use crate::tui::app::App;
+    use crate::tui::state::OwnedProcessGroupSignalOutcome;
+    use crate::tui::state::OwnedRunCompletionMarker;
+    use crate::tui::state::OwnedRunId;
+    use crate::tui::state::OwnedRunTermination;
+    use crate::tui::state::OwnedRunTerminationOutcome;
+    use crate::tui::state::OwnedRunTerminationSubmission;
+    use crate::tui::terminal::OwnedRunEvent;
     use crate::tui::test_support::make_app;
 
     fn make_package(path: &Path) -> RootItem {
@@ -290,6 +304,108 @@ mod tests {
                 .map(|name| name.to_string_lossy().into_owned()),
             ..Package::default()
         }))
+    }
+
+    fn prepare_pending_owned_run(app: &mut App) -> Result<OwnedRunId, Box<dyn std::error::Error>> {
+        app.inflight
+            .set_example_running(Some("ordered event fixture".to_string()));
+        let OwnedRunTermination::Available {
+            owned_run_id,
+            owned_run_termination_token,
+        } = app.inflight.owned_run_termination()
+        else {
+            return Err("the fixture should expose owned-run termination authority".into());
+        };
+        let submission = app
+            .inflight
+            .submit_owned_run_termination(owned_run_termination_token);
+        if submission != OwnedRunTerminationSubmission::Submitted(owned_run_id) {
+            return Err(format!(
+                "the fixture termination request was not accepted: {submission:?}"
+            )
+            .into());
+        }
+        Ok(owned_run_id)
+    }
+
+    fn queue_termination_outcome_and_completion(
+        app: &App,
+        owned_run_id: OwnedRunId,
+        owned_run_termination_outcome: OwnedRunTerminationOutcome,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let owned_run_event_sender = app.background.example_sender();
+        owned_run_event_sender
+            .send(OwnedRunEvent::TerminationOutcome(
+                owned_run_termination_outcome,
+            ))
+            .map_err(|_| "the owned-run event channel should accept the outcome")?;
+        owned_run_event_sender
+            .send(OwnedRunEvent::Finished { owned_run_id })
+            .map_err(|_| "the owned-run event channel should accept completion")?;
+        Ok(())
+    }
+
+    #[test]
+    fn queued_successful_signal_outcome_precedes_completion_and_labels_the_run_killed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut app = make_app(&[]);
+        let owned_run_id = prepare_pending_owned_run(&mut app)?;
+        queue_termination_outcome_and_completion(
+            &app,
+            owned_run_id,
+            OwnedRunTerminationOutcome::Honored {
+                owned_run_id,
+                signal: OwnedProcessGroupSignalOutcome::Sent,
+            },
+        )?;
+
+        assert_eq!(app.poll_example_msgs(), 2);
+        assert_eq!(
+            app.inflight.owned_run().completion_marker(),
+            OwnedRunCompletionMarker::Killed
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failed_signal_followed_by_natural_completion_labels_the_run_done()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut app = make_app(&[]);
+        let owned_run_id = prepare_pending_owned_run(&mut app)?;
+        queue_termination_outcome_and_completion(
+            &app,
+            owned_run_id,
+            OwnedRunTerminationOutcome::Honored {
+                owned_run_id,
+                signal: OwnedProcessGroupSignalOutcome::SignalFailed,
+            },
+        )?;
+
+        assert_eq!(app.poll_example_msgs(), 2);
+        assert_eq!(
+            app.inflight.owned_run().completion_marker(),
+            OwnedRunCompletionMarker::Done
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn refused_signal_followed_by_natural_completion_labels_the_run_done()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut app = make_app(&[]);
+        let owned_run_id = prepare_pending_owned_run(&mut app)?;
+        queue_termination_outcome_and_completion(
+            &app,
+            owned_run_id,
+            OwnedRunTerminationOutcome::Refused { owned_run_id },
+        )?;
+
+        assert_eq!(app.poll_example_msgs(), 2);
+        assert_eq!(
+            app.inflight.owned_run().completion_marker(),
+            OwnedRunCompletionMarker::Done
+        );
+        Ok(())
     }
 
     /// `disk_handlers` flips a project to deleted and advances the project-list

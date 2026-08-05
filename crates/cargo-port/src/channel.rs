@@ -18,6 +18,7 @@
 //! marks, at the type level, that they are not `Select` sources.
 
 pub(crate) use crossbeam_channel::Receiver;
+pub(crate) use crossbeam_channel::RecvTimeoutError;
 pub(crate) use crossbeam_channel::Select;
 pub(crate) use crossbeam_channel::SendError;
 pub(crate) use crossbeam_channel::Sender;

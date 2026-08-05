@@ -9,8 +9,6 @@ use std::path::Path;
 use std::process::Command;
 use std::process::Stdio;
 use std::thread;
-#[cfg(unix)]
-use std::time::Duration;
 
 use crate::channel::Sender;
 use crate::ci;
@@ -33,51 +31,41 @@ use crate::tui::constants::CARGO_RELEASE_FLAG;
 use crate::tui::constants::CARGO_RUN_SUBCOMMAND;
 use crate::tui::messages::CiFetchMsg;
 use crate::tui::messages::CleanMsg;
-use crate::tui::messages::ExampleMsg;
+use crate::tui::messages::OwnedRunEvent;
 use crate::tui::panes::CargoPackageInvocation;
 use crate::tui::panes::CiFetchKind;
 use crate::tui::panes::PendingCiFetch;
 use crate::tui::panes::PendingExampleRun;
 use crate::tui::panes::RunTargetKind;
 use crate::tui::state::Inflight;
-use crate::tui::state::OwnedProcessGroupSignalOutcome;
+use crate::tui::state::OwnedRunActivation;
 use crate::tui::state::OwnedRunId;
+use crate::tui::state::OwnedRunProcessActor;
 use crate::tui::state::OwnedRunStartingRequest;
 use crate::tui::state::OwnedRunTermination;
+use crate::tui::state::OwnedRunTerminationSubmission;
+use crate::tui::state::discard_unverified_owned_process_group;
 
 /// Attempt to signal the current run's identity-bound process group.
 pub(crate) enum OwnedRunStopSignal {
-    Sent(OwnedRunId),
-    NotSignaled,
+    Submitted,
+    NotSubmitted,
 }
 
-#[cfg(not(test))]
-pub(crate) fn signal_owned_run(inflight: &Inflight) -> OwnedRunStopSignal {
+pub(crate) fn signal_owned_run(inflight: &mut Inflight) -> OwnedRunStopSignal {
     match inflight.owned_run_termination() {
         OwnedRunTermination::Available {
-            owned_run_id,
-            owned_process_group_termination_capability,
-        } => match owned_process_group_termination_capability.signal() {
-            OwnedProcessGroupSignalOutcome::Sent => OwnedRunStopSignal::Sent(owned_run_id),
-            OwnedProcessGroupSignalOutcome::IdentityNoLongerCurrent
-            | OwnedProcessGroupSignalOutcome::SignalFailed => OwnedRunStopSignal::NotSignaled,
+            owned_run_termination_token,
+            ..
+        } => match inflight.submit_owned_run_termination(owned_run_termination_token) {
+            OwnedRunTerminationSubmission::Submitted(_) => OwnedRunStopSignal::Submitted,
+            OwnedRunTerminationSubmission::RequestAlreadyPending
+            | OwnedRunTerminationSubmission::TokenRefused
+            | OwnedRunTerminationSubmission::ActorUnavailable => OwnedRunStopSignal::NotSubmitted,
         },
-        OwnedRunTermination::NoRunningRun => OwnedRunStopSignal::NotSignaled,
-    }
-}
-
-#[cfg(test)]
-pub(crate) const fn signal_owned_run(inflight: &Inflight) -> OwnedRunStopSignal {
-    match inflight.owned_run_termination() {
-        OwnedRunTermination::Available {
-            owned_run_id,
-            owned_process_group_termination_capability,
-        } => match owned_process_group_termination_capability.signal() {
-            OwnedProcessGroupSignalOutcome::Sent => OwnedRunStopSignal::Sent(owned_run_id),
-            OwnedProcessGroupSignalOutcome::IdentityNoLongerCurrent
-            | OwnedProcessGroupSignalOutcome::SignalFailed => OwnedRunStopSignal::NotSignaled,
+        OwnedRunTermination::RequestPending { .. } | OwnedRunTermination::NoRunningRun => {
+            OwnedRunStopSignal::NotSubmitted
         },
-        OwnedRunTermination::NoRunningRun => OwnedRunStopSignal::NotSignaled,
     }
 }
 
@@ -108,7 +96,7 @@ pub(super) fn spawn_owned_run_process(app: &mut App, owned_run_id: OwnedRunId) {
     let CurrentProcessIdentityObservation::Verified(verified_process_identity) =
         observe_current_process_identity(process_group_id)
     else {
-        cleanup_unverified_owned_process_group(&mut child);
+        discard_unverified_owned_process_group(&mut child);
         let output_was_empty = app.inflight.owned_run().output_is_empty();
         app.inflight.fail_owned_run_start(
             owned_run_id,
@@ -118,47 +106,46 @@ pub(super) fn spawn_owned_run_process(app: &mut App, owned_run_id: OwnedRunId) {
         return;
     };
 
-    let owned_process_group_termination_capability =
-        crate::tui::state::OwnedProcessGroupTerminationCapability::from_verified_root(
-            verified_process_identity,
-        );
-    let output_was_empty = app.inflight.owned_run().output_is_empty();
-    if !matches!(
-        app.inflight
-            .activate_owned_run(owned_run_id, owned_process_group_termination_capability,),
-        crate::tui::state::OwnedRunActivation::Activated
-    ) {
-        cleanup_unverified_owned_process_group(&mut child);
-        return;
-    }
-    app.owned_run_output_replaced(output_was_empty);
-
-    // Take ownership of pipes before moving child to the completion worker.
+    let root_identity = verified_process_identity.clone().into_process_identity();
     let stderr = child.stderr.take();
     let stdout = child.stdout.take();
-    let example_sender = app.background.example_sender();
-    let _ = example_sender.send(ExampleMsg::Started { owned_run_id });
-    thread::spawn(move || {
-        let stderr_reader = stderr.map(|stream| {
-            let example_sender = example_sender.clone();
-            thread::spawn(move || read_with_progress(&example_sender, owned_run_id, stream))
-        });
-        let stdout_reader = stdout.map(|stream| {
-            let example_sender = example_sender.clone();
-            thread::spawn(move || read_with_progress(&example_sender, owned_run_id, stream))
-        });
-
-        // The process exit is delivered only after each captured-output reader
-        // has flushed the bytes it observed for this owned-run identity.
-        let _ = child.wait();
-        if let Some(reader) = stderr_reader {
-            let _ = reader.join();
-        }
-        if let Some(reader) = stdout_reader {
-            let _ = reader.join();
-        }
-        let _ = example_sender.send(ExampleMsg::Finished { owned_run_id });
+    let started_sender = app.background.example_sender();
+    let stderr_reader = stderr.map(|stream| {
+        let example_sender = started_sender.clone();
+        thread::spawn(move || read_with_progress(&example_sender, owned_run_id, stream))
     });
+    let stdout_reader = stdout.map(|stream| {
+        let example_sender = started_sender.clone();
+        thread::spawn(move || read_with_progress(&example_sender, owned_run_id, stream))
+    });
+    let mut output_readers = Vec::new();
+    if let Some(stderr_reader) = stderr_reader {
+        output_readers.push(stderr_reader);
+    }
+    if let Some(stdout_reader) = stdout_reader {
+        output_readers.push(stdout_reader);
+    }
+    let owned_run_process_actor = OwnedRunProcessActor::prepare(
+        owned_run_id,
+        child,
+        verified_process_identity,
+        output_readers,
+        started_sender.clone(),
+    );
+    let output_was_empty = app.inflight.owned_run().output_is_empty();
+    match app
+        .inflight
+        .activate_owned_run(owned_run_id, owned_run_process_actor, root_identity)
+    {
+        OwnedRunActivation::Activated => {},
+        OwnedRunActivation::NoMatchingStartingRun(owned_run_process_actor) => {
+            owned_run_process_actor.discard_unactivated();
+            return;
+        },
+    }
+    app.owned_run_output_replaced(output_was_empty);
+    app.inflight.start_owned_run_process_actor(owned_run_id);
+    let _ = started_sender.send(OwnedRunEvent::Started { owned_run_id });
 }
 
 fn cargo_command_for_owned_run(pending_example_run: &PendingExampleRun) -> Command {
@@ -212,46 +199,10 @@ fn isolate_owned_process(command: &mut Command) { command.process_group(0); }
 #[cfg(not(unix))]
 fn isolate_owned_process(_: &mut Command) {}
 
-#[cfg(unix)]
-fn cleanup_unverified_owned_process_group(child: &mut std::process::Child) {
-    let process_group_id = child.id();
-    let _ = Command::new("kill")
-        .arg("-TERM")
-        .arg(format!("-{process_group_id}"))
-        .status();
-    let _ = Command::new("kill")
-        .arg("-KILL")
-        .arg(format!("-{process_group_id}"))
-        .status();
-    let _ = child.kill();
-    let _ = child.wait();
-    for _ in 0..100 {
-        if !process_group_exists(process_group_id) {
-            break;
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-}
-
-#[cfg(unix)]
-fn process_group_exists(process_group_id: u32) -> bool {
-    Command::new("kill")
-        .arg("-0")
-        .arg(format!("-{process_group_id}"))
-        .status()
-        .is_ok_and(|status| status.success())
-}
-
-#[cfg(not(unix))]
-fn cleanup_unverified_owned_process_group(child: &mut std::process::Child) {
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
 /// Read a stream byte-by-byte, splitting on `\n` (new line) and `\r` (progress update).
 /// `\r`-terminated chunks are sent as `Progress` so the UI replaces the last line.
 fn read_with_progress(
-    example_sender: &Sender<ExampleMsg>,
+    example_sender: &Sender<OwnedRunEvent>,
     owned_run_id: OwnedRunId,
     stream: impl io::Read,
 ) {
@@ -263,13 +214,13 @@ fn read_with_progress(
         match byte[0] {
             b'\n' => {
                 let line = String::from_utf8_lossy(&buf).to_string();
-                let _ = example_sender.send(ExampleMsg::Output { owned_run_id, line });
+                let _ = example_sender.send(OwnedRunEvent::Output { owned_run_id, line });
                 buf.clear();
             },
             b'\r' => {
                 if !buf.is_empty() {
                     let line = String::from_utf8_lossy(&buf).to_string();
-                    let _ = example_sender.send(ExampleMsg::Progress { owned_run_id, line });
+                    let _ = example_sender.send(OwnedRunEvent::Progress { owned_run_id, line });
                     buf.clear();
                 }
             },
@@ -279,7 +230,7 @@ fn read_with_progress(
     // Flush any remaining data
     if !buf.is_empty() {
         let line = String::from_utf8_lossy(&buf).to_string();
-        let _ = example_sender.send(ExampleMsg::Output { owned_run_id, line });
+        let _ = example_sender.send(OwnedRunEvent::Output { owned_run_id, line });
     }
 }
 
@@ -472,10 +423,17 @@ mod tests {
         BufReader::new(stdout).read_line(&mut descendant_pid)?;
         let descendant_pid = descendant_pid.trim();
 
-        cleanup_unverified_owned_process_group(&mut child);
+        let process_group_id = child.id();
+        discard_unverified_owned_process_group(&mut child);
 
         assert!(child.try_wait()?.is_some());
-        assert!(!process_group_exists(child.id()));
+        assert!(
+            !Command::new("kill")
+                .arg("-0")
+                .arg(format!("-{process_group_id}"))
+                .status()?
+                .success()
+        );
         assert!(
             !Command::new("kill")
                 .arg("-0")

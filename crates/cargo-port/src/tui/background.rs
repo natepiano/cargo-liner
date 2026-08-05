@@ -21,7 +21,7 @@ use tui_pane::PERF_LOG_TARGET;
 use super::startup_services::WatcherHandle;
 use super::terminal::CiFetchMsg;
 use super::terminal::CleanMsg;
-use super::terminal::ExampleMsg;
+use super::terminal::OwnedRunEvent;
 use crate::build_monitor::BuildClassifier;
 use crate::build_monitor::CompileClassificationDemand;
 use crate::build_monitor::CompileClassificationExecution;
@@ -34,10 +34,17 @@ use crate::process_observation::ProcessRefreshExecutor;
 use crate::process_observation::RefreshCycleClassifier;
 use crate::process_observation::RunningTargetsRefreshSchedule;
 use crate::process_observation::snapshot::ProcessObservationSnapshot;
+use crate::process_termination::ProcessTerminator;
+use crate::process_termination::TerminationDispatchOutcome;
+use crate::process_termination::TerminationPlanCreation;
+use crate::process_termination::TerminationRequestId;
+use crate::process_termination::TerminationResultPoll;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
 use crate::scan::BackgroundMsg;
+use crate::tui::messages::ProcessTerminationOutcomeMsg;
+use crate::tui::messages::ProcessTerminationPlanMsg;
 use crate::tui::process_refresh::AppProcessRefreshExecutor;
 use crate::watcher::WatchRequest;
 use crate::watcher::WatcherMsg;
@@ -48,22 +55,35 @@ pub struct BackgroundChannels {
     pub background: (Sender<BackgroundMsg>, Receiver<BackgroundMsg>),
     pub ci_fetch:   (Sender<CiFetchMsg>, Receiver<CiFetchMsg>),
     pub clean:      (Sender<CleanMsg>, Receiver<CleanMsg>),
-    pub example:    (Sender<ExampleMsg>, Receiver<ExampleMsg>),
+    pub example:    (Sender<OwnedRunEvent>, Receiver<OwnedRunEvent>),
     pub watcher:    WatcherHandle,
+}
+
+/// The termination worker's one startup handshake.
+///
+/// The execution plan contains no targets. It proves that the dedicated
+/// request/result channel is operating without observing or signaling a
+/// process; authority-bearing plans are submitted only after readiness.
+enum ProcessTerminationWorkerReadiness {
+    Awaiting(TerminationRequestId),
+    Available,
+    Unavailable,
 }
 
 /// Owns every long-lived I/O channel App holds. App holds a single
 /// `background: Background` field.
 pub(super) struct Background {
-    sender:      Sender<BackgroundMsg>,
-    receiver:    Receiver<BackgroundMsg>,
-    ci_fetch_tx: Sender<CiFetchMsg>,
-    ci_fetch_rx: Receiver<CiFetchMsg>,
-    clean_tx:    Sender<CleanMsg>,
-    clean_rx:    Receiver<CleanMsg>,
-    example_tx:  Sender<ExampleMsg>,
-    example_rx:  Receiver<ExampleMsg>,
-    watcher:     WatcherHandle,
+    sender:                               Sender<BackgroundMsg>,
+    receiver:                             Receiver<BackgroundMsg>,
+    ci_fetch_tx:                          Sender<CiFetchMsg>,
+    ci_fetch_rx:                          Receiver<CiFetchMsg>,
+    clean_tx:                             Sender<CleanMsg>,
+    clean_rx:                             Receiver<CleanMsg>,
+    example_tx:                           Sender<OwnedRunEvent>,
+    example_rx:                           Receiver<OwnedRunEvent>,
+    process_terminator:                   ProcessTerminator,
+    process_termination_worker_readiness: ProcessTerminationWorkerReadiness,
+    watcher:                              WatcherHandle,
 }
 
 impl Background {
@@ -75,6 +95,8 @@ impl Background {
             example: (example_tx, example_rx),
             watcher,
         } = channels;
+        let (process_terminator, process_termination_worker_readiness) =
+            Self::start_process_termination_worker();
         Self {
             sender: background_tx,
             receiver: background_rx,
@@ -84,6 +106,8 @@ impl Background {
             clean_rx,
             example_tx,
             example_rx,
+            process_terminator,
+            process_termination_worker_readiness,
             watcher,
         }
     }
@@ -112,7 +136,74 @@ impl Background {
 
     pub(super) fn clean_sender(&self) -> Sender<CleanMsg> { self.clean_tx.clone() }
 
-    pub(super) fn example_sender(&self) -> Sender<ExampleMsg> { self.example_tx.clone() }
+    pub(super) fn example_sender(&self) -> Sender<OwnedRunEvent> { self.example_tx.clone() }
+
+    /// Reap the target-free startup handshake without consuming later
+    /// authority-bearing termination outcomes after the worker reports readiness.
+    pub(super) fn poll_process_termination_worker_readiness(&mut self) {
+        let ProcessTerminationWorkerReadiness::Awaiting(termination_request_id) =
+            self.process_termination_worker_readiness
+        else {
+            return;
+        };
+        match self.process_terminator.poll_outcome() {
+            TerminationResultPoll::Completed(termination_outcome_summary) => {
+                self.reconcile_process_termination_worker_handshake(
+                    termination_request_id,
+                    &termination_outcome_summary,
+                );
+            },
+            TerminationResultPoll::NoCompletedRequest => {},
+            TerminationResultPoll::WorkerUnavailable => {
+                self.process_termination_worker_readiness =
+                    ProcessTerminationWorkerReadiness::Unavailable;
+            },
+        }
+    }
+
+    fn reconcile_process_termination_worker_handshake(
+        &mut self,
+        termination_request_id: TerminationRequestId,
+        termination_outcome_summary: &ProcessTerminationOutcomeMsg,
+    ) {
+        if termination_outcome_summary.termination_request_id() == termination_request_id {
+            self.process_termination_worker_readiness =
+                ProcessTerminationWorkerReadiness::Available;
+        }
+    }
+
+    fn start_process_termination_worker() -> (ProcessTerminator, ProcessTerminationWorkerReadiness)
+    {
+        let mut process_terminator = ProcessTerminator::start();
+        let termination_execution_plan: ProcessTerminationPlanMsg =
+            match process_terminator.plan_termination(Vec::new()) {
+                TerminationPlanCreation::Planned(termination_execution_plan) => {
+                    termination_execution_plan
+                },
+                TerminationPlanCreation::RequestIdsExhausted => {
+                    return (
+                        process_terminator,
+                        ProcessTerminationWorkerReadiness::Unavailable,
+                    );
+                },
+            };
+        let termination_request_id = termination_execution_plan.termination_request_id();
+        match process_terminator.request_termination(termination_execution_plan) {
+            TerminationDispatchOutcome::Dispatched(dispatched_request_id)
+                if dispatched_request_id == termination_request_id =>
+            {
+                (
+                    process_terminator,
+                    ProcessTerminationWorkerReadiness::Awaiting(termination_request_id),
+                )
+            },
+            TerminationDispatchOutcome::Dispatched(_)
+            | TerminationDispatchOutcome::WorkerUnavailable => (
+                process_terminator,
+                ProcessTerminationWorkerReadiness::Unavailable,
+            ),
+        }
+    }
 
     // ── Receiver access ──────────────────────────────────────────────
 
@@ -122,7 +213,7 @@ impl Background {
 
     pub(super) const fn clean_rx(&self) -> &Receiver<CleanMsg> { &self.clean_rx }
 
-    pub(super) const fn example_rx(&self) -> &Receiver<ExampleMsg> { &self.example_rx }
+    pub(super) const fn example_rx(&self) -> &Receiver<OwnedRunEvent> { &self.example_rx }
 
     /// Send `msg` on the watcher channel. Convenience for the
     /// common watcher-registration pattern. Disabled watcher handles

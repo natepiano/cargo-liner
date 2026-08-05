@@ -245,11 +245,7 @@ fn dispatch_output_cancel_preflight(app: &mut App, preflight: OutputCancelPrefli
             true
         },
         OutputCancelPreflight::StopRunningExample => {
-            if let terminal::OwnedRunStopSignal::Sent(owned_run_id) =
-                terminal::signal_owned_run(&app.inflight)
-            {
-                let _ = app.inflight.mark_owned_run_stopping(owned_run_id);
-            }
+            let _ = terminal::signal_owned_run(&mut app.inflight);
             true
         },
         OutputCancelPreflight::CloseVisibleOutput => {
@@ -911,11 +907,7 @@ pub fn dispatch_output_action(action: OutputAction, app: &mut App) {
 /// output and hand focus back to Targets.
 fn cancel_owned_output(app: &mut App) {
     if app.inflight.owned_run().is_running() {
-        if let terminal::OwnedRunStopSignal::Sent(owned_run_id) =
-            terminal::signal_owned_run(&app.inflight)
-        {
-            let _ = app.inflight.mark_owned_run_stopping(owned_run_id);
-        }
+        let _ = terminal::signal_owned_run(&mut app.inflight);
     } else if matches!(
         app.output_copy_availability(),
         OutputCopyAvailability::CapturedOutput

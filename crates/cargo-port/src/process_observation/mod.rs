@@ -1,4 +1,10 @@
 //! Immutable host process observation without process-control operations.
+//!
+//! Nothing here signals, terminates, or otherwise controls a process. It
+//! produces immutable evidence and the platform capabilities that evidence
+//! justifies; deciding on and delivering a termination signal belongs to
+//! `crate::process_termination`, which is a separate subsystem so a reader of
+//! host state can never become a writer of it.
 
 #[cfg(test)]
 #[allow(
@@ -35,12 +41,15 @@ use snapshot::ProcessFieldSample;
 use snapshot::ProcessFieldSourceObservation;
 use snapshot::ProcessFieldUnavailable;
 use snapshot::ProcessIncarnationCache;
+use snapshot::ProcessIncarnationEvidence;
+use snapshot::ProcessIncarnationState;
 use snapshot::ProcessObservationSnapshot;
 pub(crate) use snapshot::ProcessRefreshConsumerDemand;
 pub(crate) use snapshot::ProcessRefreshExecutionOutcome;
 use snapshot::ProcessRefreshInput;
 use snapshot::ProcessRefreshObservations;
 use snapshot::ProcessSamplingOutcome;
+use snapshot::ProcessSnapshotRecord;
 use snapshot::ProcessSnapshotScope;
 use snapshot::ReportedParent;
 use snapshot::TargetedProcessObservations;
@@ -52,6 +61,33 @@ use sysinfo::ProcessRefreshKind;
 use sysinfo::ProcessesToUpdate;
 use sysinfo::System;
 use sysinfo::UpdateKind;
+
+/// Proof that a platform capability was minted by [`ProcessObserver`].
+///
+/// The field is private, so another crate module cannot turn raw PID or
+/// [`ProcessIncarnation`] data into process-control authority.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "build-monitor authorization has no production capability consumer yet"
+    )
+)]
+pub(crate) struct ProcessCapabilityMintAuthority(());
+
+/// Whether immutable observer evidence could mint a platform termination
+/// capability.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "build-monitor authorization has no production capability consumer yet"
+    )
+)]
+pub(crate) enum PlatformTerminationCapabilityObservation {
+    Available(crate::process_termination::ExternalProcessTerminationCapability),
+    InsufficientIncarnationEvidence,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum PidProcessFieldObservation {
@@ -1535,12 +1571,57 @@ struct FullSystemSnapshotCycle {
 
 /// Host-only process observation with one private long-lived metrics `System`.
 #[derive(Default)]
-pub(crate) struct ProcessObserver {
+struct ProcessObserver {
     running_metrics_system: RunningMetricsSystem,
     incarnation_cache:      ProcessIncarnationCache,
 }
 
 impl ProcessObserver {
+    /// Mint a move-only platform capability from one immutable record produced
+    /// by this observer.
+    ///
+    /// A record from an invalidated exec transition is not authority. The
+    /// platform adapter also binds and revalidates the process object before it
+    /// returns an identity-bound capability.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "build-monitor authorization has no production capability consumer yet"
+        )
+    )]
+    fn platform_termination_capability(
+        &self,
+        process_snapshot_record: &ProcessSnapshotRecord,
+    ) -> PlatformTerminationCapabilityObservation {
+        if !self
+            .incarnation_cache
+            .cached_process_identities()
+            .contains(process_snapshot_record.identity())
+        {
+            return PlatformTerminationCapabilityObservation::InsufficientIncarnationEvidence;
+        }
+        match process_snapshot_record.incarnation_evidence() {
+            ProcessIncarnationEvidence::Strong {
+                incarnation,
+                incarnation_state:
+                    ProcessIncarnationState::NewlyObserved | ProcessIncarnationState::Unchanged,
+            } => PlatformTerminationCapabilityObservation::Available(
+                crate::process_termination::ExternalProcessTerminationCapability::from_observation(
+                    ProcessCapabilityMintAuthority(()),
+                    incarnation.clone(),
+                ),
+            ),
+            ProcessIncarnationEvidence::Strong {
+                incarnation_state: ProcessIncarnationState::ExecutableOrArgumentsChanged { .. },
+                ..
+            }
+            | ProcessIncarnationEvidence::Insufficient(_) => {
+                PlatformTerminationCapabilityObservation::InsufficientIncarnationEvidence
+            },
+        }
+    }
+
     /// Execute one coalesced consumer cycle over the observer's private host state.
     fn refresh_for_consumer_demand(
         &mut self,
@@ -1951,6 +2032,25 @@ fn snapshot_scope(process_refresh_input: &ProcessRefreshInput) -> ProcessSnapsho
             ProcessSnapshotScope::TargetedIdentities(process_identities.clone())
         },
     }
+}
+
+/// Drive the production observer and capability-minting path for one real
+/// process fixture.
+#[cfg(test)]
+pub(crate) fn observe_platform_termination_capability_for_test(
+    pid: u32,
+) -> PlatformTerminationCapabilityObservation {
+    let mut process_observer = ProcessObserver::default();
+    let process_observation_snapshot =
+        process_observer.refresh(&ProcessRefreshInput::FullSystemSnapshot);
+    let Some(process_snapshot_record) = process_observation_snapshot
+        .strongly_identified_processes()
+        .values()
+        .find(|process_snapshot_record| process_snapshot_record.identity().pid() == pid)
+    else {
+        return PlatformTerminationCapabilityObservation::InsufficientIncarnationEvidence;
+    };
+    process_observer.platform_termination_capability(process_snapshot_record)
 }
 
 #[cfg(test)]

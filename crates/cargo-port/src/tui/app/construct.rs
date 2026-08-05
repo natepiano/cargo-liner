@@ -78,7 +78,7 @@ use crate::tui::state::Scan;
 use crate::tui::state::SyncTracker;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
-use crate::tui::terminal::ExampleMsg;
+use crate::tui::terminal::OwnedRunEvent;
 use crate::tui::theme_roles;
 
 /// Caller's raw arguments. Held by value (the slice and config
@@ -98,8 +98,8 @@ pub(super) struct Inputs {
 /// fetch, clean) routed through `Background`.
 pub(super) struct Channeled {
     inputs:      Inputs,
-    example_tx:  Sender<ExampleMsg>,
-    example_rx:  Receiver<ExampleMsg>,
+    example_tx:  Sender<OwnedRunEvent>,
+    example_rx:  Receiver<OwnedRunEvent>,
     ci_fetch_tx: Sender<CiFetchMsg>,
     ci_fetch_rx: Receiver<CiFetchMsg>,
     clean_tx:    Sender<CleanMsg>,
