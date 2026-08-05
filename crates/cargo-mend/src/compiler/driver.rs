@@ -13,6 +13,7 @@ use rustc_driver::Callbacks;
 use rustc_driver::Compilation;
 use rustc_interface::interface::Compiler;
 use rustc_middle::ty::TyCtxt;
+use rustc_span::def_id::LOCAL_CRATE;
 
 use super::constants::CARGO_PRIMARY_PACKAGE_ENV;
 use super::constants::PASSTHROUGH_RUSTC_WRAPPER_ENV;
@@ -38,7 +39,9 @@ impl AnalysisCallbacks {
 
 impl Callbacks for AnalysisCallbacks {
     fn after_analysis(&mut self, _: &Compiler, tcx: TyCtxt<'_>) -> Compilation {
-        match visibility::collect_and_store_findings(tcx, &self.driver_settings) {
+        let findings = visibility::collect_and_store_findings(tcx, &self.driver_settings);
+        super::sweep_counters::report(tcx.crate_name(LOCAL_CRATE).as_str());
+        match findings {
             Ok(true | false) => Compilation::Continue,
             Err(err) => {
                 self.error = Some(err);

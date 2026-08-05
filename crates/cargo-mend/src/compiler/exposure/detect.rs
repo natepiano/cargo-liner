@@ -25,6 +25,7 @@ use syn::Item;
 use syn::ItemImpl;
 use syn::spanned::Spanned;
 
+use super::super::sweep_counters;
 use super::visitor;
 use super::visitor::ItemSignatureCarrier;
 use super::visitor::OutwardDeclaration;
@@ -515,11 +516,13 @@ fn sibling_boundary_signature_exposes_item(
     let mut exposure_reach = None;
 
     let candidate_files = ctx.source_cache.source_files_under(ctx.source_root);
+    sweep_counters::record_sweep(candidate_files.len());
     for candidate_file in candidate_files.iter() {
         if ctx.source_cache.name_mention(candidate_file, item_name) == NameMention::Absent {
             continue;
         }
         let file_scopes = module_scopes(ctx, candidate_file);
+        sweep_counters::record_file_scanned(file_scopes.len());
         for &module_scope in file_scopes.iter() {
             let candidate_module = module_scope.module;
             if candidate_module == parent_boundary.module()
@@ -534,6 +537,7 @@ fn sibling_boundary_signature_exposes_item(
             {
                 continue;
             }
+            sweep_counters::record_scope_analyzed();
 
             accumulate_exposure_reach(
                 ctx,
