@@ -65,7 +65,7 @@ use sysinfo::UpdateKind;
 /// Proof that a platform capability was minted by [`ProcessObserver`].
 ///
 /// The field is private, so another crate module cannot turn raw PID or
-/// [`ProcessIncarnation`] data into process-control authority.
+/// `ProcessIncarnation` data into process-control authority.
 #[cfg_attr(
     not(test),
     expect(

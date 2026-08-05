@@ -81,7 +81,7 @@ impl OutputSelectionRange {
 ///
 /// It carries the [`OwnedRunId`] that produced the retained output, and that id
 /// comes only from [`OwnedOutputPresentation::producer`] or from a
-/// [`OutputMonitorHit::CapturedOutput`] the renderer recorded over an owned
+/// [`super::OutputMonitorHit::CapturedOutput`] the renderer recorded over an owned
 /// body. An external column has no producer to supply, so it cannot build one.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct OwnedColumnWitness(OwnedRunId);

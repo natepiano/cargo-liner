@@ -78,7 +78,7 @@ pub(super) struct OwnedBody<'a> {
 }
 
 impl<'a> OwnedBody<'a> {
-    /// `scroll_offset` is [`Viewport::scroll_offset`], the same first visible
+    /// `scroll_offset` is [`tui_pane::Viewport::scroll_offset`], the same first visible
     /// captured row the monitor-off view scrolls to, so turning the monitor on
     /// does not turn the owned output into a head-only view.
     pub(super) const fn new(

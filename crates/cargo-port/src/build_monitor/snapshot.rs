@@ -25,7 +25,7 @@ use crate::tui::OwnedRunId;
 /// There is deliberately no running-target state. A target Cargo launched is not
 /// a compile activity: [`CompilerKind`] names only compiler, build-script,
 /// linker, and wrapper executables, and
-/// [`crate::process_observation::snapshot_builder::ObservedCandidateRole`]
+/// `ObservedCandidateRole`
 /// classifies every other child of a Cargo root as `NotCandidate`, so this
 /// module holds no evidence that would distinguish a running target from any
 /// other descendant. `crate::tui::running_targets` owns that observation
