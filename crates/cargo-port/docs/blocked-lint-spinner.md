@@ -60,7 +60,7 @@ Caveats:
   or strip them. Matching on the substring `waiting for file lock` sidesteps the
   escapes entirely, since the escapes wrap the status word only.
 - Cargo suppresses the line under `-q` / `CARGO_TERM_QUIET`. The user's lint
-  shim (`~/.claude/scripts/clippy/lint`, invoked as `lint mend|clippy|doc`)
+  shim (`~/.claude/scripts/lint/lint`, invoked as `lint mend|clippy|doc`)
   uses neither, so all three of their commands emit it. A user-authored quiet
   command degrades to never-red — no false red.
 - cargo-mend writes its own summary to stderr too; scan **both** streams.

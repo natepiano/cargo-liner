@@ -31,7 +31,7 @@ pub(super) fn assert_not_default_user_cache_root(cache_root: &Path) {
 /// echo -n "/path/to/project" | shasum -a 256 | cut -c1-16
 /// ```
 ///
-/// SYNC: must match `project_key()` in `~/.claude/scripts/clippy/check_cache.sh`.
+/// SYNC: must match `project_key()` in `~/.claude/scripts/lint/check_cache.sh`.
 pub fn project_key(project_root: &Path) -> String {
     let path_str = project_root.to_string_lossy();
     let name = project_root
