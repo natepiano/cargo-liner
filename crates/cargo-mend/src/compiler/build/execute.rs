@@ -191,7 +191,7 @@ fn run_cargo_check(
         .env(SCOPE_FINGERPRINT_ENV, scope_fingerprint)
         .stdin(Stdio::inherit());
 
-    run_cargo_command(&mut command, output_mode, color_mode)
+    run_cargo_command(&mut command, output_mode, color_mode, findings_dir)
         .context("failed to run cargo check for mend")
 }
 
@@ -407,6 +407,7 @@ fn run_cargo_command(
     command: &mut Command,
     output_mode: BuildOutputMode,
     color_mode: ColorMode,
+    findings_dir: &Path,
 ) -> Result<CommandOutcome> {
     if color_mode.is_enabled() {
         command.env(CARGO_TERM_COLOR_ENV, CARGO_TERM_COLOR_ALWAYS);
@@ -425,7 +426,7 @@ fn run_cargo_command(
         .stderr
         .take()
         .context("failed to capture cargo stderr")?;
-    let stderr_outcome = stderr::stream_cargo_stderr(stderr, output_mode)?;
+    let stderr_outcome = stderr::stream_cargo_stderr(stderr, output_mode, findings_dir)?;
     let exit_status = child.wait().context("failed to wait for cargo command")?;
     let duration = start.elapsed();
     Ok(CommandOutcome {

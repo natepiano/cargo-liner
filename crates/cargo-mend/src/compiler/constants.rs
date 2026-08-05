@@ -44,6 +44,7 @@ pub(crate) const DIAGNOSTIC_SEVERITY_ERROR_PREFIX: &str = "error:";
 pub(crate) const DIAGNOSTIC_SEVERITY_WARNING_PREFIX: &str = "warning:";
 
 // driver-ipc environment variables
+pub(crate) const ANALYZING_DIR_NAME: &str = "analyzing";
 pub(crate) const CARGO_PRIMARY_PACKAGE_ENV: &str = "CARGO_PRIMARY_PACKAGE";
 pub(crate) const CONFIG_FINGERPRINT_ENV: &str = "MEND_CONFIG_FINGERPRINT";
 pub(crate) const CONFIG_JSON_ENV: &str = "MEND_CONFIG_JSON";

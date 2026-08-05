@@ -1,3 +1,4 @@
+mod analyzing;
 mod build;
 mod constants;
 mod driver;

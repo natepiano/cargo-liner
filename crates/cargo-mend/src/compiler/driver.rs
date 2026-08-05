@@ -4,6 +4,7 @@ use std::iter;
 use std::process::Command;
 use std::process::ExitCode;
 use std::process::Stdio;
+use std::time::Instant;
 
 use anyhow::Context;
 use anyhow::Error;
@@ -15,6 +16,7 @@ use rustc_interface::interface::Compiler;
 use rustc_middle::ty::TyCtxt;
 use rustc_span::def_id::LOCAL_CRATE;
 
+use super::analyzing::AnalyzingMarker;
 use super::constants::CARGO_PRIMARY_PACKAGE_ENV;
 use super::constants::PASSTHROUGH_RUSTC_WRAPPER_ENV;
 use super::constants::RUSTC_BIN;
@@ -39,8 +41,12 @@ impl AnalysisCallbacks {
 
 impl Callbacks for AnalysisCallbacks {
     fn after_analysis(&mut self, _: &Compiler, tcx: TyCtxt<'_>) -> Compilation {
+        let crate_name = tcx.crate_name(LOCAL_CRATE);
+        let _analyzing =
+            AnalyzingMarker::new(&self.driver_settings.findings_dir, crate_name.as_str());
+        let analysis_start = Instant::now();
         let findings = visibility::collect_and_store_findings(tcx, &self.driver_settings);
-        super::sweep_counters::report(tcx.crate_name(LOCAL_CRATE).as_str());
+        super::sweep_counters::report(crate_name.as_str(), analysis_start.elapsed());
         match findings {
             Ok(true | false) => Compilation::Continue,
             Err(err) => {

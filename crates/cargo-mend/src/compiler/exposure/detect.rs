@@ -7,7 +7,6 @@ use std::rc::Rc;
 
 use anyhow::Result;
 use rustc_hash::FxHashMap;
-use rustc_hash::FxHashSet;
 use rustc_hir::FieldDef;
 use rustc_hir::ItemKind;
 use rustc_hir::def::DefKind;
@@ -41,14 +40,24 @@ use crate::compiler::visibility;
 use crate::compiler::visibility::ReexportIndex;
 use crate::compiler::visibility::VisibilityReach;
 
-/// Items already on the exposure-evaluation stack.
+/// Items already on the exposure-evaluation stack, each mapped to its position
+/// on it.
 ///
 /// Two public items whose signatures mention each other (`Alpha` holds a
 /// `Beta` field, `Beta` holds an `Alpha` field) would otherwise recurse
 /// through `type_is_exposed_outside_parent` forever and overflow the stack.
 /// A revisited item contributes no new exposure path, so it evaluates to
 /// `None` and any real exposure is found on another branch of the walk.
-type VisitedItems = FxHashSet<LocalDefId>;
+///
+/// The recorded position is what [`SignatureExposureCache`] consults to decide
+/// whether a completed result is reusable: a cut is only a problem for the
+/// calls above the entry it targeted.
+type VisitedItems = FxHashMap<LocalDefId, StackDepth>;
+
+/// A call's position on the exposure-evaluation stack, counted from zero at the
+/// walk's entry point. Equal to the number of entries already in
+/// [`VisitedItems`] when the call is entered.
+type StackDepth = usize;
 type FacadeExposure<'a> =
     dyn FnMut(LocalDefId, &Path, &str) -> Result<Option<VisibilityReach>> + 'a;
 
@@ -76,16 +85,57 @@ pub(in crate::compiler) struct ExposureContext<'source, 'tcx> {
 /// `VisibilityContext` and nothing about the item being scanned. One cache
 /// therefore serves every item in the crate.
 ///
-/// `cycle_cuts` is what makes reuse sound. `type_is_exposed_outside_parent`
+/// `cycle_cut_reach` is what makes reuse sound. `type_is_exposed_outside_parent`
 /// answers `None` for an item already on the walk's stack, which under-reports
-/// that item's exposure; a result computed while such a cut happened beneath it
-/// is an under-approximation, correct only for the stack that produced it.
-/// Counting cuts lets a completed call tell whether any occurred within it, and
-/// only a call that saw none is stored.
+/// that item's exposure. What decides whether that taints a completed result is
+/// not that a cut happened but how far up the stack it reached: a cut targeting
+/// the completed call itself, or anything below it, names a cycle the call has
+/// finished traversing by the time it returns, so its own answer already
+/// accounts for every item in that cycle. A cut reaching above the call leaves
+/// the answer depending on a value still being computed, correct only for the
+/// stack that produced it.
+///
+/// Tracking the shallowest depth any cut targeted therefore stores the results
+/// that earlier only-if-no-cut gating discarded — on a large crate the majority
+/// of completed walks, each discard costing a full recomputation at the next
+/// lookup.
 #[derive(Default)]
 pub(in crate::compiler) struct SignatureExposureCache {
     exterior_reaches: RefCell<FxHashMap<LocalDefId, Option<VisibilityReach>>>,
-    cycle_cuts:       Cell<u64>,
+    cycle_cut_reach:  Cell<CycleCutReach>,
+}
+
+/// How far up the walk's stack the cycle cuts inside one call reached.
+///
+/// Kept as the running minimum over the call being measured, so a cut anywhere
+/// in its subtree is compared against that call's own depth.
+#[derive(Clone, Copy, Default)]
+enum CycleCutReach {
+    /// No cut happened inside the measured call.
+    #[default]
+    None,
+    /// The shallowest cut targeted the stack entry at this depth.
+    AtDepth(StackDepth),
+}
+
+impl CycleCutReach {
+    /// The shallower of two reaches. [`Self::None`] constrains nothing, so it
+    /// yields to any depth.
+    fn shallower_of(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::None, reach) | (reach, Self::None) => reach,
+            (Self::AtDepth(left), Self::AtDepth(right)) => Self::AtDepth(left.min(right)),
+        }
+    }
+
+    /// Whether every cut stayed at or below `depth`, which makes a call
+    /// completing at that depth hold a result good for any stack.
+    const fn resolved_within(self, depth: StackDepth) -> bool {
+        match self {
+            Self::None => true,
+            Self::AtDepth(cut_depth) => cut_depth >= depth,
+        }
+    }
 }
 
 /// The result of a [`SignatureExposureCache`] lookup: no memoized answer yet,
@@ -101,8 +151,10 @@ enum CachedExteriorReach {
 impl SignatureExposureCache {
     fn exterior_reach(&self, item_def_id: LocalDefId) -> CachedExteriorReach {
         let Some(exterior_reach) = self.exterior_reaches.borrow().get(&item_def_id).copied() else {
+            sweep_counters::record_signature_miss();
             return CachedExteriorReach::Absent;
         };
+        sweep_counters::record_signature_hit();
         exterior_reach.map_or(CachedExteriorReach::Unexposed, CachedExteriorReach::Exposed)
     }
 
@@ -116,11 +168,29 @@ impl SignatureExposureCache {
             .insert(item_def_id, exterior_reach);
     }
 
-    /// Records that the cycle guard cut a branch, marking every call currently
-    /// on the stack as holding an under-approximation.
-    fn record_cycle_cut(&self) { self.cycle_cuts.set(self.cycle_cuts.get() + 1); }
+    /// Records that the cycle guard cut a branch at `depth`, the stack position
+    /// of the entry the cut targeted.
+    fn record_cycle_cut(&self, depth: StackDepth) {
+        self.cycle_cut_reach.set(
+            self.cycle_cut_reach
+                .get()
+                .shallower_of(CycleCutReach::AtDepth(depth)),
+        );
+    }
 
-    const fn cycle_cuts(&self) -> u64 { self.cycle_cuts.get() }
+    /// Starts measuring one call's cuts, handing back the enclosing call's
+    /// reach for [`Self::end_cut_measurement`] to restore.
+    const fn begin_cut_measurement(&self) -> CycleCutReach {
+        self.cycle_cut_reach.replace(CycleCutReach::None)
+    }
+
+    /// Ends the measurement, folding what this call saw back into `enclosing`
+    /// so the cuts keep counting against the calls above, and returning it.
+    fn end_cut_measurement(&self, enclosing: CycleCutReach) -> CycleCutReach {
+        let measured = self.cycle_cut_reach.get();
+        self.cycle_cut_reach.set(enclosing.shallower_of(measured));
+        measured
+    }
 }
 
 /// The per-file results of [`module_scopes`], keyed by source path.
@@ -897,11 +967,13 @@ fn type_is_exposed_outside_parent(
         CachedExteriorReach::Unexposed => return Ok(None),
         CachedExteriorReach::Exposed(exterior_reach) => return Ok(Some(exterior_reach)),
     }
-    if !visited.insert(item_def_id) {
-        ctx.signature_exposure_cache.record_cycle_cut();
+    if let Some(&cut_depth) = visited.get(&item_def_id) {
+        ctx.signature_exposure_cache.record_cycle_cut(cut_depth);
         return Ok(None);
     }
-    let cycle_cuts_before = ctx.signature_exposure_cache.cycle_cuts();
+    let depth = visited.len();
+    visited.insert(item_def_id, depth);
+    let enclosing_cut_reach = ctx.signature_exposure_cache.begin_cut_measurement();
 
     let result = (|| {
         let mut exterior_reach = None;
@@ -952,11 +1024,16 @@ fn type_is_exposed_outside_parent(
         Ok(exterior_reach)
     })();
     visited.remove(&item_def_id);
-    if let Ok(exterior_reach) = result.as_ref()
-        && ctx.signature_exposure_cache.cycle_cuts() == cycle_cuts_before
-    {
-        ctx.signature_exposure_cache
-            .store_exterior_reach(item_def_id, *exterior_reach);
+    let cut_reach = ctx
+        .signature_exposure_cache
+        .end_cut_measurement(enclosing_cut_reach);
+    if let Ok(exterior_reach) = result.as_ref() {
+        if cut_reach.resolved_within(depth) {
+            ctx.signature_exposure_cache
+                .store_exterior_reach(item_def_id, *exterior_reach);
+        } else {
+            sweep_counters::record_signature_refused();
+        }
     }
     result
 }

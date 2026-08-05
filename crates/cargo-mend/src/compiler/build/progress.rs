@@ -1,14 +1,17 @@
 use std::io;
 use std::io::IsTerminal;
 use std::io::Write;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::thread;
 use std::thread::JoinHandle;
 
 use super::BuildOutputMode;
+use crate::compiler::analyzing;
 use crate::compiler::constants::PROGRESS_FRAMES;
 use crate::compiler::constants::PROGRESS_INTERVAL;
 
@@ -28,11 +31,14 @@ struct CargoProgressState {
     active:      Arc<AtomicBool>,
     output_lock: Arc<Mutex<()>>,
     handle:      Option<JoinHandle<()>>,
-    line_width:  usize,
+    /// Width of the status text the spinner thread printed last. The text names
+    /// the targets currently under analysis, so it changes length between
+    /// frames and cannot be fixed at startup the way a constant message could.
+    line_width:  Arc<AtomicUsize>,
 }
 
 impl CargoProgress {
-    pub(super) fn start(output_mode: BuildOutputMode) -> Self {
+    pub(super) fn start(output_mode: BuildOutputMode, findings_dir: &Path) -> Self {
         let Some(message) = progress_message_for(output_mode) else {
             return Self { state: None };
         };
@@ -42,14 +48,25 @@ impl CargoProgress {
 
         let active = Arc::new(AtomicBool::new(true));
         let output_lock = Arc::new(Mutex::new(()));
+        let line_width = Arc::new(AtomicUsize::new(progress_line_width(message)));
         let thread_active = Arc::clone(&active);
         let thread_lock = Arc::clone(&output_lock);
-        let line_width = progress_line_width(message);
+        let thread_width = Arc::clone(&line_width);
+        let thread_findings_dir = findings_dir.to_path_buf();
         let handle = thread::spawn(move || {
             let mut frame_index = 0;
             while thread_active.load(Ordering::Relaxed) {
+                let status = analyzing_status(&thread_findings_dir, message);
+                let width = progress_line_width(&status);
                 if let Ok(_guard) = thread_lock.lock() {
-                    eprint!("{}", progress_frame(message, frame_index));
+                    let previous = thread_width.swap(width, Ordering::Relaxed);
+                    // Pad out to the previous width so a shorter status does not
+                    // leave the tail of the longer one on screen.
+                    eprint!(
+                        "{}{}",
+                        progress_frame(&status, frame_index),
+                        " ".repeat(previous.saturating_sub(width))
+                    );
                     let _ = io::stderr().flush();
                 }
                 frame_index = (frame_index + 1) % PROGRESS_FRAMES.len();
@@ -101,14 +118,20 @@ impl ProgressDisplay for CargoProgress {
 impl CargoProgressState {
     fn clear_line(&self) {
         if let Ok(_guard) = self.output_lock.lock() {
-            eprint!("{}", clear_progress_line(self.line_width));
+            eprint!(
+                "{}",
+                clear_progress_line(self.line_width.load(Ordering::Relaxed))
+            );
             let _ = io::stderr().flush();
         }
     }
 
     fn write_status_notice(&self, notice: &str) {
         if let Ok(_guard) = self.output_lock.lock() {
-            eprint!("{}", clear_progress_line(self.line_width));
+            eprint!(
+                "{}",
+                clear_progress_line(self.line_width.load(Ordering::Relaxed))
+            );
             eprintln!("{notice}");
             let _ = io::stderr().flush();
         }
@@ -119,8 +142,24 @@ const fn progress_message_for(output_mode: BuildOutputMode) -> Option<&'static s
     match output_mode {
         BuildOutputMode::SuppressUnusedImportWarnings => Some("checking for fix candidates"),
         BuildOutputMode::Quiet => Some("validating applied fixes"),
-        BuildOutputMode::Full | BuildOutputMode::Json => None,
+        // The main pass forwards cargo's own status lines, so the spinner is
+        // there for what cargo cannot report: a package's status line is printed
+        // once however many targets it holds, and mend analyzes each of those
+        // targets separately. On a package with a library and thirty examples
+        // that is one line followed by minutes of silence.
+        BuildOutputMode::Full => Some("analyzing"),
+        BuildOutputMode::Json => None,
     }
+}
+
+/// The status text for one frame: the targets under analysis right now, or
+/// `fallback` when the run is between analyses.
+fn analyzing_status(findings_dir: &Path, fallback: &str) -> String {
+    let targets = analyzing::targets_in_flight(findings_dir);
+    if targets.is_empty() {
+        return fallback.to_string();
+    }
+    format!("analyzing {}", targets.join(", "))
 }
 
 fn progress_frame(message: &str, frame_index: usize) -> String {

@@ -1,5 +1,6 @@
 use std::io::BufRead;
 use std::io::BufReader;
+use std::path::Path;
 use std::process::ChildStderr;
 
 use anyhow::Result;
@@ -60,9 +61,10 @@ impl From<bool> for ProgressStatus {
 pub(super) fn stream_cargo_stderr(
     stderr: ChildStderr,
     output_mode: BuildOutputMode,
+    findings_dir: &Path,
 ) -> Result<StderrObservation> {
     let mut reader = BufReader::new(stderr);
-    let mut progress = CargoProgress::start(output_mode);
+    let mut progress = CargoProgress::start(output_mode, findings_dir);
     let mut line = String::new();
     let mut block = Vec::new();
     let mut suppression_notice = SuppressionNotice::Pending;
@@ -98,7 +100,10 @@ pub(super) fn stream_cargo_stderr(
                 &mut progress,
             );
             if should_forward_progress_line(&current, output_mode, progress.is_active().into()) {
-                eprint!("{current}");
+                // Through the progress display rather than straight to stderr:
+                // when the spinner is up it owns the last line, and a bare
+                // `eprint!` would interleave with the frame it is redrawing.
+                progress.write_status_notice(current.trim_end());
             }
             continue;
         }
@@ -131,9 +136,21 @@ fn should_forward_progress_line(
     output_mode: BuildOutputMode,
     progress_status: ProgressStatus,
 ) -> bool {
-    matches!(progress_status, ProgressStatus::Inactive)
-        && !is_finished_line(line)
-        && !matches!(output_mode, BuildOutputMode::Json | BuildOutputMode::Quiet)
+    if is_finished_line(line) {
+        return false;
+    }
+    match output_mode {
+        BuildOutputMode::Json | BuildOutputMode::Quiet => false,
+        // The main pass shows cargo's status lines even while the spinner runs:
+        // there the spinner reports which target mend is analyzing, which is
+        // additional to cargo's output rather than a replacement for it.
+        BuildOutputMode::Full => true,
+        // The fix-candidate pass replaces cargo's output with the spinner, so a
+        // forwarded line would duplicate what the spinner already says.
+        BuildOutputMode::SuppressUnusedImportWarnings => {
+            matches!(progress_status, ProgressStatus::Inactive)
+        },
+    }
 }
 
 fn is_progress_line(line: &str) -> bool {
