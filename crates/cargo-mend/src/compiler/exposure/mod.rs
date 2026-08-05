@@ -1,6 +1,7 @@
 mod detect;
 mod visitor;
 
+pub(super) use detect::BoundaryScopeCache;
 pub(super) use detect::ExposureContext;
 pub(super) use detect::ModuleScopeCache;
 pub(super) use detect::SignatureExposureCache;

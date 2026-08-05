@@ -35,6 +35,7 @@ use crate::compiler::constants::SOURCE_DIR_BENCHES;
 use crate::compiler::constants::SOURCE_DIR_EXAMPLES;
 use crate::compiler::constants::SOURCE_DIR_TESTS;
 use crate::compiler::exposure;
+use crate::compiler::exposure::BoundaryScopeCache;
 use crate::compiler::exposure::ExposureContext;
 use crate::compiler::exposure::ModuleScopeCache;
 use crate::compiler::facade;
@@ -721,6 +722,7 @@ fn assess_signature_exposure_allowance(
         module_sources:           ctx.module_sources,
         reexport_index:           ctx.reexport_index,
         module_scope_cache:       ModuleScopeCache::default(),
+        boundary_scope_cache:     BoundaryScopeCache::default(),
         signature_exposure_cache: &ctx.signature_exposure_cache,
     };
     let mut facade_exposes =

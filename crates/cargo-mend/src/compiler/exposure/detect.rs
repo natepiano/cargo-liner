@@ -61,6 +61,8 @@ pub(in crate::compiler) struct ExposureContext<'source, 'tcx> {
     pub reexport_index:           &'source ReexportIndex,
     /// Memoizes [`module_scopes`] — see that function for why.
     pub module_scope_cache:       ModuleScopeCache<'source>,
+    /// Memoizes [`boundary_scopes`] — see that function for why.
+    pub boundary_scope_cache:     BoundaryScopeCache<'source>,
     /// Memoizes [`type_is_exposed_outside_parent`] across every analyzed item.
     pub signature_exposure_cache: &'source SignatureExposureCache,
 }
@@ -143,6 +145,34 @@ impl<'syntax> ModuleScopeCache<'syntax> {
 struct ModuleScope<'syntax> {
     module: LocalDefId,
     items:  &'syntax [Item],
+}
+
+/// The per-boundary results of [`boundary_scopes`], keyed by boundary module.
+#[derive(Default)]
+pub(in crate::compiler) struct BoundaryScopeCache<'syntax> {
+    by_boundary: RefCell<FxHashMap<LocalDefId, Rc<[BoundaryFileScopes<'syntax>]>>>,
+}
+
+impl<'syntax> BoundaryScopeCache<'syntax> {
+    fn get(&self, boundary: LocalDefId) -> Option<Rc<[BoundaryFileScopes<'syntax>]>> {
+        self.by_boundary.borrow().get(&boundary).map(Rc::clone)
+    }
+
+    fn insert(&self, boundary: LocalDefId, scopes: &Rc<[BoundaryFileScopes<'syntax>]>) {
+        self.by_boundary
+            .borrow_mut()
+            .insert(boundary, Rc::clone(scopes));
+    }
+}
+
+/// The module scopes one file contributes to a boundary.
+///
+/// Grouped by file because the sweep's name check is per file: checking it once
+/// here instead of once per scope is what keeps the boundary index from trading
+/// the old file-level prune away.
+struct BoundaryFileScopes<'syntax> {
+    source_file:   PathBuf,
+    module_scopes: Vec<ModuleScope<'syntax>>,
 }
 
 #[derive(Clone, Copy)]
@@ -515,25 +545,21 @@ fn sibling_boundary_signature_exposes_item(
     let child_module: LocalDefId = ctx.tcx.parent_module_from_def_id(item_def_id).into();
     let mut exposure_reach = None;
 
-    let candidate_files = ctx.source_cache.source_files_under(ctx.source_root);
+    let candidate_files = boundary_scopes(ctx, parent_boundary.module());
     sweep_counters::record_sweep(candidate_files.len());
     for candidate_file in candidate_files.iter() {
-        if ctx.source_cache.name_mention(candidate_file, item_name) == NameMention::Absent {
+        if ctx
+            .source_cache
+            .name_mention(&candidate_file.source_file, item_name)
+            == NameMention::Absent
+        {
             continue;
         }
-        let file_scopes = module_scopes(ctx, candidate_file);
-        sweep_counters::record_file_scanned(file_scopes.len());
-        for &module_scope in file_scopes.iter() {
-            let candidate_module = module_scope.module;
-            if candidate_module == parent_boundary.module()
-                || ctx
-                    .module_sources
-                    .module_is_within(ctx.tcx, candidate_module, child_module)
-                || !ctx.module_sources.module_is_within(
-                    ctx.tcx,
-                    candidate_module,
-                    parent_boundary.module(),
-                )
+        sweep_counters::record_file_scanned(candidate_file.module_scopes.len());
+        for module_scope in &candidate_file.module_scopes {
+            if ctx
+                .module_sources
+                .module_is_within(ctx.tcx, module_scope.module, child_module)
             {
                 continue;
             }
@@ -545,8 +571,8 @@ fn sibling_boundary_signature_exposes_item(
                 &mut exposure_reach,
                 module_signature_exposes_item(
                     ctx,
-                    &module_scope,
-                    candidate_file,
+                    module_scope,
+                    &candidate_file.source_file,
                     SignatureTarget {
                         def_id: item_def_id,
                         name:   item_name,
@@ -560,6 +586,55 @@ fn sibling_boundary_signature_exposes_item(
     }
 
     Ok(exposure_reach)
+}
+
+/// Every module scope strictly inside `boundary`, grouped by file and collected
+/// once per boundary.
+///
+/// [`sibling_boundary_signature_exposes_item`] runs once per analyzed item —
+/// 209,564 times on `hana_diegetic` — and used to reach its candidates by walking
+/// all 168 source files and every module scope in them, 35 million file visits
+/// and 7.4 million scope visits that discarded roughly 85% of both. Which scopes
+/// lie inside a boundary depends on the boundary alone, and `SourceCache` and
+/// the module tree are immutable for the run, so one walk per boundary answers
+/// every sweep that shares it. The two filters that do depend on the item —
+/// [`SourceCache::name_mention`] and the exclusion of the child module's own
+/// subtree — stay at the call site.
+///
+/// Files are walked in the same order as before, and files contributing no scope
+/// are dropped, so the scopes reach [`accumulate_exposure_reach`] in the same
+/// order.
+fn boundary_scopes<'source>(
+    ctx: &ExposureContext<'source, '_>,
+    boundary: LocalDefId,
+) -> Rc<[BoundaryFileScopes<'source>]> {
+    if let Some(scopes) = ctx.boundary_scope_cache.get(boundary) {
+        return scopes;
+    }
+
+    let mut scopes = Vec::new();
+    for source_file in ctx.source_cache.source_files_under(ctx.source_root).iter() {
+        let inside: Vec<ModuleScope<'source>> = module_scopes(ctx, source_file)
+            .iter()
+            .copied()
+            .filter(|module_scope| {
+                module_scope.module != boundary
+                    && ctx
+                        .module_sources
+                        .module_is_within(ctx.tcx, module_scope.module, boundary)
+            })
+            .collect();
+        if !inside.is_empty() {
+            scopes.push(BoundaryFileScopes {
+                source_file:   source_file.clone(),
+                module_scopes: inside,
+            });
+        }
+    }
+
+    let scopes: Rc<[BoundaryFileScopes<'source>]> = scopes.into();
+    ctx.boundary_scope_cache.insert(boundary, &scopes);
+    scopes
 }
 
 pub(in crate::compiler) fn impl_item_is_exposed_by_exported_self_type(

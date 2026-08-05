@@ -1,8 +1,8 @@
 //! How much work the exposure scan's whole-crate sweeps actually do.
 //!
-//! [`sibling_boundary_signature_exposes_item`] walks every source file under the
-//! crate root once per analyzed item, and [`SourceCache::source_files_under`]
-//! rebuilds that file list on every call. A CPU profile shows which frames burn
+//! [`sibling_boundary_signature_exposes_item`] walks every file that holds a
+//! module scope inside the item's parent boundary, once per analyzed item. A
+//! CPU profile shows which frames burn
 //! time but not how many of the enumerated files and module scopes survive each
 //! filter, and that ratio is what decides whether restructuring the sweep is
 //! worth the risk. These counters answer it exactly.
