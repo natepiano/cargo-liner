@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::ffi::OsStr;
 use std::fs;
@@ -5,6 +6,7 @@ use std::hash::Hash;
 use std::hash::Hasher;
 use std::path::Path;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -158,6 +160,9 @@ pub(super) struct SourceCache {
     lexical_regions:                FxHashMap<PathBuf, LexicalRegions>,
     structural_parent_module_paths: FxHashMap<PathBuf, Vec<Vec<String>>>,
     all_features_coverage:          AllFeaturesCoverage,
+    /// Memo for [`SourceCache::source_files_under`]; see that method for why the
+    /// same directory is asked for hundreds of thousands of times.
+    files_under:                    RefCell<FxHashMap<PathBuf, Rc<[PathBuf]>>>,
 }
 
 impl SourceCache {
@@ -232,6 +237,7 @@ impl SourceCache {
             lexical_regions,
             structural_parent_module_paths: FxHashMap::default(),
             all_features_coverage,
+            files_under: RefCell::new(FxHashMap::default()),
         })
     }
 
@@ -263,12 +269,32 @@ impl SourceCache {
         self.contents.keys().map(PathBuf::as_path).collect()
     }
 
-    pub fn source_files_under(&self, dir: &Path) -> Vec<&Path> {
-        self.files_by_dir
+    /// The source files under `dir`, collected once per directory.
+    ///
+    /// The exposure scan asks for the crate root once per analyzed item — over
+    /// 395,000 times on a 168-file crate — and the answer cannot change, because
+    /// the cache is immutable for the run. Without the memo each call rescanned
+    /// `files_by_dir` with a path-prefix comparison per directory and collected
+    /// the same list into a fresh allocation.
+    ///
+    /// Callers get an [`Rc`] rather than a borrow so the memo's [`RefCell`] is
+    /// not held across the loop bodies, which call back into analysis and reach
+    /// this function again.
+    pub fn source_files_under(&self, dir: &Path) -> Rc<[PathBuf]> {
+        if let Some(files) = self.files_under.borrow().get(dir) {
+            return Rc::clone(files);
+        }
+
+        let files: Rc<[PathBuf]> = self
+            .files_by_dir
             .iter()
-            .filter(|(d, _)| d.starts_with(dir))
-            .flat_map(|(_, files)| files.iter().map(PathBuf::as_path))
-            .collect()
+            .filter(|(candidate, _)| candidate.starts_with(dir))
+            .flat_map(|(_, files)| files.iter().cloned())
+            .collect();
+        self.files_under
+            .borrow_mut()
+            .insert(dir.to_path_buf(), Rc::clone(&files));
+        files
     }
 
     pub fn read_source(&self, path: &Path) -> Result<&str> {

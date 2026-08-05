@@ -514,11 +514,13 @@ fn sibling_boundary_signature_exposes_item(
     let child_module: LocalDefId = ctx.tcx.parent_module_from_def_id(item_def_id).into();
     let mut exposure_reach = None;
 
-    for candidate_file in ctx.source_cache.source_files_under(ctx.source_root) {
+    let candidate_files = ctx.source_cache.source_files_under(ctx.source_root);
+    for candidate_file in candidate_files.iter() {
         if ctx.source_cache.name_mention(candidate_file, item_name) == NameMention::Absent {
             continue;
         }
-        for &module_scope in module_scopes(ctx, candidate_file).iter() {
+        let file_scopes = module_scopes(ctx, candidate_file);
+        for &module_scope in file_scopes.iter() {
             let candidate_module = module_scope.module;
             if candidate_module == parent_boundary.module()
                 || ctx

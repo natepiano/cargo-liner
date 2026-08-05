@@ -802,7 +802,7 @@ pub(in crate::compiler) fn path_exists_outside_child_module(
     child_module_path: &[String],
     item_name: &str,
 ) -> bool {
-    for source_file in source_cache.source_files_under(source_root) {
+    for source_file in source_cache.source_files_under(source_root).iter() {
         let Some(extracted) = source_cache.extracted_paths(source_file) else {
             continue;
         };
@@ -835,7 +835,7 @@ pub(in crate::compiler) fn path_exists_outside_module(
     item_names: &[String],
 ) -> bool {
     let item_names = ExportNameIndex::new(item_names);
-    for source_file in source_cache.source_files_under(source_root) {
+    for source_file in source_cache.source_files_under(source_root).iter() {
         let Some(extracted) = source_cache.extracted_paths(source_file) else {
             continue;
         };
