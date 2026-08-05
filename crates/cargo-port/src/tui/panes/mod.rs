@@ -52,14 +52,18 @@ pub(super) use layout::top_pane_widths;
 pub(super) use lints::build_lints_data;
 pub(super) use lints::render_lints_pane_body;
 pub(super) use output::CapturedOutputRow;
+pub(super) use output::ColumnSelection;
 pub(super) use output::OutputCopyAvailability;
 pub(super) use output::OutputMonitorHit;
+pub(super) use output::OutputMonitorVisibility;
 pub(super) use output::OutputPane;
 pub(super) use output::OutputPaneVisibility;
 pub(super) use output::OutputPresentation;
 /// Named outside `panes` only where a test asserts the Output pane's selected rows.
 #[cfg(test)]
 pub(super) use output::OutputSelectionRange;
+pub(super) use output::OutputTabStep;
+pub(super) use output::OwnedColumnSelection;
 pub(super) use output::VisualSelectionPermission;
 pub(super) use package::PackagePane;
 pub(super) use pane_data::BuildMode;

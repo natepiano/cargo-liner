@@ -148,6 +148,18 @@ impl From<MonitorWorkspaceIndexReadiness> for MonitorEmptyStateIndexNote {
     }
 }
 
+/// Whether the build monitor occupies part of the Output pane this frame.
+///
+/// Payload-free, so callers outside the pane can read the fact without naming
+/// the borrowed monitor model [`MonitorVisibility`] carries.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OutputMonitorVisibility {
+    /// Compile visibility is off, so nothing monitor-related is drawn.
+    Off,
+    /// The monitor half is drawn.
+    On,
+}
+
 /// One root Cargo invocation, as one stable column.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct MonitorColumn<'a>(&'a MonitorSessionRow);
@@ -361,6 +373,17 @@ impl<'a> OutputPresentation<'a> {
             Self::OwnedOnly(_) | Self::Monitor(_) | Self::MonitorWithOwned { .. } => {
                 OutputPaneVisibility::Visible
             },
+        }
+    }
+
+    /// Whether the build monitor occupies part of the pane this frame.
+    ///
+    /// The payload-free companion to [`MonitorVisibility`], for callers outside
+    /// the pane that need only the fact and cannot name the borrowed model.
+    pub const fn monitor_visibility(&self) -> OutputMonitorVisibility {
+        match self {
+            Self::Hidden | Self::OwnedOnly(_) => OutputMonitorVisibility::Off,
+            Self::Monitor(_) | Self::MonitorWithOwned { .. } => OutputMonitorVisibility::On,
         }
     }
 

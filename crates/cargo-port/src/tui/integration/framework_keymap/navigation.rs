@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use super::Action;
 use super::App;
 use super::AppGlobalAction;
@@ -42,6 +44,7 @@ impl Globals<App> for AppGlobalAction {
             'S'                  => Self::SccacheStats,
             ' '                  => Self::PauseSelectedLint,
             KeyBind::shift(' ')  => Self::PauseAllLints,
+            'C'                  => Self::ToggleCompileVisibility,
         }
     }
 
@@ -59,6 +62,9 @@ pub(super) fn dispatch_app_global(action: AppGlobalAction, app: &mut App) {
         AppGlobalAction::SccacheStats => sccache::open_sccache_stats_overlay(app),
         AppGlobalAction::PauseSelectedLint => app.toggle_selected_lint_pause(),
         AppGlobalAction::PauseAllLints => app.toggle_all_lint_pause(),
+        AppGlobalAction::ToggleCompileVisibility => {
+            app.toggle_compile_visibility(Instant::now());
+        },
     }
 }
 
@@ -90,6 +96,16 @@ mod tests {
         assert_eq!(
             defaults.action_for(&tui_pane::KeyBind::from('S')),
             Some(AppGlobalAction::SccacheStats),
+        );
+    }
+
+    #[test]
+    fn compile_visibility_toggle_defaults_to_shift_c() {
+        let defaults = AppGlobalAction::defaults().into_scope_map();
+
+        assert_eq!(
+            defaults.action_for(&tui_pane::KeyBind::from('C')),
+            Some(AppGlobalAction::ToggleCompileVisibility),
         );
     }
 

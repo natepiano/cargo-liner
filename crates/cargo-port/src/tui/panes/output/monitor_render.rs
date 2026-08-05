@@ -108,10 +108,19 @@ pub(super) fn render_monitor_half(
     monitor_presentation: MonitorPresentation<'_>,
     owned_body: Option<OwnedBody<'_>>,
     cursor: &OutputCursor,
+    selected_column_scroll: SelectedColumnScroll,
     hit_map: &mut MonitorHitMap,
 ) {
     let Some(owned_body) = owned_body else {
-        render_monitor(frame, area, monitor_presentation, None, cursor, hit_map);
+        render_monitor(
+            frame,
+            area,
+            monitor_presentation,
+            None,
+            cursor,
+            selected_column_scroll,
+            hit_map,
+        );
         return;
     };
     if producer_is_in_scope(monitor_presentation, owned_body.owned.producer()) {
@@ -121,6 +130,7 @@ pub(super) fn render_monitor_half(
             monitor_presentation,
             Some(owned_body),
             cursor,
+            selected_column_scroll,
             hit_map,
         );
         return;
@@ -138,6 +148,7 @@ pub(super) fn render_monitor_half(
         monitor_presentation,
         None,
         cursor,
+        selected_column_scroll,
         hit_map,
     );
     let pin_area = Rect::new(
@@ -155,21 +166,115 @@ fn producer_is_in_scope(
     monitor_presentation: MonitorPresentation<'_>,
     producer: OwnedRunId,
 ) -> bool {
-    producing_column(monitor_presentation, producer).is_some()
+    producing_column_indexed(monitor_presentation, producer).is_some()
 }
 
 /// The scope's own column for the run that produced the retained output, when
 /// the scope still covers it.
-fn producing_column(
+/// A column together with its position in the monitor's ordered session list.
+///
+/// The index is what the cursor, the hit map, and the scroll offset all agree
+/// on, so it travels with the column rather than beside it.
+#[derive(Clone, Copy)]
+struct IndexedColumn<'a> {
+    column: MonitorColumn<'a>,
+    index:  usize,
+}
+
+/// The selected column's vertical scroll, as the draw path consumes it.
+///
+/// Carries the column index the offset was measured against, so every draw site
+/// applies it to exactly one column: a bare `usize` would scroll whichever
+/// column a caller happened to hand it to.
+#[derive(Clone, Copy)]
+pub(super) struct SelectedColumnScroll {
+    column_index: usize,
+    offset:       usize,
+}
+
+impl SelectedColumnScroll {
+    /// The scroll `offset` belonging to the column at `column_index`.
+    pub(super) const fn new(column_index: usize, offset: usize) -> Self {
+        Self {
+            column_index,
+            offset,
+        }
+    }
+
+    /// How many of that column's activity rows are scrolled off the top. Every
+    /// other column draws from its first activity row.
+    const fn for_column(self, column_index: usize) -> usize {
+        if self.column_index == column_index {
+            self.offset
+        } else {
+            0
+        }
+    }
+}
+
+/// How many activity rows the selected column has, and how many of them fit.
+///
+/// Feeds [`super::pane::OutputPane::sync_column_scroll`], which reconciles the
+/// offset against the cursor before the frame draws with it.
+#[derive(Clone, Copy)]
+pub(super) struct ColumnActivityExtent {
+    /// Rows the column can draw in the strip.
+    pub(super) visible_rows: usize,
+    /// Rows the column has.
+    pub(super) row_count:    usize,
+}
+
+impl ColumnActivityExtent {
+    /// Nothing to scroll: the monitor is off, or the cursor is not in a column.
+    pub(super) const fn none() -> Self {
+        Self {
+            visible_rows: 0,
+            row_count:    0,
+        }
+    }
+}
+
+/// The activity-row extent of the column the cursor is in.
+pub(super) fn selected_column_activity_extent(
+    area: Rect,
+    monitor_presentation: MonitorPresentation<'_>,
+    cursor: &OutputCursor,
+) -> ColumnActivityExtent {
+    let MonitorPresentation::Columns(monitor_columns) = monitor_presentation else {
+        return ColumnActivityExtent::none();
+    };
+    let Some(column) = monitor_columns.columns().nth(cursor.column_index()) else {
+        return ColumnActivityExtent::none();
+    };
+    ColumnActivityExtent {
+        visible_rows: column_activity_capacity(area, monitor_columns),
+        row_count:    column.session_row().compile_activities().len(),
+    }
+}
+
+/// How many activity rows a column can draw inside `area`.
+///
+/// Shares its terms with [`owned_captured_output_height`]: both start from the
+/// strip height a column is drawn at and subtract the header. Any change to
+/// what a column draws above its activity rows belongs in both.
+fn column_activity_capacity(area: Rect, monitor_columns: MonitorColumns<'_>) -> usize {
+    let body_height = area.height.saturating_sub(MONITOR_INDICATOR_HEIGHT);
+    let strip_height = body_height
+        .saturating_sub(UnattributedSectionLayout::within(body_height, monitor_columns).height);
+    usize::from(strip_height).saturating_sub(COLUMN_HEADER_HEIGHT)
+}
+
+fn producing_column_indexed(
     monitor_presentation: MonitorPresentation<'_>,
     producer: OwnedRunId,
-) -> Option<MonitorColumn<'_>> {
+) -> Option<(usize, MonitorColumn<'_>)> {
     let MonitorPresentation::Columns(monitor_columns) = monitor_presentation else {
         return None;
     };
     monitor_columns
         .columns()
-        .find(|column| column_produced(*column, producer))
+        .enumerate()
+        .find(|(_, column)| column_produced(*column, producer))
 }
 
 /// Whether this column's session is the run that produced the retained output.
@@ -190,8 +295,11 @@ pub(super) fn owned_captured_output_height(
     area: Rect,
     monitor_presentation: MonitorPresentation<'_>,
     producer: OwnedRunId,
+    selected_column_scroll: SelectedColumnScroll,
 ) -> usize {
-    let Some(producing_column) = producing_column(monitor_presentation, producer) else {
+    let Some((producing_column_index, producing_column)) =
+        producing_column_indexed(monitor_presentation, producer)
+    else {
         return usize::from(area.height)
             .saturating_sub(OWNED_PIN_CAPTION_HEIGHT + OWNED_OUTPUT_SEPARATOR_HEIGHT);
     };
@@ -203,7 +311,13 @@ pub(super) fn owned_captured_output_height(
         .saturating_sub(UnattributedSectionLayout::within(body_height, monitor_columns).height);
     usize::from(strip_height)
         .saturating_sub(COLUMN_HEADER_HEIGHT)
-        .saturating_sub(producing_column.session_row().compile_activities().len())
+        .saturating_sub(
+            producing_column
+                .session_row()
+                .compile_activities()
+                .len()
+                .saturating_sub(selected_column_scroll.for_column(producing_column_index)),
+        )
         .saturating_sub(OWNED_OUTPUT_SEPARATOR_HEIGHT)
 }
 
@@ -335,6 +449,7 @@ fn render_monitor(
     monitor_presentation: MonitorPresentation<'_>,
     owned_body: Option<OwnedBody<'_>>,
     cursor: &OutputCursor,
+    selected_column_scroll: SelectedColumnScroll,
     hit_map: &mut MonitorHitMap,
 ) {
     if area.height < MONITOR_INDICATOR_HEIGHT {
@@ -362,7 +477,15 @@ fn render_monitor(
             frame.render_widget(Paragraph::new(empty_state_line(monitor_empty_state)), body);
         },
         MonitorPresentation::Columns(monitor_columns) => {
-            render_columns(frame, body, monitor_columns, owned_body, cursor, hit_map);
+            render_columns(
+                frame,
+                body,
+                monitor_columns,
+                owned_body,
+                cursor,
+                selected_column_scroll,
+                hit_map,
+            );
         },
     }
 }
@@ -404,6 +527,7 @@ fn render_columns(
     monitor_columns: MonitorColumns<'_>,
     owned_body: Option<OwnedBody<'_>>,
     cursor: &OutputCursor,
+    selected_column_scroll: SelectedColumnScroll,
     hit_map: &mut MonitorHitMap,
 ) {
     let unattributed_section_layout =
@@ -415,7 +539,15 @@ fn render_columns(
         area.height
             .saturating_sub(unattributed_section_layout.height),
     );
-    render_column_strip(frame, strip, monitor_columns, owned_body, cursor, hit_map);
+    render_column_strip(
+        frame,
+        strip,
+        monitor_columns,
+        owned_body,
+        cursor,
+        selected_column_scroll,
+        hit_map,
+    );
 
     if unattributed_section_layout.height > 0 {
         let section = Rect::new(
@@ -490,6 +622,7 @@ fn render_column_strip(
     monitor_columns: MonitorColumns<'_>,
     owned_body: Option<OwnedBody<'_>>,
     cursor: &OutputCursor,
+    selected_column_scroll: SelectedColumnScroll,
     hit_map: &mut MonitorHitMap,
 ) {
     if area.height == 0 || area.width == 0 {
@@ -539,10 +672,13 @@ fn render_column_strip(
         render_column(
             frame,
             text_area,
-            column,
-            column_index,
+            IndexedColumn {
+                column,
+                index: column_index,
+            },
             owned_body,
             cursor,
+            selected_column_scroll.for_column(column_index),
             hit_map,
         );
     }
@@ -553,12 +689,16 @@ fn render_column_strip(
 fn render_column(
     frame: &mut Frame,
     area: Rect,
-    column: MonitorColumn<'_>,
-    column_index: usize,
+    indexed_column: IndexedColumn<'_>,
     owned_body: Option<OwnedBody<'_>>,
     cursor: &OutputCursor,
+    activity_scroll: usize,
     hit_map: &mut MonitorHitMap,
 ) {
+    let IndexedColumn {
+        column,
+        index: column_index,
+    } = indexed_column;
     let width = usize::from(area.width);
     let now = Instant::now();
     let mut lines =
@@ -584,8 +724,14 @@ fn render_column(
         });
     }
 
-    for (row_index, compile_activity) in
-        column.session_row().compile_activities().iter().enumerate()
+    // `skip` after `enumerate`, so `row_index` stays the model index the cursor
+    // and the hit map agree on while the drawn position comes from `lines.len()`.
+    for (row_index, compile_activity) in column
+        .session_row()
+        .compile_activities()
+        .iter()
+        .enumerate()
+        .skip(activity_scroll)
     {
         let line = Line::from(Span::raw(format!(" {}", activity_label(compile_activity))));
         hit_map.record(
@@ -735,6 +881,44 @@ fn state_label(column: MonitorColumn<'_>) -> String {
         MonitorSessionOwnership::Owned(_) => format!("{activity} · launched here"),
         MonitorSessionOwnership::External => activity.to_string(),
     }
+}
+
+/// The text of the activity row `compile_activity_id` names, as a copy
+/// payload. The row is a live sample rather than a transcript, so what is
+/// copied is exactly the line drawn — the same string the user is looking at.
+pub(super) fn activity_row_text(
+    monitor_presentation: MonitorPresentation<'_>,
+    compile_activity_id: &crate::build_monitor::CompileActivityId,
+) -> tui_pane::CopySelectionResult {
+    let MonitorPresentation::Columns(monitor_columns) = monitor_presentation else {
+        return tui_pane::CopySelectionResult::Nothing;
+    };
+    monitor_columns
+        .columns()
+        .flat_map(|column| column.session_row().compile_activities())
+        .find(|compile_activity| compile_activity.compile_activity_id() == compile_activity_id)
+        .map_or(tui_pane::CopySelectionResult::Nothing, |compile_activity| {
+            let row = [activity_label(compile_activity)];
+            crate::tui::panes::copy_payload_for_output(&row, 0, 0)
+        })
+}
+
+/// The text of the scope-level unattributed row `compile_activity_id` names.
+pub(super) fn unattributed_row_text(
+    monitor_presentation: MonitorPresentation<'_>,
+    compile_activity_id: &crate::build_monitor::CompileActivityId,
+) -> tui_pane::CopySelectionResult {
+    let MonitorPresentation::Columns(monitor_columns) = monitor_presentation else {
+        return tui_pane::CopySelectionResult::Nothing;
+    };
+    monitor_columns
+        .unattributed_activities()
+        .iter()
+        .find(|unattributed| unattributed.compile_activity_id() == compile_activity_id)
+        .map_or(tui_pane::CopySelectionResult::Nothing, |unattributed| {
+            let row = [unattributed_label(unattributed)];
+            crate::tui::panes::copy_payload_for_output(&row, 0, 0)
+        })
 }
 
 /// One activity row: which compiler is running and what it is compiling.

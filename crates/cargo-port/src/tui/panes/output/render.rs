@@ -10,9 +10,12 @@ use tui_pane::label_color;
 use super::constants::PANE_BORDER_COLUMNS;
 use super::constants::PANE_CHROME_ROWS;
 use super::hit_map::MonitorHitMap;
+use super::monitor_render::ColumnActivityExtent;
 use super::monitor_render::OwnedBody;
+use super::monitor_render::SelectedColumnScroll;
 use super::monitor_render::owned_captured_output_height;
 use super::monitor_render::render_monitor_half;
+use super::monitor_render::selected_column_activity_extent;
 use super::pane::OutputPane;
 use super::presentation::MonitorVisibility;
 use super::presentation::OwnedOutputVisibility;
@@ -42,28 +45,49 @@ pub fn render_output_pane_body(
         area.width.saturating_sub(PANE_BORDER_COLUMNS),
         area.height.saturating_sub(PANE_CHROME_ROWS),
     );
+    // The cursor settles first: the selected column's scroll offset belongs to
+    // whichever column the cursor ended this frame in, and the owned body's
+    // extent depends on how many of that column's activity rows are drawn.
+    pane.reconcile_cursor(&ctx.output_presentation);
+    let activity_extent = match ctx.output_presentation.monitor() {
+        MonitorVisibility::Off => ColumnActivityExtent::none(),
+        MonitorVisibility::On(monitor_presentation) => {
+            selected_column_activity_extent(inner, monitor_presentation, pane.cursor())
+        },
+    };
+    pane.sync_column_scroll(activity_extent.visible_rows, activity_extent.row_count);
+    let selected_column_scroll =
+        SelectedColumnScroll::new(pane.cursor().column_index(), pane.column_scroll_offset());
+
     // The viewport scrolls the captured output wherever it is drawn, so its
     // extent is the height that body gets: the whole inner pane with the
-    // monitor off, and the rows left under the owned column's header, activity
-    // rows, and separator with it on.
+    // monitor off, and the rows left under the owned column's header, drawn
+    // activity rows, and separator with it on.
     let visible_rows = match (
         ctx.output_presentation.monitor(),
         ctx.output_presentation.owned_output(),
     ) {
         (MonitorVisibility::On(monitor_presentation), OwnedOutputVisibility::OnScreen(owned)) => {
-            owned_captured_output_height(inner, monitor_presentation, owned.producer())
+            owned_captured_output_height(
+                inner,
+                monitor_presentation,
+                owned.producer(),
+                selected_column_scroll,
+            )
         },
         _ => usize::from(inner.height),
     };
     pane.sync_viewport(source.len(), visible_rows, inner);
 
+    // The title reports follow state and selected-line count, both of which
+    // read the viewport length this frame's buffer just set, so it is built
+    // after the sync rather than from the previous frame's length.
     let focused = pane.focus.is_focused();
     let block = tui_pane::default_pane_chrome()
         .with_inactive_border(Style::default().fg(label_color()))
         .block(output_title(pane, ctx), focused);
     frame.render_widget(block, area);
 
-    pane.reconcile_cursor(&ctx.output_presentation);
     let selected_range = pane.selected_range(source);
     match ctx.output_presentation.monitor() {
         MonitorVisibility::Off => {
@@ -90,6 +114,7 @@ pub fn render_output_pane_body(
                 monitor_presentation,
                 owned_body,
                 pane.cursor(),
+                selected_column_scroll,
                 &mut monitor_hit_map,
             );
             pane.set_monitor_hit_map(monitor_hit_map);

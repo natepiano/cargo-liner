@@ -813,10 +813,16 @@ fn navigate_output(app: &mut App, action: NavAction) {
     // Plain motions move the single-row selection (or grow it while in
     // vim visual-line mode); `navigate` keeps the anchor, snapshot, and
     // follow state in sync with the cursor.
-    let live = app.inflight.owned_run().output().to_vec();
-    app.panes
+    // With the monitor on the motion walks the selected column's body — its
+    // header, its activity rows, and, for Cargo Port's own column, across the
+    // separator into captured output — and Left/Right select adjacent columns.
+    // With it off the owned viewport takes the motion exactly as before.
+    let borrows = app.split_output_for_navigation();
+    borrows
         .output
-        .navigate(&live, |viewport| navigate_viewport(viewport, action));
+        .navigate_action(&borrows.output_presentation, action, |viewport| {
+            navigate_viewport(viewport, action);
+        });
 }
 
 fn navigate_toasts(app: &mut App, action: NavAction) {

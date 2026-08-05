@@ -94,6 +94,13 @@ impl BuildMonitor {
         &self.live_session_ids
     }
 
+    /// Show `monitor_snapshot`, for a test that needs the pane looking at a
+    /// staged cycle rather than at one a live poll produced.
+    #[cfg(test)]
+    pub(crate) fn show_for_test(&mut self, monitor_snapshot: MonitorSnapshot) {
+        self.monitor_snapshot = monitor_snapshot;
+    }
+
     /// Drop everything the monitor was showing because visibility was switched
     /// off, leaving a state a reader can tell apart from enabled-and-waiting.
     pub(crate) fn switch_off(&mut self) {
@@ -120,6 +127,23 @@ pub(crate) struct ClassifiedRoot {
     pub(crate) compiler_pids: &'static [u32],
 }
 
+/// Whether one of the staged roots is the Cargo run Cargo Port launched.
+///
+/// A column is [`MonitorSessionOwnership::Owned`] only when the classifier
+/// attributes its root to the live owned run, so a test that needs the owned
+/// column — the one the cursor may cross into captured output from — stages the
+/// evidence rather than editing a row after the fact.
+#[cfg(test)]
+pub(crate) enum FixtureRootOwnership {
+    /// Every staged root belongs to some other process on the host.
+    AllExternal,
+    /// The root observed under `root_pid` is the owned run's Cargo root.
+    OwnedRoot {
+        root_pid:     u32,
+        owned_run_id: crate::tui::OwnedRunId,
+    },
+}
+
 /// One fresh snapshot holding a session per root in `classified_roots`, built
 /// by running the real classifier over an indexed checkout and storing the
 /// cycle under the scope that covers it.
@@ -132,19 +156,44 @@ pub(crate) struct ClassifiedRoot {
 pub(crate) fn classified_monitor_snapshot(
     classified_roots: &[ClassifiedRoot],
 ) -> Result<MonitorSnapshot, Box<dyn std::error::Error>> {
+    classified_monitor_snapshot_with_ownership(classified_roots, &FixtureRootOwnership::AllExternal)
+}
+
+/// [`classified_monitor_snapshot`] with one staged root optionally attributed to
+/// the owned run.
+#[cfg(test)]
+pub(crate) fn classified_monitor_snapshot_with_ownership(
+    classified_roots: &[ClassifiedRoot],
+    fixture_root_ownership: &FixtureRootOwnership,
+) -> Result<MonitorSnapshot, Box<dyn std::error::Error>> {
     let mut classification_fixture = classify_tests::ClassificationFixture::new()?;
+    let canonical_checkout_root = std::fs::canonicalize(&classification_fixture.checkout_root)?;
     let mut observed_processes = Vec::new();
+    let mut owned_root_evidence = OwnedRootEvidence::NoLiveRoot;
     for classified_root in classified_roots {
         let cargo_root = classification_fixture
             .cargo_root_with_pid(classified_root.root_pid, &["cargo", "build"]);
+        if let FixtureRootOwnership::OwnedRoot {
+            root_pid,
+            owned_run_id,
+        } = fixture_root_ownership
+            && *root_pid == classified_root.root_pid
+        {
+            owned_root_evidence = OwnedRootEvidence::Root(LiveOwnedRoot::new(
+                *owned_run_id,
+                cargo_root.identity().clone(),
+                canonical_checkout_root.clone(),
+                OwnedRootLifecycle::Live,
+            ));
+        }
         for compiler_pid in classified_root.compiler_pids {
             observed_processes
                 .push(classification_fixture.compiler_under(*compiler_pid, &cargo_root));
         }
         observed_processes.push(cargo_root);
     }
-    let build_classification = classification_fixture.classify(&observed_processes);
-    let canonical_checkout_root = std::fs::canonicalize(&classification_fixture.checkout_root)?;
+    let build_classification =
+        classification_fixture.classify_owned(&observed_processes, &owned_root_evidence);
 
     let mut build_monitor = BuildMonitor::default();
     build_monitor.record_classification(execution::CompletedBuildClassification::new(
@@ -152,7 +201,7 @@ pub(crate) fn classified_monitor_snapshot(
         BuildScopeKey::for_test(crate::project::AbsolutePath::from(
             canonical_checkout_root.as_path(),
         )),
-        OwnedRootEvidence::NoLiveRoot,
+        owned_root_evidence,
         Box::new(build_classification),
     ));
     Ok(build_monitor.monitor_snapshot().clone())

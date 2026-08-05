@@ -366,10 +366,20 @@ impl ClassificationFixture {
         &mut self,
         observed_processes: &[ObservedProcess],
     ) -> BuildClassification {
+        self.classify_owned(observed_processes, &OwnedRootEvidence::NoLiveRoot)
+    }
+
+    /// Classify one cycle against `owned_root_evidence`, so a staged root can be
+    /// attributed to the owned run the way a live owned build is.
+    pub(super) fn classify_owned(
+        &mut self,
+        observed_processes: &[ObservedProcess],
+        owned_root_evidence: &OwnedRootEvidence,
+    ) -> BuildClassification {
         self.build_classifier.classify_cycle(
             &snapshot_of(observed_processes),
             &self.cargo_workspace_index,
-            &OwnedRootEvidence::NoLiveRoot,
+            owned_root_evidence,
             Instant::now(),
         )
     }

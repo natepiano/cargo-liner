@@ -35,6 +35,7 @@ pub use builder::KeymapBuilder;
 pub use builder::Registering;
 pub use global_action::GlobalAction;
 pub use globals::Globals;
+pub use key_bind::AltModifierLabel;
 pub use key_bind::KeyBind;
 pub use key_bind::KeyParseError;
 pub use key_outcome::KeyOutcome;

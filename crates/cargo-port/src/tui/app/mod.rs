@@ -144,12 +144,15 @@ use super::overlays::Overlays;
 use super::panes;
 use super::panes::BottomRow;
 use super::panes::OutputCopyAvailability;
+use super::panes::OutputMonitorVisibility;
 use super::panes::OutputPaneVisibility;
 use super::panes::OutputPresentation;
+use super::panes::OwnedColumnSelection;
 use super::panes::PaneBehavior;
 use super::panes::PaneId;
 use super::panes::Panes;
 use super::panes::SyncedDescriptionHeight;
+use super::panes::VisualSelectionPermission;
 pub(super) use super::project_list::ExpandKey;
 use super::project_list::ProjectList;
 pub(super) use super::project_list::VisibleRow;
@@ -1148,6 +1151,72 @@ impl App {
         self.output_presentation().copy_availability()
     }
 
+    /// Whether Cargo Port's own column is the one the Output cursor is in.
+    ///
+    /// With the monitor off the pane draws nothing but the owned body, so its
+    /// column is selected by construction and the cursor is not consulted: the
+    /// cursor is reconciled during render, and an Esc arriving before the first
+    /// frame of a newly launched run would otherwise read as an external column
+    /// when no external column exists.
+    pub(super) fn owned_column_selection(&self) -> OwnedColumnSelection {
+        let output_presentation = self.output_presentation();
+        match output_presentation.monitor_visibility() {
+            OutputMonitorVisibility::Off => OwnedColumnSelection::Selected,
+            OutputMonitorVisibility::On => self
+                .panes
+                .output
+                .owned_column_selection(&output_presentation),
+        }
+    }
+
+    /// The clipboard payload for whatever the Output cursor is on.
+    pub(super) fn copy_output_selection(&self) -> tui_pane::CopySelectionResult {
+        self.panes
+            .output
+            .copy_payload_for_cursor(&self.output_presentation())
+    }
+
+    /// Whether the row under the Output cursor may start a visual selection.
+    ///
+    /// Short-circuits on a monitor that is off for the same reason
+    /// [`Self::owned_column_selection`] does: the cursor is reconciled during
+    /// render, so a gesture arriving before the first frame after a run opens
+    /// Output would otherwise read as a monitor row when no monitor is drawn.
+    pub(super) fn output_visual_selection_permission(&self) -> VisualSelectionPermission {
+        match self.output_presentation().monitor_visibility() {
+            OutputMonitorVisibility::Off => VisualSelectionPermission::CapturedOutput,
+            OutputMonitorVisibility::On => self.panes.output.visual_selection_permission(),
+        }
+    }
+
+    /// Split-borrow accessor for the Output navigation path.
+    ///
+    /// [`Self::output_presentation`] borrows `&self` across
+    /// `compile_visibility_state`, `build_monitor`, and `inflight`, so a
+    /// motion cannot take `&mut self.panes.output` while holding it. Same
+    /// division of the struct [`Self::split_for_render`] makes, for the same
+    /// reason.
+    pub(super) fn split_output_for_navigation(&mut self) -> OutputNavigationBorrows<'_> {
+        let Self {
+            panes,
+            inflight,
+            compile_visibility_state,
+            build_monitor,
+            ..
+        } = self;
+        let output_presentation = OutputPresentation::derive(
+            compile_visibility_state,
+            build_monitor.monitor_snapshot(),
+            inflight.owned_run().output_state(),
+            inflight.owned_run().running_label(),
+            inflight.owned_run().completion_marker(),
+        );
+        OutputNavigationBorrows {
+            output: &mut panes.output,
+            output_presentation,
+        }
+    }
+
     /// What the Output pane shows, from the two inputs the renderer takes.
     fn output_presentation(&self) -> OutputPresentation<'_> {
         OutputPresentation::derive(
@@ -1331,10 +1400,6 @@ impl App {
     /// Toggle compile-monitor visibility for the current selected project-list
     /// row. Enabling resolves only the accepted workspace index; it never
     /// launches Cargo or requests process observation.
-    #[allow(
-        dead_code,
-        reason = "Reserved for the Build Monitor visibility keybinding"
-    )]
     pub(crate) fn toggle_compile_visibility(&mut self, now: Instant) {
         if let CompileVisibilityState::On(active_monitor_state) = &self.compile_visibility_state {
             let compile_monitor_generation = active_monitor_state.compile_monitor_generation();
@@ -1401,6 +1466,13 @@ impl App {
         self.compile_monitor_generation.advance();
         self.compile_monitor_generation
     }
+}
+
+/// The Output pane beside the presentation a keyboard motion reads, as
+/// disjoint borrows of one `App`.
+pub(super) struct OutputNavigationBorrows<'a> {
+    pub(super) output:              &'a mut crate::tui::panes::OutputPane,
+    pub(super) output_presentation: OutputPresentation<'a>,
 }
 
 #[cfg(test)]
@@ -4636,6 +4708,7 @@ mod tests {
         use tui_pane::AppContext;
         use tui_pane::ClipboardBackend;
         use tui_pane::ClipboardError;
+        use tui_pane::CopySelectionResult;
         use tui_pane::FocusedPane;
         use tui_pane::FrameworkFocusId;
         use tui_pane::GlobalAction as FrameworkGlobalAction;
@@ -4646,6 +4719,9 @@ mod tests {
         use tui_pane::ToastStyle;
         use tui_pane::Viewport;
 
+        use crate::build_monitor::ClassifiedRoot;
+        use crate::build_monitor::FixtureRootOwnership;
+        use crate::build_monitor::classified_monitor_snapshot_with_ownership;
         use crate::ci::CiJob;
         use crate::ci::CiRun;
         use crate::ci::CiStatus;
@@ -4716,6 +4792,7 @@ mod tests {
         use crate::tui::running_targets::RunningTargets;
         use crate::tui::settings;
         use crate::tui::settings::SettingOption;
+        use crate::tui::state::OwnedRunOutputStateRef;
         use crate::tui::test_support as tui_test_support;
         fn open_settings_overlay(app: &mut App) {
             let keymap = Rc::clone(&app.framework_keymap);
@@ -7295,6 +7372,184 @@ mod tests {
             assert_eq!(
                 app.inflight.example_output().last().map(String::as_str),
                 Some("── killed ──"),
+            );
+        }
+
+        // ── Output pane with the build monitor drawing columns ────────────
+
+        /// The root Cargo Port launched, and the compilers running under it.
+        const MONITOR_OWNED_ROOT_PID: u32 = 8100;
+        const MONITOR_OWNED_COMPILER_PIDS: &[u32] = &[8101, 8102];
+        /// A Cargo run by someone else on the same host.
+        const MONITOR_EXTERNAL_ROOT_PID: u32 = 8200;
+        const MONITOR_EXTERNAL_COMPILER_PIDS: &[u32] = &[8201, 8202];
+        /// The captured lines the owned column carries under its activity rows.
+        const MONITOR_CAPTURED_LINES: &[&str] =
+            &["captured line 0", "captured line 1", "captured line 2"];
+
+        /// Switch the monitor on over a staged classification cycle that
+        /// attributes one root to the run whose output the pane is already
+        /// holding, so the pane draws Cargo Port's own column beside an
+        /// external one.
+        ///
+        /// The presentation comes from the real classifier, so the owned column
+        /// is owned because the cycle attributed its root to the owned run — the
+        /// same evidence production reads.
+        fn show_monitor_columns(app: &mut App) {
+            let OwnedRunOutputStateRef::Retained { producer, .. } =
+                app.inflight.owned_run().output_state()
+            else {
+                panic!("the output pane is open on a run whose output is retained");
+            };
+            let monitor_snapshot = match classified_monitor_snapshot_with_ownership(
+                &[
+                    ClassifiedRoot {
+                        root_pid:      MONITOR_OWNED_ROOT_PID,
+                        compiler_pids: MONITOR_OWNED_COMPILER_PIDS,
+                    },
+                    ClassifiedRoot {
+                        root_pid:      MONITOR_EXTERNAL_ROOT_PID,
+                        compiler_pids: MONITOR_EXTERNAL_COMPILER_PIDS,
+                    },
+                ],
+                &FixtureRootOwnership::OwnedRoot {
+                    root_pid:     MONITOR_OWNED_ROOT_PID,
+                    owned_run_id: producer,
+                },
+            ) {
+                Ok(monitor_snapshot) => monitor_snapshot,
+                Err(error) => panic!("the classification fixture builds a snapshot: {error}"),
+            };
+            // Enabled through the toggle rather than by assignment, so the
+            // scope the state carries is the one the app re-resolves on every
+            // later event: a scope it did not resolve itself is replaced by the
+            // first keystroke, taking the staged cycle with it.
+            app.toggle_compile_visibility(Instant::now());
+            app.build_monitor.show_for_test(monitor_snapshot);
+        }
+
+        /// The text a copy gesture would read off the row the Output cursor is
+        /// on, or `None` when that row has no transcript behind it.
+        fn cursor_row_text(app: &App) -> Option<String> {
+            match app.copy_output_selection() {
+                CopySelectionResult::Payload(copy_payload) => Some(copy_payload.text),
+                CopySelectionResult::Nothing => None,
+            }
+        }
+
+        /// An enabled monitor says so on its own row, and marks the rows stale
+        /// once a cycle fails without replacing them.
+        #[test]
+        fn the_monitor_indicator_row_is_drawn_and_carries_the_stale_marker() {
+            let project = make_package("demo", Path::new("/tmp/demo"));
+            let mut app = make_app(&[project]);
+            open_output(&mut app, MONITOR_CAPTURED_LINES);
+            show_monitor_columns(&mut app);
+
+            let live = buffer_text_sized(&mut app, 120, 40);
+            assert!(
+                live.contains(" Build monitor on"),
+                "an enabled monitor draws its indicator row:\n{live}",
+            );
+            assert!(
+                !live.contains("stale"),
+                "rows classified this cycle carry no staleness marker:\n{live}",
+            );
+
+            // A cycle that produced no classification at all ages what is shown.
+            app.build_monitor.record_classification_failure();
+            let stale = buffer_text_sized(&mut app, 120, 40);
+            assert!(
+                stale.contains(" Build monitor on — stale"),
+                "aged rows keep the indicator and gain the staleness marker:\n{stale}",
+            );
+        }
+
+        /// With vim keys on, `h` / `j` / `k` / `l` reach the Output pane as the
+        /// arrow keys do: `h` and `l` select the adjacent column and hold at the
+        /// ends, `j` and `k` walk the selected column's body.
+        ///
+        /// Pressed as real keys, so what is proven is that the vim overlay folds
+        /// them onto the navigation actions rather than that the pane handles
+        /// those actions.
+        #[test]
+        fn output_vim_keys_walk_the_monitor_columns_like_the_arrow_keys() {
+            let project = make_package("demo", Path::new("/tmp/demo"));
+            let mut app = make_app_vim(&[project]);
+            open_output(&mut app, MONITOR_CAPTURED_LINES);
+            show_monitor_columns(&mut app);
+            // One frame reconciles the cursor against the columns the monitor
+            // now draws, the way the pane is entered in the running app.
+            let _ = buffer_text_sized(&mut app, 120, 40);
+
+            // `k` walks up the owned column's body — captured output, then its
+            // activity rows — and stops on the header, which copies nothing.
+            for _ in 0..=MONITOR_CAPTURED_LINES.len() + MONITOR_OWNED_COMPILER_PIDS.len() {
+                press_key(&mut app, KeyCode::Char('k'));
+            }
+            assert_eq!(
+                cursor_row_text(&app),
+                None,
+                "k walks to the top of the column body, where the header has no \
+                 transcript behind it",
+            );
+
+            press_key(&mut app, KeyCode::Char('j'));
+            let first_activity = cursor_row_text(&app)
+                .unwrap_or_else(|| panic!("j from the header lands on the first activity row"));
+            assert!(
+                first_activity.starts_with("rustc "),
+                "an activity row names the compiler it runs: {first_activity}",
+            );
+
+            press_key(&mut app, KeyCode::Char('j'));
+            let second_activity =
+                cursor_row_text(&app).unwrap_or_else(|| panic!("j steps to the next activity row"));
+            assert_ne!(
+                second_activity, first_activity,
+                "each j lands on its own activity row",
+            );
+
+            press_key(&mut app, KeyCode::Char('k'));
+            assert_eq!(
+                cursor_row_text(&app).as_ref(),
+                Some(&first_activity),
+                "k comes back up the same rows j walked down",
+            );
+
+            // `h` holds at the first column, so two presses park the cursor
+            // there whichever column the body walk left it in.
+            press_key(&mut app, KeyCode::Char('h'));
+            press_key(&mut app, KeyCode::Char('h'));
+            let first_column = app.owned_column_selection();
+
+            press_key(&mut app, KeyCode::Char('l'));
+            let second_column = app.owned_column_selection();
+            assert_ne!(
+                second_column, first_column,
+                "l selects the adjacent column, and exactly one of the two is \
+                 the run Cargo Port launched",
+            );
+
+            press_key(&mut app, KeyCode::Char('l'));
+            assert_eq!(
+                app.owned_column_selection(),
+                second_column,
+                "there is no column past the last one",
+            );
+
+            press_key(&mut app, KeyCode::Char('h'));
+            assert_eq!(
+                app.owned_column_selection(),
+                first_column,
+                "h selects the column on the left",
+            );
+
+            press_key(&mut app, KeyCode::Char('h'));
+            assert_eq!(
+                app.owned_column_selection(),
+                first_column,
+                "there is no column before the first one",
             );
         }
 

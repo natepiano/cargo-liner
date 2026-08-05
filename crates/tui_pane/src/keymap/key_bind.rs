@@ -7,6 +7,45 @@ use thiserror::Error;
 
 use super::constants::MAX_FUNCTION_KEY;
 
+/// How the Alt modifier is spelled for the user on this platform.
+///
+/// The keymap always *stores* Alt portably (`alt-k`, `alt-shift-k`), because a
+/// keymap file is expected to move between machines. Only the label the user
+/// reads changes: macOS keyboards engrave that key `Option`, every other
+/// platform engraves it `Alt`.
+///
+/// A macOS terminal must be configured to report Option as Meta/Alt (iTerm2:
+/// "Left Option key: Esc+"; Terminal.app: "Use Option as Meta key") or an
+/// Alt-modified binding never reaches the application at all. A user whose
+/// terminal cannot do that rebinds the action through the keymap overlay like
+/// any other.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum AltModifierLabel {
+    /// macOS: the key is engraved `Option`.
+    Option,
+    /// Everywhere else: the key is engraved `Alt`.
+    Alt,
+}
+
+impl AltModifierLabel {
+    /// The label matching the platform this binary was built for.
+    #[must_use]
+    pub const fn current() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::Option
+        } else {
+            Self::Alt
+        }
+    }
+
+    const fn prefix(self) -> &'static str {
+        match self {
+            Self::Option => "Option-",
+            Self::Alt => "Alt-",
+        }
+    }
+}
+
 /// A single keystroke: a [`KeyCode`] plus its [`KeyModifiers`] flags.
 ///
 /// `KeyBind` is the dispatch-time type — what the keymap stores and looks up.
@@ -125,8 +164,59 @@ impl KeyBind {
 
     /// Full display name, e.g. `"up"`, `"enter"`, `"escape"`, `"ctrl-k"`,
     /// `"shift-tab"`. Used by the keymap-overlay help screen and TOML output.
+    ///
+    /// An Alt-Shift keypress normalizes to Alt held with an uppercase
+    /// character; this spells it back out as `alt-shift-k` rather than
+    /// `alt-K`, so what is written to TOML is the portable form a user can
+    /// type. [`Self::parse`] reads both spellings back to the same bind.
     #[must_use]
-    pub fn display(&self) -> String { with_modifier_prefix(self.mods, &key_name(self.code)) }
+    pub fn display(&self) -> String {
+        if let KeyCode::Char(c) = self.code
+            && self.mods.contains(KeyModifiers::ALT)
+            && c.is_ascii_uppercase()
+        {
+            return with_modifier_prefix(
+                self.mods | KeyModifiers::SHIFT,
+                &c.to_ascii_lowercase().to_string(),
+            );
+        }
+        with_modifier_prefix(self.mods, &key_name(self.code))
+    }
+
+    /// User-facing label, with the Alt modifier spelled the way this platform
+    /// engraves it. `alt-k` reads `Option-K` on macOS and `Alt-K` elsewhere;
+    /// `alt-K` — the normalized form of Alt-Shift-K — reads `Option-Shift-K` /
+    /// `Alt-Shift-K`, re-expanding the Shift that normalization folded into the
+    /// uppercase character.
+    ///
+    /// Binds without Alt are unaffected and render exactly as [`Self::display`],
+    /// which stays the portable spelling written to and read from keymap TOML.
+    #[must_use]
+    pub fn platform_label(&self, alt: AltModifierLabel) -> String {
+        if !self.mods.contains(KeyModifiers::ALT) {
+            return self.display();
+        }
+        let key_name = key_name(self.code);
+        // Only a character key is engraved in capitals. `key_name` answers
+        // with a word for every other code, and `Option-ESCAPE` is not how a
+        // keyboard spells it.
+        let key = match self.code {
+            KeyCode::Char(c) if c.is_alphabetic() => key_name.to_uppercase(),
+            _ => key_name,
+        };
+        let shifted = self.mods.contains(KeyModifiers::SHIFT)
+            || matches!(self.code, KeyCode::Char(c) if c.is_ascii_uppercase());
+        let mut label = String::new();
+        if self.mods.contains(KeyModifiers::CONTROL) {
+            label.push_str("Ctrl-");
+        }
+        label.push_str(alt.prefix());
+        if shifted {
+            label.push_str("Shift-");
+        }
+        label.push_str(&key);
+        label
+    }
 
     /// Compact display: arrow keys render as glyphs (`↑`, `↓`, `←`, `→`),
     /// every other key delegates to [`Self::display`]. Used by the status bar.
@@ -362,6 +452,49 @@ mod tests {
     use crossterm::event::KeyEvent;
 
     use super::*;
+
+    /// Both platform branches are exercised on one host by passing the label
+    /// explicitly; `AltModifierLabel::current()` picks the branch at runtime.
+    #[test]
+    fn platform_label_spells_alt_per_platform() {
+        let kill_selected = KeyBind::from_parts(KeyCode::Char('k'), KeyModifiers::ALT);
+        let kill_scoped = KeyBind::parse("alt-shift-k").unwrap();
+
+        assert_eq!(
+            kill_selected.platform_label(AltModifierLabel::Option),
+            "Option-K"
+        );
+        assert_eq!(kill_selected.platform_label(AltModifierLabel::Alt), "Alt-K");
+        assert_eq!(
+            kill_scoped.platform_label(AltModifierLabel::Option),
+            "Option-Shift-K"
+        );
+        assert_eq!(
+            kill_scoped.platform_label(AltModifierLabel::Alt),
+            "Alt-Shift-K"
+        );
+    }
+
+    /// The portable TOML spelling is unchanged by the platform label, and binds
+    /// without Alt render identically either way.
+    #[test]
+    fn platform_label_leaves_non_alt_binds_alone() {
+        for bind in [
+            KeyBind::ctrl('a'),
+            KeyBind::from(KeyCode::Esc),
+            KeyBind::from('C'),
+        ] {
+            assert_eq!(
+                bind.platform_label(AltModifierLabel::Option),
+                bind.display()
+            );
+            assert_eq!(bind.platform_label(AltModifierLabel::Alt), bind.display());
+        }
+        assert_eq!(
+            KeyBind::from_parts(KeyCode::Char('K'), KeyModifiers::ALT).display(),
+            "alt-shift-k"
+        );
+    }
 
     #[test]
     fn parse_named_keys() {

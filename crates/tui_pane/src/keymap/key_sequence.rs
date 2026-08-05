@@ -6,6 +6,7 @@ use std::fmt::Formatter;
 
 use crossterm::event::KeyCode;
 
+use super::key_bind::AltModifierLabel;
 use super::key_bind::KeyBind;
 use super::key_bind::KeyParseError;
 
@@ -35,6 +36,18 @@ impl KeySequence {
     /// Return the single key when this is a single-key sequence.
     #[must_use]
     pub fn single_key(&self) -> Option<KeyBind> { (self.keys.len() == 1).then(|| self.keys[0]) }
+
+    /// User-facing label for the whole sequence, with the Alt modifier spelled
+    /// the way this platform engraves it. Chord steps stay space-separated, as
+    /// in [`Self::display`].
+    #[must_use]
+    pub fn platform_label(&self, alt: AltModifierLabel) -> String {
+        self.keys
+            .iter()
+            .map(|key| key.platform_label(alt))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
 
     /// Whether `prefix` is a strict prefix of this sequence.
     #[must_use]

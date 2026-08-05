@@ -255,10 +255,9 @@ fn row_line<'a>(row: &GlobalShortcutRow, selection: PaneSelectionState) -> Line<
         row.description,
         width = SHORTCUT_DESCRIPTION_WIDTH
     );
-    let key_display = row
-        .key
-        .as_ref()
-        .map_or_else(String::new, crate::KeySequence::display);
+    let key_display = row.key.as_ref().map_or_else(String::new, |bind| {
+        bind.platform_label(crate::AltModifierLabel::current())
+    });
     let marker = if selection == PaneSelectionState::Unselected {
         "  "
     } else {

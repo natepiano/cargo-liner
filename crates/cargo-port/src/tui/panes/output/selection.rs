@@ -9,6 +9,7 @@ use super::presentation::OwnedOutputPresentation;
 use super::presentation::OwnedOutputVisibility;
 use crate::build_monitor::BuildSessionId;
 use crate::build_monitor::CompileActivityId;
+use crate::build_monitor::MonitorSessionOwnership;
 use crate::tui::OwnedRunId;
 
 /// The output pane's selection sub-mode.
@@ -137,6 +138,22 @@ pub enum VisualSelectionPermission {
     CapturedOutput,
 }
 
+/// Whether Cargo Port's own column is the one the Output cursor is in.
+///
+/// Esc reads this before stopping or clearing the owned run: with an external
+/// column selected it must not reach past the selection to the run Cargo Port
+/// launched. The whole column is the unit, not the row: a header or an activity row of
+/// Cargo Port's own column is as much part of that column as its captured
+/// output, so Esc stops the run from any of them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OwnedColumnSelection {
+    /// The cursor is in an external column, in the scope-level unattributed
+    /// section, or on nothing at all.
+    NotSelected,
+    /// The cursor is somewhere in Cargo Port's own column.
+    Selected,
+}
+
 /// Linewise selection state for the output pane.
 ///
 /// There is always a selection — at minimum the single row under the
@@ -196,10 +213,20 @@ impl From<OwnedOutputVisibility<'_>> for OwnedPinPresence {
 /// Held beside [`OutputCursorTarget::Activity`], which names the activity but
 /// not the session it runs under: after that activity exits, the fallback still
 /// has to find the same column rather than whatever now sits at its old index.
+/// Each variant is a distinct place the cursor can sit, because the vertical
+/// scroll offset is keyed on this value: collapsing the sections that sit
+/// outside any column into one variant would let an offset measured against
+/// the unattributed section survive a move into captured output.
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum OutputCursorColumn {
-    /// The cursor is not on a session column.
-    Detached,
+pub(super) enum OutputCursorColumn {
+    /// The cursor has no row under it.
+    Absent,
+    /// The cursor is on a row of the scope-level unattributed section, which
+    /// sits under every column and belongs to none.
+    UnattributedSection,
+    /// The cursor is in Cargo Port's own captured output, drawn either under
+    /// its session's column or pinned as its own.
+    OwnedCapturedOutput,
     /// The cursor is on this session's column.
     Session(BuildSessionId),
 }
@@ -223,7 +250,7 @@ impl OutputCursor {
     pub(super) const fn empty() -> Self {
         Self {
             target:       OutputCursorTarget::Empty,
-            column:       OutputCursorColumn::Detached,
+            column:       OutputCursorColumn::Absent,
             column_index: 0,
             row_index:    0,
         }
@@ -234,6 +261,16 @@ impl OutputCursor {
 
     /// Which column the cursor sits in, for the horizontal window.
     pub(super) const fn column_index(&self) -> usize { self.column_index }
+
+    /// Which column the cursor sits in by identity, not by position.
+    ///
+    /// The vertical scroll offset belongs to this value: an index would follow
+    /// whatever column slid into that position, and a `BuildSessionId` alone
+    /// cannot express the sections that sit outside any column.
+    pub(super) const fn column(&self) -> &OutputCursorColumn { &self.column }
+
+    /// Which row within the column's body the cursor is on.
+    pub(super) const fn row_index(&self) -> usize { self.row_index }
 
     /// Aim the cursor at a session's header row.
     pub(super) fn focus_header(&mut self, build_session_id: BuildSessionId, column_index: usize) {
@@ -264,7 +301,7 @@ impl OutputCursor {
         row_index: usize,
     ) {
         self.target = OutputCursorTarget::Unattributed(compile_activity_id);
-        self.column = OutputCursorColumn::Detached;
+        self.column = OutputCursorColumn::UnattributedSection;
         self.row_index = row_index;
     }
 
@@ -272,7 +309,7 @@ impl OutputCursor {
     /// producer is what keeps this target out of an external column.
     pub(super) fn focus_captured_output(&mut self, producer: OwnedRunId) {
         self.target = OutputCursorTarget::CapturedOutput(producer.into());
-        self.column = OutputCursorColumn::Detached;
+        self.column = OutputCursorColumn::OwnedCapturedOutput;
         self.row_index = 0;
     }
 }
@@ -444,6 +481,290 @@ impl OutputCursor {
             ),
             None => self.place_on_first(columns, owned_pin_presence),
         }
+    }
+}
+
+/// One position in the selected column's body, as a keyboard motion names it.
+///
+/// The `-- Output --` separator is not a position, which is what makes a single
+/// Down cross it from the last activity row into the captured output.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ColumnBodyRow {
+    /// The column's header block, which the cursor treats as one row.
+    Header,
+    /// The activity row at this index among the column's compile activities.
+    Activity(usize),
+    /// The captured-output line at this buffer index.
+    CapturedOutput(usize),
+}
+
+/// The column a keyboard motion walks, resolved from where the cursor is.
+///
+/// The body reads top to bottom as one list, so every vertical motion is
+/// arithmetic on a position in it rather than a special case per row kind.
+#[derive(Clone, Copy)]
+pub(super) enum SelectedColumn<'a> {
+    /// The cursor has no column to walk: the monitor drew no columns and no
+    /// owned output is on screen.
+    Nothing,
+    /// Cargo Port's own output pinned beside the scope's columns, with no
+    /// session of its own. Its captured lines are the whole body.
+    PinnedOwnedOutput { captured: usize },
+    /// One of the scope's columns: its header, its activity rows, and — when
+    /// this session is the run Cargo Port launched — its captured output.
+    Session {
+        column:   MonitorColumn<'a>,
+        index:    usize,
+        captured: usize,
+    },
+}
+
+impl SelectedColumn<'_> {
+    /// How many positions the body has.
+    pub(super) fn len(&self) -> usize {
+        match self {
+            Self::Nothing => 0,
+            Self::PinnedOwnedOutput { captured } => *captured,
+            Self::Session {
+                column, captured, ..
+            } => {
+                COLUMN_HEADER_POSITIONS + column.session_row().compile_activities().len() + captured
+            },
+        }
+    }
+
+    /// What sits at `position`, which callers clamp to `len() - 1` first.
+    fn row_at(&self, position: usize) -> ColumnBodyRow {
+        match self {
+            Self::Nothing | Self::PinnedOwnedOutput { .. } => {
+                ColumnBodyRow::CapturedOutput(position)
+            },
+            Self::Session { column, .. } => {
+                let activities = column.session_row().compile_activities().len();
+                match position.checked_sub(COLUMN_HEADER_POSITIONS) {
+                    None => ColumnBodyRow::Header,
+                    Some(below_header) if below_header < activities => {
+                        ColumnBodyRow::Activity(below_header)
+                    },
+                    Some(below_header) => ColumnBodyRow::CapturedOutput(below_header - activities),
+                }
+            },
+        }
+    }
+
+    /// Where `column_body_row` sits in the body.
+    fn position_of(&self, column_body_row: ColumnBodyRow) -> usize {
+        match self {
+            Self::Nothing | Self::PinnedOwnedOutput { .. } => match column_body_row {
+                ColumnBodyRow::Header | ColumnBodyRow::Activity(_) => 0,
+                ColumnBodyRow::CapturedOutput(row) => row,
+            },
+            Self::Session { column, .. } => {
+                let activities = column.session_row().compile_activities().len();
+                match column_body_row {
+                    ColumnBodyRow::Header => 0,
+                    ColumnBodyRow::Activity(row) => COLUMN_HEADER_POSITIONS + row,
+                    ColumnBodyRow::CapturedOutput(row) => {
+                        COLUMN_HEADER_POSITIONS + activities + row
+                    },
+                }
+            },
+        }
+    }
+}
+
+/// The header block is one position in the body however many lines it draws.
+const COLUMN_HEADER_POSITIONS: usize = 1;
+
+/// Whether an adjacent-column motion found a column to move to.
+///
+/// Tab traversal reads this to decide whether the key was consumed or falls
+/// through to pane snaking.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ColumnSelection {
+    /// There is no column at that index; the caller keeps the key.
+    NoSuchColumn,
+    /// The cursor moved to the column's header.
+    Moved,
+}
+
+impl OutputCursor {
+    /// The column a keyboard motion walks from here.
+    ///
+    /// A captured-output cursor resolves to its producer's own column when the
+    /// scope still covers that run, so Up out of the captured output lands on
+    /// the activity rows above it rather than on a separate body.
+    pub(super) fn selected_column<'a>(
+        &self,
+        columns: &'a [MonitorColumn<'a>],
+        owned_pin_presence: OwnedPinPresence,
+        captured_line_count: usize,
+    ) -> SelectedColumn<'a> {
+        match self.column.clone() {
+            OutputCursorColumn::Absent | OutputCursorColumn::UnattributedSection => columns
+                .first()
+                .map_or(SelectedColumn::Nothing, |column| SelectedColumn::Session {
+                    column:   *column,
+                    index:    0,
+                    captured: captured_for(*column, owned_pin_presence, captured_line_count),
+                }),
+            OutputCursorColumn::OwnedCapturedOutput => {
+                let OwnedPinPresence::Pinned(producer) = owned_pin_presence else {
+                    return SelectedColumn::Nothing;
+                };
+                columns
+                    .iter()
+                    .position(|column| column_produced_by(*column, producer))
+                    .map_or(
+                        SelectedColumn::PinnedOwnedOutput {
+                            captured: captured_line_count,
+                        },
+                        |index| SelectedColumn::Session {
+                            column: columns[index],
+                            index,
+                            captured: captured_line_count,
+                        },
+                    )
+            },
+            OutputCursorColumn::Session(build_session_id) => column_index_of(
+                columns,
+                &build_session_id,
+            )
+            .map_or(SelectedColumn::Nothing, |index| SelectedColumn::Session {
+                column: columns[index],
+                index,
+                captured: captured_for(columns[index], owned_pin_presence, captured_line_count),
+            }),
+        }
+    }
+
+    /// Where the cursor sits in `selected_column`'s body. `captured_row` is the
+    /// viewport's row, which the pane owns rather than the cursor.
+    pub(super) fn body_position(
+        &self,
+        selected_column: &SelectedColumn<'_>,
+        captured_row: usize,
+    ) -> usize {
+        let column_body_row = match self.target {
+            OutputCursorTarget::Activity(_) => ColumnBodyRow::Activity(self.row_index),
+            OutputCursorTarget::CapturedOutput(_) => ColumnBodyRow::CapturedOutput(captured_row),
+            OutputCursorTarget::Empty
+            | OutputCursorTarget::Header(_)
+            | OutputCursorTarget::Unattributed(_) => ColumnBodyRow::Header,
+        };
+        selected_column
+            .position_of(column_body_row)
+            .min(selected_column.len().saturating_sub(1))
+    }
+
+    /// What `position` names in `selected_column`'s body.
+    pub(super) fn body_row_at(
+        selected_column: &SelectedColumn<'_>,
+        position: usize,
+    ) -> ColumnBodyRow {
+        selected_column.row_at(position)
+    }
+
+    /// Put the cursor on `column_body_row` of `selected_column`.
+    ///
+    /// A captured-output row moves only the cursor's target; the pane positions
+    /// its viewport on the same row, because the viewport is what scrolls the
+    /// captured buffer.
+    pub(super) fn place_body_row(
+        &mut self,
+        selected_column: &SelectedColumn<'_>,
+        column_body_row: ColumnBodyRow,
+        owned_pin_presence: OwnedPinPresence,
+    ) {
+        match (selected_column, column_body_row) {
+            (SelectedColumn::Nothing, _) => {},
+            (_, ColumnBodyRow::CapturedOutput(_)) => {
+                if let OwnedPinPresence::Pinned(producer) = owned_pin_presence {
+                    self.focus_captured_output(producer);
+                }
+            },
+            (SelectedColumn::PinnedOwnedOutput { .. }, _) => {},
+            (SelectedColumn::Session { column, index, .. }, ColumnBodyRow::Header) => {
+                self.focus_header(column.build_session_id().clone(), *index);
+            },
+            (SelectedColumn::Session { column, index, .. }, ColumnBodyRow::Activity(row)) => {
+                let compile_activities = column.session_row().compile_activities();
+                if let Some(compile_activity) = compile_activities.get(row) {
+                    self.focus_activity(
+                        compile_activity.compile_activity_id().clone(),
+                        column.build_session_id().clone(),
+                        *index,
+                        row,
+                    );
+                }
+            },
+        }
+    }
+
+    /// Whether the cursor's column is the one Cargo Port launched.
+    ///
+    /// Column identity, not row kind: a header or an activity row of the owned
+    /// column is as much part of that column as its captured output, so Esc
+    /// stops the run from any of them. An external column answers
+    /// [`OwnedColumnSelection::NotSelected`] however far down it the cursor is.
+    pub(super) fn owned_column_selection(
+        &self,
+        columns: &[MonitorColumn<'_>],
+        owned_pin_presence: OwnedPinPresence,
+    ) -> OwnedColumnSelection {
+        let OwnedPinPresence::Pinned(producer) = owned_pin_presence else {
+            return OwnedColumnSelection::NotSelected;
+        };
+        match self.column.clone() {
+            OutputCursorColumn::OwnedCapturedOutput => OwnedColumnSelection::Selected,
+            OutputCursorColumn::Absent | OutputCursorColumn::UnattributedSection => {
+                OwnedColumnSelection::NotSelected
+            },
+            OutputCursorColumn::Session(build_session_id) => {
+                match column_index_of(columns, &build_session_id) {
+                    Some(index) if column_produced_by(columns[index], producer) => {
+                        OwnedColumnSelection::Selected
+                    },
+                    Some(_) | None => OwnedColumnSelection::NotSelected,
+                }
+            },
+        }
+    }
+
+    /// Move to the column at `column_index`, landing on its header.
+    pub(super) fn select_column(
+        &mut self,
+        columns: &[MonitorColumn<'_>],
+        column_index: usize,
+    ) -> ColumnSelection {
+        let Some(column) = columns.get(column_index) else {
+            return ColumnSelection::NoSuchColumn;
+        };
+        self.focus_header(column.build_session_id().clone(), column_index);
+        ColumnSelection::Moved
+    }
+}
+
+/// How many captured lines belong under `column`: its own when it is the run
+/// Cargo Port launched, and none otherwise.
+fn captured_for(
+    column: MonitorColumn<'_>,
+    owned_pin_presence: OwnedPinPresence,
+    captured_line_count: usize,
+) -> usize {
+    match owned_pin_presence {
+        OwnedPinPresence::Pinned(producer) if column_produced_by(column, producer) => {
+            captured_line_count
+        },
+        OwnedPinPresence::Absent | OwnedPinPresence::Pinned(_) => 0,
+    }
+}
+
+/// Whether `column`'s session is the run that produced the retained output.
+fn column_produced_by(column: MonitorColumn<'_>, producer: OwnedRunId) -> bool {
+    match column.session_ownership() {
+        MonitorSessionOwnership::Owned(owned_run_id) => owned_run_id == producer,
+        MonitorSessionOwnership::External => false,
     }
 }
 

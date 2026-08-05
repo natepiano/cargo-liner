@@ -55,8 +55,10 @@ tui_pane::action_enum! {
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub enum OutputAction {
-        SelectAll => ("select_all", "select all", "Select all lines");
-        Cancel    => ("cancel",     "close",      "Close output pane");
+        SelectAll         => ("select_all",          "select all", "Select all lines");
+        Cancel            => ("cancel",              "close",      "Close output pane");
+        KillSelectedBuild => ("kill_selected_build", "kill",       "Stop the selected build");
+        KillScopedBuilds  => ("kill_scoped_builds",  "kill all",   "Stop every build in scope");
     }
 }
 

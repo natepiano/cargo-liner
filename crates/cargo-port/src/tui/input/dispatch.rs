@@ -45,6 +45,7 @@ use crate::tui::keymap::ProjectListAction;
 use crate::tui::keymap_ui;
 use crate::tui::panes;
 use crate::tui::panes::OutputCopyAvailability;
+use crate::tui::panes::OwnedColumnSelection;
 use crate::tui::panes::PaneBehavior;
 use crate::tui::panes::PaneId;
 use crate::tui::sccache;
@@ -167,6 +168,10 @@ fn handle_app_surface_key(app: &mut App, surface: AppSurfaceKey, raw: &KeyEvent,
         app.pending_nav_chord.clear();
         return;
     }
+    if dispatch_output_tab_preflight(app, bind) {
+        app.pending_nav_chord.clear();
+        return;
+    }
     if dispatch_framework_global(app, bind) {
         app.pending_nav_chord.clear();
         return;
@@ -202,11 +207,24 @@ fn classify_output_cancel_preflight(
             OutputAction::Cancel.toml_key(),
             bind,
         );
+    // A hidden visual selection stays stored, but it intercepts Esc only while
+    // the owned output region it covers is the selected one: with an external
+    // column selected, Esc must not drop a selection the user cannot see.
+    let owned_column_selected =
+        matches!(app.owned_column_selection(), OwnedColumnSelection::Selected);
     let output_visual = is_output_cancel
         && app.focus_is(PaneId::Output)
+        && owned_column_selected
         && app.panes.output.selection().is_visual();
-    let running_example = code == KeyCode::Esc && app.inflight.owned_run().is_running();
+    // Esc acts on the owned run only while the owned column is the one under
+    // the cursor. With an external column selected it neither stops the run nor
+    // clears its output: the monitor's columns describe host processes Cargo
+    // Port did not launch, and Esc must not reach past the selection to the one
+    // it did.
+    let running_example =
+        code == KeyCode::Esc && owned_column_selected && app.inflight.owned_run().is_running();
     let visible_output = is_output_cancel
+        && owned_column_selected
         && matches!(
             app.output_copy_availability(),
             OutputCopyAvailability::CapturedOutput
@@ -246,6 +264,34 @@ fn dispatch_output_cancel_preflight(app: &mut App, preflight: OutputCancelPrefli
     }
 }
 
+/// Tab / Shift-Tab traverse the monitor's ordered session list before the
+/// framework's pane snaking sees them.
+///
+/// Action-aware rather than key-aware: the pane-cycle pair is read off the
+/// framework keymap, so a rebound Tab traverses columns too. Traversal covers
+/// the complete session list including columns held off screen; at either end
+/// of it, and with fewer than two sessions, the key falls through and the
+/// framework moves focus to the next pane.
+fn dispatch_output_tab_preflight(app: &mut App, bind: &KeyBind) -> bool {
+    if !app.focus_is(PaneId::Output) || focused_text_input_mode(app) {
+        return false;
+    }
+    let keymap = Rc::clone(&app.framework_keymap);
+    let output_tab_step = match keymap.framework_globals().action_for(bind) {
+        Some(tui_pane::GlobalAction::NextPane) => panes::OutputTabStep::NextColumn,
+        Some(tui_pane::GlobalAction::PrevPane) => panes::OutputTabStep::PreviousColumn,
+        _ => return false,
+    };
+    let borrows = app.split_output_for_navigation();
+    match borrows
+        .output
+        .tab_to_adjacent_column(&borrows.output_presentation, output_tab_step)
+    {
+        panes::ColumnSelection::Moved => true,
+        panes::ColumnSelection::NoSuchColumn => false,
+    }
+}
+
 fn dispatch_framework_overlay_key(app: &mut App, bind: &KeyBind, normalized: &KeyEvent) {
     if app
         .framework
@@ -270,6 +316,13 @@ fn dispatch_framework_overlay_key(app: &mut App, bind: &KeyBind, normalized: &Ke
 /// with vim keys off it does nothing. Returns whether the key was
 /// consumed. Caller guards on Output focus and non-text-input mode.
 fn dispatch_output_selection_gesture(app: &mut App, raw: &KeyEvent) -> bool {
+    // A visual range only ever covers Cargo Port's own transcript, so this path
+    // is gated the same way the drag and Ctrl-A paths already are: on a monitor
+    // row there is nothing of the pane's own to grow a selection over.
+    match app.output_visual_selection_permission() {
+        panes::VisualSelectionPermission::Denied => return false,
+        panes::VisualSelectionPermission::CapturedOutput => {},
+    }
     let code = raw.code;
     if app.config.navigation_keys().uses_vim()
         && code == KeyCode::Char('V')
@@ -841,21 +894,34 @@ pub fn dispatch_output_action(action: OutputAction, app: &mut App) {
                 app.panes.output.select_all(&live);
             },
         },
-        OutputAction::Cancel => {
-            if app.inflight.owned_run().is_running() {
-                if let terminal::OwnedRunStopSignal::Sent(owned_run_id) =
-                    terminal::signal_owned_run(&app.inflight)
-                {
-                    let _ = app.inflight.mark_owned_run_stopping(owned_run_id);
-                }
-            } else if matches!(
-                app.output_copy_availability(),
-                OutputCopyAvailability::CapturedOutput
-            ) {
-                app.inflight.clear_owned_run_output();
-                app.set_focus(FocusedPane::App(AppPaneId::Targets));
-            }
+        // Stopping and clearing both act on Cargo Port's own run, so both wait
+        // on its column being the selected one: with an external column under
+        // the cursor, Esc must not reach past the selection.
+        OutputAction::Cancel => match app.owned_column_selection() {
+            OwnedColumnSelection::NotSelected => {},
+            OwnedColumnSelection::Selected => cancel_owned_output(app),
         },
+        // Declared and rebindable, but nothing may fire them until the
+        // termination transaction that authorizes a kill exists.
+        OutputAction::KillSelectedBuild | OutputAction::KillScopedBuilds => {},
+    }
+}
+
+/// Stop the owned run if it is still running, and otherwise close its captured
+/// output and hand focus back to Targets.
+fn cancel_owned_output(app: &mut App) {
+    if app.inflight.owned_run().is_running() {
+        if let terminal::OwnedRunStopSignal::Sent(owned_run_id) =
+            terminal::signal_owned_run(&app.inflight)
+        {
+            let _ = app.inflight.mark_owned_run_stopping(owned_run_id);
+        }
+    } else if matches!(
+        app.output_copy_availability(),
+        OutputCopyAvailability::CapturedOutput
+    ) {
+        app.inflight.clear_owned_run_output();
+        app.set_focus(FocusedPane::App(AppPaneId::Targets));
     }
 }
 
@@ -864,8 +930,152 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+    use crate::build_monitor::ClassifiedRoot;
+    use crate::build_monitor::FixtureRootOwnership;
+    use crate::build_monitor::MonitorSessionOwnership;
+    use crate::build_monitor::MonitorSnapshot;
+    use crate::build_monitor::classified_monitor_snapshot_with_ownership;
     use crate::project::AbsolutePath;
+    use crate::tui::compile_visibility::CompileVisibilityState;
+    use crate::tui::compile_visibility::MonitorScopeKey;
+    use crate::tui::compile_visibility::MonitorScopeResolution;
     use crate::tui::input::editor_terminal;
+    use crate::tui::panes::OutputMonitorHit;
+    use crate::tui::state::Inflight;
+    use crate::tui::state::inflight::OwnedRunFixture;
+    use crate::tui::test_support::make_app;
+
+    /// The Cargo root Cargo Port launched, beside one run by someone else.
+    const OWNED_ROOT_PID: u32 = 8100;
+    const EXTERNAL_ROOT_PID: u32 = 8200;
+
+    /// One click target per column of a staged two-column monitor, with the
+    /// owned run's output retained so the owned column has a body to select.
+    struct StagedOutput {
+        app:            App,
+        owned_hit:      OutputMonitorHit,
+        external_hit:   OutputMonitorHit,
+        captured_lines: Vec<String>,
+    }
+
+    /// An app focused on the Output pane, showing one owned column and one
+    /// external column over a scope the index resolved.
+    fn staged_output() -> Option<StagedOutput> {
+        let OwnedRunFixture::Built { inflight, producer } =
+            Inflight::with_retained_output_and_next_run_queued("retained line")
+        else {
+            return None;
+        };
+        let monitor_snapshot = classified_monitor_snapshot_with_ownership(
+            &[
+                ClassifiedRoot {
+                    root_pid:      OWNED_ROOT_PID,
+                    compiler_pids: &[8101],
+                },
+                ClassifiedRoot {
+                    root_pid:      EXTERNAL_ROOT_PID,
+                    compiler_pids: &[8201],
+                },
+            ],
+            &FixtureRootOwnership::OwnedRoot {
+                root_pid:     OWNED_ROOT_PID,
+                owned_run_id: producer,
+            },
+        )
+        .ok()?;
+        let compile_visibility_state = CompileVisibilityState::on_for_test(
+            MonitorScopeResolution::Ready(MonitorScopeKey::for_test(AbsolutePath::from(
+                Path::new("/tmp/cargo-port-esc-precedence"),
+            ))),
+        );
+
+        let MonitorSnapshot::Fresh(monitor_data) = &monitor_snapshot else {
+            return None;
+        };
+        let mut owned_hit = None;
+        let mut external_hit = None;
+        for (column_index, monitor_session_row) in monitor_data.session_rows().iter().enumerate() {
+            let hit = OutputMonitorHit::Header {
+                build_session_id: monitor_session_row.build_session_id().clone(),
+                column_index,
+            };
+            match monitor_session_row.session_ownership() {
+                MonitorSessionOwnership::Owned(_) => owned_hit = Some(hit),
+                MonitorSessionOwnership::External => external_hit = Some(hit),
+            }
+        }
+        let (owned_hit, external_hit) = (owned_hit?, external_hit?);
+        let captured_lines = vec!["retained line".to_string()];
+
+        let mut app = make_app(&[]);
+        app.inflight = *inflight;
+        app.compile_visibility_state = compile_visibility_state;
+        app.build_monitor.show_for_test(monitor_snapshot);
+        app.set_focus_to_pane(PaneId::Output);
+        Some(StagedOutput {
+            app,
+            owned_hit,
+            external_hit,
+            captured_lines,
+        })
+    }
+
+    /// Esc on the owned column collapses the visual selection first: the run is
+    /// not stopped and the output is not closed while a range is up.
+    #[test]
+    fn esc_on_the_owned_column_collapses_the_visual_selection_first() {
+        let staged = staged_output();
+        assert!(staged.is_some(), "the staged monitor fixture builds");
+        let Some(mut staged) = staged else { return };
+
+        staged.app.panes.output.focus_hit(&staged.owned_hit);
+        staged
+            .app
+            .panes
+            .output
+            .toggle_visual(&staged.captured_lines);
+        assert!(staged.app.panes.output.selection().is_visual());
+
+        assert!(matches!(
+            classify_output_cancel_preflight(
+                &staged.app,
+                KeyCode::Esc,
+                &KeyBind::from(KeyCode::Esc)
+            ),
+            OutputCancelPreflight::ExitVisualSelection
+        ));
+    }
+
+    /// The same stored selection is invisible from an external column, so Esc
+    /// there drops neither the selection nor the owned output: nothing in the
+    /// Output pane claims the key.
+    #[test]
+    fn esc_on_an_external_column_leaves_the_owned_selection_and_output_alone() {
+        let staged = staged_output();
+        assert!(staged.is_some(), "the staged monitor fixture builds");
+        let Some(mut staged) = staged else { return };
+
+        staged.app.panes.output.focus_hit(&staged.owned_hit);
+        staged
+            .app
+            .panes
+            .output
+            .toggle_visual(&staged.captured_lines);
+        staged.app.panes.output.focus_hit(&staged.external_hit);
+        assert!(
+            staged.app.panes.output.selection().is_visual(),
+            "the selection is stored, just not on screen"
+        );
+
+        assert!(matches!(
+            classify_output_cancel_preflight(
+                &staged.app,
+                KeyCode::Esc,
+                &KeyBind::from(KeyCode::Esc)
+            ),
+            OutputCancelPreflight::Pass
+        ));
+    }
 
     #[test]
     fn terminal_shell_command_leaves_command_without_path_placeholder_unchanged() {

@@ -98,6 +98,7 @@ pub use input::overlay_is_in_text_mode;
 pub use input::record_mouse_pos;
 pub use input::set_last_mouse_pos_for_test;
 pub use keymap::Action;
+pub use keymap::AltModifierLabel;
 pub use keymap::Bindings;
 pub use keymap::Configuring;
 pub use keymap::GlobalAction;

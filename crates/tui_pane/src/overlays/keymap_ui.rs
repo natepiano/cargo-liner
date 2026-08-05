@@ -295,10 +295,9 @@ where
                 std::string::ToString::to_string,
             )
         } else {
-            row.bind
-                .as_ref()
-                .map(crate::KeySequence::display)
-                .unwrap_or_default()
+            row.bind.as_ref().map_or_else(String::new, |bind| {
+                bind.platform_label(crate::AltModifierLabel::current())
+            })
         };
 
         let desc_width = 25usize;
