@@ -912,7 +912,7 @@ This phase also removes the `#[cfg(test)]` gate — not a `dead_code` suppressio
 
 **Two decisions deferred, one since resolved.** Phase 10's was that its navigation spec let the cursor land on activity rows that are neither drawn nor hittable, because no per-column scroll state existed. **Resolved: add the scroll offset.** It is now in Phase 10's Spec, Files, and acceptance gate as a single offset belonging to the selected column, reset to zero when the selection moves to another column — not a map keyed by session, which would need pruning against a snapshot that is replaced wholesale every poll cycle. Phase 12 carries the other: "may this be acted on" now has two independent derivations that partition the seven `MonitorSnapshot` variants identically, one production and one test-gated, and the phases that authorize destruction read the test-gated one while the renderer draws off the other — the recommendation is to derive `actionability()` from `monitor_display()`. Both are recorded as `**Pending decision:**` blocks in those Work Orders and stop the loop before each phase dispatches.
 
-### Phase 10 — Monitor navigation, toggle, and owned-output coexistence · status: done (77f93f1)
+### Phase 10 — Monitor navigation, toggle, and owned-output coexistence · status: done (8a3a1af)
 
 #### Work Order
 
