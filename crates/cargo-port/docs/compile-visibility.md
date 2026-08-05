@@ -995,7 +995,7 @@ Architect review of the three remaining phases against the code Phase 10 actuall
 
 **Deferred as a pending decision** — Phase 13 gained one: its modal precedence and `y`/`n`/Esc rules are not new wiring but changes to the confirm modal shared by five existing actions, and shipped dispatch currently runs the Output cancel preflight *before* the confirm handler. Whether to scope those changes to the new action or change the shared modal — and whether that becomes its own phase ahead of Phase 13 — is unresolved.
 
-### Phase 11 — Owned-run termination actor and platform capability foundation · status: done
+### Phase 11 — Owned-run termination actor and platform capability foundation · status: done (`da3aa9e`)
 
 #### Work Order
 
