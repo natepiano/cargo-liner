@@ -842,6 +842,61 @@ fn no_facade_callers_select_only_compiling_advice() {
 }
 
 #[test]
+fn structural_advice_names_the_caller_derived_boundary() {
+    let temp = tempdir().expect("create caller-boundary fixture dir");
+    write_sources(
+        &temp,
+        &[
+            (
+                "Cargo.toml",
+                r#"[package]
+name = "caller_boundary_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+            ),
+            ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
+            (
+                "src/lib.rs",
+                "mod root;\npub fn entry() { root::entry(); }\n",
+            ),
+            (
+                "src/root/mod.rs",
+                "mod panel;\npub(crate) fn entry() { panel::entry(); }\n",
+            ),
+            (
+                "src/root/panel/mod.rs",
+                "mod conversion;\nmod diegetic;\npub(super) fn entry() { diegetic::run(); }\n",
+            ),
+            (
+                "src/root/panel/conversion/mod.rs",
+                "pub(super) mod saved;\n",
+            ),
+            (
+                "src/root/panel/conversion/saved.rs",
+                "pub(in crate::root) fn apply() {}\n",
+            ),
+            (
+                "src/root/panel/diegetic.rs",
+                "use super::conversion::saved;\npub(super) fn run() { saved::apply(); }\n",
+            ),
+        ],
+    );
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert_eq!(
+        report.summary.fixable_with_fix, 0,
+        "a facade-capable declaration must keep structural advice manual: {report:#?}",
+    );
+    assert_headline_and_help(
+        &report,
+        "src/root/panel/conversion/saved.rs",
+        "no policy-allowed visibility keeps this item reachable where it is used: private and `pub(super)` are too narrow, and no facade caps `pub`",
+        "move the item into `crate::root::panel`, or add an explicit facade at `crate::root::panel` and rerun `cargo mend`",
+    );
+}
+
+#[test]
 fn signature_only_exact_boundary_needs_no_facade() {
     let temp = create_signature_only_boundary_fixture(NamingCaller::Absent);
     let report = run_mend_json(&temp.path().join("Cargo.toml"));

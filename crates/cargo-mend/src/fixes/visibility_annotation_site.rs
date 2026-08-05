@@ -1,8 +1,8 @@
 use super::constants::TAB_DISPLAY_WIDTH;
 
-/// How a visibility annotation is written in source. A fixer may rewrite or
-/// delete a [`Self::Bare`] annotation; a [`Self::Restricted`] one names a
-/// narrower scope the author chose, so touching it would discard that choice.
+/// How a visibility annotation is written in source. Fixers may rewrite or
+/// delete a [`Self::Bare`] annotation. A [`Self::Restricted`] annotation is
+/// editable only when the finding carries an exact replacement boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum VisibilityAnnotationForm {
     Bare,

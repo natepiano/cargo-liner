@@ -2,8 +2,10 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde::Serializer;
 
-use super::constants::HINT_FIXABLE_WITH_FIX;
-use super::constants::HINT_FIXABLE_WITH_FIX_PUB_USE;
+use super::constants::HINT_ERROR_FIXABLE_WITH_FIX;
+use super::constants::HINT_ERROR_FIXABLE_WITH_FIX_PUB_USE;
+use super::constants::HINT_WARNING_FIXABLE_WITH_FIX;
+use super::constants::HINT_WARNING_FIXABLE_WITH_FIX_PUB_USE;
 use crate::config::DiagnosticCode;
 use crate::constants::HELP_URL_BASE;
 
@@ -37,18 +39,21 @@ pub(crate) enum FixSummaryBucket {
 }
 
 impl FixSupport {
-    pub(crate) const fn note(self) -> Option<&'static str> {
-        match self {
-            Self::None | Self::NeedsManualPubUseCleanup | Self::InternalParentFacade => None,
-            Self::ShortenImport
-            | Self::PreferModuleImport
-            | Self::InlinePathQualifiedType
-            | Self::UnusedPub
-            | Self::NarrowToPubCrate
-            | Self::RestrictedAnnotation
-            | Self::FieldVisibility
-            | Self::ImportsAtTop => Some(HINT_FIXABLE_WITH_FIX),
-            Self::PubUse => Some(HINT_FIXABLE_WITH_FIX_PUB_USE),
+    const fn note(self, severity: Severity) -> Option<&'static str> {
+        match (severity, self.summary_bucket()) {
+            (_, None) => None,
+            (Severity::Warning, Some(FixSummaryBucket::Standard)) => {
+                Some(HINT_WARNING_FIXABLE_WITH_FIX)
+            },
+            (Severity::Warning, Some(FixSummaryBucket::PubUse)) => {
+                Some(HINT_WARNING_FIXABLE_WITH_FIX_PUB_USE)
+            },
+            (Severity::Error, Some(FixSummaryBucket::Standard)) => {
+                Some(HINT_ERROR_FIXABLE_WITH_FIX)
+            },
+            (Severity::Error, Some(FixSummaryBucket::PubUse)) => {
+                Some(HINT_ERROR_FIXABLE_WITH_FIX_PUB_USE)
+            },
         }
     }
 
@@ -78,7 +83,7 @@ pub(crate) enum Severity {
 #[derive(Debug, Clone, Copy)]
 enum DetailMode {
     None,
-    MessageRelatedAndFix,
+    MessageAndRelated,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -125,28 +130,28 @@ static SUSPICIOUS_PUB: DiagnosticSpec = DiagnosticSpec {
     headline:    HeadlineSource::Static("`pub` is broader than this nested module boundary"),
     inline_help: None,
     help_anchor: "suspicious-pub",
-    detail_mode: DetailMode::MessageRelatedAndFix,
+    detail_mode: DetailMode::MessageAndRelated,
     fix_support: FixSupport::None,
 };
 static UNUSED_PUB: DiagnosticSpec = DiagnosticSpec {
     headline:    HeadlineSource::Static("`pub` item is not used outside its defining module"),
     inline_help: Some("consider removing `pub`"),
     help_anchor: "unused-pub",
-    detail_mode: DetailMode::MessageRelatedAndFix,
+    detail_mode: DetailMode::MessageAndRelated,
     fix_support: FixSupport::UnusedPub,
 };
 static PREFER_MODULE_IMPORT: DiagnosticSpec = DiagnosticSpec {
     headline:    HeadlineSource::Static("function import should use module-qualified form"),
     inline_help: None,
     help_anchor: "prefer-module-import",
-    detail_mode: DetailMode::MessageRelatedAndFix,
+    detail_mode: DetailMode::MessageAndRelated,
     fix_support: FixSupport::PreferModuleImport,
 };
 static INLINE_PATH_QUALIFIED_TYPE: DiagnosticSpec = DiagnosticSpec {
     headline:    HeadlineSource::Static("inline path-qualified type should use a `use` import"),
     inline_help: None,
     help_anchor: "inline-path-qualified-type",
-    detail_mode: DetailMode::MessageRelatedAndFix,
+    detail_mode: DetailMode::MessageAndRelated,
     fix_support: FixSupport::InlinePathQualifiedType,
 };
 static SHORTEN_LOCAL_CRATE_IMPORT: DiagnosticSpec = DiagnosticSpec {
@@ -155,14 +160,14 @@ static SHORTEN_LOCAL_CRATE_IMPORT: DiagnosticSpec = DiagnosticSpec {
     ),
     inline_help: None,
     help_anchor: "shorten-local-crate-import",
-    detail_mode: DetailMode::MessageRelatedAndFix,
+    detail_mode: DetailMode::MessageAndRelated,
     fix_support: FixSupport::ShortenImport,
 };
 static REPLACE_DEEP_SUPER_IMPORT: DiagnosticSpec = DiagnosticSpec {
     headline:    HeadlineSource::Static("deep `super::` chain should use a `crate::` path"),
     inline_help: None,
     help_anchor: "replace-deep-super-import",
-    detail_mode: DetailMode::MessageRelatedAndFix,
+    detail_mode: DetailMode::MessageAndRelated,
     fix_support: FixSupport::ShortenImport,
 };
 static WILDCARD_PARENT_PUB_USE: DiagnosticSpec = DiagnosticSpec {
@@ -180,7 +185,7 @@ static INTERNAL_PARENT_PUB_USE_FACADE: DiagnosticSpec = DiagnosticSpec {
         "consider removing this parent facade and importing the item from its defining child module",
     ),
     help_anchor: "internal-parent-pub-use-facade",
-    detail_mode: DetailMode::MessageRelatedAndFix,
+    detail_mode: DetailMode::MessageAndRelated,
     fix_support: FixSupport::InternalParentFacade,
 };
 static NARROW_TO_PUB_CRATE: DiagnosticSpec = DiagnosticSpec {
@@ -189,14 +194,14 @@ static NARROW_TO_PUB_CRATE: DiagnosticSpec = DiagnosticSpec {
     ),
     inline_help: Some("consider using: `pub(crate)`"),
     help_anchor: "narrow-to-pub-crate",
-    detail_mode: DetailMode::MessageRelatedAndFix,
+    detail_mode: DetailMode::MessageAndRelated,
     fix_support: FixSupport::NarrowToPubCrate,
 };
 static FIELD_VISIBILITY_WIDER_THAN_TYPE: DiagnosticSpec = DiagnosticSpec {
     headline:    HeadlineSource::Static("field visibility is wider than its containing type"),
     inline_help: None,
     help_anchor: "field-visibility-wider-than-type",
-    detail_mode: DetailMode::MessageRelatedAndFix,
+    detail_mode: DetailMode::MessageAndRelated,
     fix_support: FixSupport::FieldVisibility,
 };
 static IMPORTS_AT_TOP: DiagnosticSpec = DiagnosticSpec {
@@ -205,15 +210,15 @@ static IMPORTS_AT_TOP: DiagnosticSpec = DiagnosticSpec {
     ),
     inline_help: None,
     help_anchor: "imports-at-top",
-    detail_mode: DetailMode::MessageRelatedAndFix,
+    detail_mode: DetailMode::MessageAndRelated,
     fix_support: FixSupport::ImportsAtTop,
 };
 
 /// The visibility annotation the compiler pass read off the item this finding
-/// is about. A fixer rewrites only [`Self::Bare`]: replacing a
-/// [`Self::Restricted`] annotation would discard a narrower visibility the
-/// author wrote deliberately, and [`Self::Unknown`] means the pass captured no
-/// annotation text, so there is nothing for a fixer to verify its edit against.
+/// is about. Fixers rewrite [`Self::Bare`] and specifically approved
+/// [`Self::Restricted`] annotations. [`Self::Unknown`] means the pass captured
+/// no annotation text, so there is nothing for a fixer to verify its edit
+/// against.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) enum WrittenVisibility {
     #[default]
@@ -266,7 +271,7 @@ impl NarrowerScope {
 }
 
 /// What the compiler pass resolved about the visibility of the item a finding
-/// is about. Findings about import shape carry the [`Default`] value, which
+/// is about. Findings about import syntax carry the [`Default`] value, which
 /// says exactly that: no annotation was read and no narrowing was proposed.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ItemVisibility {
@@ -465,6 +470,10 @@ pub(crate) fn effective_fixability(finding: &Finding) -> FixSupport {
     }
 }
 
+pub(crate) fn fixability_note(finding: &Finding) -> Option<&'static str> {
+    effective_fixability(finding).note(finding.severity)
+}
+
 pub(crate) fn finding_headline(finding: &Finding) -> String {
     match diagnostic_spec(finding.diagnostic_code).headline {
         HeadlineSource::Static(headline) => headline.to_string(),
@@ -492,9 +501,9 @@ pub(crate) fn finding_message_not_in_headline(finding: &Finding) -> Option<&str>
 }
 
 pub(crate) fn detail_reasons(finding: &Finding) -> Vec<String> {
-    match diagnostic_spec(finding.diagnostic_code).detail_mode {
+    let mut reasons = match diagnostic_spec(finding.diagnostic_code).detail_mode {
         DetailMode::None => Vec::new(),
-        DetailMode::MessageRelatedAndFix => {
+        DetailMode::MessageAndRelated => {
             let mut reasons = Vec::new();
             if let Some(message) = finding_message_not_in_headline(finding) {
                 reasons.push(message.to_string());
@@ -502,12 +511,13 @@ pub(crate) fn detail_reasons(finding: &Finding) -> Vec<String> {
             if let Some(related) = &finding.related {
                 reasons.push(related.clone());
             }
-            if let Some(note) = effective_fixability(finding).note() {
-                reasons.push(note.to_string());
-            }
             reasons
         },
+    };
+    if let Some(note) = fixability_note(finding) {
+        reasons.push(note.to_string());
     }
+    reasons
 }
 
 pub(crate) fn inline_help_text(finding: &Finding) -> Option<&'static str> {

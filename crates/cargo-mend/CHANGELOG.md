@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- `forbidden_pub_crate` now derives structural advice from the item and caller modules instead of
+  repeating a wider signature or written boundary. When the declaration is an inherent or
+  associated item that cannot be re-exported, mend recommends the exact shared
+  `pub(in crate::path)` boundary and `cargo mend --fix` rewrites its `pub(crate)` annotation. The
+  applied boundary is accepted on the next run. Findings schema 24 records whether a facade is
+  impossible so cross-target reconciliation retains this distinction.
 - mend now always takes cargo's `RUSTC_WORKSPACE_WRAPPER` slot and leaves an ambient `RUSTC_WRAPPER`
   in place. Previously, a set `RUSTC_WRAPPER` was displaced into `MEND_PASSTHROUGH_RUSTC_WRAPPER` and
   mend took that slot instead. Cargo records the workspace wrapper's path in a unit's fingerprint and

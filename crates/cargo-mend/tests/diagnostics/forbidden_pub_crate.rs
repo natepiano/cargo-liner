@@ -771,3 +771,141 @@ pub struct Beta {
         "the cycle guard must retain Storage's crate-visible structural requirement: {report:#?}",
     );
 }
+
+#[test]
+fn facade_less_method_is_rewritten_to_its_caller_boundary() {
+    let temp = tempdir().expect("create facade-less method fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "facade_less_method_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src/panel/conversion")).expect("create sources");
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "mod panel;\npub use panel::Saved;\npub fn entry() -> u32 { panel::entry() }\n",
+    )
+    .expect("write lib");
+    fs::write(
+        temp.path().join("src/panel/mod.rs"),
+        "mod conversion;\nmod diegetic;\npub use conversion::Saved;\npub(crate) fn entry() -> u32 { diegetic::run() }\n",
+    )
+    .expect("write panel module");
+    fs::write(
+        temp.path().join("src/panel/conversion/mod.rs"),
+        "mod saved;\npub use saved::Saved;\n",
+    )
+    .expect("write conversion module");
+    let original = r#"pub struct Saved {
+    pub width: u32,
+}
+
+impl Saved {
+    pub(crate) fn apply_world_conversion(&self) -> u32 {
+        self.width
+    }
+}
+"#;
+    fs::write(temp.path().join("src/panel/conversion/saved.rs"), original)
+        .expect("write saved module");
+    fs::write(
+        temp.path().join("src/panel/diegetic.rs"),
+        "use super::conversion::Saved;\npub(crate) fn run() -> u32 {\n    let saved = Saved { width: 3 };\n    saved.apply_world_conversion()\n}\n",
+    )
+    .expect("write caller module");
+
+    let manifest_path = temp.path().join("Cargo.toml");
+    let report = run_mend_json(&manifest_path);
+    let finding = report
+        .findings
+        .iter()
+        .find(|finding| {
+            finding.code == DiagnosticCode::ForbiddenPubCrate
+                && finding.path.ends_with("src/panel/conversion/saved.rs")
+                && finding.line_start == 6
+        })
+        .unwrap_or_else(|| panic!("missing method finding: {report:#?}"));
+    assert!(
+        finding
+            .help
+            .iter()
+            .any(|help| help == "consider using: `pub(in crate::panel)`"),
+        "facade-less advice must name the caller boundary: {report:#?}",
+    );
+    assert_eq!(
+        report.summary.fixable_with_fix, 1,
+        "the method annotation must be offered to `--fix`: {report:#?}",
+    );
+
+    assert_human_report_advertises_error_fix(&manifest_path);
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(&manifest_path)
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let fixed = original.replace("pub(crate) fn", "pub(in crate::panel) fn");
+    assert_eq!(
+        fs::read_to_string(temp.path().join("src/panel/conversion/saved.rs"))
+            .expect("read fixed method"),
+        fixed,
+        "only the method annotation may change",
+    );
+
+    let fixed_report = run_mend_json(&manifest_path);
+    assert!(
+        fixed_report.findings.iter().all(|finding| {
+            !finding.path.ends_with("src/panel/conversion/saved.rs")
+                || finding.line_start != 6
+                || !matches!(
+                    finding.code,
+                    DiagnosticCode::ForbiddenPubCrate | DiagnosticCode::ForbiddenPubInCrate
+                )
+        }),
+        "the applied boundary must be accepted on the next run: {fixed_report:#?}",
+    );
+}
+
+fn assert_human_report_advertises_error_fix(manifest_path: &std::path::Path) {
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(manifest_path)
+        .output()
+        .expect("run cargo-mend human report");
+    assert!(
+        matches!(output.status.code(), Some(0..=2)),
+        "cargo-mend returned unexpected status {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let rendered = strip_ansi(&format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    ));
+    assert!(
+        rendered.contains("this error is auto-fixable with `cargo mend --fix`"),
+        "the human diagnostic must advertise the annotation rewrite: {rendered}",
+    );
+    assert!(
+        rendered
+            .lines()
+            .any(|line| line.starts_with("errors:")
+                && line.contains("fixable with `cargo mend --fix`")),
+        "the error summary must count the annotation rewrite: {rendered}",
+    );
+}

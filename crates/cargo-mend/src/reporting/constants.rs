@@ -34,10 +34,14 @@ pub(crate) const EXIT_CODE_WARNING: u8 = 2;
 
 // fix-availability hint strings (full sentence; `concat!` cannot interpolate
 // `const` items so the literal is materialized once here per invocation)
-pub(super) const HINT_FIXABLE_WITH_FIX: &str =
+pub(super) const HINT_WARNING_FIXABLE_WITH_FIX: &str =
     "this warning is auto-fixable with `cargo mend --fix`";
-pub(super) const HINT_FIXABLE_WITH_FIX_PUB_USE: &str =
+pub(super) const HINT_WARNING_FIXABLE_WITH_FIX_PUB_USE: &str =
     "this warning is auto-fixable with `cargo mend --fix-pub-use`";
+pub(super) const HINT_ERROR_FIXABLE_WITH_FIX: &str =
+    "this error is auto-fixable with `cargo mend --fix`";
+pub(super) const HINT_ERROR_FIXABLE_WITH_FIX_PUB_USE: &str =
+    "this error is auto-fixable with `cargo mend --fix-pub-use`";
 
 // rustc/cargo json protocol
 pub(super) const CARGO_MESSAGE_TYPE_DIAGNOSTIC: &str = "diagnostic";

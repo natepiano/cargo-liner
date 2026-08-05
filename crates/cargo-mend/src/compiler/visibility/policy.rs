@@ -557,6 +557,35 @@ pub(in crate::compiler) fn classify_no_facade_callers(
     NoFacadeVisibilityRepair::StructuralMigrationForCallerLocations
 }
 
+/// Returns the deepest module containing both `item_module` and every caller.
+/// `None` represents the crate root.
+pub(in crate::compiler) fn common_ancestor_def_path(
+    item_module: &str,
+    callers: &BTreeSet<String>,
+) -> Option<String> {
+    let mut boundary = item_module;
+    loop {
+        if boundary.is_empty() || boundary == "crate" {
+            return None;
+        }
+        if callers
+            .iter()
+            .all(|caller| def_path_is_descendant(caller, boundary))
+        {
+            return Some(boundary.to_string());
+        }
+        boundary = boundary.rsplit_once("::").map(|(parent, _)| parent)?;
+    }
+}
+
+pub(in crate::compiler) fn crate_rooted_def_path(def_path: &str) -> String {
+    if def_path == "crate" || def_path.starts_with("crate::") {
+        def_path.to_string()
+    } else {
+        format!("crate::{def_path}")
+    }
+}
+
 pub(in crate::compiler) fn parent_scope_def_path(item_module: &str) -> &str {
     item_module
         .rsplit_once("::")
@@ -983,6 +1012,7 @@ mod tests {
     use super::ParentVisibility;
     use super::allow_pub_crate_by_policy;
     use super::classify_no_facade_callers;
+    use super::common_ancestor_def_path;
     use super::crate_kind_for_root;
     use super::forbidden_pub_crate_help;
     use super::forbidden_pub_crate_suggestion;
@@ -1241,6 +1271,27 @@ mod tests {
             "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun \
              `cargo mend`",
         );
+    }
+
+    #[test]
+    fn common_ancestor_uses_complete_path_segments() {
+        let callers = BTreeSet::from([
+            String::from("root::panel::diegetic"),
+            String::from("root::panel::preview::camera"),
+        ]);
+        assert_eq!(
+            common_ancestor_def_path("root::panel::conversion::saved", &callers),
+            Some(String::from("root::panel")),
+        );
+
+        let callers = BTreeSet::from([String::from("root::panel_views")]);
+        assert_eq!(
+            common_ancestor_def_path("root::panel::conversion", &callers),
+            Some(String::from("root")),
+        );
+
+        let callers = BTreeSet::from([String::from("other")]);
+        assert_eq!(common_ancestor_def_path("root::panel", &callers), None);
     }
 
     #[test]

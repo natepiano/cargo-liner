@@ -16,8 +16,8 @@ pub(crate) struct RestrictedAnnotationScan {
     pub fixes: Vec<UseFix>,
 }
 
-/// Rewrites a bare `pub` to the exact `pub(in crate::…)` boundary the compiler
-/// pass resolved for it.
+/// Rewrites a bare `pub` or an eligible `pub(crate)` to the exact
+/// `pub(in crate::…)` boundary the compiler pass resolved for it.
 ///
 /// The replacement is built from [`NarrowerScope::ExactBoundary`], a def-path
 /// the pass computed — never from `Finding::suggestion`, which is rendered
@@ -34,12 +34,13 @@ pub(crate) fn scan_from_report(report: &Report) -> Result<RestrictedAnnotationSc
         else {
             continue;
         };
-        // A restricted annotation is already narrower than `pub`; replacing it
-        // is the stale-boundary repair, which also has a facade to move and so
-        // stays manual.
-        if finding.item_visibility.written != WrittenVisibility::Bare {
-            continue;
-        }
+        let (expected_form, expected_annotation) = match &finding.item_visibility.written {
+            WrittenVisibility::Bare => (VisibilityAnnotationForm::Bare, "pub"),
+            WrittenVisibility::Restricted(source) if source == "pub(crate)" => {
+                (VisibilityAnnotationForm::Restricted, source.as_str())
+            },
+            WrittenVisibility::Unknown | WrittenVisibility::Restricted(_) => continue,
+        };
         let absolute_path = root.join(&finding.path);
         let source = fs::read_to_string(&absolute_path)
             .with_context(|| format!("failed to read {}", absolute_path.display()))?;
@@ -48,8 +49,8 @@ pub(crate) fn scan_from_report(report: &Report) -> Result<RestrictedAnnotationSc
             continue;
         };
         // The source may have moved on since the report was written. Only edit
-        // what still reads as the bare `pub` the pass classified.
-        if site.form != VisibilityAnnotationForm::Bare {
+        // the exact annotation the compiler pass classified.
+        if !matches_expected_annotation(&source, site, expected_form, expected_annotation) {
             continue;
         }
         // One rewrite per declaration site. The same item is reported once per
@@ -72,4 +73,35 @@ pub(crate) fn scan_from_report(report: &Report) -> Result<RestrictedAnnotationSc
         });
     }
     Ok(RestrictedAnnotationScan { fixes })
+}
+
+fn matches_expected_annotation(
+    source: &str,
+    site: VisibilityAnnotationSite,
+    expected_form: VisibilityAnnotationForm,
+    expected_annotation: &str,
+) -> bool {
+    site.form == expected_form && source.get(site.start..site.end) == Some(expected_annotation)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VisibilityAnnotationForm;
+    use super::VisibilityAnnotationSite;
+    use super::matches_expected_annotation;
+
+    #[test]
+    fn restricted_rewrite_requires_the_annotation_captured_in_the_report() {
+        let source = "pub(super) fn item() {}\n";
+        let matches = VisibilityAnnotationSite::locate(source, 1, 1).map(|site| {
+            matches_expected_annotation(
+                source,
+                site,
+                VisibilityAnnotationForm::Restricted,
+                "pub(crate)",
+            )
+        });
+
+        assert_eq!(matches, Some(false));
+    }
 }

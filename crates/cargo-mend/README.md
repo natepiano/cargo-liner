@@ -236,6 +236,11 @@ Otherwise, prefer:
   `pub(super)` at the declaration would not compile
 - moving the item to a better common parent when `pub(super)` is too narrow
 
+Associated declarations such as inherent methods cannot be re-exported with `use`. When every
+caller sits under one narrower ancestor, mend instead recommends the exact
+`pub(in crate::path)` boundary. `cargo mend --fix` can rewrite the `pub(crate)` annotation in
+these cases automatically.
+
 When mend gives facade-specific advice, it quotes the facade's `use` spelling only when it can
 establish that spelling from the active item graph. A resolved reach alone never licenses quoting a
 modifier; otherwise the diagnostic calls it a re-export without naming a modifier.

@@ -158,7 +158,7 @@ fn rustc_diagnostic(finding: &Finding, span: RustcSpan) -> RustcDiagnostic {
             vec![span.clone()],
         ));
     }
-    if let Some(note) = diagnostics::effective_fixability(finding).note() {
+    if let Some(note) = diagnostics::fixability_note(finding) {
         children.push(child(RUSTC_LEVEL_HELP, note.to_string(), Vec::new()));
     }
 
@@ -219,7 +219,7 @@ fn render_diagnostic(finding: &Finding, span: &RustcSpan, level: &str) -> String
         rendered.push_str(related);
         rendered.push('\n');
     }
-    if let Some(note) = diagnostics::effective_fixability(finding).note() {
+    if let Some(note) = diagnostics::fixability_note(finding) {
         rendered.push_str("  = help: ");
         rendered.push_str(note);
         rendered.push('\n');

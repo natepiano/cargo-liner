@@ -12,6 +12,7 @@ use super::schema::StoredReport;
 use crate::compiler::visibility;
 use crate::compiler::visibility::NoFacadeVisibilityRepair;
 use crate::config::DiagnosticCode;
+use crate::reporting::FixSupport;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -81,6 +82,7 @@ pub(in crate::compiler) enum StoredVisibilitySpelling {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(in crate::compiler) enum StoredFacadeConstraint {
     Absent,
+    Impossible,
     Resolved { required: StoredVisibilityReach },
     Blocked,
 }
@@ -125,7 +127,9 @@ impl StoredVisibilityConstraint {
     pub(in crate::compiler) fn required_reach(&self) -> Option<StoredVisibilityReach> {
         let facade_requirement = match &self.facade {
             StoredFacadeConstraint::Resolved { required } => Some(required.clone()),
-            StoredFacadeConstraint::Absent | StoredFacadeConstraint::Blocked => None,
+            StoredFacadeConstraint::Absent
+            | StoredFacadeConstraint::Impossible
+            | StoredFacadeConstraint::Blocked => None,
         };
         match (&self.signature_requirement, facade_requirement) {
             (Some(signature), Some(facade)) => Some(signature.join(&facade)),
@@ -167,15 +171,32 @@ impl VisibilityConstraintSet {
     }
 
     fn includes_absent_facade(&self) -> bool {
-        self.constraints
-            .iter()
-            .any(|constraint| matches!(constraint.facade, StoredFacadeConstraint::Absent))
+        self.constraints.iter().any(|constraint| {
+            matches!(
+                constraint.facade,
+                StoredFacadeConstraint::Absent | StoredFacadeConstraint::Impossible
+            )
+        })
+    }
+
+    fn all_facades_are_impossible(&self) -> bool {
+        !self.constraints.is_empty()
+            && self
+                .constraints
+                .iter()
+                .all(|constraint| matches!(constraint.facade, StoredFacadeConstraint::Impossible))
     }
 
     fn all_facades_are_resolved(&self) -> bool {
         self.constraints
             .iter()
             .all(|constraint| matches!(constraint.facade, StoredFacadeConstraint::Resolved { .. }))
+    }
+
+    fn includes_resolved_facade(&self) -> bool {
+        self.constraints
+            .iter()
+            .any(|constraint| matches!(constraint.facade, StoredFacadeConstraint::Resolved { .. }))
     }
 
     fn all_exact_boundaries_are_eligible(&self) -> bool {
@@ -309,19 +330,97 @@ impl VisibilityConstraintGroup {
         if !self.constraints.uses_caller_reconciliation() {
             return Some(finding);
         }
+        if self.declares_facade_less_caller_boundary(callers, package_root) {
+            return None;
+        }
         if self.boundary_demand(callers, package_root, required_reach.as_ref())
             == BoundaryDemand::SignatureAlone
         {
             return None;
         }
         let repair = self.no_facade_repair(callers, package_root, required_reach.as_ref());
-        let repair_reach = required_reach.or_else(|| self.constraints.uniform_declared_reach());
-        let boundary = repair_reach
-            .as_ref()
-            .map_or("crate", StoredVisibilityReach::boundary);
-        finding.message = visibility::no_facade_headline(repair, finding.message);
-        finding.suggestion = Some(visibility::no_facade_suggestion(repair, boundary));
+        let boundary = if !self.constraints.includes_resolved_facade()
+            && self.callers_require_structural_repair(callers, package_root)
+        {
+            self.caller_repair_boundary(callers, package_root, required_reach.as_ref())
+        } else {
+            let repair_reach = required_reach.or_else(|| self.constraints.uniform_declared_reach());
+            repair_reach.as_ref().map_or_else(
+                || String::from("crate"),
+                |reach| reach.boundary().to_string(),
+            )
+        };
+        if finding.fix_support == FixSupport::RestrictedAnnotation && boundary != "crate" {
+            finding.suggestion = Some(format!("consider using: `pub(in {boundary})`"));
+            finding.narrower_scope_def_path = boundary.strip_prefix("crate::").map(String::from);
+        } else {
+            if finding.fix_support == FixSupport::RestrictedAnnotation {
+                finding.fix_support = FixSupport::None;
+                finding.narrower_scope_def_path = None;
+            }
+            finding.message = visibility::no_facade_headline(repair, finding.message);
+            finding.suggestion = Some(visibility::no_facade_suggestion(repair, &boundary));
+        }
         Some(finding)
+    }
+
+    fn declares_facade_less_caller_boundary(
+        &self,
+        callers: &CallerMap,
+        package_root: &str,
+    ) -> bool {
+        self.constraints.all_facades_are_impossible()
+            && self.callers_require_structural_repair(callers, package_root)
+            && self.constraints.all_exact_boundaries_are_eligible()
+            && self
+                .constraints
+                .constraints
+                .iter()
+                .all(|constraint| constraint.spelling == StoredVisibilitySpelling::ExactPath)
+            && self
+                .constraints
+                .uniform_declared_reach()
+                .is_some_and(|declared| {
+                    declared.boundary() == self.caller_boundary_path(callers, package_root)
+                })
+    }
+
+    fn callers_require_structural_repair(&self, callers: &CallerMap, package_root: &str) -> bool {
+        self.constraints.constraints.iter().any(|constraint| {
+            let reaching_callers = caller_aware::callers_for_package(
+                callers,
+                package_root,
+                &constraint.declaration.item_def_path,
+            )
+            .map(|item_callers| &item_callers.reaching);
+            matches!(
+                caller_repair(&constraint.declaration, reaching_callers),
+                NoFacadeVisibilityRepair::StructuralMigrationForCallerLocations
+            )
+        })
+    }
+
+    fn caller_repair_boundary(
+        &self,
+        callers: &CallerMap,
+        package_root: &str,
+        required_reach: Option<&StoredVisibilityReach>,
+    ) -> String {
+        let caller_boundary = self.caller_boundary_path(callers, package_root);
+        if self.constraints.all_facades_are_impossible() {
+            return caller_boundary;
+        }
+        let caller_reach = if caller_boundary == "crate" {
+            StoredVisibilityReach::Crate
+        } else {
+            StoredVisibilityReach::Restricted {
+                boundary: caller_boundary,
+            }
+        };
+        required_reach.map_or_else(
+            || caller_reach.boundary().to_string(),
+            |required| required.join(&caller_reach).boundary().to_string(),
+        )
     }
 
     fn public_candidate(&self) -> Option<StoredFinding> {
@@ -443,6 +542,26 @@ impl VisibilityConstraintGroup {
             repair = repair.most_invasive(caller_repair(&constraint.declaration, reaching_callers));
         }
         repair
+    }
+
+    fn caller_boundary_path(&self, callers: &CallerMap, package_root: &str) -> String {
+        let Some(declaration) = self
+            .constraints
+            .constraints
+            .first()
+            .map(|constraint| &constraint.declaration)
+        else {
+            return String::from("crate");
+        };
+        let no_callers = BTreeSet::new();
+        let reaching_callers =
+            caller_aware::callers_for_package(callers, package_root, &declaration.item_def_path)
+                .map_or(&no_callers, |item_callers| &item_callers.reaching);
+        visibility::common_ancestor_def_path(&declaration.item_module_def_path, reaching_callers)
+            .map_or_else(
+                || String::from("crate"),
+                |boundary| visibility::crate_rooted_def_path(&boundary),
+            )
     }
 }
 
@@ -603,8 +722,15 @@ mod tests {
     use super::StoredVisibilitySpelling;
     use super::VisibilityConstraintGroup;
     use super::VisibilityConstraintSet;
+    use crate::compiler::constants::FINDINGS_SCHEMA_VERSION;
     use crate::compiler::persistence::StoredFinding;
+    use crate::compiler::persistence::StoredReport;
+    use crate::compiler::persistence::caller_aware;
+    use crate::compiler::persistence::schema::UseSite;
+    use crate::compiler::persistence::schema::UseSiteReference;
     use crate::config::DiagnosticCode;
+    use crate::reporting::AllFeaturesCoverage;
+    use crate::reporting::CompilerWarningFacts;
     use crate::reporting::FixSupport;
     use crate::reporting::Severity;
 
@@ -740,6 +866,144 @@ mod tests {
         group.include(0, constraint, None);
 
         assert!(group.render(&CallerMap::new(), "/package").is_none());
+    }
+
+    #[test]
+    fn facade_less_exact_caller_boundary_suppresses_the_finding() {
+        let mut constraint = constraint(
+            StoredFacadeConstraint::Impossible,
+            Some(StoredVisibilityReach::Crate),
+        );
+        constraint.declaration.item_def_path = String::from("crate::a::b::c::item");
+        constraint.declaration.item_module_def_path = String::from("crate::a::b::c");
+        let mut group = VisibilityConstraintGroup::default();
+        group.include(0, constraint, Some(finding("exact boundary")));
+        let callers = caller_map("crate::a::b::c::item", "crate::a::caller");
+
+        assert!(group.render(&callers, "/package").is_none());
+    }
+
+    #[test]
+    fn facade_less_parent_boundary_is_not_accepted_as_a_structural_repair() {
+        let constraint = constraint(
+            StoredFacadeConstraint::Impossible,
+            Some(StoredVisibilityReach::Crate),
+        );
+        let mut group = VisibilityConstraintGroup::default();
+        group.include(0, constraint, Some(finding("parent boundary")));
+        let callers = caller_map("crate::a::b::item", "crate::a::caller");
+
+        assert!(group.render(&callers, "/package").is_some());
+    }
+
+    #[test]
+    fn facade_less_crate_visibility_rewrites_to_the_cross_target_caller_boundary() {
+        let mut constraint = constraint(
+            StoredFacadeConstraint::Impossible,
+            Some(StoredVisibilityReach::Crate),
+        );
+        constraint.diagnostic_code = DiagnosticCode::ForbiddenPubCrate;
+        constraint.visibility_annotation = String::from("pub(crate)");
+        constraint.declared_reach = StoredVisibilityReach::Crate;
+        constraint.spelling = StoredVisibilitySpelling::Crate;
+        constraint.declaration.item_def_path = String::from("crate::a::b::c::item");
+        constraint.declaration.item_module_def_path = String::from("crate::a::b::c");
+        let mut candidate = finding("crate visibility");
+        candidate.diagnostic_code = DiagnosticCode::ForbiddenPubCrate;
+        candidate.fix_support = FixSupport::RestrictedAnnotation;
+        let mut group = VisibilityConstraintGroup::default();
+        group.include(0, constraint.clone(), Some(candidate.clone()));
+
+        let callers = caller_map("crate::a::b::c::item", "crate::a::caller");
+        let rendered = group.render(&callers, "/package");
+        assert!(
+            rendered.is_some(),
+            "caller boundary must retain the finding"
+        );
+        let Some(rendered) = rendered else {
+            return;
+        };
+        assert_eq!(
+            rendered.suggestion.as_deref(),
+            Some("consider using: `pub(in crate::a)`"),
+        );
+        assert_eq!(rendered.narrower_scope_def_path.as_deref(), Some("a"),);
+        assert_eq!(rendered.fix_support, FixSupport::RestrictedAnnotation);
+
+        let mut root_group = VisibilityConstraintGroup::default();
+        root_group.include(0, constraint, Some(candidate));
+        let root_callers = caller_map("crate::a::b::c::item", "crate::other");
+        let rendered = root_group.render(&root_callers, "/package");
+        assert!(
+            rendered.is_some(),
+            "crate-wide callers must retain structural advice"
+        );
+        let Some(rendered) = rendered else {
+            return;
+        };
+        assert_eq!(rendered.fix_support, FixSupport::None);
+        assert_eq!(rendered.narrower_scope_def_path, None);
+        assert_eq!(
+            rendered.suggestion.as_deref(),
+            Some(
+                "move the item into `crate`, or add an explicit facade at `crate` and rerun `cargo mend`"
+            ),
+        );
+    }
+
+    #[test]
+    fn signature_reach_remains_the_minimum_for_facade_capable_items() {
+        let mut constraint = constraint(
+            StoredFacadeConstraint::Absent,
+            Some(StoredVisibilityReach::Crate),
+        );
+        constraint.diagnostic_code = DiagnosticCode::ForbiddenPubCrate;
+        constraint.visibility_annotation = String::from("pub(crate)");
+        constraint.declared_reach = StoredVisibilityReach::Crate;
+        constraint.spelling = StoredVisibilitySpelling::Crate;
+        let mut candidate = finding("crate visibility");
+        candidate.diagnostic_code = DiagnosticCode::ForbiddenPubCrate;
+        let mut group = VisibilityConstraintGroup::default();
+        group.include(0, constraint, Some(candidate));
+
+        let callers = caller_map("crate::a::b::item", "crate::a::caller");
+        let rendered = group.render(&callers, "/package");
+        assert!(
+            rendered.is_some(),
+            "the signature requirement must retain the finding"
+        );
+        let Some(rendered) = rendered else {
+            return;
+        };
+        assert_eq!(
+            rendered.suggestion.as_deref(),
+            Some(
+                "move the item into `crate`, or add an explicit facade at `crate` and rerun `cargo mend`"
+            ),
+        );
+    }
+
+    fn caller_map(item_def_path: &str, caller_module_def_path: &str) -> CallerMap {
+        let mut reports = vec![StoredReport {
+            version:                FINDINGS_SCHEMA_VERSION,
+            analysis_fingerprint:   String::new(),
+            scope_fingerprint:      String::new(),
+            package_root:           String::from("/package"),
+            crate_root_file:        String::from("/package/src/lib.rs"),
+            config_fingerprint:     String::new(),
+            source_files:           Vec::new(),
+            findings:               Vec::new(),
+            visibility_constraints: Vec::new(),
+            pub_use_fix_facts:      Vec::new(),
+            all_features_coverage:  AllFeaturesCoverage::default(),
+            compiler_warning_facts: CompilerWarningFacts::None,
+            use_sites:              vec![UseSite {
+                target_def_path:        item_def_path.to_string(),
+                caller_module_def_path: caller_module_def_path.to_string(),
+                reference:              UseSiteReference::Named,
+            }],
+        }];
+        caller_aware::apply_caller_aware_suppression(&mut reports)
     }
 
     fn restricted(boundary: &str) -> StoredVisibilityReach {

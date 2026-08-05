@@ -4,6 +4,9 @@ use serde::Deserialize;
 const NOTE_FIXABLE_WITH_FIX: &str = "this warning is auto-fixable with `cargo mend --fix`";
 const NOTE_FIXABLE_WITH_FIX_PUB_USE: &str =
     "this warning is auto-fixable with `cargo mend --fix-pub-use`";
+const NOTE_ERROR_FIXABLE_WITH_FIX: &str = "this error is auto-fixable with `cargo mend --fix`";
+const NOTE_ERROR_FIXABLE_WITH_FIX_PUB_USE: &str =
+    "this error is auto-fixable with `cargo mend --fix-pub-use`";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -142,10 +145,12 @@ impl AdvertisedFix {
             // `--fix-pub-use` is the more specific claim and wins: the two note
             // texts differ past `--fix`, so test each note against the longer
             // one first.
-            if note.contains(NOTE_FIXABLE_WITH_FIX_PUB_USE) {
+            if note.contains(NOTE_FIXABLE_WITH_FIX_PUB_USE)
+                || note.contains(NOTE_ERROR_FIXABLE_WITH_FIX_PUB_USE)
+            {
                 return Self::WithFixPubUse;
             }
-            if note.contains(NOTE_FIXABLE_WITH_FIX) {
+            if note.contains(NOTE_FIXABLE_WITH_FIX) || note.contains(NOTE_ERROR_FIXABLE_WITH_FIX) {
                 advertised = Self::WithFix;
             }
         }

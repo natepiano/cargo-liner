@@ -11,6 +11,8 @@ pub(super) use annotation::capped_by_enclosing_modules;
 use anyhow::Result;
 pub(super) use policy::NoFacadeVisibilityRepair;
 pub(super) use policy::classify_no_facade_callers;
+pub(super) use policy::common_ancestor_def_path;
+pub(super) use policy::crate_rooted_def_path;
 pub(super) use policy::def_path_is_descendant;
 pub(super) use policy::no_facade_headline;
 pub(super) use policy::no_facade_suggestion;
