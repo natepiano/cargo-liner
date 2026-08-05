@@ -5,6 +5,7 @@ use super::visibility_constraint::StoredVisibilityConstraint;
 use crate::config::DiagnosticCode;
 use crate::reporting::AllFeaturesCoverage;
 use crate::reporting::CompilerWarningFacts;
+use crate::reporting::ExactBoundarySpelling;
 use crate::reporting::FixSupport;
 use crate::reporting::Severity;
 
@@ -44,6 +45,8 @@ pub(in crate::compiler) struct StoredReport {
 pub(in crate::compiler) enum UseSiteReference {
     Named,
     ThroughSignature,
+    PrivateImport,
+    RestrictedImport,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -95,6 +98,9 @@ pub(in crate::compiler) struct StoredFinding {
     /// this scope.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub narrower_scope_def_path: Option<String>,
+    /// Selects the source syntax for an exact boundary rewrite.
+    #[serde(default)]
+    pub exact_boundary_spelling: ExactBoundarySpelling,
 }
 
 impl StoredFinding {

@@ -68,7 +68,7 @@ enum FixOutcome {
     Applied(usize),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PubUseNotice {
     NoneAvailable {
         skipped_unsupported: usize,
@@ -194,6 +194,32 @@ impl ExecutionNotice {
             .collect::<Vec<_>>();
         format!("mend: {}", parts.join("; "))
     }
+
+    pub(crate) fn merge(&mut self, additional: Self) {
+        for kind in additional.kinds {
+            if kind.has_applied_edits() {
+                self.kinds.retain(|existing| !existing.is_empty_noop());
+            }
+            if kind.is_empty_noop() && self.kinds.iter().any(NoticeKind::has_applied_edits) {
+                continue;
+            }
+            let existing = self
+                .kinds
+                .iter_mut()
+                .find(|existing| match (&**existing, &kind) {
+                    (NoticeKind::Fixes(left), NoticeKind::Fixes(right)) => {
+                        left.fix_kind == right.fix_kind
+                    },
+                    (NoticeKind::PubUseFixes(_), NoticeKind::PubUseFixes(_)) => true,
+                    _ => false,
+                });
+            if let Some(existing) = existing {
+                existing.merge(kind);
+            } else {
+                self.kinds.push(kind);
+            }
+        }
+    }
 }
 
 impl From<NoticeKind> for ExecutionNotice {
@@ -205,6 +231,45 @@ impl From<Vec<NoticeKind>> for ExecutionNotice {
 }
 
 impl NoticeKind {
+    const fn has_applied_edits(&self) -> bool {
+        match self {
+            Self::Fixes(FixNotice {
+                outcome: FixOutcome::PreviewApplied(_) | FixOutcome::Applied(_),
+                ..
+            })
+            | Self::PubUseFixes(
+                PubUseNotice::PreviewApplied { .. } | PubUseNotice::Applied { .. },
+            ) => true,
+            Self::Fixes(FixNotice {
+                outcome: FixOutcome::NoneAvailable,
+                ..
+            })
+            | Self::PubUseFixes(PubUseNotice::NoneAvailable { .. }) => false,
+        }
+    }
+
+    const fn is_empty_noop(&self) -> bool {
+        matches!(
+            self,
+            Self::Fixes(FixNotice {
+                outcome: FixOutcome::NoneAvailable,
+                ..
+            }) | Self::PubUseFixes(PubUseNotice::NoneAvailable {
+                skipped_unsupported: 0,
+            })
+        )
+    }
+
+    fn merge(&mut self, additional: Self) {
+        match (self, additional) {
+            (Self::Fixes(current), Self::Fixes(additional)) => current.merge(additional),
+            (Self::PubUseFixes(current), Self::PubUseFixes(additional)) => {
+                current.merge(additional);
+            },
+            _ => {},
+        }
+    }
+
     fn render_part(&self) -> String {
         match self {
             Self::Fixes(notice) => notice.render(),
@@ -238,6 +303,21 @@ impl FixKind {
 }
 
 impl FixNotice {
+    fn merge(&mut self, additional: Self) {
+        debug_assert_eq!(self.fix_kind, additional.fix_kind);
+        self.outcome = match (&self.outcome, additional.outcome) {
+            (FixOutcome::NoneAvailable, additional) => additional,
+            (current, FixOutcome::NoneAvailable) => current.clone(),
+            (FixOutcome::PreviewApplied(current), FixOutcome::PreviewApplied(additional)) => {
+                FixOutcome::PreviewApplied(current + additional)
+            },
+            (FixOutcome::Applied(current), FixOutcome::Applied(additional)) => {
+                FixOutcome::Applied(current + additional)
+            },
+            (_, additional) => additional,
+        };
+    }
+
     fn render(&self) -> String {
         match self.outcome {
             FixOutcome::NoneAvailable => format!("no {} available", self.fix_kind.plural()),
@@ -277,6 +357,46 @@ impl FixNotice {
 }
 
 impl PubUseNotice {
+    const fn merge(&mut self, additional: Self) {
+        let (current_applied, current_skipped, current_intent) = self.counts();
+        let (additional_applied, additional_skipped, additional_intent) = additional.counts();
+        let applied = current_applied + additional_applied;
+        let skipped_unsupported = current_skipped + additional_skipped;
+        let merged_intent = match (current_intent, additional_intent) {
+            (OperationIntent::DryRun, _) | (_, OperationIntent::DryRun) => OperationIntent::DryRun,
+            _ => OperationIntent::Apply,
+        };
+        *self = match (applied, merged_intent) {
+            (0, _) => Self::NoneAvailable {
+                skipped_unsupported,
+            },
+            (_, OperationIntent::DryRun) => Self::PreviewApplied {
+                applied,
+                skipped_unsupported,
+            },
+            (_, OperationIntent::ReadOnly | OperationIntent::Apply) => Self::Applied {
+                applied,
+                skipped_unsupported,
+            },
+        };
+    }
+
+    const fn counts(&self) -> (usize, usize, OperationIntent) {
+        match self {
+            Self::NoneAvailable {
+                skipped_unsupported,
+            } => (0, *skipped_unsupported, OperationIntent::ReadOnly),
+            Self::PreviewApplied {
+                applied,
+                skipped_unsupported,
+            } => (*applied, *skipped_unsupported, OperationIntent::DryRun),
+            Self::Applied {
+                applied,
+                skipped_unsupported,
+            } => (*applied, *skipped_unsupported, OperationIntent::Apply),
+        }
+    }
+
     fn render(&self) -> String {
         match self {
             Self::NoneAvailable {
@@ -460,6 +580,41 @@ mod tests {
         assert_eq!(
             notice.render(),
             "mend: applied 2 import fix(es); applied 1 annotation rewrite(s); applied 1 `pub use` fix(es)"
+        );
+    }
+
+    #[test]
+    fn merged_notice_accumulates_edits_and_discards_later_empty_passes() {
+        let mut notice = ExecutionNotice::from(vec![
+            NoticeKind::Fixes(FixNotice::from_intent(
+                OperationIntent::Apply,
+                FixKind::Annotation,
+                2,
+            )),
+            NoticeKind::PubUseFixes(PubUseNotice::Applied {
+                applied:             1,
+                skipped_unsupported: 0,
+            }),
+        ]);
+        notice.merge(ExecutionNotice::from(vec![
+            NoticeKind::Fixes(FixNotice::from_intent(
+                OperationIntent::Apply,
+                FixKind::Annotation,
+                1,
+            )),
+            NoticeKind::Fixes(FixNotice::from_intent(
+                OperationIntent::Apply,
+                FixKind::Import,
+                0,
+            )),
+            NoticeKind::PubUseFixes(PubUseNotice::NoneAvailable {
+                skipped_unsupported: 0,
+            }),
+        ]));
+
+        assert_eq!(
+            notice.render(),
+            "mend: applied 3 annotation rewrite(s); applied 1 `pub use` fix(es)"
         );
     }
 }

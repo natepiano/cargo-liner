@@ -19,15 +19,15 @@ use super::boundary::ModuleSourceMap;
 use super::boundary::ParentBoundary;
 use super::exports::ParentFacadeExports;
 use crate::compiler::settings::DriverSettings;
+use crate::compiler::source_cache;
 use crate::compiler::source_cache::ExtractedPaths;
 use crate::compiler::source_cache::NameMention;
 use crate::compiler::source_cache::PathOrigin;
 use crate::compiler::source_cache::SourceCache;
 use crate::compiler::source_cache::UseRename;
-use crate::compiler::source_cache::normalized_name;
+use crate::rust_syntax;
 use crate::rust_syntax::LexicalRegions;
 use crate::rust_syntax::PathAnchor;
-use crate::rust_syntax::identifier_character;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::compiler) enum ParentFacadeUsage {
@@ -41,7 +41,7 @@ pub(in crate::compiler) enum ParentFacadeUsage {
 
 pub(in crate::compiler) type ParentFacadeUsageByName = FxHashMap<String, ParentFacadeUsage>;
 
-pub(super) fn normalized_export_name(name: &str) -> &str { normalized_name(name) }
+pub(super) fn normalized_export_name(name: &str) -> &str { source_cache::normalized_name(name) }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ParentFacadeReferenceUsage {
@@ -380,7 +380,7 @@ fn path_separator_before(
 fn literal_identifier_start(source: &str, segment_end: usize) -> usize {
     let mut start = segment_end;
     while let Some((offset, character)) = source[..start].char_indices().next_back() {
-        if !identifier_character(character) {
+        if !rust_syntax::identifier_character(character) {
             break;
         }
         start = offset;
@@ -402,11 +402,11 @@ fn literal_match_has_identifier_boundaries(source: &str, offset: usize, length: 
     before
         .chars()
         .next_back()
-        .is_none_or(|character| !identifier_character(character))
+        .is_none_or(|character| !rust_syntax::identifier_character(character))
         && after
             .chars()
             .next()
-            .is_none_or(|character| !identifier_character(character))
+            .is_none_or(|character| !rust_syntax::identifier_character(character))
 }
 
 fn literal_module_contexts(

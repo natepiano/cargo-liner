@@ -132,6 +132,7 @@ mod tests {
     use crate::config::DiagnosticCode;
     use crate::reporting::AllFeaturesCoverage;
     use crate::reporting::CompilerWarningFacts;
+    use crate::reporting::ExactBoundarySpelling;
     use crate::reporting::FixSupport;
     use crate::reporting::Severity;
 
@@ -224,6 +225,7 @@ mod tests {
             visibility_annotation: None,
             item_def_path: None,
             narrower_scope_def_path: None,
+            exact_boundary_spelling: ExactBoundarySpelling::CratePath,
         }
     }
 

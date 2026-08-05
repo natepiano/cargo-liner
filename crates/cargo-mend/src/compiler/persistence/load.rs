@@ -348,6 +348,7 @@ fn extend_report_from_stored(
                 narrower_scope: NarrowerScope::resolve(
                     finding.narrower_scope_def_path,
                     finding.fix_support,
+                    finding.exact_boundary_spelling,
                 ),
             },
         });
@@ -398,6 +399,7 @@ mod tests {
     use crate::config::DiagnosticCode;
     use crate::reporting::AllFeaturesCoverage;
     use crate::reporting::CompilerWarningFacts;
+    use crate::reporting::ExactBoundarySpelling;
     use crate::reporting::FixSupport;
     use crate::reporting::Severity;
     use crate::selection::Selection;
@@ -798,6 +800,7 @@ mod tests {
             visibility_annotation: None,
             item_def_path: None,
             narrower_scope_def_path: None,
+            exact_boundary_spelling: ExactBoundarySpelling::CratePath,
         }
     }
 }

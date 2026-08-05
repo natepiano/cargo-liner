@@ -195,8 +195,8 @@ impl Visit<'_> for ReferenceCollector<'_> {
         let mut bindings = BTreeSet::new();
         collect_pat_bindings(&arm.pat, &mut bindings);
         self.enter_scope_with(bindings);
-        if let Some((_, guard)) = &arm.guard {
-            self.visit_expr(guard);
+        if let Pat::Guard(pat_guard) = &arm.pat {
+            self.visit_expr(&pat_guard.guard);
         }
         self.visit_expr(&arm.body);
         self.exit_scope();
@@ -261,6 +261,7 @@ fn collect_pat_bindings(pat: &Pat, bindings: &mut BTreeSet<String>) {
                 collect_pat_bindings(sub, bindings);
             }
         },
+        Pat::Guard(pat_guard) => collect_pat_bindings(&pat_guard.pat, bindings),
         Pat::Tuple(tuple) => {
             for elem in &tuple.elems {
                 collect_pat_bindings(elem, bindings);
@@ -362,8 +363,10 @@ mod tests {
     use std::collections::BTreeSet;
 
     use proc_macro2::TokenStream;
+    use syn::visit::Visit;
 
     use super::BareReference;
+    use super::ReferenceCollector;
     use super::collect_bare_refs_from_tokens;
     use super::support;
 
@@ -404,5 +407,30 @@ mod tests {
         collect_bare_refs_from_tokens(&tokens, &offsets, &names, 0, &mut refs);
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].name, "do_thing");
+    }
+
+    #[test]
+    fn match_guard_uses_pattern_bindings_as_local_scope() {
+        let source = r"
+fn inspect(value: i32) {
+    match value {
+        threshold if helper(threshold) => helper(threshold),
+    }
+}
+";
+        let syntax = syn::parse_file(source).expect("parse fixture");
+        let offsets = support::line_offsets(source);
+        let imported_names = BTreeSet::from(["helper".to_string(), "threshold".to_string()]);
+        let mut collector = ReferenceCollector::new(&offsets, &imported_names);
+
+        collector.visit_file(&syntax);
+
+        assert_eq!(collector.references.len(), 2);
+        assert!(
+            collector
+                .references
+                .iter()
+                .all(|reference| reference.name == "helper")
+        );
     }
 }

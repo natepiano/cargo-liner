@@ -1,13 +1,11 @@
 use crate::support::*;
 
-// Depth boundary for the shallow-private policy: depth 1 and depth 2
-// are shallow (pub(crate) allowed), depth 3+ is nested (pub(crate) forbidden
-// unless the parent facade caps at `pub(crate) use`).
-// See `resolve_module_location` and `allow_pub_crate_by_policy` in
-// src/compiler/visibility/policy.rs, and the 0.13.0 CHANGELOG entry.
+// `pub(crate)` is accepted at any depth when the crate root is the narrowest
+// boundary that satisfies callers and signatures. Shallower cases are still
+// reported when private or `pub(super)` is sufficient.
 
 #[test]
-fn integration_test_support_module_pub_crate_is_rejected() {
+fn integration_test_support_module_keeps_required_pub_crate() {
     let temp = tempdir().expect("create temp fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
@@ -54,14 +52,14 @@ edition = "2024"
             && finding.path.ends_with("tests/support.rs")
     });
     assert!(
-        has_forbidden,
-        "expected forbidden_pub_crate on pub(crate) in tests/support.rs: {:?}",
+        !has_forbidden,
+        "the integration-test crate root is the required boundary: {:?}",
         report.findings,
     );
 }
 
 #[test]
-fn pub_crate_at_depth_1_is_allowed() {
+fn unused_pub_crate_at_depth_1_is_removed() {
     let temp = tempdir().expect("create temp fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
@@ -83,19 +81,23 @@ edition = "2024"
     .expect("write foo");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    let forbidden: Vec<_> = report
+    let findings: Vec<_> = report
         .findings
         .iter()
         .filter(|f| f.code == DiagnosticCode::ForbiddenPubCrate)
         .collect();
+    assert_eq!(findings.len(), 1, "expected one narrowing: {report:#?}");
     assert!(
-        forbidden.is_empty(),
-        "depth-1 pub(crate) in a private module should be allowed (shallow): {forbidden:?}",
+        findings[0]
+            .help
+            .iter()
+            .any(|line| line == "consider removing the visibility"),
+        "unused crate visibility must narrow to private: {report:#?}",
     );
 }
 
 #[test]
-fn pub_crate_at_depth_2_is_allowed() {
+fn pub_crate_at_depth_2_is_accepted_when_a_facade_requires_crate_reach() {
     let temp = tempdir().expect("create temp fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
@@ -129,7 +131,7 @@ edition = "2024"
         .collect();
     assert!(
         forbidden.is_empty(),
-        "depth-2 pub(crate) in a private module subtree should be allowed (shallow): {forbidden:?}",
+        "the crate-visible facade requires the helper's crate reach: {forbidden:?}",
     );
 }
 
@@ -583,7 +585,7 @@ edition = "2024"
 }
 
 #[test]
-fn pub_crate_at_depth_3_requires_structure_for_a_crate_visible_method_surface() {
+fn pub_crate_at_depth_3_is_accepted_for_a_crate_visible_method_surface() {
     let temp = tempdir().expect("create temp fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
@@ -639,20 +641,12 @@ pub(crate) struct Storage {
     .expect("write consumer");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    let storage_finding = report
-        .findings
-        .iter()
-        .find(|finding| {
-            finding.code == DiagnosticCode::ForbiddenPubCrate
-                && finding.path.ends_with("src/foo/bar/baz.rs")
-        })
-        .unwrap_or_else(|| panic!("missing Storage finding: {report:#?}"));
     assert!(
-        storage_finding.help.iter().any(|help| {
-            help
-                == "move the item into `crate`, or add an explicit facade at `crate` and rerun `cargo mend`"
+        report.findings.iter().all(|finding| {
+            finding.code != DiagnosticCode::ForbiddenPubCrate
+                || !finding.path.ends_with("src/foo/bar/baz.rs")
         }),
-        "crate-visible method exposure requires structural advice: {report:#?}",
+        "crate-visible signature reach must accept Storage's `pub(crate)`: {report:#?}",
     );
 }
 
@@ -760,15 +754,11 @@ pub struct Beta {
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert!(
-        report.findings.iter().any(|finding| {
-            finding.code == DiagnosticCode::ForbiddenPubCrate
-                && finding.path.ends_with("src/foo/bar/baz.rs")
-                && finding.help.iter().any(|help| {
-                    help
-                        == "move the item into `crate`, or add an explicit facade at `crate` and rerun `cargo mend`"
-                })
+        report.findings.iter().all(|finding| {
+            finding.code != DiagnosticCode::ForbiddenPubCrate
+                || !finding.path.ends_with("src/foo/bar/baz.rs")
         }),
-        "the cycle guard must retain Storage's crate-visible structural requirement: {report:#?}",
+        "the cycle guard must accept Storage's required crate reach: {report:#?}",
     );
 }
 
@@ -794,7 +784,7 @@ edition = "2024"
     .expect("write lib");
     fs::write(
         temp.path().join("src/panel/mod.rs"),
-        "mod conversion;\nmod diegetic;\npub use conversion::Saved;\npub(crate) fn entry() -> u32 { diegetic::run() }\n",
+        "mod conversion;\nmod diegetic;\npub use conversion::Saved;\npub(super) fn entry() -> u32 { diegetic::run() }\n",
     )
     .expect("write panel module");
     fs::write(
@@ -816,7 +806,7 @@ impl Saved {
         .expect("write saved module");
     fs::write(
         temp.path().join("src/panel/diegetic.rs"),
-        "use super::conversion::Saved;\npub(crate) fn run() -> u32 {\n    let saved = Saved { width: 3 };\n    saved.apply_world_conversion()\n}\n",
+        "use super::conversion::Saved;\npub(super) fn run() -> u32 {\n    let saved = Saved { width: 3 };\n    saved.apply_world_conversion()\n}\n",
     )
     .expect("write caller module");
 
@@ -877,6 +867,361 @@ impl Saved {
                 )
         }),
         "the applied boundary must be accepted on the next run: {fixed_report:#?}",
+    );
+}
+
+#[test]
+fn named_fields_are_rewritten_to_their_caller_boundaries() {
+    let temp = tempdir().expect("create named-field fixture dir");
+    let original = write_named_field_fixture(temp.path());
+
+    let manifest_path = temp.path().join("Cargo.toml");
+    let report = run_mend_json(&manifest_path);
+    assert_named_field_findings(&report);
+
+    assert_human_report_advertises_error_fix(&manifest_path);
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(&manifest_path)
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    assert_eq!(
+        fs::read_to_string(temp.path().join("src/render/panel_shapes/primitive.rs"))
+            .expect("read fixed fields"),
+        original
+            .replace("pub(crate) panel", "pub(super) panel")
+            .replace("pub(crate) source", "pub(in crate::render) source")
+            .replace("pub(crate) patterned", "pub(super) patterned")
+            .replace("pub(crate) offset_field", "pub(super) offset_field"),
+        "each field must receive only its required visibility",
+    );
+
+    let fixed_report = run_mend_json(&manifest_path);
+    assert!(
+        fixed_report.findings.iter().all(|finding| {
+            !finding
+                .path
+                .ends_with("src/render/panel_shapes/primitive.rs")
+                || !matches!(
+                    finding.code,
+                    DiagnosticCode::ForbiddenPubCrate | DiagnosticCode::ForbiddenPubInCrate
+                )
+        }),
+        "the applied field boundaries must be accepted on the next run: {fixed_report:#?}",
+    );
+}
+
+#[test]
+fn crate_wide_field_keeps_pub_crate() {
+    let temp = tempdir().expect("create type-capped field fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "type_capped_field_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src/restore/target_position")).expect("create sources");
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "mod managed;\nmod restore;\n",
+    )
+    .expect("write lib");
+    fs::write(
+        temp.path().join("src/restore/mod.rs"),
+        "mod target_position;\npub(crate) use target_position::TargetPosition;\n",
+    )
+    .expect("write restore module");
+    fs::write(
+        temp.path().join("src/restore/target_position/mod.rs"),
+        "mod target;\npub(crate) use target::TargetPosition;\n",
+    )
+    .expect("write target position module");
+    fs::write(
+        temp.path().join("src/restore/target_position/target.rs"),
+        "pub(crate) struct TargetPosition {\n    pub(crate) physical_position: Option<i32>,\n}\n",
+    )
+    .expect("write target module");
+    fs::write(
+        temp.path().join("src/managed.rs"),
+        "#[cfg(test)]\nmod tests {\n    use crate::restore::TargetPosition;\n\n    #[test]\n    fn reads_target_position() {\n        let target = TargetPosition { physical_position: Some(1) };\n        assert_eq!(target.physical_position, Some(1));\n    }\n}\n",
+    )
+    .expect("write managed module");
+
+    let manifest_path = temp.path().join("Cargo.toml");
+    let report = run_mend_json(&manifest_path);
+    assert!(
+        report.findings.iter().all(|finding| {
+            !finding
+                .path
+                .ends_with("src/restore/target_position/target.rs")
+                || finding.line_start != 2
+                || !matches!(
+                    finding.code,
+                    DiagnosticCode::ForbiddenPubCrate
+                        | DiagnosticCode::ForbiddenPubInCrate
+                        | DiagnosticCode::SuspiciousPub
+                )
+        }),
+        "the field's crate-wide caller requires `pub(crate)`: {report:#?}",
+    );
+}
+
+const NAMED_FIELD_ORIGINAL: &str = r#"pub struct Key {
+    pub(crate) panel: u32,
+    pub(crate) source: u32,
+}
+
+pub struct PatternKey {
+    pub(crate) patterned: u32,
+}
+
+pub(super) fn pattern_key() -> PatternKey {
+    PatternKey { patterned: 5 }
+}
+
+pub struct OffsetKey {
+    pub(crate) offset_field: u32,
+}
+"#;
+
+fn write_named_field_fixture(root: &std::path::Path) -> &'static str {
+    pin_pub_in_path(root, PubInPath::Permitted);
+    fs::write(
+        root.join("mend.toml"),
+        "[diagnostics]\nsuspicious_pub = false\n\n[visibility]\npub_in_path = \"permitted\"\n",
+    )
+    .expect("write fixture config");
+    fs::write(
+        root.join("Cargo.toml"),
+        r#"[package]
+name = "named_field_boundary_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(root.join("src/render/panel_shapes")).expect("create sources");
+    fs::write(
+        root.join("src/lib.rs"),
+        "mod render;\npub fn entry() -> u32 { render::entry() }\n",
+    )
+    .expect("write lib");
+    fs::write(
+        root.join("src/render/mod.rs"),
+        "mod panel_shapes;\npub(crate) fn entry() -> u32 {\n    let key = panel_shapes::make();\n    panel_shapes::read_panel(&key) + panel_shapes::read_patterned() + panel_shapes::offset() as u32 + key.source\n}\n",
+    )
+    .expect("write render module");
+    fs::write(
+        root.join("src/render/panel_shapes/mod.rs"),
+        "mod batching;\nmod primitive;\npub(super) use primitive::Key;\npub(super) fn make() -> Key { batching::make() }\npub(super) fn read_panel(key: &Key) -> u32 { batching::read_panel(key) }\npub(super) fn read_patterned() -> u32 { batching::read_patterned() }\npub(super) fn offset() -> usize { batching::offset() }\n",
+    )
+    .expect("write panel_shapes module");
+    fs::write(
+        root.join("src/render/panel_shapes/batching.rs"),
+        "use super::primitive::{self, Key, OffsetKey, PatternKey};\n\npub(super) fn make() -> Key {\n    Key { panel: 2, source: 3 }\n}\n\npub(super) fn read_panel(key: &Key) -> u32 {\n    let Key { panel, .. } = key;\n    *panel\n}\n\npub(super) fn read_patterned() -> u32 {\n    let PatternKey { patterned } = primitive::pattern_key();\n    patterned\n}\n\npub(super) fn offset() -> usize {\n    std::mem::offset_of!(OffsetKey, offset_field)\n}\n",
+    )
+    .expect("write batching module");
+    fs::write(
+        root.join("src/render/panel_shapes/primitive.rs"),
+        NAMED_FIELD_ORIGINAL,
+    )
+    .expect("write primitive module");
+    NAMED_FIELD_ORIGINAL
+}
+
+fn assert_named_field_findings(report: &Report) {
+    let field_findings = report
+        .findings
+        .iter()
+        .filter(|finding| {
+            finding.code == DiagnosticCode::ForbiddenPubCrate
+                && finding
+                    .path
+                    .ends_with("src/render/panel_shapes/primitive.rs")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        field_findings.len(),
+        4,
+        "all field annotations must be reported: {report:#?}",
+    );
+    let has_help = |line_start, expected: &str| {
+        field_findings.iter().any(|finding| {
+            finding.line_start == line_start && finding.help.iter().any(|help| help == expected)
+        })
+    };
+    assert!(
+        has_help(2, "consider using: `pub(super)`"),
+        "the field used only under the parent module needs `pub(super)`: {report:#?}",
+    );
+    assert!(
+        has_help(3, "consider using: `pub(in crate::render)`"),
+        "the field read from the outer module needs its exact boundary: {report:#?}",
+    );
+    assert!(
+        has_help(7, "consider using: `pub(super)`"),
+        "a field named in a sibling-module pattern needs `pub(super)`: {report:#?}",
+    );
+    assert!(
+        has_help(15, "consider using: `pub(super)`"),
+        "a field named by `offset_of!` in a sibling module needs `pub(super)`: {report:#?}",
+    );
+    assert!(
+        field_findings.iter().all(|finding| {
+            finding
+                .help
+                .iter()
+                .any(|line| line.contains("auto-fixable"))
+        }),
+        "all exact field boundaries must be offered to `--fix`: {report:#?}",
+    );
+}
+
+#[test]
+fn tuple_fields_are_rewritten_to_their_caller_boundary() {
+    let temp = tempdir().expect("create tuple-field fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "tuple_field_boundary_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src/a/b/c")).expect("create sources");
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "mod a;\npub fn entry() -> u32 { a::entry() }\n",
+    )
+    .expect("write lib");
+    fs::write(
+        temp.path().join("src/a/mod.rs"),
+        "mod b;\npub(crate) fn entry() -> u32 { b::entry() }\n",
+    )
+    .expect("write a module");
+    fs::write(
+        temp.path().join("src/a/b/mod.rs"),
+        "mod c;\npub(super) fn entry() -> u32 { c::Tuple(4).0 }\n",
+    )
+    .expect("write b module");
+    fs::write(
+        temp.path().join("src/a/b/c/mod.rs"),
+        "pub struct Tuple(\n    pub(crate) u32,\n);\n",
+    )
+    .expect("write c module");
+
+    let manifest_path = temp.path().join("Cargo.toml");
+    let report = run_mend_json(&manifest_path);
+    let finding = report
+        .findings
+        .iter()
+        .find(|finding| {
+            finding.code == DiagnosticCode::ForbiddenPubCrate
+                && finding.path.ends_with("src/a/b/c/mod.rs")
+                && finding.line_start == 2
+        })
+        .unwrap_or_else(|| panic!("missing tuple-field finding: {report:#?}"));
+    assert!(
+        finding
+            .help
+            .iter()
+            .any(|help| help == "consider using: `pub(super)`"),
+        "the tuple field needs its constructor caller boundary: {report:#?}",
+    );
+    assert!(
+        finding
+            .help
+            .iter()
+            .any(|help| help.contains("auto-fixable")),
+        "the tuple-field boundary must be offered to `--fix`: {report:#?}",
+    );
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(&manifest_path)
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        fs::read_to_string(temp.path().join("src/a/b/c/mod.rs")).expect("read fixed tuple field"),
+        "pub(super) struct Tuple(\n    pub(super) u32,\n);\n",
+        "the tuple struct and field must receive only their required visibility",
+    );
+
+    let fixed_report = run_mend_json(&manifest_path);
+    assert!(
+        fixed_report.findings.iter().all(|finding| {
+            !finding.path.ends_with("src/a/b/c/mod.rs")
+                || !matches!(
+                    finding.code,
+                    DiagnosticCode::ForbiddenPubCrate | DiagnosticCode::ForbiddenPubInCrate
+                )
+        }),
+        "the applied tuple-field boundary must be accepted: {fixed_report:#?}",
+    );
+}
+
+#[test]
+fn crate_wide_tuple_field_keeps_pub_crate() {
+    let temp = tempdir().expect("create crate-wide tuple-field fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "crate_wide_tuple_field_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create sources");
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "mod consumer;\nmod values;\npub fn entry() -> u32 { consumer::entry() }\n",
+    )
+    .expect("write lib");
+    fs::write(
+        temp.path().join("src/consumer.rs"),
+        "pub(super) fn entry() -> u32 { crate::values::Tuple(4).0 }\n",
+    )
+    .expect("write consumer");
+    fs::write(
+        temp.path().join("src/values.rs"),
+        "pub(crate) struct Tuple(pub(crate) u32);\n",
+    )
+    .expect("write values");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        report.findings.iter().all(|finding| {
+            finding.code != DiagnosticCode::ForbiddenPubCrate
+                || !finding.path.ends_with("src/values.rs")
+        }),
+        "crate-root sibling use requires `pub(crate)` on the tuple and its field: {report:#?}",
     );
 }
 

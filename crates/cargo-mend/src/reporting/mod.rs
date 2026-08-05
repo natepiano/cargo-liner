@@ -17,6 +17,7 @@ pub(crate) use constants::EXIT_CODE_WARNING;
 pub(crate) use diagnostics::AllFeaturesCoverage;
 pub(crate) use diagnostics::BuildOutcome;
 pub(crate) use diagnostics::CompilerWarningFacts;
+pub(crate) use diagnostics::ExactBoundarySpelling;
 pub(crate) use diagnostics::Finding;
 pub(crate) use diagnostics::FixSupport;
 pub(crate) use diagnostics::ItemVisibility;

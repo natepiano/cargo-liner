@@ -14,10 +14,19 @@ pub(super) type CallerMap = BTreeMap<CallerKey, ItemCallers>;
 #[derive(Default)]
 pub(super) struct ItemCallers {
     /// Modules that write a path to the item.
-    pub naming:   BTreeSet<String>,
+    pub naming:             BTreeSet<String>,
     /// Every module that reaches the item, including those that reach it only
     /// through the signature of some other item they named.
-    pub reaching: BTreeSet<String>,
+    pub reaching:           BTreeSet<String>,
+    /// Reach backed by an actual expression, type, or signature rather than
+    /// an import declaration without a semantic reference.
+    pub semantic_reaching:  BTreeSet<String>,
+    /// Private imports must delay a visibility rewrite until the import is
+    /// removed, but they do not prove that the item is used.
+    pub private_imports:    BTreeSet<String>,
+    /// Restricted imports impose their written boundary even when no semantic
+    /// reference uses the imported name.
+    pub restricted_imports: BTreeSet<String>,
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
@@ -36,8 +45,16 @@ impl CallerKey {
 }
 
 pub(super) fn apply_caller_aware_suppression(reports: &mut [StoredReport]) -> CallerMap {
+    let callers = collect_callers(reports);
+    for report in reports {
+        suppress_invalid_narrowings(report, &callers);
+    }
+    callers
+}
+
+fn collect_callers(reports: &[StoredReport]) -> CallerMap {
     let mut callers = CallerMap::new();
-    for report in reports.iter() {
+    for report in reports {
         for site in &report.use_sites {
             let item_callers = callers
                 .entry(CallerKey::for_package(
@@ -48,39 +65,118 @@ pub(super) fn apply_caller_aware_suppression(reports: &mut [StoredReport]) -> Ca
             item_callers
                 .reaching
                 .insert(site.caller_module_def_path.clone());
-            if site.reference == UseSiteReference::Named {
-                item_callers
-                    .naming
-                    .insert(site.caller_module_def_path.clone());
+            match site.reference {
+                UseSiteReference::Named => {
+                    item_callers
+                        .naming
+                        .insert(site.caller_module_def_path.clone());
+                    item_callers
+                        .semantic_reaching
+                        .insert(site.caller_module_def_path.clone());
+                },
+                UseSiteReference::ThroughSignature => {
+                    item_callers
+                        .semantic_reaching
+                        .insert(site.caller_module_def_path.clone());
+                },
+                UseSiteReference::PrivateImport => {
+                    item_callers
+                        .naming
+                        .insert(site.caller_module_def_path.clone());
+                    item_callers
+                        .private_imports
+                        .insert(site.caller_module_def_path.clone());
+                },
+                UseSiteReference::RestrictedImport => {
+                    item_callers
+                        .naming
+                        .insert(site.caller_module_def_path.clone());
+                    item_callers
+                        .restricted_imports
+                        .insert(site.caller_module_def_path.clone());
+                },
             }
         }
     }
-
-    for report in reports.iter_mut() {
-        let package_root = report.package_root.clone();
-        report.findings.retain(|finding| {
-            if matches!(
-                finding.diagnostic_code,
-                DiagnosticCode::ForbiddenPubCrate | DiagnosticCode::ForbiddenPubInCrate
-            ) {
-                return true;
-            }
-            let Some(item_path) = finding.item_def_path.as_deref() else {
-                return true;
-            };
-            let Some(narrower_scope) = finding.narrower_scope_def_path.as_deref() else {
-                return true;
-            };
-            let Some(item_callers) = callers_for_package(&callers, &package_root, item_path) else {
-                return true;
-            };
-            item_callers
-                .reaching
-                .iter()
-                .all(|caller| visibility::def_path_is_descendant(caller, narrower_scope))
-        });
-    }
     callers
+}
+
+fn suppress_invalid_narrowings(report: &mut StoredReport, callers: &CallerMap) {
+    let package_root = report.package_root.clone();
+    let constrained_sites = report
+        .visibility_constraints
+        .iter()
+        .map(|constraint| {
+            (
+                constraint.diagnostic_code,
+                constraint.source.path.clone(),
+                constraint.source.line,
+                constraint.source.column,
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    report.findings.retain_mut(|finding| {
+        if matches!(
+            finding.diagnostic_code,
+            DiagnosticCode::ForbiddenPubCrate | DiagnosticCode::ForbiddenPubInCrate
+        ) || constrained_sites.contains(&(
+            finding.diagnostic_code,
+            finding.path.clone(),
+            finding.line,
+            finding.column,
+        )) {
+            true
+        } else {
+            retain_narrowing_finding(finding, callers, &package_root)
+        }
+    });
+}
+
+fn retain_narrowing_finding(
+    finding: &mut super::StoredFinding,
+    callers: &CallerMap,
+    package_root: &str,
+) -> bool {
+    let Some(item_path) = finding.item_def_path.as_deref() else {
+        return true;
+    };
+    let Some(narrower_scope) = finding.narrower_scope_def_path.as_deref() else {
+        return true;
+    };
+    let Some(item_callers) = callers_for_package(callers, package_root, item_path) else {
+        return true;
+    };
+    if item_callers
+        .semantic_reaching
+        .iter()
+        .any(|caller| !visibility::def_path_is_descendant(caller, narrower_scope))
+    {
+        return false;
+    }
+    if item_callers
+        .restricted_imports
+        .iter()
+        .any(|caller| !visibility::def_path_is_descendant(caller, narrower_scope))
+    {
+        return finding.diagnostic_code == DiagnosticCode::SuspiciousPub
+            && (finding.related.is_some()
+                || matches!(
+                    finding.fix_support,
+                    crate::reporting::FixSupport::PubUse
+                        | crate::reporting::FixSupport::NeedsManualPubUseCleanup
+                ));
+    }
+    if item_callers
+        .private_imports
+        .iter()
+        .any(|caller| !visibility::def_path_is_descendant(caller, narrower_scope))
+    {
+        finding.fix_support = crate::reporting::FixSupport::BlockedByPrivateImport;
+        finding.related = Some(String::from(
+            "remove the unused private import before narrowing this item",
+        ));
+    }
+    true
 }
 
 pub(super) fn callers_for_package<'a>(
@@ -105,6 +201,7 @@ mod tests {
     use crate::config::DiagnosticCode;
     use crate::reporting::AllFeaturesCoverage;
     use crate::reporting::CompilerWarningFacts;
+    use crate::reporting::ExactBoundarySpelling;
     use crate::reporting::FixSupport;
     use crate::reporting::Severity;
 
@@ -131,6 +228,53 @@ mod tests {
         apply_caller_aware_suppression(&mut reports);
 
         assert!(reports[0].findings.is_empty());
+    }
+
+    #[test]
+    fn private_import_keeps_the_warning_but_blocks_its_rewrite() {
+        let item_path = "crate::module::item";
+        let mut finding = narrowing_finding(DiagnosticCode::UnusedPub, item_path, "crate::module");
+        finding.fix_support = FixSupport::UnusedPub;
+        let mut reports = vec![StoredReport {
+            findings: vec![finding],
+            use_sites: vec![UseSite {
+                target_def_path:        item_path.to_string(),
+                caller_module_def_path: "crate::other".to_string(),
+                reference:              UseSiteReference::PrivateImport,
+            }],
+            ..report_for_test()
+        }];
+
+        apply_caller_aware_suppression(&mut reports);
+
+        assert_eq!(reports[0].findings.len(), 1);
+        assert_eq!(
+            reports[0].findings[0].fix_support,
+            FixSupport::BlockedByPrivateImport
+        );
+    }
+
+    #[test]
+    fn restricted_import_suppresses_a_direct_narrowing_but_keeps_facade_cleanup() {
+        let item_path = "crate::module::item";
+        let direct = narrowing_finding(DiagnosticCode::UnusedPub, item_path, "crate::module");
+        let mut cleanup =
+            narrowing_finding(DiagnosticCode::SuspiciousPub, item_path, "crate::module");
+        cleanup.fix_support = FixSupport::PubUse;
+        let mut reports = vec![StoredReport {
+            findings: vec![direct, cleanup],
+            use_sites: vec![UseSite {
+                target_def_path:        item_path.to_string(),
+                caller_module_def_path: "crate".to_string(),
+                reference:              UseSiteReference::RestrictedImport,
+            }],
+            ..report_for_test()
+        }];
+
+        apply_caller_aware_suppression(&mut reports);
+
+        assert_eq!(reports[0].findings.len(), 1);
+        assert_eq!(reports[0].findings[0].fix_support, FixSupport::PubUse);
     }
 
     fn narrowing_finding(
@@ -167,6 +311,7 @@ mod tests {
             visibility_annotation: None,
             item_def_path: None,
             narrower_scope_def_path: None,
+            exact_boundary_spelling: ExactBoundarySpelling::CratePath,
         }
     }
 

@@ -48,6 +48,7 @@ pub(super) fn build_finding(
         visibility_annotation:   params.visibility_annotation,
         item_def_path:           params.item_def_path,
         narrower_scope_def_path: params.narrower_scope_def_path,
+        exact_boundary_spelling: params.exact_boundary_spelling,
     })
 }
 
@@ -86,6 +87,7 @@ pub(super) fn build_line_finding(
         visibility_annotation: params.visibility_annotation,
         item_def_path: params.item_def_path,
         narrower_scope_def_path: params.narrower_scope_def_path,
+        exact_boundary_spelling: params.exact_boundary_spelling,
     })
 }
 

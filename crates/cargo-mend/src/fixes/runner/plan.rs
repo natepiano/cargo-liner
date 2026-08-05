@@ -63,11 +63,16 @@ impl MendRunner<'_> {
             .map_err(MendFailure::Unexpected)?;
         let restricted_annotation_scan =
             (operation_mode.fixes.contains(FixKind::RestrictedAnnotation)
-                && diagnostics_config.is_enabled(DiagnosticCode::SuspiciousPub)
-                    == DiagnosticStatus::Enabled)
-                .then(|| restricted_annotation::scan_from_report(&report))
-                .transpose()
-                .map_err(MendFailure::Unexpected)?;
+                && [
+                    DiagnosticCode::ForbiddenPubCrate,
+                    DiagnosticCode::ForbiddenPubInCrate,
+                    DiagnosticCode::SuspiciousPub,
+                ]
+                .into_iter()
+                .any(|code| diagnostics_config.is_enabled(code) == DiagnosticStatus::Enabled))
+            .then(|| restricted_annotation::scan_from_report(&report))
+            .transpose()
+            .map_err(MendFailure::Unexpected)?;
         let unused_pub_scan = (operation_mode.fixes.contains(FixKind::UnusedPub)
             && diagnostics_config.is_enabled(DiagnosticCode::UnusedPub)
                 == DiagnosticStatus::Enabled)

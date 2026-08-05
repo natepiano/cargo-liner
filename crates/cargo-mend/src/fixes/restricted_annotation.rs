@@ -16,27 +16,31 @@ pub(crate) struct RestrictedAnnotationScan {
     pub fixes: Vec<UseFix>,
 }
 
-/// Rewrites a bare `pub` or an eligible `pub(crate)` to the exact
-/// `pub(in crate::…)` boundary the compiler pass resolved for it.
+/// Rewrites a bare `pub` or an eligible `pub(crate)` to the exact boundary the
+/// compiler pass resolved for it.
 ///
-/// The replacement is built from [`NarrowerScope::ExactBoundary`], a def-path
-/// the pass computed — never from `Finding::suggestion`, which is rendered
-/// advice. That variant is the pass's assertion that the scope is an exact
-/// module boundary and that no facade line needs editing alongside it; every
-/// other finding is left alone.
+/// The replacement is built from an exact [`NarrowerScope`] variant — never
+/// from `Finding::suggestion`, which is rendered advice. These variants assert
+/// that the effective scope is exact and that no facade line needs editing
+/// alongside it; every other finding is left alone.
 pub(crate) fn scan_from_report(report: &Report) -> Result<RestrictedAnnotationScan> {
     let root = Path::new(&report.root);
     let mut fixes = Vec::new();
     let mut rewritten_sites: BTreeSet<String> = BTreeSet::new();
     for finding in &report.findings {
-        let NarrowerScope::ExactBoundary(narrower_scope_def_path) =
-            &finding.item_visibility.narrower_scope
-        else {
-            continue;
+        let replacement = match &finding.item_visibility.narrower_scope {
+            NarrowerScope::ExactBoundary(def_path) => format!("pub(in crate::{def_path})"),
+            NarrowerScope::ExactParentBoundary(_) => String::from("pub(super)"),
+            NarrowerScope::CrateBoundary => String::from("pub(crate)"),
+            NarrowerScope::Private => String::new(),
+            NarrowerScope::PublicBoundary => String::from("pub"),
+            NarrowerScope::Unproposed | NarrowerScope::SuppressionKey(_) => continue,
         };
         let (expected_form, expected_annotation) = match &finding.item_visibility.written {
             WrittenVisibility::Bare => (VisibilityAnnotationForm::Bare, "pub"),
-            WrittenVisibility::Restricted(source) if source == "pub(crate)" => {
+            WrittenVisibility::Restricted(source)
+                if source == "pub(crate)" || source == "pub(in crate)" =>
+            {
                 (VisibilityAnnotationForm::Restricted, source.as_str())
             },
             WrittenVisibility::Unknown | WrittenVisibility::Restricted(_) => continue,
@@ -65,10 +69,14 @@ pub(crate) fn scan_from_report(report: &Report) -> Result<RestrictedAnnotationSc
             continue;
         }
         fixes.push(UseFix {
-            path:         absolute_path,
-            start:        site.start,
-            end:          site.end,
-            replacement:  format!("pub(in crate::{narrower_scope_def_path})"),
+            path: absolute_path,
+            start: site.start,
+            end: if replacement.is_empty() {
+                site.end_with_separator
+            } else {
+                site.end
+            },
+            replacement,
             import_group: None,
         });
     }

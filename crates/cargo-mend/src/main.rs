@@ -29,7 +29,7 @@ use config::FixExecution;
 use config::OperationMode;
 use config::WarningPolicy;
 use constants::BUILD_INFO_UNKNOWN;
-use fixes::FIX_ALL_MAX_PASSES;
+use fixes::FIX_CONVERGENCE_MAX_PASSES;
 use fixes::MendRunner;
 use reporting::BuildOutcome;
 use reporting::CARGO_TERM_COLOR_ALWAYS;
@@ -131,8 +131,10 @@ fn run() -> Result<ExitCode, MendFailure> {
         output_format,
     );
     let mut outcome = runner.run(operation_mode.clone())?;
+    let mut accumulated_notice = outcome.notice.take();
+    let mut accumulated_applied_pub_use = outcome.applied_pub_use;
+    let mut accumulated_check_duration = outcome.check_duration;
     let mut total_compiler_fix_duration = Duration::ZERO;
-    let mut total_extra_check_duration = Duration::ZERO;
 
     let mut passes = 1;
 
@@ -160,16 +162,29 @@ fn run() -> Result<ExitCode, MendFailure> {
             .map_err(MendFailure::Unexpected)?;
         }
 
-        if !matches!(cli.fix.execution, FixExecution::ApplyAll) || passes >= FIX_ALL_MAX_PASSES {
+        if !matches!(
+            cli.fix.execution,
+            FixExecution::ApplyRequested | FixExecution::ApplyAll
+        ) || passes >= FIX_CONVERGENCE_MAX_PASSES
+        {
             break;
         }
 
-        // For `--fix-all` convergence: re-scan and decide if another pass
-        // would strictly reduce remaining fixables.
-        let next = runner.run(operation_mode.clone())?;
+        // Re-scan applied mend fixes so visibility cascades converge without a
+        // second invocation. Stop unless another pass strictly reduces the
+        // remaining fixable set.
+        let mut next = runner.run(operation_mode.clone())?;
         let next_total = total_fixables(&next);
         let prev_total = total_fixables(&outcome);
-        total_extra_check_duration += next.check_duration;
+        accumulated_check_duration += next.check_duration;
+        accumulated_applied_pub_use += next.applied_pub_use;
+        if let Some(next_notice) = next.notice.take() {
+            if let Some(notice) = accumulated_notice.as_mut() {
+                notice.merge(next_notice);
+            } else {
+                accumulated_notice = Some(next_notice);
+            }
+        }
         if next_total == 0 || next_total >= prev_total {
             outcome = next;
             break;
@@ -177,10 +192,11 @@ fn run() -> Result<ExitCode, MendFailure> {
         outcome = next;
         passes += 1;
     }
+    outcome.notice = accumulated_notice;
+    outcome.applied_pub_use = accumulated_applied_pub_use;
 
     let total_duration = start.elapsed();
-    let check_duration =
-        outcome.check_duration + total_extra_check_duration + total_compiler_fix_duration;
+    let check_duration = accumulated_check_duration + total_compiler_fix_duration;
 
     // Apply display filter — narrows reported findings according to the
     // user's `--lib`, `--bin`, `--example`, `--test`, `--bench` flags.

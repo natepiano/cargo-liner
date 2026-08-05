@@ -3,12 +3,14 @@ use std::path::Path;
 use rustc_span::Span;
 use rustc_span::def_id::LocalDefId;
 
+use super::ItemCategory;
 use super::classify::CrateKind;
 use super::classify::ModuleLocation;
 use super::classify::ParentVisibility;
 use crate::compiler::facade::ParentFacadeExportStatus;
 use crate::compiler::visibility::annotation::VisibilitySyntax;
 use crate::config::DiagnosticCode;
+use crate::reporting::ExactBoundarySpelling;
 use crate::reporting::FixSupport;
 use crate::reporting::Severity;
 
@@ -23,6 +25,7 @@ pub(in crate::compiler::visibility) struct FindingParams {
     pub visibility_annotation:   Option<String>,
     pub item_def_path:           Option<String>,
     pub narrower_scope_def_path: Option<String>,
+    pub exact_boundary_spelling: ExactBoundarySpelling,
 }
 
 pub(in crate::compiler::visibility) struct SuspiciousPubInput<'a> {
@@ -36,6 +39,8 @@ pub(in crate::compiler::visibility) struct SuspiciousPubInput<'a> {
     pub name:              Option<&'a str>,
     pub highlight_span:    Span,
     pub visibility_syntax: VisibilitySyntax,
+    pub category:          ItemCategory,
+    pub facade_subject:    LocalDefId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

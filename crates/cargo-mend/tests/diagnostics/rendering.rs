@@ -250,7 +250,6 @@ fn assert_rendered_diagnostics(report: &Report, rendered: &str) {
         );
     }
 
-    assert!(rendered.contains("help: consider using just `pub` or removing `pub(crate)` entirely"));
     assert!(rendered.contains("help: consider using: `pub(crate)`"));
     assert!(rendered.contains("help: consider using: `pub(super)`"));
     assert!(
@@ -276,23 +275,15 @@ fn assert_rendered_diagnostics(report: &Report, rendered: &str) {
 }
 
 fn assert_forbidden_visibility_json(output: &str, report: &Report) {
-    let expected_diagnostics = [
-        (
-            "forbidden_pub_crate",
-            Some("consider using just `pub` or removing `pub(crate)` entirely"),
-        ),
-        ("forbidden_pub_in_crate", None),
-    ];
+    let expected_diagnostics = ["forbidden_pub_crate", "forbidden_pub_in_crate"];
 
-    for (code, help) in expected_diagnostics {
-        let headline = report
+    for code in expected_diagnostics {
+        let finding = report
             .findings
             .iter()
             .find(|finding| finding.code.as_str() == code)
-            .map_or_else(
-                || panic!("fixture is missing finding for {code}"),
-                |finding| finding.headline.as_str(),
-            );
+            .unwrap_or_else(|| panic!("fixture is missing finding for {code}"));
+        let headline = finding.headline.as_str();
         let diagnostic = output
             .lines()
             .map(|line| serde_json::from_str::<Value>(line).expect("parse cargo JSON line"))
@@ -329,13 +320,12 @@ fn assert_forbidden_visibility_json(output: &str, report: &Report) {
             }),
             "cargo JSON should not emit a headline note for {code}"
         );
-        if let Some(help) = help {
+        for help in &finding.help {
             assert!(
                 children.iter().any(|child| {
-                    child.get("level").and_then(Value::as_str) == Some("help")
-                        && child.get("message").and_then(Value::as_str) == Some(help)
+                    child.get("message").and_then(Value::as_str) == Some(help.as_str())
                 }),
-                "cargo JSON is missing help for {code}"
+                "cargo JSON is missing child message for {code}: {help}"
             );
         }
     }
@@ -354,9 +344,8 @@ fn assert_forbidden_visibility_human(rendered: &str, report: &Report) {
                 || panic!("fixture is missing finding for {code:?}"),
                 |finding| finding.headline.as_str(),
             );
-        assert_eq!(
-            rendered.matches(&format!("error: {headline}")).count(),
-            1,
+        assert!(
+            rendered.contains(&format!("error: {headline}")),
             "human output should use the finding message as the headline"
         );
         assert!(
@@ -364,8 +353,19 @@ fn assert_forbidden_visibility_human(rendered: &str, report: &Report) {
             "human output should not repeat the headline as a note"
         );
     }
+    let pub_crate_help = report
+        .findings
+        .iter()
+        .find(|finding| finding.code == DiagnosticCode::ForbiddenPubCrate)
+        .and_then(|finding| {
+            finding
+                .help
+                .iter()
+                .find(|line| line.starts_with("consider "))
+        })
+        .expect("forbidden pub(crate) fixture help");
     assert!(
-        rendered.contains("help: consider using just `pub` or removing `pub(crate)` entirely"),
+        rendered.contains(&format!("help: {pub_crate_help}")),
         "human output is missing forbidden pub(crate) help"
     );
 }
@@ -406,7 +406,7 @@ fn fixture_renders_every_current_diagnostic() {
         codes, expected_codes,
         "fixture should trigger every diagnostic at least once"
     );
-    assert_eq!(report.findings.len(), 16);
+    assert_eq!(report.findings.len(), 17);
     assert_summary_matches_findings(&report);
     assert_forbidden_visibility_json(&stdout, &report);
 
@@ -631,7 +631,7 @@ fn successive_json_runs_reuse_cached_findings_for_same_scope() {
     let first_codes: BTreeSet<_> = first.findings.iter().map(|finding| finding.code).collect();
     let second_codes: BTreeSet<_> = second.findings.iter().map(|finding| finding.code).collect();
 
-    assert_eq!(first.findings.len(), 16);
+    assert_eq!(first.findings.len(), 17);
     assert_eq!(second.findings.len(), first.findings.len());
     assert_eq!(second_codes, first_codes);
     assert_eq!(second.summary.errors, first.summary.errors);

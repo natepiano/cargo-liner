@@ -13,6 +13,7 @@ use crate::compiler::persistence::FindingsSink;
 use crate::compiler::visibility::policy;
 use crate::compiler::visibility::source;
 use crate::config::DiagnosticCode;
+use crate::reporting::ExactBoundarySpelling;
 use crate::reporting::FixSupport;
 use crate::reporting::Severity;
 
@@ -54,6 +55,7 @@ pub(super) fn visit_item(
                 visibility_annotation:   None,
                 item_def_path:           None,
                 narrower_scope_def_path: None,
+                exact_boundary_spelling: ExactBoundarySpelling::CratePath,
             },
         )?);
     }

@@ -19,6 +19,7 @@ use rustc_hash::FxHashMap;
 use rustc_hash::FxHashSet;
 use rustc_hir::AmbigArg;
 use rustc_hir::Expr;
+use rustc_hir::ExprField;
 use rustc_hir::ExprKind;
 use rustc_hir::HirId;
 use rustc_hir::ImplItem;
@@ -26,10 +27,12 @@ use rustc_hir::Item;
 use rustc_hir::ItemKind;
 use rustc_hir::Pat;
 use rustc_hir::PatExprKind;
+use rustc_hir::PatField;
 use rustc_hir::PatKind;
 use rustc_hir::Path;
 use rustc_hir::QPath;
 use rustc_hir::TraitItem;
+use rustc_hir::TraitRef;
 use rustc_hir::Ty;
 use rustc_hir::TyKind;
 use rustc_hir::UseKind;
@@ -45,11 +48,13 @@ use rustc_hir::intravisit::walk_expr;
 use rustc_hir::intravisit::walk_impl_item;
 use rustc_hir::intravisit::walk_item;
 use rustc_hir::intravisit::walk_trait_item;
+use rustc_hir::intravisit::walk_trait_ref;
 use rustc_middle::hir::nested_filter::All;
 use rustc_middle::ty;
 use rustc_middle::ty::AssocContainer;
 use rustc_middle::ty::TyCtxt;
 use rustc_middle::ty::Visibility;
+use rustc_span::Ident;
 use rustc_span::Span;
 
 use super::annotation;
@@ -809,11 +814,26 @@ struct InterfaceReach {
 
 impl<'tcx> UseSiteCollector<'_, 'tcx> {
     fn record_target(&mut self, target: DefId) {
+        let original_kind = self.tcx.def_kind(target);
+        let target = match original_kind {
+            DefKind::Variant | DefKind::Ctor(CtorOf::Struct, _) => self.tcx.parent(target),
+            DefKind::Ctor(CtorOf::Variant, _) => self.tcx.parent(self.tcx.parent(target)),
+            _ => target,
+        };
         // Skip references to items in other crates — narrowing decisions
         // only apply to local items.
         if target.is_local() {
             self.push_site(target, UseSiteReference::Named);
             self.record_target_modules(target);
+        }
+        // Naming a tuple-struct constructor requires every positional field
+        // to be visible at the call site. This covers construction, using the
+        // constructor as a function value, and tuple-struct patterns. Numeric
+        // field access and `offset_of!` are recorded by their dedicated paths.
+        if matches!(original_kind, DefKind::Ctor(CtorOf::Struct, _)) {
+            for field in &self.tcx.adt_def(target).non_enum_variant().fields {
+                self.record_target(field.did);
+            }
         }
         match self.tcx.def_kind(target) {
             // A reference to a type alias also reaches every type the alias
@@ -834,6 +854,26 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
             // `--fix` back.
             DefKind::Fn | DefKind::AssocFn => self.record_fn_signature_components(target),
             _ => {},
+        }
+    }
+
+    fn record_import_target(
+        &mut self,
+        target: DefId,
+        visibility_scope: DefId,
+        reference: UseSiteReference,
+    ) {
+        let Some(local_target) = target.as_local() else {
+            return;
+        };
+        self.push_site_from(target, visibility_scope, reference);
+        let mut module: LocalDefId = self.tcx.parent_module_from_def_id(local_target).into();
+        loop {
+            self.push_site_from(module.to_def_id(), visibility_scope, reference);
+            if module == CRATE_DEF_ID {
+                return;
+            }
+            module = self.tcx.parent_module_from_def_id(module).into();
         }
     }
 
@@ -1070,7 +1110,11 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
     }
 
     fn push_site(&mut self, target: DefId, reference: UseSiteReference) {
-        self.out.insert((target, self.current_module, reference));
+        self.push_site_from(target, self.current_module, reference);
+    }
+
+    fn push_site_from(&mut self, target: DefId, caller_module: DefId, reference: UseSiteReference) {
+        self.out.insert((target, caller_module, reference));
     }
 
     fn record_qpath(&mut self, qpath: &QPath<'_>, hir_id: HirId) {
@@ -1115,6 +1159,89 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
         };
         self.record_target(adt_def.non_enum_variant().fields[field_index].did);
     }
+
+    fn record_struct_expr_field_targets(
+        &mut self,
+        expr: &'tcx Expr<'tcx>,
+        fields: &'tcx [ExprField<'tcx>],
+    ) {
+        let owner = expr.hir_id.owner.def_id;
+        if !self.tcx.has_typeck_results(owner) {
+            return;
+        }
+        let typeck = self.tcx.typeck(owner);
+        let ty::TyKind::Adt(adt_def, _) = typeck.expr_ty(expr).kind() else {
+            return;
+        };
+        if adt_def.is_enum() {
+            return;
+        }
+        let variant = adt_def.non_enum_variant();
+        if adt_def.is_struct() {
+            for field in &variant.fields {
+                self.record_target(field.did);
+            }
+            return;
+        }
+        for field in fields {
+            if let Some(field_index) = typeck.opt_field_index(field.hir_id) {
+                self.record_target(variant.fields[field_index].did);
+            }
+        }
+    }
+
+    fn record_struct_pat_field_targets(
+        &mut self,
+        pat: &'tcx Pat<'tcx>,
+        fields: &'tcx [PatField<'tcx>],
+    ) {
+        let owner = pat.hir_id.owner.def_id;
+        if !self.tcx.has_typeck_results(owner) {
+            return;
+        }
+        let typeck = self.tcx.typeck(owner);
+        let ty::TyKind::Adt(adt_def, _) = typeck.pat_ty(pat).kind() else {
+            return;
+        };
+        if adt_def.is_enum() {
+            return;
+        }
+        let variant = adt_def.non_enum_variant();
+        for field in fields {
+            if let Some(field_index) = typeck.opt_field_index(field.hir_id) {
+                self.record_target(variant.fields[field_index].did);
+            }
+        }
+    }
+
+    fn record_offset_of_field_targets(&mut self, ty: &'tcx Ty<'tcx, ()>, fields: &'tcx [Ident]) {
+        let owner = ty.hir_id.owner.def_id;
+        if !self.tcx.has_typeck_results(owner) {
+            return;
+        }
+        let typeck = self.tcx.typeck(owner);
+        let Some(mut current_ty) = typeck.node_type_opt(ty.hir_id) else {
+            return;
+        };
+        for field_name in fields {
+            let ty::TyKind::Adt(adt_def, args) = current_ty.kind() else {
+                return;
+            };
+            if adt_def.is_enum() {
+                return;
+            }
+            let variant = adt_def.non_enum_variant();
+            let Some(field) = variant
+                .fields
+                .iter()
+                .find(|field| field.name == field_name.name)
+            else {
+                return;
+            };
+            self.record_target(field.did);
+            current_ty = field.ty(self.tcx, args).skip_normalization();
+        }
+    }
 }
 
 impl<'tcx> Visitor<'tcx> for UseSiteCollector<'_, 'tcx> {
@@ -1131,6 +1258,21 @@ impl<'tcx> Visitor<'tcx> for UseSiteCollector<'_, 'tcx> {
                 .tcx
                 .parent_module_from_def_id(item.owner_id.def_id)
                 .to_def_id();
+        }
+        if let Visibility::Restricted(scope) = self.tcx.local_visibility(item.owner_id.def_id)
+            && let ItemKind::Use(path, UseKind::Single(_)) = item.kind
+        {
+            let visibility_scope = scope.to_def_id();
+            let reference = if visibility_scope == self.current_module {
+                UseSiteReference::PrivateImport
+            } else {
+                UseSiteReference::RestrictedImport
+            };
+            for resolution in path.res.present_items() {
+                if let Res::Def(_, target) = resolution {
+                    self.record_import_target(target, visibility_scope, reference);
+                }
+            }
         }
         if matches!(item.kind, ItemKind::Impl(..)) {
             self.record_trait_impl_interface(item.owner_id.def_id);
@@ -1168,7 +1310,13 @@ impl<'tcx> Visitor<'tcx> for UseSiteCollector<'_, 'tcx> {
                 self.record_type_dependent_target(expr.hir_id);
             },
             ExprKind::Field(base, ..) => self.record_field_target(base, expr.hir_id),
-            ExprKind::Struct(qpath, ..) => self.record_qpath(qpath, expr.hir_id),
+            ExprKind::OffsetOf(ty, fields) => {
+                self.record_offset_of_field_targets(ty, fields);
+            },
+            ExprKind::Struct(qpath, fields, ..) => {
+                self.record_qpath(qpath, expr.hir_id);
+                self.record_struct_expr_field_targets(expr, fields);
+            },
             _ => {},
         }
         walk_expr(self, expr);
@@ -1181,11 +1329,21 @@ impl<'tcx> Visitor<'tcx> for UseSiteCollector<'_, 'tcx> {
         rustc_hir::intravisit::walk_ty(self, ty);
     }
 
+    fn visit_trait_ref(&mut self, trait_ref: &'tcx TraitRef<'tcx>) {
+        if let Res::Def(_, def_id) = trait_ref.path.res {
+            self.record_target(def_id);
+        }
+        walk_trait_ref(self, trait_ref);
+    }
+
     fn visit_pat(&mut self, pat: &'tcx Pat<'tcx>) {
-        if let PatKind::Expr(expr) = &pat.kind
-            && let PatExprKind::Path(qpath) = &expr.kind
-        {
-            self.record_qpath(qpath, expr.hir_id);
+        match &pat.kind {
+            PatKind::Expr(expr) if let PatExprKind::Path(qpath) = &expr.kind => {
+                self.record_qpath(qpath, expr.hir_id);
+            },
+            PatKind::Struct(_, fields, _) => self.record_struct_pat_field_targets(pat, fields),
+            PatKind::TupleStruct(qpath, ..) => self.record_qpath(qpath, pat.hir_id),
+            _ => {},
         }
         rustc_hir::intravisit::walk_pat(self, pat);
     }

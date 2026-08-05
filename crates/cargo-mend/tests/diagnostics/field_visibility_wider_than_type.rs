@@ -76,7 +76,7 @@ edition = "2024"
 }
 
 #[test]
-fn pub_crate_field_on_private_struct_is_flagged() {
+fn pub_crate_field_on_private_struct_is_tightened_to_private() {
     // `pub(crate)` on a field of a private struct is also dead — the type
     // caps the field at private regardless.
     let temp = tempdir().expect("create temp fixture dir");
@@ -103,12 +103,18 @@ edition = "2024"
     let findings: Vec<_> = report
         .findings
         .iter()
-        .filter(|f| f.code == DiagnosticCode::FieldVisibilityWiderThanType)
+        .filter(|f| f.code == DiagnosticCode::ForbiddenPubCrate)
         .collect();
     assert_eq!(
         findings.len(),
         1,
-        "pub(crate) field on private struct should be flagged: {findings:?}"
+        "pub(crate) field on private struct should be tightened: {report:#?}"
+    );
+    assert!(
+        findings[0]
+            .help
+            .iter()
+            .any(|line| line == "consider removing the visibility")
     );
 }
 

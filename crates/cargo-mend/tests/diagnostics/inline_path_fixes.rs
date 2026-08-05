@@ -1114,7 +1114,14 @@ fn main() {}
     );
 
     let main_rs = fs::read_to_string(temp.path().join("src/main.rs")).expect("read fixed source");
-    assert_eq!(main_rs, source);
+    assert_eq!(
+        main_rs,
+        source.replacen(
+            "    pub trait CaptureError",
+            "    pub(crate) trait CaptureError",
+            1
+        )
+    );
 }
 
 #[test]
@@ -1191,7 +1198,10 @@ fn main() {}
     );
 
     let main_rs = fs::read_to_string(temp.path().join("src/main.rs")).expect("read fixed source");
-    assert_eq!(main_rs, source);
+    assert_eq!(
+        main_rs,
+        source.replacen("pub trait CaptureError", "pub(crate) trait CaptureError", 1)
+    );
 }
 
 #[test]

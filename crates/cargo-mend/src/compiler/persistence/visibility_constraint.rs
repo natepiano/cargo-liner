@@ -12,6 +12,7 @@ use super::schema::StoredReport;
 use crate::compiler::visibility;
 use crate::compiler::visibility::NoFacadeVisibilityRepair;
 use crate::config::DiagnosticCode;
+use crate::reporting::ExactBoundarySpelling;
 use crate::reporting::FixSupport;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -94,6 +95,14 @@ pub(in crate::compiler) enum StoredExactBoundaryAcceptance {
     Ineligible,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(in crate::compiler) enum StoredExactPathPolicy {
+    #[default]
+    Forbidden,
+    Allowed,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(in crate::compiler) enum StoredCallerReconciliation {
@@ -119,6 +128,9 @@ pub(in crate::compiler) struct StoredVisibilityConstraint {
     pub signature_requirement:     Option<StoredVisibilityReach>,
     pub facade:                    StoredFacadeConstraint,
     pub exact_boundary_acceptance: StoredExactBoundaryAcceptance,
+    /// Project policy for an exact `pub(in crate::...)` replacement.
+    #[serde(default)]
+    pub exact_path_policy:         StoredExactPathPolicy,
     pub caller_reconciliation:     StoredCallerReconciliation,
     pub outcome:                   StoredConstraintOutcome,
 }
@@ -187,22 +199,32 @@ impl VisibilityConstraintSet {
                 .all(|constraint| matches!(constraint.facade, StoredFacadeConstraint::Impossible))
     }
 
+    fn all_facades_are_absent_or_impossible(&self) -> bool {
+        !self.constraints.is_empty()
+            && self.constraints.iter().all(|constraint| {
+                matches!(
+                    constraint.facade,
+                    StoredFacadeConstraint::Absent | StoredFacadeConstraint::Impossible
+                )
+            })
+    }
+
     fn all_facades_are_resolved(&self) -> bool {
         self.constraints
             .iter()
             .all(|constraint| matches!(constraint.facade, StoredFacadeConstraint::Resolved { .. }))
     }
 
-    fn includes_resolved_facade(&self) -> bool {
-        self.constraints
-            .iter()
-            .any(|constraint| matches!(constraint.facade, StoredFacadeConstraint::Resolved { .. }))
-    }
-
     fn all_exact_boundaries_are_eligible(&self) -> bool {
         self.constraints.iter().all(|constraint| {
             constraint.exact_boundary_acceptance == StoredExactBoundaryAcceptance::Eligible
         })
+    }
+
+    fn all_exact_paths_are_allowed(&self) -> bool {
+        self.constraints
+            .iter()
+            .all(|constraint| constraint.exact_path_policy == StoredExactPathPolicy::Allowed)
     }
 
     fn uniform_declared_reach(&self) -> Option<StoredVisibilityReach> {
@@ -317,11 +339,24 @@ impl VisibilityConstraintGroup {
 
     fn render(&self, callers: &CallerMap, package_root: &str) -> Option<StoredFinding> {
         let required_reach = self.constraints.required_reach();
+        if self.declares_effective_required_boundary(callers, package_root, required_reach.as_ref())
+        {
+            return None;
+        }
         if required_reach == Some(StoredVisibilityReach::Public) {
             return self.public_candidate();
         }
         if self.constraints.includes_facade_blocker() {
+            if self.constraints.constraints.iter().all(|constraint| {
+                constraint.spelling == StoredVisibilitySpelling::Crate
+                    && constraint.declared_reach == StoredVisibilityReach::Crate
+            }) {
+                return None;
+            }
             return self.blocker_candidate();
+        }
+        if let Some(finding) = self.facade_cleanup_candidate() {
+            return Some(finding);
         }
         if self.constraints.all_facades_are_resolved() {
             return self.render_resolved_facades(required_reach.as_ref());
@@ -339,29 +374,105 @@ impl VisibilityConstraintGroup {
             return None;
         }
         let repair = self.no_facade_repair(callers, package_root, required_reach.as_ref());
-        let boundary = if !self.constraints.includes_resolved_facade()
-            && self.callers_require_structural_repair(callers, package_root)
-        {
-            self.caller_repair_boundary(callers, package_root, required_reach.as_ref())
-        } else {
-            let repair_reach = required_reach.or_else(|| self.constraints.uniform_declared_reach());
-            repair_reach.as_ref().map_or_else(
-                || String::from("crate"),
-                |reach| reach.boundary().to_string(),
-            )
+        let (boundary, exact_boundary_spelling) = match repair {
+            NoFacadeVisibilityRepair::RemoveAnnotation => {
+                (String::from("private"), ExactBoundarySpelling::Private)
+            },
+            NoFacadeVisibilityRepair::UseParentVisibility => {
+                let parent = self.parent_boundary_path();
+                let spelling = self.exact_boundary_spelling(&parent);
+                (parent, spelling)
+            },
+            NoFacadeVisibilityRepair::StructuralMigrationForCallerLocations
+            | NoFacadeVisibilityRepair::StructuralMigrationForSignatureReach { .. } => {
+                let boundary =
+                    self.caller_repair_boundary(callers, package_root, required_reach.as_ref());
+                let spelling = self.exact_boundary_spelling(&boundary);
+                (boundary, spelling)
+            },
         };
-        if finding.fix_support == FixSupport::RestrictedAnnotation && boundary != "crate" {
-            finding.suggestion = Some(format!("consider using: `pub(in {boundary})`"));
-            finding.narrower_scope_def_path = boundary.strip_prefix("crate::").map(String::from);
+        if exact_boundary_spelling == ExactBoundarySpelling::Crate
+            && self.constraints.constraints.iter().all(|constraint| {
+                constraint.spelling == StoredVisibilitySpelling::Crate
+                    && constraint.declared_reach == StoredVisibilityReach::Crate
+            })
+        {
+            return None;
+        }
+        if self.supports_rewrite(exact_boundary_spelling) {
+            self.apply_rewrite(&mut finding, &boundary, exact_boundary_spelling);
         } else {
             if finding.fix_support == FixSupport::RestrictedAnnotation {
                 finding.fix_support = FixSupport::None;
                 finding.narrower_scope_def_path = None;
             }
+            finding.exact_boundary_spelling = ExactBoundarySpelling::CratePath;
             finding.message = visibility::no_facade_headline(repair, finding.message);
             finding.suggestion = Some(visibility::no_facade_suggestion(repair, &boundary));
         }
         Some(finding)
+    }
+
+    fn declares_effective_required_boundary(
+        &self,
+        callers: &CallerMap,
+        package_root: &str,
+        required_reach: Option<&StoredVisibilityReach>,
+    ) -> bool {
+        if self.candidates.iter().any(|candidate| {
+            matches!(
+                candidate.finding.fix_support,
+                FixSupport::PubUse | FixSupport::NeedsManualPubUseCleanup
+            )
+        }) {
+            return false;
+        }
+        if !self.constraints.all_exact_boundaries_are_eligible() {
+            return false;
+        }
+        let Some(declared_reach) = self.constraints.uniform_declared_reach() else {
+            return false;
+        };
+        let caller_reach = self.caller_required_reach(callers, package_root);
+        let signature_or_facade_reach = if self.constraints.all_facades_are_impossible() {
+            None
+        } else {
+            required_reach
+        };
+        let effective_reach = match (signature_or_facade_reach, caller_reach) {
+            (Some(required), Some(caller)) => Some(required.join(&caller)),
+            (Some(required), None) => Some(required.clone()),
+            (None, Some(caller)) => Some(caller),
+            (None, None) => None,
+        };
+        effective_reach == Some(declared_reach)
+    }
+
+    fn caller_required_reach(
+        &self,
+        callers: &CallerMap,
+        package_root: &str,
+    ) -> Option<StoredVisibilityReach> {
+        let declaration = self
+            .constraints
+            .constraints
+            .first()
+            .map(|constraint| &constraint.declaration)?;
+        let reaching =
+            &caller_aware::callers_for_package(callers, package_root, &declaration.item_def_path)?
+                .reaching;
+        if reaching.is_empty() {
+            return None;
+        }
+        let boundary =
+            visibility::common_ancestor_def_path(&declaration.item_module_def_path, reaching);
+        match boundary {
+            Some(boundary) if boundary == declaration.item_module_def_path => None,
+            Some(boundary) => Some(StoredVisibilityReach::Restricted {
+                boundary: visibility::crate_rooted_def_path(&boundary),
+            }),
+            None => Some(StoredVisibilityReach::Crate),
+        }
     }
 
     fn declares_facade_less_caller_boundary(
@@ -369,7 +480,7 @@ impl VisibilityConstraintGroup {
         callers: &CallerMap,
         package_root: &str,
     ) -> bool {
-        self.constraints.all_facades_are_impossible()
+        self.constraints.all_facades_are_absent_or_impossible()
             && self.callers_require_structural_repair(callers, package_root)
             && self.constraints.all_exact_boundaries_are_eligible()
             && self
@@ -400,6 +511,90 @@ impl VisibilityConstraintGroup {
         })
     }
 
+    fn exact_boundary_spelling(&self, boundary: &str) -> ExactBoundarySpelling {
+        if boundary == "crate" {
+            return ExactBoundarySpelling::Crate;
+        }
+        if self
+            .constraints
+            .constraints
+            .first()
+            .is_some_and(|constraint| {
+                let parent =
+                    visibility::parent_scope_def_path(&constraint.declaration.item_module_def_path);
+                !parent.is_empty() && visibility::crate_rooted_def_path(parent) == boundary
+            })
+        {
+            ExactBoundarySpelling::Parent
+        } else {
+            ExactBoundarySpelling::CratePath
+        }
+    }
+
+    fn parent_boundary_path(&self) -> String {
+        self.constraints.constraints.first().map_or_else(
+            || String::from("crate"),
+            |constraint| {
+                visibility::crate_rooted_def_path(visibility::parent_scope_def_path(
+                    &constraint.declaration.item_module_def_path,
+                ))
+            },
+        )
+    }
+
+    fn supports_rewrite(&self, spelling: ExactBoundarySpelling) -> bool {
+        self.constraints.all_exact_boundaries_are_eligible()
+            && (spelling != ExactBoundarySpelling::CratePath
+                || self.constraints.all_exact_paths_are_allowed())
+    }
+
+    fn apply_rewrite(
+        &self,
+        finding: &mut StoredFinding,
+        boundary: &str,
+        spelling: ExactBoundarySpelling,
+    ) {
+        finding.suggestion = Some(match spelling {
+            ExactBoundarySpelling::CratePath => {
+                format!("consider using: `pub(in {boundary})`")
+            },
+            ExactBoundarySpelling::Parent => String::from("consider using: `pub(super)`"),
+            ExactBoundarySpelling::Crate => String::from("consider using: `pub(crate)`"),
+            ExactBoundarySpelling::Private => String::from("consider removing the visibility"),
+            ExactBoundarySpelling::Public => String::from("consider using: `pub`"),
+        });
+        finding.message = match finding.diagnostic_code {
+            DiagnosticCode::ForbiddenPubCrate => {
+                String::from("`pub(crate)` is broader than required")
+            },
+            DiagnosticCode::SuspiciousPub => format!(
+                "the narrowest proven visibility is {}",
+                match spelling {
+                    ExactBoundarySpelling::CratePath => format!("`pub(in {boundary})`"),
+                    ExactBoundarySpelling::Parent => String::from("`pub(super)`"),
+                    ExactBoundarySpelling::Crate => String::from("`pub(crate)`"),
+                    ExactBoundarySpelling::Private => String::from("private"),
+                    ExactBoundarySpelling::Public => String::from("`pub`"),
+                }
+            ),
+            _ => finding.message.clone(),
+        };
+        finding.fix_support = FixSupport::RestrictedAnnotation;
+        if let Some(constraint) = self.constraints.constraints.first() {
+            finding.visibility_annotation = Some(constraint.visibility_annotation.clone());
+            finding.item_def_path = Some(constraint.declaration.item_def_path.clone());
+        }
+        finding.narrower_scope_def_path = Some(match spelling {
+            ExactBoundarySpelling::CratePath | ExactBoundarySpelling::Parent => boundary
+                .strip_prefix("crate::")
+                .unwrap_or(boundary)
+                .to_string(),
+            ExactBoundarySpelling::Crate | ExactBoundarySpelling::Public => String::from("crate"),
+            ExactBoundarySpelling::Private => String::from("private"),
+        });
+        finding.exact_boundary_spelling = spelling;
+    }
+
     fn caller_repair_boundary(
         &self,
         callers: &CallerMap,
@@ -424,7 +619,8 @@ impl VisibilityConstraintGroup {
     }
 
     fn public_candidate(&self) -> Option<StoredFinding> {
-        self.candidates
+        let mut finding = self
+            .candidates
             .iter()
             .filter(|candidate| {
                 candidate.constraint.required_reach() == Some(StoredVisibilityReach::Public)
@@ -435,7 +631,15 @@ impl VisibilityConstraintGroup {
                     .iter()
                     .min_by(|left, right| candidate_order(left, right))
             })
-            .map(|candidate| candidate.finding.clone())
+            .map(|candidate| candidate.finding.clone())?;
+        if self.supports_rewrite(ExactBoundarySpelling::Public) {
+            self.apply_rewrite(
+                &mut finding,
+                "crate-external",
+                ExactBoundarySpelling::Public,
+            );
+        }
+        Some(finding)
     }
 
     fn blocker_candidate(&self) -> Option<StoredFinding> {
@@ -453,6 +657,19 @@ impl VisibilityConstraintGroup {
             .map(|candidate| candidate.finding.clone())
     }
 
+    fn facade_cleanup_candidate(&self) -> Option<StoredFinding> {
+        self.candidates
+            .iter()
+            .filter(|candidate| {
+                matches!(
+                    candidate.finding.fix_support,
+                    FixSupport::PubUse | FixSupport::NeedsManualPubUseCleanup
+                )
+            })
+            .min_by(|left, right| candidate_order(left, right))
+            .map(|candidate| candidate.finding.clone())
+    }
+
     fn render_resolved_facades(
         &self,
         required_reach: Option<&StoredVisibilityReach>,
@@ -466,7 +683,16 @@ impl VisibilityConstraintGroup {
         }
         let mut finding = self.preferred_candidate()?.finding.clone();
         if declared_reach.as_ref() != Some(required_reach) {
-            finding.suggestion = Some(format!("consider using: `{}`", required_reach.to_source()));
+            let boundary = required_reach.boundary();
+            let spelling = self.exact_boundary_spelling(boundary);
+            if self.supports_rewrite(spelling) {
+                self.apply_rewrite(&mut finding, boundary, spelling);
+            } else {
+                finding.suggestion =
+                    Some(format!("consider using: `{}`", required_reach.to_source()));
+                finding.fix_support = FixSupport::None;
+                finding.narrower_scope_def_path = None;
+            }
         }
         Some(finding)
     }
@@ -531,8 +757,10 @@ impl VisibilityConstraintGroup {
     ) -> NoFacadeVisibilityRepair {
         let mut repair = NoFacadeVisibilityRepair::RemoveAnnotation;
         for constraint in &self.constraints.constraints {
-            repair =
-                repair.most_invasive(requirement_repair(&constraint.declaration, required_reach));
+            if !self.constraints.all_facades_are_impossible() {
+                repair = repair
+                    .most_invasive(requirement_repair(&constraint.declaration, required_reach));
+            }
             let reaching_callers = caller_aware::callers_for_package(
                 callers,
                 package_root,
@@ -714,6 +942,7 @@ mod tests {
     use super::StoredCallerReconciliation;
     use super::StoredConstraintOutcome;
     use super::StoredExactBoundaryAcceptance;
+    use super::StoredExactPathPolicy;
     use super::StoredFacadeConstraint;
     use super::StoredVisibilityConstraint;
     use super::StoredVisibilityDeclaration;
@@ -731,6 +960,7 @@ mod tests {
     use crate::config::DiagnosticCode;
     use crate::reporting::AllFeaturesCoverage;
     use crate::reporting::CompilerWarningFacts;
+    use crate::reporting::ExactBoundarySpelling;
     use crate::reporting::FixSupport;
     use crate::reporting::Severity;
 
@@ -884,7 +1114,7 @@ mod tests {
     }
 
     #[test]
-    fn facade_less_parent_boundary_is_not_accepted_as_a_structural_repair() {
+    fn facade_less_parent_boundary_is_accepted_for_parent_callers() {
         let constraint = constraint(
             StoredFacadeConstraint::Impossible,
             Some(StoredVisibilityReach::Crate),
@@ -893,7 +1123,7 @@ mod tests {
         group.include(0, constraint, Some(finding("parent boundary")));
         let callers = caller_map("crate::a::b::item", "crate::a::caller");
 
-        assert!(group.render(&callers, "/package").is_some());
+        assert!(group.render(&callers, "/package").is_none());
     }
 
     #[test]
@@ -933,26 +1163,50 @@ mod tests {
         let mut root_group = VisibilityConstraintGroup::default();
         root_group.include(0, constraint, Some(candidate));
         let root_callers = caller_map("crate::a::b::c::item", "crate::other");
-        let rendered = root_group.render(&root_callers, "/package");
         assert!(
-            rendered.is_some(),
-            "crate-wide callers must retain structural advice"
-        );
-        let Some(rendered) = rendered else {
-            return;
-        };
-        assert_eq!(rendered.fix_support, FixSupport::None);
-        assert_eq!(rendered.narrower_scope_def_path, None);
-        assert_eq!(
-            rendered.suggestion.as_deref(),
-            Some(
-                "move the item into `crate`, or add an explicit facade at `crate` and rerun `cargo mend`"
-            ),
+            root_group.render(&root_callers, "/package").is_none(),
+            "`pub(crate)` is already exact for crate-wide callers"
         );
     }
 
     #[test]
-    fn signature_reach_remains_the_minimum_for_facade_capable_items() {
+    fn facade_less_parent_boundary_upgrades_a_manual_candidate_to_pub_super() {
+        let mut constraint = constraint(StoredFacadeConstraint::Impossible, None);
+        constraint.diagnostic_code = DiagnosticCode::ForbiddenPubCrate;
+        constraint.visibility_annotation = String::from("pub(crate)");
+        constraint.declared_reach = StoredVisibilityReach::Crate;
+        constraint.spelling = StoredVisibilitySpelling::Crate;
+        let mut candidate = finding("crate visibility");
+        candidate.diagnostic_code = DiagnosticCode::ForbiddenPubCrate;
+        let mut group = VisibilityConstraintGroup::default();
+        group.include(0, constraint, Some(candidate));
+
+        let callers = caller_map("crate::a::b::item", "crate::a::caller");
+        let rendered = group.render(&callers, "/package");
+        assert!(rendered.is_some(), "parent caller must retain the finding");
+        let Some(rendered) = rendered else {
+            return;
+        };
+
+        assert_eq!(
+            rendered.suggestion.as_deref(),
+            Some("consider using: `pub(super)`"),
+        );
+        assert_eq!(rendered.fix_support, FixSupport::RestrictedAnnotation);
+        assert_eq!(
+            rendered.visibility_annotation.as_deref(),
+            Some("pub(crate)"),
+        );
+        assert_eq!(rendered.item_def_path.as_deref(), Some("crate::a::b::item"));
+        assert_eq!(rendered.narrower_scope_def_path.as_deref(), Some("a"));
+        assert_eq!(
+            rendered.exact_boundary_spelling,
+            ExactBoundarySpelling::Parent
+        );
+    }
+
+    #[test]
+    fn crate_signature_reach_accepts_a_matching_pub_crate_annotation() {
         let mut constraint = constraint(
             StoredFacadeConstraint::Absent,
             Some(StoredVisibilityReach::Crate),
@@ -967,20 +1221,74 @@ mod tests {
         group.include(0, constraint, Some(candidate));
 
         let callers = caller_map("crate::a::b::item", "crate::a::caller");
+        assert!(
+            group.render(&callers, "/package").is_none(),
+            "the crate signature requirement must accept `pub(crate)`",
+        );
+    }
+
+    #[test]
+    fn bare_pub_rewrites_to_crate_reach_for_crate_wide_callers() {
+        let mut constraint = constraint(StoredFacadeConstraint::Absent, None);
+        constraint.diagnostic_code = DiagnosticCode::SuspiciousPub;
+        constraint.visibility_annotation = String::from("pub");
+        constraint.declared_reach = StoredVisibilityReach::Public;
+        constraint.spelling = StoredVisibilitySpelling::Public;
+        let mut candidate = finding("public visibility");
+        candidate.diagnostic_code = DiagnosticCode::SuspiciousPub;
+        let mut group = VisibilityConstraintGroup::default();
+        group.include(0, constraint, Some(candidate));
+        let callers = caller_map("crate::a::b::item", "crate::other");
+
         let rendered = group.render(&callers, "/package");
         assert!(
             rendered.is_some(),
-            "the signature requirement must retain the finding"
+            "crate-wide callers must retain a narrowing finding"
         );
         let Some(rendered) = rendered else {
             return;
         };
+
         assert_eq!(
             rendered.suggestion.as_deref(),
-            Some(
-                "move the item into `crate`, or add an explicit facade at `crate` and rerun `cargo mend`"
-            ),
+            Some("consider using: `pub(crate)`"),
         );
+        assert_eq!(rendered.fix_support, FixSupport::RestrictedAnnotation);
+        assert_eq!(
+            rendered.exact_boundary_spelling,
+            ExactBoundarySpelling::Crate
+        );
+    }
+
+    #[test]
+    fn bare_pub_rewrites_to_an_exact_ancestor_for_sibling_callers() {
+        let mut constraint = constraint(StoredFacadeConstraint::Absent, None);
+        constraint.diagnostic_code = DiagnosticCode::SuspiciousPub;
+        constraint.visibility_annotation = String::from("pub");
+        constraint.declared_reach = StoredVisibilityReach::Public;
+        constraint.spelling = StoredVisibilitySpelling::Public;
+        constraint.declaration.item_def_path = String::from("crate::a::b::c::item");
+        constraint.declaration.item_module_def_path = String::from("crate::a::b::c");
+        let mut candidate = finding("public visibility");
+        candidate.diagnostic_code = DiagnosticCode::SuspiciousPub;
+        let mut group = VisibilityConstraintGroup::default();
+        group.include(0, constraint, Some(candidate));
+        let callers = caller_map("crate::a::b::c::item", "crate::a::caller");
+
+        let rendered = group.render(&callers, "/package");
+        assert!(
+            rendered.is_some(),
+            "sibling callers must retain a narrowing finding"
+        );
+        let Some(rendered) = rendered else {
+            return;
+        };
+
+        assert_eq!(
+            rendered.suggestion.as_deref(),
+            Some("consider using: `pub(in crate::a)`"),
+        );
+        assert_eq!(rendered.fix_support, FixSupport::RestrictedAnnotation);
     }
 
     fn caller_map(item_def_path: &str, caller_module_def_path: &str) -> CallerMap {
@@ -1033,6 +1341,7 @@ mod tests {
             signature_requirement,
             facade,
             exact_boundary_acceptance: StoredExactBoundaryAcceptance::Eligible,
+            exact_path_policy: StoredExactPathPolicy::Allowed,
             caller_reconciliation: StoredCallerReconciliation::CallerAware,
             outcome: StoredConstraintOutcome::Finding,
         }
@@ -1055,6 +1364,7 @@ mod tests {
             visibility_annotation:   None,
             item_def_path:           None,
             narrower_scope_def_path: None,
+            exact_boundary_spelling: ExactBoundarySpelling::CratePath,
         }
     }
 }

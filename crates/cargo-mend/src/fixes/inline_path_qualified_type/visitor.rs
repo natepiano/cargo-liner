@@ -370,7 +370,7 @@ impl Visit<'_> for InlinePathVisitor<'_> {
         // `impl Trait for Type` — the trait path is `ItemImpl::trait_`, a bare
         // `syn::Path` not visited as a `TypePath`. Inspect it directly.
         self.push_generics(&node.generics);
-        if let Some((_, trait_path, _)) = &node.trait_ {
+        if let Some((trait_path, _)) = &node.trait_ {
             self.check_path(trait_path);
             if trait_path.segments.len() == 1 {
                 let name = trait_path.segments[0].ident.to_string();

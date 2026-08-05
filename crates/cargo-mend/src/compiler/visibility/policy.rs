@@ -281,15 +281,8 @@ pub(super) fn classify_suspicious_pub(
 }
 
 // Items at depth 1 (`crate::foo`) and depth 2 (`crate::foo::bar`) both map to
-// `ShallowPrivate`. Depth 2 covers the common `src/<top>/<child>.rs`
-// library layout: when the top-level module is private, nothing outside its
-// subtree can reach the child regardless of `pub(crate)` vs `pub(super)`, so
-// the policy treats them the same as depth-1 items. Depth 3+ falls through to
-// `Nested`. `pub(crate)` is still rejected at `Nested` by
-// `allow_pub_crate_by_policy` alone — but the visibility scan separately
-// permits it when the parent facade re-exports the item as `pub(crate) use`,
-// because in that case the parent has already capped reach at `pub(crate)`
-// and the source modifier should match the cap (visible-at-a-glance).
+// `ShallowPrivate`. Depth 2 covers the common `src/<top>/<child>.rs` library
+// layout. Depth 3+ maps to `Nested`.
 pub(super) fn resolve_module_location(tcx: TyCtxt<'_>, parent_def: LocalDefId) -> ModuleLocation {
     if parent_def == CRATE_DEF_ID {
         return ModuleLocation::CrateRoot;
@@ -315,25 +308,6 @@ pub(super) fn module_depth(tcx: TyCtxt<'_>, mut module: LocalDefId) -> usize {
         module = tcx.parent_module_from_def_id(module).into();
     }
     depth
-}
-
-pub(super) const fn allow_pub_crate_by_policy(
-    crate_kind: CrateKind,
-    module_location: ModuleLocation,
-    parent_visibility: ParentVisibility,
-) -> bool {
-    match (crate_kind, module_location) {
-        (CrateKind::Library, ModuleLocation::CrateRoot) => true,
-        (CrateKind::IntegrationTest, _) => false,
-        (_, ModuleLocation::ShallowPrivate) => {
-            matches!(parent_visibility, ParentVisibility::Private)
-        },
-        _ => false,
-    }
-}
-
-pub(super) const fn narrow_to_pub_crate_by_policy(crate_kind: CrateKind) -> bool {
-    matches!(crate_kind, CrateKind::Library)
 }
 
 pub(super) fn crate_kind_for_root(root_module: &Path, package_root: &Path) -> CrateKind {
@@ -405,7 +379,7 @@ impl ForbiddenPubCrateSuggestionReason {
     }
 }
 
-/// Suggestion for a forbidden `pub(crate)` item. Each
+/// Suggestion for a `pub(crate)` item that can use a narrower boundary. Each
 /// `ForbiddenPubCrateSuggestionReason` carries the data for exactly one of the
 /// following cases:
 ///
@@ -439,12 +413,12 @@ pub(super) fn forbidden_pub_crate_suggestion(reason: ForbiddenPubCrateSuggestion
             )
         },
         ForbiddenPubCrateSuggestionReason::ParentFacade { boundary_path } => format!(
-            "the parent module re-exports this to `{boundary_path}`; consider using `pub` \
-             (`pub(crate)` and `pub(in ...)` are forbidden by policy)"
+            "the parent module re-exports this to `{boundary_path}`; use the narrowest source \
+             visibility that still reaches that boundary"
         ),
         ForbiddenPubCrateSuggestionReason::ParentFacadeWithoutKnownBoundary => String::from(
-            "the parent module re-exports this to its own parent; consider using `pub` \
-             (`pub(crate)` and `pub(in ...)` are forbidden by policy)",
+            "the parent module re-exports this to its own parent; resolve that boundary before \
+             narrowing the source visibility",
         ),
         ForbiddenPubCrateSuggestionReason::LocationPolicy { module_location } => {
             forbidden_pub_crate_help(module_location).to_string()
@@ -579,10 +553,10 @@ pub(in crate::compiler) fn common_ancestor_def_path(
 }
 
 pub(in crate::compiler) fn crate_rooted_def_path(def_path: &str) -> String {
-    if def_path == "crate" || def_path.starts_with("crate::") {
-        def_path.to_string()
-    } else {
-        format!("crate::{def_path}")
+    match def_path {
+        "" | "crate" => String::from("crate"),
+        rooted if rooted.starts_with("crate::") => rooted.to_string(),
+        relative => format!("crate::{relative}"),
     }
 }
 
@@ -1009,93 +983,16 @@ mod tests {
     use super::ForbiddenPubCrateSuggestionReason;
     use super::ModuleLocation;
     use super::NoFacadeVisibilityRepair;
-    use super::ParentVisibility;
-    use super::allow_pub_crate_by_policy;
     use super::classify_no_facade_callers;
     use super::common_ancestor_def_path;
     use super::crate_kind_for_root;
+    use super::crate_rooted_def_path;
     use super::forbidden_pub_crate_help;
     use super::forbidden_pub_crate_suggestion;
     use super::suspicious_pub_note;
     use crate::compiler::constants::SOURCE_DIR_BENCHES;
     use crate::compiler::constants::SOURCE_DIR_EXAMPLES;
     use crate::compiler::constants::SOURCE_DIR_TESTS;
-
-    #[test]
-    fn allow_pub_crate_allows_library_crate_root_items() {
-        assert!(allow_pub_crate_by_policy(
-            CrateKind::Library,
-            ModuleLocation::CrateRoot,
-            ParentVisibility::Public
-        ));
-    }
-
-    #[test]
-    fn allow_pub_crate_allows_shallow_private_library_modules() {
-        assert!(allow_pub_crate_by_policy(
-            CrateKind::Library,
-            ModuleLocation::ShallowPrivate,
-            ParentVisibility::Private
-        ));
-    }
-
-    #[test]
-    fn allow_pub_crate_rejects_nested_modules() {
-        assert!(!allow_pub_crate_by_policy(
-            CrateKind::Library,
-            ModuleLocation::Nested,
-            ParentVisibility::Private
-        ));
-    }
-
-    #[test]
-    fn allow_pub_crate_rejects_binary_crate_root_items() {
-        assert!(!allow_pub_crate_by_policy(
-            CrateKind::Binary,
-            ModuleLocation::CrateRoot,
-            ParentVisibility::Public
-        ));
-    }
-
-    #[test]
-    fn allow_pub_crate_allows_shallow_private_binary_modules() {
-        assert!(allow_pub_crate_by_policy(
-            CrateKind::Binary,
-            ModuleLocation::ShallowPrivate,
-            ParentVisibility::Private
-        ));
-    }
-
-    #[test]
-    fn allow_pub_crate_rejects_binary_nested_modules() {
-        assert!(!allow_pub_crate_by_policy(
-            CrateKind::Binary,
-            ModuleLocation::Nested,
-            ParentVisibility::Private
-        ));
-    }
-
-    #[test]
-    fn allow_pub_crate_rejects_integration_test_items_in_any_location() {
-        for module_location in [
-            ModuleLocation::CrateRoot,
-            ModuleLocation::ShallowPrivate,
-            ModuleLocation::Nested,
-        ] {
-            for parent_visibility in [ParentVisibility::Private, ParentVisibility::Public] {
-                assert!(
-                    !allow_pub_crate_by_policy(
-                        CrateKind::IntegrationTest,
-                        module_location,
-                        parent_visibility,
-                    ),
-                    "pub(crate) should be forbidden in integration-test crates \
-                     regardless of module location or parent visibility \
-                     (location = {module_location:?}, parent = {parent_visibility:?})",
-                );
-            }
-        }
-    }
 
     #[test]
     fn crate_kind_for_root_detects_library_from_lib_rs() {
@@ -1231,15 +1128,15 @@ mod tests {
             forbidden_pub_crate_suggestion(ForbiddenPubCrateSuggestionReason::ParentFacade {
                 boundary_path: String::from("crate::a"),
             }),
-            "the parent module re-exports this to `crate::a`; consider using `pub` \
-             (`pub(crate)` and `pub(in ...)` are forbidden by policy)",
+            "the parent module re-exports this to `crate::a`; use the narrowest source \
+             visibility that still reaches that boundary",
         );
         assert_eq!(
             forbidden_pub_crate_suggestion(
                 ForbiddenPubCrateSuggestionReason::ParentFacadeWithoutKnownBoundary,
             ),
-            "the parent module re-exports this to its own parent; consider using `pub` \
-             (`pub(crate)` and `pub(in ...)` are forbidden by policy)",
+            "the parent module re-exports this to its own parent; resolve that boundary before \
+             narrowing the source visibility",
         );
     }
 
@@ -1292,6 +1189,11 @@ mod tests {
 
         let callers = BTreeSet::from([String::from("other")]);
         assert_eq!(common_ancestor_def_path("root::panel", &callers), None);
+    }
+
+    #[test]
+    fn empty_def_path_resolves_to_the_crate_root() {
+        assert_eq!(crate_rooted_def_path(""), "crate");
     }
 
     #[test]

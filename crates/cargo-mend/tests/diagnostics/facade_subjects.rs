@@ -272,7 +272,7 @@ fn inherent_items_follow_their_self_type_facade_subject() {
 }
 
 #[test]
-fn non_applicable_named_facade_is_blocked_by_matching_glob() {
+fn non_applicable_named_facade_keeps_manual_cleanup_when_a_glob_blocks_it() {
     let temp = tempdir().expect("create named and glob fallback fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
@@ -292,11 +292,30 @@ fn non_applicable_named_facade_is_blocked_by_matching_glob() {
     .expect("write inherent subject");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert_glob_blocker(&report, "src/a/b/c.rs");
+    assert_pub_crate_is_retained_at_unresolved_glob(&report, "src/a/b/c.rs");
+    let finding = report
+        .findings
+        .iter()
+        .find(|finding| {
+            finding.code == DiagnosticCode::SuspiciousPub && finding.path == "src/a/b/c.rs"
+        })
+        .unwrap_or_else(|| panic!("missing stale named-facade finding: {report:#?}"));
+    assert!(
+        finding
+            .help
+            .iter()
+            .any(|line| line == "consider using: `pub(super)`")
+    );
+    assert!(
+        finding
+            .help
+            .iter()
+            .all(|line| !line.contains("auto-fixable"))
+    );
 }
 
 #[test]
-fn ancestor_glob_targeting_descendant_module_is_a_blocker() {
+fn ancestor_glob_targeting_descendant_module_retains_exact_pub_crate() {
     let temp = tempdir().expect("create descendant glob target fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
@@ -325,7 +344,7 @@ fn ancestor_glob_targeting_descendant_module_is_a_blocker() {
     .expect("write unused control subject");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert_glob_blocker(&report, "src/a/b/c.rs");
+    assert_pub_crate_is_retained_at_unresolved_glob(&report, "src/a/b/c.rs");
     assert!(
         !has_unused_pub(&report, "src/a/b/c.rs"),
         "the ancestor glob must suppress unused_pub for Globbed: {report:#?}"
@@ -341,7 +360,7 @@ fn ancestor_glob_targeting_descendant_module_is_a_blocker() {
         unused_control
             .help
             .iter()
-            .any(|help| help.contains("consider using `pub(super)`")),
+            .any(|help| help == "consider removing the visibility"),
         "the unrelated control subject must not inherit the glob blocker: {report:#?}"
     );
 }
@@ -381,7 +400,7 @@ fn unused_named_facade_with_outer_glob_has_no_pub_use_fix() {
 }
 
 #[test]
-fn inherent_glob_uses_the_self_type_module_as_a_blocker() {
+fn inherent_glob_retains_exact_pub_crate_through_the_self_type_module() {
     let temp = tempdir().expect("create split inherent fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture module");
@@ -406,7 +425,7 @@ fn inherent_glob_uses_the_self_type_module_as_a_blocker() {
     .expect("write inherent implementation");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert_glob_blocker(&report, "src/a/b/impls.rs");
+    assert_pub_crate_is_retained_at_unresolved_glob(&report, "src/a/b/impls.rs");
     assert!(!has_unused_pub(&report, "src/a/b/impls.rs"), "{report:#?}");
 }
 
@@ -568,7 +587,7 @@ fn raw_identifier_module_segments_match_literal_and_parsed_paths() {
 }
 
 #[test]
-fn extern_crate_declaration_reports_a_foreign_chain_blocker() {
+fn extern_crate_declaration_retains_exact_pub_crate_at_a_foreign_boundary() {
     let temp = tempdir().expect("create temp fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a/b/c")).expect("create fixture modules");
@@ -589,26 +608,11 @@ fn extern_crate_declaration_reports_a_foreign_chain_blocker() {
     .expect("write extern crate declaration");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    let finding = report
-        .findings
-        .iter()
-        .find(|finding| {
-            finding.code == DiagnosticCode::ForbiddenPubCrate && finding.path == "src/a/b/c/d.rs"
-        })
-        .unwrap_or_else(|| panic!("missing extern crate blocker: {report:#?}"));
     assert!(
-        finding
-            .help
-            .iter()
-            .any(|help| help.contains("facade chain leaves the crate at a/b/c/d.rs:1")),
-        "{report:#?}"
-    );
-    assert!(
-        finding
-            .help
-            .iter()
-            .all(|help| !help.contains("consider using")),
-        "an unresolvable foreign chain must not recommend a replacement: {report:#?}"
+        report.findings.iter().all(|finding| {
+            finding.code != DiagnosticCode::ForbiddenPubCrate || finding.path != "src/a/b/c/d.rs"
+        }),
+        "an unresolved foreign boundary must retain exact pub(crate): {report:#?}",
     );
 }
 
@@ -727,28 +731,13 @@ edition = "2024"
     assert_no_stored_pub_use_fix_facts(&temp);
 }
 
-fn assert_foreign_boundary_finding(report: &Report, path: &str, blocker_location: &str) {
-    let finding = report
-        .findings
-        .iter()
-        .find(|finding| finding.code == DiagnosticCode::ForbiddenPubCrate && finding.path == path)
-        .unwrap_or_else(|| panic!("missing foreign boundary finding at {path}: {report:#?}"));
+fn assert_foreign_boundary_finding(report: &Report, path: &str, _blocker_location: &str) {
     assert!(
-        finding.help.iter().any(|help| {
-            help.contains(&format!(
-                "facade chain leaves the crate at {blocker_location}"
-            ))
+        report.findings.iter().all(|finding| {
+            finding.code != DiagnosticCode::ForbiddenPubCrate || finding.path != path
         }),
-        "the finding at {path} must retain its foreign chain blocker: {report:#?}"
+        "an unresolved foreign boundary must retain exact pub(crate) at {path}: {report:#?}",
     );
-    assert!(
-        finding
-            .help
-            .iter()
-            .all(|help| !help.contains("consider using")),
-        "an unresolvable foreign chain must not recommend a replacement: {report:#?}"
-    );
-    assert_eq!(finding.fix_support, FixSupport::None, "{report:#?}");
 }
 
 fn assert_no_stored_pub_use_fix_facts(temp: &TempDir) {
@@ -807,7 +796,7 @@ fn inactive_and_macro_generated_globs_follow_active_hir() {
             })
             .count(),
         1,
-        "inactive glob must leave Globbed forbidden while the active named facade permits Named: {inactive_report:#?}"
+        "the inactive glob must not protect Globbed while the active named facade permits Named: {inactive_report:#?}"
     );
 
     let generated = tempdir().expect("create generated glob fixture dir");
@@ -865,13 +854,13 @@ fn inactive_and_macro_generated_globs_follow_active_hir() {
                 finding.code == DiagnosticCode::ForbiddenPubCrate && finding.path == "src/a/b/c.rs"
             })
             .count(),
-        1,
-        "{precedence_report:#?}"
+        0,
+        "the named facade permits Named while unresolved glob reach leaves exact pub(crate) on Globbed unchanged: {precedence_report:#?}"
     );
 }
 
 #[test]
-fn private_import_does_not_suppress_unused_pub() {
+fn private_import_defers_narrowing_until_the_import_is_removed() {
     let temp = tempdir().expect("create private import fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a")).expect("create fixture module");
@@ -889,8 +878,9 @@ fn private_import_does_not_suppress_unused_pub() {
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert!(
         has_unused_pub(&report, "src/a/child.rs"),
-        "a private import must not count as a facade: {report:#?}"
+        "the private import must not count as semantic use: {report:#?}"
     );
+    assert_eq!(report.summary.fixable_with_fix, 0, "{report:#?}");
 }
 
 #[test]
@@ -1138,21 +1128,14 @@ fn inline_sibling_signature_uses_its_restricted_outward_reach() {
     assert!(
         forbidden_help
             .iter()
-            .all(|help| !help.contains("this item is exposed through a public signature")),
-        "the crate-visible make facade must not require public reach: {report:#?}"
+            .any(|help| help.as_str() == "consider removing the visibility"),
+        "Hidden must retain the non-exposed recommendation: {report:#?}"
     );
     assert!(
         forbidden_help
             .iter()
-            .any(|help| help.contains("consider using `pub(super)`")),
-        "Hidden must retain the non-exposed recommendation: {report:#?}"
-    );
-    assert!(
-        forbidden_help.iter().any(|help| {
-            help.as_str()
-                == "move the item into `crate`, or add an explicit facade at `crate` and rerun `cargo mend`"
-        }),
-        "Exposed must retain its crate-visible signature boundary: {report:#?}"
+            .all(|help| !help.contains("consider using: `pub(crate)`")),
+        "Exposed's exact crate-visible signature boundary must be accepted: {report:#?}"
     );
     assert_eq!(
         report
@@ -1162,13 +1145,13 @@ fn inline_sibling_signature_uses_its_restricted_outward_reach() {
                 finding.code == DiagnosticCode::ForbiddenPubCrate && finding.path == "src/a/b.rs"
             })
             .count(),
-        2,
-        "both forbidden annotations remain findings while Exposed keeps its signature floor: {report:#?}",
+        1,
+        "only the unexposed annotation should remain a finding: {report:#?}",
     );
 }
 
 #[test]
-fn module_glob_reexports_enum_subjects_as_a_blocker() {
+fn module_glob_reexport_retains_exact_pub_crate_on_enum_subjects() {
     let temp = tempdir().expect("create enum glob fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
@@ -1188,28 +1171,15 @@ fn module_glob_reexports_enum_subjects_as_a_blocker() {
     .expect("write enum subject");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert_glob_blocker(&report, "src/a/b/child.rs");
+    assert_pub_crate_is_retained_at_unresolved_glob(&report, "src/a/b/child.rs");
 }
 
-fn assert_glob_blocker(report: &Report, path: &str) {
-    let finding = report
-        .findings
-        .iter()
-        .find(|finding| finding.code == DiagnosticCode::ForbiddenPubCrate && finding.path == path)
-        .unwrap_or_else(|| panic!("missing glob blocker for {path}: {report:#?}"));
+fn assert_pub_crate_is_retained_at_unresolved_glob(report: &Report, path: &str) {
     assert!(
-        finding
-            .help
-            .iter()
-            .any(|help| help.contains("uses `*`; replace it with an explicit re-export")),
-        "{report:#?}"
-    );
-    assert!(
-        finding
-            .help
-            .iter()
-            .all(|help| !help.contains("consider using")),
-        "{report:#?}"
+        report.findings.iter().all(|finding| {
+            finding.code != DiagnosticCode::ForbiddenPubCrate || finding.path != path
+        }),
+        "an unresolved glob must retain exact pub(crate) at {path}: {report:#?}",
     );
 }
 

@@ -31,8 +31,9 @@ In practice, that means:
 - if the crate root re-exports the item via `pub use`, the source must be bare `pub` (E0364)
 - if an item is only local implementation detail, keep it private
 - if an item seems to need a deeply nested visibility like `pub(in crate::feature::subtree)` and
-  that path is not the exact boundary required by a parent facade, the module tree is probably
-  wrong; `cargo mend` rejects the form so the structural problem remains visible
+  that path is not the narrowest boundary required by callers, signatures, or a parent facade, the
+  module tree is probably wrong; `cargo mend` rejects the form so the structural problem remains
+  visible
 
 `cargo mend` flags places where the written visibility is broader, vaguer, or more global than
 the code relationship actually is.
@@ -41,12 +42,10 @@ the code relationship actually is.
 
 Hard errors:
 
-- `pub(crate)` is forbidden by default. Two narrow exceptions: at the crate root of a library
-  crate (item stays crate-internal but outside the public library API), and inside a top-level
-  private module with a private parent (any crate kind)
+- `pub(crate)` is reported only when callers and signatures prove that a narrower visibility is
+  sufficient; it is accepted when the narrowest proven boundary is the crate root
 - `pub(in ...)` is forbidden unless a crate-rooted path exactly matches the boundary required by a
-  parent facade and `pub_in_path` permits it; other forms signal that the item should move to a
-  better common parent
+  parent facade, callers, or signature reach and `pub_in_path` permits it
 - `pub mod` requires an explicit allowlist entry
 
 Warnings:
@@ -191,7 +190,7 @@ non-default feature still need an explicit `--features <set>` invocation to be v
 
 Use this as a migration aid and CI guard:
 
-1. fail immediately on forbidden visibility forms
+1. fail immediately on visibility forms broader than the proven boundary
 2. review suspicious `pub`
 3. let `cargo mend --fix` rewrite the straightforward local-import paths it knows how to fix
 4. keep repo-specific exceptions small and explicit
@@ -201,45 +200,40 @@ The usual review flow is:
 1. ask whether the item is truly part of the module's API
 2. if all callers are inside the defining module subtree, make it private
 3. if callers live in sibling modules, try `pub(super)` in a nested module
-4. use `pub(in crate::path)` only when a parent facade re-exports the declaration with
-   `pub(super) use`, so `pub(super)` at the declaration would not compile
-5. if the item lives in a top-level private module and is not re-exported by the crate root,
-   use `pub(crate)` — `cargo mend --fix` will narrow bare `pub` for you here
-6. if `pub(super)` is too narrow, move the item to a better common parent
+4. use `pub(in crate::path)` when callers, signatures, or a parent facade require a wider ancestor
+5. use `pub(crate)` when the required common ancestor is the crate root
+6. move the item to a better common parent when a restricted annotation would obscure ownership
 7. only keep broader visibility when the module structure genuinely requires it
 
 ## Diagnostic Reference
 
 <a id="forbidden-pub-crate"></a>
-### Forbidden `pub(crate)`
+### Overly broad `pub(crate)`
 
 `pub(crate)` lets any module in the crate touch the item, regardless of where the item lives.
 In a deep module tree that usually weakens the module boundaries the layout was meant to
 enforce.
 
-This rule applies to struct and union fields as well as items. A `pub(crate)` field is rejected
-wherever a `pub(crate)` item would be; `pub(super)` and `pub(self)` fields are unaffected.
-
-`cargo mend` forbids `pub(crate)` by default. Two narrow exceptions:
-
-1. **Library crate root** — the item should stay crate-internal but outside the public library
-   API.
-2. **Top-level private module with a private parent** — the item should be reachable anywhere
-   in the crate but kept out of the public boundary. Applies to library and binary crates;
-   integration tests never qualify.
+This rule applies to declarations and struct and union fields. Cargo-mend joins callers and
+signature requirements across every selected target and computes their deepest common module. It
+accepts `pub(crate)` when that module is the crate root. When the common module is narrower, the
+diagnostic keeps its stable `forbidden_pub_crate` code but reports that the annotation is broader
+than required.
 
 Otherwise, prefer:
 
 - private items when they are local implementation details
 - `pub(super)` when the parent module owns the boundary
-- `pub(in crate::path)` when a parent facade re-exports the item with `pub(super) use`, so
-  `pub(super)` at the declaration would not compile
+- `pub(in crate::path)` when callers, signatures, or a parent facade require a wider ancestor
+- `pub(crate)` when uses genuinely span crate-root sibling branches
 - moving the item to a better common parent when `pub(super)` is too narrow
 
-Associated declarations such as inherent methods cannot be re-exported with `use`. When every
-caller sits under one narrower ancestor, mend instead recommends the exact
-`pub(in crate::path)` boundary. `cargo mend --fix` can rewrite the `pub(crate)` annotation in
-these cases automatically.
+`cargo mend --fix` writes each proven result directly: it removes an unnecessary annotation, uses
+`pub(super)` for the immediate parent, uses exact `pub(in crate::path)` for a wider ancestor, and
+uses `pub(crate)` for the crate root. It applies related declaration changes in one batch before the
+validation build, so a trait and its associated type can narrow together without an intermediate
+E0446 failure. Field construction, access, destructuring, and `offset_of!` computations contribute
+caller evidence for named and positional fields.
 
 When mend gives facade-specific advice, it quotes the facade's `use` spelling only when it can
 establish that spelling from the active item graph. A resolved reach alone never licenses quoting a
@@ -256,8 +250,8 @@ mod helpers;
 pub(crate) fn helper() {}
 ```
 
-`helper` here looks reasonable — any caller in the crate can use it — but that is the problem.
-The helper now ignores the `feature` module boundary. A better version:
+When every caller is under `feature`, the crate-wide annotation ignores that module boundary. A
+better version is:
 
 ```rust
 // src/feature/helpers.rs
@@ -266,40 +260,31 @@ pub(super) fn helper() {}
 
 `helper` is now available to `feature` and nowhere else.
 
-**Exception 1** — library crate root:
+`pub(crate)` remains correct when the item is reached from crate-root sibling branches:
 
 ```rust
 // src/lib.rs
-pub(crate) type InternalDrawPhase = ();
+mod render;
+mod text;
+
+// src/render/batching.rs
+pub(crate) struct TextRunBatch;
 ```
 
-Usable anywhere inside the crate, but not part of the external library API.
-
-**Exception 2** — top-level private module:
-
-```rust
-// src/lib.rs
-mod internals;
-
-// src/internals.rs
-pub(crate) fn helper() {}
-```
-
-`internals` is private to the crate, so `pub(crate)` inside it cannot leak. The item is
-reachable anywhere inside the crate; the public boundary still holds.
+If both `render` and `text` reach `TextRunBatch`, their common boundary is the crate root and mend
+accepts the annotation.
 
 <a id="forbidden-pub-in-crate"></a>
 ### Forbidden `pub(in ...)`
 
-Most `pub(in ...)` annotations are a code smell: the visibility path has to reach outward to
-describe the real boundary, which usually means the item lives too deep in the module tree. Mend
-rejects those forms so the structural problem remains visible instead of being hidden by an
-annotation.
+Arbitrary `pub(in ...)` annotations are rejected because they can hide an ownership problem behind
+a long path. An exact crate-rooted `pub(in crate::path)` is accepted when `path` is the narrowest
+boundary required by callers, signatures, or a parent facade. Set `pub_in_path = "permitted"` (the
+default) or `"required"` to accept that exact boundary.
 
-There is one declaration-only exception. Reach for `pub(in crate::path)` when a parent module
-re-exports the item with `pub(super) use`, which puts the item's required reach above the module it
-lives in. `pub(super)` at the declaration is too narrow to compile; `pub` is wider than the truth.
-Set `pub_in_path = "permitted"` (the default) or `"required"` to accept this exact boundary.
+A parent re-export is one case that requires this form. A `pub(super) use` can put the item's
+required reach above the module where it is declared: `pub(super)` at the declaration is then too
+narrow to compile, while bare `pub` is wider than required.
 
 ```rust
 // src/video_plane/plane/camera_panel.rs
@@ -324,9 +309,8 @@ can see the item, not who owns it.
 Always spell this boundary from `crate::`. `pub(in super::super)` can name the same module, but
 forces readers to count levels and changes meaning when the file moves.
 
-This exception is declarations only. A `use` line selects its own reach, so `pub(super)`,
-`pub(crate)`, and `pub` already express what it needs. Fields are excluded because a field cannot
-be re-exported, so no facade can justify one.
+Exact-boundary repairs apply to declarations and fields. A `use` line selects its own reach, so
+`pub(super)`, `pub(crate)`, and `pub` already express what it needs.
 
 Do not use this form to avoid moving an item. If the required path is long or names a module
 unrelated to the item, the item belongs in a different module. It is not a way to widen access:

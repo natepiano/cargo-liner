@@ -41,6 +41,7 @@ use super::constants::SOURCE_DIR_BENCHES;
 use super::constants::SOURCE_DIR_EXAMPLES;
 use super::constants::SOURCE_DIR_SRC;
 use super::constants::SOURCE_DIR_TESTS;
+use super::sweep_counters;
 use crate::reporting::AllFeaturesCoverage;
 use crate::rust_syntax::LexicalRegions;
 use crate::rust_syntax::PathAnchor;
@@ -281,7 +282,7 @@ impl SourceCache {
     /// not held across the loop bodies, which call back into analysis and reach
     /// this function again.
     pub fn source_files_under(&self, dir: &Path) -> Rc<[PathBuf]> {
-        super::sweep_counters::record_file_list_request();
+        sweep_counters::record_file_list_request();
         if let Some(files) = self.files_under.borrow().get(dir) {
             return Rc::clone(files);
         }
@@ -292,7 +293,7 @@ impl SourceCache {
             .filter(|(candidate, _)| candidate.starts_with(dir))
             .flat_map(|(_, files)| files.iter().cloned())
             .collect();
-        super::sweep_counters::record_file_list_build(files.len());
+        sweep_counters::record_file_list_build(files.len());
         self.files_under
             .borrow_mut()
             .insert(dir.to_path_buf(), Rc::clone(&files));

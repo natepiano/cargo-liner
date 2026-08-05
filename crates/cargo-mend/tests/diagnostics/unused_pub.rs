@@ -523,7 +523,7 @@ impl LocalHelper {
 }
 
 #[test]
-fn fix_never_strips_a_restricted_annotation() {
+fn fix_strips_an_unneeded_restricted_annotation() {
     // `unused_pub`'s fix deletes the annotation outright. That is only ever
     // correct for a bare `pub`: deleting a `pub(crate)` would discard a narrower
     // visibility the author wrote. The bare sibling in the same file proves the
@@ -563,7 +563,7 @@ edition = "2024"
 
     assert_eq!(
         fs::read_to_string(temp.path().join("src/helpers.rs")).expect("read fixed helpers"),
-        "pub(crate) struct RestrictedHelper;\nstruct BareHelper;\n",
+        "struct RestrictedHelper;\nstruct BareHelper;\n",
     );
 }
 

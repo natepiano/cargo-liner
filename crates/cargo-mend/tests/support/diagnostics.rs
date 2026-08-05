@@ -189,7 +189,7 @@ impl HeadlineSource {
 pub const fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
     const FORBIDDEN_PUB_CRATE: DiagnosticSpec = DiagnosticSpec {
         headline:    HeadlineSource::FindingMessage {
-            fallback: "use of `pub(crate)` is forbidden by policy",
+            fallback: "`pub(crate)` is broader than required",
         },
         help_anchor: "forbidden-pub-crate",
         fix_support: FixSupport::None,

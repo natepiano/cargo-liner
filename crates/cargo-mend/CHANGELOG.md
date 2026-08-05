@@ -8,12 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
-- `forbidden_pub_crate` now derives structural advice from the item and caller modules instead of
-  repeating a wider signature or written boundary. When the declaration is an inherent or
-  associated item that cannot be re-exported, mend recommends the exact shared
-  `pub(in crate::path)` boundary and `cargo mend --fix` rewrites its `pub(crate)` annotation. The
-  applied boundary is accepted on the next run. Findings schema 24 records whether a facade is
-  impossible so cross-target reconciliation retains this distinction.
+- `pub(crate)` is now an accepted final visibility when callers and signatures require the crate
+  root. The stable `forbidden_pub_crate` diagnostic remains for annotations that can be tighter.
+  Cross-target reconciliation selects private, `pub(super)`, an exact `pub(in crate::path)`, or
+  `pub(crate)` from the deepest common required module, and `cargo mend --fix` writes each result.
+  Bare `pub` findings use the same reconciliation, including inherent methods whose containing type
+  has wider reach. Related changes are applied in one validation batch, so traits, associated types,
+  loaders, and their error types can narrow together without an intermediate E0446 failure.
+  Trait bounds now contribute caller evidence. Named and positional field construction, access,
+  destructuring, and `offset_of!` computations do as well. Applied modes repeat while the remaining
+  fixable count decreases, so visibility cascades converge during one `cargo mend --fix`
+  invocation. Restricted re-exports
+  retain the boundary their targets must reach between passes, and private imports defer a rewrite
+  until removing the import makes it valid. Findings schema 27 records these caller kinds, the exact
+  replacement spelling, and whether project policy accepts an exact restricted path.
 - mend now always takes cargo's `RUSTC_WORKSPACE_WRAPPER` slot and leaves an ambient `RUSTC_WRAPPER`
   in place. Previously, a set `RUSTC_WRAPPER` was displaced into `MEND_PASSTHROUGH_RUSTC_WRAPPER` and
   mend took that slot instead. Cargo records the workspace wrapper's path in a unit's fingerprint and

@@ -127,7 +127,7 @@ pub(super) fn record_signature_refused() {
 /// mend runs as a `RUSTC_WRAPPER`, so a workspace produces one line per compiled
 /// target — a package's lib, each example, each bench, each test binary — and the
 /// totals are summed afterwards. `analysis_ms` is the wall time
-/// [`visibility::collect_and_store_findings`] took for that target, which is the
+/// [`super::visibility::collect_and_store_findings`] took for that target, which is the
 /// only per-target timing available: cargo prints one status line per package
 /// however many targets it holds, so its output cannot attribute time.
 ///

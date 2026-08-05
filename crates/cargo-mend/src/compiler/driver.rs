@@ -21,6 +21,7 @@ use super::constants::CARGO_PRIMARY_PACKAGE_ENV;
 use super::constants::PASSTHROUGH_RUSTC_WRAPPER_ENV;
 use super::constants::RUSTC_BIN;
 use super::settings::DriverSettings;
+use super::sweep_counters;
 use super::visibility;
 use crate::reporting::EXIT_CODE_ERROR;
 
@@ -46,7 +47,7 @@ impl Callbacks for AnalysisCallbacks {
             AnalyzingMarker::new(&self.driver_settings.findings_dir, crate_name.as_str());
         let analysis_start = Instant::now();
         let findings = visibility::collect_and_store_findings(tcx, &self.driver_settings);
-        super::sweep_counters::report(crate_name.as_str(), analysis_start.elapsed());
+        sweep_counters::report(crate_name.as_str(), analysis_start.elapsed());
         match findings {
             Ok(true | false) => Compilation::Continue,
             Err(err) => {

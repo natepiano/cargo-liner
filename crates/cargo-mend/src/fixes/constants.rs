@@ -1,5 +1,5 @@
 // fix runner
-pub(crate) const FIX_ALL_MAX_PASSES: usize = 5;
+pub(crate) const FIX_CONVERGENCE_MAX_PASSES: usize = 5;
 
 // rustc display columns
 /// Columns rustc charges a tab when it computes `SourceMap::lookup_char_pos`'s

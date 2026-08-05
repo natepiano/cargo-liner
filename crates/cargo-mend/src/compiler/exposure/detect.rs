@@ -24,7 +24,6 @@ use syn::Item;
 use syn::ItemImpl;
 use syn::spanned::Spanned;
 
-use super::super::sweep_counters;
 use super::visitor;
 use super::visitor::ItemSignatureCarrier;
 use super::visitor::OutwardDeclaration;
@@ -36,6 +35,7 @@ use crate::compiler::facade::ParentFacadeUsage;
 use crate::compiler::settings::DriverSettings;
 use crate::compiler::source_cache::NameMention;
 use crate::compiler::source_cache::SourceCache;
+use crate::compiler::sweep_counters;
 use crate::compiler::visibility;
 use crate::compiler::visibility::ReexportIndex;
 use crate::compiler::visibility::VisibilityReach;

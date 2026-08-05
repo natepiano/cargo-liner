@@ -3,18 +3,28 @@ use std::collections::BTreeSet;
 use super::StoredFinding;
 use super::StoredReport;
 use crate::config::DiagnosticCode;
+use crate::reporting::FixSupport;
 
 pub(super) fn apply_visibility_narrowing_priority(reports: &mut [StoredReport]) {
     let mut unused_pub_keys = BTreeSet::new();
+    let mut facade_cleanup_keys = BTreeSet::new();
     for report in reports.iter() {
         for finding in &report.findings {
             if finding.diagnostic_code == DiagnosticCode::UnusedPub {
                 unused_pub_keys.insert(visibility_priority_key(finding));
             }
+            if finding.diagnostic_code == DiagnosticCode::SuspiciousPub
+                && matches!(
+                    finding.fix_support,
+                    FixSupport::PubUse | FixSupport::NeedsManualPubUseCleanup
+                )
+            {
+                facade_cleanup_keys.insert(visibility_priority_key(finding));
+            }
         }
     }
 
-    if unused_pub_keys.is_empty() {
+    if unused_pub_keys.is_empty() && facade_cleanup_keys.is_empty() {
         return;
     }
 
@@ -26,7 +36,10 @@ pub(super) fn apply_visibility_narrowing_priority(reports: &mut [StoredReport]) 
             ) {
                 return true;
             }
-            !unused_pub_keys.contains(&visibility_priority_key(finding))
+            let key = visibility_priority_key(finding);
+            !(unused_pub_keys.contains(&key)
+                || finding.diagnostic_code == DiagnosticCode::NarrowToPubCrate
+                    && facade_cleanup_keys.contains(&key))
         });
     }
 }
@@ -47,6 +60,7 @@ mod tests {
     use crate::config::DiagnosticCode;
     use crate::reporting::AllFeaturesCoverage;
     use crate::reporting::CompilerWarningFacts;
+    use crate::reporting::ExactBoundarySpelling;
     use crate::reporting::FixSupport;
     use crate::reporting::Severity;
 
@@ -103,6 +117,7 @@ mod tests {
             visibility_annotation: None,
             item_def_path: None,
             narrower_scope_def_path: None,
+            exact_boundary_spelling: ExactBoundarySpelling::CratePath,
         }
     }
 

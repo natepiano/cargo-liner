@@ -395,7 +395,7 @@ edition = "2024"
 }
 
 #[test]
-fn binary_crate_top_level_module_is_not_flagged() {
+fn binary_crate_top_level_item_is_narrowed_to_pub_crate() {
     let temp = tempdir().expect("create temp fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
@@ -426,9 +426,10 @@ edition = "2024"
         .iter()
         .filter(|f| f.code == DiagnosticCode::NarrowToPubCrate)
         .collect();
-    assert!(
-        narrow_findings.is_empty(),
-        "binary crates must not receive narrow_to_pub_crate findings: {narrow_findings:?}",
+    assert_eq!(
+        narrow_findings.len(),
+        1,
+        "the crate-root caller requires pub(crate): {narrow_findings:?}",
     );
     assert_summary_matches_findings(&report);
 }
@@ -1150,7 +1151,7 @@ pub_in_path = "permitted"
 }
 
 #[test]
-fn binary_pub_at_depth_3_is_not_narrowed_when_parent_caps_at_pub_crate() {
+fn binary_pub_at_depth_3_is_narrowed_when_parent_caps_at_pub_crate() {
     let temp = tempdir().expect("create temp fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
@@ -1180,11 +1181,11 @@ edition = "2024"
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert!(
-        !report.findings.iter().any(|finding| {
+        report.findings.iter().any(|finding| {
             finding.code == DiagnosticCode::NarrowToPubCrate
                 && finding.path.ends_with("src/foo/bar/baz.rs")
         }),
-        "a binary parent facade capped at pub(crate) must not request pub(crate): {report:#?}"
+        "a binary parent facade capped at pub(crate) must request pub(crate): {report:#?}"
     );
 }
 

@@ -29,6 +29,7 @@ use super::source;
 use crate::compiler::persistence::FindingsSink;
 use crate::compiler::persistence::StoredFinding;
 use crate::config::DiagnosticCode;
+use crate::reporting::ExactBoundarySpelling;
 use crate::reporting::FixSupport;
 use crate::reporting::Severity;
 
@@ -151,6 +152,7 @@ fn check_field(
             visibility_annotation:   None,
             item_def_path:           None,
             narrower_scope_def_path: None,
+            exact_boundary_spelling: ExactBoundarySpelling::CratePath,
         },
     )?;
     sink.findings.push(finding);

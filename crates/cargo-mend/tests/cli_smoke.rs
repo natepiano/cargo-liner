@@ -416,7 +416,7 @@ fn all_targets_fix_edits_shared_path_module_once() {
     );
     assert_eq!(
         fs::read_to_string(temp.path().join("fixtures.rs")).expect("read shared fixture"),
-        "const SHARED_VALUE: usize = 1;\npub const USED_BY_EXAMPLE: usize = 2;\n"
+        "const SHARED_VALUE: usize = 1;\npub(crate) const USED_BY_EXAMPLE: usize = 2;\n"
     );
 }
 

@@ -22,6 +22,7 @@ pub(crate) enum FixSupport {
     #[serde(rename = "fix_pub_use")]
     PubUse,
     NeedsManualPubUseCleanup,
+    BlockedByPrivateImport,
     InternalParentFacade,
     UnusedPub,
     NarrowToPubCrate,
@@ -59,7 +60,10 @@ impl FixSupport {
 
     pub(crate) const fn summary_bucket(self) -> Option<FixSummaryBucket> {
         match self {
-            Self::None | Self::NeedsManualPubUseCleanup | Self::InternalParentFacade => None,
+            Self::None
+            | Self::NeedsManualPubUseCleanup
+            | Self::BlockedByPrivateImport
+            | Self::InternalParentFacade => None,
             Self::ShortenImport
             | Self::PreferModuleImport
             | Self::InlinePathQualifiedType
@@ -103,7 +107,7 @@ pub(crate) struct DiagnosticSpec {
 
 static FORBIDDEN_PUB_CRATE: DiagnosticSpec = DiagnosticSpec {
     headline:    HeadlineSource::FindingMessage {
-        fallback: "use of `pub(crate)` is forbidden by policy",
+        fallback: "`pub(crate)` is broader than required",
     },
     inline_help: None,
     help_anchor: "forbidden-pub-crate",
@@ -241,6 +245,17 @@ impl From<Option<String>> for WrittenVisibility {
 
 /// The scope a finding proposes narrowing its item to, and what a fixer is
 /// allowed to do with it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ExactBoundarySpelling {
+    #[default]
+    CratePath,
+    Parent,
+    Crate,
+    Private,
+    Public,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) enum NarrowerScope {
     /// The finding proposes no narrowing.
@@ -252,20 +267,51 @@ pub(crate) enum NarrowerScope {
     SuppressionKey(String),
     /// Canonical def-path of the exact module boundary the item needs, without
     /// the leading `crate::`. `pub(in crate::<path>)` built from this is a
-    /// correct rewrite of the item's bare `pub`.
+    /// correct rewrite of the item's supported visibility annotation.
     ExactBoundary(String),
+    /// Canonical def-path of the exact module boundary when it is the item's
+    /// immediate parent. `pub(super)` is the canonical rewrite for this case.
+    ExactParentBoundary(String),
+    /// The exact boundary is the crate root. `pub(crate)` is the canonical
+    /// rewrite for this case.
+    CrateBoundary,
+    /// No caller or signature requires visibility outside the defining module.
+    /// The visibility annotation can be removed.
+    Private,
+    /// The required boundary is crate-external. Bare `pub` is the only source
+    /// spelling that satisfies it.
+    PublicBoundary,
 }
 
 impl NarrowerScope {
-    /// Rebuilds the scope from the two stored fields that carry it. The
-    /// def-path alone cannot say which kind of scope it is; the compiler pass
-    /// records that by attaching [`FixSupport::RestrictedAnnotation`] to the
-    /// same finding, which it does only for a resolved exact boundary.
-    pub(crate) fn resolve(def_path: Option<String>, fix_support: FixSupport) -> Self {
-        match (def_path, fix_support) {
-            (None, _) => Self::Unproposed,
-            (Some(def_path), FixSupport::RestrictedAnnotation) => Self::ExactBoundary(def_path),
-            (Some(def_path), _) => Self::SuppressionKey(def_path),
+    /// Rebuilds the scope from the stored boundary, fix support, and exact
+    /// replacement spelling. The def-path alone cannot distinguish an
+    /// immediate parent from a wider ancestor.
+    pub(crate) fn resolve(
+        def_path: Option<String>,
+        fix_support: FixSupport,
+        exact_boundary_spelling: ExactBoundarySpelling,
+    ) -> Self {
+        match (def_path, fix_support, exact_boundary_spelling) {
+            (None, _, _) => Self::Unproposed,
+            (Some(def_path), FixSupport::RestrictedAnnotation, ExactBoundarySpelling::Parent) => {
+                Self::ExactParentBoundary(def_path)
+            },
+            (Some(_), FixSupport::RestrictedAnnotation, ExactBoundarySpelling::Crate) => {
+                Self::CrateBoundary
+            },
+            (Some(_), FixSupport::RestrictedAnnotation, ExactBoundarySpelling::Private) => {
+                Self::Private
+            },
+            (
+                Some(def_path),
+                FixSupport::RestrictedAnnotation,
+                ExactBoundarySpelling::CratePath,
+            ) => Self::ExactBoundary(def_path),
+            (Some(_), FixSupport::RestrictedAnnotation, ExactBoundarySpelling::Public) => {
+                Self::PublicBoundary
+            },
+            (Some(def_path), _, _) => Self::SuppressionKey(def_path),
         }
     }
 }
@@ -553,7 +599,7 @@ mod tests {
         for (diagnostic_code, fallback) in [
             (
                 DiagnosticCode::ForbiddenPubCrate,
-                "use of `pub(crate)` is forbidden by policy",
+                "`pub(crate)` is broader than required",
             ),
             (
                 DiagnosticCode::ForbiddenPubInCrate,

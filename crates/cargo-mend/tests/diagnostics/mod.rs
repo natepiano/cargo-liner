@@ -27,4 +27,5 @@ mod pub_use_fixes;
 mod rendering;
 #[path = "../support/mod.rs"]
 mod support;
+mod suspicious_pub_fixes;
 mod unused_pub;

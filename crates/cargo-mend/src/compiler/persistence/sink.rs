@@ -35,9 +35,8 @@ pub(in crate::compiler) struct FindingsSink {
 pub(in crate::compiler) struct UseSiteIndex(BTreeMap<String, BTreeMap<String, UseSiteReference>>);
 
 impl UseSiteIndex {
-    /// A module that writes the item's path anywhere stays
-    /// [`UseSiteReference::Named`] however many signature-only references it
-    /// also has: naming it once is enough for a re-export to serve it.
+    /// A semantic path use wins over signature-only reach, which wins over an
+    /// import declaration retained to keep visibility rewrites safe.
     pub(in crate::compiler) fn insert(
         &mut self,
         target_def_path: String,
@@ -50,8 +49,15 @@ impl UseSiteIndex {
             .or_default()
             .entry(caller_module_def_path)
             .or_insert(reference);
-        if reference == UseSiteReference::Named {
-            *recorded = UseSiteReference::Named;
+        if matches!(
+            (*recorded, reference),
+            (_, UseSiteReference::Named)
+                | (
+                    UseSiteReference::PrivateImport | UseSiteReference::RestrictedImport,
+                    UseSiteReference::ThroughSignature
+                )
+        ) {
+            *recorded = reference;
         }
     }
 

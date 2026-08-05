@@ -21,6 +21,7 @@ pub(super) use sink::prepare_findings_dir;
 pub(super) use visibility_constraint::StoredCallerReconciliation;
 pub(super) use visibility_constraint::StoredConstraintOutcome;
 pub(super) use visibility_constraint::StoredExactBoundaryAcceptance;
+pub(super) use visibility_constraint::StoredExactPathPolicy;
 pub(super) use visibility_constraint::StoredFacadeConstraint;
 pub(super) use visibility_constraint::StoredVisibilityConstraint;
 pub(super) use visibility_constraint::StoredVisibilityDeclaration;

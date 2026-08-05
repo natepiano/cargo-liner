@@ -50,10 +50,6 @@ enum ForbiddenVisibilityPersistenceExpectation<'a> {
         item_module_def_path:       &'a str,
         required_boundary_def_path: &'a str,
     },
-    StructuralBlocker {
-        visibility_annotation: &'a str,
-        item_def_path:         &'a str,
-    },
 }
 
 impl<'a> ForbiddenVisibilityPersistenceExpectation<'a> {
@@ -78,10 +74,6 @@ impl<'a> ForbiddenVisibilityPersistenceExpectation<'a> {
             | Self::ResolvedFacadeRestricted {
                 visibility_annotation,
                 ..
-            }
-            | Self::StructuralBlocker {
-                visibility_annotation,
-                ..
             } => visibility_annotation,
         }
     }
@@ -92,8 +84,7 @@ impl<'a> ForbiddenVisibilityPersistenceExpectation<'a> {
             | Self::AcceptedRestricted { item_def_path, .. }
             | Self::Public { item_def_path, .. }
             | Self::Restricted { item_def_path, .. }
-            | Self::ResolvedFacadeRestricted { item_def_path, .. }
-            | Self::StructuralBlocker { item_def_path, .. } => item_def_path,
+            | Self::ResolvedFacadeRestricted { item_def_path, .. } => item_def_path,
         }
     }
 
@@ -115,7 +106,7 @@ impl<'a> ForbiddenVisibilityPersistenceExpectation<'a> {
                 item_module_def_path,
                 ..
             } => Some(item_module_def_path),
-            Self::Public { .. } | Self::StructuralBlocker { .. } => None,
+            Self::Public { .. } => None,
         }
     }
 
@@ -124,8 +115,7 @@ impl<'a> ForbiddenVisibilityPersistenceExpectation<'a> {
             Self::AcceptedCrate { .. } | Self::AcceptedRestricted { .. } => "accepted",
             Self::Public { .. }
             | Self::Restricted { .. }
-            | Self::ResolvedFacadeRestricted { .. }
-            | Self::StructuralBlocker { .. } => "finding",
+            | Self::ResolvedFacadeRestricted { .. } => "finding",
         }
     }
 
@@ -144,7 +134,7 @@ impl<'a> ForbiddenVisibilityPersistenceExpectation<'a> {
                 ..
             } => Some(signature_boundary_def_path),
             Self::Public { .. } => Some("crate-external"),
-            Self::AcceptedCrate { .. } | Self::StructuralBlocker { .. } => None,
+            Self::AcceptedCrate { .. } => None,
         }
     }
 
@@ -154,15 +144,13 @@ impl<'a> ForbiddenVisibilityPersistenceExpectation<'a> {
             Self::AcceptedRestricted { .. }
             | Self::Public { .. }
             | Self::Restricted { .. }
-            | Self::ResolvedFacadeRestricted { .. }
-            | Self::StructuralBlocker { .. } => None,
+            | Self::ResolvedFacadeRestricted { .. } => None,
         }
     }
 
     const fn facade_kind(self) -> Option<&'static str> {
         match self {
             Self::ResolvedFacadeRestricted { .. } => Some("resolved"),
-            Self::StructuralBlocker { .. } => Some("blocked"),
             Self::AcceptedCrate { .. }
             | Self::AcceptedRestricted { .. }
             | Self::Public { .. }
@@ -1195,7 +1183,7 @@ edition = "2024"
 }
 
 #[test]
-fn suspicious_pub_is_suppressed_for_internal_parent_super_facade_in_mod_rs() {
+fn suspicious_pub_is_narrowed_to_an_internal_parent_super_facade_in_mod_rs() {
     let temp = tempdir().expect("create temp fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/private_parent")).expect("create nested fixture dir");
@@ -1232,10 +1220,16 @@ edition = "2024"
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert_eq!(report.summary.errors, 0);
-    assert_eq!(report.summary.warnings, 0);
-    assert_eq!(report.summary.fixable_with_fix, 0);
+    assert_eq!(report.summary.warnings, 1);
+    assert_eq!(report.summary.fixable_with_fix, 1);
     assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
-    assert!(report.findings.is_empty());
+    assert!(
+        report.findings[0]
+            .help
+            .iter()
+            .any(|line| line == "consider using: `pub(crate)`"),
+        "unexpected internal facade refinement: {report:#?}",
+    );
 }
 
 #[test]
@@ -1279,7 +1273,7 @@ edition = "2024"
 }
 
 #[test]
-fn suspicious_pub_is_suppressed_for_internal_parent_super_facade_in_file_module() {
+fn suspicious_pub_is_narrowed_to_an_internal_parent_super_facade_in_file_module() {
     let temp = tempdir().expect("create temp fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
     fs::create_dir_all(temp.path().join("src/private_parent")).expect("create nested fixture dir");
@@ -1316,10 +1310,16 @@ edition = "2024"
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert_eq!(report.summary.errors, 0);
-    assert_eq!(report.summary.warnings, 0);
-    assert_eq!(report.summary.fixable_with_fix, 0);
+    assert_eq!(report.summary.warnings, 1);
+    assert_eq!(report.summary.fixable_with_fix, 1);
     assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
-    assert!(report.findings.is_empty());
+    assert!(
+        report.findings[0]
+            .help
+            .iter()
+            .any(|line| line == "consider using: `pub(crate)`"),
+        "unexpected internal facade refinement: {report:#?}",
+    );
 }
 
 #[test]
@@ -1840,10 +1840,7 @@ fn assert_path_sibling_signature_exposure_uses_logical_identity() {
         target_finding
             .help
             .iter()
-            .any(|line| {
-                line
-                    == "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend`"
-            }),
+            .any(|line| { line == "consider using: `pub(in crate::a)`" }),
         "logical sibling signature exposure must preserve its private-ancestor cap: {sibling_report:#?}"
     );
 }
@@ -1991,11 +1988,18 @@ fn restricted_signature_exposure_accepts_its_exact_facade_boundary() {
     let signature_only_finding = signature_only_findings[0];
     assert_eq!(signature_only_finding.code, DiagnosticCode::SuspiciousPub);
     assert!(
-        signature_only_finding.help.iter().any(|line| {
-            line
-                == "move the item into `crate::video_plane`, or add an explicit facade at `crate::video_plane` and rerun `cargo mend`"
-        }),
+        signature_only_finding
+            .help
+            .iter()
+            .any(|line| { line == "consider using: `pub(in crate::video_plane)`" }),
         "equal exposure advice must name its signature boundary: {report:#?}",
+    );
+    assert!(
+        signature_only_finding
+            .help
+            .iter()
+            .any(|line| line == "this warning is auto-fixable with `cargo mend --fix`"),
+        "the signature-boundary refinement must be auto-fixable: {report:#?}",
     );
     assert_stored_forbidden_visibility_advice(
         &temp,
@@ -2012,7 +2016,7 @@ fn restricted_signature_exposure_accepts_its_exact_facade_boundary() {
 }
 
 #[test]
-fn crate_wide_signature_requirement_is_persisted_without_rendering_a_finding() {
+fn crate_wide_signature_requirement_is_persisted_while_an_unused_carrier_is_tightened() {
     let temp = tempdir().expect("create accepted crate reach fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
     write_allowance_sources(
@@ -2040,14 +2044,19 @@ bench = false
     );
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(report.findings.iter().any(|finding| {
+        finding.path == "src/lib.rs"
+            && finding.line_start == 3
+            && finding
+                .help
+                .iter()
+                .any(|line| line == "consider removing the visibility")
+    }));
     assert!(
-        !report.findings.iter().any(|finding| {
-            matches!(
-                finding.code,
-                DiagnosticCode::ForbiddenPubCrate | DiagnosticCode::ForbiddenPubInCrate
-            )
-        }),
-        "accepted evidence must not render: {report:#?}",
+        report
+            .findings
+            .iter()
+            .all(|finding| { !(finding.path == "src/a.rs" && finding.line_start == 1) })
     );
     assert_stored_forbidden_visibility_advice(
         &temp,
@@ -2205,20 +2214,11 @@ edition = "2024"
     );
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    let target_finding = report
-        .findings
-        .iter()
-        .find(|finding| {
-            finding.path == "src/a/left.rs" && finding.code == DiagnosticCode::ForbiddenPubInCrate
-        })
-        .expect("find sibling-exposed target finding");
-    assert_eq!(target_finding.fix_support, FixSupport::None);
     assert!(
-        target_finding
-            .help
-            .iter()
-            .any(|line| line == "consider using: `pub(super)`"),
-        "the sibling signature must anchor its common-ancestor reach at crate::a: {report:#?}",
+        report.findings.iter().all(|finding| {
+            !(finding.path == "src/a/left.rs" && finding.item.as_deref() == Some("struct Target"))
+        }),
+        "the exact common-ancestor visibility must be accepted: {report:#?}",
     );
     assert!(
         report.findings.iter().any(|finding| {
@@ -2267,10 +2267,10 @@ edition = "2024"
     assert_eq!(target_finding.code, DiagnosticCode::SuspiciousPub);
     assert_eq!(target_finding.fix_support, FixSupport::None);
     assert!(
-        target_finding.help.iter().any(|line| {
-            line
-                == "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend`"
-        }),
+        target_finding
+            .help
+            .iter()
+            .any(|line| { line == "consider using: `pub(in crate::a)`" }),
         "the sibling impl must require the containing module's crate::a reach: {report:#?}",
     );
     let control_findings = report
@@ -2355,10 +2355,10 @@ pub struct NonRawReturn;
         assert_eq!(target_finding.code, DiagnosticCode::SuspiciousPub);
         assert_eq!(target_finding.fix_support, FixSupport::None);
         assert!(
-            target_finding.help.iter().any(|line| {
-                line
-                    == "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend`"
-            }),
+            target_finding
+                .help
+                .iter()
+                .any(|line| { line == "consider using: `pub(in crate::a)`" }),
             "{carrier_spelling} impl signature target must retain crate::a reach: {report:#?}",
         );
         assert!(
@@ -2443,10 +2443,10 @@ impl crate::a::b::carrier::Carrier {
         assert_eq!(finding.code, DiagnosticCode::SuspiciousPub);
         assert_eq!(finding.fix_support, FixSupport::None);
         assert!(
-            finding.help.iter().any(|line| {
-                line
-                    == "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend`"
-            }),
+            finding
+                .help
+                .iter()
+                .any(|line| { line == "consider using: `pub(in crate::a)`" }),
             "{target} must retain exact crate::a signature reach: {report:#?}",
         );
         assert!(
@@ -2523,10 +2523,10 @@ impl RestrictedContract for TraitCarrier { type Output = c::TraitTarget; }
             .unwrap_or_else(|| panic!("missing {carrier} target finding: {report:#?}"));
         assert_eq!(finding.fix_support, FixSupport::None);
         assert!(
-            finding.help.iter().any(|line| {
-                line
-                    == "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend`"
-            }),
+            finding
+                .help
+                .iter()
+                .any(|line| { line == "consider using: `pub(in crate::a)`" }),
             "the {carrier} must require exact crate::a reach: {report:#?}",
         );
         assert!(
@@ -2547,9 +2547,10 @@ impl RestrictedContract for TraitCarrier { type Output = c::TraitTarget; }
         })
         .unwrap_or_else(|| panic!("missing private method control: {report:#?}"));
     assert!(
-        private_control.help.iter().any(|line| {
-            line == "consider using `pub(super)` or removing `pub(crate)` entirely"
-        }),
+        private_control
+            .help
+            .iter()
+            .any(|line| { line == "consider using: `pub(super)`" }),
         "the private method must contribute no outward reach: {report:#?}",
     );
 }
@@ -2599,10 +2600,10 @@ edition = "2024"
         .expect("find capped module-path exposure finding");
     assert_eq!(target_finding.fix_support, FixSupport::None);
     assert!(
-        target_finding.help.iter().any(|line| {
-            line
-                == "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend`"
-        }),
+        target_finding
+            .help
+            .iter()
+            .any(|line| { line == "consider using: `pub(in crate::a)`" }),
         "the parent facade must preserve the crate::a signature boundary: {report:#?}",
     );
     assert!(
@@ -2670,10 +2671,10 @@ edition = "2024"
     assert_eq!(target_findings[0].code, DiagnosticCode::SuspiciousPub);
     assert_eq!(target_findings[0].fix_support, FixSupport::None);
     assert!(
-        target_findings[0].help.iter().any(|line| {
-            line
-                == "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend`"
-        }),
+        target_findings[0]
+            .help
+            .iter()
+            .any(|line| { line == "consider using: `pub(in crate::a)`" }),
         "the private b module must cap make at crate::a: {report:#?}",
     );
 }
@@ -2721,10 +2722,10 @@ edition = "2024"
     assert_eq!(target_findings[0].code, DiagnosticCode::SuspiciousPub);
     assert_eq!(target_findings[0].fix_support, FixSupport::None);
     assert!(
-        target_findings[0].help.iter().any(|line| {
-            line
-                == "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend`"
-        }),
+        target_findings[0]
+            .help
+            .iter()
+            .any(|line| { line == "consider using: `pub(in crate::a)`" }),
         "the private hidden module must cap its public re-export at crate::a: {report:#?}",
     );
     assert!(
@@ -2798,28 +2799,16 @@ edition = "2024"
         target_finding("src/hidden/api/public_target.rs")
             .help
             .iter()
-            .any(|line| {
-                line == "this item is exposed through a public signature; consider using `pub`"
-            }),
+            .any(|line| line == "consider using: `pub`"),
         "the resolved hidden::api export must give its public make function external reach: {report:#?}",
     );
     for path in [
         "src/hidden/api/restricted/target.rs",
         "src/same_name/api/target.rs",
     ] {
-        let finding = target_finding(path);
         assert!(
-            finding.help.iter().all(|line| {
-                line != "this item is exposed through a public signature; consider using `pub`"
-            }),
-            "restricted descendants and the same-name module must remain below public reach at {path}: {report:#?}",
-        );
-        assert!(
-            finding.help.iter().any(|line| {
-                line
-                    == "move the item into `crate`, or add an explicit facade at `crate` and rerun `cargo mend`"
-            }),
-            "the restricted or unexported path must retain only crate reach at {path}: {report:#?}",
+            report.findings.iter().all(|finding| finding.path != path),
+            "the exact crate visibility must be accepted at {path}: {report:#?}",
         );
     }
 }
@@ -2865,13 +2854,18 @@ edition = "2024"
         })
         .unwrap_or_else(|| panic!("missing outer-glob target finding: {report:#?}"));
     assert_eq!(target_finding.code, DiagnosticCode::ForbiddenPubInCrate);
-    assert_eq!(target_finding.fix_support, FixSupport::None);
     assert!(
-        target_finding.help.iter().any(|line| {
-            line
-                == "move the item into `crate`, or add an explicit facade at `crate` and rerun `cargo mend`"
-        }),
+        target_finding
+            .help
+            .iter()
+            .any(|line| line == "consider using: `pub(crate)`"),
         "the outer glob must widen the nested signature requirement to pub(crate): {report:#?}",
+    );
+    assert!(
+        target_finding
+            .help
+            .iter()
+            .any(|line| line == "this error is auto-fixable with `cargo mend --fix`")
     );
     assert!(
         report.findings.iter().any(|finding| {
@@ -2917,33 +2911,12 @@ edition = "2024"
     );
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    let target_findings = report
-        .findings
-        .iter()
-        .filter(|finding| {
-            finding.path == "src/api/carrier/target.rs"
-                && finding.code == DiagnosticCode::ForbiddenPubCrate
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        target_findings.len(),
-        1,
-        "the nested signature type must have one finding: {report:#?}",
-    );
     assert!(
-        target_findings[0].help.iter().any(|line| {
-            line
-                == "move the item into `crate`, or add an explicit facade at `crate` and rerun `cargo mend`"
-        }),
-        "the restricted carrier must cap its nested signature type at crate reach: {report:#?}",
-    );
-    assert_eq!(target_findings[0].fix_support, FixSupport::None);
-    assert!(
-        target_findings[0]
-            .help
+        report
+            .findings
             .iter()
-            .all(|line| !line.contains("crate-external")),
-        "the nested signature type must not receive public-reach advice: {report:#?}",
+            .all(|finding| finding.path != "src/api/carrier/target.rs"),
+        "the nested signature type's exact crate visibility must be accepted: {report:#?}",
     );
 }
 
@@ -2983,32 +2956,11 @@ edition = "2024"
     );
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    let restricted_targets = report
-        .findings
-        .iter()
-        .filter(|finding| {
-            finding.path == "src/container/carrier/targets.rs"
-                && finding.code == DiagnosticCode::ForbiddenPubCrate
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        restricted_targets.len(),
-        1,
-        "the restricted nested target must have one finding: {report:#?}",
-    );
-    let restricted_target = restricted_targets[0];
     assert!(
-        restricted_target.help.iter().any(|line| {
-            line
-                == "move the item into `crate`, or add an explicit facade at `crate` and rerun `cargo mend`"
+        report.findings.iter().all(|finding| {
+            finding.path != "src/container/carrier/targets.rs" || finding.line_start != 2
         }),
-        "the restricted exact glob child must cap its signature type at crate reach: {report:#?}",
-    );
-    assert!(
-        restricted_target.help.iter().all(|line| {
-            line != "consider using: `pub(super)`" && !line.contains("public signature")
-        }),
-        "the restricted exact glob child must not provide public signature reach: {report:#?}",
+        "the restricted exact glob child's crate visibility must be accepted: {report:#?}",
     );
 
     assert!(
@@ -3063,24 +3015,22 @@ edition = "2024"
     );
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    for (path, item) in [
-        ("src/a/b/original.rs", "struct Carrier"),
-        ("src/a/b/target.rs", "struct Target"),
-    ] {
-        assert!(
-            !report.findings.iter().any(|finding| {
-                finding.path == path
-                    && finding.item.as_deref() == Some(item)
-                    && matches!(
-                        finding.code,
-                        DiagnosticCode::SuspiciousPub
-                            | DiagnosticCode::ForbiddenPubCrate
-                            | DiagnosticCode::ForbiddenPubInCrate
-                    )
-            }),
-            "the used same-name declaration must not give the shadowed {item} outward reach: {report:#?}",
-        );
-    }
+    assert!(report.findings.iter().all(|finding| {
+        finding.path != "src/a/b/original.rs" || finding.item.as_deref() != Some("struct Carrier")
+    }));
+    let shadowed_target = report
+        .findings
+        .iter()
+        .find(|finding| {
+            finding.path == "src/a/b/target.rs" && finding.item.as_deref() == Some("struct Target")
+        })
+        .unwrap_or_else(|| panic!("missing shadowed target finding: {report:#?}"));
+    assert!(
+        shadowed_target
+            .help
+            .iter()
+            .any(|line| line == "consider using: `pub(super)`")
+    );
     let control_target_finding = report
         .findings
         .iter()
@@ -3090,12 +3040,11 @@ edition = "2024"
         })
         .unwrap_or_else(|| panic!("missing valid glob control finding: {report:#?}"));
     assert_eq!(control_target_finding.code, DiagnosticCode::SuspiciousPub);
-    assert_eq!(control_target_finding.fix_support, FixSupport::None);
     assert!(
-        control_target_finding.help.iter().any(|line| {
-            line
-                == "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend`"
-        }),
+        control_target_finding
+            .help
+            .iter()
+            .any(|line| line == "consider using: `pub(in crate::a)`"),
         "the valid used glob must contribute its crate::a reach: {report:#?}",
     );
 }
@@ -3156,15 +3105,15 @@ edition = "2024"
         })
         .unwrap_or_else(|| panic!("missing independently exported target finding: {report:#?}"));
     assert_eq!(target_finding.code, DiagnosticCode::ForbiddenPubInCrate);
-    assert_eq!(target_finding.fix_support, FixSupport::None);
     assert_eq!(
         target_finding.headline,
         "use of `pub(in crate::a)` outside an exact facade boundary is forbidden by policy"
     );
     assert!(
-        target_finding.help.iter().any(|line| {
-            line == "this item is exposed through a public signature; consider using `pub`"
-        }),
+        target_finding
+            .help
+            .iter()
+            .any(|line| line == "consider using: `pub`"),
         "the independent public glob must require bare pub: {report:#?}",
     );
     // The control: `RestrictedCarrier` reaches only `crate::a`, so its field type
@@ -3227,7 +3176,7 @@ edition = "2024"
         finding
             .help
             .iter()
-            .any(|line| line.contains("consider using `pub`")),
+            .any(|line| line == "consider using: `pub`"),
         "public exposure must require bare pub: {report:#?}",
     );
 }
@@ -3366,12 +3315,13 @@ edition = "2024"
         .unwrap_or_else(|| panic!("missing public blocked-facade finding: {report:#?}"));
     assert_eq!(
         target_finding.headline,
-        "use of `pub(crate)` is forbidden by policy"
+        "`pub(crate)` is broader than required"
     );
     assert!(
-        target_finding.help.iter().any(|line| {
-            line == "this item is exposed through a public signature; consider using `pub`"
-        }),
+        target_finding
+            .help
+            .iter()
+            .any(|line| line == "consider using: `pub`"),
         "public signature advice must require bare pub: {report:#?}",
     );
     assert!(
@@ -3394,7 +3344,7 @@ edition = "2024"
 }
 
 #[test]
-fn restricted_signature_retains_an_unresolvable_parent_facade_blocker() {
+fn restricted_signature_accepts_exact_crate_reach_despite_an_unresolvable_facade() {
     let temp = tempdir().expect("create restricted blocked-facade fixture dir");
     write_allowance_sources(
         &temp,
@@ -3422,35 +3372,22 @@ edition = "2024"
     );
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    let target_finding = report
-        .findings
-        .iter()
-        .find(|finding| {
-            finding.path == "src/a/b/c.rs"
-                && finding.line_start == 1
-                && finding.code == DiagnosticCode::ForbiddenPubCrate
-        })
-        .unwrap_or_else(|| panic!("missing restricted blocked-facade finding: {report:#?}"));
     assert!(
-        target_finding.help.iter().any(|line| {
-            line == "facade at a.rs:3 uses `*`; replace it with an explicit re-export"
-        }),
-        "restricted signature advice must retain the facade blocker: {report:#?}",
-    );
-    assert!(
-        target_finding.help.iter().all(|line| {
-            line != "this item is exposed through a public signature; consider using `pub`"
-        }),
-        "restricted signature advice must not require public reach: {report:#?}",
+        report
+            .findings
+            .iter()
+            .all(|finding| { finding.path != "src/a/b/c.rs" || finding.line_start != 1 }),
+        "the exact crate visibility remains safe despite an unresolved facade: {report:#?}",
     );
     assert_stored_forbidden_visibility_advice(
         &temp,
         "forbidden_pub_crate",
         "src/a/b/c.rs",
         1,
-        ForbiddenVisibilityPersistenceExpectation::StructuralBlocker {
+        ForbiddenVisibilityPersistenceExpectation::AcceptedCrate {
             visibility_annotation: "pub(crate)",
             item_def_path:         "a::b::c::Target",
+            item_module_def_path:  "a::b::c",
         },
     );
 }
@@ -3570,18 +3507,19 @@ edition = "2024"
     );
     assert!(
         target_findings.iter().any(|finding| {
-            finding.help.iter().any(|line| {
-                line
-                    == "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend`"
-            })
+            finding
+                .help
+                .iter()
+                .any(|line| line == "consider using: `pub(in crate::a)`")
         }),
         "the second expose method must retain its crate::a reach: {report:#?}",
     );
     assert!(
-        target_findings
+        target_findings.iter().all(|finding| finding
+            .help
             .iter()
-            .all(|finding| finding.fix_support == FixSupport::None),
-        "same-line target findings must remain structural: {report:#?}",
+            .any(|line| line == "this error is auto-fixable with `cargo mend --fix`")),
+        "same-line target findings must be directly fixable: {report:#?}",
     );
 }
 
@@ -4113,24 +4051,19 @@ edition = "2024"
     );
     let target_finding = target_findings[0];
     assert_eq!(target_finding.code, DiagnosticCode::SuspiciousPub);
-    assert_eq!(target_finding.fix_support, FixSupport::None);
     assert!(
-        target_finding.help.iter().any(|line| {
-            line
-                == "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend`"
-        }),
-        "no-facade advice must use a structural outcome at crate::a: {report:#?}",
+        target_finding
+            .help
+            .iter()
+            .any(|line| line == "consider using: `pub(in crate::a)`"),
+        "no-facade advice must preserve the signature floor at crate::a: {report:#?}",
     );
     assert!(
-        !target_finding.help.iter().any(|line| {
-            matches!(
-                line.as_str(),
-                "consider using: `pub(super)`"
-                    | "consider using: `pub(crate)`"
-                    | "consider using: `pub(in crate::a)`"
-            )
-        }),
-        "no-facade advice must not propose a visibility below the signature floor: {report:#?}",
+        target_finding
+            .help
+            .iter()
+            .any(|line| line == "this warning is auto-fixable with `cargo mend --fix`"),
+        "the signature-floor refinement must be auto-fixable: {report:#?}",
     );
 }
 
@@ -4159,25 +4092,12 @@ edition = "2024"
     );
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    let target_finding = report
-        .findings
-        .iter()
-        .find(|finding| {
-            finding.path == "src/a/b.rs"
-                && finding.code == DiagnosticCode::ForbiddenPubInCrate
-                && finding.headline.contains("pub(in crate::a)")
-                && finding
-                    .help
-                    .iter()
-                    .any(|line| line == "consider using: `pub(super)`")
-        })
-        .unwrap_or_else(|| panic!("missing same-module signature finding: {report:#?}"));
     assert!(
-        target_finding
-            .help
+        report
+            .findings
             .iter()
-            .all(|line| line != "consider removing the visibility"),
-        "the direct pub(super) signature must preserve the parent boundary: {report:#?}",
+            .all(|finding| { !(finding.path == "src/a/b.rs" && finding.line_start == 1) }),
+        "the direct pub(super) signature must accept the exact parent boundary: {report:#?}",
     );
 
     let control_finding = report
@@ -4250,24 +4170,12 @@ edition = "2024"
         "a private trait must not expose its associated signature type: {report:#?}",
     );
 
-    let restricted_finding = report
-        .findings
-        .iter()
-        .find(|finding| finding.path == "src/api/restricted_case.rs")
-        .unwrap_or_else(|| panic!("missing restricted-trait finding: {report:#?}"));
     assert!(
-        restricted_finding
-            .help
+        report
+            .findings
             .iter()
-            .any(|line| line == "consider using: `pub(super)`"),
-        "the restricted trait must expose its signature type only to crate::api: {report:#?}",
-    );
-    assert!(
-        restricted_finding
-            .help
-            .iter()
-            .all(|line| line != "consider removing the visibility"),
-        "the restricted trait's signature boundary must survive refinement: {report:#?}",
+            .all(|finding| finding.path != "src/api/restricted_case.rs"),
+        "the restricted trait's exact signature boundary must be accepted: {report:#?}",
     );
 
     assert!(
@@ -4400,21 +4308,11 @@ edition = "2024"
         }),
         "the public raw-identifier trait re-export must require and accept public reach: {report:#?}",
     );
-    let restricted_signature = report
-        .findings
-        .iter()
-        .find(|finding| {
-            finding.code == DiagnosticCode::ForbiddenPubInCrate
-                && finding.path == "src/api/restricted_case.rs"
-                && finding.line_start == 2
-        })
-        .unwrap_or_else(|| panic!("missing restricted trait signature finding: {report:#?}"));
     assert!(
-        restricted_signature
-            .help
-            .iter()
-            .any(|line| line == "consider using: `pub(super)`"),
-        "the restricted trait re-export must contribute crate::api reach: {report:#?}",
+        report.findings.iter().all(|finding| {
+            !(finding.path == "src/api/restricted_case.rs" && finding.line_start == 2)
+        }),
+        "the restricted trait re-export's exact signature boundary must be accepted: {report:#?}",
     );
     let private_signature = report
         .findings
@@ -4483,24 +4381,12 @@ edition = "2024"
         );
     }
 
-    let parent_finding = report
-        .findings
-        .iter()
-        .find(|finding| finding.path == "src/api/parent_case.rs")
-        .unwrap_or_else(|| panic!("missing visible inherent-item control: {report:#?}"));
     assert!(
-        parent_finding
-            .help
+        report
+            .findings
             .iter()
-            .any(|line| line == "consider using: `pub(super)`"),
-        "pub(super) must expose its signature type to crate::api: {report:#?}",
-    );
-    assert!(
-        parent_finding
-            .help
-            .iter()
-            .all(|line| line != "consider removing the visibility"),
-        "the visible inherent-item control must retain its parent boundary: {report:#?}",
+            .all(|finding| finding.path != "src/api/parent_case.rs"),
+        "pub(super) must accept the signature type's exact crate::api boundary: {report:#?}",
     );
 }
 
@@ -4548,17 +4434,11 @@ edition = "2024"
             })
             .unwrap_or_else(|| panic!("missing private-equivalent sibling finding: {report:#?}"));
         assert!(
-            finding.help.iter().any(|line| {
-                line == "consider using `pub(super)` or removing `pub(crate)` entirely"
-            }),
-            "line {line_start} must receive only the nested-location recommendation: {report:#?}",
-        );
-        assert!(
             finding
                 .help
                 .iter()
-                .all(|line| line != "consider using: `pub(super)`"),
-            "line {line_start} must not receive a signature-exposure requirement: {report:#?}",
+                .any(|line| line == "consider using: `pub(super)`"),
+            "line {line_start} must receive only the nested-location recommendation: {report:#?}",
         );
     }
 
@@ -4572,10 +4452,10 @@ edition = "2024"
         })
         .unwrap_or_else(|| panic!("missing outward sibling control: {report:#?}"));
     assert!(
-        outward_finding.help.iter().any(|line| {
-            line
-                == "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend`"
-        }),
+        outward_finding
+            .help
+            .iter()
+            .any(|line| line == "consider using: `pub(in crate::a)`"),
         "the outward sibling must retain its crate::a signature requirement: {report:#?}",
     );
 }
@@ -4625,12 +4505,11 @@ edition = "2024"
     );
     let target_finding = target_findings[0];
     assert_eq!(target_finding.code, DiagnosticCode::SuspiciousPub);
-    assert_eq!(target_finding.fix_support, FixSupport::None);
     assert!(
-        target_finding.help.iter().any(|line| {
-            line
-                == "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend`"
-        }),
+        target_finding
+            .help
+            .iter()
+            .any(|line| line == "consider using: `pub(in crate::a)`"),
         "the unresolved pub(super) facade must retain crate::a reach: {report:#?}",
     );
 }
@@ -4664,28 +4543,12 @@ edition = "2024"
     );
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    let target_findings = report
-        .findings
-        .iter()
-        .filter(|finding| finding.path == "src/a/b/c.rs")
-        .collect::<Vec<_>>();
-    assert_eq!(
-        target_findings.len(),
-        1,
-        "unexpected blocked-facade findings: {report:#?}",
-    );
-    let target_finding = target_findings[0];
-    assert_eq!(target_finding.code, DiagnosticCode::ForbiddenPubInCrate);
-    assert_eq!(
-        target_finding.headline,
-        "parent facade does not provide a resolvable visibility boundary"
-    );
     assert!(
-        target_finding.help.iter().any(|line| {
-            line
-                == "facade at a/b.rs:2 uses `*`; replace it with an explicit re-export before using `pub(in ...)`"
-        }),
-        "unexpected blocked-facade help: {report:#?}",
+        report
+            .findings
+            .iter()
+            .all(|finding| finding.path != "src/a/b/c.rs"),
+        "an unresolved facade must not reject an already exact visibility: {report:#?}",
     );
 }
 
@@ -4793,22 +4656,11 @@ fn assert_field_signature_reach(report: &Report, carrier: &str) {
 
     for (signature, line_start) in [("Parent", 6), ("Exact", 8)] {
         let item = format!("struct {carrier}{signature}Signature");
-        let findings = report
-            .findings
-            .iter()
-            .filter(|finding| finding.path == finding_path && finding.line_start == line_start)
-            .collect::<Vec<_>>();
-        assert_eq!(
-            findings.len(),
-            1,
-            "missing restricted field signature-type finding for {item}: {report:#?}",
-        );
         assert!(
-            findings[0]
-                .help
-                .iter()
-                .any(|line| line == "consider using: `pub(super)`"),
-            "{item} must retain only the crate::api field boundary: {report:#?}",
+            report.findings.iter().all(|finding| {
+                finding.path != finding_path || finding.line_start != line_start
+            }),
+            "{item} must accept its exact crate::api field boundary: {report:#?}",
         );
     }
 
@@ -4819,10 +4671,10 @@ fn assert_field_signature_reach(report: &Report, carrier: &str) {
         .find(|finding| finding.path == finding_path && finding.line_start == 10)
         .unwrap_or_else(|| panic!("missing field signature finding: {report:#?}"));
     assert!(
-        crate_finding.help.iter().any(|line| {
-            line
-                == "move the item into `crate`, or add an explicit facade at `crate` and rerun `cargo mend`"
-        }),
+        crate_finding
+            .help
+            .iter()
+            .any(|line| line == "consider using: `pub(crate)`"),
         "{crate_item} must retain only the crate field boundary: {report:#?}",
     );
 
@@ -4836,7 +4688,7 @@ fn assert_field_signature_reach(report: &Report, carrier: &str) {
         public_finding
             .help
             .iter()
-            .any(|line| line.contains("consider using `pub`")),
+            .any(|line| line == "consider using: `pub`"),
         "{public_item} must retain public signature reach: {report:#?}",
     );
 }
@@ -4942,17 +4794,12 @@ pub(super) fn outer_surface(_: OuterTarget) {}
     );
 
     let outer_target = finding_at(2);
-    assert_eq!(
-        outer_target.headline,
-        "no policy-allowed visibility keeps this item reachable where it is used: private and `pub(super)` are too narrow, and no facade caps `pub`",
-        "a caller above the parent must require structural advice: {report:#?}",
-    );
     assert!(
         outer_target
             .help
             .iter()
-            .any(|line| line.contains("add an explicit facade")),
-        "the structural advice must identify the facade alternative: {report:#?}",
+            .any(|line| line == "consider using: `pub(in crate::a)`"),
+        "a caller above the parent must receive the exact direct fix: {report:#?}",
     );
 }
 
@@ -5037,23 +4884,19 @@ fn assert_declaration_identity_findings(report: &Report) {
 
     let inactive_target = finding_at(1);
     assert!(
-        inactive_target.help.iter().any(|line| {
-            line == "consider using `pub(super)` or removing `pub(crate)` entirely"
-        }),
+        inactive_target
+            .help
+            .iter()
+            .any(|line| line == "consider removing the visibility"),
         "inactive cfg declaration must not expose InactiveTarget: {report:#?}",
     );
 
     let active_target = finding_at(2);
-    assert_eq!(
-        active_target.headline,
-        "no policy-allowed visibility keeps this item reachable where it is used: private and `pub(super)` are too narrow, and no facade caps `pub`",
-        "the active parent-boundary declaration and its above-parent caller require structure: {report:#?}",
-    );
     assert!(
-        active_target.help.iter().any(|line| {
-            line
-                == "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend`"
-        }),
+        active_target
+            .help
+            .iter()
+            .any(|line| line == "consider using: `pub(in crate::a)`"),
         "ActiveTarget must retain the active declaration's crate::a reach: {report:#?}",
     );
 
@@ -5066,18 +4909,23 @@ fn assert_declaration_identity_findings(report: &Report) {
         "the type namespace must retain its parent-only alias reach: {report:#?}",
     );
 
-    let value_target = finding_at(4);
-    assert_eq!(
-        value_target.headline,
-        "no policy-allowed visibility keeps this item reachable where it is used: private and `pub(super)` are too narrow, and no facade caps `pub`",
-        "the value namespace must retain its crate-visible const reach: {report:#?}",
+    assert!(
+        report
+            .findings
+            .iter()
+            .all(|finding| { !(finding.path == "src/a/b/c.rs" && finding.line_start == 4) }),
+        "the active value declaration's signature must remain distinct from the type alias: {report:#?}",
     );
     assert!(
-        value_target.help.iter().any(|line| {
-            line
-                == "move the item into `crate`, or add an explicit facade at `crate` and rerun `cargo mend`"
+        report.findings.iter().any(|finding| {
+            finding.path == "src/a/b/c.rs"
+                && finding.line_start == 8
+                && finding
+                    .help
+                    .iter()
+                    .any(|line| line == "consider removing the visibility")
         }),
-        "ValueTarget must retain the same-named const's crate reach: {report:#?}",
+        "the unused active value declaration itself must be tightened: {report:#?}",
     );
 }
 
@@ -5193,17 +5041,13 @@ fn attribute_metadata_alone_does_not_expose_a_child_through_a_public_signature()
             .iter()
             .filter(|finding| finding.path == path)
             .flat_map(|finding| finding.help.iter())
-            .any(|line| {
-                line == "this item is exposed through a public signature; consider using `pub`"
-            })
+            .any(|line| line == "consider using: `pub`")
     };
     assert!(
         target_finding("app/src/hidden/api/signature_target.rs")
             .help
             .iter()
-            .any(|line| {
-                line == "this item is exposed through a public signature; consider using `pub`"
-            }),
+            .any(|line| line == "consider using: `pub`"),
         "the return type of the exported api::make must keep its public signature reach: {report:#?}",
     );
     for path in [

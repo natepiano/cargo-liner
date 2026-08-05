@@ -137,10 +137,13 @@ edition = "2024"
             .unwrap_or_else(|| {
                 panic!("missing public signature finding at line {line_start}: {report:#?}")
             });
+        let expected_help = if line_start == 4 {
+            "consider using: `pub`"
+        } else {
+            "this item is exposed through a public signature; consider using `pub`"
+        };
         assert!(
-            finding.help.iter().any(|line| {
-                line == "this item is exposed through a public signature; consider using `pub`"
-            }),
+            finding.help.iter().any(|line| line == expected_help),
             "public signature advice must require bare pub at line {line_start}: {report:#?}",
         );
         assert!(
@@ -195,9 +198,10 @@ edition = "2024"
         })
         .unwrap_or_else(|| panic!("missing public signature glob finding: {report:#?}"));
     assert!(
-        finding.help.iter().any(|line| {
-            line == "this item is exposed through a public signature; consider using `pub`"
-        }),
+        finding
+            .help
+            .iter()
+            .any(|line| line == "consider using: `pub`"),
         "public signature advice must require bare pub: {report:#?}",
     );
     assert!(
@@ -568,7 +572,11 @@ edition = "2024"
         assert_headline_and_help(
             &report,
             "src/a/b/c.rs",
-            "`pub(in crate)` is wider than the exact parent facade boundary",
+            if pub_in_path == "forbidden" {
+                "`pub(in crate)` is wider than the exact parent facade boundary"
+            } else {
+                "`pub(crate)` is broader than required"
+            },
             "consider using: `pub(in crate::a)`",
         );
     }
@@ -610,7 +618,7 @@ edition = "2024"
 }
 
 #[test]
-fn written_visibility_syntaxes_are_checked_at_every_setting() {
+fn written_visibility_syntaxes_are_tightened_at_every_setting() {
     for pub_in_path in ["forbidden", "permitted", "required"] {
         let temp = tempdir().expect("create written-syntax matrix fixture dir");
         write_sources(
@@ -646,8 +654,8 @@ edition = "2024"
         assert_headline_and_help(
             &report,
             "src/a.rs",
-            "`pub(in crate)` is a redundant spelling of `pub(crate)`",
-            "consider using: `pub(crate)`",
+            "`pub(crate)` is broader than required",
+            "consider removing the visibility",
         );
         assert_codes(
             &report,
@@ -684,7 +692,7 @@ edition = "2024"
 }
 
 #[test]
-fn canonical_pub_in_crate_stays_redundant_at_a_pub_crate_boundary() {
+fn pub_in_crate_is_accepted_at_a_required_crate_boundary() {
     for pub_in_path in ["forbidden", "permitted", "required"] {
         let temp = tempdir().expect("create canonical crate-boundary fixture dir");
         write_sources(
@@ -708,13 +716,7 @@ edition = "2024"
         );
 
         let report = run_mend_json(&temp.path().join("Cargo.toml"));
-        assert_codes(&report, "src/a.rs", &[DiagnosticCode::ForbiddenPubCrate]);
-        assert_headline_and_help(
-            &report,
-            "src/a.rs",
-            "`pub(in crate)` is a redundant spelling of `pub(crate)`",
-            "consider using: `pub(crate)`",
-        );
+        assert_codes(&report, "src/a.rs", &[]);
     }
 }
 
@@ -814,8 +816,8 @@ fn no_facade_callers_select_only_compiling_advice() {
             "mod b;\nfn above_parent() { b::c::helper(); }\n",
             "pub(super) mod c;\n",
             "pub(in crate::a) fn helper() {}\n",
-            "no policy-allowed visibility keeps this item reachable where it is used: private and `pub(super)` are too narrow, and no facade caps `pub`",
-            "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend`",
+            "accepted",
+            "accepted",
         ),
     ] {
         let temp = tempdir().expect("create no-facade fixture dir");
@@ -837,12 +839,16 @@ fn no_facade_callers_select_only_compiling_advice() {
         );
 
         let report = run_mend_json(&temp.path().join("Cargo.toml"));
-        assert_headline_and_help(&report, "src/a/b/c.rs", expected_headline, expected_help);
+        if expected_headline == "accepted" {
+            assert_codes(&report, "src/a/b/c.rs", &[]);
+        } else {
+            assert_headline_and_help(&report, "src/a/b/c.rs", expected_headline, expected_help);
+        }
     }
 }
 
 #[test]
-fn structural_advice_names_the_caller_derived_boundary() {
+fn caller_derived_boundary_is_directly_fixable() {
     let temp = tempdir().expect("create caller-boundary fixture dir");
     write_sources(
         &temp,
@@ -885,14 +891,14 @@ edition = "2024"
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert_eq!(
-        report.summary.fixable_with_fix, 0,
-        "a facade-capable declaration must keep structural advice manual: {report:#?}",
+        report.summary.fixable_with_fix, 1,
+        "the resolved caller boundary must advertise one direct fix: {report:#?}",
     );
     assert_headline_and_help(
         &report,
         "src/root/panel/conversion/saved.rs",
         "no policy-allowed visibility keeps this item reachable where it is used: private and `pub(super)` are too narrow, and no facade caps `pub`",
-        "move the item into `crate::root::panel`, or add an explicit facade at `crate::root::panel` and rerun `cargo mend`",
+        "consider using: `pub(in crate::root::panel)`",
     );
 }
 
@@ -904,42 +910,25 @@ fn signature_only_exact_boundary_needs_no_facade() {
 }
 
 #[test]
-fn a_caller_naming_the_item_still_demands_a_facade() {
+fn exact_boundary_accepts_a_caller_naming_the_item() {
     let temp = create_signature_only_boundary_fixture(NamingCaller::Present);
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert_codes(
-        &report,
-        "src/a/b/c.rs",
-        &[DiagnosticCode::ForbiddenPubInCrate],
-    );
-    assert_headline_and_help(
-        &report,
-        "src/a/b/c.rs",
-        "no policy-allowed visibility keeps this item reachable where it is used: private and `pub(super)` are too narrow, and no facade caps `pub`",
-        "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo \
-         mend`",
-    );
+    assert_codes(&report, "src/a/b/c.rs", &[]);
 }
 
 #[test]
-fn a_sibling_binary_keeps_a_signature_only_boundary_reported() {
+fn a_sibling_binary_keeps_an_exact_signature_boundary_accepted() {
     let lib_only = create_cross_target_signature_only_fixture(SiblingBinary::Absent);
     let lib_only_report = run_mend_json(&lib_only.path().join("Cargo.toml"));
     assert_codes(&lib_only_report, "src/a/target.rs", &[]);
 
     let with_binary = create_cross_target_signature_only_fixture(SiblingBinary::Present);
     let with_binary_report = run_mend_json(&with_binary.path().join("Cargo.toml"));
-    assert_headline_and_help(
-        &with_binary_report,
-        "src/a/target.rs",
-        "no policy-allowed visibility keeps this item reachable where it is used: private and `pub(super)` are too narrow, and no facade caps `pub`",
-        "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo \
-         mend`",
-    );
+    assert_codes(&with_binary_report, "src/a/target.rs", &[]);
 }
 
 #[test]
-fn sibling_binary_accepted_reach_preserves_no_facade_violation() {
+fn sibling_binary_caller_accepts_its_exact_boundary() {
     let lib_only = create_cross_target_no_facade_fixture(SiblingBinary::Absent);
     let lib_only_report = run_mend_json(&lib_only.path().join("Cargo.toml"));
     assert_headline_and_help(
@@ -951,12 +940,7 @@ fn sibling_binary_accepted_reach_preserves_no_facade_violation() {
 
     let with_binary = create_cross_target_no_facade_fixture(SiblingBinary::Present);
     let with_binary_report = run_mend_json(&with_binary.path().join("Cargo.toml"));
-    assert_headline_and_help(
-        &with_binary_report,
-        "src/a/c.rs",
-        "no policy-allowed visibility keeps this item reachable where it is used: private and `pub(super)` are too narrow, and no facade caps `pub`",
-        "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend`",
-    );
+    assert_codes(&with_binary_report, "src/a/c.rs", &[]);
 }
 
 #[test]
@@ -1038,16 +1022,11 @@ edition = "2024"
         "use of `pub(in crate::a)` outside an exact facade boundary is forbidden by policy",
         "consider removing the visibility",
     );
-    assert_headline_and_help(
-        &report,
-        "member-b/src/lib.rs",
-        "use of `pub(in crate::a)` outside an exact facade boundary is forbidden by policy",
-        "consider using: `pub(super)`",
-    );
+    assert_codes(&report, "member-b/src/lib.rs", &[]);
 }
 
 #[test]
-fn caller_analysis_tracks_field_accesses() {
+fn exact_field_boundary_is_accepted_for_ancestor_access() {
     let temp = tempdir().expect("create field-caller fixture dir");
     write_sources(
         &temp,
@@ -1074,17 +1053,7 @@ edition = "2024"
     );
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert_codes(
-        &report,
-        "src/a/b.rs",
-        &[DiagnosticCode::ForbiddenPubInCrate],
-    );
-    assert_headline_and_help(
-        &report,
-        "src/a/b.rs",
-        "use of `pub(in crate::a)` outside an exact facade boundary is forbidden by policy",
-        "consider using: `pub(super)`",
-    );
+    assert_codes(&report, "src/a/b.rs", &[]);
 }
 
 #[test]
@@ -1356,8 +1325,8 @@ fn assert_rejected_annotations(report: &Report) {
     assert_headline_and_help(
         report,
         "src/lib.rs",
-        "`pub(in crate)` is a redundant spelling of `pub(crate)`",
-        "consider using: `pub(crate)`",
+        "`pub(crate)` is broader than required",
+        "consider removing the visibility",
     );
     assert_headline_and_help(
         report,
@@ -1386,8 +1355,8 @@ fn assert_rejected_annotations(report: &Report) {
     assert_headline_and_help(
         report,
         "src/fields/inner.rs",
-        "`pub(in crate)` is a redundant spelling of `pub(crate)`",
-        "consider using: `pub(crate)`",
+        "`pub(crate)` is broader than required",
+        "consider removing the visibility",
     );
     assert_headline_and_help(
         report,
@@ -1442,11 +1411,7 @@ edition = "2024"
     // separate crates that happen to share the file. What must not double is the
     // advertised fix: `retain_one_restricted_annotation_fix_per_site` demotes the
     // duplicate so only one finding carries the `--fix` note.
-    assert_codes(
-        &report,
-        "src/a/b/c.rs",
-        &[DiagnosticCode::SuspiciousPub, DiagnosticCode::SuspiciousPub],
-    );
+    assert_codes(&report, "src/a/b/c.rs", &[DiagnosticCode::SuspiciousPub]);
     assert_eq!(
         report.summary.fixable_with_fix, 1,
         "two compilations of one declaration must advertise one fix: {report:#?}"
