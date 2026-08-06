@@ -10,11 +10,11 @@ use super::visibility_annotation_site::VisibilityAnnotationSite;
 use crate::config::DiagnosticCode;
 use crate::reporting::Report;
 
-pub(crate) struct UnusedPubScan {
+pub(super) struct UnusedPubScan {
     pub fixes: Vec<UseFix>,
 }
 
-pub(crate) fn scan_from_report(report: &Report) -> Result<UnusedPubScan> {
+pub(super) fn scan_from_report(report: &Report) -> Result<UnusedPubScan> {
     let root = Path::new(&report.root);
     let mut fixes = Vec::new();
     for finding in &report.findings {

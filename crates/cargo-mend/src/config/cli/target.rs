@@ -45,7 +45,7 @@ pub(crate) enum TargetSelection {
 }
 
 impl CargoCheckCli {
-    pub fn explicit_manifest_path(&self) -> Option<&Path> {
+    pub(crate) fn explicit_manifest_path(&self) -> Option<&Path> {
         self.manifest_path
             .as_deref()
             .or(self.positional_manifest_path.as_deref())

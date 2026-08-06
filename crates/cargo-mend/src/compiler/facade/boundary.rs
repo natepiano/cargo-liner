@@ -16,7 +16,7 @@ use rustc_span::def_id::LocalDefId;
 use crate::compiler::source_cache::SourceCache;
 
 #[derive(Debug, Clone)]
-pub struct ParentBoundary {
+pub(super) struct ParentBoundary {
     pub boundary_file: PathBuf,
     pub module_path:   Vec<String>,
 }
@@ -327,7 +327,7 @@ impl ModuleSourceMap {
 /// This path is intentionally used only after HIR has selected a re-export.
 /// The source path supplies reporting and usage-analysis metadata; it never
 /// decides whether a facade exists.
-pub fn parent_boundary_for_reexport(
+pub(super) fn parent_boundary_for_reexport(
     tcx: TyCtxt<'_>,
     owner_module: LocalDefId,
     use_span: Span,
@@ -363,7 +363,7 @@ pub(super) fn logical_parent_boundary_for_child(
     })
 }
 
-pub fn module_path(tcx: TyCtxt<'_>, module: LocalDefId) -> Vec<String> {
+pub(super) fn module_path(tcx: TyCtxt<'_>, module: LocalDefId) -> Vec<String> {
     if module == CRATE_DEF_ID {
         return Vec::new();
     }

@@ -97,7 +97,7 @@ enum HeadlineSource {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct DiagnosticSpec {
+pub(super) struct DiagnosticSpec {
     headline:        HeadlineSource,
     pub inline_help: Option<&'static str>,
     pub help_anchor: &'static str,
@@ -489,7 +489,7 @@ impl Report {
     }
 }
 
-pub(crate) fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
+fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
     match code {
         DiagnosticCode::OverbroadPubCrate => &OVERBROAD_PUB_CRATE,
         DiagnosticCode::ForbiddenPubInCrate => &FORBIDDEN_PUB_IN_CRATE,
@@ -508,7 +508,7 @@ pub(crate) fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
     }
 }
 
-pub(crate) fn effective_fixability(finding: &Finding) -> FixSupport {
+pub(super) fn effective_fixability(finding: &Finding) -> FixSupport {
     if matches!(finding.fix_support, FixSupport::None) {
         diagnostic_spec(finding.diagnostic_code).fix_support
     } else {
@@ -516,11 +516,11 @@ pub(crate) fn effective_fixability(finding: &Finding) -> FixSupport {
     }
 }
 
-pub(crate) fn fixability_note(finding: &Finding) -> Option<&'static str> {
+pub(super) fn fixability_note(finding: &Finding) -> Option<&'static str> {
     effective_fixability(finding).note(finding.severity)
 }
 
-pub(crate) fn finding_headline(finding: &Finding) -> String {
+pub(super) fn finding_headline(finding: &Finding) -> String {
     match diagnostic_spec(finding.diagnostic_code).headline {
         HeadlineSource::Static(headline) => headline.to_string(),
         HeadlineSource::FindingMessage { fallback } => {
@@ -533,7 +533,7 @@ pub(crate) fn finding_headline(finding: &Finding) -> String {
     }
 }
 
-pub(crate) fn finding_message_not_in_headline(finding: &Finding) -> Option<&str> {
+pub(super) fn finding_message_not_in_headline(finding: &Finding) -> Option<&str> {
     if finding.message.is_empty()
         || matches!(
             diagnostic_spec(finding.diagnostic_code).headline,
@@ -546,7 +546,7 @@ pub(crate) fn finding_message_not_in_headline(finding: &Finding) -> Option<&str>
     }
 }
 
-pub(crate) fn detail_reasons(finding: &Finding) -> Vec<String> {
+pub(super) fn detail_reasons(finding: &Finding) -> Vec<String> {
     let mut reasons = match diagnostic_spec(finding.diagnostic_code).detail_mode {
         DetailMode::None => Vec::new(),
         DetailMode::MessageAndRelated => {
@@ -566,19 +566,19 @@ pub(crate) fn detail_reasons(finding: &Finding) -> Vec<String> {
     reasons
 }
 
-pub(crate) fn inline_help_text(finding: &Finding) -> Option<&'static str> {
+fn inline_help_text(finding: &Finding) -> Option<&'static str> {
     diagnostic_spec(finding.diagnostic_code).inline_help
 }
 
-pub(crate) fn custom_inline_help_text(finding: &Finding) -> Option<&str> {
+fn custom_inline_help_text(finding: &Finding) -> Option<&str> {
     finding.suggestion.as_deref()
 }
 
-pub(crate) fn resolved_inline_help_text(finding: &Finding) -> Option<&str> {
+pub(super) fn resolved_inline_help_text(finding: &Finding) -> Option<&str> {
     custom_inline_help_text(finding).or_else(|| inline_help_text(finding))
 }
 
-pub(crate) fn finding_help_url(finding: &Finding) -> String {
+pub(super) fn finding_help_url(finding: &Finding) -> String {
     format!(
         "{HELP_URL_BASE}#{}",
         diagnostic_spec(finding.diagnostic_code).help_anchor

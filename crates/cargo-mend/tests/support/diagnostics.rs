@@ -10,7 +10,7 @@ const NOTE_ERROR_FIXABLE_WITH_FIX_PUB_USE: &str =
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum DiagnosticCode {
+pub(crate) enum DiagnosticCode {
     OverbroadPubCrate,
     ForbiddenPubInCrate,
     ReviewPubMod,
@@ -28,7 +28,7 @@ pub enum DiagnosticCode {
 }
 
 impl DiagnosticCode {
-    pub const ALL: &[Self] = &[
+    pub(crate) const ALL: &[Self] = &[
         Self::OverbroadPubCrate,
         Self::ForbiddenPubInCrate,
         Self::ReviewPubMod,
@@ -45,7 +45,7 @@ impl DiagnosticCode {
         Self::ImportsAtTop,
     ];
 
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::OverbroadPubCrate => "overbroad_pub_crate",
             Self::ForbiddenPubInCrate => "forbidden_pub_in_crate",
@@ -67,7 +67,7 @@ impl DiagnosticCode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum FixSupport {
+pub(crate) enum FixSupport {
     #[default]
     None,
     ShortenImport,
@@ -87,13 +87,13 @@ pub enum FixSupport {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FixSummaryBucket {
+pub(crate) enum FixSummaryBucket {
     Standard,
     PubUse,
 }
 
 impl FixSupport {
-    pub const fn note(self) -> Option<&'static str> {
+    pub(crate) const fn note(self) -> Option<&'static str> {
         match self {
             Self::None | Self::NeedsManualPubUseCleanup | Self::InternalParentFacade => None,
             Self::ShortenImport
@@ -108,7 +108,7 @@ impl FixSupport {
         }
     }
 
-    pub const fn summary_bucket(self) -> Option<FixSummaryBucket> {
+    pub(crate) const fn summary_bucket(self) -> Option<FixSummaryBucket> {
         match self {
             Self::None | Self::NeedsManualPubUseCleanup | Self::InternalParentFacade => None,
             Self::ShortenImport
@@ -132,14 +132,14 @@ impl FixSupport {
 /// `suspicious_pub` whose bare `pub` narrows to an exact module boundary —
 /// reaches the JSON as this note and nothing else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AdvertisedFix {
+pub(crate) enum AdvertisedFix {
     NotOffered,
     WithFix,
     WithFixPubUse,
 }
 
 impl AdvertisedFix {
-    pub fn from_notes<'note>(notes: impl IntoIterator<Item = &'note str>) -> Self {
+    pub(crate) fn from_notes<'note>(notes: impl IntoIterator<Item = &'note str>) -> Self {
         let mut advertised = Self::NotOffered;
         for note in notes {
             // `--fix-pub-use` is the more specific claim and wins: the two note
@@ -186,7 +186,7 @@ impl HeadlineSource {
     }
 }
 
-pub const fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
+pub(crate) const fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
     const OVERBROAD_PUB_CRATE: DiagnosticSpec = DiagnosticSpec {
         headline:    HeadlineSource::FindingMessage {
             fallback: "`pub(crate)` is broader than required",

@@ -30,7 +30,7 @@ pub(super) fn cargo_command() -> Command {
     command
 }
 
-pub fn mend_command() -> Command {
+pub(crate) fn mend_command() -> Command {
     let mut command = Command::new(mend_bin());
     clear_wrappers(&mut command);
     command
@@ -88,7 +88,7 @@ pub(super) fn assert_summary_matches_findings(report: &Report) {
     );
 }
 
-pub const fn fix_support_for(code: DiagnosticCode, fix_support: FixSupport) -> FixSupport {
+pub(crate) const fn fix_support_for(code: DiagnosticCode, fix_support: FixSupport) -> FixSupport {
     if matches!(fix_support, FixSupport::None) {
         diagnostic_spec(code).fix_support
     } else {
@@ -172,7 +172,7 @@ enum BuildFinishedStatus {
     Seen,
 }
 
-pub fn parse_mend_json_output(stdout: &[u8]) -> Report {
+pub(crate) fn parse_mend_json_output(stdout: &[u8]) -> Report {
     let output = std::str::from_utf8(stdout).expect("decode cargo-mend json output");
     let mut findings = Vec::new();
     let mut build_finished = BuildFinishedStatus::Missing;

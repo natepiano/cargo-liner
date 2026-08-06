@@ -21,7 +21,7 @@ use std::process;
 use super::constants::ANALYZING_DIR_NAME;
 
 /// The directory holding one file per in-flight analysis.
-pub(crate) fn analyzing_dir(findings_dir: &Path) -> PathBuf {
+fn analyzing_dir(findings_dir: &Path) -> PathBuf {
     findings_dir.join(ANALYZING_DIR_NAME)
 }
 
@@ -60,7 +60,7 @@ impl Drop for AnalyzingMarker {
 
 /// The crate names currently being analyzed, sorted so the progress line does
 /// not reorder itself between frames while the same set is in flight.
-pub(crate) fn targets_in_flight(findings_dir: &Path) -> Vec<String> {
+pub(super) fn targets_in_flight(findings_dir: &Path) -> Vec<String> {
     let Ok(entries) = fs::read_dir(analyzing_dir(findings_dir)) else {
         return Vec::new();
     };

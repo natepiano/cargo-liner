@@ -35,8 +35,8 @@ use crate::constants::HELP_URL_BASE;
 #[derive(Debug, Default)]
 pub(crate) struct GlobalConfig {
     pub(crate) diagnostics:     DiagnosticsConfig,
-    pub(crate) prelude_pub_mod: PreludePubMod,
-    pub(crate) pub_in_path:     PubInPath,
+    pub(super) prelude_pub_mod: PreludePubMod,
+    pub(super) pub_in_path:     PubInPath,
 }
 
 #[derive(Debug, Default, Deserialize)]

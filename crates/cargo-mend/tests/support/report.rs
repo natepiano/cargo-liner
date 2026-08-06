@@ -27,7 +27,7 @@ pub struct Finding {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct Report {
+pub(crate) struct Report {
     pub summary:  Summary,
     pub findings: Vec<Finding>,
 }
@@ -45,7 +45,7 @@ pub struct Summary {
 }
 
 #[derive(Clone, Copy)]
-pub struct ExpectedFinding {
+pub(crate) struct ExpectedFinding {
     pub code:        DiagnosticCode,
     pub fix_support: FixSupport,
 }

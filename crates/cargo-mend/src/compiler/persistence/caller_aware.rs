@@ -5,6 +5,7 @@ use super::StoredReport;
 use super::schema::UseSiteReference;
 use crate::compiler::visibility;
 use crate::config::DiagnosticCode;
+use crate::reporting::FixSupport;
 
 pub(super) type CallerMap = BTreeMap<CallerKey, ItemCallers>;
 
@@ -171,7 +172,7 @@ fn retain_narrowing_finding(
         .iter()
         .any(|caller| !visibility::def_path_is_descendant(caller, narrower_scope))
     {
-        finding.fix_support = crate::reporting::FixSupport::BlockedByPrivateImport;
+        finding.fix_support = FixSupport::BlockedByPrivateImport;
         finding.related = Some(String::from(
             "remove the unused private import before narrowing this item",
         ));

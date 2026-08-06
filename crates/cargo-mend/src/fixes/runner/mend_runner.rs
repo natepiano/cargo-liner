@@ -30,7 +30,7 @@ pub(crate) struct MendRunner<'a> {
 }
 
 impl<'a> MendRunner<'a> {
-    pub const fn new(
+    pub(crate) const fn new(
         selection: &'a Selection,
         cargo_plan: &'a CargoCheckPlan,
         loaded_config: &'a LoadedConfig,
@@ -46,7 +46,7 @@ impl<'a> MendRunner<'a> {
         }
     }
 
-    pub fn run(&self, operation_mode: OperationMode) -> Result<ExecutionOutcome, MendFailure> {
+    pub(crate) fn run(&self, operation_mode: OperationMode) -> Result<ExecutionOutcome, MendFailure> {
         let planned = self.plan(operation_mode)?;
         self.execute(planned)
     }

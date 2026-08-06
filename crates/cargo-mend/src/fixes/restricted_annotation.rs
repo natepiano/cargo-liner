@@ -12,7 +12,7 @@ use crate::reporting::NarrowerScope;
 use crate::reporting::Report;
 use crate::reporting::WrittenVisibility;
 
-pub(crate) struct RestrictedAnnotationScan {
+pub(super) struct RestrictedAnnotationScan {
     pub fixes: Vec<UseFix>,
 }
 
@@ -23,7 +23,7 @@ pub(crate) struct RestrictedAnnotationScan {
 /// from `Finding::suggestion`, which is rendered advice. These variants assert
 /// that the effective scope is exact and that no facade line needs editing
 /// alongside it; every other finding is left alone.
-pub(crate) fn scan_from_report(report: &Report) -> Result<RestrictedAnnotationScan> {
+pub(super) fn scan_from_report(report: &Report) -> Result<RestrictedAnnotationScan> {
     let root = Path::new(&report.root);
     let mut fixes = Vec::new();
     let mut rewritten_sites: BTreeSet<String> = BTreeSet::new();
