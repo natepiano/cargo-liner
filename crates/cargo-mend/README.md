@@ -5,10 +5,9 @@
 [![Crates.io](https://img.shields.io/crates/d/cargo-mend.svg)](https://crates.io/crates/cargo-mend)
 [![CI](https://github.com/natepiano/cargo-mend/workflows/CI/badge.svg)](https://github.com/natepiano/cargo-mend/actions)
 
-**Warning:** This project is pre-1.0 and under active development. Diagnostics, config format,
-and CLI flags may change without notice between releases. The `--fix` flag modifies source files
-in place (it rolls back on `cargo check` failure, but always review the diff before committing).
-Use at your own risk.
+**Warning:** This project is pre-1.0 and under active development. Diagnostics, config, and CLI
+flags may change between releases. Fix modes modify source files in place; Mend-managed fixes roll
+back on `cargo check` failure, but always review the diff before committing.
 
 `cargo-mend` provides the `cargo mend` subcommand for enforcing an opinionated Rust
 visibility style across a crate or workspace.
@@ -26,8 +25,8 @@ In practice, that means:
   intended API surface
 - if an item is only meant for its parent module or peer modules under the same parent,
   `pub(super)` should say that directly
-- if an item lives in a top-level private module and is not re-exported by the crate root, use
-  `pub(crate)` — bare `pub` there is misleading because the item can never escape the crate
+- if an item in a top-level private module is shared across crate-root branches, use `pub(crate)`;
+  if it stays inside its own subtree, narrow it further
 - if the crate root re-exports the item via `pub use`, the source must be bare `pub` (E0364)
 - if an item is only local implementation detail, keep it private
 - if an item seems to need a deeply nested visibility like `pub(in crate::feature::subtree)` and
@@ -42,17 +41,18 @@ the code relationship actually is.
 
 Hard errors:
 
-- `pub(crate)` is reported only when callers and signatures prove that a narrower visibility is
-  sufficient; it is accepted when the narrowest proven boundary is the crate root
+- `pub(crate)` is reported only when the complete reach analysis proves that a narrower visibility
+  is sufficient; it is accepted when the narrowest proven boundary is the crate root
 - `pub(in ...)` is forbidden unless a crate-rooted path exactly matches the boundary required by a
   parent facade, callers, or signature reach and `pub_in_path` permits it
-- `pub mod` requires an explicit allowlist entry
+- `pub mod` requires an explicit allowlist entry, except for a crate-root prelude
 
 Warnings:
 
-- `pub` in a nested child file where compiler analysis shows the item should probably be
-  narrower than `pub`
-- parent module `pub use *` re-exports that should be explicit
+- `pub` that exceeds the reach required by callers or signatures
+- dead field visibility and parent facades that deserve review
+- import forms that obscure local module relationships
+- parent-module `pub use *` re-exports that should be explicit
 
 If you are new to Rust visibility, the important idea is this:
 
@@ -73,22 +73,23 @@ allow_pub_mod = [
 allow_pub_items = [
   "src/example/private_child.rs::SomeIntentionalFacadeItem",
 ]
-# exact declaration-only parent-facade boundaries: forbidden | permitted | required
+# exact caller, signature, or facade boundaries: forbidden | permitted | required
 pub_in_path = "required"
 ```
 
 Use the allowlists sparingly. The default assumption should be that the code structure is wrong before
 the policy is wrong.
 
-`pub_in_path` controls exact crate-rooted `pub(in crate::path)` boundaries on declarations:
+`pub_in_path` controls exact crate-rooted `pub(in crate::path)` boundaries on declarations and
+fields:
 
 - `forbidden` rejects them
-- `permitted` accepts them when they exactly match a parent-facade boundary
+- `permitted` accepts them when they exactly match a caller, signature, or parent-facade boundary
 - `required` (the default) also asks `suspicious_pub` to recommend that boundary instead of bare
-  `pub`, and `cargo mend --fix` rewrites the declaration
+  `pub`, and `cargo mend --fix` rewrites the declaration or field
 
 Other restricted spellings, such as `pub(in crate)`, relative `pub(in super::...)` paths, and
-boundaries that do not match the facade remain diagnostics.
+boundaries that do not match the proven reach remain diagnostics.
 
 A crate-root `pub mod prelude;` is exempt from `review_pub_mod` by default — a prelude is an
 intentional public surface, so it does not need an `allow_pub_mod` entry. Nested `pub mod prelude;`
@@ -97,9 +98,13 @@ and any other crate-root `pub mod` are still reviewed. Set `allow_prelude_pub_mo
 
 ### Global config
 
-On first run, cargo-mend writes a global config to your platform config directory
-(`~/.config/cargo-mend/config.toml` on Linux/macOS). It records the on/off default for every
-diagnostic and the fallback defaults for `[visibility]`:
+On first run, cargo-mend writes a global config to your platform config directory:
+
+- Linux: `$XDG_CONFIG_HOME/cargo-mend/config.toml`, falling back to
+  `~/.config/cargo-mend/config.toml`
+- macOS: `~/Library/Application Support/cargo-mend/config.toml`
+
+It records the on/off default for every diagnostic and the fallback defaults for `[visibility]`:
 
 ```toml
 [diagnostics]
@@ -128,9 +133,8 @@ stability guarantee and `cargo-mend` is sensitive to the exact rustc version use
 
 ### Compatibility
 
-`cargo-mend` links against the compiler internals of the stable toolchain that builds it, so a
-binary built for one rustc will not build against a newer one. Build each release with the
-matching toolchain:
+`cargo-mend` links against the compiler internals of the toolchain that builds it, so releases are
+tied to a specific rustc version. Build and run each release with its matching toolchain:
 
 | `cargo-mend` | rustc |
 |--------------|-------|
@@ -152,11 +156,16 @@ RUSTC_BOOTSTRAP=1 cargo +stable install cargo-mend --version <VERSION>
 ```bash
 cargo mend
 cargo mend --fail-on-warn
+cargo mend --dry-run
 cargo mend --fix
+cargo mend --fix-pub-use
+cargo mend --fix-compiler
+cargo mend --fix-all
 cargo mend --json
-cargo mend --version
-cargo mend --build-info
+cargo mend --workspace
+cargo mend --package my-crate
 cargo mend --manifest-path path/to/Cargo.toml
+cargo mend path/to/project
 ```
 
 Behavior:
@@ -164,9 +173,12 @@ Behavior:
 - run it at a workspace root to audit all workspace members
 - run it in a member crate directory to audit just that package
 - pass `--manifest-path` to choose an explicit crate or workspace root
-- `--fix` only rewrites the import-shortening cases that `cargo-mend` can prove are safe
-- if a `--fix` run would leave the crate failing `cargo check`, `cargo-mend` restores the
-  original files automatically
+- `--fix` applies Mend's proven import and visibility rewrites
+- `--fix-pub-use` repairs stale parent re-exports, while `--fix-compiler` runs `cargo fix`
+- `--fix-all` combines all three fix categories
+- `--dry-run` previews the requested categories; by itself, it previews all fixes
+- if a Mend fix batch would leave the crate failing `cargo check`, cargo-mend restores the original
+  files automatically
 - if there is nothing fixable, `cargo-mend` says so after the report summary
 
 ### Target selection flags are display filters
@@ -183,8 +195,9 @@ By always compiling everything, mend sees the full call graph and gives correct 
 So `cargo mend --lib` is "show me only the lib-file findings"; the analysis behind those
 findings still considered every target.
 
-Caveat: this only handles `#[cfg(test)]`. `#[cfg(feature = "x")]` items reached only under a
-non-default feature still need an explicit `--features <set>` invocation to be visible.
+Caveat: this covers `#[cfg(test)]`, but not code enabled only by non-default features. Cargo-mend
+does not currently expose Cargo's feature-selection flags, so those configurations are outside the
+analyzed call graph.
 
 ## Intended workflow
 
@@ -192,7 +205,7 @@ Use this as a migration aid and CI guard:
 
 1. fail immediately on visibility forms broader than the proven boundary
 2. review suspicious `pub`
-3. let `cargo mend --fix` rewrite the straightforward local-import paths it knows how to fix
+3. let `cargo mend --fix` apply the visibility and import rewrites it can prove safe
 4. keep repo-specific exceptions small and explicit
 
 The usual review flow is:
@@ -280,7 +293,7 @@ accepts the annotation.
 Arbitrary `pub(in ...)` annotations are rejected because they can hide an ownership problem behind
 a long path. An exact crate-rooted `pub(in crate::path)` is accepted when `path` is the narrowest
 boundary required by callers, signatures, or a parent facade. Set `pub_in_path = "permitted"` (the
-default) or `"required"` to accept that exact boundary.
+less strict mode) or `"required"` (the default) to accept that exact boundary.
 
 A parent re-export is one case that requires this form. A `pub(super) use` can put the item's
 required reach above the module where it is declared: `pub(super)` at the declaration is then too
@@ -355,6 +368,8 @@ Resolutions:
 
 - make the item private
 - change it to `pub(super)`
+- use the exact `pub(in crate::path)` or `pub(crate)` boundary Mend reports when wider access is
+  required
 - move it to a better common parent if it is genuinely shared across the crate
 
 At logical depth greater than one, `suspicious_pub` examines bare `pub` and accepted crate-rooted
@@ -582,7 +597,8 @@ That can be intentional, but it is worth review because it usually means one of 
 - the parent boundary is acting as an internal namespace and should stay that way intentionally
 - or the subtree should import the child module directly instead of routing through the parent
 
-`cargo-mend` does not auto-fix this case.
+Cargo-mend does not auto-fix this case because removing the facade also requires choosing which
+child-module path each caller should import.
 
 <a id="narrow-to-pub-crate"></a>
 ### Narrow `pub` to `pub(crate)`
@@ -630,8 +646,7 @@ on a **fully private type** (a type with no `pub` annotation of its own). The fi
 cannot grant any access because the containing type itself isn't visible — the annotation is
 dead.
 
-The lint deliberately does **not** fire on the conventional pattern of `pub` fields on
-`pub(crate)` or `pub(super)` structs:
+The lint deliberately does **not** fire on `pub` fields of `pub(crate)` or `pub(super)` structs:
 
 ```rust
 // Allowed — `pub` on fields of a `pub(crate)` struct is idiomatic Rust shorthand
@@ -640,10 +655,6 @@ pub(crate) struct GhRun {
     pub node_id:   String,
 }
 ```
-
-Most large Rust codebases (rustc, cargo, tokio, serde, ratatui) write `pub` fields on
-`pub(crate)` types and rely on the type to cap the reach. Flagging that pattern would push
-toward a less idiomatic style.
 
 What does get flagged: a `pub` field on a struct that has no visibility annotation at all.
 

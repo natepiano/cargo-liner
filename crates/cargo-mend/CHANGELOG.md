@@ -8,197 +8,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
-- `pub(crate)` is now an accepted final visibility when callers and signatures require the crate
-  root. The stable `forbidden_pub_crate` diagnostic remains for annotations that can be tighter.
-  Cross-target reconciliation selects private, `pub(super)`, an exact `pub(in crate::path)`, or
-  `pub(crate)` from the deepest common required module, and `cargo mend --fix` writes each result.
-  Bare `pub` findings use the same reconciliation, including inherent methods whose containing type
-  has wider reach. Related changes are applied in one validation batch, so traits, associated types,
-  loaders, and their error types can narrow together without an intermediate E0446 failure.
-  Trait bounds now contribute caller evidence. Named and positional field construction, access,
-  destructuring, and `offset_of!` computations do as well. Applied modes repeat while the remaining
-  fixable count decreases, so visibility cascades converge during one `cargo mend --fix`
-  invocation. Restricted re-exports
-  retain the boundary their targets must reach between passes, and private imports defer a rewrite
-  until removing the import makes it valid. Findings schema 27 records these caller kinds, the exact
-  replacement spelling, and whether project policy accepts an exact restricted path.
-- mend now always takes cargo's `RUSTC_WORKSPACE_WRAPPER` slot and leaves an ambient `RUSTC_WRAPPER`
-  in place. Previously, a set `RUSTC_WRAPPER` was displaced into `MEND_PASSTHROUGH_RUSTC_WRAPPER` and
-  mend took that slot instead. Cargo records the workspace wrapper's path in a unit's fingerprint and
-  does not record `RUSTC_WRAPPER`'s, so under a wrapper such as sccache a newly installed mend left
-  every unit fresh and the run produced no analysis. The workspace slot is also the narrower one: it
-  wraps workspace members and not their dependencies, which are the only crates mend analyzes, and
-  cargo invokes the two wrappers outermost-first, so a caching wrapper keeps serving dependency
-  builds and mend runs beneath it.
-- An exact, crate-rooted `pub(in crate::path)` declaration whose boundary is demanded only by a
-  signature that crosses it — a type named in another item's return type, parameter, or public
-  field, and never written by any caller — is no longer a `forbidden_pub_in_crate` error, and no
-  facade is required for it. A caller that writes the item's own path across the boundary still is
-  one: only the exposing item's path reaches a signature-exposed type, so a facade re-exporting it
-  would have no user and would fail `unused_imports`.
-- Exact, crate-rooted `pub(in crate::path)` declaration boundaries that match a parent facade are
-  now accepted when `[visibility] pub_in_path` is `"permitted"` or `"required"` (the default).
-  `required` also revises `suspicious_pub` advice for a bare `pub` behind such a facade. There is no
-  warning-first grace mode: `[diagnostics]` supports enable/disable, not severity levels, and the
-  required annotation change is a one-line edit.
-- The global configuration is migrated once to the new default. A global `config.toml` written before
-  this release carries no `config_version`, so its `[visibility] pub_in_path = "permitted"` is
-  rewritten to `"required"` on the first run and then stamped with the version; every later run
-  reads the stamp and leaves the value alone. To keep the previous behavior, set
-  `pub_in_path = "permitted"` in the global configuration *after the first run of the upgraded
-  binary* — that first run is what writes the stamp, and a config that carries the stamp is never
-  revisited, so the value sticks from then on. Setting it before that first run does not work: the
-  file still has no stamp, so the migration rewrites the value. A project `mend.toml` is never
-  rewritten.
+- Visibility tightening is now caller-aware across all selected targets. Mend computes the deepest
+  module required by callers, signatures, facades, trait bounds, imports, and field use, then chooses
+  private, `pub(super)`, exact `pub(in crate::path)`, `pub(crate)`, or `pub` as appropriate.
+- `pub(crate)` is now accepted when crate-root access is genuinely required. The existing
+  `forbidden_pub_crate` diagnostic remains for declarations and fields that can be tighter.
+- Exact crate-rooted `pub(in crate::path)` is accepted when it matches the boundary required by
+  callers, signatures, or a parent facade and `pub_in_path` is `"permitted"` or `"required"`.
+  `"required"` is now the default and also recommends exact boundaries for eligible bare `pub`
+  declarations.
+- `cargo mend --fix` applies related visibility changes together and repeats successful passes until
+  no further fixes are exposed. This allows dependent declarations and named or positional fields
+  to narrow in one invocation.
+- Mend now uses `RUSTC_WORKSPACE_WRAPPER` for its compiler driver and preserves an existing
+  `RUSTC_WRAPPER`, so compiler caches continue to serve dependencies and new Mend builds trigger the
+  required workspace analysis.
+- Global configs created before this release migrate `pub_in_path` from `"permitted"` to
+  `"required"` once. Project `mend.toml` files are never rewritten. To retain the old global
+  behavior, run the upgraded binary once and then set the global value back to `"permitted"`.
 
 #### Visibility-policy upgrade contract
 
-The following two-code matrix applies to `forbidden_pub_in_crate` and `forbidden_pub_crate`:
-
-- **Previously green with `forbidden_pub_in_crate` enabled:** exact `pub(in crate::...)`
-  declarations covered by the scanner were previously absent, while `pub(in crate)`, relative
-  spellings, and restricted field annotations can now become new errors. Output is unchanged only
-  when none of those newly detected forms exist.
-- **`forbidden_pub_in_crate` disabled:** existing annotations may be present. Exact boundaries
-  become permitted, while `suspicious_pub` or another canonical diagnostic can newly appear;
-  disabling `forbidden_pub_in_crate` does not disable those codes.
-- **`forbidden_pub_in_crate` disabled while `forbidden_pub_crate` remains enabled:** new
-  `pub(in crate)` detection routes to the enabled code, so a project that believed it had opted out
-  can still receive new errors.
-- **Already failing:** an exact-boundary error can disappear under `permitted`; retained failures
-  receive new headlines and help, and secondary findings can change count and order.
-- **Machine-readable output:** `rustc_diagnostic` no longer emits the `note` child that duplicated
-  the headline, and `render_diagnostic` no longer repeats it in `rendered`. Consumers of mend's
-  cargo JSON therefore see one fewer child on every forbidden-visibility finding, including when
-  the finding itself is otherwise unchanged.
-- **The `--fix` summary now names the kind of edit it applied:** every fixer except `pub use` was
-  previously counted into one "import fix(es)" total, so a run that removed a `pub` or rewrote an
-  annotation announced an import fix it had not made. Removing a `pub`, narrowing one to
-  `pub(crate)`, rewriting a `pub` to an exact `pub(in crate::...)` boundary, and rewriting a field
-  annotation now each report under their own noun — "`pub` removal(s)", "visibility narrowing(s)",
-  "annotation rewrite(s)", and "field visibility rewrite(s)" — with one clause per kind when a run
-  applies more than one. Only the kinds that applied something are named — a kind with nothing to
-  do is left out rather than reporting a zero — and a run that applied nothing at all still reports
-  a single "nothing available" line. "import fix(es)" now counts only the fixers that move or
-  rewrite a `use` item. Consumers matching the old text will see different output.
-- **Struct and union fields now follow the `pub(crate)` location policy:** a `pub(crate)` field now
-  reaches the same rejection rule as a `pub(crate)` item wherever that policy does not permit it.
-  This does not make every `pub(crate)` field an error: permitted locations remain green, and
-  `pub(super)` and `pub(self)` fields remain allowed. Struct and union fields were previously
-  exempt, so this is the broadest behavior change for existing codebases.
-- **Reject-once changes co-occurring codes:** a forbidden `pub(crate) mod` that previously emitted
-  both `forbidden_pub_crate` and `review_pub_mod` now emits only the rejection. Finding counts and
-  code sets can therefore change even when the source is otherwise unaffected.
-- **Facade `use` spellings are quoted only when mend can establish them:**
-  `forbidden_pub_crate` has both a spelling-specific and a neutral facade-help variant, and
-  `internal_parent_pub_use_facade` uses neutral re-export wording when the written modifier is not
-  recoverable. Consumers matching those strings will see different text.
-- **Impl items reached through their self type now count as exposed:** items in an `impl` can inherit
-  exposure from the implemented type, so items that were previously flagged can now be allowed.
-- **Files unreachable from the crate root no longer influence findings:** source files that no `mod`
-  declaration reaches are no longer scanned for usage or facades, so findings that depended on them
-  disappear.
-- **A child module importing a parent re-export no longer counts as an outside caller:** this can
-  make `narrow_to_pub_crate` and stale-facade findings newly appear.
-- **Project `[visibility] allow_prelude_pub_mod` now takes effect:** a project `mend.toml` value is
-  no longer discarded in favor of the global configuration, so repositories that relied on it being
-  ignored change behavior.
-- **Findings schema 21 invalidates schema 19:** cached reports are rejected because
-  forbidden-visibility persistence now stores typed signature, facade, caller, and acceptance
-  constraints separately from diagnostics. After upgrading, run
-  `rm -rf target/mend-findings` and force a recompile.
-- **`suspicious_pub` help is now always computed:** the former static
-  ``consider using: `pub(super)` `` text is gone, so items behind a facade receive the facade
-  boundary instead.
-- **`cargo mend --message-format=json` now emits exactly one `help` child per finding:** it no
-  longer emits both static and dynamic suggestions for the same diagnostic.
-- **Both renderers resolve custom help before static help:** terminal output and
-  `--message-format=json` now agree for diagnostics carrying both values. Consumers pinned to the
-  former JSON string will see a change.
+- Detection now includes restricted field annotations, relative `pub(in ...)` spellings, impl items
+  exposed through their self type, and caller relationships from fields and trait bounds. Finding
+  counts can change after upgrading.
+- Disabling `forbidden_pub_in_crate` does not suppress other visibility diagnostics. For example,
+  `pub(in crate)` can still reach `forbidden_pub_crate`, while an accepted exact boundary can still
+  receive `suspicious_pub` advice.
+- Struct and union fields now follow the same caller-aware `pub(crate)` policy as declarations.
+- Unreachable source files no longer influence findings, and child imports of a parent re-export no
+  longer count as outside callers.
+- Project `allow_prelude_pub_mod` settings now correctly override the global value.
+- JSON diagnostics no longer duplicate the headline as a `note`, and emit at most one `help` child.
+  Fix summaries now name the kind of edit applied instead of grouping visibility edits as imports.
+- Findings schema 27 replaces older cached reports. The per-build wrapper path forces fresh analysis
+  when the installed Mend build changes.
 
 ### Performance
-- Signature-exposure analysis is now memoized per item instead of recomputed once per signature that
-  mentions it. Whether a type escapes its parent module depends only on that type, so the walk was
-  answering the same question repeatedly on crates where one type appears in many signatures. The
-  cache stores a result only when no cycle cut occurred beneath it: the walk answers "not exposed"
-  for an item already on its own stack, which under-reports that item and is correct only for the
-  stack that produced it, so a counter of cuts lets a completed call tell whether it saw one. On
-  `hana_lagrange` this took a full run from about 160s to about 32s with identical findings.
-- Facade scanning no longer rebuilds the same two results over and over on large crates. Its cost was
-  `occurrences × Σ_files(path expressions × module contexts)`, so a crate with many `pub use`
-  declarations *and* many path expressions paid the product of the two, not the sum. Two changes:
-  a path is now rejected before any allocation happens, and the set of modules a source file defines
-  is computed once per file instead of once per file per re-export.
-
-  The first matters because resolving a plain path against the enclosing module cloned the whole
-  path once per module-prefix length — every segment copied — before anything tested whether the
-  path could match. A candidate is only ever accepted at one length, so the segment compared against
-  the export set is always the path's last one, and `crate`/`self`/`super` resolution rewrites only
-  the prefix ahead of it. A final segment that names no export therefore cannot match under any
-  prefix, and is now discarded without allocating. Paths whose final segment is itself an anchor
-  (`super::super`) name no candidate on their own and still fall through to the full scan.
-
-  On a crate with roughly 29,000 path expressions and 900 `pub use` declarations, a full check went
-  from 1019s to 254s. Findings are unchanged.
-- The maps keyed by file path and by `DefId` now hash with `rustc-hash` rather than the standard
-  library's default. The default hasher is chosen to resist hash flooding from untrusted keys, and
-  pays several mixing rounds per eight bytes to get it; an absolute source path is 60 to 100 bytes,
-  and `Path`'s own hashing walks it component by component, so every lookup mixed the whole path.
-  These keys come from the local source tree and from the compiler, so that resistance buys nothing
-  here. Worth roughly 2% on a crate with 9,000 path expressions — the earlier caching had already
-  removed most of the lookups this makes cheaper, so the two changes overlap rather than add.
-
-  One visible consequence: this hasher has a fixed seed, so map iteration order is now stable from
-  run to run instead of varying with the standard library's per-process random seed.
+- Memoized signature-exposure analysis reduced a representative `hana_lagrange` run from about 160
+  seconds to 32 seconds with unchanged findings.
+- Indexed facade references and module contexts reduced a 29,000-path, 900-re-export check from
+  1,019 seconds to 254 seconds with unchanged findings.
+- Compiler and source-path maps now use `rustc-hash`, improving lookup speed and making iteration
+  order stable across runs.
 
 ### Fixed
-- Naming a type inside an attribute no longer counts as putting that type in a public signature.
-  Previously mend searched the attributes on every `pub` item for the name of the type it was
-  judging, and a match was taken as proof that the item's signature carried that type — which meant
-  the type had to be `pub` too. Nothing narrowed the search: any attribute qualified, and the name
-  could appear anywhere inside it, including in a string. `#[derive(...)]`, `#[reflect(...)]`, and
-  even `#[doc = "TypeName"]` all counted. The search also ran first and replaced the real check, so
-  a match ended the analysis before the item's actual fields and signatures were read.
-
-  In Bevy this hit the standard pattern for required components. A `pub` component that lists its
-  internal components in `#[require(...)]` had every one of them reported as exposed through a
-  public signature, with advice to widen them to `pub` — the opposite of the right answer, since
-  `#[require]` registers those components from inside a function body and never places them in a
-  signature. Attributes describe the source before macros run; whether a macro actually puts a type
-  in public API is answered by the expanded code, which mend already reads.
-- `--fix` no longer narrows a declaration that a `pub use` in another module re-exports. rustc's
-  E0364 is syntactic: a `pub use` requires the item it names to be `pub`, whether or not the
-  re-export is itself reachable from outside. A `pub use` in one of the item's ancestor modules is
-  the parent facade, and `--fix-pub-use` rewrites it together with the declaration; a `pub use`
-  anywhere else — a sibling module — has no such coordinated edit, so narrowing the declaration
-  alone stopped the crate compiling and rolled the whole `--fix` batch back. `suspicious_pub` still
-  reports these items, since the finding itself is true; it no longer offers to fix them.
-- A run that analyzed nothing no longer reports a clean crate. mend only sees source that cargo
-  recompiles; when cargo has nothing to rebuild *and* no cached report under
-  `target/mend-findings` survives the schema, analysis, and configuration compatibility checks, the
-  run ends holding an empty findings list. That was indistinguishable from "no problems found" and
-  printed as `No findings.` with exit 0. `load_report` now returns whether any stored report reached
-  the run, and a run with none fails with "no analysis was produced for this crate" plus
-  instructions to force a rebuild. Deleting `target/mend-findings` without touching sources is the
-  way to reach this; a repeat run that replays the cache is unaffected.
-- Installing a new mend build no longer leaves the next run with nothing to analyze. Cargo keys a
-  unit's fingerprint on the wrapper's path and reads nothing else about the file — neither mtime nor
-  contents — so overwriting the mend binary in place left every workspace member fresh, the driver
-  never ran, and the run ended at "no analysis was produced for this crate". Cargo is now pointed at
-  a per-build alias of mend under `target/mend-wrapper/<analysis fingerprint>/`, so a new build is a
-  new path and cargo rebuilds against it. Two mend builds keep separate alias paths, so cargo retains
-  both artifact sets and switching between them costs no rebuild.
-- Two mend runs sharing one target directory no longer break each other's build. Cargo executes the
-  wrapper alias once per compilation unit, and recreating that link on every run unlinked it first; a
-  run compiling through the gap failed with a missing file and reported crates as never executed. The
-  alias is now left alone when it already points at the running binary, and otherwise replaced by
-  renaming a staged link over it, so the path resolves to one binary or the other and is never
-  absent.
+- Types mentioned only in attributes such as `#[require(...)]`, `#[reflect(...)]`, or documentation
+  are no longer treated as part of a public signature.
+- `--fix` no longer narrows declarations pinned to `pub` by a sibling-module `pub use`; those findings
+  remain visible but are not offered as automatic fixes.
+- A run that produced no compiler analysis now fails with recovery instructions instead of reporting
+  a clean crate.
+- New installations reliably trigger analysis, and concurrent Mend runs can safely share one target
+  directory.
 
 ## [0.17.6] - 2026-07-27
 
 ### Fixed
-- `prefer_module_import` now leaves a function import alone when an attribute names that function, instead of rewriting the import and breaking the build. Attributes can name a function as a string — `#[serde(default = "default_monitor_scale")]` — and a string is not a path, so nothing rewrote it when the import changed. Rewriting `use super::window_state::default_monitor_scale;` to `use super::window_state;` left the attribute naming something no longer in scope (E0425), and `cargo mend --fix` rolled the entire run back. The same guard covers functions named as bare idents inside attribute tokens, such as `#[arg(default_value_t = default_scale())]`, which were invisible to the rewrite for the same reason.
+- `prefer_module_import` now leaves function imports unchanged when attributes refer to the function
+  by string or token, preventing unresolved attribute references after `--fix`.
 
 ## [0.17.5] - 2026-07-25
 
@@ -208,8 +76,9 @@ The following two-code matrix applies to `forbidden_pub_in_crate` and `forbidden
 ## [0.17.4] - 2026-07-23
 
 ### Fixed
-- `prefer_module_import` no longer rewrites `use crate::parent::child;` to `use crate::parent;` when `child` is an inline `mod` block inside the parent module's file. Module detection only checked the filesystem for `child.rs`/`child/mod.rs`, so the inline module was misclassified as a function import, leaving multi-segment references like `child::CONST` unresolved (E0433) and forcing `cargo mend --fix` to roll back.
-- `prefer_module_import` import dedup is now scope-aware: a `use` inside a nested `mod` (e.g. `mod tests`) no longer suppresses inserting the same module import at file top level, no longer causes deletion of an import that only exists in a different scope, and same-module imports in different scopes each rewrite in place. Previously an inline call rewrite could be left without its `use crate::module;` (E0433, rollback) because a `mod tests` import already claimed that module file-globally.
+- `prefer_module_import` no longer mistakes inline modules for imported functions.
+- Import deduplication now respects inline-module scopes, preventing an import in `mod tests` from
+  suppressing or deleting a required file-level import.
 
 ## [0.17.3] - 2026-07-20
 
@@ -236,12 +105,14 @@ The following two-code matrix applies to `forbidden_pub_in_crate` and `forbidden
 
 ### Fixed
 - `cargo mend` now preserves an existing `RUSTC_WRAPPER` (e.g. `kache`, `sccache`) instead of dropping it. When a wrapper is set, dependency compilations are passed through to it (chained ahead of `rustc`) and only the primary package is intercepted for analysis, so cached artifacts are reused instead of every dependency being recompiled under the bare compiler.
-- `imports_at_top` no longer strips the `#[cfg]` gate when it moves a conditionally-compiled `use` to the file top. A `use` nested in a `#[cfg]`-gated block (the winit `#[cfg(target_os = "…")] let raw = { use winit::platform::…; … }` pattern) or carrying its own `#[cfg]` was moved unconditionally, so the other targets' imports became active on the current platform, failed to resolve (E0432), and forced `cargo mend --fix` to roll back. The moved import now carries the enclosing block's `#[cfg]` (or its own) with it, staying conditionally compiled; the gated block is left in place minus the `use`.
+- `imports_at_top` now preserves an imported item's own or enclosing `#[cfg]` gate when moving it,
+  preventing platform-specific imports from becoming unconditional.
 
 ## [0.16.1] - 2026-07-01
 
 ### Fixed
-- `prefer_module_import` no longer rewrites a function import to `use module;` when the file already imports a *different* module under that same bare name, which produced a duplicate-name error (E0252) and a misrouted call (E0425) and forced `cargo mend --fix` to roll back. When the target module name is already bound to another module, the function import is now left untouched instead. The prior fix only handled the case where the *same* module was already imported.
+- `prefer_module_import` now skips rewrites when another imported module already uses the target
+  module's bare name.
 
 ## [0.16.0] - 2026-06-20
 
@@ -386,9 +257,11 @@ The following two-code matrix applies to `forbidden_pub_in_crate` and `forbidden
 ## [0.8.1] - 2026-04-26
 
 ### Fixed
-- `prefer_module_import --fix` no longer rolls back when an imported function is shadowed by a local binding of the same name. The call-site rewriter now tracks `let`, function/closure parameter, `for`, and `match`-arm bindings, and leaves bare references alone when they resolve to a local. Previously code like `let dot_radius = scaling::dot_radius(...);` followed by uses of `dot_radius` got rewritten to `scaling::dot_radius` everywhere, producing fn-item-where-`f32`-expected errors and triggering rollback
+- `prefer_module_import --fix` now preserves references shadowed by local bindings in `let`,
+  function, closure, `for`, and match-arm scopes.
 - `prefer_module_import --fix` no longer corrupts struct literal field shorthand. `Foo { name }` is now left as shorthand instead of being rewritten to the parse-error `Foo { module::name }`
-- The on-disk findings cache is now reused across different cargo target-selection flags. Previously the cache was keyed on the full cargo CLI argument vector, so a `cargo mend --all-targets` run that immediately followed a plain `cargo mend` would silently drop the lib's findings: cargo's own fingerprinting correctly skipped recompiling the lib, the rustc-driver wrapper therefore did not re-emit, and the cache file from the prior run was rejected because its `scope_fingerprint` didn't match. The cache now matches purely on schema version, mend driver build id, and diagnostic config — `cargo mend`, `cargo mend --lib`, `cargo mend --all-targets`, etc. now produce consistent findings in any order with no extra recompilation and no extra target growth
+- Findings caches are now shared across target display filters, so `cargo mend`, `--lib`, and
+  `--all-targets` report consistently without redundant compilation.
 
 ## [0.8.0] - 2026-04-22
 
