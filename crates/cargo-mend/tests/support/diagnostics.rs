@@ -11,7 +11,7 @@ const NOTE_ERROR_FIXABLE_WITH_FIX_PUB_USE: &str =
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DiagnosticCode {
-    ForbiddenPubCrate,
+    OverbroadPubCrate,
     ForbiddenPubInCrate,
     ReviewPubMod,
     SuspiciousPub,
@@ -29,7 +29,7 @@ pub enum DiagnosticCode {
 
 impl DiagnosticCode {
     pub const ALL: &[Self] = &[
-        Self::ForbiddenPubCrate,
+        Self::OverbroadPubCrate,
         Self::ForbiddenPubInCrate,
         Self::ReviewPubMod,
         Self::SuspiciousPub,
@@ -47,7 +47,7 @@ impl DiagnosticCode {
 
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::ForbiddenPubCrate => "forbidden_pub_crate",
+            Self::OverbroadPubCrate => "overbroad_pub_crate",
             Self::ForbiddenPubInCrate => "forbidden_pub_in_crate",
             Self::ReviewPubMod => "review_pub_mod",
             Self::SuspiciousPub => "suspicious_pub",
@@ -187,11 +187,11 @@ impl HeadlineSource {
 }
 
 pub const fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
-    const FORBIDDEN_PUB_CRATE: DiagnosticSpec = DiagnosticSpec {
+    const OVERBROAD_PUB_CRATE: DiagnosticSpec = DiagnosticSpec {
         headline:    HeadlineSource::FindingMessage {
             fallback: "`pub(crate)` is broader than required",
         },
-        help_anchor: "forbidden-pub-crate",
+        help_anchor: "overbroad-pub-crate",
         fix_support: FixSupport::None,
     };
     const FORBIDDEN_PUB_IN_CRATE: DiagnosticSpec = DiagnosticSpec {
@@ -273,7 +273,7 @@ pub const fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
     };
 
     match code {
-        DiagnosticCode::ForbiddenPubCrate => &FORBIDDEN_PUB_CRATE,
+        DiagnosticCode::OverbroadPubCrate => &OVERBROAD_PUB_CRATE,
         DiagnosticCode::ForbiddenPubInCrate => &FORBIDDEN_PUB_IN_CRATE,
         DiagnosticCode::ReviewPubMod => &REVIEW_PUB_MOD,
         DiagnosticCode::SuspiciousPub => &SUSPICIOUS_PUB,

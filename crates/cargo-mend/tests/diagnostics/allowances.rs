@@ -1832,7 +1832,7 @@ fn assert_path_sibling_signature_exposure_uses_logical_identity() {
         .findings
         .iter()
         .find(|finding| {
-            finding.code == DiagnosticCode::ForbiddenPubCrate
+            finding.code == DiagnosticCode::OverbroadPubCrate
                 && finding.path == "src/a/odd/target.rs"
         })
         .expect("find target visibility finding");
@@ -1970,7 +1970,7 @@ fn restricted_signature_exposure_accepts_its_exact_facade_boundary() {
         !report.findings.iter().any(|finding| {
             matches!(
                 finding.code,
-                DiagnosticCode::ForbiddenPubCrate | DiagnosticCode::ForbiddenPubInCrate
+                DiagnosticCode::OverbroadPubCrate | DiagnosticCode::ForbiddenPubInCrate
             ) && finding.path == "src/video_plane/plane/camera_panel.rs"
         }),
         "exact restricted signature reach should be accepted: {report:#?}",
@@ -2060,7 +2060,7 @@ bench = false
     );
     assert_stored_forbidden_visibility_advice(
         &temp,
-        "forbidden_pub_crate",
+        "overbroad_pub_crate",
         "src/a.rs",
         1,
         ForbiddenVisibilityPersistenceExpectation::AcceptedCrate {
@@ -2161,7 +2161,7 @@ edition = "2024"
             finding.path == "src/a/b/c.rs"
                 && matches!(
                     finding.code,
-                    DiagnosticCode::ForbiddenPubCrate | DiagnosticCode::ForbiddenPubInCrate
+                    DiagnosticCode::OverbroadPubCrate | DiagnosticCode::ForbiddenPubInCrate
                 )
         }),
         "the wider facade boundary must remain the required reach: {report:#?}",
@@ -2517,7 +2517,7 @@ impl RestrictedContract for TraitCarrier { type Output = c::TraitTarget; }
             .iter()
             .find(|finding| {
                 finding.path == "src/a/b/c.rs"
-                    && finding.code == DiagnosticCode::ForbiddenPubCrate
+                    && finding.code == DiagnosticCode::OverbroadPubCrate
                     && finding.line_start == line_start
             })
             .unwrap_or_else(|| panic!("missing {carrier} target finding: {report:#?}"));
@@ -2542,7 +2542,7 @@ impl RestrictedContract for TraitCarrier { type Output = c::TraitTarget; }
         .iter()
         .find(|finding| {
             finding.path == "src/a/b/c.rs"
-                && finding.code == DiagnosticCode::ForbiddenPubCrate
+                && finding.code == DiagnosticCode::OverbroadPubCrate
                 && finding.line_start == 3
         })
         .unwrap_or_else(|| panic!("missing private method control: {report:#?}"));
@@ -2595,7 +2595,7 @@ edition = "2024"
         .findings
         .iter()
         .find(|finding| {
-            finding.path == "src/a/b/c.rs" && finding.code == DiagnosticCode::ForbiddenPubCrate
+            finding.path == "src/a/b/c.rs" && finding.code == DiagnosticCode::OverbroadPubCrate
         })
         .expect("find capped module-path exposure finding");
     assert_eq!(target_finding.fix_support, FixSupport::None);
@@ -2791,7 +2791,7 @@ edition = "2024"
             .findings
             .iter()
             .find(|finding| {
-                finding.path == path && finding.code == DiagnosticCode::ForbiddenPubCrate
+                finding.path == path && finding.code == DiagnosticCode::OverbroadPubCrate
             })
             .unwrap_or_else(|| panic!("missing signature target finding at {path}: {report:#?}"))
     };
@@ -3169,7 +3169,7 @@ edition = "2024"
         .findings
         .iter()
         .find(|finding| {
-            finding.path == "src/a/b/c.rs" && finding.code == DiagnosticCode::ForbiddenPubCrate
+            finding.path == "src/a/b/c.rs" && finding.code == DiagnosticCode::OverbroadPubCrate
         })
         .expect("find public signature exposure finding");
     assert!(
@@ -3219,7 +3219,7 @@ edition = "2024"
         .find(|finding| {
             finding.path == "src/a/b/c.rs"
                 && finding.line_start == 1
-                && finding.code == DiagnosticCode::ForbiddenPubCrate
+                && finding.code == DiagnosticCode::OverbroadPubCrate
         })
         .unwrap_or_else(|| panic!("missing resolved-facade pub(crate) finding: {report:#?}"));
     assert!(
@@ -3231,7 +3231,7 @@ edition = "2024"
     );
     assert_stored_forbidden_visibility_advice(
         &temp,
-        "forbidden_pub_crate",
+        "overbroad_pub_crate",
         "src/a/b/c.rs",
         1,
         ForbiddenVisibilityPersistenceExpectation::ResolvedFacadeRestricted {
@@ -3247,7 +3247,7 @@ edition = "2024"
         .find(|finding| {
             finding.path == "src/a/b/c.rs"
                 && finding.line_start == 3
-                && finding.code == DiagnosticCode::ForbiddenPubCrate
+                && finding.code == DiagnosticCode::OverbroadPubCrate
         })
         .unwrap_or_else(|| panic!("missing facade-only pub(crate) finding: {report:#?}"));
     assert!(
@@ -3260,7 +3260,7 @@ edition = "2024"
     );
     assert_stored_forbidden_visibility_advice(
         &temp,
-        "forbidden_pub_crate",
+        "overbroad_pub_crate",
         "src/a/b/c.rs",
         3,
         ForbiddenVisibilityPersistenceExpectation::ResolvedFacadeRestricted {
@@ -3310,7 +3310,7 @@ edition = "2024"
         .find(|finding| {
             finding.path == "src/a/b/c.rs"
                 && finding.line_start == 1
-                && finding.code == DiagnosticCode::ForbiddenPubCrate
+                && finding.code == DiagnosticCode::OverbroadPubCrate
         })
         .unwrap_or_else(|| panic!("missing public blocked-facade finding: {report:#?}"));
     assert_eq!(
@@ -3333,7 +3333,7 @@ edition = "2024"
     );
     assert_stored_forbidden_visibility_advice(
         &temp,
-        "forbidden_pub_crate",
+        "overbroad_pub_crate",
         "src/a/b/c.rs",
         1,
         ForbiddenVisibilityPersistenceExpectation::Public {
@@ -3381,7 +3381,7 @@ edition = "2024"
     );
     assert_stored_forbidden_visibility_advice(
         &temp,
-        "forbidden_pub_crate",
+        "overbroad_pub_crate",
         "src/a/b/c.rs",
         1,
         ForbiddenVisibilityPersistenceExpectation::AcceptedCrate {
@@ -3492,7 +3492,7 @@ edition = "2024"
         .findings
         .iter()
         .filter(|finding| {
-            finding.code == DiagnosticCode::ForbiddenPubCrate && finding.path == "src/a/b/c.rs"
+            finding.code == DiagnosticCode::OverbroadPubCrate && finding.path == "src/a/b/c.rs"
         })
         .collect::<Vec<_>>();
     assert_eq!(target_findings.len(), 2, "target findings: {report:#?}");
@@ -3518,7 +3518,7 @@ edition = "2024"
         target_findings.iter().all(|finding| finding
             .help
             .iter()
-            .any(|line| line == "this error is auto-fixable with `cargo mend --fix`")),
+            .any(|line| line == "this warning is auto-fixable with `cargo mend --fix`")),
         "same-line target findings must be directly fixable: {report:#?}",
     );
 }
@@ -4430,7 +4430,7 @@ edition = "2024"
             .find(|finding| {
                 finding.path == "src/a/b/left.rs"
                     && finding.line_start == line_start
-                    && finding.code == DiagnosticCode::ForbiddenPubCrate
+                    && finding.code == DiagnosticCode::OverbroadPubCrate
             })
             .unwrap_or_else(|| panic!("missing private-equivalent sibling finding: {report:#?}"));
         assert!(
@@ -4448,7 +4448,7 @@ edition = "2024"
         .find(|finding| {
             finding.path == "src/a/b/left.rs"
                 && finding.line_start == 3
-                && finding.code == DiagnosticCode::ForbiddenPubCrate
+                && finding.code == DiagnosticCode::OverbroadPubCrate
         })
         .unwrap_or_else(|| panic!("missing outward sibling control: {report:#?}"));
     assert!(
@@ -4775,7 +4775,7 @@ pub(super) fn outer_surface(_: OuterTarget) {}
             .findings
             .iter()
             .find(|finding| {
-                finding.code == DiagnosticCode::ForbiddenPubCrate
+                finding.code == DiagnosticCode::OverbroadPubCrate
                     && finding.path == "src/a/b/c.rs"
                     && finding.line_start == line_start
             })
@@ -4869,7 +4869,7 @@ fn assert_declaration_identity_findings(report: &Report) {
             .findings
             .iter()
             .filter(|finding| {
-                finding.code == DiagnosticCode::ForbiddenPubCrate
+                finding.code == DiagnosticCode::OverbroadPubCrate
                     && finding.path == "src/a/b/c.rs"
                     && finding.line_start == line_start
             })
@@ -5028,11 +5028,11 @@ fn attribute_metadata_alone_does_not_expose_a_child_through_a_public_signature()
             .findings
             .iter()
             .find(|finding| {
-                finding.path == path && finding.code == DiagnosticCode::ForbiddenPubCrate
+                finding.path == path && finding.code == DiagnosticCode::OverbroadPubCrate
             })
-            .unwrap_or_else(|| panic!("missing forbidden_pub_crate finding at {path}: {report:#?}"))
+            .unwrap_or_else(|| panic!("missing overbroad_pub_crate finding at {path}: {report:#?}"))
     };
-    // The attribute-named target may keep a forbidden_pub_crate finding for an
+    // The attribute-named target may keep an overbroad_pub_crate finding for an
     // unrelated reason, or lose it entirely once the false exposure is gone.
     // What must never appear is the claim that a public signature carries it.
     let claims_public_signature_exposure = |path: &str| {

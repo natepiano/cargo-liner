@@ -275,9 +275,12 @@ fn assert_rendered_diagnostics(report: &Report, rendered: &str) {
 }
 
 fn assert_forbidden_visibility_json(output: &str, report: &Report) {
-    let expected_diagnostics = ["forbidden_pub_crate", "forbidden_pub_in_crate"];
+    let expected_diagnostics = [
+        ("overbroad_pub_crate", "warning"),
+        ("forbidden_pub_in_crate", "error"),
+    ];
 
-    for code in expected_diagnostics {
+    for (code, expected_level) in expected_diagnostics {
         let finding = report
             .findings
             .iter()
@@ -295,6 +298,11 @@ fn assert_forbidden_visibility_json(output: &str, report: &Report) {
             })
             .expect("find forbidden visibility cargo diagnostic");
         let message = diagnostic.get("message").expect("cargo diagnostic message");
+        assert_eq!(
+            message.get("level").and_then(Value::as_str),
+            Some(expected_level),
+            "cargo JSON severity for {code}",
+        );
         assert_eq!(
             message.get("message").and_then(Value::as_str),
             Some(headline),
@@ -332,9 +340,9 @@ fn assert_forbidden_visibility_json(output: &str, report: &Report) {
 }
 
 fn assert_forbidden_visibility_human(rendered: &str, report: &Report) {
-    for code in [
-        DiagnosticCode::ForbiddenPubCrate,
-        DiagnosticCode::ForbiddenPubInCrate,
+    for (code, level) in [
+        (DiagnosticCode::OverbroadPubCrate, "warning"),
+        (DiagnosticCode::ForbiddenPubInCrate, "error"),
     ] {
         let headline = report
             .findings
@@ -345,7 +353,7 @@ fn assert_forbidden_visibility_human(rendered: &str, report: &Report) {
                 |finding| finding.headline.as_str(),
             );
         assert!(
-            rendered.contains(&format!("error: {headline}")),
+            rendered.contains(&format!("{level}: {headline}")),
             "human output should use the finding message as the headline"
         );
         assert!(
@@ -356,7 +364,7 @@ fn assert_forbidden_visibility_human(rendered: &str, report: &Report) {
     let pub_crate_help = report
         .findings
         .iter()
-        .find(|finding| finding.code == DiagnosticCode::ForbiddenPubCrate)
+        .find(|finding| finding.code == DiagnosticCode::OverbroadPubCrate)
         .and_then(|finding| {
             finding
                 .help

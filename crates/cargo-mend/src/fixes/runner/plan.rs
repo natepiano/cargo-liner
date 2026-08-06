@@ -64,7 +64,7 @@ impl MendRunner<'_> {
         let restricted_annotation_scan =
             (operation_mode.fixes.contains(FixKind::RestrictedAnnotation)
                 && [
-                    DiagnosticCode::ForbiddenPubCrate,
+                    DiagnosticCode::OverbroadPubCrate,
                     DiagnosticCode::ForbiddenPubInCrate,
                     DiagnosticCode::SuspiciousPub,
                 ]

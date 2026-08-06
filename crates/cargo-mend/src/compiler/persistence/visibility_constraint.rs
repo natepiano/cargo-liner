@@ -564,7 +564,7 @@ impl VisibilityConstraintGroup {
             ExactBoundarySpelling::Public => String::from("consider using: `pub`"),
         });
         finding.message = match finding.diagnostic_code {
-            DiagnosticCode::ForbiddenPubCrate => {
+            DiagnosticCode::OverbroadPubCrate => {
                 String::from("`pub(crate)` is broader than required")
             },
             DiagnosticCode::SuspiciousPub => format!(
@@ -1132,14 +1132,14 @@ mod tests {
             StoredFacadeConstraint::Impossible,
             Some(StoredVisibilityReach::Crate),
         );
-        constraint.diagnostic_code = DiagnosticCode::ForbiddenPubCrate;
+        constraint.diagnostic_code = DiagnosticCode::OverbroadPubCrate;
         constraint.visibility_annotation = String::from("pub(crate)");
         constraint.declared_reach = StoredVisibilityReach::Crate;
         constraint.spelling = StoredVisibilitySpelling::Crate;
         constraint.declaration.item_def_path = String::from("crate::a::b::c::item");
         constraint.declaration.item_module_def_path = String::from("crate::a::b::c");
         let mut candidate = finding("crate visibility");
-        candidate.diagnostic_code = DiagnosticCode::ForbiddenPubCrate;
+        candidate.diagnostic_code = DiagnosticCode::OverbroadPubCrate;
         candidate.fix_support = FixSupport::RestrictedAnnotation;
         let mut group = VisibilityConstraintGroup::default();
         group.include(0, constraint.clone(), Some(candidate.clone()));
@@ -1172,12 +1172,12 @@ mod tests {
     #[test]
     fn facade_less_parent_boundary_upgrades_a_manual_candidate_to_pub_super() {
         let mut constraint = constraint(StoredFacadeConstraint::Impossible, None);
-        constraint.diagnostic_code = DiagnosticCode::ForbiddenPubCrate;
+        constraint.diagnostic_code = DiagnosticCode::OverbroadPubCrate;
         constraint.visibility_annotation = String::from("pub(crate)");
         constraint.declared_reach = StoredVisibilityReach::Crate;
         constraint.spelling = StoredVisibilitySpelling::Crate;
         let mut candidate = finding("crate visibility");
-        candidate.diagnostic_code = DiagnosticCode::ForbiddenPubCrate;
+        candidate.diagnostic_code = DiagnosticCode::OverbroadPubCrate;
         let mut group = VisibilityConstraintGroup::default();
         group.include(0, constraint, Some(candidate));
 
@@ -1211,12 +1211,12 @@ mod tests {
             StoredFacadeConstraint::Absent,
             Some(StoredVisibilityReach::Crate),
         );
-        constraint.diagnostic_code = DiagnosticCode::ForbiddenPubCrate;
+        constraint.diagnostic_code = DiagnosticCode::OverbroadPubCrate;
         constraint.visibility_annotation = String::from("pub(crate)");
         constraint.declared_reach = StoredVisibilityReach::Crate;
         constraint.spelling = StoredVisibilitySpelling::Crate;
         let mut candidate = finding("crate visibility");
-        candidate.diagnostic_code = DiagnosticCode::ForbiddenPubCrate;
+        candidate.diagnostic_code = DiagnosticCode::OverbroadPubCrate;
         let mut group = VisibilityConstraintGroup::default();
         group.include(0, constraint, Some(candidate));
 

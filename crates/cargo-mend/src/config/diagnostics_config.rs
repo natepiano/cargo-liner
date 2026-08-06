@@ -63,9 +63,19 @@ mod tests {
     fn missing_code_defaults_to_enabled() {
         let diagnostics_config = DiagnosticsConfig::default();
         assert_eq!(
-            diagnostics_config.is_enabled(DiagnosticCode::ForbiddenPubCrate),
+            diagnostics_config.is_enabled(DiagnosticCode::OverbroadPubCrate),
             DiagnosticStatus::Enabled
         );
+    }
+
+    #[test]
+    fn legacy_overbroad_pub_crate_key_is_accepted() {
+        assert!(matches!(
+            toml::from_str::<DiagnosticsConfig>("forbidden_pub_crate = false"),
+            Ok(diagnostics_config)
+                if diagnostics_config.is_enabled(DiagnosticCode::OverbroadPubCrate)
+                    == DiagnosticStatus::Disabled
+        ));
     }
 
     #[test]

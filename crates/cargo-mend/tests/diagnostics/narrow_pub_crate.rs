@@ -890,17 +890,17 @@ edition = "2024"
         "narrow_to_pub_crate should not fire in tests/: {narrow_on_support:?}",
     );
 
-    let forbidden_on_support: Vec<_> = report
+    let overbroad_on_support: Vec<_> = report
         .findings
         .iter()
         .filter(|finding| {
-            finding.code == DiagnosticCode::ForbiddenPubCrate
+            finding.code == DiagnosticCode::OverbroadPubCrate
                 && finding.path.ends_with("tests/support.rs")
         })
         .collect();
     assert!(
-        forbidden_on_support.is_empty(),
-        "forbidden_pub_crate should not fire on pub items in tests/: {forbidden_on_support:?}",
+        overbroad_on_support.is_empty(),
+        "overbroad_pub_crate should not fire on pub items in tests/: {overbroad_on_support:?}",
     );
 }
 

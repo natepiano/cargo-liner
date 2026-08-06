@@ -105,12 +105,12 @@ pub(crate) struct DiagnosticSpec {
     pub fix_support: FixSupport,
 }
 
-static FORBIDDEN_PUB_CRATE: DiagnosticSpec = DiagnosticSpec {
+static OVERBROAD_PUB_CRATE: DiagnosticSpec = DiagnosticSpec {
     headline:    HeadlineSource::FindingMessage {
         fallback: "`pub(crate)` is broader than required",
     },
     inline_help: None,
-    help_anchor: "forbidden-pub-crate",
+    help_anchor: "overbroad-pub-crate",
     detail_mode: DetailMode::None,
     fix_support: FixSupport::None,
 };
@@ -491,7 +491,7 @@ impl Report {
 
 pub(crate) fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
     match code {
-        DiagnosticCode::ForbiddenPubCrate => &FORBIDDEN_PUB_CRATE,
+        DiagnosticCode::OverbroadPubCrate => &OVERBROAD_PUB_CRATE,
         DiagnosticCode::ForbiddenPubInCrate => &FORBIDDEN_PUB_IN_CRATE,
         DiagnosticCode::ReviewPubMod => &REVIEW_PUB_MOD,
         DiagnosticCode::SuspiciousPub => &SUSPICIOUS_PUB,
@@ -598,7 +598,7 @@ mod tests {
     fn finding_message_headlines_use_messages_with_static_fallbacks() {
         for (diagnostic_code, fallback) in [
             (
-                DiagnosticCode::ForbiddenPubCrate,
+                DiagnosticCode::OverbroadPubCrate,
                 "`pub(crate)` is broader than required",
             ),
             (
@@ -637,15 +637,15 @@ mod tests {
 
         for (diagnostic_code, message) in [
             (
-                DiagnosticCode::ForbiddenPubCrate,
+                DiagnosticCode::OverbroadPubCrate,
                 "use of `pub(crate)` does not match the parent facade boundary",
             ),
             (
-                DiagnosticCode::ForbiddenPubCrate,
+                DiagnosticCode::OverbroadPubCrate,
                 "`pub(in crate)` is a redundant spelling of `pub(crate)`",
             ),
             (
-                DiagnosticCode::ForbiddenPubCrate,
+                DiagnosticCode::OverbroadPubCrate,
                 "`pub(in crate)` is wider than the exact parent facade boundary",
             ),
             (

@@ -567,7 +567,7 @@ edition = "2024"
         assert_codes(
             &report,
             "src/a/b/c.rs",
-            &[DiagnosticCode::ForbiddenPubCrate],
+            &[DiagnosticCode::OverbroadPubCrate],
         );
         assert_headline_and_help(
             &report,
@@ -650,7 +650,7 @@ edition = "2024"
         );
 
         let report = run_mend_json(&temp.path().join("Cargo.toml"));
-        assert_codes(&report, "src/a.rs", &[DiagnosticCode::ForbiddenPubCrate]);
+        assert_codes(&report, "src/a.rs", &[DiagnosticCode::OverbroadPubCrate]);
         assert_headline_and_help(
             &report,
             "src/a.rs",
@@ -1292,7 +1292,7 @@ edition = "2024"
 }
 
 fn assert_rejected_annotations(report: &Report) {
-    assert_codes(report, "src/lib.rs", &[DiagnosticCode::ForbiddenPubCrate]);
+    assert_codes(report, "src/lib.rs", &[DiagnosticCode::OverbroadPubCrate]);
     assert_codes(
         report,
         "src/outer/child.rs",
@@ -1315,10 +1315,10 @@ fn assert_rejected_annotations(report: &Report) {
         report,
         "src/fields/inner.rs",
         &[
-            DiagnosticCode::ForbiddenPubCrate,
             DiagnosticCode::ForbiddenPubInCrate,
             DiagnosticCode::ForbiddenPubInCrate,
             DiagnosticCode::ForbiddenPubInCrate,
+            DiagnosticCode::OverbroadPubCrate,
         ],
     );
 

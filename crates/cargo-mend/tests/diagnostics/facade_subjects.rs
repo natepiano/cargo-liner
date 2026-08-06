@@ -111,7 +111,7 @@ fn path_module_and_raw_identifier_facades_use_hir_module_identity() {
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert!(
         !report.findings.iter().any(|finding| {
-            finding.code == DiagnosticCode::ForbiddenPubCrate && finding.path == "src/a/odd.rs"
+            finding.code == DiagnosticCode::OverbroadPubCrate && finding.path == "src/a/odd.rs"
         }),
         "#[path] facade must permit its nested pub(crate) subject: {report:#?}"
     );
@@ -173,7 +173,7 @@ fn spaced_facade_visibility_uses_resolved_reach() {
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert!(
         !report.findings.iter().any(|finding| {
-            finding.code == DiagnosticCode::ForbiddenPubCrate && finding.path == "src/a/b/child.rs"
+            finding.code == DiagnosticCode::OverbroadPubCrate && finding.path == "src/a/b/child.rs"
         }),
         "resolved pub(crate) facade reach must permit its subject: {report:#?}"
     );
@@ -207,7 +207,7 @@ fn variant_reexport_normalizes_to_its_containing_enum() {
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert!(
         !report.findings.iter().any(|finding| {
-            finding.code == DiagnosticCode::ForbiddenPubCrate && finding.path == "src/a/b/c.rs"
+            finding.code == DiagnosticCode::OverbroadPubCrate && finding.path == "src/a/b/c.rs"
         }),
         "the re-exported variant must normalize to Choice: {report:#?}"
     );
@@ -216,7 +216,7 @@ fn variant_reexport_normalizes_to_its_containing_enum() {
             .findings
             .iter()
             .filter(|finding| {
-                finding.code == DiagnosticCode::ForbiddenPubCrate
+                finding.code == DiagnosticCode::OverbroadPubCrate
                     && finding.path == "src/a/b/unfacaded.rs"
             })
             .count(),
@@ -253,7 +253,7 @@ fn inherent_items_follow_their_self_type_facade_subject() {
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert!(
         !report.findings.iter().any(|finding| {
-            finding.code == DiagnosticCode::ForbiddenPubCrate && finding.path == "src/a/b/c.rs"
+            finding.code == DiagnosticCode::OverbroadPubCrate && finding.path == "src/a/b/c.rs"
         }),
         "the Widget facade must reach its associated items through their self type: {report:#?}"
     );
@@ -262,7 +262,7 @@ fn inherent_items_follow_their_self_type_facade_subject() {
             .findings
             .iter()
             .filter(|finding| {
-                finding.code == DiagnosticCode::ForbiddenPubCrate
+                finding.code == DiagnosticCode::OverbroadPubCrate
                     && finding.path == "src/a/b/unfacaded.rs"
             })
             .count(),
@@ -353,7 +353,7 @@ fn ancestor_glob_targeting_descendant_module_retains_exact_pub_crate() {
         .findings
         .iter()
         .find(|finding| {
-            finding.code == DiagnosticCode::ForbiddenPubCrate && finding.path == "src/a/b/unused.rs"
+            finding.code == DiagnosticCode::OverbroadPubCrate && finding.path == "src/a/b/unused.rs"
         })
         .unwrap_or_else(|| panic!("missing unused control finding: {report:#?}"));
     assert!(
@@ -610,7 +610,7 @@ fn extern_crate_declaration_retains_exact_pub_crate_at_a_foreign_boundary() {
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert!(
         report.findings.iter().all(|finding| {
-            finding.code != DiagnosticCode::ForbiddenPubCrate || finding.path != "src/a/b/c/d.rs"
+            finding.code != DiagnosticCode::OverbroadPubCrate || finding.path != "src/a/b/c/d.rs"
         }),
         "an unresolved foreign boundary must retain exact pub(crate): {report:#?}",
     );
@@ -734,7 +734,7 @@ edition = "2024"
 fn assert_foreign_boundary_finding(report: &Report, path: &str, _blocker_location: &str) {
     assert!(
         report.findings.iter().all(|finding| {
-            finding.code != DiagnosticCode::ForbiddenPubCrate || finding.path != path
+            finding.code != DiagnosticCode::OverbroadPubCrate || finding.path != path
         }),
         "an unresolved foreign boundary must retain exact pub(crate) at {path}: {report:#?}",
     );
@@ -792,7 +792,7 @@ fn inactive_and_macro_generated_globs_follow_active_hir() {
             .findings
             .iter()
             .filter(|finding| {
-                finding.code == DiagnosticCode::ForbiddenPubCrate && finding.path == "src/a/b/c.rs"
+                finding.code == DiagnosticCode::OverbroadPubCrate && finding.path == "src/a/b/c.rs"
             })
             .count(),
         1,
@@ -851,7 +851,7 @@ fn inactive_and_macro_generated_globs_follow_active_hir() {
             .findings
             .iter()
             .filter(|finding| {
-                finding.code == DiagnosticCode::ForbiddenPubCrate && finding.path == "src/a/b/c.rs"
+                finding.code == DiagnosticCode::OverbroadPubCrate && finding.path == "src/a/b/c.rs"
             })
             .count(),
         0,
@@ -907,7 +907,7 @@ fn crate_root_pub_crate_facade_keeps_deep_subject_allowed() {
         .findings
         .iter()
         .filter(|finding| {
-            finding.code == DiagnosticCode::ForbiddenPubCrate && finding.path == "src/a/b/c.rs"
+            finding.code == DiagnosticCode::OverbroadPubCrate && finding.path == "src/a/b/c.rs"
         })
         .count();
     assert_eq!(
@@ -1121,7 +1121,7 @@ fn inline_sibling_signature_uses_its_restricted_outward_reach() {
         .findings
         .iter()
         .filter(|finding| {
-            finding.code == DiagnosticCode::ForbiddenPubCrate && finding.path == "src/a/b.rs"
+            finding.code == DiagnosticCode::OverbroadPubCrate && finding.path == "src/a/b.rs"
         })
         .flat_map(|finding| &finding.help)
         .collect::<Vec<_>>();
@@ -1142,7 +1142,7 @@ fn inline_sibling_signature_uses_its_restricted_outward_reach() {
             .findings
             .iter()
             .filter(|finding| {
-                finding.code == DiagnosticCode::ForbiddenPubCrate && finding.path == "src/a/b.rs"
+                finding.code == DiagnosticCode::OverbroadPubCrate && finding.path == "src/a/b.rs"
             })
             .count(),
         1,
@@ -1177,7 +1177,7 @@ fn module_glob_reexport_retains_exact_pub_crate_on_enum_subjects() {
 fn assert_pub_crate_is_retained_at_unresolved_glob(report: &Report, path: &str) {
     assert!(
         report.findings.iter().all(|finding| {
-            finding.code != DiagnosticCode::ForbiddenPubCrate || finding.path != path
+            finding.code != DiagnosticCode::OverbroadPubCrate || finding.path != path
         }),
         "an unresolved glob must retain exact pub(crate) at {path}: {report:#?}",
     );

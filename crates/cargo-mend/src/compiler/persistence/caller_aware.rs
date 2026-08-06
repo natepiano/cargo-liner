@@ -118,7 +118,7 @@ fn suppress_invalid_narrowings(report: &mut StoredReport, callers: &CallerMap) {
     report.findings.retain_mut(|finding| {
         if matches!(
             finding.diagnostic_code,
-            DiagnosticCode::ForbiddenPubCrate | DiagnosticCode::ForbiddenPubInCrate
+            DiagnosticCode::OverbroadPubCrate | DiagnosticCode::ForbiddenPubInCrate
         ) || constrained_sites.contains(&(
             finding.diagnostic_code,
             finding.path.clone(),

@@ -9,6 +9,7 @@ pub(crate) const GLOBAL_CONFIG_FILE: &str = "config.toml";
 pub(crate) const CONFIG_VERSION: i64 = 1;
 pub(crate) const CONFIG_VERSION_KEY: &str = "config_version";
 pub(crate) const DIAGNOSTICS_TABLE_KEY: &str = "diagnostics";
+pub(crate) const LEGACY_OVERBROAD_PUB_CRATE_KEY: &str = "forbidden_pub_crate";
 pub(crate) const PRELUDE_COMMENT: &str =
     "# default-on; set false to review crate-root prelude modules too\n";
 pub(crate) const PRELUDE_KEY: &str = "allow_prelude_pub_mod";

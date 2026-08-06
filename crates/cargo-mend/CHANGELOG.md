@@ -11,8 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Visibility tightening is now caller-aware across all selected targets. Mend computes the deepest
   module required by callers, signatures, facades, trait bounds, imports, and field use, then chooses
   private, `pub(super)`, exact `pub(in crate::path)`, `pub(crate)`, or `pub` as appropriate.
-- `pub(crate)` is now accepted when crate-root access is genuinely required. The existing
-  `forbidden_pub_crate` diagnostic remains for declarations and fields that can be tighter.
+- `pub(crate)` is now accepted when crate-root access is genuinely required. The
+  `forbidden_pub_crate` diagnostic is renamed to `overbroad_pub_crate` and is now a warning for
+  declarations and fields that can be tighter, so it fails CI only under `--fail-on-warn`. Existing
+  configs may still use the old key; global configs migrate it automatically.
 - Exact crate-rooted `pub(in crate::path)` is accepted when it matches the boundary required by
   callers, signatures, or a parent facade and `pub_in_path` is `"permitted"` or `"required"`.
   `"required"` is now the default and also recommends exact boundaries for eligible bare `pub`
@@ -33,7 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exposed through their self type, and caller relationships from fields and trait bounds. Finding
   counts can change after upgrading.
 - Disabling `forbidden_pub_in_crate` does not suppress other visibility diagnostics. For example,
-  `pub(in crate)` can still reach `forbidden_pub_crate`, while an accepted exact boundary can still
+  `pub(in crate)` can still reach `overbroad_pub_crate`, while an accepted exact boundary can still
   receive `suspicious_pub` advice.
 - Struct and union fields now follow the same caller-aware `pub(crate)` policy as declarations.
 - Unreachable source files no longer influence findings, and child imports of a parent re-export no

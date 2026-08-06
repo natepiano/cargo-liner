@@ -4,7 +4,8 @@ use serde::Serialize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DiagnosticCode {
-    ForbiddenPubCrate,
+    #[serde(alias = "forbidden_pub_crate")]
+    OverbroadPubCrate,
     ForbiddenPubInCrate,
     ReviewPubMod,
     SuspiciousPub,
@@ -22,7 +23,7 @@ pub(crate) enum DiagnosticCode {
 
 impl DiagnosticCode {
     pub(crate) const ALL: &[Self] = &[
-        Self::ForbiddenPubCrate,
+        Self::OverbroadPubCrate,
         Self::ForbiddenPubInCrate,
         Self::ReviewPubMod,
         Self::SuspiciousPub,
@@ -40,7 +41,7 @@ impl DiagnosticCode {
 
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
-            Self::ForbiddenPubCrate => "forbidden_pub_crate",
+            Self::OverbroadPubCrate => "overbroad_pub_crate",
             Self::ForbiddenPubInCrate => "forbidden_pub_in_crate",
             Self::ReviewPubMod => "review_pub_mod",
             Self::SuspiciousPub => "suspicious_pub",

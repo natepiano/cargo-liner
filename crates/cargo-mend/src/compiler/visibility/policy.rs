@@ -335,7 +335,7 @@ pub(super) fn crate_kind_for_root(root_module: &Path, package_root: &Path) -> Cr
     }
 }
 
-pub(super) const fn forbidden_pub_crate_help(module_location: ModuleLocation) -> &'static str {
+pub(super) const fn overbroad_pub_crate_help(module_location: ModuleLocation) -> &'static str {
     if matches!(
         module_location,
         ModuleLocation::CrateRoot | ModuleLocation::ShallowPrivate
@@ -346,7 +346,7 @@ pub(super) const fn forbidden_pub_crate_help(module_location: ModuleLocation) ->
     }
 }
 
-pub(super) enum ForbiddenPubCrateSuggestionReason {
+pub(super) enum OverbroadPubCrateSuggestionReason {
     PublicSignatureExposure,
     NoFacadeRepair {
         boundary_path: String,
@@ -365,7 +365,7 @@ pub(super) enum ForbiddenPubCrateSuggestionReason {
     },
 }
 
-impl ForbiddenPubCrateSuggestionReason {
+impl OverbroadPubCrateSuggestionReason {
     pub(super) fn headline(&self, generic_headline: String) -> String {
         match self {
             Self::NoFacadeRepair { repair, .. } => no_facade_headline(*repair, generic_headline),
@@ -380,7 +380,7 @@ impl ForbiddenPubCrateSuggestionReason {
 }
 
 /// Suggestion for a `pub(crate)` item that can use a narrower boundary. Each
-/// `ForbiddenPubCrateSuggestionReason` carries the data for exactly one of the
+/// `OverbroadPubCrateSuggestionReason` carries the data for exactly one of the
 /// following cases:
 ///
 /// - `PublicSignatureExposure` keeps the item at `pub` because a reachable public signature exposes
@@ -389,39 +389,39 @@ impl ForbiddenPubCrateSuggestionReason {
 /// - The parent-facade variants distinguish exact `pub(super) use` syntax and whether the resolved
 ///   boundary path is known.
 /// - `LocationPolicy` supplies the fallback module location.
-pub(super) fn forbidden_pub_crate_suggestion(reason: ForbiddenPubCrateSuggestionReason) -> String {
+pub(super) fn overbroad_pub_crate_suggestion(reason: OverbroadPubCrateSuggestionReason) -> String {
     match reason {
-        ForbiddenPubCrateSuggestionReason::PublicSignatureExposure => {
+        OverbroadPubCrateSuggestionReason::PublicSignatureExposure => {
             String::from("this item is exposed through a public signature; consider using `pub`")
         },
-        ForbiddenPubCrateSuggestionReason::NoFacadeRepair {
+        OverbroadPubCrateSuggestionReason::NoFacadeRepair {
             boundary_path,
             repair,
         } => no_facade_suggestion(repair, &boundary_path),
-        ForbiddenPubCrateSuggestionReason::ExactPubSuperParentFacade { boundary_path } => {
+        OverbroadPubCrateSuggestionReason::ExactPubSuperParentFacade { boundary_path } => {
             format!(
                 "the parent module re-exports this with `pub(super) use` to `{boundary_path}`; \
                  consider using `pub` (`pub(super)` here would not compile — the re-export would \
                  be wider than the item)"
             )
         },
-        ForbiddenPubCrateSuggestionReason::ExactPubSuperParentFacadeWithoutKnownBoundary => {
+        OverbroadPubCrateSuggestionReason::ExactPubSuperParentFacadeWithoutKnownBoundary => {
             String::from(
                 "the parent module re-exports this with `pub(super) use`; consider using `pub` \
                  (`pub(super)` here would not compile — the re-export would be wider than the \
                  item)",
             )
         },
-        ForbiddenPubCrateSuggestionReason::ParentFacade { boundary_path } => format!(
+        OverbroadPubCrateSuggestionReason::ParentFacade { boundary_path } => format!(
             "the parent module re-exports this to `{boundary_path}`; use the narrowest source \
              visibility that still reaches that boundary"
         ),
-        ForbiddenPubCrateSuggestionReason::ParentFacadeWithoutKnownBoundary => String::from(
+        OverbroadPubCrateSuggestionReason::ParentFacadeWithoutKnownBoundary => String::from(
             "the parent module re-exports this to its own parent; resolve that boundary before \
              narrowing the source visibility",
         ),
-        ForbiddenPubCrateSuggestionReason::LocationPolicy { module_location } => {
-            forbidden_pub_crate_help(module_location).to_string()
+        OverbroadPubCrateSuggestionReason::LocationPolicy { module_location } => {
+            overbroad_pub_crate_help(module_location).to_string()
         },
     }
 }
@@ -980,15 +980,15 @@ mod tests {
     use std::path::Path;
 
     use super::CrateKind;
-    use super::ForbiddenPubCrateSuggestionReason;
     use super::ModuleLocation;
     use super::NoFacadeVisibilityRepair;
+    use super::OverbroadPubCrateSuggestionReason;
     use super::classify_no_facade_callers;
     use super::common_ancestor_def_path;
     use super::crate_kind_for_root;
     use super::crate_rooted_def_path;
-    use super::forbidden_pub_crate_help;
-    use super::forbidden_pub_crate_suggestion;
+    use super::overbroad_pub_crate_help;
+    use super::overbroad_pub_crate_suggestion;
     use super::suspicious_pub_note;
     use crate::compiler::constants::SOURCE_DIR_BENCHES;
     use crate::compiler::constants::SOURCE_DIR_EXAMPLES;
@@ -1041,63 +1041,63 @@ mod tests {
     }
 
     #[test]
-    fn forbidden_pub_crate_help_handles_crate_root_items() {
+    fn overbroad_pub_crate_help_handles_crate_root_items() {
         assert_eq!(
-            forbidden_pub_crate_help(ModuleLocation::CrateRoot),
+            overbroad_pub_crate_help(ModuleLocation::CrateRoot),
             "consider using just `pub` or removing `pub(crate)` entirely"
         );
     }
 
     #[test]
-    fn forbidden_pub_crate_help_handles_shallow_private_modules() {
+    fn overbroad_pub_crate_help_handles_shallow_private_modules() {
         assert_eq!(
-            forbidden_pub_crate_help(ModuleLocation::ShallowPrivate),
+            overbroad_pub_crate_help(ModuleLocation::ShallowPrivate),
             "consider using just `pub` or removing `pub(crate)` entirely"
         );
     }
 
     #[test]
-    fn forbidden_pub_crate_help_handles_nested_private_modules() {
+    fn overbroad_pub_crate_help_handles_nested_private_modules() {
         assert_eq!(
-            forbidden_pub_crate_help(ModuleLocation::Nested),
+            overbroad_pub_crate_help(ModuleLocation::Nested),
             "consider using `pub(super)` or removing `pub(crate)` entirely"
         );
     }
 
     #[test]
-    fn forbidden_pub_crate_suggestion_renders_signature_and_location_reasons() {
+    fn overbroad_pub_crate_suggestion_renders_signature_and_location_reasons() {
         assert_eq!(
-            forbidden_pub_crate_suggestion(
-                ForbiddenPubCrateSuggestionReason::PublicSignatureExposure,
+            overbroad_pub_crate_suggestion(
+                OverbroadPubCrateSuggestionReason::PublicSignatureExposure,
             ),
             "this item is exposed through a public signature; consider using `pub`",
         );
         assert_eq!(
-            forbidden_pub_crate_suggestion(ForbiddenPubCrateSuggestionReason::LocationPolicy {
+            overbroad_pub_crate_suggestion(OverbroadPubCrateSuggestionReason::LocationPolicy {
                 module_location: ModuleLocation::Nested,
             },),
-            forbidden_pub_crate_help(ModuleLocation::Nested),
+            overbroad_pub_crate_help(ModuleLocation::Nested),
         );
     }
 
     #[test]
-    fn forbidden_pub_crate_suggestion_renders_no_facade_reasons() {
+    fn overbroad_pub_crate_suggestion_renders_no_facade_reasons() {
         assert_eq!(
-            forbidden_pub_crate_suggestion(ForbiddenPubCrateSuggestionReason::NoFacadeRepair {
+            overbroad_pub_crate_suggestion(OverbroadPubCrateSuggestionReason::NoFacadeRepair {
                 boundary_path: String::from("crate::a"),
                 repair:        NoFacadeVisibilityRepair::RemoveAnnotation,
             },),
             "consider removing the visibility",
         );
         assert_eq!(
-            forbidden_pub_crate_suggestion(ForbiddenPubCrateSuggestionReason::NoFacadeRepair {
+            overbroad_pub_crate_suggestion(OverbroadPubCrateSuggestionReason::NoFacadeRepair {
                 boundary_path: String::from("crate::a"),
                 repair:        NoFacadeVisibilityRepair::UseParentVisibility,
             },),
             "consider using: `pub(super)`",
         );
         assert_eq!(
-            forbidden_pub_crate_suggestion(ForbiddenPubCrateSuggestionReason::NoFacadeRepair {
+            overbroad_pub_crate_suggestion(OverbroadPubCrateSuggestionReason::NoFacadeRepair {
                 boundary_path: String::from("crate::a"),
                 repair:        NoFacadeVisibilityRepair::StructuralMigrationForCallerLocations,
             },),
@@ -1107,10 +1107,10 @@ mod tests {
     }
 
     #[test]
-    fn forbidden_pub_crate_suggestion_renders_parent_facade_reasons() {
+    fn overbroad_pub_crate_suggestion_renders_parent_facade_reasons() {
         assert_eq!(
-            forbidden_pub_crate_suggestion(
-                ForbiddenPubCrateSuggestionReason::ExactPubSuperParentFacade {
+            overbroad_pub_crate_suggestion(
+                OverbroadPubCrateSuggestionReason::ExactPubSuperParentFacade {
                     boundary_path: String::from("crate::a"),
                 },
             ),
@@ -1118,22 +1118,22 @@ mod tests {
              (`pub(super)` here would not compile — the re-export would be wider than the item)",
         );
         assert_eq!(
-            forbidden_pub_crate_suggestion(
-                ForbiddenPubCrateSuggestionReason::ExactPubSuperParentFacadeWithoutKnownBoundary,
+            overbroad_pub_crate_suggestion(
+                OverbroadPubCrateSuggestionReason::ExactPubSuperParentFacadeWithoutKnownBoundary,
             ),
             "the parent module re-exports this with `pub(super) use`; consider using `pub` \
              (`pub(super)` here would not compile — the re-export would be wider than the item)",
         );
         assert_eq!(
-            forbidden_pub_crate_suggestion(ForbiddenPubCrateSuggestionReason::ParentFacade {
+            overbroad_pub_crate_suggestion(OverbroadPubCrateSuggestionReason::ParentFacade {
                 boundary_path: String::from("crate::a"),
             }),
             "the parent module re-exports this to `crate::a`; use the narrowest source \
              visibility that still reaches that boundary",
         );
         assert_eq!(
-            forbidden_pub_crate_suggestion(
-                ForbiddenPubCrateSuggestionReason::ParentFacadeWithoutKnownBoundary,
+            overbroad_pub_crate_suggestion(
+                OverbroadPubCrateSuggestionReason::ParentFacadeWithoutKnownBoundary,
             ),
             "the parent module re-exports this to its own parent; resolve that boundary before \
              narrowing the source visibility",

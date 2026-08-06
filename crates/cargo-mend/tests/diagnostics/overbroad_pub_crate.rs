@@ -48,7 +48,7 @@ edition = "2024"
     let report = parse_mend_json_output(&output.stdout);
 
     let has_forbidden = report.findings.iter().any(|finding| {
-        finding.code == DiagnosticCode::ForbiddenPubCrate
+        finding.code == DiagnosticCode::OverbroadPubCrate
             && finding.path.ends_with("tests/support.rs")
     });
     assert!(
@@ -59,7 +59,7 @@ edition = "2024"
 }
 
 #[test]
-fn unused_pub_crate_at_depth_1_is_removed() {
+fn unused_pub_crate_at_depth_1_is_a_fixable_warning() {
     let temp = tempdir().expect("create temp fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
@@ -80,11 +80,23 @@ edition = "2024"
     )
     .expect("write foo");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let manifest_path = temp.path().join("Cargo.toml");
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(&manifest_path)
+        .arg("--json")
+        .output()
+        .expect("run cargo-mend --json");
+    assert!(
+        output.status.success(),
+        "a pub(crate) narrowing warning must not fail by default: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let report = parse_mend_json_output(&output.stdout);
     let findings: Vec<_> = report
         .findings
         .iter()
-        .filter(|f| f.code == DiagnosticCode::ForbiddenPubCrate)
+        .filter(|f| f.code == DiagnosticCode::OverbroadPubCrate)
         .collect();
     assert_eq!(findings.len(), 1, "expected one narrowing: {report:#?}");
     assert!(
@@ -93,6 +105,19 @@ edition = "2024"
             .iter()
             .any(|line| line == "consider removing the visibility"),
         "unused crate visibility must narrow to private: {report:#?}",
+    );
+
+    let strict_output = mend_command()
+        .arg("--manifest-path")
+        .arg(manifest_path)
+        .arg("--fail-on-warn")
+        .output()
+        .expect("run cargo-mend --fail-on-warn");
+    assert_eq!(
+        strict_output.status.code(),
+        Some(2),
+        "--fail-on-warn must fail for pub(crate) narrowing advice: {}",
+        String::from_utf8_lossy(&strict_output.stderr),
     );
 }
 
@@ -127,7 +152,7 @@ edition = "2024"
     let forbidden: Vec<_> = report
         .findings
         .iter()
-        .filter(|f| f.code == DiagnosticCode::ForbiddenPubCrate)
+        .filter(|f| f.code == DiagnosticCode::OverbroadPubCrate)
         .collect();
     assert!(
         forbidden.is_empty(),
@@ -172,7 +197,7 @@ edition = "2024"
         .findings
         .iter()
         .filter(|f| {
-            f.code == DiagnosticCode::ForbiddenPubCrate && f.path.ends_with("src/foo/bar/baz.rs")
+            f.code == DiagnosticCode::OverbroadPubCrate && f.path.ends_with("src/foo/bar/baz.rs")
         })
         .count();
     assert_eq!(
@@ -222,7 +247,7 @@ fn pub_crate_at_depth_3_names_exact_boundary_for_supported_facade_spellings() {
             .findings
             .iter()
             .find(|finding| {
-                finding.code == DiagnosticCode::ForbiddenPubCrate
+                finding.code == DiagnosticCode::OverbroadPubCrate
                     && finding.path.ends_with("src/foo/bar/baz.rs")
             })
             .expect("depth-three parent facade should reject pub(crate)");
@@ -275,7 +300,7 @@ edition = "2024"
         .findings
         .iter()
         .find(|finding| {
-            finding.code == DiagnosticCode::ForbiddenPubCrate
+            finding.code == DiagnosticCode::OverbroadPubCrate
                 && finding.path == "src/a/b/c/child.rs"
         })
         .unwrap_or_else(|| panic!("missing forbidden visibility finding: {report:#?}"));
@@ -325,7 +350,7 @@ edition = "2024"
         .findings
         .iter()
         .find(|finding| {
-            finding.code == DiagnosticCode::ForbiddenPubCrate && finding.path == "src/a/b/c/d.rs"
+            finding.code == DiagnosticCode::OverbroadPubCrate && finding.path == "src/a/b/c/d.rs"
         })
         .unwrap_or_else(|| panic!("missing restricted chain finding: {report:#?}"));
     assert!(
@@ -366,7 +391,7 @@ edition = "2024"
         .findings
         .iter()
         .filter(|f| {
-            f.code == DiagnosticCode::ForbiddenPubCrate && f.path.ends_with("src/foo/bar/baz.rs")
+            f.code == DiagnosticCode::OverbroadPubCrate && f.path.ends_with("src/foo/bar/baz.rs")
         })
         .count();
     assert_eq!(
@@ -407,7 +432,7 @@ edition = "2024"
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert!(
         !report.findings.iter().any(|finding| {
-            finding.code == DiagnosticCode::ForbiddenPubCrate && finding.path == "src/a/b/c.rs"
+            finding.code == DiagnosticCode::OverbroadPubCrate && finding.path == "src/a/b/c.rs"
         }),
         "a named re-export must take precedence over a sibling glob: {report:#?}"
     );
@@ -462,7 +487,7 @@ edition = "2024"
         .findings
         .iter()
         .find(|finding| {
-            finding.code == DiagnosticCode::ForbiddenPubCrate && finding.path == "src/a/b/c/d.rs"
+            finding.code == DiagnosticCode::OverbroadPubCrate && finding.path == "src/a/b/c/d.rs"
         })
         .unwrap_or_else(|| panic!("missing too-wide pub(crate) finding: {report:#?}"));
     assert!(
@@ -516,7 +541,7 @@ edition = "2024"
         .findings
         .iter()
         .find(|finding| {
-            finding.code == DiagnosticCode::ForbiddenPubCrate && finding.path == "src/a/b/c/d.rs"
+            finding.code == DiagnosticCode::OverbroadPubCrate && finding.path == "src/a/b/c/d.rs"
         })
         .unwrap_or_else(|| panic!("missing renamed chain boundary: {report:#?}"));
     assert!(
@@ -578,7 +603,7 @@ edition = "2024"
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert!(
         !report.findings.iter().any(|finding| {
-            finding.code == DiagnosticCode::ForbiddenPubCrate && finding.path == "src/a/b/c/d.rs"
+            finding.code == DiagnosticCode::OverbroadPubCrate && finding.path == "src/a/b/c/d.rs"
         }),
         "the outer pub(crate) hop must set the joined boundary to pub(crate): {report:#?}"
     );
@@ -643,7 +668,7 @@ pub(crate) struct Storage {
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert!(
         report.findings.iter().all(|finding| {
-            finding.code != DiagnosticCode::ForbiddenPubCrate
+            finding.code != DiagnosticCode::OverbroadPubCrate
                 || !finding.path.ends_with("src/foo/bar/baz.rs")
         }),
         "crate-visible signature reach must accept Storage's `pub(crate)`: {report:#?}",
@@ -676,7 +701,7 @@ edition = "2024"
     let forbidden_count = report
         .findings
         .iter()
-        .filter(|f| f.code == DiagnosticCode::ForbiddenPubCrate && f.path.ends_with("src/foo.rs"))
+        .filter(|f| f.code == DiagnosticCode::OverbroadPubCrate && f.path.ends_with("src/foo.rs"))
         .count();
     assert_eq!(
         forbidden_count, 1,
@@ -755,7 +780,7 @@ pub struct Beta {
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert!(
         report.findings.iter().all(|finding| {
-            finding.code != DiagnosticCode::ForbiddenPubCrate
+            finding.code != DiagnosticCode::OverbroadPubCrate
                 || !finding.path.ends_with("src/foo/bar/baz.rs")
         }),
         "the cycle guard must accept Storage's required crate reach: {report:#?}",
@@ -816,7 +841,7 @@ impl Saved {
         .findings
         .iter()
         .find(|finding| {
-            finding.code == DiagnosticCode::ForbiddenPubCrate
+            finding.code == DiagnosticCode::OverbroadPubCrate
                 && finding.path.ends_with("src/panel/conversion/saved.rs")
                 && finding.line_start == 6
         })
@@ -833,7 +858,7 @@ impl Saved {
         "the method annotation must be offered to `--fix`: {report:#?}",
     );
 
-    assert_human_report_advertises_error_fix(&manifest_path);
+    assert_human_report_advertises_warning_fix(&manifest_path);
 
     let output = mend_command()
         .arg("--manifest-path")
@@ -863,7 +888,7 @@ impl Saved {
                 || finding.line_start != 6
                 || !matches!(
                     finding.code,
-                    DiagnosticCode::ForbiddenPubCrate | DiagnosticCode::ForbiddenPubInCrate
+                    DiagnosticCode::OverbroadPubCrate | DiagnosticCode::ForbiddenPubInCrate
                 )
         }),
         "the applied boundary must be accepted on the next run: {fixed_report:#?}",
@@ -879,7 +904,7 @@ fn named_fields_are_rewritten_to_their_caller_boundaries() {
     let report = run_mend_json(&manifest_path);
     assert_named_field_findings(&report);
 
-    assert_human_report_advertises_error_fix(&manifest_path);
+    assert_human_report_advertises_warning_fix(&manifest_path);
 
     let output = mend_command()
         .arg("--manifest-path")
@@ -913,7 +938,7 @@ fn named_fields_are_rewritten_to_their_caller_boundaries() {
                 .ends_with("src/render/panel_shapes/primitive.rs")
                 || !matches!(
                     finding.code,
-                    DiagnosticCode::ForbiddenPubCrate | DiagnosticCode::ForbiddenPubInCrate
+                    DiagnosticCode::OverbroadPubCrate | DiagnosticCode::ForbiddenPubInCrate
                 )
         }),
         "the applied field boundaries must be accepted on the next run: {fixed_report:#?}",
@@ -971,7 +996,7 @@ edition = "2024"
                 || finding.line_start != 2
                 || !matches!(
                     finding.code,
-                    DiagnosticCode::ForbiddenPubCrate
+                    DiagnosticCode::OverbroadPubCrate
                         | DiagnosticCode::ForbiddenPubInCrate
                         | DiagnosticCode::SuspiciousPub
                 )
@@ -1048,7 +1073,7 @@ fn assert_named_field_findings(report: &Report) {
         .findings
         .iter()
         .filter(|finding| {
-            finding.code == DiagnosticCode::ForbiddenPubCrate
+            finding.code == DiagnosticCode::OverbroadPubCrate
                 && finding
                     .path
                     .ends_with("src/render/panel_shapes/primitive.rs")
@@ -1133,7 +1158,7 @@ edition = "2024"
         .findings
         .iter()
         .find(|finding| {
-            finding.code == DiagnosticCode::ForbiddenPubCrate
+            finding.code == DiagnosticCode::OverbroadPubCrate
                 && finding.path.ends_with("src/a/b/c/mod.rs")
                 && finding.line_start == 2
         })
@@ -1177,7 +1202,7 @@ edition = "2024"
             !finding.path.ends_with("src/a/b/c/mod.rs")
                 || !matches!(
                     finding.code,
-                    DiagnosticCode::ForbiddenPubCrate | DiagnosticCode::ForbiddenPubInCrate
+                    DiagnosticCode::OverbroadPubCrate | DiagnosticCode::ForbiddenPubInCrate
                 )
         }),
         "the applied tuple-field boundary must be accepted: {fixed_report:#?}",
@@ -1218,14 +1243,14 @@ edition = "2024"
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert!(
         report.findings.iter().all(|finding| {
-            finding.code != DiagnosticCode::ForbiddenPubCrate
+            finding.code != DiagnosticCode::OverbroadPubCrate
                 || !finding.path.ends_with("src/values.rs")
         }),
         "crate-root sibling use requires `pub(crate)` on the tuple and its field: {report:#?}",
     );
 }
 
-fn assert_human_report_advertises_error_fix(manifest_path: &std::path::Path) {
+fn assert_human_report_advertises_warning_fix(manifest_path: &std::path::Path) {
     let output = mend_command()
         .arg("--manifest-path")
         .arg(manifest_path)
@@ -1243,14 +1268,13 @@ fn assert_human_report_advertises_error_fix(manifest_path: &std::path::Path) {
         String::from_utf8_lossy(&output.stderr),
     ));
     assert!(
-        rendered.contains("this error is auto-fixable with `cargo mend --fix`"),
+        rendered.contains("this warning is auto-fixable with `cargo mend --fix`"),
         "the human diagnostic must advertise the annotation rewrite: {rendered}",
     );
     assert!(
-        rendered
-            .lines()
-            .any(|line| line.starts_with("errors:")
-                && line.contains("fixable with `cargo mend --fix`")),
-        "the error summary must count the annotation rewrite: {rendered}",
+        rendered.lines().any(|line| line.starts_with("summary:")
+            && line.contains("mend warning")
+            && line.contains("fixable with `cargo mend --fix`")),
+        "the warning summary must count the annotation rewrite: {rendered}",
     );
 }

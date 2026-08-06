@@ -485,7 +485,7 @@ mod tests {
     fn malformed_json_prevents_all_features_coverage() {
         let fixture = PersistenceFixture::new();
         let finding = stored_finding(
-            DiagnosticCode::ForbiddenPubCrate,
+            DiagnosticCode::OverbroadPubCrate,
             &fixture.crate_root,
             "item",
             1,
@@ -532,7 +532,7 @@ mod tests {
     fn wrong_schema_or_fingerprint_reports_are_rejected() {
         let fixture = PersistenceFixture::new();
         let mut wrong_schema = fixture.report_with_findings(vec![stored_finding(
-            DiagnosticCode::ForbiddenPubCrate,
+            DiagnosticCode::OverbroadPubCrate,
             &fixture.crate_root,
             "item",
             1,
@@ -547,14 +547,14 @@ mod tests {
         });
         wrong_schema.version = FINDINGS_SCHEMA_VERSION - 1;
         let mut wrong_analysis = fixture.report_with_findings(vec![stored_finding(
-            DiagnosticCode::ForbiddenPubCrate,
+            DiagnosticCode::OverbroadPubCrate,
             &fixture.crate_root,
             "item",
             1,
         )]);
         wrong_analysis.analysis_fingerprint = "old-analysis".to_string();
         let mut wrong_config = fixture.report_with_findings(vec![stored_finding(
-            DiagnosticCode::ForbiddenPubCrate,
+            DiagnosticCode::OverbroadPubCrate,
             &fixture.crate_root,
             "item",
             1,
@@ -588,7 +588,7 @@ mod tests {
     fn missing_crate_root_report_is_rejected() {
         let fixture = PersistenceFixture::new();
         let finding = stored_finding(
-            DiagnosticCode::ForbiddenPubCrate,
+            DiagnosticCode::OverbroadPubCrate,
             &fixture.crate_root,
             "item",
             1,
@@ -612,7 +612,7 @@ mod tests {
     fn canonical_selected_roots_are_accepted() {
         let fixture = PersistenceFixture::new();
         let finding = stored_finding(
-            DiagnosticCode::ForbiddenPubCrate,
+            DiagnosticCode::OverbroadPubCrate,
             &fixture.crate_root,
             "item",
             1,
@@ -632,7 +632,7 @@ mod tests {
     fn empty_package_root_compatibility_is_retained() {
         let fixture = PersistenceFixture::new();
         let finding = stored_finding(
-            DiagnosticCode::ForbiddenPubCrate,
+            DiagnosticCode::OverbroadPubCrate,
             &fixture.crate_root,
             "item",
             1,

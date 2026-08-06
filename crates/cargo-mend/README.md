@@ -41,14 +41,14 @@ the code relationship actually is.
 
 Hard errors:
 
-- `pub(crate)` is reported only when the complete reach analysis proves that a narrower visibility
-  is sufficient; it is accepted when the narrowest proven boundary is the crate root
 - `pub(in ...)` is forbidden unless a crate-rooted path exactly matches the boundary required by a
   parent facade, callers, or signature reach and `pub_in_path` permits it
 - `pub mod` requires an explicit allowlist entry, except for a crate-root prelude
 
 Warnings:
 
+- `pub(crate)` when the complete reach analysis proves that a narrower visibility is sufficient;
+  it is accepted when the narrowest proven boundary is the crate root
 - `pub` that exceeds the reach required by callers or signatures
 - dead field visibility and parent facades that deserve review
 - import forms that obscure local module relationships
@@ -177,6 +177,7 @@ Behavior:
 - `--fix-pub-use` repairs stale parent re-exports, while `--fix-compiler` runs `cargo fix`
 - `--fix-all` combines all three fix categories
 - `--dry-run` previews the requested categories; by itself, it previews all fixes
+- warnings leave the exit status successful unless `--fail-on-warn` is set
 - if a Mend fix batch would leave the crate failing `cargo check`, cargo-mend restores the original
   files automatically
 - if there is nothing fixable, `cargo-mend` says so after the report summary
@@ -203,7 +204,7 @@ analyzed call graph.
 
 Use this as a migration aid and CI guard:
 
-1. fail immediately on visibility forms broader than the proven boundary
+1. report visibility forms broader than the proven boundary
 2. review suspicious `pub`
 3. let `cargo mend --fix` apply the visibility and import rewrites it can prove safe
 4. keep repo-specific exceptions small and explicit
@@ -220,7 +221,7 @@ The usual review flow is:
 
 ## Diagnostic Reference
 
-<a id="forbidden-pub-crate"></a>
+<a id="overbroad-pub-crate"></a>
 ### Overly broad `pub(crate)`
 
 `pub(crate)` lets any module in the crate touch the item, regardless of where the item lives.
@@ -230,8 +231,7 @@ enforce.
 This rule applies to declarations and struct and union fields. Cargo-mend joins callers and
 signature requirements across every selected target and computes their deepest common module. It
 accepts `pub(crate)` when that module is the crate root. When the common module is narrower, the
-diagnostic keeps its stable `forbidden_pub_crate` code but reports that the annotation is broader
-than required.
+`overbroad_pub_crate` diagnostic reports that the annotation is broader than required.
 
 Otherwise, prefer:
 

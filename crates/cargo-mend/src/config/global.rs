@@ -10,6 +10,7 @@ use serde::Deserialize;
 use toml::from_str;
 use toml_edit::DocumentMut;
 use toml_edit::Item;
+use toml_edit::Key;
 use toml_edit::Table;
 use toml_edit::value;
 
@@ -18,6 +19,7 @@ use super::constants::CONFIG_VERSION;
 use super::constants::CONFIG_VERSION_KEY;
 use super::constants::DIAGNOSTICS_TABLE_KEY;
 use super::constants::GLOBAL_CONFIG_FILE;
+use super::constants::LEGACY_OVERBROAD_PUB_CRATE_KEY;
 use super::constants::PRELUDE_COMMENT;
 use super::constants::PRELUDE_KEY;
 use super::constants::PUB_IN_PATH_COMMENT;
@@ -100,6 +102,12 @@ fn reconcile_global_config(path: &Path) -> Result<()> {
     let mut edit = ConfigEdit::Unchanged;
 
     if let Some(diagnostics) = ensure_table(doc.as_table_mut(), DIAGNOSTICS_TABLE_KEY) {
+        if matches!(
+            migrate_overbroad_pub_crate_key(diagnostics),
+            ConfigEdit::Rewritten
+        ) {
+            edit = ConfigEdit::Rewritten;
+        }
         for code in DiagnosticCode::ALL {
             if !diagnostics.contains_key(code.as_str()) {
                 diagnostics.insert(code.as_str(), value(true));
@@ -145,6 +153,24 @@ fn reconcile_global_config(path: &Path) -> Result<()> {
 enum ConfigEdit {
     Unchanged,
     Rewritten,
+}
+
+fn migrate_overbroad_pub_crate_key(diagnostics: &mut Table) -> ConfigEdit {
+    let current_key = DiagnosticCode::OverbroadPubCrate.as_str();
+    if diagnostics.contains_key(current_key) {
+        return diagnostics
+            .remove(LEGACY_OVERBROAD_PUB_CRATE_KEY)
+            .map_or(ConfigEdit::Unchanged, |_| ConfigEdit::Rewritten);
+    }
+
+    let Some((legacy_key, item)) = diagnostics.remove_entry(LEGACY_OVERBROAD_PUB_CRATE_KEY) else {
+        return ConfigEdit::Unchanged;
+    };
+    let current_key = Key::new(current_key)
+        .with_leaf_decor(legacy_key.leaf_decor().clone())
+        .with_dotted_decor(legacy_key.dotted_decor().clone());
+    diagnostics.insert_formatted(&current_key, item);
+    ConfigEdit::Rewritten
 }
 
 /// A config with no `config_version` predates the `pub_in_path` default flip, so
@@ -230,6 +256,7 @@ mod tests {
     use super::CONFIG_VERSION_KEY;
     use super::GlobalConfig;
     use super::GlobalConfigFile;
+    use super::LEGACY_OVERBROAD_PUB_CRATE_KEY;
     use super::PRELUDE_KEY;
     use super::PUB_IN_PATH_COMMENT;
     use super::PUB_IN_PATH_KEY;
@@ -273,7 +300,7 @@ prefer_module_import = false
         assert!(matches!(
             global_config_file
                 .diagnostics_config
-                .is_enabled(DiagnosticCode::ForbiddenPubCrate),
+                .is_enabled(DiagnosticCode::OverbroadPubCrate),
             DiagnosticStatus::Enabled
         ));
         let global = GlobalConfig::from(global_config_file);
@@ -313,6 +340,28 @@ prefer_module_import = false
         let after = std::fs::read_to_string(&path).unwrap();
         assert_eq!(after, original, "complete file must be left untouched");
         assert!(after.contains("# my note"));
+    }
+
+    #[test]
+    fn reconcile_migrates_legacy_overbroad_pub_crate_key() {
+        let current_key = DiagnosticCode::OverbroadPubCrate.as_str();
+        let original = format!(
+            "{CONFIG_VERSION_KEY} = {CONFIG_VERSION}\n[diagnostics]\n# keep this setting\n{LEGACY_OVERBROAD_PUB_CRATE_KEY} = false\n"
+        );
+
+        let after = reconciled(&original);
+
+        assert!(!after.contains(LEGACY_OVERBROAD_PUB_CRATE_KEY));
+        assert!(after.contains(&format!("# keep this setting\n{current_key} = false")));
+        let file: GlobalConfigFile = from_str(&after).unwrap();
+        assert_eq!(
+            file.diagnostics_config
+                .is_enabled(DiagnosticCode::OverbroadPubCrate),
+            DiagnosticStatus::Disabled
+        );
+
+        let twice = reconciled(&after);
+        assert_eq!(twice, after, "diagnostic-key migration must be idempotent");
     }
 
     #[test]

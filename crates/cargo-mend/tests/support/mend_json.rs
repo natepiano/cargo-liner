@@ -45,9 +45,7 @@ pub(super) fn strip_ansi(input: &str) -> String {
 
 const fn severity_for_code(code: DiagnosticCode) -> &'static str {
     match code {
-        DiagnosticCode::ForbiddenPubCrate
-        | DiagnosticCode::ForbiddenPubInCrate
-        | DiagnosticCode::ReviewPubMod => "error",
+        DiagnosticCode::ForbiddenPubInCrate | DiagnosticCode::ReviewPubMod => "error",
         _ => "warning",
     }
 }
@@ -282,7 +280,7 @@ fn diagnostic_child_messages(diagnostic: &Value) -> Vec<String> {
 
 fn code_from_str(code: &str) -> DiagnosticCode {
     match code {
-        "forbidden_pub_crate" => DiagnosticCode::ForbiddenPubCrate,
+        "overbroad_pub_crate" => DiagnosticCode::OverbroadPubCrate,
         "forbidden_pub_in_crate" => DiagnosticCode::ForbiddenPubInCrate,
         "review_pub_mod" => DiagnosticCode::ReviewPubMod,
         "suspicious_pub" => DiagnosticCode::SuspiciousPub,

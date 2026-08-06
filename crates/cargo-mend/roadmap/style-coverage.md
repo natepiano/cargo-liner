@@ -8,7 +8,7 @@ Mapping between `nate_style/rust/` entries and `cargo-mend` as of 2026-03-29.
 
 | Style entry | Rule | Severity | Fix |
 |---|---|---|---|
-| `no-pubcrate-in-nested-modules` | `forbidden_pub_crate` | error | -- |
+| `no-pubcrate-in-nested-modules` | `overbroad_pub_crate` | warning | `--fix` |
 | `no-pubin-cratepath` | `forbidden_pub_in_crate` | error | -- |
 | `never-use-pub-mod` | `review_pub_mod` | error | -- |
 | `leaf-module-visibility` | `suspicious_pub` | warning | `--fix-pub-use` (conditional) |

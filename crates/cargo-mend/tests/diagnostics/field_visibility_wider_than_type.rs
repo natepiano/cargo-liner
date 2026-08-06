@@ -32,7 +32,7 @@ edition = "2024"
         .findings
         .iter()
         .filter(|finding| {
-            finding.path == "src/a/b/c.rs" && finding.code == DiagnosticCode::ForbiddenPubCrate
+            finding.path == "src/a/b/c.rs" && finding.code == DiagnosticCode::OverbroadPubCrate
         })
         .count();
     assert_eq!(forbidden, 1, "unexpected field findings: {report:#?}");
@@ -103,7 +103,7 @@ edition = "2024"
     let findings: Vec<_> = report
         .findings
         .iter()
-        .filter(|f| f.code == DiagnosticCode::ForbiddenPubCrate)
+        .filter(|f| f.code == DiagnosticCode::OverbroadPubCrate)
         .collect();
     assert_eq!(
         findings.len(),
