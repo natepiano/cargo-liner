@@ -46,7 +46,10 @@ impl<'a> MendRunner<'a> {
         }
     }
 
-    pub(crate) fn run(&self, operation_mode: OperationMode) -> Result<ExecutionOutcome, MendFailure> {
+    pub(crate) fn run(
+        &self,
+        operation_mode: OperationMode,
+    ) -> Result<ExecutionOutcome, MendFailure> {
         let planned = self.plan(operation_mode)?;
         self.execute(planned)
     }

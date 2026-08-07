@@ -570,9 +570,7 @@ fn inline_help_text(finding: &Finding) -> Option<&'static str> {
     diagnostic_spec(finding.diagnostic_code).inline_help
 }
 
-fn custom_inline_help_text(finding: &Finding) -> Option<&str> {
-    finding.suggestion.as_deref()
-}
+fn custom_inline_help_text(finding: &Finding) -> Option<&str> { finding.suggestion.as_deref() }
 
 pub(super) fn resolved_inline_help_text(finding: &Finding) -> Option<&str> {
     custom_inline_help_text(finding).or_else(|| inline_help_text(finding))

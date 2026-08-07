@@ -21,9 +21,7 @@ use std::process;
 use super::constants::ANALYZING_DIR_NAME;
 
 /// The directory holding one file per in-flight analysis.
-fn analyzing_dir(findings_dir: &Path) -> PathBuf {
-    findings_dir.join(ANALYZING_DIR_NAME)
-}
+fn analyzing_dir(findings_dir: &Path) -> PathBuf { findings_dir.join(ANALYZING_DIR_NAME) }
 
 /// Announces one target's analysis for as long as it is alive.
 ///
