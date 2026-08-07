@@ -22,6 +22,7 @@ use super::presentation::MonitorPresentation;
 use super::presentation::MonitorVisibility;
 use super::selection::OutputCursorTarget;
 use crate::build_monitor::BuildSessionId;
+use crate::build_monitor::BuildTerminationLifecycleRegistry;
 use crate::build_monitor::ClassifiedRoot;
 use crate::build_monitor::FixtureRootOwnership;
 use crate::build_monitor::MonitorSessionOwnership;
@@ -47,6 +48,12 @@ const EXTERNAL_COMPILER_PIDS: &[u32] = &[7201, 7202];
 const OWNED_ACTIVITY_ROWS: usize = OWNED_COMPILER_PIDS.len();
 /// How many captured lines the retained owned output holds.
 const CAPTURED_LINES: usize = 3;
+
+fn empty_termination_lifecycle_registry() -> &'static BuildTerminationLifecycleRegistry {
+    static REGISTRY: std::sync::OnceLock<BuildTerminationLifecycleRegistry> =
+        std::sync::OnceLock::new();
+    REGISTRY.get_or_init(BuildTerminationLifecycleRegistry::default)
+}
 
 fn owned_run_id() -> OwnedRunId { OwnedRunId::for_test(NonZeroU64::MIN) }
 
@@ -110,6 +117,7 @@ fn derive_with_captured_output<'a>(
     OutputPresentation::derive(
         compile_visibility_state,
         monitor_snapshot,
+        empty_termination_lifecycle_registry(),
         OwnedRunOutputStateRef::Retained {
             producer: owned_run_id(),
             title: OwnedRunOutputTitleRef::Named("cargo build"),
@@ -128,6 +136,7 @@ fn derive_without_captured_output<'a>(
     OutputPresentation::derive(
         compile_visibility_state,
         monitor_snapshot,
+        empty_termination_lifecycle_registry(),
         OwnedRunOutputStateRef::Absent,
         OwnedRunRunningLabelRef::NotRunning,
         OwnedRunCompletionMarker::NotCompleted,

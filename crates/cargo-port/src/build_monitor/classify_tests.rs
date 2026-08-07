@@ -37,7 +37,9 @@ use super::session::ScopeAttribution;
 use super::session::SessionScope;
 use super::session::SessionTargetDirectory;
 use super::session::TargetDirectoryEvidence;
+use super::termination::OwnedTerminationSupport;
 use crate::process_observation::BuildCandidateRole;
+use crate::process_observation::ProcessObserver;
 use crate::process_observation::identity::ProcessIdentity;
 use crate::process_observation::identity::ProcessIncarnation;
 use crate::process_observation::snapshot_builder::ObservedCandidateRole;
@@ -1527,6 +1529,7 @@ fn requested_demand(
             ProjectListRevision::default(),
         )),
         owned_root_evidence: OwnedRootEvidence::NoLiveRoot,
+        owned_termination_support: OwnedTerminationSupport::Unavailable,
         cancellation,
     }
 }
@@ -1534,15 +1537,17 @@ fn requested_demand(
 #[test]
 fn a_cycle_that_owes_the_monitor_nothing_runs_no_classification() {
     let mut build_classifier = BuildClassifier::default();
+    let process_observer = ProcessObserver::default();
 
-    assert_eq!(
+    assert!(matches!(
         build_classifier.classify_demand(
+            &process_observer,
             &snapshot_of(&[]),
             CompileClassificationDemand::NotRequested,
             Instant::now(),
         ),
         CompileClassificationExecution::NotRequested
-    );
+    ));
 }
 
 /// Cancellation is read after the observation the cycle already paid for, so a
@@ -1551,18 +1556,21 @@ fn a_cycle_that_owes_the_monitor_nothing_runs_no_classification() {
 #[test]
 fn a_cancelled_demand_skips_classification_and_names_its_generation() {
     let mut build_classifier = BuildClassifier::default();
+    let process_observer = ProcessObserver::default();
     let mut compile_monitor_generation = CompileMonitorGeneration::default();
     compile_monitor_generation.advance();
     let cancellation =
         CompileClassificationCancellation::for_generation(compile_monitor_generation);
     let _ = cancellation.cancel(compile_monitor_generation);
 
-    assert_eq!(
+    assert!(matches!(
         build_classifier.classify_demand(
+            &process_observer,
             &snapshot_of(&[]),
             requested_demand(compile_monitor_generation, cancellation),
             Instant::now(),
         ),
-        CompileClassificationExecution::Cancelled(compile_monitor_generation)
-    );
+        CompileClassificationExecution::Cancelled(returned_generation)
+            if returned_generation == compile_monitor_generation
+    ));
 }

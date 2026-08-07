@@ -10,6 +10,9 @@ use std::time::Instant;
 use super::constants::MINIMUM_READABLE_COLUMN_WIDTH;
 use crate::build_monitor::BuildSessionActivity;
 use crate::build_monitor::BuildSessionId;
+use crate::build_monitor::BuildTerminationLifecycle;
+use crate::build_monitor::BuildTerminationLifecycleRegistry;
+use crate::build_monitor::BuildTerminationTerminalRecord;
 use crate::build_monitor::MonitorDisplay;
 use crate::build_monitor::MonitorSessionOwnership;
 use crate::build_monitor::MonitorSessionRow;
@@ -112,6 +115,41 @@ impl MonitorEmptyState {
     }
 }
 
+/// An empty monitor message plus row-independent terminal results.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MonitorEmptyPresentation<'a> {
+    monitor_empty_state:            MonitorEmptyState,
+    termination_lifecycle_registry: &'a BuildTerminationLifecycleRegistry,
+}
+
+impl<'a> MonitorEmptyPresentation<'a> {
+    const fn new(
+        monitor_empty_state: MonitorEmptyState,
+        termination_lifecycle_registry: &'a BuildTerminationLifecycleRegistry,
+    ) -> Self {
+        Self {
+            monitor_empty_state,
+            termination_lifecycle_registry,
+        }
+    }
+
+    pub(super) const fn monitor_empty_state(self) -> MonitorEmptyState { self.monitor_empty_state }
+
+    /// Terminal records remain available when no current row survives.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "row-independent terminal records are projected before the renderer consumes them"
+        )
+    )]
+    pub(super) fn terminal_records(
+        self,
+    ) -> impl Iterator<Item = &'a BuildTerminationTerminalRecord> {
+        self.termination_lifecycle_registry.terminal_records()
+    }
+}
+
 /// The empty-state line, in the parts the renderer draws it from.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct MonitorEmptyStateMessage {
@@ -162,29 +200,47 @@ pub enum OutputMonitorVisibility {
 
 /// One root Cargo invocation, as one stable column.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct MonitorColumn<'a>(&'a MonitorSessionRow);
+pub(super) struct MonitorColumn<'a> {
+    monitor_session_row:         &'a MonitorSessionRow,
+    build_termination_lifecycle: BuildTerminationLifecycle,
+}
 
 impl<'a> MonitorColumn<'a> {
     /// The exec-sensitive key this column keeps its cursor and selection under.
-    pub(super) const fn build_session_id(self) -> &'a BuildSessionId { self.0.build_session_id() }
+    pub(super) const fn build_session_id(self) -> &'a BuildSessionId {
+        self.monitor_session_row.build_session_id()
+    }
 
     /// The session record the header columns are drawn from.
-    pub(super) const fn session_row(self) -> &'a MonitorSessionRow { self.0 }
+    pub(super) const fn session_row(self) -> &'a MonitorSessionRow { self.monitor_session_row }
 
     /// What this session is doing right now.
     pub(super) const fn build_session_activity(self) -> BuildSessionActivity {
-        self.0.build_session_activity()
+        self.monitor_session_row.build_session_activity()
     }
 
     /// Whether Cargo Port launched the run behind this column.
     pub(super) const fn session_ownership(self) -> MonitorSessionOwnership {
-        self.0.session_ownership()
+        self.monitor_session_row.session_ownership()
+    }
+
+    /// Transaction lifecycle joined at presentation time, never persisted on
+    /// the replaceable monitor row.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "lifecycle markers read this presentation-only join"
+        )
+    )]
+    pub(super) const fn build_termination_lifecycle(self) -> BuildTerminationLifecycle {
+        self.build_termination_lifecycle
     }
 
     /// How long this session's root has been running, as of `now`.
     pub(super) fn elapsed(self, now: Instant) -> std::time::Duration {
         now.saturating_duration_since(
-            self.0
+            self.monitor_session_row
                 .build_session()
                 .root_observation()
                 .first_observed_at(),
@@ -196,15 +252,23 @@ impl<'a> MonitorColumn<'a> {
 /// whether the whole set carries the staleness marker.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MonitorColumns<'a> {
-    session_rows:            &'a [MonitorSessionRow],
-    unattributed_activities: &'a [UnattributedCompileActivity],
-    monitor_staleness:       MonitorStaleness,
+    session_rows:                   &'a [MonitorSessionRow],
+    termination_lifecycle_registry: &'a BuildTerminationLifecycleRegistry,
+    unattributed_activities:        &'a [UnattributedCompileActivity],
+    monitor_staleness:              MonitorStaleness,
 }
 
 impl<'a> MonitorColumns<'a> {
     /// The columns in first-seen order.
     pub(super) fn columns(&self) -> impl Iterator<Item = MonitorColumn<'a>> {
-        self.session_rows.iter().map(MonitorColumn)
+        self.session_rows
+            .iter()
+            .map(|monitor_session_row| MonitorColumn {
+                build_termination_lifecycle: self
+                    .termination_lifecycle_registry
+                    .lifecycle_for(monitor_session_row.build_session_id()),
+                monitor_session_row,
+            })
     }
 
     /// How many columns the model holds, on screen or not.
@@ -218,6 +282,20 @@ impl<'a> MonitorColumns<'a> {
 
     /// Whether the rows carry the visible staleness marker.
     pub(super) const fn monitor_staleness(&self) -> MonitorStaleness { self.monitor_staleness }
+
+    /// Terminal records are read through the registry join, never a TUI store.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "row-independent terminal records are projected before the renderer consumes them"
+        )
+    )]
+    pub(super) fn terminal_records(
+        &self,
+    ) -> impl Iterator<Item = &'a BuildTerminationTerminalRecord> {
+        self.termination_lifecycle_registry.terminal_records()
+    }
 
     /// The contiguous run of columns that fits `width`, chosen so
     /// `selected_index` stays on screen.
@@ -268,7 +346,7 @@ impl MonitorColumnWindow {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MonitorPresentation<'a> {
     /// No column to draw, and the reason the user needs.
-    Empty(MonitorEmptyState),
+    Empty(MonitorEmptyPresentation<'a>),
     /// One column per root Cargo invocation.
     Columns(MonitorColumns<'a>),
 }
@@ -334,6 +412,7 @@ impl<'a> OutputPresentation<'a> {
     pub fn derive(
         compile_visibility_state: &'a CompileVisibilityState,
         monitor_snapshot: &'a MonitorSnapshot,
+        termination_lifecycle_registry: &'a BuildTerminationLifecycleRegistry,
         owned_run_output_state: OwnedRunOutputStateRef<'a>,
         owned_run_running_label: OwnedRunRunningLabelRef<'a>,
         owned_run_completion_marker: OwnedRunCompletionMarker,
@@ -355,7 +434,11 @@ impl<'a> OutputPresentation<'a> {
             // row until there is.
             OwnedRunOutputStateRef::Absent | OwnedRunOutputStateRef::Retained { .. } => None,
         };
-        let monitor_visibility = monitor_presentation(compile_visibility_state, monitor_snapshot);
+        let monitor_visibility = monitor_presentation(
+            compile_visibility_state,
+            monitor_snapshot,
+            termination_lifecycle_registry,
+        );
         match (monitor_visibility, owned) {
             (MonitorVisibility::Off, None) => Self::Hidden,
             (MonitorVisibility::Off, Some(owned)) => Self::OwnedOnly(owned),
@@ -454,6 +537,7 @@ pub(super) enum MonitorVisibility<'a> {
 fn monitor_presentation<'a>(
     compile_visibility_state: &'a CompileVisibilityState,
     monitor_snapshot: &'a MonitorSnapshot,
+    termination_lifecycle_registry: &'a BuildTerminationLifecycleRegistry,
 ) -> MonitorVisibility<'a> {
     let CompileVisibilityState::On(active_monitor_state) = compile_visibility_state else {
         return MonitorVisibility::Off;
@@ -468,11 +552,15 @@ fn monitor_presentation<'a>(
                 && monitor_data.unattributed_activities().is_empty()
             {
                 return MonitorVisibility::On(MonitorPresentation::Empty(
-                    MonitorEmptyState::NoBuildSessions,
+                    MonitorEmptyPresentation::new(
+                        MonitorEmptyState::NoBuildSessions,
+                        termination_lifecycle_registry,
+                    ),
                 ));
             }
             return MonitorVisibility::On(MonitorPresentation::Columns(MonitorColumns {
                 session_rows: monitor_data.session_rows(),
+                termination_lifecycle_registry,
                 unattributed_activities: monitor_data.unattributed_activities(),
                 monitor_staleness,
             }));
@@ -486,7 +574,10 @@ fn monitor_presentation<'a>(
             MonitorEmptyState::Unavailable,
         ),
     };
-    MonitorVisibility::On(MonitorPresentation::Empty(monitor_empty_state))
+    MonitorVisibility::On(MonitorPresentation::Empty(MonitorEmptyPresentation::new(
+        monitor_empty_state,
+        termination_lifecycle_registry,
+    )))
 }
 
 /// The empty state to draw: the one a non-actionable scope resolution names, or

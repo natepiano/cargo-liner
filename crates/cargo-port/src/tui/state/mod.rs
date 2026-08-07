@@ -42,11 +42,11 @@ pub(super) use network_stage::NetworkRunningToasts;
 pub(super) use network_stage::StartupNetworkPending;
 pub(super) use network_stage::StartupNetworkReadiness;
 pub(super) use network_stage::StartupNetworkReady;
-#[cfg(test)]
 pub(crate) use owned_run_process_actor::OwnedProcessGroupSignalOutcome;
 pub(crate) use owned_run_process_actor::OwnedRunProcessActor;
 pub(crate) use owned_run_process_actor::OwnedRunTerminationOutcome;
 pub(crate) use owned_run_process_actor::OwnedRunTerminationSubmission;
+pub(crate) use owned_run_process_actor::OwnedRunTerminationToken;
 pub(crate) use owned_run_process_actor::discard_unverified_owned_process_group;
 pub(crate) use scan::Scan;
 pub(super) use sync::SyncTracker;

@@ -40,6 +40,7 @@ impl App {
         log_saturated_background_batch(&stats);
         stats.ci_msgs = self.poll_ci_fetches();
         self.background.poll_process_termination_worker_readiness();
+        self.poll_build_termination_results();
         stats.example_msgs = self.poll_example_msgs();
         self.poll_clean_msgs();
         let now = Instant::now();
@@ -171,6 +172,8 @@ impl App {
                     let _ = self
                         .inflight
                         .reconcile_owned_run_termination(owned_run_termination_outcome);
+                    self.build_monitor
+                        .reconcile_owned_termination(owned_run_termination_outcome);
                 },
                 OwnedRunEvent::Finished { owned_run_id } => {
                     if self.inflight.finish_owned_run(owned_run_id)
@@ -180,11 +183,28 @@ impl App {
                         // visible — unless a selection is holding the view.
                         self.panes.output.on_process_exit();
                     }
+                    self.build_monitor
+                        .reconcile_owned_termination_finished(owned_run_id);
                 },
             }
             count += 1;
         }
         count
+    }
+
+    /// Reconcile every completed external outcome without waiting for the
+    /// worker. Transaction deadlines are checked from the foreground tick so a
+    /// disconnected or slow backend cannot hold lifecycle state indefinitely.
+    fn poll_build_termination_results(&mut self) {
+        while let crate::process_termination::TerminationResultPoll::Completed(
+            termination_outcome_summary,
+        ) = self.background.poll_process_termination_outcome()
+        {
+            self.build_monitor
+                .reconcile_external_termination(&termination_outcome_summary);
+        }
+        self.build_monitor
+            .expire_termination_transaction(Instant::now());
     }
     pub(super) fn poll_clean_msgs(&mut self) {
         while let Ok(msg) = self.background.clean_rx().try_recv() {

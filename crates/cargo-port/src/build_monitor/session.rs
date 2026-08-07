@@ -400,7 +400,6 @@ impl SessionRootObservation {
     }
 
     /// The strong identity of the session's Cargo root process.
-    #[cfg(test)]
     pub(crate) const fn root_identity(&self) -> &ProcessIdentity { &self.root_identity }
 
     /// The Cargo root's PID, for display only.
@@ -461,7 +460,6 @@ impl BuildSession {
     pub(crate) const fn session_scope(&self) -> &SessionScope { &self.session_scope }
 
     /// The strong identity of this session's Cargo root process.
-    #[cfg(test)]
     pub(crate) const fn root_identity(&self) -> &ProcessIdentity {
         self.root_observation.root_identity()
     }

@@ -12,11 +12,15 @@ use std::time::Duration;
 use std::time::Instant;
 
 use crate::build_monitor::BuildClassificationExecutionFailure;
+use crate::build_monitor::BuildMonitoringRefreshCycleDemand;
+use crate::build_monitor::BuildMonitoringRefreshCycleExecution;
 use crate::build_monitor::BuildScopeActionability;
+use crate::build_monitor::BuildTerminationObservationExecution;
 use crate::build_monitor::CompileClassificationCancellation;
 use crate::build_monitor::CompileClassificationDemand;
 use crate::build_monitor::CompileClassificationExecution;
 use crate::build_monitor::CompileMonitorGeneration;
+use crate::build_monitor::OwnedTerminationSupport;
 use crate::process_observation::ProcessRefreshConsumerDemand;
 use crate::process_observation::ProcessRefreshDeadline;
 use crate::process_observation::ProcessRefreshDispatchOutcome;
@@ -37,7 +41,7 @@ pub(crate) type AppProcessRefreshExecutor = ProcessRefreshExecutor<BuildClassify
 
 /// The borrowed worker receiver the event loop registers wakeups on.
 pub(crate) type AppProcessRefreshResultReceiver<'a> =
-    ProcessRefreshResultReceiver<'a, CompileClassificationExecution>;
+    ProcessRefreshResultReceiver<'a, BuildMonitoringRefreshCycleExecution>;
 
 /// Whether the foreground tick received one completed observer refresh and
 /// therefore has an observer duration to instrument.
@@ -75,6 +79,7 @@ impl App {
     pub fn process_refresh_tick(&mut self, now: Instant) -> ObserverRefreshTiming {
         let mut observer_refresh_timing = ObserverRefreshTiming::NoCompletedRefresh;
         self.push_compile_monitor_schedule();
+        self.push_termination_transaction_schedule();
         match self.process_refresh_executor.poll_result() {
             ProcessRefreshResultPoll::Ready(process_refresh_execution) => {
                 observer_refresh_timing =
@@ -82,6 +87,7 @@ impl App {
             },
             ProcessRefreshResultPoll::Pending => {},
         }
+        self.push_termination_transaction_schedule();
 
         let running_targets_polling_effect = self.startup_services.running_targets_polling_effect();
         if running_targets_polling_effect == StartupEffect::Suppressed {
@@ -117,6 +123,11 @@ impl App {
             .rearm_compile_monitor(compile_monitor_refresh_schedule);
     }
 
+    const fn push_termination_transaction_schedule(&mut self) {
+        self.process_refresh_executor
+            .rearm_termination_transaction(self.build_monitor.termination_refresh_schedule());
+    }
+
     pub fn process_refresh_next_deadline(&self) -> ProcessRefreshDeadline {
         self.process_refresh_executor.next_deadline()
     }
@@ -144,7 +155,7 @@ impl App {
     fn dispatch_due_process_refresh(
         &mut self,
         now: Instant,
-    ) -> ProcessRefreshDispatchOutcome<CompileClassificationExecution> {
+    ) -> ProcessRefreshDispatchOutcome<BuildMonitoringRefreshCycleExecution> {
         let compile_classification_demand = |demand| {
             compile_classification_demand(
                 demand,
@@ -163,7 +174,10 @@ impl App {
                     requested_cancellation =
                         CompileClassificationInFlight::Requested(cancellation.clone());
                 }
-                compile_classification_demand
+                BuildMonitoringRefreshCycleDemand::new(
+                    compile_classification_demand,
+                    self.build_monitor.termination_observation_demand(demand),
+                )
             });
         if !matches!(
             process_refresh_dispatch_outcome,
@@ -211,11 +225,14 @@ impl App {
         };
         let observer_refresh_timing =
             ObserverRefreshTiming::Completed(completed_process_refresh_execution.elapsed());
-        let (process_observation_snapshot, compile_classification_execution) =
+        let (process_observation_snapshot, build_monitoring_refresh_cycle_execution) =
             completed_process_refresh_execution.into_parts();
+        let (compile_classification_execution, build_termination_observation_execution) =
+            build_monitoring_refresh_cycle_execution.into_parts();
 
         self.compile_classification_in_flight = CompileClassificationInFlight::NotRequested;
         self.store_compile_classification_execution(now, compile_classification_execution);
+        self.reconcile_build_termination_observation(build_termination_observation_execution);
 
         if demand.includes_running_targets() {
             self.apply_running_targets_observation(now, &process_observation_snapshot);
@@ -281,6 +298,21 @@ impl App {
                 );
             },
         }
+    }
+
+    fn reconcile_build_termination_observation(
+        &mut self,
+        build_termination_observation_execution: BuildTerminationObservationExecution,
+    ) {
+        let crate::tui::background::ProcessTerminatorAvailability::Available(process_terminator) =
+            self.background.available_process_terminator()
+        else {
+            return;
+        };
+        self.build_monitor.reconcile_termination_observation(
+            build_termination_observation_execution,
+            process_terminator,
+        );
     }
 
     /// Age what the monitor shows for a cycle that produced no classification,
@@ -352,6 +384,19 @@ fn compile_classification_demand(
         build_scope_key,
         cargo_workspace_index: Arc::clone(cargo_workspace_index),
         owned_root_evidence: inflight.owned_run().owned_root_evidence(),
+        owned_termination_support: match inflight.owned_run_termination() {
+            crate::tui::state::OwnedRunTermination::Available {
+                owned_run_id,
+                owned_run_termination_token,
+            } => OwnedTerminationSupport::Actionable {
+                owned_run_id,
+                owned_run_termination_token,
+            },
+            crate::tui::state::OwnedRunTermination::RequestPending { .. }
+            | crate::tui::state::OwnedRunTermination::NoRunningRun => {
+                OwnedTerminationSupport::Unavailable
+            },
+        },
         cancellation: CompileClassificationCancellation::for_generation(compile_monitor_generation),
     }
 }
@@ -364,6 +409,7 @@ fn compile_classification_demand(
 mod tests {
     use super::*;
     use crate::build_monitor::BuildScopeKey;
+    use crate::build_monitor::BuildTerminationObservationDemand;
     use crate::build_monitor::CompletedBuildClassification;
     use crate::build_monitor::MonitorSnapshot;
     use crate::process_observation::CompileMonitorRefreshSchedule;
@@ -374,6 +420,15 @@ mod tests {
     use crate::process_observation::snapshot::ProcessRefreshExecutionFailure;
     use crate::project::AbsolutePath;
     use crate::tui::startup_services::StartupServices;
+
+    fn completed_cycle(
+        compile_classification_execution: CompileClassificationExecution,
+    ) -> BuildMonitoringRefreshCycleExecution {
+        BuildMonitoringRefreshCycleExecution::new(
+            compile_classification_execution,
+            BuildTerminationObservationExecution::NotRequested,
+        )
+    }
 
     #[test]
     fn subsecond_app_ticks_skip_attribution_collection_until_due() {
@@ -465,11 +520,11 @@ mod tests {
         let compile_monitor_generation = enable_compile_monitor(&mut app, now);
         let process_refresh_execution = ProcessRefreshExecution::completed_for_test(
             ProcessRefreshConsumerDemand::RunningTargetsAndCompileMonitor,
-            CompileClassificationExecution::Failed {
+            completed_cycle(CompileClassificationExecution::Failed {
                 compile_monitor_generation,
                 build_classification_execution_failure:
                     BuildClassificationExecutionFailure::NoIndexedWorkspace,
-            },
+            }),
         );
 
         assert!(matches!(
@@ -496,11 +551,11 @@ mod tests {
         let current_generation = enable_compile_monitor(&mut app, now);
         let process_refresh_execution = ProcessRefreshExecution::completed_for_test(
             ProcessRefreshConsumerDemand::RunningTargetsAndCompileMonitor,
-            CompileClassificationExecution::Failed {
+            completed_cycle(CompileClassificationExecution::Failed {
                 compile_monitor_generation:             superseded_generation,
                 build_classification_execution_failure:
                     BuildClassificationExecutionFailure::NoIndexedWorkspace,
-            },
+            }),
         );
 
         assert_ne!(superseded_generation, current_generation);
@@ -525,13 +580,13 @@ mod tests {
         let current_generation = enable_compile_monitor(&mut app, now);
         let superseded_completion = ProcessRefreshExecution::completed_for_test(
             ProcessRefreshConsumerDemand::RunningTargetsAndCompileMonitor,
-            CompileClassificationExecution::Completed(
+            completed_cycle(CompileClassificationExecution::Completed(
                 CompletedBuildClassification::empty_for_test(
                     superseded_generation,
                     BuildScopeKey::for_test(AbsolutePath::from(std::path::Path::new("/"))),
                     now,
                 ),
-            ),
+            )),
         );
 
         app.reconcile_process_refresh_execution(now, superseded_completion);
@@ -544,13 +599,13 @@ mod tests {
 
         let current_completion = ProcessRefreshExecution::completed_for_test(
             ProcessRefreshConsumerDemand::RunningTargetsAndCompileMonitor,
-            CompileClassificationExecution::Completed(
+            completed_cycle(CompileClassificationExecution::Completed(
                 CompletedBuildClassification::empty_for_test(
                     current_generation,
                     BuildScopeKey::for_test(AbsolutePath::from(std::path::Path::new("/"))),
                     now,
                 ),
-            ),
+            )),
         );
 
         app.reconcile_process_refresh_execution(now, current_completion);
@@ -569,7 +624,9 @@ mod tests {
         let mut app = crate::tui::test_support::make_app(&[]);
         let process_refresh_execution = ProcessRefreshExecution::completed_for_test(
             ProcessRefreshConsumerDemand::RunningTargetsAndCompileMonitor,
-            CompileClassificationExecution::Cancelled(CompileMonitorGeneration::default()),
+            completed_cycle(CompileClassificationExecution::Cancelled(
+                CompileMonitorGeneration::default(),
+            )),
         );
 
         assert!(matches!(
@@ -595,6 +652,7 @@ mod tests {
             build_scope_key: BuildScopeKey::for_test(AbsolutePath::from(std::path::Path::new("/"))),
             cargo_workspace_index: Arc::clone(&app.cargo_workspace_index),
             owned_root_evidence: app.inflight.owned_run().owned_root_evidence(),
+            owned_termination_support: OwnedTerminationSupport::Unavailable,
             cancellation: cancellation.clone(),
         };
         app.process_refresh_executor = ProcessRefreshExecutor::new(
@@ -608,9 +666,13 @@ mod tests {
             CompileClassificationInFlight::Requested(cancellation);
 
         app.cancel_compile_classification(compile_monitor_generation);
-        let ProcessRefreshDispatchOutcome::Finished(process_refresh_execution) = app
-            .process_refresh_executor
-            .refresh_due(now, |_| compile_classification_demand)
+        let ProcessRefreshDispatchOutcome::Finished(process_refresh_execution) =
+            app.process_refresh_executor.refresh_due(now, |_| {
+                BuildMonitoringRefreshCycleDemand::new(
+                    compile_classification_demand,
+                    BuildTerminationObservationDemand::NotRequested,
+                )
+            })
         else {
             panic!("the synchronous backend finishes the cycle it dispatches")
         };
@@ -625,13 +687,20 @@ mod tests {
         else {
             panic!("a synchronous cycle completes")
         };
-        let (process_observation_snapshot, compile_classification_execution) =
+        let (process_observation_snapshot, build_monitoring_refresh_cycle_execution) =
             completed_process_refresh_execution.into_parts();
+        let (compile_classification_execution, build_termination_observation_execution) =
+            build_monitoring_refresh_cycle_execution.into_parts();
 
-        assert_eq!(
+        assert!(matches!(
             compile_classification_execution,
-            CompileClassificationExecution::Cancelled(compile_monitor_generation)
-        );
+            CompileClassificationExecution::Cancelled(returned_generation)
+                if returned_generation == compile_monitor_generation
+        ));
+        assert!(matches!(
+            build_termination_observation_execution,
+            BuildTerminationObservationExecution::NotRequested
+        ));
         app.apply_running_targets_observation(now, &process_observation_snapshot);
         assert_eq!(app.running_target_attribution_collection_count, 1);
     }
@@ -641,7 +710,7 @@ mod tests {
         let mut app = crate::tui::test_support::make_app(&[]);
         let process_refresh_execution = ProcessRefreshExecution::completed_for_test(
             ProcessRefreshConsumerDemand::CompileMonitor,
-            CompileClassificationExecution::NotRequested,
+            completed_cycle(CompileClassificationExecution::NotRequested),
         );
 
         assert!(matches!(

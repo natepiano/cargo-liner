@@ -469,6 +469,7 @@ impl BuildClassifier {
     /// so the observation stays available to Running Targets either way.
     pub(crate) fn classify_demand(
         &mut self,
+        process_observer: &crate::process_observation::ProcessObserver,
         process_observation_snapshot: &ProcessObservationSnapshot,
         compile_classification_demand: CompileClassificationDemand,
         cycle_instant: Instant,
@@ -478,6 +479,7 @@ impl BuildClassifier {
             build_scope_key,
             cargo_workspace_index,
             owned_root_evidence,
+            owned_termination_support,
             cancellation,
         } = compile_classification_demand
         else {
@@ -512,12 +514,42 @@ impl BuildClassifier {
             &owned_root_evidence,
             cycle_instant,
         );
-        CompileClassificationExecution::Completed(CompletedBuildClassification::new(
+        let mut completed_build_classification = CompletedBuildClassification::new(
             compile_monitor_generation,
             build_scope_key,
             owned_root_evidence,
             Box::new(build_classification),
-        ))
+        );
+        completed_build_classification.set_owned_termination_support(owned_termination_support);
+        let classified_roots: Vec<_> = completed_build_classification
+            .classification()
+            .build_sessions()
+            .iter()
+            .map(|build_session| {
+                (
+                    build_session.build_session_id().clone(),
+                    build_session.root_identity().clone(),
+                )
+            })
+            .collect();
+        for (build_session_id, root_identity) in classified_roots {
+            let classified_external_termination_support = process_observation_snapshot
+                .strongly_identified_processes()
+                .get(&root_identity)
+                .map_or(
+                    super::termination::ClassifiedExternalTerminationSupport::ObservedOnly,
+                    |process_snapshot_record| {
+                        process_observer
+                            .external_termination_support(process_snapshot_record)
+                            .into()
+                    },
+                );
+            completed_build_classification.insert_external_termination_support(
+                build_session_id,
+                classified_external_termination_support,
+            );
+        }
+        CompileClassificationExecution::Completed(completed_build_classification)
     }
 
     /// Prepare one cycle's input, run the pure classification, then apply what

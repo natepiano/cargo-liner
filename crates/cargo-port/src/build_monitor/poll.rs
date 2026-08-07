@@ -7,6 +7,7 @@
 //! classifiable; the narrowing happens here so the set the pane renders and the
 //! set a scope-wide termination acts on are one value.
 
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 use super::BuildMonitor;
@@ -28,6 +29,12 @@ use super::snapshot::MonitorData;
 use super::snapshot::MonitorSessionOwnership;
 use super::snapshot::MonitorSessionRow;
 use super::snapshot::MonitorSnapshot;
+use super::termination::BuildTerminationAuthority;
+use super::termination::ClassifiedExternalTerminationSupport;
+use super::termination::ClassifiedExternalTerminationSupports;
+use super::termination::ExternalBuildTerminationAuthority;
+use super::termination::OwnedBuildTerminationAuthority;
+use super::termination::OwnedTerminationSupport;
 use crate::project::CanonicalCheckoutRoot;
 
 impl BuildMonitor {
@@ -43,15 +50,23 @@ impl BuildMonitor {
         &mut self,
         completed_build_classification: CompletedBuildClassification,
     ) {
-        let (build_scope_key, owned_root_evidence, build_classification) =
-            completed_build_classification.into_scoped_classification();
+        let (
+            build_scope_key,
+            owned_root_evidence,
+            build_classification,
+            mut classified_external_termination_supports,
+            owned_termination_support,
+        ) = completed_build_classification.into_scoped_classification();
         let monitor_data =
             scoped_monitor_data(build_scope_key, &build_classification, &owned_root_evidence);
-        self.live_session_ids = monitor_data
-            .session_rows()
-            .iter()
-            .map(|monitor_session_row| monitor_session_row.build_session_id().clone())
-            .collect();
+        self.termination_lifecycle_registry
+            .record_fresh_observations(monitor_data.session_rows());
+        self.termination_state
+            .replace_current_authorities(current_termination_authorities(
+                &monitor_data,
+                &mut classified_external_termination_supports,
+                owned_termination_support,
+            ));
         self.monitor_snapshot = MonitorSnapshot::Fresh(monitor_data);
     }
 
@@ -64,9 +79,7 @@ impl BuildMonitor {
     pub(crate) fn record_classification_failure(&mut self) {
         self.monitor_snapshot =
             std::mem::replace(&mut self.monitor_snapshot, MonitorSnapshot::Unavailable).aged();
-        if matches!(self.monitor_snapshot, MonitorSnapshot::Unavailable) {
-            self.live_session_ids.clear();
-        }
+        self.termination_state.clear_current_authorities();
     }
 
     /// Move to the new scope, keeping the prior rows on screen when the new
@@ -85,11 +98,66 @@ impl BuildMonitor {
         };
         if !matches!(
             self.monitor_snapshot,
-            MonitorSnapshot::PendingWithRetained(_)
+            MonitorSnapshot::PendingWithRetained(_) | MonitorSnapshot::StaleWithRetained(_)
         ) {
-            self.live_session_ids.clear();
+            self.termination_lifecycle_registry.clear_terminal_entries();
+            self.termination_state.clear_current_authorities();
         }
     }
+}
+
+/// Convert this cycle's root support into action authority only for the exact
+/// rows the monitor stored. An observed-only adapter, an unresolved external
+/// scope, and a stale owned token all become absent from this map rather than a
+/// weaker authority type.
+fn current_termination_authorities(
+    monitor_data: &MonitorData,
+    classified_external_termination_supports: &mut ClassifiedExternalTerminationSupports,
+    owned_termination_support: OwnedTerminationSupport,
+) -> BTreeMap<super::session::BuildSessionId, BuildTerminationAuthority> {
+    monitor_data
+        .session_rows()
+        .iter()
+        .filter_map(|monitor_session_row| {
+            let build_session = monitor_session_row.build_session();
+            let build_session_id = monitor_session_row.build_session_id().clone();
+            let build_termination_authority = match monitor_session_row.session_ownership() {
+                MonitorSessionOwnership::Owned(owned_run_id) => match owned_termination_support {
+                    OwnedTerminationSupport::Actionable {
+                        owned_run_id: supported_owned_run_id,
+                        owned_run_termination_token,
+                    } if supported_owned_run_id == owned_run_id => Some(
+                        BuildTerminationAuthority::Owned(OwnedBuildTerminationAuthority {
+                            owned_run_id,
+                            owned_run_termination_token,
+                        }),
+                    ),
+                    OwnedTerminationSupport::Actionable { .. }
+                    | OwnedTerminationSupport::Unavailable => None,
+                },
+                MonitorSessionOwnership::External => {
+                    let ClassifiedExternalTerminationSupport::Actionable(
+                        external_process_termination_capability,
+                    ) = classified_external_termination_supports.take(&build_session_id)
+                    else {
+                        return None;
+                    };
+                    let SessionScope::Resolved { .. } = build_session.session_scope() else {
+                        return None;
+                    };
+                    Some(BuildTerminationAuthority::External(
+                        ExternalBuildTerminationAuthority {
+                            session_scope: build_session.session_scope().clone(),
+                            root_identity: build_session.root_identity().clone(),
+                            external_process_termination_capability,
+                        },
+                    ))
+                },
+            };
+            build_termination_authority
+                .map(|build_termination_authority| (build_session_id, build_termination_authority))
+        })
+        .collect()
 }
 
 /// Keep the sessions this scope covers, plus the Cargo Port-owned session

@@ -31,6 +31,7 @@ pub(crate) use executor::ProcessRefreshResultPoll;
 pub(crate) use executor::ProcessRefreshResultReceiver;
 pub(crate) use executor::RefreshCycleClassifier;
 pub(crate) use executor::RunningTargetsRefreshSchedule;
+pub(crate) use executor::TerminationTransactionRefreshSchedule;
 use identity::ObservedProcessIdentity;
 use identity::PlatformProcessObservation;
 use identity::ProcessIdentity;
@@ -66,24 +67,27 @@ use sysinfo::UpdateKind;
 ///
 /// The field is private, so another crate module cannot turn raw PID or
 /// `ProcessIncarnation` data into process-control authority.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "build-monitor authorization has no production capability consumer yet"
-    )
-)]
 pub(crate) struct ProcessCapabilityMintAuthority(());
+
+/// Whether observer evidence can authorize external termination.
+///
+/// `PlatformTerminationCapabilityObservation::Available` proves that the
+/// observer bound immutable process evidence to a platform capability. It does
+/// not prove that the private platform adapter can deliver an identity-bound
+/// signal on this host. This semantic boundary keeps observed-only adapters
+/// out of build-monitor action authority.
+#[derive(Debug)]
+pub(crate) enum ExternalTerminationSupport {
+    /// The capability has an identity-bound signal adapter and may become
+    /// build-monitor termination authority after scope and lifecycle checks.
+    Actionable(crate::process_termination::ExternalProcessTerminationCapability),
+    /// Observation remains available, but this host exposes no safe signal
+    /// adapter for the process object.
+    ObservedOnly,
+}
 
 /// Whether immutable observer evidence could mint a platform termination
 /// capability.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "build-monitor authorization has no production capability consumer yet"
-    )
-)]
 pub(crate) enum PlatformTerminationCapabilityObservation {
     Available(crate::process_termination::ExternalProcessTerminationCapability),
     InsufficientIncarnationEvidence,
@@ -1569,11 +1573,21 @@ struct FullSystemSnapshotCycle {
     running_metrics_refresh_targets: RunningMetricsRefreshTargets,
 }
 
+#[cfg(test)]
+#[derive(Default)]
+enum ActionableCapabilityFixture {
+    #[default]
+    Disabled,
+    Enabled,
+}
+
 /// Host-only process observation with one private long-lived metrics `System`.
 #[derive(Default)]
-struct ProcessObserver {
-    running_metrics_system: RunningMetricsSystem,
-    incarnation_cache:      ProcessIncarnationCache,
+pub(crate) struct ProcessObserver {
+    running_metrics_system:        RunningMetricsSystem,
+    incarnation_cache:             ProcessIncarnationCache,
+    #[cfg(test)]
+    actionable_capability_fixture: ActionableCapabilityFixture,
 }
 
 impl ProcessObserver {
@@ -1583,13 +1597,6 @@ impl ProcessObserver {
     /// A record from an invalidated exec transition is not authority. The
     /// platform adapter also binds and revalidates the process object before it
     /// returns an identity-bound capability.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "build-monitor authorization has no production capability consumer yet"
-        )
-    )]
     fn platform_termination_capability(
         &self,
         process_snapshot_record: &ProcessSnapshotRecord,
@@ -1622,6 +1629,74 @@ impl ProcessObserver {
         }
     }
 
+    /// State the semantic termination support for one record from this
+    /// observer's current snapshot without exposing adapter internals.
+    pub(crate) fn external_termination_support(
+        &self,
+        process_snapshot_record: &ProcessSnapshotRecord,
+    ) -> ExternalTerminationSupport {
+        #[cfg(test)]
+        if matches!(
+            self.actionable_capability_fixture,
+            ActionableCapabilityFixture::Enabled
+        ) && self
+            .incarnation_cache
+            .cached_process_identities()
+            .contains(process_snapshot_record.identity())
+            && let ProcessIncarnationEvidence::Strong {
+                incarnation,
+                incarnation_state:
+                    ProcessIncarnationState::NewlyObserved | ProcessIncarnationState::Unchanged,
+            } = process_snapshot_record.incarnation_evidence()
+        {
+            return ExternalTerminationSupport::Actionable(
+                crate::process_termination::ExternalProcessTerminationCapability::actionable_for_test(
+                    incarnation.clone(),
+                ),
+            );
+        }
+        match self.platform_termination_capability(process_snapshot_record) {
+            PlatformTerminationCapabilityObservation::Available(
+                external_process_termination_capability,
+            ) if external_process_termination_capability.is_actionable() => {
+                ExternalTerminationSupport::Actionable(external_process_termination_capability)
+            },
+            PlatformTerminationCapabilityObservation::Available(_)
+            | PlatformTerminationCapabilityObservation::InsufficientIncarnationEvidence => {
+                ExternalTerminationSupport::ObservedOnly
+            },
+        }
+    }
+
+    /// Enable deterministic identity-bound fixture capabilities for cached
+    /// strong incarnations observed by this same observer.
+    #[cfg(test)]
+    pub(crate) const fn enable_actionable_capability_fixture(&mut self) {
+        self.actionable_capability_fixture = ActionableCapabilityFixture::Enabled;
+    }
+
+    /// Retain every strong incarnation in a fixed snapshot inside this
+    /// observer's private cache.
+    #[cfg(test)]
+    pub(crate) fn remember_snapshot_incarnations_for_test(
+        &mut self,
+        process_observation_snapshot: &ProcessObservationSnapshot,
+    ) {
+        for process_snapshot_record in process_observation_snapshot
+            .strongly_identified_processes()
+            .values()
+        {
+            if let ProcessIncarnationEvidence::Strong { incarnation, .. } =
+                process_snapshot_record.incarnation_evidence()
+            {
+                self.incarnation_cache.remember_incarnation_for_test(
+                    process_snapshot_record.identity().clone(),
+                    incarnation.clone(),
+                );
+            }
+        }
+    }
+
     /// Execute one coalesced consumer cycle over the observer's private host state.
     fn refresh_for_consumer_demand(
         &mut self,
@@ -1635,9 +1710,11 @@ impl ProcessObserver {
                 )
             },
             ProcessRefreshConsumerDemand::RunningTargets
-            | ProcessRefreshConsumerDemand::RunningTargetsAndCompileMonitor => {
-                ProcessRefreshInput::FullSystemSnapshot
-            },
+            | ProcessRefreshConsumerDemand::RunningTargetsAndCompileMonitor
+            | ProcessRefreshConsumerDemand::TerminationTransaction
+            | ProcessRefreshConsumerDemand::RunningTargetsAndTerminationTransaction
+            | ProcessRefreshConsumerDemand::CompileMonitorAndTerminationTransaction
+            | ProcessRefreshConsumerDemand::AllConsumers => ProcessRefreshInput::FullSystemSnapshot,
         };
         match process_refresh_input {
             ProcessRefreshInput::FullSystemSnapshot => {
@@ -1648,6 +1725,9 @@ impl ProcessObserver {
                     process_field_refresh_kind(),
                     &process_refresh_host_source,
                 );
+                if !process_refresh_consumer_demand.includes_running_targets() {
+                    return process_observation_snapshot;
+                }
                 let running_process_metrics = self
                     .running_metrics_system
                     .observe_process_metrics_for_cycle(

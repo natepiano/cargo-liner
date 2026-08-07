@@ -73,10 +73,19 @@ impl ExternalProcessTerminationCapability {
     pub(super) const fn pid(&self) -> u32 { self.authorized_incarnation.identity().pid() }
 
     pub(super) fn observe_admission(&self) -> TerminationSignalAdmission {
+        #[cfg(test)]
+        if matches!(&self.adapter, ExternalTerminationAdapter::Fixture(_)) {
+            return TerminationSignalAdmission::SameProcessObject;
+        }
         observe_termination_admission(&self.authorized_incarnation)
     }
 
-    pub(super) const fn has_identity_bound_adapter(&self) -> bool {
+    /// Whether the private adapter can deliver an identity-bound signal.
+    ///
+    /// This is deliberately a semantic answer: callers can decide whether
+    /// observation becomes actionable without learning the adapter variant or
+    /// gaining any way to signal through it.
+    pub(crate) const fn is_actionable(&self) -> bool {
         match &self.adapter {
             #[cfg(target_os = "linux")]
             ExternalTerminationAdapter::LinuxPidFd(_) => true,
@@ -137,6 +146,17 @@ impl ExternalProcessTerminationCapability {
         match self.adapter {
             ExternalTerminationAdapter::ObservedOnly => BoundProcessObjectPresence::Unavailable,
         }
+    }
+
+    /// Create an identity-bound fixture that accepts one graceful request and
+    /// then reports the authorized process object gone.
+    #[cfg(test)]
+    pub(crate) fn actionable_for_test(authorized_incarnation: ProcessIncarnation) -> Self {
+        Self::for_test(
+            authorized_incarnation,
+            BoundSignalDelivery::Accepted,
+            &[BoundProcessObjectPresence::Gone],
+        )
     }
 
     #[cfg(test)]
@@ -752,7 +772,7 @@ mod tests {
     fn linux_real_process_capability_uses_pidfd() {
         let process_fixture = ExecProcessFixture::spawn();
         let capability = process_fixture.capability();
-        assert!(capability.has_identity_bound_adapter());
+        assert!(capability.is_actionable());
     }
 
     #[cfg(all(unix, not(target_os = "linux")))]
@@ -760,7 +780,7 @@ mod tests {
     fn hosts_without_a_safe_adapter_produce_observed_only_capabilities() {
         let process_fixture = ExecProcessFixture::spawn();
         let capability = process_fixture.capability();
-        assert!(!capability.has_identity_bound_adapter());
+        assert!(!capability.is_actionable());
     }
 
     #[test]

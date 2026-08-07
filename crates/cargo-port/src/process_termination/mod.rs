@@ -22,17 +22,24 @@ mod constants;
     )
 )]
 mod platform;
+mod transaction;
 
 use std::num::NonZeroU64;
+use std::thread::JoinHandle;
+use std::time::Instant;
 
 #[cfg(any(target_os = "linux", test))]
 use platform::BoundProcessObjectPresence;
 use platform::BoundSignalDelivery;
 pub(crate) use platform::ExternalProcessTerminationCapability;
 use platform::TerminationSignalAdmission;
+pub(crate) use transaction::AdmittedTerminationDescendantObservation;
+pub(crate) use transaction::AdmittedTerminationDescendantPresence;
+pub(crate) use transaction::FrozenTerminationRootObservation;
+pub(crate) use transaction::FrozenTerminationRootPresence;
+pub(crate) use transaction::TerminationDescendantObservationPass;
+pub(crate) use transaction::observe_termination_descendants;
 
-#[cfg(any(target_os = "linux", test))]
-use self::constants::TERMINATION_CONFIRMATION_TIMEOUT;
 use crate::channel::Receiver;
 use crate::channel::Sender;
 use crate::channel::TryRecvError;
@@ -44,6 +51,23 @@ use crate::channel::unbounded;
 /// that later correlates against a real one.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct TerminationRequestId(NonZeroU64);
+
+/// Private semantic identity for one target inside a termination transaction.
+///
+/// The identity is allocated by the transaction owner and travels with both
+/// the frozen capability and the worker outcome. It deliberately is not a PID
+/// or a vector offset, so a reordered worker plan cannot reconcile one
+/// process's outcome to another build session.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) struct TerminationTargetId(NonZeroU64);
+
+impl TerminationTargetId {
+    /// Allocate an identity from a transaction-owned counter.
+    pub(crate) const fn from_non_zero(value: NonZeroU64) -> Self { Self(value) }
+
+    #[cfg(test)]
+    pub(crate) const fn for_test(value: NonZeroU64) -> Self { Self(value) }
+}
 
 /// Whether the monotonic counter still had an unused request identity.
 ///
@@ -58,12 +82,13 @@ pub(crate) enum TerminationPlanCreation {
 /// One request's frozen set of targets.
 ///
 /// The plan is immutable once built, so a build that starts after the request
-/// was authorized cannot join it. Target order is the order the plan was built
-/// in; the worker signals targets in that order and never reorders them.
+/// was authorized cannot join it. The worker orders admitted descendants from
+/// deepest to shallowest and frozen roots last.
 #[derive(Debug)]
 pub(crate) struct TerminationExecutionPlan {
     termination_request_id: TerminationRequestId,
-    targets:                Vec<ExternalProcessTerminationCapability>,
+    deadline:               TerminationExecutionDeadline,
+    targets:                Vec<TerminationExecutionTarget>,
 }
 
 impl TerminationExecutionPlan {
@@ -73,6 +98,84 @@ impl TerminationExecutionPlan {
 
     #[cfg(test)]
     pub(crate) const fn target_count(&self) -> usize { self.targets.len() }
+}
+
+/// The time boundary applied by the external worker.
+#[derive(Clone, Copy, Debug)]
+enum TerminationExecutionDeadline {
+    At(Instant),
+    StartupHandshake,
+}
+
+impl TerminationExecutionDeadline {
+    fn expired(self, now: Instant) -> bool {
+        match self {
+            Self::At(deadline) => now >= deadline,
+            Self::StartupHandshake => false,
+        }
+    }
+
+    #[cfg(any(target_os = "linux", test))]
+    fn confirmation_timeout(self, now: Instant) -> std::time::Duration {
+        match self {
+            Self::At(deadline) => self::constants::TERMINATION_CONFIRMATION_TIMEOUT
+                .min(deadline.saturating_duration_since(now)),
+            Self::StartupHandshake => self::constants::TERMINATION_CONFIRMATION_TIMEOUT,
+        }
+    }
+}
+
+/// Where one target sits in its frozen process tree.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TerminationExecutionTargetRole {
+    FrozenRoot,
+    AdmittedDescendant { depth_from_root: usize },
+}
+
+impl TerminationExecutionTargetRole {
+    const fn leaf_order(self) -> usize {
+        match self {
+            Self::FrozenRoot => 0,
+            Self::AdmittedDescendant { depth_from_root } => depth_from_root,
+        }
+    }
+}
+
+/// One frozen external target together with the transaction identity that owns
+/// its eventual result.
+#[derive(Debug)]
+pub(crate) struct TerminationExecutionTarget {
+    semantic_target_id:                      TerminationTargetId,
+    role:                                    TerminationExecutionTargetRole,
+    external_process_termination_capability: ExternalProcessTerminationCapability,
+}
+
+impl TerminationExecutionTarget {
+    /// Pair one opaque, move-only capability with its transaction-local
+    /// semantic identity.
+    pub(crate) const fn new(
+        semantic_target_id: TerminationTargetId,
+        external_process_termination_capability: ExternalProcessTerminationCapability,
+    ) -> Self {
+        Self {
+            semantic_target_id,
+            role: TerminationExecutionTargetRole::FrozenRoot,
+            external_process_termination_capability,
+        }
+    }
+
+    /// Pair a newly admitted descendant with its validated root depth.
+    pub(crate) const fn admitted_descendant(
+        semantic_target_id: TerminationTargetId,
+        depth_from_root: usize,
+        external_process_termination_capability: ExternalProcessTerminationCapability,
+    ) -> Self {
+        Self {
+            semantic_target_id,
+            role: TerminationExecutionTargetRole::AdmittedDescendant { depth_from_root },
+            external_process_termination_capability,
+        }
+    }
 }
 
 /// Why one planned target was not signaled.
@@ -89,6 +192,19 @@ pub(crate) enum TerminationError {
     ProcessRevalidationUnavailable { pid: u32 },
     /// The identity-bound host adapter refused the graceful signal.
     HostRejectedSignal { pid: u32 },
+    /// The root still existed, but no longer satisfied its frozen scope condition.
+    FrozenScopeDiverged { pid: u32 },
+    /// The transaction deadline arrived before this target's pass began.
+    DeadlineExpired { pid: u32 },
+    /// The worker's monotonic request identity space was exhausted before the
+    /// target could be dispatched.
+    RequestIdentitiesExhausted { pid: u32 },
+    /// The dedicated termination worker was unavailable when the target was
+    /// dispatched.
+    TerminationWorkerUnavailable { pid: u32 },
+    /// The worker accepted the plan under a request identity other than the
+    /// one allocated for this transaction pass.
+    TerminationRequestCorrelationMismatch { pid: u32 },
 }
 
 /// What one planned target's termination attempt established.
@@ -96,7 +212,7 @@ pub(crate) enum TerminationError {
 /// Each variant states only what the worker observed. Nothing here claims that
 /// a signal caused an exit it cannot attribute.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum TerminationTargetOutcome {
+pub(crate) enum TerminationTargetResult {
     /// The authorized process object was already gone before any signal.
     AlreadyGone { pid: u32 },
     /// The signal was delivered and the identity-bound handle then reported
@@ -115,10 +231,34 @@ pub(crate) enum TerminationTargetOutcome {
     Refused(TerminationError),
 }
 
+/// One target's correlated result from the external worker.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TerminationTargetOutcome {
+    semantic_target_id: TerminationTargetId,
+    role:               TerminationExecutionTargetRole,
+    result:             TerminationTargetResult,
+}
+
+impl TerminationTargetOutcome {
+    pub(crate) const fn semantic_target_id(&self) -> TerminationTargetId { self.semantic_target_id }
+
+    pub(crate) const fn result(&self) -> &TerminationTargetResult { &self.result }
+
+    pub(crate) const fn role(&self) -> TerminationExecutionTargetRole { self.role }
+}
+
+/// Whether the worker completed its ordered pass before the plan deadline.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TerminationOutcomeDeadline {
+    CompletedWithinDeadline,
+    Expired,
+}
+
 /// One request's correlated, immutable result.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TerminationOutcomeSummary {
     termination_request_id: TerminationRequestId,
+    deadline:               TerminationOutcomeDeadline,
     target_outcomes:        Vec<TerminationTargetOutcome>,
 }
 
@@ -127,8 +267,10 @@ impl TerminationOutcomeSummary {
         self.termination_request_id
     }
 
-    #[cfg(test)]
     pub(crate) fn target_outcomes(&self) -> &[TerminationTargetOutcome] { &self.target_outcomes }
+
+    #[cfg(test)]
+    pub(crate) const fn deadline(&self) -> TerminationOutcomeDeadline { self.deadline }
 }
 
 /// Whether a plan reached the termination worker.
@@ -148,33 +290,65 @@ pub(crate) enum TerminationResultPoll {
 
 /// The sole owner of external termination work.
 ///
-/// It holds the request and result channel ends; the worker thread it starts
-/// owns every host call. Dropping the terminator closes the request channel,
-/// which is what ends the worker.
+/// It holds the request and result channel ends plus the worker join handle.
+/// Dropping the terminator sends `ProcessTerminationWorkerCommand::Shutdown`
+/// and joins the thread after its bounded in-flight work completes.
 #[derive(Debug)]
 pub(crate) struct ProcessTerminator {
-    next_request_id: NonZeroU64,
-    plan_tx:         Sender<TerminationExecutionPlan>,
-    outcome_rx:      Receiver<TerminationOutcomeSummary>,
+    next_request_id:  NonZeroU64,
+    command_sender:   Sender<ProcessTerminationWorkerCommand>,
+    outcome_receiver: Receiver<TerminationOutcomeSummary>,
+    thread_state:     ProcessTerminationWorkerThreadState,
+}
+
+#[derive(Debug)]
+enum ProcessTerminationWorkerCommand {
+    Execute(TerminationExecutionPlan),
+    Shutdown,
+}
+
+#[derive(Debug)]
+enum ProcessTerminationWorkerThreadState {
+    Running(JoinHandle<()>),
+    Joined,
+    #[cfg(test)]
+    Disconnected,
 }
 
 impl ProcessTerminator {
     /// Start the dedicated termination worker.
     pub(crate) fn start() -> Self {
-        let (plan_tx, plan_rx) = unbounded::<TerminationExecutionPlan>();
-        let (outcome_tx, outcome_rx) = unbounded::<TerminationOutcomeSummary>();
-        std::thread::spawn(move || run_termination_worker(&plan_rx, &outcome_tx));
+        let (command_sender, command_receiver) = unbounded();
+        let (outcome_sender, outcome_receiver) = unbounded();
+        let join_handle = std::thread::spawn(move || {
+            run_termination_worker(&command_receiver, &outcome_sender);
+        });
         Self {
             next_request_id: NonZeroU64::MIN,
-            plan_tx,
-            outcome_rx,
+            command_sender,
+            outcome_receiver,
+            thread_state: ProcessTerminationWorkerThreadState::Running(join_handle),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn disconnected_for_test() -> Self {
+        let (command_sender, command_receiver) = unbounded();
+        let (outcome_sender, outcome_receiver) = unbounded();
+        drop(command_receiver);
+        drop(outcome_sender);
+        Self {
+            next_request_id: NonZeroU64::MIN,
+            command_sender,
+            outcome_receiver,
+            thread_state: ProcessTerminationWorkerThreadState::Disconnected,
         }
     }
 
     /// Freeze one request's targets under a fresh request identity.
     pub(crate) fn plan_termination(
         &mut self,
-        targets: Vec<ExternalProcessTerminationCapability>,
+        targets: Vec<TerminationExecutionTarget>,
     ) -> TerminationPlanCreation {
         let termination_request_id = TerminationRequestId(self.next_request_id);
         let Some(next_request_id) = self.next_request_id.checked_add(1) else {
@@ -183,6 +357,25 @@ impl ProcessTerminator {
         self.next_request_id = next_request_id;
         TerminationPlanCreation::Planned(TerminationExecutionPlan {
             termination_request_id,
+            deadline: TerminationExecutionDeadline::StartupHandshake,
+            targets,
+        })
+    }
+
+    /// Freeze one deadline-bounded transaction pass under a fresh request identity.
+    pub(crate) fn plan_bounded_termination(
+        &mut self,
+        targets: Vec<TerminationExecutionTarget>,
+        deadline: Instant,
+    ) -> TerminationPlanCreation {
+        let termination_request_id = TerminationRequestId(self.next_request_id);
+        let Some(next_request_id) = self.next_request_id.checked_add(1) else {
+            return TerminationPlanCreation::RequestIdsExhausted;
+        };
+        self.next_request_id = next_request_id;
+        TerminationPlanCreation::Planned(TerminationExecutionPlan {
+            termination_request_id,
+            deadline: TerminationExecutionDeadline::At(deadline),
             targets,
         })
     }
@@ -193,8 +386,10 @@ impl ProcessTerminator {
         termination_execution_plan: TerminationExecutionPlan,
     ) -> TerminationDispatchOutcome {
         let termination_request_id = termination_execution_plan.termination_request_id();
-        self.plan_tx
-            .send(termination_execution_plan)
+        self.command_sender
+            .send(ProcessTerminationWorkerCommand::Execute(
+                termination_execution_plan,
+            ))
             .map_or(TerminationDispatchOutcome::WorkerUnavailable, |()| {
                 TerminationDispatchOutcome::Dispatched(termination_request_id)
             })
@@ -202,7 +397,7 @@ impl ProcessTerminator {
 
     /// Take one completed request's summary if the worker has returned it.
     pub(crate) fn poll_outcome(&self) -> TerminationResultPoll {
-        match self.outcome_rx.try_recv() {
+        match self.outcome_receiver.try_recv() {
             Ok(termination_outcome_summary) => {
                 TerminationResultPoll::Completed(termination_outcome_summary)
             },
@@ -210,18 +405,43 @@ impl ProcessTerminator {
             Err(TryRecvError::Disconnected) => TerminationResultPoll::WorkerUnavailable,
         }
     }
+
+    /// Borrow the worker result channel only to register an event-loop wakeup.
+    pub(crate) const fn outcome_receiver(&self) -> &Receiver<TerminationOutcomeSummary> {
+        &self.outcome_receiver
+    }
+}
+
+impl Drop for ProcessTerminator {
+    fn drop(&mut self) {
+        let _ = self
+            .command_sender
+            .send(ProcessTerminationWorkerCommand::Shutdown);
+        let thread_state = std::mem::replace(
+            &mut self.thread_state,
+            ProcessTerminationWorkerThreadState::Joined,
+        );
+        if let ProcessTerminationWorkerThreadState::Running(join_handle) = thread_state {
+            let _ = join_handle.join();
+        }
+    }
 }
 
 fn run_termination_worker(
-    plan_rx: &Receiver<TerminationExecutionPlan>,
-    outcome_tx: &Sender<TerminationOutcomeSummary>,
+    command_receiver: &Receiver<ProcessTerminationWorkerCommand>,
+    outcome_sender: &Sender<TerminationOutcomeSummary>,
 ) {
-    while let Ok(termination_execution_plan) = plan_rx.recv() {
-        if outcome_tx
-            .send(execute_termination_plan(&termination_execution_plan))
-            .is_err()
-        {
-            break;
+    while let Ok(command) = command_receiver.recv() {
+        match command {
+            ProcessTerminationWorkerCommand::Execute(termination_execution_plan) => {
+                if outcome_sender
+                    .send(execute_termination_plan(&termination_execution_plan))
+                    .is_err()
+                {
+                    break;
+                }
+            },
+            ProcessTerminationWorkerCommand::Shutdown => break,
         }
     }
 }
@@ -229,13 +449,46 @@ fn run_termination_worker(
 fn execute_termination_plan(
     termination_execution_plan: &TerminationExecutionPlan,
 ) -> TerminationOutcomeSummary {
+    let mut ordered_targets: Vec<&TerminationExecutionTarget> =
+        termination_execution_plan.targets.iter().collect();
+    ordered_targets.sort_by(|left, right| {
+        right
+            .role
+            .leaf_order()
+            .cmp(&left.role.leaf_order())
+            .then_with(|| left.semantic_target_id.cmp(&right.semantic_target_id))
+    });
+    let mut deadline = TerminationOutcomeDeadline::CompletedWithinDeadline;
+    let target_outcomes = ordered_targets
+        .into_iter()
+        .map(|termination_execution_target| {
+            let result = if termination_execution_plan.deadline.expired(Instant::now()) {
+                deadline = TerminationOutcomeDeadline::Expired;
+                TerminationTargetResult::Refused(TerminationError::DeadlineExpired {
+                    pid: termination_execution_target
+                        .external_process_termination_capability
+                        .pid(),
+                })
+            } else {
+                terminate_one_target(
+                    &termination_execution_target.external_process_termination_capability,
+                    termination_execution_plan.deadline,
+                )
+            };
+            if termination_execution_plan.deadline.expired(Instant::now()) {
+                deadline = TerminationOutcomeDeadline::Expired;
+            }
+            TerminationTargetOutcome {
+                semantic_target_id: termination_execution_target.semantic_target_id,
+                role: termination_execution_target.role,
+                result,
+            }
+        })
+        .collect();
     TerminationOutcomeSummary {
         termination_request_id: termination_execution_plan.termination_request_id,
-        target_outcomes:        termination_execution_plan
-            .targets
-            .iter()
-            .map(terminate_one_target)
-            .collect(),
+        deadline,
+        target_outcomes,
     }
 }
 
@@ -245,10 +498,12 @@ fn execute_termination_plan(
 /// driven from fixed admission evidence instead of a live process race.
 fn terminate_one_target(
     external_process_termination_capability: &ExternalProcessTerminationCapability,
-) -> TerminationTargetOutcome {
+    termination_execution_deadline: TerminationExecutionDeadline,
+) -> TerminationTargetResult {
     apply_termination_admission(
         external_process_termination_capability,
         external_process_termination_capability.observe_admission(),
+        termination_execution_deadline,
     )
 }
 
@@ -256,25 +511,30 @@ fn terminate_one_target(
 fn apply_termination_admission(
     external_process_termination_capability: &ExternalProcessTerminationCapability,
     termination_signal_admission: TerminationSignalAdmission,
-) -> TerminationTargetOutcome {
+    termination_execution_deadline: TerminationExecutionDeadline,
+) -> TerminationTargetResult {
     let pid = external_process_termination_capability.pid();
     match termination_signal_admission {
         TerminationSignalAdmission::PidReused | TerminationSignalAdmission::ProcessGone => {
-            TerminationTargetOutcome::AlreadyGone { pid }
+            TerminationTargetResult::AlreadyGone { pid }
         },
         TerminationSignalAdmission::RevalidationUnavailable => {
-            TerminationTargetOutcome::Refused(TerminationError::ProcessRevalidationUnavailable {
+            TerminationTargetResult::Refused(TerminationError::ProcessRevalidationUnavailable {
                 pid,
             })
         },
         TerminationSignalAdmission::ProcessImageReplaced => {
-            TerminationTargetOutcome::Refused(TerminationError::ProcessImageReplaced { pid })
+            TerminationTargetResult::Refused(TerminationError::ProcessImageReplaced { pid })
         },
         TerminationSignalAdmission::SameProcessObject => {
-            if external_process_termination_capability.has_identity_bound_adapter() {
-                deliver_one_bound_signal(external_process_termination_capability, pid)
+            if external_process_termination_capability.is_actionable() {
+                deliver_one_bound_signal(
+                    external_process_termination_capability,
+                    pid,
+                    termination_execution_deadline.confirmation_timeout(Instant::now()),
+                )
             } else {
-                TerminationTargetOutcome::Refused(TerminationError::HostHasNoIdentityBoundAdapter {
+                TerminationTargetResult::Refused(TerminationError::HostHasNoIdentityBoundAdapter {
                     pid,
                 })
             }
@@ -286,25 +546,30 @@ fn apply_termination_admission(
 const fn apply_termination_admission(
     external_process_termination_capability: &ExternalProcessTerminationCapability,
     termination_signal_admission: TerminationSignalAdmission,
-) -> TerminationTargetOutcome {
+    _: TerminationExecutionDeadline,
+) -> TerminationTargetResult {
     let pid = external_process_termination_capability.pid();
     match termination_signal_admission {
         TerminationSignalAdmission::PidReused | TerminationSignalAdmission::ProcessGone => {
-            TerminationTargetOutcome::AlreadyGone { pid }
+            TerminationTargetResult::AlreadyGone { pid }
         },
         TerminationSignalAdmission::RevalidationUnavailable => {
-            TerminationTargetOutcome::Refused(TerminationError::ProcessRevalidationUnavailable {
+            TerminationTargetResult::Refused(TerminationError::ProcessRevalidationUnavailable {
                 pid,
             })
         },
         TerminationSignalAdmission::ProcessImageReplaced => {
-            TerminationTargetOutcome::Refused(TerminationError::ProcessImageReplaced { pid })
+            TerminationTargetResult::Refused(TerminationError::ProcessImageReplaced { pid })
         },
         TerminationSignalAdmission::SameProcessObject => {
-            if external_process_termination_capability.has_identity_bound_adapter() {
-                deliver_one_bound_signal(external_process_termination_capability, pid)
+            if external_process_termination_capability.is_actionable() {
+                deliver_one_bound_signal(
+                    external_process_termination_capability,
+                    pid,
+                    std::time::Duration::ZERO,
+                )
             } else {
-                TerminationTargetOutcome::Refused(TerminationError::HostHasNoIdentityBoundAdapter {
+                TerminationTargetResult::Refused(TerminationError::HostHasNoIdentityBoundAdapter {
                     pid,
                 })
             }
@@ -318,26 +583,27 @@ const fn apply_termination_admission(
 fn deliver_one_bound_signal(
     external_process_termination_capability: &ExternalProcessTerminationCapability,
     pid: u32,
-) -> TerminationTargetOutcome {
+    confirmation_timeout: std::time::Duration,
+) -> TerminationTargetResult {
     match external_process_termination_capability.deliver_termination_request() {
         BoundSignalDelivery::Rejected => {
-            TerminationTargetOutcome::Refused(TerminationError::HostRejectedSignal { pid })
+            TerminationTargetResult::Refused(TerminationError::HostRejectedSignal { pid })
         },
         #[cfg(any(target_os = "linux", test))]
-        BoundSignalDelivery::ProcessGone => TerminationTargetOutcome::AlreadyGone { pid },
+        BoundSignalDelivery::ProcessGone => TerminationTargetResult::AlreadyGone { pid },
         #[cfg(any(target_os = "linux", test))]
         BoundSignalDelivery::Accepted => {
             match external_process_termination_capability
-                .confirm_process_object_gone(TERMINATION_CONFIRMATION_TIMEOUT)
+                .confirm_process_object_gone(confirmation_timeout)
             {
                 #[cfg(any(target_os = "linux", test))]
                 BoundProcessObjectPresence::Gone => {
-                    TerminationTargetOutcome::GoneAfterSignaling { pid }
+                    TerminationTargetResult::GoneAfterSignaling { pid }
                 },
                 #[cfg(any(target_os = "linux", test))]
-                BoundProcessObjectPresence::Present => TerminationTargetOutcome::Survived { pid },
+                BoundProcessObjectPresence::Present => TerminationTargetResult::Survived { pid },
                 BoundProcessObjectPresence::Unavailable => {
-                    TerminationTargetOutcome::SignaledButUnconfirmed { pid }
+                    TerminationTargetResult::SignaledButUnconfirmed { pid }
                 },
             }
         },
@@ -348,10 +614,11 @@ fn deliver_one_bound_signal(
 const fn deliver_one_bound_signal(
     external_process_termination_capability: &ExternalProcessTerminationCapability,
     pid: u32,
-) -> TerminationTargetOutcome {
+    _: std::time::Duration,
+) -> TerminationTargetResult {
     match external_process_termination_capability.deliver_termination_request() {
         BoundSignalDelivery::Rejected => {
-            TerminationTargetOutcome::Refused(TerminationError::HostRejectedSignal { pid })
+            TerminationTargetResult::Refused(TerminationError::HostRejectedSignal { pid })
         },
     }
 }
@@ -360,6 +627,7 @@ const fn deliver_one_bound_signal(
 #[allow(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests {
     use std::process::Command;
+    use std::time::Duration;
 
     use super::*;
     use crate::process_observation::PlatformTerminationCapabilityObservation;
@@ -382,7 +650,39 @@ mod tests {
         process_terminator: &mut ProcessTerminator,
         targets: Vec<ExternalProcessTerminationCapability>,
     ) -> TerminationExecutionPlan {
+        let targets = targets
+            .into_iter()
+            .enumerate()
+            .map(|(index, external_process_termination_capability)| {
+                let Ok(target_number) = u64::try_from(index + 1) else {
+                    panic!("test target identities should fit in u64");
+                };
+                let Some(target_number) = NonZeroU64::new(target_number) else {
+                    panic!("test target identities start at one");
+                };
+                let termination_target_id = TerminationTargetId::for_test(target_number);
+                TerminationExecutionTarget::new(
+                    termination_target_id,
+                    external_process_termination_capability,
+                )
+            })
+            .collect();
         match process_terminator.plan_termination(targets) {
+            TerminationPlanCreation::Planned(termination_execution_plan) => {
+                termination_execution_plan
+            },
+            TerminationPlanCreation::RequestIdsExhausted => {
+                panic!("a fresh terminator has unused request identities")
+            },
+        }
+    }
+
+    fn bounded_plan(
+        process_terminator: &mut ProcessTerminator,
+        targets: Vec<TerminationExecutionTarget>,
+        deadline: Instant,
+    ) -> TerminationExecutionPlan {
+        match process_terminator.plan_bounded_termination(targets, deadline) {
             TerminationPlanCreation::Planned(termination_execution_plan) => {
                 termination_execution_plan
             },
@@ -458,6 +758,116 @@ mod tests {
     }
 
     #[test]
+    fn bounded_pass_orders_deepest_descendant_before_parent_and_root() {
+        let mut process_terminator = ProcessTerminator::start();
+        let root_target_id = TerminationTargetId::for_test(NonZeroU64::MIN);
+        let parent_target_id = TerminationTargetId::for_test(NonZeroU64::MIN.saturating_add(1));
+        let leaf_target_id = TerminationTargetId::for_test(NonZeroU64::MIN.saturating_add(2));
+        let plan = bounded_plan(
+            &mut process_terminator,
+            vec![
+                TerminationExecutionTarget::new(root_target_id, test_capability(FIXTURE_PID)),
+                TerminationExecutionTarget::admitted_descendant(
+                    parent_target_id,
+                    1,
+                    test_capability(FIXTURE_PID + 1),
+                ),
+                TerminationExecutionTarget::admitted_descendant(
+                    leaf_target_id,
+                    2,
+                    test_capability(FIXTURE_PID + 2),
+                ),
+            ],
+            Instant::now() + Duration::from_secs(5),
+        );
+        let request_id = plan.termination_request_id();
+        assert_eq!(
+            process_terminator.request_termination(plan),
+            TerminationDispatchOutcome::Dispatched(request_id)
+        );
+        let summary = await_outcome(&process_terminator);
+
+        assert_eq!(
+            summary
+                .target_outcomes()
+                .iter()
+                .map(TerminationTargetOutcome::semantic_target_id)
+                .collect::<Vec<_>>(),
+            vec![leaf_target_id, parent_target_id, root_target_id]
+        );
+        assert!(matches!(
+            summary.target_outcomes()[0].role(),
+            TerminationExecutionTargetRole::AdmittedDescendant { depth_from_root: 2 }
+        ));
+        assert_eq!(
+            summary.target_outcomes()[2].role(),
+            TerminationExecutionTargetRole::FrozenRoot
+        );
+    }
+
+    #[test]
+    fn expired_pass_reports_deadline_without_claiming_a_signal() {
+        let mut process_terminator = ProcessTerminator::start();
+        let target_id = TerminationTargetId::for_test(NonZeroU64::MIN);
+        let plan = bounded_plan(
+            &mut process_terminator,
+            vec![TerminationExecutionTarget::new(
+                target_id,
+                test_capability(FIXTURE_PID),
+            )],
+            Instant::now(),
+        );
+        let request_id = plan.termination_request_id();
+        assert_eq!(
+            process_terminator.request_termination(plan),
+            TerminationDispatchOutcome::Dispatched(request_id)
+        );
+        let summary = await_outcome(&process_terminator);
+
+        assert_eq!(summary.deadline(), TerminationOutcomeDeadline::Expired);
+        assert!(matches!(
+            summary.target_outcomes(),
+            [TerminationTargetOutcome {
+                semantic_target_id,
+                result: TerminationTargetResult::Refused(TerminationError::DeadlineExpired {
+                    pid: FIXTURE_PID,
+                }),
+                ..
+            }] if *semantic_target_id == target_id
+        ));
+    }
+
+    #[test]
+    fn bounded_confirmation_reports_both_survivor_and_expired_deadline() {
+        let mut process_terminator = ProcessTerminator::start();
+        let target_id = TerminationTargetId::for_test(NonZeroU64::MIN);
+        let capability = ExternalProcessTerminationCapability::for_test(
+            ProcessIncarnation::for_test(
+                ProcessIdentity::for_test(FIXTURE_PID, 7),
+                "/usr/bin/cargo",
+            ),
+            BoundSignalDelivery::Accepted,
+            &[BoundProcessObjectPresence::Present; 8],
+        );
+        let plan = bounded_plan(
+            &mut process_terminator,
+            vec![TerminationExecutionTarget::new(target_id, capability)],
+            Instant::now() + Duration::from_millis(100),
+        );
+        let summary = execute_termination_plan(&plan);
+
+        assert_eq!(summary.deadline(), TerminationOutcomeDeadline::Expired);
+        assert!(matches!(
+            summary.target_outcomes(),
+            [TerminationTargetOutcome {
+                semantic_target_id,
+                result: TerminationTargetResult::Survived { pid: FIXTURE_PID },
+                ..
+            }] if *semantic_target_id == target_id
+        ));
+    }
+
+    #[test]
     fn a_bound_target_that_exits_after_one_signal_is_reported_as_gone() {
         let capability = ExternalProcessTerminationCapability::for_test(
             ProcessIncarnation::for_test(
@@ -468,8 +878,12 @@ mod tests {
             &[BoundProcessObjectPresence::Gone],
         );
         assert_eq!(
-            apply_termination_admission(&capability, TerminationSignalAdmission::SameProcessObject),
-            TerminationTargetOutcome::GoneAfterSignaling { pid: FIXTURE_PID }
+            apply_termination_admission(
+                &capability,
+                TerminationSignalAdmission::SameProcessObject,
+                TerminationExecutionDeadline::StartupHandshake,
+            ),
+            TerminationTargetResult::GoneAfterSignaling { pid: FIXTURE_PID }
         );
     }
 
@@ -484,8 +898,12 @@ mod tests {
             &[BoundProcessObjectPresence::Present],
         );
         assert_eq!(
-            apply_termination_admission(&capability, TerminationSignalAdmission::SameProcessObject),
-            TerminationTargetOutcome::Refused(TerminationError::HostRejectedSignal {
+            apply_termination_admission(
+                &capability,
+                TerminationSignalAdmission::SameProcessObject,
+                TerminationExecutionDeadline::StartupHandshake,
+            ),
+            TerminationTargetResult::Refused(TerminationError::HostRejectedSignal {
                 pid: FIXTURE_PID,
             })
         );
@@ -502,8 +920,12 @@ mod tests {
             &[],
         );
         assert_eq!(
-            apply_termination_admission(&capability, TerminationSignalAdmission::SameProcessObject),
-            TerminationTargetOutcome::AlreadyGone { pid: FIXTURE_PID }
+            apply_termination_admission(
+                &capability,
+                TerminationSignalAdmission::SameProcessObject,
+                TerminationExecutionDeadline::StartupHandshake,
+            ),
+            TerminationTargetResult::AlreadyGone { pid: FIXTURE_PID }
         );
     }
 
@@ -528,8 +950,8 @@ mod tests {
             .unwrap_or_else(|error| panic!("the disappearance fixture should be reaped: {error}"));
 
         assert_eq!(
-            terminate_one_target(&capability),
-            TerminationTargetOutcome::AlreadyGone { pid: child.id() }
+            terminate_one_target(&capability, TerminationExecutionDeadline::StartupHandshake),
+            TerminationTargetResult::AlreadyGone { pid: child.id() }
         );
     }
 
@@ -546,7 +968,7 @@ mod tests {
                 panic!("the live pidfd fixture should produce authority")
             },
         };
-        assert!(capability.has_identity_bound_adapter());
+        assert!(capability.is_actionable());
         let mut process_terminator = ProcessTerminator::start();
         let plan = planned(&mut process_terminator, vec![capability]);
         let request_id = plan.termination_request_id();
@@ -554,10 +976,14 @@ mod tests {
             process_terminator.request_termination(plan),
             TerminationDispatchOutcome::Dispatched(request_id)
         );
-        assert_eq!(
-            await_outcome(&process_terminator).target_outcomes(),
-            &[TerminationTargetOutcome::GoneAfterSignaling { pid: child.id() }]
-        );
+        let termination_outcome_summary = await_outcome(&process_terminator);
+        assert!(matches!(
+            termination_outcome_summary.target_outcomes(),
+            [TerminationTargetOutcome {
+                result: TerminationTargetResult::GoneAfterSignaling { pid },
+                ..
+            }] if *pid == child.id()
+        ));
         child
             .wait()
             .unwrap_or_else(|error| panic!("the pidfd fixture should be reaped: {error}"));
@@ -566,7 +992,7 @@ mod tests {
     #[test]
     fn dropping_the_terminator_ends_the_worker() {
         let process_terminator = ProcessTerminator::start();
-        let outcome_rx = process_terminator.outcome_rx.clone();
+        let outcome_rx = process_terminator.outcome_receiver().clone();
         drop(process_terminator);
         for _ in 0..TERMINATION_POLL_ATTEMPTS {
             if outcome_rx.try_recv() == Err(TryRecvError::Disconnected) {

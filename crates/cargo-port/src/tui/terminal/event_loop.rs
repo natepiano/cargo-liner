@@ -25,6 +25,7 @@ use crate::process_observation::ProcessRefreshDeadline;
 use crate::project::AbsolutePath;
 use crate::tui::app::App;
 use crate::tui::app::PollBackgroundStats;
+use crate::tui::background::ProcessTerminationResultReceiver;
 use crate::tui::input;
 use crate::tui::process_refresh::AppProcessRefreshResultReceiver;
 use crate::tui::process_refresh::ObserverRefreshTiming;
@@ -177,6 +178,11 @@ fn wait_for_event(app: &App, input_rx: &Receiver<Event>) {
         app.process_refresh_result_receiver()
     {
         select.recv(process_refresh_result_receiver);
+    }
+    if let ProcessTerminationResultReceiver::Worker(process_termination_result_receiver) =
+        app.background.process_termination_result_receiver()
+    {
+        select.recv(process_termination_result_receiver);
     }
     // The fired index is ignored: the loop body drains every source.
     let _ = select.ready_timeout(timeout);

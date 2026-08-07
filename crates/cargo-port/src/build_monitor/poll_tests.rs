@@ -88,7 +88,6 @@ fn a_session_the_scope_covers_is_stored_fresh() -> Result<(), Box<dyn std::error
         build_monitor.monitor_snapshot().observation(),
         MonitorObservation::Observed(monitor_data.observed_at())
     );
-    assert_eq!(build_monitor.live_session_ids().len(), 1);
     Ok(())
 }
 
@@ -113,7 +112,6 @@ fn an_out_of_scope_external_session_is_dropped_and_the_owned_run_is_not()
         panic!("a stored cycle is fresh");
     };
     assert!(monitor_data.session_rows().is_empty());
-    assert!(build_monitor.live_session_ids().is_empty());
 
     let mut owned_fixture = ClassificationFixture::new()?;
     let owned_root = owned_fixture.cargo_root(&["cargo", "build"]);
@@ -173,7 +171,6 @@ fn cycles_without_a_classification_age_what_is_shown() -> Result<(), Box<dyn std
         build_monitor.monitor_snapshot().actionability(),
         MonitorDataActionability::NotActionable
     ));
-    assert_eq!(build_monitor.live_session_ids().len(), 1);
 
     build_monitor.record_classification_failure();
 
@@ -181,7 +178,6 @@ fn cycles_without_a_classification_age_what_is_shown() -> Result<(), Box<dyn std
         *build_monitor.monitor_snapshot(),
         MonitorSnapshot::Unavailable
     );
-    assert!(build_monitor.live_session_ids().is_empty());
     Ok(())
 }
 
@@ -214,7 +210,10 @@ fn a_scope_covering_the_same_roots_retains_what_is_shown() -> Result<(), Box<dyn
         build_monitor.monitor_snapshot().actionability(),
         MonitorDataActionability::Actionable(_)
     ));
-    assert_eq!(build_monitor.live_session_ids().len(), 1);
+    assert!(matches!(
+        build_monitor.monitor_snapshot().actionability(),
+        MonitorDataActionability::Actionable(monitor_data) if monitor_data.session_rows().len() == 1
+    ));
     Ok(())
 }
 
@@ -236,7 +235,6 @@ fn a_scope_covering_different_roots_retains_nothing() -> Result<(), Box<dyn std:
     build_monitor.replace_scope(&BuildScopeActionability::Actionable(unrelated_scope_key()));
 
     assert_eq!(*build_monitor.monitor_snapshot(), MonitorSnapshot::Pending);
-    assert!(build_monitor.live_session_ids().is_empty());
     Ok(())
 }
 
@@ -258,7 +256,6 @@ fn a_scope_that_authorizes_nothing_shows_nothing() -> Result<(), Box<dyn std::er
     build_monitor.replace_scope(&BuildScopeActionability::NotActionable);
 
     assert_eq!(*build_monitor.monitor_snapshot(), MonitorSnapshot::Pending);
-    assert!(build_monitor.live_session_ids().is_empty());
     Ok(())
 }
 
@@ -280,7 +277,6 @@ fn clearing_the_monitor_drops_what_it_was_showing() -> Result<(), Box<dyn std::e
     build_monitor.switch_off();
 
     assert_eq!(*build_monitor.monitor_snapshot(), MonitorSnapshot::Off);
-    assert!(build_monitor.live_session_ids().is_empty());
     Ok(())
 }
 

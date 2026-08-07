@@ -31,5 +31,9 @@ mod test_support;
 mod theme_roles;
 mod workspace_index;
 
+pub(crate) use state::OwnedProcessGroupSignalOutcome;
 pub(crate) use state::OwnedRunId;
+pub(crate) use state::OwnedRunTerminationOutcome;
+pub(crate) use state::OwnedRunTerminationSubmission;
+pub(crate) use state::OwnedRunTerminationToken;
 pub use terminal::run;

@@ -208,11 +208,24 @@ impl MonitorData {
 /// still on screen", which is why it is its own value rather than a payload
 /// bolted onto pending or stale.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct RetainedMonitorData(MonitorData);
+pub(crate) struct RetainedMonitorData {
+    displayed_data:          MonitorData,
+    current_build_scope_key: BuildScopeKey,
+}
 
 impl RetainedMonitorData {
+    const fn new(displayed_data: MonitorData, current_build_scope_key: BuildScopeKey) -> Self {
+        Self {
+            displayed_data,
+            current_build_scope_key,
+        }
+    }
+
     /// The prior cycle's rows, still current enough to render and act on.
-    pub(crate) const fn monitor_data(&self) -> &MonitorData { &self.0 }
+    pub(crate) const fn monitor_data(&self) -> &MonitorData { &self.displayed_data }
+
+    /// The current scope key that retained rows may authorize against.
+    const fn current_build_scope_key(&self) -> &BuildScopeKey { &self.current_build_scope_key }
 }
 
 /// What the compile monitor has to show right now.
@@ -250,13 +263,25 @@ pub(crate) enum MonitorSnapshot {
 /// identity against the live process snapshot before it signals, so a session
 /// that ended meanwhile is simply not found. Data that a failed cycle already
 /// aged is not, however it was retained afterwards.
-#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MonitorDataActionability<'a> {
     /// These rows may be acted on.
-    Actionable(&'a MonitorData),
+    Actionable(ActionableMonitorData<'a>),
     /// Nothing shown may be acted on.
     NotActionable,
+}
+
+/// Current scope identity paired with the rows that remain actionable in it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ActionableMonitorData<'a> {
+    build_scope_key: &'a BuildScopeKey,
+    session_rows:    &'a [MonitorSessionRow],
+}
+
+impl<'a> ActionableMonitorData<'a> {
+    pub(crate) const fn build_scope_key(self) -> &'a BuildScopeKey { self.build_scope_key }
+
+    pub(crate) const fn session_rows(self) -> &'a [MonitorSessionRow] { self.session_rows }
 }
 
 /// Whether the monitor holds an observation instant to derive age from.
@@ -301,12 +326,19 @@ pub(crate) enum MonitorDisplay<'a> {
 
 impl MonitorSnapshot {
     /// The rows a termination may act on.
-    #[cfg(test)]
-    pub(crate) const fn actionability(&self) -> MonitorDataActionability<'_> {
+    pub(crate) fn actionability(&self) -> MonitorDataActionability<'_> {
         match self {
-            Self::Fresh(monitor_data) => MonitorDataActionability::Actionable(monitor_data),
+            Self::Fresh(monitor_data) => {
+                MonitorDataActionability::Actionable(ActionableMonitorData {
+                    build_scope_key: monitor_data.build_scope_key(),
+                    session_rows:    monitor_data.session_rows(),
+                })
+            },
             Self::PendingWithRetained(retained_monitor_data) => {
-                MonitorDataActionability::Actionable(retained_monitor_data.monitor_data())
+                MonitorDataActionability::Actionable(ActionableMonitorData {
+                    build_scope_key: retained_monitor_data.current_build_scope_key(),
+                    session_rows:    retained_monitor_data.monitor_data().session_rows(),
+                })
             },
             Self::Off
             | Self::Pending
@@ -362,7 +394,7 @@ impl MonitorSnapshot {
         match self {
             Self::Fresh(monitor_data) => Self::Stale(monitor_data),
             Self::PendingWithRetained(retained_monitor_data) => {
-                Self::Stale(retained_monitor_data.0)
+                Self::Stale(retained_monitor_data.displayed_data)
             },
             Self::Pending | Self::Stale(_) | Self::StaleWithRetained(_) | Self::Unavailable => {
                 Self::Unavailable
@@ -381,22 +413,81 @@ impl MonitorSnapshot {
         let (retained, monitor_staleness) = match self {
             Self::Fresh(monitor_data) => (monitor_data, MonitorStaleness::Live),
             Self::PendingWithRetained(retained_monitor_data) => {
-                (retained_monitor_data.0, MonitorStaleness::Live)
+                (retained_monitor_data.displayed_data, MonitorStaleness::Live)
             },
             Self::Stale(monitor_data) => (monitor_data, MonitorStaleness::Stale),
-            Self::StaleWithRetained(retained_monitor_data) => {
-                (retained_monitor_data.0, MonitorStaleness::Stale)
-            },
+            Self::StaleWithRetained(retained_monitor_data) => (
+                retained_monitor_data.displayed_data,
+                MonitorStaleness::Stale,
+            ),
             Self::Off | Self::Pending | Self::Unavailable => return Self::Pending,
         };
         if retained.build_scope_key().covered_scope_roots() != build_scope_key.covered_scope_roots()
         {
             return Self::Pending;
         }
-        let retained_monitor_data = RetainedMonitorData(retained);
+        let retained_monitor_data = RetainedMonitorData::new(retained, build_scope_key.clone());
         match monitor_staleness {
             MonitorStaleness::Live => Self::PendingWithRetained(retained_monitor_data),
             MonitorStaleness::Stale => Self::StaleWithRetained(retained_monitor_data),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::time::Instant;
+
+    use super::MonitorData;
+    use super::MonitorDataActionability;
+    use super::MonitorDisplay;
+    use super::MonitorSnapshot;
+    use super::MonitorStaleness;
+    use super::RetainedMonitorData;
+    use crate::build_monitor::BuildScopeKey;
+    use crate::project::AbsolutePath;
+
+    fn monitor_data() -> MonitorData {
+        MonitorData::new(
+            BuildScopeKey::for_test(AbsolutePath::from(Path::new("/"))),
+            Vec::new(),
+            Vec::new(),
+            Instant::now(),
+        )
+    }
+
+    fn retained_monitor_data(monitor_data: MonitorData) -> RetainedMonitorData {
+        let build_scope_key = monitor_data.build_scope_key().clone();
+        RetainedMonitorData::new(monitor_data, build_scope_key)
+    }
+
+    #[test]
+    fn actionability_agrees_with_visible_staleness_for_every_snapshot_variant() {
+        let monitor_data = monitor_data();
+        let snapshots = [
+            MonitorSnapshot::Off,
+            MonitorSnapshot::Pending,
+            MonitorSnapshot::PendingWithRetained(retained_monitor_data(monitor_data.clone())),
+            MonitorSnapshot::Fresh(monitor_data.clone()),
+            MonitorSnapshot::Stale(monitor_data.clone()),
+            MonitorSnapshot::StaleWithRetained(retained_monitor_data(monitor_data)),
+            MonitorSnapshot::Unavailable,
+        ];
+
+        for monitor_snapshot in snapshots {
+            let visible_rows_are_live = matches!(
+                monitor_snapshot.monitor_display(),
+                MonitorDisplay::Rows {
+                    monitor_staleness: MonitorStaleness::Live,
+                    ..
+                }
+            );
+            let snapshot_is_actionable = matches!(
+                monitor_snapshot.actionability(),
+                MonitorDataActionability::Actionable(_)
+            );
+            assert_eq!(snapshot_is_actionable, visible_rows_are_live);
         }
     }
 }

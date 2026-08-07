@@ -472,9 +472,14 @@ fn render_monitor(
         return;
     }
     match monitor_presentation {
-        MonitorPresentation::Empty(monitor_empty_state) => {
+        MonitorPresentation::Empty(monitor_empty_presentation) => {
             hit_map.record(HitRegion::Drawn(body), OutputMonitorHit::EmptyMonitor);
-            frame.render_widget(Paragraph::new(empty_state_line(monitor_empty_state)), body);
+            frame.render_widget(
+                Paragraph::new(empty_state_line(
+                    monitor_empty_presentation.monitor_empty_state(),
+                )),
+                body,
+            );
         },
         MonitorPresentation::Columns(monitor_columns) => {
             render_columns(

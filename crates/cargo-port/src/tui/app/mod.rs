@@ -679,6 +679,7 @@ impl App {
         let output_presentation = OutputPresentation::derive(
             compile_visibility_state,
             build_monitor.monitor_snapshot(),
+            build_monitor.termination_lifecycle_registry(),
             inflight.owned_run().output_state(),
             inflight.owned_run().running_label(),
             inflight.owned_run().completion_marker(),
@@ -722,6 +723,7 @@ impl App {
         let output_presentation = OutputPresentation::derive(
             &self.compile_visibility_state,
             self.build_monitor.monitor_snapshot(),
+            self.build_monitor.termination_lifecycle_registry(),
             self.inflight.owned_run().output_state(),
             self.inflight.owned_run().running_label(),
             self.inflight.owned_run().completion_marker(),
@@ -1207,6 +1209,7 @@ impl App {
         let output_presentation = OutputPresentation::derive(
             compile_visibility_state,
             build_monitor.monitor_snapshot(),
+            build_monitor.termination_lifecycle_registry(),
             inflight.owned_run().output_state(),
             inflight.owned_run().running_label(),
             inflight.owned_run().completion_marker(),
@@ -1222,6 +1225,7 @@ impl App {
         OutputPresentation::derive(
             &self.compile_visibility_state,
             self.build_monitor.monitor_snapshot(),
+            self.build_monitor.termination_lifecycle_registry(),
             self.inflight.owned_run().output_state(),
             self.inflight.owned_run().running_label(),
             self.inflight.owned_run().completion_marker(),
@@ -16060,6 +16064,7 @@ mod tests {
             output_presentation:       crate::tui::panes::OutputPresentation::derive(
                 &app.compile_visibility_state,
                 app.build_monitor.monitor_snapshot(),
+                app.build_monitor.termination_lifecycle_registry(),
                 app.inflight.owned_run().output_state(),
                 app.inflight.owned_run().running_label(),
                 app.inflight.owned_run().completion_marker(),

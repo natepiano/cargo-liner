@@ -16,6 +16,8 @@ use super::presentation::OwnedOutputVisibility;
 use super::selection::OutputCursor;
 use super::selection::OutputCursorTarget;
 use crate::build_monitor::BuildSessionId;
+use crate::build_monitor::BuildTerminationLifecycle;
+use crate::build_monitor::BuildTerminationLifecycleRegistry;
 use crate::build_monitor::ClassifiedRoot;
 use crate::build_monitor::CompileActivityId;
 use crate::build_monitor::CompilerAttribution;
@@ -23,6 +25,7 @@ use crate::build_monitor::MonitorSnapshot;
 use crate::build_monitor::classified_monitor_snapshot;
 use crate::process_observation::identity::ProcessIdentity;
 use crate::process_observation::identity::ProcessIncarnation;
+use crate::process_termination::TerminationTargetResult;
 use crate::project::AbsolutePath;
 use crate::tui::OwnedRunId;
 use crate::tui::compile_visibility::CompileVisibilityState;
@@ -55,6 +58,12 @@ fn no_index_yet() -> MonitorScopeResolutionRevision {
     MonitorScopeResolutionRevision::for_test(MonitorWorkspaceIndexReadiness::Uninitialized)
 }
 
+fn empty_termination_lifecycle_registry() -> &'static BuildTerminationLifecycleRegistry {
+    static REGISTRY: std::sync::OnceLock<BuildTerminationLifecycleRegistry> =
+        std::sync::OnceLock::new();
+    REGISTRY.get_or_init(BuildTerminationLifecycleRegistry::default)
+}
+
 /// Derive with no owned output retained.
 fn derive_without_owned_output<'a>(
     compile_visibility_state: &'a CompileVisibilityState,
@@ -63,6 +72,7 @@ fn derive_without_owned_output<'a>(
     OutputPresentation::derive(
         compile_visibility_state,
         monitor_snapshot,
+        empty_termination_lifecycle_registry(),
         OwnedRunOutputStateRef::Absent,
         OwnedRunRunningLabelRef::NotRunning,
         OwnedRunCompletionMarker::NotCompleted,
@@ -87,10 +97,11 @@ fn columns_of<'a>(output_presentation: &OutputPresentation<'a>) -> MonitorColumn
 
 /// The empty state a monitor with no columns is showing.
 fn empty_state_of(output_presentation: &OutputPresentation<'_>) -> MonitorEmptyState {
-    let MonitorPresentation::Empty(monitor_empty_state) = monitor_of(output_presentation) else {
+    let MonitorPresentation::Empty(monitor_empty_presentation) = monitor_of(output_presentation)
+    else {
         panic!("this monitor is showing no columns");
     };
-    monitor_empty_state
+    monitor_empty_presentation.monitor_empty_state()
 }
 
 /// Each of the four scope resolutions the index has not settled draws its own
@@ -199,6 +210,7 @@ fn output_with_no_producer_or_no_lines_is_not_drawn() {
     let lineless = OutputPresentation::derive(
         &off_state,
         &monitor_snapshot,
+        empty_termination_lifecycle_registry(),
         OwnedRunOutputStateRef::Retained {
             producer: OwnedRunId::for_test(NonZeroU64::MIN),
             title:    OwnedRunOutputTitleRef::Unavailable,
@@ -234,6 +246,7 @@ fn retained_output_stays_attributed_to_the_run_that_produced_it() {
     let output_presentation = OutputPresentation::derive(
         &off_state,
         &monitor_snapshot,
+        empty_termination_lifecycle_registry(),
         inflight.owned_run().output_state(),
         inflight.owned_run().running_label(),
         inflight.owned_run().completion_marker(),
@@ -284,6 +297,7 @@ fn owned_output_pinned_beside_the_monitor_keeps_both_halves() {
     let output_presentation = OutputPresentation::derive(
         &compile_visibility_state,
         &monitor_snapshot,
+        empty_termination_lifecycle_registry(),
         OwnedRunOutputStateRef::Retained {
             producer: OwnedRunId::for_test(NonZeroU64::MIN),
             title:    OwnedRunOutputTitleRef::Named("cargo build"),
@@ -341,6 +355,76 @@ fn columns_without_compilers(root_pids: &[u32]) -> MonitorSnapshot {
         })
         .collect();
     classified_columns(&classified_roots)
+}
+
+/// Transaction lifecycle belongs to the monitor, not the replaceable rows;
+/// presentation joins it by immutable session identity when it constructs a
+/// column for rendering.
+#[test]
+fn monitor_columns_join_the_termination_lifecycle_registry() {
+    let compile_visibility_state = actionable_scope();
+    let monitor_snapshot = columns_without_compilers(&[4_242]);
+    let MonitorSnapshot::Fresh(monitor_data) = &monitor_snapshot else {
+        panic!("the classification fixture creates fresh monitor rows");
+    };
+    let build_session_id = monitor_data.session_rows()[0].build_session_id();
+    let mut build_termination_lifecycle_registry = BuildTerminationLifecycleRegistry::default();
+    build_termination_lifecycle_registry.mark_terminating_for_test(build_session_id);
+
+    let output_presentation = OutputPresentation::derive(
+        &compile_visibility_state,
+        &monitor_snapshot,
+        &build_termination_lifecycle_registry,
+        OwnedRunOutputStateRef::Absent,
+        OwnedRunRunningLabelRef::NotRunning,
+        OwnedRunCompletionMarker::NotCompleted,
+    );
+    let monitor_columns = columns_of(&output_presentation);
+    assert_eq!(monitor_columns.terminal_records().count(), 0);
+    let Some(monitor_column) = monitor_columns.columns().next() else {
+        panic!("the fresh monitor draws its session column");
+    };
+
+    assert_eq!(
+        monitor_column.build_termination_lifecycle(),
+        BuildTerminationLifecycle::Terminating
+    );
+}
+
+#[test]
+fn empty_monitor_projects_terminal_records_without_a_current_row() {
+    let compile_visibility_state = actionable_scope();
+    let monitor_snapshot = columns_without_compilers(&[4_243]);
+    let MonitorSnapshot::Fresh(monitor_data) = &monitor_snapshot else {
+        panic!("the classification fixture creates fresh monitor rows");
+    };
+    let monitor_session_row = &monitor_data.session_rows()[0];
+    let build_session_id = monitor_session_row.build_session_id().clone();
+    let mut build_termination_lifecycle_registry = BuildTerminationLifecycleRegistry::default();
+    build_termination_lifecycle_registry.record_external_terminal_for_test(
+        monitor_session_row,
+        TerminationTargetResult::SignaledButUnconfirmed { pid: 4_243 },
+    );
+
+    let output_presentation = OutputPresentation::derive(
+        &compile_visibility_state,
+        &MonitorSnapshot::Unavailable,
+        &build_termination_lifecycle_registry,
+        OwnedRunOutputStateRef::Absent,
+        OwnedRunRunningLabelRef::NotRunning,
+        OwnedRunCompletionMarker::NotCompleted,
+    );
+    let MonitorPresentation::Empty(monitor_empty_presentation) = monitor_of(&output_presentation)
+    else {
+        panic!("a rowless monitor should use the empty presentation");
+    };
+    let records: Vec<_> = monitor_empty_presentation.terminal_records().collect();
+
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        records[0].display_identity().build_session_id(),
+        &build_session_id
+    );
 }
 
 /// Classification hands each session the activities this cycle attributed to

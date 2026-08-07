@@ -60,6 +60,12 @@ pub(crate) enum OwnedProcessGroupSignalOutcome {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct OwnedRunTerminationToken(OwnedRunId);
 
+#[cfg(test)]
+impl OwnedRunTerminationToken {
+    /// Name a run-bound actor token directly for transaction integration tests.
+    pub(crate) const fn for_test(owned_run_id: OwnedRunId) -> Self { Self(owned_run_id) }
+}
+
 /// Whether a termination token reached the actor worker.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OwnedRunTerminationSubmission {

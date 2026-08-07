@@ -6,7 +6,7 @@ use crate::tui::state::OwnedRunTerminationOutcome;
 
 /// Correlated immutable result sent by the process observer worker.
 pub(super) type ProcessRefreshMsg = crate::process_observation::ProcessRefreshExecution<
-    crate::build_monitor::CompileClassificationExecution,
+    crate::build_monitor::BuildMonitoringRefreshCycleExecution,
 >;
 
 /// A frozen external termination request transported to the dedicated worker.

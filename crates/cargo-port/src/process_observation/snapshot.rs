@@ -237,32 +237,42 @@ pub(crate) enum ProcessSnapshotScope {
 pub(crate) enum ProcessRefreshConsumerDemand {
     RunningTargets,
     CompileMonitor,
+    TerminationTransaction,
     RunningTargetsAndCompileMonitor,
+    RunningTargetsAndTerminationTransaction,
+    CompileMonitorAndTerminationTransaction,
+    AllConsumers,
 }
 
 impl ProcessRefreshConsumerDemand {
     pub(crate) const fn includes_running_targets(self) -> bool {
         matches!(
             self,
-            Self::RunningTargets | Self::RunningTargetsAndCompileMonitor
+            Self::RunningTargets
+                | Self::RunningTargetsAndCompileMonitor
+                | Self::RunningTargetsAndTerminationTransaction
+                | Self::AllConsumers
         )
     }
 
     pub(crate) const fn includes_compile_monitor(self) -> bool {
         matches!(
             self,
-            Self::CompileMonitor | Self::RunningTargetsAndCompileMonitor
+            Self::CompileMonitor
+                | Self::RunningTargetsAndCompileMonitor
+                | Self::CompileMonitorAndTerminationTransaction
+                | Self::AllConsumers
         )
     }
 
-    pub(crate) const fn coalesce(self, other: Self) -> Self {
-        if matches!((self, other), (Self::RunningTargets, Self::RunningTargets)) {
-            Self::RunningTargets
-        } else if matches!((self, other), (Self::CompileMonitor, Self::CompileMonitor)) {
-            Self::CompileMonitor
-        } else {
-            Self::RunningTargetsAndCompileMonitor
-        }
+    pub(crate) const fn includes_termination_transaction(self) -> bool {
+        matches!(
+            self,
+            Self::TerminationTransaction
+                | Self::RunningTargetsAndTerminationTransaction
+                | Self::CompileMonitorAndTerminationTransaction
+                | Self::AllConsumers
+        )
     }
 }
 
@@ -1289,6 +1299,18 @@ pub(super) struct ProcessIncarnationCache {
 }
 
 impl ProcessIncarnationCache {
+    /// Seed the observer-owned prior-incarnation cache from fixed test
+    /// evidence so capability transport can be exercised without a host PID.
+    #[cfg(test)]
+    pub(super) fn remember_incarnation_for_test(
+        &mut self,
+        process_identity: ProcessIdentity,
+        process_incarnation: ProcessIncarnation,
+    ) {
+        self.previous_incarnations
+            .insert(process_identity, process_incarnation);
+    }
+
     pub(super) fn snapshot_from(
         &mut self,
         observed_at: Instant,

@@ -13,6 +13,11 @@ use std::sync::atomic::Ordering;
 use super::classify::BuildClassification;
 use super::scope::BuildScopeKey;
 use super::session::OwnedRootEvidence;
+use super::termination::BuildTerminationObservationDemand;
+use super::termination::BuildTerminationObservationExecution;
+use super::termination::ClassifiedExternalTerminationSupport;
+use super::termination::ClassifiedExternalTerminationSupports;
+use super::termination::OwnedTerminationSupport;
 use crate::project::CargoWorkspaceIndex;
 
 /// Monotonic identity for one compile-monitor scope lifetime.
@@ -98,6 +103,7 @@ pub(crate) enum CompileClassificationDemand {
         build_scope_key:            BuildScopeKey,
         cargo_workspace_index:      Arc<CargoWorkspaceIndex>,
         owned_root_evidence:        OwnedRootEvidence,
+        owned_termination_support:  OwnedTerminationSupport,
         cancellation:               CompileClassificationCancellation,
     },
 }
@@ -121,18 +127,20 @@ pub(crate) enum BuildClassificationExecutionFailure {
 /// evidence travels with the result because re-reading the live evidence at
 /// reconcile time would label this cycle's sessions with whichever owned run is
 /// current then, not the one they were classified against.
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub(crate) struct CompletedBuildClassification {
-    compile_monitor_generation: CompileMonitorGeneration,
-    build_scope_key:            BuildScopeKey,
-    owned_root_evidence:        OwnedRootEvidence,
-    classification:             Box<BuildClassification>,
+    compile_monitor_generation:               CompileMonitorGeneration,
+    build_scope_key:                          BuildScopeKey,
+    owned_root_evidence:                      OwnedRootEvidence,
+    classification:                           Box<BuildClassification>,
+    classified_external_termination_supports: ClassifiedExternalTerminationSupports,
+    owned_termination_support:                OwnedTerminationSupport,
 }
 
 impl CompletedBuildClassification {
     /// Stamp one classification with the generation, scope, and owned-root
     /// evidence it ran under.
-    pub(crate) const fn new(
+    pub(crate) fn new(
         compile_monitor_generation: CompileMonitorGeneration,
         build_scope_key: BuildScopeKey,
         owned_root_evidence: OwnedRootEvidence,
@@ -143,6 +151,9 @@ impl CompletedBuildClassification {
             build_scope_key,
             owned_root_evidence,
             classification,
+            classified_external_termination_supports:
+                ClassifiedExternalTerminationSupports::default(),
+            owned_termination_support: OwnedTerminationSupport::Unavailable,
         }
     }
 
@@ -170,16 +181,42 @@ impl CompletedBuildClassification {
     /// The classification itself, for reporting what one cycle observed.
     pub(crate) const fn classification(&self) -> &BuildClassification { &self.classification }
 
+    /// Attach observer-minted move-only root support from this exact cycle.
+    pub(crate) fn insert_external_termination_support(
+        &mut self,
+        build_session_id: super::session::BuildSessionId,
+        classified_external_termination_support: ClassifiedExternalTerminationSupport,
+    ) {
+        self.classified_external_termination_supports
+            .insert(build_session_id, classified_external_termination_support);
+    }
+
+    /// Retain the actor-issued token captured when this cycle was dispatched.
+    pub(crate) const fn set_owned_termination_support(
+        &mut self,
+        owned_termination_support: OwnedTerminationSupport,
+    ) {
+        self.owned_termination_support = owned_termination_support;
+    }
+
     /// The scope, the owned-root evidence the cycle was classified against, and
     /// the classification itself, for the one consumer that narrows the
     /// host-wide result to that scope.
     pub(crate) fn into_scoped_classification(
         self,
-    ) -> (BuildScopeKey, OwnedRootEvidence, Box<BuildClassification>) {
+    ) -> (
+        BuildScopeKey,
+        OwnedRootEvidence,
+        Box<BuildClassification>,
+        ClassifiedExternalTerminationSupports,
+        OwnedTerminationSupport,
+    ) {
         (
             self.build_scope_key,
             self.owned_root_evidence,
             self.classification,
+            self.classified_external_termination_supports,
+            self.owned_termination_support,
         )
     }
 }
@@ -191,7 +228,7 @@ impl CompletedBuildClassification {
 /// observation available to Running Targets. The classification is boxed
 /// because it dwarfs the other variants and every cycle moves one of these
 /// through the worker result channel.
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub(crate) enum CompileClassificationExecution {
     NotRequested,
     Completed(CompletedBuildClassification),
@@ -203,6 +240,68 @@ pub(crate) enum CompileClassificationExecution {
         build_classification_execution_failure: BuildClassificationExecutionFailure,
     },
     Cancelled(CompileMonitorGeneration),
+}
+
+/// Independent compile-monitor and termination work carried by one refresh.
+#[derive(Clone, Debug)]
+pub(crate) struct BuildMonitoringRefreshCycleDemand {
+    compile_classification_demand:        CompileClassificationDemand,
+    build_termination_observation_demand: BuildTerminationObservationDemand,
+}
+
+impl BuildMonitoringRefreshCycleDemand {
+    pub(crate) const fn new(
+        compile_classification_demand: CompileClassificationDemand,
+        build_termination_observation_demand: BuildTerminationObservationDemand,
+    ) -> Self {
+        Self {
+            compile_classification_demand,
+            build_termination_observation_demand,
+        }
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        CompileClassificationDemand,
+        BuildTerminationObservationDemand,
+    ) {
+        (
+            self.compile_classification_demand,
+            self.build_termination_observation_demand,
+        )
+    }
+}
+
+/// Independent consumer outcomes produced from one immutable process snapshot.
+#[derive(Debug)]
+pub(crate) struct BuildMonitoringRefreshCycleExecution {
+    compile_classification_execution:        CompileClassificationExecution,
+    build_termination_observation_execution: BuildTerminationObservationExecution,
+}
+
+impl BuildMonitoringRefreshCycleExecution {
+    pub(crate) const fn new(
+        compile_classification_execution: CompileClassificationExecution,
+        build_termination_observation_execution: BuildTerminationObservationExecution,
+    ) -> Self {
+        Self {
+            compile_classification_execution,
+            build_termination_observation_execution,
+        }
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        CompileClassificationExecution,
+        BuildTerminationObservationExecution,
+    ) {
+        (
+            self.compile_classification_execution,
+            self.build_termination_observation_execution,
+        )
+    }
 }
 
 #[cfg(test)]

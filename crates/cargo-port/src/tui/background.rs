@@ -23,8 +23,8 @@ use super::terminal::CiFetchMsg;
 use super::terminal::CleanMsg;
 use super::terminal::OwnedRunEvent;
 use crate::build_monitor::BuildClassifier;
-use crate::build_monitor::CompileClassificationDemand;
-use crate::build_monitor::CompileClassificationExecution;
+use crate::build_monitor::BuildMonitoringRefreshCycleDemand;
+use crate::build_monitor::BuildMonitoringRefreshCycleExecution;
 use crate::channel::Receiver;
 use crate::channel::SendError;
 use crate::channel::Sender;
@@ -84,6 +84,12 @@ pub(super) struct Background {
     process_terminator:                   ProcessTerminator,
     process_termination_worker_readiness: ProcessTerminationWorkerReadiness,
     watcher:                              WatcherHandle,
+}
+
+/// Borrowed external-worker receiver used only for event-loop wakeups.
+pub(super) enum ProcessTerminationResultReceiver<'a> {
+    NoCompletedResultExpected,
+    Worker(&'a Receiver<ProcessTerminationOutcomeMsg>),
 }
 
 impl Background {
@@ -157,6 +163,64 @@ impl Background {
             TerminationResultPoll::WorkerUnavailable => {
                 self.process_termination_worker_readiness =
                     ProcessTerminationWorkerReadiness::Unavailable;
+            },
+        }
+    }
+
+    /// Poll one correlated external result after the target-free startup
+    /// handshake has established that the worker is available.
+    pub(super) fn poll_process_termination_outcome(&mut self) -> TerminationResultPoll {
+        match self.process_termination_worker_readiness {
+            ProcessTerminationWorkerReadiness::Available => {
+                let termination_result_poll = self.process_terminator.poll_outcome();
+                if matches!(
+                    termination_result_poll,
+                    TerminationResultPoll::WorkerUnavailable
+                ) {
+                    self.process_termination_worker_readiness =
+                        ProcessTerminationWorkerReadiness::Unavailable;
+                }
+                termination_result_poll
+            },
+            ProcessTerminationWorkerReadiness::Awaiting(_) => {
+                TerminationResultPoll::NoCompletedRequest
+            },
+            ProcessTerminationWorkerReadiness::Unavailable => {
+                TerminationResultPoll::WorkerUnavailable
+            },
+        }
+    }
+
+    pub(super) const fn process_termination_result_receiver(
+        &self,
+    ) -> ProcessTerminationResultReceiver<'_> {
+        match self.process_termination_worker_readiness {
+            ProcessTerminationWorkerReadiness::Available => {
+                ProcessTerminationResultReceiver::Worker(self.process_terminator.outcome_receiver())
+            },
+            ProcessTerminationWorkerReadiness::Awaiting(_)
+            | ProcessTerminationWorkerReadiness::Unavailable => {
+                ProcessTerminationResultReceiver::NoCompletedResultExpected
+            },
+        }
+    }
+
+    /// Borrow the dedicated external worker only after its startup handshake.
+    ///
+    /// The returned terminator still accepts only frozen opaque capabilities;
+    /// no caller receives a platform adapter or PID signal path.
+    pub(super) const fn available_process_terminator(
+        &mut self,
+    ) -> ProcessTerminatorAvailability<'_> {
+        match self.process_termination_worker_readiness {
+            ProcessTerminationWorkerReadiness::Available => {
+                ProcessTerminatorAvailability::Available(&mut self.process_terminator)
+            },
+            ProcessTerminationWorkerReadiness::Awaiting(_) => {
+                ProcessTerminatorAvailability::Starting
+            },
+            ProcessTerminationWorkerReadiness::Unavailable => {
+                ProcessTerminatorAvailability::Unavailable
             },
         }
     }
@@ -262,6 +326,13 @@ impl Background {
             "app_register_project_background_services"
         );
     }
+}
+
+/// Whether App may submit a frozen external transaction to the worker.
+pub(super) enum ProcessTerminatorAvailability<'a> {
+    Available(&'a mut ProcessTerminator),
+    Starting,
+    Unavailable,
 }
 
 #[cfg(test)]
@@ -379,6 +450,23 @@ mod tests {
 
         assert!(!background.watcher_is_active());
     }
+
+    #[test]
+    fn observed_worker_disconnection_stops_termination_receiver_registration() {
+        let mut background = fresh();
+        background.process_terminator = ProcessTerminator::disconnected_for_test();
+        background.process_termination_worker_readiness =
+            ProcessTerminationWorkerReadiness::Available;
+
+        assert!(matches!(
+            background.poll_process_termination_outcome(),
+            TerminationResultPoll::WorkerUnavailable
+        ));
+        assert!(matches!(
+            background.process_termination_result_receiver(),
+            ProcessTerminationResultReceiver::NoCompletedResultExpected
+        ));
+    }
 }
 
 /// The sole runtime [`BuildClassifier`], handed to the dedicated
@@ -395,18 +483,32 @@ pub(crate) struct BuildClassifyingRefreshCycle {
 }
 
 impl RefreshCycleClassifier for BuildClassifyingRefreshCycle {
-    type CycleDemand = CompileClassificationDemand;
-    type CycleOutcome = CompileClassificationExecution;
+    type CycleDemand = BuildMonitoringRefreshCycleDemand;
+    type CycleOutcome = BuildMonitoringRefreshCycleExecution;
 
     fn classify_refresh_cycle(
         &mut self,
+        process_observer: &mut crate::process_observation::ProcessObserver,
         process_observation_snapshot: &ProcessObservationSnapshot,
-        compile_classification_demand: CompileClassificationDemand,
-    ) -> CompileClassificationExecution {
-        self.build_classifier.classify_demand(
+        build_monitoring_refresh_cycle_demand: BuildMonitoringRefreshCycleDemand,
+    ) -> BuildMonitoringRefreshCycleExecution {
+        let (compile_classification_demand, build_termination_observation_demand) =
+            build_monitoring_refresh_cycle_demand.into_parts();
+        let compile_classification_execution = self.build_classifier.classify_demand(
+            process_observer,
             process_observation_snapshot,
             compile_classification_demand,
             Instant::now(),
+        );
+        let build_termination_observation_execution =
+            crate::build_monitor::observe_build_termination_demand(
+                process_observer,
+                process_observation_snapshot,
+                build_termination_observation_demand,
+            );
+        BuildMonitoringRefreshCycleExecution::new(
+            compile_classification_execution,
+            build_termination_observation_execution,
         )
     }
 }

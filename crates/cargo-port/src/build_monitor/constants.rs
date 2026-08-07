@@ -68,4 +68,9 @@ pub(super) const RUSTDOC_EXECUTABLE: &str = "rustdoc";
 // process walk
 /// How far a descendant may sit below its Cargo root before the parent chain
 /// is treated as unproven. A build script's linker is the deepest real case.
-pub(super) const MAX_DESCENDANT_WALK_DEPTH: usize = 8;
+pub(crate) const MAX_DESCENDANT_WALK_DEPTH: usize = 8;
+
+// termination transaction
+/// Minimum delay between observer passes when live signaled targets remain.
+pub(super) const TERMINATION_DESCENDANT_REFRESH_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(50);

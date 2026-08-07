@@ -26,10 +26,11 @@ pub(crate) trait RefreshCycleClassifier: Send + 'static {
     /// Immutable consumer evidence attached to one refresh request.
     type CycleDemand: Send + 'static;
     /// What classifying one refresh cycle produced for that consumer.
-    type CycleOutcome: Debug + PartialEq + Send + 'static;
+    type CycleOutcome: Debug + Send + 'static;
 
     fn classify_refresh_cycle(
         &mut self,
+        process_observer: &mut ProcessObserver,
         process_observation_snapshot: &ProcessObservationSnapshot,
         cycle_demand: Self::CycleDemand,
     ) -> Self::CycleOutcome;
@@ -70,6 +71,13 @@ pub(crate) enum RunningTargetsRefreshSchedule {
 /// Whether compile monitoring contributes a process deadline.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CompileMonitorRefreshSchedule {
+    At(Instant),
+    NotScheduled,
+}
+
+/// Whether an active termination transaction contributes a process deadline.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TerminationTransactionRefreshSchedule {
     At(Instant),
     NotScheduled,
 }
@@ -288,12 +296,13 @@ enum ProcessRefreshWorkerResultPoll<CycleOutcome> {
 
 /// App-owned scheduler and execution backend for the sole `ProcessObserver`.
 pub(crate) struct ProcessRefreshExecutor<C: RefreshCycleClassifier> {
-    backend:                  ProcessRefreshExecutionBackend<C>,
-    running_targets_schedule: RunningTargetsRefreshSchedule,
-    running_targets_deadline: ProcessRefreshDeadline,
-    compile_monitor_schedule: CompileMonitorRefreshSchedule,
-    in_flight:                ProcessRefreshInFlight,
-    next_request_id:          ProcessRefreshRequestId,
+    backend:                          ProcessRefreshExecutionBackend<C>,
+    running_targets_schedule:         RunningTargetsRefreshSchedule,
+    running_targets_deadline:         ProcessRefreshDeadline,
+    compile_monitor_schedule:         CompileMonitorRefreshSchedule,
+    termination_transaction_schedule: TerminationTransactionRefreshSchedule,
+    in_flight:                        ProcessRefreshInFlight,
+    next_request_id:                  ProcessRefreshRequestId,
 }
 
 impl<C: RefreshCycleClassifier> ProcessRefreshExecutor<C> {
@@ -325,6 +334,7 @@ impl<C: RefreshCycleClassifier> ProcessRefreshExecutor<C> {
             running_targets_schedule,
             running_targets_deadline,
             compile_monitor_schedule,
+            termination_transaction_schedule: TerminationTransactionRefreshSchedule::NotScheduled,
             in_flight: ProcessRefreshInFlight::Idle,
             next_request_id: ProcessRefreshRequestId(0),
         }
@@ -340,11 +350,39 @@ impl<C: RefreshCycleClassifier> ProcessRefreshExecutor<C> {
         self.compile_monitor_schedule = compile_monitor_schedule;
     }
 
+    /// Hand the executor the active transaction's next observation deadline.
+    pub(crate) const fn rearm_termination_transaction(
+        &mut self,
+        termination_transaction_refresh_schedule: TerminationTransactionRefreshSchedule,
+    ) {
+        self.termination_transaction_schedule = termination_transaction_refresh_schedule;
+    }
+
     pub(crate) fn next_deadline(&self) -> ProcessRefreshDeadline {
         if matches!(self.in_flight, ProcessRefreshInFlight::Awaiting { .. }) {
             return ProcessRefreshDeadline::AwaitingWorker;
         }
-        minimum_deadline(self.running_targets_deadline, self.compile_monitor_schedule)
+        minimum_deadline(
+            minimum_deadline(
+                self.running_targets_deadline,
+                match self.compile_monitor_schedule {
+                    CompileMonitorRefreshSchedule::At(deadline) => {
+                        ProcessRefreshDeadline::At(deadline)
+                    },
+                    CompileMonitorRefreshSchedule::NotScheduled => {
+                        ProcessRefreshDeadline::NotScheduled
+                    },
+                },
+            ),
+            match self.termination_transaction_schedule {
+                TerminationTransactionRefreshSchedule::At(deadline) => {
+                    ProcessRefreshDeadline::At(deadline)
+                },
+                TerminationTransactionRefreshSchedule::NotScheduled => {
+                    ProcessRefreshDeadline::NotScheduled
+                },
+            },
+        )
     }
 
     /// Dispatch a due cycle, asking the consumer for its per-cycle demand only
@@ -454,18 +492,37 @@ impl<C: RefreshCycleClassifier> ProcessRefreshExecutor<C> {
             CompileMonitorRefreshSchedule::At(deadline) => deadline <= now,
             CompileMonitorRefreshSchedule::NotScheduled => false,
         };
-        match (running_targets_due, compile_monitor_due) {
-            (true, true) => DueProcessRefreshDemand::Due(
-                ProcessRefreshConsumerDemand::RunningTargets
-                    .coalesce(ProcessRefreshConsumerDemand::CompileMonitor),
+        let termination_transaction_due = match self.termination_transaction_schedule {
+            TerminationTransactionRefreshSchedule::At(deadline) => deadline <= now,
+            TerminationTransactionRefreshSchedule::NotScheduled => false,
+        };
+        match (
+            running_targets_due,
+            compile_monitor_due,
+            termination_transaction_due,
+        ) {
+            (true, true, true) => {
+                DueProcessRefreshDemand::Due(ProcessRefreshConsumerDemand::AllConsumers)
+            },
+            (true, true, false) => DueProcessRefreshDemand::Due(
+                ProcessRefreshConsumerDemand::RunningTargetsAndCompileMonitor,
             ),
-            (true, false) => {
+            (true, false, true) => DueProcessRefreshDemand::Due(
+                ProcessRefreshConsumerDemand::RunningTargetsAndTerminationTransaction,
+            ),
+            (false, true, true) => DueProcessRefreshDemand::Due(
+                ProcessRefreshConsumerDemand::CompileMonitorAndTerminationTransaction,
+            ),
+            (true, false, false) => {
                 DueProcessRefreshDemand::Due(ProcessRefreshConsumerDemand::RunningTargets)
             },
-            (false, true) => {
+            (false, true, false) => {
                 DueProcessRefreshDemand::Due(ProcessRefreshConsumerDemand::CompileMonitor)
             },
-            (false, false) => DueProcessRefreshDemand::NotDue,
+            (false, false, true) => {
+                DueProcessRefreshDemand::Due(ProcessRefreshConsumerDemand::TerminationTransaction)
+            },
+            (false, false, false) => DueProcessRefreshDemand::NotDue,
         }
     }
 
@@ -478,12 +535,12 @@ impl<C: RefreshCycleClassifier> ProcessRefreshExecutor<C> {
                 RunningTargetsRefreshSchedule::Suppressed => ProcessRefreshDeadline::NotScheduled,
             };
         }
-        if matches!(
-            demand,
-            ProcessRefreshConsumerDemand::CompileMonitor
-                | ProcessRefreshConsumerDemand::RunningTargetsAndCompileMonitor
-        ) {
+        if demand.includes_compile_monitor() {
             self.compile_monitor_schedule = CompileMonitorRefreshSchedule::NotScheduled;
+        }
+        if demand.includes_termination_transaction() {
+            self.termination_transaction_schedule =
+                TerminationTransactionRefreshSchedule::NotScheduled;
         }
     }
 }
@@ -495,14 +552,10 @@ pub(crate) enum ProcessRefreshResultReceiver<'a, CycleOutcome> {
 }
 
 fn minimum_deadline(
-    running_targets_deadline: ProcessRefreshDeadline,
-    compile_monitor_schedule: CompileMonitorRefreshSchedule,
+    left_deadline: ProcessRefreshDeadline,
+    right_deadline: ProcessRefreshDeadline,
 ) -> ProcessRefreshDeadline {
-    let compile_monitor_deadline = match compile_monitor_schedule {
-        CompileMonitorRefreshSchedule::At(deadline) => ProcessRefreshDeadline::At(deadline),
-        CompileMonitorRefreshSchedule::NotScheduled => ProcessRefreshDeadline::NotScheduled,
-    };
-    match (running_targets_deadline, compile_monitor_deadline) {
+    match (left_deadline, right_deadline) {
         (ProcessRefreshDeadline::At(left), ProcessRefreshDeadline::At(right)) => {
             ProcessRefreshDeadline::At(left.min(right))
         },
@@ -557,7 +610,11 @@ fn execute_refresh<C: RefreshCycleClassifier>(
     let elapsed = started.elapsed();
     let cycle_outcome = process_refresh_cycle_owner
         .refresh_cycle_classifier
-        .classify_refresh_cycle(&process_observation_snapshot, plan.cycle_demand);
+        .classify_refresh_cycle(
+            &mut process_refresh_cycle_owner.process_observer,
+            &process_observation_snapshot,
+            plan.cycle_demand,
+        );
     ProcessRefreshExecution {
         request_id,
         demand: plan.demand,
@@ -599,6 +656,7 @@ mod tests {
 
         fn classify_refresh_cycle(
             &mut self,
+            _: &mut ProcessObserver,
             _process_observation_snapshot: &ProcessObservationSnapshot,
             _cycle_demand: Self::CycleDemand,
         ) -> Self::CycleOutcome {
@@ -617,6 +675,7 @@ mod tests {
 
         fn classify_refresh_cycle(
             &mut self,
+            _: &mut ProcessObserver,
             _process_observation_snapshot: &ProcessObservationSnapshot,
             _cycle_demand: Self::CycleDemand,
         ) -> Self::CycleOutcome {
@@ -701,6 +760,47 @@ mod tests {
         assert_eq!(
             process_refresh_executor.refresh_due(now, unclassified_cycle),
             ProcessRefreshDispatchOutcome::NotDue
+        );
+    }
+
+    #[test]
+    fn transaction_demand_uses_the_sole_executor_and_a_full_system_snapshot() {
+        let now = Instant::now();
+        let mut process_refresh_executor = ProcessRefreshExecutor::new(
+            ProcessRefreshExecutionBackendSelection::Synchronous,
+            NoRefreshCycleClassification,
+            RunningTargetsRefreshSchedule::Suppressed,
+            CompileMonitorRefreshSchedule::NotScheduled,
+            now,
+        );
+        process_refresh_executor
+            .rearm_termination_transaction(TerminationTransactionRefreshSchedule::At(now));
+
+        let ProcessRefreshDispatchOutcome::Finished(process_refresh_execution) =
+            process_refresh_executor.refresh_due(now, unclassified_cycle)
+        else {
+            panic!("transaction refresh should finish synchronously");
+        };
+        assert_eq!(
+            process_refresh_execution.demand(),
+            ProcessRefreshConsumerDemand::TerminationTransaction
+        );
+        let ProcessRefreshExecutionOutcome::Completed(completed_execution) =
+            process_refresh_execution.into_outcome()
+        else {
+            panic!("transaction refresh should complete successfully");
+        };
+        assert_eq!(
+            completed_execution.snapshot().scope(),
+            &crate::process_observation::snapshot::ProcessSnapshotScope::FullSystem
+        );
+        assert!(matches!(
+            completed_execution.snapshot().running_process_metrics(),
+            crate::process_observation::snapshot::RunningProcessMetricsObservation::NotRequested
+        ));
+        assert_eq!(
+            process_refresh_executor.next_deadline(),
+            ProcessRefreshDeadline::NotScheduled
         );
     }
 
