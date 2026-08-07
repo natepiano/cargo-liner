@@ -1280,6 +1280,8 @@ pub(crate) enum OwnedRunFixture {
     /// A fresh slot refused the launch, so there is no run to retain output
     /// from.
     Unbuilt,
+    /// One running owned run with output that remains available while it runs.
+    Live { inflight: Box<Inflight> },
     /// One finished run's output, retained under the run that wrote it.
     Built {
         inflight: Box<Inflight>,
@@ -1395,6 +1397,40 @@ impl Inflight {
         OwnedRunFixture::Built {
             inflight: Box::new(inflight),
             producer,
+        }
+    }
+
+    /// An active owned run with one output line, driven through its lifecycle.
+    #[cfg(test)]
+    pub(crate) fn with_live_owned_run_output(line: &str) -> OwnedRunFixture {
+        let mut inflight = Self::new();
+        let owned_run_id = match inflight.queue_owned_run(pending_run_for_test()) {
+            OwnedRunLaunchAdmission::Queued(owned_run_id) => owned_run_id,
+            OwnedRunLaunchAdmission::AlreadyActive
+            | OwnedRunLaunchAdmission::IdentitiesExhausted => return OwnedRunFixture::Unbuilt,
+        };
+        assert_eq!(
+            inflight.begin_owned_run_launch(),
+            OwnedRunLaunchStart::Starting(owned_run_id)
+        );
+        assert!(matches!(
+            inflight.activate_owned_run(
+                owned_run_id,
+                OwnedRunProcessActor::for_test(
+                    owned_run_id,
+                    ProcessIdentity::for_test(4242, 7),
+                    OwnedProcessGroupSignalOutcome::Sent,
+                ),
+                ProcessIdentity::for_test(4242, 7),
+            ),
+            OwnedRunActivation::Activated
+        ));
+        assert_eq!(
+            inflight.record_owned_run_output(owned_run_id, line.to_string()),
+            OwnedRunMessageUpdate::Applied
+        );
+        OwnedRunFixture::Live {
+            inflight: Box::new(inflight),
         }
     }
 

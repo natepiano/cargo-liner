@@ -29,6 +29,7 @@ use tui_pane::Viewport;
 use super::editor_terminal;
 use crate::tui::app::App;
 use crate::tui::app::ConfirmAction;
+use crate::tui::app::ConfirmationAcceptance;
 use crate::tui::app::PendingClean;
 use crate::tui::finder;
 use crate::tui::integration::AppGlobalAction;
@@ -56,6 +57,7 @@ pub fn handle_event(app: &mut App, event: &Event) {
     let started = Instant::now();
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => handle_key_event(app, key),
+        Event::Mouse(_) if app.confirmation_is_open() => {},
         Event::Mouse(mouse) => {
             tui_pane::record_mouse_pos(mouse.column, mouse.row);
             app.mouse_pos = Some(Position::new(mouse.column, mouse.row));
@@ -101,7 +103,7 @@ struct AppSurfaceKey {
 
 impl KeyDispatchLayer {
     const fn current(app: &App) -> Self {
-        if app.confirm().is_some() {
+        if app.confirmation_is_open() {
             Self::AppSurface(AppSurfaceKey {
                 focused: *app.framework.focused(),
             })
@@ -145,12 +147,12 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
 
 fn handle_app_surface_key(app: &mut App, surface: AppSurfaceKey, raw: &KeyEvent, bind: &KeyBind) {
     let code = raw.code;
-    let output_preflight = classify_output_cancel_preflight(app, code, bind);
-    if dispatch_output_cancel_preflight(app, output_preflight) {
+    if handle_confirm_key(app, code) {
         app.pending_nav_chord.clear();
         return;
     }
-    if handle_confirm_key(app, code) {
+    let output_preflight = classify_output_cancel_preflight(app, code, bind);
+    if dispatch_output_cancel_preflight(app, output_preflight) {
         app.pending_nav_chord.clear();
         return;
     }
@@ -609,59 +611,63 @@ fn normalize_nav(app: &App, raw: &KeyEvent) -> KeyEvent {
 }
 
 fn handle_confirm_key(app: &mut App, key: KeyCode) -> bool {
-    // While the confirm is waiting for a `cargo metadata` re-fetch,
-    // `y` is disabled — the plan isn't trustworthy yet. `n` cancels
-    // regardless, so we let the Ignore path fall through to
-    // take_confirm().
-    if key == KeyCode::Char('y') && app.scan.confirm_verifying().is_some() {
-        return true;
-    }
-    let Some(action) = app.take_confirm() else {
+    if !app.confirmation_is_open() {
         return false;
-    };
-    if key == KeyCode::Char('y') {
-        match action {
-            ConfirmAction::Clean(abs_path) => {
-                if app.start_clean(&abs_path) {
-                    app.inflight
-                        .pending_cleans_mut()
-                        .push_back(PendingClean { abs_path });
-                }
-            },
-            ConfirmAction::CleanGroup { primary, linked } => {
-                // Fan out `start_clean` over every checkout in the
-                // group. Paths whose resolved target dir is absent
-                // short-circuit with the "Already clean" toast inside
-                // `start_clean` and don't contribute a pending entry;
-                // the remainder queue up for execution like individual
-                // project cleans.
-                for path in std::iter::once(primary).chain(linked) {
-                    if app.start_clean(&path) {
-                        app.inflight
-                            .pending_cleans_mut()
-                            .push_back(PendingClean { abs_path: path });
-                    }
-                }
-            },
-            ConfirmAction::KillTarget {
-                termination_capability,
-                ..
-            } => {
-                panes::execute_target_kill(app, termination_capability);
-            },
-            ConfirmAction::PauseLintProject(project_root) => {
-                app.pause_project_lints(&project_root);
-            },
-            ConfirmAction::PauseAllLints => app.pause_all_lints(),
-        }
+    }
+    match key {
+        KeyCode::Char('y') => match app.accept_confirmation() {
+            ConfirmationAcceptance::Closed => return false,
+            ConfirmationAcceptance::Verifying => {},
+            ConfirmationAcceptance::Ready(action) => execute_confirmed_action(app, action),
+        },
+        KeyCode::Char('n') | KeyCode::Esc => app.dismiss_confirmation(),
+        _ => {},
     }
     true
 }
 
+fn execute_confirmed_action(app: &mut App, action: ConfirmAction) {
+    match action {
+        ConfirmAction::Clean(abs_path) => {
+            if app.start_clean(&abs_path) {
+                app.inflight
+                    .pending_cleans_mut()
+                    .push_back(PendingClean { abs_path });
+            }
+        },
+        ConfirmAction::CleanGroup { primary, linked } => {
+            // Fan out `start_clean` over every checkout in the
+            // group. Paths whose resolved target dir is absent
+            // short-circuit with the "Already clean" toast inside
+            // `start_clean` and don't contribute a pending entry;
+            // the remainder queue up for execution like individual
+            // project cleans.
+            for path in std::iter::once(primary).chain(linked) {
+                if app.start_clean(&path) {
+                    app.inflight
+                        .pending_cleans_mut()
+                        .push_back(PendingClean { abs_path: path });
+                }
+            }
+        },
+        ConfirmAction::KillTarget {
+            termination_capability,
+            ..
+        } => {
+            panes::execute_target_kill(app, termination_capability);
+        },
+        ConfirmAction::PauseLintProject(project_root) => {
+            app.pause_project_lints(&project_root);
+        },
+        ConfirmAction::PauseAllLints => app.pause_all_lints(),
+    }
+}
+
 fn handle_mouse_event(app: &mut App, kind: MouseEventKind, column: u16, row: u16) {
-    if app.confirm().is_some() {
+    if app.confirmation_is_open() {
         return;
     }
+
     match kind {
         MouseEventKind::ScrollUp => scroll_pane_at(app, column, row, true),
         MouseEventKind::ScrollDown => scroll_pane_at(app, column, row, false),
@@ -808,7 +814,7 @@ const fn pane_label(pane: PaneId) -> &'static str {
 fn handle_mouse_click(app: &mut App, column: u16, row: u16, mode: ClickMode) {
     let pos = Position::new(column, row);
 
-    if app.confirm().is_some() {
+    if app.confirmation_is_open() {
         return;
     }
 
@@ -918,8 +924,15 @@ fn cancel_owned_output(app: &mut App) {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+#[allow(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests {
     use std::path::Path;
+    #[cfg(unix)]
+    use std::process::Command;
 
     use super::*;
     use crate::build_monitor::ClassifiedRoot;
@@ -927,15 +940,86 @@ mod tests {
     use crate::build_monitor::MonitorSessionOwnership;
     use crate::build_monitor::MonitorSnapshot;
     use crate::build_monitor::classified_monitor_snapshot_with_ownership;
+    use crate::config::CargoPortConfig;
+    use crate::config::LintIndicator;
+    #[cfg(unix)]
+    use crate::process_observation::identity::CurrentProcessIdentityObservation;
+    #[cfg(unix)]
+    use crate::process_observation::identity::observe_current_process_identity;
     use crate::project::AbsolutePath;
+    use crate::project::Package;
+    use crate::project::RootItem;
+    use crate::project::RustProject;
     use crate::tui::compile_visibility::CompileVisibilityState;
     use crate::tui::compile_visibility::MonitorScopeKey;
     use crate::tui::compile_visibility::MonitorScopeResolution;
     use crate::tui::input::editor_terminal;
     use crate::tui::panes::OutputMonitorHit;
+    #[cfg(unix)]
+    use crate::tui::running_targets::RunningTargetTerminationCapability;
     use crate::tui::state::Inflight;
     use crate::tui::state::inflight::OwnedRunFixture;
     use crate::tui::test_support::make_app;
+    use crate::tui::test_support::make_app_with_lint_runtime;
+
+    /// A child process this test owns, together with authority bound to the
+    /// child lifetime. Drop always reaps it if the assertion path aborts.
+    #[cfg(unix)]
+    struct TestOwnedTerminationFixture {
+        child:                  std::process::Child,
+        termination_capability: RunningTargetTerminationCapability,
+    }
+
+    #[cfg(unix)]
+    impl TestOwnedTerminationFixture {
+        fn spawn() -> Self {
+            let mut child = Command::new("/bin/sleep")
+                .arg("30")
+                .spawn()
+                .unwrap_or_else(|error| panic!("the termination fixture should spawn: {error}"));
+            let termination_capability = match observe_current_process_identity(child.id()) {
+                CurrentProcessIdentityObservation::Verified(verified_process_identity) => {
+                    RunningTargetTerminationCapability::from_observed_identity(
+                        verified_process_identity.into_process_identity(),
+                    )
+                },
+                observation => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!(
+                        "the termination fixture should have a verified identity: {observation:?}"
+                    );
+                },
+            };
+            Self {
+                child,
+                termination_capability,
+            }
+        }
+
+        fn termination_capability(&self) -> RunningTargetTerminationCapability {
+            self.termination_capability.clone()
+        }
+
+        fn wait_for_termination(&mut self) {
+            let status = self
+                .child
+                .wait()
+                .unwrap_or_else(|error| panic!("the termination fixture should exit: {error}"));
+            assert!(
+                !status.success(),
+                "the confirmation sends SIGTERM to the test-owned child"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for TestOwnedTerminationFixture {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
 
     /// The Cargo root Cargo Port launched, beside one run by someone else.
     const OWNED_ROOT_PID: u32 = 8100;
@@ -1010,6 +1094,277 @@ mod tests {
             external_hit,
             captured_lines,
         })
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        handle_event(app, &Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    }
+
+    fn press_with_modifiers(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
+        handle_event(app, &Event::Key(KeyEvent::new(code, modifiers)));
+    }
+
+    #[test]
+    fn confirmation_escape_keeps_a_live_owned_run_and_its_output_open() {
+        let mut app = make_app(&[]);
+        let OwnedRunFixture::Live { inflight } =
+            Inflight::with_live_owned_run_output("live output")
+        else {
+            panic!("the live owned-run fixture builds");
+        };
+        app.inflight = *inflight;
+        let output_before_escape = app.inflight.owned_run().output().to_vec();
+        assert!(
+            app.inflight.owned_run().is_running(),
+            "the fixture has a live owned run before Esc"
+        );
+        app.open_ready_confirmation_for_test(ConfirmAction::Clean(AbsolutePath::from(Path::new(
+            "/tmp/confirmation-precedence",
+        ))));
+
+        press(&mut app, KeyCode::Esc);
+
+        assert!(
+            !app.confirmation_is_open(),
+            "Esc dismisses the confirmation before Output can cancel"
+        );
+        assert!(
+            matches!(
+                app.inflight.owned_run_termination(),
+                crate::tui::state::OwnedRunTermination::Available { .. }
+            ),
+            "Esc does not submit an owned-run termination while confirmation is open"
+        );
+        assert!(
+            app.inflight.owned_run().is_running(),
+            "the active owned run is not stopped while confirmation consumes Esc"
+        );
+        assert_eq!(
+            app.inflight.owned_run().output(),
+            output_before_escape.as_slice(),
+            "the live Output remains open while the confirmation consumes Esc"
+        );
+    }
+
+    #[test]
+    fn confirmation_consumes_unrelated_keys_and_mouse_input() {
+        let mut app = make_app(&[]);
+        app.open_ready_confirmation_for_test(ConfirmAction::Clean(AbsolutePath::from(Path::new(
+            "/tmp/confirmation-input",
+        ))));
+
+        press_with_modifiers(&mut app, KeyCode::Char('C'), KeyModifiers::SHIFT);
+
+        assert!(
+            app.confirmation_is_open(),
+            "a global action key leaves the confirmation unchanged"
+        );
+        assert!(matches!(
+            app.compile_visibility_state,
+            CompileVisibilityState::Off
+        ));
+        assert!(app.mouse_pos.is_none(), "test setup has no mouse position");
+        handle_event(
+            &mut app,
+            &Event::Mouse(crossterm::event::MouseEvent {
+                kind:      MouseEventKind::ScrollDown,
+                column:    7,
+                row:       9,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+        assert!(
+            app.confirmation_is_open(),
+            "mouse events leave the confirmation unchanged"
+        );
+        assert!(
+            app.mouse_pos.is_none(),
+            "an open confirmation ignores mouse input"
+        );
+    }
+
+    #[test]
+    fn n_and_escape_dismiss_a_confirmation_without_executing_it() {
+        for key in [KeyCode::Char('n'), KeyCode::Esc] {
+            let mut app = make_app(&[]);
+            app.open_ready_confirmation_for_test(ConfirmAction::Clean(AbsolutePath::from(
+                Path::new("/tmp/confirmation-dismiss"),
+            )));
+
+            press(&mut app, key);
+
+            assert!(
+                !app.confirmation_is_open(),
+                "{key:?} dismisses the confirmation"
+            );
+            assert!(
+                app.inflight.pending_cleans_mut().is_empty(),
+                "{key:?} does not start the clean action"
+            );
+        }
+    }
+
+    #[test]
+    fn verifying_clean_confirmation_consumes_y_without_closing() {
+        let mut app = make_app(&[]);
+        app.open_verifying_clean_confirmation_for_test(AbsolutePath::from(Path::new(
+            "/tmp/confirmation-verifying",
+        )));
+
+        press(&mut app, KeyCode::Char('y'));
+
+        assert!(
+            app.confirmation_is_open(),
+            "y cannot accept a confirmation still verifying metadata"
+        );
+        assert!(
+            app.inflight.pending_cleans_mut().is_empty(),
+            "the clean action remains unstarted while verification is pending"
+        );
+    }
+
+    #[test]
+    fn ready_y_accepts_clean_confirmation_actions() {
+        let temp_dir_result = tempfile::tempdir();
+        assert!(
+            temp_dir_result.is_ok(),
+            "create confirmation test directory: {temp_dir_result:?}"
+        );
+        let Ok(temp_dir) = temp_dir_result else {
+            return;
+        };
+        let clean = temp_dir.path().join("clean");
+        let group_primary = temp_dir.path().join("group-primary");
+        let group_linked = temp_dir.path().join("group-linked");
+        for project_path in [&clean, &group_primary, &group_linked] {
+            let create_target_result = std::fs::create_dir_all(project_path.join("target"));
+            assert!(
+                create_target_result.is_ok(),
+                "create clean target directory: {create_target_result:?}"
+            );
+            if create_target_result.is_err() {
+                return;
+            }
+        }
+        let mut app = make_app(&[]);
+
+        app.open_ready_confirmation_for_test(ConfirmAction::Clean(AbsolutePath::from(clean)));
+        press(&mut app, KeyCode::Char('y'));
+        assert_eq!(app.inflight.pending_cleans_mut().len(), 1);
+        assert!(!app.confirmation_is_open());
+
+        app.open_ready_confirmation_for_test(ConfirmAction::CleanGroup {
+            primary: AbsolutePath::from(group_primary),
+            linked:  vec![AbsolutePath::from(group_linked)],
+        });
+        press(&mut app, KeyCode::Char('y'));
+        assert_eq!(app.inflight.pending_cleans_mut().len(), 3);
+        assert!(!app.confirmation_is_open());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ready_y_terminates_the_test_owned_kill_target() {
+        let mut app = make_app(&[]);
+        let mut termination_fixture = TestOwnedTerminationFixture::spawn();
+        let pid = termination_fixture.child.id();
+        app.open_ready_confirmation_for_test(ConfirmAction::KillTarget {
+            label: "test-owned target".to_string(),
+            pid,
+            create_time: 0,
+            termination_capability: termination_fixture.termination_capability(),
+        });
+
+        press(&mut app, KeyCode::Char('y'));
+
+        assert!(
+            !app.confirmation_is_open(),
+            "y accepts the kill confirmation"
+        );
+        termination_fixture.wait_for_termination();
+    }
+
+    #[test]
+    fn ready_y_pauses_the_selected_lint_project_and_all_lints() {
+        let project_path = AbsolutePath::from(Path::new("/tmp/cargo-port-lint-project"));
+        let project = RootItem::Rust(RustProject::Package(Package {
+            path: project_path.clone(),
+            name: Some("lint-project".to_string()),
+            ..Package::default()
+        }));
+        let mut cargo_port_config = CargoPortConfig::default();
+        cargo_port_config.lint.enabled = LintIndicator::Enabled;
+        cargo_port_config.lint.include = vec!["lint-project".to_string()];
+
+        let mut project_app =
+            make_app_with_lint_runtime(std::slice::from_ref(&project), &cargo_port_config);
+        let project_runtime = project_app
+            .lint
+            .runtime()
+            .cloned()
+            .expect("the lint-enabled fixture owns an active runtime");
+        assert!(
+            !project_runtime.is_project_paused(&project_path),
+            "the selected lint project starts active"
+        );
+        assert_eq!(
+            project_app.project_list.selected_project_path(),
+            Some(project_path.as_path()),
+            "the lint-enabled fixture selects the active project"
+        );
+        press(&mut project_app, KeyCode::Char(' '));
+        assert!(matches!(
+            project_app.confirmation_modal_state(),
+            crate::tui::app::ConfirmationModalState::Open {
+                action: ConfirmAction::PauseLintProject(path),
+                ..
+            } if path == &project_path
+        ));
+
+        press(&mut project_app, KeyCode::Char('y'));
+
+        assert!(
+            !project_app.confirmation_is_open(),
+            "y accepts the selected-project pause confirmation"
+        );
+        assert!(
+            project_runtime.is_project_paused(&project_path),
+            "the accepted confirmation pauses the selected active lint project"
+        );
+        drop(project_runtime);
+        drop(project_app);
+
+        let mut all_lints_app = make_app_with_lint_runtime(&[project], &cargo_port_config);
+        let all_lints_runtime = all_lints_app
+            .lint
+            .runtime()
+            .cloned()
+            .expect("the lint-enabled fixture owns an active runtime");
+        assert!(
+            !all_lints_runtime.is_globally_paused(),
+            "all lint work starts active"
+        );
+        press_with_modifiers(&mut all_lints_app, KeyCode::Char(' '), KeyModifiers::SHIFT);
+        assert!(matches!(
+            all_lints_app.confirmation_modal_state(),
+            crate::tui::app::ConfirmationModalState::Open {
+                action: ConfirmAction::PauseAllLints,
+                ..
+            }
+        ));
+
+        press(&mut all_lints_app, KeyCode::Char('y'));
+
+        assert!(
+            !all_lints_app.confirmation_is_open(),
+            "y accepts the all-lints pause confirmation"
+        );
+        assert!(
+            all_lints_runtime.is_globally_paused(),
+            "the accepted confirmation pauses active lint work globally"
+        );
+        drop(all_lints_runtime);
+        drop(all_lints_app);
     }
 
     /// Esc on the owned column collapses the visual selection first: the run is

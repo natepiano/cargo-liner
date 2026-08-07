@@ -81,10 +81,7 @@ impl App {
                 },
             },
         }
-        // If the user had a confirm popup waiting on this workspace's
-        // re-fingerprint, clear the Verifying flag so the next render
-        // shows Ready and 'y' starts working again.
-        self.scan.clear_confirm_verifying_for(&workspace_root);
+        self.finish_clean_metadata_confirmation(&workspace_root);
         self.startup.metadata.seen.insert(workspace_root);
         self.maybe_log_startup_phase_completions();
     }

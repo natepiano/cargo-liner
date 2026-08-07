@@ -80,6 +80,9 @@ use anyhow::Error;
 use async_tasks::Startup;
 pub(super) use ci::CiRunDisplayMode;
 pub(crate) use confirm_action::ConfirmAction;
+pub(crate) use confirm_action::ConfirmationAcceptance;
+pub(crate) use confirm_action::ConfirmationModalState;
+pub(crate) use confirm_action::ConfirmationReadiness;
 pub(super) use discovery::DiscoveryRowKind;
 pub(super) use discovery::DiscoveryShimmer;
 pub(super) use discovery_shimmer::discovery_name_segments_for_path_with_refs;
@@ -286,9 +289,8 @@ pub(super) struct App {
     /// Scan subsystem. Owns `scan` (`ScanState`),
     /// `dirty`, `data_generation`, `discovery_shimmers`,
     /// `pending_git_first_commit`, `metadata_store`,
-    /// `target_dir_index`, `priority_fetch_path`,
-    /// `confirm_verifying`, `lint_cache_usage`, and (test-only)
-    /// `retry_spawn_mode`.
+    /// `target_dir_index`, `priority_fetch_path`, `lint_cache_usage`, and
+    /// (test-only) `retry_spawn_mode`.
     pub(super) scan:                                        Scan,
     /// Startup-phase orchestrator. Owns the per-phase trackers
     /// (`disk`, `git`, `repo`, `metadata`, `lint_phase`,
@@ -302,7 +304,8 @@ pub(super) struct App {
     /// the transient `inline_error` UI feedback, and the
     /// `status_flash` slot.
     pub(super) overlays:                                    Overlays,
-    confirm:                                                Option<ConfirmAction>,
+    /// The only owner of a [`ConfirmAction`] and its [`ConfirmationReadiness`].
+    confirmation_modal_state:                               ConfirmationModalState,
     pub(super) animation_started:                           Instant,
     /// Time the project-volume capacity was last requested. This refreshes on
     /// disk-watch updates and at a low fixed cadence for external disk use.
@@ -750,25 +753,41 @@ impl App {
     pub(super) fn apply_hovered_pane_row(&mut self) { interaction::apply_hovered_pane_row(self); }
 
     #[cfg(test)]
-    pub(super) fn set_confirm(&mut self, action: ConfirmAction) { self.confirm = Some(action); }
+    pub(super) fn open_ready_confirmation_for_test(&mut self, action: ConfirmAction) {
+        self.open_confirmation(action, ConfirmationReadiness::Ready);
+    }
 
-    /// Whether the currently-open confirm is still waiting for a
-    /// `cargo metadata` refresh to land. Callers that gate `y` on a
-    /// settled plan consult this.
+    #[cfg(test)]
+    pub(super) fn open_verifying_clean_confirmation_for_test(&mut self, primary: AbsolutePath) {
+        self.open_verifying_confirmation_for_test(ConfirmAction::Clean(primary.clone()), primary);
+    }
+
+    #[cfg(test)]
+    pub(super) fn open_verifying_confirmation_for_test(
+        &mut self,
+        action: ConfirmAction,
+        primary: AbsolutePath,
+    ) {
+        self.open_confirmation(
+            action,
+            ConfirmationReadiness::VerifyingCleanMetadata(primary),
+        );
+    }
+
     /// Open a Clean confirm popup for `project_path`, first checking
     /// whether the project's workspace manifest has drifted since the
     /// last `cargo metadata` run. On drift: dispatch a `cargo metadata` refresh,
     /// mark the confirm as verifying (popup blocks `y` until the
     /// refresh lands). On match: open the confirm Ready immediately.
     pub fn request_clean_confirm(&mut self, project_path: AbsolutePath) {
-        if self.scan.should_verify_before_clean(&project_path) {
+        let confirmation_readiness = if self.scan.should_verify_before_clean(&project_path) {
             let dispatch = self.clean_metadata_dispatch();
             scan::spawn_cargo_metadata_refresh(dispatch, project_path.clone());
-            self.scan.set_confirm_verifying(Some(project_path.clone()));
+            ConfirmationReadiness::VerifyingCleanMetadata(project_path.clone())
         } else {
-            self.scan.set_confirm_verifying(None);
-        }
-        self.confirm = Some(ConfirmAction::Clean(project_path));
+            ConfirmationReadiness::Ready
+        };
+        self.open_confirmation(ConfirmAction::Clean(project_path), confirmation_readiness);
     }
 
     /// Open the confirm dialog for a group-level clean — fans out to
@@ -784,14 +803,17 @@ impl App {
         primary: AbsolutePath,
         linked: Vec<AbsolutePath>,
     ) {
-        if self.scan.should_verify_before_clean(&primary) {
+        let confirmation_readiness = if self.scan.should_verify_before_clean(&primary) {
             let dispatch = self.clean_metadata_dispatch();
             scan::spawn_cargo_metadata_refresh(dispatch, primary.clone());
-            self.scan.set_confirm_verifying(Some(primary.clone()));
+            ConfirmationReadiness::VerifyingCleanMetadata(primary.clone())
         } else {
-            self.scan.set_confirm_verifying(None);
-        }
-        self.confirm = Some(ConfirmAction::CleanGroup { primary, linked });
+            ConfirmationReadiness::Ready
+        };
+        self.open_confirmation(
+            ConfirmAction::CleanGroup { primary, linked },
+            confirmation_readiness,
+        );
     }
 
     /// Open a confirm dialog to `SIGTERM` the running instance named by
@@ -804,12 +826,15 @@ impl App {
         create_time: u64,
         termination_capability: super::running_targets::RunningTargetTerminationCapability,
     ) {
-        self.confirm = Some(ConfirmAction::KillTarget {
-            label,
-            pid,
-            create_time,
-            termination_capability,
-        });
+        self.open_confirmation(
+            ConfirmAction::KillTarget {
+                label,
+                pid,
+                create_time,
+                termination_capability,
+            },
+            ConfirmationReadiness::Ready,
+        );
     }
 
     /// Toggle lints for the selected project's lint-owning root (bound to
@@ -828,7 +853,10 @@ impl App {
         if runtime.is_project_paused(&project_root) {
             self.resume_project_lints(&project_root);
         } else {
-            self.confirm = Some(ConfirmAction::PauseLintProject(project_root));
+            self.open_confirmation(
+                ConfirmAction::PauseLintProject(project_root),
+                ConfirmationReadiness::Ready,
+            );
         }
     }
 
@@ -842,7 +870,7 @@ impl App {
         if runtime.is_globally_paused() {
             self.resume_all_lints();
         } else {
-            self.confirm = Some(ConfirmAction::PauseAllLints);
+            self.open_confirmation(ConfirmAction::PauseAllLints, ConfirmationReadiness::Ready);
         }
     }
 
@@ -997,7 +1025,68 @@ impl App {
     /// `cargo metadata` on fingerprint drift.
     fn clean_metadata_dispatch(&self) -> MetadataDispatchContext { self.metadata_dispatch() }
 
-    pub(super) const fn confirm(&self) -> Option<&ConfirmAction> { self.confirm.as_ref() }
+    pub(super) const fn confirmation_modal_state(&self) -> &ConfirmationModalState {
+        &self.confirmation_modal_state
+    }
+
+    pub(super) const fn confirmation_is_open(&self) -> bool {
+        self.confirmation_modal_state.is_open()
+    }
+
+    /// Replace any existing confirmation action and readiness state together.
+    fn open_confirmation(&mut self, action: ConfirmAction, readiness: ConfirmationReadiness) {
+        self.confirmation_modal_state = ConfirmationModalState::Open { action, readiness };
+    }
+
+    /// Mark only the open clean confirmation for `workspace_root` ready.
+    ///
+    /// Both the action primary path and its verification path must match. A
+    /// canceled, replaced, unrelated, or wrong-workspace metadata arrival
+    /// therefore cannot affect the currently visible modal.
+    pub(super) fn finish_clean_metadata_confirmation(&mut self, workspace_root: &AbsolutePath) {
+        let ConfirmationModalState::Open { action, readiness } = &mut self.confirmation_modal_state
+        else {
+            return;
+        };
+        let ConfirmationReadiness::VerifyingCleanMetadata(verifying_primary) = readiness else {
+            return;
+        };
+        let action_primary_matches = match action {
+            ConfirmAction::Clean(primary) | ConfirmAction::CleanGroup { primary, .. } => {
+                primary == workspace_root
+            },
+            ConfirmAction::KillTarget { .. }
+            | ConfirmAction::PauseLintProject(_)
+            | ConfirmAction::PauseAllLints => false,
+        };
+        if action_primary_matches && verifying_primary == workspace_root {
+            *readiness = ConfirmationReadiness::Ready;
+        }
+    }
+
+    pub(super) fn dismiss_confirmation(&mut self) {
+        self.confirmation_modal_state = ConfirmationModalState::Closed;
+    }
+
+    pub(super) fn accept_confirmation(&mut self) -> ConfirmationAcceptance {
+        match std::mem::replace(
+            &mut self.confirmation_modal_state,
+            ConfirmationModalState::Closed,
+        ) {
+            ConfirmationModalState::Closed => ConfirmationAcceptance::Closed,
+            ConfirmationModalState::Open {
+                action,
+                readiness: ConfirmationReadiness::Ready,
+            } => ConfirmationAcceptance::Ready(action),
+            confirmation_modal_state @ ConfirmationModalState::Open {
+                readiness: ConfirmationReadiness::VerifyingCleanMetadata(_),
+                ..
+            } => {
+                self.confirmation_modal_state = confirmation_modal_state;
+                ConfirmationAcceptance::Verifying
+            },
+        }
+    }
 
     /// Apply the Output-pane focus behavior after `OwnedRun` replaces its
     /// retained output buffer.
@@ -1037,8 +1126,6 @@ impl App {
             non_rust,
         }
     }
-
-    pub(super) const fn take_confirm(&mut self) -> Option<ConfirmAction> { self.confirm.take() }
 
     pub(super) fn owner_repo_for_path(&self, path: &Path) -> Option<OwnerRepo> {
         self.project_list.owner_repo_for_path_inner(path)
@@ -4365,20 +4452,30 @@ mod tests {
 
             press(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
             assert!(matches!(
-                app.confirm(),
-                Some(super::super::ConfirmAction::PauseLintProject(_))
+                app.confirmation_modal_state(),
+                super::super::ConfirmationModalState::Open {
+                    action: super::super::ConfirmAction::PauseLintProject(_),
+                    ..
+                }
             ));
-            press(&mut app, KeyCode::Char('n'), KeyModifiers::NONE);
-            assert!(app.confirm().is_none());
+            press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+            assert!(matches!(
+                app.confirmation_modal_state(),
+                super::super::ConfirmationModalState::Closed
+            ));
             assert_eq!(
                 app.framework.overlay(),
-                Some(FrameworkOverlayId::GlobalShortcuts)
+                Some(FrameworkOverlayId::GlobalShortcuts),
+                "Esc closes only the confirmation; the framework overlay remains open"
             );
 
             press(&mut app, KeyCode::Char(' '), KeyModifiers::SHIFT);
             assert!(matches!(
-                app.confirm(),
-                Some(super::super::ConfirmAction::PauseAllLints)
+                app.confirmation_modal_state(),
+                super::super::ConfirmationModalState::Open {
+                    action: super::super::ConfirmAction::PauseAllLints,
+                    ..
+                }
             ));
             drop(app);
         }
@@ -6567,7 +6664,9 @@ mod tests {
                     out_of_tree_target_bytes: None,
                 });
 
-            app.set_confirm(ConfirmAction::Clean(AbsolutePath::from(project_dir)));
+            app.open_ready_confirmation_for_test(ConfirmAction::Clean(AbsolutePath::from(
+                project_dir,
+            )));
             let rendered = buffer_text(&mut app);
 
             assert!(
@@ -6864,7 +6963,9 @@ mod tests {
                 &target_dir,
             );
 
-            app.set_confirm(ConfirmAction::Clean(AbsolutePath::from(primary_dir)));
+            app.open_ready_confirmation_for_test(ConfirmAction::Clean(AbsolutePath::from(
+                primary_dir,
+            )));
             let rendered = buffer_text(&mut app);
 
             assert!(
@@ -6885,7 +6986,7 @@ mod tests {
             std::fs::create_dir_all(&project_dir).expect("create test directory");
             let mut app = make_app(&[make_package("demo", &project_dir)]);
 
-            app.set_confirm(ConfirmAction::Clean(AbsolutePath::from(
+            app.open_ready_confirmation_for_test(ConfirmAction::Clean(AbsolutePath::from(
                 project_dir.clone(),
             )));
             let rendered = buffer_text(&mut app);
@@ -6913,7 +7014,7 @@ mod tests {
             }
 
             let mut app = make_app(&[]);
-            app.set_confirm(ConfirmAction::CleanGroup {
+            app.open_ready_confirmation_for_test(ConfirmAction::CleanGroup {
                 primary: AbsolutePath::from(primary.clone()),
                 linked:  vec![
                     AbsolutePath::from(linked_a.clone()),
@@ -10245,6 +10346,9 @@ mod tests {
         use crate::project::WorktreeGroup;
         use crate::project::WorktreeStatus;
         use crate::scan::CargoMetadataError;
+        use crate::tui::app::ConfirmAction;
+        use crate::tui::app::ConfirmationModalState;
+        use crate::tui::app::ConfirmationReadiness;
         use crate::tui::app::phase_state::Denominator;
         use crate::tui::app::target_index::CleanSelection;
         use crate::tui::compile_visibility::CompileMonitorGeneration;
@@ -12981,6 +13085,21 @@ mod tests {
             }
         }
 
+        fn complete_metadata(app: &mut App, workspace_root: &AbsolutePath) {
+            let generation = app
+                .scan
+                .metadata_store_handle()
+                .lock()
+                .expect("store lock")
+                .next_generation(workspace_root);
+            app.handle_bg_msg(BackgroundMsg::CargoMetadata {
+                workspace_root: workspace_root.clone(),
+                generation,
+                fingerprint: fake_fingerprint(),
+                result: Ok(fake_metadata(workspace_root)),
+            });
+        }
+
         fn lint_toast_running_items(app: &App) -> Vec<String> {
             app.framework
                 .toasts
@@ -13179,30 +13298,132 @@ mod tests {
         }
 
         #[test]
-        fn successful_metadata_arrival_clears_confirm_verifying() {
+        fn matching_metadata_arrival_makes_clean_confirmation_ready() {
             let project_a = make_project(Some("a"), "~/never-real/a");
             let mut app = make_app(std::slice::from_ref(&project_a));
 
             let workspace_root = AbsolutePath::from(project_a.path().as_path().to_path_buf());
-            app.scan.set_confirm_verifying(Some(workspace_root.clone()));
-            let generation = app
+            app.open_verifying_clean_confirmation_for_test(workspace_root.clone());
+            complete_metadata(&mut app, &workspace_root);
+
+            assert!(matches!(
+                app.confirmation_modal_state(),
+                ConfirmationModalState::Open {
+                    action: ConfirmAction::Clean(primary),
+                    readiness: ConfirmationReadiness::Ready,
+                } if primary == &workspace_root
+            ));
+        }
+
+        #[test]
+        fn matching_metadata_arrival_makes_clean_group_confirmation_ready() {
+            let project_a = make_project(Some("a"), "~/never-real/a");
+            let mut app = make_app(std::slice::from_ref(&project_a));
+            let primary = AbsolutePath::from(project_a.path().as_path().to_path_buf());
+            let linked = AbsolutePath::from("/tmp/cargo-port-clean-group-linked");
+            app.open_verifying_confirmation_for_test(
+                ConfirmAction::CleanGroup {
+                    primary: primary.clone(),
+                    linked:  vec![linked.clone()],
+                },
+                primary.clone(),
+            );
+
+            complete_metadata(&mut app, &primary);
+
+            assert!(matches!(
+                app.confirmation_modal_state(),
+                ConfirmationModalState::Open {
+                    action: ConfirmAction::CleanGroup {
+                        primary: action_primary,
+                        linked: action_linked,
+                    },
+                    readiness: ConfirmationReadiness::Ready,
+                } if action_primary == &primary && action_linked == &vec![linked]
+            ));
+        }
+
+        #[test]
+        fn matching_metadata_arrival_cannot_ready_an_unrelated_action() {
+            let project_a = make_project(Some("a"), "~/never-real/a");
+            let mut app = make_app(std::slice::from_ref(&project_a));
+            let workspace_root = AbsolutePath::from(project_a.path().as_path().to_path_buf());
+            app.open_verifying_confirmation_for_test(
+                ConfirmAction::PauseAllLints,
+                workspace_root.clone(),
+            );
+
+            complete_metadata(&mut app, &workspace_root);
+
+            assert!(matches!(
+                app.confirmation_modal_state(),
+                ConfirmationModalState::Open {
+                    action: ConfirmAction::PauseAllLints,
+                    readiness: ConfirmationReadiness::VerifyingCleanMetadata(primary),
+                } if primary == &workspace_root
+            ));
+        }
+
+        #[test]
+        fn metadata_arrivals_cannot_mutate_another_confirmation() {
+            let project_a = make_project(Some("a"), "~/never-real/a");
+            let workspace_root = AbsolutePath::from(project_a.path().as_path().to_path_buf());
+            let other_workspace = AbsolutePath::from("/tmp/cargo-port-other-workspace");
+
+            let mut app = make_app(std::slice::from_ref(&project_a));
+            app.open_verifying_clean_confirmation_for_test(workspace_root.clone());
+            let stale_generation = app
                 .scan
                 .metadata_store_handle()
                 .lock()
                 .expect("store lock")
                 .next_generation(&workspace_root);
-
+            let _current_generation = app
+                .scan
+                .metadata_store_handle()
+                .lock()
+                .expect("store lock")
+                .next_generation(&workspace_root);
             app.handle_bg_msg(BackgroundMsg::CargoMetadata {
                 workspace_root: workspace_root.clone(),
-                generation,
-                fingerprint: fake_fingerprint(),
-                result: Ok(fake_metadata(&workspace_root)),
+                generation:     stale_generation,
+                fingerprint:    fake_fingerprint(),
+                result:         Ok(fake_metadata(&workspace_root)),
             });
+            assert!(matches!(
+                app.confirmation_modal_state(),
+                ConfirmationModalState::Open {
+                    readiness: ConfirmationReadiness::VerifyingCleanMetadata(primary),
+                    ..
+                } if primary == &workspace_root
+            ));
 
-            assert!(
-                app.scan.confirm_verifying().is_none(),
-                "successful metadata arrival clears the Verifying flag"
-            );
+            complete_metadata(&mut app, &other_workspace);
+            assert!(matches!(
+                app.confirmation_modal_state(),
+                ConfirmationModalState::Open {
+                    readiness: ConfirmationReadiness::VerifyingCleanMetadata(primary),
+                    ..
+                } if primary == &workspace_root
+            ));
+
+            app.dismiss_confirmation();
+            complete_metadata(&mut app, &workspace_root);
+            assert!(matches!(
+                app.confirmation_modal_state(),
+                ConfirmationModalState::Closed
+            ));
+
+            app.open_verifying_clean_confirmation_for_test(workspace_root.clone());
+            app.open_ready_confirmation_for_test(ConfirmAction::PauseAllLints);
+            complete_metadata(&mut app, &workspace_root);
+            assert!(matches!(
+                app.confirmation_modal_state(),
+                ConfirmationModalState::Open {
+                    action:    ConfirmAction::PauseAllLints,
+                    readiness: ConfirmationReadiness::Ready,
+                }
+            ));
         }
 
         /// Race guard: an arrival stamped with a generation older than the
@@ -14374,11 +14595,13 @@ mod tests {
 
             app.request_clean_confirm(workspace_root);
 
-            assert!(
-                app.scan.confirm_verifying().is_none(),
-                "capture failure (test path doesn't exist) → no verifying state"
-            );
-            assert!(app.confirm().is_some(), "popup opens immediately in Ready");
+            assert!(matches!(
+                app.confirmation_modal_state(),
+                ConfirmationModalState::Open {
+                    action:    ConfirmAction::Clean(_),
+                    readiness: ConfirmationReadiness::Ready,
+                }
+            ));
         }
 
         #[test]
@@ -14393,12 +14616,13 @@ mod tests {
 
             app.request_clean_confirm(workspace_root.clone());
 
-            assert_eq!(
-                app.scan.confirm_verifying(),
-                Some(&workspace_root),
-                "missing metadata → confirm opens in Verifying state, \
-                 pending on this workspace root"
-            );
+            assert!(matches!(
+                app.confirmation_modal_state(),
+                ConfirmationModalState::Open {
+                    action: ConfirmAction::Clean(primary),
+                    readiness: ConfirmationReadiness::VerifyingCleanMetadata(verifying_primary),
+                } if primary == &workspace_root && verifying_primary == &workspace_root
+            ));
         }
 
         #[test]

@@ -30,6 +30,7 @@ use tui_pane::ThemeRuntime;
 use tui_pane::ToastSettings;
 
 use super::App;
+use super::ConfirmationModalState;
 use super::async_tasks::Startup;
 use super::scan_state::ScanState;
 use crate::build_monitor::BuildMonitor;
@@ -313,7 +314,7 @@ impl AppBuilder<Started> {
             startup_services,
             visited_panes: std::iter::once(AppPaneId::ProjectList).collect(),
             overlays,
-            confirm: None,
+            confirmation_modal_state: ConfirmationModalState::Closed,
             animation_started: Instant::now(),
             storage_refresh_at: Instant::now(),
             crates_io_refresh_at: Instant::now(),

@@ -42,6 +42,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::app::App;
 use super::app::ConfirmAction;
+use super::app::ConfirmationModalState;
 use super::app::OverlayRenderInputs;
 use super::constants::AFFECTED_EXTRAS_VISIBLE_CAP;
 use super::constants::CONFIRM_DIALOG_HEIGHT;
@@ -250,9 +251,9 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     if app.overlays.is_sccache_open() {
         sccache::render_sccache_popup(frame, app);
     }
-    if let Some(action) = app.confirm() {
+    if let ConfirmationModalState::Open { action, readiness } = app.confirmation_modal_state() {
         let body = confirm_action_body(app, action);
-        let verifying = app.scan.confirm_verifying().is_some();
+        let verifying = readiness.is_verifying();
         render_confirm_popup(frame, action, &body, verifying);
     }
 

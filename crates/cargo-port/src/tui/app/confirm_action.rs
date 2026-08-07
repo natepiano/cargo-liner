@@ -29,3 +29,47 @@ pub(crate) enum ConfirmAction {
     /// the user toggles back. Resuming needs no confirmation.
     PauseAllLints,
 }
+
+/// The [`crate::tui::app::App`]-owned confirmation lifecycle.
+///
+/// [`ConfirmationModalState::Open`] keeps its non-cloneable [`ConfirmAction`]
+/// together with the [`ConfirmationReadiness`] that determines whether
+/// accepting it may execute that action.
+pub(crate) enum ConfirmationModalState {
+    /// No confirmation is currently consuming input.
+    Closed,
+    /// One action is visible and owns the matching readiness state.
+    Open {
+        action:    ConfirmAction,
+        readiness: ConfirmationReadiness,
+    },
+}
+
+impl ConfirmationModalState {
+    pub(crate) const fn is_open(&self) -> bool { matches!(self, Self::Open { .. }) }
+}
+
+/// Whether the action in an open [`ConfirmationModalState`] may execute.
+pub(crate) enum ConfirmationReadiness {
+    /// The action can execute when the user accepts it.
+    Ready,
+    /// A clean action must wait for the metadata refresh for this primary
+    /// workspace path before it may execute.
+    VerifyingCleanMetadata(AbsolutePath),
+}
+
+impl ConfirmationReadiness {
+    pub(crate) const fn is_verifying(&self) -> bool {
+        matches!(self, Self::VerifyingCleanMetadata(_))
+    }
+}
+
+/// Result of accepting the current [`ConfirmationModalState`] with `y`.
+pub(crate) enum ConfirmationAcceptance {
+    /// No confirmation was open, so normal input dispatch continues.
+    Closed,
+    /// The open action remains blocked on clean metadata verification.
+    Verifying,
+    /// The ready action was removed from its modal and may execute.
+    Ready(ConfirmAction),
+}

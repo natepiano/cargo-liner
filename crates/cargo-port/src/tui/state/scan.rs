@@ -4,8 +4,7 @@
 //! machine, per-tick data generation counter,
 //! discovery shimmer animations, pending first-commit strings,
 //! cargo-metadata store, workspace-target-dir index, priority-fetch
-//! path, the workspace root awaiting Clean confirm, and (in test
-//! builds) the retry-spawn knob.
+//! path and (in test builds) the retry-spawn knob.
 //!
 //! [`crate::tui::app::TreeMutation`] takes direct `&mut` references
 //! to `Scan + Panes + Selection` so the mutation fan-out is declared
@@ -34,7 +33,6 @@ pub(crate) struct Scan {
     metadata_store:              Arc<Mutex<WorkspaceMetadataStore>>,
     pub(crate) target_dir_index: TargetDirIndex,
     priority_fetch_path:         Option<AbsolutePath>,
-    confirm_verifying:           Option<AbsolutePath>,
     #[cfg(test)]
     retry_spawn_mode:            RetrySpawnMode,
 }
@@ -49,7 +47,6 @@ impl Scan {
             metadata_store,
             target_dir_index: TargetDirIndex::new(),
             priority_fetch_path: None,
-            confirm_verifying: None,
             #[cfg(test)]
             retry_spawn_mode: RetrySpawnMode::Enabled,
         }
@@ -137,25 +134,6 @@ impl Scan {
         self.priority_fetch_path = path;
     }
 
-    // ── confirm-verifying slot ──────────────────────────────────────
-
-    pub const fn confirm_verifying(&self) -> Option<&AbsolutePath> {
-        self.confirm_verifying.as_ref()
-    }
-
-    pub fn set_confirm_verifying(&mut self, path: Option<AbsolutePath>) {
-        self.confirm_verifying = path;
-    }
-
-    /// Clear `confirm_verifying` if it currently points to
-    /// `workspace_root`. Called when a verifying clean for that
-    /// workspace finishes (regardless of outcome).
-    pub fn clear_confirm_verifying_for(&mut self, workspace_root: &AbsolutePath) {
-        if self.confirm_verifying.as_ref() == Some(workspace_root) {
-            self.confirm_verifying = None;
-        }
-    }
-
     // ── retry-spawn mode (test-only) ────────────────────────────────
 
     #[cfg(test)]
@@ -234,7 +212,6 @@ mod tests {
         assert!(scan.discovery_shimmers().is_empty());
         assert!(scan.pending_git_first_commit().is_empty());
         assert!(scan.priority_fetch_path().is_none());
-        assert!(scan.confirm_verifying().is_none());
     }
 
     #[test]
@@ -253,16 +230,6 @@ mod tests {
         assert_eq!(scan.priority_fetch_path(), Some(&p));
         scan.set_priority_fetch_path(None);
         assert!(scan.priority_fetch_path().is_none());
-    }
-
-    #[test]
-    fn confirm_verifying_round_trip() {
-        let mut scan = fresh();
-        let p = abs("/tmp/ws");
-        scan.set_confirm_verifying(Some(p.clone()));
-        assert_eq!(scan.confirm_verifying(), Some(&p));
-        scan.set_confirm_verifying(None);
-        assert!(scan.confirm_verifying().is_none());
     }
 
     #[test]
