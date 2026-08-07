@@ -109,6 +109,24 @@ pub(crate) struct SelectedBuildTerminationAuthorization {
     pub(super) display_identity: BuildTerminationDisplayIdentity,
 }
 
+/// Whether one displayed build session can currently freeze a selected-build
+/// termination authorization.
+///
+/// This is deliberately read-only. The Output shortcut bar needs to describe
+/// the same authority map that confirmation will consume without taking the
+/// move-only capability out of that map.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SelectedBuildTerminationAvailability {
+    /// The displayed session has a current authority-bearing handle.
+    Available,
+    /// The monitor has no current snapshot on which termination is allowed.
+    SnapshotNotActionable,
+    /// This displayed session has no current authority-bearing handle.
+    SessionNotActionable,
+    /// An earlier transaction owns the lifecycle until it reaches a terminal state.
+    Busy,
+}
+
 /// Whether a retained selected-build authorization still names current data.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::build_monitor) enum SelectedBuildTerminationAuthorizationCurrency {

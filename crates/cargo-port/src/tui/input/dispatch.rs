@@ -656,6 +656,13 @@ fn execute_confirmed_action(app: &mut App, action: ConfirmAction) {
         } => {
             panes::execute_target_kill(app, termination_capability);
         },
+        ConfirmAction::TerminateSelectedBuild {
+            selected_build_termination_confirmation_display,
+            selected_build_termination_authorization,
+        } => app.submit_selected_build_termination(
+            selected_build_termination_confirmation_display,
+            *selected_build_termination_authorization,
+        ),
         ConfirmAction::PauseLintProject(project_root) => {
             app.pause_project_lints(&project_root);
         },
@@ -903,9 +910,8 @@ pub fn dispatch_output_action(action: OutputAction, app: &mut App) {
             OwnedColumnSelection::NotSelected => {},
             OwnedColumnSelection::Selected => cancel_owned_output(app),
         },
-        // Declared and rebindable, but nothing may fire them until the
-        // termination transaction that authorizes a kill exists.
-        OutputAction::KillSelectedBuild | OutputAction::KillScopedBuilds => {},
+        OutputAction::KillSelectedBuild => app.request_selected_build_termination_confirmation(),
+        OutputAction::KillScopedBuilds => {},
     }
 }
 
@@ -935,6 +941,7 @@ mod tests {
     use std::process::Command;
 
     use super::*;
+    use crate::build_monitor::BuildSessionId;
     use crate::build_monitor::ClassifiedRoot;
     use crate::build_monitor::FixtureRootOwnership;
     use crate::build_monitor::MonitorSessionOwnership;
@@ -944,12 +951,15 @@ mod tests {
     use crate::config::LintIndicator;
     #[cfg(unix)]
     use crate::process_observation::identity::CurrentProcessIdentityObservation;
+    use crate::process_observation::identity::ProcessIdentity;
+    use crate::process_observation::identity::ProcessIncarnation;
     #[cfg(unix)]
     use crate::process_observation::identity::observe_current_process_identity;
     use crate::project::AbsolutePath;
     use crate::project::Package;
     use crate::project::RootItem;
     use crate::project::RustProject;
+    use crate::tui::background::ProcessTerminatorReadinessForTest;
     use crate::tui::compile_visibility::CompileVisibilityState;
     use crate::tui::compile_visibility::MonitorScopeKey;
     use crate::tui::compile_visibility::MonitorScopeResolution;
@@ -958,6 +968,7 @@ mod tests {
     #[cfg(unix)]
     use crate::tui::running_targets::RunningTargetTerminationCapability;
     use crate::tui::state::Inflight;
+    use crate::tui::state::OwnedRunTermination;
     use crate::tui::state::inflight::OwnedRunFixture;
     use crate::tui::test_support::make_app;
     use crate::tui::test_support::make_app_with_lint_runtime;
@@ -1024,6 +1035,11 @@ mod tests {
     /// The Cargo root Cargo Port launched, beside one run by someone else.
     const OWNED_ROOT_PID: u32 = 8100;
     const EXTERNAL_ROOT_PID: u32 = 8200;
+
+    /// The test actor's identity, mirrored by the classified owned root.
+    const SELECTED_BUILD_OWNED_ROOT_PID: u32 = 4242;
+    const SELECTED_BUILD_EXTERNAL_ROOT_PID: u32 = 4243;
+    const SELECTED_BUILD_COMPILER_CHILDREN: &[u32] = &[4244, 4245];
 
     /// One click target per column of a staged two-column monitor, with the
     /// owned run's output retained so the owned column has a body to select.
@@ -1096,12 +1112,199 @@ mod tests {
         })
     }
 
+    /// One App-owned selected-build fixture. It owns every runtime resource,
+    /// so teardown drops the App only after all test references have gone.
+    struct SelectedBuildDispatchFixture {
+        app:                 Option<App>,
+        owned_header:        OutputMonitorHit,
+        captured_output:     OutputMonitorHit,
+        stale_session_id:    BuildSessionId,
+        selected_session_id: BuildSessionId,
+    }
+
+    /// Whether the selected-build fixture starts its owned process actor.
+    #[derive(Clone, Copy)]
+    enum OwnedTerminationActorFixture {
+        /// The actor accepts the submitted termination token.
+        Running,
+        /// No actor is started, so token submission is refused synchronously.
+        Unavailable,
+    }
+
+    impl SelectedBuildDispatchFixture {
+        fn app(&self) -> &App {
+            self.app
+                .as_ref()
+                .unwrap_or_else(|| panic!("selected-build App fixture should be live"))
+        }
+
+        fn app_mut(&mut self) -> &mut App {
+            self.app
+                .as_mut()
+                .unwrap_or_else(|| panic!("selected-build App fixture should be live"))
+        }
+    }
+
+    impl Drop for SelectedBuildDispatchFixture {
+        fn drop(&mut self) {
+            // This fixture intentionally retains no cloned runtime handles.
+            // Taking `app` during fixture teardown closes its actor and
+            // background endpoints before the remaining value fields drop.
+            drop(self.app.take());
+        }
+    }
+
+    /// An actionable selected-build App fixture whose live actor either serves
+    /// a request or remains unavailable for the synchronous-refusal path.
+    fn selected_build_dispatch_fixture(
+        owned_termination_actor_fixture: OwnedTerminationActorFixture,
+    ) -> SelectedBuildDispatchFixture {
+        let OwnedRunFixture::Live { inflight } =
+            Inflight::with_live_owned_run_output("selected build output")
+        else {
+            panic!("the live owned-run fixture should build");
+        };
+        let mut app = make_app(&[]);
+        app.inflight = *inflight;
+        let OwnedRunTermination::Available {
+            owned_run_id,
+            owned_run_termination_token,
+        } = app.inflight.owned_run_termination()
+        else {
+            panic!("the live owned-run fixture should issue one termination token");
+        };
+        if matches!(
+            owned_termination_actor_fixture,
+            OwnedTerminationActorFixture::Running
+        ) {
+            app.inflight.start_owned_run_process_actor(owned_run_id);
+        }
+
+        let monitor_snapshot = classified_monitor_snapshot_with_ownership(
+            &[
+                ClassifiedRoot {
+                    root_pid:      SELECTED_BUILD_EXTERNAL_ROOT_PID,
+                    compiler_pids: &[],
+                },
+                ClassifiedRoot {
+                    root_pid:      SELECTED_BUILD_OWNED_ROOT_PID,
+                    compiler_pids: SELECTED_BUILD_COMPILER_CHILDREN,
+                },
+            ],
+            &FixtureRootOwnership::OwnedRoot {
+                root_pid: SELECTED_BUILD_OWNED_ROOT_PID,
+                owned_run_id,
+            },
+        )
+        .unwrap_or_else(|error| panic!("selected-build fixture snapshot should classify: {error}"));
+        let MonitorSnapshot::Fresh(monitor_data) = &monitor_snapshot else {
+            panic!("selected-build fixture should have fresh monitor data");
+        };
+        let mut owned_header = None;
+        let mut selected_session_id = None;
+        for (column_index, monitor_session_row) in monitor_data.session_rows().iter().enumerate() {
+            if matches!(
+                monitor_session_row.session_ownership(),
+                MonitorSessionOwnership::Owned(current_owned_run_id)
+                    if current_owned_run_id == owned_run_id
+            ) {
+                let build_session_id = monitor_session_row.build_session_id().clone();
+                owned_header = Some(OutputMonitorHit::Header {
+                    build_session_id: build_session_id.clone(),
+                    column_index,
+                });
+                selected_session_id = Some(build_session_id);
+            }
+        }
+        let owned_header = owned_header
+            .unwrap_or_else(|| panic!("fixture should include the owned monitor column"));
+        let selected_session_id = selected_session_id
+            .unwrap_or_else(|| panic!("fixture should retain the owned session identity"));
+        let stale_session_id = BuildSessionId::for_test(ProcessIncarnation::for_test(
+            ProcessIdentity::for_test(SELECTED_BUILD_EXTERNAL_ROOT_PID, 99),
+            "stale cargo build",
+        ));
+        // Enable this through the App so every normal input event re-resolves
+        // the same scope it started with. Assigning a synthetic scope here
+        // would let `handle_event` replace the staged snapshot after Alt-K.
+        app.toggle_compile_visibility(Instant::now());
+        let authorized_session_id = match app
+            .build_monitor
+            .show_with_owned_termination_authority_for_test(
+                monitor_snapshot,
+                owned_run_id,
+                owned_run_termination_token,
+            )
+        {
+            crate::build_monitor::OwnedTerminationFixtureAuthorityInstallation::Installed(
+                build_session_id,
+            ) => build_session_id,
+            crate::build_monitor::OwnedTerminationFixtureAuthorityInstallation::SnapshotNotActionable => {
+                panic!("selected-build fixture must stage an actionable monitor snapshot")
+            },
+            crate::build_monitor::OwnedTerminationFixtureAuthorityInstallation::MatchingOwnedSessionAbsent => {
+                panic!("selected-build fixture must stage the matching owned monitor row")
+            },
+        };
+        assert_eq!(
+            authorized_session_id, selected_session_id,
+            "the monitor authority belongs to the same current owned column the fixture selects"
+        );
+        app.set_process_terminator_readiness_for_test(ProcessTerminatorReadinessForTest::Available);
+        app.set_focus_to_pane(PaneId::Output);
+        app.framework.toasts = tui_pane::Toasts::default();
+        SelectedBuildDispatchFixture {
+            app: Some(app),
+            owned_header,
+            captured_output: OutputMonitorHit::CapturedOutput {
+                producer: owned_run_id,
+                row:      0,
+            },
+            stale_session_id,
+            selected_session_id,
+        }
+    }
+
+    fn assert_selected_build_confirmation(app: &App) {
+        match app.confirmation_modal_state() {
+            crate::tui::app::ConfirmationModalState::Open {
+                action:
+                    ConfirmAction::TerminateSelectedBuild {
+                        selected_build_termination_confirmation_display,
+                        selected_build_termination_authorization: _,
+                    },
+                readiness: crate::tui::app::ConfirmationReadiness::Ready,
+            } => {
+                assert_eq!(
+                    selected_build_termination_confirmation_display.root_pid(),
+                    SELECTED_BUILD_OWNED_ROOT_PID,
+                    "the confirmation names the exact selected root"
+                );
+                assert_eq!(
+                    selected_build_termination_confirmation_display.compiler_child_count(),
+                    SELECTED_BUILD_COMPILER_CHILDREN.len(),
+                    "the confirmation keeps the selected root's compiler-child count"
+                );
+            },
+            crate::tui::app::ConfirmationModalState::Closed => {
+                panic!("Alt-K should retain a ready selected-build confirmation")
+            },
+            crate::tui::app::ConfirmationModalState::Open { .. } => {
+                panic!("the open confirmation should retain selected-build authorization")
+            },
+        }
+    }
+
     fn press(app: &mut App, code: KeyCode) {
         handle_event(app, &Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
     }
 
     fn press_with_modifiers(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
         handle_event(app, &Event::Key(KeyEvent::new(code, modifiers)));
+    }
+
+    fn press_alt_k(app: &mut App) {
+        press_with_modifiers(app, KeyCode::Char('k'), KeyModifiers::ALT);
     }
 
     #[test]
@@ -1282,6 +1485,256 @@ mod tests {
             "y accepts the kill confirmation"
         );
         termination_fixture.wait_for_termination();
+    }
+
+    #[test]
+    fn alt_k_retains_selected_authorization_until_an_available_worker_submits_it() {
+        let mut fixture = selected_build_dispatch_fixture(OwnedTerminationActorFixture::Running);
+        let owned_header = fixture.owned_header.clone();
+        fixture.app_mut().panes.output.focus_hit(&owned_header);
+
+        press_alt_k(fixture.app_mut());
+        assert_selected_build_confirmation(fixture.app());
+
+        fixture
+            .app_mut()
+            .set_process_terminator_readiness_for_test(ProcessTerminatorReadinessForTest::Starting);
+        press(fixture.app_mut(), KeyCode::Char('y'));
+        assert_selected_build_confirmation(fixture.app());
+
+        fixture.app_mut().set_process_terminator_readiness_for_test(
+            ProcessTerminatorReadinessForTest::Unavailable,
+        );
+        press(fixture.app_mut(), KeyCode::Char('y'));
+        assert_selected_build_confirmation(fixture.app());
+
+        fixture.app_mut().set_process_terminator_readiness_for_test(
+            ProcessTerminatorReadinessForTest::Available,
+        );
+        press(fixture.app_mut(), KeyCode::Char('y'));
+
+        assert!(
+            !fixture.app().confirmation_is_open(),
+            "an available worker consumes the retained selected authorization"
+        );
+        assert!(
+            matches!(
+                fixture.app().inflight.owned_run_termination(),
+                OwnedRunTermination::RequestPending { .. }
+            ),
+            "the selected authorization immediately fans its owned token into Inflight"
+        );
+    }
+
+    #[test]
+    fn captured_output_targets_its_owned_root_and_unattributed_or_stale_cursor_refuses() {
+        let mut captured_fixture =
+            selected_build_dispatch_fixture(OwnedTerminationActorFixture::Unavailable);
+        let captured_output = captured_fixture.captured_output.clone();
+        captured_fixture
+            .app_mut()
+            .panes
+            .output
+            .focus_hit(&captured_output);
+        press_alt_k(captured_fixture.app_mut());
+        assert_selected_build_confirmation(captured_fixture.app());
+
+        let mut unattributed_fixture =
+            selected_build_dispatch_fixture(OwnedTerminationActorFixture::Unavailable);
+        unattributed_fixture
+            .app_mut()
+            .panes
+            .output
+            .focus_hit(&OutputMonitorHit::Unattributed {
+                compile_activity_id: crate::build_monitor::CompileActivityId::for_test(
+                    ProcessIncarnation::for_test(
+                        ProcessIdentity::for_test(SELECTED_BUILD_EXTERNAL_ROOT_PID, 98),
+                        "unattributed rustc",
+                    ),
+                ),
+                row_index:           0,
+            });
+        press_alt_k(unattributed_fixture.app_mut());
+        assert!(
+            !unattributed_fixture.app().confirmation_is_open(),
+            "an unattributed row cannot fall through to the first build column"
+        );
+        assert_eq!(
+            unattributed_fixture
+                .app()
+                .build_monitor
+                .selected_termination_availability(&unattributed_fixture.selected_session_id),
+            crate::build_monitor::SelectedBuildTerminationAvailability::Available,
+            "an unattributed attempt leaves the owned authority untouched"
+        );
+
+        let mut stale_fixture =
+            selected_build_dispatch_fixture(OwnedTerminationActorFixture::Unavailable);
+        let stale_session_id = stale_fixture.stale_session_id.clone();
+        stale_fixture
+            .app_mut()
+            .panes
+            .output
+            .focus_hit(&OutputMonitorHit::Header {
+                build_session_id: stale_session_id,
+                column_index:     0,
+            });
+        press_alt_k(stale_fixture.app_mut());
+        assert!(
+            !stale_fixture.app().confirmation_is_open(),
+            "a stale session identity cannot target the current first column"
+        );
+        assert_eq!(
+            stale_fixture
+                .app()
+                .build_monitor
+                .selected_termination_availability(&stale_fixture.selected_session_id),
+            crate::build_monitor::SelectedBuildTerminationAvailability::Available,
+            "a stale attempt leaves the owned authority untouched"
+        );
+    }
+
+    #[test]
+    fn captured_output_replacement_before_render_refuses_alt_k_and_preserves_current_authority() {
+        let mut fixture =
+            selected_build_dispatch_fixture(OwnedTerminationActorFixture::Unavailable);
+        let captured_output = fixture.captured_output.clone();
+        let retained_producer = match &captured_output {
+            OutputMonitorHit::CapturedOutput { producer, .. } => *producer,
+            OutputMonitorHit::Header { .. }
+            | OutputMonitorHit::Activity { .. }
+            | OutputMonitorHit::Unattributed { .. }
+            | OutputMonitorHit::EmptyMonitor => {
+                panic!("the selected-build fixture should retain a captured-output hit")
+            },
+        };
+        fixture.app_mut().panes.output.focus_hit(&captured_output);
+
+        let app = fixture.app_mut();
+        app.inflight
+            .set_example_running(Some("replacement selected build output".to_string()));
+        let OwnedRunTermination::Available {
+            owned_run_id,
+            owned_run_termination_token,
+        } = app.inflight.owned_run_termination()
+        else {
+            panic!("the replacement owned run should issue one termination token");
+        };
+        assert_ne!(
+            retained_producer, owned_run_id,
+            "the replacement run must not reuse the retained output producer"
+        );
+        let monitor_snapshot = classified_monitor_snapshot_with_ownership(
+            &[
+                ClassifiedRoot {
+                    root_pid:      SELECTED_BUILD_EXTERNAL_ROOT_PID,
+                    compiler_pids: &[],
+                },
+                ClassifiedRoot {
+                    root_pid:      SELECTED_BUILD_OWNED_ROOT_PID,
+                    compiler_pids: SELECTED_BUILD_COMPILER_CHILDREN,
+                },
+            ],
+            &FixtureRootOwnership::OwnedRoot {
+                root_pid: SELECTED_BUILD_OWNED_ROOT_PID,
+                owned_run_id,
+            },
+        )
+        .unwrap_or_else(|error| {
+            panic!("replacement selected-build fixture snapshot should classify: {error}")
+        });
+        let replacement_session_id = match app.build_monitor.show_with_owned_termination_authority_for_test(
+                monitor_snapshot,
+                owned_run_id,
+                owned_run_termination_token,
+            )
+        {
+            crate::build_monitor::OwnedTerminationFixtureAuthorityInstallation::Installed(
+                build_session_id,
+            ) => build_session_id,
+            crate::build_monitor::OwnedTerminationFixtureAuthorityInstallation::SnapshotNotActionable => {
+                panic!("replacement selected-build fixture must stage an actionable monitor snapshot")
+            },
+            crate::build_monitor::OwnedTerminationFixtureAuthorityInstallation::MatchingOwnedSessionAbsent => {
+                panic!("replacement selected-build fixture must stage the matching owned monitor row")
+            },
+        };
+
+        press_alt_k(fixture.app_mut());
+
+        assert!(
+            !fixture.app().confirmation_is_open(),
+            "Alt-K cannot select the replacement owned column before cursor reconciliation"
+        );
+        assert_eq!(
+            fixture
+                .app()
+                .build_monitor
+                .selected_termination_availability(&replacement_session_id),
+            crate::build_monitor::SelectedBuildTerminationAvailability::Available,
+            "the refused key leaves the replacement owned authority available"
+        );
+    }
+
+    #[test]
+    fn synchronous_owned_actor_refusal_completes_and_toasts_once() {
+        let mut fixture =
+            selected_build_dispatch_fixture(OwnedTerminationActorFixture::Unavailable);
+        let owned_header = fixture.owned_header.clone();
+        fixture.app_mut().panes.output.focus_hit(&owned_header);
+        press_alt_k(fixture.app_mut());
+        assert_selected_build_confirmation(fixture.app());
+        let toast_count_before_acceptance = fixture.app().framework.toasts.active_now().len();
+
+        press(fixture.app_mut(), KeyCode::Char('y'));
+
+        assert!(
+            !fixture.app().confirmation_is_open(),
+            "the synchronous actor refusal completes the accepted confirmation"
+        );
+        let terminal_records: Vec<_> = fixture
+            .app()
+            .build_monitor
+            .termination_lifecycle_registry()
+            .terminal_records()
+            .collect();
+        assert_eq!(terminal_records.len(), 1);
+        assert_eq!(
+            terminal_records[0].session_completion(),
+            crate::build_monitor::BuildTerminationSessionCompletion::RetryUnavailable,
+            "the retained record preserves actor submission refusal"
+        );
+        let completion_toasts = fixture
+            .app()
+            .framework
+            .toasts
+            .active_now()
+            .iter()
+            .filter(|toast| toast.title() == "Build termination incomplete")
+            .count();
+        assert_eq!(
+            completion_toasts, 1,
+            "the terminal transition produces one toast"
+        );
+        assert_eq!(
+            fixture.app().framework.toasts.active_now().len(),
+            toast_count_before_acceptance + 1,
+            "the synchronous completion adds exactly one toast"
+        );
+
+        fixture.app_mut().poll_background();
+        assert_eq!(
+            fixture
+                .app()
+                .framework
+                .toasts
+                .active_now()
+                .iter()
+                .filter(|toast| toast.title() == "Build termination incomplete")
+                .count(),
+            1,
+            "polling the persistent lifecycle registry cannot replay the completion toast"
+        );
     }
 
     #[test]

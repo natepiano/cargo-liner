@@ -64,6 +64,8 @@ pub(super) use output::OutputPresentation;
 pub(super) use output::OutputSelectionRange;
 pub(super) use output::OutputTabStep;
 pub(super) use output::OwnedColumnSelection;
+pub(super) use output::SelectedBuildTerminationConfirmationDisplay;
+pub(super) use output::SelectedBuildTerminationSelection;
 pub(super) use output::VisualSelectionPermission;
 pub(super) use package::PackagePane;
 pub(super) use pane_data::BuildMode;

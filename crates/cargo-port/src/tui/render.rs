@@ -31,6 +31,7 @@ use tui_pane::StatusLineGlobal;
 use tui_pane::ToastsRenderCtx;
 use tui_pane::accent_color;
 use tui_pane::error_color;
+use tui_pane::format_progressive;
 use tui_pane::label_color;
 use tui_pane::render_status_line as render_framework_status_line;
 use tui_pane::secondary_text_color;
@@ -335,6 +336,30 @@ fn confirm_action_body(app: &App, action: &ConfirmAction) -> Vec<String> {
                 ),
             ]
         },
+        ConfirmAction::TerminateSelectedBuild {
+            selected_build_termination_confirmation_display,
+            ..
+        } => vec![
+            selected_build_termination_confirmation_display
+                .operative_cargo_command()
+                .to_string(),
+            selected_build_termination_confirmation_display
+                .checkout()
+                .to_string(),
+            format!(
+                "pid {} · {}",
+                selected_build_termination_confirmation_display.root_pid(),
+                format_progressive(
+                    selected_build_termination_confirmation_display
+                        .start_age()
+                        .as_secs(),
+                ),
+            ),
+            format!(
+                "{} compiler children currently observed",
+                selected_build_termination_confirmation_display.compiler_child_count(),
+            ),
+        ],
         ConfirmAction::PauseLintProject(project_root) => vec![
             project::home_relative_path(project_root.as_path()),
             "Kills running lint jobs for this project.".to_string(),
@@ -387,6 +412,7 @@ fn render_confirm_popup(
         ConfirmAction::Clean(_) => "Run cargo clean?",
         ConfirmAction::CleanGroup { .. } => "Run cargo clean on all checkouts?",
         ConfirmAction::KillTarget { .. } => "Send SIGTERM?",
+        ConfirmAction::TerminateSelectedBuild { .. } => "Terminate selected Cargo build?",
         ConfirmAction::PauseLintProject(_) => "Pause lints for selected project?",
         ConfirmAction::PauseAllLints => "Pause all lints?",
     };

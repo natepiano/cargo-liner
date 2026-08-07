@@ -227,6 +227,27 @@ pub(crate) struct BuildTerminationTerminalRecord {
     target_results:       Vec<BuildTerminationTargetResult>,
 }
 
+/// The one-shot terminal facts emitted when a transaction leaves its active
+/// lifecycle state.
+///
+/// The lifecycle registry remains the persistent owner of these records. This
+/// value is an event payload for callers that need to present completion once.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct BuildTerminationTransactionCompletion {
+    transaction_id:   BuildTerminationTransactionId,
+    terminal_records: Vec<BuildTerminationTerminalRecord>,
+}
+
+impl BuildTerminationTransactionCompletion {
+    pub(crate) const fn transaction_id(&self) -> BuildTerminationTransactionId {
+        self.transaction_id
+    }
+
+    pub(crate) fn terminal_records(&self) -> &[BuildTerminationTerminalRecord] {
+        &self.terminal_records
+    }
+}
+
 impl BuildTerminationTerminalRecord {
     pub(crate) const fn transaction_id(&self) -> BuildTerminationTransactionId {
         self.transaction_id
@@ -347,7 +368,7 @@ impl BuildTerminationLifecycleRegistry {
         &mut self,
         transaction_id: BuildTerminationTransactionId,
         mut target_results_by_session: BTreeMap<BuildSessionId, Vec<BuildTerminationTargetResult>>,
-    ) {
+    ) -> BuildTerminationTransactionCompletion {
         let completing_sessions: Vec<_> = self
             .entries
             .iter()
@@ -372,6 +393,7 @@ impl BuildTerminationLifecycleRegistry {
                 .values()
                 .flat_map(|target_results| target_results.iter()),
         );
+        let mut terminal_records = Vec::with_capacity(completing_sessions.len());
         for build_session_id in completing_sessions {
             let Some(BuildTerminationLifecycleEntry::Terminating {
                 display_identity, ..
@@ -385,16 +407,22 @@ impl BuildTerminationLifecycleRegistry {
                     vec![BuildTerminationTargetResult::TransactionResultUnavailable]
                 });
             let session_completion = session_completion(&target_results);
+            let terminal_record = BuildTerminationTerminalRecord {
+                transaction_id,
+                display_identity,
+                session_completion,
+                aggregate_completion,
+                target_results,
+            };
+            terminal_records.push(terminal_record.clone());
             self.entries.insert(
                 build_session_id,
-                BuildTerminationLifecycleEntry::Terminal(BuildTerminationTerminalRecord {
-                    transaction_id,
-                    display_identity,
-                    session_completion,
-                    aggregate_completion,
-                    target_results,
-                }),
+                BuildTerminationLifecycleEntry::Terminal(terminal_record),
             );
+        }
+        BuildTerminationTransactionCompletion {
+            transaction_id,
+            terminal_records,
         }
     }
 

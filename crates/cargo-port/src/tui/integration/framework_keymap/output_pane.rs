@@ -61,15 +61,22 @@ impl Shortcuts<App> for OutputPane {
         }
     }
 
-    /// Both termination actions are declared and rebindable but do not fire
-    /// yet: the confirmation transaction that authorizes them lands with the
-    /// termination phases, so the bar greys them out rather than offering a
-    /// key that does nothing.
-    fn state(&self, action: OutputAction, _: &App) -> ShortcutState {
+    /// Scoped termination remains disabled until its separate exact-set
+    /// transaction arrives. Selected termination reads availability without
+    /// consuming the authority confirmation will move into its action.
+    fn state(&self, action: OutputAction, app: &App) -> ShortcutState {
         match action {
-            OutputAction::KillSelectedBuild | OutputAction::KillScopedBuilds => {
-                ShortcutState::Disabled
+            OutputAction::KillSelectedBuild => match app.selected_build_termination_availability() {
+                crate::build_monitor::SelectedBuildTerminationAvailability::Available => {
+                    ShortcutState::Enabled
+                },
+                crate::build_monitor::SelectedBuildTerminationAvailability::SnapshotNotActionable
+                | crate::build_monitor::SelectedBuildTerminationAvailability::SessionNotActionable
+                | crate::build_monitor::SelectedBuildTerminationAvailability::Busy => {
+                    ShortcutState::Disabled
+                },
             },
+            OutputAction::KillScopedBuilds => ShortcutState::Disabled,
             OutputAction::SelectAll | OutputAction::Cancel => ShortcutState::Enabled,
         }
     }

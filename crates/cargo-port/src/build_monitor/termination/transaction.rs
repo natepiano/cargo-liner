@@ -3,17 +3,20 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::num::NonZeroU64;
+use std::time::Duration;
 use std::time::Instant;
 
 use super::super::constants::TERMINATION_DESCENDANT_REFRESH_INTERVAL;
 use super::super::scope::BuildScopeKey;
 use super::super::session::BuildSessionId;
 use super::super::session::SessionScope;
+use super::BuildTerminationTransactionCompletion;
 use super::authority::BuildTerminationAuthority;
 use super::authority::BuildTerminationAuthorizationConstruction;
 use super::authority::FrozenBuildTerminationTarget;
 use super::authority::ScopeTerminationAuthorization;
 use super::authority::SelectedBuildTerminationAuthorization;
+use super::authority::SelectedBuildTerminationAvailability;
 use super::lifecycle::BuildTerminationDisplayIdentity;
 use super::lifecycle::BuildTerminationLifecycleRegistry;
 use super::lifecycle::BuildTerminationTargetResult;
@@ -51,6 +54,33 @@ use crate::tui::OwnedRunTerminationToken;
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct BuildTerminationTransactionId(pub(super) NonZeroU64);
 
+/// The fixed grace period available to one submitted build termination.
+pub(crate) const BUILD_TERMINATION_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The expiry instant derived when App submits one frozen termination request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct BuildTerminationDeadline(Instant);
+
+impl BuildTerminationDeadline {
+    /// Use the shared selected/scope termination timeout from submission time.
+    pub(crate) fn from_submission_time(submitted_at: Instant) -> Self {
+        Self(submitted_at + BUILD_TERMINATION_TIMEOUT)
+    }
+
+    pub(crate) const fn expires_at(self) -> Instant { self.0 }
+
+    fn has_expired(self, now: Instant) -> bool { now >= self.0 }
+}
+
+/// Whether a monitor operation completed one transaction that App must present.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum BuildTerminationCompletionTransition {
+    /// The operation left every active transaction nonterminal.
+    NoCompletion,
+    /// The operation completed one transaction exactly once.
+    Completed(BuildTerminationTransactionCompletion),
+}
+
 /// Result of attempting to start one frozen transaction.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum BuildTerminationSubmission {
@@ -80,7 +110,7 @@ pub(crate) enum BuildTerminationSubmissionRefusal {
 #[derive(Debug)]
 pub(crate) struct BuildTerminationTransaction {
     transaction_id:       BuildTerminationTransactionId,
-    deadline:             Instant,
+    deadline:             BuildTerminationDeadline,
     pending_targets:      BTreeMap<TerminationTargetId, BuildSessionId>,
     owned_targets:        BTreeMap<OwnedRunId, OwnedPendingTerminationTarget>,
     external_roots:       BTreeMap<TerminationTargetId, FrozenExternalTerminationRoot>,
@@ -218,6 +248,32 @@ impl BuildTerminationState {
         self.current_authorities.clear();
     }
 
+    /// Read the selected session's authority state without consuming it.
+    pub(in crate::build_monitor) fn selected_termination_availability(
+        &self,
+        build_session_id: &BuildSessionId,
+    ) -> SelectedBuildTerminationAvailability {
+        if self.lifecycle_transaction_is_active() {
+            return SelectedBuildTerminationAvailability::Busy;
+        }
+        if self.current_authorities.contains_key(build_session_id) {
+            SelectedBuildTerminationAvailability::Available
+        } else {
+            SelectedBuildTerminationAvailability::SessionNotActionable
+        }
+    }
+
+    /// Read the selected session's state when no actionable snapshot exists.
+    pub(in crate::build_monitor) const fn selected_termination_availability_for_inactive_snapshot(
+        &self,
+    ) -> SelectedBuildTerminationAvailability {
+        if self.lifecycle_transaction_is_active() {
+            SelectedBuildTerminationAvailability::Busy
+        } else {
+            SelectedBuildTerminationAvailability::SnapshotNotActionable
+        }
+    }
+
     pub(in crate::build_monitor) fn selected_authorization(
         &mut self,
         build_scope_key: &BuildScopeKey,
@@ -306,7 +362,7 @@ impl BuildTerminationState {
         &mut self,
         selected_build_termination_authorization: SelectedBuildTerminationAuthorization,
         process_terminator: &mut ProcessTerminator,
-        deadline: Instant,
+        build_termination_deadline: BuildTerminationDeadline,
         lifecycle_registry: &mut BuildTerminationLifecycleRegistry,
     ) -> BuildTerminationSubmission {
         let SelectedBuildTerminationAuthorization {
@@ -322,7 +378,7 @@ impl BuildTerminationState {
                 display_identity,
             }],
             process_terminator,
-            deadline,
+            build_termination_deadline,
             lifecycle_registry,
         )
     }
@@ -331,13 +387,13 @@ impl BuildTerminationState {
         &mut self,
         scope_termination_authorization: ScopeTerminationAuthorization,
         process_terminator: &mut ProcessTerminator,
-        deadline: Instant,
+        build_termination_deadline: BuildTerminationDeadline,
         lifecycle_registry: &mut BuildTerminationLifecycleRegistry,
     ) -> BuildTerminationSubmission {
         self.submit_targets(
             scope_termination_authorization.targets,
             process_terminator,
-            deadline,
+            build_termination_deadline,
             lifecycle_registry,
         )
     }
@@ -346,7 +402,7 @@ impl BuildTerminationState {
         &mut self,
         frozen_targets: Vec<FrozenBuildTerminationTarget>,
         _: &mut ProcessTerminator,
-        deadline: Instant,
+        build_termination_deadline: BuildTerminationDeadline,
         lifecycle_registry: &mut BuildTerminationLifecycleRegistry,
     ) -> BuildTerminationSubmission {
         if self.lifecycle_transaction_is_active() {
@@ -419,7 +475,7 @@ impl BuildTerminationState {
         self.active_transaction =
             ActiveBuildTerminationTransaction::Active(BuildTerminationTransaction {
                 transaction_id: build_termination_transaction_id,
-                deadline,
+                deadline: build_termination_deadline,
                 pending_targets,
                 owned_targets,
                 external_roots,
@@ -437,14 +493,14 @@ impl BuildTerminationState {
         transaction_id: BuildTerminationTransactionId,
         mut submit: impl FnMut(OwnedRunTerminationToken) -> OwnedRunTerminationSubmission,
         lifecycle_registry: &mut BuildTerminationLifecycleRegistry,
-    ) {
+    ) -> BuildTerminationCompletionTransition {
         let ActiveBuildTerminationTransaction::Active(build_termination_transaction) =
             &mut self.active_transaction
         else {
-            return;
+            return BuildTerminationCompletionTransition::NoCompletion;
         };
         if build_termination_transaction.transaction_id != transaction_id {
-            return;
+            return BuildTerminationCompletionTransition::NoCompletion;
         }
         let owned_targets = build_termination_transaction.owned_targets.clone();
         for (owned_run_id, owned_pending_termination_target) in owned_targets {
@@ -499,7 +555,7 @@ impl BuildTerminationState {
                 ),
             }
         }
-        self.complete_terminal_transaction(lifecycle_registry);
+        self.complete_terminal_transaction(lifecycle_registry)
     }
 
     pub(in crate::build_monitor) fn termination_observation_demand(
@@ -570,12 +626,12 @@ impl BuildTerminationState {
         completed_build_termination_observation: CompletedBuildTerminationObservation,
         process_terminator: &mut ProcessTerminator,
         lifecycle_registry: &mut BuildTerminationLifecycleRegistry,
-    ) {
+    ) -> BuildTerminationCompletionTransition {
         let next_target_id = &mut self.next_target_id;
         let ActiveBuildTerminationTransaction::Active(build_termination_transaction) =
             &mut self.active_transaction
         else {
-            return;
+            return BuildTerminationCompletionTransition::NoCompletion;
         };
         if build_termination_transaction.transaction_id
             != completed_build_termination_observation.transaction_id
@@ -584,7 +640,7 @@ impl BuildTerminationState {
                 ExternalTerminationPassState::AwaitingObservation { .. }
             )
         {
-            return;
+            return BuildTerminationCompletionTransition::NoCompletion;
         }
 
         reconcile_observed_roots(
@@ -613,19 +669,20 @@ impl BuildTerminationState {
             submitted_target_ids,
         ) == ExternalPassDispatch::ReconcileTerminalState
         {
-            self.complete_terminal_transaction(lifecycle_registry);
+            return self.complete_terminal_transaction(lifecycle_registry);
         }
+        BuildTerminationCompletionTransition::NoCompletion
     }
 
     pub(in crate::build_monitor) fn reconcile_external_outcome(
         &mut self,
         termination_outcome_summary: &TerminationOutcomeSummary,
         lifecycle_registry: &mut BuildTerminationLifecycleRegistry,
-    ) {
+    ) -> BuildTerminationCompletionTransition {
         let ActiveBuildTerminationTransaction::Active(build_termination_transaction) =
             &mut self.active_transaction
         else {
-            return;
+            return BuildTerminationCompletionTransition::NoCompletion;
         };
         let termination_request_id = termination_outcome_summary.termination_request_id();
         let ExternalTerminationPassState::AwaitingWorker {
@@ -633,10 +690,10 @@ impl BuildTerminationState {
             target_ids: expected_target_ids,
         } = &build_termination_transaction.external_pass_state
         else {
-            return;
+            return BuildTerminationCompletionTransition::NoCompletion;
         };
         if *expected_request_id != termination_request_id {
-            return;
+            return BuildTerminationCompletionTransition::NoCompletion;
         }
         let expected_target_ids = expected_target_ids.clone();
         for termination_target_outcome in termination_outcome_summary.target_outcomes() {
@@ -675,14 +732,14 @@ impl BuildTerminationState {
             } else {
                 ExternalTerminationPassState::Settled
             };
-        self.complete_terminal_transaction(lifecycle_registry);
+        self.complete_terminal_transaction(lifecycle_registry)
     }
 
     pub(in crate::build_monitor) fn reconcile_owned_outcome(
         &mut self,
         owned_run_termination_outcome: OwnedRunTerminationOutcome,
         lifecycle_registry: &mut BuildTerminationLifecycleRegistry,
-    ) {
+    ) -> BuildTerminationCompletionTransition {
         let owned_run_id = match owned_run_termination_outcome {
             OwnedRunTerminationOutcome::Honored { owned_run_id, .. }
             | OwnedRunTerminationOutcome::Refused { owned_run_id } => owned_run_id,
@@ -690,19 +747,19 @@ impl BuildTerminationState {
         let ActiveBuildTerminationTransaction::Active(build_termination_transaction) =
             &mut self.active_transaction
         else {
-            return;
+            return BuildTerminationCompletionTransition::NoCompletion;
         };
         let Some(owned_pending_termination_target) = build_termination_transaction
             .owned_targets
             .get(&owned_run_id)
             .copied()
         else {
-            return;
+            return BuildTerminationCompletionTransition::NoCompletion;
         };
         if owned_pending_termination_target.progress
             != OwnedBuildTerminationProgress::SignalOutcomePending
         {
-            return;
+            return BuildTerminationCompletionTransition::NoCompletion;
         }
         let owned_build_termination_result = match owned_run_termination_outcome {
             OwnedRunTerminationOutcome::Honored {
@@ -715,7 +772,7 @@ impl BuildTerminationState {
                 {
                     pending_target.progress = OwnedBuildTerminationProgress::ReapingAfterSignal;
                 }
-                return;
+                return BuildTerminationCompletionTransition::NoCompletion;
             },
             OwnedRunTerminationOutcome::Honored {
                 signal: OwnedProcessGroupSignalOutcome::ProcessAlreadyReaped,
@@ -738,50 +795,50 @@ impl BuildTerminationState {
             owned_run_id,
             owned_build_termination_result,
         );
-        self.complete_terminal_transaction(lifecycle_registry);
+        self.complete_terminal_transaction(lifecycle_registry)
     }
 
     pub(in crate::build_monitor) fn reconcile_owned_finished(
         &mut self,
         owned_run_id: OwnedRunId,
         lifecycle_registry: &mut BuildTerminationLifecycleRegistry,
-    ) {
+    ) -> BuildTerminationCompletionTransition {
         let ActiveBuildTerminationTransaction::Active(build_termination_transaction) =
             &mut self.active_transaction
         else {
-            return;
+            return BuildTerminationCompletionTransition::NoCompletion;
         };
         let Some(owned_pending_termination_target) = build_termination_transaction
             .owned_targets
             .get(&owned_run_id)
         else {
-            return;
+            return BuildTerminationCompletionTransition::NoCompletion;
         };
         if owned_pending_termination_target.progress
             != OwnedBuildTerminationProgress::ReapingAfterSignal
         {
-            return;
+            return BuildTerminationCompletionTransition::NoCompletion;
         }
         complete_owned_target(
             build_termination_transaction,
             owned_run_id,
             OwnedBuildTerminationResult::ReapedAfterSignal { owned_run_id },
         );
-        self.complete_terminal_transaction(lifecycle_registry);
+        self.complete_terminal_transaction(lifecycle_registry)
     }
 
     pub(in crate::build_monitor) fn expire(
         &mut self,
         now: Instant,
         lifecycle_registry: &mut BuildTerminationLifecycleRegistry,
-    ) {
+    ) -> BuildTerminationCompletionTransition {
         let ActiveBuildTerminationTransaction::Active(build_termination_transaction) =
             &mut self.active_transaction
         else {
-            return;
+            return BuildTerminationCompletionTransition::NoCompletion;
         };
-        if now < build_termination_transaction.deadline {
-            return;
+        if !build_termination_transaction.deadline.has_expired(now) {
+            return BuildTerminationCompletionTransition::NoCompletion;
         }
         let expired_targets: Vec<_> = build_termination_transaction
             .pending_targets
@@ -839,19 +896,19 @@ impl BuildTerminationState {
             );
         }
         build_termination_transaction.pending_targets.clear();
-        self.complete_terminal_transaction(lifecycle_registry);
+        self.complete_terminal_transaction(lifecycle_registry)
     }
 
     fn complete_terminal_transaction(
         &mut self,
         lifecycle_registry: &mut BuildTerminationLifecycleRegistry,
-    ) {
+    ) -> BuildTerminationCompletionTransition {
         if !matches!(
             &self.active_transaction,
             ActiveBuildTerminationTransaction::Active(build_termination_transaction)
                 if build_termination_transaction.is_terminal()
         ) {
-            return;
+            return BuildTerminationCompletionTransition::NoCompletion;
         }
         let ActiveBuildTerminationTransaction::Active(build_termination_transaction) =
             std::mem::replace(
@@ -859,12 +916,12 @@ impl BuildTerminationState {
                 ActiveBuildTerminationTransaction::Idle,
             )
         else {
-            return;
+            return BuildTerminationCompletionTransition::NoCompletion;
         };
-        lifecycle_registry.complete_transaction(
+        BuildTerminationCompletionTransition::Completed(lifecycle_registry.complete_transaction(
             build_termination_transaction.transaction_id,
             build_termination_transaction.terminal_results,
-        );
+        ))
     }
 }
 
@@ -1188,9 +1245,10 @@ fn dispatch_external_pass(
             };
         return ExternalPassDispatch::ReconcileTerminalState;
     }
-    let termination_execution_plan = match process_terminator
-        .plan_bounded_termination(execution_targets, build_termination_transaction.deadline)
-    {
+    let termination_execution_plan = match process_terminator.plan_bounded_termination(
+        execution_targets,
+        build_termination_transaction.deadline.expires_at(),
+    ) {
         TerminationPlanCreation::Planned(termination_execution_plan) => termination_execution_plan,
         TerminationPlanCreation::RequestIdsExhausted => {
             mark_external_worker_failure(
@@ -1369,7 +1427,7 @@ mod tests {
     }
 
     fn await_external_outcome(process_terminator: &ProcessTerminator) -> TerminationOutcomeSummary {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + BUILD_TERMINATION_TIMEOUT;
         loop {
             match process_terminator.poll_outcome() {
                 TerminationResultPoll::Completed(summary) => return summary,
@@ -1415,7 +1473,7 @@ mod tests {
     }
 
     fn started_owned_transaction(
-        deadline: Instant,
+        build_termination_deadline: BuildTerminationDeadline,
     ) -> (
         BuildTerminationState,
         BuildTerminationLifecycleRegistry,
@@ -1437,7 +1495,7 @@ mod tests {
         let BuildTerminationSubmission::Submitted(transaction_id) = termination_state.submit_scope(
             authorization,
             &mut process_terminator,
-            deadline,
+            build_termination_deadline,
             &mut lifecycle_registry,
         ) else {
             panic!("owned transaction should start");
@@ -1537,6 +1595,135 @@ mod tests {
     }
 
     #[test]
+    fn selected_availability_reads_authority_without_consuming_it() {
+        let owned_run_id = OwnedRunId::for_test(NonZeroU64::MIN);
+        let (mut build_monitor, build_session_id) =
+            monitor_with_owned_authority(4_200_111, owned_run_id);
+
+        assert_eq!(
+            build_monitor.selected_termination_availability(&build_session_id),
+            SelectedBuildTerminationAvailability::Available
+        );
+        assert!(matches!(
+            build_monitor.selected_termination_authorization(&build_session_id),
+            BuildTerminationAuthorizationConstruction::Authorized(_)
+        ));
+    }
+
+    #[test]
+    fn selected_and_scope_submission_share_the_five_second_semantic_deadline() {
+        assert_eq!(BUILD_TERMINATION_TIMEOUT, Duration::from_secs(5));
+        let submitted_at = Instant::now();
+        let build_termination_deadline =
+            BuildTerminationDeadline::from_submission_time(submitted_at);
+        assert_eq!(
+            build_termination_deadline
+                .expires_at()
+                .duration_since(submitted_at),
+            BUILD_TERMINATION_TIMEOUT
+        );
+
+        let owned_run_id = OwnedRunId::for_test(NonZeroU64::MIN);
+        let mut process_terminator = ProcessTerminator::start();
+        let (mut selected_monitor, selected_session_id) =
+            monitor_with_owned_authority(4_200_112, owned_run_id);
+        let BuildTerminationAuthorizationConstruction::Authorized(selected_authorization) =
+            selected_monitor.selected_termination_authorization(&selected_session_id)
+        else {
+            panic!("selected fixture should authorize");
+        };
+        assert!(matches!(
+            selected_monitor.submit_selected_termination(
+                selected_authorization,
+                &mut process_terminator,
+                build_termination_deadline,
+            ),
+            BuildTerminationSubmission::Submitted(_)
+        ));
+        let ActiveBuildTerminationTransaction::Active(selected_transaction) =
+            &selected_monitor.termination_state.active_transaction
+        else {
+            panic!("selected submission should activate a transaction");
+        };
+        assert_eq!(selected_transaction.deadline, build_termination_deadline);
+
+        let scope_submitted_at = Instant::now();
+        let scope_deadline = BuildTerminationDeadline::from_submission_time(scope_submitted_at);
+        let (mut scope_monitor, _) = monitor_with_owned_authority(4_200_113, owned_run_id);
+        let BuildTerminationAuthorizationConstruction::Authorized(scope_authorization) =
+            scope_monitor.scope_termination_authorization()
+        else {
+            panic!("scope fixture should authorize");
+        };
+        assert!(matches!(
+            scope_monitor.submit_scope_termination(
+                scope_authorization,
+                &mut process_terminator,
+                scope_deadline,
+            ),
+            BuildTerminationSubmission::Submitted(_)
+        ));
+        let ActiveBuildTerminationTransaction::Active(scope_transaction) =
+            &scope_monitor.termination_state.active_transaction
+        else {
+            panic!("scope submission should activate a transaction");
+        };
+        assert_eq!(scope_transaction.deadline, scope_deadline);
+        assert_eq!(
+            scope_deadline
+                .expires_at()
+                .duration_since(scope_submitted_at),
+            BUILD_TERMINATION_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn synchronous_owned_submission_refusal_emits_one_completion_transition() {
+        let owned_run_id = OwnedRunId::for_test(NonZeroU64::MIN);
+        let build_session_id = build_session_id_for(4_200_114);
+        let mut termination_state = BuildTerminationState::default();
+        let mut lifecycle_registry = BuildTerminationLifecycleRegistry::default();
+        let mut process_terminator = ProcessTerminator::start();
+        let BuildTerminationSubmission::Submitted(transaction_id) = termination_state.submit_scope(
+            owned_scope_authorization(
+                build_session_id.clone(),
+                owned_run_id,
+                "/workspace",
+                4_200_114,
+            ),
+            &mut process_terminator,
+            BuildTerminationDeadline::from_submission_time(Instant::now()),
+            &mut lifecycle_registry,
+        ) else {
+            panic!("owned fixture should start a transaction");
+        };
+
+        let completion_transition = termination_state.submit_owned_targets(
+            transaction_id,
+            |_| OwnedRunTerminationSubmission::ActorUnavailable,
+            &mut lifecycle_registry,
+        );
+        assert!(matches!(
+            completion_transition,
+            BuildTerminationCompletionTransition::Completed(
+                BuildTerminationTransactionCompletion { .. }
+            )
+        ));
+        assert_eq!(
+            termination_state.submit_owned_targets(
+                transaction_id,
+                |_| OwnedRunTerminationSubmission::ActorUnavailable,
+                &mut lifecycle_registry,
+            ),
+            BuildTerminationCompletionTransition::NoCompletion
+        );
+        assert_eq!(
+            lifecycle_registry.lifecycle_for(&build_session_id),
+            BuildTerminationLifecycle::RetryUnavailable
+        );
+    }
+
+    #[test]
     fn selected_delayed_confirmation_requires_exact_scope_and_session() {
         let owned_run_id = OwnedRunId::for_test(NonZeroU64::MIN);
         let (mut current_monitor, current_session_id) =
@@ -1551,7 +1738,7 @@ mod tests {
             current_monitor.submit_selected_termination(
                 current_authorization,
                 &mut process_terminator,
-                Instant::now() + Duration::from_secs(5),
+                BuildTerminationDeadline::from_submission_time(Instant::now()),
             ),
             BuildTerminationSubmission::Submitted(_)
         ));
@@ -1574,7 +1761,7 @@ mod tests {
             revision_monitor.submit_selected_termination(
                 revision_authorization,
                 &mut process_terminator,
-                Instant::now() + Duration::from_secs(5),
+                BuildTerminationDeadline::from_submission_time(Instant::now()),
             ),
             BuildTerminationSubmission::Refused(
                 BuildTerminationSubmissionRefusal::SelectedScopeChanged
@@ -1605,7 +1792,7 @@ mod tests {
             session_monitor.submit_selected_termination(
                 session_authorization,
                 &mut process_terminator,
-                Instant::now() + Duration::from_secs(5),
+                BuildTerminationDeadline::from_submission_time(Instant::now()),
             ),
             BuildTerminationSubmission::Refused(
                 BuildTerminationSubmissionRefusal::SelectedSessionChanged
@@ -1639,7 +1826,7 @@ mod tests {
             revision_monitor.submit_scope_termination(
                 revision_authorization,
                 &mut process_terminator,
-                Instant::now() + Duration::from_secs(5),
+                BuildTerminationDeadline::from_submission_time(Instant::now()),
             ),
             BuildTerminationSubmission::Submitted(_)
         ));
@@ -1664,7 +1851,7 @@ mod tests {
             incompatible_monitor.submit_scope_termination(
                 incompatible_authorization,
                 &mut process_terminator,
-                Instant::now() + Duration::from_secs(5),
+                BuildTerminationDeadline::from_submission_time(Instant::now()),
             ),
             BuildTerminationSubmission::Refused(
                 BuildTerminationSubmissionRefusal::ScopeRootsChanged
@@ -1689,7 +1876,7 @@ mod tests {
             off_monitor.submit_scope_termination(
                 off_authorization,
                 &mut process_terminator,
-                Instant::now() + Duration::from_secs(5),
+                BuildTerminationDeadline::from_submission_time(Instant::now()),
             ),
             BuildTerminationSubmission::Refused(
                 BuildTerminationSubmissionRefusal::SnapshotNotActionable
@@ -1789,7 +1976,7 @@ mod tests {
             active_monitor.submit_scope_termination(
                 active_authorization,
                 &mut process_terminator,
-                Instant::now() + Duration::from_secs(5),
+                BuildTerminationDeadline::from_submission_time(Instant::now()),
             ),
             BuildTerminationSubmission::Submitted(_)
         ));
@@ -1809,7 +1996,7 @@ mod tests {
 
     #[test]
     fn owned_signal_outcome_waits_for_matching_finished_event() {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = BuildTerminationDeadline::from_submission_time(Instant::now());
         let (mut termination_state, mut lifecycle_registry, _, build_session_id, owned_run_id) =
             started_owned_transaction(deadline);
         termination_state.reconcile_owned_outcome(
@@ -1859,7 +2046,7 @@ mod tests {
 
     #[test]
     fn owned_reap_deadline_remains_authoritative() {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = BuildTerminationDeadline::from_submission_time(Instant::now());
         let (mut termination_state, mut lifecycle_registry, _, build_session_id, owned_run_id) =
             started_owned_transaction(deadline);
         termination_state.reconcile_owned_outcome(
@@ -1869,7 +2056,7 @@ mod tests {
             },
             &mut lifecycle_registry,
         );
-        termination_state.expire(deadline, &mut lifecycle_registry);
+        termination_state.expire(deadline.expires_at(), &mut lifecycle_registry);
         assert!(!termination_state.lifecycle_transaction_is_active());
         assert_eq!(
             lifecycle_registry.lifecycle_for(&build_session_id),
@@ -1900,7 +2087,9 @@ mod tests {
     #[test]
     fn owned_process_already_reaped_completes_as_already_gone() {
         let (mut termination_state, mut lifecycle_registry, _, build_session_id, owned_run_id) =
-            started_owned_transaction(Instant::now() + Duration::from_secs(5));
+            started_owned_transaction(BuildTerminationDeadline::from_submission_time(
+                Instant::now(),
+            ));
         termination_state.reconcile_owned_outcome(
             OwnedRunTerminationOutcome::Honored {
                 owned_run_id,
@@ -1950,7 +2139,7 @@ mod tests {
                     4_200_301,
                 ),
                 &mut process_terminator,
-                Instant::now() + Duration::from_secs(5),
+                BuildTerminationDeadline::from_submission_time(Instant::now()),
                 &mut lifecycle_registry,
             );
             assert_eq!(submission, BuildTerminationSubmission::IdentityExhausted);
@@ -2018,7 +2207,7 @@ mod tests {
         let BuildTerminationSubmission::Submitted(transaction_id) = termination_state.submit_scope(
             authorization,
             &mut process_terminator,
-            Instant::now() + Duration::from_secs(5),
+            BuildTerminationDeadline::from_submission_time(Instant::now()),
             &mut lifecycle_registry,
         ) else {
             panic!("mixed transaction should start");

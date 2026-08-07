@@ -77,11 +77,15 @@ pub(crate) use snapshot::MonitorSessionOwnership;
 pub(crate) use snapshot::MonitorSessionRow;
 pub(crate) use snapshot::MonitorSnapshot;
 pub(crate) use snapshot::MonitorStaleness;
+pub(crate) use termination::BUILD_TERMINATION_TIMEOUT;
 pub(crate) use termination::BuildTerminationAuthorizationConstruction;
+pub(crate) use termination::BuildTerminationCompletionTransition;
+pub(crate) use termination::BuildTerminationDeadline;
 pub(crate) use termination::BuildTerminationLifecycle;
 pub(crate) use termination::BuildTerminationLifecycleRegistry;
 pub(crate) use termination::BuildTerminationObservationDemand;
 pub(crate) use termination::BuildTerminationObservationExecution;
+pub(crate) use termination::BuildTerminationSessionCompletion;
 use termination::BuildTerminationState;
 pub(crate) use termination::BuildTerminationSubmission;
 pub(crate) use termination::BuildTerminationSubmissionRefusal;
@@ -90,6 +94,7 @@ pub(crate) use termination::BuildTerminationTransactionId;
 pub(crate) use termination::OwnedTerminationSupport;
 pub(crate) use termination::ScopeTerminationAuthorization;
 pub(crate) use termination::SelectedBuildTerminationAuthorization;
+pub(crate) use termination::SelectedBuildTerminationAvailability;
 pub(crate) use termination::observe_build_termination_demand;
 
 /// The compile monitor's own classification results and their lifetime.
@@ -103,6 +108,18 @@ pub(crate) struct BuildMonitor {
     monitor_snapshot:               MonitorSnapshot,
     termination_lifecycle_registry: BuildTerminationLifecycleRegistry,
     termination_state:              BuildTerminationState,
+}
+
+/// Whether a test fixture installed the owned actor authority matching the
+/// snapshot it staged for App-level input coverage.
+#[cfg(test)]
+pub(crate) enum OwnedTerminationFixtureAuthorityInstallation {
+    /// The staged owned row and actor token now share this session identity.
+    Installed(BuildSessionId),
+    /// The fixture supplied a snapshot that cannot carry current authority.
+    SnapshotNotActionable,
+    /// The fixture supplied no owned row matching its live actor run.
+    MatchingOwnedSessionAbsent,
 }
 
 impl BuildMonitor {
@@ -123,6 +140,43 @@ impl BuildMonitor {
         self.monitor_snapshot = monitor_snapshot;
     }
 
+    /// Install a staged snapshot and the actor token that the matching live
+    /// owned run issued, for an App input fixture that must exercise the real
+    /// selected-build confirmation path.
+    #[cfg(test)]
+    pub(crate) fn show_with_owned_termination_authority_for_test(
+        &mut self,
+        monitor_snapshot: MonitorSnapshot,
+        owned_run_id: crate::tui::OwnedRunId,
+        owned_run_termination_token: crate::tui::OwnedRunTerminationToken,
+    ) -> OwnedTerminationFixtureAuthorityInstallation {
+        let MonitorSnapshot::Fresh(monitor_data) = &monitor_snapshot else {
+            return OwnedTerminationFixtureAuthorityInstallation::SnapshotNotActionable;
+        };
+        let Some(monitor_session_row) = monitor_data.session_rows().iter().find(|row| {
+            matches!(
+                row.session_ownership(),
+                MonitorSessionOwnership::Owned(current_owned_run_id)
+                    if current_owned_run_id == owned_run_id
+            )
+        }) else {
+            return OwnedTerminationFixtureAuthorityInstallation::MatchingOwnedSessionAbsent;
+        };
+        let build_session_id = monitor_session_row.build_session_id().clone();
+        self.monitor_snapshot = monitor_snapshot;
+        self.termination_state
+            .replace_current_authorities(std::collections::BTreeMap::from([(
+                build_session_id.clone(),
+                termination::BuildTerminationAuthority::Owned(
+                    termination::OwnedBuildTerminationAuthority {
+                        owned_run_id,
+                        owned_run_termination_token,
+                    },
+                ),
+            )]));
+        OwnedTerminationFixtureAuthorityInstallation::Installed(build_session_id)
+    }
+
     /// Drop everything the monitor was showing because visibility was switched
     /// off, leaving a state a reader can tell apart from enabled-and-waiting.
     pub(crate) fn switch_off(&mut self) {
@@ -139,13 +193,6 @@ impl BuildMonitor {
     }
 
     /// Freeze the currently displayed authority for one selected session.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "selected authorization is constructed only after Output resolves one session"
-        )
-    )]
     pub(crate) fn selected_termination_authorization(
         &mut self,
         build_session_id: &BuildSessionId,
@@ -168,6 +215,33 @@ impl BuildMonitor {
             snapshot::MonitorDataActionability::NotActionable => self
                 .termination_state
                 .selected_authorization_for_inactive_snapshot(),
+        }
+    }
+
+    /// Report whether `build_session_id` can freeze selected-build authority
+    /// without removing that authority from the current snapshot.
+    pub(crate) fn selected_termination_availability(
+        &self,
+        build_session_id: &BuildSessionId,
+    ) -> SelectedBuildTerminationAvailability {
+        match self.monitor_snapshot.actionability() {
+            snapshot::MonitorDataActionability::Actionable(monitor_data) => {
+                if monitor_data
+                    .session_rows()
+                    .iter()
+                    .any(|monitor_session_row| {
+                        monitor_session_row.build_session_id() == build_session_id
+                    })
+                {
+                    self.termination_state
+                        .selected_termination_availability(build_session_id)
+                } else {
+                    SelectedBuildTerminationAvailability::SessionNotActionable
+                }
+            },
+            snapshot::MonitorDataActionability::NotActionable => self
+                .termination_state
+                .selected_termination_availability_for_inactive_snapshot(),
         }
     }
 
@@ -195,18 +269,11 @@ impl BuildMonitor {
     /// Start one selected-build transaction. The external worker receives its
     /// plan here; actor-issued owned tokens are submitted separately through
     /// [`Self::submit_owned_termination_targets`].
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "retained selected authorization is submitted only after confirmation"
-        )
-    )]
     pub(crate) fn submit_selected_termination(
         &mut self,
         selected_build_termination_authorization: SelectedBuildTerminationAuthorization,
         process_terminator: &mut crate::process_termination::ProcessTerminator,
-        deadline: std::time::Instant,
+        build_termination_deadline: BuildTerminationDeadline,
     ) -> BuildTerminationSubmission {
         match self.monitor_snapshot.actionability() {
             snapshot::MonitorDataActionability::NotActionable => {
@@ -233,7 +300,7 @@ impl BuildMonitor {
         self.termination_state.submit_selected(
             selected_build_termination_authorization,
             process_terminator,
-            deadline,
+            build_termination_deadline,
             &mut self.termination_lifecycle_registry,
         )
     }
@@ -250,7 +317,7 @@ impl BuildMonitor {
         &mut self,
         scope_termination_authorization: ScopeTerminationAuthorization,
         process_terminator: &mut crate::process_termination::ProcessTerminator,
-        deadline: std::time::Instant,
+        build_termination_deadline: BuildTerminationDeadline,
     ) -> BuildTerminationSubmission {
         match self.monitor_snapshot.actionability() {
             snapshot::MonitorDataActionability::NotActionable => {
@@ -272,72 +339,80 @@ impl BuildMonitor {
         self.termination_state.submit_scope(
             scope_termination_authorization,
             process_terminator,
-            deadline,
+            build_termination_deadline,
             &mut self.termination_lifecycle_registry,
         )
     }
 
     /// Submit actor tokens without exposing them outside the monitor-owned
     /// transaction boundary.
-    #[expect(
-        dead_code,
-        reason = "owned actor tokens are sent only through this transaction boundary"
-    )]
     pub(crate) fn submit_owned_termination_targets(
         &mut self,
         build_termination_transaction_id: BuildTerminationTransactionId,
         submit: impl FnMut(
             crate::tui::OwnedRunTerminationToken,
         ) -> crate::tui::OwnedRunTerminationSubmission,
-    ) {
-        self.termination_state.submit_owned_targets(
+    ) -> BuildTerminationCompletionTransition {
+        let build_termination_completion_transition = self.termination_state.submit_owned_targets(
             build_termination_transaction_id,
             submit,
             &mut self.termination_lifecycle_registry,
         );
         self.clear_terminal_termination_if_monitoring_off();
+        build_termination_completion_transition
     }
 
     /// Reconcile one correlated external worker result.
     pub(crate) fn reconcile_external_termination(
         &mut self,
         termination_outcome_summary: &crate::process_termination::TerminationOutcomeSummary,
-    ) {
-        self.termination_state.reconcile_external_outcome(
-            termination_outcome_summary,
-            &mut self.termination_lifecycle_registry,
-        );
+    ) -> BuildTerminationCompletionTransition {
+        let build_termination_completion_transition =
+            self.termination_state.reconcile_external_outcome(
+                termination_outcome_summary,
+                &mut self.termination_lifecycle_registry,
+            );
         self.clear_terminal_termination_if_monitoring_off();
+        build_termination_completion_transition
     }
 
     /// Reconcile one FIFO actor outcome after `Inflight` has applied it.
     pub(crate) fn reconcile_owned_termination(
         &mut self,
         owned_run_termination_outcome: crate::tui::OwnedRunTerminationOutcome,
-    ) {
-        self.termination_state.reconcile_owned_outcome(
-            owned_run_termination_outcome,
-            &mut self.termination_lifecycle_registry,
-        );
+    ) -> BuildTerminationCompletionTransition {
+        let build_termination_completion_transition =
+            self.termination_state.reconcile_owned_outcome(
+                owned_run_termination_outcome,
+                &mut self.termination_lifecycle_registry,
+            );
         self.clear_terminal_termination_if_monitoring_off();
+        build_termination_completion_transition
     }
 
     /// Reconcile the actor's later child-reap proof for an owned target.
     pub(crate) fn reconcile_owned_termination_finished(
         &mut self,
         owned_run_id: crate::tui::OwnedRunId,
-    ) {
-        self.termination_state
+    ) -> BuildTerminationCompletionTransition {
+        let build_termination_completion_transition = self
+            .termination_state
             .reconcile_owned_finished(owned_run_id, &mut self.termination_lifecycle_registry);
         self.clear_terminal_termination_if_monitoring_off();
+        build_termination_completion_transition
     }
 
     /// End a bounded transaction whose remaining targets did not become
     /// terminal before its deadline.
-    pub(crate) fn expire_termination_transaction(&mut self, now: std::time::Instant) {
-        self.termination_state
+    pub(crate) fn expire_termination_transaction(
+        &mut self,
+        now: std::time::Instant,
+    ) -> BuildTerminationCompletionTransition {
+        let build_termination_completion_transition = self
+            .termination_state
             .expire(now, &mut self.termination_lifecycle_registry);
         self.clear_terminal_termination_if_monitoring_off();
+        build_termination_completion_transition
     }
 
     /// Build one immutable descendant-pass request only for transaction demand.
@@ -361,19 +436,21 @@ impl BuildMonitor {
         &mut self,
         build_termination_observation_execution: BuildTerminationObservationExecution,
         process_terminator: &mut crate::process_termination::ProcessTerminator,
-    ) {
+    ) -> BuildTerminationCompletionTransition {
         let BuildTerminationObservationExecution::Completed(
             completed_build_termination_observation,
         ) = build_termination_observation_execution
         else {
-            return;
+            return BuildTerminationCompletionTransition::NoCompletion;
         };
-        self.termination_state.reconcile_termination_observation(
-            completed_build_termination_observation,
-            process_terminator,
-            &mut self.termination_lifecycle_registry,
-        );
+        let build_termination_completion_transition =
+            self.termination_state.reconcile_termination_observation(
+                completed_build_termination_observation,
+                process_terminator,
+                &mut self.termination_lifecycle_registry,
+            );
         self.clear_terminal_termination_if_monitoring_off();
+        build_termination_completion_transition
     }
 
     fn clear_terminal_termination_if_monitoring_off(&mut self) {

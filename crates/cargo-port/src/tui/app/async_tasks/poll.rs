@@ -172,8 +172,12 @@ impl App {
                     let _ = self
                         .inflight
                         .reconcile_owned_run_termination(owned_run_termination_outcome);
-                    self.build_monitor
+                    let build_termination_completion_transition = self
+                        .build_monitor
                         .reconcile_owned_termination(owned_run_termination_outcome);
+                    self.consume_build_termination_completion_transition(
+                        build_termination_completion_transition,
+                    );
                 },
                 OwnedRunEvent::Finished { owned_run_id } => {
                     if self.inflight.finish_owned_run(owned_run_id)
@@ -183,8 +187,12 @@ impl App {
                         // visible — unless a selection is holding the view.
                         self.panes.output.on_process_exit();
                     }
-                    self.build_monitor
+                    let build_termination_completion_transition = self
+                        .build_monitor
                         .reconcile_owned_termination_finished(owned_run_id);
+                    self.consume_build_termination_completion_transition(
+                        build_termination_completion_transition,
+                    );
                 },
             }
             count += 1;
@@ -200,11 +208,19 @@ impl App {
             termination_outcome_summary,
         ) = self.background.poll_process_termination_outcome()
         {
-            self.build_monitor
+            let build_termination_completion_transition = self
+                .build_monitor
                 .reconcile_external_termination(&termination_outcome_summary);
+            self.consume_build_termination_completion_transition(
+                build_termination_completion_transition,
+            );
         }
-        self.build_monitor
+        let build_termination_completion_transition = self
+            .build_monitor
             .expire_termination_transaction(Instant::now());
+        self.consume_build_termination_completion_transition(
+            build_termination_completion_transition,
+        );
     }
     pub(super) fn poll_clean_msgs(&mut self) {
         while let Ok(msg) = self.background.clean_rx().try_recv() {

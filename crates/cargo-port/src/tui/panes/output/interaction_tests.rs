@@ -17,6 +17,7 @@ use super::OutputPane;
 use super::OutputPresentation;
 use super::OutputTabStep;
 use super::OwnedColumnSelection;
+use super::SelectedBuildTerminationSelection;
 use super::presentation::MonitorColumns;
 use super::presentation::MonitorPresentation;
 use super::presentation::MonitorVisibility;
@@ -73,16 +74,23 @@ fn captured_lines() -> Vec<String> {
 
 /// One owned column and one external column, both classified this cycle.
 fn owned_and_external_snapshot() -> MonitorSnapshot {
-    staged_snapshot(&[
-        ClassifiedRoot {
-            root_pid:      OWNED_ROOT_PID,
-            compiler_pids: OWNED_COMPILER_PIDS,
-        },
-        ClassifiedRoot {
-            root_pid:      EXTERNAL_ROOT_PID,
-            compiler_pids: EXTERNAL_COMPILER_PIDS,
-        },
-    ])
+    owned_and_external_snapshot_for(owned_run_id())
+}
+
+fn owned_and_external_snapshot_for(owned_run_id: OwnedRunId) -> MonitorSnapshot {
+    staged_snapshot_for(
+        &[
+            ClassifiedRoot {
+                root_pid:      OWNED_ROOT_PID,
+                compiler_pids: OWNED_COMPILER_PIDS,
+            },
+            ClassifiedRoot {
+                root_pid:      EXTERNAL_ROOT_PID,
+                compiler_pids: EXTERNAL_COMPILER_PIDS,
+            },
+        ],
+        owned_run_id,
+    )
 }
 
 /// Only the owned column, for the cases that turn on there being no column
@@ -95,11 +103,18 @@ fn owned_only_snapshot() -> MonitorSnapshot {
 }
 
 fn staged_snapshot(classified_roots: &[ClassifiedRoot]) -> MonitorSnapshot {
+    staged_snapshot_for(classified_roots, owned_run_id())
+}
+
+fn staged_snapshot_for(
+    classified_roots: &[ClassifiedRoot],
+    owned_run_id: OwnedRunId,
+) -> MonitorSnapshot {
     match classified_monitor_snapshot_with_ownership(
         classified_roots,
         &FixtureRootOwnership::OwnedRoot {
-            root_pid:     OWNED_ROOT_PID,
-            owned_run_id: owned_run_id(),
+            root_pid: OWNED_ROOT_PID,
+            owned_run_id,
         },
     ) {
         Ok(monitor_snapshot) => monitor_snapshot,
@@ -114,12 +129,26 @@ fn derive_with_captured_output<'a>(
     monitor_snapshot: &'a MonitorSnapshot,
     lines: &'a [String],
 ) -> OutputPresentation<'a> {
+    derive_with_captured_output_for(
+        compile_visibility_state,
+        monitor_snapshot,
+        owned_run_id(),
+        lines,
+    )
+}
+
+fn derive_with_captured_output_for<'a>(
+    compile_visibility_state: &'a CompileVisibilityState,
+    monitor_snapshot: &'a MonitorSnapshot,
+    producer: OwnedRunId,
+    lines: &'a [String],
+) -> OutputPresentation<'a> {
     OutputPresentation::derive(
         compile_visibility_state,
         monitor_snapshot,
         empty_termination_lifecycle_registry(),
         OwnedRunOutputStateRef::Retained {
-            producer: owned_run_id(),
+            producer,
             title: OwnedRunOutputTitleRef::Named("cargo build"),
             lines,
         },
@@ -183,6 +212,121 @@ fn click_header(pane: &mut OutputPane, build_session_id: BuildSessionId, column_
         build_session_id,
         column_index,
     });
+}
+
+#[test]
+fn selected_build_termination_targets_the_activity_columns_root_session() {
+    let compile_visibility_state = actionable_scope();
+    let monitor_snapshot = owned_and_external_snapshot();
+    let output_presentation =
+        derive_without_captured_output(&compile_visibility_state, &monitor_snapshot);
+    let (external_index, external_column) = columns_of(&output_presentation)
+        .columns()
+        .enumerate()
+        .find(|(_, monitor_column)| {
+            matches!(
+                monitor_column.session_ownership(),
+                MonitorSessionOwnership::External
+            )
+        })
+        .unwrap_or_else(|| panic!("fixture includes an external build column"));
+    let build_session_id = external_column.build_session_id().clone();
+    let compile_activity = external_column.session_row().compile_activities()[0]
+        .compile_activity_id()
+        .clone();
+    let compiler_child_count = external_column.session_row().compile_activities().len();
+    let mut output_pane = OutputPane::new();
+    output_pane.focus_hit(&OutputMonitorHit::Activity {
+        compile_activity_id: compile_activity,
+        build_session_id:    build_session_id.clone(),
+        column_index:        external_index,
+        row_index:           0,
+    });
+
+    let SelectedBuildTerminationSelection::SelectedBuild(selected_build_termination_display_target) =
+        output_pane.selected_build_termination_selection(&output_presentation)
+    else {
+        panic!("an activity cursor should resolve its owning session column");
+    };
+    assert_eq!(
+        selected_build_termination_display_target.build_session_id(),
+        &build_session_id
+    );
+    let (_, selected_build_termination_confirmation_display) =
+        selected_build_termination_display_target.into_parts();
+    assert_eq!(
+        selected_build_termination_confirmation_display.compiler_child_count(),
+        compiler_child_count,
+        "the selected activity identifies the root column, not one compiler child"
+    );
+}
+
+#[test]
+fn selected_build_termination_targets_captured_output_through_its_owned_column() {
+    let compile_visibility_state = actionable_scope();
+    let unrelated_root_pid = 7_000;
+    let monitor_snapshot = staged_snapshot(&[
+        ClassifiedRoot {
+            root_pid:      unrelated_root_pid,
+            compiler_pids: &[7_001],
+        },
+        ClassifiedRoot {
+            root_pid:      OWNED_ROOT_PID,
+            compiler_pids: OWNED_COMPILER_PIDS,
+        },
+    ]);
+    let lines = captured_lines();
+    let output_presentation =
+        derive_with_captured_output(&compile_visibility_state, &monitor_snapshot, &lines);
+    let first_column_id = column_id(&output_presentation, 0);
+    let (_, owned_column_id) = owned_column(&output_presentation);
+    assert_ne!(
+        first_column_id, owned_column_id,
+        "the fixture puts an unrelated build ahead of the owned producer"
+    );
+    let mut output_pane = OutputPane::new();
+    output_pane.focus_hit(&OutputMonitorHit::CapturedOutput {
+        producer: owned_run_id(),
+        row:      0,
+    });
+
+    let SelectedBuildTerminationSelection::SelectedBuild(selected_build_termination_display_target) =
+        output_pane.selected_build_termination_selection(&output_presentation)
+    else {
+        panic!("captured output with a current owned column should select its producer");
+    };
+
+    assert_eq!(
+        selected_build_termination_display_target.build_session_id(),
+        &owned_column_id,
+        "captured output targets its owned producer rather than the first unrelated column"
+    );
+}
+
+#[test]
+fn selected_build_termination_refuses_captured_output_after_owned_run_replacement_before_reconcile()
+{
+    let compile_visibility_state = actionable_scope();
+    let retained_producer = owned_run_id();
+    let current_producer = OwnedRunId::for_test(NonZeroU64::MAX);
+    let monitor_snapshot = owned_and_external_snapshot_for(current_producer);
+    let lines = captured_lines();
+    let output_presentation = derive_with_captured_output_for(
+        &compile_visibility_state,
+        &monitor_snapshot,
+        current_producer,
+        &lines,
+    );
+    let mut output_pane = OutputPane::new();
+    output_pane.focus_hit(&OutputMonitorHit::CapturedOutput {
+        producer: retained_producer,
+        row:      0,
+    });
+
+    assert!(matches!(
+        output_pane.selected_build_termination_selection(&output_presentation),
+        SelectedBuildTerminationSelection::NoBuildSelected
+    ));
 }
 
 /// Apply one keyboard motion with the monitor on, where the viewport motion the

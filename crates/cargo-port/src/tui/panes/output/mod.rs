@@ -22,10 +22,12 @@ pub use hit_map::OutputMonitorHit;
 pub use pane::CapturedOutputRow;
 pub use pane::OutputPane;
 pub use pane::OutputTabStep;
+pub(crate) use pane::SelectedBuildTerminationSelection;
 pub use presentation::OutputCopyAvailability;
 pub use presentation::OutputMonitorVisibility;
 pub use presentation::OutputPaneVisibility;
 pub use presentation::OutputPresentation;
+pub(crate) use presentation::SelectedBuildTerminationConfirmationDisplay;
 use render::render_output_pane_body;
 pub use selection::ColumnSelection;
 /// Named outside the pane only where a test asserts the selected rows.

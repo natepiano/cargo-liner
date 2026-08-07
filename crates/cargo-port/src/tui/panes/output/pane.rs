@@ -16,6 +16,7 @@ use super::presentation::MonitorColumn;
 use super::presentation::MonitorPresentation;
 use super::presentation::MonitorVisibility;
 use super::presentation::OutputPresentation;
+use super::presentation::SelectedBuildTerminationDisplayTarget;
 use super::selection::ColumnBodyRow;
 use super::selection::ColumnSelection;
 use super::selection::OutputCursor;
@@ -25,6 +26,7 @@ use super::selection::OutputSelection;
 use super::selection::OutputSelectionRange;
 use super::selection::OwnedColumnSelection;
 use super::selection::OwnedPinPresence;
+use super::selection::SelectedBuildTerminationCursorSelection;
 use super::selection::SelectionMode;
 use super::selection::VisualSelectionPermission;
 use super::selection::VisualSelectionSource;
@@ -77,6 +79,16 @@ pub struct OutputPane {
     cursor:          OutputCursor,
     column_scroll:   ColumnScroll,
     monitor_hit_map: MonitorHitMap,
+}
+
+/// The selected build column, if the reconciled cursor still names one in the
+/// presentation available to the action.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum SelectedBuildTerminationSelection {
+    /// The cursor is absent, unattributed, or does not resolve one current column.
+    NoBuildSelected,
+    /// The cursor's retained session identity resolved in the current columns.
+    SelectedBuild(SelectedBuildTerminationDisplayTarget),
 }
 
 impl OutputPane {
@@ -259,6 +271,37 @@ impl OutputPane {
         let columns: Vec<MonitorColumn<'_>> = monitor_columns.columns().collect();
         self.cursor
             .owned_column_selection(&columns, owned_pin_presence)
+    }
+
+    /// Resolve selected-build termination by retained session identity rather
+    /// than by the cursor's motion fallback. An unattributed or stale cursor
+    /// therefore cannot select another column that happens to occupy its index.
+    pub fn selected_build_termination_selection(
+        &self,
+        output_presentation: &OutputPresentation<'_>,
+    ) -> SelectedBuildTerminationSelection {
+        let MonitorVisibility::On(MonitorPresentation::Columns(monitor_columns)) =
+            output_presentation.monitor()
+        else {
+            return SelectedBuildTerminationSelection::NoBuildSelected;
+        };
+        let columns: Vec<MonitorColumn<'_>> = monitor_columns.columns().collect();
+        let owned_pin_presence = OwnedPinPresence::from(output_presentation.owned_output());
+        let SelectedBuildTerminationCursorSelection::SelectedBuild(build_session_id) = self
+            .cursor
+            .selected_build_termination_selection(&columns, owned_pin_presence)
+        else {
+            return SelectedBuildTerminationSelection::NoBuildSelected;
+        };
+        let Some(monitor_column) = columns
+            .iter()
+            .find(|monitor_column| monitor_column.build_session_id() == &build_session_id)
+        else {
+            return SelectedBuildTerminationSelection::NoBuildSelected;
+        };
+        SelectedBuildTerminationSelection::SelectedBuild(
+            monitor_column.selected_build_termination_display_target(std::time::Instant::now()),
+        )
     }
 
     /// Apply a keyboard motion.

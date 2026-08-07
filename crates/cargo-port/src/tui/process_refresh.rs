@@ -309,9 +309,13 @@ impl App {
         else {
             return;
         };
-        self.build_monitor.reconcile_termination_observation(
-            build_termination_observation_execution,
-            process_terminator,
+        let build_termination_completion_transition =
+            self.build_monitor.reconcile_termination_observation(
+                build_termination_observation_execution,
+                process_terminator,
+            );
+        self.consume_build_termination_completion_transition(
+            build_termination_completion_transition,
         );
     }
 

@@ -68,6 +68,17 @@ enum ProcessTerminationWorkerReadiness {
     Awaiting(TerminationRequestId),
     Available,
     Unavailable,
+    #[cfg(test)]
+    StartingForTest,
+}
+
+/// Deterministic worker readiness used by App interaction fixtures.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ProcessTerminatorReadinessForTest {
+    Starting,
+    Available,
+    Unavailable,
 }
 
 /// Owns every long-lived I/O channel App holds. App holds a single
@@ -185,6 +196,10 @@ impl Background {
             ProcessTerminationWorkerReadiness::Awaiting(_) => {
                 TerminationResultPoll::NoCompletedRequest
             },
+            #[cfg(test)]
+            ProcessTerminationWorkerReadiness::StartingForTest => {
+                TerminationResultPoll::NoCompletedRequest
+            },
             ProcessTerminationWorkerReadiness::Unavailable => {
                 TerminationResultPoll::WorkerUnavailable
             },
@@ -202,6 +217,10 @@ impl Background {
             | ProcessTerminationWorkerReadiness::Unavailable => {
                 ProcessTerminationResultReceiver::NoCompletedResultExpected
             },
+            #[cfg(test)]
+            ProcessTerminationWorkerReadiness::StartingForTest => {
+                ProcessTerminationResultReceiver::NoCompletedResultExpected
+            },
         }
     }
 
@@ -217,6 +236,10 @@ impl Background {
                 ProcessTerminatorAvailability::Available(&mut self.process_terminator)
             },
             ProcessTerminationWorkerReadiness::Awaiting(_) => {
+                ProcessTerminatorAvailability::Starting
+            },
+            #[cfg(test)]
+            ProcessTerminationWorkerReadiness::StartingForTest => {
                 ProcessTerminatorAvailability::Starting
             },
             ProcessTerminationWorkerReadiness::Unavailable => {
@@ -307,6 +330,25 @@ impl Background {
 
     #[cfg(test)]
     pub(super) const fn watcher_is_active(&self) -> bool { self.watcher.is_active() }
+
+    /// Set worker readiness without driving the background handshake.
+    #[cfg(test)]
+    pub(super) const fn set_process_terminator_readiness_for_test(
+        &mut self,
+        process_terminator_readiness_for_test: ProcessTerminatorReadinessForTest,
+    ) {
+        self.process_termination_worker_readiness = match process_terminator_readiness_for_test {
+            ProcessTerminatorReadinessForTest::Starting => {
+                ProcessTerminationWorkerReadiness::StartingForTest
+            },
+            ProcessTerminatorReadinessForTest::Available => {
+                ProcessTerminationWorkerReadiness::Available
+            },
+            ProcessTerminatorReadinessForTest::Unavailable => {
+                ProcessTerminationWorkerReadiness::Unavailable
+            },
+        };
+    }
 
     pub(super) fn register_item_background_services(&self, item: &RootItem) {
         let started = std::time::Instant::now();
@@ -465,6 +507,34 @@ mod tests {
         assert!(matches!(
             background.process_termination_result_receiver(),
             ProcessTerminationResultReceiver::NoCompletedResultExpected
+        ));
+    }
+
+    #[test]
+    fn test_readiness_control_reports_each_submission_state() {
+        let mut background = fresh();
+
+        background
+            .set_process_terminator_readiness_for_test(ProcessTerminatorReadinessForTest::Starting);
+        assert!(matches!(
+            background.available_process_terminator(),
+            ProcessTerminatorAvailability::Starting
+        ));
+
+        background.set_process_terminator_readiness_for_test(
+            ProcessTerminatorReadinessForTest::Available,
+        );
+        assert!(matches!(
+            background.available_process_terminator(),
+            ProcessTerminatorAvailability::Available(_)
+        ));
+
+        background.set_process_terminator_readiness_for_test(
+            ProcessTerminatorReadinessForTest::Unavailable,
+        );
+        assert!(matches!(
+            background.available_process_terminator(),
+            ProcessTerminatorAvailability::Unavailable
         ));
     }
 }

@@ -154,6 +154,8 @@ use super::panes::OwnedColumnSelection;
 use super::panes::PaneBehavior;
 use super::panes::PaneId;
 use super::panes::Panes;
+use super::panes::SelectedBuildTerminationConfirmationDisplay;
+use super::panes::SelectedBuildTerminationSelection;
 use super::panes::SyncedDescriptionHeight;
 use super::panes::VisualSelectionPermission;
 pub(super) use super::project_list::ExpandKey;
@@ -182,8 +184,17 @@ use super::state::Scan;
 use super::state::SyncTracker;
 #[cfg(test)]
 use super::test_support::FixtureDirs;
+use crate::build_monitor::BUILD_TERMINATION_TIMEOUT;
 use crate::build_monitor::BuildMonitor;
 use crate::build_monitor::BuildScopeActionability;
+use crate::build_monitor::BuildTerminationAuthorizationConstruction;
+use crate::build_monitor::BuildTerminationCompletionTransition;
+use crate::build_monitor::BuildTerminationDeadline;
+use crate::build_monitor::BuildTerminationSessionCompletion;
+use crate::build_monitor::BuildTerminationSubmission;
+use crate::build_monitor::BuildTerminationSubmissionRefusal;
+use crate::build_monitor::SelectedBuildTerminationAuthorization;
+use crate::build_monitor::SelectedBuildTerminationAvailability;
 use crate::channel::Receiver;
 use crate::channel::Sender;
 use crate::ci::OwnerRepo;
@@ -837,6 +848,246 @@ impl App {
         );
     }
 
+    /// Freeze selected-build authority after the Output cursor resolves one
+    /// current session column. The display target identifies the column; only
+    /// `BuildMonitor` may turn it into an opaque authorization.
+    pub(super) fn request_selected_build_termination_confirmation(&mut self) {
+        let selected_build_termination_selection = self
+            .panes
+            .output
+            .selected_build_termination_selection(&self.output_presentation());
+        let SelectedBuildTerminationSelection::SelectedBuild(
+            selected_build_termination_display_target,
+        ) = selected_build_termination_selection
+        else {
+            self.show_timed_warning_toast(
+                "Build termination unavailable",
+                "No build column is selected",
+            );
+            return;
+        };
+        let (build_session_id, selected_build_termination_confirmation_display) =
+            selected_build_termination_display_target.into_parts();
+        match self
+            .build_monitor
+            .selected_termination_availability(&build_session_id)
+        {
+            SelectedBuildTerminationAvailability::Available => {},
+            selected_build_termination_availability => {
+                self.show_selected_build_termination_unavailable(
+                    selected_build_termination_availability,
+                );
+                return;
+            },
+        }
+        match self
+            .build_monitor
+            .selected_termination_authorization(&build_session_id)
+        {
+            BuildTerminationAuthorizationConstruction::Authorized(
+                selected_build_termination_authorization,
+            ) => self.open_confirmation(
+                ConfirmAction::TerminateSelectedBuild {
+                    selected_build_termination_confirmation_display,
+                    selected_build_termination_authorization: Box::new(
+                        selected_build_termination_authorization,
+                    ),
+                },
+                ConfirmationReadiness::Ready,
+            ),
+            BuildTerminationAuthorizationConstruction::SnapshotNotActionable => {
+                self.show_selected_build_termination_unavailable(
+                    SelectedBuildTerminationAvailability::SnapshotNotActionable,
+                );
+            },
+            BuildTerminationAuthorizationConstruction::SessionNotActionable
+            | BuildTerminationAuthorizationConstruction::ScopeNotFullyActionable => {
+                self.show_selected_build_termination_unavailable(
+                    SelectedBuildTerminationAvailability::SessionNotActionable,
+                );
+            },
+            BuildTerminationAuthorizationConstruction::Busy => {
+                self.show_selected_build_termination_unavailable(
+                    SelectedBuildTerminationAvailability::Busy,
+                );
+            },
+        }
+    }
+
+    /// Set deterministic process-terminator readiness for an input fixture.
+    #[cfg(test)]
+    pub(crate) const fn set_process_terminator_readiness_for_test(
+        &mut self,
+        process_terminator_readiness_for_test: crate::tui::background::ProcessTerminatorReadinessForTest,
+    ) {
+        self.background
+            .set_process_terminator_readiness_for_test(process_terminator_readiness_for_test);
+    }
+
+    /// Submit the authorization moved out of the ready confirmation. A worker
+    /// that is not ready receives the exact same action back into a ready modal
+    /// so the opaque authority is retained rather than reconstructed.
+    pub(super) fn submit_selected_build_termination(
+        &mut self,
+        selected_build_termination_confirmation_display: SelectedBuildTerminationConfirmationDisplay,
+        selected_build_termination_authorization: SelectedBuildTerminationAuthorization,
+    ) {
+        match self.background.available_process_terminator() {
+            crate::tui::background::ProcessTerminatorAvailability::Available(
+                process_terminator,
+            ) => {
+                let build_termination_submission = self.build_monitor.submit_selected_termination(
+                    selected_build_termination_authorization,
+                    process_terminator,
+                    BuildTerminationDeadline::from_submission_time(Instant::now()),
+                );
+                match build_termination_submission {
+                    BuildTerminationSubmission::Submitted(build_termination_transaction_id) => {
+                        let Self {
+                            build_monitor,
+                            inflight,
+                            ..
+                        } = self;
+                        let build_termination_completion_transition = build_monitor
+                            .submit_owned_termination_targets(
+                                build_termination_transaction_id,
+                                |token| inflight.submit_owned_run_termination(token),
+                            );
+                        self.consume_build_termination_completion_transition(
+                            build_termination_completion_transition,
+                        );
+                    },
+                    BuildTerminationSubmission::Busy => self.show_timed_warning_toast(
+                        "Build termination unavailable",
+                        "Another build termination is still in progress",
+                    ),
+                    BuildTerminationSubmission::Refused(build_termination_submission_refusal) => {
+                        self.show_build_termination_submission_refusal(
+                            build_termination_submission_refusal,
+                        );
+                    },
+                    BuildTerminationSubmission::IdentityExhausted => self.show_timed_warning_toast(
+                        "Build termination unavailable",
+                        "Termination identity allocation is exhausted",
+                    ),
+                }
+            },
+            crate::tui::background::ProcessTerminatorAvailability::Starting => {
+                self.restore_selected_build_termination_confirmation(
+                    selected_build_termination_confirmation_display,
+                    selected_build_termination_authorization,
+                    "The termination worker is starting",
+                );
+            },
+            crate::tui::background::ProcessTerminatorAvailability::Unavailable => {
+                self.restore_selected_build_termination_confirmation(
+                    selected_build_termination_confirmation_display,
+                    selected_build_termination_authorization,
+                    "The termination worker is unavailable",
+                );
+            },
+        }
+    }
+
+    fn restore_selected_build_termination_confirmation(
+        &mut self,
+        selected_build_termination_confirmation_display: SelectedBuildTerminationConfirmationDisplay,
+        selected_build_termination_authorization: SelectedBuildTerminationAuthorization,
+        worker_message: &str,
+    ) {
+        self.open_confirmation(
+            ConfirmAction::TerminateSelectedBuild {
+                selected_build_termination_confirmation_display,
+                selected_build_termination_authorization: Box::new(
+                    selected_build_termination_authorization,
+                ),
+            },
+            ConfirmationReadiness::Ready,
+        );
+        self.show_timed_warning_toast("Build termination delayed", worker_message);
+    }
+
+    pub(super) fn consume_build_termination_completion_transition(
+        &mut self,
+        build_termination_completion_transition: BuildTerminationCompletionTransition,
+    ) {
+        let BuildTerminationCompletionTransition::Completed(
+            build_termination_transaction_completion,
+        ) = build_termination_completion_transition
+        else {
+            return;
+        };
+        let Some(build_termination_terminal_record) = build_termination_transaction_completion
+            .terminal_records()
+            .first()
+        else {
+            return;
+        };
+        match build_termination_terminal_record.session_completion() {
+            BuildTerminationSessionCompletion::AlreadyGone => self.show_timed_toast(
+                "Build already exited",
+                "The selected Cargo root was already gone",
+            ),
+            BuildTerminationSessionCompletion::GoneAfterSignaling => self.show_timed_toast(
+                "Build termination complete",
+                "The selected Cargo root exited after SIGTERM",
+            ),
+            BuildTerminationSessionCompletion::RetryUnavailable => {
+                self.show_timed_warning_toast(
+                    "Build termination incomplete",
+                    "Some selected build processes still need a fresh observation before retry",
+                );
+            },
+            BuildTerminationSessionCompletion::DeadlineExpired => self.show_timed_warning_toast(
+                "Build termination timed out",
+                format!(
+                    "The selected build did not complete within {} seconds",
+                    BUILD_TERMINATION_TIMEOUT.as_secs(),
+                ),
+            ),
+        }
+    }
+
+    fn show_selected_build_termination_unavailable(
+        &mut self,
+        selected_build_termination_availability: SelectedBuildTerminationAvailability,
+    ) {
+        let body = match selected_build_termination_availability {
+            SelectedBuildTerminationAvailability::Available => {
+                "The selected build can be terminated"
+            },
+            SelectedBuildTerminationAvailability::SnapshotNotActionable => {
+                "The current monitor snapshot is not actionable"
+            },
+            SelectedBuildTerminationAvailability::SessionNotActionable => {
+                "The selected build has no current termination authority"
+            },
+            SelectedBuildTerminationAvailability::Busy => {
+                "Another build termination is still in progress"
+            },
+        };
+        self.show_timed_warning_toast("Build termination unavailable", body);
+    }
+
+    fn show_build_termination_submission_refusal(
+        &mut self,
+        build_termination_submission_refusal: BuildTerminationSubmissionRefusal,
+    ) {
+        let body = match build_termination_submission_refusal {
+            BuildTerminationSubmissionRefusal::SnapshotNotActionable => {
+                "The monitor snapshot is no longer actionable"
+            },
+            BuildTerminationSubmissionRefusal::SelectedScopeChanged
+            | BuildTerminationSubmissionRefusal::ScopeRootsChanged => {
+                "The selected build scope changed before termination"
+            },
+            BuildTerminationSubmissionRefusal::SelectedSessionChanged => {
+                "The selected build changed before termination"
+            },
+        };
+        self.show_timed_warning_toast("Build termination refused", body);
+    }
+
     /// Toggle lints for the selected project's lint-owning root (bound to
     /// Space). A workspace member resolves to its workspace root, so all of
     /// that workspace's lint commands pause together.
@@ -1056,6 +1307,7 @@ impl App {
                 primary == workspace_root
             },
             ConfirmAction::KillTarget { .. }
+            | ConfirmAction::TerminateSelectedBuild { .. }
             | ConfirmAction::PauseLintProject(_)
             | ConfirmAction::PauseAllLints => false,
         };
@@ -1255,6 +1507,27 @@ impl App {
                 .panes
                 .output
                 .owned_column_selection(&output_presentation),
+        }
+    }
+
+    /// Read selected-build termination availability through the reconciled
+    /// Output presentation without consuming the monitor's opaque authority.
+    pub(super) fn selected_build_termination_availability(
+        &self,
+    ) -> SelectedBuildTerminationAvailability {
+        let selected_build_termination_selection = self
+            .panes
+            .output
+            .selected_build_termination_selection(&self.output_presentation());
+        match selected_build_termination_selection {
+            SelectedBuildTerminationSelection::NoBuildSelected => {
+                SelectedBuildTerminationAvailability::SessionNotActionable
+            },
+            SelectedBuildTerminationSelection::SelectedBuild(
+                selected_build_termination_display_target,
+            ) => self.build_monitor.selected_termination_availability(
+                selected_build_termination_display_target.build_session_id(),
+            ),
         }
     }
 

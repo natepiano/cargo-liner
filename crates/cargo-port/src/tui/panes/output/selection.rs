@@ -231,6 +231,22 @@ pub(super) enum OutputCursorColumn {
     Session(BuildSessionId),
 }
 
+/// The current cursor's destructive selected-build target, if the current
+/// presentation still proves one exists.
+///
+/// This is deliberately separate from [`SelectedColumn`]. Motion needs an
+/// absent or unattributed cursor to fall back to the first column, whereas a
+/// destructive action must refuse unless the cursor names one exact current
+/// session. Captured output resolves only through its retained producer's
+/// owned monitor column.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum SelectedBuildTerminationCursorSelection {
+    /// The cursor has no destructive selected-build target in this presentation.
+    NoSelectedBuild,
+    /// One current monitor column is the cursor's exact selected-build target.
+    SelectedBuild(BuildSessionId),
+}
+
 /// Where the Output pane's cursor is, and what it falls back to when the thing
 /// under it exits.
 ///
@@ -315,6 +331,46 @@ impl OutputCursor {
 }
 
 impl OutputCursor {
+    /// Resolve the destructive target without applying any motion fallback.
+    pub(super) fn selected_build_termination_selection(
+        &self,
+        columns: &[MonitorColumn<'_>],
+        owned_pin_presence: OwnedPinPresence,
+    ) -> SelectedBuildTerminationCursorSelection {
+        match &self.column {
+            OutputCursorColumn::Session(build_session_id) => {
+                if columns
+                    .iter()
+                    .any(|column| column.build_session_id() == build_session_id)
+                {
+                    SelectedBuildTerminationCursorSelection::SelectedBuild(build_session_id.clone())
+                } else {
+                    SelectedBuildTerminationCursorSelection::NoSelectedBuild
+                }
+            },
+            OutputCursorColumn::OwnedCapturedOutput => match (&self.target, owned_pin_presence) {
+                (
+                    OutputCursorTarget::CapturedOutput(owned_column_witness),
+                    OwnedPinPresence::Pinned(producer),
+                ) if owned_column_witness.producer() == producer => columns
+                    .iter()
+                    .find(|column| column_produced_by(**column, producer))
+                    .map_or(
+                        SelectedBuildTerminationCursorSelection::NoSelectedBuild,
+                        |column| {
+                            SelectedBuildTerminationCursorSelection::SelectedBuild(
+                                column.build_session_id().clone(),
+                            )
+                        },
+                    ),
+                _ => SelectedBuildTerminationCursorSelection::NoSelectedBuild,
+            },
+            OutputCursorColumn::Absent | OutputCursorColumn::UnattributedSection => {
+                SelectedBuildTerminationCursorSelection::NoSelectedBuild
+            },
+        }
+    }
+
     /// Move the cursor to whatever survived this frame.
     ///
     /// A scope change that leaves no columns keeps only a still-present pinned

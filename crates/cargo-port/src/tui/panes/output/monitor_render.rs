@@ -15,7 +15,6 @@ use ratatui::text::Span;
 use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
 use ratatui::widgets::Paragraph;
-use tui_pane::format_progressive;
 use tui_pane::label_color;
 
 use super::constants::COLUMN_DIVIDER_WIDTH;
@@ -44,19 +43,14 @@ use super::selection::OutputCursor;
 use super::selection::OutputCursorTarget;
 use super::selection::OutputSelectionRange;
 use super::selection::VisualSelectionPermission;
-use crate::build_monitor::BuildProfileLabel;
-use crate::build_monitor::BuildSessionActivity;
-use crate::build_monitor::CargoCommandSelector;
-use crate::build_monitor::CargoSubcommand;
-use crate::build_monitor::CargoSubcommandRecognition;
+use crate::build_monitor::BuildTerminationSessionCompletion;
+use crate::build_monitor::BuildTerminationTerminalRecord;
 use crate::build_monitor::CompileActivity;
 use crate::build_monitor::CompiledCrateIdentity;
 use crate::build_monitor::CompilerAttribution;
 use crate::build_monitor::CompilerKind;
 use crate::build_monitor::MonitorSessionOwnership;
 use crate::build_monitor::MonitorStaleness;
-use crate::build_monitor::SessionScope;
-use crate::build_monitor::TargetDirectoryEvidence;
 use crate::build_monitor::UnattributedCompileActivity;
 use crate::tui::OwnedRunId;
 use crate::tui::state::OwnedRunCompletionMarker;
@@ -455,12 +449,21 @@ fn render_monitor(
     if area.height < MONITOR_INDICATOR_HEIGHT {
         return;
     }
-    let monitor_staleness = match monitor_presentation {
-        MonitorPresentation::Empty(_) => MonitorStaleness::Live,
-        MonitorPresentation::Columns(monitor_columns) => monitor_columns.monitor_staleness(),
+    let (monitor_staleness, terminal_record_count) = match monitor_presentation {
+        MonitorPresentation::Empty(monitor_empty_presentation) => (
+            MonitorStaleness::Live,
+            monitor_empty_presentation.terminal_records().count(),
+        ),
+        MonitorPresentation::Columns(monitor_columns) => (
+            monitor_columns.monitor_staleness(),
+            monitor_columns.terminal_records().count(),
+        ),
     };
     let indicator = Rect::new(area.x, area.y, area.width, MONITOR_INDICATOR_HEIGHT);
-    frame.render_widget(Paragraph::new(indicator_line(monitor_staleness)), indicator);
+    frame.render_widget(
+        Paragraph::new(indicator_line(monitor_staleness, terminal_record_count)),
+        indicator,
+    );
 
     let body = Rect::new(
         area.x,
@@ -475,14 +478,12 @@ fn render_monitor(
         MonitorPresentation::Empty(monitor_empty_presentation) => {
             hit_map.record(HitRegion::Drawn(body), OutputMonitorHit::EmptyMonitor);
             frame.render_widget(
-                Paragraph::new(empty_state_line(
-                    monitor_empty_presentation.monitor_empty_state(),
-                )),
+                Paragraph::new(empty_state_lines(monitor_empty_presentation)),
                 body,
             );
         },
         MonitorPresentation::Columns(monitor_columns) => {
-            render_columns(
+            render_columns_with_terminal_records(
                 frame,
                 body,
                 monitor_columns,
@@ -495,13 +496,71 @@ fn render_monitor(
     }
 }
 
+/// Draw live columns above the row-independent terminal records they do not
+/// replace. The registry stays the sole result owner; this only reserves the
+/// visible rows needed to project its existing records beside live work.
+fn render_columns_with_terminal_records(
+    frame: &mut Frame,
+    area: Rect,
+    monitor_columns: MonitorColumns<'_>,
+    owned_body: Option<OwnedBody<'_>>,
+    cursor: &OutputCursor,
+    selected_column_scroll: SelectedColumnScroll,
+    hit_map: &mut MonitorHitMap,
+) {
+    let terminal_record_lines: Vec<_> = monitor_columns
+        .terminal_records()
+        .map(terminal_record_line)
+        .collect();
+    let terminal_record_height = u16::try_from(terminal_record_lines.len())
+        .unwrap_or(u16::MAX)
+        .min(area.height);
+    let live_columns_area = Rect::new(
+        area.x,
+        area.y,
+        area.width,
+        area.height.saturating_sub(terminal_record_height),
+    );
+    if live_columns_area.height > 0 {
+        render_columns(
+            frame,
+            live_columns_area,
+            monitor_columns,
+            owned_body,
+            cursor,
+            selected_column_scroll,
+            hit_map,
+        );
+    }
+    if terminal_record_height > 0 {
+        let terminal_record_area = Rect::new(
+            area.x,
+            area.y.saturating_add(live_columns_area.height),
+            area.width,
+            terminal_record_height,
+        );
+        frame.render_widget(Paragraph::new(terminal_record_lines), terminal_record_area);
+    }
+}
+
 /// The always-visible enabled indicator, carrying the staleness marker.
-fn indicator_line(monitor_staleness: MonitorStaleness) -> Line<'static> {
+fn indicator_line(
+    monitor_staleness: MonitorStaleness,
+    terminal_record_count: usize,
+) -> Line<'static> {
     let text = match monitor_staleness {
         MonitorStaleness::Live => " Build monitor on",
         MonitorStaleness::Stale => " Build monitor on — stale",
     };
-    Line::from(Span::styled(text, Style::default().fg(label_color())))
+    let terminal_note = match terminal_record_count {
+        0 => String::new(),
+        1 => " — 1 termination result".to_string(),
+        _ => format!(" — {terminal_record_count} termination results"),
+    };
+    Line::from(Span::styled(
+        format!("{text}{terminal_note}"),
+        Style::default().fg(label_color()),
+    ))
 }
 
 /// Why the enabled monitor has no columns, followed by the index that answer
@@ -522,6 +581,43 @@ fn empty_state_line(monitor_empty_state: MonitorEmptyState) -> Line<'static> {
         },
     }
     Line::from(spans)
+}
+
+/// The empty monitor explanation followed by terminal records that outlived
+/// their replaceable live session rows.
+fn empty_state_lines(
+    monitor_empty_presentation: super::presentation::MonitorEmptyPresentation<'_>,
+) -> Vec<Line<'static>> {
+    std::iter::once(empty_state_line(
+        monitor_empty_presentation.monitor_empty_state(),
+    ))
+    .chain(
+        monitor_empty_presentation
+            .terminal_records()
+            .map(terminal_record_line),
+    )
+    .collect()
+}
+
+/// One retained terminal record named by its frozen root PID.
+fn terminal_record_line(
+    build_termination_terminal_record: &BuildTerminationTerminalRecord,
+) -> Line<'static> {
+    let result = match build_termination_terminal_record.session_completion() {
+        BuildTerminationSessionCompletion::AlreadyGone => "already gone",
+        BuildTerminationSessionCompletion::GoneAfterSignaling => "gone after signal",
+        BuildTerminationSessionCompletion::RetryUnavailable => "termination incomplete",
+        BuildTerminationSessionCompletion::DeadlineExpired => "termination timed out",
+    };
+    Line::from(Span::styled(
+        format!(
+            " Build pid {} — {result}",
+            build_termination_terminal_record
+                .display_identity()
+                .root_pid(),
+        ),
+        Style::default().fg(label_color()),
+    ))
 }
 
 /// Split `area` into the column strip and the scope-level unattributed section,
@@ -713,7 +809,7 @@ fn render_column(
         cursor.target(),
         OutputCursorTarget::Header(build_session_id) if build_session_id == column.build_session_id()
     );
-    for (index, text) in header_fields(column, now).into_iter().enumerate() {
+    for (index, text) in column.header_fields(now).into_iter().enumerate() {
         let line = Line::from(Span::raw(format!(" {text}")));
         hit_map.record(
             row_rect(area, lines.len()),
@@ -776,116 +872,6 @@ fn render_column(
     }
 
     frame.render_widget(Paragraph::new(lines), area);
-}
-
-/// The header fields, in display order: the operative Cargo command and its
-/// selectors, the checkout it builds, the resolved profile with the root PID
-/// and elapsed time, and what it is doing now.
-fn header_fields(column: MonitorColumn<'_>, now: Instant) -> [String; COLUMN_HEADER_HEIGHT] {
-    let build_session = column.session_row().build_session();
-    let root_observation = build_session.root_observation();
-    [
-        cargo_command_label(column),
-        checkout_label(column),
-        format!(
-            "{} · pid {} · {}",
-            profile_label(column),
-            root_observation.root_pid(),
-            format_progressive(column.elapsed(now).as_secs()),
-        ),
-        state_label(column),
-    ]
-}
-
-/// `cargo <subcommand>` followed by the selectors as the user typed them.
-fn cargo_command_label(column: MonitorColumn<'_>) -> String {
-    let operative_cargo_command = column
-        .session_row()
-        .build_session()
-        .operative_cargo_command();
-    let subcommand = match operative_cargo_command.subcommand() {
-        CargoSubcommand::Named(name) => name.as_str(),
-        CargoSubcommand::Absent => "",
-    };
-    let selectors: Vec<String> = operative_cargo_command
-        .selectors()
-        .iter()
-        .map(selector_label)
-        .collect();
-    let command = if selectors.is_empty() {
-        format!("cargo {subcommand}")
-    } else {
-        format!("cargo {subcommand} {}", selectors.join(" "))
-    };
-    let command = command.trim_end();
-    // An alias or plugin cannot be decided from argv, so the header says the
-    // subcommand was read rather than recognized.
-    match column
-        .session_row()
-        .build_session()
-        .cargo_subcommand_recognition()
-    {
-        CargoSubcommandRecognition::Build | CargoSubcommandRecognition::NonBuild => {
-            command.to_string()
-        },
-        CargoSubcommandRecognition::Unrecognized => format!("{command} (alias)"),
-    }
-}
-
-/// One selector argument, rendered the way it was written.
-fn selector_label(cargo_command_selector: &CargoCommandSelector) -> String {
-    match cargo_command_selector {
-        CargoCommandSelector::Package(name) => format!("-p {name}"),
-        CargoCommandSelector::AllPackages => "--workspace".to_string(),
-        CargoCommandSelector::Library => "--lib".to_string(),
-        CargoCommandSelector::Binary(name) => format!("--bin {name}"),
-        CargoCommandSelector::AllBinaries => "--bins".to_string(),
-        CargoCommandSelector::Example(name) => format!("--example {name}"),
-        CargoCommandSelector::AllExamples => "--examples".to_string(),
-        CargoCommandSelector::Test(name) => format!("--test {name}"),
-        CargoCommandSelector::AllTests => "--tests".to_string(),
-        CargoCommandSelector::Benchmark(name) => format!("--bench {name}"),
-        CargoCommandSelector::AllBenchmarks => "--benches".to_string(),
-        CargoCommandSelector::AllTargets => "--all-targets".to_string(),
-    }
-}
-
-/// The checkout this session builds, falling back to where it writes when no
-/// method related it to the project list.
-fn checkout_label(column: MonitorColumn<'_>) -> String {
-    let build_session = column.session_row().build_session();
-    match build_session.session_scope() {
-        SessionScope::Resolved { root, .. } => root.path().to_string(),
-        SessionScope::Unresolved => match build_session.session_target_directory().evidence() {
-            TargetDirectoryEvidence::Determined(canonical_target_directory) => {
-                format!("writes {}", canonical_target_directory.path())
-            },
-            TargetDirectoryEvidence::Unobservable => "checkout unresolved".to_string(),
-        },
-    }
-}
-
-/// The resolved profile, keeping a manifest's custom name.
-fn profile_label(column: MonitorColumn<'_>) -> String {
-    match column.session_row().build_session().build_profile().label() {
-        BuildProfileLabel::Dev => "dev".to_string(),
-        BuildProfileLabel::Release => "release".to_string(),
-        BuildProfileLabel::Custom(name) => name.clone(),
-    }
-}
-
-/// What the session is doing this cycle, and whether Cargo Port launched it.
-fn state_label(column: MonitorColumn<'_>) -> String {
-    let activity = match column.build_session_activity() {
-        BuildSessionActivity::Compiling => "compiling",
-        BuildSessionActivity::RunningBuildScript => "build script",
-        BuildSessionActivity::Linking => "linking",
-        BuildSessionActivity::ActiveWithoutCompiler => "active",
-    };
-    match column.session_ownership() {
-        MonitorSessionOwnership::Owned(_) => format!("{activity} · launched here"),
-        MonitorSessionOwnership::External => activity.to_string(),
-    }
 }
 
 /// The text of the activity row `compile_activity_id` names, as a copy
@@ -1050,4 +1036,172 @@ fn unattributed_label(unattributed_activity: &UnattributedCompileActivity) -> St
         compiler_kind_label(unattributed_activity.compiler_kind()),
         crate_identity_label(unattributed_activity.compiled_crate_identity()),
     )
+}
+
+#[cfg(test)]
+#[allow(clippy::panic, reason = "tests should panic on unexpected values")]
+mod tests {
+    use std::path::Path;
+
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use super::super::presentation::MonitorVisibility;
+    use super::super::presentation::OutputPresentation;
+    use super::*;
+    use crate::build_monitor::BuildTerminationLifecycleRegistry;
+    use crate::build_monitor::ClassifiedRoot;
+    use crate::build_monitor::MonitorSnapshot;
+    use crate::build_monitor::classified_monitor_snapshot;
+    use crate::process_termination::TerminationTargetResult;
+    use crate::project::AbsolutePath;
+    use crate::tui::compile_visibility::CompileVisibilityState;
+    use crate::tui::compile_visibility::MonitorScopeKey;
+    use crate::tui::compile_visibility::MonitorScopeResolution;
+
+    const TERMINATED_ROOT_PID: u32 = 9_421;
+    const LIVE_ROOT_PID: u32 = 9_422;
+
+    fn actionable_scope() -> CompileVisibilityState {
+        CompileVisibilityState::on_for_test(MonitorScopeResolution::Ready(
+            MonitorScopeKey::for_test(AbsolutePath::from(Path::new(
+                "/tmp/cargo-port-monitor-render",
+            ))),
+        ))
+    }
+
+    fn snapshot(root_pid: u32) -> MonitorSnapshot {
+        classified_monitor_snapshot(&[ClassifiedRoot {
+            root_pid,
+            compiler_pids: &[],
+        }])
+        .unwrap_or_else(|error| panic!("classification fixture should build a snapshot: {error}"))
+    }
+
+    fn terminal_record_line_text(termination_target_result: TerminationTargetResult) -> String {
+        let terminal_snapshot = snapshot(TERMINATED_ROOT_PID);
+        let MonitorSnapshot::Fresh(monitor_data) = &terminal_snapshot else {
+            panic!("classification fixture should produce fresh data");
+        };
+        let terminal_row = &monitor_data.session_rows()[0];
+        let mut build_termination_lifecycle_registry = BuildTerminationLifecycleRegistry::default();
+        build_termination_lifecycle_registry
+            .record_external_terminal_for_test(terminal_row, termination_target_result);
+        let terminal_record = build_termination_lifecycle_registry
+            .terminal_records()
+            .next()
+            .unwrap_or_else(|| panic!("recording a terminal result should retain one record"));
+        terminal_record_line(terminal_record)
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn terminal_record_lines_preserve_already_gone_gone_after_signal_and_partial_truth() {
+        let cases = [
+            (
+                TerminationTargetResult::AlreadyGone {
+                    pid: TERMINATED_ROOT_PID,
+                },
+                "already gone",
+            ),
+            (
+                TerminationTargetResult::GoneAfterSignaling {
+                    pid: TERMINATED_ROOT_PID,
+                },
+                "gone after signal",
+            ),
+            (
+                TerminationTargetResult::Survived {
+                    pid: TERMINATED_ROOT_PID,
+                },
+                "termination incomplete",
+            ),
+        ];
+
+        for (termination_target_result, expected_truth) in cases {
+            let rendered = terminal_record_line_text(termination_target_result);
+            assert!(
+                rendered.contains(&format!("Build pid {TERMINATED_ROOT_PID}")),
+                "terminal projection retains the target identity: {rendered:?}"
+            );
+            assert!(
+                rendered.contains(expected_truth),
+                "terminal projection preserves its semantic outcome: {rendered:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn live_columns_render_retained_terminal_result_detail() {
+        let terminal_snapshot = snapshot(TERMINATED_ROOT_PID);
+        let MonitorSnapshot::Fresh(terminal_data) = &terminal_snapshot else {
+            panic!("classification fixture should produce fresh data");
+        };
+        let terminal_row = &terminal_data.session_rows()[0];
+        let mut build_termination_lifecycle_registry = BuildTerminationLifecycleRegistry::default();
+        build_termination_lifecycle_registry.record_external_terminal_for_test(
+            terminal_row,
+            TerminationTargetResult::GoneAfterSignaling {
+                pid: TERMINATED_ROOT_PID,
+            },
+        );
+        let live_snapshot = snapshot(LIVE_ROOT_PID);
+        let compile_visibility_state = actionable_scope();
+        let output_presentation = OutputPresentation::derive(
+            &compile_visibility_state,
+            &live_snapshot,
+            &build_termination_lifecycle_registry,
+            crate::tui::state::OwnedRunOutputStateRef::Absent,
+            crate::tui::state::OwnedRunRunningLabelRef::NotRunning,
+            OwnedRunCompletionMarker::NotCompleted,
+        );
+        let MonitorVisibility::On(MonitorPresentation::Columns(monitor_columns)) =
+            output_presentation.monitor()
+        else {
+            panic!("the unrelated current root should keep a live column on screen");
+        };
+        assert_eq!(monitor_columns.len(), 1);
+        assert_eq!(monitor_columns.terminal_records().count(), 1);
+
+        let backend = TestBackend::new(100, 16);
+        let mut terminal =
+            Terminal::new(backend).unwrap_or_else(|error| panic!("create test terminal: {error}"));
+        let cursor = OutputCursor::empty();
+        terminal
+            .draw(|frame| {
+                let mut hit_map = MonitorHitMap::new();
+                render_monitor(
+                    frame,
+                    frame.area(),
+                    MonitorPresentation::Columns(monitor_columns),
+                    None,
+                    &cursor,
+                    SelectedColumnScroll::new(0, 0),
+                    &mut hit_map,
+                );
+            })
+            .unwrap_or_else(|error| panic!("draw test frame: {error}"));
+
+        let buffer = terminal.backend().buffer();
+        let mut rendered = String::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                rendered.push_str(buffer[(x, y)].symbol());
+            }
+            rendered.push('\n');
+        }
+        assert!(
+            rendered.contains(&format!("pid {LIVE_ROOT_PID}")),
+            "the unrelated current build remains rendered: {rendered:?}"
+        );
+        assert!(
+            rendered.contains(&format!(
+                "Build pid {TERMINATED_ROOT_PID} — gone after signal"
+            )),
+            "the retained terminal projection names its target and semantic outcome: {rendered:?}"
+        );
+    }
 }

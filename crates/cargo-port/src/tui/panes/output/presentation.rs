@@ -7,17 +7,25 @@
 
 use std::time::Instant;
 
+use tui_pane::format_progressive;
+
 use super::constants::MINIMUM_READABLE_COLUMN_WIDTH;
+use crate::build_monitor::BuildProfileLabel;
 use crate::build_monitor::BuildSessionActivity;
 use crate::build_monitor::BuildSessionId;
 use crate::build_monitor::BuildTerminationLifecycle;
 use crate::build_monitor::BuildTerminationLifecycleRegistry;
 use crate::build_monitor::BuildTerminationTerminalRecord;
+use crate::build_monitor::CargoCommandSelector;
+use crate::build_monitor::CargoSubcommand;
+use crate::build_monitor::CargoSubcommandRecognition;
 use crate::build_monitor::MonitorDisplay;
 use crate::build_monitor::MonitorSessionOwnership;
 use crate::build_monitor::MonitorSessionRow;
 use crate::build_monitor::MonitorSnapshot;
 use crate::build_monitor::MonitorStaleness;
+use crate::build_monitor::SessionScope;
+use crate::build_monitor::TargetDirectoryEvidence;
 use crate::build_monitor::UnattributedCompileActivity;
 use crate::tui::OwnedRunId;
 use crate::tui::compile_visibility::CompileVisibilityState;
@@ -136,13 +144,6 @@ impl<'a> MonitorEmptyPresentation<'a> {
     pub(super) const fn monitor_empty_state(self) -> MonitorEmptyState { self.monitor_empty_state }
 
     /// Terminal records remain available when no current row survives.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "row-independent terminal records are projected before the renderer consumes them"
-        )
-    )]
     pub(super) fn terminal_records(
         self,
     ) -> impl Iterator<Item = &'a BuildTerminationTerminalRecord> {
@@ -205,6 +206,69 @@ pub(super) struct MonitorColumn<'a> {
     build_termination_lifecycle: BuildTerminationLifecycle,
 }
 
+/// Confirmation data derived from a displayed root Cargo session.
+///
+/// It is intentionally insufficient to authorize anything: the modal owns a
+/// separate opaque authorization, while this value only records what the user
+/// selected and what the column was showing at that time.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SelectedBuildTerminationConfirmationDisplay {
+    operative_cargo_command: String,
+    checkout:                String,
+    root_pid:                u32,
+    start_age:               std::time::Duration,
+    compiler_child_count:    usize,
+    profile:                 String,
+    state:                   String,
+}
+
+impl SelectedBuildTerminationConfirmationDisplay {
+    pub(crate) fn operative_cargo_command(&self) -> &str { &self.operative_cargo_command }
+
+    pub(crate) fn checkout(&self) -> &str { &self.checkout }
+
+    pub(crate) const fn root_pid(&self) -> u32 { self.root_pid }
+
+    pub(crate) const fn start_age(&self) -> std::time::Duration { self.start_age }
+
+    pub(crate) const fn compiler_child_count(&self) -> usize { self.compiler_child_count }
+
+    fn header_fields(&self) -> [String; 4] {
+        [
+            self.operative_cargo_command.clone(),
+            self.checkout.clone(),
+            format!(
+                "{} · pid {} · {}",
+                self.profile,
+                self.root_pid,
+                format_progressive(self.start_age.as_secs()),
+            ),
+            self.state.clone(),
+        ]
+    }
+}
+
+/// The Output cursor's selected session represented for the termination
+/// confirmation flow. It carries display facts, never signal authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SelectedBuildTerminationDisplayTarget {
+    build_session_id:                                BuildSessionId,
+    selected_build_termination_confirmation_display: SelectedBuildTerminationConfirmationDisplay,
+}
+
+impl SelectedBuildTerminationDisplayTarget {
+    pub(crate) const fn build_session_id(&self) -> &BuildSessionId { &self.build_session_id }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (BuildSessionId, SelectedBuildTerminationConfirmationDisplay) {
+        (
+            self.build_session_id,
+            self.selected_build_termination_confirmation_display,
+        )
+    }
+}
+
 impl<'a> MonitorColumn<'a> {
     /// The exec-sensitive key this column keeps its cursor and selection under.
     pub(super) const fn build_session_id(self) -> &'a BuildSessionId {
@@ -226,13 +290,6 @@ impl<'a> MonitorColumn<'a> {
 
     /// Transaction lifecycle joined at presentation time, never persisted on
     /// the replaceable monitor row.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "lifecycle markers read this presentation-only join"
-        )
-    )]
     pub(super) const fn build_termination_lifecycle(self) -> BuildTerminationLifecycle {
         self.build_termination_lifecycle
     }
@@ -245,6 +302,143 @@ impl<'a> MonitorColumn<'a> {
                 .root_observation()
                 .first_observed_at(),
         )
+    }
+
+    /// Derive the selected-build confirmation display from the same session
+    /// record and lifecycle join that the column header consumes.
+    pub(super) fn selected_build_termination_display_target(
+        self,
+        now: Instant,
+    ) -> SelectedBuildTerminationDisplayTarget {
+        SelectedBuildTerminationDisplayTarget {
+            build_session_id:                                self.build_session_id().clone(),
+            selected_build_termination_confirmation_display: self
+                .selected_build_termination_confirmation_display(now),
+        }
+    }
+
+    pub(super) fn header_fields(self, now: Instant) -> [String; 4] {
+        self.selected_build_termination_confirmation_display(now)
+            .header_fields()
+    }
+
+    fn selected_build_termination_confirmation_display(
+        self,
+        now: Instant,
+    ) -> SelectedBuildTerminationConfirmationDisplay {
+        let build_session = self.monitor_session_row.build_session();
+        let root_observation = build_session.root_observation();
+        SelectedBuildTerminationConfirmationDisplay {
+            operative_cargo_command: cargo_command_label(self),
+            checkout:                checkout_label(self),
+            root_pid:                root_observation.root_pid(),
+            start_age:               self.elapsed(now),
+            compiler_child_count:    self.monitor_session_row.compile_activities().len(),
+            profile:                 profile_label(self),
+            state:                   state_label(self),
+        }
+    }
+}
+
+/// `cargo <subcommand>` followed by the selectors as the user typed them.
+fn cargo_command_label(monitor_column: MonitorColumn<'_>) -> String {
+    let operative_cargo_command = monitor_column
+        .session_row()
+        .build_session()
+        .operative_cargo_command();
+    let subcommand = match operative_cargo_command.subcommand() {
+        CargoSubcommand::Named(name) => name.as_str(),
+        CargoSubcommand::Absent => "",
+    };
+    let selectors: Vec<String> = operative_cargo_command
+        .selectors()
+        .iter()
+        .map(selector_label)
+        .collect();
+    let command = if selectors.is_empty() {
+        format!("cargo {subcommand}")
+    } else {
+        format!("cargo {subcommand} {}", selectors.join(" "))
+    };
+    let command = command.trim_end();
+    match monitor_column
+        .session_row()
+        .build_session()
+        .cargo_subcommand_recognition()
+    {
+        CargoSubcommandRecognition::Build | CargoSubcommandRecognition::NonBuild => {
+            command.to_string()
+        },
+        CargoSubcommandRecognition::Unrecognized => format!("{command} (alias)"),
+    }
+}
+
+/// One selector argument, rendered the way it was written.
+fn selector_label(cargo_command_selector: &CargoCommandSelector) -> String {
+    match cargo_command_selector {
+        CargoCommandSelector::Package(name) => format!("-p {name}"),
+        CargoCommandSelector::AllPackages => "--workspace".to_string(),
+        CargoCommandSelector::Library => "--lib".to_string(),
+        CargoCommandSelector::Binary(name) => format!("--bin {name}"),
+        CargoCommandSelector::AllBinaries => "--bins".to_string(),
+        CargoCommandSelector::Example(name) => format!("--example {name}"),
+        CargoCommandSelector::AllExamples => "--examples".to_string(),
+        CargoCommandSelector::Test(name) => format!("--test {name}"),
+        CargoCommandSelector::AllTests => "--tests".to_string(),
+        CargoCommandSelector::Benchmark(name) => format!("--bench {name}"),
+        CargoCommandSelector::AllBenchmarks => "--benches".to_string(),
+        CargoCommandSelector::AllTargets => "--all-targets".to_string(),
+    }
+}
+
+/// The checkout this session builds, falling back to where it writes when no
+/// method related it to the project list.
+fn checkout_label(monitor_column: MonitorColumn<'_>) -> String {
+    let build_session = monitor_column.session_row().build_session();
+    match build_session.session_scope() {
+        SessionScope::Resolved { root, .. } => root.path().to_string(),
+        SessionScope::Unresolved => match build_session.session_target_directory().evidence() {
+            TargetDirectoryEvidence::Determined(canonical_target_directory) => {
+                format!("writes {}", canonical_target_directory.path())
+            },
+            TargetDirectoryEvidence::Unobservable => "checkout unresolved".to_string(),
+        },
+    }
+}
+
+/// The resolved profile, keeping a manifest's custom name.
+fn profile_label(monitor_column: MonitorColumn<'_>) -> String {
+    match monitor_column
+        .session_row()
+        .build_session()
+        .build_profile()
+        .label()
+    {
+        BuildProfileLabel::Dev => "dev".to_string(),
+        BuildProfileLabel::Release => "release".to_string(),
+        BuildProfileLabel::Custom(name) => name.clone(),
+    }
+}
+
+/// The current activity with the transaction lifecycle marker when one exists.
+fn state_label(monitor_column: MonitorColumn<'_>) -> String {
+    match monitor_column.build_termination_lifecycle() {
+        BuildTerminationLifecycle::Terminating => "terminating".to_string(),
+        BuildTerminationLifecycle::GoneAfterSignaling => "gone after signal".to_string(),
+        BuildTerminationLifecycle::AlreadyGone => "already gone".to_string(),
+        BuildTerminationLifecycle::RetryUnavailable => "termination incomplete".to_string(),
+        BuildTerminationLifecycle::Observed => {
+            let activity = match monitor_column.build_session_activity() {
+                BuildSessionActivity::Compiling => "compiling",
+                BuildSessionActivity::RunningBuildScript => "build script",
+                BuildSessionActivity::Linking => "linking",
+                BuildSessionActivity::ActiveWithoutCompiler => "active",
+            };
+            match monitor_column.session_ownership() {
+                MonitorSessionOwnership::Owned(_) => format!("{activity} · launched here"),
+                MonitorSessionOwnership::External => activity.to_string(),
+            }
+        },
     }
 }
 
@@ -284,13 +478,6 @@ impl<'a> MonitorColumns<'a> {
     pub(super) const fn monitor_staleness(&self) -> MonitorStaleness { self.monitor_staleness }
 
     /// Terminal records are read through the registry join, never a TUI store.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "row-independent terminal records are projected before the renderer consumes them"
-        )
-    )]
     pub(super) fn terminal_records(
         &self,
     ) -> impl Iterator<Item = &'a BuildTerminationTerminalRecord> {
