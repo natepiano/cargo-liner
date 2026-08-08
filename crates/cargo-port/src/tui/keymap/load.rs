@@ -101,19 +101,19 @@ pub(crate) fn keymap_path() -> CargoPortConfigurationPathResolution {
     let keymap_path_resolution_source = KeymapPathResolutionSource::SharedConfigurationRoot;
 
     resolve_keymap_path(
-        keymap_path_resolution_source,
-        crate::config::cargo_port_configuration_root(),
+        &keymap_path_resolution_source,
+        &crate::config::cargo_port_configuration_root(),
     )
 }
 
 fn resolve_keymap_path(
-    keymap_path_resolution_source: KeymapPathResolutionSource,
-    cargo_port_configuration_root: CargoPortConfigurationPathResolution,
+    keymap_path_resolution_source: &KeymapPathResolutionSource,
+    cargo_port_configuration_root: &CargoPortConfigurationPathResolution,
 ) -> CargoPortConfigurationPathResolution {
     match keymap_path_resolution_source {
         #[cfg(test)]
         KeymapPathResolutionSource::TestSpecificPath(path) => {
-            CargoPortConfigurationPathResolution::Resolved(path)
+            CargoPortConfigurationPathResolution::Resolved(path.clone())
         },
         KeymapPathResolutionSource::SharedConfigurationRoot => {
             cargo_port_configuration_root.child(KEYMAP_FILE)
@@ -828,8 +828,8 @@ clear_history = "d"
 
         assert_eq!(
             resolve_keymap_path(
-                KeymapPathResolutionSource::TestSpecificPath(test_keymap_path.clone()),
-                shared_configuration_root,
+                &KeymapPathResolutionSource::TestSpecificPath(test_keymap_path.clone()),
+                &shared_configuration_root,
             ),
             CargoPortConfigurationPathResolution::Resolved(test_keymap_path)
         );

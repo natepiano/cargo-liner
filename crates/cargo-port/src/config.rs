@@ -86,14 +86,16 @@ fn resolve_configuration_child_path(
     platform_configuration_directory: Option<PathBuf>,
     child_name: &str,
 ) -> CargoPortConfigurationPathResolution {
-    match test_path_override {
-        Some(test_path) => CargoPortConfigurationPathResolution::Resolved(test_path),
-        None => resolve_configuration_root(
-            configuration_root_override,
-            platform_configuration_directory,
-        )
-        .child(child_name),
-    }
+    test_path_override.map_or_else(
+        || {
+            resolve_configuration_root(
+                configuration_root_override,
+                platform_configuration_directory,
+            )
+            .child(child_name)
+        },
+        CargoPortConfigurationPathResolution::Resolved,
+    )
 }
 
 fn resolve_configuration_root(

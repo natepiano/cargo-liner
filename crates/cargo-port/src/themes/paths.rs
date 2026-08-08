@@ -37,19 +37,19 @@ pub(crate) fn themes_dir() -> CargoPortConfigurationPathResolution {
         ThemesDirectoryResolutionSource::SharedConfigurationRoot;
 
     resolve_themes_dir(
-        themes_directory_resolution_source,
-        crate::config::cargo_port_configuration_root(),
+        &themes_directory_resolution_source,
+        &crate::config::cargo_port_configuration_root(),
     )
 }
 
 fn resolve_themes_dir(
-    themes_directory_resolution_source: ThemesDirectoryResolutionSource,
-    cargo_port_configuration_root: CargoPortConfigurationPathResolution,
+    themes_directory_resolution_source: &ThemesDirectoryResolutionSource,
+    cargo_port_configuration_root: &CargoPortConfigurationPathResolution,
 ) -> CargoPortConfigurationPathResolution {
     match themes_directory_resolution_source {
         #[cfg(test)]
         ThemesDirectoryResolutionSource::TestSpecificDirectory(path) => {
-            CargoPortConfigurationPathResolution::Resolved(path)
+            CargoPortConfigurationPathResolution::Resolved(path.clone())
         },
         ThemesDirectoryResolutionSource::SharedConfigurationRoot => {
             cargo_port_configuration_root.child(THEMES_DIRNAME)
@@ -104,8 +104,8 @@ mod tests {
 
         assert_eq!(
             resolve_themes_dir(
-                ThemesDirectoryResolutionSource::TestSpecificDirectory(test_themes_dir.clone()),
-                shared_configuration_root,
+                &ThemesDirectoryResolutionSource::TestSpecificDirectory(test_themes_dir.clone()),
+                &shared_configuration_root,
             ),
             CargoPortConfigurationPathResolution::Resolved(test_themes_dir)
         );
