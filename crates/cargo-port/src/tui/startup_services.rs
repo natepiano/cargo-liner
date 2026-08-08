@@ -1,5 +1,4 @@
 use std::cell::RefCell;
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -182,13 +181,13 @@ impl StartupServices {
         }
     }
 
-    pub(crate) fn themes_dir(&self) -> Option<PathBuf> {
+    pub(crate) fn themes_dir(&self) -> crate::config::CargoPortConfigurationPathResolution {
         if self.allows(StartupEffectKind::ThemeDirectory) {
             self.record_real(StartupEffectKind::ThemeDirectory);
             themes::themes_dir()
         } else {
             self.record_suppressed(StartupEffectKind::ThemeDirectory);
-            None
+            crate::config::CargoPortConfigurationPathResolution::PlatformDirectoryUnavailable
         }
     }
 
@@ -768,3 +767,5 @@ enum StartupEffectKind {
     ProjectDetails,
     StreamingScan,
 }
+#[cfg(test)]
+use std::path::PathBuf;

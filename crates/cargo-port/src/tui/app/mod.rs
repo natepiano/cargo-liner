@@ -146,6 +146,8 @@ use super::keymap;
 use super::overlays::Overlays;
 use super::panes;
 use super::panes::BottomRow;
+use super::panes::OutputBuildSetTerminationConfirmationDisplay;
+use super::panes::OutputBuildSetTerminationConfirmationDisplayResolution;
 use super::panes::OutputCopyAvailability;
 use super::panes::OutputMonitorVisibility;
 use super::panes::OutputPaneVisibility;
@@ -160,6 +162,7 @@ use super::panes::SyncedDescriptionHeight;
 use super::panes::VisualSelectionPermission;
 pub(super) use super::project_list::ExpandKey;
 use super::project_list::ProjectList;
+use super::project_list::ProjectListRowDisplayPathResolution;
 pub(super) use super::project_list::VisibleRow;
 use super::render_context::PaneRenderCtx;
 use super::settings;
@@ -184,15 +187,20 @@ use super::state::Scan;
 use super::state::SyncTracker;
 #[cfg(test)]
 use super::test_support::FixtureDirs;
+use crate::build_monitor::AdditionalBuildExclusion;
 use crate::build_monitor::BUILD_TERMINATION_TIMEOUT;
 use crate::build_monitor::BuildMonitor;
 use crate::build_monitor::BuildScopeActionability;
+use crate::build_monitor::BuildTerminationAggregateCompletion;
 use crate::build_monitor::BuildTerminationAuthorizationConstruction;
 use crate::build_monitor::BuildTerminationCompletionTransition;
 use crate::build_monitor::BuildTerminationDeadline;
 use crate::build_monitor::BuildTerminationSessionCompletion;
 use crate::build_monitor::BuildTerminationSubmission;
 use crate::build_monitor::BuildTerminationSubmissionRefusal;
+use crate::build_monitor::BuildTerminationTransactionTargetSet;
+use crate::build_monitor::OutputBuildSetTerminationAuthorization;
+use crate::build_monitor::OutputBuildSetTerminationAvailability;
 use crate::build_monitor::SelectedBuildTerminationAuthorization;
 use crate::build_monitor::SelectedBuildTerminationAvailability;
 use crate::channel::Receiver;
@@ -222,6 +230,42 @@ use crate::tui::compile_visibility::monitor_scope_input;
 use crate::tui::compile_visibility::resolve_monitor_scope;
 use crate::tui::process_refresh::AppProcessRefreshExecutor;
 use crate::tui::process_refresh::CompileClassificationInFlight;
+
+/// One ready confirmation whose opaque authority must either submit or return
+/// to the same modal when the termination worker is not available yet.
+enum ConfirmedBuildTerminationRequest {
+    SelectedBuild {
+        selected_build_termination_confirmation_display:
+            SelectedBuildTerminationConfirmationDisplay,
+        selected_build_termination_authorization:        Box<SelectedBuildTerminationAuthorization>,
+    },
+    OutputBuildSet {
+        output_build_set_termination_confirmation_display:
+            OutputBuildSetTerminationConfirmationDisplay,
+        output_build_set_termination_authorization: Box<OutputBuildSetTerminationAuthorization>,
+    },
+}
+
+impl ConfirmedBuildTerminationRequest {
+    fn into_confirm_action(self) -> ConfirmAction {
+        match self {
+            Self::SelectedBuild {
+                selected_build_termination_confirmation_display,
+                selected_build_termination_authorization,
+            } => ConfirmAction::TerminateSelectedBuild {
+                selected_build_termination_confirmation_display,
+                selected_build_termination_authorization,
+            },
+            Self::OutputBuildSet {
+                output_build_set_termination_confirmation_display,
+                output_build_set_termination_authorization,
+            } => ConfirmAction::TerminateOutputBuildSet {
+                output_build_set_termination_confirmation_display,
+                output_build_set_termination_authorization,
+            },
+        }
+    }
+}
 
 pub(super) struct App {
     /// Net subsystem. Owns the shared `HttpClient`, the GitHub
@@ -901,7 +945,7 @@ impl App {
                 );
             },
             BuildTerminationAuthorizationConstruction::SessionNotActionable
-            | BuildTerminationAuthorizationConstruction::ScopeNotFullyActionable => {
+            | BuildTerminationAuthorizationConstruction::BuildSetNotFullyActionable => {
                 self.show_selected_build_termination_unavailable(
                     SelectedBuildTerminationAvailability::SessionNotActionable,
                 );
@@ -909,6 +953,78 @@ impl App {
             BuildTerminationAuthorizationConstruction::Busy => {
                 self.show_selected_build_termination_unavailable(
                     SelectedBuildTerminationAvailability::Busy,
+                );
+            },
+        }
+    }
+
+    /// Freeze one exact all-or-refuse Output build set after checking the
+    /// active monitor scope that authorizes destructive classification.
+    pub(super) fn request_output_build_set_termination_confirmation(&mut self) {
+        if self.build_scope_actionability() == BuildScopeActionability::NotActionable {
+            self.show_output_build_set_termination_unavailable(
+                OutputBuildSetTerminationAvailability::SnapshotNotActionable,
+            );
+            return;
+        }
+        match self.output_build_set_termination_availability() {
+            OutputBuildSetTerminationAvailability::Available => {},
+            output_build_set_termination_availability => {
+                self.show_output_build_set_termination_unavailable(
+                    output_build_set_termination_availability,
+                );
+                return;
+            },
+        }
+        let project_list_row_display_path_resolution = self.project_list.selected_row().map_or(
+            ProjectListRowDisplayPathResolution::RowUnavailable,
+            |visible_row| self.project_list.display_path_for_row(visible_row),
+        );
+        let output_build_set_termination_confirmation_display_resolution = self
+            .output_presentation()
+            .output_build_set_termination_confirmation_display_resolution(
+                project_list_row_display_path_resolution,
+                Instant::now(),
+            );
+        let OutputBuildSetTerminationConfirmationDisplayResolution::Ready(
+            output_build_set_termination_confirmation_display,
+        ) = output_build_set_termination_confirmation_display_resolution
+        else {
+            self.show_timed_warning_toast(
+                "Build termination unavailable",
+                "The selected project row is no longer available",
+            );
+            return;
+        };
+        match self
+            .build_monitor
+            .output_build_set_termination_authorization()
+        {
+            BuildTerminationAuthorizationConstruction::Authorized(
+                output_build_set_termination_authorization,
+            ) => self.open_confirmation(
+                ConfirmAction::TerminateOutputBuildSet {
+                    output_build_set_termination_confirmation_display,
+                    output_build_set_termination_authorization: Box::new(
+                        output_build_set_termination_authorization,
+                    ),
+                },
+                ConfirmationReadiness::Ready,
+            ),
+            BuildTerminationAuthorizationConstruction::SnapshotNotActionable => {
+                self.show_output_build_set_termination_unavailable(
+                    OutputBuildSetTerminationAvailability::SnapshotNotActionable,
+                );
+            },
+            BuildTerminationAuthorizationConstruction::SessionNotActionable
+            | BuildTerminationAuthorizationConstruction::BuildSetNotFullyActionable => {
+                self.show_output_build_set_termination_unavailable(
+                    OutputBuildSetTerminationAvailability::BuildSetNotFullyActionable,
+                );
+            },
+            BuildTerminationAuthorizationConstruction::Busy => {
+                self.show_output_build_set_termination_unavailable(
+                    OutputBuildSetTerminationAvailability::Busy,
                 );
             },
         }
@@ -924,23 +1040,65 @@ impl App {
             .set_process_terminator_readiness_for_test(process_terminator_readiness_for_test);
     }
 
-    /// Submit the authorization moved out of the ready confirmation. A worker
-    /// that is not ready receives the exact same action back into a ready modal
-    /// so the opaque authority is retained rather than reconstructed.
+    /// Submit selected-build authority through the shared confirmed-request
+    /// operation.
     pub(super) fn submit_selected_build_termination(
         &mut self,
         selected_build_termination_confirmation_display: SelectedBuildTerminationConfirmationDisplay,
         selected_build_termination_authorization: SelectedBuildTerminationAuthorization,
     ) {
+        self.submit_confirmed_build_termination(ConfirmedBuildTerminationRequest::SelectedBuild {
+            selected_build_termination_confirmation_display,
+            selected_build_termination_authorization: Box::new(
+                selected_build_termination_authorization,
+            ),
+        });
+    }
+
+    /// Submit output-build-set authority through the same confirmed-request
+    /// operation selected termination uses.
+    pub(super) fn submit_output_build_set_termination(
+        &mut self,
+        output_build_set_termination_confirmation_display: OutputBuildSetTerminationConfirmationDisplay,
+        output_build_set_termination_authorization: OutputBuildSetTerminationAuthorization,
+    ) {
+        self.submit_confirmed_build_termination(ConfirmedBuildTerminationRequest::OutputBuildSet {
+            output_build_set_termination_confirmation_display,
+            output_build_set_termination_authorization: Box::new(
+                output_build_set_termination_authorization,
+            ),
+        });
+    }
+
+    /// Submit one ready confirmation, preserving it if the worker is still
+    /// starting and driving selected and Output-build-set completion through
+    /// one lifecycle owner.
+    fn submit_confirmed_build_termination(
+        &mut self,
+        confirmed_build_termination_request: ConfirmedBuildTerminationRequest,
+    ) {
         match self.background.available_process_terminator() {
             crate::tui::background::ProcessTerminatorAvailability::Available(
                 process_terminator,
             ) => {
-                let build_termination_submission = self.build_monitor.submit_selected_termination(
-                    selected_build_termination_authorization,
-                    process_terminator,
-                    BuildTerminationDeadline::from_submission_time(Instant::now()),
-                );
+                let build_termination_submission = match confirmed_build_termination_request {
+                    ConfirmedBuildTerminationRequest::SelectedBuild {
+                        selected_build_termination_authorization,
+                        ..
+                    } => self.build_monitor.submit_selected_termination(
+                        *selected_build_termination_authorization,
+                        process_terminator,
+                        BuildTerminationDeadline::from_submission_time(Instant::now()),
+                    ),
+                    ConfirmedBuildTerminationRequest::OutputBuildSet {
+                        output_build_set_termination_authorization,
+                        ..
+                    } => self.build_monitor.submit_output_build_set_termination(
+                        *output_build_set_termination_authorization,
+                        process_terminator,
+                        BuildTerminationDeadline::from_submission_time(Instant::now()),
+                    ),
+                };
                 match build_termination_submission {
                     BuildTerminationSubmission::Submitted(build_termination_transaction_id) => {
                         let Self {
@@ -973,35 +1131,27 @@ impl App {
                 }
             },
             crate::tui::background::ProcessTerminatorAvailability::Starting => {
-                self.restore_selected_build_termination_confirmation(
-                    selected_build_termination_confirmation_display,
-                    selected_build_termination_authorization,
+                self.restore_confirmed_build_termination(
+                    confirmed_build_termination_request,
                     "The termination worker is starting",
                 );
             },
             crate::tui::background::ProcessTerminatorAvailability::Unavailable => {
-                self.restore_selected_build_termination_confirmation(
-                    selected_build_termination_confirmation_display,
-                    selected_build_termination_authorization,
+                self.restore_confirmed_build_termination(
+                    confirmed_build_termination_request,
                     "The termination worker is unavailable",
                 );
             },
         }
     }
 
-    fn restore_selected_build_termination_confirmation(
+    fn restore_confirmed_build_termination(
         &mut self,
-        selected_build_termination_confirmation_display: SelectedBuildTerminationConfirmationDisplay,
-        selected_build_termination_authorization: SelectedBuildTerminationAuthorization,
+        confirmed_build_termination_request: ConfirmedBuildTerminationRequest,
         worker_message: &str,
     ) {
         self.open_confirmation(
-            ConfirmAction::TerminateSelectedBuild {
-                selected_build_termination_confirmation_display,
-                selected_build_termination_authorization: Box::new(
-                    selected_build_termination_authorization,
-                ),
-            },
+            confirmed_build_termination_request.into_confirm_action(),
             ConfirmationReadiness::Ready,
         );
         self.show_timed_warning_toast("Build termination delayed", worker_message);
@@ -1017,10 +1167,26 @@ impl App {
         else {
             return;
         };
-        let Some(build_termination_terminal_record) = build_termination_transaction_completion
-            .terminal_records()
-            .first()
-        else {
+        match build_termination_transaction_completion.target_set() {
+            BuildTerminationTransactionTargetSet::SelectedBuild => {
+                self.show_selected_build_termination_completion(
+                    build_termination_transaction_completion.terminal_records(),
+                );
+            },
+            BuildTerminationTransactionTargetSet::OutputBuildSet => {
+                self.show_output_build_set_termination_completion(
+                    build_termination_transaction_completion.terminal_records(),
+                    build_termination_transaction_completion.additional_build_exclusion(),
+                );
+            },
+        }
+    }
+
+    fn show_selected_build_termination_completion(
+        &mut self,
+        terminal_records: &[crate::build_monitor::BuildTerminationTerminalRecord],
+    ) {
+        let Some(build_termination_terminal_record) = terminal_records.first() else {
             return;
         };
         match build_termination_terminal_record.session_completion() {
@@ -1048,6 +1214,45 @@ impl App {
         }
     }
 
+    fn show_output_build_set_termination_completion(
+        &mut self,
+        terminal_records: &[crate::build_monitor::BuildTerminationTerminalRecord],
+        additional_build_exclusion: AdditionalBuildExclusion,
+    ) {
+        let Some(build_termination_terminal_record) = terminal_records.first() else {
+            return;
+        };
+        let additional_build_exclusion_note = match additional_build_exclusion {
+            AdditionalBuildExclusion::NoAdditionalBuilds => String::new(),
+            AdditionalBuildExclusion::Excluded { count } => {
+                format!(" {count} newer build(s) were not included.")
+            },
+        };
+        match build_termination_terminal_record.aggregate_completion() {
+            BuildTerminationAggregateCompletion::AllTargetsGone => self.show_timed_toast(
+                "Output build-set termination complete",
+                format!(
+                    "Every confirmed Output build root is gone.{additional_build_exclusion_note}"
+                ),
+            ),
+            BuildTerminationAggregateCompletion::RetryUnavailable => {
+                self.show_timed_warning_toast(
+                    "Output build-set termination incomplete",
+                    format!(
+                        "Some confirmed Output build roots need a fresh observation before retry.{additional_build_exclusion_note}"
+                    ),
+                );
+            },
+            BuildTerminationAggregateCompletion::DeadlineExpired => self.show_timed_warning_toast(
+                "Output build-set termination timed out",
+                format!(
+                    "The confirmed Output build set did not complete within {} seconds.{additional_build_exclusion_note}",
+                    BUILD_TERMINATION_TIMEOUT.as_secs(),
+                ),
+            ),
+        }
+    }
+
     fn show_selected_build_termination_unavailable(
         &mut self,
         selected_build_termination_availability: SelectedBuildTerminationAvailability,
@@ -1069,6 +1274,27 @@ impl App {
         self.show_timed_warning_toast("Build termination unavailable", body);
     }
 
+    fn show_output_build_set_termination_unavailable(
+        &mut self,
+        output_build_set_termination_availability: OutputBuildSetTerminationAvailability,
+    ) {
+        let body = match output_build_set_termination_availability {
+            OutputBuildSetTerminationAvailability::Available => {
+                "The Output build set can be terminated"
+            },
+            OutputBuildSetTerminationAvailability::SnapshotNotActionable => {
+                "The current monitor snapshot is not actionable"
+            },
+            OutputBuildSetTerminationAvailability::BuildSetNotFullyActionable => {
+                "Every shown build root must have current termination authority"
+            },
+            OutputBuildSetTerminationAvailability::Busy => {
+                "Another build termination is still in progress"
+            },
+        };
+        self.show_timed_warning_toast("Build termination unavailable", body);
+    }
+
     fn show_build_termination_submission_refusal(
         &mut self,
         build_termination_submission_refusal: BuildTerminationSubmissionRefusal,
@@ -1078,7 +1304,7 @@ impl App {
                 "The monitor snapshot is no longer actionable"
             },
             BuildTerminationSubmissionRefusal::SelectedScopeChanged
-            | BuildTerminationSubmissionRefusal::ScopeRootsChanged => {
+            | BuildTerminationSubmissionRefusal::CoveredScopeRootsChanged => {
                 "The selected build scope changed before termination"
             },
             BuildTerminationSubmissionRefusal::SelectedSessionChanged => {
@@ -1308,6 +1534,7 @@ impl App {
             },
             ConfirmAction::KillTarget { .. }
             | ConfirmAction::TerminateSelectedBuild { .. }
+            | ConfirmAction::TerminateOutputBuildSet { .. }
             | ConfirmAction::PauseLintProject(_)
             | ConfirmAction::PauseAllLints => false,
         };
@@ -1529,6 +1756,18 @@ impl App {
                 selected_build_termination_display_target.build_session_id(),
             ),
         }
+    }
+
+    /// Read exact Output-build-set availability without consuming the opaque
+    /// authority confirmation will later retain.
+    pub(super) fn output_build_set_termination_availability(
+        &self,
+    ) -> OutputBuildSetTerminationAvailability {
+        if self.build_scope_actionability() == BuildScopeActionability::NotActionable {
+            return OutputBuildSetTerminationAvailability::SnapshotNotActionable;
+        }
+        self.build_monitor
+            .output_build_set_termination_availability()
     }
 
     /// The clipboard payload for whatever the Output cursor is on.

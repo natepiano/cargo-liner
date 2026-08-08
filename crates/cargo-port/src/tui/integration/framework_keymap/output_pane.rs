@@ -57,13 +57,12 @@ impl Shortcuts<App> for OutputPane {
             KeyBind::ctrl('a')             => OutputAction::SelectAll,
             crossterm::event::KeyCode::Esc => OutputAction::Cancel,
             alt_key('k')                   => OutputAction::KillSelectedBuild,
-            alt_key('K')                   => OutputAction::KillScopedBuilds,
+            alt_key('K')                   => OutputAction::TerminateOutputBuildSet,
         }
     }
 
-    /// Scoped termination remains disabled until its separate exact-set
-    /// transaction arrives. Selected termination reads availability without
-    /// consuming the authority confirmation will move into its action.
+    /// Termination availability reads the same opaque authority map that the
+    /// confirmation later consumes.
     fn state(&self, action: OutputAction, app: &App) -> ShortcutState {
         match action {
             OutputAction::KillSelectedBuild => match app.selected_build_termination_availability() {
@@ -76,7 +75,18 @@ impl Shortcuts<App> for OutputPane {
                     ShortcutState::Disabled
                 },
             },
-            OutputAction::KillScopedBuilds => ShortcutState::Disabled,
+            OutputAction::TerminateOutputBuildSet => {
+                match app.output_build_set_termination_availability() {
+                    crate::build_monitor::OutputBuildSetTerminationAvailability::Available => {
+                        ShortcutState::Enabled
+                    },
+                    crate::build_monitor::OutputBuildSetTerminationAvailability::SnapshotNotActionable
+                    | crate::build_monitor::OutputBuildSetTerminationAvailability::BuildSetNotFullyActionable
+                    | crate::build_monitor::OutputBuildSetTerminationAvailability::Busy => {
+                        ShortcutState::Disabled
+                    },
+                }
+            },
             OutputAction::SelectAll | OutputAction::Cancel => ShortcutState::Enabled,
         }
     }
@@ -100,7 +110,7 @@ impl Shortcuts<App> for OutputPane {
             },
             OutputAction::SelectAll
             | OutputAction::KillSelectedBuild
-            | OutputAction::KillScopedBuilds => action.bar_label(),
+            | OutputAction::TerminateOutputBuildSet => action.bar_label(),
         }
     }
 
@@ -131,8 +141,8 @@ mod tests {
 
         for (spelling, expected) in [
             ("alt-k", OutputAction::KillSelectedBuild),
-            ("alt-shift-k", OutputAction::KillScopedBuilds),
-            ("alt-K", OutputAction::KillScopedBuilds),
+            ("alt-shift-k", OutputAction::TerminateOutputBuildSet),
+            ("alt-K", OutputAction::TerminateOutputBuildSet),
         ] {
             let resolved = KeyBind::parse(spelling)
                 .ok()
@@ -158,7 +168,7 @@ mod tests {
         assert_eq!(pressed, alt_key('K'));
         assert_eq!(
             defaults.action_for(&pressed),
-            Some(OutputAction::KillScopedBuilds),
+            Some(OutputAction::TerminateOutputBuildSet),
         );
     }
 }

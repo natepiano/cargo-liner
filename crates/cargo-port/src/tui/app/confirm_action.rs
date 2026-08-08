@@ -1,5 +1,7 @@
+use crate::build_monitor::OutputBuildSetTerminationAuthorization;
 use crate::build_monitor::SelectedBuildTerminationAuthorization;
 use crate::project::AbsolutePath;
+use crate::tui::panes::OutputBuildSetTerminationConfirmationDisplay;
 use crate::tui::panes::SelectedBuildTerminationConfirmationDisplay;
 use crate::tui::running_targets::RunningTargetTerminationCapability;
 
@@ -31,6 +33,14 @@ pub(crate) enum ConfirmAction {
         selected_build_termination_confirmation_display:
             SelectedBuildTerminationConfirmationDisplay,
         selected_build_termination_authorization:        Box<SelectedBuildTerminationAuthorization>,
+    },
+    /// Terminate the exact actionable root rows shown in Output. Display data
+    /// describes the frozen set, while the opaque authorization is the sole
+    /// signal authority.
+    TerminateOutputBuildSet {
+        output_build_set_termination_confirmation_display:
+            OutputBuildSetTerminationConfirmationDisplay,
+        output_build_set_termination_authorization: Box<OutputBuildSetTerminationAuthorization>,
     },
     /// Pause lint operations for one workspace or standalone package. A
     /// workspace member always resolves to this owning lint root.

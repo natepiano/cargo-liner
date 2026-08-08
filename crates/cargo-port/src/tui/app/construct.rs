@@ -14,7 +14,6 @@
 //! reach construction through that one method.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
@@ -43,7 +42,6 @@ use crate::lint::RuntimeHandle;
 use crate::process_observation::CompileMonitorRefreshSchedule;
 use crate::process_observation::ProcessRefreshExecutionBackendSelection;
 use crate::process_observation::RunningTargetsRefreshSchedule;
-use crate::project::AbsolutePath;
 use crate::project::CargoWorkspaceIndex;
 use crate::project::RootItem;
 use crate::scan;
@@ -109,13 +107,14 @@ pub(super) struct Channeled {
 
 /// `Channeled` plus the products of applying the selected startup policy.
 pub(super) struct Started {
-    channeled:    Channeled,
-    config_path:  Option<AbsolutePath>,
-    lint_warning: Option<String>,
-    lint_runtime: Option<RuntimeHandle>,
-    watcher:      WatcherHandle,
-    themes_dir:   Option<PathBuf>,
-    projects:     ProjectList,
+    channeled:              Channeled,
+    config_path_resolution: config::CargoPortConfigurationPathResolution,
+    keymap_path_resolution: config::CargoPortConfigurationPathResolution,
+    lint_warning:           Option<String>,
+    lint_runtime:           Option<RuntimeHandle>,
+    watcher:                WatcherHandle,
+    themes_dir_resolution:  config::CargoPortConfigurationPathResolution,
+    projects:               ProjectList,
 }
 
 /// Typestate builder. The state parameter is the stage struct itself
@@ -168,7 +167,8 @@ impl AppBuilder<Channeled> {
         let inputs = &self.state.inputs;
         let startup_services = &inputs.startup_environment.startup_services;
         startup_services.install_active_config(&inputs.cargo_port_config);
-        let themes_dir = startup_services.themes_dir();
+        let themes_dir_resolution = startup_services.themes_dir();
+        let themes_dir = themes_dir_resolution.clone().into_external_path();
         let mut registry = tui_pane::ThemeRegistry::from_dir_with_builtins(themes_dir.as_deref());
         theme_roles::apply_role_defaults_to_registry(&mut registry);
         // Resolve the initial theme from the loaded `[appearance]`
@@ -193,7 +193,8 @@ impl AppBuilder<Channeled> {
                 .focused_pane_tint
                 .is_enabled(),
         );
-        let config_path = config::config_path();
+        let config_path_resolution = config::config_path();
+        let keymap_path_resolution = keymap::keymap_path();
         let lint_spawn = startup_services
             .spawn_lint_runtime(&inputs.cargo_port_config, inputs.background_tx.clone());
         let watch_roots = scan::resolve_include_dirs(&inputs.cargo_port_config.tui.include_dirs);
@@ -215,11 +216,12 @@ impl AppBuilder<Channeled> {
         AppBuilder {
             state: Started {
                 channeled: self.state,
-                config_path,
+                config_path_resolution,
+                keymap_path_resolution,
                 lint_warning: lint_spawn.warning,
                 lint_runtime: lint_spawn.handle,
                 watcher,
-                themes_dir,
+                themes_dir_resolution,
                 projects,
             },
         }
@@ -249,16 +251,13 @@ impl AppBuilder<Started> {
         });
         let lint = Lint::new(started.lint_runtime);
         let inflight = Inflight::new();
-        let config_path_buf = started
-            .config_path
-            .as_ref()
-            .map(|p| p.as_path().to_path_buf());
-        let config = Config::new(config_path_buf, inputs.cargo_port_config);
-        let keymap_path_buf = keymap::keymap_path()
-            .as_ref()
-            .map(|p| p.as_path().to_path_buf());
-        let keymap = Keymap::new(keymap_path_buf.clone(), keymap::ResolvedKeymap::defaults());
-        let themes = ThemeRuntime::new(started.themes_dir);
+        let config = Config::new(started.config_path_resolution, inputs.cargo_port_config);
+        let keymap_path = started.keymap_path_resolution.clone().into_external_path();
+        let keymap = Keymap::new(
+            started.keymap_path_resolution,
+            keymap::ResolvedKeymap::defaults(),
+        );
+        let themes = ThemeRuntime::new(started.themes_dir_resolution.into_external_path());
         let cargo_workspace_index = Arc::new(metadata_store.lock().map_or_else(
             |_| CargoWorkspaceIndex::default(),
             |metadata_store| {
@@ -275,7 +274,7 @@ impl AppBuilder<Started> {
         let framework_builder = FrameworkKeymap::<App>::builder().vim_mode(
             integration::vim_mode_from_config(config.current().tui.navigation_keys),
         );
-        let framework_builder = if let Some(path) = keymap_path_buf {
+        let framework_builder = if let Some(path) = keymap_path {
             let display_path = path.display().to_string();
             keymap::migrate_removed_action_keys_on_disk(&path)
                 .with_context(|| format!("migrating removed keymap actions in {display_path}"))?;

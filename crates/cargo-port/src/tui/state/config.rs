@@ -6,12 +6,14 @@
 //! load-watch-reload contract.
 
 use std::path::Path;
+#[cfg(test)]
 use std::path::PathBuf;
 use std::time::Duration;
 
 use tui_pane::WatchedFile;
 
 use crate::config::CargoPortConfig;
+use crate::config::CargoPortConfigurationPathResolution;
 use crate::config::EdgeScroll;
 use crate::config::NavigationKeys;
 use crate::config::NonRustInclusion;
@@ -24,9 +26,12 @@ pub(crate) struct Config {
 }
 
 impl Config {
-    pub fn new(path: Option<PathBuf>, current: CargoPortConfig) -> Self {
+    pub fn new(
+        path_resolution: CargoPortConfigurationPathResolution,
+        current: CargoPortConfig,
+    ) -> Self {
         Self {
-            file: WatchedFile::new(path, current),
+            file: WatchedFile::new(path_resolution.into_external_path(), current),
         }
     }
 
@@ -100,7 +105,21 @@ mod tests {
     #[test]
     fn config_new_seeds_current() {
         let cargo_port_config = CargoPortConfig::default();
-        let config = Config::new(None, cargo_port_config);
+        let config = Config::new(
+            CargoPortConfigurationPathResolution::PlatformDirectoryUnavailable,
+            cargo_port_config,
+        );
         assert!(config.path().is_none());
+    }
+
+    #[test]
+    fn configuration_paths_without_a_filesystem_path_leave_the_watcher_unset() {
+        for path_resolution in [
+            CargoPortConfigurationPathResolution::PlatformDirectoryUnavailable,
+            CargoPortConfigurationPathResolution::InvalidEmptyOverride,
+        ] {
+            let config = Config::new(path_resolution, CargoPortConfig::default());
+            assert!(config.path().is_none());
+        }
     }
 }

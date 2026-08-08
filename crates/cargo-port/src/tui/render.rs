@@ -53,6 +53,7 @@ use super::interaction;
 use super::overlays::PopupFrame;
 use super::panes;
 use super::panes::EmptyDescriptionBehavior;
+use super::panes::OutputBuildSetTerminationConfirmationDisplay;
 use super::panes::PaneId;
 use super::render_context::PaneRenderCtx;
 use super::sccache;
@@ -360,6 +361,12 @@ fn confirm_action_body(app: &App, action: &ConfirmAction) -> Vec<String> {
                 selected_build_termination_confirmation_display.compiler_child_count(),
             ),
         ],
+        ConfirmAction::TerminateOutputBuildSet {
+            output_build_set_termination_confirmation_display,
+            ..
+        } => output_build_set_termination_confirmation_body(
+            output_build_set_termination_confirmation_display,
+        ),
         ConfirmAction::PauseLintProject(project_root) => vec![
             project::home_relative_path(project_root.as_path()),
             "Kills running lint jobs for this project.".to_string(),
@@ -370,6 +377,24 @@ fn confirm_action_body(app: &App, action: &ConfirmAction) -> Vec<String> {
             "Holds new runs until you resume.".to_string(),
         ],
     }
+}
+
+fn output_build_set_termination_confirmation_body(
+    output_build_set_termination_confirmation_display: &OutputBuildSetTerminationConfirmationDisplay,
+) -> Vec<String> {
+    let mut body = vec![format!(
+        "Context row: {}",
+        output_build_set_termination_confirmation_display.selected_row_display_path(),
+    )];
+    for target_summary in output_build_set_termination_confirmation_display.target_summaries() {
+        body.push(format!(
+            "{} · pid {} · {}",
+            target_summary.operative_cargo_command(),
+            target_summary.root_pid(),
+            target_summary.checkout(),
+        ));
+    }
+    body
 }
 
 /// Append the "Also affects:" block (sibling project paths + optional
@@ -413,6 +438,7 @@ fn render_confirm_popup(
         ConfirmAction::CleanGroup { .. } => "Run cargo clean on all checkouts?",
         ConfirmAction::KillTarget { .. } => "Send SIGTERM?",
         ConfirmAction::TerminateSelectedBuild { .. } => "Terminate selected Cargo build?",
+        ConfirmAction::TerminateOutputBuildSet { .. } => "Terminate every shown Cargo build?",
         ConfirmAction::PauseLintProject(_) => "Pause lints for selected project?",
         ConfirmAction::PauseAllLints => "Pause all lints?",
     };

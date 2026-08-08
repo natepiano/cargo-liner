@@ -82,6 +82,22 @@ fn push_unique_path(paths: &mut Vec<AbsolutePath>, path: &AbsolutePath) {
     }
 }
 
+/// Whether a typed visible row still resolves to the display path a caller
+/// needs to freeze into a confirmation or render pass.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ProjectListRowDisplayPathResolution {
+    /// The row remains present and supplies its display path.
+    Resolved(DisplayPath),
+    /// The row no longer resolves through the current project list.
+    RowUnavailable,
+}
+
+impl From<Option<DisplayPath>> for ProjectListRowDisplayPathResolution {
+    fn from(display_path: Option<DisplayPath>) -> Self {
+        display_path.map_or(Self::RowUnavailable, Self::Resolved)
+    }
+}
+
 impl ProjectList {
     pub fn new(items: Vec<RootItem>) -> Self {
         Self {
@@ -1278,98 +1294,103 @@ impl ProjectList {
         }
     }
 
-    pub fn display_path_for_row(&self, row: VisibleRow) -> Option<DisplayPath> {
-        match row {
-            VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
-                let item = self.get(node_index)?;
-                Some(item.display_path())
-            },
-            VisibleRow::Member {
-                node_index,
-                group_index,
-                member_index,
-            } => self
-                .get(node_index)?
-                .root_item
-                .resolve_member(group_index, member_index)
-                .map(ProjectFields::display_path),
-            VisibleRow::MemberVendored {
-                node_index,
-                group_index,
-                member_index,
-                vendored_index,
-            } => self
-                .get(node_index)?
-                .root_item
-                .resolve_member_vendored(group_index, member_index, vendored_index)
-                .map(ProjectFields::display_path),
-            VisibleRow::Vendored {
-                node_index,
-                vendored_index,
-            } => self
-                .get(node_index)?
-                .root_item
-                .resolve_vendored(vendored_index)
-                .map(ProjectFields::display_path),
-            VisibleRow::WorktreeEntry {
-                node_index,
-                worktree_index,
-            }
-            | VisibleRow::WorktreeGroupHeader {
-                node_index,
-                worktree_index,
-                ..
-            } => match &self.get(node_index)?.root_item {
-                RootItem::Worktrees(worktree_group) => {
-                    worktree_group.worktree_display_path(worktree_index)
+    pub fn display_path_for_row(&self, row: VisibleRow) -> ProjectListRowDisplayPathResolution {
+        let display_path = (|| -> Option<DisplayPath> {
+            match row {
+                VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
+                    let item = self.get(node_index)?;
+                    Some(item.display_path())
                 },
-                _ => None,
-            },
-            VisibleRow::WorktreeMember {
-                node_index,
-                worktree_index,
-                group_index,
-                member_index,
-            } => {
-                match &self.get(node_index)?.root_item {
+                VisibleRow::Member {
+                    node_index,
+                    group_index,
+                    member_index,
+                } => self
+                    .get(node_index)?
+                    .root_item
+                    .resolve_member(group_index, member_index)
+                    .map(ProjectFields::display_path),
+                VisibleRow::MemberVendored {
+                    node_index,
+                    group_index,
+                    member_index,
+                    vendored_index,
+                } => self
+                    .get(node_index)?
+                    .root_item
+                    .resolve_member_vendored(group_index, member_index, vendored_index)
+                    .map(ProjectFields::display_path),
+                VisibleRow::Vendored {
+                    node_index,
+                    vendored_index,
+                } => self
+                    .get(node_index)?
+                    .root_item
+                    .resolve_vendored(vendored_index)
+                    .map(ProjectFields::display_path),
+                VisibleRow::WorktreeEntry {
+                    node_index,
+                    worktree_index,
+                }
+                | VisibleRow::WorktreeGroupHeader {
+                    node_index,
+                    worktree_index,
+                    ..
+                } => match &self.get(node_index)?.root_item {
+                    RootItem::Worktrees(worktree_group) => {
+                        worktree_group.worktree_display_path(worktree_index)
+                    },
+                    _ => None,
+                },
+                VisibleRow::WorktreeMember {
+                    node_index,
+                    worktree_index,
+                    group_index,
+                    member_index,
+                } => match &self.get(node_index)?.root_item {
                     RootItem::Worktrees(worktree_group) => worktree_group
                         .worktree_member_display_path(worktree_index, group_index, member_index),
                     _ => None,
-                }
-            },
-            VisibleRow::WorktreeMemberVendored {
-                node_index,
-                worktree_index,
-                group_index,
-                member_index,
-                vendored_index,
-            } => match &self.get(node_index)?.root_item {
-                RootItem::Worktrees(worktree_group) => worktree_group
-                    .member_vendored_ref(worktree_index, group_index, member_index, vendored_index)
-                    .map(ProjectFields::display_path),
-                _ => None,
-            },
-            VisibleRow::WorktreeVendored {
-                node_index,
-                worktree_index,
-                vendored_index,
-            } => match &self.get(node_index)?.root_item {
-                RootItem::Worktrees(worktree_group) => {
-                    worktree_group.worktree_vendored_display_path(worktree_index, vendored_index)
                 },
-                _ => None,
-            },
-            VisibleRow::Submodule {
-                node_index,
-                submodule_index,
-            } => {
-                let item = self.get(node_index)?;
-                let submodule = item.submodules().get(submodule_index)?;
-                Some(DisplayPath::new(project::home_relative_path(
-                    &submodule.path,
-                )))
-            },
-        }
+                VisibleRow::WorktreeMemberVendored {
+                    node_index,
+                    worktree_index,
+                    group_index,
+                    member_index,
+                    vendored_index,
+                } => match &self.get(node_index)?.root_item {
+                    RootItem::Worktrees(worktree_group) => worktree_group
+                        .member_vendored_ref(
+                            worktree_index,
+                            group_index,
+                            member_index,
+                            vendored_index,
+                        )
+                        .map(ProjectFields::display_path),
+                    _ => None,
+                },
+                VisibleRow::WorktreeVendored {
+                    node_index,
+                    worktree_index,
+                    vendored_index,
+                } => match &self.get(node_index)?.root_item {
+                    RootItem::Worktrees(worktree_group) => worktree_group
+                        .worktree_vendored_display_path(worktree_index, vendored_index),
+                    _ => None,
+                },
+                VisibleRow::Submodule {
+                    node_index,
+                    submodule_index,
+                } => {
+                    let item = self.get(node_index)?;
+                    let submodule = item.submodules().get(submodule_index)?;
+                    Some(DisplayPath::new(project::home_relative_path(
+                        &submodule.path,
+                    )))
+                },
+            }
+        })();
+        display_path.into()
     }
 
     pub fn abs_path_for_row(&self, row: VisibleRow) -> Option<AbsolutePath> {

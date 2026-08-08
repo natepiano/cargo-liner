@@ -36,6 +36,7 @@ use super::presentation::MonitorColumns;
 use super::presentation::MonitorEmptyState;
 use super::presentation::MonitorEmptyStateIndexNote;
 use super::presentation::MonitorPresentation;
+use super::presentation::OutputBuildSetTerminationAggregateProjection;
 use super::presentation::OwnedOutputPresentation;
 use super::render::fill_row;
 use super::render::parse_output_line;
@@ -43,6 +44,8 @@ use super::selection::OutputCursor;
 use super::selection::OutputCursorTarget;
 use super::selection::OutputSelectionRange;
 use super::selection::VisualSelectionPermission;
+use crate::build_monitor::AdditionalBuildExclusion;
+use crate::build_monitor::BuildTerminationAggregateCompletion;
 use crate::build_monitor::BuildTerminationSessionCompletion;
 use crate::build_monitor::BuildTerminationTerminalRecord;
 use crate::build_monitor::CompileActivity;
@@ -508,10 +511,8 @@ fn render_columns_with_terminal_records(
     selected_column_scroll: SelectedColumnScroll,
     hit_map: &mut MonitorHitMap,
 ) {
-    let terminal_record_lines: Vec<_> = monitor_columns
-        .terminal_records()
-        .map(terminal_record_line)
-        .collect();
+    let terminal_records: Vec<_> = monitor_columns.terminal_records().collect();
+    let terminal_record_lines = termination_result_lines(&terminal_records);
     let terminal_record_height = u16::try_from(terminal_record_lines.len())
         .unwrap_or(u16::MAX)
         .min(area.height);
@@ -588,15 +589,66 @@ fn empty_state_line(monitor_empty_state: MonitorEmptyState) -> Line<'static> {
 fn empty_state_lines(
     monitor_empty_presentation: super::presentation::MonitorEmptyPresentation<'_>,
 ) -> Vec<Line<'static>> {
+    let terminal_records: Vec<_> = monitor_empty_presentation.terminal_records().collect();
     std::iter::once(empty_state_line(
         monitor_empty_presentation.monitor_empty_state(),
     ))
-    .chain(
-        monitor_empty_presentation
-            .terminal_records()
-            .map(terminal_record_line),
-    )
+    .chain(termination_result_lines(&terminal_records))
     .collect()
+}
+
+fn termination_result_lines(
+    terminal_records: &[&BuildTerminationTerminalRecord],
+) -> Vec<Line<'static>> {
+    let output_build_set_result_groups =
+        super::presentation::output_build_set_termination_result_groups(
+            terminal_records.iter().copied(),
+        );
+    output_build_set_result_groups
+        .into_iter()
+        .flat_map(|output_build_set_result_group| {
+            let aggregate = output_build_set_result_group.aggregate();
+            let terminal_records = output_build_set_result_group.into_terminal_records();
+            std::iter::once(output_build_set_aggregate_line(aggregate))
+                .chain(terminal_records.into_iter().map(terminal_record_line))
+        })
+        .chain(
+            terminal_records
+                .iter()
+                .copied()
+                .filter(|terminal_record| {
+                    terminal_record.target_set()
+                        != crate::build_monitor::BuildTerminationTransactionTargetSet::OutputBuildSet
+                })
+                .map(terminal_record_line),
+        )
+        .collect()
+}
+
+/// One transaction-level output-build-set outcome projected from the registry's
+/// per-root terminal records.
+fn output_build_set_aggregate_line(
+    output_build_set_termination_aggregate_projection: OutputBuildSetTerminationAggregateProjection,
+) -> Line<'static> {
+    let result = match output_build_set_termination_aggregate_projection.aggregate_completion() {
+        BuildTerminationAggregateCompletion::AllTargetsGone => "all roots gone",
+        BuildTerminationAggregateCompletion::RetryUnavailable => "termination incomplete",
+        BuildTerminationAggregateCompletion::DeadlineExpired => "termination timed out",
+    };
+    let additional_build_exclusion =
+        match output_build_set_termination_aggregate_projection.additional_build_exclusion() {
+            AdditionalBuildExclusion::NoAdditionalBuilds => String::new(),
+            AdditionalBuildExclusion::Excluded { count } => {
+                format!(" · {count} newer build(s) excluded")
+            },
+        };
+    Line::from(Span::styled(
+        format!(
+            " Output build set ({} roots) — {result}{additional_build_exclusion}",
+            output_build_set_termination_aggregate_projection.confirmed_root_count(),
+        ),
+        Style::default().fg(label_color()),
+    ))
 }
 
 /// One retained terminal record named by its frozen root PID.
@@ -1041,6 +1093,7 @@ fn unattributed_label(unattributed_activity: &UnattributedCompileActivity) -> St
 #[cfg(test)]
 #[allow(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests {
+    use std::num::NonZeroU64;
     use std::path::Path;
 
     use ratatui::Terminal;
@@ -1070,12 +1123,19 @@ mod tests {
         ))
     }
 
-    fn snapshot(root_pid: u32) -> MonitorSnapshot {
-        classified_monitor_snapshot(&[ClassifiedRoot {
-            root_pid,
-            compiler_pids: &[],
-        }])
-        .unwrap_or_else(|error| panic!("classification fixture should build a snapshot: {error}"))
+    fn snapshot(root_pid: u32) -> MonitorSnapshot { snapshots(&[root_pid]) }
+
+    fn snapshots(root_pids: &[u32]) -> MonitorSnapshot {
+        let classified_roots: Vec<_> = root_pids
+            .iter()
+            .map(|root_pid| ClassifiedRoot {
+                root_pid:      *root_pid,
+                compiler_pids: &[],
+            })
+            .collect();
+        classified_monitor_snapshot(&classified_roots).unwrap_or_else(|error| {
+            panic!("classification fixture should build a snapshot: {error}")
+        })
     }
 
     fn terminal_record_line_text(termination_target_result: TerminationTargetResult) -> String {
@@ -1203,5 +1263,45 @@ mod tests {
             )),
             "the retained terminal projection names its target and semantic outcome: {rendered:?}"
         );
+    }
+
+    #[test]
+    fn output_build_set_results_keep_each_aggregate_with_its_transaction_roots() {
+        let first_snapshot = snapshots(&[9_431, 9_432]);
+        let second_snapshot = snapshots(&[9_433, 9_434]);
+        let MonitorSnapshot::Fresh(first_data) = &first_snapshot else {
+            panic!("first classification fixture should produce fresh data");
+        };
+        let MonitorSnapshot::Fresh(second_data) = &second_snapshot else {
+            panic!("second classification fixture should produce fresh data");
+        };
+        let Some(second_transaction_id) = NonZeroU64::new(2) else {
+            panic!("two is a nonzero transaction identity");
+        };
+        let mut registry = BuildTerminationLifecycleRegistry::default();
+        registry
+            .record_output_build_set_terminal_for_test(NonZeroU64::MIN, first_data.session_rows());
+        registry.record_output_build_set_terminal_for_test(
+            second_transaction_id,
+            second_data.session_rows(),
+        );
+        let terminal_records: Vec<_> = registry.terminal_records().collect();
+        let rendered: Vec<_> = termination_result_lines(&terminal_records)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+
+        assert_eq!(rendered.len(), 6);
+        assert!(rendered[0].contains("Output build set (2 roots)"));
+        assert!(rendered[1].contains("Build pid 9431"));
+        assert!(rendered[2].contains("Build pid 9432"));
+        assert!(rendered[3].contains("Output build set (2 roots)"));
+        assert!(rendered[4].contains("Build pid 9433"));
+        assert!(rendered[5].contains("Build pid 9434"));
     }
 }

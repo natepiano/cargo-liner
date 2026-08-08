@@ -6,7 +6,9 @@ use super::super::session::BuildSessionId;
 use super::super::session::SessionScope;
 use super::super::snapshot::MonitorSessionOwnership;
 use super::super::snapshot::MonitorSessionRow;
+use super::transaction::AdditionalBuildExclusion;
 use super::transaction::BuildTerminationTransactionId;
+use super::transaction::BuildTerminationTransactionTargetSet;
 use crate::process_termination::TerminationExecutionTargetRole;
 use crate::process_termination::TerminationTargetId;
 use crate::process_termination::TerminationTargetResult;
@@ -220,11 +222,14 @@ pub(crate) enum BuildTerminationAggregateCompletion {
 /// Persistent row-independent result for one completed build session.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BuildTerminationTerminalRecord {
-    transaction_id:       BuildTerminationTransactionId,
-    display_identity:     BuildTerminationDisplayIdentity,
-    session_completion:   BuildTerminationSessionCompletion,
-    aggregate_completion: BuildTerminationAggregateCompletion,
-    target_results:       Vec<BuildTerminationTargetResult>,
+    transaction_id:             BuildTerminationTransactionId,
+    target_set:                 BuildTerminationTransactionTargetSet,
+    confirmed_root_count:       usize,
+    additional_build_exclusion: AdditionalBuildExclusion,
+    display_identity:           BuildTerminationDisplayIdentity,
+    session_completion:         BuildTerminationSessionCompletion,
+    aggregate_completion:       BuildTerminationAggregateCompletion,
+    target_results:             Vec<BuildTerminationTargetResult>,
 }
 
 /// The one-shot terminal facts emitted when a transaction leaves its active
@@ -234,13 +239,27 @@ pub(crate) struct BuildTerminationTerminalRecord {
 /// value is an event payload for callers that need to present completion once.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BuildTerminationTransactionCompletion {
-    transaction_id:   BuildTerminationTransactionId,
-    terminal_records: Vec<BuildTerminationTerminalRecord>,
+    transaction_id:             BuildTerminationTransactionId,
+    target_set:                 BuildTerminationTransactionTargetSet,
+    confirmed_root_count:       usize,
+    additional_build_exclusion: AdditionalBuildExclusion,
+    terminal_records:           Vec<BuildTerminationTerminalRecord>,
 }
 
 impl BuildTerminationTransactionCompletion {
     pub(crate) const fn transaction_id(&self) -> BuildTerminationTransactionId {
         self.transaction_id
+    }
+
+    pub(crate) const fn target_set(&self) -> BuildTerminationTransactionTargetSet {
+        self.target_set
+    }
+
+    /// The original number of root rows in the user-confirmed transaction.
+    pub(crate) const fn confirmed_root_count(&self) -> usize { self.confirmed_root_count }
+
+    pub(crate) const fn additional_build_exclusion(&self) -> AdditionalBuildExclusion {
+        self.additional_build_exclusion
     }
 
     pub(crate) fn terminal_records(&self) -> &[BuildTerminationTerminalRecord] {
@@ -251,6 +270,17 @@ impl BuildTerminationTransactionCompletion {
 impl BuildTerminationTerminalRecord {
     pub(crate) const fn transaction_id(&self) -> BuildTerminationTransactionId {
         self.transaction_id
+    }
+
+    pub(crate) const fn target_set(&self) -> BuildTerminationTransactionTargetSet {
+        self.target_set
+    }
+
+    /// The original number of root rows in the user-confirmed transaction.
+    pub(crate) const fn confirmed_root_count(&self) -> usize { self.confirmed_root_count }
+
+    pub(crate) const fn additional_build_exclusion(&self) -> AdditionalBuildExclusion {
+        self.additional_build_exclusion
     }
 
     pub(crate) const fn display_identity(&self) -> &BuildTerminationDisplayIdentity {
@@ -364,9 +394,64 @@ impl BuildTerminationLifecycleRegistry {
         );
     }
 
+    /// Stage one completed output-build-set transaction for presentation tests.
+    #[cfg(test)]
+    pub(crate) fn record_output_build_set_terminal_for_test(
+        &mut self,
+        transaction_id: std::num::NonZeroU64,
+        monitor_session_rows: &[MonitorSessionRow],
+    ) {
+        let transaction_id = BuildTerminationTransactionId(transaction_id);
+        let mut target_results_by_session = BTreeMap::new();
+        for monitor_session_row in monitor_session_rows {
+            let build_session_id = monitor_session_row.build_session_id().clone();
+            self.mark_terminating(
+                transaction_id,
+                BuildTerminationDisplayIdentity::from_monitor_session_row(monitor_session_row),
+            );
+            target_results_by_session.insert(
+                build_session_id,
+                vec![BuildTerminationTargetResult::External(
+                    ExternalBuildTerminationResult::new(
+                        TerminationTargetId::for_test(std::num::NonZeroU64::MIN),
+                        TerminationExecutionTargetRole::FrozenRoot,
+                        TerminationTargetResult::GoneAfterSignaling {
+                            pid: monitor_session_row
+                                .build_session()
+                                .root_observation()
+                                .root_pid(),
+                        },
+                    ),
+                )],
+            );
+        }
+        self.complete_transaction_with_target_set(
+            transaction_id,
+            BuildTerminationTransactionTargetSet::OutputBuildSet,
+            AdditionalBuildExclusion::NoAdditionalBuilds,
+            target_results_by_session,
+        );
+    }
+
     pub(super) fn complete_transaction(
         &mut self,
         transaction_id: BuildTerminationTransactionId,
+        target_results_by_session: BTreeMap<BuildSessionId, Vec<BuildTerminationTargetResult>>,
+    ) -> BuildTerminationTransactionCompletion {
+        self.complete_transaction_with_target_set(
+            transaction_id,
+            BuildTerminationTransactionTargetSet::SelectedBuild,
+            AdditionalBuildExclusion::NoAdditionalBuilds,
+            target_results_by_session,
+        )
+    }
+
+    /// Retain terminal records with the frozen transaction target-set semantics.
+    pub(super) fn complete_transaction_with_target_set(
+        &mut self,
+        transaction_id: BuildTerminationTransactionId,
+        build_termination_transaction_target_set: BuildTerminationTransactionTargetSet,
+        additional_build_exclusion: AdditionalBuildExclusion,
         mut target_results_by_session: BTreeMap<BuildSessionId, Vec<BuildTerminationTargetResult>>,
     ) -> BuildTerminationTransactionCompletion {
         let completing_sessions: Vec<_> = self
@@ -393,6 +478,7 @@ impl BuildTerminationLifecycleRegistry {
                 .values()
                 .flat_map(|target_results| target_results.iter()),
         );
+        let confirmed_root_count = completing_sessions.len();
         let mut terminal_records = Vec::with_capacity(completing_sessions.len());
         for build_session_id in completing_sessions {
             let Some(BuildTerminationLifecycleEntry::Terminating {
@@ -409,6 +495,9 @@ impl BuildTerminationLifecycleRegistry {
             let session_completion = session_completion(&target_results);
             let terminal_record = BuildTerminationTerminalRecord {
                 transaction_id,
+                target_set: build_termination_transaction_target_set,
+                confirmed_root_count,
+                additional_build_exclusion,
                 display_identity,
                 session_completion,
                 aggregate_completion,
@@ -422,6 +511,9 @@ impl BuildTerminationLifecycleRegistry {
         }
         BuildTerminationTransactionCompletion {
             transaction_id,
+            target_set: build_termination_transaction_target_set,
+            confirmed_root_count,
+            additional_build_exclusion,
             terminal_records,
         }
     }
@@ -743,5 +835,46 @@ mod tests {
             assert_eq!(external_results.len(), 1);
             assert_eq!(external_results[0].result(), &termination_target_result);
         }
+    }
+
+    #[test]
+    fn output_build_set_records_retain_the_confirmed_root_count_after_eviction() {
+        let first_identity = display_identity(4_260, "/workspace-first");
+        let second_identity = display_identity(4_261, "/workspace-second");
+        let transaction_id = BuildTerminationTransactionId(std::num::NonZeroU64::MIN);
+        let mut registry = BuildTerminationLifecycleRegistry::default();
+        registry.mark_terminating(transaction_id, first_identity);
+        registry.mark_terminating(transaction_id, second_identity.clone());
+        let completion = registry.complete_transaction_with_target_set(
+            transaction_id,
+            BuildTerminationTransactionTargetSet::OutputBuildSet,
+            AdditionalBuildExclusion::NoAdditionalBuilds,
+            BTreeMap::new(),
+        );
+        assert_eq!(completion.confirmed_root_count(), 2);
+        assert!(
+            completion
+                .terminal_records()
+                .iter()
+                .all(|terminal_record| terminal_record.confirmed_root_count() == 2)
+        );
+
+        registry.record_fresh_display_identities_for_test(&[display_identity(
+            4_262,
+            "/workspace-first",
+        )]);
+
+        let retained_records: Vec<_> = registry.terminal_records().collect();
+        assert_eq!(retained_records.len(), 1);
+        assert_eq!(
+            retained_records[0].display_identity(),
+            &second_identity,
+            "the unrelated root record remains visible"
+        );
+        assert_eq!(
+            retained_records[0].confirmed_root_count(),
+            2,
+            "the aggregate keeps describing the two roots the user confirmed"
+        );
     }
 }

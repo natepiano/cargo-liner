@@ -663,6 +663,13 @@ fn execute_confirmed_action(app: &mut App, action: ConfirmAction) {
             selected_build_termination_confirmation_display,
             *selected_build_termination_authorization,
         ),
+        ConfirmAction::TerminateOutputBuildSet {
+            output_build_set_termination_confirmation_display,
+            output_build_set_termination_authorization,
+        } => app.submit_output_build_set_termination(
+            output_build_set_termination_confirmation_display,
+            *output_build_set_termination_authorization,
+        ),
         ConfirmAction::PauseLintProject(project_root) => {
             app.pause_project_lints(&project_root);
         },
@@ -911,7 +918,9 @@ pub fn dispatch_output_action(action: OutputAction, app: &mut App) {
             OwnedColumnSelection::Selected => cancel_owned_output(app),
         },
         OutputAction::KillSelectedBuild => app.request_selected_build_termination_confirmation(),
-        OutputAction::KillScopedBuilds => {},
+        OutputAction::TerminateOutputBuildSet => {
+            app.request_output_build_set_termination_confirmation();
+        },
     }
 }
 
@@ -1122,6 +1131,21 @@ mod tests {
         selected_session_id: BuildSessionId,
     }
 
+    /// An App fixture with one fully actionable Output root and a selected
+    /// project row, so the real output-build-set input route can freeze a
+    /// confirmation without constructing authority in UI code.
+    struct OutputBuildSetDispatchFixture {
+        app:          Option<App>,
+        owned_header: OutputMonitorHit,
+    }
+
+    /// The monitor rows an Output build-set fixture presents to the action.
+    #[derive(Clone, Copy)]
+    enum OutputBuildSetFixtureRows {
+        OwnedOnly,
+        OwnedAndObservedOnly,
+    }
+
     /// Whether the selected-build fixture starts its owned process actor.
     #[derive(Clone, Copy)]
     enum OwnedTerminationActorFixture {
@@ -1152,6 +1176,24 @@ mod tests {
             // background endpoints before the remaining value fields drop.
             drop(self.app.take());
         }
+    }
+
+    impl OutputBuildSetDispatchFixture {
+        fn app(&self) -> &App {
+            self.app
+                .as_ref()
+                .unwrap_or_else(|| panic!("output-build-set App fixture should be live"))
+        }
+
+        fn app_mut(&mut self) -> &mut App {
+            self.app
+                .as_mut()
+                .unwrap_or_else(|| panic!("output-build-set App fixture should be live"))
+        }
+    }
+
+    impl Drop for OutputBuildSetDispatchFixture {
+        fn drop(&mut self) { drop(self.app.take()); }
     }
 
     /// An actionable selected-build App fixture whose live actor either serves
@@ -1265,6 +1307,105 @@ mod tests {
         }
     }
 
+    fn output_build_set_dispatch_fixture(
+        owned_termination_actor_fixture: OwnedTerminationActorFixture,
+        output_build_set_fixture_rows: OutputBuildSetFixtureRows,
+    ) -> OutputBuildSetDispatchFixture {
+        let OwnedRunFixture::Live { inflight } =
+            Inflight::with_live_owned_run_output("output build-set output")
+        else {
+            panic!("the live owned-run fixture should build");
+        };
+        let project = RootItem::Rust(RustProject::Package(Package {
+            path: AbsolutePath::from(Path::new("/tmp/output-build-set-context")),
+            name: Some("output-build-set-context".to_string()),
+            ..Package::default()
+        }));
+        let mut app = make_app(&[project]);
+        app.inflight = *inflight;
+        let OwnedRunTermination::Available {
+            owned_run_id,
+            owned_run_termination_token,
+        } = app.inflight.owned_run_termination()
+        else {
+            panic!("the live owned-run fixture should issue one termination token");
+        };
+        if matches!(
+            owned_termination_actor_fixture,
+            OwnedTerminationActorFixture::Running
+        ) {
+            app.inflight.start_owned_run_process_actor(owned_run_id);
+        }
+        let classified_roots = match output_build_set_fixture_rows {
+            OutputBuildSetFixtureRows::OwnedOnly => vec![ClassifiedRoot {
+                root_pid:      SELECTED_BUILD_OWNED_ROOT_PID,
+                compiler_pids: SELECTED_BUILD_COMPILER_CHILDREN,
+            }],
+            OutputBuildSetFixtureRows::OwnedAndObservedOnly => vec![
+                ClassifiedRoot {
+                    root_pid:      SELECTED_BUILD_OWNED_ROOT_PID,
+                    compiler_pids: SELECTED_BUILD_COMPILER_CHILDREN,
+                },
+                ClassifiedRoot {
+                    root_pid:      SELECTED_BUILD_EXTERNAL_ROOT_PID,
+                    compiler_pids: &[],
+                },
+            ],
+        };
+        let monitor_snapshot = classified_monitor_snapshot_with_ownership(
+            &classified_roots,
+            &FixtureRootOwnership::OwnedRoot {
+                root_pid: SELECTED_BUILD_OWNED_ROOT_PID,
+                owned_run_id,
+            },
+        )
+        .unwrap_or_else(|error| {
+            panic!("output-build-set fixture snapshot should classify: {error}")
+        });
+        let MonitorSnapshot::Fresh(monitor_data) = &monitor_snapshot else {
+            panic!("output-build-set fixture should have fresh monitor data");
+        };
+        let owned_header = monitor_data
+            .session_rows()
+            .iter()
+            .enumerate()
+            .find_map(|(column_index, monitor_session_row)| {
+                matches!(
+                    monitor_session_row.session_ownership(),
+                    MonitorSessionOwnership::Owned(current_owned_run_id)
+                        if current_owned_run_id == owned_run_id
+                )
+                .then_some(OutputMonitorHit::Header {
+                    build_session_id: monitor_session_row.build_session_id().clone(),
+                    column_index,
+                })
+            })
+            .unwrap_or_else(|| {
+                panic!("output-build-set fixture should retain the owned monitor column")
+            });
+        app.compile_visibility_state = CompileVisibilityState::on_for_test(
+            MonitorScopeResolution::Ready(MonitorScopeKey::for_test(AbsolutePath::from(
+                Path::new("/tmp/output-build-set-context"),
+            ))),
+        );
+        let crate::build_monitor::OwnedTerminationFixtureAuthorityInstallation::Installed(_) = app
+            .build_monitor
+            .show_with_owned_termination_authority_for_test(
+                monitor_snapshot,
+                owned_run_id,
+                owned_run_termination_token,
+            )
+        else {
+            panic!("the output-build-set fixture must install the shown root authority");
+        };
+        app.set_process_terminator_readiness_for_test(ProcessTerminatorReadinessForTest::Available);
+        app.framework.toasts = tui_pane::Toasts::default();
+        OutputBuildSetDispatchFixture {
+            app: Some(app),
+            owned_header,
+        }
+    }
+
     fn assert_selected_build_confirmation(app: &App) {
         match app.confirmation_modal_state() {
             crate::tui::app::ConfirmationModalState::Open {
@@ -1291,6 +1432,34 @@ mod tests {
             },
             crate::tui::app::ConfirmationModalState::Open { .. } => {
                 panic!("the open confirmation should retain selected-build authorization")
+            },
+        }
+    }
+
+    fn assert_output_build_set_confirmation(app: &App) {
+        match app.confirmation_modal_state() {
+            crate::tui::app::ConfirmationModalState::Open {
+                action:
+                    ConfirmAction::TerminateOutputBuildSet {
+                        output_build_set_termination_confirmation_display,
+                        output_build_set_termination_authorization: _,
+                    },
+                readiness: crate::tui::app::ConfirmationReadiness::Ready,
+            } => {
+                let target_summaries =
+                    output_build_set_termination_confirmation_display.target_summaries();
+                assert_eq!(target_summaries.len(), 1);
+                assert_eq!(
+                    target_summaries[0].root_pid(),
+                    SELECTED_BUILD_OWNED_ROOT_PID,
+                    "the modal keeps the exact Output root frozen at confirmation"
+                );
+            },
+            crate::tui::app::ConfirmationModalState::Closed => {
+                panic!("the output-build-set action should retain a ready confirmation")
+            },
+            crate::tui::app::ConfirmationModalState::Open { .. } => {
+                panic!("the open confirmation should retain output-build-set authority")
             },
         }
     }
@@ -1524,6 +1693,155 @@ mod tests {
             ),
             "the selected authorization immediately fans its owned token into Inflight"
         );
+    }
+
+    #[test]
+    fn output_build_set_dispatch_retains_its_exact_confirmation_until_the_worker_is_ready() {
+        let mut fixture = output_build_set_dispatch_fixture(
+            OwnedTerminationActorFixture::Running,
+            OutputBuildSetFixtureRows::OwnedOnly,
+        );
+
+        dispatch_output_action(OutputAction::TerminateOutputBuildSet, fixture.app_mut());
+        assert_output_build_set_confirmation(fixture.app());
+
+        assert!(
+            handle_confirm_key(fixture.app_mut(), KeyCode::Char('x')),
+            "the confirmation layer consumes an unrelated Output shortcut first"
+        );
+        assert_output_build_set_confirmation(fixture.app());
+
+        fixture
+            .app_mut()
+            .set_process_terminator_readiness_for_test(ProcessTerminatorReadinessForTest::Starting);
+        assert!(handle_confirm_key(fixture.app_mut(), KeyCode::Char('y')));
+        assert_output_build_set_confirmation(fixture.app());
+
+        fixture.app_mut().set_process_terminator_readiness_for_test(
+            ProcessTerminatorReadinessForTest::Unavailable,
+        );
+        assert!(handle_confirm_key(fixture.app_mut(), KeyCode::Char('y')));
+        assert_output_build_set_confirmation(fixture.app());
+
+        fixture.app_mut().set_process_terminator_readiness_for_test(
+            ProcessTerminatorReadinessForTest::Available,
+        );
+        assert!(handle_confirm_key(fixture.app_mut(), KeyCode::Char('y')));
+
+        assert!(
+            !fixture.app().confirmation_is_open(),
+            "an available worker consumes the retained output-build-set authority"
+        );
+        assert!(
+            matches!(
+                fixture.app().inflight.owned_run_termination(),
+                OwnedRunTermination::RequestPending { .. }
+            ),
+            "the shared submit path immediately fans the owned token into Inflight"
+        );
+    }
+
+    #[test]
+    fn output_build_set_completion_uses_aggregate_wording_once() {
+        let mut fixture = output_build_set_dispatch_fixture(
+            OwnedTerminationActorFixture::Unavailable,
+            OutputBuildSetFixtureRows::OwnedOnly,
+        );
+        dispatch_output_action(OutputAction::TerminateOutputBuildSet, fixture.app_mut());
+        assert_output_build_set_confirmation(fixture.app());
+
+        press(fixture.app_mut(), KeyCode::Char('y'));
+
+        assert!(
+            !fixture.app().confirmation_is_open(),
+            "the synchronous refusal completes the accepted output-build-set confirmation"
+        );
+        let output_completion_toasts = fixture
+            .app()
+            .framework
+            .toasts
+            .active_now()
+            .iter()
+            .filter(|toast| toast.title() == "Output build-set termination incomplete")
+            .count();
+        assert_eq!(
+            output_completion_toasts, 1,
+            "the output-set aggregate transition has its own wording and occurs once"
+        );
+
+        fixture.app_mut().poll_background();
+        assert_eq!(
+            fixture
+                .app()
+                .framework
+                .toasts
+                .active_now()
+                .iter()
+                .filter(|toast| toast.title() == "Output build-set termination incomplete")
+                .count(),
+            1,
+            "retained terminal records do not replay output-set completion"
+        );
+    }
+
+    #[test]
+    fn output_build_set_dispatch_refuses_mixed_rows_without_consuming_owned_authority() {
+        let mut fixture = output_build_set_dispatch_fixture(
+            OwnedTerminationActorFixture::Unavailable,
+            OutputBuildSetFixtureRows::OwnedAndObservedOnly,
+        );
+        let MonitorSnapshot::Fresh(monitor_data) = fixture.app().build_monitor.monitor_snapshot()
+        else {
+            panic!("mixed Output fixture should keep a fresh monitor snapshot");
+        };
+        assert_eq!(
+            monitor_data.session_rows().len(),
+            2,
+            "the mixed Output fixture shows both the owned and observed roots"
+        );
+        assert!(
+            monitor_data
+                .session_rows()
+                .iter()
+                .any(|monitor_session_row| {
+                    matches!(
+                        monitor_session_row.session_ownership(),
+                        MonitorSessionOwnership::Owned(_)
+                    )
+                }),
+            "one shown root owns current termination authority"
+        );
+        assert!(
+            monitor_data
+                .session_rows()
+                .iter()
+                .any(|monitor_session_row| {
+                    matches!(
+                        monitor_session_row.session_ownership(),
+                        MonitorSessionOwnership::External
+                    )
+                }),
+            "one shown root is observed only"
+        );
+
+        dispatch_output_action(OutputAction::TerminateOutputBuildSet, fixture.app_mut());
+
+        assert!(
+            !fixture.app().confirmation_is_open(),
+            "the mixed Output set refuses before opening a confirmation"
+        );
+        assert!(
+            matches!(
+                fixture.app().inflight.owned_run_termination(),
+                OwnedRunTermination::Available { .. }
+            ),
+            "the refusal does not submit the owned termination token"
+        );
+
+        let owned_header = fixture.owned_header.clone();
+        fixture.app_mut().panes.output.focus_hit(&owned_header);
+        dispatch_output_action(OutputAction::KillSelectedBuild, fixture.app_mut());
+        assert_selected_build_confirmation(fixture.app());
     }
 
     #[test]

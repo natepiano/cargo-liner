@@ -5,17 +5,21 @@
 //! [`OutputPresentation`], so none of them can disagree about what the pane is
 //! currently showing.
 
+use std::collections::BTreeMap;
 use std::time::Instant;
 
 use tui_pane::format_progressive;
 
 use super::constants::MINIMUM_READABLE_COLUMN_WIDTH;
+use crate::build_monitor::AdditionalBuildExclusion;
 use crate::build_monitor::BuildProfileLabel;
 use crate::build_monitor::BuildSessionActivity;
 use crate::build_monitor::BuildSessionId;
+use crate::build_monitor::BuildTerminationAggregateCompletion;
 use crate::build_monitor::BuildTerminationLifecycle;
 use crate::build_monitor::BuildTerminationLifecycleRegistry;
 use crate::build_monitor::BuildTerminationTerminalRecord;
+use crate::build_monitor::BuildTerminationTransactionTargetSet;
 use crate::build_monitor::CargoCommandSelector;
 use crate::build_monitor::CargoSubcommand;
 use crate::build_monitor::CargoSubcommandRecognition;
@@ -27,10 +31,12 @@ use crate::build_monitor::MonitorStaleness;
 use crate::build_monitor::SessionScope;
 use crate::build_monitor::TargetDirectoryEvidence;
 use crate::build_monitor::UnattributedCompileActivity;
+use crate::project::DisplayPath;
 use crate::tui::OwnedRunId;
 use crate::tui::compile_visibility::CompileVisibilityState;
 use crate::tui::compile_visibility::MonitorScopeResolution;
 use crate::tui::compile_visibility::MonitorWorkspaceIndexReadiness;
+use crate::tui::project_list::ProjectListRowDisplayPathResolution;
 use crate::tui::state::OwnedRunCompletionMarker;
 use crate::tui::state::OwnedRunOutputStateRef;
 use crate::tui::state::OwnedRunOutputTitleRef;
@@ -199,6 +205,45 @@ pub enum OutputMonitorVisibility {
     On,
 }
 
+/// One output-build-set aggregate derived from terminal records with the same
+/// transaction identity. The registry remains the only terminal-result owner.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct OutputBuildSetTerminationAggregateProjection {
+    aggregate_completion:       BuildTerminationAggregateCompletion,
+    additional_build_exclusion: AdditionalBuildExclusion,
+    confirmed_root_count:       usize,
+}
+
+impl OutputBuildSetTerminationAggregateProjection {
+    pub(super) const fn aggregate_completion(self) -> BuildTerminationAggregateCompletion {
+        self.aggregate_completion
+    }
+
+    pub(super) const fn additional_build_exclusion(self) -> AdditionalBuildExclusion {
+        self.additional_build_exclusion
+    }
+
+    pub(super) const fn confirmed_root_count(self) -> usize { self.confirmed_root_count }
+}
+
+/// One retained output-build-set transaction, projected from the lifecycle
+/// registry as its aggregate followed by the root records that still belong to
+/// that transaction.
+pub(super) struct OutputBuildSetTerminationResultGroup<'a> {
+    aggregate:        OutputBuildSetTerminationAggregateProjection,
+    terminal_records: Vec<&'a BuildTerminationTerminalRecord>,
+}
+
+impl<'a> OutputBuildSetTerminationResultGroup<'a> {
+    pub(super) const fn aggregate(&self) -> OutputBuildSetTerminationAggregateProjection {
+        self.aggregate
+    }
+
+    pub(super) fn into_terminal_records(self) -> Vec<&'a BuildTerminationTerminalRecord> {
+        self.terminal_records
+    }
+}
+
 /// One root Cargo invocation, as one stable column.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct MonitorColumn<'a> {
@@ -220,6 +265,34 @@ pub(crate) struct SelectedBuildTerminationConfirmationDisplay {
     compiler_child_count:    usize,
     profile:                 String,
     state:                   String,
+}
+
+/// Display data frozen beside opaque authority for all root rows shown in the
+/// Output monitor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct OutputBuildSetTerminationConfirmationDisplay {
+    selected_row_display_path: DisplayPath,
+    target_summaries:          Vec<SelectedBuildTerminationConfirmationDisplay>,
+}
+
+impl OutputBuildSetTerminationConfirmationDisplay {
+    pub(crate) const fn selected_row_display_path(&self) -> &DisplayPath {
+        &self.selected_row_display_path
+    }
+
+    pub(crate) fn target_summaries(&self) -> &[SelectedBuildTerminationConfirmationDisplay] {
+        &self.target_summaries
+    }
+}
+
+/// Whether the current selected project-list row can name the frozen output
+/// build-set confirmation without fabricating a display value.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum OutputBuildSetTerminationConfirmationDisplayResolution {
+    /// The selected row and exact current Output rows produced display data.
+    Ready(OutputBuildSetTerminationConfirmationDisplay),
+    /// The selected row vanished before its display identity was frozen.
+    SelectedRowUnavailable,
 }
 
 impl SelectedBuildTerminationConfirmationDisplay {
@@ -507,6 +580,36 @@ impl<'a> MonitorColumns<'a> {
     }
 }
 
+/// Group output-build-set terminal records by stable transaction identity.
+pub(super) fn output_build_set_termination_result_groups<'a>(
+    terminal_records: impl Iterator<Item = &'a BuildTerminationTerminalRecord>,
+) -> Vec<OutputBuildSetTerminationResultGroup<'a>> {
+    let mut by_transaction = BTreeMap::new();
+    for terminal_record in terminal_records {
+        if terminal_record.target_set() != BuildTerminationTransactionTargetSet::OutputBuildSet {
+            continue;
+        }
+        by_transaction
+            .entry(terminal_record.transaction_id())
+            .and_modify(
+                |output_build_set_termination_result_group: &mut OutputBuildSetTerminationResultGroup<'_>| {
+                    output_build_set_termination_result_group
+                        .terminal_records
+                        .push(terminal_record);
+                },
+            )
+            .or_insert_with(|| OutputBuildSetTerminationResultGroup {
+                aggregate: OutputBuildSetTerminationAggregateProjection {
+                    aggregate_completion:       terminal_record.aggregate_completion(),
+                    additional_build_exclusion: terminal_record.additional_build_exclusion(),
+                    confirmed_root_count:       terminal_record.confirmed_root_count(),
+                },
+                terminal_records: vec![terminal_record],
+            });
+    }
+    by_transaction.into_values().collect()
+}
+
 /// The contiguous run of columns drawn this frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct MonitorColumnWindow {
@@ -665,6 +768,37 @@ impl<'a> OutputPresentation<'a> {
                 OutputCopyAvailability::CapturedOutput
             },
         }
+    }
+
+    /// Freeze the selected-row identity and every exact current monitor-root
+    /// summary separately from opaque termination authority.
+    pub(crate) fn output_build_set_termination_confirmation_display_resolution(
+        &self,
+        project_list_row_display_path_resolution: ProjectListRowDisplayPathResolution,
+        now: Instant,
+    ) -> OutputBuildSetTerminationConfirmationDisplayResolution {
+        let ProjectListRowDisplayPathResolution::Resolved(selected_row_display_path) =
+            project_list_row_display_path_resolution
+        else {
+            return OutputBuildSetTerminationConfirmationDisplayResolution::SelectedRowUnavailable;
+        };
+        let target_summaries = match self.monitor() {
+            MonitorVisibility::Off | MonitorVisibility::On(MonitorPresentation::Empty(_)) => {
+                Vec::new()
+            },
+            MonitorVisibility::On(MonitorPresentation::Columns(monitor_columns)) => monitor_columns
+                .columns()
+                .map(|monitor_column| {
+                    monitor_column.selected_build_termination_confirmation_display(now)
+                })
+                .collect(),
+        };
+        OutputBuildSetTerminationConfirmationDisplayResolution::Ready(
+            OutputBuildSetTerminationConfirmationDisplay {
+                selected_row_display_path,
+                target_summaries,
+            },
+        )
     }
 
     /// Whether the owned body is on screen this frame.

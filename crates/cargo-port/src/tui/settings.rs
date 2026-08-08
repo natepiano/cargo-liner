@@ -584,14 +584,18 @@ pub(super) struct StartupSettings {
 }
 
 pub(super) fn load_cargo_port_settings_for_startup() -> Result<StartupSettings, String> {
-    let config_path = config::config_path();
-    let should_seed_file = config_path
-        .as_ref()
-        .is_some_and(|path| !path.as_path().exists());
-    let settings_spec = config_path.as_ref().map_or_else(
-        || SettingsFileSpec::new(APP_NAME, CONFIG_FILE),
-        |path| SettingsFileSpec::new(APP_NAME, CONFIG_FILE).with_path(path.as_path()),
-    );
+    let (settings_spec, should_seed_file) = match config::config_path() {
+        config::CargoPortConfigurationPathResolution::Resolved(config_path) => (
+            SettingsFileSpec::new(APP_NAME, CONFIG_FILE).with_path(&config_path),
+            !config_path.exists(),
+        ),
+        config::CargoPortConfigurationPathResolution::PlatformDirectoryUnavailable => {
+            (SettingsFileSpec::new(APP_NAME, CONFIG_FILE), false)
+        },
+        config::CargoPortConfigurationPathResolution::InvalidEmptyOverride => {
+            return Err("CARGO_PORT_CONFIG_DIR is set but empty".to_string());
+        },
+    };
     let mut loaded_settings =
         SettingsStore::load_for_startup(settings_spec, cargo_port_settings_registry())
             .map_err(|err| err.to_string())?;

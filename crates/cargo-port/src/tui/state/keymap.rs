@@ -7,11 +7,11 @@
 //! load-watch-reload contract.
 
 use std::path::Path;
-use std::path::PathBuf;
 
 use tui_pane::ToastId;
 use tui_pane::WatchedFile;
 
+use crate::config::CargoPortConfigurationPathResolution;
 use crate::tui::keymap::ResolvedKeymap;
 
 /// Owns the parsed keymap plus the on-disk watch state and the
@@ -23,9 +23,12 @@ pub struct Keymap {
 }
 
 impl Keymap {
-    pub fn new(path: Option<PathBuf>, current: ResolvedKeymap) -> Self {
+    pub fn new(
+        path_resolution: CargoPortConfigurationPathResolution,
+        current: ResolvedKeymap,
+    ) -> Self {
         Self {
-            file:           WatchedFile::new(path, current),
+            file:           WatchedFile::new(path_resolution.into_external_path(), current),
             diagnostics_id: None,
             warnings_id:    None,
         }
@@ -72,7 +75,10 @@ mod tests {
 
     #[test]
     fn new_seeds_diagnostics_id_to_none() {
-        let mut keymap = Keymap::new(None, ResolvedKeymap::defaults());
+        let mut keymap = Keymap::new(
+            CargoPortConfigurationPathResolution::PlatformDirectoryUnavailable,
+            ResolvedKeymap::defaults(),
+        );
         assert!(keymap.take_diagnostics_id().is_none());
         assert!(keymap.take_warnings_id().is_none());
         assert!(keymap.path().is_none());
@@ -80,7 +86,10 @@ mod tests {
 
     #[test]
     fn diagnostics_id_round_trip_set_take() {
-        let mut keymap = Keymap::new(None, ResolvedKeymap::defaults());
+        let mut keymap = Keymap::new(
+            CargoPortConfigurationPathResolution::PlatformDirectoryUnavailable,
+            ResolvedKeymap::defaults(),
+        );
         keymap.set_diagnostics_id(Some(ToastId(42)));
         let taken = keymap.take_diagnostics_id();
         assert_eq!(taken, Some(ToastId(42)));
@@ -92,7 +101,10 @@ mod tests {
 
     #[test]
     fn warnings_id_round_trip_set_take() {
-        let mut keymap = Keymap::new(None, ResolvedKeymap::defaults());
+        let mut keymap = Keymap::new(
+            CargoPortConfigurationPathResolution::PlatformDirectoryUnavailable,
+            ResolvedKeymap::defaults(),
+        );
         keymap.set_warnings_id(Some(ToastId(42)));
         let taken = keymap.take_warnings_id();
         assert_eq!(taken, Some(ToastId(42)));
@@ -104,7 +116,10 @@ mod tests {
 
     #[test]
     fn replace_current_swaps_in_new_keymap() {
-        let mut keymap = Keymap::new(None, ResolvedKeymap::defaults());
+        let mut keymap = Keymap::new(
+            CargoPortConfigurationPathResolution::PlatformDirectoryUnavailable,
+            ResolvedKeymap::defaults(),
+        );
         let next = ResolvedKeymap::defaults();
         keymap.replace_current(next);
         // We can't easily compare ResolvedKeymap structurally — the
@@ -113,5 +128,16 @@ mod tests {
         assert!(keymap.take_diagnostics_id().is_none());
         assert!(keymap.take_warnings_id().is_none());
         assert!(keymap.path().is_none());
+    }
+
+    #[test]
+    fn configuration_paths_without_a_filesystem_path_leave_the_watcher_unset() {
+        for path_resolution in [
+            CargoPortConfigurationPathResolution::PlatformDirectoryUnavailable,
+            CargoPortConfigurationPathResolution::InvalidEmptyOverride,
+        ] {
+            let keymap = Keymap::new(path_resolution, ResolvedKeymap::defaults());
+            assert!(keymap.path().is_none());
+        }
     }
 }

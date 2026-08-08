@@ -77,7 +77,9 @@ pub(crate) use snapshot::MonitorSessionOwnership;
 pub(crate) use snapshot::MonitorSessionRow;
 pub(crate) use snapshot::MonitorSnapshot;
 pub(crate) use snapshot::MonitorStaleness;
+pub(crate) use termination::AdditionalBuildExclusion;
 pub(crate) use termination::BUILD_TERMINATION_TIMEOUT;
+pub(crate) use termination::BuildTerminationAggregateCompletion;
 pub(crate) use termination::BuildTerminationAuthorizationConstruction;
 pub(crate) use termination::BuildTerminationCompletionTransition;
 pub(crate) use termination::BuildTerminationDeadline;
@@ -91,8 +93,10 @@ pub(crate) use termination::BuildTerminationSubmission;
 pub(crate) use termination::BuildTerminationSubmissionRefusal;
 pub(crate) use termination::BuildTerminationTerminalRecord;
 pub(crate) use termination::BuildTerminationTransactionId;
+pub(crate) use termination::BuildTerminationTransactionTargetSet;
+pub(crate) use termination::OutputBuildSetTerminationAuthorization;
+pub(crate) use termination::OutputBuildSetTerminationAvailability;
 pub(crate) use termination::OwnedTerminationSupport;
-pub(crate) use termination::ScopeTerminationAuthorization;
 pub(crate) use termination::SelectedBuildTerminationAuthorization;
 pub(crate) use termination::SelectedBuildTerminationAvailability;
 pub(crate) use termination::observe_build_termination_demand;
@@ -245,24 +249,36 @@ impl BuildMonitor {
         }
     }
 
-    /// Freeze the exact current row set only when each live root is actionable.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "scope authorization is constructed from the exact rendered root set"
-        )
-    )]
-    pub(crate) fn scope_termination_authorization(
-        &mut self,
-    ) -> BuildTerminationAuthorizationConstruction<ScopeTerminationAuthorization> {
+    /// Report whether every exact current Output root row can freeze authority
+    /// without consuming any move-only capability.
+    pub(crate) fn output_build_set_termination_availability(
+        &self,
+    ) -> OutputBuildSetTerminationAvailability {
         match self.monitor_snapshot.actionability() {
             snapshot::MonitorDataActionability::Actionable(monitor_data) => self
                 .termination_state
-                .scope_authorization(monitor_data.build_scope_key(), monitor_data.session_rows()),
+                .output_build_set_termination_availability(monitor_data.session_rows()),
             snapshot::MonitorDataActionability::NotActionable => self
                 .termination_state
-                .scope_authorization_for_inactive_snapshot(),
+                .output_build_set_termination_availability_for_inactive_snapshot(),
+        }
+    }
+
+    /// Freeze the exact current Output row set only when each live root is
+    /// actionable.
+    pub(crate) fn output_build_set_termination_authorization(
+        &mut self,
+    ) -> BuildTerminationAuthorizationConstruction<OutputBuildSetTerminationAuthorization> {
+        match self.monitor_snapshot.actionability() {
+            snapshot::MonitorDataActionability::Actionable(monitor_data) => {
+                self.termination_state.output_build_set_authorization(
+                    monitor_data.build_scope_key(),
+                    monitor_data.session_rows(),
+                )
+            },
+            snapshot::MonitorDataActionability::NotActionable => self
+                .termination_state
+                .output_build_set_authorization_for_inactive_snapshot(),
         }
     }
 
@@ -305,39 +321,33 @@ impl BuildMonitor {
         )
     }
 
-    /// Start one exact all-actionable scope transaction.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "retained scope authorization is submitted only after confirmation"
-        )
-    )]
-    pub(crate) fn submit_scope_termination(
+    /// Start one exact all-actionable Output build-set transaction.
+    pub(crate) fn submit_output_build_set_termination(
         &mut self,
-        scope_termination_authorization: ScopeTerminationAuthorization,
+        output_build_set_termination_authorization: OutputBuildSetTerminationAuthorization,
         process_terminator: &mut crate::process_termination::ProcessTerminator,
         build_termination_deadline: BuildTerminationDeadline,
     ) -> BuildTerminationSubmission {
-        match self.monitor_snapshot.actionability() {
-            snapshot::MonitorDataActionability::NotActionable => {
+        let snapshot::MonitorDataActionability::Actionable(monitor_data) =
+            self.monitor_snapshot.actionability()
+        else {
+            return BuildTerminationSubmission::Refused(
+                BuildTerminationSubmissionRefusal::SnapshotNotActionable,
+            );
+        };
+        match output_build_set_termination_authorization.currency_against(monitor_data) {
+            termination::OutputBuildSetTerminationAuthorizationCurrency::Current => {},
+            termination::OutputBuildSetTerminationAuthorizationCurrency::CoveredRootsChanged => {
                 return BuildTerminationSubmission::Refused(
-                    BuildTerminationSubmissionRefusal::SnapshotNotActionable,
+                    BuildTerminationSubmissionRefusal::CoveredScopeRootsChanged,
                 );
             },
-            snapshot::MonitorDataActionability::Actionable(monitor_data) => {
-                match scope_termination_authorization.currency_against(monitor_data) {
-                    termination::ScopeTerminationAuthorizationCurrency::Current => {},
-                    termination::ScopeTerminationAuthorizationCurrency::CoveredRootsChanged => {
-                        return BuildTerminationSubmission::Refused(
-                            BuildTerminationSubmissionRefusal::ScopeRootsChanged,
-                        );
-                    },
-                }
-            },
         }
-        self.termination_state.submit_scope(
-            scope_termination_authorization,
+        let additional_build_exclusion = output_build_set_termination_authorization
+            .additional_build_exclusion_against(monitor_data);
+        self.termination_state.submit_output_build_set(
+            output_build_set_termination_authorization,
+            additional_build_exclusion,
             process_terminator,
             build_termination_deadline,
             &mut self.termination_lifecycle_registry,

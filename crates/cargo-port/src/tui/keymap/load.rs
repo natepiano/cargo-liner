@@ -33,10 +33,9 @@ use super::constants::LEGACY_PAUSE_LINT_ACTION_KEY;
 use super::constants::PAUSE_ALL_LINTS_ACTION_KEY;
 use super::constants::REMOVED_PROJECT_LIST_GLOBAL_ACTIONS;
 use super::resolved::ResolvedKeymap;
+use crate::config::CargoPortConfigurationPathResolution;
 use crate::config::NavigationKeys;
-use crate::constants::APP_NAME;
 use crate::constants::KEYMAP_FILE;
-use crate::project::AbsolutePath;
 
 pub struct KeymapLoadResult {
     pub(crate) keymap:          ResolvedKeymap,
@@ -69,6 +68,15 @@ pub(crate) enum KeymapErrorReason {
     UnknownAction,
 }
 
+/// Which source supplies the keymap path for this lookup.
+enum KeymapPathResolutionSource {
+    /// A thread-local test fixture supplies the complete keymap path.
+    #[cfg(test)]
+    TestSpecificPath(PathBuf),
+    /// Cargo Port resolves `keymap.toml` under its shared configuration root.
+    SharedConfigurationRoot,
+}
+
 impl Display for KeymapErrorReason {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
@@ -81,13 +89,36 @@ impl Display for KeymapErrorReason {
 }
 
 /// Path to the keymap config file.
-pub(crate) fn keymap_path() -> Option<AbsolutePath> {
+pub(crate) fn keymap_path() -> CargoPortConfigurationPathResolution {
     #[cfg(test)]
-    if let Some(path) = KEYMAP_PATH_OVERRIDE.with(|slot| slot.borrow().clone()) {
-        return Some(path.into());
-    }
+    let keymap_path_resolution_source = KEYMAP_PATH_OVERRIDE.with(|slot| {
+        slot.borrow().clone().map_or(
+            KeymapPathResolutionSource::SharedConfigurationRoot,
+            KeymapPathResolutionSource::TestSpecificPath,
+        )
+    });
+    #[cfg(not(test))]
+    let keymap_path_resolution_source = KeymapPathResolutionSource::SharedConfigurationRoot;
 
-    dirs::config_dir().map(|d| d.join(APP_NAME).join(KEYMAP_FILE).into())
+    resolve_keymap_path(
+        keymap_path_resolution_source,
+        crate::config::cargo_port_configuration_root(),
+    )
+}
+
+fn resolve_keymap_path(
+    keymap_path_resolution_source: KeymapPathResolutionSource,
+    cargo_port_configuration_root: CargoPortConfigurationPathResolution,
+) -> CargoPortConfigurationPathResolution {
+    match keymap_path_resolution_source {
+        #[cfg(test)]
+        KeymapPathResolutionSource::TestSpecificPath(path) => {
+            CargoPortConfigurationPathResolution::Resolved(path)
+        },
+        KeymapPathResolutionSource::SharedConfigurationRoot => {
+            cargo_port_configuration_root.child(KEYMAP_FILE)
+        },
+    }
 }
 
 #[cfg(test)]
@@ -153,13 +184,17 @@ pub(crate) fn migrate_removed_action_keys_on_disk(path: &Path) -> std::io::Resul
 
 /// Load and validate keymap from disk. Creates the default file if missing.
 pub(crate) fn load_keymap(vim_mode: NavigationKeys) -> KeymapLoadResult {
-    let Some(path) = keymap_path() else {
-        return KeymapLoadResult {
-            keymap:          ResolvedKeymap::defaults(),
-            errors:          Vec::new(),
-            warnings:        Vec::new(),
-            missing_actions: Vec::new(),
-        };
+    let path = match keymap_path() {
+        CargoPortConfigurationPathResolution::Resolved(path) => path,
+        CargoPortConfigurationPathResolution::PlatformDirectoryUnavailable
+        | CargoPortConfigurationPathResolution::InvalidEmptyOverride => {
+            return KeymapLoadResult {
+                keymap:          ResolvedKeymap::defaults(),
+                errors:          Vec::new(),
+                warnings:        Vec::new(),
+                missing_actions: Vec::new(),
+            };
+        },
     };
 
     if !path.exists() {
@@ -784,6 +819,21 @@ show_branch = "b"
 activate      = "enter"
 clear_history = "d"
 "#;
+
+    #[test]
+    fn test_specific_keymap_path_wins_over_the_shared_configuration_root() {
+        let test_keymap_path = PathBuf::from("/test-fixture/keymap.toml");
+        let shared_configuration_root =
+            CargoPortConfigurationPathResolution::Resolved(PathBuf::from("/ambient/cargo-port"));
+
+        assert_eq!(
+            resolve_keymap_path(
+                KeymapPathResolutionSource::TestSpecificPath(test_keymap_path.clone()),
+                shared_configuration_root,
+            ),
+            CargoPortConfigurationPathResolution::Resolved(test_keymap_path)
+        );
+    }
 
     #[test]
     fn default_toml_loads_without_errors() {

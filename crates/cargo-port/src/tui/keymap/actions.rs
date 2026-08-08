@@ -58,7 +58,7 @@ tui_pane::action_enum! {
         SelectAll         => ("select_all",          "select all", "Select all lines");
         Cancel            => ("cancel",              "close",      "Close output pane");
         KillSelectedBuild => ("kill_selected_build", "kill",       "Stop the selected build");
-        KillScopedBuilds  => ("kill_scoped_builds",  "kill all",   "Stop every build in scope");
+        TerminateOutputBuildSet => ("kill_scoped_builds", "kill all", "Stop every build shown in Output");
     }
 }
 

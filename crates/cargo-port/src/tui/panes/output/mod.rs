@@ -23,6 +23,8 @@ pub use pane::CapturedOutputRow;
 pub use pane::OutputPane;
 pub use pane::OutputTabStep;
 pub(crate) use pane::SelectedBuildTerminationSelection;
+pub(crate) use presentation::OutputBuildSetTerminationConfirmationDisplay;
+pub(crate) use presentation::OutputBuildSetTerminationConfirmationDisplayResolution;
 pub use presentation::OutputCopyAvailability;
 pub use presentation::OutputMonitorVisibility;
 pub use presentation::OutputPaneVisibility;

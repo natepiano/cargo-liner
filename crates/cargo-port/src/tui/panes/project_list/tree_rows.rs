@@ -41,6 +41,7 @@ use crate::tui::panes::constants::TREE_PREFIX_LAST;
 use crate::tui::panes::constants::TREE_PREFIX_LEAF_EXTENSION;
 use crate::tui::panes::lang;
 use crate::tui::project_list::ProjectList;
+use crate::tui::project_list::ProjectListRowDisplayPathResolution;
 use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::state;
 use crate::tui::state::Lint;
@@ -552,7 +553,10 @@ fn render_worktree_entry<'a>(
             node_index:     ni,
             worktree_index: wi,
         });
-    let dp = display_path.unwrap_or_default().to_string();
+    let dp = match display_path {
+        ProjectListRowDisplayPathResolution::Resolved(display_path) => display_path.to_string(),
+        ProjectListRowDisplayPathResolution::RowUnavailable => String::new(),
+    };
     let abs_path = ctx
         .project_list
         .abs_path_for_row(VisibleRow::WorktreeEntry {

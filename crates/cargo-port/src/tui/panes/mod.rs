@@ -53,6 +53,8 @@ pub(super) use lints::build_lints_data;
 pub(super) use lints::render_lints_pane_body;
 pub(super) use output::CapturedOutputRow;
 pub(super) use output::ColumnSelection;
+pub(super) use output::OutputBuildSetTerminationConfirmationDisplay;
+pub(super) use output::OutputBuildSetTerminationConfirmationDisplayResolution;
 pub(super) use output::OutputCopyAvailability;
 pub(super) use output::OutputMonitorHit;
 pub(super) use output::OutputMonitorVisibility;

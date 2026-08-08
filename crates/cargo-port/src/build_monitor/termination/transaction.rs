@@ -14,7 +14,8 @@ use super::BuildTerminationTransactionCompletion;
 use super::authority::BuildTerminationAuthority;
 use super::authority::BuildTerminationAuthorizationConstruction;
 use super::authority::FrozenBuildTerminationTarget;
-use super::authority::ScopeTerminationAuthorization;
+use super::authority::OutputBuildSetTerminationAuthorization;
+use super::authority::OutputBuildSetTerminationAvailability;
 use super::authority::SelectedBuildTerminationAuthorization;
 use super::authority::SelectedBuildTerminationAvailability;
 use super::lifecycle::BuildTerminationDisplayIdentity;
@@ -53,6 +54,25 @@ use crate::tui::OwnedRunTerminationToken;
 /// The monotonic owner identity for one build termination transaction.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct BuildTerminationTransactionId(pub(super) NonZeroU64);
+
+/// The user-visible set whose frozen authority owns one transaction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BuildTerminationTransactionTargetSet {
+    /// One root selected through the Output cursor.
+    SelectedBuild,
+    /// Every live actionable root row the Output snapshot represented.
+    OutputBuildSet,
+}
+
+/// Whether current Output rows appeared after an output-build-set confirmation
+/// froze its immutable target identities.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AdditionalBuildExclusion {
+    /// The current display contains no root added after confirmation.
+    NoAdditionalBuilds,
+    /// Current display rows included this many roots outside frozen authority.
+    Excluded { count: usize },
+}
 
 /// The fixed grace period available to one submitted build termination.
 pub(crate) const BUILD_TERMINATION_TIMEOUT: Duration = Duration::from_secs(5);
@@ -103,20 +123,22 @@ pub(crate) enum BuildTerminationSubmissionRefusal {
     SelectedScopeChanged,
     /// A selected authorization's exact session is no longer current.
     SelectedSessionChanged,
-    /// A scope authorization's covered roots differ from the current scope.
-    ScopeRootsChanged,
+    /// An output-build-set authorization's covered roots changed.
+    CoveredScopeRootsChanged,
 }
 
 #[derive(Debug)]
 pub(crate) struct BuildTerminationTransaction {
-    transaction_id:       BuildTerminationTransactionId,
-    deadline:             BuildTerminationDeadline,
-    pending_targets:      BTreeMap<TerminationTargetId, BuildSessionId>,
-    owned_targets:        BTreeMap<OwnedRunId, OwnedPendingTerminationTarget>,
-    external_roots:       BTreeMap<TerminationTargetId, FrozenExternalTerminationRoot>,
+    transaction_id:             BuildTerminationTransactionId,
+    target_set:                 BuildTerminationTransactionTargetSet,
+    additional_build_exclusion: AdditionalBuildExclusion,
+    deadline:                   BuildTerminationDeadline,
+    pending_targets:            BTreeMap<TerminationTargetId, BuildSessionId>,
+    owned_targets:              BTreeMap<OwnedRunId, OwnedPendingTerminationTarget>,
+    external_roots:             BTreeMap<TerminationTargetId, FrozenExternalTerminationRoot>,
     admitted_descendants: BTreeMap<TerminationTargetId, AdmittedExternalTerminationDescendant>,
-    external_pass_state:  ExternalTerminationPassState,
-    terminal_results:     BTreeMap<BuildSessionId, Vec<BuildTerminationTargetResult>>,
+    external_pass_state:        ExternalTerminationPassState,
+    terminal_results:           BTreeMap<BuildSessionId, Vec<BuildTerminationTargetResult>>,
 }
 
 #[derive(Debug)]
@@ -204,7 +226,7 @@ impl BuildTerminationTransaction {
 enum ActiveBuildTerminationTransaction {
     #[default]
     Idle,
-    Active(BuildTerminationTransaction),
+    Active(Box<BuildTerminationTransaction>),
 }
 
 /// Owns active transaction state and current snapshot-derived authority.
@@ -274,6 +296,38 @@ impl BuildTerminationState {
         }
     }
 
+    /// Read exact Output-build-set actionability without taking any authority.
+    pub(in crate::build_monitor) fn output_build_set_termination_availability(
+        &self,
+        monitor_session_rows: &[super::super::snapshot::MonitorSessionRow],
+    ) -> OutputBuildSetTerminationAvailability {
+        if self.lifecycle_transaction_is_active() {
+            return OutputBuildSetTerminationAvailability::Busy;
+        }
+        if monitor_session_rows.is_empty()
+            || monitor_session_rows.iter().any(|monitor_session_row| {
+                !self
+                    .current_authorities
+                    .contains_key(monitor_session_row.build_session_id())
+            })
+        {
+            OutputBuildSetTerminationAvailability::BuildSetNotFullyActionable
+        } else {
+            OutputBuildSetTerminationAvailability::Available
+        }
+    }
+
+    /// Read output-build-set actionability when the snapshot is unavailable.
+    pub(in crate::build_monitor) const fn output_build_set_termination_availability_for_inactive_snapshot(
+        &self,
+    ) -> OutputBuildSetTerminationAvailability {
+        if self.lifecycle_transaction_is_active() {
+            OutputBuildSetTerminationAvailability::Busy
+        } else {
+            OutputBuildSetTerminationAvailability::SnapshotNotActionable
+        }
+    }
+
     pub(in crate::build_monitor) fn selected_authorization(
         &mut self,
         build_scope_key: &BuildScopeKey,
@@ -309,11 +363,11 @@ impl BuildTerminationState {
         }
     }
 
-    pub(in crate::build_monitor) fn scope_authorization(
+    pub(in crate::build_monitor) fn output_build_set_authorization(
         &mut self,
         build_scope_key: &BuildScopeKey,
         monitor_session_rows: &[super::super::snapshot::MonitorSessionRow],
-    ) -> BuildTerminationAuthorizationConstruction<ScopeTerminationAuthorization> {
+    ) -> BuildTerminationAuthorizationConstruction<OutputBuildSetTerminationAuthorization> {
         if self.lifecycle_transaction_is_active() {
             return BuildTerminationAuthorizationConstruction::Busy;
         }
@@ -324,7 +378,7 @@ impl BuildTerminationState {
                     .contains_key(monitor_session_row.build_session_id())
             })
         {
-            return BuildTerminationAuthorizationConstruction::ScopeNotFullyActionable;
+            return BuildTerminationAuthorizationConstruction::BuildSetNotFullyActionable;
         }
         let mut targets = Vec::with_capacity(monitor_session_rows.len());
         for monitor_session_row in monitor_session_rows {
@@ -332,7 +386,7 @@ impl BuildTerminationState {
             let Some(build_termination_authority) =
                 self.current_authorities.remove(build_session_id)
             else {
-                return BuildTerminationAuthorizationConstruction::ScopeNotFullyActionable;
+                return BuildTerminationAuthorizationConstruction::BuildSetNotFullyActionable;
             };
             targets.push(FrozenBuildTerminationTarget {
                 session_id:       build_session_id.clone(),
@@ -342,15 +396,17 @@ impl BuildTerminationState {
                 ),
             });
         }
-        BuildTerminationAuthorizationConstruction::Authorized(ScopeTerminationAuthorization {
-            scope_key: build_scope_key.clone(),
-            targets,
-        })
+        BuildTerminationAuthorizationConstruction::Authorized(
+            OutputBuildSetTerminationAuthorization {
+                scope_key: build_scope_key.clone(),
+                targets,
+            },
+        )
     }
 
-    pub(in crate::build_monitor) const fn scope_authorization_for_inactive_snapshot(
+    pub(in crate::build_monitor) const fn output_build_set_authorization_for_inactive_snapshot(
         &self,
-    ) -> BuildTerminationAuthorizationConstruction<ScopeTerminationAuthorization> {
+    ) -> BuildTerminationAuthorizationConstruction<OutputBuildSetTerminationAuthorization> {
         if self.lifecycle_transaction_is_active() {
             BuildTerminationAuthorizationConstruction::Busy
         } else {
@@ -377,21 +433,44 @@ impl BuildTerminationState {
                 authority,
                 display_identity,
             }],
+            BuildTerminationTransactionTargetSet::SelectedBuild,
+            AdditionalBuildExclusion::NoAdditionalBuilds,
             process_terminator,
             build_termination_deadline,
             lifecycle_registry,
         )
     }
 
-    pub(in crate::build_monitor) fn submit_scope(
+    pub(in crate::build_monitor) fn submit_output_build_set(
         &mut self,
-        scope_termination_authorization: ScopeTerminationAuthorization,
+        output_build_set_termination_authorization: OutputBuildSetTerminationAuthorization,
+        additional_build_exclusion: AdditionalBuildExclusion,
         process_terminator: &mut ProcessTerminator,
         build_termination_deadline: BuildTerminationDeadline,
         lifecycle_registry: &mut BuildTerminationLifecycleRegistry,
     ) -> BuildTerminationSubmission {
         self.submit_targets(
-            scope_termination_authorization.targets,
+            output_build_set_termination_authorization.targets,
+            BuildTerminationTransactionTargetSet::OutputBuildSet,
+            additional_build_exclusion,
+            process_terminator,
+            build_termination_deadline,
+            lifecycle_registry,
+        )
+    }
+
+    /// Submit a fixed output-build-set fixture without later-row exclusions.
+    #[cfg(test)]
+    fn submit_output_build_set_for_test(
+        &mut self,
+        output_build_set_termination_authorization: OutputBuildSetTerminationAuthorization,
+        process_terminator: &mut ProcessTerminator,
+        build_termination_deadline: BuildTerminationDeadline,
+        lifecycle_registry: &mut BuildTerminationLifecycleRegistry,
+    ) -> BuildTerminationSubmission {
+        self.submit_output_build_set(
+            output_build_set_termination_authorization,
+            AdditionalBuildExclusion::NoAdditionalBuilds,
             process_terminator,
             build_termination_deadline,
             lifecycle_registry,
@@ -401,6 +480,8 @@ impl BuildTerminationState {
     fn submit_targets(
         &mut self,
         frozen_targets: Vec<FrozenBuildTerminationTarget>,
+        build_termination_transaction_target_set: BuildTerminationTransactionTargetSet,
+        additional_build_exclusion: AdditionalBuildExclusion,
         _: &mut ProcessTerminator,
         build_termination_deadline: BuildTerminationDeadline,
         lifecycle_registry: &mut BuildTerminationLifecycleRegistry,
@@ -473,8 +554,10 @@ impl BuildTerminationState {
             }
         };
         self.active_transaction =
-            ActiveBuildTerminationTransaction::Active(BuildTerminationTransaction {
+            ActiveBuildTerminationTransaction::Active(Box::new(BuildTerminationTransaction {
                 transaction_id: build_termination_transaction_id,
+                target_set: build_termination_transaction_target_set,
+                additional_build_exclusion,
                 deadline: build_termination_deadline,
                 pending_targets,
                 owned_targets,
@@ -482,7 +565,7 @@ impl BuildTerminationState {
                 admitted_descendants: BTreeMap::new(),
                 external_pass_state,
                 terminal_results: BTreeMap::new(),
-            });
+            }));
         BuildTerminationSubmission::Submitted(build_termination_transaction_id)
     }
 
@@ -918,10 +1001,14 @@ impl BuildTerminationState {
         else {
             return BuildTerminationCompletionTransition::NoCompletion;
         };
-        BuildTerminationCompletionTransition::Completed(lifecycle_registry.complete_transaction(
-            build_termination_transaction.transaction_id,
-            build_termination_transaction.terminal_results,
-        ))
+        BuildTerminationCompletionTransition::Completed(
+            lifecycle_registry.complete_transaction_with_target_set(
+                build_termination_transaction.transaction_id,
+                build_termination_transaction.target_set,
+                build_termination_transaction.additional_build_exclusion,
+                build_termination_transaction.terminal_results,
+            ),
+        )
     }
 }
 
@@ -1444,13 +1531,13 @@ mod tests {
         }
     }
 
-    fn owned_scope_authorization(
+    fn owned_output_build_set_authorization(
         build_session_id: BuildSessionId,
         owned_run_id: OwnedRunId,
         root: &str,
         pid: u32,
-    ) -> ScopeTerminationAuthorization {
-        ScopeTerminationAuthorization {
+    ) -> OutputBuildSetTerminationAuthorization {
+        OutputBuildSetTerminationAuthorization {
             scope_key: BuildScopeKey::for_test(AbsolutePath::from(PathBuf::from(root))),
             targets:   vec![FrozenBuildTerminationTarget {
                 session_id:       build_session_id.clone(),
@@ -1472,6 +1559,27 @@ mod tests {
         }
     }
 
+    fn owned_output_build_set_target(
+        build_session_id: BuildSessionId,
+        owned_run_id: OwnedRunId,
+        root: &str,
+        pid: u32,
+    ) -> FrozenBuildTerminationTarget {
+        FrozenBuildTerminationTarget {
+            session_id:       build_session_id.clone(),
+            authority:        BuildTerminationAuthority::Owned(OwnedBuildTerminationAuthority {
+                owned_run_id,
+                owned_run_termination_token: OwnedRunTerminationToken::for_test(owned_run_id),
+            }),
+            display_identity: BuildTerminationDisplayIdentity::for_test(
+                build_session_id,
+                resolved_scope(root),
+                pid,
+                MonitorSessionOwnership::Owned(owned_run_id),
+            ),
+        }
+    }
+
     fn started_owned_transaction(
         build_termination_deadline: BuildTerminationDeadline,
     ) -> (
@@ -1483,7 +1591,7 @@ mod tests {
     ) {
         let owned_run_id = OwnedRunId::for_test(NonZeroU64::MIN);
         let build_session_id = build_session_id_for(4_200_101);
-        let authorization = owned_scope_authorization(
+        let authorization = owned_output_build_set_authorization(
             build_session_id.clone(),
             owned_run_id,
             "/workspace",
@@ -1492,12 +1600,14 @@ mod tests {
         let mut termination_state = BuildTerminationState::default();
         let mut lifecycle_registry = BuildTerminationLifecycleRegistry::default();
         let mut process_terminator = ProcessTerminator::start();
-        let BuildTerminationSubmission::Submitted(transaction_id) = termination_state.submit_scope(
-            authorization,
-            &mut process_terminator,
-            build_termination_deadline,
-            &mut lifecycle_registry,
-        ) else {
+        let BuildTerminationSubmission::Submitted(transaction_id) = termination_state
+            .submit_output_build_set_for_test(
+                authorization,
+                &mut process_terminator,
+                build_termination_deadline,
+                &mut lifecycle_registry,
+            )
+        else {
             panic!("owned transaction should start");
         };
         termination_state.submit_owned_targets(
@@ -1611,7 +1721,106 @@ mod tests {
     }
 
     #[test]
-    fn selected_and_scope_submission_share_the_five_second_semantic_deadline() {
+    fn output_build_set_availability_reads_authority_without_consuming_it() {
+        let owned_run_id = OwnedRunId::for_test(NonZeroU64::MIN);
+        let (mut build_monitor, _) = monitor_with_owned_authority(4_200_115, owned_run_id);
+
+        assert_eq!(
+            build_monitor.output_build_set_termination_availability(),
+            OutputBuildSetTerminationAvailability::Available
+        );
+        assert!(matches!(
+            build_monitor.output_build_set_termination_authorization(),
+            BuildTerminationAuthorizationConstruction::Authorized(_)
+        ));
+    }
+
+    #[test]
+    fn output_build_set_availability_refuses_an_observed_only_root() {
+        let owned_run_id = OwnedRunId::for_test(NonZeroU64::MIN);
+        let (mut build_monitor, _) = monitor_with_owned_authority(4_200_116, owned_run_id);
+        build_monitor.termination_state.clear_current_authorities();
+
+        assert_eq!(
+            build_monitor.output_build_set_termination_availability(),
+            OutputBuildSetTerminationAvailability::BuildSetNotFullyActionable
+        );
+    }
+
+    #[test]
+    fn output_build_set_submits_each_confirmed_owned_root_once() {
+        let first_owned_run_id = OwnedRunId::for_test(NonZeroU64::MIN);
+        let Some(second_owned_run_identity) = NonZeroU64::new(2) else {
+            panic!("two is a nonzero owned-run identity");
+        };
+        let second_owned_run_id = OwnedRunId::for_test(second_owned_run_identity);
+        let first_session_id = build_session_id_for(4_200_117);
+        let second_session_id = build_session_id_for(4_200_118);
+        let authorization = OutputBuildSetTerminationAuthorization {
+            scope_key: BuildScopeKey::for_test(AbsolutePath::from(PathBuf::from(
+                "/selected-checkout",
+            ))),
+            targets:   vec![
+                owned_output_build_set_target(
+                    first_session_id,
+                    first_owned_run_id,
+                    "/selected-checkout",
+                    4_200_117,
+                ),
+                owned_output_build_set_target(
+                    second_session_id,
+                    second_owned_run_id,
+                    "/shown-outside-selected-checkout",
+                    4_200_118,
+                ),
+            ],
+        };
+        let mut termination_state = BuildTerminationState::default();
+        let mut lifecycle_registry = BuildTerminationLifecycleRegistry::default();
+        let mut process_terminator = ProcessTerminator::start();
+        let BuildTerminationSubmission::Submitted(transaction_id) = termination_state
+            .submit_output_build_set_for_test(
+                authorization,
+                &mut process_terminator,
+                BuildTerminationDeadline::from_submission_time(Instant::now()),
+                &mut lifecycle_registry,
+            )
+        else {
+            panic!("every confirmed owned root should form one transaction");
+        };
+
+        let submitted_run_ids = [first_owned_run_id, second_owned_run_id];
+        let mut submitted_count = 0;
+        assert_eq!(
+            termination_state.submit_owned_targets(
+                transaction_id,
+                |_| {
+                    let submitted_run_id = submitted_run_ids[submitted_count];
+                    submitted_count += 1;
+                    OwnedRunTerminationSubmission::Submitted(submitted_run_id)
+                },
+                &mut lifecycle_registry,
+            ),
+            BuildTerminationCompletionTransition::NoCompletion
+        );
+        assert_eq!(
+            submitted_count, 2,
+            "one output-build-set acceptance fans every frozen owned token out immediately"
+        );
+        assert!(termination_state.lifecycle_transaction_is_active());
+        assert_eq!(
+            termination_state.submit_owned_targets(
+                transaction_id,
+                |_| OwnedRunTerminationSubmission::ActorUnavailable,
+                &mut lifecycle_registry,
+            ),
+            BuildTerminationCompletionTransition::NoCompletion,
+            "the transaction never reconstructs or resubmits accepted authority"
+        );
+    }
+
+    #[test]
+    fn selected_and_output_build_set_submission_share_the_five_second_semantic_deadline() {
         assert_eq!(BUILD_TERMINATION_TIMEOUT, Duration::from_secs(5));
         let submitted_at = Instant::now();
         let build_termination_deadline =
@@ -1647,32 +1856,39 @@ mod tests {
         };
         assert_eq!(selected_transaction.deadline, build_termination_deadline);
 
-        let scope_submitted_at = Instant::now();
-        let scope_deadline = BuildTerminationDeadline::from_submission_time(scope_submitted_at);
-        let (mut scope_monitor, _) = monitor_with_owned_authority(4_200_113, owned_run_id);
-        let BuildTerminationAuthorizationConstruction::Authorized(scope_authorization) =
-            scope_monitor.scope_termination_authorization()
+        let output_build_set_submitted_at = Instant::now();
+        let output_build_set_deadline =
+            BuildTerminationDeadline::from_submission_time(output_build_set_submitted_at);
+        let (mut output_build_set_monitor, _) =
+            monitor_with_owned_authority(4_200_113, owned_run_id);
+        let BuildTerminationAuthorizationConstruction::Authorized(output_build_set_authorization) =
+            output_build_set_monitor.output_build_set_termination_authorization()
         else {
-            panic!("scope fixture should authorize");
+            panic!("output-build-set fixture should authorize");
         };
         assert!(matches!(
-            scope_monitor.submit_scope_termination(
-                scope_authorization,
+            output_build_set_monitor.submit_output_build_set_termination(
+                output_build_set_authorization,
                 &mut process_terminator,
-                scope_deadline,
+                output_build_set_deadline,
             ),
             BuildTerminationSubmission::Submitted(_)
         ));
-        let ActiveBuildTerminationTransaction::Active(scope_transaction) =
-            &scope_monitor.termination_state.active_transaction
+        let ActiveBuildTerminationTransaction::Active(output_build_set_transaction) =
+            &output_build_set_monitor
+                .termination_state
+                .active_transaction
         else {
-            panic!("scope submission should activate a transaction");
+            panic!("output-build-set submission should activate a transaction");
         };
-        assert_eq!(scope_transaction.deadline, scope_deadline);
         assert_eq!(
-            scope_deadline
+            output_build_set_transaction.deadline,
+            output_build_set_deadline
+        );
+        assert_eq!(
+            output_build_set_deadline
                 .expires_at()
-                .duration_since(scope_submitted_at),
+                .duration_since(output_build_set_submitted_at),
             BUILD_TERMINATION_TIMEOUT
         );
     }
@@ -1684,17 +1900,19 @@ mod tests {
         let mut termination_state = BuildTerminationState::default();
         let mut lifecycle_registry = BuildTerminationLifecycleRegistry::default();
         let mut process_terminator = ProcessTerminator::start();
-        let BuildTerminationSubmission::Submitted(transaction_id) = termination_state.submit_scope(
-            owned_scope_authorization(
-                build_session_id.clone(),
-                owned_run_id,
-                "/workspace",
-                4_200_114,
-            ),
-            &mut process_terminator,
-            BuildTerminationDeadline::from_submission_time(Instant::now()),
-            &mut lifecycle_registry,
-        ) else {
+        let BuildTerminationSubmission::Submitted(transaction_id) = termination_state
+            .submit_output_build_set_for_test(
+                owned_output_build_set_authorization(
+                    build_session_id.clone(),
+                    owned_run_id,
+                    "/workspace",
+                    4_200_114,
+                ),
+                &mut process_terminator,
+                BuildTerminationDeadline::from_submission_time(Instant::now()),
+                &mut lifecycle_registry,
+            )
+        else {
             panic!("owned fixture should start a transaction");
         };
 
@@ -1806,13 +2024,13 @@ mod tests {
     }
 
     #[test]
-    fn scope_delayed_confirmation_accepts_equal_roots_and_refuses_incompatible_state() {
+    fn output_build_set_delayed_confirmation_accepts_equal_roots_and_refuses_incompatible_state() {
         let owned_run_id = OwnedRunId::for_test(NonZeroU64::MIN);
         let (mut revision_monitor, _) = monitor_with_owned_authority(4_200_203, owned_run_id);
         let BuildTerminationAuthorizationConstruction::Authorized(revision_authorization) =
-            revision_monitor.scope_termination_authorization()
+            revision_monitor.output_build_set_termination_authorization()
         else {
-            panic!("current scope should authorize");
+            panic!("current output build set should authorize");
         };
         let changed_snapshot = revision_changed_snapshot(revision_monitor.monitor_snapshot());
         let MonitorSnapshot::Fresh(changed_data) = changed_snapshot else {
@@ -1823,7 +2041,7 @@ mod tests {
         ));
         let mut process_terminator = ProcessTerminator::start();
         assert!(matches!(
-            revision_monitor.submit_scope_termination(
+            revision_monitor.submit_output_build_set_termination(
                 revision_authorization,
                 &mut process_terminator,
                 BuildTerminationDeadline::from_submission_time(Instant::now()),
@@ -1834,9 +2052,9 @@ mod tests {
         let (mut incompatible_monitor, incompatible_session_id) =
             monitor_with_owned_authority(4_200_203, owned_run_id);
         let BuildTerminationAuthorizationConstruction::Authorized(incompatible_authorization) =
-            incompatible_monitor.scope_termination_authorization()
+            incompatible_monitor.output_build_set_termination_authorization()
         else {
-            panic!("current scope should authorize before root replacement");
+            panic!("current output build set should authorize before root replacement");
         };
         let MonitorSnapshot::Fresh(monitor_data) = incompatible_monitor.monitor_snapshot() else {
             panic!("test monitor should be fresh");
@@ -1848,13 +2066,13 @@ mod tests {
             monitor_data.observed_at(),
         )));
         assert_eq!(
-            incompatible_monitor.submit_scope_termination(
+            incompatible_monitor.submit_output_build_set_termination(
                 incompatible_authorization,
                 &mut process_terminator,
                 BuildTerminationDeadline::from_submission_time(Instant::now()),
             ),
             BuildTerminationSubmission::Refused(
-                BuildTerminationSubmissionRefusal::ScopeRootsChanged
+                BuildTerminationSubmissionRefusal::CoveredScopeRootsChanged
             )
         );
         assert_eq!(
@@ -1867,13 +2085,13 @@ mod tests {
         let (mut off_monitor, off_session_id) =
             monitor_with_owned_authority(4_200_203, owned_run_id);
         let BuildTerminationAuthorizationConstruction::Authorized(off_authorization) =
-            off_monitor.scope_termination_authorization()
+            off_monitor.output_build_set_termination_authorization()
         else {
-            panic!("current scope should authorize before monitoring switches off");
+            panic!("current output build set should authorize before monitoring switches off");
         };
         off_monitor.switch_off();
         assert_eq!(
-            off_monitor.submit_scope_termination(
+            off_monitor.submit_output_build_set_termination(
                 off_authorization,
                 &mut process_terminator,
                 BuildTerminationDeadline::from_submission_time(Instant::now()),
@@ -1887,6 +2105,74 @@ mod tests {
                 .termination_lifecycle_registry()
                 .lifecycle_for(&off_session_id),
             BuildTerminationLifecycle::Observed
+        );
+    }
+
+    #[test]
+    fn output_build_set_excludes_a_newly_shown_root_from_frozen_authority() {
+        let owned_run_id = OwnedRunId::for_test(NonZeroU64::MIN);
+        let (mut build_monitor, _) = monitor_with_owned_authority(4_200_206, owned_run_id);
+        let BuildTerminationAuthorizationConstruction::Authorized(authorization) =
+            build_monitor.output_build_set_termination_authorization()
+        else {
+            panic!("the original shown root should authorize one output-build-set transaction");
+        };
+        let MonitorSnapshot::Fresh(current_data) = build_monitor.monitor_snapshot() else {
+            panic!("the test monitor should remain fresh before a new root appears");
+        };
+        let added_snapshot = match classified_monitor_snapshot_with_ownership(
+            &[ClassifiedRoot {
+                root_pid:      4_200_207,
+                compiler_pids: &[],
+            }],
+            &FixtureRootOwnership::AllExternal,
+        ) {
+            Ok(snapshot) => snapshot,
+            Err(error) => panic!("the new shown root should classify: {error}"),
+        };
+        let MonitorSnapshot::Fresh(added_data) = &added_snapshot else {
+            panic!("the added root fixture should produce fresh monitor data");
+        };
+        let mut shown_rows = current_data.session_rows().to_vec();
+        shown_rows.extend_from_slice(added_data.session_rows());
+        let expanded_snapshot = MonitorSnapshot::Fresh(MonitorData::new(
+            current_data.build_scope_key().clone(),
+            shown_rows,
+            current_data.unattributed_activities().to_vec(),
+            current_data.observed_at(),
+        ));
+        build_monitor.show_for_test(expanded_snapshot);
+
+        let mut process_terminator = ProcessTerminator::start();
+        let BuildTerminationSubmission::Submitted(transaction_id) = build_monitor
+            .submit_output_build_set_termination(
+                authorization,
+                &mut process_terminator,
+                BuildTerminationDeadline::from_submission_time(Instant::now()),
+            )
+        else {
+            panic!("a new shown root must not replace or subset frozen authority");
+        };
+        let ActiveBuildTerminationTransaction::Active(transaction) =
+            &build_monitor.termination_state.active_transaction
+        else {
+            panic!("the original authority should own one active transaction");
+        };
+        assert_eq!(
+            transaction.additional_build_exclusion,
+            AdditionalBuildExclusion::Excluded { count: 1 }
+        );
+        let mut owned_submission_count = 0;
+        assert_eq!(
+            build_monitor.submit_owned_termination_targets(transaction_id, |_| {
+                owned_submission_count += 1;
+                OwnedRunTerminationSubmission::Submitted(owned_run_id)
+            }),
+            BuildTerminationCompletionTransition::NoCompletion
+        );
+        assert_eq!(
+            owned_submission_count, 1,
+            "only the original owned root receives a termination token"
         );
     }
 
@@ -1967,13 +2253,13 @@ mod tests {
         let (mut active_monitor, active_session_id) =
             monitor_with_owned_authority(4_200_207, owned_run_id);
         let BuildTerminationAuthorizationConstruction::Authorized(active_authorization) =
-            active_monitor.scope_termination_authorization()
+            active_monitor.output_build_set_termination_authorization()
         else {
             panic!("active-state fixture should authorize");
         };
         let mut process_terminator = ProcessTerminator::start();
         assert!(matches!(
-            active_monitor.submit_scope_termination(
+            active_monitor.submit_output_build_set_termination(
                 active_authorization,
                 &mut process_terminator,
                 BuildTerminationDeadline::from_submission_time(Instant::now()),
@@ -2131,8 +2417,8 @@ mod tests {
             &mut target_identity_exhausted,
         ] {
             let mut lifecycle_registry = BuildTerminationLifecycleRegistry::default();
-            let submission = termination_state.submit_scope(
-                owned_scope_authorization(
+            let submission = termination_state.submit_output_build_set_for_test(
+                owned_output_build_set_authorization(
                     build_session_id.clone(),
                     owned_run_id,
                     "/workspace",
@@ -2160,7 +2446,7 @@ mod tests {
         let owned_session_id = build_session_id_for(4_200_002);
         let owned_run_id = OwnedRunId::for_test(NonZeroU64::MIN);
         let scope_key = BuildScopeKey::for_test(AbsolutePath::from(PathBuf::from("/workspace")));
-        let authorization = ScopeTerminationAuthorization {
+        let authorization = OutputBuildSetTerminationAuthorization {
             scope_key,
             targets: vec![
                 FrozenBuildTerminationTarget {
@@ -2204,12 +2490,14 @@ mod tests {
         let mut termination_state = BuildTerminationState::default();
         let mut lifecycle_registry = BuildTerminationLifecycleRegistry::default();
         let mut process_terminator = ProcessTerminator::start();
-        let BuildTerminationSubmission::Submitted(transaction_id) = termination_state.submit_scope(
-            authorization,
-            &mut process_terminator,
-            BuildTerminationDeadline::from_submission_time(Instant::now()),
-            &mut lifecycle_registry,
-        ) else {
+        let BuildTerminationSubmission::Submitted(transaction_id) = termination_state
+            .submit_output_build_set_for_test(
+                authorization,
+                &mut process_terminator,
+                BuildTerminationDeadline::from_submission_time(Instant::now()),
+                &mut lifecycle_registry,
+            )
+        else {
             panic!("mixed transaction should start");
         };
         termination_state.submit_owned_targets(

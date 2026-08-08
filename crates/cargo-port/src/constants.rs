@@ -135,6 +135,7 @@ pub(crate) const STALE_TIMEOUT: Duration = Duration::from_mins(30);
 pub(crate) const APP_NAME: &str = "cargo-port";
 pub(crate) const CLIPPY_LINT_COMMAND_NAME: &str = "clippy";
 pub(crate) const CONFIG_FILE: &str = "config.toml";
+pub(crate) const CONFIG_ROOT_OVERRIDE_ENV: &str = "CARGO_PORT_CONFIG_DIR";
 pub(crate) const DEFAULT_APPEARANCE_MODE: &str = "dark";
 pub(crate) const DEFAULT_CI_RUN_COUNT: u32 = 5;
 pub(crate) const DEFAULT_CLIPPY_LINT_COMMAND: &str = "cargo clippy --workspace --all-targets \

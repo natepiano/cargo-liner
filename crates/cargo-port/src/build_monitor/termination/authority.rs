@@ -1,4 +1,4 @@
-//! Snapshot-derived authority and opaque selected or scoped authorization.
+//! Snapshot-derived authority and opaque selected or output-build-set authorization.
 
 use std::collections::BTreeMap;
 
@@ -158,37 +158,74 @@ impl SelectedBuildTerminationAuthorization {
     }
 }
 
-/// Opaque authority frozen for the exact all-actionable set in one scope.
+/// Opaque authority frozen for the exact actionable root rows in Output.
 #[derive(Debug)]
-pub(crate) struct ScopeTerminationAuthorization {
+pub(crate) struct OutputBuildSetTerminationAuthorization {
     pub(super) scope_key: BuildScopeKey,
     pub(super) targets:   Vec<FrozenBuildTerminationTarget>,
 }
 
-/// Whether a retained scope authorization still covers the current roots.
+/// Whether a retained output-build-set authorization still covers the current
+/// roots.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::build_monitor) enum ScopeTerminationAuthorizationCurrency {
+pub(in crate::build_monitor) enum OutputBuildSetTerminationAuthorizationCurrency {
     /// Covered roots are equal; revision-only churn does not invalidate targets.
     Current,
     /// The current actionable scope covers a different root set.
     CoveredRootsChanged,
 }
 
-impl ScopeTerminationAuthorization {
+impl OutputBuildSetTerminationAuthorization {
     pub(in crate::build_monitor) fn currency_against(
         &self,
         actionable_monitor_data: ActionableMonitorData<'_>,
-    ) -> ScopeTerminationAuthorizationCurrency {
+    ) -> OutputBuildSetTerminationAuthorizationCurrency {
         if self.scope_key.covered_scope_roots()
             == actionable_monitor_data
                 .build_scope_key()
                 .covered_scope_roots()
         {
-            ScopeTerminationAuthorizationCurrency::Current
+            OutputBuildSetTerminationAuthorizationCurrency::Current
         } else {
-            ScopeTerminationAuthorizationCurrency::CoveredRootsChanged
+            OutputBuildSetTerminationAuthorizationCurrency::CoveredRootsChanged
         }
     }
+
+    /// Count current Output rows that appeared after this authorization froze
+    /// its exact root identities. They remain outside destructive authority.
+    pub(in crate::build_monitor) fn additional_build_exclusion_against(
+        &self,
+        actionable_monitor_data: ActionableMonitorData<'_>,
+    ) -> super::transaction::AdditionalBuildExclusion {
+        let count = actionable_monitor_data
+            .session_rows()
+            .iter()
+            .filter(|monitor_session_row| {
+                !self.targets.iter().any(|frozen_target| {
+                    &frozen_target.session_id == monitor_session_row.build_session_id()
+                })
+            })
+            .count();
+        if count == 0 {
+            super::transaction::AdditionalBuildExclusion::NoAdditionalBuilds
+        } else {
+            super::transaction::AdditionalBuildExclusion::Excluded { count }
+        }
+    }
+}
+
+/// Whether the exact live root rows currently displayed in Output can freeze
+/// one all-or-refuse termination authorization.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OutputBuildSetTerminationAvailability {
+    /// Every displayed root row has current termination authority.
+    Available,
+    /// The monitor has no current actionable snapshot.
+    SnapshotNotActionable,
+    /// The row set is empty or includes at least one observed-only root.
+    BuildSetNotFullyActionable,
+    /// An earlier transaction owns the lifecycle until it reaches a terminal state.
+    Busy,
 }
 
 #[derive(Debug)]
@@ -208,8 +245,8 @@ pub(crate) enum BuildTerminationAuthorizationConstruction<A> {
     /// The selected session is missing, observed-only, already terminating, or
     /// otherwise lacks an authority-bearing handle.
     SessionNotActionable,
-    /// The scope has no roots to terminate or includes an observed-only root.
-    ScopeNotFullyActionable,
+    /// The Output row set has no roots to terminate or includes an observed-only root.
+    BuildSetNotFullyActionable,
     /// An active transaction owns the lifecycle until it becomes terminal.
     Busy,
 }

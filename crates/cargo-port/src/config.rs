@@ -1,7 +1,7 @@
 #[cfg(test)]
 use std::cell::RefCell;
+use std::ffi::OsString;
 use std::path::Path;
-#[cfg(test)]
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::sync::RwLock;
@@ -16,6 +16,7 @@ use super::constants::APP_NAME;
 use super::constants::CARGO_COMMAND_NAME;
 use super::constants::CLIPPY_LINT_COMMAND_NAME;
 use super::constants::CONFIG_FILE;
+use super::constants::CONFIG_ROOT_OVERRIDE_ENV;
 use super::constants::DEFAULT_CLIPPY_LINT_COMMAND;
 use super::constants::MIN_CPU_POLL_MS;
 use crate::constants::BYTES_PER_GIB;
@@ -34,7 +35,88 @@ use crate::constants::DEFAULT_LOW_CPU_UTILIZATION_MAX_PERCENT;
 use crate::constants::DEFAULT_MAIN_BRANCH;
 use crate::constants::DEFAULT_MEDIUM_CPU_UTILIZATION_MAX_PERCENT;
 use crate::constants::DEFAULT_REMOTE_HOST_URL;
-use crate::project::AbsolutePath;
+
+/// The filesystem root Cargo Port uses for its user-owned configuration.
+///
+/// An explicit empty `CARGO_PORT_CONFIG_DIR` is not equivalent to an unset
+/// override. Keeping that state distinct prevents startup from reading or
+/// writing the user's normal configuration after a malformed override.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum CargoPortConfigurationPathResolution {
+    /// A configuration root or one of its fixed children is available.
+    Resolved(PathBuf),
+    /// The operating system did not expose a configuration directory.
+    PlatformDirectoryUnavailable,
+    /// `CARGO_PORT_CONFIG_DIR` was present but contained no path.
+    InvalidEmptyOverride,
+}
+
+impl CargoPortConfigurationPathResolution {
+    /// Resolve one fixed configuration child without collapsing failure states.
+    pub(crate) fn child(&self, child_name: &str) -> Self {
+        match self {
+            Self::Resolved(root) => Self::Resolved(root.join(child_name)),
+            Self::PlatformDirectoryUnavailable => Self::PlatformDirectoryUnavailable,
+            Self::InvalidEmptyOverride => Self::InvalidEmptyOverride,
+        }
+    }
+
+    /// Convert at an API boundary that only accepts an optional filesystem
+    /// path. Cargo Port keeps the richer state until that boundary so an
+    /// invalid override cannot be mistaken for a platform lookup failure.
+    pub(crate) fn into_external_path(self) -> Option<PathBuf> {
+        match self {
+            Self::Resolved(path) => Some(path),
+            Self::PlatformDirectoryUnavailable | Self::InvalidEmptyOverride => None,
+        }
+    }
+}
+
+/// Resolve the one supported Cargo Port configuration root.
+pub(crate) fn cargo_port_configuration_root() -> CargoPortConfigurationPathResolution {
+    resolve_configuration_root(
+        std::env::var_os(CONFIG_ROOT_OVERRIDE_ENV),
+        dirs::config_dir(),
+    )
+}
+
+fn resolve_configuration_child_path(
+    test_path_override: Option<PathBuf>,
+    configuration_root_override: Option<OsString>,
+    platform_configuration_directory: Option<PathBuf>,
+    child_name: &str,
+) -> CargoPortConfigurationPathResolution {
+    match test_path_override {
+        Some(test_path) => CargoPortConfigurationPathResolution::Resolved(test_path),
+        None => resolve_configuration_root(
+            configuration_root_override,
+            platform_configuration_directory,
+        )
+        .child(child_name),
+    }
+}
+
+fn resolve_configuration_root(
+    configuration_root_override: Option<OsString>,
+    platform_configuration_directory: Option<PathBuf>,
+) -> CargoPortConfigurationPathResolution {
+    match configuration_root_override {
+        Some(configuration_root_override) if configuration_root_override.is_empty() => {
+            CargoPortConfigurationPathResolution::InvalidEmptyOverride
+        },
+        Some(configuration_root_override) => CargoPortConfigurationPathResolution::Resolved(
+            PathBuf::from(configuration_root_override),
+        ),
+        None => platform_configuration_directory.map_or(
+            CargoPortConfigurationPathResolution::PlatformDirectoryUnavailable,
+            |platform_configuration_directory| {
+                CargoPortConfigurationPathResolution::Resolved(
+                    platform_configuration_directory.join(APP_NAME),
+                )
+            },
+        ),
+    }
+}
 
 /// Whether non-Rust projects (git repos without `Cargo.toml`) are included in scans.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -843,13 +925,19 @@ impl Default for MouseConfig {
     }
 }
 
-pub(crate) fn config_path() -> Option<AbsolutePath> {
+/// Resolve Cargo Port's `config.toml` without treating an invalid override as
+/// the normal per-user configuration directory.
+pub(crate) fn config_path() -> CargoPortConfigurationPathResolution {
     #[cfg(test)]
-    if let Some(path) = CONFIG_PATH_OVERRIDE.with(|slot| slot.borrow().clone()) {
-        return Some(path.into());
-    }
-
-    dirs::config_dir().map(|d| d.join(APP_NAME).join(CONFIG_FILE).into())
+    let test_path_override = CONFIG_PATH_OVERRIDE.with(|slot| slot.borrow().clone());
+    #[cfg(not(test))]
+    let test_path_override = None;
+    resolve_configuration_child_path(
+        test_path_override,
+        std::env::var_os(CONFIG_ROOT_OVERRIDE_ENV),
+        dirs::config_dir(),
+        CONFIG_FILE,
+    )
 }
 
 #[cfg(test)]
@@ -908,6 +996,110 @@ mod tests {
 
     use super::*;
     use crate::test_support;
+
+    #[test]
+    fn configuration_root_uses_the_explicit_override_directly() {
+        let resolution = resolve_configuration_root(
+            Some(OsString::from("/disposable/cargo-port")),
+            Some(PathBuf::from("/user/config")),
+        );
+        assert_eq!(
+            resolution,
+            CargoPortConfigurationPathResolution::Resolved(PathBuf::from("/disposable/cargo-port"))
+        );
+        assert_eq!(
+            resolution.child(CONFIG_FILE),
+            CargoPortConfigurationPathResolution::Resolved(PathBuf::from(
+                "/disposable/cargo-port/config.toml"
+            ))
+        );
+    }
+
+    #[test]
+    fn empty_configuration_root_override_does_not_use_the_platform_directory() {
+        assert_eq!(
+            resolve_configuration_root(Some(OsString::new()), Some(PathBuf::from("/user/config"))),
+            CargoPortConfigurationPathResolution::InvalidEmptyOverride
+        );
+    }
+
+    #[test]
+    fn absent_configuration_root_override_preserves_the_platform_root() {
+        assert_eq!(
+            resolve_configuration_root(None, Some(PathBuf::from("/user/config"))),
+            CargoPortConfigurationPathResolution::Resolved(PathBuf::from(
+                "/user/config/cargo-port"
+            ))
+        );
+        assert_eq!(
+            resolve_configuration_root(None, None),
+            CargoPortConfigurationPathResolution::PlatformDirectoryUnavailable
+        );
+    }
+
+    #[test]
+    fn configuration_path_family_keeps_one_explicit_root_and_fails_closed() {
+        let explicit_root = Some(OsString::from("/disposable/cargo-port"));
+        let platform_root = Some(PathBuf::from("/user/config"));
+        let config = resolve_configuration_child_path(
+            None,
+            explicit_root.clone(),
+            platform_root.clone(),
+            CONFIG_FILE,
+        );
+        let keymap = resolve_configuration_child_path(
+            None,
+            explicit_root.clone(),
+            platform_root.clone(),
+            crate::constants::KEYMAP_FILE,
+        );
+        let themes = resolve_configuration_child_path(None, explicit_root, platform_root, "themes");
+        assert_eq!(
+            config,
+            CargoPortConfigurationPathResolution::Resolved(PathBuf::from(
+                "/disposable/cargo-port/config.toml"
+            ))
+        );
+        assert_eq!(
+            keymap,
+            CargoPortConfigurationPathResolution::Resolved(PathBuf::from(
+                "/disposable/cargo-port/keymap.toml"
+            ))
+        );
+        assert_eq!(
+            themes,
+            CargoPortConfigurationPathResolution::Resolved(PathBuf::from(
+                "/disposable/cargo-port/themes"
+            ))
+        );
+
+        for child_name in [CONFIG_FILE, crate::constants::KEYMAP_FILE, "themes"] {
+            assert_eq!(
+                resolve_configuration_child_path(
+                    None,
+                    Some(OsString::new()),
+                    Some(PathBuf::from("/user/config")),
+                    child_name,
+                ),
+                CargoPortConfigurationPathResolution::InvalidEmptyOverride
+            );
+        }
+    }
+
+    #[test]
+    fn test_configuration_path_override_precedes_an_ambient_explicit_root() {
+        assert_eq!(
+            resolve_configuration_child_path(
+                Some(PathBuf::from("/test-fixture/config.toml")),
+                Some(OsString::from("/ambient/cargo-port")),
+                Some(PathBuf::from("/user/config")),
+                CONFIG_FILE,
+            ),
+            CargoPortConfigurationPathResolution::Resolved(PathBuf::from(
+                "/test-fixture/config.toml"
+            ))
+        );
+    }
 
     fn assert_default_config_subset(
         cargo_port_config: &CargoPortConfig,
