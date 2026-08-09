@@ -10,8 +10,6 @@
 //! outcome polling use channels, so a host signal never blocks the TUI loop.
 
 use std::process::Child;
-#[cfg(unix)]
-use std::process::Command;
 use std::sync::Arc;
 use std::sync::Mutex;
 #[cfg(test)]
@@ -47,6 +45,8 @@ use crate::process_observation::identity::ProcessIdentity;
 #[cfg(not(test))]
 use crate::process_observation::identity::StrongProcessIdentityRevalidation;
 use crate::process_observation::identity::VerifiedProcessIdentity;
+#[cfg(unix)]
+use crate::support;
 use crate::tui::messages::OwnedRunEvent;
 
 /// How the actor resolved one accepted owned-group termination request.
@@ -204,11 +204,7 @@ fn signal_owned_process_group(
     process_group_id: u32,
     process_identity: &ProcessIdentity,
 ) -> OwnedProcessGroupSignalOutcome {
-    let group_signal_sent = std::process::Command::new("kill")
-        .arg("-TERM")
-        .arg(format!("-{process_group_id}"))
-        .status()
-        .is_ok_and(|status| status.success());
+    let group_signal_sent = support::terminate_process_group(process_group_id).is_ok();
     if group_signal_sent {
         return OwnedProcessGroupSignalOutcome::Sent;
     }
@@ -663,31 +659,16 @@ fn close_command_admission_after_reap(
 #[cfg(unix)]
 pub(crate) fn discard_unverified_owned_process_group(child: &mut Child) {
     let process_group_id = child.id();
-    let _ = Command::new("kill")
-        .arg("-TERM")
-        .arg(format!("-{process_group_id}"))
-        .status();
-    let _ = Command::new("kill")
-        .arg("-KILL")
-        .arg(format!("-{process_group_id}"))
-        .status();
+    let _ = support::terminate_process_group(process_group_id);
+    let _ = support::hard_kill_process_group(process_group_id);
     let _ = child.kill();
     let _ = child.wait();
     for _ in 0..UNACTIVATED_GROUP_EXIT_POLL_ATTEMPTS {
-        if !process_group_exists(process_group_id) {
+        if !support::process_group_exists(process_group_id) {
             break;
         }
         std::thread::sleep(UNACTIVATED_GROUP_EXIT_POLL_INTERVAL);
     }
-}
-
-#[cfg(unix)]
-fn process_group_exists(process_group_id: u32) -> bool {
-    std::process::Command::new("kill")
-        .arg("-0")
-        .arg(format!("-{process_group_id}"))
-        .status()
-        .is_ok_and(|status| status.success())
 }
 
 #[cfg(not(unix))]

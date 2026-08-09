@@ -47,6 +47,8 @@ use super::run_commands_for_project;
 use super::status;
 use super::thread;
 use crate::lint;
+#[cfg(unix)]
+use crate::support;
 
 pub(super) struct ProjectWorker {
     pub(super) stop:       Arc<AtomicBool>,
@@ -503,10 +505,7 @@ fn kill_worker_child(child: &ChildSlot) {
 fn kill_child_tree(child: &mut Child) {
     #[cfg(unix)]
     {
-        let _ = std::process::Command::new("kill")
-            .arg("-KILL")
-            .arg(format!("-{}", child.id()))
-            .status();
+        let _ = support::hard_kill_process_group(child.id());
     }
     let _ = child.kill();
     let _ = child.wait();

@@ -16,6 +16,7 @@ mod process_termination;
 mod project;
 mod scan;
 mod sccache;
+mod support;
 #[cfg(test)]
 mod test_support;
 mod themes;
