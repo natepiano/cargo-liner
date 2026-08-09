@@ -1037,7 +1037,7 @@ mod running_metrics_system {
 
         #[test]
         fn absent_metrics_cache_record_is_omitted_from_cycle_output() {
-            let pid = Pid::from_u32(53);
+            let pid = Pid::from_u32(u32::MAX);
             let process_identity = ProcessIdentity::for_test(pid.as_u32(), 530);
             let observed_process_identity = ObservedProcessIdentity::Strong(process_identity);
             let mut running_metrics_system = RunningMetricsSystem::default();

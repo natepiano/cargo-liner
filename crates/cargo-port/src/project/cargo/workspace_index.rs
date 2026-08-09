@@ -722,7 +722,6 @@ mod tests {
     use std::collections::HashMap;
     #[cfg(unix)]
     use std::error::Error;
-    #[cfg(unix)]
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
