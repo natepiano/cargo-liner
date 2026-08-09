@@ -117,6 +117,13 @@ pub(crate) enum RollbackStatus {
 pub(crate) struct FixValidationFailure {
     pub rollback_status: RollbackStatus,
     pub cause:           CompilerFailureCause,
+    pub applied_fixes:   AppliedFixes,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AppliedFixes {
+    Mend,
+    Compiler,
 }
 
 impl MendFailure {
@@ -157,9 +164,13 @@ impl Display for AnalysisFailure {
 
 impl Display for FixValidationFailure {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let applied_fixes = match self.applied_fixes {
+            AppliedFixes::Mend => "mend",
+            AppliedFixes::Compiler => "compiler",
+        };
         let source = match &self.cause {
             CompilerFailureCause::CargoCheck => {
-                "compiler failed after applying mend fixes".to_string()
+                format!("compiler failed after applying {applied_fixes} fixes")
             },
             CompilerFailureCause::NoAnalysisProduced => {
                 "no analysis was produced after applying mend fixes".to_string()
@@ -171,11 +182,11 @@ impl Display for FixValidationFailure {
         match self.rollback_status {
             RollbackStatus::Restored => write!(
                 f,
-                "compiler failed after applying mend fixes; changes were rolled back\n\n{source:#}"
+                "compiler failed after applying {applied_fixes} fixes; changes were rolled back\n\n{source:#}"
             ),
             RollbackStatus::RestoreFailed => write!(
                 f,
-                "compiler failed after applying mend fixes, and rollback also failed\n\n{source:#}"
+                "compiler failed after applying {applied_fixes} fixes, and rollback also failed\n\n{source:#}"
             ),
         }
     }
@@ -472,6 +483,7 @@ mod tests {
     use anyhow::anyhow;
 
     use super::AnalysisFailure;
+    use super::AppliedFixes;
     use super::CompilerFailureCause;
     use super::ExecutionNotice;
     use super::FixKind;
@@ -508,6 +520,7 @@ mod tests {
         let failure = FixValidationFailure {
             rollback_status: RollbackStatus::Restored,
             cause:           CompilerFailureCause::Unexpected(anyhow!("boom")),
+            applied_fixes:   AppliedFixes::Mend,
         };
         assert!(
             failure
@@ -521,6 +534,7 @@ mod tests {
         let failure = FixValidationFailure {
             rollback_status: RollbackStatus::RestoreFailed,
             cause:           CompilerFailureCause::Unexpected(anyhow!("boom")),
+            applied_fixes:   AppliedFixes::Mend,
         };
         assert!(
             failure

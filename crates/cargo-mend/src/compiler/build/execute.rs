@@ -19,6 +19,7 @@ use anyhow::Result;
 use anyhow::bail;
 use serde_json::to_string;
 
+use super::source_transaction::CompilerFixTransaction;
 use super::stderr;
 use crate::compiler::constants::CARGO_BIN;
 use crate::compiler::constants::CARGO_FLAG_ALL_FEATURES;
@@ -48,13 +49,16 @@ use crate::config::LoadedConfig;
 use crate::constants::FINGERPRINT_HEX_WIDTH;
 use crate::reporting::AllFeaturesCoverage;
 use crate::reporting::AnalysisFailure;
+use crate::reporting::AppliedFixes;
 use crate::reporting::CARGO_TERM_COLOR_ALWAYS;
 use crate::reporting::CARGO_TERM_COLOR_ENV;
 use crate::reporting::ColorMode;
 use crate::reporting::CompilerFailureCause;
 use crate::reporting::CompilerWarningFacts;
+use crate::reporting::FixValidationFailure;
 use crate::reporting::MendFailure;
 use crate::reporting::Report;
+use crate::reporting::RollbackStatus;
 use crate::selection::CargoCheckPlan;
 use crate::selection::Selection;
 
@@ -296,15 +300,46 @@ fn scope_fingerprint_for(cargo_plan: &CargoCheckPlan) -> String {
 }
 
 pub(crate) fn run_cargo_fix(
+    selection: &Selection,
     cargo_plan: &CargoCheckPlan,
     color_mode: ColorMode,
     all_features_coverage: AllFeaturesCoverage,
-) -> Result<Duration> {
+) -> Result<Duration, MendFailure> {
     let start = Instant::now();
+    let transaction =
+        CompilerFixTransaction::capture(selection).map_err(MendFailure::Unexpected)?;
     let cargo_fix_features = cargo_fix_features_for(&cargo_plan.cargo_args, all_features_coverage);
+    let applied_features = match apply_cargo_fix(cargo_plan, color_mode, cargo_fix_features) {
+        Ok(applied_features) => applied_features,
+        Err(error) => {
+            return Err(compiler_fix_failure(
+                &transaction,
+                CompilerFailureCause::Unexpected(error),
+            ));
+        },
+    };
+    let validation = run_cargo_fix_validation(cargo_plan, color_mode, applied_features);
+    match validation {
+        Ok(status) if status.success() => Ok(start.elapsed()),
+        Ok(_) => Err(compiler_fix_failure(
+            &transaction,
+            CompilerFailureCause::CargoCheck,
+        )),
+        Err(error) => Err(compiler_fix_failure(
+            &transaction,
+            CompilerFailureCause::Unexpected(error),
+        )),
+    }
+}
+
+fn apply_cargo_fix(
+    cargo_plan: &CargoCheckPlan,
+    color_mode: ColorMode,
+    cargo_fix_features: CargoFixFeatures,
+) -> Result<CargoFixFeatures> {
     let status = run_cargo_fix_command(cargo_plan, color_mode, cargo_fix_features)?;
     if status.success() {
-        return Ok(start.elapsed());
+        return Ok(cargo_fix_features);
     }
 
     if cargo_fix_features == CargoFixFeatures::All {
@@ -313,11 +348,48 @@ pub(crate) fn run_cargo_fix(
         );
         let retry_status = run_cargo_fix_command(cargo_plan, color_mode, CargoFixFeatures::Plan)?;
         if retry_status.success() {
-            return Ok(start.elapsed());
+            return Ok(CargoFixFeatures::Plan);
         }
     }
 
     bail!("cargo fix failed");
+}
+
+fn run_cargo_fix_validation(
+    cargo_plan: &CargoCheckPlan,
+    color_mode: ColorMode,
+    cargo_fix_features: CargoFixFeatures,
+) -> Result<ExitStatus> {
+    let mut command = Command::new(CARGO_BIN);
+    command
+        .arg(CARGO_SUBCOMMAND_CHECK)
+        .args(&cargo_plan.cargo_args);
+    if cargo_fix_features == CargoFixFeatures::All {
+        command.arg(CARGO_FLAG_ALL_FEATURES);
+    }
+    if color_mode.is_enabled() {
+        command.env(CARGO_TERM_COLOR_ENV, CARGO_TERM_COLOR_ALWAYS);
+    }
+    command
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .context("failed to validate cargo fix")
+}
+
+fn compiler_fix_failure(
+    transaction: &CompilerFixTransaction,
+    cause: CompilerFailureCause,
+) -> MendFailure {
+    let rollback_status = transaction
+        .restore()
+        .map_or(RollbackStatus::RestoreFailed, |()| RollbackStatus::Restored);
+    MendFailure::FixValidation(FixValidationFailure {
+        rollback_status,
+        cause,
+        applied_fixes: AppliedFixes::Compiler,
+    })
 }
 
 fn cargo_fix_features_for(

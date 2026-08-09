@@ -9,6 +9,7 @@ use syn::visit::Visit;
 use syn::visit::visit_item_mod;
 
 use super::support;
+use crate::fixes::imports::ConditionalAttributes;
 use crate::rust_syntax::PathAnchor;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,24 +19,27 @@ pub(super) enum ImportTarget {
 }
 
 pub(super) struct RawCandidate {
-    pub(super) function_name:   String,
-    pub(super) module_name:     String,
-    pub(super) module_path:     String,
-    pub(super) absolute_module: Vec<String>,
-    pub(super) replacement_use: String,
-    pub(super) span_start:      LineColumn,
-    pub(super) span_end:        LineColumn,
+    pub(super) function_name:          String,
+    pub(super) module_name:            String,
+    pub(super) module_path:            String,
+    pub(super) absolute_module:        Vec<String>,
+    pub(super) replacement_use:        String,
+    pub(super) conditional_attributes: ConditionalAttributes,
+    pub(super) span_start:             LineColumn,
+    pub(super) span_end:               LineColumn,
     /// True when the target module is the file's own parent module.
     /// The use statement should be deleted and references rewritten as `super::fn(...)`.
-    pub(super) import_target:   ImportTarget,
+    pub(super) import_target:          ImportTarget,
     /// Inline `mod` chain containing the `use` — empty at file top level.
     /// An import inside `mod tests` binds nothing at file top level (and vice
     /// versa), so dedup and reuse decisions must compare scopes.
-    pub(super) inline_scope:    Vec<String>,
+    pub(super) inline_scope:           Vec<String>,
 }
 
 pub(super) struct ImportDetector<'a> {
     pub(super) source_root:         &'a Path,
+    pub(super) text:                &'a str,
+    pub(super) offsets:             &'a [usize],
     pub(super) current_module_path: Vec<String>,
     pub(super) inline_scope:        Vec<String>,
     pub(super) declared_modules:    &'a BTreeSet<String>,
@@ -46,6 +50,8 @@ impl Visit<'_> for ImportDetector<'_> {
     fn visit_item_use(&mut self, node: &ItemUse) {
         if let Some(candidate) = analyze_function_import(
             self.source_root,
+            self.text,
+            self.offsets,
             &self.current_module_path,
             &self.inline_scope,
             self.declared_modules,
@@ -70,6 +76,8 @@ impl Visit<'_> for ImportDetector<'_> {
 
 fn analyze_function_import(
     source_root: &Path,
+    text: &str,
+    offsets: &[usize],
     current_module_path: &[String],
     inline_scope: &[String],
     declared_modules: &BTreeSet<String>,
@@ -129,6 +137,7 @@ fn analyze_function_import(
     };
     let span = node.span();
     let absolute_module = absolute_segments[..absolute_segments.len() - 1].to_vec();
+    let conditional_attributes = ConditionalAttributes::from_attributes(text, offsets, &node.attrs);
 
     Some(RawCandidate {
         function_name: leaf.clone(),
@@ -136,6 +145,7 @@ fn analyze_function_import(
         module_path,
         absolute_module,
         replacement_use,
+        conditional_attributes,
         span_start: span.start(),
         span_end: span.end(),
         import_target,

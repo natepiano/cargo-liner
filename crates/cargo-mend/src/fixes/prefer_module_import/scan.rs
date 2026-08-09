@@ -147,6 +147,8 @@ fn scan_file(
 
     let mut detector = ImportDetector {
         source_root,
+        text: &text,
+        offsets: &offsets,
         current_module_path: current_module_path.clone(),
         inline_scope: Vec::new(),
         declared_modules: &declared_modules,
@@ -541,7 +543,7 @@ fn build_function_use_fix(
             path:         file_context.path.to_path_buf(),
             start:        byte_start,
             end:          byte_end,
-            replacement:  function.replacement_use.clone(),
+            replacement:  replacement_use_with_conditional_attributes(function),
             import_group: group,
         }
     } else {
@@ -553,6 +555,17 @@ fn build_function_use_fix(
             import_group: group,
         }
     }
+}
+
+fn replacement_use_with_conditional_attributes(function: &RawCandidate) -> String {
+    if function.conditional_attributes.is_empty() {
+        return function.replacement_use.clone();
+    }
+
+    let mut replacement = function.conditional_attributes.render("");
+    replacement.push_str(&" ".repeat(function.span_start.column));
+    replacement.push_str(&function.replacement_use);
+    replacement
 }
 
 fn build_reference_fixes(

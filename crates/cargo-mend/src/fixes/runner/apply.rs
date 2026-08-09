@@ -2,6 +2,7 @@ use super::MendRunner;
 use super::RunPlan;
 use crate::compiler::BuildOutputMode;
 use crate::fixes::imports;
+use crate::reporting::AppliedFixes;
 use crate::reporting::CompilerFailureCause;
 use crate::reporting::ExecutionOutcome;
 use crate::reporting::FixValidationFailure;
@@ -72,6 +73,7 @@ impl MendRunner<'_> {
                 Err(MendFailure::FixValidation(FixValidationFailure {
                     rollback_status,
                     cause,
+                    applied_fixes: AppliedFixes::Mend,
                 }))
             },
         }

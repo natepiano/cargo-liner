@@ -29,6 +29,7 @@ pub(crate) use diagnostics::ReportSummary;
 pub(crate) use diagnostics::Severity;
 pub(crate) use diagnostics::WrittenVisibility;
 pub(crate) use outcome::AnalysisFailure;
+pub(crate) use outcome::AppliedFixes;
 pub(crate) use outcome::CompilerFailureCause;
 pub(crate) use outcome::ExecutionNotice;
 pub(crate) use outcome::ExecutionOutcome;

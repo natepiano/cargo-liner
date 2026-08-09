@@ -1,4 +1,147 @@
+use std::path::Path;
+
 use crate::support::*;
+
+fn assert_prefer_module_fixture_compiles(manifest_path: &Path) {
+    let check = cargo_command()
+        .arg("check")
+        .arg("--all-targets")
+        .arg("--manifest-path")
+        .arg(manifest_path)
+        .output()
+        .expect("check prefer-module-import fixture");
+    assert!(
+        check.status.success(),
+        "fixture must compile before mend: {}\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
+    );
+}
+
+#[test]
+fn fix_all_preserves_cfg_on_rewritten_module_import() {
+    if std::env::var_os("CARGO_MEND_SKIP_NETWORK_TESTS").is_some() {
+        eprintln!(
+            "skipping fix_all_preserves_cfg_on_rewritten_module_import: \
+             CARGO_MEND_SKIP_NETWORK_TESTS is set"
+        );
+        return;
+    }
+
+    let temp = tempdir().expect("create cfg-gated import fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "cfg_gated_module_import_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create fixture source dir");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod consumer;\nmod process_observation;\n\nfn main() {\n    #[cfg(not(test))]\n    consumer::signal();\n}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/process_observation.rs"),
+        "pub(crate) mod identity {\n    pub(crate) fn revalidate() {}\n}\n",
+    )
+    .expect("write identity module");
+    fs::write(
+        temp.path().join("src/consumer.rs"),
+        "#[cfg(not(test))]\nuse crate::process_observation::identity::revalidate;\n\n#[cfg(not(test))]\npub(crate) fn signal() {\n    revalidate();\n}\n",
+    )
+    .expect("write consumer");
+    let manifest_path = temp.path().join("Cargo.toml");
+    assert_prefer_module_fixture_compiles(&manifest_path);
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(manifest_path)
+        .arg("--fix-all")
+        .output()
+        .expect("run cargo-mend --fix-all");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix-all failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let consumer =
+        fs::read_to_string(temp.path().join("src/consumer.rs")).expect("read fixed consumer");
+    assert!(
+        consumer.contains("#[cfg(not(test))]\nuse crate::process_observation::identity;"),
+        "the module import must retain the function import's cfg gate:\n{consumer}"
+    );
+    assert!(
+        consumer.contains("identity::revalidate();"),
+        "the call must use the rewritten module import:\n{consumer}"
+    );
+}
+
+#[test]
+fn compiler_fix_validation_restores_cfg_incomplete_edit() {
+    if std::env::var_os("CARGO_MEND_SKIP_NETWORK_TESTS").is_some() {
+        eprintln!(
+            "skipping compiler_fix_validation_restores_cfg_incomplete_edit: \
+             CARGO_MEND_SKIP_NETWORK_TESTS is set"
+        );
+        return;
+    }
+
+    let temp = tempdir().expect("create compiler rollback fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "compiler_fix_rollback_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create fixture source dir");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod consumer;\nmod process_observation;\n\nfn main() {\n    #[cfg(not(test))]\n    consumer::signal();\n}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/process_observation.rs"),
+        "pub(crate) mod identity {\n    pub(crate) fn revalidate() {}\n}\n",
+    )
+    .expect("write identity module");
+    let consumer_path = temp.path().join("src/consumer.rs");
+    let original = "use crate::process_observation::identity;\n\n#[cfg(not(test))]\npub(crate) fn signal() {\n    identity::revalidate();\n}\n";
+    fs::write(&consumer_path, original).expect("write consumer");
+    let manifest_path = temp.path().join("Cargo.toml");
+    assert_prefer_module_fixture_compiles(&manifest_path);
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(manifest_path)
+        .arg("--fix-compiler")
+        .output()
+        .expect("run cargo-mend --fix-compiler");
+    assert!(
+        !output.status.success(),
+        "cfg-incomplete cargo fix must fail validation"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("compiler failed after applying compiler fixes; changes were rolled back"),
+        "expected compiler-fix rollback message, got:\n{stderr}"
+    );
+    let restored = fs::read_to_string(consumer_path).expect("read restored consumer");
+    assert_eq!(
+        restored, original,
+        "failed compiler-fix validation must restore its source edits"
+    );
+}
 
 #[test]
 fn basic_function_import_rewrite() {

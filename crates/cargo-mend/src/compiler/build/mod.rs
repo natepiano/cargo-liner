@@ -1,5 +1,6 @@
 mod execute;
 mod progress;
+mod source_transaction;
 mod stderr;
 
 pub(crate) use execute::BuildOutputMode;
