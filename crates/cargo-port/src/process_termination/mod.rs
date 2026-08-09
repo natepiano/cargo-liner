@@ -15,7 +15,7 @@
 
 mod constants;
 #[cfg_attr(
-    not(test),
+    all(not(test), not(target_os = "linux")),
     expect(
         dead_code,
         reason = "build-monitor authorization has no production capability consumer yet"

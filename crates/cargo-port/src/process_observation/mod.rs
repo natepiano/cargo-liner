@@ -2178,6 +2178,7 @@ mod tests {
     use super::snapshot::FullProcessRefreshEvidence;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use super::snapshot::ParentWalkDepth;
+    #[cfg(target_os = "macos")]
     use super::snapshot::ParentageValidationOutcome;
     use super::snapshot::ProcessFieldInvalidation;
     use super::snapshot::ProcessFieldLifetimeBinding;

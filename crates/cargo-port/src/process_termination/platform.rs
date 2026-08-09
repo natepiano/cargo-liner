@@ -312,7 +312,7 @@ fn poll_pid_fd_presence(
     };
     // SAFETY: `poll_file_descriptor` is a live one-element buffer for the
     // duration of the call and its descriptor remains owned by `file_descriptor`.
-    let result = unsafe { libc::poll(&mut poll_file_descriptor, 1, timeout_milliseconds) };
+    let result = unsafe { libc::poll(&raw mut poll_file_descriptor, 1, timeout_milliseconds) };
     if result == 0 {
         return BoundProcessObjectPresence::Present;
     }

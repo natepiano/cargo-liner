@@ -26,9 +26,13 @@ pub(crate) enum ProcessCreationOrderUnavailable {
     EqualMonotonicCreationValue,
     #[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
     PlatformDoesNotExposeMonotonicCreationOrder,
+    #[cfg(any(target_os = "macos", test))]
     PlatformQueryFailed,
+    #[cfg(any(target_os = "macos", test))]
     PlatformValueInvalid,
+    #[cfg(any(target_os = "macos", test))]
     IdentityChangedDuringPlatformQuery,
+    #[cfg(any(target_os = "macos", test))]
     IdentityRevalidationUnavailable,
     ProcessIdentityInsufficient,
 }
@@ -253,9 +257,11 @@ pub(crate) enum InsufficientProcessIdentity {
     ProcessExitedBeforeIdentityLookup {
         pid: u32,
     },
+    #[cfg(any(target_os = "macos", test))]
     ProcessLifetimeAnchorInvalid {
         pid: u32,
     },
+    #[cfg(any(target_os = "macos", test))]
     ProcessLifetimeAnchorUnavailable {
         pid: u32,
     },
@@ -263,15 +269,18 @@ pub(crate) enum InsufficientProcessIdentity {
     PlatformCreationTokenUnavailable {
         pid: u32,
     },
+    #[cfg(any(target_os = "macos", test))]
     PlatformIdentityChangedDuringLookup {
         pid: u32,
     },
     PlatformIdentityLookupFailed {
         pid: u32,
     },
+    #[cfg(any(target_os = "macos", test))]
     PlatformMonotonicCreationQueryFailed {
         pid: u32,
     },
+    #[cfg(any(target_os = "macos", test))]
     PlatformMonotonicCreationValueInvalid {
         pid: u32,
     },
@@ -281,10 +290,11 @@ impl InsufficientProcessIdentity {
     const fn pid(&self) -> u32 {
         match self {
             Self::ProcessExitedBeforeIdentityLookup { pid }
-            | Self::ProcessLifetimeAnchorInvalid { pid }
+            | Self::PlatformIdentityLookupFailed { pid } => *pid,
+            #[cfg(any(target_os = "macos", test))]
+            Self::ProcessLifetimeAnchorInvalid { pid }
             | Self::ProcessLifetimeAnchorUnavailable { pid }
             | Self::PlatformIdentityChangedDuringLookup { pid }
-            | Self::PlatformIdentityLookupFailed { pid }
             | Self::PlatformMonotonicCreationQueryFailed { pid }
             | Self::PlatformMonotonicCreationValueInvalid { pid } => *pid,
             #[cfg(any(test, not(target_os = "macos")))]
@@ -471,16 +481,14 @@ impl PlatformProcessObservation {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            start_time.map_or_else(
-                || {
-                    ProcessLifetimeAnchorObservation::Insufficient(
-                        InsufficientProcessIdentity::PlatformCreationTokenUnavailable { pid },
-                    )
-                },
-                |start_time| {
+            match start_time {
+                Some(start_time) => {
                     ProcessLifetimeAnchorObservation::Present(ProcessLifetimeAnchor(start_time))
                 },
-            )
+                None => ProcessLifetimeAnchorObservation::Insufficient(
+                    InsufficientProcessIdentity::PlatformCreationTokenUnavailable { pid },
+                ),
+            }
         }
     }
 
@@ -503,7 +511,7 @@ impl PlatformProcessObservation {
     }
 
     #[cfg(target_os = "linux")]
-    fn bind_initial_anchor(
+    const fn bind_initial_anchor(
         pid: u32,
         initial_anchor: ProcessLifetimeAnchorObservation,
     ) -> PlatformProcessLifetimeEvidence {
