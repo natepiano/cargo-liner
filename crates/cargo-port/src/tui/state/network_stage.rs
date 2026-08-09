@@ -9,7 +9,7 @@ use crate::ci::OwnerRepo;
 /// panel owns those rows, so there is no slot here to populate and the
 /// standalone toast cannot be created.
 #[derive(Default)]
-pub struct NetworkRunningToasts {
+pub(in crate::tui) struct NetworkRunningToasts {
     /// "Fetching crates.io info" toast slot.
     pub crates_io: Option<ToastTaskId>,
     /// "Retrieving GitHub repo details" toast slot.
@@ -36,7 +36,7 @@ pub(super) enum StartupServiceExit {
 
 /// Count of startup-owned network items still running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StartupNetworkPending {
+pub(in crate::tui) struct StartupNetworkPending {
     pub github:    usize,
     pub crates_io: usize,
 }
@@ -45,14 +45,14 @@ pub struct StartupNetworkPending {
 /// steady state. Its fields are private so callers cannot manufacture it
 /// without going through `Net::startup_network_readiness`.
 #[derive(Debug, PartialEq, Eq)]
-pub struct StartupNetworkReady {
+pub(in crate::tui) struct StartupNetworkReady {
     pub(super) github:    StartupServiceExit,
     pub(super) crates_io: StartupServiceExit,
 }
 
 /// Whether the startup-owned network trackers may hand off to steady state.
 #[derive(Debug, PartialEq, Eq)]
-pub enum StartupNetworkReadiness {
+pub(in crate::tui) enum StartupNetworkReadiness {
     Ready(StartupNetworkReady),
     Pending(StartupNetworkPending),
 }

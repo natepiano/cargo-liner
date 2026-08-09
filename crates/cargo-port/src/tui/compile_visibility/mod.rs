@@ -31,7 +31,7 @@ use crate::process_observation::CompileMonitorRefreshSchedule;
 /// refresh is owed. A disabled monitor owns no schedule at all, because
 /// [`CompileVisibilityState::Off`] drops this whole aggregate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum MonitorRefreshSchedule {
+enum MonitorRefreshSchedule {
     /// Nothing is out; the next refresh is owed at this instant.
     DueAt(Instant),
     /// A cycle for this generation is with the worker; when it settles the
@@ -45,14 +45,14 @@ pub(crate) enum MonitorRefreshSchedule {
 /// Whether a cycle is with the worker, and the generation it was dispatched
 /// under.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum InFlightMonitorGeneration {
+pub(super) enum InFlightMonitorGeneration {
     InFlight(CompileMonitorGeneration),
     NoneInFlight,
 }
 
 /// Compile-monitor state owned while visibility is enabled.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ActiveMonitorState {
+pub struct ActiveMonitorState {
     monitor_selected_row:       MonitorSelectedRow,
     monitor_scope_resolution:   MonitorScopeResolution,
     compile_monitor_generation: CompileMonitorGeneration,
@@ -80,7 +80,7 @@ impl ActiveMonitorState {
     /// would dispatch produces [`crate::build_monitor::CompileClassificationDemand::NotRequested`],
     /// so nothing would record the dispatch or the settle and the deadline would
     /// stay in the past, waking the event loop with a zero timeout every tick.
-    pub(crate) fn compile_monitor_refresh_schedule(&self) -> CompileMonitorRefreshSchedule {
+    fn compile_monitor_refresh_schedule(&self) -> CompileMonitorRefreshSchedule {
         if self.build_scope_actionability() == BuildScopeActionability::NotActionable {
             return CompileMonitorRefreshSchedule::NotScheduled;
         }
@@ -126,7 +126,7 @@ impl ActiveMonitorState {
 
     /// Whether this scope authorizes build classification, and the roots and
     /// revisions it authorizes it over.
-    pub(crate) fn build_scope_actionability(&self) -> BuildScopeActionability {
+    pub(super) fn build_scope_actionability(&self) -> BuildScopeActionability {
         build_scope_actionability(self.monitor_scope_resolution())
     }
 
@@ -150,18 +150,18 @@ impl ActiveMonitorState {
 
     /// The named resolution this scope produced, and the one input
     /// [`build_scope_actionability`] reads to decide what may be classified.
-    pub(crate) const fn monitor_scope_resolution(&self) -> &MonitorScopeResolution {
+    pub(super) const fn monitor_scope_resolution(&self) -> &MonitorScopeResolution {
         &self.monitor_scope_resolution
     }
 
-    pub(crate) const fn compile_monitor_generation(&self) -> CompileMonitorGeneration {
+    pub(super) const fn compile_monitor_generation(&self) -> CompileMonitorGeneration {
         self.compile_monitor_generation
     }
 }
 
 /// Whether compile-monitor visibility owns an active selected-scope aggregate.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) enum CompileVisibilityState {
+pub enum CompileVisibilityState {
     #[default]
     Off,
     /// Boxed because the active aggregate carries the whole resolved scope —
@@ -171,11 +171,11 @@ pub(crate) enum CompileVisibilityState {
 }
 
 impl CompileVisibilityState {
-    pub(crate) const fn is_on(&self) -> bool { matches!(self, Self::On(_)) }
+    pub(super) const fn is_on(&self) -> bool { matches!(self, Self::On(_)) }
 
     /// A monitor switched on over the scope resolution a test names.
     #[cfg(test)]
-    pub(crate) fn on_for_test(monitor_scope_resolution: MonitorScopeResolution) -> Self {
+    pub(super) fn on_for_test(monitor_scope_resolution: MonitorScopeResolution) -> Self {
         Self::On(Box::new(ActiveMonitorState {
             monitor_selected_row: MonitorSelectedRow::NoVisibleRow,
             monitor_scope_resolution,
@@ -184,7 +184,7 @@ impl CompileVisibilityState {
         }))
     }
 
-    pub(crate) fn enable(
+    pub(super) fn enable(
         &mut self,
         monitor_scope_update: MonitorScopeUpdate,
         compile_monitor_generation: CompileMonitorGeneration,
@@ -200,7 +200,7 @@ impl CompileVisibilityState {
     /// The dispatch deadline the shared executor should hold. A disabled
     /// monitor contributes none, so no compile-specific wakeup exists while it
     /// is off.
-    pub(crate) fn compile_monitor_refresh_schedule(&self) -> CompileMonitorRefreshSchedule {
+    pub(super) fn compile_monitor_refresh_schedule(&self) -> CompileMonitorRefreshSchedule {
         match self {
             Self::Off => CompileMonitorRefreshSchedule::NotScheduled,
             Self::On(active_monitor_state) => {
@@ -211,7 +211,7 @@ impl CompileVisibilityState {
 
     /// The generation of the cycle the monitor is still waiting on, for a
     /// whole-cycle failure that names no generation of its own.
-    pub(crate) const fn in_flight_generation(&self) -> InFlightMonitorGeneration {
+    pub(super) const fn in_flight_generation(&self) -> InFlightMonitorGeneration {
         match self {
             Self::Off => InFlightMonitorGeneration::NoneInFlight,
             Self::On(active_monitor_state) => active_monitor_state.in_flight_generation(),
@@ -219,22 +219,22 @@ impl CompileVisibilityState {
     }
 
     /// Record that a compile refresh went out for the enabled monitor.
-    pub(crate) fn record_refresh_dispatch(&mut self, now: Instant) {
+    pub(super) fn record_refresh_dispatch(&mut self, now: Instant) {
         if let Self::On(active_monitor_state) = self {
             active_monitor_state.record_dispatch(now);
         }
     }
 
     /// Record that the in-flight compile refresh settled, however it settled.
-    pub(crate) fn record_refresh_settled(&mut self, now: Instant) {
+    pub(super) fn record_refresh_settled(&mut self, now: Instant) {
         if let Self::On(active_monitor_state) = self {
             active_monitor_state.record_settled(now);
         }
     }
 
-    pub(crate) fn disable(&mut self) { *self = Self::Off; }
+    pub(super) fn disable(&mut self) { *self = Self::Off; }
 
-    pub(crate) fn requires_scope_replacement(
+    pub(super) fn requires_scope_replacement(
         &self,
         monitor_scope_update: &MonitorScopeUpdate,
     ) -> bool {
@@ -246,7 +246,7 @@ impl CompileVisibilityState {
         }
     }
 
-    pub(crate) fn replace_scope(
+    pub(super) fn replace_scope(
         &mut self,
         monitor_scope_update: MonitorScopeUpdate,
         compile_monitor_generation: CompileMonitorGeneration,
@@ -264,7 +264,7 @@ impl CompileVisibilityState {
     /// Whether a result that names this generation may still be applied. A
     /// toggle or scope replacement advances past the generation it cancelled,
     /// so a late result from it is refused here.
-    pub(crate) fn accepts_generation(
+    pub(super) fn accepts_generation(
         &self,
         compile_monitor_generation: CompileMonitorGeneration,
     ) -> bool {
@@ -313,7 +313,7 @@ fn next_refresh_boundary(boundary: Instant, now: Instant) -> Instant {
 /// The one entry point through which a monitor scope reaches build
 /// classification. Routing through [`MonitorScopeResolution::actionability`]
 /// keeps the five resolution states from being restated anywhere downstream.
-pub(crate) fn build_scope_actionability(
+fn build_scope_actionability(
     monitor_scope_resolution: &MonitorScopeResolution,
 ) -> BuildScopeActionability {
     match monitor_scope_resolution.actionability() {

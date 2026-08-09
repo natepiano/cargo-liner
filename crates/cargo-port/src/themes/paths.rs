@@ -4,6 +4,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 
 use super::constants::THEMES_DIRNAME;
+use crate::config;
 use crate::config::CargoPortConfigurationPathResolution;
 
 /// Which source supplies the themes directory for this lookup.
@@ -38,7 +39,7 @@ pub(crate) fn themes_dir() -> CargoPortConfigurationPathResolution {
 
     resolve_themes_dir(
         &themes_directory_resolution_source,
-        &crate::config::cargo_port_configuration_root(),
+        &config::cargo_port_configuration_root(),
     )
 }
 

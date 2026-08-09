@@ -26,21 +26,21 @@ use super::integration::AppPaneId;
 use super::sccache::SccachePane;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum FinderMode {
+enum FinderMode {
     #[default]
     Hidden,
     Visible,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum SccacheMode {
+enum SccacheMode {
     #[default]
     Hidden,
     Visible,
 }
 
 #[derive(Default)]
-pub(crate) struct Overlays {
+pub(super) struct Overlays {
     finder:           FinderMode,
     sccache:          SccacheMode,
     finder_return:    Option<FocusedPane<AppPaneId>>,
@@ -51,55 +51,55 @@ pub(crate) struct Overlays {
 }
 
 impl Overlays {
-    pub(crate) fn new() -> Self { Self::default() }
+    pub(super) fn new() -> Self { Self::default() }
 
     // ── finder ──────────────────────────────────────────────────────
 
-    pub(crate) const fn is_finder_open(&self) -> bool { matches!(self.finder, FinderMode::Visible) }
+    pub(super) const fn is_finder_open(&self) -> bool { matches!(self.finder, FinderMode::Visible) }
 
-    pub(crate) const fn open_finder(&mut self) { self.finder = FinderMode::Visible; }
+    pub(super) const fn open_finder(&mut self) { self.finder = FinderMode::Visible; }
 
-    pub(crate) const fn close_finder(&mut self) { self.finder = FinderMode::Hidden; }
+    pub(super) const fn close_finder(&mut self) { self.finder = FinderMode::Hidden; }
 
-    pub(crate) const fn is_sccache_open(&self) -> bool {
+    pub(super) const fn is_sccache_open(&self) -> bool {
         matches!(self.sccache, SccacheMode::Visible)
     }
 
-    pub(crate) const fn open_sccache(&mut self) { self.sccache = SccacheMode::Visible; }
+    pub(super) const fn open_sccache(&mut self) { self.sccache = SccacheMode::Visible; }
 
-    pub(crate) const fn close_sccache(&mut self) { self.sccache = SccacheMode::Hidden; }
+    pub(super) const fn close_sccache(&mut self) { self.sccache = SccacheMode::Hidden; }
 
-    pub(crate) const fn set_finder_return(&mut self, focus: FocusedPane<AppPaneId>) {
+    pub(super) const fn set_finder_return(&mut self, focus: FocusedPane<AppPaneId>) {
         self.finder_return = Some(focus);
     }
 
-    pub(crate) const fn finder_return(&self) -> Option<FocusedPane<AppPaneId>> {
+    pub(super) const fn finder_return(&self) -> Option<FocusedPane<AppPaneId>> {
         self.finder_return
     }
 
-    pub(crate) const fn take_finder_return(&mut self) -> Option<FocusedPane<AppPaneId>> {
+    pub(super) const fn take_finder_return(&mut self) -> Option<FocusedPane<AppPaneId>> {
         self.finder_return.take()
     }
 
-    pub(crate) fn close_settings(&mut self) { self.inline_error = None; }
+    pub(super) fn close_settings(&mut self) { self.inline_error = None; }
 
     // ── inline error ────────────────────────────────────────────────
 
-    pub(crate) const fn inline_error(&self) -> Option<&String> { self.inline_error.as_ref() }
+    pub(super) const fn inline_error(&self) -> Option<&String> { self.inline_error.as_ref() }
 
-    pub(crate) fn set_inline_error(&mut self, error: impl Into<String>) {
+    pub(super) fn set_inline_error(&mut self, error: impl Into<String>) {
         self.inline_error = Some(error.into());
     }
 
-    pub(crate) fn clear_inline_error(&mut self) { self.inline_error = None; }
+    pub(super) fn clear_inline_error(&mut self) { self.inline_error = None; }
 
     // ── status flash ────────────────────────────────────────────────
 
-    pub(crate) const fn status_flash(&self) -> Option<&(String, Instant)> {
+    pub(super) const fn status_flash(&self) -> Option<&(String, Instant)> {
         self.status_flash.as_ref()
     }
 
-    pub(crate) fn set_status_flash(&mut self, message: String, at: Instant) {
+    pub(super) fn set_status_flash(&mut self, message: String, at: Instant) {
         self.status_flash = Some((message, at));
     }
 

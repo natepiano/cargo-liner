@@ -10,12 +10,10 @@ use tui_pane::label_color;
 use super::constants::PANE_BORDER_COLUMNS;
 use super::constants::PANE_CHROME_ROWS;
 use super::hit_map::MonitorHitMap;
+use super::monitor_render;
 use super::monitor_render::ColumnActivityExtent;
 use super::monitor_render::OwnedBody;
 use super::monitor_render::SelectedColumnScroll;
-use super::monitor_render::owned_captured_output_height;
-use super::monitor_render::render_monitor_half;
-use super::monitor_render::selected_column_activity_extent;
 use super::pane::OutputPane;
 use super::presentation::MonitorVisibility;
 use super::presentation::OwnedOutputVisibility;
@@ -24,7 +22,7 @@ use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::state::OwnedRunOutputTitleRef;
 use crate::tui::state::OwnedRunRunningLabelRef;
 
-pub fn render_output_pane_body(
+pub(super) fn render_output_pane_body(
     frame: &mut Frame,
     area: Rect,
     pane: &mut OutputPane,
@@ -52,7 +50,11 @@ pub fn render_output_pane_body(
     let activity_extent = match ctx.output_presentation.monitor() {
         MonitorVisibility::Off => ColumnActivityExtent::none(),
         MonitorVisibility::On(monitor_presentation) => {
-            selected_column_activity_extent(inner, monitor_presentation, pane.cursor())
+            monitor_render::selected_column_activity_extent(
+                inner,
+                monitor_presentation,
+                pane.cursor(),
+            )
         },
     };
     pane.sync_column_scroll(activity_extent.visible_rows, activity_extent.row_count);
@@ -68,7 +70,7 @@ pub fn render_output_pane_body(
         ctx.output_presentation.owned_output(),
     ) {
         (MonitorVisibility::On(monitor_presentation), OwnedOutputVisibility::OnScreen(owned)) => {
-            owned_captured_output_height(
+            monitor_render::owned_captured_output_height(
                 inner,
                 monitor_presentation,
                 owned.producer(),
@@ -108,7 +110,7 @@ pub fn render_output_pane_body(
                 )),
             };
             let mut monitor_hit_map = MonitorHitMap::new();
-            render_monitor_half(
+            monitor_render::render_monitor_half(
                 frame,
                 inner,
                 monitor_presentation,

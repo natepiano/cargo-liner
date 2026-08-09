@@ -7,6 +7,7 @@
 //! evidence production reads.
 
 use std::num::NonZeroU64;
+use std::sync::OnceLock;
 
 use tui_pane::CopySelectionResult;
 use tui_pane::NavAction;
@@ -22,13 +23,13 @@ use super::presentation::MonitorColumns;
 use super::presentation::MonitorPresentation;
 use super::presentation::MonitorVisibility;
 use super::selection::OutputCursorTarget;
+use crate::build_monitor;
 use crate::build_monitor::BuildSessionId;
 use crate::build_monitor::BuildTerminationLifecycleRegistry;
 use crate::build_monitor::ClassifiedRoot;
 use crate::build_monitor::FixtureRootOwnership;
 use crate::build_monitor::MonitorSessionOwnership;
 use crate::build_monitor::MonitorSnapshot;
-use crate::build_monitor::classified_monitor_snapshot_with_ownership;
 use crate::project::AbsolutePath;
 use crate::tui::OwnedRunId;
 use crate::tui::compile_visibility::CompileVisibilityState;
@@ -51,8 +52,7 @@ const OWNED_ACTIVITY_ROWS: usize = OWNED_COMPILER_PIDS.len();
 const CAPTURED_LINES: usize = 3;
 
 fn empty_termination_lifecycle_registry() -> &'static BuildTerminationLifecycleRegistry {
-    static REGISTRY: std::sync::OnceLock<BuildTerminationLifecycleRegistry> =
-        std::sync::OnceLock::new();
+    static REGISTRY: OnceLock<BuildTerminationLifecycleRegistry> = std::sync::OnceLock::new();
     REGISTRY.get_or_init(BuildTerminationLifecycleRegistry::default)
 }
 
@@ -110,7 +110,7 @@ fn staged_snapshot_for(
     classified_roots: &[ClassifiedRoot],
     owned_run_id: OwnedRunId,
 ) -> MonitorSnapshot {
-    match classified_monitor_snapshot_with_ownership(
+    match build_monitor::classified_monitor_snapshot_with_ownership(
         classified_roots,
         &FixtureRootOwnership::OwnedRoot {
             root_pid: OWNED_ROOT_PID,

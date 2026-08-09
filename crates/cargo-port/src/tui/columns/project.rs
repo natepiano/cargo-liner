@@ -2,8 +2,8 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
-pub use tui_pane::ColumnSpec;
-pub use tui_pane::ColumnWidths;
+use tui_pane::ColumnSpec;
+use tui_pane::ColumnWidths;
 use tui_pane::error_color;
 use tui_pane::label_color;
 use tui_pane::secondary_text_color;
@@ -11,15 +11,15 @@ use tui_pane::text_default;
 use tui_pane::title_color;
 use unicode_width::UnicodeWidthStr;
 
-pub use super::constants::COL_CI;
-pub use super::constants::COL_DISK;
-pub use super::constants::COL_GIT_PATH;
-pub use super::constants::COL_LANG;
-pub use super::constants::COL_LINT;
-pub use super::constants::COL_MAIN;
-pub use super::constants::COL_NAME;
-pub use super::constants::COL_SYNC;
-pub use super::constants::NUM_COLS;
+use super::constants::COL_CI;
+use super::constants::COL_DISK;
+use super::constants::COL_GIT_PATH;
+use super::constants::COL_LANG;
+use super::constants::COL_LINT;
+use super::constants::COL_MAIN;
+use super::constants::COL_NAME;
+use super::constants::COL_SYNC;
+use super::constants::NUM_COLS;
 use crate::ci::CiStatus;
 use crate::constants::IN_SYNC;
 use crate::project::GitStatus;
@@ -39,7 +39,7 @@ pub(super) enum ColumnWidth {
 }
 
 #[derive(Clone, Copy)]
-pub enum Align {
+pub(in crate::tui) enum Align {
     Left,
     Right,
     Center,
@@ -180,7 +180,7 @@ pub(super) const fn column_defs(lint_enabled: bool) -> [ColumnDef; NUM_COLS] {
 // ── Cell / row types ────────────────────────────────────────────────
 
 #[derive(Default)]
-pub struct CellContent {
+pub(in crate::tui) struct CellContent {
     pub text:           String,
     pub style:          Style,
     pub segments:       Option<Vec<StyledSegment>>,
@@ -190,7 +190,7 @@ pub struct CellContent {
 }
 
 #[derive(Clone)]
-pub struct StyledSegment {
+pub(in crate::tui) struct StyledSegment {
     pub text:  String,
     pub style: Style,
 }
@@ -202,14 +202,14 @@ pub struct StyledSegment {
 /// [`Self::hidden`]; tests/fixtures that just need a glyph use
 /// `Self::with_icon`.
 #[derive(Clone, Copy)]
-pub struct LintCell {
+pub(in crate::tui) struct LintCell {
     icon:  &'static str,
     style: Style,
 }
 
 impl LintCell {
     /// Empty cell — used for non-Rust child rows that have no lint state.
-    pub const fn hidden() -> Self {
+    pub(in crate::tui) const fn hidden() -> Self {
         Self {
             icon:  " ",
             style: Style::new(),
@@ -230,14 +230,16 @@ impl LintCell {
     /// Construct from already-resolved icon + style. Visible to the App
     /// layer so `App::lint_cell` can populate both fields from a single
     /// [`LintStatus`](crate::lint::LintStatus).
-    pub const fn from_parts(icon: &'static str, style: Style) -> Self { Self { icon, style } }
+    pub(in crate::tui) const fn from_parts(icon: &'static str, style: Style) -> Self {
+        Self { icon, style }
+    }
 
     pub(super) const fn icon(&self) -> &'static str { self.icon }
     pub(super) const fn style(&self) -> Style { self.style }
 }
 
 #[derive(Clone)]
-pub enum RowLifecycle {
+pub(in crate::tui) enum RowLifecycle {
     Present,
     Deleted,
 }
@@ -277,7 +279,7 @@ impl From<bool> for LintColumnStatus {
 }
 
 #[derive(Clone)]
-pub struct ProjectRow<'a> {
+pub(in crate::tui) struct ProjectRow<'a> {
     pub prefix:            &'a str,
     pub name:              &'a str,
     pub name_segments:     Option<Vec<StyledSegment>>,
@@ -295,7 +297,7 @@ pub struct ProjectRow<'a> {
     pub worktree_health:   WorktreeHealth,
 }
 
-pub struct RowCells {
+pub(in crate::tui) struct RowCells {
     pub cells:           [CellContent; NUM_COLS],
     pub prefix:          String,
     pub lifecycle:       RowLifecycle,
@@ -309,7 +311,7 @@ pub struct RowCells {
 /// the generation counter App uses to invalidate cached widths
 /// after tree changes, and the project-list-specific seeding
 /// from `column_defs`.
-pub struct ProjectListWidths {
+pub(in crate::tui) struct ProjectListWidths {
     inner:          ColumnWidths,
     lint_column:    LintColumnStatus,
     pub generation: u64,
@@ -322,7 +324,7 @@ impl Default for ProjectListWidths {
 impl ProjectListWidths {
     /// Seed from column definitions: Fixed columns get their width,
     /// Fit columns get their minimum.
-    pub fn new(lint_enabled: bool) -> Self {
+    pub(in crate::tui) fn new(lint_enabled: bool) -> Self {
         Self {
             inner:       ColumnWidths::new(project_list_specs(lint_enabled)),
             lint_column: LintColumnStatus::from(lint_enabled),
@@ -332,15 +334,15 @@ impl ProjectListWidths {
 
     /// Update a Fit column with observed content width. No-op for
     /// Fixed columns (`ColumnSpec::fixed` caps `max == min`).
-    pub fn observe(&mut self, col: usize, width: usize) {
+    pub(in crate::tui) fn observe(&mut self, col: usize, width: usize) {
         self.inner.observe_cell_usize(col, width);
     }
 
     /// Resolved width for a column.
-    pub fn get(&self, col: usize) -> usize { usize::from(self.inner.get(col)) }
+    pub(in crate::tui) fn get(&self, col: usize) -> usize { usize::from(self.inner.get(col)) }
 
     /// Total display width of all columns including gaps.
-    pub fn total_width(&self) -> usize {
+    pub(in crate::tui) fn total_width(&self) -> usize {
         let defs = column_defs(self.lint_column.is_enabled());
         let mut total = 0;
         for (i, def) in defs.iter().enumerate() {
@@ -349,7 +351,7 @@ impl ProjectListWidths {
         total
     }
 
-    pub const fn lint_enabled(&self) -> bool { self.lint_column.is_enabled() }
+    pub(in crate::tui) const fn lint_enabled(&self) -> bool { self.lint_column.is_enabled() }
 }
 
 /// Map the project-list `column_defs` into [`ColumnSpec`]s for
@@ -371,7 +373,7 @@ fn project_list_specs(lint_enabled: bool) -> Vec<ColumnSpec> {
 
 /// Terminal display width of a string, accounting for multi-byte and wide
 /// characters. Use this for ALL layout calculations — never `.len()`.
-pub fn display_width(s: &str) -> usize { UnicodeWidthStr::width(s) }
+pub(in crate::tui) fn display_width(s: &str) -> usize { UnicodeWidthStr::width(s) }
 
 /// Pad a string to a target display width using trailing spaces (left-aligned).
 pub(super) fn pad_right(s: &str, target: usize) -> String {
@@ -400,7 +402,7 @@ fn pad_center(s: &str, target: usize) -> String {
 
 /// Render a `RowCells` into a styled `Line` using the column definitions and
 /// resolved widths. Replaces `project_row_spans`.
-pub fn row_to_line(row: &RowCells, widths: &ProjectListWidths) -> Line<'static> {
+pub(in crate::tui) fn row_to_line(row: &RowCells, widths: &ProjectListWidths) -> Line<'static> {
     let defs = column_defs(widths.lint_enabled());
     let mut spans = Vec::with_capacity(NUM_COLS);
     // Track which span indices are suffix spans (exempt from strikethrough).
@@ -488,7 +490,7 @@ pub fn row_to_line(row: &RowCells, widths: &ProjectListWidths) -> Line<'static> 
 
 /// Build the header `Line` from column definitions and resolved widths.
 /// `name_text` is the dynamic header for the Name column (e.g. "~/rust (42)").
-pub fn header_line(widths: &ProjectListWidths, name_text: &str) -> Line<'static> {
+pub(in crate::tui) fn header_line(widths: &ProjectListWidths, name_text: &str) -> Line<'static> {
     let defs = column_defs(widths.lint_enabled());
     let header_style = Style::default()
         .fg(theme_roles::column_header_color())
@@ -556,7 +558,7 @@ pub fn header_line(widths: &ProjectListWidths, name_text: &str) -> Line<'static>
 
 /// Build a `RowCells` for a project row. Single construction site replaces all
 /// scattered project row literals.
-pub fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
+pub(in crate::tui) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
     let ci_text = row
         .ci
         .map_or(String::new(), |conclusion| String::from(conclusion.icon()));
@@ -648,7 +650,7 @@ pub fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
     }
 }
 
-pub fn project_name_style(git_status: Option<GitStatus>) -> Style {
+pub(in crate::tui) fn project_name_style(git_status: Option<GitStatus>) -> Style {
     match git_status {
         Some(GitStatus::Modified) => Style::default().fg(theme_roles::git_modified_color()),
         Some(GitStatus::Untracked) => Style::default().fg(theme_roles::git_untracked_color()),
@@ -657,7 +659,7 @@ pub fn project_name_style(git_status: Option<GitStatus>) -> Style {
     }
 }
 
-pub fn project_name_shimmer_style(git_status: Option<GitStatus>) -> Style {
+pub(in crate::tui) fn project_name_shimmer_style(git_status: Option<GitStatus>) -> Style {
     match git_status {
         Some(GitStatus::Modified) => Style::default().fg(theme_roles::git_modified_color()),
         Some(GitStatus::Untracked) => Style::default().fg(theme_roles::git_untracked_color()),
@@ -668,7 +670,7 @@ pub fn project_name_shimmer_style(git_status: Option<GitStatus>) -> Style {
     }
 }
 
-pub fn build_shimmer_segments(
+pub(in crate::tui) fn build_shimmer_segments(
     name: &str,
     base_style: Style,
     accent_style: Style,
@@ -722,7 +724,7 @@ pub fn build_shimmer_segments(
 }
 
 /// Build a `RowCells` for a group header (only Name column has content).
-pub fn build_group_header_cells(prefix: &str, label: &str) -> RowCells {
+pub(in crate::tui) fn build_group_header_cells(prefix: &str, label: &str) -> RowCells {
     let mut cells = std::array::from_fn::<CellContent, NUM_COLS, _>(|_| CellContent::default());
     cells[COL_NAME] = CellContent {
         text: String::from(label),
@@ -746,7 +748,7 @@ fn summary_label_col(widths: &ProjectListWidths) -> usize {
 }
 
 /// Build a `RowCells` for the summary (Σ) row.
-pub fn build_summary_cells(widths: &ProjectListWidths, disk: &str) -> RowCells {
+pub(in crate::tui) fn build_summary_cells(widths: &ProjectListWidths, disk: &str) -> RowCells {
     let total_style = Style::default()
         .fg(title_color())
         .add_modifier(Modifier::BOLD);
@@ -787,7 +789,11 @@ pub fn build_summary_cells(widths: &ProjectListWidths, disk: &str) -> RowCells {
 /// right-aligns with the Σ above it, without disturbing the Disk column.
 /// `style` colors both the label and the value — the caller bands it by
 /// remaining free space.
-pub fn build_available_line(widths: &ProjectListWidths, disk: &str, style: Style) -> Line<'static> {
+pub(in crate::tui) fn build_available_line(
+    widths: &ProjectListWidths,
+    disk: &str,
+    style: Style,
+) -> Line<'static> {
     let defs = column_defs(widths.lint_enabled());
     let sigma_col = summary_label_col(widths);
     let sigma_end = (0..=sigma_col)

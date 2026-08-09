@@ -13,7 +13,7 @@ use crate::tui::app::App;
 use crate::tui::integration;
 
 impl App {
-    pub fn sync_running_clean_toast(&mut self) {
+    pub(in crate::tui::app) fn sync_running_clean_toast(&mut self) {
         let (toast_slot, items) = self.inflight.clean().items_for_toast(
             |p| project::home_relative_path(p.as_path()),
             integration::path_key,

@@ -30,20 +30,25 @@ pub(crate) struct VendoredPackage {
 }
 
 impl VendoredPackage {
-    pub fn package_name(&self) -> PackageName {
+    pub(crate) fn package_name(&self) -> PackageName {
         PackageName(self.name.as_deref().map_or_else(
             || paths::directory_leaf(self.path.as_path()),
             str::to_string,
         ))
     }
 
-    pub fn crates_version(&self) -> Option<&str> { self.crates_version.as_deref() }
+    pub(crate) fn crates_version(&self) -> Option<&str> { self.crates_version.as_deref() }
 
-    pub fn crates_prerelease(&self) -> Option<&str> { self.crates_prerelease.as_deref() }
+    pub(crate) fn crates_prerelease(&self) -> Option<&str> { self.crates_prerelease.as_deref() }
 
-    pub const fn crates_downloads(&self) -> Option<u64> { self.crates_downloads }
+    pub(crate) const fn crates_downloads(&self) -> Option<u64> { self.crates_downloads }
 
-    pub fn set_crates_io(&mut self, version: String, prerelease: Option<String>, downloads: u64) {
+    pub(crate) fn set_crates_io(
+        &mut self,
+        version: String,
+        prerelease: Option<String>,
+        downloads: u64,
+    ) {
         self.crates_version = Some(version);
         self.crates_prerelease = prerelease;
         self.crates_downloads = Some(downloads);

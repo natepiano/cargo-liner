@@ -14,6 +14,7 @@ use tui_pane::AppContext;
 use tui_pane::FocusedPane;
 use tui_pane::FrameworkFocusId;
 use tui_pane::FrameworkOverlayId;
+use tui_pane::GlobalAction;
 use tui_pane::Globals;
 use tui_pane::KeyBind;
 use tui_pane::KeyOutcome;
@@ -45,10 +46,14 @@ use crate::tui::keymap::OutputAction;
 use crate::tui::keymap::ProjectListAction;
 use crate::tui::keymap_ui;
 use crate::tui::panes;
+use crate::tui::panes::CapturedOutputRow;
+use crate::tui::panes::ColumnSelection;
 use crate::tui::panes::OutputCopyAvailability;
+use crate::tui::panes::OutputTabStep;
 use crate::tui::panes::OwnedColumnSelection;
 use crate::tui::panes::PaneBehavior;
 use crate::tui::panes::PaneId;
+use crate::tui::panes::VisualSelectionPermission;
 use crate::tui::sccache;
 use crate::tui::settings;
 use crate::tui::terminal;
@@ -276,8 +281,8 @@ fn dispatch_output_tab_preflight(app: &mut App, bind: &KeyBind) -> bool {
     }
     let keymap = Rc::clone(&app.framework_keymap);
     let output_tab_step = match keymap.framework_globals().action_for(bind) {
-        Some(tui_pane::GlobalAction::NextPane) => panes::OutputTabStep::NextColumn,
-        Some(tui_pane::GlobalAction::PrevPane) => panes::OutputTabStep::PreviousColumn,
+        Some(GlobalAction::NextPane) => OutputTabStep::NextColumn,
+        Some(GlobalAction::PrevPane) => OutputTabStep::PreviousColumn,
         _ => return false,
     };
     let borrows = app.split_output_for_navigation();
@@ -285,8 +290,8 @@ fn dispatch_output_tab_preflight(app: &mut App, bind: &KeyBind) -> bool {
         .output
         .tab_to_adjacent_column(&borrows.output_presentation, output_tab_step)
     {
-        panes::ColumnSelection::Moved => true,
-        panes::ColumnSelection::NoSuchColumn => false,
+        ColumnSelection::Moved => true,
+        ColumnSelection::NoSuchColumn => false,
     }
 }
 
@@ -318,8 +323,8 @@ fn dispatch_output_selection_gesture(app: &mut App, raw: &KeyEvent) -> bool {
     // is gated the same way the drag and Ctrl-A paths already are: on a monitor
     // row there is nothing of the pane's own to grow a selection over.
     match app.output_visual_selection_permission() {
-        panes::VisualSelectionPermission::Denied => return false,
-        panes::VisualSelectionPermission::CapturedOutput => {},
+        VisualSelectionPermission::Denied => return false,
+        VisualSelectionPermission::CapturedOutput => {},
     }
     let code = raw.code;
     if app.config.navigation_keys().uses_vim()
@@ -704,11 +709,11 @@ fn handle_output_drag(app: &mut App, column: u16, row: u16) {
         return;
     }
     match app.panes.output.visual_selection_permission() {
-        panes::VisualSelectionPermission::Denied => return,
-        panes::VisualSelectionPermission::CapturedOutput => {},
+        VisualSelectionPermission::Denied => return,
+        VisualSelectionPermission::CapturedOutput => {},
     }
     let pos = Position::new(column, row);
-    let panes::CapturedOutputRow::Row(row) = app.panes.output.captured_output_row_at(pos) else {
+    let CapturedOutputRow::Row(row) = app.panes.output.captured_output_row_at(pos) else {
         return;
     };
     let live = app.inflight.owned_run().output().to_vec();
@@ -904,8 +909,8 @@ pub fn dispatch_output_action(action: OutputAction, app: &mut App) {
         // while the cursor is in it; on a monitor row there is nothing of
         // Cargo Port's own to select.
         OutputAction::SelectAll => match app.panes.output.visual_selection_permission() {
-            panes::VisualSelectionPermission::Denied => {},
-            panes::VisualSelectionPermission::CapturedOutput => {
+            VisualSelectionPermission::Denied => {},
+            VisualSelectionPermission::CapturedOutput => {
                 let live = app.inflight.owned_run().output().to_vec();
                 app.panes.output.select_all(&live);
             },
@@ -947,27 +952,33 @@ fn cancel_owned_output(app: &mut App) {
 mod tests {
     use std::path::Path;
     #[cfg(unix)]
+    use std::process::Child;
+    #[cfg(unix)]
     use std::process::Command;
 
+    use crossterm::event::MouseEvent;
+
     use super::*;
+    use crate::build_monitor;
     use crate::build_monitor::BuildSessionId;
     use crate::build_monitor::ClassifiedRoot;
     use crate::build_monitor::FixtureRootOwnership;
     use crate::build_monitor::MonitorSessionOwnership;
     use crate::build_monitor::MonitorSnapshot;
-    use crate::build_monitor::classified_monitor_snapshot_with_ownership;
+    use crate::build_monitor::OwnedTerminationFixtureAuthorityInstallation;
     use crate::config::CargoPortConfig;
     use crate::config::LintIndicator;
+    use crate::process_observation::identity;
     #[cfg(unix)]
     use crate::process_observation::identity::CurrentProcessIdentityObservation;
     use crate::process_observation::identity::ProcessIdentity;
     use crate::process_observation::identity::ProcessIncarnation;
-    #[cfg(unix)]
-    use crate::process_observation::identity::observe_current_process_identity;
     use crate::project::AbsolutePath;
     use crate::project::Package;
     use crate::project::RootItem;
     use crate::project::RustProject;
+    use crate::tui::app::ConfirmationModalState;
+    use crate::tui::app::ConfirmationReadiness;
     use crate::tui::background::ProcessTerminatorReadinessForTest;
     use crate::tui::compile_visibility::CompileVisibilityState;
     use crate::tui::compile_visibility::MonitorScopeKey;
@@ -979,14 +990,13 @@ mod tests {
     use crate::tui::state::Inflight;
     use crate::tui::state::OwnedRunTermination;
     use crate::tui::state::inflight::OwnedRunFixture;
-    use crate::tui::test_support::make_app;
-    use crate::tui::test_support::make_app_with_lint_runtime;
+    use crate::tui::test_support;
 
     /// A child process this test owns, together with authority bound to the
     /// child lifetime. Drop always reaps it if the assertion path aborts.
     #[cfg(unix)]
     struct TestOwnedTerminationFixture {
-        child:                  std::process::Child,
+        child:                  Child,
         termination_capability: RunningTargetTerminationCapability,
     }
 
@@ -997,7 +1007,9 @@ mod tests {
                 .arg("30")
                 .spawn()
                 .unwrap_or_else(|error| panic!("the termination fixture should spawn: {error}"));
-            let termination_capability = match observe_current_process_identity(child.id()) {
+            let termination_capability = match identity::observe_current_process_identity(
+                child.id(),
+            ) {
                 CurrentProcessIdentityObservation::Verified(verified_process_identity) => {
                     RunningTargetTerminationCapability::from_observed_identity(
                         verified_process_identity.into_process_identity(),
@@ -1067,7 +1079,7 @@ mod tests {
         else {
             return None;
         };
-        let monitor_snapshot = classified_monitor_snapshot_with_ownership(
+        let monitor_snapshot = build_monitor::classified_monitor_snapshot_with_ownership(
             &[
                 ClassifiedRoot {
                     root_pid:      OWNED_ROOT_PID,
@@ -1108,7 +1120,7 @@ mod tests {
         let (owned_hit, external_hit) = (owned_hit?, external_hit?);
         let captured_lines = vec!["retained line".to_string()];
 
-        let mut app = make_app(&[]);
+        let mut app = test_support::make_app(&[]);
         app.inflight = *inflight;
         app.compile_visibility_state = compile_visibility_state;
         app.build_monitor.show_for_test(monitor_snapshot);
@@ -1206,7 +1218,7 @@ mod tests {
         else {
             panic!("the live owned-run fixture should build");
         };
-        let mut app = make_app(&[]);
+        let mut app = test_support::make_app(&[]);
         app.inflight = *inflight;
         let OwnedRunTermination::Available {
             owned_run_id,
@@ -1222,7 +1234,7 @@ mod tests {
             app.inflight.start_owned_run_process_actor(owned_run_id);
         }
 
-        let monitor_snapshot = classified_monitor_snapshot_with_ownership(
+        let monitor_snapshot = build_monitor::classified_monitor_snapshot_with_ownership(
             &[
                 ClassifiedRoot {
                     root_pid:      SELECTED_BUILD_EXTERNAL_ROOT_PID,
@@ -1276,15 +1288,14 @@ mod tests {
                 monitor_snapshot,
                 owned_run_id,
                 owned_run_termination_token,
-            )
-        {
-            crate::build_monitor::OwnedTerminationFixtureAuthorityInstallation::Installed(
-                build_session_id,
-            ) => build_session_id,
-            crate::build_monitor::OwnedTerminationFixtureAuthorityInstallation::SnapshotNotActionable => {
+            ) {
+            OwnedTerminationFixtureAuthorityInstallation::Installed(build_session_id) => {
+                build_session_id
+            },
+            OwnedTerminationFixtureAuthorityInstallation::SnapshotNotActionable => {
                 panic!("selected-build fixture must stage an actionable monitor snapshot")
             },
-            crate::build_monitor::OwnedTerminationFixtureAuthorityInstallation::MatchingOwnedSessionAbsent => {
+            OwnedTerminationFixtureAuthorityInstallation::MatchingOwnedSessionAbsent => {
                 panic!("selected-build fixture must stage the matching owned monitor row")
             },
         };
@@ -1321,7 +1332,7 @@ mod tests {
             name: Some("output-build-set-context".to_string()),
             ..Package::default()
         }));
-        let mut app = make_app(&[project]);
+        let mut app = test_support::make_app(&[project]);
         app.inflight = *inflight;
         let OwnedRunTermination::Available {
             owned_run_id,
@@ -1352,7 +1363,7 @@ mod tests {
                 },
             ],
         };
-        let monitor_snapshot = classified_monitor_snapshot_with_ownership(
+        let monitor_snapshot = build_monitor::classified_monitor_snapshot_with_ownership(
             &classified_roots,
             &FixtureRootOwnership::OwnedRoot {
                 root_pid: SELECTED_BUILD_OWNED_ROOT_PID,
@@ -1388,7 +1399,7 @@ mod tests {
                 Path::new("/tmp/output-build-set-context"),
             ))),
         );
-        let crate::build_monitor::OwnedTerminationFixtureAuthorityInstallation::Installed(_) = app
+        let OwnedTerminationFixtureAuthorityInstallation::Installed(_) = app
             .build_monitor
             .show_with_owned_termination_authority_for_test(
                 monitor_snapshot,
@@ -1408,13 +1419,13 @@ mod tests {
 
     fn assert_selected_build_confirmation(app: &App) {
         match app.confirmation_modal_state() {
-            crate::tui::app::ConfirmationModalState::Open {
+            ConfirmationModalState::Open {
                 action:
                     ConfirmAction::TerminateSelectedBuild {
                         selected_build_termination_confirmation_display,
                         selected_build_termination_authorization: _,
                     },
-                readiness: crate::tui::app::ConfirmationReadiness::Ready,
+                readiness: ConfirmationReadiness::Ready,
             } => {
                 assert_eq!(
                     selected_build_termination_confirmation_display.root_pid(),
@@ -1427,10 +1438,10 @@ mod tests {
                     "the confirmation keeps the selected root's compiler-child count"
                 );
             },
-            crate::tui::app::ConfirmationModalState::Closed => {
+            ConfirmationModalState::Closed => {
                 panic!("Alt-K should retain a ready selected-build confirmation")
             },
-            crate::tui::app::ConfirmationModalState::Open { .. } => {
+            ConfirmationModalState::Open { .. } => {
                 panic!("the open confirmation should retain selected-build authorization")
             },
         }
@@ -1438,13 +1449,13 @@ mod tests {
 
     fn assert_output_build_set_confirmation(app: &App) {
         match app.confirmation_modal_state() {
-            crate::tui::app::ConfirmationModalState::Open {
+            ConfirmationModalState::Open {
                 action:
                     ConfirmAction::TerminateOutputBuildSet {
                         output_build_set_termination_confirmation_display,
                         output_build_set_termination_authorization: _,
                     },
-                readiness: crate::tui::app::ConfirmationReadiness::Ready,
+                readiness: ConfirmationReadiness::Ready,
             } => {
                 let target_summaries =
                     output_build_set_termination_confirmation_display.target_summaries();
@@ -1455,10 +1466,10 @@ mod tests {
                     "the modal keeps the exact Output root frozen at confirmation"
                 );
             },
-            crate::tui::app::ConfirmationModalState::Closed => {
+            ConfirmationModalState::Closed => {
                 panic!("the output-build-set action should retain a ready confirmation")
             },
-            crate::tui::app::ConfirmationModalState::Open { .. } => {
+            ConfirmationModalState::Open { .. } => {
                 panic!("the open confirmation should retain output-build-set authority")
             },
         }
@@ -1478,7 +1489,7 @@ mod tests {
 
     #[test]
     fn confirmation_escape_keeps_a_live_owned_run_and_its_output_open() {
-        let mut app = make_app(&[]);
+        let mut app = test_support::make_app(&[]);
         let OwnedRunFixture::Live { inflight } =
             Inflight::with_live_owned_run_output("live output")
         else {
@@ -1520,7 +1531,7 @@ mod tests {
 
     #[test]
     fn confirmation_consumes_unrelated_keys_and_mouse_input() {
-        let mut app = make_app(&[]);
+        let mut app = test_support::make_app(&[]);
         app.open_ready_confirmation_for_test(ConfirmAction::Clean(AbsolutePath::from(Path::new(
             "/tmp/confirmation-input",
         ))));
@@ -1538,7 +1549,7 @@ mod tests {
         assert!(app.mouse_pos.is_none(), "test setup has no mouse position");
         handle_event(
             &mut app,
-            &Event::Mouse(crossterm::event::MouseEvent {
+            &Event::Mouse(MouseEvent {
                 kind:      MouseEventKind::ScrollDown,
                 column:    7,
                 row:       9,
@@ -1558,7 +1569,7 @@ mod tests {
     #[test]
     fn n_and_escape_dismiss_a_confirmation_without_executing_it() {
         for key in [KeyCode::Char('n'), KeyCode::Esc] {
-            let mut app = make_app(&[]);
+            let mut app = test_support::make_app(&[]);
             app.open_ready_confirmation_for_test(ConfirmAction::Clean(AbsolutePath::from(
                 Path::new("/tmp/confirmation-dismiss"),
             )));
@@ -1578,7 +1589,7 @@ mod tests {
 
     #[test]
     fn verifying_clean_confirmation_consumes_y_without_closing() {
-        let mut app = make_app(&[]);
+        let mut app = test_support::make_app(&[]);
         app.open_verifying_clean_confirmation_for_test(AbsolutePath::from(Path::new(
             "/tmp/confirmation-verifying",
         )));
@@ -1618,7 +1629,7 @@ mod tests {
                 return;
             }
         }
-        let mut app = make_app(&[]);
+        let mut app = test_support::make_app(&[]);
 
         app.open_ready_confirmation_for_test(ConfirmAction::Clean(AbsolutePath::from(clean)));
         press(&mut app, KeyCode::Char('y'));
@@ -1637,7 +1648,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn ready_y_terminates_the_test_owned_kill_target() {
-        let mut app = make_app(&[]);
+        let mut app = test_support::make_app(&[]);
         let mut termination_fixture = TestOwnedTerminationFixture::spawn();
         let pid = termination_fixture.child.id();
         app.open_ready_confirmation_for_test(ConfirmAction::KillTarget {
@@ -1942,7 +1953,7 @@ mod tests {
             retained_producer, owned_run_id,
             "the replacement run must not reuse the retained output producer"
         );
-        let monitor_snapshot = classified_monitor_snapshot_with_ownership(
+        let monitor_snapshot = build_monitor::classified_monitor_snapshot_with_ownership(
             &[
                 ClassifiedRoot {
                     root_pid:      SELECTED_BUILD_EXTERNAL_ROOT_PID,
@@ -1961,20 +1972,25 @@ mod tests {
         .unwrap_or_else(|error| {
             panic!("replacement selected-build fixture snapshot should classify: {error}")
         });
-        let replacement_session_id = match app.build_monitor.show_with_owned_termination_authority_for_test(
+        let replacement_session_id = match app
+            .build_monitor
+            .show_with_owned_termination_authority_for_test(
                 monitor_snapshot,
                 owned_run_id,
                 owned_run_termination_token,
-            )
-        {
-            crate::build_monitor::OwnedTerminationFixtureAuthorityInstallation::Installed(
-                build_session_id,
-            ) => build_session_id,
-            crate::build_monitor::OwnedTerminationFixtureAuthorityInstallation::SnapshotNotActionable => {
-                panic!("replacement selected-build fixture must stage an actionable monitor snapshot")
+            ) {
+            OwnedTerminationFixtureAuthorityInstallation::Installed(build_session_id) => {
+                build_session_id
             },
-            crate::build_monitor::OwnedTerminationFixtureAuthorityInstallation::MatchingOwnedSessionAbsent => {
-                panic!("replacement selected-build fixture must stage the matching owned monitor row")
+            OwnedTerminationFixtureAuthorityInstallation::SnapshotNotActionable => {
+                panic!(
+                    "replacement selected-build fixture must stage an actionable monitor snapshot"
+                )
+            },
+            OwnedTerminationFixtureAuthorityInstallation::MatchingOwnedSessionAbsent => {
+                panic!(
+                    "replacement selected-build fixture must stage the matching owned monitor row"
+                )
             },
         };
 
@@ -2067,8 +2083,10 @@ mod tests {
         cargo_port_config.lint.enabled = LintIndicator::Enabled;
         cargo_port_config.lint.include = vec!["lint-project".to_string()];
 
-        let mut project_app =
-            make_app_with_lint_runtime(std::slice::from_ref(&project), &cargo_port_config);
+        let mut project_app = test_support::make_app_with_lint_runtime(
+            std::slice::from_ref(&project),
+            &cargo_port_config,
+        );
         let project_runtime = project_app
             .lint
             .runtime()
@@ -2105,7 +2123,8 @@ mod tests {
         drop(project_runtime);
         drop(project_app);
 
-        let mut all_lints_app = make_app_with_lint_runtime(&[project], &cargo_port_config);
+        let mut all_lints_app =
+            test_support::make_app_with_lint_runtime(&[project], &cargo_port_config);
         let all_lints_runtime = all_lints_app
             .lint
             .runtime()

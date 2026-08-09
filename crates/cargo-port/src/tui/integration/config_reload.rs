@@ -26,14 +26,14 @@ pub(super) enum ConfigKey {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ReloadDecision {
+pub(in crate::tui) enum ReloadDecision {
     #[default]
     Skip,
     Apply,
 }
 
 impl ReloadDecision {
-    pub const fn should_apply(self) -> bool { matches!(self, Self::Apply) }
+    pub(in crate::tui) const fn should_apply(self) -> bool { matches!(self, Self::Apply) }
 }
 
 /// What the config reload should do to the project tree. The three
@@ -41,7 +41,7 @@ impl ReloadDecision {
 /// over `RegroupMembers`, which wins over `None`. The enum makes the
 /// mutual exclusion exhaustive at the type level.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum TreeReaction {
+pub(in crate::tui) enum TreeReaction {
     #[default]
     None,
     RegroupMembers,
@@ -57,14 +57,14 @@ impl TreeReaction {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ReloadActions {
+pub(in crate::tui) struct ReloadActions {
     pub tree:                 TreeReaction,
     pub refresh_cpu:          ReloadDecision,
     pub refresh_lint_runtime: ReloadDecision,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ScanState {
+pub(in crate::tui) enum ScanState {
     Complete,
     #[default]
     Pending,
@@ -75,7 +75,7 @@ impl ScanState {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum NonRustCacheState {
+pub(in crate::tui) enum NonRustCacheState {
     Present,
     #[default]
     Missing,
@@ -86,7 +86,7 @@ impl NonRustCacheState {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ReloadContext {
+pub(in crate::tui) struct ReloadContext {
     pub scan:           ScanState,
     pub non_rust_cache: NonRustCacheState,
 }
@@ -220,7 +220,7 @@ fn changed_keys(old: &CargoPortConfig, new: &CargoPortConfig) -> Vec<ConfigKey> 
     keys
 }
 
-pub fn collect_reload_actions(
+pub(in crate::tui) fn collect_reload_actions(
     old: &CargoPortConfig,
     new: &CargoPortConfig,
     context: ReloadContext,

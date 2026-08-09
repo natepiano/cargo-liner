@@ -106,7 +106,7 @@ impl App {
         clippy::too_many_lines,
         reason = "trivial 1:1 exhaustive variant mapping"
     )]
-    pub fn handle_bg_msg(&mut self, msg: BackgroundMsg) -> bool {
+    pub(in crate::tui::app) fn handle_bg_msg(&mut self, msg: BackgroundMsg) -> bool {
         self.update_generations_for_msg(&msg);
         match msg {
             BackgroundMsg::DiskUsage { path, bytes } => {

@@ -6,8 +6,8 @@ use super::KeyBind;
 /// action→key for display.
 #[derive(Clone, Debug)]
 pub(crate) struct ScopeMap<A: Copy + Eq + std::hash::Hash> {
-    pub(crate) by_key:    HashMap<KeyBind, A>,
-    pub(crate) by_action: HashMap<A, KeyBind>,
+    pub(super) by_key:    HashMap<KeyBind, A>,
+    pub(super) by_action: HashMap<A, KeyBind>,
 }
 
 impl<A: Copy + Eq + std::hash::Hash> ScopeMap<A> {

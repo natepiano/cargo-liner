@@ -38,7 +38,7 @@ pub(crate) struct RepoInfo {
 
 impl RepoInfo {
     /// Repo-level origin classification derived from `remotes`.
-    pub fn origin_kind(&self) -> GitOrigin {
+    pub(crate) fn origin_kind(&self) -> GitOrigin {
         if self.remotes.is_empty() {
             GitOrigin::Local
         } else if self.remotes.iter().any(|r| r.name == GIT_REMOTE_UPSTREAM) {
@@ -52,7 +52,7 @@ impl RepoInfo {
     /// primary checkout's path) and shared across every linked
     /// worktree. Excludes `first_commit`, which is handled by
     /// `schedule_git_first_commit_refreshes` batched by repo root.
-    pub fn get(probe_path: &Path) -> Option<Self> {
+    pub(crate) fn get(probe_path: &Path) -> Option<Self> {
         let repo_root = discovery::git_repo_root(probe_path)?;
         let active_config = config::active_config();
 

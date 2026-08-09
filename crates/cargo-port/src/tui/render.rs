@@ -54,6 +54,7 @@ use super::overlays::PopupFrame;
 use super::panes;
 use super::panes::EmptyDescriptionBehavior;
 use super::panes::OutputBuildSetTerminationConfirmationDisplay;
+use super::panes::OutputPaneVisibility;
 use super::panes::PaneId;
 use super::render_context::PaneRenderCtx;
 use super::sccache;
@@ -152,13 +153,13 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
             .unwrap_or(u16::MAX);
 
     let bottom_row = match app.output_pane_visibility() {
-        panes::OutputPaneVisibility::Hidden => {
+        OutputPaneVisibility::Hidden => {
             // The hit map answers clicks from the rows the last frame drew, so
             // a frame that does not draw the pane at all must leave none behind.
             app.panes.output.clear_monitor_hit_map();
             panes::BottomRow::Diagnostics
         },
-        panes::OutputPaneVisibility::Visible => panes::BottomRow::Output,
+        OutputPaneVisibility::Visible => panes::BottomRow::Output,
     };
     let tiled = resolve_tiled_layout(app, outer_layout[0], left_width, bottom_row);
 

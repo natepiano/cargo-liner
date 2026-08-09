@@ -29,7 +29,7 @@ pub(super) use super::constants::SYNTHETIC_RATE_LIMIT_SECS;
 /// GraphQL APIs share `api.github.com` but track their quotas
 /// independently, so detection and display must keep them separate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RateLimitBucket {
+pub(super) enum RateLimitBucket {
     Core,
     GraphQl,
 }
@@ -57,7 +57,7 @@ pub(crate) struct GitHubRateLimit {
 /// bucket the response counted against. Returns `None` if the bucket
 /// header is missing or names a resource we don't track (`search`,
 /// `integration_manifest`, etc.).
-pub(crate) fn parse_rate_limit_headers(
+pub(super) fn parse_rate_limit_headers(
     headers: &HeaderMap,
 ) -> Option<(RateLimitBucket, RateLimitQuota)> {
     let resource = headers.get(RATE_LIMIT_RESOURCE_HEADER)?.to_str().ok()?;
@@ -84,7 +84,7 @@ pub(crate) fn parse_rate_limit_headers(
 
 /// Parse a `/rate_limit` JSON response. Missing buckets stay `None` so
 /// the caller can merge selectively.
-pub(crate) fn parse_rate_limit_response(value: &Value) -> GitHubRateLimit {
+pub(super) fn parse_rate_limit_response(value: &Value) -> GitHubRateLimit {
     let resources = value.get(RATE_LIMIT_RESOURCES_KEY);
     let bucket = |name: &str| -> Option<RateLimitQuota> {
         let entry = resources?.get(name)?;
@@ -107,7 +107,7 @@ pub(crate) fn parse_rate_limit_response(value: &Value) -> GitHubRateLimit {
 /// `429 Too Many Requests`, or `403 Forbidden` with
 /// `X-RateLimit-Remaining: 0` (the secondary-rate-limit / abuse-detection
 /// form). A bare 403 is auth-related and not rate-limit.
-pub(crate) fn github_is_rate_limited(status: StatusCode, headers: &HeaderMap) -> bool {
+pub(super) fn github_is_rate_limited(status: StatusCode, headers: &HeaderMap) -> bool {
     if status == StatusCode::TOO_MANY_REQUESTS {
         return true;
     }
@@ -124,7 +124,7 @@ pub(crate) fn github_is_rate_limited(status: StatusCode, headers: &HeaderMap) ->
 /// True when a GraphQL response body carries an `errors[].type` of
 /// `RATE_LIMITED`. GraphQL returns HTTP 200 on rate-limit, so
 /// status-based detection alone is not enough for that endpoint.
-pub(crate) fn graphql_body_is_rate_limited(body: &Value) -> bool {
+pub(super) fn graphql_body_is_rate_limited(body: &Value) -> bool {
     body.get(GRAPHQL_RESPONSE_ERRORS_KEY)
         .and_then(serde_json::Value::as_array)
         .is_some_and(|errors| {

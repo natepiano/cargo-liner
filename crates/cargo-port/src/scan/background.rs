@@ -31,7 +31,7 @@ use crate::project::WorkspaceMetadata;
 use crate::sccache::StatsResult as SccacheStatsResult;
 
 /// Messages sent from background threads to the main event loop.
-pub enum BackgroundMsg {
+pub(crate) enum BackgroundMsg {
     /// Disk usage (bytes) computed for a single project path.
     DiskUsage { path: AbsolutePath, bytes: u64 },
     /// Batch of disk usage results for projects under a common root.
@@ -252,7 +252,7 @@ impl BackgroundMsg {
     /// `ci`, `lints`). Service-level signals, fetch lifecycle, and batch
     /// notifications that are processed via dedicated paths return
     /// `None` — they invalidate via their own routes (or don't need to).
-    pub fn detail_relevance(&self) -> Option<&Path> {
+    pub(crate) fn detail_relevance(&self) -> Option<&Path> {
         match self {
             // Per-project path bearing — each maps to a field rendered
             // inside the detail set.
@@ -335,7 +335,7 @@ impl BackgroundMsg {
     }
 }
 
-pub const fn combine_service_signal(
+pub(super) const fn combine_service_signal(
     left: Option<ServiceSignal>,
     right: Option<ServiceSignal>,
 ) -> Option<ServiceSignal> {
@@ -357,7 +357,7 @@ pub const fn combine_service_signal(
     }
 }
 
-pub fn emit_service_signal(sender: &Sender<BackgroundMsg>, signal: Option<ServiceSignal>) {
+pub(crate) fn emit_service_signal(sender: &Sender<BackgroundMsg>, signal: Option<ServiceSignal>) {
     let msg = match signal {
         Some(ServiceSignal::Reachable(service)) => BackgroundMsg::ServiceReachable { service },
         Some(ServiceSignal::Unreachable(service)) => BackgroundMsg::ServiceUnreachable { service },
@@ -367,7 +367,7 @@ pub fn emit_service_signal(sender: &Sender<BackgroundMsg>, signal: Option<Servic
     let _ = sender.send(msg);
 }
 
-pub fn emit_service_recovered(sender: &Sender<BackgroundMsg>, service: ServiceKind) {
+pub(crate) fn emit_service_recovered(sender: &Sender<BackgroundMsg>, service: ServiceKind) {
     let _ = sender.send(BackgroundMsg::ServiceRecovered { service });
 }
 
@@ -377,7 +377,7 @@ pub fn emit_service_recovered(sender: &Sender<BackgroundMsg>, service: ServiceKi
 /// independently. The watcher's refresh path uses a smarter
 /// orchestration that probes `RepoInfo` once per repo and reuses it
 /// across sibling worktrees.
-pub fn emit_git_info(sender: &Sender<BackgroundMsg>, path: &AbsolutePath) {
+pub(crate) fn emit_git_info(sender: &Sender<BackgroundMsg>, path: &AbsolutePath) {
     let Some(repo) = RepoInfo::get(path.as_path()) else {
         return;
     };
@@ -395,4 +395,4 @@ pub fn emit_git_info(sender: &Sender<BackgroundMsg>, path: &AbsolutePath) {
 }
 
 /// Base cache directory for CI metadata.
-pub fn cache_dir() -> AbsolutePath { cache_paths::ci_cache_root() }
+pub(crate) fn cache_dir() -> AbsolutePath { cache_paths::ci_cache_root() }

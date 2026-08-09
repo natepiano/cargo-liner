@@ -231,7 +231,7 @@ pub(super) fn format_rate_limit_bucket(quota: Option<RateLimitQuota>) -> String 
     format!("{base} resets {}", tui_pane::format_progressive(secs))
 }
 
-pub fn format_ahead_behind_against((ahead, behind): (usize, usize), branch: &str) -> String {
+pub(super) fn format_ahead_behind_against((ahead, behind): (usize, usize), branch: &str) -> String {
     match (ahead, behind) {
         (0, 0) => format!("{IN_SYNC} up to date with {branch}"),
         (ahead, 0) => format!("{SYNC_UP}{ahead} ahead of {branch}"),

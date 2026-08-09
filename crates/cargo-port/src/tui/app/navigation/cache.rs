@@ -10,15 +10,15 @@ use crate::tui::panes::DetailCacheKey;
 use crate::tui::render;
 
 impl App {
-    pub fn ensure_visible_rows_cached(&mut self) {
+    pub(in crate::tui) fn ensure_visible_rows_cached(&mut self) {
         let include_non_rust = self.config.include_non_rust().includes_non_rust();
         self.project_list.recompute_visibility(include_non_rust);
     }
 
     /// Return the cached visible rows. Must call `ensure_visible_rows_cached()` first.
-    pub fn visible_rows(&self) -> &[VisibleRow] { self.project_list.visible_rows() }
+    pub(in crate::tui) fn visible_rows(&self) -> &[VisibleRow] { self.project_list.visible_rows() }
 
-    pub fn ensure_fit_widths_cached(&mut self) {
+    pub(in crate::tui) fn ensure_fit_widths_cached(&mut self) {
         let root_labels = self
             .project_list
             .resolved_root_labels(self.config.include_non_rust().includes_non_rust());
@@ -43,7 +43,7 @@ impl App {
         self.project_list.set_fit_widths(widths);
     }
 
-    pub fn ensure_disk_cache(&mut self) {
+    pub(in crate::tui) fn ensure_disk_cache(&mut self) {
         let (root_sorted, child_sorted) = panes::compute_disk_cache(&self.project_list);
         self.project_list.set_disk_caches(root_sorted, child_sorted);
     }
@@ -53,7 +53,7 @@ impl App {
     /// data generation has changed since the last build — both are the only
     /// inputs to `build_selected_pane_data`, so a matching stamp means the
     /// stored detail is still correct.
-    pub fn ensure_detail_cached(&mut self) {
+    pub(in crate::tui) fn ensure_detail_cached(&mut self) {
         let desired = self.project_list.selected_row().map(|row| DetailCacheKey {
             visible_row: row,
             generation:  self.scan.generation(),

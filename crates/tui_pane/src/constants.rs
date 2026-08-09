@@ -39,6 +39,6 @@ pub const SECTION_ITEM_INDENT: &str = "    ";
 pub const ACTIVITY_SPINNER: FrameCycle =
     FrameCycle::new(ACTIVITY_SPINNER_FRAMES, Duration::from_millis(1200));
 /// Default framework activity-spinner frames.
-pub(crate) const ACTIVITY_SPINNER_FRAMES: &[&str] = &[
+const ACTIVITY_SPINNER_FRAMES: &[&str] = &[
     "⠉⠉", "⠈⠙", "⠀⠹", "⠀⢸", "⠀⣰", "⢀⣠", "⣀⣀", "⣄⡀", "⣆⠀", "⡇⠀", "⠏⠀", "⠋⠁",
 ];

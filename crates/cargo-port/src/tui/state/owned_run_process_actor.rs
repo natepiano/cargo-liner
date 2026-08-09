@@ -10,8 +10,14 @@
 //! outcome polling use channels, so a host signal never blocks the TUI loop.
 
 use std::process::Child;
+#[cfg(unix)]
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::Mutex;
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
+#[cfg(test)]
+use std::sync::atomic::Ordering;
 use std::thread::JoinHandle;
 
 #[cfg(all(not(unix), not(test)))]
@@ -31,16 +37,16 @@ use super::constants::UNACTIVATED_GROUP_EXIT_POLL_ATTEMPTS;
 #[cfg(unix)]
 use super::constants::UNACTIVATED_GROUP_EXIT_POLL_INTERVAL;
 use super::inflight::OwnedRunId;
+use crate::channel;
 use crate::channel::Receiver;
 use crate::channel::RecvTimeoutError;
 use crate::channel::Sender;
-use crate::channel::unbounded;
+#[cfg(not(test))]
+use crate::process_observation::identity;
 use crate::process_observation::identity::ProcessIdentity;
 #[cfg(not(test))]
 use crate::process_observation::identity::StrongProcessIdentityRevalidation;
 use crate::process_observation::identity::VerifiedProcessIdentity;
-#[cfg(not(test))]
-use crate::process_observation::identity::revalidate_strong_process_identity;
 use crate::tui::messages::OwnedRunEvent;
 
 /// How the actor resolved one accepted owned-group termination request.
@@ -113,7 +119,7 @@ struct OwnedProcessGroupTerminationCapability {
     #[cfg(test)]
     test_signal_outcome:         OwnedProcessGroupSignalOutcome,
     #[cfg(test)]
-    test_signal_count:           std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    test_signal_count:           Arc<AtomicUsize>,
 }
 
 impl OwnedProcessGroupTerminationCapability {
@@ -141,7 +147,7 @@ impl OwnedProcessGroupTerminationCapability {
 
     #[cfg(not(test))]
     fn signal(&self) -> OwnedProcessGroupSignalOutcome {
-        match revalidate_strong_process_identity(&self.process_identity) {
+        match identity::revalidate_strong_process_identity(&self.process_identity) {
             StrongProcessIdentityRevalidation::Current => {
                 signal_owned_process_group(self.process_group_id, &self.process_identity)
             },
@@ -154,8 +160,7 @@ impl OwnedProcessGroupTerminationCapability {
 
     #[cfg(test)]
     fn signal(&self) -> OwnedProcessGroupSignalOutcome {
-        self.test_signal_count
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.test_signal_count.fetch_add(1, Ordering::SeqCst);
         if self.authorized_process_identity.pid() == 0 {
             OwnedProcessGroupSignalOutcome::SignalFailed
         } else {
@@ -179,7 +184,7 @@ impl OwnedProcessGroupTerminationCapability {
     const fn with_test_signal_probe(
         process_identity: ProcessIdentity,
         test_signal_outcome: OwnedProcessGroupSignalOutcome,
-        test_signal_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        test_signal_count: Arc<AtomicUsize>,
     ) -> Self {
         Self {
             #[cfg(not(test))]
@@ -209,7 +214,7 @@ fn signal_owned_process_group(
     }
 
     if !matches!(
-        revalidate_strong_process_identity(process_identity),
+        identity::revalidate_strong_process_identity(process_identity),
         StrongProcessIdentityRevalidation::Current
     ) {
         return OwnedProcessGroupSignalOutcome::IdentityNoLongerCurrent;
@@ -240,7 +245,7 @@ fn signal_owned_process_group(
         ProcessRefreshKind::nothing(),
     );
     if !matches!(
-        revalidate_strong_process_identity(process_identity),
+        identity::revalidate_strong_process_identity(process_identity),
         StrongProcessIdentityRevalidation::Current
     ) {
         return OwnedProcessGroupSignalOutcome::IdentityNoLongerCurrent;
@@ -331,7 +336,7 @@ struct OwnedRunProcessWorkerChannels {
 
 impl ServingOwnedRunProcessActor {
     fn unavailable() -> Self {
-        let (command_tx, command_rx) = unbounded();
+        let (command_tx, command_rx) = channel::unbounded();
         drop(command_rx);
         Self {
             command_tx,
@@ -423,7 +428,7 @@ impl OwnedRunProcessActor {
         else {
             return;
         };
-        let (command_tx, command_rx) = unbounded();
+        let (command_tx, command_rx) = channel::unbounded();
         let command_admission = Arc::new(Mutex::new(OwnedRunCommandAdmission::Accepting));
         let owned_run_id = self.owned_run_id;
         let worker_command_admission = Arc::clone(&command_admission);
@@ -499,7 +504,7 @@ impl OwnedRunProcessActor {
         process_identity: ProcessIdentity,
         test_signal_outcome: OwnedProcessGroupSignalOutcome,
     ) -> Self {
-        let (owned_run_event_sender, _) = unbounded();
+        let (owned_run_event_sender, _) = channel::unbounded();
         Self {
             owned_run_id,
             state: OwnedRunProcessActorState::Prepared(PreparedOwnedRunProcessActor {
@@ -521,7 +526,7 @@ impl OwnedRunProcessActor {
         child: Child,
         verified_process_identity: VerifiedProcessIdentity,
         owned_run_event_sender: Sender<OwnedRunEvent>,
-    ) -> (Self, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    ) -> (Self, Arc<AtomicUsize>) {
         let test_signal_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let process_identity = verified_process_identity.into_process_identity();
         (
@@ -657,8 +662,6 @@ fn close_command_admission_after_reap(
 /// may escalate after a strong identity could not be established.
 #[cfg(unix)]
 pub(crate) fn discard_unverified_owned_process_group(child: &mut Child) {
-    use std::process::Command;
-
     let process_group_id = child.id();
     let _ = Command::new("kill")
         .arg("-TERM")
@@ -700,17 +703,22 @@ mod tests {
     use std::io::Write as _;
     use std::num::NonZeroU64;
     #[cfg(unix)]
+    use std::process::ChildStdin;
+    #[cfg(unix)]
     use std::process::Command;
     #[cfg(unix)]
     use std::process::Stdio;
     #[cfg(unix)]
+    use std::sync::Arc;
+    #[cfg(unix)]
+    use std::sync::atomic::AtomicUsize;
+    #[cfg(unix)]
     use std::sync::atomic::Ordering;
 
     use super::*;
+    use crate::process_observation::identity;
     #[cfg(unix)]
     use crate::process_observation::identity::CurrentProcessIdentityObservation;
-    #[cfg(unix)]
-    use crate::process_observation::identity::observe_current_process_identity;
 
     fn owned_run_id(value: u64) -> OwnedRunId {
         OwnedRunId::for_test(NonZeroU64::new(value).unwrap_or(NonZeroU64::MIN))
@@ -725,7 +733,7 @@ mod tests {
         owned_run_id: OwnedRunId,
         test_signal_outcome: OwnedProcessGroupSignalOutcome,
     ) -> StartedActorFixture {
-        let (owned_run_event_sender, owned_run_event_rx) = unbounded();
+        let (owned_run_event_sender, owned_run_event_rx) = channel::unbounded();
         let mut owned_run_process_actor = OwnedRunProcessActor {
             owned_run_id,
             state: OwnedRunProcessActorState::Prepared(PreparedOwnedRunProcessActor {
@@ -759,9 +767,9 @@ mod tests {
     #[cfg(unix)]
     struct RealActorFixture {
         owned_run_process_actor: OwnedRunProcessActor,
-        child_stdin:             std::process::ChildStdin,
+        child_stdin:             ChildStdin,
         owned_run_event_rx:      Receiver<OwnedRunEvent>,
-        test_signal_count:       std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        test_signal_count:       Arc<AtomicUsize>,
     }
 
     #[cfg(unix)]
@@ -777,7 +785,9 @@ mod tests {
                 .stdin
                 .take()
                 .unwrap_or_else(|| panic!("the actor child fixture should have stdin"));
-            let verified_process_identity = match observe_current_process_identity(child.id()) {
+            let verified_process_identity = match identity::observe_current_process_identity(
+                child.id(),
+            ) {
                 CurrentProcessIdentityObservation::Verified(verified_process_identity) => {
                     verified_process_identity
                 },
@@ -787,7 +797,7 @@ mod tests {
                     )
                 },
             };
-            let (owned_run_event_sender, owned_run_event_rx) = unbounded();
+            let (owned_run_event_sender, owned_run_event_rx) = channel::unbounded();
             let (mut owned_run_process_actor, test_signal_count) =
                 OwnedRunProcessActor::prepare_with_test_signal_probe(
                     owned_run_id,
@@ -804,7 +814,7 @@ mod tests {
             }
         }
 
-        fn release_child(mut child_stdin: std::process::ChildStdin) {
+        fn release_child(mut child_stdin: ChildStdin) {
             child_stdin
                 .write_all(b"finished\n")
                 .unwrap_or_else(|error| panic!("the actor child fixture should exit: {error}"));

@@ -21,7 +21,7 @@ use crate::constants::SYNC_UP;
 use crate::project::AbsolutePath;
 
 #[derive(Default)]
-pub struct SyncTracker {
+pub(in crate::tui) struct SyncTracker {
     entries:       HashMap<AbsolutePath, SyncEntry>,
     current_toast: Option<ToastTaskId>,
     next_item_seq: u64,
@@ -58,7 +58,7 @@ enum Baseline {
 }
 
 /// A flipped sync value worth surfacing.
-pub struct SyncTransition {
+pub(in crate::tui) struct SyncTransition {
     pub previous: Option<(usize, usize)>,
     pub current:  Option<(usize, usize)>,
 }
@@ -70,14 +70,18 @@ impl SyncTracker {
     /// a project whose git info is still loading becomes eligible without
     /// recording a premature "no remote" baseline that a later
     /// `CheckoutInfo` would flip to "in sync".
-    pub fn mark_eligible(&mut self, path: AbsolutePath) {
+    pub(in crate::tui) fn mark_eligible(&mut self, path: AbsolutePath) {
         self.entries.entry(path).or_default().toast_readiness = SyncToastReadiness::Ready;
     }
 
     /// Seed a project's baseline from a fully-resolved ahead/behind value,
     /// but only if no observation has been recorded yet. A `None` here is a
     /// real "no remote-tracking branch", not git info that is still loading.
-    pub fn seed_baseline(&mut self, path: AbsolutePath, current: Option<(usize, usize)>) {
+    pub(in crate::tui) fn seed_baseline(
+        &mut self,
+        path: AbsolutePath,
+        current: Option<(usize, usize)>,
+    ) {
         let entry = self.entries.entry(path).or_default();
         if matches!(entry.last_seen, Baseline::Unseen) {
             entry.last_seen = Baseline::Seen(current);
@@ -87,7 +91,7 @@ impl SyncTracker {
     /// Record `current` and return `Some` if the value flipped versus
     /// the prior observation AND the project is eligible. Always
     /// updates the stored baseline.
-    pub fn observe(
+    pub(in crate::tui) fn observe(
         &mut self,
         path: AbsolutePath,
         current: Option<(usize, usize)>,
@@ -104,14 +108,16 @@ impl SyncTracker {
         }
     }
 
-    pub const fn current_toast(&self) -> Option<ToastTaskId> { self.current_toast }
+    pub(in crate::tui) const fn current_toast(&self) -> Option<ToastTaskId> { self.current_toast }
 
-    pub const fn set_current_toast(&mut self, id: Option<ToastTaskId>) { self.current_toast = id; }
+    pub(in crate::tui) const fn set_current_toast(&mut self, id: Option<ToastTaskId>) {
+        self.current_toast = id;
+    }
 
     /// Mint a unique sequence number for the next tracked item key so
     /// repeated transitions for the same project don't dedupe against
     /// each other inside one toast.
-    pub const fn next_item_seq(&mut self) -> u64 {
+    pub(in crate::tui) const fn next_item_seq(&mut self) -> u64 {
         let seq = self.next_item_seq;
         self.next_item_seq = self.next_item_seq.wrapping_add(1);
         seq
@@ -119,7 +125,7 @@ impl SyncTracker {
 }
 
 /// Render `acme: ↓3 ──▶︎ in sync` for one transition.
-pub fn format_transition(name: &str, transition: &SyncTransition) -> String {
+pub(in crate::tui) fn format_transition(name: &str, transition: &SyncTransition) -> String {
     format!(
         "{name}: {} ──▶︎ {}",
         format_sync(transition.previous),

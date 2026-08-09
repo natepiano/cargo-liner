@@ -9,6 +9,7 @@ use tui_pane::TrackedItemActivity;
 use tui_pane::TrackedItemKey;
 
 use super::constants::MAX_MSGS_PER_FRAME;
+use crate::process_termination::TerminationResultPoll;
 use crate::scan::BackgroundMsg;
 use crate::tui::app::App;
 use crate::tui::app::poll_background_stats::PollBackgroundStats;
@@ -21,7 +22,7 @@ use crate::tui::terminal::CleanMsg;
 use crate::tui::terminal::OwnedRunEvent;
 
 impl App {
-    pub fn poll_background(&mut self) -> PollBackgroundStats {
+    pub(in crate::tui) fn poll_background(&mut self) -> PollBackgroundStats {
         let mut rebuild_status = RebuildStatus::NotNeeded;
         let mut msg_count = 0;
         let started = Instant::now();
@@ -204,9 +205,8 @@ impl App {
     /// worker. Transaction deadlines are checked from the foreground tick so a
     /// disconnected or slow backend cannot hold lifecycle state indefinitely.
     fn poll_build_termination_results(&mut self) {
-        while let crate::process_termination::TerminationResultPoll::Completed(
-            termination_outcome_summary,
-        ) = self.background.poll_process_termination_outcome()
+        while let TerminationResultPoll::Completed(termination_outcome_summary) =
+            self.background.poll_process_termination_outcome()
         {
             let build_termination_completion_transition = self
                 .build_monitor
@@ -330,7 +330,7 @@ mod tests {
     use crate::tui::state::OwnedRunTerminationOutcome;
     use crate::tui::state::OwnedRunTerminationSubmission;
     use crate::tui::terminal::OwnedRunEvent;
-    use crate::tui::test_support::make_app;
+    use crate::tui::test_support;
 
     fn make_package(path: &Path) -> RootItem {
         RootItem::Rust(RustProject::Package(Package {
@@ -384,7 +384,7 @@ mod tests {
     #[test]
     fn queued_successful_signal_outcome_precedes_completion_and_labels_the_run_killed()
     -> Result<(), Box<dyn std::error::Error>> {
-        let mut app = make_app(&[]);
+        let mut app = test_support::make_app(&[]);
         let owned_run_id = prepare_pending_owned_run(&mut app)?;
         queue_termination_outcome_and_completion(
             &app,
@@ -406,7 +406,7 @@ mod tests {
     #[test]
     fn failed_signal_followed_by_natural_completion_labels_the_run_done()
     -> Result<(), Box<dyn std::error::Error>> {
-        let mut app = make_app(&[]);
+        let mut app = test_support::make_app(&[]);
         let owned_run_id = prepare_pending_owned_run(&mut app)?;
         queue_termination_outcome_and_completion(
             &app,
@@ -428,7 +428,7 @@ mod tests {
     #[test]
     fn refused_signal_followed_by_natural_completion_labels_the_run_done()
     -> Result<(), Box<dyn std::error::Error>> {
-        let mut app = make_app(&[]);
+        let mut app = test_support::make_app(&[]);
         let owned_run_id = prepare_pending_owned_run(&mut app)?;
         queue_termination_outcome_and_completion(
             &app,
@@ -460,7 +460,8 @@ mod tests {
         let removed_root = temp_dir.path().join("removed");
         let retained_root = temp_dir.path().join("retained");
         std::fs::create_dir_all(&retained_root)?;
-        let mut app = make_app(&[make_package(&removed_root), make_package(&retained_root)]);
+        let mut app =
+            test_support::make_app(&[make_package(&removed_root), make_package(&retained_root)]);
         app.ensure_visible_rows_cached();
         app.project_list
             .set_cursor(app.project_list.visible_rows().len().saturating_sub(1));

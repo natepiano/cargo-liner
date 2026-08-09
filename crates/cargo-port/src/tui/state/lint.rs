@@ -67,7 +67,7 @@ use crate::tui::render_context::PaneRenderCtx;
 /// - `Runs { count, status }` — Rust project with at least one lint run. `status` is unframed; the
 ///   renderer frames the icon at render time.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum LintDisplay {
+pub(in crate::tui) enum LintDisplay {
     /// Default for partial / placeholder `PackageData` (e.g.,
     /// submodules and other non-Rust contexts where the Lint row
     /// is excluded by `package_fields_from_data` anyway).
@@ -82,7 +82,7 @@ pub enum LintDisplay {
 
 /// The `Lint` subsystem. Owns the lint runtime, in-flight
 /// paths, running-toast slot, and the disk cache stat counter.
-pub struct Lint {
+pub(in crate::tui) struct Lint {
     /// Tokio runtime handle that runs cargo lint commands. Spawned
     /// at startup; replaced by [`Self::set_runtime`] when lint
     /// config (`lint.enabled`, `lint.parallel`, `lint.cache_root`)
@@ -117,7 +117,7 @@ impl Lint {
     /// Construct a fresh `Lint` carrying the runtime handle. The
     /// handle is initialized once at app startup; subsequent
     /// config-driven respawns flow through [`Self::set_runtime`].
-    pub fn new(runtime: Option<RuntimeHandle>) -> Self {
+    pub(in crate::tui) fn new(runtime: Option<RuntimeHandle>) -> Self {
         Self {
             runtime,
             running: RunningTracker::new(),
@@ -134,40 +134,46 @@ impl Lint {
 
     // ── content ─────────────────────────────────────────────────
 
-    pub const fn content(&self) -> Option<&LintsData> { self.content.as_ref() }
+    pub(in crate::tui) const fn content(&self) -> Option<&LintsData> { self.content.as_ref() }
 
-    pub fn set_content(&mut self, data: LintsData) { self.content = Some(data); }
+    pub(in crate::tui) fn set_content(&mut self, data: LintsData) { self.content = Some(data); }
 
-    pub fn clear_content(&mut self) { self.content = None; }
+    pub(in crate::tui) fn clear_content(&mut self) { self.content = None; }
 
     // ── runtime ─────────────────────────────────────────────────
 
     /// The lint runtime handle, if lint is enabled.
-    pub const fn runtime(&self) -> Option<&RuntimeHandle> { self.runtime.as_ref() }
+    pub(in crate::tui) const fn runtime(&self) -> Option<&RuntimeHandle> { self.runtime.as_ref() }
 
     /// Clone the runtime handle. Used by spawn paths that want an
     /// owned handle (e.g., [`crate::tui::app::App::reload_lint_history`]).
-    pub fn runtime_clone(&self) -> Option<RuntimeHandle> { self.runtime.clone() }
+    pub(in crate::tui) fn runtime_clone(&self) -> Option<RuntimeHandle> { self.runtime.clone() }
 
     /// Replace the runtime handle. Called by the config-reload
     /// path when lint settings change.
-    pub fn set_runtime(&mut self, handle: Option<RuntimeHandle>) { self.runtime = handle; }
+    pub(in crate::tui) fn set_runtime(&mut self, handle: Option<RuntimeHandle>) {
+        self.runtime = handle;
+    }
 
     // ── pause ───────────────────────────────────────────────────
 
     /// Whether lint is paused. Paused exactly when the sticky warning toast
     /// is held.
-    pub const fn is_paused(&self) -> bool { self.pause_toast.is_some() }
+    pub(in crate::tui) const fn is_paused(&self) -> bool { self.pause_toast.is_some() }
 
     /// Record the sticky "paused" warning toast and enter the paused state.
-    pub const fn set_pause_toast(&mut self, id: ToastId) { self.pause_toast = Some(id); }
+    pub(in crate::tui) const fn set_pause_toast(&mut self, id: ToastId) {
+        self.pause_toast = Some(id);
+    }
 
     /// Leave the paused state, returning the sticky toast id to dismiss.
-    pub const fn take_pause_toast(&mut self) -> Option<ToastId> { self.pause_toast.take() }
+    pub(in crate::tui) const fn take_pause_toast(&mut self) -> Option<ToastId> {
+        self.pause_toast.take()
+    }
 
     // ── running toast projection ────────────────────────────────
 
-    pub fn apply_lint_status(
+    pub(in crate::tui) fn apply_lint_status(
         &mut self,
         path: AbsolutePath,
         kind: LintStatusKind,
@@ -189,12 +195,12 @@ impl Lint {
         }
     }
 
-    pub fn clear_running_path(&mut self, path: &Path) {
+    pub(in crate::tui) fn clear_running_path(&mut self, path: &Path) {
         self.running.remove(path);
         self.catch_up_running.remove(path);
     }
 
-    pub fn toast_items_for_origin(
+    pub(in crate::tui) fn toast_items_for_origin(
         &self,
         origin: LintRunOrigin,
     ) -> (Option<ToastTaskId>, Vec<TrackedItem>) {
@@ -204,14 +210,14 @@ impl Lint {
         )
     }
 
-    pub const fn running_toast_title(origin: LintRunOrigin) -> &'static str {
+    pub(in crate::tui) const fn running_toast_title(origin: LintRunOrigin) -> &'static str {
         match origin {
             LintRunOrigin::CatchUp => CATCH_UP_LINT_TOAST_TITLE,
             LintRunOrigin::Normal => NORMAL_LINT_TOAST_TITLE,
         }
     }
 
-    pub const fn set_running_toast_for_origin(
+    pub(in crate::tui) const fn set_running_toast_for_origin(
         &mut self,
         origin: LintRunOrigin,
         toast: Option<ToastTaskId>,
@@ -230,7 +236,7 @@ impl Lint {
     #[cfg(test)]
     pub const fn running_toast_id(&self) -> Option<ToastTaskId> { self.running.toast }
 
-    pub fn running_toast_path_count(&self) -> usize {
+    pub(in crate::tui) fn running_toast_path_count(&self) -> usize {
         self.running.running.len() + self.catch_up_running.running.len()
     }
 
@@ -279,13 +285,15 @@ impl Lint {
 
     // ── cache usage ─────────────────────────────────────────────
 
-    pub const fn set_cache_usage(&mut self, usage: CacheUsage) { self.cache_usage = usage; }
+    pub(in crate::tui) const fn set_cache_usage(&mut self, usage: CacheUsage) {
+        self.cache_usage = usage;
+    }
 
     // ── read-side lookups ───────────────────────────────────────
 
     /// Lint status of the project at `path`. Returns
     /// [`LintStatus::NoLog`] when the path has no lint history.
-    pub fn status_for_path(projects: &ProjectList, path: &Path) -> LintStatus {
+    pub(in crate::tui) fn status_for_path(projects: &ProjectList, path: &Path) -> LintStatus {
         projects
             .lint_at_path(path)
             .map_or(LintStatus::NoLog, |lr| lr.status().clone())
@@ -294,11 +302,16 @@ impl Lint {
     /// Lint status of a `RootItem` (single project or worktree
     /// group), aggregated across the group's checkouts when
     /// applicable. Delegates to [`RootItem::lint_rollup_status`].
-    pub fn status_for_root(item: &RootItem) -> LintStatus { item.lint_rollup_status() }
+    pub(in crate::tui) fn status_for_root(item: &RootItem) -> LintStatus {
+        item.lint_rollup_status()
+    }
 
     /// Lint status of a single worktree entry within a worktree
     /// group; `worktree_index` 0 is the primary checkout.
-    pub fn status_for_worktree(item: &RootItem, worktree_index: usize) -> LintStatus {
+    pub(in crate::tui) fn status_for_worktree(
+        item: &RootItem,
+        worktree_index: usize,
+    ) -> LintStatus {
         match item {
             RootItem::Worktrees(group) => group.lint_status_for_worktree(worktree_index),
             _ => LintStatus::NoLog,
@@ -306,7 +319,7 @@ impl Lint {
     }
 
     /// Run count at `path`, or 0 when no lint history exists.
-    pub fn run_count_at(projects: &ProjectList, path: &Path) -> usize {
+    pub(in crate::tui) fn run_count_at(projects: &ProjectList, path: &Path) -> usize {
         projects.lint_at_path(path).map_or(0, |lr| lr.runs().len())
     }
 
@@ -318,7 +331,7 @@ impl Lint {
     /// pane is showing a worktree-group rollup. In that case the
     /// status aggregates across the group's checkouts and the run
     /// count sums across them. Otherwise the lookup is per-path.
-    pub fn package_display(
+    pub(in crate::tui) fn package_display(
         projects: &ProjectList,
         abs: &AbsolutePath,
         is_worktree_group: bool,
@@ -378,7 +391,7 @@ const fn activity_for(phase: LintRunPhase) -> TrackedItemActivity {
 /// The color a live lint spinner takes. Blocked on a cargo file lock reads as
 /// an error color so a stuck run is visible at a glance; anything else spins
 /// in the accent color.
-pub fn running_spinner_color(phase: LintRunPhase) -> Color {
+pub(in crate::tui) fn running_spinner_color(phase: LintRunPhase) -> Color {
     match phase {
         LintRunPhase::Executing => tui_pane::accent_color(),
         LintRunPhase::Blocked => tui_pane::error_color(),
@@ -388,7 +401,7 @@ pub fn running_spinner_color(phase: LintRunPhase) -> Color {
 /// Resolve a [`LintStatus`] to the [`LintCell`] (icon + style
 /// pair) rendered in the Lint column. Free fn so renderers can
 /// call it from `Pane::render` with typed refs (no `&App`).
-pub fn lint_cell_for(
+pub(in crate::tui) fn lint_cell_for(
     status: &LintStatus,
     config: &Config,
     animation_elapsed: Duration,

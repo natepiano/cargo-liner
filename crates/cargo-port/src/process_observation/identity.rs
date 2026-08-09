@@ -1,7 +1,12 @@
+use std::ffi::OsString;
 #[cfg(target_os = "macos")]
 use std::mem::MaybeUninit;
+use std::path::Path;
 
 use processkit::process_info;
+use sha2::Digest as _;
+use sysinfo::ProcessesToUpdate;
+use sysinfo::UpdateKind;
 
 use super::snapshot::ProcessFieldObservation;
 use super::snapshot::ProcessFieldUnavailable;
@@ -120,7 +125,7 @@ impl ProcessIdentity {
 /// only so `ProcessIdentity` can be a deterministic collection key; only
 /// `ProcessCreationOrderEvidence` establishes creation order.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(crate) struct PlatformCreationToken(u64);
+struct PlatformCreationToken(u64);
 
 impl PlatformCreationToken {
     const fn from_platform(value: u64) -> Self { Self(value) }
@@ -137,7 +142,7 @@ pub(crate) enum ObservedProcessIdentity {
 }
 
 impl ObservedProcessIdentity {
-    pub(crate) const fn pid(&self) -> u32 {
+    pub(super) const fn pid(&self) -> u32 {
         match self {
             Self::Strong(process_identity) => process_identity.pid(),
             Self::Insufficient(insufficient_identity) => insufficient_identity.pid(),
@@ -707,7 +712,7 @@ impl ProcessIncarnation {
     pub(crate) const fn identity(&self) -> &ProcessIdentity { &self.identity }
 
     #[cfg(test)]
-    pub(crate) const fn executable_argv_fingerprint(&self) -> &ProcessFingerprint {
+    pub(super) const fn executable_argv_fingerprint(&self) -> &ProcessFingerprint {
         &self.executable_argv_fingerprint
     }
 }
@@ -736,11 +741,11 @@ pub(crate) fn observe_process_image_continuity(
     let pid = sysinfo::Pid::from_u32(authorized_incarnation.identity.pid());
     let mut system = sysinfo::System::new();
     system.refresh_processes_specifics(
-        sysinfo::ProcessesToUpdate::Some(&[pid]),
+        ProcessesToUpdate::Some(&[pid]),
         true,
         sysinfo::ProcessRefreshKind::nothing()
-            .with_exe(sysinfo::UpdateKind::Always)
-            .with_cmd(sysinfo::UpdateKind::Always),
+            .with_exe(UpdateKind::Always)
+            .with_cmd(UpdateKind::Always),
     );
     let Some(process) = system.process(pid) else {
         return ProcessImageContinuity::ProcessGone;
@@ -759,25 +764,16 @@ pub(crate) fn observe_process_image_continuity(
 
 /// A stable digest of observed executable and argument evidence.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(crate) struct ProcessFingerprint([u8; 32]);
+pub(super) struct ProcessFingerprint([u8; 32]);
 
 impl ProcessFingerprint {
-    pub(super) fn from_observed_fields(
-        executable: &std::path::Path,
-        argv: &[std::ffi::OsString],
-    ) -> Self {
-        use sha2::Digest as _;
-
+    pub(super) fn from_observed_fields(executable: &Path, argv: &[OsString]) -> Self {
         let mut digest = sha2::Sha256::new();
         Self::write_hash_input(executable, argv, |bytes| digest.update(bytes));
         Self(digest.finalize().into())
     }
 
-    fn write_hash_input(
-        executable: &std::path::Path,
-        argv: &[std::ffi::OsString],
-        mut write: impl FnMut(&[u8]),
-    ) {
+    fn write_hash_input(executable: &Path, argv: &[OsString], mut write: impl FnMut(&[u8])) {
         let executable_bytes = executable.as_os_str().as_encoded_bytes();
         let executable_length = executable_bytes.len().to_le_bytes();
         write(&executable_length);

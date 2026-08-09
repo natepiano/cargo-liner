@@ -8,13 +8,13 @@ use tui_pane::PanePlacement;
 use tui_pane::ResolvedPane;
 use tui_pane::ResolvedPaneLayout;
 
+use super::constants::CPU_PANE_WIDTH;
 use super::constants::PANE_BORDER_HEIGHT;
 use super::cpu;
-use super::cpu::CPU_PANE_WIDTH;
 use super::spec::PaneId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BottomRow {
+pub(in crate::tui) enum BottomRow {
     Diagnostics,
     Output,
 }
@@ -96,9 +96,11 @@ pub(super) fn derived_layout(bottom_row: BottomRow) -> PaneGridLayout<PaneId> {
     PaneGridLayout { placements }
 }
 
-pub fn tab_order(bottom_row: BottomRow) -> Vec<PaneId> { derived_layout(bottom_row).tab_order() }
+pub(in crate::tui) fn tab_order(bottom_row: BottomRow) -> Vec<PaneId> {
+    derived_layout(bottom_row).tab_order()
+}
 
-pub fn resolve_layout(
+pub(in crate::tui) fn resolve_layout(
     area: Rect,
     left_width: u16,
     core_count: usize,
@@ -231,7 +233,7 @@ const fn cpu_column_width() -> u16 { CPU_PANE_WIDTH }
 /// measurement wraps each pane's description to these widths, and
 /// [`resolve_pane_area`] lays the panes out at the same widths, so the
 /// measured height matches the rendered layout.
-pub fn top_pane_widths(area: Rect, left_width: u16) -> (u16, u16) {
+pub(in crate::tui) fn top_pane_widths(area: Rect, left_width: u16) -> (u16, u16) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(left_width), Constraint::Min(20)])

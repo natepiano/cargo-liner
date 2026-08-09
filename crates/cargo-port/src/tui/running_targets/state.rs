@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::env;
@@ -44,7 +45,7 @@ impl From<Option<AbsolutePath>> for CargoInstallBinDirectory {
 
 /// Where a process appears in the Running Targets process outline.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RunningProcessPlacement {
+pub(in crate::tui) enum RunningProcessPlacement {
     /// The process has no parent row in the outline.
     TopLevel,
     /// The process appears directly under the shown parent process.
@@ -58,7 +59,7 @@ impl From<Option<u32>> for RunningProcessPlacement {
 }
 
 /// Running Targets presentation state derived from immutable observer records.
-pub struct RunningTargetsState {
+pub(in crate::tui) struct RunningTargetsState {
     snapshot:                    RunningTargets,
     /// Canonical Cargo install binary directory (`~/.cargo/bin` by default).
     /// Executables living directly in a resolved directory are matched as
@@ -77,7 +78,7 @@ pub struct RunningTargetsState {
 }
 
 #[derive(Default)]
-pub struct RunningTargets {
+pub(in crate::tui) struct RunningTargets {
     by_key:   HashMap<RunningKey, RunningTarget>,
     /// Untracked processes descended from tracked instances — e.g. the
     /// `cargo` and `rustc` processes a `cargo mend` run spawns. Shown
@@ -97,7 +98,7 @@ struct RunningTarget {
 /// than one process (multiple `cargo run` invocations); each gets its own
 /// instance so the pane can list them separately and kill one by PID.
 #[derive(Clone)]
-pub struct RunningInstance {
+pub(in crate::tui) struct RunningInstance {
     /// OS process id, used to terminate the instance.
     pub pid:                    u32,
     /// CPU usage in percent. A busy multi-threaded process can exceed 100.
@@ -120,7 +121,7 @@ pub struct RunningInstance {
 /// One untracked process descended from a tracked instance — e.g. the
 /// `cargo` and `rustc` processes a `cargo mend` run spawns. Carries the
 /// same live metrics as an instance so its Running row reads the same.
-pub struct ChildProcess {
+pub(in crate::tui) struct ChildProcess {
     /// OS process id, used to terminate the process.
     pub pid:                    u32,
     /// The process's executable name — the Target cell of its row.
@@ -143,7 +144,7 @@ pub struct ChildProcess {
 /// How a running target's binary was launched — the marker shown in place
 /// of a bare "running" flag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RunProfile {
+pub(in crate::tui) enum RunProfile {
     /// Exe under `target/debug/`.
     Debug,
     /// Exe under `target/release/`.
@@ -154,7 +155,7 @@ pub enum RunProfile {
 }
 
 impl RunProfile {
-    pub const fn label(self) -> &'static str {
+    pub(in crate::tui) const fn label(self) -> &'static str {
         match self {
             Self::Debug => "debug",
             Self::Release => "release",
@@ -164,14 +165,14 @@ impl RunProfile {
 
     /// Whether this is a `cargo install`ed binary — the instances the
     /// Running list groups under its collapsible `cargo` header.
-    pub const fn is_installed(self) -> bool { matches!(self, Self::Installed) }
+    pub(in crate::tui) const fn is_installed(self) -> bool { matches!(self, Self::Installed) }
 }
 
 /// Key identifying a running target. Matched against
 /// `(target_dir, run_target_kind, name)`, where `target_dir` is the
 /// target-directory path used for executable matching.
 #[derive(Hash, Eq, PartialEq, Clone, Debug)]
-pub struct RunningKey {
+pub(in crate::tui) struct RunningKey {
     pub target_dir:      AbsolutePath,
     pub run_target_kind: RunTargetKind,
     pub name:            String,
@@ -179,7 +180,7 @@ pub struct RunningKey {
 
 /// Borrowed Running Targets attribution for one workspace or unindexed
 /// visible project.
-pub struct RunningTargetProjectAttribution<'a> {
+pub(in crate::tui) struct RunningTargetProjectAttribution<'a> {
     /// Target-directory path used as the executable-matching boundary.
     /// This is canonical when live canonical resolution succeeds and is the
     /// declared target-directory path when canonical resolution is unavailable.
@@ -297,7 +298,7 @@ impl RunningTargetProjectAttribution<'_> {
 }
 
 impl RunningTargetsState {
-    pub fn new() -> Self {
+    pub(in crate::tui) fn new() -> Self {
         Self {
             snapshot:                    RunningTargets::default(),
             cargo_install_bin_directory: cargo_install_bin_directory(),
@@ -307,7 +308,7 @@ impl RunningTargetsState {
     }
 
     /// Rebuild view state from one completed identity and metrics observation.
-    pub fn apply_observation(
+    pub(in crate::tui) fn apply_observation(
         &mut self,
         now: Instant,
         process_observation_snapshot: &ProcessObservationSnapshot,
@@ -415,10 +416,7 @@ impl RunningTargetsState {
         &mut self,
         now: Instant,
         process_observation_snapshot: &ProcessObservationSnapshot,
-        running_process_metrics: &std::collections::BTreeMap<
-            ProcessIdentity,
-            RunningProcessMetricsRecord,
-        >,
+        running_process_metrics: &BTreeMap<ProcessIdentity, RunningProcessMetricsRecord>,
         project_attributions: &[RunningTargetProjectAttribution<'_>],
     ) -> HashMap<RunningKey, RunningTarget> {
         let mut by_key: HashMap<RunningKey, RunningTarget> = HashMap::new();
@@ -521,7 +519,7 @@ impl RunningTargetsState {
         by_key
     }
 
-    pub const fn snapshot(&self) -> &RunningTargets { &self.snapshot }
+    pub(in crate::tui) const fn snapshot(&self) -> &RunningTargets { &self.snapshot }
 
     /// Replace the snapshot directly, bypassing the process poll. Used by
     /// render/dispatch tests.
@@ -533,7 +531,10 @@ impl RunningTargetsState {
     /// so the pane reflects the change on the very next render (the next
     /// poll would do the same once the process exits). Also evicts the
     /// PIDs' first-seen entries so a reused number starts a fresh slot.
-    pub fn drop_instance(&mut self, capability: &RunningTargetTerminationCapability) {
+    pub(in crate::tui) fn drop_instance(
+        &mut self,
+        capability: &RunningTargetTerminationCapability,
+    ) {
         self.snapshot.drop_identity(capability);
         self.first_seen.remove(capability.process_identity());
         self.cpu_history.remove(capability.process_identity());
@@ -544,7 +545,7 @@ impl RunningTargets {
     /// Every tracked key with its owning member dir and instances (sorted
     /// by PID). Iteration order is arbitrary; callers sort the flattened
     /// rows themselves.
-    pub fn iter_targets(
+    pub(in crate::tui) fn iter_targets(
         &self,
     ) -> impl Iterator<Item = (&RunningKey, &AbsolutePath, &[RunningInstance])> {
         self.by_key
@@ -555,11 +556,11 @@ impl RunningTargets {
     /// Whether any tracked instance is currently running — keys with no
     /// live instances are dropped each tick, so a non-empty map means
     /// live processes.
-    pub fn has_instances(&self) -> bool { !self.by_key.is_empty() }
+    pub(in crate::tui) fn has_instances(&self) -> bool { !self.by_key.is_empty() }
 
     /// Untracked descendants of tracked instances, for the Running list's
     /// outline. Unordered; the row builder nests them by parent link.
-    pub fn child_processes(&self) -> &[ChildProcess] { &self.children }
+    pub(in crate::tui) fn child_processes(&self) -> &[ChildProcess] { &self.children }
 
     /// Remove every instance and child process whose PID is in `pids`,
     /// dropping any key left with no instances.

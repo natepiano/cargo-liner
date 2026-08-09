@@ -36,6 +36,8 @@ mod snapshot;
 )]
 mod termination;
 
+use std::time::Instant;
+
 pub(crate) use activity::CompileActivity;
 pub(crate) use activity::CompileActivityId;
 pub(crate) use activity::CompiledCrateIdentity;
@@ -72,6 +74,7 @@ pub(crate) use session::OwnedRootLifecycle;
 pub(crate) use session::SessionScope;
 pub(crate) use session::TargetDirectoryEvidence;
 pub(crate) use snapshot::BuildSessionActivity;
+use snapshot::MonitorDataActionability;
 pub(crate) use snapshot::MonitorDisplay;
 pub(crate) use snapshot::MonitorSessionOwnership;
 pub(crate) use snapshot::MonitorSessionRow;
@@ -80,6 +83,8 @@ pub(crate) use snapshot::MonitorStaleness;
 pub(crate) use termination::AdditionalBuildExclusion;
 pub(crate) use termination::BUILD_TERMINATION_TIMEOUT;
 pub(crate) use termination::BuildTerminationAggregateCompletion;
+#[cfg(test)]
+use termination::BuildTerminationAuthority;
 pub(crate) use termination::BuildTerminationAuthorizationConstruction;
 pub(crate) use termination::BuildTerminationCompletionTransition;
 pub(crate) use termination::BuildTerminationDeadline;
@@ -95,11 +100,24 @@ pub(crate) use termination::BuildTerminationTerminalRecord;
 pub(crate) use termination::BuildTerminationTransactionId;
 pub(crate) use termination::BuildTerminationTransactionTargetSet;
 pub(crate) use termination::OutputBuildSetTerminationAuthorization;
+use termination::OutputBuildSetTerminationAuthorizationCurrency;
 pub(crate) use termination::OutputBuildSetTerminationAvailability;
+#[cfg(test)]
+use termination::OwnedBuildTerminationAuthority;
 pub(crate) use termination::OwnedTerminationSupport;
 pub(crate) use termination::SelectedBuildTerminationAuthorization;
+use termination::SelectedBuildTerminationAuthorizationCurrency;
 pub(crate) use termination::SelectedBuildTerminationAvailability;
 pub(crate) use termination::observe_build_termination_demand;
+
+use crate::process_observation::ProcessRefreshConsumerDemand;
+use crate::process_observation::TerminationTransactionRefreshSchedule;
+use crate::process_termination::ProcessTerminator;
+use crate::process_termination::TerminationOutcomeSummary;
+use crate::tui::OwnedRunId;
+use crate::tui::OwnedRunTerminationOutcome;
+use crate::tui::OwnedRunTerminationSubmission;
+use crate::tui::OwnedRunTerminationToken;
 
 /// The compile monitor's own classification results and their lifetime.
 ///
@@ -151,8 +169,8 @@ impl BuildMonitor {
     pub(crate) fn show_with_owned_termination_authority_for_test(
         &mut self,
         monitor_snapshot: MonitorSnapshot,
-        owned_run_id: crate::tui::OwnedRunId,
-        owned_run_termination_token: crate::tui::OwnedRunTerminationToken,
+        owned_run_id: OwnedRunId,
+        owned_run_termination_token: OwnedRunTerminationToken,
     ) -> OwnedTerminationFixtureAuthorityInstallation {
         let MonitorSnapshot::Fresh(monitor_data) = &monitor_snapshot else {
             return OwnedTerminationFixtureAuthorityInstallation::SnapshotNotActionable;
@@ -171,12 +189,10 @@ impl BuildMonitor {
         self.termination_state
             .replace_current_authorities(std::collections::BTreeMap::from([(
                 build_session_id.clone(),
-                termination::BuildTerminationAuthority::Owned(
-                    termination::OwnedBuildTerminationAuthority {
-                        owned_run_id,
-                        owned_run_termination_token,
-                    },
-                ),
+                BuildTerminationAuthority::Owned(OwnedBuildTerminationAuthority {
+                    owned_run_id,
+                    owned_run_termination_token,
+                }),
             )]));
         OwnedTerminationFixtureAuthorityInstallation::Installed(build_session_id)
     }
@@ -202,7 +218,7 @@ impl BuildMonitor {
         build_session_id: &BuildSessionId,
     ) -> BuildTerminationAuthorizationConstruction<SelectedBuildTerminationAuthorization> {
         match self.monitor_snapshot.actionability() {
-            snapshot::MonitorDataActionability::Actionable(monitor_data) => {
+            MonitorDataActionability::Actionable(monitor_data) => {
                 let Some(monitor_session_row) =
                     monitor_data
                         .session_rows()
@@ -216,7 +232,7 @@ impl BuildMonitor {
                 self.termination_state
                     .selected_authorization(monitor_data.build_scope_key(), monitor_session_row)
             },
-            snapshot::MonitorDataActionability::NotActionable => self
+            MonitorDataActionability::NotActionable => self
                 .termination_state
                 .selected_authorization_for_inactive_snapshot(),
         }
@@ -229,7 +245,7 @@ impl BuildMonitor {
         build_session_id: &BuildSessionId,
     ) -> SelectedBuildTerminationAvailability {
         match self.monitor_snapshot.actionability() {
-            snapshot::MonitorDataActionability::Actionable(monitor_data) => {
+            MonitorDataActionability::Actionable(monitor_data) => {
                 if monitor_data
                     .session_rows()
                     .iter()
@@ -243,7 +259,7 @@ impl BuildMonitor {
                     SelectedBuildTerminationAvailability::SessionNotActionable
                 }
             },
-            snapshot::MonitorDataActionability::NotActionable => self
+            MonitorDataActionability::NotActionable => self
                 .termination_state
                 .selected_termination_availability_for_inactive_snapshot(),
         }
@@ -255,10 +271,10 @@ impl BuildMonitor {
         &self,
     ) -> OutputBuildSetTerminationAvailability {
         match self.monitor_snapshot.actionability() {
-            snapshot::MonitorDataActionability::Actionable(monitor_data) => self
+            MonitorDataActionability::Actionable(monitor_data) => self
                 .termination_state
                 .output_build_set_termination_availability(monitor_data.session_rows()),
-            snapshot::MonitorDataActionability::NotActionable => self
+            MonitorDataActionability::NotActionable => self
                 .termination_state
                 .output_build_set_termination_availability_for_inactive_snapshot(),
         }
@@ -270,13 +286,13 @@ impl BuildMonitor {
         &mut self,
     ) -> BuildTerminationAuthorizationConstruction<OutputBuildSetTerminationAuthorization> {
         match self.monitor_snapshot.actionability() {
-            snapshot::MonitorDataActionability::Actionable(monitor_data) => {
+            MonitorDataActionability::Actionable(monitor_data) => {
                 self.termination_state.output_build_set_authorization(
                     monitor_data.build_scope_key(),
                     monitor_data.session_rows(),
                 )
             },
-            snapshot::MonitorDataActionability::NotActionable => self
+            MonitorDataActionability::NotActionable => self
                 .termination_state
                 .output_build_set_authorization_for_inactive_snapshot(),
         }
@@ -288,24 +304,24 @@ impl BuildMonitor {
     pub(crate) fn submit_selected_termination(
         &mut self,
         selected_build_termination_authorization: SelectedBuildTerminationAuthorization,
-        process_terminator: &mut crate::process_termination::ProcessTerminator,
+        process_terminator: &mut ProcessTerminator,
         build_termination_deadline: BuildTerminationDeadline,
     ) -> BuildTerminationSubmission {
         match self.monitor_snapshot.actionability() {
-            snapshot::MonitorDataActionability::NotActionable => {
+            MonitorDataActionability::NotActionable => {
                 return BuildTerminationSubmission::Refused(
                     BuildTerminationSubmissionRefusal::SnapshotNotActionable,
                 );
             },
-            snapshot::MonitorDataActionability::Actionable(monitor_data) => {
+            MonitorDataActionability::Actionable(monitor_data) => {
                 match selected_build_termination_authorization.currency_against(monitor_data) {
-                    termination::SelectedBuildTerminationAuthorizationCurrency::Current => {},
-                    termination::SelectedBuildTerminationAuthorizationCurrency::ScopeChanged => {
+                    SelectedBuildTerminationAuthorizationCurrency::Current => {},
+                    SelectedBuildTerminationAuthorizationCurrency::ScopeChanged => {
                         return BuildTerminationSubmission::Refused(
                             BuildTerminationSubmissionRefusal::SelectedScopeChanged,
                         );
                     },
-                    termination::SelectedBuildTerminationAuthorizationCurrency::SessionChanged => {
+                    SelectedBuildTerminationAuthorizationCurrency::SessionChanged => {
                         return BuildTerminationSubmission::Refused(
                             BuildTerminationSubmissionRefusal::SelectedSessionChanged,
                         );
@@ -325,10 +341,10 @@ impl BuildMonitor {
     pub(crate) fn submit_output_build_set_termination(
         &mut self,
         output_build_set_termination_authorization: OutputBuildSetTerminationAuthorization,
-        process_terminator: &mut crate::process_termination::ProcessTerminator,
+        process_terminator: &mut ProcessTerminator,
         build_termination_deadline: BuildTerminationDeadline,
     ) -> BuildTerminationSubmission {
-        let snapshot::MonitorDataActionability::Actionable(monitor_data) =
+        let MonitorDataActionability::Actionable(monitor_data) =
             self.monitor_snapshot.actionability()
         else {
             return BuildTerminationSubmission::Refused(
@@ -336,8 +352,8 @@ impl BuildMonitor {
             );
         };
         match output_build_set_termination_authorization.currency_against(monitor_data) {
-            termination::OutputBuildSetTerminationAuthorizationCurrency::Current => {},
-            termination::OutputBuildSetTerminationAuthorizationCurrency::CoveredRootsChanged => {
+            OutputBuildSetTerminationAuthorizationCurrency::Current => {},
+            OutputBuildSetTerminationAuthorizationCurrency::CoveredRootsChanged => {
                 return BuildTerminationSubmission::Refused(
                     BuildTerminationSubmissionRefusal::CoveredScopeRootsChanged,
                 );
@@ -359,9 +375,7 @@ impl BuildMonitor {
     pub(crate) fn submit_owned_termination_targets(
         &mut self,
         build_termination_transaction_id: BuildTerminationTransactionId,
-        submit: impl FnMut(
-            crate::tui::OwnedRunTerminationToken,
-        ) -> crate::tui::OwnedRunTerminationSubmission,
+        submit: impl FnMut(OwnedRunTerminationToken) -> OwnedRunTerminationSubmission,
     ) -> BuildTerminationCompletionTransition {
         let build_termination_completion_transition = self.termination_state.submit_owned_targets(
             build_termination_transaction_id,
@@ -375,7 +389,7 @@ impl BuildMonitor {
     /// Reconcile one correlated external worker result.
     pub(crate) fn reconcile_external_termination(
         &mut self,
-        termination_outcome_summary: &crate::process_termination::TerminationOutcomeSummary,
+        termination_outcome_summary: &TerminationOutcomeSummary,
     ) -> BuildTerminationCompletionTransition {
         let build_termination_completion_transition =
             self.termination_state.reconcile_external_outcome(
@@ -389,7 +403,7 @@ impl BuildMonitor {
     /// Reconcile one FIFO actor outcome after `Inflight` has applied it.
     pub(crate) fn reconcile_owned_termination(
         &mut self,
-        owned_run_termination_outcome: crate::tui::OwnedRunTerminationOutcome,
+        owned_run_termination_outcome: OwnedRunTerminationOutcome,
     ) -> BuildTerminationCompletionTransition {
         let build_termination_completion_transition =
             self.termination_state.reconcile_owned_outcome(
@@ -403,7 +417,7 @@ impl BuildMonitor {
     /// Reconcile the actor's later child-reap proof for an owned target.
     pub(crate) fn reconcile_owned_termination_finished(
         &mut self,
-        owned_run_id: crate::tui::OwnedRunId,
+        owned_run_id: OwnedRunId,
     ) -> BuildTerminationCompletionTransition {
         let build_termination_completion_transition = self
             .termination_state
@@ -416,7 +430,7 @@ impl BuildMonitor {
     /// terminal before its deadline.
     pub(crate) fn expire_termination_transaction(
         &mut self,
-        now: std::time::Instant,
+        now: Instant,
     ) -> BuildTerminationCompletionTransition {
         let build_termination_completion_transition = self
             .termination_state
@@ -428,7 +442,7 @@ impl BuildMonitor {
     /// Build one immutable descendant-pass request only for transaction demand.
     pub(crate) fn termination_observation_demand(
         &self,
-        process_refresh_consumer_demand: crate::process_observation::ProcessRefreshConsumerDemand,
+        process_refresh_consumer_demand: ProcessRefreshConsumerDemand,
     ) -> BuildTerminationObservationDemand {
         self.termination_state
             .termination_observation_demand(process_refresh_consumer_demand)
@@ -437,7 +451,7 @@ impl BuildMonitor {
     /// The next time the active transaction needs the shared observer.
     pub(crate) const fn termination_refresh_schedule(
         &self,
-    ) -> crate::process_observation::TerminationTransactionRefreshSchedule {
+    ) -> TerminationTransactionRefreshSchedule {
         self.termination_state.termination_refresh_schedule()
     }
 
@@ -445,7 +459,7 @@ impl BuildMonitor {
     pub(crate) fn reconcile_termination_observation(
         &mut self,
         build_termination_observation_execution: BuildTerminationObservationExecution,
-        process_terminator: &mut crate::process_termination::ProcessTerminator,
+        process_terminator: &mut ProcessTerminator,
     ) -> BuildTerminationCompletionTransition {
         let BuildTerminationObservationExecution::Completed(
             completed_build_termination_observation,
@@ -494,7 +508,7 @@ pub(crate) enum FixtureRootOwnership {
     /// The root observed under `root_pid` is the owned run's Cargo root.
     OwnedRoot {
         root_pid:     u32,
-        owned_run_id: crate::tui::OwnedRunId,
+        owned_run_id: OwnedRunId,
     },
 }
 

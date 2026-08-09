@@ -2,10 +2,10 @@
 
 use std::sync::Arc;
 
+use super::app::App;
 use crate::project::CargoWorkspaceIndex;
 use crate::project::CargoWorkspaceIndexRevisionState;
 use crate::project::WorkspaceIndexRebuild;
-use crate::tui::app::App;
 
 /// Readiness of the App-owned workspace index for one consumer decision.
 ///
@@ -31,7 +31,7 @@ pub(crate) enum WorkspaceIndexReadiness<'a> {
 impl App {
     /// Refresh the immutable index only when the metadata store is available,
     /// then expose the current or retained accepted index to one consumer.
-    pub(crate) fn workspace_index_readiness(&mut self) -> WorkspaceIndexReadiness<'_> {
+    pub(super) fn workspace_index_readiness(&mut self) -> WorkspaceIndexReadiness<'_> {
         {
             let Ok(metadata_store) = self.scan.metadata_store().lock() else {
                 return self.retained_workspace_index_readiness();

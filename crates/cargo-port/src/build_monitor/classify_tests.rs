@@ -4,8 +4,11 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::num::NonZeroU64;
+use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
+
+use tempfile::TempDir;
 
 use super::activity::CompilationTarget;
 use super::activity::CompileActivity;
@@ -15,10 +18,10 @@ use super::activity::CompilerKind;
 use super::activity::CompilerSessionCandidates;
 use super::activity::ResolvedCompilerAttribution;
 use super::build_classifier::BuildClassifier;
+use super::classify;
 use super::classify::ArgumentPath;
 use super::classify::BuildClassification;
 use super::classify::CargoSubcommandRecognition;
-use super::classify::observed_process_path_arguments;
 use super::execution::CompileClassificationCancellation;
 use super::execution::CompileClassificationDemand;
 use super::execution::CompileClassificationExecution;
@@ -42,9 +45,9 @@ use crate::process_observation::BuildCandidateRole;
 use crate::process_observation::ProcessObserver;
 use crate::process_observation::identity::ProcessIdentity;
 use crate::process_observation::identity::ProcessIncarnation;
+use crate::process_observation::snapshot_builder;
 use crate::process_observation::snapshot_builder::ObservedCandidateRole;
 use crate::process_observation::snapshot_builder::ObservedProcess;
-use crate::process_observation::snapshot_builder::snapshot_of;
 use crate::project::AbsolutePath;
 use crate::project::CargoWorkspaceIndex;
 use crate::project::FileStamp;
@@ -168,11 +171,11 @@ fn configured_aliases_and_third_party_plugins_stay_unrecognized() {
 
 #[test]
 fn manifest_path_argument_is_read_in_both_spellings() {
-    let separate = observed_process_path_arguments(
+    let separate = classify::observed_process_path_arguments(
         BuildCandidateRole::Cargo,
         &argv(&["cargo", "build", "--manifest-path", "/checkout/Cargo.toml"]),
     );
-    let joined = observed_process_path_arguments(
+    let joined = classify::observed_process_path_arguments(
         BuildCandidateRole::Cargo,
         &argv(&["cargo", "build", "--manifest-path=/checkout/Cargo.toml"]),
     );
@@ -188,7 +191,7 @@ fn manifest_path_argument_is_read_in_both_spellings() {
 
 #[test]
 fn absolute_manifest_argument_without_a_flag_is_read() {
-    let observed = observed_process_path_arguments(
+    let observed = classify::observed_process_path_arguments(
         BuildCandidateRole::Cargo,
         &argv(&["cargo", "package", "/checkout/member/Cargo.toml"]),
     );
@@ -200,7 +203,7 @@ fn absolute_manifest_argument_without_a_flag_is_read() {
 
 #[test]
 fn target_directory_argument_is_read() {
-    let observed = observed_process_path_arguments(
+    let observed = classify::observed_process_path_arguments(
         BuildCandidateRole::Cargo,
         &argv(&["cargo", "build", "--target-dir", "/shared/target"]),
     );
@@ -212,7 +215,7 @@ fn target_directory_argument_is_read() {
 
 #[test]
 fn compiler_output_directory_and_primary_input_are_read() {
-    let observed = observed_process_path_arguments(
+    let observed = classify::observed_process_path_arguments(
         BuildCandidateRole::Compiler,
         &argv(&[
             "rustc",
@@ -237,7 +240,7 @@ fn compiler_output_directory_and_primary_input_are_read() {
 fn a_cargo_root_never_claims_a_primary_input() {
     // `cargo run src/main.rs` is not a compile of that file; only a compiler
     // process names a primary input.
-    let observed = observed_process_path_arguments(
+    let observed = classify::observed_process_path_arguments(
         BuildCandidateRole::Cargo,
         &argv(&["cargo", "build", "/checkout/src/lib.rs"]),
     );
@@ -309,8 +312,8 @@ fn an_unobservable_target_directory_never_matches_output() {
 
 /// One indexed workspace on disk, plus the classifier that reads it.
 pub(super) struct ClassificationFixture {
-    temp_dir:                         tempfile::TempDir,
-    pub(super) checkout_root:         std::path::PathBuf,
+    temp_dir:                         TempDir,
+    pub(super) checkout_root:         PathBuf,
     workspace_metadata_store:         WorkspaceMetadataStore,
     pub(super) cargo_workspace_index: CargoWorkspaceIndex,
     pub(super) build_classifier:      BuildClassifier,
@@ -335,10 +338,7 @@ impl ClassificationFixture {
 
     /// Create one checkout directory with its own `target/` and index it as a
     /// workspace, so a test can state two live checkouts side by side.
-    fn index_checkout(
-        &mut self,
-        name: &str,
-    ) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    fn index_checkout(&mut self, name: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
         let checkout_root = self.temp_dir.path().join(name);
         std::fs::create_dir_all(checkout_root.join("target"))?;
         std::fs::create_dir_all(checkout_root.join("src"))?;
@@ -379,7 +379,7 @@ impl ClassificationFixture {
         owned_root_evidence: &OwnedRootEvidence,
     ) -> BuildClassification {
         self.build_classifier.classify_cycle(
-            &snapshot_of(observed_processes),
+            &snapshot_builder::snapshot_of(observed_processes),
             &self.cargo_workspace_index,
             owned_root_evidence,
             Instant::now(),
@@ -392,7 +392,7 @@ impl ClassificationFixture {
         &self,
         name: &str,
         version: &str,
-    ) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    ) -> Result<PathBuf, Box<dyn std::error::Error>> {
         let dependency_root = self.temp_dir.path().join(format!("{name}-{version}"));
         std::fs::create_dir_all(dependency_root.join("src"))?;
         std::fs::write(
@@ -612,7 +612,7 @@ fn classifying_the_same_snapshot_twice_produces_the_same_result()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut fixture = ClassificationFixture::new()?;
     let cargo_root = fixture.cargo_root(&["cargo", "build", "--release"]);
-    let process_observation_snapshot = snapshot_of(&[cargo_root]);
+    let process_observation_snapshot = snapshot_builder::snapshot_of(&[cargo_root]);
     let cycle_instant = Instant::now();
 
     let first = fixture.build_classifier.classify_cycle(
@@ -656,7 +656,7 @@ fn a_verified_owned_root_is_attributed_to_the_owned_run() -> Result<(), Box<dyn 
     ));
 
     let build_classification = fixture.build_classifier.classify_cycle(
-        &snapshot_of(&[cargo_root]),
+        &snapshot_builder::snapshot_of(&[cargo_root]),
         &fixture.cargo_workspace_index,
         &owned_root_evidence,
         Instant::now(),
@@ -1154,7 +1154,7 @@ fn compilers_sharing_one_target_directory_are_separated_by_their_primary_input()
     )
     .with_cwd(&sibling_checkout_root)
     .with_candidate_role(ObservedCandidateRole::Cargo);
-    let compiler_for = |pid: u32, fingerprint_source: &str, primary_input: &std::path::Path| {
+    let compiler_for = |pid: u32, fingerprint_source: &str, primary_input: &Path| {
         ObservedProcess::new(
             pid,
             u64::from(pid),
@@ -1542,7 +1542,7 @@ fn a_cycle_that_owes_the_monitor_nothing_runs_no_classification() {
     assert!(matches!(
         build_classifier.classify_demand(
             &process_observer,
-            &snapshot_of(&[]),
+            &snapshot_builder::snapshot_of(&[]),
             CompileClassificationDemand::NotRequested,
             Instant::now(),
         ),
@@ -1566,7 +1566,7 @@ fn a_cancelled_demand_skips_classification_and_names_its_generation() {
     assert!(matches!(
         build_classifier.classify_demand(
             &process_observer,
-            &snapshot_of(&[]),
+            &snapshot_builder::snapshot_of(&[]),
             requested_demand(compile_monitor_generation, cancellation),
             Instant::now(),
         ),

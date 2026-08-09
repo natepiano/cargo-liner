@@ -22,8 +22,8 @@ pub(super) const PULL_REQUEST_MIN_TITLE_WIDTH: usize = 8;
 // and render.
 
 pub(super) const PREFIX_ROOT_EXPANDED: &str = "▼ ";
-pub const PREFIX_ROOT_COLLAPSED: &str = "▶ ";
-pub const PREFIX_ROOT_LEAF: &str = "  ";
+pub(in crate::tui) const PREFIX_ROOT_COLLAPSED: &str = "▶ ";
+pub(in crate::tui) const PREFIX_ROOT_LEAF: &str = "  ";
 pub(super) const TREE_PREFIX_BLANK: &str = "  ";
 pub(super) const TREE_PREFIX_CONTINUATION: &str = "│ ";
 pub(super) const TREE_PREFIX_BRANCH: &str = "├─";
@@ -39,7 +39,7 @@ pub(super) const PREFIX_SUBMODULE: &str = "└─";
 pub(super) const PREFIX_VENDORED: &str = "└─";
 pub(super) const PREFIX_GROUP_COLLAPSED: &str = "└─▶ ";
 pub(super) const PREFIX_WORKTREE_COLLAPSED: &str = "└─▶ ";
-pub const PREFIX_WORKTREE_FLAT: &str = "└─";
+pub(in crate::tui) const PREFIX_WORKTREE_FLAT: &str = "└─";
 pub(super) const PREFIX_WORKTREE_GROUP_COLLAPSED: &str = "  └─▶ ";
 pub(super) const PREFIX_WORKTREE_MEMBER_INLINE: &str = "  └─";
 pub(super) const PREFIX_WORKTREE_MEMBER_NAMED: &str = "    └─";
@@ -81,7 +81,7 @@ pub(super) const CPU_CONTENT_WIDTH: u16 = 17;
 pub(super) const CPU_GPU_ROWS: usize = 4;
 #[cfg(not(target_os = "macos"))]
 pub(super) const CPU_GPU_ROWS: usize = 1;
-pub const CPU_PANE_WIDTH: u16 = CPU_CONTENT_WIDTH + 2;
+pub(in crate::tui) const CPU_PANE_WIDTH: u16 = CPU_CONTENT_WIDTH + 2;
 /// Pinned head rows above the scrolling cores band: the `Cores` count row and
 /// the `Device` utilization row.
 pub(super) const CPU_PINNED_HEAD_ROWS: usize = 2;

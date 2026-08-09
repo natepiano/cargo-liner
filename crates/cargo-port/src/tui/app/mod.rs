@@ -106,6 +106,7 @@ pub(super) use tree_mutation::TreeMutation;
 use tui_pane::AppContext;
 use tui_pane::ClipboardBackend;
 use tui_pane::CopyOutcome;
+use tui_pane::CopySelectionResult;
 use tui_pane::FocusedPane;
 use tui_pane::Framework;
 use tui_pane::FrameworkFocusId;
@@ -134,11 +135,18 @@ pub(super) use super::app_render_state::OverlayRenderInputs;
 pub(super) use super::app_render_state::RenderBorrows;
 pub(super) use super::app_render_state::RenderRegistry;
 use super::background::Background;
+use super::background::ProcessTerminatorAvailability;
+#[cfg(test)]
+use super::background::ProcessTerminatorReadinessForTest;
 #[cfg(test)]
 use super::columns::LintCell;
 pub(super) use super::columns::ProjectListWidths;
 #[cfg(test)]
 use super::columns::StyledSegment;
+use super::compile_visibility;
+use super::compile_visibility::CompileMonitorGeneration;
+use super::compile_visibility::CompileVisibilityState;
+use super::compile_visibility::MonitorScopeUpdate;
 use super::integration;
 use super::integration::AppPaneId;
 use super::interaction;
@@ -150,6 +158,7 @@ use super::panes::OutputBuildSetTerminationConfirmationDisplay;
 use super::panes::OutputBuildSetTerminationConfirmationDisplayResolution;
 use super::panes::OutputCopyAvailability;
 use super::panes::OutputMonitorVisibility;
+use super::panes::OutputPane;
 use super::panes::OutputPaneVisibility;
 use super::panes::OutputPresentation;
 use super::panes::OwnedColumnSelection;
@@ -160,11 +169,14 @@ use super::panes::SelectedBuildTerminationConfirmationDisplay;
 use super::panes::SelectedBuildTerminationSelection;
 use super::panes::SyncedDescriptionHeight;
 use super::panes::VisualSelectionPermission;
+use super::process_refresh::AppProcessRefreshExecutor;
+use super::process_refresh::CompileClassificationInFlight;
 pub(super) use super::project_list::ExpandKey;
 use super::project_list::ProjectList;
 use super::project_list::ProjectListRowDisplayPathResolution;
 pub(super) use super::project_list::VisibleRow;
 use super::render_context::PaneRenderCtx;
+use super::running_targets::RunningTargetTerminationCapability;
 use super::settings;
 use super::settings::SettingOption;
 use super::settings::StartupSettings;
@@ -198,6 +210,7 @@ use crate::build_monitor::BuildTerminationDeadline;
 use crate::build_monitor::BuildTerminationSessionCompletion;
 use crate::build_monitor::BuildTerminationSubmission;
 use crate::build_monitor::BuildTerminationSubmissionRefusal;
+use crate::build_monitor::BuildTerminationTerminalRecord;
 use crate::build_monitor::BuildTerminationTransactionTargetSet;
 use crate::build_monitor::OutputBuildSetTerminationAuthorization;
 use crate::build_monitor::OutputBuildSetTerminationAvailability;
@@ -223,13 +236,6 @@ use crate::project::WorkspaceMetadataStore;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::MetadataDispatchContext;
-use crate::tui::compile_visibility::CompileMonitorGeneration;
-use crate::tui::compile_visibility::CompileVisibilityState;
-use crate::tui::compile_visibility::MonitorScopeUpdate;
-use crate::tui::compile_visibility::monitor_scope_input;
-use crate::tui::compile_visibility::resolve_monitor_scope;
-use crate::tui::process_refresh::AppProcessRefreshExecutor;
-use crate::tui::process_refresh::CompileClassificationInFlight;
 
 /// One ready confirmation whose opaque authority must either submit or return
 /// to the same modal when the termination worker is not available yet.
@@ -879,7 +885,7 @@ impl App {
         label: String,
         pid: u32,
         create_time: u64,
-        termination_capability: super::running_targets::RunningTargetTerminationCapability,
+        termination_capability: RunningTargetTerminationCapability,
     ) {
         self.open_confirmation(
             ConfirmAction::KillTarget {
@@ -1032,9 +1038,9 @@ impl App {
 
     /// Set deterministic process-terminator readiness for an input fixture.
     #[cfg(test)]
-    pub(crate) const fn set_process_terminator_readiness_for_test(
+    pub(super) const fn set_process_terminator_readiness_for_test(
         &mut self,
-        process_terminator_readiness_for_test: crate::tui::background::ProcessTerminatorReadinessForTest,
+        process_terminator_readiness_for_test: ProcessTerminatorReadinessForTest,
     ) {
         self.background
             .set_process_terminator_readiness_for_test(process_terminator_readiness_for_test);
@@ -1078,9 +1084,7 @@ impl App {
         confirmed_build_termination_request: ConfirmedBuildTerminationRequest,
     ) {
         match self.background.available_process_terminator() {
-            crate::tui::background::ProcessTerminatorAvailability::Available(
-                process_terminator,
-            ) => {
+            ProcessTerminatorAvailability::Available(process_terminator) => {
                 let build_termination_submission = match confirmed_build_termination_request {
                     ConfirmedBuildTerminationRequest::SelectedBuild {
                         selected_build_termination_authorization,
@@ -1130,13 +1134,13 @@ impl App {
                     ),
                 }
             },
-            crate::tui::background::ProcessTerminatorAvailability::Starting => {
+            ProcessTerminatorAvailability::Starting => {
                 self.restore_confirmed_build_termination(
                     confirmed_build_termination_request,
                     "The termination worker is starting",
                 );
             },
-            crate::tui::background::ProcessTerminatorAvailability::Unavailable => {
+            ProcessTerminatorAvailability::Unavailable => {
                 self.restore_confirmed_build_termination(
                     confirmed_build_termination_request,
                     "The termination worker is unavailable",
@@ -1184,7 +1188,7 @@ impl App {
 
     fn show_selected_build_termination_completion(
         &mut self,
-        terminal_records: &[crate::build_monitor::BuildTerminationTerminalRecord],
+        terminal_records: &[BuildTerminationTerminalRecord],
     ) {
         let Some(build_termination_terminal_record) = terminal_records.first() else {
             return;
@@ -1216,7 +1220,7 @@ impl App {
 
     fn show_output_build_set_termination_completion(
         &mut self,
-        terminal_records: &[crate::build_monitor::BuildTerminationTerminalRecord],
+        terminal_records: &[BuildTerminationTerminalRecord],
         additional_build_exclusion: AdditionalBuildExclusion,
     ) {
         let Some(build_termination_terminal_record) = terminal_records.first() else {
@@ -1771,7 +1775,7 @@ impl App {
     }
 
     /// The clipboard payload for whatever the Output cursor is on.
-    pub(super) fn copy_output_selection(&self) -> tui_pane::CopySelectionResult {
+    pub(super) fn copy_output_selection(&self) -> CopySelectionResult {
         self.panes
             .output
             .copy_payload_for_cursor(&self.output_presentation())
@@ -2003,7 +2007,7 @@ impl App {
     /// Toggle compile-monitor visibility for the current selected project-list
     /// row. Enabling resolves only the accepted workspace index; it never
     /// launches Cargo or requests process observation.
-    pub(crate) fn toggle_compile_visibility(&mut self, now: Instant) {
+    pub(super) fn toggle_compile_visibility(&mut self, now: Instant) {
         if let CompileVisibilityState::On(active_monitor_state) = &self.compile_visibility_state {
             let compile_monitor_generation = active_monitor_state.compile_monitor_generation();
             self.cancel_compile_classification(compile_monitor_generation);
@@ -2060,9 +2064,9 @@ impl App {
     }
 
     fn resolve_compile_monitor_scope(&mut self) -> MonitorScopeUpdate {
-        let monitor_scope_input = monitor_scope_input(&self.project_list);
+        let monitor_scope_input = compile_visibility::monitor_scope_input(&self.project_list);
         let workspace_index_readiness = self.workspace_index_readiness();
-        resolve_monitor_scope(monitor_scope_input, workspace_index_readiness)
+        compile_visibility::resolve_monitor_scope(monitor_scope_input, workspace_index_readiness)
     }
 
     const fn advance_compile_monitor_generation(&mut self) -> CompileMonitorGeneration {
@@ -2074,7 +2078,7 @@ impl App {
 /// The Output pane beside the presentation a keyboard motion reads, as
 /// disjoint borrows of one `App`.
 pub(super) struct OutputNavigationBorrows<'a> {
-    pub(super) output:              &'a mut crate::tui::panes::OutputPane,
+    pub(super) output:              &'a mut OutputPane,
     pub(super) output_presentation: OutputPresentation<'a>,
 }
 
@@ -5338,9 +5342,9 @@ mod tests {
         use tui_pane::ToastStyle;
         use tui_pane::Viewport;
 
+        use crate::build_monitor;
         use crate::build_monitor::ClassifiedRoot;
         use crate::build_monitor::FixtureRootOwnership;
-        use crate::build_monitor::classified_monitor_snapshot_with_ownership;
         use crate::ci::CiJob;
         use crate::ci::CiRun;
         use crate::ci::CiStatus;
@@ -5399,6 +5403,7 @@ mod tests {
         use crate::tui::panes;
         use crate::tui::panes::LintsData;
         use crate::tui::panes::LintsProjectKind;
+        use crate::tui::panes::OutputSelectionRange;
         use crate::tui::panes::PaneId;
         use crate::tui::panes::RunTargetKind;
         use crate::tui::panes::SyncedDescriptionHeight;
@@ -5572,7 +5577,7 @@ mod tests {
         }
 
         /// The output pane's inclusive selection range against the live buffer.
-        fn output_range(app: &App) -> crate::tui::panes::OutputSelectionRange {
+        fn output_range(app: &App) -> OutputSelectionRange {
             app.panes
                 .output
                 .selected_range(app.inflight.example_output())
@@ -8032,7 +8037,7 @@ mod tests {
             else {
                 panic!("the output pane is open on a run whose output is retained");
             };
-            let monitor_snapshot = match classified_monitor_snapshot_with_ownership(
+            let monitor_snapshot = match build_monitor::classified_monitor_snapshot_with_ownership(
                 &[
                     ClassifiedRoot {
                         root_pid:      MONITOR_OWNED_ROOT_PID,

@@ -2,6 +2,7 @@
 //! out of scope, and how what it shows ages.
 
 use std::num::NonZeroU64;
+use std::path::Path;
 use std::time::Instant;
 
 use super::BuildMonitor;
@@ -23,9 +24,9 @@ use super::snapshot::MonitorObservation;
 use super::snapshot::MonitorSessionOwnership;
 use super::snapshot::MonitorSnapshot;
 use super::snapshot::MonitorStaleness;
+use crate::process_observation::snapshot_builder;
 use crate::process_observation::snapshot_builder::ObservedCandidateRole;
 use crate::process_observation::snapshot_builder::ObservedProcess;
-use crate::process_observation::snapshot_builder::snapshot_of;
 use crate::project::AbsolutePath;
 use crate::tui::OwnedRunId;
 
@@ -43,9 +44,7 @@ fn completed(
     )
 }
 
-fn scope_key_for(path: &std::path::Path) -> BuildScopeKey {
-    BuildScopeKey::for_test(AbsolutePath::from(path))
-}
+fn scope_key_for(path: &Path) -> BuildScopeKey { BuildScopeKey::for_test(AbsolutePath::from(path)) }
 
 fn unrelated_scope_key() -> BuildScopeKey {
     scope_key_for(std::path::Path::new("/nowhere/that/is/indexed"))
@@ -123,7 +122,7 @@ fn an_out_of_scope_external_session_is_dropped_and_the_owned_run_is_not()
         OwnedRootLifecycle::Live,
     ));
     let owned_classification = owned_fixture.build_classifier.classify_cycle(
-        &snapshot_of(&[owned_root]),
+        &snapshot_builder::snapshot_of(&[owned_root]),
         &owned_fixture.cargo_workspace_index,
         &owned_root_evidence,
         Instant::now(),

@@ -1,9 +1,12 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::ffi::OsString;
+use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
+
+use sysinfo::Process;
 
 use super::identity::InsufficientProcessIdentity;
 use super::identity::ObservedProcessIdentity;
@@ -44,7 +47,7 @@ pub(crate) enum ProcessFieldInvalidation {
 
 /// A direct parent report before its identity is validated against the snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum ReportedParent {
+pub(super) enum ReportedParent {
     Root,
     Identified(ProcessIdentity),
     IdentityUnavailable(InsufficientProcessIdentity),
@@ -52,7 +55,7 @@ pub(crate) enum ReportedParent {
 
 /// The validation outcome for one process's direct parent relation.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum ParentageValidationOutcome {
+pub(super) enum ParentageValidationOutcome {
     Root {
         child: ProcessIdentity,
     },
@@ -82,10 +85,10 @@ pub(crate) struct StrongParentEdge {
 }
 
 impl StrongParentEdge {
-    pub(crate) const fn parent(&self) -> &ProcessIdentity { &self.parent }
+    const fn parent(&self) -> &ProcessIdentity { &self.parent }
 
     #[cfg(test)]
-    pub(crate) const fn child(&self) -> &ProcessIdentity { &self.child }
+    const fn child(&self) -> &ProcessIdentity { &self.child }
 
     #[cfg(test)]
     pub(crate) const fn for_test(parent: ProcessIdentity, child: ProcessIdentity) -> Self {
@@ -103,7 +106,7 @@ impl ValidatedParentEdge {
     pub(crate) const fn parent(&self) -> &ProcessIdentity { self.endpoints.parent() }
 
     #[cfg(test)]
-    pub(crate) const fn child(&self) -> &ProcessIdentity { self.endpoints.child() }
+    pub(super) const fn child(&self) -> &ProcessIdentity { self.endpoints.child() }
 
     #[cfg(test)]
     pub(crate) const fn for_test(parent: ProcessIdentity, child: ProcessIdentity) -> Self {
@@ -151,9 +154,9 @@ pub(crate) struct InsufficientProcessIncarnationEvidence {
 
 #[cfg(test)]
 impl InsufficientProcessIncarnationEvidence {
-    pub(crate) const fn executable(&self) -> &ProcessFieldObservation<PathBuf> { &self.executable }
+    const fn executable(&self) -> &ProcessFieldObservation<PathBuf> { &self.executable }
 
-    pub(crate) const fn argv(&self) -> &ProcessFieldObservation<Vec<OsString>> { &self.argv }
+    const fn argv(&self) -> &ProcessFieldObservation<Vec<OsString>> { &self.argv }
 }
 
 /// One immutable record for a strongly identified process.
@@ -201,7 +204,7 @@ impl ProcessSnapshotRecord {
 
     pub(crate) const fn cwd(&self) -> &ProcessFieldObservation<PathBuf> { &self.cwd }
 
-    pub(crate) const fn parentage_validation_outcome(
+    pub(super) const fn parentage_validation_outcome(
         &self,
     ) -> &ProcessFieldObservation<ParentageValidationOutcome> {
         &self.parentage_validation_outcome
@@ -210,7 +213,7 @@ impl ProcessSnapshotRecord {
 
 /// A diagnostic-only process record without a strong identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct InsufficientIdentityProcessRecord {
+pub(super) struct InsufficientIdentityProcessRecord {
     identity:   InsufficientProcessIdentity,
     executable: ProcessFieldObservation<PathBuf>,
     argv:       ProcessFieldObservation<Vec<OsString>>,
@@ -220,14 +223,14 @@ pub(crate) struct InsufficientIdentityProcessRecord {
 
 /// The exact process set an observer refreshes.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum ProcessRefreshInput {
+pub(super) enum ProcessRefreshInput {
     FullSystemSnapshot,
     TargetedIdentities(BTreeSet<ProcessIdentity>),
 }
 
 /// The scope that produced an immutable snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum ProcessSnapshotScope {
+pub(super) enum ProcessSnapshotScope {
     FullSystem,
     TargetedIdentities(BTreeSet<ProcessIdentity>),
 }
@@ -427,7 +430,7 @@ impl BuildCandidateRole {
 
 /// Whether one process incarnation is a Cargo, compiler, or wrapper candidate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum BuildCandidateEvidence {
+enum BuildCandidateEvidence {
     /// Executable and argument evidence identifies this Cargo-related role.
     Candidate(BuildCandidateRole),
     /// The incarnation runs no Cargo-related executable.
@@ -521,7 +524,7 @@ impl ProcessObservationSnapshot {
     }
 
     #[cfg(test)]
-    pub(crate) const fn scope(&self) -> &ProcessSnapshotScope { &self.scope }
+    pub(super) const fn scope(&self) -> &ProcessSnapshotScope { &self.scope }
 
     pub(crate) const fn strongly_identified_processes(
         &self,
@@ -530,17 +533,17 @@ impl ProcessObservationSnapshot {
     }
 
     #[cfg(test)]
-    pub(crate) fn insufficient_identity_processes(&self) -> &[InsufficientIdentityProcessRecord] {
+    fn insufficient_identity_processes(&self) -> &[InsufficientIdentityProcessRecord] {
         &self.insufficient_identity_processes
     }
 
     #[cfg(test)]
-    pub(crate) fn identity_binding_invalidations(&self) -> &[ProcessIdentityBindingInvalidation] {
+    pub(super) fn identity_binding_invalidations(&self) -> &[ProcessIdentityBindingInvalidation] {
         &self.identity_binding_invalidations
     }
 
     #[cfg(test)]
-    pub(crate) const fn targeted_process_observations(&self) -> &TargetedProcessObservations {
+    pub(super) const fn targeted_process_observations(&self) -> &TargetedProcessObservations {
         &self.targeted_process_observations
     }
 
@@ -753,7 +756,7 @@ impl AncestryTerminal {
 
 /// Why fields sampled from a PID cannot be bound to one strong identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum ProcessIdentityBindingInvalidation {
+pub(super) enum ProcessIdentityBindingInvalidation {
     PlatformIdentityChanged {
         before: ObservedProcessIdentity,
         after:  ObservedProcessIdentity,
@@ -773,14 +776,14 @@ pub(crate) enum ProcessIdentityBindingInvalidation {
 
 /// Exact results for a requested strong-identity refresh.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum TargetedProcessObservations {
+pub(super) enum TargetedProcessObservations {
     NotRequested,
     Outcomes(BTreeMap<ProcessIdentity, TargetedProcessObservation>),
 }
 
 /// The semantic outcome for one requested strong process identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum TargetedProcessObservation {
+pub(super) enum TargetedProcessObservation {
     Observed,
     Gone,
     Replaced { replacement: ProcessIdentity },
@@ -809,7 +812,7 @@ pub(super) struct ProcessFieldSample {
 }
 
 impl ProcessFieldSample {
-    pub(super) fn observe(process: &sysinfo::Process) -> Self {
+    pub(super) fn observe(process: &Process) -> Self {
         let executable = process.exe().map_or(
             ProcessFieldObservation::Unavailable(ProcessFieldUnavailable::PlatformDidNotReport),
             |executable| ProcessFieldObservation::Observed(executable.to_path_buf()),
@@ -1660,7 +1663,7 @@ impl LinkerRecognition {
     /// name, so a [`std::path::Path::file_stem`] split at the last dot would
     /// reduce them to `ld`, `ld64`, and `ld` and miss every name that is not
     /// coincidentally another entry in the same table.
-    pub(crate) fn of_executable(executable: &std::path::Path) -> Self {
+    pub(crate) fn of_executable(executable: &Path) -> Self {
         executable
             .file_name()
             .and_then(std::ffi::OsStr::to_str)

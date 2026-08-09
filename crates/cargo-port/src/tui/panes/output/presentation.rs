@@ -6,6 +6,7 @@
 //! currently showing.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 use std::time::Instant;
 
 use tui_pane::format_progressive;
@@ -68,7 +69,7 @@ pub enum OutputCopyAvailability {
 /// Each state is a different fact about the selected scope, so each renders its
 /// own message rather than collapsing into "no sessions".
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MonitorEmptyState {
+pub(super) enum MonitorEmptyState {
     /// Enabled with an actionable scope, first cycle not back yet.
     AwaitingFirstCycle,
     /// A cycle came back with no build session in this scope.
@@ -261,7 +262,7 @@ pub(crate) struct SelectedBuildTerminationConfirmationDisplay {
     operative_cargo_command: String,
     checkout:                String,
     root_pid:                u32,
-    start_age:               std::time::Duration,
+    start_age:               Duration,
     compiler_child_count:    usize,
     profile:                 String,
     state:                   String,
@@ -302,7 +303,7 @@ impl SelectedBuildTerminationConfirmationDisplay {
 
     pub(crate) const fn root_pid(&self) -> u32 { self.root_pid }
 
-    pub(crate) const fn start_age(&self) -> std::time::Duration { self.start_age }
+    pub(crate) const fn start_age(&self) -> Duration { self.start_age }
 
     pub(crate) const fn compiler_child_count(&self) -> usize { self.compiler_child_count }
 
@@ -324,15 +325,17 @@ impl SelectedBuildTerminationConfirmationDisplay {
 /// The Output cursor's selected session represented for the termination
 /// confirmation flow. It carries display facts, never signal authority.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct SelectedBuildTerminationDisplayTarget {
+pub struct SelectedBuildTerminationDisplayTarget {
     build_session_id:                                BuildSessionId,
     selected_build_termination_confirmation_display: SelectedBuildTerminationConfirmationDisplay,
 }
 
 impl SelectedBuildTerminationDisplayTarget {
-    pub(crate) const fn build_session_id(&self) -> &BuildSessionId { &self.build_session_id }
+    pub(in crate::tui) const fn build_session_id(&self) -> &BuildSessionId {
+        &self.build_session_id
+    }
 
-    pub(crate) fn into_parts(
+    pub(in crate::tui) fn into_parts(
         self,
     ) -> (BuildSessionId, SelectedBuildTerminationConfirmationDisplay) {
         (
@@ -368,7 +371,7 @@ impl<'a> MonitorColumn<'a> {
     }
 
     /// How long this session's root has been running, as of `now`.
-    pub(super) fn elapsed(self, now: Instant) -> std::time::Duration {
+    pub(super) fn elapsed(self, now: Instant) -> Duration {
         now.saturating_duration_since(
             self.monitor_session_row
                 .build_session()

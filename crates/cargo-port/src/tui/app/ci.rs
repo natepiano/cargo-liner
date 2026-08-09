@@ -16,7 +16,7 @@ use crate::scan::CiFetchResult;
 use crate::tui::panes::CiFetchKind;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum CiRunDisplayMode {
+pub(in crate::tui) enum CiRunDisplayMode {
     #[default]
     BranchOnly,
     All,

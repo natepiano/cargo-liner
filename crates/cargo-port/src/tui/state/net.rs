@@ -51,7 +51,7 @@ use crate::tui::startup_services::StartupServices;
 /// absent — so authenticated calls silently no-op. Recovery, display
 /// text, and toast copy diverge between them — hence the explicit enum.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum AvailabilityStatus {
+pub(in crate::tui) enum AvailabilityStatus {
     #[default]
     Reachable,
     Unreachable,
@@ -67,12 +67,12 @@ pub enum AvailabilityStatus {
 }
 
 impl AvailabilityStatus {
-    pub const fn is_available(self) -> bool { matches!(self, Self::Reachable) }
+    pub(in crate::tui) const fn is_available(self) -> bool { matches!(self, Self::Reachable) }
 
     /// True when GitHub has no usable auth token — whether `gh` is logged
     /// out (`Unauthenticated`) or absent (`NotInstalled`). Both render the
     /// same actionable-warning state; only the remediation copy differs.
-    pub const fn is_unauthenticated(self) -> bool {
+    pub(in crate::tui) const fn is_unauthenticated(self) -> bool {
         matches!(self, Self::Unauthenticated | Self::NotInstalled)
     }
 }
@@ -82,7 +82,7 @@ impl AvailabilityStatus {
 /// `NoTransition` no-ops, `Silent` triggers refetch without a toast,
 /// `WithToast(id)` triggers refetch and surfaces the back-online toast.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RecoveryOutcome {
+pub(in crate::tui) enum RecoveryOutcome {
     /// The service was already reachable — nothing to do.
     NoTransition,
     /// State transitioned from unavailable → reachable, but no
@@ -103,7 +103,9 @@ impl RecoveryOutcome {
     /// panel hands the network rows back to steady state, spraying the
     /// standalone "Fetching crates.io info" toasts the panel was meant to
     /// embed.
-    pub const fn triggers_refetch(self) -> bool { matches!(self, Self::WithToast(_)) }
+    pub(in crate::tui) const fn triggers_refetch(self) -> bool {
+        matches!(self, Self::WithToast(_))
+    }
 }
 
 /// Render-side snapshot of service availability — collapses
@@ -112,7 +114,7 @@ impl RecoveryOutcome {
 /// per-row data so the rendering function stays a pure read.
 /// Applies equally to GitHub and crates.io.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ServiceStatus {
+pub(in crate::tui) enum ServiceStatus {
     #[default]
     Available,
     Unreachable,
@@ -135,14 +137,14 @@ impl RetryStatus {
     }
 }
 
-pub struct ServiceAvailability {
+pub(in crate::tui) struct ServiceAvailability {
     status:            AvailabilityStatus,
     retry_status:      RetryStatus,
     unavailable_toast: Option<ToastId>,
 }
 
 impl ServiceAvailability {
-    pub const fn new() -> Self {
+    const fn new() -> Self {
         Self {
             status:            AvailabilityStatus::Reachable,
             retry_status:      RetryStatus::Inactive,
@@ -150,7 +152,7 @@ impl ServiceAvailability {
         }
     }
 
-    pub const fn status(&self) -> AvailabilityStatus { self.status }
+    pub(in crate::tui) const fn status(&self) -> AvailabilityStatus { self.status }
 
     #[cfg(test)]
     pub const fn is_unavailable(&self) -> bool { !self.status.is_available() }
@@ -161,7 +163,7 @@ impl ServiceAvailability {
     ///   the outage). Caller refetches missing data without showing a toast.
     /// - `WithToast(id)` on the transition edge with a live toast slot to dismiss; caller also
     ///   pushes the recovery toast and refetches.
-    pub const fn mark_reachable(&mut self) -> RecoveryOutcome {
+    pub(in crate::tui) const fn mark_reachable(&mut self) -> RecoveryOutcome {
         let was_unavailable = !matches!(self.status, AvailabilityStatus::Reachable);
         self.status = AvailabilityStatus::Reachable;
         if !was_unavailable {
@@ -181,14 +183,14 @@ impl ServiceAvailability {
     /// loop is not respawned. `Reachable` signals during flip-flopping
     /// bursts leave retry status and the toast slot untouched — only
     /// `mark_recovered` clears them.
-    pub const fn mark_unreachable(&mut self) -> bool {
+    pub(in crate::tui) const fn mark_unreachable(&mut self) -> bool {
         self.status = AvailabilityStatus::Unreachable;
         self.retry_status.activate()
     }
 
     /// Marks the service rate-limited. Same retry-spawn semantics as
     /// `mark_unreachable`.
-    pub const fn mark_rate_limited(&mut self) -> bool {
+    pub(in crate::tui) const fn mark_rate_limited(&mut self) -> bool {
         self.status = AvailabilityStatus::RateLimited;
         self.retry_status.activate()
     }
@@ -197,7 +199,7 @@ impl ServiceAvailability {
     /// Unlike the reachability transitions this spawns no retry loop —
     /// the token is fixed for the process lifetime, so recovery needs a
     /// restart. Set once from `App::warn_if_github_unauthenticated`.
-    pub const fn mark_unauthenticated(&mut self) {
+    pub(in crate::tui) const fn mark_unauthenticated(&mut self) {
         self.status = AvailabilityStatus::Unauthenticated;
     }
 
@@ -205,24 +207,30 @@ impl ServiceAvailability {
     /// startup. Like [`Self::mark_unauthenticated`] this spawns no retry
     /// loop — installing `gh` needs a restart. Set once from
     /// `App::warn_if_github_unauthenticated`.
-    pub const fn mark_not_installed(&mut self) { self.status = AvailabilityStatus::NotInstalled; }
+    pub(in crate::tui) const fn mark_not_installed(&mut self) {
+        self.status = AvailabilityStatus::NotInstalled;
+    }
 
     /// The id of the tracked unavailability toast, if one was ever
     /// pushed. Callers must verify liveness against the toast manager
     /// before assuming a toast is still visible — the user may have
     /// dismissed it out-of-band, in which case the id refers to a
     /// toast that no longer exists.
-    pub const fn toast_id(&self) -> Option<ToastId> { self.unavailable_toast }
+    pub(in crate::tui) const fn toast_id(&self) -> Option<ToastId> { self.unavailable_toast }
 
-    pub const fn set_toast(&mut self, id: ToastId) { self.unavailable_toast = Some(id); }
+    pub(in crate::tui) const fn set_toast(&mut self, id: ToastId) {
+        self.unavailable_toast = Some(id);
+    }
 
     /// Convenience for the retry-probe path: identical semantics to
     /// [`Self::mark_reachable`]. Kept as a distinct name so the
     /// retry-thread caller reads cleanly.
-    pub const fn mark_recovered(&mut self) -> RecoveryOutcome { self.mark_reachable() }
+    pub(in crate::tui) const fn mark_recovered(&mut self) -> RecoveryOutcome {
+        self.mark_reachable()
+    }
 }
 
-pub struct Github {
+pub(in crate::tui) struct Github {
     pub availability:     ServiceAvailability,
     pub fetch_cache:      RepoCache,
     repo_fetch_in_flight: HashSet<OwnerRepo>,
@@ -239,11 +247,11 @@ impl Github {
         }
     }
 
-    pub const fn repo_fetch_in_flight_mut(&mut self) -> &mut HashSet<OwnerRepo> {
+    pub(in crate::tui) const fn repo_fetch_in_flight_mut(&mut self) -> &mut HashSet<OwnerRepo> {
         &mut self.repo_fetch_in_flight
     }
 
-    pub fn contains_in_flight(&self, repo: &OwnerRepo) -> bool {
+    pub(in crate::tui) fn contains_in_flight(&self, repo: &OwnerRepo) -> bool {
         self.repo_fetch_in_flight.contains(repo)
     }
 
@@ -254,26 +262,28 @@ impl Github {
     /// `RepoFetchQueued` from the worker thread. The startup GitHub row gates
     /// completion on this so the panel cannot hand off to steady state in the
     /// spawn→queue window.
-    pub fn has_repo_fetch_in_flight(&self) -> bool { !self.repo_fetch_in_flight.is_empty() }
+    pub(in crate::tui) fn has_repo_fetch_in_flight(&self) -> bool {
+        !self.repo_fetch_in_flight.is_empty()
+    }
 
-    pub fn insert_pr_check_poll(&mut self, repo: OwnerRepo, number: u32) -> bool {
+    pub(in crate::tui) fn insert_pr_check_poll(&mut self, repo: OwnerRepo, number: u32) -> bool {
         self.pr_check_polls.insert((repo, number))
     }
 
-    pub fn remove_pr_check_poll(&mut self, repo: &OwnerRepo, number: u32) -> bool {
+    pub(in crate::tui) fn remove_pr_check_poll(&mut self, repo: &OwnerRepo, number: u32) -> bool {
         self.pr_check_polls.remove(&(repo.clone(), number))
     }
 
-    pub fn pr_check_poll_numbers(&self, repo: &OwnerRepo) -> HashSet<u32> {
+    pub(in crate::tui) fn pr_check_poll_numbers(&self, repo: &OwnerRepo) -> HashSet<u32> {
         self.pr_check_polls
             .iter()
             .filter_map(|(poll_repo, number)| (poll_repo == repo).then_some(*number))
             .collect()
     }
 
-    pub fn has_pr_check_polls(&self) -> bool { !self.pr_check_polls.is_empty() }
+    pub(in crate::tui) fn has_pr_check_polls(&self) -> bool { !self.pr_check_polls.is_empty() }
 
-    pub fn retain_pr_check_polls_for_repo(
+    pub(in crate::tui) fn retain_pr_check_polls_for_repo(
         &mut self,
         repo: &OwnerRepo,
         active_numbers: &HashSet<u32>,
@@ -295,7 +305,7 @@ impl Github {
     }
 }
 
-pub struct CratesIo {
+pub(in crate::tui) struct CratesIo {
     pub availability: ServiceAvailability,
 }
 
@@ -324,7 +334,7 @@ enum NetworkToastStage {
     SteadyState(SteadyStateNetworkToasts),
 }
 
-pub struct Net {
+pub(in crate::tui) struct Net {
     pub http_client: HttpClient,
     pub github:      Github,
     pub crates_io:   CratesIo,
@@ -335,7 +345,7 @@ pub struct Net {
 }
 
 impl Net {
-    pub fn new(http_client: HttpClient) -> Self {
+    pub(in crate::tui) fn new(http_client: HttpClient) -> Self {
         Self {
             http_client,
             github: Github::new(),
@@ -348,7 +358,7 @@ impl Net {
     /// rows. The standalone-toast sync paths read the slot through this: a
     /// `None` return means there is structurally nowhere to store a toast id,
     /// so they no-op.
-    pub const fn network_toasts(&self) -> Option<&NetworkRunningToasts> {
+    pub(in crate::tui) const fn network_toasts(&self) -> Option<&NetworkRunningToasts> {
         match &self.toast_stage {
             NetworkToastStage::SteadyState(stage) => Some(&stage.toasts),
             NetworkToastStage::StartupOwned(_) => None,
@@ -357,42 +367,42 @@ impl Net {
 
     /// Mutable view of the steady-state network-toast slots, or `None` while
     /// startup owns the rows.
-    pub const fn network_toasts_mut(&mut self) -> Option<&mut NetworkRunningToasts> {
+    pub(in crate::tui) const fn network_toasts_mut(&mut self) -> Option<&mut NetworkRunningToasts> {
         match &mut self.toast_stage {
             NetworkToastStage::SteadyState(stage) => Some(&mut stage.toasts),
             NetworkToastStage::StartupOwned(_) => None,
         }
     }
 
-    pub const fn github_running(&self) -> &RunningTracker<OwnerRepo> {
+    pub(in crate::tui) const fn github_running(&self) -> &RunningTracker<OwnerRepo> {
         match &self.toast_stage {
             NetworkToastStage::StartupOwned(trackers) => &trackers.github,
             NetworkToastStage::SteadyState(stage) => &stage.running.github,
         }
     }
 
-    pub const fn github_running_mut(&mut self) -> &mut RunningTracker<OwnerRepo> {
+    pub(in crate::tui) const fn github_running_mut(&mut self) -> &mut RunningTracker<OwnerRepo> {
         match &mut self.toast_stage {
             NetworkToastStage::StartupOwned(trackers) => &mut trackers.github,
             NetworkToastStage::SteadyState(stage) => &mut stage.running.github,
         }
     }
 
-    pub const fn crates_io_running(&self) -> &RunningTracker<String> {
+    pub(in crate::tui) const fn crates_io_running(&self) -> &RunningTracker<String> {
         match &self.toast_stage {
             NetworkToastStage::StartupOwned(trackers) => &trackers.crates_io,
             NetworkToastStage::SteadyState(stage) => &stage.running.crates_io,
         }
     }
 
-    pub const fn crates_io_running_mut(&mut self) -> &mut RunningTracker<String> {
+    pub(in crate::tui) const fn crates_io_running_mut(&mut self) -> &mut RunningTracker<String> {
         match &mut self.toast_stage {
             NetworkToastStage::StartupOwned(trackers) => &mut trackers.crates_io,
             NetworkToastStage::SteadyState(stage) => &mut stage.running.crates_io,
         }
     }
 
-    pub fn startup_github_running_repos(&self) -> Vec<OwnerRepo> {
+    pub(in crate::tui) fn startup_github_running_repos(&self) -> Vec<OwnerRepo> {
         match &self.toast_stage {
             NetworkToastStage::StartupOwned(trackers) => {
                 trackers.github.running.keys().cloned().collect()
@@ -401,7 +411,7 @@ impl Net {
         }
     }
 
-    pub fn startup_crates_io_running_names(&self) -> Vec<String> {
+    pub(in crate::tui) fn startup_crates_io_running_names(&self) -> Vec<String> {
         match &self.toast_stage {
             NetworkToastStage::StartupOwned(trackers) => {
                 trackers.crates_io.running.keys().cloned().collect()
@@ -413,7 +423,7 @@ impl Net {
     /// Check whether startup-owned network work is terminal. This only
     /// produces `StartupNetworkReady` after both service trackers have drained
     /// or their startup rows have failed and are allowed to abandon work.
-    pub fn startup_network_readiness(
+    pub(in crate::tui) fn startup_network_readiness(
         &self,
         github_failed: bool,
         crates_io_failed: bool,
@@ -446,7 +456,10 @@ impl Net {
     /// Enter steady state. The `StartupNetworkReady` proof is only produced
     /// after startup-owned network work has reached a terminal outcome, so
     /// this transition cannot be called from plain row-completion checks.
-    pub fn begin_steady_state_network_toasts(&mut self, ready: &StartupNetworkReady) {
+    pub(in crate::tui) fn begin_steady_state_network_toasts(
+        &mut self,
+        ready: &StartupNetworkReady,
+    ) {
         let NetworkToastStage::StartupOwned(trackers) = &mut self.toast_stage else {
             return;
         };
@@ -467,7 +480,7 @@ impl Net {
     /// Return the stage to `StartupOwned`, discarding the slots. The caller is
     /// responsible for finishing any live toasts first — once the slots are
     /// gone their ids are unrecoverable.
-    pub fn set_network_toasts_startup_owned(&mut self) {
+    pub(in crate::tui) fn set_network_toasts_startup_owned(&mut self) {
         let trackers = match std::mem::replace(
             &mut self.toast_stage,
             NetworkToastStage::StartupOwned(NetworkRunningTrackers::default()),
@@ -478,17 +491,19 @@ impl Net {
         self.toast_stage = NetworkToastStage::StartupOwned(trackers);
     }
 
-    pub fn http_client(&self) -> HttpClient { self.http_client.clone() }
+    pub(in crate::tui) fn http_client(&self) -> HttpClient { self.http_client.clone() }
 
-    pub fn rate_limit(&self) -> GitHubRateLimit { self.http_client.rate_limit() }
+    pub(in crate::tui) fn rate_limit(&self) -> GitHubRateLimit { self.http_client.rate_limit() }
 
-    pub fn set_force_github_rate_limit(&self, on: bool) {
+    pub(in crate::tui) fn set_force_github_rate_limit(&self, on: bool) {
         self.http_client.set_force_github_rate_limit(on);
     }
 
-    pub const fn github_status(&self) -> AvailabilityStatus { self.github.availability.status() }
+    pub(in crate::tui) const fn github_status(&self) -> AvailabilityStatus {
+        self.github.availability.status()
+    }
 
-    pub const fn crates_io_status(&self) -> AvailabilityStatus {
+    pub(in crate::tui) const fn crates_io_status(&self) -> AvailabilityStatus {
         self.crates_io.availability.status()
     }
 
@@ -496,12 +511,15 @@ impl Net {
     /// cache, the in-flight set, and the running tracker (running
     /// fetches map + toast slot). Crates.io and the `HttpClient`
     /// keep their state across rescans.
-    pub fn clear_for_tree_change(&mut self) {
+    pub(in crate::tui) fn clear_for_tree_change(&mut self) {
         self.github.clear_for_tree_change();
         self.github_running_mut().clear();
     }
 
-    pub const fn availability_for(&mut self, service: ServiceKind) -> &mut ServiceAvailability {
+    pub(in crate::tui) const fn availability_for(
+        &mut self,
+        service: ServiceKind,
+    ) -> &mut ServiceAvailability {
         match service {
             ServiceKind::GitHub => &mut self.github.availability,
             ServiceKind::CratesIo => &mut self.crates_io.availability,
@@ -513,7 +531,7 @@ impl Net {
     /// is quota-exempt, so this is safe to run even when GitHub is
     /// refusing other calls. Logged via `rate_limit_prime_ok` /
     /// `rate_limit_prime_failed`.
-    pub fn spawn_rate_limit_prime(&self, startup_services: &StartupServices) {
+    pub(in crate::tui) fn spawn_rate_limit_prime(&self, startup_services: &StartupServices) {
         startup_services.spawn_github_rate_limit_prime(self.http_client());
     }
 }

@@ -10,10 +10,12 @@
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::ffi::OsString;
+use std::iter::Peekable;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
 
+use super::activity::AttributedSession;
 use super::activity::CompilationTarget;
 use super::activity::CompileActivity;
 use super::activity::CompileActivityId;
@@ -106,7 +108,7 @@ pub(crate) struct BuildClassificationCycle(u64);
 
 impl BuildClassificationCycle {
     /// Advance to the next cycle.
-    pub(crate) const fn advance(&mut self) { self.0 = self.0.saturating_add(1); }
+    pub(super) const fn advance(&mut self) { self.0 = self.0.saturating_add(1); }
 }
 
 /// How a Cargo subcommand read from argv classifies.
@@ -198,7 +200,7 @@ fn normalize_builtin_alias(subcommand: &str) -> &str {
 /// argument, which is a different fact from an argument that was named and then
 /// failed to canonicalize.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) enum ArgumentPath {
+pub(super) enum ArgumentPath {
     /// The command line named this path, exactly as written.
     Named(PathBuf),
     /// The command line named no such path.
@@ -209,7 +211,7 @@ pub(crate) enum ArgumentPath {
 impl ArgumentPath {
     /// The path argv named, for the canonicalization that runs before the pure
     /// call.
-    pub(crate) fn named_path(&self) -> Option<&Path> {
+    pub(super) fn named_path(&self) -> Option<&Path> {
         match self {
             Self::Named(path) => Some(path),
             Self::NotNamed => None,
@@ -220,21 +222,21 @@ impl ArgumentPath {
 /// Path arguments read from one candidate's command line, before
 /// canonicalization.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct ObservedProcessPathArguments {
+pub(super) struct ObservedProcessPathArguments {
     /// Directory containing the manifest named by `--manifest-path` or by an
     /// absolute `Cargo.toml` argument.
-    pub(crate) manifest_directory:        ArgumentPath,
+    pub(super) manifest_directory:        ArgumentPath,
     /// The `--target-dir` argument.
-    pub(crate) target_directory_argument: ArgumentPath,
+    pub(super) target_directory_argument: ArgumentPath,
     /// The compiler `--out-dir` argument.
-    pub(crate) output_directory:          ArgumentPath,
+    pub(super) output_directory:          ArgumentPath,
     /// The compiler's primary input source file.
-    pub(crate) primary_input:             ArgumentPath,
+    pub(super) primary_input:             ArgumentPath,
 }
 
 /// One candidate's canonicalized paths, resolved before the pure call.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct CanonicalProcessPathSet {
+pub(super) struct CanonicalProcessPathSet {
     working_directory:         CanonicalPathResolution<AbsolutePath>,
     manifest_directory:        CanonicalPathResolution<AbsolutePath>,
     target_directory_argument: CanonicalPathResolution<AbsolutePath>,
@@ -244,7 +246,7 @@ pub(crate) struct CanonicalProcessPathSet {
 
 impl CanonicalProcessPathSet {
     /// Record one candidate's canonicalized paths.
-    pub(crate) const fn new(
+    pub(super) const fn new(
         working_directory: CanonicalPathResolution<AbsolutePath>,
         manifest_directory: CanonicalPathResolution<AbsolutePath>,
         target_directory_argument: CanonicalPathResolution<AbsolutePath>,
@@ -263,13 +265,13 @@ impl CanonicalProcessPathSet {
 
 /// Canonicalized paths for every candidate incarnation in one cycle.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct CanonicalProcessPaths {
+pub(super) struct CanonicalProcessPaths {
     entries: BTreeMap<ProcessIncarnation, CanonicalProcessPathSet>,
 }
 
 impl CanonicalProcessPaths {
     /// Record one candidate's canonicalized paths.
-    pub(crate) fn insert(
+    pub(super) fn insert(
         &mut self,
         incarnation: ProcessIncarnation,
         canonical_process_path_set: CanonicalProcessPathSet,
@@ -285,7 +287,7 @@ impl CanonicalProcessPaths {
 /// One indexed workspace's checkout root paired with the target directory it
 /// writes to, resolved once per cycle.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct IndexedWorkspaceTargetDirectory {
+struct IndexedWorkspaceTargetDirectory {
     canonical_checkout_root:     CanonicalPathResolution<CanonicalCheckoutRoot>,
     target_directory_resolution: CanonicalPathResolution<CanonicalTargetDirectory>,
 }
@@ -294,7 +296,7 @@ impl IndexedWorkspaceTargetDirectory {
     /// Resolve one workspace view's target directory. This performs filesystem
     /// syscalls, so it runs while the input is being prepared and never inside
     /// [`classify`].
-    pub(crate) fn resolve(cargo_workspace_view: &CargoWorkspaceView) -> Self {
+    fn resolve(cargo_workspace_view: &CargoWorkspaceView) -> Self {
         Self {
             canonical_checkout_root:     cargo_workspace_view.checkout_root_resolution().clone(),
             target_directory_resolution: cargo_workspace_view.target_directory_resolution(),
@@ -304,13 +306,13 @@ impl IndexedWorkspaceTargetDirectory {
 
 /// Every indexed workspace's target directory for one cycle.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct IndexedWorkspaceTargetDirectories {
+pub(super) struct IndexedWorkspaceTargetDirectories {
     entries: Vec<IndexedWorkspaceTargetDirectory>,
 }
 
 impl IndexedWorkspaceTargetDirectories {
     /// Resolve every indexed workspace's target directory once.
-    pub(crate) fn resolve(cargo_workspace_index: &CargoWorkspaceIndex) -> Self {
+    pub(super) fn resolve(cargo_workspace_index: &CargoWorkspaceIndex) -> Self {
         Self {
             entries: cargo_workspace_index
                 .workspaces()
@@ -345,13 +347,13 @@ impl IndexedWorkspaceTargetDirectories {
 
 /// One dependency source root whose package identity is not yet cached.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct DependencyManifestLookupRequest {
+pub(super) struct DependencyManifestLookupRequest {
     canonical_source_root: AbsolutePath,
 }
 
 impl DependencyManifestLookupRequest {
     /// The canonical directory whose manifest chain must be read.
-    pub(crate) const fn canonical_source_root(&self) -> &AbsolutePath {
+    pub(super) const fn canonical_source_root(&self) -> &AbsolutePath {
         &self.canonical_source_root
     }
 }
@@ -365,7 +367,7 @@ impl DependencyManifestLookupRequest {
 /// that only reads them. The reference never crosses a thread — `classify` runs
 /// on the thread that builds the input.
 #[derive(Clone, Copy)]
-pub(crate) struct BuildClassificationInput<'a> {
+pub(super) struct BuildClassificationInput<'a> {
     process_observation_snapshot:         &'a ProcessObservationSnapshot,
     cargo_workspace_index:                &'a CargoWorkspaceIndex,
     indexed_workspace_target_directories: &'a IndexedWorkspaceTargetDirectories,
@@ -524,39 +526,39 @@ impl BuildClassification {
 
     /// Dependency source roots whose manifests the classifier must read after
     /// this call so the next cycle can identify them exactly.
-    pub(crate) fn dependency_manifest_lookup_requests(&self) -> &[DependencyManifestLookupRequest] {
+    pub(super) fn dependency_manifest_lookup_requests(&self) -> &[DependencyManifestLookupRequest] {
         &self.dependency_manifest_lookup_requests
     }
 
     /// Every candidate incarnation observed this cycle, for ledger pruning.
-    pub(crate) fn observed_incarnations(&self) -> &[ProcessIncarnation] {
+    pub(super) fn observed_incarnations(&self) -> &[ProcessIncarnation] {
         &self.observed_incarnations
     }
 
     /// Cargo roots proven to compile this cycle, for sticky promotion.
-    pub(crate) fn promoted_root_incarnations(&self) -> &[ProcessIncarnation] {
+    pub(super) fn promoted_root_incarnations(&self) -> &[ProcessIncarnation] {
         &self.promoted_root_incarnations
     }
 
     /// Build directories this cycle's own compilers were observed writing
     /// under, for the sticky profile a session keeps between compiler children.
-    pub(crate) fn observed_session_build_directories(&self) -> &[SessionBuildDirectory] {
+    pub(super) fn observed_session_build_directories(&self) -> &[SessionBuildDirectory] {
         &self.observed_session_build_directories
     }
 
     /// Dependency source roots this cycle resolved from cache, for revalidation.
-    pub(crate) fn dependency_source_roots_in_use(&self) -> &[AbsolutePath] {
+    pub(super) fn dependency_source_roots_in_use(&self) -> &[AbsolutePath] {
         &self.dependency_source_roots_in_use
     }
 
     /// The cycle counter this classification was produced with.
     #[cfg(test)]
-    pub(crate) const fn build_classification_cycle(&self) -> BuildClassificationCycle {
+    pub(super) const fn build_classification_cycle(&self) -> BuildClassificationCycle {
         self.classification_cycle
     }
 
     /// When this cycle was taken.
-    pub(crate) const fn cycle_instant(&self) -> Instant { self.cycle_instant }
+    pub(super) const fn cycle_instant(&self) -> Instant { self.cycle_instant }
 }
 
 /// One validated Cargo root process and everything argv says about it.
@@ -570,7 +572,7 @@ pub(crate) struct RecognizedCargoRoot {
 
 impl RecognizedCargoRoot {
     /// The exec-sensitive incarnation this root was recognized in.
-    pub(crate) const fn incarnation(&self) -> &ProcessIncarnation { &self.incarnation }
+    pub(super) const fn incarnation(&self) -> &ProcessIncarnation { &self.incarnation }
 }
 
 /// One validated compiler process and everything argv says about it.
@@ -584,7 +586,7 @@ pub(crate) struct RecognizedCompilerProcess {
 
 impl RecognizedCompilerProcess {
     /// The exec-sensitive incarnation this compiler was recognized in.
-    pub(crate) const fn incarnation(&self) -> &ProcessIncarnation { &self.incarnation }
+    pub(super) const fn incarnation(&self) -> &ProcessIncarnation { &self.incarnation }
 }
 
 /// Whether every candidate in this cycle carried readable argv and working
@@ -757,18 +759,18 @@ struct AttachedCompilers {
 
 /// The build directory one session's own compiler was observed writing under.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct SessionBuildDirectory {
+pub(super) struct SessionBuildDirectory {
     build_session_id:     BuildSessionId,
     build_directory_name: String,
 }
 
 impl SessionBuildDirectory {
     /// The session whose own compiler wrote under this build directory.
-    pub(crate) const fn build_session_id(&self) -> &BuildSessionId { &self.build_session_id }
+    pub(super) const fn build_session_id(&self) -> &BuildSessionId { &self.build_session_id }
 
     /// The profile-named directory immediately inside the session's target
     /// directory.
-    pub(crate) fn build_directory_name(&self) -> &str { &self.build_directory_name }
+    pub(super) fn build_directory_name(&self) -> &str { &self.build_directory_name }
 }
 
 /// Pass two: attach each compiler descendant to the session that owns it, and
@@ -804,7 +806,7 @@ fn attach_compilers(
             CompileActivityId::from_recognized_compiler(recognized_compiler_process);
         let first_seen = first_seen_for(input, recognized_compiler_process.incarnation());
         match compiler_attribution.attributed_session() {
-            super::activity::AttributedSession::Session(build_session_id) => {
+            AttributedSession::Session(build_session_id) => {
                 if let Some(cargo_root) = cargo_roots.iter().find(|cargo_root| {
                     BuildSessionId::from_recognized_root(&cargo_root.recognized_cargo_root)
                         == *build_session_id
@@ -829,7 +831,7 @@ fn attach_compilers(
                     first_seen,
                 ));
             },
-            super::activity::AttributedSession::Unresolved => {
+            AttributedSession::Unresolved => {
                 unattributed_compile_activities.push(UnattributedCompileActivity::new(
                     compile_activity_id,
                     recognized_compiler_process.compiler_kind,
@@ -1684,7 +1686,7 @@ impl CompilerInvocation {
 /// resolves a name against the workspace.
 fn selector_argument<'a>(
     argument: &str,
-    arguments: &mut std::iter::Peekable<impl Iterator<Item = &'a OsString>>,
+    arguments: &mut Peekable<impl Iterator<Item = &'a OsString>>,
 ) -> Option<CargoCommandSelector> {
     match argument {
         WORKSPACE_ARGUMENT | ALL_PACKAGES_ARGUMENT => {
@@ -1719,7 +1721,7 @@ fn selector_argument<'a>(
 fn argument_value<'a>(
     argument: &str,
     name: &str,
-    arguments: &mut std::iter::Peekable<impl Iterator<Item = &'a OsString>>,
+    arguments: &mut Peekable<impl Iterator<Item = &'a OsString>>,
 ) -> Option<String> {
     if argument == name {
         return arguments
@@ -1737,7 +1739,7 @@ fn argument_value<'a>(
 /// call. Shares the argument grammar with [`CargoInvocation`] and
 /// [`CompilerInvocation`] so the two never disagree about which token is a
 /// path.
-pub(crate) fn observed_process_path_arguments(
+pub(super) fn observed_process_path_arguments(
     build_candidate_role: BuildCandidateRole,
     argv: &[OsString],
 ) -> ObservedProcessPathArguments {

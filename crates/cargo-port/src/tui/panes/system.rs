@@ -25,7 +25,7 @@ use crate::tui::startup_services::StartupServices;
 
 /// Owns every pane-related piece of state. App holds a single `panes:
 /// Panes` field.
-pub struct Panes {
+pub(in crate::tui) struct Panes {
     pub package:      PackagePane,
     pub lang:         LangPane,
     pub cpu:          CpuPane,
@@ -59,7 +59,7 @@ struct TopRowHeightCache {
 }
 
 impl Panes {
-    pub fn new(cpu_cfg: &CpuConfig, startup_services: StartupServices) -> Self {
+    pub(in crate::tui) fn new(cpu_cfg: &CpuConfig, startup_services: StartupServices) -> Self {
         Self {
             package:      PackagePane::new(),
             lang:         LangPane::new(),
@@ -82,19 +82,19 @@ impl Panes {
     /// holds a different key. The caller recomputes on a miss via
     /// [`super::max_top_pane_inner_height`] and stores it with
     /// [`Self::store_top_row_height`].
-    pub fn cached_top_row_height(&self, key: (u64, u16, u16)) -> Option<u16> {
+    pub(in crate::tui) fn cached_top_row_height(&self, key: (u64, u16, u16)) -> Option<u16> {
         (self.top_row_height_cache.key == Some(key)).then_some(self.top_row_height_cache.value)
     }
 
     /// Store the cross-project top-row inner height computed for `key`.
-    pub const fn store_top_row_height(&mut self, key: (u64, u16, u16), value: u16) {
+    pub(in crate::tui) const fn store_top_row_height(&mut self, key: (u64, u16, u16), value: u16) {
         self.top_row_height_cache.key = Some(key);
         self.top_row_height_cache.value = value;
     }
 
     /// Currently-hovered pane/row pair, or `None`. Used by the
     /// App-level `apply_hovered_pane_row` orchestrator.
-    pub const fn hovered_row(&self) -> Option<HoveredPaneRow> { self.hovered_row }
+    pub(in crate::tui) const fn hovered_row(&self) -> Option<HoveredPaneRow> { self.hovered_row }
 
     /// Write the detail-set content across the four migrated detail
     /// panes (Package/Git/CI/Lints) plus the targets slot in
@@ -102,7 +102,7 @@ impl Panes {
     /// panes coherent for this stamp" invariant is preserved by this
     /// orchestrator: callers cannot write one detail member without
     /// writing the others.
-    pub fn set_detail_data(
+    pub(in crate::tui) fn set_detail_data(
         &mut self,
         stamp: super::data::DetailCacheKey,
         package: super::PackageData,
@@ -118,38 +118,42 @@ impl Panes {
     /// Clear the detail set across the migrated detail panes owned by `Panes`,
     /// stamping with `stamp`. Mirrors `set_detail_data`'s fan-out. CI and lint
     /// content live on their own subsystems and are cleared by the caller.
-    pub fn clear_detail_data(&mut self, stamp: Option<super::data::DetailCacheKey>) {
+    pub(in crate::tui) fn clear_detail_data(&mut self, stamp: Option<super::data::DetailCacheKey>) {
         self.package.clear_content();
         self.git.clear_content();
         self.targets.clear_content();
         self.pane_data.set_detail_stamp(stamp);
     }
 
-    pub const fn set_hover(&mut self, hovered: Option<HoveredPaneRow>) {
+    pub(in crate::tui) const fn set_hover(&mut self, hovered: Option<HoveredPaneRow>) {
         self.hovered_row = hovered;
     }
 
     /// Drop tree-derived caches owned by per-pane structs.
     /// Currently only `GitPane`'s worktree-summary map.
-    pub fn clear_for_tree_change(&self) { self.clear_worktree_summary_cache(); }
+    pub(in crate::tui) fn clear_for_tree_change(&self) { self.clear_worktree_summary_cache(); }
 
     /// Drop `GitPane`'s cached worktree-summary rows. The cached rows embed
     /// each entry's branch name, read from in-memory `CheckoutInfo`; when a
     /// later `CheckoutInfo` lands the rows must recompute, or branches that
     /// were unresolved at first render stay blank.
-    pub fn clear_worktree_summary_cache(&self) { self.git.clear_worktree_summary_cache(); }
+    pub(in crate::tui) fn clear_worktree_summary_cache(&self) {
+        self.git.clear_worktree_summary_cache();
+    }
 
     /// Drain the CPU pane's background sampler. Delegates to `CpuPane::tick`.
-    pub fn cpu_tick(&mut self) { self.cpu.tick(); }
+    pub(in crate::tui) fn cpu_tick(&mut self) { self.cpu.tick(); }
 
     /// Reset the CPU pane after a config reload changes CPU poll
     /// behavior. Delegates to `CpuPane::reset`.
-    pub fn reset_cpu(&mut self, cpu_config: &CpuConfig) { self.cpu.reset(cpu_config); }
+    pub(in crate::tui) fn reset_cpu(&mut self, cpu_config: &CpuConfig) {
+        self.cpu.reset(cpu_config);
+    }
 
     /// Seed the CPU pane's content with the current sampler's
     /// placeholder `CpuUsage`. Delegates to
     /// `CpuPane::install_placeholder`. Used from `App::finish_new`.
-    pub fn install_cpu_placeholder(&mut self) { self.cpu.install_placeholder(); }
+    pub(in crate::tui) fn install_cpu_placeholder(&mut self) { self.cpu.install_placeholder(); }
 }
 
 #[cfg(test)]

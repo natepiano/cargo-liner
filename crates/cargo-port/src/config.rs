@@ -123,7 +123,7 @@ fn resolve_configuration_root(
 /// Whether non-Rust projects (git repos without `Cargo.toml`) are included in scans.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "bool", into = "bool")]
-pub(crate) enum NonRustInclusion {
+pub enum NonRustInclusion {
     Include,
     #[default]
     Exclude,
@@ -144,7 +144,7 @@ impl NonRustInclusion {
 /// Scroll direction for mouse wheel events.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "bool", into = "bool")]
-pub(crate) enum ScrollDirection {
+pub enum ScrollDirection {
     #[default]
     Normal,
     Inverted,
@@ -166,7 +166,7 @@ impl ScrollDirection {
 /// for a real file-system change event.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "bool", into = "bool")]
-pub(crate) enum DiscoveryLint {
+pub enum DiscoveryLint {
     /// Run lints immediately when a new project appears after the initial scan.
     Immediate,
     /// Wait for an actual disk event before running lints on new projects.
@@ -189,7 +189,7 @@ impl DiscoveryLint {
 /// Whether `hjkl` should mirror arrow-key navigation in non-text panes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "bool", into = "bool")]
-pub(crate) enum NavigationKeys {
+pub enum NavigationKeys {
     #[default]
     ArrowsOnly,
     ArrowsAndVim,
@@ -217,7 +217,7 @@ impl NavigationKeys {
 /// adjacent pane in tab order, or stops at the edge.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "bool", into = "bool")]
-pub(crate) enum EdgeScroll {
+pub enum EdgeScroll {
     #[default]
     Stops,
     AdvancesPane,
@@ -244,7 +244,7 @@ impl EdgeScroll {
 /// Whether lint status indicators render for projects.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "bool", into = "bool")]
-pub(crate) enum LintIndicator {
+pub enum LintIndicator {
     Enabled,
     #[default]
     Disabled,
@@ -271,7 +271,7 @@ impl LintIndicator {
 /// Whether the focused pane receives a background tint.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "bool", into = "bool")]
-pub(crate) enum FocusedPaneTint {
+pub enum FocusedPaneTint {
     #[default]
     Enabled,
     Disabled,
@@ -298,7 +298,7 @@ impl FocusedPaneTint {
 /// Whether GitHub HTTP calls synthesize rate-limit responses.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "bool", into = "bool")]
-pub(crate) enum GitHubRateLimitMode {
+pub enum GitHubRateLimitMode {
     Forced,
     #[default]
     Normal,
@@ -318,7 +318,7 @@ impl GitHubRateLimitMode {
 
 /// Cache storage settings shared by CI and lint-history data.
 #[derive(Clone, Debug, Default, PartialEq, Eq, confique::Config, Serialize)]
-pub(crate) struct CacheConfig {
+pub struct CacheConfig {
     /// Override the app cache root. Empty uses the system cache directory.
     #[config(default = "")]
     pub root: String,
@@ -326,7 +326,7 @@ pub(crate) struct CacheConfig {
 
 /// Lint status indicator settings.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct LintCommandConfig {
+pub struct LintCommandConfig {
     #[serde(default)]
     pub name:    String,
     #[serde(default)]
@@ -334,7 +334,7 @@ pub(crate) struct LintCommandConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, confique::Config, Serialize)]
-pub(crate) struct LintConfig {
+pub struct LintConfig {
     /// Show a lint status indicator per project by reading cache-rooted
     /// lint JSON artifacts.
     #[config(default = false)]
@@ -394,7 +394,7 @@ impl LintConfig {
         parse_cache_size(&self.cache_size).map(|parsed| parsed.bytes)
     }
 
-    pub(crate) fn normalized_cache_size(&self) -> Result<String, String> {
+    fn normalized_cache_size(&self) -> Result<String, String> {
         parse_cache_size(&self.cache_size).map(|parsed| parsed.normalized)
     }
 }
@@ -406,14 +406,14 @@ pub(crate) fn default_clippy_lint_command() -> LintCommandConfig {
     }
 }
 
-pub(crate) fn builtin_lint_command(name: &str) -> Option<LintCommandConfig> {
+fn builtin_lint_command(name: &str) -> Option<LintCommandConfig> {
     match name.trim().to_ascii_lowercase().as_str() {
         CLIPPY_LINT_COMMAND_NAME => Some(default_clippy_lint_command()),
         _ => None,
     }
 }
 
-pub(crate) fn infer_lint_command_name(command: &str) -> String {
+fn infer_lint_command_name(command: &str) -> String {
     let mut parts = command.split_whitespace();
     let Some(first) = parts.next() else {
         return String::new();
@@ -607,9 +607,7 @@ pub(crate) fn parse_cache_size(value: &str) -> Result<ParsedCacheSize, String> {
     })
 }
 
-pub(crate) fn normalize_config(
-    mut cargo_port_config: CargoPortConfig,
-) -> Result<CargoPortConfig, String> {
+fn normalize_config(mut cargo_port_config: CargoPortConfig) -> Result<CargoPortConfig, String> {
     cargo_port_config.lint.commands = normalize_lint_commands(&cargo_port_config.lint.commands);
     cargo_port_config.lint.cache_size = cargo_port_config.lint.normalized_cache_size()?;
     cargo_port_config.cpu.poll_ms = cargo_port_config.cpu.poll_ms.max(MIN_CPU_POLL_MS);
@@ -717,7 +715,7 @@ fn normalize_non_negative_secs(secs: f64) -> f64 {
 
 /// Top-level application configuration.
 #[derive(Clone, Debug, Default, PartialEq, confique::Config, Serialize)]
-pub(crate) struct CargoPortConfig {
+pub struct CargoPortConfig {
     #[config(nested)]
     pub cache:      CacheConfig,
     #[config(nested)]
@@ -746,7 +744,7 @@ pub(crate) struct CargoPortConfig {
 /// in [`tui_pane::ThemeRegistry`]. Unknown names fall back to the
 /// compiled-in built-ins with a toast naming the missing id.
 #[derive(Clone, Debug, PartialEq, Eq, confique::Config, Serialize)]
-pub(crate) struct AppearanceConfig {
+pub struct AppearanceConfig {
     /// Theme appearance mode: `"auto"`, `"light"`, or `"dark"`.
     #[config(default = "dark")]
     pub mode:              String,
@@ -779,7 +777,7 @@ impl Default for AppearanceConfig {
 /// exists only to exercise code paths that are hard to reproduce
 /// organically (e.g. GitHub rate-limit behaviour).
 #[derive(Clone, Debug, Default, PartialEq, Eq, confique::Config, Serialize)]
-pub(crate) struct DebugConfig {
+pub struct DebugConfig {
     /// When true, all GitHub HTTP requests short-circuit to a synthetic
     /// rate-limited response without hitting the network. Lets the
     /// rate-limit toast, `/rate_limit` display, and recovery probe be
@@ -790,7 +788,7 @@ pub(crate) struct DebugConfig {
 
 /// CPU meter settings for the TUI host metrics pane.
 #[derive(Clone, Debug, PartialEq, Eq, confique::Config, Serialize)]
-pub(crate) struct CpuConfig {
+pub struct CpuConfig {
     /// How often to refresh CPU utilization values in milliseconds.
     #[config(default = 1000)]
     pub poll_ms: u64,
@@ -816,7 +814,7 @@ impl Default for CpuConfig {
 
 /// TUI display and behaviour settings.
 #[derive(Clone, Debug, PartialEq, confique::Config, Serialize)]
-pub(crate) struct TuiConfig {
+pub struct TuiConfig {
     /// Directory names whose members are shown inline (pulled up to the
     /// workspace level). For example, `["crates"]` means projects under
     /// `workspace/crates/` appear directly under the workspace rather than
@@ -913,7 +911,7 @@ impl Default for TuiConfig {
 
 /// Mouse input settings.
 #[derive(Clone, Debug, PartialEq, Eq, confique::Config, Serialize)]
-pub(crate) struct MouseConfig {
+pub struct MouseConfig {
     /// Whether to invert mouse scroll direction.
     #[config(default = true)]
     pub invert_scroll: ScrollDirection,

@@ -1,3 +1,5 @@
+use crossterm::event::KeyCode;
+
 use super::Action;
 use super::App;
 use super::AppPaneId;
@@ -13,6 +15,8 @@ use super::Shortcuts;
 use super::TabStop;
 use super::input;
 use super::output_is_tabbable;
+use crate::build_monitor::OutputBuildSetTerminationAvailability;
+use crate::build_monitor::SelectedBuildTerminationAvailability;
 
 /// `key` held with Alt — the portable representation the keymap stores for the
 /// termination shortcuts, spelled `alt-<key>` in TOML.
@@ -21,10 +25,7 @@ use super::output_is_tabbable;
 /// dispatch spelling a live Alt-Shift keypress arrives as, and the one
 /// `alt-shift-k` in a user's TOML parses to.
 fn alt_key(key: char) -> KeyBind {
-    KeyBind::from_parts(
-        crossterm::event::KeyCode::Char(key),
-        crossterm::event::KeyModifiers::ALT,
-    )
+    KeyBind::from_parts(KeyCode::Char(key), crossterm::event::KeyModifiers::ALT)
 }
 
 /// `Pane<App>` + `Shortcuts<App>` host for the Output pane.
@@ -65,26 +66,20 @@ impl Shortcuts<App> for OutputPane {
     /// confirmation later consumes.
     fn state(&self, action: OutputAction, app: &App) -> ShortcutState {
         match action {
-            OutputAction::KillSelectedBuild => match app.selected_build_termination_availability() {
-                crate::build_monitor::SelectedBuildTerminationAvailability::Available => {
-                    ShortcutState::Enabled
-                },
-                crate::build_monitor::SelectedBuildTerminationAvailability::SnapshotNotActionable
-                | crate::build_monitor::SelectedBuildTerminationAvailability::SessionNotActionable
-                | crate::build_monitor::SelectedBuildTerminationAvailability::Busy => {
-                    ShortcutState::Disabled
-                },
+            OutputAction::KillSelectedBuild => {
+                match app.selected_build_termination_availability() {
+                    SelectedBuildTerminationAvailability::Available => ShortcutState::Enabled,
+                    SelectedBuildTerminationAvailability::SnapshotNotActionable
+                    | SelectedBuildTerminationAvailability::SessionNotActionable
+                    | SelectedBuildTerminationAvailability::Busy => ShortcutState::Disabled,
+                }
             },
             OutputAction::TerminateOutputBuildSet => {
                 match app.output_build_set_termination_availability() {
-                    crate::build_monitor::OutputBuildSetTerminationAvailability::Available => {
-                        ShortcutState::Enabled
-                    },
-                    crate::build_monitor::OutputBuildSetTerminationAvailability::SnapshotNotActionable
-                    | crate::build_monitor::OutputBuildSetTerminationAvailability::BuildSetNotFullyActionable
-                    | crate::build_monitor::OutputBuildSetTerminationAvailability::Busy => {
-                        ShortcutState::Disabled
-                    },
+                    OutputBuildSetTerminationAvailability::Available => ShortcutState::Enabled,
+                    OutputBuildSetTerminationAvailability::SnapshotNotActionable
+                    | OutputBuildSetTerminationAvailability::BuildSetNotFullyActionable
+                    | OutputBuildSetTerminationAvailability::Busy => ShortcutState::Disabled,
                 }
             },
             OutputAction::SelectAll | OutputAction::Cancel => ShortcutState::Enabled,
@@ -125,6 +120,7 @@ impl CopySelection<App> for OutputPane {
 
 #[cfg(test)]
 mod tests {
+    use crossterm::event::KeyCode;
     use tui_pane::KeyBind;
     use tui_pane::Shortcuts;
 
@@ -161,7 +157,7 @@ mod tests {
     fn alt_shift_keypress_normalizes_onto_the_scoped_kill_binding() {
         let defaults = OutputPane::defaults().into_scope_map();
         let pressed = KeyBind::from_parts(
-            crossterm::event::KeyCode::Char('k'),
+            KeyCode::Char('k'),
             crossterm::event::KeyModifiers::ALT | crossterm::event::KeyModifiers::SHIFT,
         );
 

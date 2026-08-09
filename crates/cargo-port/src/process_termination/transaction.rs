@@ -228,8 +228,8 @@ pub(crate) fn observe_termination_descendants(
 mod tests {
     use super::*;
     use crate::build_monitor::MAX_DESCENDANT_WALK_DEPTH;
+    use crate::process_observation::snapshot_builder;
     use crate::process_observation::snapshot_builder::ObservedProcess;
-    use crate::process_observation::snapshot_builder::snapshot_of;
 
     fn target_id(value: u64) -> TerminationTargetId {
         let value = std::num::NonZeroU64::MIN.saturating_add(value.saturating_sub(1));
@@ -253,7 +253,8 @@ mod tests {
         let middle = process(11).with_validated_parent(root.identity());
         let leaf = process(12).with_validated_parent(middle.identity());
         let broken = process(13).with_unobservable_parentage();
-        let snapshot = snapshot_of(&[root.clone(), middle.clone(), leaf.clone(), broken]);
+        let snapshot =
+            snapshot_builder::snapshot_of(&[root.clone(), middle.clone(), leaf.clone(), broken]);
         let pass = observe_termination_descendants(
             &snapshot,
             &[FrozenTerminationRootObservation::new(
@@ -279,7 +280,7 @@ mod tests {
         let root = process(20);
         let admitted = process(21).with_validated_parent(root.identity());
         let newly_visible = process(22).with_validated_parent(admitted.identity());
-        let snapshot = snapshot_of(&[admitted.clone(), newly_visible]);
+        let snapshot = snapshot_builder::snapshot_of(&[admitted.clone(), newly_visible]);
         let pass = observe_termination_descendants(
             &snapshot,
             &[FrozenTerminationRootObservation::new(
@@ -320,7 +321,7 @@ mod tests {
         let descendant_beyond_depth_limit =
             process(next_pid).with_validated_parent(&descendant_at_depth_limit);
         observed_processes.push(descendant_beyond_depth_limit.clone());
-        let snapshot = snapshot_of(&observed_processes);
+        let snapshot = snapshot_builder::snapshot_of(&observed_processes);
 
         let pass = observe_termination_descendants(
             &snapshot,

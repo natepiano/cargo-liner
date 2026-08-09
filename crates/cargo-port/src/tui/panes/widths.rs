@@ -57,7 +57,7 @@ use crate::tui::render;
 
 /// Walk the project tree and produce a `ProjectListWidths`.
 /// Single entry point used by `App::ensure_fit_widths`.
-pub fn compute_project_list_widths(
+pub(in crate::tui) fn compute_project_list_widths(
     entries: &ProjectList,
     root_labels: &[String],
     lint_enabled: bool,
@@ -74,7 +74,7 @@ pub fn compute_project_list_widths(
 /// Tests reach into width math through a minimal surface; this
 /// is the gutter-aware name-column width helper. Public via
 /// `panes/mod.rs` for `app/tests/rows.rs` and `app/tests/panes.rs`.
-pub const fn name_width_with_gutter(content_width: usize) -> usize {
+pub(in crate::tui) const fn name_width_with_gutter(content_width: usize) -> usize {
     content_width.saturating_add(1)
 }
 

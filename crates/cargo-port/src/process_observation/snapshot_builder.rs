@@ -47,7 +47,7 @@ impl ObservedCandidateRole {
 
 /// Where one observed process sits in the validated parent chain.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum ObservedParentage {
+enum ObservedParentage {
     /// The process has no observed parent inside the snapshot.
     Root,
     /// The process's parent edge was validated and names this identity.

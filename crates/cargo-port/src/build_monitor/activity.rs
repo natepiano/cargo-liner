@@ -61,7 +61,7 @@ pub(crate) struct CompilerSessionCandidates(Vec<BuildSessionId>);
 
 impl CompilerSessionCandidates {
     /// Record one compatible live session, ignoring repeats.
-    pub(crate) fn include(&mut self, build_session_id: BuildSessionId) {
+    pub(super) fn include(&mut self, build_session_id: BuildSessionId) {
         if !self.0.contains(&build_session_id) {
             self.0.push(build_session_id);
         }
@@ -69,7 +69,7 @@ impl CompilerSessionCandidates {
 
     /// Convert collected candidates into attribution. Exactly one candidate
     /// resolves to `resolved_by`; zero or more than one cannot.
-    pub(crate) fn attribution(
+    pub(super) fn attribution(
         self,
         resolved_by: ResolvedCompilerAttribution,
     ) -> CompilerAttribution {
@@ -103,7 +103,7 @@ impl CompilerSessionCandidates {
     /// candidate is ambiguous here: the system-wide uniqueness test could not
     /// see every candidate, so the match may be false-unique and must not
     /// authorize termination.
-    pub(crate) fn degraded_attribution(self) -> CompilerAttribution {
+    pub(super) fn degraded_attribution(self) -> CompilerAttribution {
         match self.0.as_slice() {
             [] => CompilerAttribution::Unattributed,
             [_, ..] => CompilerAttribution::Ambiguous { candidates: self },
@@ -111,13 +111,13 @@ impl CompilerSessionCandidates {
     }
 
     /// The candidate sessions, for the attribution-unavailable section.
-    pub(crate) fn candidates(&self) -> &[BuildSessionId] { &self.0 }
+    pub(super) fn candidates(&self) -> &[BuildSessionId] { &self.0 }
 
     /// How many compatible live sessions were collected.
-    pub(crate) const fn len(&self) -> usize { self.0.len() }
+    pub(super) const fn len(&self) -> usize { self.0.len() }
 
     /// Whether no compatible live session was collected.
-    pub(crate) const fn is_empty(&self) -> bool { self.0.is_empty() }
+    pub(super) const fn is_empty(&self) -> bool { self.0.is_empty() }
 }
 
 /// Which association method selected a single collected candidate.
@@ -129,7 +129,7 @@ impl CompilerSessionCandidates {
 /// [`CompilerAttribution::UniqueOutputMatch`]; keeping them apart here is what
 /// lets a misattribution name the evidence that produced it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ResolvedCompilerAttribution {
+pub(super) enum ResolvedCompilerAttribution {
     /// A validated parent chain reached the session's Cargo root.
     ValidatedParentChain,
     /// The compiler's output directory sits under exactly one live session's
@@ -208,7 +208,7 @@ pub(crate) struct ManifestPackageIdentity {
 
 impl ManifestPackageIdentity {
     /// Record a dependency package read from its manifest.
-    pub(crate) const fn new(name: String, version: String) -> Self { Self { name, version } }
+    pub(super) const fn new(name: String, version: String) -> Self { Self { name, version } }
 
     /// The package name declared in the manifest.
     pub(crate) fn name(&self) -> &str { &self.name }

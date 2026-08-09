@@ -17,4 +17,4 @@ pub(super) const TESTS_UNIT_LABEL: &str = "unit";
 /// publishable but a confirmed crates.io outage means no data has landed
 /// — the title already says "crates.io", so the cell only needs to say
 /// the service is unreachable.
-pub const CRATES_IO_UNREACHABLE: &str = "unreachable";
+pub(in crate::tui::panes) const CRATES_IO_UNREACHABLE: &str = "unreachable";

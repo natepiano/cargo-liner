@@ -18,10 +18,14 @@ use std::time::Instant;
 
 use tui_pane::PERF_LOG_TARGET;
 
+use super::messages::ProcessTerminationOutcomeMsg;
+use super::messages::ProcessTerminationPlanMsg;
+use super::process_refresh::AppProcessRefreshExecutor;
 use super::startup_services::WatcherHandle;
 use super::terminal::CiFetchMsg;
 use super::terminal::CleanMsg;
 use super::terminal::OwnedRunEvent;
+use crate::build_monitor;
 use crate::build_monitor::BuildClassifier;
 use crate::build_monitor::BuildMonitoringRefreshCycleDemand;
 use crate::build_monitor::BuildMonitoringRefreshCycleExecution;
@@ -29,6 +33,7 @@ use crate::channel::Receiver;
 use crate::channel::SendError;
 use crate::channel::Sender;
 use crate::process_observation::CompileMonitorRefreshSchedule;
+use crate::process_observation::ProcessObserver;
 use crate::process_observation::ProcessRefreshExecutionBackendSelection;
 use crate::process_observation::ProcessRefreshExecutor;
 use crate::process_observation::RefreshCycleClassifier;
@@ -43,9 +48,6 @@ use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
 use crate::scan::BackgroundMsg;
-use crate::tui::messages::ProcessTerminationOutcomeMsg;
-use crate::tui::messages::ProcessTerminationPlanMsg;
-use crate::tui::process_refresh::AppProcessRefreshExecutor;
 use crate::watcher::WatchRequest;
 use crate::watcher::WatcherMsg;
 
@@ -75,7 +77,7 @@ enum ProcessTerminationWorkerReadiness {
 /// Deterministic worker readiness used by App interaction fixtures.
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ProcessTerminatorReadinessForTest {
+pub(super) enum ProcessTerminatorReadinessForTest {
     Starting,
     Available,
     Unavailable,
@@ -548,7 +550,7 @@ mod tests {
 /// dependency both ways. Owning it here keeps observation neutral while the
 /// worker still holds the classifier and the observer as one unit.
 #[derive(Debug, Default)]
-pub(crate) struct BuildClassifyingRefreshCycle {
+pub(super) struct BuildClassifyingRefreshCycle {
     build_classifier: BuildClassifier,
 }
 
@@ -558,7 +560,7 @@ impl RefreshCycleClassifier for BuildClassifyingRefreshCycle {
 
     fn classify_refresh_cycle(
         &mut self,
-        process_observer: &mut crate::process_observation::ProcessObserver,
+        process_observer: &mut ProcessObserver,
         process_observation_snapshot: &ProcessObservationSnapshot,
         build_monitoring_refresh_cycle_demand: BuildMonitoringRefreshCycleDemand,
     ) -> BuildMonitoringRefreshCycleExecution {
@@ -571,7 +573,7 @@ impl RefreshCycleClassifier for BuildClassifyingRefreshCycle {
             Instant::now(),
         );
         let build_termination_observation_execution =
-            crate::build_monitor::observe_build_termination_demand(
+            build_monitor::observe_build_termination_demand(
                 process_observer,
                 process_observation_snapshot,
                 build_termination_observation_demand,

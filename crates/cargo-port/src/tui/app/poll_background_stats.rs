@@ -1,14 +1,14 @@
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum RebuildStatus {
+pub(in crate::tui) enum RebuildStatus {
     Needed,
     #[default]
     NotNeeded,
 }
 
 impl RebuildStatus {
-    pub const fn needs_rebuild(self) -> bool { matches!(self, Self::Needed) }
+    pub(in crate::tui) const fn needs_rebuild(self) -> bool { matches!(self, Self::Needed) }
 
-    pub const fn merge_needed(&mut self, needs_rebuild: bool) {
+    pub(super) const fn merge_needed(&mut self, needs_rebuild: bool) {
         if needs_rebuild {
             *self = Self::Needed;
         }
@@ -16,7 +16,7 @@ impl RebuildStatus {
 }
 
 #[derive(Default)]
-pub struct PollBackgroundStats {
+pub(in crate::tui) struct PollBackgroundStats {
     pub bg_msgs:                usize,
     pub disk_usage_msgs:        usize,
     pub git_info_msgs:          usize,

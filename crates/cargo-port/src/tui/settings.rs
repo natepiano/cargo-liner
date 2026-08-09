@@ -48,6 +48,7 @@ use super::render_context::PaneRenderCtx;
 use crate::cache_paths;
 use crate::config;
 use crate::config::CargoPortConfig;
+use crate::config::CargoPortConfigurationPathResolution;
 use crate::config::LintCommandConfig;
 use crate::constants::APP_NAME;
 use crate::constants::CONFIG_FILE;
@@ -585,14 +586,14 @@ pub(super) struct StartupSettings {
 
 pub(super) fn load_cargo_port_settings_for_startup() -> Result<StartupSettings, String> {
     let (settings_spec, should_seed_file) = match config::config_path() {
-        config::CargoPortConfigurationPathResolution::Resolved(config_path) => (
+        CargoPortConfigurationPathResolution::Resolved(config_path) => (
             SettingsFileSpec::new(APP_NAME, CONFIG_FILE).with_path(&config_path),
             !config_path.exists(),
         ),
-        config::CargoPortConfigurationPathResolution::PlatformDirectoryUnavailable => {
+        CargoPortConfigurationPathResolution::PlatformDirectoryUnavailable => {
             (SettingsFileSpec::new(APP_NAME, CONFIG_FILE), false)
         },
-        config::CargoPortConfigurationPathResolution::InvalidEmptyOverride => {
+        CargoPortConfigurationPathResolution::InvalidEmptyOverride => {
             return Err("CARGO_PORT_CONFIG_DIR is set but empty".to_string());
         },
     };
@@ -1373,7 +1374,7 @@ fn toggle_vim_mode(app: &mut App) {
 /// [`prepare_settings_render_inputs`] before `App::split_for_render`
 /// runs; consumed by `SettingsPane`'s [`tui_pane::Renderable`] impl
 /// via [`crate::tui::render_context::PaneRenderCtx`].
-pub(crate) struct SettingsRenderInputs {
+pub(super) struct SettingsRenderInputs {
     pub lines:            Vec<Line<'static>>,
     pub line_count:       usize,
     pub selectable_count: usize,

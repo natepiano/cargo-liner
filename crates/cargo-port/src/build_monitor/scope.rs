@@ -6,6 +6,8 @@
 //! defined beside that type, which drops the selected-row identity and keeps
 //! the roots and revisions that identify what may be classified.
 
+#[cfg(test)]
+use crate::project::AbsolutePath;
 use crate::project::AcceptedCargoMetadataRevision;
 use crate::project::CanonicalCheckoutRoot;
 use crate::project::CanonicalPathResolution;
@@ -149,7 +151,7 @@ impl BuildScopeKey {
     /// A key covering one checkout and workspace root, for tests that need an
     /// actionable scope without resolving one from a live index.
     #[cfg(test)]
-    pub(crate) fn for_test(canonical_root: crate::project::AbsolutePath) -> Self {
+    pub(crate) fn for_test(canonical_root: AbsolutePath) -> Self {
         Self {
             covered_scope_roots:              CoveredScopeRoots {
                 canonical_checkout_roots:  vec![CanonicalCheckoutRoot::for_test(

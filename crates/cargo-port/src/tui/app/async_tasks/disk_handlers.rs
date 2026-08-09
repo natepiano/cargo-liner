@@ -42,7 +42,7 @@ impl App {
         self.project_list.set_project_storage(paths, storage);
     }
 
-    pub fn handle_disk_usage(&mut self, path: &Path, bytes: u64) {
+    pub(in crate::tui) fn handle_disk_usage(&mut self, path: &Path, bytes: u64) {
         self.apply_disk_usage(path, bytes);
     }
     pub(super) fn handle_disk_usage_batch(&mut self, entries: Vec<(AbsolutePath, DirSizes)>) {

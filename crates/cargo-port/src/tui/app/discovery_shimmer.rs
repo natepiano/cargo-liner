@@ -18,7 +18,7 @@ use crate::tui::state::Scan;
 /// Free-fn equivalent of `App::discovery_name_segments_for_path`.
 /// Used by `ProjectListPane::render` and re-used by the App
 /// method as a thin delegator.
-pub fn discovery_name_segments_for_path_with_refs(
+pub(in crate::tui) fn discovery_name_segments_for_path_with_refs(
     scan: &Scan,
     config: &Config,
     project_list: &ProjectList,

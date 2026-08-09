@@ -33,12 +33,12 @@ impl App {
         });
         self.background.replace_watcher(new_watcher);
     }
-    pub fn register_existing_projects(&self) {
+    pub(in crate::tui::app) fn register_existing_projects(&self) {
         self.project_list.for_each_leaf(|item| {
             self.background.register_item_background_services(item);
         });
     }
-    pub fn finish_watcher_registration_batch(&self) {
+    pub(in crate::tui::app) fn finish_watcher_registration_batch(&self) {
         let _ = self
             .background
             .send_watcher(WatcherMsg::InitialRegistrationComplete);
@@ -69,7 +69,7 @@ impl App {
     /// reads run on the tokio blocking pool and land back as
     /// [`BackgroundMsg::LintHistoryLoaded`], applied by
     /// [`Self::apply_lint_history_loaded`].
-    pub fn refresh_lint_runs_from_disk(&self) {
+    pub(in crate::tui::app) fn refresh_lint_runs_from_disk(&self) {
         let effect = self.startup_services.lint_history_hydration_effect();
         self.startup_services.record_lint_history_hydration(effect);
         if effect == StartupEffect::Suppressed {
@@ -133,7 +133,7 @@ impl App {
     /// so callers don't block the first paint (or any frame) on a walk
     /// of `~/Library/Caches/cargo-port/lint-runs`, which can hold
     /// thousands of archived run files.
-    pub fn refresh_lint_cache_usage_from_disk(&self) {
+    pub(in crate::tui) fn refresh_lint_cache_usage_from_disk(&self) {
         let effect = self.startup_services.lint_cache_scan_effect();
         self.startup_services.record_lint_cache_scan(effect);
         if effect == StartupEffect::Suppressed {
@@ -155,7 +155,7 @@ impl App {
             let _ = sender.send(BackgroundMsg::LintCacheUsage { usage });
         });
     }
-    pub fn lint_runtime_projects(&self) -> Vec<RegisterProjectRequest> {
+    pub(in crate::tui::app) fn lint_runtime_projects(&self) -> Vec<RegisterProjectRequest> {
         if !self.scan.is_complete() {
             return Vec::new();
         }

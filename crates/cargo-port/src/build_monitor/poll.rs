@@ -114,7 +114,7 @@ fn current_termination_authorities(
     monitor_data: &MonitorData,
     classified_external_termination_supports: &mut ClassifiedExternalTerminationSupports,
     owned_termination_support: OwnedTerminationSupport,
-) -> BTreeMap<super::session::BuildSessionId, BuildTerminationAuthority> {
+) -> BTreeMap<BuildSessionId, BuildTerminationAuthority> {
     monitor_data
         .session_rows()
         .iter()

@@ -1266,7 +1266,10 @@ fn render_git_about_section(frame: &mut Frame, ctx: &GitAboutCtx<'_>) -> GitAbou
 /// blocks. Each of the remotes / worktrees blocks adds three header/spacing
 /// rows when non-empty. Shared by the render path and the cross-project
 /// top-row height measurement so the predicted height matches what renders.
-pub fn git_lower_content_height(data: &GitData, flat_fields_len: usize) -> usize {
+pub(in crate::tui::panes) fn git_lower_content_height(
+    data: &GitData,
+    flat_fields_len: usize,
+) -> usize {
     let remotes_block = if data.remotes.is_empty() {
         0
     } else {
@@ -1287,7 +1290,7 @@ pub fn git_lower_content_height(data: &GitData, flat_fields_len: usize) -> usize
 /// absent and only the lower content occupies the pane. Shared by the render
 /// path (the viewport's scroll-overflow extent) and the cross-project top-row
 /// measurement so the pager and the row height agree on what renders.
-pub const fn git_content_height(
+pub(in crate::tui::panes) const fn git_content_height(
     synced_description_height: usize,
     has_description: bool,
     lower_content_height: usize,

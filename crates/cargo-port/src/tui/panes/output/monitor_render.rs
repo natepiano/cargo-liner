@@ -15,6 +15,7 @@ use ratatui::text::Span;
 use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
 use ratatui::widgets::Paragraph;
+use tui_pane::CopySelectionResult;
 use tui_pane::label_color;
 
 use super::constants::COLUMN_DIVIDER_WIDTH;
@@ -27,19 +28,20 @@ use super::constants::OWNED_PIN_CAPTION_HEIGHT;
 use super::constants::UNATTRIBUTED_SECTION_AREA_DIVISOR;
 use super::constants::UNATTRIBUTED_SECTION_CAPTION_HEIGHT;
 use super::constants::UNATTRIBUTED_SECTION_MINIMUM_HEIGHT;
+use super::hit_map;
 use super::hit_map::HitRegion;
 use super::hit_map::MonitorHitMap;
 use super::hit_map::OutputMonitorHit;
-use super::hit_map::row_rect;
+use super::presentation;
 use super::presentation::MonitorColumn;
 use super::presentation::MonitorColumns;
+use super::presentation::MonitorEmptyPresentation;
 use super::presentation::MonitorEmptyState;
 use super::presentation::MonitorEmptyStateIndexNote;
 use super::presentation::MonitorPresentation;
 use super::presentation::OutputBuildSetTerminationAggregateProjection;
 use super::presentation::OwnedOutputPresentation;
-use super::render::fill_row;
-use super::render::parse_output_line;
+use super::render;
 use super::selection::OutputCursor;
 use super::selection::OutputCursorTarget;
 use super::selection::OutputSelectionRange;
@@ -48,7 +50,9 @@ use crate::build_monitor::AdditionalBuildExclusion;
 use crate::build_monitor::BuildTerminationAggregateCompletion;
 use crate::build_monitor::BuildTerminationSessionCompletion;
 use crate::build_monitor::BuildTerminationTerminalRecord;
+use crate::build_monitor::BuildTerminationTransactionTargetSet;
 use crate::build_monitor::CompileActivity;
+use crate::build_monitor::CompileActivityId;
 use crate::build_monitor::CompiledCrateIdentity;
 use crate::build_monitor::CompilerAttribution;
 use crate::build_monitor::CompilerKind;
@@ -56,6 +60,7 @@ use crate::build_monitor::MonitorSessionOwnership;
 use crate::build_monitor::MonitorStaleness;
 use crate::build_monitor::UnattributedCompileActivity;
 use crate::tui::OwnedRunId;
+use crate::tui::panes;
 use crate::tui::state::OwnedRunCompletionMarker;
 use crate::tui::state::OwnedRunOutputTitleRef;
 use crate::tui::state::OwnedRunRunningLabelRef;
@@ -418,16 +423,16 @@ fn owned_output_lines(
         .take(drawable_rows)
     {
         hit_map.record(
-            row_rect(area, start_line + lines.len()),
+            hit_map::row_rect(area, start_line + lines.len()),
             OutputMonitorHit::CapturedOutput {
                 producer: owned_body.owned.producer(),
                 row,
             },
         );
-        let parsed = parse_output_line(raw);
+        let parsed = render::parse_output_line(raw);
         lines.push(
             if captured_selected && owned_body.selected_range.contains(row) {
-                fill_row(parsed, width)
+                render::fill_row(parsed, width)
             } else {
                 parsed
             },
@@ -587,7 +592,7 @@ fn empty_state_line(monitor_empty_state: MonitorEmptyState) -> Line<'static> {
 /// The empty monitor explanation followed by terminal records that outlived
 /// their replaceable live session rows.
 fn empty_state_lines(
-    monitor_empty_presentation: super::presentation::MonitorEmptyPresentation<'_>,
+    monitor_empty_presentation: MonitorEmptyPresentation<'_>,
 ) -> Vec<Line<'static>> {
     let terminal_records: Vec<_> = monitor_empty_presentation.terminal_records().collect();
     std::iter::once(empty_state_line(
@@ -601,9 +606,7 @@ fn termination_result_lines(
     terminal_records: &[&BuildTerminationTerminalRecord],
 ) -> Vec<Line<'static>> {
     let output_build_set_result_groups =
-        super::presentation::output_build_set_termination_result_groups(
-            terminal_records.iter().copied(),
-        );
+        presentation::output_build_set_termination_result_groups(terminal_records.iter().copied());
     output_build_set_result_groups
         .into_iter()
         .flat_map(|output_build_set_result_group| {
@@ -618,7 +621,7 @@ fn termination_result_lines(
                 .copied()
                 .filter(|terminal_record| {
                     terminal_record.target_set()
-                        != crate::build_monitor::BuildTerminationTransactionTargetSet::OutputBuildSet
+                        != BuildTerminationTransactionTargetSet::OutputBuildSet
                 })
                 .map(terminal_record_line),
         )
@@ -864,14 +867,14 @@ fn render_column(
     for (index, text) in column.header_fields(now).into_iter().enumerate() {
         let line = Line::from(Span::raw(format!(" {text}")));
         hit_map.record(
-            row_rect(area, lines.len()),
+            hit_map::row_rect(area, lines.len()),
             OutputMonitorHit::Header {
                 build_session_id: column.build_session_id().clone(),
                 column_index,
             },
         );
         lines.push(if header_selected && index == 0 {
-            fill_row(line, width)
+            render::fill_row(line, width)
         } else {
             line
         });
@@ -888,7 +891,7 @@ fn render_column(
     {
         let line = Line::from(Span::raw(format!(" {}", activity_label(compile_activity))));
         hit_map.record(
-            row_rect(area, lines.len()),
+            hit_map::row_rect(area, lines.len()),
             OutputMonitorHit::Activity {
                 compile_activity_id: compile_activity.compile_activity_id().clone(),
                 build_session_id: column.build_session_id().clone(),
@@ -902,7 +905,7 @@ fn render_column(
                 if compile_activity_id == compile_activity.compile_activity_id()
         );
         lines.push(if selected {
-            fill_row(line, width)
+            render::fill_row(line, width)
         } else {
             line
         });
@@ -931,36 +934,36 @@ fn render_column(
 /// copied is exactly the line drawn — the same string the user is looking at.
 pub(super) fn activity_row_text(
     monitor_presentation: MonitorPresentation<'_>,
-    compile_activity_id: &crate::build_monitor::CompileActivityId,
-) -> tui_pane::CopySelectionResult {
+    compile_activity_id: &CompileActivityId,
+) -> CopySelectionResult {
     let MonitorPresentation::Columns(monitor_columns) = monitor_presentation else {
-        return tui_pane::CopySelectionResult::Nothing;
+        return CopySelectionResult::Nothing;
     };
     monitor_columns
         .columns()
         .flat_map(|column| column.session_row().compile_activities())
         .find(|compile_activity| compile_activity.compile_activity_id() == compile_activity_id)
-        .map_or(tui_pane::CopySelectionResult::Nothing, |compile_activity| {
+        .map_or(CopySelectionResult::Nothing, |compile_activity| {
             let row = [activity_label(compile_activity)];
-            crate::tui::panes::copy_payload_for_output(&row, 0, 0)
+            panes::copy_payload_for_output(&row, 0, 0)
         })
 }
 
 /// The text of the scope-level unattributed row `compile_activity_id` names.
 pub(super) fn unattributed_row_text(
     monitor_presentation: MonitorPresentation<'_>,
-    compile_activity_id: &crate::build_monitor::CompileActivityId,
-) -> tui_pane::CopySelectionResult {
+    compile_activity_id: &CompileActivityId,
+) -> CopySelectionResult {
     let MonitorPresentation::Columns(monitor_columns) = monitor_presentation else {
-        return tui_pane::CopySelectionResult::Nothing;
+        return CopySelectionResult::Nothing;
     };
     monitor_columns
         .unattributed_activities()
         .iter()
         .find(|unattributed| unattributed.compile_activity_id() == compile_activity_id)
-        .map_or(tui_pane::CopySelectionResult::Nothing, |unattributed| {
+        .map_or(CopySelectionResult::Nothing, |unattributed| {
             let row = [unattributed_label(unattributed)];
-            crate::tui::panes::copy_payload_for_output(&row, 0, 0)
+            panes::copy_payload_for_output(&row, 0, 0)
         })
 }
 
@@ -1038,7 +1041,7 @@ fn render_unattributed_section(
             unattributed_label(unattributed_activity)
         )));
         hit_map.record(
-            row_rect(area, lines.len()),
+            hit_map::row_rect(area, lines.len()),
             OutputMonitorHit::Unattributed {
                 compile_activity_id: unattributed_activity.compile_activity_id().clone(),
                 row_index,
@@ -1050,7 +1053,7 @@ fn render_unattributed_section(
                 if compile_activity_id == unattributed_activity.compile_activity_id()
         );
         lines.push(if selected {
-            fill_row(line, width)
+            render::fill_row(line, width)
         } else {
             line
         });
@@ -1099,18 +1102,20 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    use super::super::presentation::MonitorVisibility;
-    use super::super::presentation::OutputPresentation;
     use super::*;
+    use crate::build_monitor;
     use crate::build_monitor::BuildTerminationLifecycleRegistry;
     use crate::build_monitor::ClassifiedRoot;
     use crate::build_monitor::MonitorSnapshot;
-    use crate::build_monitor::classified_monitor_snapshot;
     use crate::process_termination::TerminationTargetResult;
     use crate::project::AbsolutePath;
     use crate::tui::compile_visibility::CompileVisibilityState;
     use crate::tui::compile_visibility::MonitorScopeKey;
     use crate::tui::compile_visibility::MonitorScopeResolution;
+    use crate::tui::panes::output::presentation::MonitorVisibility;
+    use crate::tui::panes::output::presentation::OutputPresentation;
+    use crate::tui::state::OwnedRunOutputStateRef;
+    use crate::tui::state::OwnedRunRunningLabelRef;
 
     const TERMINATED_ROOT_PID: u32 = 9_421;
     const LIVE_ROOT_PID: u32 = 9_422;
@@ -1133,7 +1138,7 @@ mod tests {
                 compiler_pids: &[],
             })
             .collect();
-        classified_monitor_snapshot(&classified_roots).unwrap_or_else(|error| {
+        build_monitor::classified_monitor_snapshot(&classified_roots).unwrap_or_else(|error| {
             panic!("classification fixture should build a snapshot: {error}")
         })
     }
@@ -1214,8 +1219,8 @@ mod tests {
             &compile_visibility_state,
             &live_snapshot,
             &build_termination_lifecycle_registry,
-            crate::tui::state::OwnedRunOutputStateRef::Absent,
-            crate::tui::state::OwnedRunRunningLabelRef::NotRunning,
+            OwnedRunOutputStateRef::Absent,
+            OwnedRunRunningLabelRef::NotRunning,
             OwnedRunCompletionMarker::NotCompleted,
         );
         let MonitorVisibility::On(MonitorPresentation::Columns(monitor_columns)) =

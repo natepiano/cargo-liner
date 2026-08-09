@@ -13,7 +13,7 @@ use crate::tui::app::FinderState;
     reason = "guard ships alongside ProjectList so the type is in place \
               while call sites still use the direct accessors"
 )]
-pub struct SelectionMutation<'a> {
+pub(super) struct SelectionMutation<'a> {
     pub(super) project_list: &'a mut ProjectList,
     pub(super) non_rust:     NonRustInclusion,
 }

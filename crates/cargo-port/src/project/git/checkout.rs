@@ -61,7 +61,7 @@ impl HeadState {
     /// The branch name when `HEAD` points at one. `None` for detached
     /// and unborn checkouts. Use for comparisons against
     /// `local_main_branch` and other branch-name lookups.
-    pub const fn branch_name(&self) -> Option<&str> {
+    pub(crate) const fn branch_name(&self) -> Option<&str> {
         match self {
             Self::Branch(name) => Some(name.as_str()),
             Self::Unborn | Self::Detached { .. } => None,
@@ -71,7 +71,7 @@ impl HeadState {
     /// Short display label, suitable for compact UI like the finder
     /// column. `Branch(name)` → `name`, `Detached { short_sha }` →
     /// `"detached @ <short_sha>"`, `Unborn` → `""`.
-    pub fn display_label(&self) -> String {
+    pub(crate) fn display_label(&self) -> String {
         match self {
             Self::Branch(name) => name.clone(),
             Self::Detached { short_sha } => format!("detached @ {short_sha}"),
@@ -122,7 +122,7 @@ impl CheckoutInfo {
     /// The remote matching the current branch's `@{upstream}` within
     /// `repo`, if any. Lookup is by name match against
     /// `repo.remotes[i].tracked_ref` — this is rendered data, not hot.
-    pub fn primary_remote<'r>(&self, repo: &'r RepoInfo) -> Option<&'r RemoteInfo> {
+    pub(crate) fn primary_remote<'r>(&self, repo: &'r RepoInfo) -> Option<&'r RemoteInfo> {
         let want = self.primary_tracked_ref.as_deref()?;
         repo.remotes
             .iter()
@@ -130,24 +130,24 @@ impl CheckoutInfo {
     }
 
     /// The primary remote's URL, looked up against `repo`.
-    pub fn primary_url<'r>(&self, repo: &'r RepoInfo) -> Option<&'r str> {
+    pub(crate) fn primary_url<'r>(&self, repo: &'r RepoInfo) -> Option<&'r str> {
         self.primary_remote(repo).and_then(|r| r.url.as_deref())
     }
 
     /// The primary remote's ahead/behind vs its tracked ref.
-    pub fn primary_ahead_behind(&self, repo: &RepoInfo) -> Option<(usize, usize)> {
+    pub(crate) fn primary_ahead_behind(&self, repo: &RepoInfo) -> Option<(usize, usize)> {
         self.primary_remote(repo).and_then(|r| r.ahead_behind)
     }
 
     /// The primary remote's tracked ref (e.g. `origin/main`).
-    pub fn primary_tracked_ref(&self) -> Option<&str> { self.primary_tracked_ref.as_deref() }
+    pub(crate) fn primary_tracked_ref(&self) -> Option<&str> { self.primary_tracked_ref.as_deref() }
 
     /// Probe per-checkout git metadata for `probe_path`. Cheap (no
     /// per-remote loop). `local_main_branch` is supplied by the caller —
     /// usually pulled from the entry's `RepoInfo.local_main_branch`,
     /// which is identical across siblings so probing it once at the
     /// `RepoInfo::get` call avoids redundant work.
-    pub fn get(probe_path: &Path, local_main_branch: Option<&str>) -> Option<Self> {
+    pub(crate) fn get(probe_path: &Path, local_main_branch: Option<&str>) -> Option<Self> {
         let repo_root = discovery::git_repo_root(probe_path)?;
 
         let head = resolve_head_state(&repo_root);
@@ -301,7 +301,7 @@ pub(crate) enum GitStatus {
 }
 
 impl GitStatus {
-    pub const fn label(self) -> &'static str {
+    pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Clean => "clean",
             Self::Modified => "modified",
@@ -310,7 +310,7 @@ impl GitStatus {
         }
     }
 
-    pub const fn icon(self) -> &'static str {
+    pub(crate) const fn icon(self) -> &'static str {
         match self {
             Self::Clean => GIT_STATUS_CLEAN,
             Self::Modified => GIT_STATUS_MODIFIED,
@@ -319,7 +319,7 @@ impl GitStatus {
         }
     }
 
-    pub fn label_with_icon(self) -> String {
+    pub(crate) fn label_with_icon(self) -> String {
         let icon = self.icon();
         if icon.is_empty() {
             self.label().to_string()
@@ -341,7 +341,7 @@ pub(crate) enum LocalGitState {
 }
 
 impl LocalGitState {
-    pub fn info(&self) -> Option<&CheckoutInfo> {
+    pub(crate) fn info(&self) -> Option<&CheckoutInfo> {
         match self {
             Self::Detected(info) => Some(info),
             Self::Pending => None,

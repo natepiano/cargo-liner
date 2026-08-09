@@ -18,17 +18,17 @@ use super::actions::TargetsAction;
 /// TOML config at load time.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ResolvedKeymap {
-    pub(crate) project_list: ScopeMap<ProjectListAction>,
-    pub(crate) package:      ScopeMap<PackageAction>,
-    pub(crate) git:          ScopeMap<GitAction>,
-    pub(crate) targets:      ScopeMap<TargetsAction>,
-    pub(crate) ci_runs:      ScopeMap<CiRunsAction>,
-    pub(crate) lints:        ScopeMap<LintsAction>,
+    pub(super) project_list:    ScopeMap<ProjectListAction>,
+    pub(super) package:         ScopeMap<PackageAction>,
+    pub(super) git:             ScopeMap<GitAction>,
+    pub(super) targets:         ScopeMap<TargetsAction>,
+    pub(in crate::tui) ci_runs: ScopeMap<CiRunsAction>,
+    pub(super) lints:           ScopeMap<LintsAction>,
 }
 
 impl ResolvedKeymap {
     /// The built-in default keymap matching the current hardcoded bindings.
-    pub fn defaults() -> Self {
+    pub(crate) fn defaults() -> Self {
         let mut km = Self::default();
 
         // Project list

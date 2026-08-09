@@ -38,44 +38,42 @@ use crate::watcher::WatcherMsg;
 use crate::watcher::WatcherSpawn;
 
 #[derive(Clone, Debug)]
-pub(crate) enum StartupProfile {
+enum StartupProfile {
     Production,
     #[cfg(test)]
     QuietUnitTest(StartupEffects),
 }
 
 impl StartupProfile {
-    pub(crate) const fn production() -> Self { Self::Production }
+    const fn production() -> Self { Self::Production }
 
     #[cfg(test)]
-    pub(crate) const fn quiet_unit_test() -> Self {
-        Self::QuietUnitTest(StartupEffects::quiet_unit_test())
-    }
+    const fn quiet_unit_test() -> Self { Self::QuietUnitTest(StartupEffects::quiet_unit_test()) }
 }
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct StartupEffects {
-    pub(crate) watcher:                  StartupEffect,
-    pub(crate) lint_runtime:             StartupEffect,
-    pub(crate) lint_history_hydration:   StartupEffect,
-    pub(crate) lint_cache_scan:          StartupEffect,
-    pub(crate) github_rate_limit_prime:  StartupEffect,
-    pub(crate) service_retry_probes:     StartupEffect,
-    pub(crate) cpu_monitor:              StartupEffect,
-    pub(crate) theme_directory:          StartupEffect,
-    pub(crate) process_globals:          StartupEffect,
-    pub(crate) host_github_auth:         StartupEffect,
-    pub(crate) running_targets_polling:  StartupEffect,
-    pub(crate) priority_detail_fetch:    StartupEffect,
-    pub(crate) startup_git_first_commit: StartupEffect,
-    pub(crate) startup_project_details:  StartupEffect,
-    pub(crate) streaming_scan:           StartupEffect,
+pub(super) struct StartupEffects {
+    pub(super) watcher:                  StartupEffect,
+    pub(super) lint_runtime:             StartupEffect,
+    pub(super) lint_history_hydration:   StartupEffect,
+    pub(super) lint_cache_scan:          StartupEffect,
+    github_rate_limit_prime:             StartupEffect,
+    service_retry_probes:                StartupEffect,
+    pub(super) cpu_monitor:              StartupEffect,
+    pub(super) theme_directory:          StartupEffect,
+    pub(super) process_globals:          StartupEffect,
+    host_github_auth:                    StartupEffect,
+    pub(super) running_targets_polling:  StartupEffect,
+    pub(super) priority_detail_fetch:    StartupEffect,
+    pub(super) startup_git_first_commit: StartupEffect,
+    pub(super) startup_project_details:  StartupEffect,
+    pub(super) streaming_scan:           StartupEffect,
 }
 
 #[cfg(test)]
 impl StartupEffects {
-    pub(crate) const fn quiet_unit_test() -> Self {
+    const fn quiet_unit_test() -> Self {
         Self {
             watcher:                  StartupEffect::Suppressed,
             lint_runtime:             StartupEffect::Suppressed,
@@ -95,7 +93,7 @@ impl StartupEffects {
         }
     }
 
-    pub(crate) const fn quiet_unit_test_with_lint_runtime() -> Self {
+    const fn quiet_unit_test_with_lint_runtime() -> Self {
         Self {
             lint_runtime: StartupEffect::Real,
             ..Self::quiet_unit_test()
@@ -111,7 +109,7 @@ impl StartupEffects {
     /// `startup_project_details`, `streaming_scan`, and `process_globals` stay
     /// suppressed because `TestApp` does not own join handles for their worker
     /// threads, Rayon jobs, Tokio tasks, or process-global theme/config slots.
-    pub(crate) const fn local_startup_unit_test() -> Self {
+    pub(super) const fn local_startup_unit_test() -> Self {
         Self {
             theme_directory: StartupEffect::Real,
             host_github_auth: StartupEffect::Suppressed,
@@ -121,7 +119,7 @@ impl StartupEffects {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum StartupEffect {
+pub(super) enum StartupEffect {
     Real,
     Suppressed,
 }
@@ -131,7 +129,7 @@ impl StartupEffect {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct StartupServices {
+pub struct StartupServices {
     profile:                StartupProfile,
     counts:                 Rc<RefCell<StartupEffectCounts>>,
     #[cfg(test)]
@@ -141,7 +139,7 @@ pub(crate) struct StartupServices {
 }
 
 impl StartupServices {
-    pub(crate) fn new(profile: StartupProfile) -> Self {
+    fn new(profile: StartupProfile) -> Self {
         Self {
             profile,
             counts: Rc::new(RefCell::new(StartupEffectCounts::default())),
@@ -153,26 +151,26 @@ impl StartupServices {
     }
 
     #[cfg(test)]
-    pub(crate) fn production() -> Self { Self::new(StartupProfile::production()) }
+    pub(super) fn production() -> Self { Self::new(StartupProfile::production()) }
 
     #[cfg(test)]
-    pub(crate) fn quiet_unit_test() -> Self { Self::new(StartupProfile::quiet_unit_test()) }
+    pub(super) fn quiet_unit_test() -> Self { Self::new(StartupProfile::quiet_unit_test()) }
 
     #[cfg(test)]
-    pub(crate) fn quiet_unit_test_with_lint_runtime() -> Self {
+    pub(super) fn quiet_unit_test_with_lint_runtime() -> Self {
         Self::new(StartupProfile::QuietUnitTest(
             StartupEffects::quiet_unit_test_with_lint_runtime(),
         ))
     }
 
     #[cfg(test)]
-    pub(crate) fn local_startup_unit_test() -> Self {
+    pub(super) fn local_startup_unit_test() -> Self {
         Self::new(StartupProfile::QuietUnitTest(
             StartupEffects::local_startup_unit_test(),
         ))
     }
 
-    pub(crate) fn install_active_config(&self, cargo_port_config: &CargoPortConfig) {
+    pub(super) fn install_active_config(&self, cargo_port_config: &CargoPortConfig) {
         if self.allows(StartupEffectKind::ProcessGlobals) {
             config::set_active_config(cargo_port_config);
             self.record_real(StartupEffectKind::ProcessGlobals);
@@ -181,17 +179,17 @@ impl StartupServices {
         }
     }
 
-    pub(crate) fn themes_dir(&self) -> crate::config::CargoPortConfigurationPathResolution {
+    pub(super) fn themes_dir(&self) -> CargoPortConfigurationPathResolution {
         if self.allows(StartupEffectKind::ThemeDirectory) {
             self.record_real(StartupEffectKind::ThemeDirectory);
             themes::themes_dir()
         } else {
             self.record_suppressed(StartupEffectKind::ThemeDirectory);
-            crate::config::CargoPortConfigurationPathResolution::PlatformDirectoryUnavailable
+            CargoPortConfigurationPathResolution::PlatformDirectoryUnavailable
         }
     }
 
-    pub(crate) fn install_theme_state(
+    pub(super) fn install_theme_state(
         &self,
         registry: ThemeRegistry,
         initial_theme: Theme,
@@ -206,7 +204,7 @@ impl StartupServices {
         }
     }
 
-    pub(crate) fn replace_theme_registry(&self, registry: ThemeRegistry) {
+    pub(super) fn replace_theme_registry(&self, registry: ThemeRegistry) {
         if self.allows(StartupEffectKind::ProcessGlobals) {
             tui_pane::replace_registry(registry);
             self.record_real(StartupEffectKind::ProcessGlobals);
@@ -215,7 +213,7 @@ impl StartupServices {
         }
     }
 
-    pub(crate) fn publish_active_theme(&self, theme: Arc<Theme>, focused_pane_tint: bool) {
+    pub(super) fn publish_active_theme(&self, theme: Arc<Theme>, focused_pane_tint: bool) {
         if self.allows(StartupEffectKind::ProcessGlobals) {
             tui_pane::set_active_theme(theme);
             tui_pane::set_focused_pane_tint(focused_pane_tint);
@@ -225,7 +223,7 @@ impl StartupServices {
         }
     }
 
-    pub(crate) fn spawn_lint_runtime(
+    pub(super) fn spawn_lint_runtime(
         &self,
         cargo_port_config: &CargoPortConfig,
         background_tx: Sender<BackgroundMsg>,
@@ -256,7 +254,7 @@ impl StartupServices {
         }
     }
 
-    pub(crate) fn spawn_watcher(&self, startup: WatcherStartup<'_>) -> WatcherHandle {
+    pub(super) fn spawn_watcher(&self, startup: WatcherStartup<'_>) -> WatcherHandle {
         if self.allows(StartupEffectKind::Watcher) {
             self.record_real(StartupEffectKind::Watcher);
             WatcherHandle::active(watcher::spawn_watcher(WatcherSpawn {
@@ -275,7 +273,7 @@ impl StartupServices {
         }
     }
 
-    pub(crate) fn spawn_streaming_scan(
+    pub(super) fn spawn_streaming_scan(
         &self,
         startup: StreamingScanStartup<'_>,
     ) -> StreamingScanStart {
@@ -305,7 +303,7 @@ impl StartupServices {
         }
     }
 
-    pub(crate) fn spawn_github_rate_limit_prime(&self, client: HttpClient) {
+    pub(super) fn spawn_github_rate_limit_prime(&self, client: HttpClient) {
         if !self.allows(StartupEffectKind::GithubRateLimitPrime) {
             self.record_suppressed(StartupEffectKind::GithubRateLimitPrime);
             return;
@@ -321,7 +319,7 @@ impl StartupServices {
         });
     }
 
-    pub(crate) fn spawn_service_retry_probe(
+    pub(super) fn spawn_service_retry_probe(
         &self,
         sender: Sender<BackgroundMsg>,
         client: HttpClient,
@@ -349,88 +347,88 @@ impl StartupServices {
         });
     }
 
-    pub(crate) const fn lint_history_hydration_effect(&self) -> StartupEffect {
+    pub(super) const fn lint_history_hydration_effect(&self) -> StartupEffect {
         self.effect(StartupEffectKind::LintHistoryHydration)
     }
 
-    pub(crate) const fn lint_cache_scan_effect(&self) -> StartupEffect {
+    pub(super) const fn lint_cache_scan_effect(&self) -> StartupEffect {
         self.effect(StartupEffectKind::LintCacheScan)
     }
 
-    pub(crate) const fn cpu_monitor_effect(&self) -> StartupEffect {
+    pub(super) const fn cpu_monitor_effect(&self) -> StartupEffect {
         self.effect(StartupEffectKind::CpuMonitor)
     }
 
-    pub(crate) const fn running_targets_polling_effect(&self) -> StartupEffect {
+    pub(super) const fn running_targets_polling_effect(&self) -> StartupEffect {
         self.effect(StartupEffectKind::RunningTargetsPolling)
     }
 
-    pub(crate) const fn process_globals_effect(&self) -> StartupEffect {
+    pub(super) const fn process_globals_effect(&self) -> StartupEffect {
         self.effect(StartupEffectKind::ProcessGlobals)
     }
 
-    pub(crate) const fn theme_directory_effect(&self) -> StartupEffect {
+    pub(super) const fn theme_directory_effect(&self) -> StartupEffect {
         self.effect(StartupEffectKind::ThemeDirectory)
     }
 
-    pub(crate) const fn priority_detail_fetch_effect(&self) -> StartupEffect {
+    pub(super) const fn priority_detail_fetch_effect(&self) -> StartupEffect {
         self.effect(StartupEffectKind::PriorityDetailFetch)
     }
 
-    pub(crate) const fn startup_git_first_commit_effect(&self) -> StartupEffect {
+    pub(super) const fn startup_git_first_commit_effect(&self) -> StartupEffect {
         self.effect(StartupEffectKind::GitFirstCommit)
     }
 
-    pub(crate) const fn startup_project_details_effect(&self) -> StartupEffect {
+    pub(super) const fn startup_project_details_effect(&self) -> StartupEffect {
         self.effect(StartupEffectKind::ProjectDetails)
     }
 
-    pub(crate) const fn streaming_scan_effect(&self) -> StartupEffect {
+    pub(super) const fn streaming_scan_effect(&self) -> StartupEffect {
         self.effect(StartupEffectKind::StreamingScan)
     }
 
-    pub(crate) fn record_lint_history_hydration(&self, effect: StartupEffect) {
+    pub(super) fn record_lint_history_hydration(&self, effect: StartupEffect) {
         self.record_effect(StartupEffectKind::LintHistoryHydration, effect);
     }
 
-    pub(crate) fn record_lint_cache_scan(&self, effect: StartupEffect) {
+    pub(super) fn record_lint_cache_scan(&self, effect: StartupEffect) {
         self.record_effect(StartupEffectKind::LintCacheScan, effect);
     }
 
-    pub(crate) fn record_cpu_monitor(&self, effect: StartupEffect) {
+    pub(super) fn record_cpu_monitor(&self, effect: StartupEffect) {
         self.record_effect(StartupEffectKind::CpuMonitor, effect);
     }
 
-    pub(crate) fn record_running_targets_polling(&self, effect: StartupEffect) {
+    pub(super) fn record_running_targets_polling(&self, effect: StartupEffect) {
         self.record_effect(StartupEffectKind::RunningTargetsPolling, effect);
     }
 
-    pub(crate) fn record_process_globals(&self, effect: StartupEffect) {
+    pub(super) fn record_process_globals(&self, effect: StartupEffect) {
         self.record_effect(StartupEffectKind::ProcessGlobals, effect);
     }
 
-    pub(crate) fn record_theme_directory(&self, effect: StartupEffect) {
+    pub(super) fn record_theme_directory(&self, effect: StartupEffect) {
         self.record_effect(StartupEffectKind::ThemeDirectory, effect);
     }
 
-    pub(crate) fn record_priority_detail_fetch(&self, effect: StartupEffect) {
+    pub(super) fn record_priority_detail_fetch(&self, effect: StartupEffect) {
         self.record_effect(StartupEffectKind::PriorityDetailFetch, effect);
     }
 
-    pub(crate) fn record_startup_git_first_commit(&self, effect: StartupEffect) {
+    pub(super) fn record_startup_git_first_commit(&self, effect: StartupEffect) {
         self.record_effect(StartupEffectKind::GitFirstCommit, effect);
     }
 
-    pub(crate) fn record_startup_project_details(&self, effect: StartupEffect) {
+    pub(super) fn record_startup_project_details(&self, effect: StartupEffect) {
         self.record_effect(StartupEffectKind::ProjectDetails, effect);
     }
 
-    pub(crate) fn record_streaming_scan(&self, effect: StartupEffect) {
+    fn record_streaming_scan(&self, effect: StartupEffect) {
         self.record_effect(StartupEffectKind::StreamingScan, effect);
     }
 
     #[cfg(test)]
-    pub(crate) fn test_http_client(&self, handle: Handle) -> Option<HttpClient> {
+    pub(super) fn test_http_client(&self, handle: Handle) -> Option<HttpClient> {
         if self.allows(StartupEffectKind::HostGithubAuth) {
             self.record_real(StartupEffectKind::HostGithubAuth);
             HttpClient::new(handle)
@@ -441,15 +439,15 @@ impl StartupServices {
     }
 
     #[cfg(test)]
-    pub(crate) fn counts(&self) -> StartupEffectCounts { *self.counts.borrow() }
+    pub(super) fn counts(&self) -> StartupEffectCounts { *self.counts.borrow() }
 
     #[cfg(test)]
-    pub(crate) fn lint_runtime_shutdown_count_for_test(&self) -> usize {
+    pub(super) fn lint_runtime_shutdown_count_for_test(&self) -> usize {
         self.lint_runtime_shutdowns.borrow().len()
     }
 
     #[cfg(test)]
-    pub(crate) fn join_lint_runtime_shutdowns_for_test(&self) {
+    pub(super) fn join_lint_runtime_shutdowns_for_test(&self) {
         let supervisors: Vec<_> = self.lint_runtime_shutdowns.borrow_mut().drain(..).collect();
         for supervisor in supervisors {
             assert!(
@@ -460,24 +458,24 @@ impl StartupServices {
     }
 
     #[cfg(test)]
-    pub(crate) fn set_fixture_cache_root_for_test(&self, cache_root: PathBuf) {
+    pub(super) fn set_fixture_cache_root_for_test(&self, cache_root: PathBuf) {
         *self.fixture_cache_root.borrow_mut() = Some(cache_root);
     }
 
     #[cfg(test)]
-    pub(crate) const fn has_production_profile_for_test(&self) -> bool {
+    pub(super) const fn has_production_profile_for_test(&self) -> bool {
         matches!(self.profile, StartupProfile::Production)
     }
 
     #[cfg(test)]
-    pub(crate) const fn requires_fixture_cache_root_for_test(&self) -> bool {
+    pub(super) const fn requires_fixture_cache_root_for_test(&self) -> bool {
         self.effect(StartupEffectKind::LintRuntime).runs()
             || self.effect(StartupEffectKind::LintHistoryHydration).runs()
             || self.effect(StartupEffectKind::LintCacheScan).runs()
     }
 
     #[cfg(test)]
-    pub(crate) const fn serializes_process_globals_for_test(&self) -> bool {
+    pub(super) const fn serializes_process_globals_for_test(&self) -> bool {
         self.effect(StartupEffectKind::ProcessGlobals).runs()
     }
 
@@ -543,17 +541,17 @@ impl StartupServices {
 }
 
 #[derive(Clone)]
-pub(crate) enum WatcherHandle {
+pub(super) enum WatcherHandle {
     Active(Sender<WatcherMsg>),
     Disabled,
 }
 
 impl WatcherHandle {
-    pub(crate) const fn disabled() -> Self { Self::Disabled }
+    pub(super) const fn disabled() -> Self { Self::Disabled }
 
-    pub(crate) const fn active(sender: Sender<WatcherMsg>) -> Self { Self::Active(sender) }
+    pub(super) const fn active(sender: Sender<WatcherMsg>) -> Self { Self::Active(sender) }
 
-    pub(crate) fn send(&self, msg: WatcherMsg) -> Result<(), SendError<WatcherMsg>> {
+    pub(super) fn send(&self, msg: WatcherMsg) -> Result<(), SendError<WatcherMsg>> {
         match self {
             Self::Active(sender) => sender.send(msg),
             Self::Disabled => Ok(()),
@@ -561,19 +559,19 @@ impl WatcherHandle {
     }
 
     #[cfg(test)]
-    pub(crate) const fn is_active(&self) -> bool { matches!(self, Self::Active(_)) }
+    pub(super) const fn is_active(&self) -> bool { matches!(self, Self::Active(_)) }
 }
 
 #[derive(Clone)]
-pub(crate) struct StartupEnvironment {
-    pub(crate) http_client:      HttpClient,
-    pub(crate) scan_started_at:  Instant,
-    pub(crate) metadata_store:   Arc<Mutex<WorkspaceMetadataStore>>,
-    pub(crate) startup_services: StartupServices,
+pub(super) struct StartupEnvironment {
+    pub(super) http_client:      HttpClient,
+    pub(super) scan_started_at:  Instant,
+    pub(super) metadata_store:   Arc<Mutex<WorkspaceMetadataStore>>,
+    pub(super) startup_services: StartupServices,
 }
 
 impl StartupEnvironment {
-    pub(crate) fn production(
+    pub(super) fn production(
         http_client: HttpClient,
         scan_started_at: Instant,
         metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
@@ -587,7 +585,7 @@ impl StartupEnvironment {
     }
 
     #[cfg(test)]
-    pub(crate) const fn with_services(
+    pub(super) const fn with_services(
         http_client: HttpClient,
         scan_started_at: Instant,
         metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
@@ -602,40 +600,40 @@ impl StartupEnvironment {
     }
 }
 
-pub(crate) struct WatcherStartup<'a> {
-    pub(crate) watch_roots:    &'a [AbsolutePath],
-    pub(crate) background_tx:  Sender<BackgroundMsg>,
-    pub(crate) ci_run_count:   u32,
-    pub(crate) non_rust:       NonRustInclusion,
-    pub(crate) exclude_dirs:   ExcludeDirs,
-    pub(crate) client:         HttpClient,
-    pub(crate) lint_runtime:   Option<RuntimeHandle>,
-    pub(crate) metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
+pub(super) struct WatcherStartup<'a> {
+    pub(super) watch_roots:    &'a [AbsolutePath],
+    pub(super) background_tx:  Sender<BackgroundMsg>,
+    pub(super) ci_run_count:   u32,
+    pub(super) non_rust:       NonRustInclusion,
+    pub(super) exclude_dirs:   ExcludeDirs,
+    pub(super) client:         HttpClient,
+    pub(super) lint_runtime:   Option<RuntimeHandle>,
+    pub(super) metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
 }
 
-pub(crate) struct StreamingScanStartup<'a> {
-    pub(crate) scan_dirs:      Vec<AbsolutePath>,
-    pub(crate) inline_dirs:    &'a [String],
-    pub(crate) exclude_dirs:   ExcludeDirs,
-    pub(crate) non_rust:       NonRustInclusion,
-    pub(crate) client:         HttpClient,
-    pub(crate) metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
+pub(super) struct StreamingScanStartup<'a> {
+    pub(super) scan_dirs:      Vec<AbsolutePath>,
+    pub(super) inline_dirs:    &'a [String],
+    pub(super) exclude_dirs:   ExcludeDirs,
+    pub(super) non_rust:       NonRustInclusion,
+    pub(super) client:         HttpClient,
+    pub(super) metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
 }
 
-pub(crate) struct StreamingScanStart {
-    pub(crate) sender:   Sender<BackgroundMsg>,
-    pub(crate) receiver: Receiver<BackgroundMsg>,
-    pub(crate) effect:   StartupEffect,
+pub(super) struct StreamingScanStart {
+    pub(super) sender:   Sender<BackgroundMsg>,
+    pub(super) receiver: Receiver<BackgroundMsg>,
+    pub(super) effect:   StartupEffect,
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct LintRuntimeStartup {
-    pub(crate) handle:  Option<RuntimeHandle>,
-    pub(crate) warning: Option<String>,
+pub(super) struct LintRuntimeStartup {
+    pub(super) handle:  Option<RuntimeHandle>,
+    pub(super) warning: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct StartupEffectCounts {
+pub(super) struct StartupEffectCounts {
     watcher:                  EffectCount,
     lint_runtime:             EffectCount,
     lint_history_hydration:   EffectCount,
@@ -655,7 +653,7 @@ pub(crate) struct StartupEffectCounts {
 
 impl StartupEffectCounts {
     #[cfg(test)]
-    pub(crate) const fn real_total(self) -> usize {
+    pub(super) const fn real_total(self) -> usize {
         self.watcher.real
             + self.lint_runtime.real
             + self.lint_history_hydration.real
@@ -674,55 +672,55 @@ impl StartupEffectCounts {
     }
 
     #[cfg(test)]
-    pub(crate) const fn watcher(self) -> EffectCount { self.watcher }
+    pub(super) const fn watcher(self) -> EffectCount { self.watcher }
 
     #[cfg(test)]
-    pub(crate) const fn lint_runtime(self) -> EffectCount { self.lint_runtime }
+    pub(super) const fn lint_runtime(self) -> EffectCount { self.lint_runtime }
 
     #[cfg(test)]
-    pub(crate) const fn lint_history_hydration(self) -> EffectCount { self.lint_history_hydration }
+    pub(super) const fn lint_history_hydration(self) -> EffectCount { self.lint_history_hydration }
 
     #[cfg(test)]
-    pub(crate) const fn lint_cache_scan(self) -> EffectCount { self.lint_cache_scan }
+    pub(super) const fn lint_cache_scan(self) -> EffectCount { self.lint_cache_scan }
 
     #[cfg(test)]
-    pub(crate) const fn github_rate_limit_prime(self) -> EffectCount {
+    pub(super) const fn github_rate_limit_prime(self) -> EffectCount {
         self.github_rate_limit_prime
     }
 
     #[cfg(test)]
-    pub(crate) const fn service_retry_probes(self) -> EffectCount { self.service_retry_probes }
+    pub(super) const fn service_retry_probes(self) -> EffectCount { self.service_retry_probes }
 
     #[cfg(test)]
-    pub(crate) const fn cpu_monitor(self) -> EffectCount { self.cpu_monitor }
+    pub(super) const fn cpu_monitor(self) -> EffectCount { self.cpu_monitor }
 
     #[cfg(test)]
-    pub(crate) const fn theme_directory(self) -> EffectCount { self.theme_directory }
+    pub(super) const fn theme_directory(self) -> EffectCount { self.theme_directory }
 
     #[cfg(test)]
-    pub(crate) const fn process_globals(self) -> EffectCount { self.process_globals }
+    pub(super) const fn process_globals(self) -> EffectCount { self.process_globals }
 
     #[cfg(test)]
-    pub(crate) const fn host_github_auth(self) -> EffectCount { self.host_github_auth }
+    pub(super) const fn host_github_auth(self) -> EffectCount { self.host_github_auth }
 
     #[cfg(test)]
-    pub(crate) const fn startup_project_details(self) -> EffectCount {
+    pub(super) const fn startup_project_details(self) -> EffectCount {
         self.startup_project_details
     }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct EffectCount {
+pub(super) struct EffectCount {
     real:       usize,
     suppressed: usize,
 }
 
 impl EffectCount {
     #[cfg(test)]
-    pub(crate) const fn real(self) -> usize { self.real }
+    pub(super) const fn real(self) -> usize { self.real }
 
     #[cfg(test)]
-    pub(crate) const fn suppressed(self) -> usize { self.suppressed }
+    pub(super) const fn suppressed(self) -> usize { self.suppressed }
 }
 
 impl StartupEffectCounts {
@@ -769,3 +767,5 @@ enum StartupEffectKind {
 }
 #[cfg(test)]
 use std::path::PathBuf;
+
+use crate::config::CargoPortConfigurationPathResolution;

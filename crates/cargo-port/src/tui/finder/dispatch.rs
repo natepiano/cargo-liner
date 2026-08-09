@@ -29,9 +29,9 @@ use tui_pane::render_overflow_affordance;
 use tui_pane::text_default;
 use tui_pane::title_color;
 
+use super::constants::FINDER_COLUMN_COUNT;
+use super::constants::FINDER_HEADERS;
 use super::constants::MIN_POPUP_WIDTH;
-use super::index::FINDER_COLUMN_COUNT;
-use super::index::FINDER_HEADERS;
 use super::index::FinderItem;
 use super::index::FinderKind;
 use crate::ci;
@@ -112,14 +112,14 @@ pub(super) fn search_finder(
 
 // ── Input handling ──────────────────────────────────────────────────────
 
-pub fn dispatch_finder_action(action: FinderAction, app: &mut App) {
+pub(in crate::tui) fn dispatch_finder_action(action: FinderAction, app: &mut App) {
     match action {
         FinderAction::Activate => confirm_finder(app),
         FinderAction::Cancel => close_finder(app),
     }
 }
 
-pub fn handle_finder_text_key(app: &mut App, key: KeyCode) {
+pub(in crate::tui) fn handle_finder_text_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Up => {
             app.overlays.finder_pane.viewport.up();
@@ -303,7 +303,7 @@ fn navigate_to_pull_request(app: &mut App, item: &FinderItem) {
 /// Short-circuits when no overlay is active (caller decides
 /// whether to invoke; the trait dispatch in `render::ui` only
 /// fires when finder is open).
-pub fn render_finder_pane_body(
+pub(in crate::tui) fn render_finder_pane_body(
     frame: &mut Frame,
     _: Rect,
     pane: &mut FinderPane,

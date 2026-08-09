@@ -27,13 +27,13 @@ pub(super) use actions::handle_ci_runs_key;
 pub(super) use ci::build_ci_data;
 pub(super) use ci::render_ci_pane_body;
 #[cfg(test)]
+pub(super) use constants::CPU_PANE_WIDTH;
+#[cfg(test)]
 pub(super) use constants::PREFIX_ROOT_COLLAPSED;
 #[cfg(test)]
 pub(super) use constants::PREFIX_ROOT_LEAF;
 #[cfg(test)]
 pub(super) use constants::PREFIX_WORKTREE_FLAT;
-#[cfg(test)]
-pub(super) use cpu::CPU_PANE_WIDTH;
 pub(super) use cpu::CpuPane;
 #[cfg(test)]
 pub(super) use cpu::cpu_required_pane_height;
@@ -160,6 +160,7 @@ use super::keymap::TargetsAction;
 use super::project_list::ProjectList;
 #[cfg(test)]
 use super::render_context::PaneRenderCtx;
+use super::running_targets::RunningTargetTerminationCapability;
 pub(super) use super::state::CiDisplay;
 pub(super) use super::state::LintDisplay;
 #[cfg(test)]
@@ -214,7 +215,7 @@ pub(super) fn dispatch_targets_action(action: TargetsAction, app: &mut App) {
 
 pub(super) fn execute_target_kill(
     app: &mut App,
-    termination_capability: crate::tui::running_targets::RunningTargetTerminationCapability,
+    termination_capability: RunningTargetTerminationCapability,
 ) {
     actions::execute_target_kill(app, termination_capability);
 }

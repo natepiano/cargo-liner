@@ -634,6 +634,7 @@ fn execute_refresh<C: RefreshCycleClassifier>(
     reason = "tests should fail on unexpected executor states"
 )]
 mod tests {
+    use super::thread::ThreadId;
     use super::*;
     use crate::process_observation::snapshot::ProcessObservationSnapshot;
 
@@ -671,7 +672,7 @@ mod tests {
 
     impl RefreshCycleClassifier for ClassifyingThreadRecord {
         type CycleDemand = UnclassifiedRefreshCycle;
-        type CycleOutcome = thread::ThreadId;
+        type CycleOutcome = ThreadId;
 
         fn classify_refresh_cycle(
             &mut self,

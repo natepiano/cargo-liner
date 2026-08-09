@@ -37,7 +37,7 @@ struct SccacheLines {
     selectable_values: Vec<SccacheTarget>,
 }
 
-pub fn render_sccache_popup(frame: &mut Frame<'_>, app: &mut App) {
+pub(in crate::tui) fn render_sccache_popup(frame: &mut Frame<'_>, app: &mut App) {
     let SccacheLines {
         lines,
         line_targets,

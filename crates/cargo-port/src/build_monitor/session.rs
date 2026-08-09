@@ -1,6 +1,7 @@
 //! Build-session identity, scope attribution, and the immutable session
 //! records the monitor pane renders.
 
+use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -104,7 +105,7 @@ impl SessionScope {
 
 /// The canonical checkout a resolved session builds in.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum SessionScopeRoot {
+pub(super) enum SessionScopeRoot {
     /// The session resolved to this canonical checkout root.
     Checkout(CanonicalCheckoutRoot),
     /// No checkout root was resolved for this session.
@@ -195,7 +196,7 @@ impl BuildProfileLabel {
 
 /// Which evidence named a session's profile.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum BuildProfileAttribution {
+pub(super) enum BuildProfileAttribution {
     /// An explicit `--profile` or `--release` argument.
     Argument,
     /// The build directory observed in a compiler `--out-dir`.
@@ -213,7 +214,7 @@ pub(crate) struct BuildProfile {
 
 impl BuildProfile {
     /// Pair a profile label with the evidence that named it.
-    pub(crate) const fn new(
+    pub(super) const fn new(
         label: BuildProfileLabel,
         attribution: BuildProfileAttribution,
     ) -> Self {
@@ -224,7 +225,7 @@ impl BuildProfile {
     pub(crate) const fn label(&self) -> &BuildProfileLabel { &self.label }
 
     /// Which evidence named this profile.
-    pub(crate) const fn attribution(&self) -> BuildProfileAttribution { self.attribution }
+    pub(super) const fn attribution(&self) -> BuildProfileAttribution { self.attribution }
 }
 
 /// Whether a Cargo Port-owned root is still live enough for its compiler
@@ -278,7 +279,7 @@ impl LiveOwnedRoot {
     pub(crate) const fn root_identity(&self) -> &ProcessIdentity { &self.root_identity }
 
     /// The directory the owned run was launched from.
-    pub(crate) fn launch_directory(&self) -> &std::path::Path { &self.launch_directory }
+    pub(crate) fn launch_directory(&self) -> &Path { &self.launch_directory }
 
     /// Whether the owned root is running or stopping.
     #[cfg(test)]
@@ -310,7 +311,7 @@ pub(crate) struct OperativeCargoCommand {
 
 impl OperativeCargoCommand {
     /// Record one observed Cargo command.
-    pub(crate) const fn new(
+    pub(super) const fn new(
         subcommand: CargoSubcommand,
         recognition: CargoSubcommandRecognition,
         selectors: Vec<CargoCommandSelector>,
@@ -326,7 +327,7 @@ impl OperativeCargoCommand {
     pub(crate) const fn subcommand(&self) -> &CargoSubcommand { &self.subcommand }
 
     /// How the subcommand was recognized.
-    pub(crate) const fn recognition(&self) -> CargoSubcommandRecognition { self.recognition }
+    pub(super) const fn recognition(&self) -> CargoSubcommandRecognition { self.recognition }
 
     /// The selector arguments that narrow what this command builds, in the
     /// order argv gave them.
@@ -392,7 +393,7 @@ impl SessionRootObservation {
     /// first-seen ledger recorded when the root was first observed, so it does
     /// not move while the root lives and elapsed build time is computable from
     /// it.
-    pub(crate) const fn new(root_identity: ProcessIdentity, first_observed_at: Instant) -> Self {
+    pub(super) const fn new(root_identity: ProcessIdentity, first_observed_at: Instant) -> Self {
         Self {
             root_identity,
             first_observed_at,
@@ -400,7 +401,7 @@ impl SessionRootObservation {
     }
 
     /// The strong identity of the session's Cargo root process.
-    pub(crate) const fn root_identity(&self) -> &ProcessIdentity { &self.root_identity }
+    pub(super) const fn root_identity(&self) -> &ProcessIdentity { &self.root_identity }
 
     /// The Cargo root's PID, for display only.
     pub(crate) const fn root_pid(&self) -> u32 { self.root_identity.pid() }
@@ -423,7 +424,7 @@ pub(crate) struct BuildSession {
 
 impl BuildSession {
     /// Assemble one immutable session record.
-    pub(crate) const fn new(
+    pub(super) const fn new(
         build_session_id: BuildSessionId,
         operative_cargo_command: OperativeCargoCommand,
         session_scope: SessionScope,
@@ -444,7 +445,7 @@ impl BuildSession {
     }
 
     /// This session's stable key.
-    pub(crate) const fn build_session_id(&self) -> &BuildSessionId { &self.session_id }
+    pub(super) const fn build_session_id(&self) -> &BuildSessionId { &self.session_id }
 
     /// The Cargo command this session is executing.
     pub(crate) const fn operative_cargo_command(&self) -> &OperativeCargoCommand {
@@ -460,7 +461,7 @@ impl BuildSession {
     pub(crate) const fn session_scope(&self) -> &SessionScope { &self.session_scope }
 
     /// The strong identity of this session's Cargo root process.
-    pub(crate) const fn root_identity(&self) -> &ProcessIdentity {
+    pub(super) const fn root_identity(&self) -> &ProcessIdentity {
         self.root_observation.root_identity()
     }
 
@@ -478,5 +479,5 @@ impl BuildSession {
     pub(crate) const fn build_profile(&self) -> &BuildProfile { &self.build_profile }
 
     /// The cycle in which this session was first observed.
-    pub(crate) const fn first_seen(&self) -> BuildClassificationCycle { self.first_seen }
+    pub(super) const fn first_seen(&self) -> BuildClassificationCycle { self.first_seen }
 }

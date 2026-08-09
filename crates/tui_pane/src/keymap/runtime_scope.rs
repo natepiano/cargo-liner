@@ -152,7 +152,7 @@ pub struct KeymapHelpRow {
 }
 
 impl KeymapHelpRow {
-    pub(crate) const fn header(section: &'static str, scope: &'static str) -> Self {
+    pub(super) const fn header(section: &'static str, scope: &'static str) -> Self {
         Self {
             section,
             scope,
@@ -301,7 +301,7 @@ pub(super) fn slots_from_scope<A: Action>(
 /// Emits one [`BarRegion::Nav`] slot per [`Action::ALL`] entry in the
 /// app's navigation enum that has a bound key. The bar's
 /// `nav_region.rs` reduces these to the rendered nav row.
-pub(crate) fn render_navigation_slots<Ctx: AppContext + 'static>(
+pub(super) fn render_navigation_slots<Ctx: AppContext + 'static>(
     keymap: &Keymap<Ctx>,
 ) -> Vec<RenderedSlot> {
     let Some(scope) = keymap.navigation() else {
@@ -313,7 +313,7 @@ pub(crate) fn render_navigation_slots<Ctx: AppContext + 'static>(
 /// `G`-monomorphized renderer the keymap stores at
 /// [`KeymapBuilder::register_globals`](crate::KeymapBuilder::register_globals)
 /// time. See [`render_navigation_slots`].
-pub(crate) fn render_app_globals_slots<Ctx: AppContext + 'static, G: Globals<Ctx>>(
+pub(super) fn render_app_globals_slots<Ctx: AppContext + 'static, G: Globals<Ctx>>(
     keymap: &Keymap<Ctx>,
 ) -> Vec<RenderedSlot> {
     let Some(scope) = keymap.globals::<G>() else {
@@ -324,7 +324,7 @@ pub(crate) fn render_app_globals_slots<Ctx: AppContext + 'static, G: Globals<Ctx
 
 /// `G`-monomorphized renderer for the framework-owned global
 /// shortcut overlay.
-pub(crate) fn render_app_global_shortcut_rows<Ctx: AppContext + 'static, G: Globals<Ctx>>(
+pub(super) fn render_app_global_shortcut_rows<Ctx: AppContext + 'static, G: Globals<Ctx>>(
     keymap: &Keymap<Ctx>,
 ) -> Vec<GlobalShortcutRow> {
     let Some(scope) = keymap.globals::<G>() else {
@@ -346,7 +346,7 @@ pub(crate) fn render_app_global_shortcut_rows<Ctx: AppContext + 'static, G: Glob
 /// `N`-monomorphized renderer for the keymap help overlay's
 /// navigation section. Emits one [`KeymapHelpRow::header`] (with
 /// `N::SECTION_NAME`) followed by one row per [`Action::ALL`] entry.
-pub(crate) fn keymap_help_rows_for_navigation<Ctx: AppContext + 'static, N: Navigation<Ctx>>(
+pub(super) fn keymap_help_rows_for_navigation<Ctx: AppContext + 'static, N: Navigation<Ctx>>(
     keymap: &Keymap<Ctx>,
 ) -> Vec<KeymapHelpRow> {
     let Some(scope) = keymap.navigation() else {
@@ -367,7 +367,7 @@ pub(crate) fn keymap_help_rows_for_navigation<Ctx: AppContext + 'static, N: Navi
 
 /// `G`-monomorphized renderer for the keymap help overlay's
 /// app-globals section. Section name comes from [`Globals::SECTION_NAME`].
-pub(crate) fn keymap_help_rows_for_app_globals<Ctx: AppContext + 'static, G: Globals<Ctx>>(
+pub(super) fn keymap_help_rows_for_app_globals<Ctx: AppContext + 'static, G: Globals<Ctx>>(
     keymap: &Keymap<Ctx>,
 ) -> Vec<KeymapHelpRow> {
     let Some(scope) = keymap.globals::<G>() else {
@@ -391,7 +391,7 @@ pub(crate) fn keymap_help_rows_for_app_globals<Ctx: AppContext + 'static, G: Glo
 /// keymap TOML writer to enumerate every action regardless of whether
 /// it currently has a binding. The action set is framework-owned, so
 /// this is not parameterized by the app's `Navigation` impl.
-pub(crate) fn navigation_toml_action_keys<Ctx: AppContext + 'static>(
+pub(super) fn navigation_toml_action_keys<Ctx: AppContext + 'static>(
     _: &Keymap<Ctx>,
 ) -> Vec<&'static str> {
     NavAction::ALL.iter().map(|a| a.toml_key()).collect()
@@ -399,7 +399,7 @@ pub(crate) fn navigation_toml_action_keys<Ctx: AppContext + 'static>(
 
 /// `G`-monomorphized TOML-action-keys collector for the app-globals
 /// scope. Mirror of [`navigation_toml_action_keys`].
-pub(crate) fn app_globals_toml_action_keys<Ctx: AppContext + 'static, G: Globals<Ctx>>(
+pub(super) fn app_globals_toml_action_keys<Ctx: AppContext + 'static, G: Globals<Ctx>>(
     _: &Keymap<Ctx>,
 ) -> Vec<&'static str> {
     G::Actions::ALL.iter().map(|a| a.toml_key()).collect()

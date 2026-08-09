@@ -11,7 +11,7 @@ use crate::lint::LintStatusKind;
 /// `tui_pane::Icon` rendered in the project list. Keeps `lint/` free
 /// of UI-framework imports — this is the only place the domain enum
 /// crosses into `tui_pane` types.
-pub const fn icon_for(kind: LintStatusKind) -> Icon {
+pub(in crate::tui) const fn icon_for(kind: LintStatusKind) -> Icon {
     match kind {
         // Both phases spin the same glyph; only the spinner's color separates a
         // blocked run from a progressing one.

@@ -16,13 +16,15 @@ use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
 
+use tempfile::TempDir;
+
 use super::build_classifier::BuildClassifier;
 use super::classify::BuildClassification;
 use super::session::OwnedRootEvidence;
 use crate::process_observation::snapshot::ProcessObservationSnapshot;
+use crate::process_observation::snapshot_builder;
 use crate::process_observation::snapshot_builder::ObservedCandidateRole;
 use crate::process_observation::snapshot_builder::ObservedProcess;
-use crate::process_observation::snapshot_builder::snapshot_of_at;
 use crate::project::AbsolutePath;
 use crate::project::CargoWorkspaceIndex;
 use crate::project::FileStamp;
@@ -174,7 +176,7 @@ impl FixtureBackedClassificationTimingSamples {
 struct DeterministicClassificationFixture {
     /// Holds the checkouts classification canonicalizes against; every
     /// fixture path is derived from it.
-    temp_dir:              tempfile::TempDir,
+    temp_dir:              TempDir,
     cargo_workspace_index: CargoWorkspaceIndex,
     observed_processes:    Vec<ObservedProcess>,
 }
@@ -302,7 +304,8 @@ impl DeterministicClassificationFixture {
     /// stays out of the classification increment.
     fn measure_snapshot_assembly(&self) -> (Duration, ProcessObservationSnapshot) {
         let started = Instant::now();
-        let process_observation_snapshot = snapshot_of_at(Instant::now(), &self.observed_processes);
+        let process_observation_snapshot =
+            snapshot_builder::snapshot_of_at(Instant::now(), &self.observed_processes);
         let elapsed = started.elapsed();
         (elapsed, process_observation_snapshot)
     }

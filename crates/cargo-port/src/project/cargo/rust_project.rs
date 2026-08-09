@@ -26,35 +26,35 @@ pub(crate) enum RustProject {
 }
 
 impl RustProject {
-    pub fn path(&self) -> &AbsolutePath {
+    pub(crate) fn path(&self) -> &AbsolutePath {
         match self {
             Self::Workspace(ws) => ws.path(),
             Self::Package(pkg) => pkg.path(),
         }
     }
 
-    pub fn name(&self) -> Option<&str> {
+    pub(crate) fn name(&self) -> Option<&str> {
         match self {
             Self::Workspace(ws) => ws.name(),
             Self::Package(pkg) => pkg.name(),
         }
     }
 
-    pub fn worktree_status(&self) -> &WorktreeStatus {
+    pub(crate) fn worktree_status(&self) -> &WorktreeStatus {
         match self {
             Self::Workspace(ws) => ws.worktree_status(),
             Self::Package(pkg) => pkg.worktree_status(),
         }
     }
 
-    pub fn display_path(&self) -> DisplayPath {
+    pub(crate) fn display_path(&self) -> DisplayPath {
         match self {
             Self::Workspace(ws) => ws.display_path(),
             Self::Package(pkg) => pkg.display_path(),
         }
     }
 
-    pub fn linked_primary_root(&self) -> Option<AbsolutePath> {
+    pub(crate) fn linked_primary_root(&self) -> Option<AbsolutePath> {
         let status = self.worktree_status();
         if status.is_linked_worktree() {
             status.primary_root().cloned()
@@ -63,77 +63,77 @@ impl RustProject {
         }
     }
 
-    pub fn root_directory_name(&self) -> RootDirectoryName {
+    pub(crate) fn root_directory_name(&self) -> RootDirectoryName {
         match self {
             Self::Workspace(ws) => ws.root_directory_name(),
             Self::Package(pkg) => pkg.root_directory_name(),
         }
     }
 
-    pub fn visibility(&self) -> Visibility {
+    pub(crate) fn visibility(&self) -> Visibility {
         match self {
             Self::Workspace(ws) => ws.visibility(),
             Self::Package(pkg) => pkg.visibility(),
         }
     }
 
-    pub fn worktree_health(&self) -> WorktreeHealth {
+    pub(crate) fn worktree_health(&self) -> WorktreeHealth {
         match self {
             Self::Workspace(ws) => ws.worktree_health(),
             Self::Package(pkg) => pkg.worktree_health(),
         }
     }
 
-    pub fn disk_usage_bytes(&self) -> Option<u64> {
+    pub(crate) fn disk_usage_bytes(&self) -> Option<u64> {
         match self {
             Self::Workspace(ws) => ws.disk_usage_bytes(),
             Self::Package(pkg) => pkg.disk_usage_bytes(),
         }
     }
 
-    pub fn git_info(&self) -> Option<&CheckoutInfo> {
+    pub(crate) fn git_info(&self) -> Option<&CheckoutInfo> {
         match self {
             Self::Workspace(ws) => ws.git_info(),
             Self::Package(pkg) => pkg.git_info(),
         }
     }
 
-    pub const fn rust_info(&self) -> &RustInfo {
+    pub(crate) const fn rust_info(&self) -> &RustInfo {
         match self {
             Self::Workspace(ws) => &ws.rust,
             Self::Package(pkg) => &pkg.rust,
         }
     }
 
-    pub const fn rust_info_mut(&mut self) -> &mut RustInfo {
+    pub(crate) const fn rust_info_mut(&mut self) -> &mut RustInfo {
         match self {
             Self::Workspace(ws) => &mut ws.rust,
             Self::Package(pkg) => &mut pkg.rust,
         }
     }
 
-    pub fn at_path(&self, path: &Path) -> Option<&ProjectInfo> {
+    pub(crate) fn at_path(&self, path: &Path) -> Option<&ProjectInfo> {
         match self {
             Self::Workspace(ws) => info_in_workspace(ws, path),
             Self::Package(pkg) => info_in_package(pkg, path),
         }
     }
 
-    pub fn rust_info_at_path(&self, path: &Path) -> Option<&RustInfo> {
+    pub(crate) fn rust_info_at_path(&self, path: &Path) -> Option<&RustInfo> {
         match self {
             Self::Workspace(ws) => rust_info_in_workspace(ws, path),
             Self::Package(pkg) => rust_info_in_package(pkg, path),
         }
     }
 
-    pub fn at_path_mut(&mut self, path: &Path) -> Option<&mut ProjectInfo> {
+    pub(crate) fn at_path_mut(&mut self, path: &Path) -> Option<&mut ProjectInfo> {
         match self {
             Self::Workspace(ws) => info_in_workspace_mut(ws, path),
             Self::Package(pkg) => info_in_package_mut(pkg, path),
         }
     }
 
-    pub fn rust_info_at_path_mut(&mut self, path: &Path) -> Option<&mut RustInfo> {
+    pub(crate) fn rust_info_at_path_mut(&mut self, path: &Path) -> Option<&mut RustInfo> {
         match self {
             Self::Workspace(ws) => rust_info_in_workspace_mut(ws, path),
             Self::Package(pkg) => rust_info_in_package_mut(pkg, path),
@@ -144,42 +144,42 @@ impl RustProject {
     ///
     /// Lint runs at the workspace/package level. Members and vendored packages
     /// resolve to their owning parent's `LintRuns`.
-    pub fn lint_at_path(&self, path: &Path) -> Option<&LintRuns> {
+    pub(crate) fn lint_at_path(&self, path: &Path) -> Option<&LintRuns> {
         match self {
             Self::Workspace(ws) => lint_in_workspace(ws, path),
             Self::Package(pkg) => lint_in_package(pkg, path),
         }
     }
 
-    pub fn lint_at_path_mut(&mut self, path: &Path) -> Option<&mut LintRuns> {
+    pub(crate) fn lint_at_path_mut(&mut self, path: &Path) -> Option<&mut LintRuns> {
         match self {
             Self::Workspace(ws) => lint_in_workspace_mut(ws, path),
             Self::Package(pkg) => lint_in_package_mut(pkg, path),
         }
     }
 
-    pub fn lint_owner_path(&self, path: &Path) -> Option<&AbsolutePath> {
+    pub(crate) fn lint_owner_path(&self, path: &Path) -> Option<&AbsolutePath> {
         match self {
             Self::Workspace(ws) => lint_owner_in_workspace(ws, path),
             Self::Package(pkg) => lint_owner_in_package(pkg, path),
         }
     }
 
-    pub fn vendored_at_path(&self, path: &Path) -> Option<&VendoredPackage> {
+    pub(crate) fn vendored_at_path(&self, path: &Path) -> Option<&VendoredPackage> {
         match self {
             Self::Workspace(ws) => vendored_in_workspace(ws, path),
             Self::Package(pkg) => vendored_in_package(pkg, path),
         }
     }
 
-    pub fn vendored_at_path_mut(&mut self, path: &Path) -> Option<&mut VendoredPackage> {
+    pub(crate) fn vendored_at_path_mut(&mut self, path: &Path) -> Option<&mut VendoredPackage> {
         match self {
             Self::Workspace(ws) => vendored_in_workspace_mut(ws, path),
             Self::Package(pkg) => vendored_in_package_mut(pkg, path),
         }
     }
 
-    pub fn collect_project_info(&self, out: &mut Vec<(AbsolutePath, ProjectInfo)>) {
+    pub(crate) fn collect_project_info(&self, out: &mut Vec<(AbsolutePath, ProjectInfo)>) {
         match self {
             Self::Workspace(ws) => collect_project_info_from_workspace(ws, out),
             Self::Package(pkg) => collect_project_info_from_package(pkg, out),

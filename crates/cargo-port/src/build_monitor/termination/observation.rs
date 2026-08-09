@@ -2,8 +2,8 @@
 
 use std::collections::BTreeMap;
 
-use super::super::session::SessionScope;
 use super::transaction::BuildTerminationTransactionId;
+use crate::build_monitor::session::SessionScope;
 use crate::process_observation::ExternalTerminationSupport;
 use crate::process_observation::ProcessObserver;
 use crate::process_observation::identity::ProcessIdentity;
@@ -11,6 +11,7 @@ use crate::process_observation::snapshot::BuildCandidateRole;
 use crate::process_observation::snapshot::ProcessFieldObservation;
 use crate::process_observation::snapshot::ProcessObservationSnapshot;
 use crate::process_observation::snapshot::ProcessSnapshotRecord;
+use crate::process_termination;
 use crate::process_termination::AdmittedTerminationDescendantObservation;
 use crate::process_termination::AdmittedTerminationDescendantPresence;
 use crate::process_termination::ExternalProcessTerminationCapability;
@@ -18,7 +19,6 @@ use crate::process_termination::FrozenTerminationRootObservation;
 use crate::process_termination::FrozenTerminationRootPresence;
 use crate::process_termination::TerminationDescendantObservationPass;
 use crate::process_termination::TerminationTargetId;
-use crate::process_termination::observe_termination_descendants;
 
 /// Whether the shared refresh worker owes an observation pass to a transaction.
 #[derive(Clone, Debug)]
@@ -133,7 +133,7 @@ pub(crate) fn observe_build_termination_demand(
             )
         })
         .collect();
-    let descendant_observation_pass = observe_termination_descendants(
+    let descendant_observation_pass = process_termination::observe_termination_descendants(
         process_observation_snapshot,
         &frozen_roots,
         &request.admitted_descendants,
@@ -354,8 +354,8 @@ mod tests {
 
     use super::*;
     use crate::build_monitor::session::ScopeAttribution;
+    use crate::process_observation::snapshot_builder;
     use crate::process_observation::snapshot_builder::ObservedProcess;
-    use crate::process_observation::snapshot_builder::snapshot_of;
     use crate::project::AbsolutePath;
     use crate::project::CanonicalCheckoutRoot;
 
@@ -397,7 +397,7 @@ mod tests {
         let child = ObservedProcess::new(4_000_002, 2, "child", "/usr/bin/rustc", &["rustc"])
             .with_cwd(Path::new("/workspace/project"))
             .with_validated_parent(root.identity());
-        let first_snapshot = snapshot_of(&[root.clone(), child.clone()]);
+        let first_snapshot = snapshot_builder::snapshot_of(&[root.clone(), child.clone()]);
         let first_request = BuildTerminationObservationRequest {
             transaction_id:       transaction_id(),
             frozen_roots:         vec![BuildTerminationRootObservationRequest {
@@ -447,7 +447,8 @@ mod tests {
             ObservedProcess::new(4_000_003, 3, "grandchild", "/usr/bin/rustc", &["rustc"])
                 .with_cwd(Path::new("/workspace/project"))
                 .with_validated_parent(child.identity());
-        let second_snapshot = snapshot_of(&[root.clone(), child.clone(), grandchild.clone()]);
+        let second_snapshot =
+            snapshot_builder::snapshot_of(&[root.clone(), child.clone(), grandchild.clone()]);
         sole_observer.remember_snapshot_incarnations_for_test(&second_snapshot);
         let second_observation = completed_observation(observe_build_termination_demand(
             &sole_observer,
@@ -542,7 +543,7 @@ mod tests {
             let process =
                 ObservedProcess::new(4_100_000 + index, 1, executable, executable, &[executable])
                     .with_cwd(Path::new(cwd));
-            let snapshot = snapshot_of(std::slice::from_ref(&process));
+            let snapshot = snapshot_builder::snapshot_of(std::slice::from_ref(&process));
             let record = &snapshot.strongly_identified_processes()[process.identity()];
             assert_eq!(
                 descendant_admission_policy(record, &session_scope, nested_cargo, association),
@@ -552,7 +553,7 @@ mod tests {
 
         let admitted = ObservedProcess::new(4_100_100, 1, "admitted", "/usr/bin/rustc", &["rustc"])
             .with_cwd(Path::new("/workspace/project"));
-        let admitted_snapshot = snapshot_of(std::slice::from_ref(&admitted));
+        let admitted_snapshot = snapshot_builder::snapshot_of(std::slice::from_ref(&admitted));
         assert_eq!(
             descendant_admission_policy(
                 &admitted_snapshot.strongly_identified_processes()[admitted.identity()],

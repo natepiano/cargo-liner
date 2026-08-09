@@ -11,6 +11,15 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
+use super::app::App;
+use super::background::BuildClassifyingRefreshCycle;
+use super::background::ProcessTerminatorAvailability;
+use super::compile_visibility::CompileVisibilityState;
+use super::compile_visibility::InFlightMonitorGeneration;
+use super::messages::ProcessRefreshMsg;
+use super::startup_services::StartupEffect;
+use super::state::Inflight;
+use super::state::OwnedRunTermination;
 use crate::build_monitor::BuildClassificationExecutionFailure;
 use crate::build_monitor::BuildMonitoringRefreshCycleDemand;
 use crate::build_monitor::BuildMonitoringRefreshCycleExecution;
@@ -29,24 +38,19 @@ use crate::process_observation::ProcessRefreshExecutor;
 use crate::process_observation::ProcessRefreshResultPoll;
 use crate::process_observation::ProcessRefreshResultReceiver;
 use crate::process_observation::snapshot::ProcessRefreshExecutionFailure;
-use crate::tui::app::App;
-use crate::tui::background::BuildClassifyingRefreshCycle;
-use crate::tui::compile_visibility::CompileVisibilityState;
-use crate::tui::compile_visibility::InFlightMonitorGeneration;
-use crate::tui::messages::ProcessRefreshMsg;
-use crate::tui::startup_services::StartupEffect;
+use crate::project::CargoWorkspaceIndex;
 
 /// The one executor `App` owns, bound to the classifier the worker owns.
-pub(crate) type AppProcessRefreshExecutor = ProcessRefreshExecutor<BuildClassifyingRefreshCycle>;
+pub(super) type AppProcessRefreshExecutor = ProcessRefreshExecutor<BuildClassifyingRefreshCycle>;
 
 /// The borrowed worker receiver the event loop registers wakeups on.
-pub(crate) type AppProcessRefreshResultReceiver<'a> =
+pub(super) type AppProcessRefreshResultReceiver<'a> =
     ProcessRefreshResultReceiver<'a, BuildMonitoringRefreshCycleExecution>;
 
 /// Whether the foreground tick received one completed observer refresh and
 /// therefore has an observer duration to instrument.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum ObserverRefreshTiming {
+pub(super) enum ObserverRefreshTiming {
     #[default]
     NoCompletedRefresh,
     Completed(Duration),
@@ -68,7 +72,7 @@ enum CompileMonitorCycleFailure<'a> {
 /// is actually in flight is what lets a toggle or scope invalidation cancel
 /// that cycle and nothing else.
 #[derive(Clone, Debug, Default)]
-pub(crate) enum CompileClassificationInFlight {
+pub(super) enum CompileClassificationInFlight {
     #[default]
     NotRequested,
     Requested(CompileClassificationCancellation),
@@ -115,7 +119,7 @@ impl App {
     /// Hand the executor whatever deadline the monitor's own scheduling intent
     /// currently implies. A disabled monitor pushes `NotScheduled`, so no
     /// compile-specific wakeup survives a toggle off.
-    pub(crate) fn push_compile_monitor_schedule(&mut self) {
+    pub(super) fn push_compile_monitor_schedule(&mut self) {
         let compile_monitor_refresh_schedule = self
             .compile_visibility_state
             .compile_monitor_refresh_schedule();
@@ -139,7 +143,7 @@ impl App {
     /// Stop the in-flight classification when the caller owns the generation it
     /// was requested under. A toggle or scope invalidation that advances past a
     /// different generation leaves the cycle running.
-    pub(crate) fn cancel_compile_classification(
+    pub(super) fn cancel_compile_classification(
         &self,
         compile_monitor_generation: CompileMonitorGeneration,
     ) {
@@ -304,7 +308,7 @@ impl App {
         &mut self,
         build_termination_observation_execution: BuildTerminationObservationExecution,
     ) {
-        let crate::tui::background::ProcessTerminatorAvailability::Available(process_terminator) =
+        let ProcessTerminatorAvailability::Available(process_terminator) =
             self.background.available_process_terminator()
         else {
             return;
@@ -368,8 +372,8 @@ impl App {
 fn compile_classification_demand(
     demand: ProcessRefreshConsumerDemand,
     compile_visibility_state: &CompileVisibilityState,
-    cargo_workspace_index: &Arc<crate::project::CargoWorkspaceIndex>,
-    inflight: &crate::tui::state::Inflight,
+    cargo_workspace_index: &Arc<CargoWorkspaceIndex>,
+    inflight: &Inflight,
 ) -> CompileClassificationDemand {
     if !demand.includes_compile_monitor() {
         return CompileClassificationDemand::NotRequested;
@@ -389,15 +393,14 @@ fn compile_classification_demand(
         cargo_workspace_index: Arc::clone(cargo_workspace_index),
         owned_root_evidence: inflight.owned_run().owned_root_evidence(),
         owned_termination_support: match inflight.owned_run_termination() {
-            crate::tui::state::OwnedRunTermination::Available {
+            OwnedRunTermination::Available {
                 owned_run_id,
                 owned_run_termination_token,
             } => OwnedTerminationSupport::Actionable {
                 owned_run_id,
                 owned_run_termination_token,
             },
-            crate::tui::state::OwnedRunTermination::RequestPending { .. }
-            | crate::tui::state::OwnedRunTermination::NoRunningRun => {
+            OwnedRunTermination::RequestPending { .. } | OwnedRunTermination::NoRunningRun => {
                 OwnedTerminationSupport::Unavailable
             },
         },

@@ -18,7 +18,7 @@ use crate::FrameworkFocusId;
 /// focus to the first live app tab stop. Routes through
 /// [`AppContext::set_focus`] so binary-side overrides observe the
 /// transition.
-pub(crate) fn reconcile_focus_after_toast_change<Ctx: AppContext>(ctx: &mut Ctx) {
+pub(super) fn reconcile_focus_after_toast_change<Ctx: AppContext>(ctx: &mut Ctx) {
     {
         let framework = ctx.framework();
         if !matches!(

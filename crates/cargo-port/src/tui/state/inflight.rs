@@ -26,8 +26,14 @@ use crate::build_monitor::OwnedRootLifecycle;
 use crate::process_observation::identity::ProcessIdentity;
 use crate::project::AbsolutePath;
 use crate::tui::app::PendingClean;
+#[cfg(test)]
+use crate::tui::panes::BuildMode;
+#[cfg(test)]
+use crate::tui::panes::CargoPackageInvocation;
 use crate::tui::panes::PendingCiFetch;
 use crate::tui::panes::PendingExampleRun;
+#[cfg(test)]
+use crate::tui::panes::RunTargetKind;
 
 /// A monotonically allocated identity for one Cargo Port-owned run.
 ///
@@ -50,7 +56,7 @@ impl OwnedRunId {
 /// messages, output joins, and cursors all correlate on [`OwnedRunId`], so a
 /// reissued value would attach one run's output to another.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum OwnedRunIdAllocation {
+enum OwnedRunIdAllocation {
     /// A fresh identity no earlier run has held.
     Allocated(OwnedRunId),
     /// Every identity the counter can represent has already been issued.
@@ -77,11 +83,13 @@ impl OwnedRun {
         }
     }
 
-    pub(crate) const fn lifecycle(&self) -> &OwnedRunLifecycle { &self.lifecycle }
+    const fn lifecycle(&self) -> &OwnedRunLifecycle { &self.lifecycle }
 
-    pub(crate) const fn identity(&self) -> OwnedRunIdentityRef<'_> { self.lifecycle.identity() }
+    pub(in crate::tui) const fn identity(&self) -> OwnedRunIdentityRef<'_> {
+        self.lifecycle.identity()
+    }
 
-    pub(crate) fn output(&self) -> &[String] {
+    pub(in crate::tui) fn output(&self) -> &[String] {
         debug_assert!(
             self.lifecycle
                 .output_identity_is_valid(self.output_identity())
@@ -89,7 +97,7 @@ impl OwnedRun {
         self.lifecycle.output()
     }
 
-    pub(crate) const fn output_identity(&self) -> OwnedRunOutputIdentityRef<'_> {
+    const fn output_identity(&self) -> OwnedRunOutputIdentityRef<'_> {
         self.lifecycle.output_identity()
     }
 
@@ -99,7 +107,7 @@ impl OwnedRun {
     /// draw output it cannot attribute. The producer is the retaining run, not
     /// [`Self::identity`]: run N's output stays labelled N while run N+1 is
     /// queued or starting.
-    pub(crate) fn output_state(&self) -> OwnedRunOutputStateRef<'_> {
+    pub(in crate::tui) fn output_state(&self) -> OwnedRunOutputStateRef<'_> {
         debug_assert!(
             self.lifecycle
                 .output_identity_is_valid(self.output_identity())
@@ -114,21 +122,21 @@ impl OwnedRun {
         }
     }
 
-    pub(crate) fn output_is_empty(&self) -> bool { self.output().is_empty() }
+    pub(in crate::tui) fn output_is_empty(&self) -> bool { self.output().is_empty() }
 
     /// How the run behind the retained output ended.
     ///
     /// The Output pane keeps that output pinned after the run is gone, so the
     /// marker has to survive the lifecycle it describes.
-    pub(crate) const fn completion_marker(&self) -> OwnedRunCompletionMarker {
+    pub(in crate::tui) const fn completion_marker(&self) -> OwnedRunCompletionMarker {
         self.lifecycle.completion_marker()
     }
 
-    pub(crate) fn running_label(&self) -> OwnedRunRunningLabelRef<'_> {
+    pub(in crate::tui) fn running_label(&self) -> OwnedRunRunningLabelRef<'_> {
         self.lifecycle.running_label()
     }
 
-    pub(crate) const fn is_running(&self) -> bool {
+    pub(in crate::tui) const fn is_running(&self) -> bool {
         matches!(
             self.lifecycle(),
             OwnedRunLifecycle::Running(_) | OwnedRunLifecycle::TerminationRequestPending(_)
@@ -205,7 +213,7 @@ impl OwnedRun {
     /// classification. A stopping run still has live compiler descendants, so
     /// it is reported as an owned root with a stopping lifecycle rather than as
     /// no root at all.
-    pub(crate) fn owned_root_evidence(&self) -> OwnedRootEvidence {
+    pub(in crate::tui) fn owned_root_evidence(&self) -> OwnedRootEvidence {
         match &self.lifecycle {
             OwnedRunLifecycle::Running(running_owned_run) => {
                 OwnedRootEvidence::Root(LiveOwnedRoot::new(
@@ -715,7 +723,7 @@ impl OwnedRun {
 }
 
 /// The state-specific lifecycle of a Cargo Port-owned run.
-pub(crate) enum OwnedRunLifecycle {
+enum OwnedRunLifecycle {
     Absent(OwnedRunRetainedOutput),
     Queued(QueuedOwnedRun),
     Starting(StartingOwnedRun),
@@ -964,14 +972,14 @@ impl OwnedRunLifecycle {
 }
 
 /// A queued owned run has launch data but no observed process root.
-pub(crate) struct QueuedOwnedRun {
+struct QueuedOwnedRun {
     owned_run_id:        OwnedRunId,
     pending_example_run: PendingExampleRun,
     retained_output:     OwnedRunRetainedOutput,
 }
 
 /// A starting owned run has launch data but no observed process root.
-pub(crate) struct StartingOwnedRun {
+struct StartingOwnedRun {
     owned_run_id:        OwnedRunId,
     pending_example_run: PendingExampleRun,
     retained_output:     OwnedRunRetainedOutput,
@@ -988,7 +996,7 @@ impl From<QueuedOwnedRun> for StartingOwnedRun {
 }
 
 /// A running owned run has immutable root evidence and one actor endpoint.
-pub(crate) struct RunningOwnedRun {
+struct RunningOwnedRun {
     owned_run_id:            OwnedRunId,
     running_label:           String,
     launch_directory:        PathBuf,
@@ -999,14 +1007,14 @@ pub(crate) struct RunningOwnedRun {
 
 /// A running owned run whose actor has accepted one termination request but
 /// has not yet reported whether it sent a signal.
-pub(crate) struct TerminationRequestPendingOwnedRun {
+struct TerminationRequestPendingOwnedRun {
     running_owned_run: RunningOwnedRun,
 }
 
 /// A stop-requested run retains live-root evidence until completion. Dropping
 /// the command endpoint makes the detached actor worker wait for and reap its
 /// child while retaining the worker-owned termination capability.
-pub(crate) struct StoppingOwnedRun {
+struct StoppingOwnedRun {
     owned_run_id:     OwnedRunId,
     launch_directory: PathBuf,
     retained_output:  OwnedRunRetainedOutput,
@@ -1025,18 +1033,18 @@ impl From<RunningOwnedRun> for StoppingOwnedRun {
 }
 
 /// Completed output that remains available after the process lifecycle ends.
-pub(crate) struct RetainedOwnedRun {
+struct RetainedOwnedRun {
     owned_run_id:    OwnedRunId,
     retained_output: OwnedRunRetainedOutput,
 }
 
 /// A failed launch retains its diagnostic output without process authority.
-pub(crate) struct FailedOwnedRun {
+struct FailedOwnedRun {
     owned_run_id:    OwnedRunId,
     retained_output: OwnedRunRetainedOutput,
 }
 
-pub(crate) struct OwnedRunRetainedOutput {
+struct OwnedRunRetainedOutput {
     identity: OwnedRunOutputIdentity,
     title:    OwnedRunOutputTitle,
     lines:    Vec<String>,
@@ -1119,14 +1127,14 @@ impl OwnedRunOutputTitle {
 
 /// Borrowed identity availability for the current owned-run lifecycle.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum OwnedRunIdentityRef<'a> {
+pub(in crate::tui) enum OwnedRunIdentityRef<'a> {
     Absent,
     Current(&'a OwnedRunId),
 }
 
 /// The run that produced the currently retained output, when one exists.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum OwnedRunOutputIdentityRef<'a> {
+enum OwnedRunOutputIdentityRef<'a> {
     Correlated(&'a OwnedRunId),
     Uncorrelated,
 }
@@ -1293,10 +1301,6 @@ pub(crate) enum OwnedRunFixture {
 /// lifecycle rather than assemble its result.
 #[cfg(test)]
 fn pending_run_for_test() -> PendingExampleRun {
-    use crate::tui::panes::BuildMode;
-    use crate::tui::panes::CargoPackageInvocation;
-    use crate::tui::panes::RunTargetKind;
-
     PendingExampleRun {
         abs_path:                 "/tmp/demo".to_string(),
         target_name:              "demo".to_string(),

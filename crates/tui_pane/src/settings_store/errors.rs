@@ -1,6 +1,6 @@
 use super::SettingsError;
 
-pub fn invalid(section: &str, key: &str, message: &str) -> SettingsError {
+pub(crate) fn invalid(section: &str, key: &str, message: &str) -> SettingsError {
     SettingsError::Invalid {
         section: section.to_string(),
         key:     key.to_string(),

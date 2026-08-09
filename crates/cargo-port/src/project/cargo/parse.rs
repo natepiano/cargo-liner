@@ -53,7 +53,7 @@ pub(crate) struct ExampleGroup {
     pub names:    Vec<String>,
 }
 
-pub enum ProjectLoadError {
+pub(crate) enum ProjectLoadError {
     Read(io::Error),
     Parse(toml::de::Error),
 }

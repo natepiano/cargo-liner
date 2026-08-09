@@ -11,23 +11,32 @@
 //! requires privileges or an entitlement Cargo Port does not hold, and
 //! `processkit::ProcessGroup` can bind only children it spawned or adopted.
 
+#[cfg(test)]
+use std::collections::VecDeque;
 use std::fmt;
+use std::fmt::Formatter;
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd as _;
 #[cfg(target_os = "linux")]
 use std::os::fd::FromRawFd as _;
 #[cfg(target_os = "linux")]
 use std::os::fd::OwnedFd;
+#[cfg(test)]
+use std::sync::Mutex;
+
+#[cfg(target_os = "linux")]
+use libc::SYS_pidfd_open;
+#[cfg(target_os = "linux")]
+use libc::SYS_pidfd_send_signal;
 
 #[cfg(test)]
 use super::constants::TERMINATION_CONFIRMATION_POLL_INTERVAL;
 use crate::process_observation::ProcessCapabilityMintAuthority;
+use crate::process_observation::identity;
 use crate::process_observation::identity::InsufficientProcessIdentity;
 use crate::process_observation::identity::ProcessImageContinuity;
 use crate::process_observation::identity::ProcessIncarnation;
 use crate::process_observation::identity::StrongProcessIdentityRevalidation;
-use crate::process_observation::identity::observe_process_image_continuity;
-use crate::process_observation::identity::revalidate_strong_process_identity;
 
 /// Authority to terminate one process that Cargo Port did not start.
 ///
@@ -176,7 +185,7 @@ impl ExternalProcessTerminationCapability {
 }
 
 impl fmt::Debug for ExternalProcessTerminationCapability {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ExternalProcessTerminationCapability")
             .finish_non_exhaustive()
@@ -249,7 +258,7 @@ fn open_pid_fd(pid: u32) -> Option<OwnedFd> {
     let native_pid = libc::pid_t::try_from(pid).ok()?;
     // SAFETY: `pidfd_open` receives one valid PID value and the required zero
     // flags. A nonnegative return value is a new owned file descriptor.
-    let raw_file_descriptor = unsafe { libc::syscall(libc::SYS_pidfd_open, native_pid, 0_u32) };
+    let raw_file_descriptor = unsafe { libc::syscall(SYS_pidfd_open, native_pid, 0_u32) };
     let raw_file_descriptor = i32::try_from(raw_file_descriptor).ok()?;
     if raw_file_descriptor < 0 {
         return None;
@@ -269,7 +278,7 @@ fn send_pid_fd_termination_signal(file_descriptor: &OwnedFd) -> BoundSignalDeliv
     // `SIGTERM`, the optional siginfo pointer is null, and flags must be zero.
     let result = unsafe {
         libc::syscall(
-            libc::SYS_pidfd_send_signal,
+            SYS_pidfd_send_signal,
             file_descriptor.as_raw_fd(),
             libc::SIGTERM,
             std::ptr::null::<libc::siginfo_t>(),
@@ -322,7 +331,7 @@ fn poll_pid_fd_presence(
 #[cfg(test)]
 struct BoundProcessObject {
     delivery: BoundSignalDelivery,
-    presence: std::sync::Mutex<std::collections::VecDeque<BoundProcessObjectPresence>>,
+    presence: Mutex<VecDeque<BoundProcessObjectPresence>>,
 }
 
 #[cfg(test)]
@@ -401,10 +410,10 @@ fn observe_termination_admission(
     authorized_incarnation: &ProcessIncarnation,
 ) -> TerminationSignalAdmission {
     let identity_revalidation =
-        revalidate_strong_process_identity(authorized_incarnation.identity());
+        identity::revalidate_strong_process_identity(authorized_incarnation.identity());
     admit_termination_signal(
         &identity_revalidation,
-        observe_process_image_continuity(authorized_incarnation),
+        identity::observe_process_image_continuity(authorized_incarnation),
     )
 }
 
@@ -420,26 +429,26 @@ mod tests {
     #[cfg(unix)]
     use std::io::Write as _;
     #[cfg(unix)]
+    use std::process::Child;
+    #[cfg(unix)]
     use std::process::Command;
     #[cfg(unix)]
     use std::process::Stdio;
 
     use super::*;
+    use crate::process_observation;
     use crate::process_observation::PlatformTerminationCapabilityObservation;
+    use crate::process_observation::identity;
     #[cfg(unix)]
     use crate::process_observation::identity::CurrentProcessIdentityObservation;
     use crate::process_observation::identity::ObservedProcessIdentity;
     use crate::process_observation::identity::ProcessIdentity;
-    use crate::process_observation::identity::classify_strong_process_identity_revalidation;
-    #[cfg(unix)]
-    use crate::process_observation::identity::observe_current_process_identity;
-    use crate::process_observation::observe_platform_termination_capability_for_test;
 
     const ADMISSION_POLL_ATTEMPTS: usize = 100;
 
     #[cfg(unix)]
     struct ExecProcessFixture {
-        child: std::process::Child,
+        child: Child,
     }
 
     #[cfg(unix)]
@@ -466,7 +475,9 @@ mod tests {
         }
 
         fn capability(&self) -> ExternalProcessTerminationCapability {
-            match observe_platform_termination_capability_for_test(self.child.id()) {
+            match process_observation::observe_platform_termination_capability_for_test(
+                self.child.id(),
+            ) {
                 PlatformTerminationCapabilityObservation::Available(capability) => capability,
                 PlatformTerminationCapabilityObservation::InsufficientIncarnationEvidence => {
                     panic!("the live exec fixture should produce strong immutable evidence")
@@ -496,7 +507,7 @@ mod tests {
     struct ReplacementProcessTableFixture {
         expected:          ProcessIdentity,
         replacement:       ProcessIdentity,
-        replacement_child: std::process::Child,
+        replacement_child: Child,
     }
 
     #[cfg(unix)]
@@ -526,8 +537,8 @@ mod tests {
             }
         }
 
-        fn strong_identity(child: &std::process::Child) -> ProcessIdentity {
-            match observe_current_process_identity(child.id()) {
+        fn strong_identity(child: &Child) -> ProcessIdentity {
+            match identity::observe_current_process_identity(child.id()) {
                 CurrentProcessIdentityObservation::Verified(verified_process_identity) => {
                     verified_process_identity.into_process_identity()
                 },
@@ -538,7 +549,7 @@ mod tests {
         }
 
         fn admission(&self) -> TerminationSignalAdmission {
-            let identity_revalidation = classify_strong_process_identity_revalidation(
+            let identity_revalidation = identity::classify_strong_process_identity_revalidation(
                 &self.expected,
                 ObservedProcessIdentity::Strong(self.replacement.clone()),
             );
@@ -601,7 +612,7 @@ mod tests {
             .expect("the disappearance fixture should be reaped");
 
         assert_eq!(
-            observe_process_image_continuity(&capability.authorized_incarnation),
+            identity::observe_process_image_continuity(&capability.authorized_incarnation),
             ProcessImageContinuity::ProcessGone
         );
         assert_eq!(

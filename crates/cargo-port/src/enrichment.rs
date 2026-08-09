@@ -62,7 +62,7 @@ pub(crate) fn spawn_language_scan(path: AbsolutePath, sender: Sender<BackgroundM
     });
 }
 
-pub(crate) fn spawn_test_count_scan(path: AbsolutePath, sender: Sender<BackgroundMsg>) {
+fn spawn_test_count_scan(path: AbsolutePath, sender: Sender<BackgroundMsg>) {
     rayon::spawn(move || {
         let counts = scan::collect_test_counts_single(path.as_path());
         let _ = sender.send(BackgroundMsg::TestCountsBatch {

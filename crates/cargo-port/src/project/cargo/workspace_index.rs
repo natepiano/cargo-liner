@@ -8,6 +8,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use ExactWorkspaceOwnershipEvidence::Ambiguous;
+use ExactWorkspaceOwnershipEvidence::Unavailable;
+use ExactWorkspaceOwnershipEvidence::Unique;
 use cargo_metadata::PackageId;
 use cargo_metadata::TargetKind;
 
@@ -644,10 +647,6 @@ fn reconcile_visible_target_ownership(
     project_evidence: ExactWorkspaceOwnershipEvidence<'_>,
     source_evidence: ExactWorkspaceOwnershipEvidence<'_>,
 ) -> VisibleTargetOwnershipDecision {
-    use ExactWorkspaceOwnershipEvidence::Ambiguous;
-    use ExactWorkspaceOwnershipEvidence::Unavailable;
-    use ExactWorkspaceOwnershipEvidence::Unique;
-
     match (project_evidence, source_evidence) {
         (Unique(project_index), Unavailable) => {
             VisibleTargetOwnershipDecision::Indexed(project_index)
@@ -733,6 +732,7 @@ mod tests {
     use cargo_metadata::PackageId;
     use cargo_metadata::TargetKind;
     use cargo_metadata::semver::Version;
+    use tempfile::TempDir;
 
     use super::*;
     use crate::project::FileStamp;
@@ -741,7 +741,7 @@ mod tests {
     use crate::project::WorkspaceMetadata;
 
     struct SharedSourceWorkspaceFixture {
-        _temp_dir:              tempfile::TempDir,
+        _temp_dir:              TempDir,
         cargo_workspace_index:  CargoWorkspaceIndex,
         first_checkout_root:    PathBuf,
         second_checkout_root:   PathBuf,

@@ -20,7 +20,7 @@ use crate::tui::project_list::ProjectList;
 ///
 /// Mutation guard (RAII), fan-out flavor. See "Recurring patterns"
 /// in [`crate::tui::app`] for the pattern.
-pub struct TreeMutation<'a> {
+pub(in crate::tui) struct TreeMutation<'a> {
     pub projects: &'a mut ProjectList,
     pub panes:    &'a mut Panes,
     pub non_rust: NonRustInclusion,
@@ -28,7 +28,7 @@ pub struct TreeMutation<'a> {
 
 impl TreeMutation<'_> {
     /// Replace the entire project list (used by tree-build paths).
-    pub fn replace_all(&mut self, projects: ProjectList) {
+    pub(in crate::tui) fn replace_all(&mut self, projects: ProjectList) {
         self.projects.replace_roots_from(projects);
     }
 
@@ -37,7 +37,7 @@ impl TreeMutation<'_> {
     /// context and schedules a `cargo metadata` refresh for the item's
     /// Rust roots — insertion and dispatch are one step, so a project
     /// can never land in the list with unscheduled metadata.
-    pub fn insert_into_hierarchy(
+    pub(in crate::tui) fn insert_into_hierarchy(
         &mut self,
         item: RootItem,
         dispatch: &MetadataDispatchContext,
@@ -55,7 +55,7 @@ impl TreeMutation<'_> {
     /// context is required and the item's Rust roots get a fresh
     /// `cargo metadata` — a probed replacement arrives with a default
     /// `Cargo`, so without this its Type/edition/targets would blank out.
-    pub fn replace_leaf_by_path(
+    pub(in crate::tui) fn replace_leaf_by_path(
         &mut self,
         path: &Path,
         item: RootItem,
@@ -70,13 +70,15 @@ impl TreeMutation<'_> {
     }
 
     /// Re-bucket workspace members under inline-dir groups.
-    pub fn regroup_members(&mut self, inline_dirs: &[String]) {
+    pub(in crate::tui) fn regroup_members(&mut self, inline_dirs: &[String]) {
         self.projects.regroup_members(inline_dirs);
     }
 
     /// Re-detect worktree groupings at the top level after a structural
     /// change (insert / replace / remove).
-    pub fn regroup_top_level_worktrees(&mut self) { self.projects.regroup_top_level_worktrees(); }
+    pub(in crate::tui) fn regroup_top_level_worktrees(&mut self) {
+        self.projects.regroup_top_level_worktrees();
+    }
 }
 
 impl Drop for TreeMutation<'_> {

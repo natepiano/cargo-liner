@@ -3,18 +3,18 @@ use crate::tui::project_list::ExpandTarget;
 use crate::tui::terminal;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SelectionSync {
+pub(in crate::tui) enum SelectionSync {
     #[default]
     Stable,
     Changed,
 }
 
 impl SelectionSync {
-    pub const fn is_changed(self) -> bool { matches!(self, Self::Changed) }
+    pub(in crate::tui) const fn is_changed(self) -> bool { matches!(self, Self::Changed) }
 }
 
 #[derive(Debug, Default)]
-pub struct SelectionPaths {
+pub(in crate::tui) struct SelectionPaths {
     pub last_selected:      Option<AbsolutePath>,
     pub selected_project:   Option<AbsolutePath>,
     pub collapsed_selected: Option<AbsolutePath>,
@@ -27,7 +27,7 @@ pub struct SelectionPaths {
 }
 
 impl SelectionPaths {
-    pub fn new() -> Self {
+    pub(in crate::tui) fn new() -> Self {
         let (last_selected, pending_expanded) = terminal::load_tree_state();
         Self {
             last_selected,

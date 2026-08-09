@@ -142,7 +142,7 @@ impl App {
     /// fetch trigger is here because either a `RepoInfo` or
     /// `CheckoutInfo` arrival can signal "this repo's state changed";
     /// the dedup set absorbs N attempts for the same `OwnerRepo`.
-    pub fn handle_checkout_info(&mut self, path: &Path, info: CheckoutInfo) {
+    pub(in crate::tui::app) fn handle_checkout_info(&mut self, path: &Path, info: CheckoutInfo) {
         tracing::trace!(
             target: PERF_LOG_TARGET,
             path = %path.display(),
@@ -226,7 +226,7 @@ impl App {
     /// checkout would produce silent arbitration if they ever
     /// diverged). The `path` is the primary's path — the emitter is
     /// responsible for that contract.
-    pub fn handle_repo_info(&mut self, path: &Path, mut info: RepoInfo) {
+    pub(in crate::tui::app) fn handle_repo_info(&mut self, path: &Path, mut info: RepoInfo) {
         // Preserve a previously-fetched `first_commit` across refresh.
         // `RepoInfo::get` always returns `None` for it; the value is
         // filled in either by a prior `handle_git_first_commit` write
@@ -536,7 +536,7 @@ impl App {
             self.sync_tracker.mark_eligible(path);
         }
     }
-    pub fn handle_project_discovered(&mut self, item: RootItem) -> bool {
+    pub(in crate::tui::app) fn handle_project_discovered(&mut self, item: RootItem) -> bool {
         let legacy_expansions = self.project_list.capture_legacy_root_expansions();
         let discovered_path = item.path().to_path_buf();
         let mut already_exists = false;
@@ -573,7 +573,7 @@ impl App {
         // The caller batches multiple discoveries before refreshing once.
         true
     }
-    pub fn handle_project_refreshed(&mut self, item: RootItem) -> bool {
+    pub(in crate::tui::app) fn handle_project_refreshed(&mut self, item: RootItem) -> bool {
         let legacy_expansions = self.project_list.capture_legacy_root_expansions();
         let path = item.path().to_path_buf();
         let service_item = item.clone();

@@ -9,9 +9,12 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+#[cfg(test)]
+use std::time::Instant;
 
 use super::classify::BuildClassification;
 use super::scope::BuildScopeKey;
+use super::session::BuildSessionId;
 use super::session::OwnedRootEvidence;
 use super::termination::BuildTerminationObservationDemand;
 use super::termination::BuildTerminationObservationExecution;
@@ -163,7 +166,7 @@ impl CompletedBuildClassification {
     pub(crate) fn empty_for_test(
         compile_monitor_generation: CompileMonitorGeneration,
         build_scope_key: BuildScopeKey,
-        cycle_instant: std::time::Instant,
+        cycle_instant: Instant,
     ) -> Self {
         Self::new(
             compile_monitor_generation,
@@ -184,7 +187,7 @@ impl CompletedBuildClassification {
     /// Attach observer-minted move-only root support from this exact cycle.
     pub(crate) fn insert_external_termination_support(
         &mut self,
-        build_session_id: super::session::BuildSessionId,
+        build_session_id: BuildSessionId,
         classified_external_termination_support: ClassifiedExternalTerminationSupport,
     ) {
         self.classified_external_termination_supports

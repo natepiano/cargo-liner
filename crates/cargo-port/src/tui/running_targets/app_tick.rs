@@ -48,7 +48,7 @@ struct IndexedRunningTargetProjectAttribution<'a> {
 impl App {
     /// Apply one completed observation to the Running Targets view, using the
     /// attribution the accepted workspace index supports.
-    pub(crate) fn apply_running_targets_observation(
+    pub(in crate::tui) fn apply_running_targets_observation(
         &mut self,
         now: Instant,
         process_observation_snapshot: &ProcessObservationSnapshot,

@@ -45,7 +45,7 @@ use crate::scan::ExcludeDirs;
 use crate::scan::MetadataDispatchContext;
 
 /// Request to register an already-known project with the watcher.
-pub struct WatchRequest {
+pub(crate) struct WatchRequest {
     /// Display path (e.g. `~/foo/bar`).
     pub project_label: String,
     /// Absolute filesystem path to the project root.
@@ -54,7 +54,7 @@ pub struct WatchRequest {
     pub repo_root:     Option<AbsolutePath>,
 }
 
-pub enum WatcherMsg {
+pub(crate) enum WatcherMsg {
     Register(WatchRequest),
     InitialRegistrationComplete,
 }
@@ -73,7 +73,7 @@ pub enum WatcherMsg {
 // register time, collect the ancestor `.cargo/` dirs, diff the union
 // across projects on add/remove, and register notify watches on the
 // diff. Tracked for Step 1b follow-up.
-pub struct WatcherSpawn<'a> {
+pub(crate) struct WatcherSpawn<'a> {
     pub watch_roots:    &'a [AbsolutePath],
     pub background_tx:  Sender<BackgroundMsg>,
     pub ci_run_count:   u32,
@@ -84,7 +84,7 @@ pub struct WatcherSpawn<'a> {
     pub metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
 }
 
-pub fn spawn_watcher(spawn: WatcherSpawn<'_>) -> Sender<WatcherMsg> {
+pub(crate) fn spawn_watcher(spawn: WatcherSpawn<'_>) -> Sender<WatcherMsg> {
     let WatcherSpawn {
         watch_roots,
         background_tx,

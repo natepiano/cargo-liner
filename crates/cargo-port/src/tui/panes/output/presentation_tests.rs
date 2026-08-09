@@ -2,6 +2,7 @@
 //! the compile-visibility state and the monitor snapshot.
 
 use std::num::NonZeroU64;
+use std::sync::OnceLock;
 
 use super::constants::MINIMUM_READABLE_COLUMN_WIDTH;
 use super::presentation::MonitorColumns;
@@ -15,6 +16,7 @@ use super::presentation::OutputPresentation;
 use super::presentation::OwnedOutputVisibility;
 use super::selection::OutputCursor;
 use super::selection::OutputCursorTarget;
+use crate::build_monitor;
 use crate::build_monitor::BuildSessionId;
 use crate::build_monitor::BuildTerminationLifecycle;
 use crate::build_monitor::BuildTerminationLifecycleRegistry;
@@ -22,7 +24,6 @@ use crate::build_monitor::ClassifiedRoot;
 use crate::build_monitor::CompileActivityId;
 use crate::build_monitor::CompilerAttribution;
 use crate::build_monitor::MonitorSnapshot;
-use crate::build_monitor::classified_monitor_snapshot;
 use crate::process_observation::identity::ProcessIdentity;
 use crate::process_observation::identity::ProcessIncarnation;
 use crate::process_termination::TerminationTargetResult;
@@ -59,8 +60,7 @@ fn no_index_yet() -> MonitorScopeResolutionRevision {
 }
 
 fn empty_termination_lifecycle_registry() -> &'static BuildTerminationLifecycleRegistry {
-    static REGISTRY: std::sync::OnceLock<BuildTerminationLifecycleRegistry> =
-        std::sync::OnceLock::new();
+    static REGISTRY: OnceLock<BuildTerminationLifecycleRegistry> = std::sync::OnceLock::new();
     REGISTRY.get_or_init(BuildTerminationLifecycleRegistry::default)
 }
 
@@ -339,7 +339,7 @@ fn an_external_only_monitor_has_nothing_to_copy() {
 /// A monitor snapshot holding one column per root, classified by the real
 /// classifier so the rows are the ones the pane draws.
 fn classified_columns(classified_roots: &[ClassifiedRoot]) -> MonitorSnapshot {
-    match classified_monitor_snapshot(classified_roots) {
+    match build_monitor::classified_monitor_snapshot(classified_roots) {
         Ok(monitor_snapshot) => monitor_snapshot,
         Err(error) => panic!("the classification fixture builds a snapshot: {error}"),
     }

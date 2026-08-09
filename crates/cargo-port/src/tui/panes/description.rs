@@ -33,7 +33,7 @@ use crate::tui::render;
 
 /// What the block renders when the source description is empty.
 #[derive(Clone, Copy)]
-pub enum EmptyDescriptionBehavior {
+pub(in crate::tui) enum EmptyDescriptionBehavior {
     /// Render the `NO_DESCRIPTION_AVAILABLE` placeholder in a muted style
     /// (the Package pane's behavior). Placeholder rows do *not* count for
     /// inter-pane sync — the sync floor stays `0` so the Git pane (which
@@ -47,10 +47,10 @@ pub enum EmptyDescriptionBehavior {
 /// via [`sync_floor`] so neither pane can fabricate a value that wouldn't
 /// be backed by a real [`DescriptionBlock`].
 #[derive(Clone, Copy, Default)]
-pub struct SyncedDescriptionHeight(u16);
+pub(in crate::tui) struct SyncedDescriptionHeight(u16);
 
 impl SyncedDescriptionHeight {
-    pub const fn rows(self) -> u16 { self.0 }
+    pub(in crate::tui) const fn rows(self) -> u16 { self.0 }
 }
 
 /// Pre-wrapped description block for one detail pane. Owns the wrapped
@@ -76,7 +76,7 @@ impl DescriptionContentState {
 }
 
 #[derive(Clone)]
-pub struct DescriptionBlock {
+pub(in crate::tui) struct DescriptionBlock {
     rows:             Vec<String>,
     style:            Style,
     column_width:     u16,
@@ -89,7 +89,7 @@ impl DescriptionBlock {
     /// Build the description block for a pane sitting in `outer_area`.
     /// `empty_behavior` decides what renders when the source text is
     /// empty (Package shows a placeholder; Git renders nothing).
-    pub fn for_pane(
+    pub(in crate::tui) fn for_pane(
         text: Option<&str>,
         outer_area: Rect,
         empty_behavior: EmptyDescriptionBehavior,
@@ -131,7 +131,7 @@ impl DescriptionBlock {
     /// Returns `0` when the source text was empty — placeholders don't
     /// trigger sync, matching the previous free-function behavior: only
     /// when *both* panes have real content do they align their bottoms.
-    pub fn natural_sync_height(&self) -> u16 {
+    pub(in crate::tui) fn natural_sync_height(&self) -> u16 {
         if self.content_state.has_real_content() {
             u16::try_from(self.rows.len())
                 .unwrap_or(u16::MAX)
@@ -150,7 +150,7 @@ impl DescriptionBlock {
         dead_code,
         reason = "selectable panes call render_with_selection; keep the unselected wrapper for callers that do not track row focus"
     )]
-    pub fn render(
+    pub(in crate::tui) fn render(
         &self,
         frame: &mut Frame,
         project_inner: Rect,
@@ -166,7 +166,7 @@ impl DescriptionBlock {
         )
     }
 
-    pub fn render_with_selection(
+    pub(in crate::tui) fn render_with_selection(
         &self,
         frame: &mut Frame,
         project_inner: Rect,
@@ -222,7 +222,7 @@ impl DescriptionBlock {
 /// must clear so their bottom edges line up. Returns `0` if any block
 /// is empty (placeholder or missing source), matching the old free-
 /// function behavior.
-pub fn sync_floor(blocks: &[&DescriptionBlock]) -> SyncedDescriptionHeight {
+pub(in crate::tui) fn sync_floor(blocks: &[&DescriptionBlock]) -> SyncedDescriptionHeight {
     let heights: Vec<u16> = blocks.iter().map(|b| b.natural_sync_height()).collect();
     if heights.contains(&0) {
         SyncedDescriptionHeight(0)

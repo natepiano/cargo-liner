@@ -16,14 +16,14 @@ use crate::tui::keymap::ResolvedKeymap;
 
 /// Owns the parsed keymap plus the on-disk watch state and the
 /// diagnostics-toast slot.
-pub struct Keymap {
+pub(in crate::tui) struct Keymap {
     file:           WatchedFile<ResolvedKeymap>,
     diagnostics_id: Option<ToastId>,
     warnings_id:    Option<ToastId>,
 }
 
 impl Keymap {
-    pub fn new(
+    pub(in crate::tui) fn new(
         path_resolution: CargoPortConfigurationPathResolution,
         current: ResolvedKeymap,
     ) -> Self {
@@ -37,19 +37,21 @@ impl Keymap {
     #[cfg(test)]
     pub const fn current(&self) -> &ResolvedKeymap { &self.file.current }
 
-    pub fn path(&self) -> Option<&Path> { self.file.path() }
+    pub(in crate::tui) fn path(&self) -> Option<&Path> { self.file.path() }
 
     /// Replace the parsed keymap (used by reload paths that parse
     /// the file themselves before consulting the stamp — the
     /// existing `App::maybe_reload_keymap_from_disk` path captures
     /// `result.keymap` from `keymap::load_keymap_from_str` and
     /// installs it directly).
-    pub fn replace_current(&mut self, value: ResolvedKeymap) { self.file.current = value; }
+    pub(in crate::tui) fn replace_current(&mut self, value: ResolvedKeymap) {
+        self.file.current = value;
+    }
 
     /// Refresh the cached stamp without re-parsing. Used after App
     /// itself writes the file (defaults written for missing
     /// actions) so the next reload doesn't see the self-write.
-    pub fn sync_stamp(&mut self) { self.file.sync_stamp(); }
+    pub(in crate::tui) fn sync_stamp(&mut self) { self.file.sync_stamp(); }
 
     /// Return `Some(path)` if the keymap file's stamp has changed
     /// since the last seen value, swallowing the stamp delta.
@@ -58,15 +60,25 @@ impl Keymap {
     /// `KeymapLoadResult` doesn't fit
     /// [`tui_pane::WatchedFile`]'s
     /// `take_stamp_change` signature.
-    pub fn take_stamp_change(&mut self) -> Option<&Path> { self.file.take_stamp_change() }
+    pub(in crate::tui) fn take_stamp_change(&mut self) -> Option<&Path> {
+        self.file.take_stamp_change()
+    }
 
-    pub const fn set_diagnostics_id(&mut self, id: Option<ToastId>) { self.diagnostics_id = id; }
+    pub(in crate::tui) const fn set_diagnostics_id(&mut self, id: Option<ToastId>) {
+        self.diagnostics_id = id;
+    }
 
-    pub const fn take_diagnostics_id(&mut self) -> Option<ToastId> { self.diagnostics_id.take() }
+    pub(in crate::tui) const fn take_diagnostics_id(&mut self) -> Option<ToastId> {
+        self.diagnostics_id.take()
+    }
 
-    pub const fn set_warnings_id(&mut self, id: Option<ToastId>) { self.warnings_id = id; }
+    pub(in crate::tui) const fn set_warnings_id(&mut self, id: Option<ToastId>) {
+        self.warnings_id = id;
+    }
 
-    pub const fn take_warnings_id(&mut self) -> Option<ToastId> { self.warnings_id.take() }
+    pub(in crate::tui) const fn take_warnings_id(&mut self) -> Option<ToastId> {
+        self.warnings_id.take()
+    }
 }
 
 #[cfg(test)]

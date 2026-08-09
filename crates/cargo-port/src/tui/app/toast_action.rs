@@ -1,7 +1,7 @@
 use crate::project::AbsolutePath;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum CargoPortToastAction {
+pub(in crate::tui) enum CargoPortToastAction {
     OpenPath(AbsolutePath),
 }
 

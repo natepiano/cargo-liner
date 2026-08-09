@@ -57,7 +57,7 @@ use crate::tui::render_context::PaneRenderCtx;
 ///   count of runs after display-mode filtering; `github_total` drives the "/ github N" suffix when
 ///   > 0.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum CiDisplay {
+pub(in crate::tui) enum CiDisplay {
     #[default]
     NoWorkflow,
     UnpublishedBranch,
@@ -80,7 +80,7 @@ pub enum CiDisplay {
 /// - `display_modes` (`HashMap<AbsolutePath, CiRunDisplayMode>`) — per-project `BranchOnly` vs
 ///   `All` selection. Treated as domain state (which CI runs are surfaced for this project), not UI
 ///   state.
-pub struct Ci {
+pub(in crate::tui) struct Ci {
     pub fetch_tracker: CiFetchTracker,
     fetch_toast:       Option<ToastTaskId>,
     display_modes:     HashMap<AbsolutePath, CiRunDisplayMode>,
@@ -94,7 +94,7 @@ pub struct Ci {
 }
 
 impl Ci {
-    pub fn new() -> Self {
+    pub(in crate::tui) fn new() -> Self {
         Self {
             fetch_tracker: CiFetchTracker::default(),
             fetch_toast:   None,
@@ -109,11 +109,11 @@ impl Ci {
 
     // ── content ─────────────────────────────────────────────────
 
-    pub const fn content(&self) -> Option<&CiData> { self.content.as_ref() }
+    pub(in crate::tui) const fn content(&self) -> Option<&CiData> { self.content.as_ref() }
 
-    pub fn set_content(&mut self, data: CiData) { self.content = Some(data); }
+    pub(in crate::tui) fn set_content(&mut self, data: CiData) { self.content = Some(data); }
 
-    pub fn clear_content(&mut self) { self.content = None; }
+    pub(in crate::tui) fn clear_content(&mut self) { self.content = None; }
 
     #[cfg(test)]
     pub fn override_runs_for_test(&mut self, runs: Vec<CiRun>) {
@@ -127,32 +127,36 @@ impl Ci {
 
     // ── fetch toast ─────────────────────────────────────────────
 
-    pub const fn set_fetch_toast(&mut self, task_id: Option<ToastTaskId>) {
+    pub(in crate::tui) const fn set_fetch_toast(&mut self, task_id: Option<ToastTaskId>) {
         self.fetch_toast = task_id;
     }
 
-    pub const fn take_fetch_toast(&mut self) -> Option<ToastTaskId> { self.fetch_toast.take() }
+    pub(in crate::tui) const fn take_fetch_toast(&mut self) -> Option<ToastTaskId> {
+        self.fetch_toast.take()
+    }
 
     // ── display modes ───────────────────────────────────────────
 
-    pub fn display_mode_for(&self, path: &Path) -> CiRunDisplayMode {
+    pub(in crate::tui) fn display_mode_for(&self, path: &Path) -> CiRunDisplayMode {
         self.display_modes.get(path).copied().unwrap_or_default()
     }
 
-    pub fn display_mode_label_for(&self, path: &Path) -> &'static str {
+    pub(in crate::tui) fn display_mode_label_for(&self, path: &Path) -> &'static str {
         match self.display_mode_for(path) {
             CiRunDisplayMode::BranchOnly => "branch",
             CiRunDisplayMode::All => "all",
         }
     }
 
-    pub fn set_display_mode(&mut self, path: AbsolutePath, mode: CiRunDisplayMode) {
+    pub(in crate::tui) fn set_display_mode(&mut self, path: AbsolutePath, mode: CiRunDisplayMode) {
         self.display_modes.insert(path, mode);
     }
 
-    pub fn remove_display_mode(&mut self, path: &Path) { self.display_modes.remove(path); }
+    pub(in crate::tui) fn remove_display_mode(&mut self, path: &Path) {
+        self.display_modes.remove(path);
+    }
 
-    pub fn clear_display_modes(&mut self) { self.display_modes.clear(); }
+    pub(in crate::tui) fn clear_display_modes(&mut self) { self.display_modes.clear(); }
 }
 
 /// Render-time CI snapshot.
@@ -166,14 +170,14 @@ impl Ci {
 /// render dispatch loop hand the CI pane's own `&mut Ci` to its
 /// `Renderable::render` impl in the same pass — the lookup carries
 /// what other panes (mainly `ProjectListPane`) need to read.
-pub struct CiStatusLookup {
+pub(in crate::tui) struct CiStatusLookup {
     display_modes: HashMap<PathBuf, CiRunDisplayMode>,
 }
 
 impl CiStatusLookup {
     /// Per-path display mode (`BranchOnly` / `All`), or the default
     /// when the path has no explicit override.
-    pub fn display_mode_for(&self, path: &Path) -> CiRunDisplayMode {
+    pub(in crate::tui) fn display_mode_for(&self, path: &Path) -> CiRunDisplayMode {
         self.display_modes.get(path).copied().unwrap_or_default()
     }
 }
@@ -188,7 +192,7 @@ impl Ci {
     /// without holding a `&Ci` — which is what frees the CI pane's
     /// own dispatcher to hold `&mut self.ci` at the same time.
     #[must_use]
-    pub fn status_lookup(&self) -> CiStatusLookup {
+    pub(in crate::tui) fn status_lookup(&self) -> CiStatusLookup {
         CiStatusLookup {
             display_modes: self
                 .display_modes
@@ -226,7 +230,7 @@ impl Ci {
         clippy::too_many_arguments,
         reason = "wide CI dependency surface (Q6 in docs/app-api.md)"
     )]
-    pub fn package_display(
+    pub(in crate::tui) fn package_display(
         &self,
         abs: &AbsolutePath,
         repo_info: Option<&RepoInfo>,
@@ -299,20 +303,20 @@ impl Ci {
 /// hierarchy; this only records which owner paths currently have a request
 /// in flight.
 #[derive(Default)]
-pub struct CiFetchTracker {
+pub(in crate::tui) struct CiFetchTracker {
     inner: HashSet<AbsolutePath>,
 }
 
 impl CiFetchTracker {
-    pub fn start(&mut self, path: AbsolutePath) { self.inner.insert(path); }
+    pub(in crate::tui) fn start(&mut self, path: AbsolutePath) { self.inner.insert(path); }
 
-    pub fn complete(&mut self, path: &Path) -> bool { self.inner.remove(path) }
+    pub(in crate::tui) fn complete(&mut self, path: &Path) -> bool { self.inner.remove(path) }
 
-    pub fn is_fetching(&self, path: &Path) -> bool { self.inner.contains(path) }
+    pub(in crate::tui) fn is_fetching(&self, path: &Path) -> bool { self.inner.contains(path) }
 
-    pub fn clear(&mut self) { self.inner.clear(); }
+    pub(in crate::tui) fn clear(&mut self) { self.inner.clear(); }
 
-    pub fn retain(&mut self, mut keep: impl FnMut(&AbsolutePath) -> bool) {
+    pub(in crate::tui) fn retain(&mut self, mut keep: impl FnMut(&AbsolutePath) -> bool) {
         self.inner.retain(|path| keep(path));
     }
 }

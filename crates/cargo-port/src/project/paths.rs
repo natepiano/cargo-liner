@@ -16,16 +16,18 @@ use std::path::Prefix;
 pub(crate) struct AbsolutePath(PathBuf);
 
 impl AbsolutePath {
-    pub fn as_path(&self) -> &Path { &self.0 }
+    pub(crate) fn as_path(&self) -> &Path { &self.0 }
 
-    pub fn to_path_buf(&self) -> PathBuf { self.0.clone() }
+    pub(crate) fn to_path_buf(&self) -> PathBuf { self.0.clone() }
 
-    pub fn display_path(&self) -> DisplayPath { DisplayPath::new(home_relative_path(&self.0)) }
+    pub(crate) fn display_path(&self) -> DisplayPath {
+        DisplayPath::new(home_relative_path(&self.0))
+    }
 
     /// Resolve a raw path string that may be relative to a base directory.
     /// If the raw path is absolute, use it directly. Otherwise, join it with
     /// `base`. Canonicalizes the result when possible.
-    pub fn resolve(raw: &str, base: &Path) -> Self {
+    pub(crate) fn resolve(raw: &str, base: &Path) -> Self {
         let raw_path = Path::new(raw);
         let resolved = if raw_path.is_absolute() {
             PathBuf::from(raw)
@@ -37,7 +39,7 @@ impl AbsolutePath {
 
     /// Resolve a raw path string that may be relative to a base directory.
     /// Does not canonicalize.
-    pub fn resolve_no_canonicalize(raw: &str, base: &Path) -> Self {
+    pub(crate) fn resolve_no_canonicalize(raw: &str, base: &Path) -> Self {
         let raw_path = Path::new(raw);
         if raw_path.is_absolute() {
             Self::from(raw)
@@ -157,11 +159,11 @@ pub(crate) fn normalize_test_path(path: &Path) -> PathBuf {
 pub(crate) struct DisplayPath(String);
 
 impl DisplayPath {
-    pub const fn new(s: String) -> Self { Self(s) }
+    pub(crate) const fn new(s: String) -> Self { Self(s) }
 
-    pub fn as_str(&self) -> &str { &self.0 }
+    pub(crate) fn as_str(&self) -> &str { &self.0 }
 
-    pub fn into_string(self) -> String { self.0 }
+    pub(crate) fn into_string(self) -> String { self.0 }
 }
 
 impl Display for DisplayPath {
@@ -179,7 +181,7 @@ impl AsRef<str> for DisplayPath {
 pub(crate) struct RootDirectoryName(pub(super) String);
 
 impl RootDirectoryName {
-    pub(crate) fn as_str(&self) -> &str { &self.0 }
+    fn as_str(&self) -> &str { &self.0 }
 
     pub(crate) fn into_string(self) -> String { self.0 }
 }

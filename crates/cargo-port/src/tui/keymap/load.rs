@@ -33,22 +33,23 @@ use super::constants::LEGACY_PAUSE_LINT_ACTION_KEY;
 use super::constants::PAUSE_ALL_LINTS_ACTION_KEY;
 use super::constants::REMOVED_PROJECT_LIST_GLOBAL_ACTIONS;
 use super::resolved::ResolvedKeymap;
+use crate::config;
 use crate::config::CargoPortConfigurationPathResolution;
 use crate::config::NavigationKeys;
 use crate::constants::KEYMAP_FILE;
 
-pub struct KeymapLoadResult {
-    pub(crate) keymap:          ResolvedKeymap,
-    pub(crate) errors:          Vec<KeymapError>,
-    pub(crate) warnings:        Vec<String>,
-    pub(crate) missing_actions: Vec<String>,
+pub(crate) struct KeymapLoadResult {
+    pub(in crate::tui) keymap:          ResolvedKeymap,
+    pub(in crate::tui) errors:          Vec<KeymapError>,
+    pub(in crate::tui) warnings:        Vec<String>,
+    pub(in crate::tui) missing_actions: Vec<String>,
 }
 
 pub(crate) struct KeymapError {
-    pub(crate) scope:  String,
-    pub(crate) action: String,
-    pub(crate) key:    String,
-    pub(crate) reason: KeymapErrorReason,
+    pub(in crate::tui) scope:  String,
+    pub(in crate::tui) action: String,
+    pub(in crate::tui) key:    String,
+    pub(in crate::tui) reason: KeymapErrorReason,
 }
 
 impl Display for KeymapError {
@@ -102,7 +103,7 @@ pub(crate) fn keymap_path() -> CargoPortConfigurationPathResolution {
 
     resolve_keymap_path(
         &keymap_path_resolution_source,
-        &crate::config::cargo_port_configuration_root(),
+        &config::cargo_port_configuration_root(),
     )
 }
 

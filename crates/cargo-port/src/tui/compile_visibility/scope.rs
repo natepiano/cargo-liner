@@ -27,10 +27,10 @@ pub(crate) struct MonitorSelectedRowIdentity {
 }
 
 impl MonitorSelectedRowIdentity {
-    pub(crate) const fn visible_row(&self) -> VisibleRow { self.visible_row }
+    const fn visible_row(&self) -> VisibleRow { self.visible_row }
 
     #[cfg(test)]
-    pub(crate) const fn visible_row_kind(&self) -> VisibleRowKind { self.visible_row.kind() }
+    const fn visible_row_kind(&self) -> VisibleRowKind { self.visible_row.kind() }
 }
 
 impl From<VisibleRow> for MonitorSelectedRowIdentity {
@@ -823,6 +823,8 @@ mod tests {
     use std::time::Duration;
     use std::time::Instant;
 
+    use tempfile::TempDir;
+
     use super::*;
     use crate::build_monitor::BuildScopeActionability;
     use crate::build_monitor::BuildScopeKey;
@@ -906,7 +908,7 @@ mod tests {
     }
 
     struct ScopeFixture {
-        temp_dir:                            tempfile::TempDir,
+        temp_dir:                            TempDir,
         cargo_workspace_index:               Arc<CargoWorkspaceIndex>,
         containing_checkout_workspace_index: Arc<CargoWorkspaceIndex>,
         checkout_roots:                      FixtureCheckoutRoots,

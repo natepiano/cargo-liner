@@ -12,7 +12,7 @@ use super::constants::SECONDS_PER_HOUR;
 use super::constants::SECONDS_PER_MINUTE;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub(crate) struct OwnerRepo {
+pub struct OwnerRepo {
     owner: String,
     repo:  String,
 }
@@ -60,7 +60,7 @@ pub(crate) struct GqlCheckRun {
 /// Whether a CI run has been fully fetched from the API.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum FetchStatus {
+pub enum FetchStatus {
     #[default]
     Fetched,
     Pending,
@@ -68,7 +68,7 @@ pub(crate) enum FetchStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum CiStatus {
+pub enum CiStatus {
     Passed,
     Failed,
     Cancelled,
@@ -95,7 +95,7 @@ impl Display for CiStatus {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-pub(crate) struct CiRun {
+pub struct CiRun {
     pub run_id:          u64,
     pub created_at:      String,
     pub branch:          String,
@@ -112,7 +112,7 @@ pub(crate) struct CiRun {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-pub(crate) struct CiJob {
+pub struct CiJob {
     pub name:          String,
     pub ci_status:     CiStatus,
     pub duration:      String,

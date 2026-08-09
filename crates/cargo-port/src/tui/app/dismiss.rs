@@ -8,7 +8,7 @@ use crate::tui::panes::PaneId;
 
 impl App {
     /// Resolve the currently focused pane into a dismiss target, if one exists.
-    pub fn focused_dismiss_target(&self) -> Option<DismissTarget> {
+    pub(in crate::tui) fn focused_dismiss_target(&self) -> Option<DismissTarget> {
         match self.focused_pane_id() {
             PaneId::Toasts => self
                 .framework
@@ -24,7 +24,7 @@ impl App {
     }
 
     /// Perform the dismiss for the given target.
-    pub fn dismiss(&mut self, target: DismissTarget) {
+    pub(in crate::tui) fn dismiss(&mut self, target: DismissTarget) {
         match target {
             DismissTarget::Toast(id) => self.dismiss_toast(id),
             DismissTarget::DeletedProject(path) => {

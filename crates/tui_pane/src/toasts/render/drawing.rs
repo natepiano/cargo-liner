@@ -21,7 +21,7 @@ use crate::toasts::ToastView;
 /// or its contrast is so low the toast would vanish. This palette is
 /// fixed at compile time. The roundtrip test in `mod tests` locks
 /// every field against accidental drift.
-pub struct FallbackToastPalette {
+pub(super) struct FallbackToastPalette {
     /// Spinner color in tracked-item rows.
     pub accent:  Color,
     /// Border + text color for error toasts.
@@ -36,7 +36,7 @@ pub struct FallbackToastPalette {
     pub title:   Color,
 }
 
-pub const fn fallback_toast_palette() -> FallbackToastPalette {
+pub(super) const fn fallback_toast_palette() -> FallbackToastPalette {
     FallbackToastPalette {
         accent:  Color::Cyan,
         error:   Color::Red,

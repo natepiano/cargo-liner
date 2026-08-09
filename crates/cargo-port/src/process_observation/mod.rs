@@ -80,7 +80,7 @@ pub(crate) struct ProcessCapabilityMintAuthority(());
 pub(crate) enum ExternalTerminationSupport {
     /// The capability has an identity-bound signal adapter and may become
     /// build-monitor termination authority after scope and lifecycle checks.
-    Actionable(crate::process_termination::ExternalProcessTerminationCapability),
+    Actionable(ExternalProcessTerminationCapability),
     /// Observation remains available, but this host exposes no safe signal
     /// adapter for the process object.
     ObservedOnly,
@@ -89,7 +89,7 @@ pub(crate) enum ExternalTerminationSupport {
 /// Whether immutable observer evidence could mint a platform termination
 /// capability.
 pub(crate) enum PlatformTerminationCapabilityObservation {
-    Available(crate::process_termination::ExternalProcessTerminationCapability),
+    Available(ExternalProcessTerminationCapability),
     InsufficientIncarnationEvidence,
 }
 
@@ -239,7 +239,7 @@ impl ProcessRefreshSamplingEvidence {
 }
 
 struct TargetedPidClassification {
-    observations: BTreeMap<ProcessIdentity, snapshot::TargetedProcessObservation>,
+    observations: BTreeMap<ProcessIdentity, TargetedProcessObservation>,
     admission:    TargetedSampleAdmission,
 }
 
@@ -959,6 +959,8 @@ mod running_metrics_system {
     mod tests {
         use std::collections::BTreeMap;
         use std::collections::BTreeSet;
+        #[cfg(unix)]
+        use std::process::Child;
 
         use sysinfo::Pid;
 
@@ -976,7 +978,7 @@ mod running_metrics_system {
 
         #[cfg(unix)]
         struct OwnedMetricsTestChild {
-            child: std::process::Child,
+            child: Child,
         }
 
         #[cfg(unix)]
@@ -1506,6 +1508,9 @@ mod running_metrics_system {
 }
 
 use running_metrics_system::RunningMetricsSystem;
+use snapshot::TargetedProcessObservation;
+
+use crate::process_termination::ExternalProcessTerminationCapability;
 
 enum FullProcessDiscoveryOutcome {
     NoProcessesUpdated,
@@ -1751,7 +1756,7 @@ impl ProcessObserver {
 
     /// Refresh a full or selected process set and return only immutable evidence.
     #[cfg(test)]
-    pub(crate) fn refresh(
+    fn refresh(
         &mut self,
         process_refresh_input: &ProcessRefreshInput,
     ) -> ProcessObservationSnapshot {
@@ -2145,8 +2150,15 @@ mod tests {
     use std::path::Path;
     use std::path::PathBuf;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
+    use std::process::ChildStdin;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     use std::time::Duration;
     use std::time::Instant;
+
+    use sysinfo::Pid;
+    use sysinfo::UpdateKind;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    use tempfile::TempDir;
 
     use super::FullRefreshDirectlySampledPids;
     use super::PidProcessFieldObservation;
@@ -2155,36 +2167,36 @@ mod tests {
     use super::ProcessObserver;
     use super::ProcessRefreshConsumerDemand;
     use super::ProcessRefreshSamplingEvidence;
-    use crate::process_observation::identity::InsufficientProcessIdentity;
-    use crate::process_observation::identity::ObservedProcessIdentity;
-    use crate::process_observation::identity::ProcessCreationOrderEvidence;
-    use crate::process_observation::identity::ProcessIdentity;
+    use super::identity::InsufficientProcessIdentity;
+    use super::identity::ObservedProcessIdentity;
+    use super::identity::ProcessCreationOrderEvidence;
+    use super::identity::ProcessIdentity;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    use crate::process_observation::snapshot::AncestryLookup;
+    use super::snapshot::AncestryLookup;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    use crate::process_observation::snapshot::AncestryTerminal;
-    use crate::process_observation::snapshot::FullProcessRefreshEvidence;
+    use super::snapshot::AncestryTerminal;
+    use super::snapshot::FullProcessRefreshEvidence;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    use crate::process_observation::snapshot::ParentWalkDepth;
-    use crate::process_observation::snapshot::ParentageValidationOutcome;
-    use crate::process_observation::snapshot::ProcessFieldInvalidation;
-    use crate::process_observation::snapshot::ProcessFieldLifetimeBinding;
-    use crate::process_observation::snapshot::ProcessFieldObservation;
-    use crate::process_observation::snapshot::ProcessFieldSample;
-    use crate::process_observation::snapshot::ProcessFieldSourceObservation;
-    use crate::process_observation::snapshot::ProcessFieldUnavailable;
-    use crate::process_observation::snapshot::ProcessIdentityBindingInvalidation;
-    use crate::process_observation::snapshot::ProcessIncarnationEvidence;
-    use crate::process_observation::snapshot::ProcessIncarnationState;
-    use crate::process_observation::snapshot::ProcessObservationSnapshot;
-    use crate::process_observation::snapshot::ProcessRefreshInput;
-    use crate::process_observation::snapshot::ProcessRefreshObservations;
-    use crate::process_observation::snapshot::ProcessSamplingOutcome;
-    use crate::process_observation::snapshot::ProcessSnapshotScope;
-    use crate::process_observation::snapshot::ReportedParent;
-    use crate::process_observation::snapshot::TargetedProcessObservation;
-    use crate::process_observation::snapshot::TargetedProcessObservations;
-    use crate::process_observation::snapshot::TargetedSampleAdmission;
+    use super::snapshot::ParentWalkDepth;
+    use super::snapshot::ParentageValidationOutcome;
+    use super::snapshot::ProcessFieldInvalidation;
+    use super::snapshot::ProcessFieldLifetimeBinding;
+    use super::snapshot::ProcessFieldObservation;
+    use super::snapshot::ProcessFieldSample;
+    use super::snapshot::ProcessFieldSourceObservation;
+    use super::snapshot::ProcessFieldUnavailable;
+    use super::snapshot::ProcessIdentityBindingInvalidation;
+    use super::snapshot::ProcessIncarnationEvidence;
+    use super::snapshot::ProcessIncarnationState;
+    use super::snapshot::ProcessObservationSnapshot;
+    use super::snapshot::ProcessRefreshInput;
+    use super::snapshot::ProcessRefreshObservations;
+    use super::snapshot::ProcessSamplingOutcome;
+    use super::snapshot::ProcessSnapshotScope;
+    use super::snapshot::ReportedParent;
+    use super::snapshot::TargetedProcessObservation;
+    use super::snapshot::TargetedProcessObservations;
+    use super::snapshot::TargetedSampleAdmission;
 
     fn strong_identity(pid: u32) -> std::io::Result<ProcessIdentity> {
         match PlatformProcessObservation::observe_lifetime(pid)
@@ -2245,7 +2257,7 @@ mod tests {
     }
 
     fn synthetic_sampling_evidence(
-        pids: &[sysinfo::Pid],
+        pids: &[Pid],
         identity_observations: &[PlatformProcessObservation],
     ) -> ProcessRefreshSamplingEvidence {
         let next_observation = Cell::new(0);
@@ -2420,9 +2432,9 @@ mod tests {
     fn production_field_adapter_uses_repeated_fresh_system_samples() -> std::io::Result<()> {
         let pid = sysinfo::Pid::from_u32(std::process::id());
         let refresh_kind = sysinfo::ProcessRefreshKind::nothing()
-            .with_exe(sysinfo::UpdateKind::Always)
-            .with_cmd(sysinfo::UpdateKind::Always)
-            .with_cwd(sysinfo::UpdateKind::Always);
+            .with_exe(UpdateKind::Always)
+            .with_cmd(UpdateKind::Always)
+            .with_cwd(UpdateKind::Always);
         let process_field_sources =
             ProcessObserver::refresh_process_field_sources(&[pid], refresh_kind);
         let Some(process_field_source) = process_field_sources.get(&pid) else {
@@ -3434,8 +3446,8 @@ mod tests {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     struct SamePidExecTestChild {
         child:    std::process::Child,
-        trigger:  std::process::ChildStdin,
-        exec_cwd: tempfile::TempDir,
+        trigger:  ChildStdin,
+        exec_cwd: TempDir,
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]

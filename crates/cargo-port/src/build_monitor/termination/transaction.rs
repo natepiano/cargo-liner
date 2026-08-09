@@ -6,10 +6,6 @@ use std::num::NonZeroU64;
 use std::time::Duration;
 use std::time::Instant;
 
-use super::super::constants::TERMINATION_DESCENDANT_REFRESH_INTERVAL;
-use super::super::scope::BuildScopeKey;
-use super::super::session::BuildSessionId;
-use super::super::session::SessionScope;
 use super::BuildTerminationTransactionCompletion;
 use super::authority::BuildTerminationAuthority;
 use super::authority::BuildTerminationAuthorizationConstruction;
@@ -31,6 +27,13 @@ use super::observation::BuildTerminationRootObservationRequest;
 use super::observation::BuildTerminationRootPresence;
 use super::observation::CompletedBuildTerminationObservation;
 use super::observation::NewActionableTerminationDescendant;
+use crate::build_monitor::constants::TERMINATION_DESCENDANT_REFRESH_INTERVAL;
+use crate::build_monitor::scope::BuildScopeKey;
+use crate::build_monitor::session::BuildSessionId;
+use crate::build_monitor::session::SessionScope;
+use crate::build_monitor::snapshot::MonitorSessionRow;
+use crate::process_observation::ProcessRefreshConsumerDemand;
+use crate::process_observation::TerminationTransactionRefreshSchedule;
 use crate::process_observation::identity::ProcessIdentity;
 use crate::process_termination::AdmittedTerminationDescendantObservation;
 use crate::process_termination::AdmittedTerminationDescendantPresence;
@@ -128,7 +131,7 @@ pub(crate) enum BuildTerminationSubmissionRefusal {
 }
 
 #[derive(Debug)]
-pub(crate) struct BuildTerminationTransaction {
+struct BuildTerminationTransaction {
     transaction_id:             BuildTerminationTransactionId,
     target_set:                 BuildTerminationTransactionTargetSet,
     additional_build_exclusion: AdditionalBuildExclusion,
@@ -299,7 +302,7 @@ impl BuildTerminationState {
     /// Read exact Output-build-set actionability without taking any authority.
     pub(in crate::build_monitor) fn output_build_set_termination_availability(
         &self,
-        monitor_session_rows: &[super::super::snapshot::MonitorSessionRow],
+        monitor_session_rows: &[MonitorSessionRow],
     ) -> OutputBuildSetTerminationAvailability {
         if self.lifecycle_transaction_is_active() {
             return OutputBuildSetTerminationAvailability::Busy;
@@ -331,7 +334,7 @@ impl BuildTerminationState {
     pub(in crate::build_monitor) fn selected_authorization(
         &mut self,
         build_scope_key: &BuildScopeKey,
-        monitor_session_row: &super::super::snapshot::MonitorSessionRow,
+        monitor_session_row: &MonitorSessionRow,
     ) -> BuildTerminationAuthorizationConstruction<SelectedBuildTerminationAuthorization> {
         if self.lifecycle_transaction_is_active() {
             return BuildTerminationAuthorizationConstruction::Busy;
@@ -366,7 +369,7 @@ impl BuildTerminationState {
     pub(in crate::build_monitor) fn output_build_set_authorization(
         &mut self,
         build_scope_key: &BuildScopeKey,
-        monitor_session_rows: &[super::super::snapshot::MonitorSessionRow],
+        monitor_session_rows: &[MonitorSessionRow],
     ) -> BuildTerminationAuthorizationConstruction<OutputBuildSetTerminationAuthorization> {
         if self.lifecycle_transaction_is_active() {
             return BuildTerminationAuthorizationConstruction::Busy;
@@ -643,7 +646,7 @@ impl BuildTerminationState {
 
     pub(in crate::build_monitor) fn termination_observation_demand(
         &self,
-        process_refresh_consumer_demand: crate::process_observation::ProcessRefreshConsumerDemand,
+        process_refresh_consumer_demand: ProcessRefreshConsumerDemand,
     ) -> BuildTerminationObservationDemand {
         if !process_refresh_consumer_demand.includes_termination_transaction() {
             return BuildTerminationObservationDemand::NotRequested;
@@ -687,19 +690,19 @@ impl BuildTerminationState {
 
     pub(in crate::build_monitor) const fn termination_refresh_schedule(
         &self,
-    ) -> crate::process_observation::TerminationTransactionRefreshSchedule {
+    ) -> TerminationTransactionRefreshSchedule {
         let ActiveBuildTerminationTransaction::Active(build_termination_transaction) =
             &self.active_transaction
         else {
-            return crate::process_observation::TerminationTransactionRefreshSchedule::NotScheduled;
+            return TerminationTransactionRefreshSchedule::NotScheduled;
         };
         match build_termination_transaction.external_pass_state {
             ExternalTerminationPassState::AwaitingObservation { not_before } => {
-                crate::process_observation::TerminationTransactionRefreshSchedule::At(not_before)
+                TerminationTransactionRefreshSchedule::At(not_before)
             },
             ExternalTerminationPassState::AwaitingWorker { .. }
             | ExternalTerminationPassState::Settled => {
-                crate::process_observation::TerminationTransactionRefreshSchedule::NotScheduled
+                TerminationTransactionRefreshSchedule::NotScheduled
             },
         }
     }
@@ -1459,29 +1462,30 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
 
-    use super::super::authority::ExternalBuildTerminationAuthority;
-    use super::super::authority::OwnedBuildTerminationAuthority;
-    use super::super::lifecycle::BuildTerminationAggregateCompletion;
-    use super::super::lifecycle::BuildTerminationLifecycle;
-    use super::super::lifecycle::BuildTerminationSessionCompletion;
-    use super::super::observation::BuildTerminationObservationExecution;
-    use super::super::observation::observe_build_termination_demand;
     use super::*;
+    use crate::build_monitor;
+    use crate::build_monitor::BuildMonitor;
     use crate::build_monitor::BuildScopeActionability;
     use crate::build_monitor::ClassifiedRoot;
     use crate::build_monitor::FixtureRootOwnership;
     use crate::build_monitor::LiveTargetDirectoryRevision;
     use crate::build_monitor::MonitorSessionOwnership;
     use crate::build_monitor::MonitorSnapshot;
-    use crate::build_monitor::classified_monitor_snapshot_with_ownership;
     use crate::build_monitor::session::ScopeAttribution;
     use crate::build_monitor::snapshot::MonitorData;
+    use crate::build_monitor::termination::authority::ExternalBuildTerminationAuthority;
+    use crate::build_monitor::termination::authority::OwnedBuildTerminationAuthority;
+    use crate::build_monitor::termination::lifecycle::BuildTerminationAggregateCompletion;
+    use crate::build_monitor::termination::lifecycle::BuildTerminationLifecycle;
+    use crate::build_monitor::termination::lifecycle::BuildTerminationSessionCompletion;
+    use crate::build_monitor::termination::observation;
+    use crate::build_monitor::termination::observation::BuildTerminationObservationExecution;
     use crate::process_observation::ProcessObserver;
     use crate::process_observation::ProcessRefreshConsumerDemand;
     use crate::process_observation::identity::ProcessIdentity;
     use crate::process_observation::identity::ProcessIncarnation;
+    use crate::process_observation::snapshot_builder;
     use crate::process_observation::snapshot_builder::ObservedProcess;
-    use crate::process_observation::snapshot_builder::snapshot_of;
     use crate::process_termination::TerminationResultPoll;
     use crate::project::AbsolutePath;
     use crate::project::AcceptedCargoMetadataRevision;
@@ -1627,8 +1631,8 @@ mod tests {
     fn monitor_with_owned_authority(
         root_pid: u32,
         owned_run_id: OwnedRunId,
-    ) -> (crate::build_monitor::BuildMonitor, BuildSessionId) {
-        let monitor_snapshot = match classified_monitor_snapshot_with_ownership(
+    ) -> (BuildMonitor, BuildSessionId) {
+        let monitor_snapshot = match build_monitor::classified_monitor_snapshot_with_ownership(
             &[ClassifiedRoot {
                 root_pid,
                 compiler_pids: &[],
@@ -1683,7 +1687,7 @@ mod tests {
         let MonitorSnapshot::Fresh(monitor_data) = monitor_snapshot else {
             panic!("test snapshot should be fresh");
         };
-        let replacement_snapshot = match classified_monitor_snapshot_with_ownership(
+        let replacement_snapshot = match build_monitor::classified_monitor_snapshot_with_ownership(
             &[ClassifiedRoot {
                 root_pid:      4_200_202,
                 compiler_pids: &[],
@@ -2120,7 +2124,7 @@ mod tests {
         let MonitorSnapshot::Fresh(current_data) = build_monitor.monitor_snapshot() else {
             panic!("the test monitor should remain fresh before a new root appears");
         };
-        let added_snapshot = match classified_monitor_snapshot_with_ownership(
+        let added_snapshot = match build_monitor::classified_monitor_snapshot_with_ownership(
             &[ClassifiedRoot {
                 root_pid:      4_200_207,
                 compiler_pids: &[],
@@ -2506,10 +2510,10 @@ mod tests {
             &mut lifecycle_registry,
         );
 
-        let snapshot = snapshot_of(std::slice::from_ref(&root));
+        let snapshot = snapshot_builder::snapshot_of(std::slice::from_ref(&root));
         let demand = termination_state
             .termination_observation_demand(ProcessRefreshConsumerDemand::TerminationTransaction);
-        let observation = completed_observation(observe_build_termination_demand(
+        let observation = completed_observation(observation::observe_build_termination_demand(
             &ProcessObserver::default(),
             &snapshot,
             demand,

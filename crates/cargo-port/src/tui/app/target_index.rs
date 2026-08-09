@@ -24,7 +24,7 @@ pub(crate) struct TargetDirIndex {
 }
 
 impl TargetDirIndex {
-    pub fn new() -> Self { Self::default() }
+    pub(crate) fn new() -> Self { Self::default() }
 
     /// Set/replace the `target_dir` for `member.project_root`. If the
     /// project previously lived under a different target dir, the
@@ -56,7 +56,7 @@ impl TargetDirIndex {
     /// whose root is in `exclude`. Callers that drive the confirm
     /// dialog pass their selection-set as `exclude` so self-members
     /// don't get listed as "collateral".
-    pub fn siblings<'a>(
+    pub(crate) fn siblings<'a>(
         &'a self,
         target_dir: &AbsolutePath,
         exclude: &[AbsolutePath],

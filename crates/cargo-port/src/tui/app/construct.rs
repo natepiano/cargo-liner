@@ -21,6 +21,7 @@ use std::time::Instant;
 use anyhow::Context;
 use anyhow::Error;
 use tui_pane::FocusedPane;
+use tui_pane::Framework;
 use tui_pane::Keymap as FrameworkKeymap;
 use tui_pane::LoadedSettings;
 use tui_pane::PERF_LOG_TARGET;
@@ -38,6 +39,7 @@ use crate::channel::Receiver;
 use crate::channel::Sender;
 use crate::config;
 use crate::config::CargoPortConfig;
+use crate::config::CargoPortConfigurationPathResolution;
 use crate::lint::RuntimeHandle;
 use crate::process_observation::CompileMonitorRefreshSchedule;
 use crate::process_observation::ProcessRefreshExecutionBackendSelection;
@@ -108,12 +110,12 @@ pub(super) struct Channeled {
 /// `Channeled` plus the products of applying the selected startup policy.
 pub(super) struct Started {
     channeled:              Channeled,
-    config_path_resolution: config::CargoPortConfigurationPathResolution,
-    keymap_path_resolution: config::CargoPortConfigurationPathResolution,
+    config_path_resolution: CargoPortConfigurationPathResolution,
+    keymap_path_resolution: CargoPortConfigurationPathResolution,
     lint_warning:           Option<String>,
     lint_runtime:           Option<RuntimeHandle>,
     watcher:                WatcherHandle,
-    themes_dir_resolution:  config::CargoPortConfigurationPathResolution,
+    themes_dir_resolution:  CargoPortConfigurationPathResolution,
     projects:               ProjectList,
 }
 
@@ -351,10 +353,7 @@ fn process_refresh_executor(startup_services: &StartupServices) -> AppProcessRef
     )
 }
 
-fn app_framework(
-    settings_store: SettingsStore,
-    toast_settings: ToastSettings,
-) -> tui_pane::Framework<App> {
+fn app_framework(settings_store: SettingsStore, toast_settings: ToastSettings) -> Framework<App> {
     tui_pane::Framework::new_with_settings(
         FocusedPane::App(AppPaneId::ProjectList),
         LoadedSettings {

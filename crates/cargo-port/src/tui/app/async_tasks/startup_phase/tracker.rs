@@ -294,7 +294,7 @@ impl App {
             .min_by_key(|(_, entry)| entry.started_at)
             .map(|(name, _)| name.clone())
     }
-    pub fn maybe_log_startup_phase_completions(&mut self) {
+    pub(in crate::tui::app) fn maybe_log_startup_phase_completions(&mut self) {
         let Some(scan_complete_at) = self.startup.scan_complete_at else {
             return;
         };
@@ -334,7 +334,7 @@ impl App {
     /// Re-evaluate the panel each frame so the minimum-visible floor and
     /// the per-row timeout can close it even when no new `BackgroundMsg`
     /// arrives.
-    pub fn tick_startup_panel(&mut self) {
+    pub(in crate::tui) fn tick_startup_panel(&mut self) {
         if !self.startup.is_collecting() {
             return;
         }
@@ -398,7 +398,10 @@ impl App {
     /// panel finishes without waiting out the timeout. No-op once startup
     /// has completed or the repo row is already terminal; the accompanying
     /// service-unavailable toast already names the reason.
-    pub fn fail_startup_repo_phase(&mut self, reason: FailureReason) {
+    pub(in crate::tui::app::async_tasks) fn fail_startup_repo_phase(
+        &mut self,
+        reason: FailureReason,
+    ) {
         if !self.startup.is_collecting() {
             return;
         }
@@ -412,13 +415,19 @@ impl App {
     /// Add counted language scan work to the startup row. The final stats still
     /// arrive as project-root batches; these counted tokens only make progress
     /// reflect long scans without flooding the main queue with one path per file.
-    pub const fn mark_startup_languages_expected(&mut self, units: usize) {
+    pub(in crate::tui::app::async_tasks) const fn mark_startup_languages_expected(
+        &mut self,
+        units: usize,
+    ) {
         self.startup.languages.add_work_expected(units);
     }
     /// Mark the project-root language tokens from a `LanguageStatsBatch`.
     /// Runs alongside the `ProjectList` handler, which owns the actual stats.
     /// Each batch also completes the counted scan work that produced it.
-    pub fn mark_startup_languages_seen(&mut self, entries: &[(AbsolutePath, LanguageStats)]) {
+    pub(in crate::tui::app::async_tasks) fn mark_startup_languages_seen(
+        &mut self,
+        entries: &[(AbsolutePath, LanguageStats)],
+    ) {
         self.startup.languages.add_work_seen(entries.len());
         for (path, _) in entries {
             self.startup.languages.seen.insert(path.clone());
@@ -429,17 +438,27 @@ impl App {
     }
     /// Mark the tests row's `seen` from a `TestCountsBatch`. Runs alongside
     /// the `ProjectList` handler, which owns the actual counts.
-    pub fn mark_startup_tests_seen(&mut self, entries: &[(AbsolutePath, TestCounts)]) {
+    pub(in crate::tui::app::async_tasks) fn mark_startup_tests_seen(
+        &mut self,
+        entries: &[(AbsolutePath, TestCounts)],
+    ) {
         for (path, _) in entries {
             self.startup.tests.seen.insert(path.clone());
         }
         self.maybe_log_startup_phase_completions();
     }
-    pub fn mark_startup_project_details_declared(&mut self, path: AbsolutePath) {
+    pub(in crate::tui::app::async_tasks) fn mark_startup_project_details_declared(
+        &mut self,
+        path: AbsolutePath,
+    ) {
         self.startup.details_declared.seen.insert(path);
         self.maybe_log_startup_phase_completions();
     }
-    pub fn maybe_complete_startup_disk(&mut self, now: Instant, scan_complete_at: Instant) {
+    pub(in crate::tui::app) fn maybe_complete_startup_disk(
+        &mut self,
+        now: Instant,
+        scan_complete_at: Instant,
+    ) {
         if !self.startup.disk.complete_once(now) {
             return;
         }
@@ -453,7 +472,11 @@ impl App {
             "startup_phase_complete"
         );
     }
-    pub fn maybe_complete_startup_git(&mut self, now: Instant, scan_complete_at: Instant) {
+    pub(in crate::tui::app) fn maybe_complete_startup_git(
+        &mut self,
+        now: Instant,
+        scan_complete_at: Instant,
+    ) {
         if !self.startup.git.complete_once(now) {
             return;
         }
@@ -467,7 +490,11 @@ impl App {
             "startup_phase_complete"
         );
     }
-    pub fn maybe_complete_startup_repo(&mut self, now: Instant, scan_complete_at: Instant) {
+    pub(in crate::tui::app) fn maybe_complete_startup_repo(
+        &mut self,
+        now: Instant,
+        scan_complete_at: Instant,
+    ) {
         // Gate repo-phase completion on git being terminal (complete or
         // failed). Without this, a scan that completes before any
         // `RepoFetchQueued` arrives would see `repo.seen (0) >=
@@ -549,7 +576,11 @@ impl App {
             "startup_phase_complete"
         );
     }
-    pub fn maybe_complete_startup_ready(&mut self, now: Instant, scan_complete_at: Instant) {
+    pub(in crate::tui::app) fn maybe_complete_startup_ready(
+        &mut self,
+        now: Instant,
+        scan_complete_at: Instant,
+    ) {
         let lint_seen = self.startup.lint_phase.seen.len();
         let lint_expected = self.startup.lint_phase.expected_len();
         if !self.startup.is_collecting() {

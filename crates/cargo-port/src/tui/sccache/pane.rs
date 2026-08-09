@@ -20,7 +20,7 @@ pub(super) enum SccacheStatus {
     Failed { lines: Vec<String> },
 }
 
-pub struct SccachePane {
+pub(in crate::tui) struct SccachePane {
     status:            SccacheStatus,
     request_id:        u64,
     line_targets:      Vec<Option<usize>>,
@@ -29,7 +29,7 @@ pub struct SccachePane {
 }
 
 impl SccachePane {
-    pub const fn new() -> Self {
+    pub(in crate::tui) const fn new() -> Self {
         Self {
             status:            SccacheStatus::Loading,
             request_id:        0,
@@ -41,7 +41,7 @@ impl SccachePane {
 
     pub(super) const fn status(&self) -> &SccacheStatus { &self.status }
 
-    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
+    pub(in crate::tui) const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
 
     pub(super) fn set_line_targets(
         &mut self,
@@ -52,7 +52,7 @@ impl SccachePane {
         self.selectable_values = selectable_values;
     }
 
-    pub fn row_at(&self, pos: Position) -> Option<usize> {
+    pub(in crate::tui) fn row_at(&self, pos: Position) -> Option<usize> {
         let inner = self.viewport.content_area();
         if inner.width == 0 || inner.height == 0 || !inner.contains(pos) {
             return None;
@@ -71,14 +71,14 @@ impl SccachePane {
         self.selectable_values.get(self.viewport.pos())
     }
 
-    pub fn start_loading(&mut self) -> u64 {
+    pub(in crate::tui) fn start_loading(&mut self) -> u64 {
         self.request_id = self.request_id.saturating_add(1);
         self.status = SccacheStatus::Loading;
         self.viewport.home();
         self.request_id
     }
 
-    pub fn apply_result(&mut self, request_id: u64, result: StatsResult) {
+    pub(in crate::tui) fn apply_result(&mut self, request_id: u64, result: StatsResult) {
         if self.request_id != request_id {
             return;
         }
@@ -89,7 +89,7 @@ impl SccachePane {
         self.viewport.home();
     }
 
-    pub fn handle_navigation_key(&mut self, code: KeyCode) {
+    pub(in crate::tui) fn handle_navigation_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Up => self.viewport.up(),
             KeyCode::Down => self.viewport.down(),

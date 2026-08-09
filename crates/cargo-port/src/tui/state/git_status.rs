@@ -17,7 +17,7 @@ use crate::project::AbsolutePath;
 use crate::project::GitStatus;
 
 #[derive(Default)]
-pub struct GitStatusTracker {
+pub(in crate::tui) struct GitStatusTracker {
     entries:       HashMap<AbsolutePath, Baseline>,
     current_toast: Option<ToastTaskId>,
     next_item_seq: u64,
@@ -35,7 +35,7 @@ enum Baseline {
 }
 
 /// A flipped git-status value worth surfacing.
-pub struct GitStatusTransition {
+pub(in crate::tui) struct GitStatusTransition {
     pub previous: GitStatus,
     pub current:  GitStatus,
 }
@@ -44,7 +44,7 @@ impl GitStatusTracker {
     /// Record `current` and return `Some` if the value flipped versus the
     /// prior observation. The first call for a given path always returns
     /// `None` and just seeds the baseline.
-    pub fn observe(
+    pub(in crate::tui) fn observe(
         &mut self,
         path: AbsolutePath,
         current: GitStatus,
@@ -59,14 +59,16 @@ impl GitStatusTracker {
         }
     }
 
-    pub const fn current_toast(&self) -> Option<ToastTaskId> { self.current_toast }
+    pub(in crate::tui) const fn current_toast(&self) -> Option<ToastTaskId> { self.current_toast }
 
-    pub const fn set_current_toast(&mut self, id: Option<ToastTaskId>) { self.current_toast = id; }
+    pub(in crate::tui) const fn set_current_toast(&mut self, id: Option<ToastTaskId>) {
+        self.current_toast = id;
+    }
 
     /// Mint a unique sequence number for the next tracked item key so
     /// repeated transitions for the same project don't dedupe against each
     /// other inside one toast.
-    pub const fn next_item_seq(&mut self) -> u64 {
+    pub(in crate::tui) const fn next_item_seq(&mut self) -> u64 {
         let seq = self.next_item_seq;
         self.next_item_seq = self.next_item_seq.wrapping_add(1);
         seq
@@ -74,7 +76,7 @@ impl GitStatusTracker {
 }
 
 /// Render `acme: ● modified ──▶︎ ✓ clean` for one transition.
-pub fn format_transition(name: &str, transition: &GitStatusTransition) -> String {
+pub(in crate::tui) fn format_transition(name: &str, transition: &GitStatusTransition) -> String {
     format!(
         "{name}: {} ──▶︎ {}",
         transition.previous.label_with_icon(),

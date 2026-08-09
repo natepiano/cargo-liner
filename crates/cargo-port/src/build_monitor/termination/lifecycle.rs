@@ -1,14 +1,17 @@
 //! Build-session termination lifecycle and terminal facts retained across snapshots.
 
 use std::collections::BTreeMap;
+#[cfg(test)]
+use std::num::NonZeroU64;
 
-use super::super::session::BuildSessionId;
-use super::super::session::SessionScope;
-use super::super::snapshot::MonitorSessionOwnership;
-use super::super::snapshot::MonitorSessionRow;
 use super::transaction::AdditionalBuildExclusion;
 use super::transaction::BuildTerminationTransactionId;
 use super::transaction::BuildTerminationTransactionTargetSet;
+use crate::build_monitor::session::BuildSessionId;
+use crate::build_monitor::session::SessionScope;
+use crate::build_monitor::snapshot::MonitorSessionOwnership;
+use crate::build_monitor::snapshot::MonitorSessionRow;
+use crate::process_termination::TerminationError;
 use crate::process_termination::TerminationExecutionTargetRole;
 use crate::process_termination::TerminationTargetId;
 use crate::process_termination::TerminationTargetResult;
@@ -53,16 +56,14 @@ impl BuildTerminationDisplayIdentity {
 
     pub(crate) const fn build_session_id(&self) -> &BuildSessionId { &self.session_id }
 
-    pub(crate) const fn session_scope(&self) -> &SessionScope { &self.session_scope }
+    const fn session_scope(&self) -> &SessionScope { &self.session_scope }
 
     pub(crate) const fn root_pid(&self) -> u32 { self.root_pid }
 
-    pub(crate) const fn session_ownership(&self) -> MonitorSessionOwnership {
-        self.session_ownership
-    }
+    const fn session_ownership(&self) -> MonitorSessionOwnership { self.session_ownership }
 
     #[cfg(test)]
-    pub(crate) const fn for_test(
+    pub(super) const fn for_test(
         session_id: BuildSessionId,
         session_scope: SessionScope,
         root_pid: u32,
@@ -165,11 +166,11 @@ impl ExternalBuildTerminationResult {
         }
     }
 
-    pub(crate) const fn semantic_target_id(&self) -> TerminationTargetId { self.semantic_target_id }
+    const fn semantic_target_id(&self) -> TerminationTargetId { self.semantic_target_id }
 
-    pub(crate) const fn role(&self) -> TerminationExecutionTargetRole { self.role }
+    const fn role(&self) -> TerminationExecutionTargetRole { self.role }
 
-    pub(crate) const fn result(&self) -> &TerminationTargetResult { &self.result }
+    const fn result(&self) -> &TerminationTargetResult { &self.result }
 }
 
 /// One terminal target fact retained for presentation and retry decisions.
@@ -398,7 +399,7 @@ impl BuildTerminationLifecycleRegistry {
     #[cfg(test)]
     pub(crate) fn record_output_build_set_terminal_for_test(
         &mut self,
-        transaction_id: std::num::NonZeroU64,
+        transaction_id: NonZeroU64,
         monitor_session_rows: &[MonitorSessionRow],
     ) {
         let transaction_id = BuildTerminationTransactionId(transaction_id);
@@ -634,9 +635,9 @@ const fn target_completion(
             TerminationTargetResult::GoneAfterSignaling { .. } => {
                 BuildTerminationTargetCompletion::GoneAfterSignaling
             },
-            TerminationTargetResult::Refused(
-                crate::process_termination::TerminationError::DeadlineExpired { .. },
-            ) => BuildTerminationTargetCompletion::DeadlineExpired,
+            TerminationTargetResult::Refused(TerminationError::DeadlineExpired { .. }) => {
+                BuildTerminationTargetCompletion::DeadlineExpired
+            },
             TerminationTargetResult::Refused(_) => {
                 BuildTerminationTargetCompletion::RetryUnavailable
             },

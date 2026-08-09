@@ -18,7 +18,7 @@ pub enum ToastCommand<A> {
     Activate(A),
 }
 
-pub struct ToastSpec<Ctx: AppContext> {
+pub(crate) struct ToastSpec<Ctx: AppContext> {
     pub(super) title:              String,
     pub(super) body:               ToastBody,
     pub(super) style:              ToastStyle,

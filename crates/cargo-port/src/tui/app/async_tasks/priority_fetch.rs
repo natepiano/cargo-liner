@@ -70,7 +70,7 @@ impl App {
     }
 
     /// Spawn a priority fetch for the selected project if it hasn't been loaded yet.
-    pub fn maybe_priority_fetch(&mut self) {
+    pub(in crate::tui) fn maybe_priority_fetch(&mut self) {
         let Some(target) = self.priority_fetch_target() else {
             return;
         };

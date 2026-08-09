@@ -10,7 +10,7 @@ impl App {
             .is_some()
     }
 
-    pub fn expand(&mut self) -> bool {
+    pub(in crate::tui) fn expand(&mut self) -> bool {
         if !self.selected_is_expandable() {
             return false;
         }

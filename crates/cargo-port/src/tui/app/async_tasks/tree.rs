@@ -48,7 +48,7 @@ impl App {
         self.project_list.recompute_visibility(include_non_rust);
     }
 
-    pub fn rescan(&mut self) {
+    pub(in crate::tui) fn rescan(&mut self) {
         // Preserve the open/closed layout across the rebuild: snapshot the live
         // expansions as restart-stable targets before the tree is cleared, then
         // hand them back through `pending_expanded` so `handle_scan_result`

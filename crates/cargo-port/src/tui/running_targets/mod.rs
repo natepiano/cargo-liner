@@ -10,5 +10,16 @@ mod state;
 mod termination;
 
 pub(super) use constants::RUNNING_TARGETS_REFRESH_INTERVAL;
-pub(super) use state::*;
-pub(super) use termination::*;
+#[cfg(test)]
+pub(super) use state::ChildProcess;
+use state::ExactRunningTargetOwnerEvidence;
+pub(super) use state::RunProfile;
+#[cfg(test)]
+pub(super) use state::RunningInstance;
+#[cfg(test)]
+pub(super) use state::RunningKey;
+pub(super) use state::RunningProcessPlacement;
+pub(super) use state::RunningTargetProjectAttribution;
+pub(super) use state::RunningTargets;
+pub(super) use state::RunningTargetsState;
+pub(super) use termination::RunningTargetTerminationCapability;

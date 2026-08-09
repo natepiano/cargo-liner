@@ -24,7 +24,7 @@ fn configured_app_cache_root_for(cargo_port_config: &CargoPortConfig) -> Absolut
 }
 
 /// Resolve the active app cache root from the process' last good config.
-pub(crate) fn app_cache_root() -> AbsolutePath {
+fn app_cache_root() -> AbsolutePath {
     let cargo_port_config = config::active_config();
     configured_app_cache_root_for(&cargo_port_config)
 }

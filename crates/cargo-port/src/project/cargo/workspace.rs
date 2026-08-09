@@ -31,14 +31,14 @@ pub(crate) struct Workspace {
 }
 
 impl Workspace {
-    pub fn groups(&self) -> &[MemberGroup] { &self.groups }
+    pub(crate) fn groups(&self) -> &[MemberGroup] { &self.groups }
 
-    pub const fn groups_mut(&mut self) -> &mut Vec<MemberGroup> { &mut self.groups }
+    pub(crate) const fn groups_mut(&mut self) -> &mut Vec<MemberGroup> { &mut self.groups }
 
-    pub fn has_members(&self) -> bool { self.groups.iter().any(|g| !g.members().is_empty()) }
+    pub(crate) fn has_members(&self) -> bool { self.groups.iter().any(|g| !g.members().is_empty()) }
 
     /// Cargo package name when present, otherwise directory leaf.
-    pub fn package_name(&self) -> PackageName {
+    pub(crate) fn package_name(&self) -> PackageName {
         PackageName(self.name.as_deref().map_or_else(
             || paths::directory_leaf(self.path.as_path()),
             str::to_string,

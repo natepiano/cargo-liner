@@ -26,19 +26,22 @@ use crate::tui::app::ScanState;
 use crate::tui::app::TargetDirIndex;
 
 pub(crate) struct Scan {
-    pub(crate) state:            ScanState,
-    data_generation:             u64,
-    discovery_shimmers:          HashMap<AbsolutePath, DiscoveryShimmer>,
-    pending_git_first_commit:    HashMap<AbsolutePath, String>,
-    metadata_store:              Arc<Mutex<WorkspaceMetadataStore>>,
-    pub(crate) target_dir_index: TargetDirIndex,
-    priority_fetch_path:         Option<AbsolutePath>,
+    pub(in crate::tui) state:            ScanState,
+    data_generation:                     u64,
+    discovery_shimmers:                  HashMap<AbsolutePath, DiscoveryShimmer>,
+    pending_git_first_commit:            HashMap<AbsolutePath, String>,
+    metadata_store:                      Arc<Mutex<WorkspaceMetadataStore>>,
+    pub(in crate::tui) target_dir_index: TargetDirIndex,
+    priority_fetch_path:                 Option<AbsolutePath>,
     #[cfg(test)]
-    retry_spawn_mode:            RetrySpawnMode,
+    retry_spawn_mode:                    RetrySpawnMode,
 }
 
 impl Scan {
-    pub fn new(state: ScanState, metadata_store: Arc<Mutex<WorkspaceMetadataStore>>) -> Self {
+    pub(crate) fn new(
+        state: ScanState,
+        metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
+    ) -> Self {
         Self {
             state,
             data_generation: 0,
@@ -54,31 +57,35 @@ impl Scan {
 
     // ── scan-state machine ──────────────────────────────────────────
 
-    pub const fn is_complete(&self) -> bool { self.state.phase.is_complete() }
+    pub(crate) const fn is_complete(&self) -> bool { self.state.phase.is_complete() }
 
     /// Whether scan-driven animation should keep the render loop
     /// ticking: the scan is still streaming, or discovery shimmers are
     /// still fading. Mirrors the render-time scan spinner and the
     /// discovery-shimmer fade in `tui::columns`.
-    pub fn needs_animation(&self) -> bool { !self.is_complete() || self.has_active_shimmers() }
+    pub(crate) fn needs_animation(&self) -> bool {
+        !self.is_complete() || self.has_active_shimmers()
+    }
 
     // ── data generation ─────────────────────────────────────────────
 
-    pub const fn generation(&self) -> u64 { self.data_generation }
+    pub(crate) const fn generation(&self) -> u64 { self.data_generation }
 
-    pub const fn bump_generation(&mut self) { self.data_generation += 1; }
+    pub(crate) const fn bump_generation(&mut self) { self.data_generation += 1; }
 
     // ── discovery shimmers ──────────────────────────────────────────
 
-    pub const fn discovery_shimmers(&self) -> &HashMap<AbsolutePath, DiscoveryShimmer> {
+    pub(crate) const fn discovery_shimmers(&self) -> &HashMap<AbsolutePath, DiscoveryShimmer> {
         &self.discovery_shimmers
     }
 
-    pub const fn discovery_shimmers_mut(&mut self) -> &mut HashMap<AbsolutePath, DiscoveryShimmer> {
+    pub(crate) const fn discovery_shimmers_mut(
+        &mut self,
+    ) -> &mut HashMap<AbsolutePath, DiscoveryShimmer> {
         &mut self.discovery_shimmers
     }
 
-    pub fn prune_shimmers(&mut self, now: Instant) {
+    pub(crate) fn prune_shimmers(&mut self, now: Instant) {
         self.discovery_shimmers
             .retain(|_, shimmer| shimmer.is_active_at(now));
     }
@@ -87,7 +94,7 @@ impl Scan {
     /// pruned each frame by [`prune_shimmers`](Self::prune_shimmers), so
     /// a non-empty map means at least one is still fading and the loop
     /// should keep ticking.
-    pub fn has_active_shimmers(&self) -> bool { !self.discovery_shimmers.is_empty() }
+    pub(crate) fn has_active_shimmers(&self) -> bool { !self.discovery_shimmers.is_empty() }
 
     // ── pending git first-commit cache ──────────────────────────────
 
@@ -96,26 +103,28 @@ impl Scan {
         &self.pending_git_first_commit
     }
 
-    pub const fn pending_git_first_commit_mut(&mut self) -> &mut HashMap<AbsolutePath, String> {
+    pub(crate) const fn pending_git_first_commit_mut(
+        &mut self,
+    ) -> &mut HashMap<AbsolutePath, String> {
         &mut self.pending_git_first_commit
     }
 
     // ── metadata store ──────────────────────────────────────────────
 
-    pub const fn metadata_store(&self) -> &Arc<Mutex<WorkspaceMetadataStore>> {
+    pub(crate) const fn metadata_store(&self) -> &Arc<Mutex<WorkspaceMetadataStore>> {
         &self.metadata_store
     }
 
     /// Clone of the process-wide metadata store handle. Used by scan
     /// dispatchers and async-task spawners that need a `Send` handle
     /// independent of the borrow on `Scan`.
-    pub fn metadata_store_handle(&self) -> Arc<Mutex<WorkspaceMetadataStore>> {
+    pub(crate) fn metadata_store_handle(&self) -> Arc<Mutex<WorkspaceMetadataStore>> {
         Arc::clone(&self.metadata_store)
     }
 
     /// Resolve the owning workspace's `target_directory` for any path
     /// inside a known workspace.
-    pub fn resolve_target_dir(&self, path: &AbsolutePath) -> Option<AbsolutePath> {
+    pub(crate) fn resolve_target_dir(&self, path: &AbsolutePath) -> Option<AbsolutePath> {
         self.metadata_store
             .lock()
             .ok()
@@ -126,11 +135,11 @@ impl Scan {
 
     // ── priority fetch path ─────────────────────────────────────────
 
-    pub const fn priority_fetch_path(&self) -> Option<&AbsolutePath> {
+    pub(crate) const fn priority_fetch_path(&self) -> Option<&AbsolutePath> {
         self.priority_fetch_path.as_ref()
     }
 
-    pub fn set_priority_fetch_path(&mut self, path: Option<AbsolutePath>) {
+    pub(crate) fn set_priority_fetch_path(&mut self, path: Option<AbsolutePath>) {
         self.priority_fetch_path = path;
     }
 
@@ -149,7 +158,7 @@ impl Scan {
     /// fingerprint differs from the stored metadata's fingerprint
     /// (a `.cargo/config.toml` edit, a manifest save, etc.), OR when
     /// no metadata covers `project_path` at all.
-    pub fn should_verify_before_clean(&self, project_path: &AbsolutePath) -> bool {
+    pub(crate) fn should_verify_before_clean(&self, project_path: &AbsolutePath) -> bool {
         let Ok(store) = self.metadata_store.lock() else {
             return false;
         };
@@ -169,7 +178,7 @@ impl Scan {
     /// Merge an out-of-tree target walk result into the metadata cache.
     /// Declines when the cached metadata's `target_directory` has since been
     /// redirected — a fresh walk is already in flight under the new dir.
-    pub fn handle_out_of_tree_target_size(
+    pub(crate) fn handle_out_of_tree_target_size(
         &self,
         workspace_root: &AbsolutePath,
         target_dir: &AbsolutePath,

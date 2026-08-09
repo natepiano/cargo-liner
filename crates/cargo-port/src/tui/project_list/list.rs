@@ -45,6 +45,7 @@ use crate::project::ProjectCiInfo;
 use crate::project::ProjectEntry;
 use crate::project::ProjectFields;
 use crate::project::ProjectInfo;
+use crate::project::ProjectListRevision;
 use crate::project::ProjectPrData;
 use crate::project::ProjectPrInfo;
 use crate::project::RepoInfo;
@@ -99,7 +100,7 @@ impl From<Option<DisplayPath>> for ProjectListRowDisplayPathResolution {
 }
 
 impl ProjectList {
-    pub fn new(items: Vec<RootItem>) -> Self {
+    pub(in crate::tui) fn new(items: Vec<RootItem>) -> Self {
         Self {
             roots: items
                 .into_iter()
@@ -116,21 +117,23 @@ impl ProjectList {
     /// file and stamp the lint-enabled state into the column-width cache.
     /// Tests build via `ProjectList::new` / `ProjectList::default` and skip
     /// this side-effecting initialization.
-    pub fn init_runtime_state(&mut self, lint_enabled: bool) {
+    pub(in crate::tui) fn init_runtime_state(&mut self, lint_enabled: bool) {
         self.paths = SelectionPaths::new();
         self.cached_fit_widths = ProjectListWidths::new(lint_enabled);
     }
 
     // -- Slice-like read surface ------------------------------------------
 
-    pub fn len(&self) -> usize { self.roots.len() }
+    pub(in crate::tui) fn len(&self) -> usize { self.roots.len() }
 
-    pub fn is_empty(&self) -> bool { self.roots.is_empty() }
+    pub(in crate::tui) fn is_empty(&self) -> bool { self.roots.is_empty() }
 
-    pub fn iter(&self) -> Values<'_, AbsolutePath, ProjectEntry> { self.roots.values() }
+    pub(in crate::tui) fn iter(&self) -> Values<'_, AbsolutePath, ProjectEntry> {
+        self.roots.values()
+    }
 
     /// Disk space represented by top-level rows currently visible in the pane.
-    pub fn visible_project_disk_usage(&self) -> u64 {
+    pub(in crate::tui) fn visible_project_disk_usage(&self) -> u64 {
         self.cached_visible_rows
             .iter()
             .filter_map(|row| match row {
@@ -143,7 +146,7 @@ impl ProjectList {
     }
 
     /// Mounted-volume probe paths for all currently visible top-level rows.
-    pub fn visible_project_storage_paths(&self) -> Vec<AbsolutePath> {
+    pub(in crate::tui) fn visible_project_storage_paths(&self) -> Vec<AbsolutePath> {
         let mut paths = Vec::new();
         for row in &self.cached_visible_rows {
             let VisibleRow::Root { node_index } = row else {
@@ -167,17 +170,21 @@ impl ProjectList {
     }
 
     /// Stored result of the latest visible-project volume probe.
-    pub const fn project_storage(&self) -> ProjectStorage { self.storage }
+    pub(in crate::tui) const fn project_storage(&self) -> ProjectStorage { self.storage }
 
     /// Accept a volume probe only while it still describes the current roots.
-    pub fn set_project_storage(&mut self, paths: &[AbsolutePath], storage: ProjectStorage) {
+    pub(in crate::tui) fn set_project_storage(
+        &mut self,
+        paths: &[AbsolutePath],
+        storage: ProjectStorage,
+    ) {
         if self.visible_project_storage_paths() == paths {
             self.storage = storage;
         }
     }
 
     /// Disk bytes rendered by one visible row, excluding label-only group rows.
-    pub fn visible_row_disk_usage(&self, row: VisibleRow) -> Option<u64> {
+    pub(in crate::tui) fn visible_row_disk_usage(&self, row: VisibleRow) -> Option<u64> {
         match row {
             VisibleRow::Root { node_index } => self
                 .get(node_index)
@@ -194,7 +201,9 @@ impl ProjectList {
     /// state (cursor, expansion set, finder, sort/width caches) intact.
     /// Used by tree-rebuild paths that hand-build a fresh `ProjectList`
     /// for whole-tree replacement.
-    pub fn replace_roots_from(&mut self, replacement: Self) { self.roots = replacement.roots; }
+    pub(in crate::tui) fn replace_roots_from(&mut self, replacement: Self) {
+        self.roots = replacement.roots;
+    }
 
     /// Split-borrow accessor for bulk-expansion paths that need to inspect
     /// the tree structure while mutating the expansion set. Used by
@@ -215,11 +224,11 @@ impl ProjectList {
     #[cfg(test)]
     pub fn first(&self) -> Option<&ProjectEntry> { self.roots.first().map(|(_, entry)| entry) }
 
-    pub fn get(&self, index: usize) -> Option<&ProjectEntry> {
+    pub(in crate::tui) fn get(&self, index: usize) -> Option<&ProjectEntry> {
         self.roots.get_index(index).map(|(_, entry)| entry)
     }
 
-    pub fn resolved_root_labels(&self, include_non_rust: bool) -> Vec<String> {
+    pub(in crate::tui) fn resolved_root_labels(&self, include_non_rust: bool) -> Vec<String> {
         let mut labels: Vec<String> = self
             .roots
             .values()
@@ -264,7 +273,7 @@ impl ProjectList {
         labels
     }
 
-    pub fn git_directories(&self) -> Vec<AbsolutePath> {
+    pub(in crate::tui) fn git_directories(&self) -> Vec<AbsolutePath> {
         self.roots
             .values()
             .filter_map(|entry| entry.root_item.git_directory())
@@ -280,7 +289,7 @@ impl ProjectList {
     /// a synthesized `ProjectEntry` whose `item` is `Rust(Workspace(..))`
     /// or `Rust(Package(..))`. The synthesized entries share the outer
     /// `git_repo` via clone so each leaf sees the same repo-level data.
-    pub fn for_each_leaf(&self, mut f: impl FnMut(&ProjectEntry)) {
+    pub(in crate::tui) fn for_each_leaf(&self, mut f: impl FnMut(&ProjectEntry)) {
         for entry in self.roots.values() {
             match &entry.root_item {
                 RootItem::Worktrees(group) => {
@@ -298,7 +307,7 @@ impl ProjectList {
 
     /// Zero-allocation leaf path iteration. Yields `(path, is_rust)` for
     /// every leaf project without cloning any `RootItem`.
-    pub fn for_each_leaf_path(&self, mut f: impl FnMut(&Path, bool)) {
+    pub(in crate::tui) fn for_each_leaf_path(&self, mut f: impl FnMut(&Path, bool)) {
         for entry in self.roots.values() {
             match &entry.root_item {
                 RootItem::Worktrees(group) => {
@@ -311,7 +320,7 @@ impl ProjectList {
         }
     }
 
-    pub fn at_path(&self, target: &Path) -> Option<&ProjectInfo> {
+    pub(in crate::tui) fn at_path(&self, target: &Path) -> Option<&ProjectInfo> {
         if let Some(entry) = self.roots.get(target) {
             return entry.root_item.at_path(target);
         }
@@ -320,7 +329,7 @@ impl ProjectList {
             .find_map(|entry| entry.root_item.at_path(target))
     }
 
-    pub fn at_path_mut(&mut self, target: &Path) -> Option<&mut ProjectInfo> {
+    pub(in crate::tui) fn at_path_mut(&mut self, target: &Path) -> Option<&mut ProjectInfo> {
         // Split into two separate borrows to sidestep the NLL limitation on
         // returning a reference borrowed inside an if-let: first check if the
         // root key matches, then re-borrow mutably to return.
@@ -339,7 +348,7 @@ impl ProjectList {
     /// CI fetches and GitHub repo metadata for submodules belong to the
     /// upstream repository and are suppressed at the parent project's
     /// level — see the `BackgroundMsg::GitInfo` handler.
-    pub fn is_submodule_path(&self, target: &Path) -> bool {
+    pub(in crate::tui) fn is_submodule_path(&self, target: &Path) -> bool {
         self.roots.values().any(|entry| {
             entry
                 .root_item
@@ -349,7 +358,7 @@ impl ProjectList {
         })
     }
 
-    pub fn rust_info_at_path(&self, target: &Path) -> Option<&RustInfo> {
+    pub(in crate::tui) fn rust_info_at_path(&self, target: &Path) -> Option<&RustInfo> {
         self.roots
             .values()
             .find_map(|entry| entry.root_item.rust_info_at_path(target))
@@ -361,7 +370,7 @@ impl ProjectList {
             .find_map(|entry| entry.root_item.rust_info_at_path_mut(target))
     }
 
-    pub fn vendored_at_path(&self, target: &Path) -> Option<&VendoredPackage> {
+    pub(in crate::tui) fn vendored_at_path(&self, target: &Path) -> Option<&VendoredPackage> {
         self.roots
             .values()
             .find_map(|entry| entry.root_item.vendored_at_path(target))
@@ -378,25 +387,25 @@ impl ProjectList {
     /// Used by the detail pane/icon to show parent lints when a vendored row
     /// is selected — the list-row icon stays blank because `lint_at_path`
     /// does not fall back.
-    pub fn vendored_owner_lint(&self, target: &Path) -> Option<&LintRuns> {
+    pub(in crate::tui) fn vendored_owner_lint(&self, target: &Path) -> Option<&LintRuns> {
         self.roots
             .values()
             .find_map(|entry| entry.root_item.vendored_owner_lint(target))
     }
 
-    pub fn lint_at_path(&self, target: &Path) -> Option<&LintRuns> {
+    pub(in crate::tui) fn lint_at_path(&self, target: &Path) -> Option<&LintRuns> {
         self.roots
             .values()
             .find_map(|entry| entry.root_item.lint_at_path(target))
     }
 
-    pub fn lint_at_path_mut(&mut self, target: &Path) -> Option<&mut LintRuns> {
+    pub(in crate::tui) fn lint_at_path_mut(&mut self, target: &Path) -> Option<&mut LintRuns> {
         self.roots
             .values_mut()
             .find_map(|entry| entry.root_item.lint_at_path_mut(target))
     }
 
-    pub fn lint_owner_path(&self, target: &Path) -> Option<AbsolutePath> {
+    pub(in crate::tui) fn lint_owner_path(&self, target: &Path) -> Option<AbsolutePath> {
         self.roots
             .values()
             .find_map(|entry| entry.root_item.lint_owner_path(target))
@@ -410,7 +419,7 @@ impl ProjectList {
             .cloned()
     }
 
-    pub fn has_running_lints(&self) -> bool {
+    pub(in crate::tui) fn has_running_lints(&self) -> bool {
         self.roots.values().any(|entry| match &entry.root_item {
             RootItem::Rust(project) => project_lint_is_running(project),
             RootItem::Worktrees(group) => group.iter_entries().any(project_lint_is_running),
@@ -420,19 +429,22 @@ impl ProjectList {
 
     /// Top-level entry whose hierarchy contains `target`. One-shot
     /// replacement for the per-field per-path lookups used elsewhere.
-    pub fn entry_containing(&self, target: &Path) -> Option<&ProjectEntry> {
+    pub(in crate::tui) fn entry_containing(&self, target: &Path) -> Option<&ProjectEntry> {
         self.roots
             .values()
             .find(|entry| project::entry_contains(entry, target))
     }
 
-    pub fn worktree_status_for(&self, path: &Path) -> Option<&WorktreeStatus> {
+    pub(in crate::tui) fn worktree_status_for(&self, path: &Path) -> Option<&WorktreeStatus> {
         self.entry_containing(path)?
             .root_item
             .worktree_status_at(path)
     }
 
-    pub fn entry_containing_mut(&mut self, target: &Path) -> Option<&mut ProjectEntry> {
+    pub(in crate::tui) fn entry_containing_mut(
+        &mut self,
+        target: &Path,
+    ) -> Option<&mut ProjectEntry> {
         self.roots
             .values_mut()
             .find(|entry| project::entry_contains(entry, target))
@@ -442,13 +454,17 @@ impl ProjectList {
     /// `git_repo_for_mut` so a submodule path lands on the submodule's
     /// own `git_repo`. Silently no-ops when `path` has no associated
     /// `GitRepo`.
-    pub fn replace_ci_data_for_path(&mut self, path: &Path, ci_data: ProjectCiData) {
+    pub(in crate::tui) fn replace_ci_data_for_path(&mut self, path: &Path, ci_data: ProjectCiData) {
         if let Some(repo) = self.git_repo_for_mut(path) {
             repo.ci_data = ci_data;
         }
     }
 
-    pub fn replace_pr_data_for_repo(&mut self, owner_repo: &OwnerRepo, data: &ProjectPrData) {
+    pub(in crate::tui) fn replace_pr_data_for_repo(
+        &mut self,
+        owner_repo: &OwnerRepo,
+        data: &ProjectPrData,
+    ) {
         let targets: Vec<AbsolutePath> = self
             .roots
             .values()
@@ -465,7 +481,10 @@ impl ProjectList {
         }
     }
 
-    pub fn pr_info_for_repo(&self, owner_repo: &OwnerRepo) -> Option<&ProjectPrInfo> {
+    pub(in crate::tui) fn pr_info_for_repo(
+        &self,
+        owner_repo: &OwnerRepo,
+    ) -> Option<&ProjectPrInfo> {
         self.roots.values().find_map(|entry| {
             let url = self.fetch_url_for(entry.root_item.path())?;
             (ci::parse_owner_repo(&url).as_ref() == Some(owner_repo))
@@ -476,7 +495,7 @@ impl ProjectList {
 
     // -- Git/Repo reads --------------------------------------------------
 
-    pub fn git_info_for(&self, path: &Path) -> Option<&CheckoutInfo> {
+    pub(in crate::tui) fn git_info_for(&self, path: &Path) -> Option<&CheckoutInfo> {
         self.at_path(path)
             .and_then(|project| project.local_git_state.info())
     }
@@ -485,7 +504,7 @@ impl ProjectList {
     /// entry containing `path`. `None` means either the path isn't in a
     /// known entry, the entry isn't in a git repo, or the background
     /// `LocalGitInfo::get` call hasn't completed yet.
-    pub fn repo_info_for(&self, path: &Path) -> Option<&RepoInfo> {
+    pub(in crate::tui) fn repo_info_for(&self, path: &Path) -> Option<&RepoInfo> {
         self.git_repo_for(path)
             .and_then(|repo| repo.repo_info.as_ref())
     }
@@ -496,7 +515,7 @@ impl ProjectList {
     /// 1. Direct entry hit (path is a top-level project root).
     /// 2. Submodule hit (path matches a submodule under some entry).
     /// 3. Containing-entry fallback (path is inside an entry's hierarchy).
-    pub fn git_repo_for(&self, path: &Path) -> Option<&GitRepo> {
+    pub(in crate::tui) fn git_repo_for(&self, path: &Path) -> Option<&GitRepo> {
         for entry in self.roots.values() {
             if entry.root_item.path() == path {
                 return entry.git_repo.as_ref();
@@ -531,7 +550,7 @@ impl ProjectList {
 
     /// Ensure a `GitRepo` slot exists for the given path (submodule or
     /// entry) and return a mutable reference to it.
-    pub fn ensure_git_repo_for(&mut self, path: &Path) -> Option<&mut GitRepo> {
+    pub(in crate::tui) fn ensure_git_repo_for(&mut self, path: &Path) -> Option<&mut GitRepo> {
         match GitRepoLookup::find(self, path)? {
             GitRepoLookup::Direct(key) | GitRepoLookup::Containing(key) => Some(
                 self.roots
@@ -551,7 +570,7 @@ impl ProjectList {
     }
 
     /// Convenience: the primary remote's URL for the checkout at `path`.
-    pub fn primary_url_for(&self, path: &Path) -> Option<&str> {
+    pub(in crate::tui) fn primary_url_for(&self, path: &Path) -> Option<&str> {
         let checkout = self.git_info_for(path)?;
         let repo = self.repo_info_for(path)?;
         checkout.primary_url(repo)
@@ -571,7 +590,7 @@ impl ProjectList {
     /// sync-change tracker needs them apart so a startup race (the cached
     /// GitHub fetch landing before local `CheckoutInfo`) is not mistaken
     /// for a real "no remote" baseline.
-    pub fn primary_sync_resolution(&self, path: &Path) -> SyncResolution {
+    pub(in crate::tui) fn primary_sync_resolution(&self, path: &Path) -> SyncResolution {
         let (Some(checkout), Some(repo)) = (self.git_info_for(path), self.repo_info_for(path))
         else {
             return SyncResolution::Unresolved;
@@ -585,7 +604,7 @@ impl ProjectList {
     /// still belongs to the repo and should fetch repo-level metadata.
     /// Preference order: `upstream`, then `origin`, then the first
     /// remote with a parseable owner/repo URL.
-    pub fn fetch_url_for(&self, path: &Path) -> Option<String> {
+    pub(in crate::tui) fn fetch_url_for(&self, path: &Path) -> Option<String> {
         let repo = self.repo_info_for(path)?;
         let parseable = |name: &str| {
             repo.remotes
@@ -605,14 +624,14 @@ impl ProjectList {
             .map(String::from)
     }
 
-    pub fn git_status_for(&self, path: &Path) -> Option<GitStatus> {
+    pub(in crate::tui) fn git_status_for(&self, path: &Path) -> Option<GitStatus> {
         self.git_info_for(path).map(|info| info.status)
     }
 
     /// Roll up the worst git path state across all **visible** children of a
     /// `RootItem`. For worktree groups, checks primary + non-dismissed linked
     /// entries. For everything else, returns the state for the single path.
-    pub fn git_status_for_item(&self, item: &RootItem) -> Option<GitStatus> {
+    pub(in crate::tui) fn git_status_for_item(&self, item: &RootItem) -> Option<GitStatus> {
         match item {
             RootItem::Worktrees(g) => visible_rows::worst_git_status(
                 std::iter::once(self.git_status_for(g.primary.path())).chain(
@@ -627,7 +646,7 @@ impl ProjectList {
     }
 
     /// Formatted ahead/behind sync status for the project list columns.
-    pub fn git_sync(&self, path: &Path) -> String {
+    pub(in crate::tui) fn git_sync(&self, path: &Path) -> String {
         let Some(info) = self.git_info_for(path) else {
             return String::new();
         };
@@ -643,13 +662,13 @@ impl ProjectList {
         }
     }
 
-    pub fn ci_data_for(&self, path: &Path) -> Option<&ProjectCiData> {
+    pub(in crate::tui) fn ci_data_for(&self, path: &Path) -> Option<&ProjectCiData> {
         self.entry_containing(path)
             .and_then(|entry| entry.git_repo.as_ref())
             .map(|repo| &repo.ci_data)
     }
 
-    pub fn ci_info_for(&self, path: &Path) -> Option<&ProjectCiInfo> {
+    pub(in crate::tui) fn ci_info_for(&self, path: &Path) -> Option<&ProjectCiInfo> {
         self.ci_data_for(path).and_then(ProjectCiData::info)
     }
 
@@ -672,7 +691,11 @@ impl ProjectList {
     /// the render-time [`CiStatusLookup`] snapshot. Suppressed for
     /// unpublished worktree branches whose parent-repo CI doesn't
     /// apply.
-    pub fn ci_status_using_lookup(&self, path: &Path, lookup: &CiStatusLookup) -> Option<CiStatus> {
+    pub(in crate::tui) fn ci_status_using_lookup(
+        &self,
+        path: &Path,
+        lookup: &CiStatusLookup,
+    ) -> Option<CiStatus> {
         if self.unpublished_ci_branch_name(path).is_some() {
             return None;
         }
@@ -691,7 +714,7 @@ impl ProjectList {
     /// lookup or `RootItem::ci_status`'s aggregator (for `WorktreeGroup`,
     /// which spans multiple checkouts and therefore can't be addressed by a
     /// single path).
-    pub fn ci_status_for_root_item_using_lookup(
+    pub(in crate::tui) fn ci_status_for_root_item_using_lookup(
         &self,
         item: &RootItem,
         lookup: &CiStatusLookup,
@@ -699,12 +722,12 @@ impl ProjectList {
         item.ci_status(|p| self.ci_status_using_lookup(p, lookup))
     }
 
-    pub fn is_deleted(&self, path: &Path) -> bool {
+    pub(in crate::tui) fn is_deleted(&self, path: &Path) -> bool {
         self.at_path(path)
             .is_some_and(|project| project.visibility == Visibility::Deleted)
     }
 
-    pub fn is_rust_at_path(&self, path: &Path) -> bool {
+    pub(in crate::tui) fn is_rust_at_path(&self, path: &Path) -> bool {
         self.iter().any(|item| {
             if item
                 .submodules()
@@ -717,12 +740,12 @@ impl ProjectList {
         })
     }
 
-    pub fn is_vendored_path(&self, path: &Path) -> bool {
+    pub(in crate::tui) fn is_vendored_path(&self, path: &Path) -> bool {
         self.iter()
             .any(|item| item.root_item.vendored_at_path(path).is_some())
     }
 
-    pub fn is_workspace_member_path(&self, path: &Path) -> bool {
+    pub(in crate::tui) fn is_workspace_member_path(&self, path: &Path) -> bool {
         self.iter().any(|item| match &item.root_item {
             RootItem::Rust(RustProject::Workspace(ws)) => ws
                 .groups()
@@ -741,7 +764,7 @@ impl ProjectList {
         })
     }
 
-    pub fn git_main(&self, path: &Path) -> String {
+    pub(in crate::tui) fn git_main(&self, path: &Path) -> String {
         let Some(info) = self.git_info_for(path) else {
             return String::new();
         };
@@ -769,7 +792,7 @@ impl ProjectList {
     /// This preserves the `IndexMap` key invariant: no mutation here can
     /// change a root entry's primary path, so keys stay in sync with the
     /// entries they index.
-    pub fn replace_leaf_by_path(
+    pub(in crate::tui) fn replace_leaf_by_path(
         &mut self,
         path: &Path,
         mut replacement: RootItem,
@@ -837,7 +860,7 @@ impl ProjectList {
     /// top-level peer.
     ///
     /// Returns `true` if the item was inserted into an existing workspace.
-    pub fn insert_into_hierarchy(&mut self, item: RootItem) -> bool {
+    pub(in crate::tui) fn insert_into_hierarchy(&mut self, item: RootItem) -> bool {
         let item_path = item.path().to_path_buf();
         for entry in self.roots.values_mut() {
             if grouping::try_attach_worktree(&mut entry.root_item, &item) {
@@ -882,7 +905,7 @@ impl ProjectList {
     /// Regroup workspace members based on `inline_dirs` config. Walks all
     /// workspaces (including inside worktree groups) and re-sorts their
     /// members into `Named` / `Inline` groups.
-    pub fn regroup_members(&mut self, inline_dirs: &[String]) {
+    pub(in crate::tui) fn regroup_members(&mut self, inline_dirs: &[String]) {
         for entry in self.roots.values_mut() {
             match &mut entry.root_item {
                 RootItem::Rust(RustProject::Workspace(ws)) => {
@@ -901,7 +924,7 @@ impl ProjectList {
         }
     }
 
-    pub fn regroup_top_level_worktrees(&mut self) {
+    pub(in crate::tui) fn regroup_top_level_worktrees(&mut self) {
         let mut index = 0;
         while index < self.roots.len() {
             let Some(identity) =
@@ -940,7 +963,7 @@ impl ProjectList {
 
     // -- Vec-like operations -------------------------------------------------
 
-    pub fn clear(&mut self) {
+    pub(in crate::tui) fn clear(&mut self) {
         if !self.roots.is_empty() {
             self.roots.clear();
             self.advance_revision();
@@ -991,25 +1014,27 @@ impl<'a> IntoIterator for &'a mut ProjectList {
 impl ProjectList {
     // ── project-list cursor ─────────────────────────────────────────
 
-    pub const fn cursor(&self) -> usize { self.cursor }
+    pub(in crate::tui) const fn cursor(&self) -> usize { self.cursor }
 
-    pub const fn set_cursor(&mut self, cursor: usize) { self.cursor = cursor; }
+    pub(in crate::tui) const fn set_cursor(&mut self, cursor: usize) { self.cursor = cursor; }
 
     /// Revision consumed by caches whose ownership follows visible project-list
     /// content.
-    pub const fn revision(&self) -> crate::project::ProjectListRevision { self.revision }
+    pub(in crate::tui) const fn revision(&self) -> ProjectListRevision { self.revision }
 
     /// Record a tree, membership, row-kind, or project-visibility change even
     /// when the resulting visible paths remain identical.
-    pub const fn mark_visible_ownership_changed(&mut self) { self.advance_revision(); }
+    pub(in crate::tui) const fn mark_visible_ownership_changed(&mut self) {
+        self.advance_revision();
+    }
 
-    pub fn select_project_path(&mut self, selected_project_path: AbsolutePath) {
+    pub(in crate::tui) fn select_project_path(&mut self, selected_project_path: AbsolutePath) {
         if self.paths.selected_project.as_ref() != Some(&selected_project_path) {
             self.paths.selected_project = Some(selected_project_path);
         }
     }
 
-    pub fn clear_selected_project(&mut self) {
+    pub(in crate::tui) fn clear_selected_project(&mut self) {
         if self.paths.selected_project.is_some() {
             self.paths.selected_project = None;
         }
@@ -1019,23 +1044,23 @@ impl ProjectList {
 
     // ── sync flag ───────────────────────────────────────────────────
 
-    pub const fn sync(&self) -> SelectionSync { self.sync }
+    pub(in crate::tui) const fn sync(&self) -> SelectionSync { self.sync }
 
-    pub const fn mark_sync_changed(&mut self) { self.sync = SelectionSync::Changed; }
+    pub(in crate::tui) const fn mark_sync_changed(&mut self) { self.sync = SelectionSync::Changed; }
 
-    pub const fn mark_sync_stable(&mut self) { self.sync = SelectionSync::Stable; }
+    pub(in crate::tui) const fn mark_sync_stable(&mut self) { self.sync = SelectionSync::Stable; }
 
     // ── expansion set ───────────────────────────────────────────────
 
     // ── cached visible rows ─────────────────────────────────────────
 
-    pub fn visible_rows(&self) -> &[VisibleRow] { &self.cached_visible_rows }
+    pub(in crate::tui) fn visible_rows(&self) -> &[VisibleRow] { &self.cached_visible_rows }
 
-    pub const fn row_count(&self) -> usize { self.cached_visible_rows.len() }
+    pub(in crate::tui) const fn row_count(&self) -> usize { self.cached_visible_rows.len() }
 
     // ── cursor movement ─────────────────────────────────────────────
 
-    pub const fn move_up(&mut self) {
+    pub(in crate::tui) const fn move_up(&mut self) {
         let count = self.row_count();
         if count == 0 {
             return;
@@ -1046,7 +1071,7 @@ impl ProjectList {
         }
     }
 
-    pub const fn move_down(&mut self) {
+    pub(in crate::tui) const fn move_down(&mut self) {
         let count = self.row_count();
         if count == 0 {
             return;
@@ -1057,11 +1082,11 @@ impl ProjectList {
         }
     }
 
-    pub const fn move_up_by(&mut self, step: usize) {
+    pub(in crate::tui) const fn move_up_by(&mut self, step: usize) {
         self.cursor = self.cursor.saturating_sub(step);
     }
 
-    pub fn move_down_by(&mut self, step: usize) {
+    pub(in crate::tui) fn move_down_by(&mut self, step: usize) {
         let count = self.row_count();
         if count == 0 {
             return;
@@ -1069,13 +1094,13 @@ impl ProjectList {
         self.cursor = self.cursor.saturating_add(step).min(count - 1);
     }
 
-    pub const fn move_to_top(&mut self) {
+    pub(in crate::tui) const fn move_to_top(&mut self) {
         if self.row_count() > 0 {
             self.cursor = 0;
         }
     }
 
-    pub const fn move_to_bottom(&mut self) {
+    pub(in crate::tui) const fn move_to_bottom(&mut self) {
         let count = self.row_count();
         if count > 0 {
             self.cursor = count - 1;
@@ -1086,7 +1111,7 @@ impl ProjectList {
     /// set. Called by [`SelectionMutation::drop`] and (via App) from
     /// `TreeMutation::drop` so externally-driven tree mutations also
     /// keep the visible-rows cache fresh.
-    pub fn recompute_visibility(&mut self, include_non_rust: bool) {
+    pub(in crate::tui) fn recompute_visibility(&mut self, include_non_rust: bool) {
         let visible_rows = self.compute_visible_rows(&self.expanded, include_non_rust);
         if self.cached_visible_rows != visible_rows {
             self.cached_visible_rows = visible_rows;
@@ -1102,7 +1127,7 @@ impl ProjectList {
 
     // ── disk-sort caches ────────────────────────────────────────────
 
-    pub fn set_disk_caches(
+    pub(in crate::tui) fn set_disk_caches(
         &mut self,
         root_sorted: Vec<u64>,
         child_sorted: HashMap<usize, Vec<u64>>,
@@ -1119,9 +1144,11 @@ impl ProjectList {
     #[cfg(test)]
     pub const fn fit_widths_mut(&mut self) -> &mut ProjectListWidths { &mut self.cached_fit_widths }
 
-    pub fn set_fit_widths(&mut self, widths: ProjectListWidths) { self.cached_fit_widths = widths; }
+    pub(in crate::tui) fn set_fit_widths(&mut self, widths: ProjectListWidths) {
+        self.cached_fit_widths = widths;
+    }
 
-    pub fn reset_fit_widths(&mut self, lint_enabled: bool) {
+    pub(in crate::tui) fn reset_fit_widths(&mut self, lint_enabled: bool) {
         self.cached_fit_widths = ProjectListWidths::new(lint_enabled);
     }
 
@@ -1161,7 +1188,7 @@ impl ProjectList {
 // dismiss-target lookup, CI/branch lookups that don't cross into Ci/panes
 // state.
 impl ProjectList {
-    pub fn selected_row(&self) -> Option<VisibleRow> {
+    pub(in crate::tui) fn selected_row(&self) -> Option<VisibleRow> {
         let rows = self.visible_rows();
         let selected = self.cursor();
         rows.get(selected).copied()
@@ -1169,12 +1196,12 @@ impl ProjectList {
 
     /// Current typed row for consumers that must distinguish an empty list
     /// from a selected row without treating both states as `None`.
-    pub(crate) fn current_visible_row(&self) -> CurrentVisibleRow {
+    pub(in crate::tui) fn current_visible_row(&self) -> CurrentVisibleRow {
         self.selected_row()
             .map_or(CurrentVisibleRow::NoVisibleRow, CurrentVisibleRow::Selected)
     }
 
-    pub fn selected_project_path(&self) -> Option<&Path> {
+    pub(in crate::tui) fn selected_project_path(&self) -> Option<&Path> {
         let row = self.selected_row()?;
         self.path_for_row(row)
     }
@@ -1185,7 +1212,9 @@ impl ProjectList {
     /// checkout (`WorktreeEntry`) — callers then fall back to the single
     /// selected path. Lets the Lints pane aggregate the whole group's
     /// history instead of just the primary's.
-    pub fn selected_worktree_group_checkout_paths(&self) -> Option<Vec<AbsolutePath>> {
+    pub(in crate::tui) fn selected_worktree_group_checkout_paths(
+        &self,
+    ) -> Option<Vec<AbsolutePath>> {
         let VisibleRow::Root { node_index } = self.selected_row()? else {
             return None;
         };
@@ -1294,7 +1323,10 @@ impl ProjectList {
         }
     }
 
-    pub fn display_path_for_row(&self, row: VisibleRow) -> ProjectListRowDisplayPathResolution {
+    pub(in crate::tui) fn display_path_for_row(
+        &self,
+        row: VisibleRow,
+    ) -> ProjectListRowDisplayPathResolution {
         let display_path = (|| -> Option<DisplayPath> {
             match row {
                 VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
@@ -1393,7 +1425,7 @@ impl ProjectList {
         display_path.into()
     }
 
-    pub fn abs_path_for_row(&self, row: VisibleRow) -> Option<AbsolutePath> {
+    pub(in crate::tui) fn abs_path_for_row(&self, row: VisibleRow) -> Option<AbsolutePath> {
         match row {
             VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
                 let item = self.get(node_index)?;
@@ -1487,7 +1519,7 @@ impl ProjectList {
         }
     }
 
-    pub fn expand_key_for_row(&self, row: VisibleRow) -> Option<ExpandKey> {
+    pub(in crate::tui) fn expand_key_for_row(&self, row: VisibleRow) -> Option<ExpandKey> {
         match row {
             VisibleRow::Root { node_index } => self
                 .get(node_index)?
@@ -1565,7 +1597,11 @@ impl ProjectList {
         }
     }
 
-    pub fn toggle_expand_for_row(&mut self, row: VisibleRow, include_non_rust: bool) -> bool {
+    pub(in crate::tui) fn toggle_expand_for_row(
+        &mut self,
+        row: VisibleRow,
+        include_non_rust: bool,
+    ) -> bool {
         let Some(key) = self.expand_key_for_row(row) else {
             return false;
         };
@@ -1575,7 +1611,10 @@ impl ProjectList {
 
     fn try_collapse(&mut self, key: &ExpandKey) -> bool { self.expanded.remove(key) }
 
-    pub fn dismiss_target_for_row_inner(&self, row: VisibleRow) -> Option<DismissTarget> {
+    pub(in crate::tui) fn dismiss_target_for_row_inner(
+        &self,
+        row: VisibleRow,
+    ) -> Option<DismissTarget> {
         let dismiss_path = match row {
             VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
                 self.get(node_index).map(|item| item.path().clone())
@@ -1622,7 +1661,7 @@ impl ProjectList {
         }
     }
 
-    pub fn worktree_parent_node_index(&self, path: &Path) -> Option<usize> {
+    pub(in crate::tui) fn worktree_parent_node_index(&self, path: &Path) -> Option<usize> {
         self.iter()
             .enumerate()
             .find_map(|(ni, item)| match &item.root_item {
@@ -1638,7 +1677,7 @@ impl ProjectList {
             .is_some_and(|path| path == target_path)
     }
 
-    pub const fn last_selected_path(&self) -> Option<&AbsolutePath> {
+    pub(in crate::tui) const fn last_selected_path(&self) -> Option<&AbsolutePath> {
         self.paths.last_selected.as_ref()
     }
 
@@ -1649,12 +1688,12 @@ impl ProjectList {
     /// path under a linked checkout resolves to that checkout (not the
     /// group primary). Falls back to `path` when it resolves to no known
     /// checkout.
-    pub fn ci_branch_owner_path(&self, path: &Path) -> AbsolutePath {
+    pub(in crate::tui) fn ci_branch_owner_path(&self, path: &Path) -> AbsolutePath {
         self.checkout_root_for(path)
             .unwrap_or_else(|| AbsolutePath::from(path))
     }
 
-    pub fn current_branch_for(&self, path: &Path) -> Option<&str> {
+    pub(in crate::tui) fn current_branch_for(&self, path: &Path) -> Option<&str> {
         let owner = self.ci_branch_owner_path(path);
         self.git_info_for(owner.as_path())?.head.branch_name()
     }
@@ -1664,11 +1703,11 @@ impl ProjectList {
     /// default — whose runs the parent repo can hold. An unpublished
     /// branch (no upstream, not the default) has no branch-scoped run
     /// set to filter to, so the pane shows all runs and offers no toggle.
-    pub fn ci_toggle_available_for_inner(&self, path: &Path) -> bool {
+    pub(in crate::tui) fn ci_toggle_available_for_inner(&self, path: &Path) -> bool {
         self.current_branch_for(path).is_some() && self.unpublished_ci_branch_name(path).is_none()
     }
 
-    pub fn owner_repo_for_path_inner(&self, path: &Path) -> Option<OwnerRepo> {
+    pub(in crate::tui) fn owner_repo_for_path_inner(&self, path: &Path) -> Option<OwnerRepo> {
         let entry_path = self.entry_containing(path)?.root_item.path().clone();
         self.fetch_url_for(entry_path.as_path())
             .as_deref()
@@ -1678,7 +1717,7 @@ impl ProjectList {
 
 impl ProjectList {
     /// Expand every node and named group, restoring selection after recompute.
-    pub fn expand_all(&mut self, include_non_rust: bool) {
+    pub(in crate::tui) fn expand_all(&mut self, include_non_rust: bool) {
         let selected_path = self
             .paths
             .collapsed_selected
@@ -1739,7 +1778,7 @@ impl ProjectList {
     }
 
     /// Clear all expansions, then recompute and restore selection.
-    pub fn collapse_all(&mut self, include_non_rust: bool) {
+    pub(in crate::tui) fn collapse_all(&mut self, include_non_rust: bool) {
         let selected_path = self.selected_project_path().map(AbsolutePath::from);
         let anchor = self.selected_row().map(VisibleRow::collapse_anchor);
         self.expanded.clear();
@@ -1861,7 +1900,11 @@ impl ProjectList {
     }
 
     /// Composes `expand_path_in_tree` + `select_matching_visible_row`.
-    pub fn select_project_in_tree(&mut self, target_path: &Path, include_non_rust: bool) {
+    pub(in crate::tui) fn select_project_in_tree(
+        &mut self,
+        target_path: &Path,
+        include_non_rust: bool,
+    ) {
         self.expand_path_in_tree(target_path);
         self.select_matching_visible_row(target_path, include_non_rust);
     }
@@ -2057,7 +2100,7 @@ impl ProjectList {
     }
 
     /// Public collapse entry point. Returns whether anything visibly changed.
-    pub fn collapse(&mut self, include_non_rust: bool) -> bool {
+    pub(in crate::tui) fn collapse(&mut self, include_non_rust: bool) -> bool {
         let selected = self.cursor();
         let Some(row) = self.visible_rows().get(selected).copied() else {
             return false;
@@ -2099,7 +2142,7 @@ impl ProjectList {
 
     /// Map the currently selected row to a [`CleanSelection`] when the
     /// Clean shortcut should be enabled on it.
-    pub fn clean_selection(&self) -> Option<CleanSelection> {
+    pub(in crate::tui) fn clean_selection(&self) -> Option<CleanSelection> {
         let row = self.selected_row()?;
         match row {
             VisibleRow::Root { node_index } => {
@@ -2128,7 +2171,7 @@ impl ProjectList {
     }
 
     /// Move the cursor to the `Root` row for `node_index`, if visible.
-    pub fn select_root_row(&mut self, node_index: usize) {
+    pub(in crate::tui) fn select_root_row(&mut self, node_index: usize) {
         if let Some(pos) = self
             .visible_rows()
             .iter()
@@ -2141,7 +2184,7 @@ impl ProjectList {
     /// Project the live expansion set onto restart-stable [`ExpandTarget`]s for
     /// persistence. Only currently-expanded containers are emitted, so the
     /// saved set is exactly what the user has open.
-    pub fn export_expanded(&self) -> Vec<ExpandTarget> {
+    pub(in crate::tui) fn export_expanded(&self) -> Vec<ExpandTarget> {
         expand_state::collect_expandable_targets(self)
             .into_iter()
             .filter(|(key, _)| self.expanded.contains(key))
@@ -2152,7 +2195,7 @@ impl ProjectList {
     /// Re-open every container named by `targets` against the current tree.
     /// Targets whose path or group no longer exists are silently skipped, so a
     /// persisted set survives projects being added or removed.
-    pub fn apply_expanded(&mut self, targets: &[ExpandTarget]) {
+    pub(in crate::tui) fn apply_expanded(&mut self, targets: &[ExpandTarget]) {
         if targets.is_empty() {
             return;
         }
@@ -2167,7 +2210,7 @@ impl ProjectList {
 
     /// Snapshot expansion of every top-level node so a tree rebuild can
     /// re-apply the same logical expansions to a re-indexed layout.
-    pub fn capture_legacy_root_expansions(&self) -> Vec<LegacyRootExpansion> {
+    pub(in crate::tui) fn capture_legacy_root_expansions(&self) -> Vec<LegacyRootExpansion> {
         if self.expanded.is_empty() {
             return Vec::new();
         }
@@ -2211,7 +2254,10 @@ impl ProjectList {
 
     /// Re-apply expansions captured by `capture_legacy_root_expansions`,
     /// adapting old node indices to the post-rebuild layout.
-    pub fn migrate_legacy_root_expansions(&mut self, legacy: &[LegacyRootExpansion]) {
+    pub(in crate::tui) fn migrate_legacy_root_expansions(
+        &mut self,
+        legacy: &[LegacyRootExpansion],
+    ) {
         if legacy.is_empty() {
             return;
         }
@@ -2255,7 +2301,10 @@ impl ProjectList {
 
     /// Stamp each [`PackageRecord`]'s derived [`Cargo`] fields onto
     /// the matching package / workspace member / vendored package.
-    pub fn apply_cargo_fields_from_workspace_metadata(&mut self, metadata: &WorkspaceMetadata) {
+    pub(in crate::tui) fn apply_cargo_fields_from_workspace_metadata(
+        &mut self,
+        metadata: &WorkspaceMetadata,
+    ) {
         for record in metadata.packages.values() {
             let Some(manifest_dir) = record.manifest_path.as_path().parent() else {
                 continue;
@@ -2271,7 +2320,7 @@ impl ProjectList {
     }
 
     /// Synchronize workspace member rows from fresh `cargo metadata`.
-    pub fn sync_workspace_members_from_metadata(
+    pub(in crate::tui) fn sync_workspace_members_from_metadata(
         &mut self,
         metadata: &WorkspaceMetadata,
         inline_dirs: &[String],
@@ -2286,7 +2335,10 @@ impl ProjectList {
     }
 
     /// Apply a batch of `LanguageStats` to matching projects.
-    pub fn handle_language_stats_batch(&mut self, entries: Vec<(AbsolutePath, LanguageStats)>) {
+    pub(in crate::tui) fn handle_language_stats_batch(
+        &mut self,
+        entries: Vec<(AbsolutePath, LanguageStats)>,
+    ) {
         for (path, stats) in entries {
             if let Some(project) = self.at_path_mut(path.as_path()) {
                 project.language_stats = Some(stats);
@@ -2295,7 +2347,10 @@ impl ProjectList {
     }
 
     /// Apply a batch of `TestCounts` to matching projects.
-    pub fn handle_test_counts_batch(&mut self, entries: Vec<(AbsolutePath, TestCounts)>) {
+    pub(in crate::tui) fn handle_test_counts_batch(
+        &mut self,
+        entries: Vec<(AbsolutePath, TestCounts)>,
+    ) {
         for (path, counts) in entries {
             if let Some(project) = self.at_path_mut(path.as_path()) {
                 project.test_counts = Some(counts);
@@ -2304,7 +2359,7 @@ impl ProjectList {
     }
 
     /// Stamp crates.io version+downloads onto the matching project.
-    pub fn handle_crates_io_version_msg(
+    pub(in crate::tui) fn handle_crates_io_version_msg(
         &mut self,
         path: &Path,
         version: String,
@@ -2318,14 +2373,19 @@ impl ProjectList {
         }
     }
 
-    pub fn handle_repo_meta(&mut self, path: &Path, stars: u64, description: Option<String>) {
+    pub(in crate::tui) fn handle_repo_meta(
+        &mut self,
+        path: &Path,
+        stars: u64,
+        description: Option<String>,
+    ) {
         if let Some(repo) = self.ensure_git_repo_for(path) {
             repo.github_info = Some(GitHubInfo { stars, description });
         }
     }
 
     /// Collect root project metadata for the lint runtime.
-    pub fn lint_runtime_root_entries(&self) -> Vec<LintRuntimeRootEntry> {
+    pub(in crate::tui) fn lint_runtime_root_entries(&self) -> Vec<LintRuntimeRootEntry> {
         let mut seen = HashSet::new();
         let mut entries = Vec::new();
         for entry in self {
@@ -2353,7 +2413,7 @@ impl ProjectList {
     }
 
     /// Whether any project in the current snapshot is non-Rust.
-    pub fn has_cached_non_rust_projects(&self) -> bool {
+    pub(in crate::tui) fn has_cached_non_rust_projects(&self) -> bool {
         let mut found = false;
         self.for_each_leaf(|item| {
             if !item.is_rust() {
@@ -2364,14 +2424,14 @@ impl ProjectList {
     }
 
     /// Whether the currently-selected project's path has been dismissed.
-    pub fn selected_project_is_deleted(&self) -> bool {
+    pub(in crate::tui) fn selected_project_is_deleted(&self) -> bool {
         self.selected_project_path()
             .is_some_and(|path| self.is_deleted(path))
     }
 
     /// Resolve the current selection to the absolute path of its
     /// containing root entry (Workspace, Package, or worktree primary).
-    pub fn selected_ci_path(&self) -> Option<AbsolutePath> {
+    pub(in crate::tui) fn selected_ci_path(&self) -> Option<AbsolutePath> {
         let path = self.selected_project_path()?;
         let entry = self.entry_containing(path)?;
         Some(entry.root_item.path().clone())
@@ -2384,7 +2444,7 @@ impl ProjectList {
     /// available (see `ci_toggle_available_for_inner`). On an
     /// unpublished branch — or a row with no branch — every run is
     /// shown unfiltered, matching the `All` view.
-    pub fn ci_runs_for_ci_pane(&self, path: &Path, ci: &Ci) -> Vec<CiRun> {
+    pub(in crate::tui) fn ci_runs_for_ci_pane(&self, path: &Path, ci: &Ci) -> Vec<CiRun> {
         let Some(info) = self.ci_info_for(path) else {
             return Vec::new();
         };

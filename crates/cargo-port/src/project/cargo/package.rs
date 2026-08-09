@@ -28,7 +28,7 @@ pub(crate) struct Package {
 
 impl Package {
     /// Cargo package name when present, otherwise directory leaf.
-    pub fn package_name(&self) -> PackageName {
+    pub(crate) fn package_name(&self) -> PackageName {
         PackageName(self.name.as_deref().map_or_else(
             || paths::directory_leaf(self.path.as_path()),
             str::to_string,
@@ -36,7 +36,7 @@ impl Package {
     }
 
     /// Language icon for the project list.
-    pub const fn lang_icon() -> &'static str { "\u{1f980}" }
+    pub(crate) const fn lang_icon() -> &'static str { "\u{1f980}" }
 }
 
 impl ProjectFields for Package {

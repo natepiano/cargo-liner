@@ -4,25 +4,27 @@ use sysinfo::ProcessesToUpdate;
 use sysinfo::Signal;
 use sysinfo::System;
 
+use crate::process_observation::identity;
 use crate::process_observation::identity::ProcessIdentity;
 use crate::process_observation::identity::StrongProcessIdentityRevalidation;
-use crate::process_observation::identity::revalidate_strong_process_identity;
 
 /// Opaque authority to signal one strongly identified Running Targets process.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RunningTargetTerminationCapability {
+pub(in crate::tui) struct RunningTargetTerminationCapability {
     process_identity: ProcessIdentity,
 }
 
 impl RunningTargetTerminationCapability {
-    pub(crate) const fn from_observed_identity(process_identity: ProcessIdentity) -> Self {
+    pub(in crate::tui) const fn from_observed_identity(process_identity: ProcessIdentity) -> Self {
         Self { process_identity }
     }
 
-    pub(crate) const fn process_identity(&self) -> &ProcessIdentity { &self.process_identity }
+    pub(in crate::tui) const fn process_identity(&self) -> &ProcessIdentity {
+        &self.process_identity
+    }
 
     /// Revalidate the observed identity and preserve the legacy `SIGTERM` action.
-    pub fn terminate(self) -> RunningTargetTerminationOutcome {
+    pub(in crate::tui) fn terminate(self) -> RunningTargetTerminationOutcome {
         let pid = Pid::from_u32(self.process_identity.pid());
         let mut system = System::new();
         system.refresh_processes_specifics(
@@ -33,7 +35,7 @@ impl RunningTargetTerminationCapability {
         let Some(process) = system.process(pid) else {
             return RunningTargetTerminationOutcome::SignalNotDelivered;
         };
-        match revalidate_strong_process_identity(&self.process_identity) {
+        match identity::revalidate_strong_process_identity(&self.process_identity) {
             StrongProcessIdentityRevalidation::Current => {},
             StrongProcessIdentityRevalidation::Replaced(_)
             | StrongProcessIdentityRevalidation::Unavailable(_) => {
@@ -47,14 +49,14 @@ impl RunningTargetTerminationCapability {
     }
 
     #[cfg(test)]
-    pub(crate) const fn for_test(pid: u32, creation_token: u64) -> Self {
+    pub(in crate::tui) const fn for_test(pid: u32, creation_token: u64) -> Self {
         Self::from_observed_identity(ProcessIdentity::for_test(pid, creation_token))
     }
 }
 
 /// The result of the preserved Running Targets signaling path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RunningTargetTerminationOutcome {
+pub(in crate::tui) enum RunningTargetTerminationOutcome {
     SignalDelivered,
     SignalNotDelivered,
     IdentityNoLongerCurrent,

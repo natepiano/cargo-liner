@@ -19,7 +19,7 @@ use crate::tui::integration::AppGlobalAction;
 use crate::tui::integration::AppPaneId;
 use crate::tui::settings;
 
-pub fn open_in_editor(app: &mut App) {
+pub(in crate::tui) fn open_in_editor(app: &mut App) {
     if app.project_list.selected_project_is_deleted() {
         let name = selected_project_display_name(app);
         app.show_timed_warning_toast(
@@ -71,7 +71,10 @@ pub(super) fn framework_overlay_editor_target_path(
     }
 }
 
-pub fn open_paths_in_editor<P>(editor: &str, paths: impl IntoIterator<Item = P>) -> Result<()>
+pub(in crate::tui) fn open_paths_in_editor<P>(
+    editor: &str,
+    paths: impl IntoIterator<Item = P>,
+) -> Result<()>
 where
     P: AsRef<Path>,
 {
@@ -103,7 +106,7 @@ fn open_paths_via_editor_command(editor: &str, paths: &[&Path]) -> Result<()> {
         .map(|_| ())
 }
 
-pub fn handle_framework_overlay_editor_key(
+pub(super) fn handle_framework_overlay_editor_key(
     app: &mut App,
     bind: &KeyBind,
     overlay: FrameworkOverlayId,
@@ -133,7 +136,7 @@ pub fn handle_framework_overlay_editor_key(
     true
 }
 
-pub fn open_finder(app: &mut App) {
+pub(in crate::tui) fn open_finder(app: &mut App) {
     let (index, col_widths) = finder::build_finder_index(&app.project_list);
     let finder = &mut app.project_list.finder;
     finder.index = index;
@@ -184,7 +187,7 @@ fn spawn_terminal_command(command: &str, cwd: &Path) -> Result<()> {
         .map(|_| ())
 }
 
-pub fn open_terminal(app: &mut App) {
+pub(in crate::tui) fn open_terminal(app: &mut App) {
     if app.project_list.selected_project_is_deleted() {
         let name = selected_project_display_name(app);
         app.show_timed_warning_toast(

@@ -21,7 +21,7 @@ use crate::project::WorktreeGroup;
 /// nested containers (root nodes, named groups, worktree
 /// entries, worktree groups) the user has toggled open.
 #[derive(Hash, Eq, PartialEq, Clone, Debug)]
-pub enum ExpandKey {
+pub(in crate::tui) enum ExpandKey {
     Node(usize),
     Group(usize, usize),
     Member(usize, usize, usize),
@@ -32,7 +32,7 @@ pub enum ExpandKey {
 
 /// What a visible row represents.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum VisibleRow {
+pub(in crate::tui) enum VisibleRow {
     /// A top-level project/workspace root.
     Root { node_index: usize },
     /// A group header (e.g., "examples").
@@ -121,7 +121,7 @@ pub enum VisibleRowKind {
 /// The current project-list cursor state expressed without an ambiguous
 /// optional row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CurrentVisibleRow {
+pub(in crate::tui) enum CurrentVisibleRow {
     Selected(VisibleRow),
     NoVisibleRow,
 }
@@ -145,7 +145,7 @@ impl VisibleRow {
     }
 
     /// Index of the project-list root entry this row was emitted under.
-    pub const fn node_index(self) -> usize {
+    pub(in crate::tui) const fn node_index(self) -> usize {
         match self {
             Self::Root { node_index }
             | Self::GroupHeader { node_index, .. }
@@ -168,7 +168,7 @@ impl ProjectList {
     /// nested containers are walked into; `include_non_rust`
     /// gates whether non-Rust roots are emitted; `Dismissed`
     /// roots are always filtered out.
-    pub fn compute_visible_rows(
+    pub(in crate::tui) fn compute_visible_rows(
         &self,
         expanded: &HashSet<ExpandKey>,
         include_non_rust: bool,
@@ -429,7 +429,7 @@ pub(super) fn worst_git_status(
 /// reorders node indices. Used to re-apply the same logical expansions
 /// to the new layout.
 #[derive(Clone)]
-pub enum LegacyRootExpansionKind {
+pub(in crate::tui) enum LegacyRootExpansionKind {
     HadChildren,
     Leaf,
 }
@@ -449,7 +449,7 @@ impl From<bool> for LegacyRootExpansionKind {
 }
 
 #[derive(Clone)]
-pub struct LegacyRootExpansion {
+pub(in crate::tui) struct LegacyRootExpansion {
     pub(super) root_path:      AbsolutePath,
     pub(super) old_node_index: usize,
     pub(super) expansion_kind: LegacyRootExpansionKind,

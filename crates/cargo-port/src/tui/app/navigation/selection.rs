@@ -6,7 +6,7 @@ use crate::tui::project_list::ProjectListRowDisplayPathResolution;
 
 impl App {
     /// Returns the `RootItem` when a root row is selected.
-    pub fn selected_item(&self) -> Option<&RootItem> {
+    pub(in crate::tui) fn selected_item(&self) -> Option<&RootItem> {
         match self.project_list.selected_row()? {
             VisibleRow::Root { node_index } => self
                 .project_list
@@ -17,7 +17,7 @@ impl App {
     }
 
     /// Resolve the display path of the currently selected row using `project_list_items`.
-    pub fn selected_display_path(&self) -> Option<DisplayPath> {
+    pub(in crate::tui::app) fn selected_display_path(&self) -> Option<DisplayPath> {
         let rows = self.visible_rows();
         let selected = self.project_list.cursor();
         let row = rows.get(selected)?;

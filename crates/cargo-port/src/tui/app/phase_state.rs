@@ -252,7 +252,7 @@ impl LanguagePhase {
 /// A bar fraction clamped to `0..=100`, computed once from a subset count
 /// so the renderer never re-divides and can never exceed the bar width.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Percentage(u8);
+pub(super) struct Percentage(u8);
 
 impl Percentage {
     /// An empty (0%) percentage.

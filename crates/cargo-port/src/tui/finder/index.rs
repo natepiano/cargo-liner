@@ -4,8 +4,8 @@ use std::path::Path;
 use ratatui::style::Color;
 use tui_pane::title_color;
 
-pub use super::constants::FINDER_COLUMN_COUNT;
-pub use super::constants::FINDER_HEADERS;
+use super::constants::FINDER_COLUMN_COUNT;
+use super::constants::FINDER_HEADERS;
 use crate::ci;
 use crate::ci::OwnerRepo;
 use crate::project::AbsolutePath;
@@ -28,7 +28,7 @@ use crate::tui::project_list::ProjectList;
 
 /// A searchable item in the universal finder.
 #[derive(Clone)]
-pub struct FinderItem {
+pub(in crate::tui) struct FinderItem {
     /// Display name shown in the results list.
     pub display_name:  String,
     /// Search tokens derived from visible fields and path segments.
@@ -49,13 +49,13 @@ pub struct FinderItem {
 }
 
 #[derive(Clone)]
-pub struct PullRequestTarget {
+pub(in crate::tui) struct PullRequestTarget {
     pub owner_repo: OwnerRepo,
     pub number:     u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum FinderKind {
+pub(in crate::tui) enum FinderKind {
     Project,
     Binary,
     Example,
@@ -64,7 +64,7 @@ pub enum FinderKind {
 }
 
 impl FinderKind {
-    pub const fn label(self) -> &'static str {
+    pub(super) const fn label(self) -> &'static str {
         match self {
             Self::Project => "project",
             Self::Binary => TARGET_KIND_BIN_LABEL,
@@ -74,7 +74,7 @@ impl FinderKind {
         }
     }
 
-    pub fn color(self) -> Color {
+    pub(super) fn color(self) -> Color {
         match self {
             Self::Project | Self::PullRequest => title_color(),
             Self::Binary => RunTargetKind::Binary.color(),
@@ -91,7 +91,7 @@ impl FinderKind {
 /// `Dismissed` ones are skipped so the finder only returns live,
 /// navigable targets. Returns `(items, col_widths)` where `col_widths` is
 /// the max display width of each column across the entire index.
-pub fn build_finder_index(
+pub(in crate::tui) fn build_finder_index(
     entries: &ProjectList,
 ) -> (Vec<FinderItem>, [usize; FINDER_COLUMN_COUNT]) {
     let mut items = Vec::new();
@@ -522,7 +522,7 @@ struct TypedProjectContext<'a> {
     branch:       &'a str,
 }
 
-pub fn build_search_tokens(fields: &[&str]) -> Vec<String> {
+pub(super) fn build_search_tokens(fields: &[&str]) -> Vec<String> {
     let mut tokens = Vec::new();
     for field in fields {
         for segment in field

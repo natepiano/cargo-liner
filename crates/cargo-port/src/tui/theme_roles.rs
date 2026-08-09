@@ -24,13 +24,13 @@ enum RolePalette {
     HighContrastLight,
 }
 
-pub(crate) fn apply_role_defaults_to_registry(registry: &mut ThemeRegistry) {
+pub(super) fn apply_role_defaults_to_registry(registry: &mut ThemeRegistry) {
     registry.update_themes(|id, appearance, theme| {
         apply_role_defaults_to_theme(theme, Some(id), appearance);
     });
 }
 
-pub(crate) fn apply_role_defaults_to_theme(
+pub(super) fn apply_role_defaults_to_theme(
     theme: &mut Theme,
     id: Option<&ThemeId>,
     appearance: Appearance,
@@ -44,19 +44,19 @@ pub(crate) fn apply_role_defaults_to_theme(
     }
 }
 
-pub(crate) fn column_header_color() -> Color { role_color(COLUMN_HEADER) }
+pub(super) fn column_header_color() -> Color { role_color(COLUMN_HEADER) }
 
-pub(crate) fn discovery_shimmer_color() -> Color { role_color(DISCOVERY_SHIMMER) }
+pub(super) fn discovery_shimmer_color() -> Color { role_color(DISCOVERY_SHIMMER) }
 
-pub(crate) fn git_ignored_color() -> Color { role_color(GIT_IGNORED) }
+pub(super) fn git_ignored_color() -> Color { role_color(GIT_IGNORED) }
 
-pub(crate) fn git_modified_color() -> Color { role_color(GIT_MODIFIED) }
+pub(super) fn git_modified_color() -> Color { role_color(GIT_MODIFIED) }
 
-pub(crate) fn git_untracked_color() -> Color { role_color(GIT_UNTRACKED) }
+pub(super) fn git_untracked_color() -> Color { role_color(GIT_UNTRACKED) }
 
-pub(crate) fn language_subtotal_color() -> Color { role_color(LANGUAGE_SUBTOTAL) }
+pub(super) fn language_subtotal_color() -> Color { role_color(LANGUAGE_SUBTOTAL) }
 
-pub(crate) fn target_bench_color() -> Color { role_color(TARGET_BENCH) }
+pub(super) fn target_bench_color() -> Color { role_color(TARGET_BENCH) }
 
 fn role_color(role: &str) -> Color {
     tui_pane::role_color(role, default_role(role, RolePalette::DefaultDark))

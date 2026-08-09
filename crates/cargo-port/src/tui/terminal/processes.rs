@@ -13,8 +13,8 @@ use std::thread;
 use crate::channel::Sender;
 use crate::ci;
 use crate::constants::CARGO_COMMAND_NAME;
+use crate::process_observation::identity;
 use crate::process_observation::identity::CurrentProcessIdentityObservation;
-use crate::process_observation::identity::observe_current_process_identity;
 use crate::project::AbsolutePath;
 use crate::scan;
 use crate::scan::BackgroundMsg;
@@ -37,6 +37,7 @@ use crate::tui::panes::CiFetchKind;
 use crate::tui::panes::PendingCiFetch;
 use crate::tui::panes::PendingExampleRun;
 use crate::tui::panes::RunTargetKind;
+use crate::tui::state;
 use crate::tui::state::Inflight;
 use crate::tui::state::OwnedRunActivation;
 use crate::tui::state::OwnedRunId;
@@ -44,15 +45,14 @@ use crate::tui::state::OwnedRunProcessActor;
 use crate::tui::state::OwnedRunStartingRequest;
 use crate::tui::state::OwnedRunTermination;
 use crate::tui::state::OwnedRunTerminationSubmission;
-use crate::tui::state::discard_unverified_owned_process_group;
 
 /// Attempt to signal the current run's identity-bound process group.
-pub(crate) enum OwnedRunStopSignal {
+pub(in crate::tui) enum OwnedRunStopSignal {
     Submitted,
     NotSubmitted,
 }
 
-pub(crate) fn signal_owned_run(inflight: &mut Inflight) -> OwnedRunStopSignal {
+pub(in crate::tui) fn signal_owned_run(inflight: &mut Inflight) -> OwnedRunStopSignal {
     match inflight.owned_run_termination() {
         OwnedRunTermination::Available {
             owned_run_termination_token,
@@ -94,9 +94,9 @@ pub(super) fn spawn_owned_run_process(app: &mut App, owned_run_id: OwnedRunId) {
     // has been observed and revalidated for that root lifetime.
     let process_group_id = child.id();
     let CurrentProcessIdentityObservation::Verified(verified_process_identity) =
-        observe_current_process_identity(process_group_id)
+        identity::observe_current_process_identity(process_group_id)
     else {
-        discard_unverified_owned_process_group(&mut child);
+        state::discard_unverified_owned_process_group(&mut child);
         let output_was_empty = app.inflight.owned_run().output_is_empty();
         app.inflight.fail_owned_run_start(
             owned_run_id,
@@ -424,7 +424,7 @@ mod tests {
         let descendant_pid = descendant_pid.trim();
 
         let process_group_id = child.id();
-        discard_unverified_owned_process_group(&mut child);
+        state::discard_unverified_owned_process_group(&mut child);
 
         assert!(child.try_wait()?.is_some());
         assert!(

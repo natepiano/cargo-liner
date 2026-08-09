@@ -2,5 +2,5 @@ use crate::project::AbsolutePath;
 
 #[derive(Clone)]
 pub(crate) struct PendingClean {
-    pub(crate) abs_path: AbsolutePath,
+    pub(in crate::tui) abs_path: AbsolutePath,
 }

@@ -12,6 +12,7 @@ use tui_pane::Viewport;
 
 use super::hit_map::MonitorHitMap;
 use super::hit_map::OutputMonitorHit;
+use super::monitor_render;
 use super::presentation::MonitorColumn;
 use super::presentation::MonitorPresentation;
 use super::presentation::MonitorVisibility;
@@ -84,7 +85,7 @@ pub struct OutputPane {
 /// The selected build column, if the reconciled cursor still names one in the
 /// presentation available to the action.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum SelectedBuildTerminationSelection {
+pub enum SelectedBuildTerminationSelection {
     /// The cursor is absent, unattributed, or does not resolve one current column.
     NoBuildSelected,
     /// The cursor's retained session identity resolved in the current columns.
@@ -429,13 +430,10 @@ impl OutputPane {
                 CopySelectionResult::Nothing
             },
             OutputCursorTarget::Activity(compile_activity_id) => {
-                super::monitor_render::activity_row_text(monitor_presentation, compile_activity_id)
+                monitor_render::activity_row_text(monitor_presentation, compile_activity_id)
             },
             OutputCursorTarget::Unattributed(compile_activity_id) => {
-                super::monitor_render::unattributed_row_text(
-                    monitor_presentation,
-                    compile_activity_id,
-                )
+                monitor_render::unattributed_row_text(monitor_presentation, compile_activity_id)
             },
         }
     }

@@ -167,7 +167,7 @@ impl MonitorData {
     }
 
     /// The scope these rows were classified under.
-    pub(crate) const fn build_scope_key(&self) -> &BuildScopeKey { &self.build_scope_key }
+    pub(super) const fn build_scope_key(&self) -> &BuildScopeKey { &self.build_scope_key }
 
     /// Sessions in first-seen order, as classification produced them.
     pub(crate) fn session_rows(&self) -> &[MonitorSessionRow] { &self.session_rows }
@@ -182,7 +182,7 @@ impl MonitorData {
 
     /// When the evidence behind these rows was observed.
     #[cfg(test)]
-    pub(crate) const fn observed_at(&self) -> Instant { self.observed_at }
+    pub(super) const fn observed_at(&self) -> Instant { self.observed_at }
 
     /// Build one session row from a classified session and the activities this
     /// cycle attributed to it.
@@ -222,7 +222,7 @@ impl RetainedMonitorData {
     }
 
     /// The prior cycle's rows, still current enough to render and act on.
-    pub(crate) const fn monitor_data(&self) -> &MonitorData { &self.displayed_data }
+    const fn monitor_data(&self) -> &MonitorData { &self.displayed_data }
 
     /// The current scope key that retained rows may authorize against.
     const fn current_build_scope_key(&self) -> &BuildScopeKey { &self.current_build_scope_key }
@@ -279,9 +279,9 @@ pub(crate) struct ActionableMonitorData<'a> {
 }
 
 impl<'a> ActionableMonitorData<'a> {
-    pub(crate) const fn build_scope_key(self) -> &'a BuildScopeKey { self.build_scope_key }
+    pub(super) const fn build_scope_key(self) -> &'a BuildScopeKey { self.build_scope_key }
 
-    pub(crate) const fn session_rows(self) -> &'a [MonitorSessionRow] { self.session_rows }
+    pub(super) const fn session_rows(self) -> &'a [MonitorSessionRow] { self.session_rows }
 }
 
 /// Whether the monitor holds an observation instant to derive age from.

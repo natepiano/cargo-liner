@@ -98,10 +98,7 @@ pub(crate) fn dispatch_global<Ctx: AppContext>(
 /// `pub(crate)` so [`crate::Keymap::dispatch_framework_global`] can
 /// call it via [`dispatch_global`]; the binary cannot bypass this
 /// routing.
-pub(crate) fn dismiss_chain<Ctx: AppContext>(
-    ctx: &mut Ctx,
-    fallback: Option<fn(&mut Ctx) -> bool>,
-) -> bool {
+fn dismiss_chain<Ctx: AppContext>(ctx: &mut Ctx, fallback: Option<fn(&mut Ctx) -> bool>) -> bool {
     if ctx.framework_mut().dismiss_framework() {
         focus::reconcile_focus_after_toast_change(ctx);
         return true;

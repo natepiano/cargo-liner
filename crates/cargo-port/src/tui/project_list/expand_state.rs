@@ -20,7 +20,7 @@ use crate::project::RustProject;
 /// Path-based projection of an [`ExpandKey`] — the form persisted to disk and
 /// re-resolved against the tree on the next launch.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum ExpandTarget {
+pub(in crate::tui) enum ExpandTarget {
     /// A top-level root node (workspace, package, worktree group, or non-Rust
     /// repo), identified by the root's path.
     Root(AbsolutePath),

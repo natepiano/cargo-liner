@@ -2,7 +2,7 @@ use tui_pane::PaneAxisSize;
 use tui_pane::PaneSizeSpec;
 
 #[derive(Default, PartialEq, Eq, Clone, Copy, Debug, Hash)]
-pub enum PaneId {
+pub(in crate::tui) enum PaneId {
     #[default]
     ProjectList,
     Package,
@@ -21,7 +21,7 @@ pub enum PaneId {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PaneBehavior {
+pub(in crate::tui) enum PaneBehavior {
     ProjectList,
     DetailFields,
     DetailTargets,
@@ -33,7 +33,7 @@ pub enum PaneBehavior {
     Overlay,
 }
 
-pub const fn behavior(id: PaneId) -> PaneBehavior {
+pub(in crate::tui) const fn behavior(id: PaneId) -> PaneBehavior {
     match id {
         PaneId::ProjectList => PaneBehavior::ProjectList,
         PaneId::Package | PaneId::Lang | PaneId::Git => PaneBehavior::DetailFields,
@@ -49,7 +49,7 @@ pub const fn behavior(id: PaneId) -> PaneBehavior {
     }
 }
 
-pub const fn size_spec(id: PaneId, cpu_width: u16) -> PaneSizeSpec {
+pub(in crate::tui) const fn size_spec(id: PaneId, cpu_width: u16) -> PaneSizeSpec {
     match id {
         PaneId::Cpu => PaneSizeSpec {
             width:  PaneAxisSize::Fixed(cpu_width),

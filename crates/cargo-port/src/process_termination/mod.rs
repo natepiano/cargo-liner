@@ -40,10 +40,10 @@ pub(crate) use transaction::FrozenTerminationRootPresence;
 pub(crate) use transaction::TerminationDescendantObservationPass;
 pub(crate) use transaction::observe_termination_descendants;
 
+use crate::channel;
 use crate::channel::Receiver;
 use crate::channel::Sender;
 use crate::channel::TryRecvError;
-use crate::channel::unbounded;
 
 /// A monotonically allocated identity for one submitted termination request.
 ///
@@ -97,7 +97,7 @@ impl TerminationExecutionPlan {
     }
 
     #[cfg(test)]
-    pub(crate) const fn target_count(&self) -> usize { self.targets.len() }
+    const fn target_count(&self) -> usize { self.targets.len() }
 }
 
 /// The time boundary applied by the external worker.
@@ -249,7 +249,7 @@ impl TerminationTargetOutcome {
 
 /// Whether the worker completed its ordered pass before the plan deadline.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TerminationOutcomeDeadline {
+enum TerminationOutcomeDeadline {
     CompletedWithinDeadline,
     Expired,
 }
@@ -270,7 +270,7 @@ impl TerminationOutcomeSummary {
     pub(crate) fn target_outcomes(&self) -> &[TerminationTargetOutcome] { &self.target_outcomes }
 
     #[cfg(test)]
-    pub(crate) const fn deadline(&self) -> TerminationOutcomeDeadline { self.deadline }
+    const fn deadline(&self) -> TerminationOutcomeDeadline { self.deadline }
 }
 
 /// Whether a plan reached the termination worker.
@@ -318,8 +318,8 @@ enum ProcessTerminationWorkerThreadState {
 impl ProcessTerminator {
     /// Start the dedicated termination worker.
     pub(crate) fn start() -> Self {
-        let (command_sender, command_receiver) = unbounded();
-        let (outcome_sender, outcome_receiver) = unbounded();
+        let (command_sender, command_receiver) = channel::unbounded();
+        let (outcome_sender, outcome_receiver) = channel::unbounded();
         let join_handle = std::thread::spawn(move || {
             run_termination_worker(&command_receiver, &outcome_sender);
         });
@@ -333,8 +333,8 @@ impl ProcessTerminator {
 
     #[cfg(test)]
     pub(crate) fn disconnected_for_test() -> Self {
-        let (command_sender, command_receiver) = unbounded();
-        let (outcome_sender, outcome_receiver) = unbounded();
+        let (command_sender, command_receiver) = channel::unbounded();
+        let (outcome_sender, outcome_receiver) = channel::unbounded();
         drop(command_receiver);
         drop(outcome_sender);
         Self {
@@ -630,10 +630,10 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::process_observation;
     use crate::process_observation::PlatformTerminationCapabilityObservation;
     use crate::process_observation::identity::ProcessIdentity;
     use crate::process_observation::identity::ProcessIncarnation;
-    use crate::process_observation::observe_platform_termination_capability_for_test;
 
     const FIXTURE_PID: u32 = 4242;
     const TERMINATION_POLL_ATTEMPTS: usize = 200;
@@ -936,12 +936,14 @@ mod tests {
             .arg("5")
             .spawn()
             .unwrap_or_else(|error| panic!("the disappearance fixture should spawn: {error}"));
-        let capability = match observe_platform_termination_capability_for_test(child.id()) {
-            PlatformTerminationCapabilityObservation::Available(capability) => capability,
-            PlatformTerminationCapabilityObservation::InsufficientIncarnationEvidence => {
-                panic!("the live disappearance fixture should produce authority")
-            },
-        };
+        let capability =
+            match process_observation::observe_platform_termination_capability_for_test(child.id())
+            {
+                PlatformTerminationCapabilityObservation::Available(capability) => capability,
+                PlatformTerminationCapabilityObservation::InsufficientIncarnationEvidence => {
+                    panic!("the live disappearance fixture should produce authority")
+                },
+            };
         child
             .kill()
             .unwrap_or_else(|error| panic!("the disappearance fixture should stop: {error}"));
@@ -962,12 +964,14 @@ mod tests {
             .arg("5")
             .spawn()
             .unwrap_or_else(|error| panic!("the pidfd fixture should spawn: {error}"));
-        let capability = match observe_platform_termination_capability_for_test(child.id()) {
-            PlatformTerminationCapabilityObservation::Available(capability) => capability,
-            PlatformTerminationCapabilityObservation::InsufficientIncarnationEvidence => {
-                panic!("the live pidfd fixture should produce authority")
-            },
-        };
+        let capability =
+            match process_observation::observe_platform_termination_capability_for_test(child.id())
+            {
+                PlatformTerminationCapabilityObservation::Available(capability) => capability,
+                PlatformTerminationCapabilityObservation::InsufficientIncarnationEvidence => {
+                    panic!("the live pidfd fixture should produce authority")
+                },
+            };
         assert!(capability.is_actionable());
         let mut process_terminator = ProcessTerminator::start();
         let plan = planned(&mut process_terminator, vec![capability]);

@@ -4,7 +4,7 @@ use crate::tui::app::VisibleRow;
 /// Two keys match iff both the selected row and the app's data generation
 /// match — neither changing means the built detail is still accurate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DetailCacheKey {
+pub(in crate::tui) struct DetailCacheKey {
     pub visible_row: VisibleRow,
     pub generation:  u64,
 }
@@ -18,14 +18,14 @@ pub struct DetailCacheKey {
 /// `Panes::clear_detail_data` — they fan out across the five
 /// per-pane content slots and update this store's `detail_stamp`
 /// in lockstep.
-pub struct PaneDataStore {
+pub(in crate::tui) struct PaneDataStore {
     detail_stamp:  Option<DetailCacheKey>,
     #[cfg(test)]
     detail_builds: u64,
 }
 
 impl PaneDataStore {
-    pub const fn new() -> Self {
+    pub(super) const fn new() -> Self {
         Self {
             detail_stamp:               None,
             #[cfg(test)]
@@ -35,7 +35,7 @@ impl PaneDataStore {
 
     /// True when the stored detail matches `desired` — caller can skip
     /// rebuilding. A desired key of `None` matches a cleared store.
-    pub fn detail_is_current(&self, desired: Option<DetailCacheKey>) -> bool {
+    pub(in crate::tui) fn detail_is_current(&self, desired: Option<DetailCacheKey>) -> bool {
         self.detail_stamp == desired
     }
 

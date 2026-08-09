@@ -2,10 +2,13 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
+use std::path::Path;
+use std::path::PathBuf;
 
 use cargo_metadata::PackageId;
 use cargo_metadata::TargetKind;
 use cargo_metadata::semver::Version;
+use tempfile::TempDir;
 
 use crate::project::AbsolutePath;
 use crate::project::AcceptedCargoMetadataRevision;
@@ -39,14 +42,14 @@ type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 struct WorkspaceIndexApiFixture {
     accepted_cargo_metadata_revision: AcceptedCargoMetadataRevision,
     cargo_workspace_index:            CargoWorkspaceIndex,
-    cargo_workspace_root:             std::path::PathBuf,
-    checkout_root:                    std::path::PathBuf,
+    cargo_workspace_root:             PathBuf,
+    checkout_root:                    PathBuf,
     project_list_revision:            ProjectListRevision,
-    resolved_member_root:             std::path::PathBuf,
+    resolved_member_root:             PathBuf,
     resolved_package_id:              PackageId,
-    resolved_source:                  std::path::PathBuf,
-    target_directory:                 std::path::PathBuf,
-    unresolved_member_root:           std::path::PathBuf,
+    resolved_source:                  PathBuf,
+    target_directory:                 PathBuf,
+    unresolved_member_root:           PathBuf,
     unresolved_package_id:            PackageId,
 }
 
@@ -206,9 +209,7 @@ fn canonical_package_queries_preserve_exact_ambiguous_and_unindexed_ownership() 
     Ok(())
 }
 
-fn workspace_index_api_fixture(
-    temp_dir: &tempfile::TempDir,
-) -> TestResult<WorkspaceIndexApiFixture> {
+fn workspace_index_api_fixture(temp_dir: &TempDir) -> TestResult<WorkspaceIndexApiFixture> {
     let checkout_root = temp_dir.path().join("checkout");
     let cargo_workspace_root = checkout_root.join("cargo-workspace");
     let resolved_member_root = cargo_workspace_root.join("crates/resolved-member");
@@ -404,7 +405,7 @@ fn assert_package_identities(
 
 fn assert_live_target_directory_resolution(
     workspace: &CargoWorkspaceView,
-    target_directory: &std::path::Path,
+    target_directory: &Path,
 ) -> TestResult {
     assert_eq!(
         workspace.declared_target_directory_path().as_path(),
@@ -427,11 +428,7 @@ fn assert_live_target_directory_resolution(
     Ok(())
 }
 
-fn package_record(
-    name: &str,
-    member_root: &std::path::Path,
-    source_path: &std::path::Path,
-) -> PackageRecord {
+fn package_record(name: &str, member_root: &Path, source_path: &Path) -> PackageRecord {
     PackageRecord {
         name:          name.to_string(),
         version:       Version::new(0, 1, 0),
@@ -452,8 +449,8 @@ fn package_record(
 }
 
 fn scope_workspace_metadata(
-    checkout_root: &std::path::Path,
-    cargo_workspace_root: &std::path::Path,
+    checkout_root: &Path,
+    cargo_workspace_root: &Path,
 ) -> WorkspaceMetadata {
     WorkspaceMetadata {
         declared_checkout_root:   AbsolutePath::from(checkout_root),

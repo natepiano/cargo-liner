@@ -2,26 +2,26 @@ use std::time::Duration;
 use std::time::Instant;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DiscoveryShimmer {
+pub(in crate::tui) struct DiscoveryShimmer {
     pub started_at: Instant,
     pub duration:   Duration,
 }
 
 impl DiscoveryShimmer {
-    pub const fn new(started_at: Instant, duration: Duration) -> Self {
+    pub(in crate::tui) const fn new(started_at: Instant, duration: Duration) -> Self {
         Self {
             started_at,
             duration,
         }
     }
 
-    pub fn is_active_at(self, now: Instant) -> bool {
+    pub(in crate::tui) fn is_active_at(self, now: Instant) -> bool {
         now.duration_since(self.started_at) < self.duration
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DiscoveryRowKind {
+pub(in crate::tui) enum DiscoveryRowKind {
     Root,
     WorktreeEntry,
     PathOnly,

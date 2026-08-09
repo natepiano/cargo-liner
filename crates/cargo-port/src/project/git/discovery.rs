@@ -12,7 +12,7 @@ pub(crate) enum GitRepoPresence {
 }
 
 impl GitRepoPresence {
-    pub const fn is_in_repo(self) -> bool { matches!(self, Self::InRepo) }
+    pub(crate) const fn is_in_repo(self) -> bool { matches!(self, Self::InRepo) }
 }
 
 /// The git worktree status of a project directory.
@@ -36,12 +36,12 @@ pub(crate) enum WorktreeStatus {
 }
 
 impl WorktreeStatus {
-    pub const fn is_linked_worktree(&self) -> bool { matches!(self, Self::Linked { .. }) }
+    pub(crate) const fn is_linked_worktree(&self) -> bool { matches!(self, Self::Linked { .. }) }
 
     /// Canonical path of the primary repo root (where `.git/` is a
     /// directory). For `NotGit` returns `None`; for both `Primary` and
     /// `Linked` returns the primary repo's root.
-    pub const fn primary_root(&self) -> Option<&AbsolutePath> {
+    pub(crate) const fn primary_root(&self) -> Option<&AbsolutePath> {
         match self {
             Self::NotGit => None,
             Self::Primary { root } => Some(root),

@@ -20,6 +20,10 @@ mod roots;
 mod runtime;
 
 use runtime::ProjectEntry;
+use runtime::WatchDrainResult;
+pub(crate) use runtime::WatchRequest;
 use runtime::WatchState;
 use runtime::WatcherLoopState;
-pub(crate) use runtime::*;
+pub(crate) use runtime::WatcherMsg;
+pub(crate) use runtime::WatcherSpawn;
+pub(crate) use runtime::spawn_watcher;

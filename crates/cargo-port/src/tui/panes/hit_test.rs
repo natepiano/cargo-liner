@@ -8,7 +8,7 @@ use tui_pane::Viewport;
 /// at `inner.y + 1`. `viewport.content_area` is the full inner
 /// rect (including the header); `viewport.scroll_offset` is the
 /// `TableState::offset()` recorded at render time.
-pub fn hit_test_table_row(viewport: &Viewport, pos: Position) -> Option<usize> {
+pub(in crate::tui) fn hit_test_table_row(viewport: &Viewport, pos: Position) -> Option<usize> {
     let inner = viewport.content_area();
     if inner.width == 0 || inner.height == 0 {
         return None;

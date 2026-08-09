@@ -2,11 +2,12 @@
 
 use std::collections::BTreeMap;
 
-use super::super::scope::BuildScopeKey;
-use super::super::session::BuildSessionId;
-use super::super::session::SessionScope;
-use super::super::snapshot::ActionableMonitorData;
 use super::lifecycle::BuildTerminationDisplayIdentity;
+use super::transaction::AdditionalBuildExclusion;
+use crate::build_monitor::scope::BuildScopeKey;
+use crate::build_monitor::session::BuildSessionId;
+use crate::build_monitor::session::SessionScope;
+use crate::build_monitor::snapshot::ActionableMonitorData;
 use crate::process_observation::ExternalTerminationSupport;
 use crate::process_observation::identity::ProcessIdentity;
 use crate::process_termination::ExternalProcessTerminationCapability;
@@ -196,7 +197,7 @@ impl OutputBuildSetTerminationAuthorization {
     pub(in crate::build_monitor) fn additional_build_exclusion_against(
         &self,
         actionable_monitor_data: ActionableMonitorData<'_>,
-    ) -> super::transaction::AdditionalBuildExclusion {
+    ) -> AdditionalBuildExclusion {
         let count = actionable_monitor_data
             .session_rows()
             .iter()
@@ -207,9 +208,9 @@ impl OutputBuildSetTerminationAuthorization {
             })
             .count();
         if count == 0 {
-            super::transaction::AdditionalBuildExclusion::NoAdditionalBuilds
+            AdditionalBuildExclusion::NoAdditionalBuilds
         } else {
-            super::transaction::AdditionalBuildExclusion::Excluded { count }
+            AdditionalBuildExclusion::Excluded { count }
         }
     }
 }

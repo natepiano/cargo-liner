@@ -1,6 +1,7 @@
 //! Values shared by build-session classification and its support caches.
 
 // cache eviction
+use std::time::Duration;
 /// Most build sessions whose observed build directory is remembered at once.
 /// The key is exec-sensitive, so a retired entry can never be re-matched by a
 /// later session and is dropped by least recent use alone.
@@ -72,5 +73,5 @@ pub(crate) const MAX_DESCENDANT_WALK_DEPTH: usize = 8;
 
 // termination transaction
 /// Minimum delay between observer passes when live signaled targets remain.
-pub(super) const TERMINATION_DESCENDANT_REFRESH_INTERVAL: std::time::Duration =
+pub(super) const TERMINATION_DESCENDANT_REFRESH_INTERVAL: Duration =
     std::time::Duration::from_millis(50);

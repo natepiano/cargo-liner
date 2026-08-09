@@ -48,7 +48,7 @@ impl App {
         );
         self.show_timed_toast("Config reload failed", err.to_string());
     }
-    pub fn load_initial_keymap(&mut self) {
+    pub(in crate::tui::app) fn load_initial_keymap(&mut self) {
         let vim_mode = self.config.current().tui.navigation_keys;
         let keymap_missing = self.keymap.path().is_some_and(|path| !path.exists());
         let result = keymap::load_keymap(vim_mode);
@@ -92,7 +92,7 @@ impl App {
             keymap_ui::save_current_keymap_to_disk(self);
         }
     }
-    pub fn maybe_reload_keymap_from_disk(&mut self) {
+    pub(in crate::tui) fn maybe_reload_keymap_from_disk(&mut self) {
         let Some(path) = self.keymap.take_stamp_change() else {
             return;
         };
@@ -193,7 +193,7 @@ impl App {
     /// toast. Persistent parse-error toasts are dismissed when the
     /// next reload succeeds with zero failures, matching the keymap
     /// diagnostics flow.
-    pub fn maybe_reload_themes_from_disk(&mut self) {
+    pub(in crate::tui) fn maybe_reload_themes_from_disk(&mut self) {
         if self.themes.take_change().is_none() {
             return;
         }
@@ -308,12 +308,12 @@ impl App {
     /// Record the terminal's detected background appearance and re-resolve
     /// the active theme so the backdrop decision reflects it. Called once
     /// at startup after the OSC 11 probe, before the input thread starts.
-    pub fn set_terminal_appearance(&mut self, appearance: Option<Appearance>) {
+    pub(in crate::tui) fn set_terminal_appearance(&mut self, appearance: Option<Appearance>) {
         self.themes.set_terminal_appearance(appearance);
         self.resolve_and_apply_active_theme();
     }
 
-    pub fn maybe_reload_config_from_disk(&mut self) {
+    pub(in crate::tui) fn maybe_reload_config_from_disk(&mut self) {
         let Some(path) = self.config.take_stamp_change() else {
             return;
         };
@@ -341,7 +341,7 @@ impl App {
             Err(err) => self.record_config_reload_failure(&format!("{path_buf}: {err}")),
         }
     }
-    pub fn apply_config(&mut self, cargo_port_config: &CargoPortConfig) {
+    pub(in crate::tui) fn apply_config(&mut self, cargo_port_config: &CargoPortConfig) {
         if self.config.current() == cargo_port_config {
             return;
         }
@@ -437,7 +437,10 @@ impl App {
     /// orchestrator. See "Recurring patterns" in
     /// `src/tui/app/mod.rs` for the cross-subsystem orchestrator
     /// pattern.
-    pub fn apply_lint_config_change(&mut self, cargo_port_config: &CargoPortConfig) {
+    pub(in crate::tui::app) fn apply_lint_config_change(
+        &mut self,
+        cargo_port_config: &CargoPortConfig,
+    ) {
         // Runtime: respawn the lint runtime.
         let lint_spawn = self
             .startup_services

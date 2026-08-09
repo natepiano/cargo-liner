@@ -13,7 +13,10 @@ use std::path::PathBuf;
 use std::time::Instant;
 use std::time::SystemTime;
 
+use toml::Table;
+
 use super::activity::ManifestPackageIdentity;
+use super::classify;
 use super::classify::ArgumentPath;
 use super::classify::BuildClassification;
 use super::classify::BuildClassificationCycle;
@@ -25,8 +28,6 @@ use super::classify::CycleStamp;
 use super::classify::IndexedWorkspaceTargetDirectories;
 use super::classify::ObservedCycle;
 use super::classify::SessionBuildDirectory;
-use super::classify::classify;
-use super::classify::observed_process_path_arguments;
 use super::constants::MANIFEST_FILE_NAME;
 use super::constants::MAX_BUILD_DIRECTORY_ENTRIES;
 use super::constants::MAX_DEPENDENCY_MANIFEST_ENTRIES;
@@ -40,6 +41,8 @@ use super::execution::CompletedBuildClassification;
 use super::session::BuildSession;
 use super::session::BuildSessionId;
 use super::session::OwnedRootEvidence;
+use super::termination::ClassifiedExternalTerminationSupport;
+use crate::process_observation::ProcessObserver;
 use crate::process_observation::identity::ProcessIncarnation;
 use crate::process_observation::snapshot::ProcessFieldObservation;
 use crate::process_observation::snapshot::ProcessObservationSnapshot;
@@ -469,7 +472,7 @@ impl BuildClassifier {
     /// so the observation stays available to Running Targets either way.
     pub(crate) fn classify_demand(
         &mut self,
-        process_observer: &crate::process_observation::ProcessObserver,
+        process_observer: &ProcessObserver,
         process_observation_snapshot: &ProcessObservationSnapshot,
         compile_classification_demand: CompileClassificationDemand,
         cycle_instant: Instant,
@@ -537,7 +540,7 @@ impl BuildClassifier {
                 .strongly_identified_processes()
                 .get(&root_identity)
                 .map_or(
-                    super::termination::ClassifiedExternalTerminationSupport::ObservedOnly,
+                    ClassifiedExternalTerminationSupport::ObservedOnly,
                     |process_snapshot_record| {
                         process_observer
                             .external_termination_support(process_snapshot_record)
@@ -567,7 +570,7 @@ impl BuildClassifier {
         let indexed_workspace_target_directories =
             IndexedWorkspaceTargetDirectories::resolve(cargo_workspace_index);
 
-        let build_classification = classify(BuildClassificationInput::new(
+        let build_classification = classify::classify(BuildClassificationInput::new(
             ObservedCycle::new(
                 process_observation_snapshot,
                 cargo_workspace_index,
@@ -650,7 +653,7 @@ fn resolve_canonical_process_paths(
         let ProcessFieldObservation::Observed(argv) = record.argv() else {
             continue;
         };
-        let observed = observed_process_path_arguments(build_candidate_role, argv);
+        let observed = classify::observed_process_path_arguments(build_candidate_role, argv);
         let working_directory = match record.cwd() {
             ProcessFieldObservation::Observed(cwd) => canonicalize(cwd),
             ProcessFieldObservation::Unavailable(_) | ProcessFieldObservation::Invalidated(_) => {
@@ -722,7 +725,7 @@ fn read_nearest_manifest(canonical_source_root: &Path) -> (PathBuf, DependencyMa
 /// manifest: a dependency manifest may use table syntax this crate has no
 /// model for, and only these two fields identify the package.
 fn parse_manifest_package(contents: &str) -> DependencyManifestIdentity {
-    let Ok(document) = contents.parse::<toml::Table>() else {
+    let Ok(document) = contents.parse::<Table>() else {
         return DependencyManifestIdentity::NoManifest;
     };
     let Some(package) = document.get("package").and_then(toml::Value::as_table) else {

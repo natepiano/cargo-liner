@@ -47,7 +47,7 @@ use crate::tui::render;
 use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::theme_roles;
 
-pub fn render_targets_pane_body(
+pub(super) fn render_targets_pane_body(
     frame: &mut Frame,
     area: Rect,
     pane: &mut TargetsPane,

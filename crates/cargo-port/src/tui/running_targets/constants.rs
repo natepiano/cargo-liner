@@ -18,4 +18,4 @@ pub(super) const MIN_HEX_HASH_LEN: usize = 16;
 // refresh cadence
 
 /// Running Targets resource and history sampling interval.
-pub(crate) const RUNNING_TARGETS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+pub(in crate::tui) const RUNNING_TARGETS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);

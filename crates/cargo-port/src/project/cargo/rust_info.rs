@@ -29,17 +29,22 @@ pub(crate) struct RustInfo {
 }
 
 impl RustInfo {
-    pub fn vendored(&self) -> &[VendoredPackage] { &self.vendored }
+    pub(crate) fn vendored(&self) -> &[VendoredPackage] { &self.vendored }
 
-    pub const fn vendored_mut(&mut self) -> &mut Vec<VendoredPackage> { &mut self.vendored }
+    pub(crate) const fn vendored_mut(&mut self) -> &mut Vec<VendoredPackage> { &mut self.vendored }
 
-    pub fn crates_version(&self) -> Option<&str> { self.crates_version.as_deref() }
+    pub(crate) fn crates_version(&self) -> Option<&str> { self.crates_version.as_deref() }
 
-    pub fn crates_prerelease(&self) -> Option<&str> { self.crates_prerelease.as_deref() }
+    pub(crate) fn crates_prerelease(&self) -> Option<&str> { self.crates_prerelease.as_deref() }
 
-    pub const fn crates_downloads(&self) -> Option<u64> { self.crates_downloads }
+    pub(crate) const fn crates_downloads(&self) -> Option<u64> { self.crates_downloads }
 
-    pub fn set_crates_io(&mut self, version: String, prerelease: Option<String>, downloads: u64) {
+    pub(crate) fn set_crates_io(
+        &mut self,
+        version: String,
+        prerelease: Option<String>,
+        downloads: u64,
+    ) {
         self.crates_version = Some(version);
         self.crates_prerelease = prerelease;
         self.crates_downloads = Some(downloads);
@@ -98,13 +103,15 @@ impl Default for Cargo {
 }
 
 impl Cargo {
-    pub fn types(&self) -> &[ProjectType] { &self.types }
+    pub(crate) fn types(&self) -> &[ProjectType] { &self.types }
 
-    pub fn examples(&self) -> &[ExampleGroup] { &self.examples }
+    pub(crate) fn examples(&self) -> &[ExampleGroup] { &self.examples }
 
-    pub fn benches(&self) -> &[String] { &self.benches }
+    pub(crate) fn benches(&self) -> &[String] { &self.benches }
 
-    pub fn example_count(&self) -> usize { self.examples.iter().map(|g| g.names.len()).sum() }
+    pub(crate) fn example_count(&self) -> usize {
+        self.examples.iter().map(|g| g.names.len()).sum()
+    }
 
     #[allow(
         dead_code,
@@ -115,7 +122,7 @@ impl Cargo {
         self.types.iter().any(|t| matches!(t, ProjectType::Binary))
     }
 
-    pub const fn publishable(&self) -> bool { self.publish_status.is_publishable() }
+    pub(crate) const fn publishable(&self) -> bool { self.publish_status.is_publishable() }
 }
 
 impl From<&PackageRecord> for Cargo {

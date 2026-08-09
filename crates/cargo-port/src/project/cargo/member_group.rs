@@ -13,30 +13,30 @@ pub(crate) enum MemberGroup {
 }
 
 impl MemberGroup {
-    pub fn members(&self) -> &[Package] {
+    pub(crate) fn members(&self) -> &[Package] {
         match self {
             Self::Named { members, .. } | Self::Inline { members } => members,
         }
     }
 
-    pub const fn members_mut(&mut self) -> &mut Vec<Package> {
+    pub(crate) const fn members_mut(&mut self) -> &mut Vec<Package> {
         match self {
             Self::Named { members, .. } | Self::Inline { members } => members,
         }
     }
 
-    pub fn group_name(&self) -> &str {
+    pub(crate) fn group_name(&self) -> &str {
         match self {
             Self::Named { name, .. } => name,
             Self::Inline { .. } => "",
         }
     }
 
-    pub const fn is_named(&self) -> bool { matches!(self, Self::Named { .. }) }
+    pub(crate) const fn is_named(&self) -> bool { matches!(self, Self::Named { .. }) }
 
-    pub const fn is_inline(&self) -> bool { matches!(self, Self::Inline { .. }) }
+    pub(crate) const fn is_inline(&self) -> bool { matches!(self, Self::Inline { .. }) }
 
-    pub fn into_members(self) -> Vec<Package> {
+    pub(crate) fn into_members(self) -> Vec<Package> {
         match self {
             Self::Named { members, .. } | Self::Inline { members } => members,
         }

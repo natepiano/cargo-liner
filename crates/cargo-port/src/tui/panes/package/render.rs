@@ -314,7 +314,10 @@ fn stats_label_width(data: &PackageData) -> u16 {
 /// Description / Structure / Tests band) and the right stats column. Shared by
 /// the render path and the cross-project top-row height measurement so the
 /// predicted height matches what renders.
-pub fn package_lower_metadata_height(data: &PackageData, rows: &[PackageRow]) -> usize {
+pub(in crate::tui::panes) fn package_lower_metadata_height(
+    data: &PackageData,
+    rows: &[PackageRow],
+) -> usize {
     let metadata_line_count = rows
         .iter()
         .filter(|row| {
@@ -333,7 +336,7 @@ pub fn package_lower_metadata_height(data: &PackageData, rows: &[PackageRow]) ->
 /// separator below it, and the lower metadata block. Shared by the render
 /// path (the viewport's scroll-overflow extent) and the cross-project top-row
 /// measurement so the pager and the row height agree on what renders.
-pub fn package_content_height(
+pub(in crate::tui::panes) fn package_content_height(
     synced_description_height: usize,
     lower_metadata_height: usize,
 ) -> usize {

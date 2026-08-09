@@ -53,6 +53,7 @@ use crate::tui::keymap::PackageAction;
 use crate::tui::keymap::TargetsAction;
 use crate::tui::render;
 use crate::tui::running_targets::RunningProcessPlacement;
+use crate::tui::running_targets::RunningTargetTerminationCapability;
 use crate::tui::state::OwnedRunLaunchAdmission;
 
 fn handle_target_action(app: &mut App, mode: BuildMode) {
@@ -470,7 +471,7 @@ fn collapse_running_parent(app: &mut App) -> bool {
 /// table) on that render.
 pub(super) fn execute_target_kill(
     app: &mut App,
-    termination_capability: crate::tui::running_targets::RunningTargetTerminationCapability,
+    termination_capability: RunningTargetTerminationCapability,
 ) {
     app.panes
         .running_targets

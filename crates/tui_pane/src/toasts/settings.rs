@@ -194,7 +194,7 @@ impl ToastSettings {
 
 impl ToastRendering {
     /// Whether toasts are enabled.
-    pub const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
+    const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
 }
 
 /// Toast width in terminal cells.

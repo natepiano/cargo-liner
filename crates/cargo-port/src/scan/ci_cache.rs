@@ -1,8 +1,8 @@
 use std::cmp::Reverse;
 use std::collections::HashSet;
 
+use super::background;
 use super::cache_dir;
-use super::combine_service_signal;
 use super::discovery::RepoMetaInfo;
 use crate::ci;
 use crate::ci::CiRun;
@@ -79,7 +79,7 @@ fn load_cached_run(owner: &str, repo: &str, run_id: u64) -> Option<CiRun> {
 }
 
 /// Load all cached CI runs for a given repo.
-pub(crate) fn load_all_cached_runs(owner: &str, repo: &str) -> Vec<CiRun> {
+fn load_all_cached_runs(owner: &str, repo: &str) -> Vec<CiRun> {
     let dir = ci_cache_dir(owner, repo);
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -188,7 +188,7 @@ pub(crate) fn fetch_ci_runs_cached(
     (
         result,
         meta,
-        combine_service_signal(list_signal, detail_signal),
+        background::combine_service_signal(list_signal, detail_signal),
     )
 }
 
@@ -220,7 +220,10 @@ pub(crate) fn fetch_older_runs(
             github_total,
         }
     };
-    (result, combine_service_signal(list_signal, detail_signal))
+    (
+        result,
+        background::combine_service_signal(list_signal, detail_signal),
+    )
 }
 
 pub(crate) struct CratesIoInfo {

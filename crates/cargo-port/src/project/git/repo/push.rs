@@ -14,14 +14,14 @@ use crate::project::git::constants::GIT_GET_REGEXP_ARG;
 /// to lock out accidental pushes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum KnownSentinel {
+pub(crate) enum KnownSentinel {
     Disabled,
     NoPush,
     DoNotPush,
 }
 
 impl KnownSentinel {
-    pub const fn label(self) -> &'static str {
+    pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Disabled => "DISABLED",
             Self::NoPush => "no-push",
