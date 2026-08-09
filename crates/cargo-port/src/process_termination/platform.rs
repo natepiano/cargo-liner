@@ -517,24 +517,41 @@ mod tests {
                 .arg("5")
                 .spawn()
                 .expect("the original PID fixture should spawn");
-            let replacement_child = Command::new("/bin/sleep")
-                .arg("5")
-                .spawn()
-                .expect("the replacement PID fixture should spawn");
             let expected = Self::strong_identity(&original_child);
-            let replacement =
-                Self::strong_identity(&replacement_child).with_pid_for_test(expected.pid());
             original_child
                 .kill()
                 .expect("the original PID fixture should stop");
             original_child
                 .wait()
                 .expect("the original PID fixture should be reaped");
+            let (replacement_child, replacement) = Self::spawn_distinct_replacement(&expected);
             Self {
                 expected,
                 replacement,
                 replacement_child,
             }
+        }
+
+        fn spawn_distinct_replacement(expected: &ProcessIdentity) -> (Child, ProcessIdentity) {
+            for _ in 0..ADMISSION_POLL_ATTEMPTS {
+                let mut replacement_child = Command::new("/bin/sleep")
+                    .arg("5")
+                    .spawn()
+                    .expect("the replacement PID fixture should spawn");
+                let replacement =
+                    Self::strong_identity(&replacement_child).with_pid_for_test(expected.pid());
+                if replacement != *expected {
+                    return (replacement_child, replacement);
+                }
+                replacement_child
+                    .kill()
+                    .expect("an indistinct replacement PID fixture should stop");
+                replacement_child
+                    .wait()
+                    .expect("an indistinct replacement PID fixture should be reaped");
+                std::thread::sleep(TERMINATION_CONFIRMATION_POLL_INTERVAL);
+            }
+            panic!("the replacement PID fixture should receive a distinct creation token");
         }
 
         fn strong_identity(child: &Child) -> ProcessIdentity {

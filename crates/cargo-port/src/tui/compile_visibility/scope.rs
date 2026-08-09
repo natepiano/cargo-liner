@@ -1851,6 +1851,7 @@ mod tests {
     /// everything classified under it, non-current. Accepted `cargo metadata`,
     /// project-list content, and the selected row are all held constant here, so
     /// the live target-directory resolution is the only input that moved.
+    #[cfg(unix)]
     #[test]
     fn a_target_directory_that_appears_or_is_retargeted_invalidates_the_scope() -> TestResult<()> {
         let mut scope_fixture = scope_fixture()?;
