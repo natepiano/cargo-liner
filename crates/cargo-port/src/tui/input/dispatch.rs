@@ -126,6 +126,7 @@ impl KeyDispatchLayer {
 enum OutputCancelPreflight {
     ExitVisualSelection,
     StopRunningExample,
+    CloseMonitor,
     CloseVisibleOutput,
     Pass,
 }
@@ -208,7 +209,9 @@ fn classify_output_cancel_preflight(
     code: KeyCode,
     bind: &KeyBind,
 ) -> OutputCancelPreflight {
-    let is_output_cancel = !focused_text_input_mode(app)
+    let app_overlay_open = app.overlays.is_finder_open() || app.overlays.is_sccache_open();
+    let is_output_cancel = !app_overlay_open
+        && !focused_text_input_mode(app)
         && app.framework_keymap.is_key_bound_to_toml_key(
             OutputPane::APP_PANE_ID,
             OutputAction::Cancel.toml_key(),
@@ -230,6 +233,7 @@ fn classify_output_cancel_preflight(
     // it did.
     let running_example =
         code == KeyCode::Esc && owned_column_selected && app.inflight.owned_run().is_running();
+    let visible_monitor = is_output_cancel && app.compile_visibility_state.is_on();
     let visible_output = is_output_cancel
         && owned_column_selected
         && matches!(
@@ -237,11 +241,17 @@ fn classify_output_cancel_preflight(
             OutputCopyAvailability::CapturedOutput
         );
 
-    match (output_visual, running_example, visible_output) {
-        (true, _, _) => OutputCancelPreflight::ExitVisualSelection,
-        (false, true, _) => OutputCancelPreflight::StopRunningExample,
-        (false, false, true) => OutputCancelPreflight::CloseVisibleOutput,
-        (false, false, false) => OutputCancelPreflight::Pass,
+    match (
+        output_visual,
+        running_example,
+        visible_monitor,
+        visible_output,
+    ) {
+        (true, _, _, _) => OutputCancelPreflight::ExitVisualSelection,
+        (false, true, _, _) => OutputCancelPreflight::StopRunningExample,
+        (false, false, true, _) => OutputCancelPreflight::CloseMonitor,
+        (false, false, false, true) => OutputCancelPreflight::CloseVisibleOutput,
+        (false, false, false, false) => OutputCancelPreflight::Pass,
     }
 }
 
@@ -253,6 +263,11 @@ fn dispatch_output_cancel_preflight(app: &mut App, preflight: OutputCancelPrefli
         },
         OutputCancelPreflight::StopRunningExample => {
             let _ = terminal::signal_owned_run(&mut app.inflight);
+            true
+        },
+        OutputCancelPreflight::CloseMonitor => {
+            app.toggle_compile_visibility(Instant::now());
+            app.reconcile_bottom_row_focus();
             true
         },
         OutputCancelPreflight::CloseVisibleOutput => {
@@ -915,9 +930,9 @@ pub fn dispatch_output_action(action: OutputAction, app: &mut App) {
                 app.panes.output.select_all(&live);
             },
         },
-        // Stopping and clearing both act on Cargo Port's own run, so both wait
-        // on its column being the selected one: with an external column under
-        // the cursor, Esc must not reach past the selection.
+        // The preflight disables the compile monitor before this focused-pane
+        // dispatcher runs. Stopping and clearing act only on Cargo Port's own
+        // run, so both require its column to be selected.
         OutputAction::Cancel => match app.owned_column_selection() {
             OwnedColumnSelection::NotSelected => {},
             OwnedColumnSelection::Selected => cancel_owned_output(app),
@@ -985,6 +1000,7 @@ mod tests {
     use crate::tui::compile_visibility::MonitorScopeResolution;
     use crate::tui::input::editor_terminal;
     use crate::tui::panes::OutputMonitorHit;
+    use crate::tui::panes::OutputPaneVisibility;
     #[cfg(unix)]
     use crate::tui::running_targets::RunningTargetTerminationCapability;
     use crate::tui::state::Inflight;
@@ -2183,11 +2199,27 @@ mod tests {
         ));
     }
 
-    /// The same stored selection is invisible from an external column, so Esc
-    /// there drops neither the selection nor the owned output: nothing in the
-    /// Output pane claims the key.
     #[test]
-    fn esc_on_an_external_column_leaves_the_owned_selection_and_output_alone() {
+    fn esc_closes_monitor_opened_from_the_project_list() {
+        let mut app = test_support::make_app(&[]);
+
+        press_with_modifiers(&mut app, KeyCode::Char('C'), KeyModifiers::SHIFT);
+        assert!(app.compile_visibility_state.is_on());
+        assert_eq!(app.output_pane_visibility(), OutputPaneVisibility::Visible);
+
+        press(&mut app, KeyCode::Esc);
+
+        assert!(matches!(
+            app.compile_visibility_state,
+            CompileVisibilityState::Off
+        ));
+        assert_eq!(app.output_pane_visibility(), OutputPaneVisibility::Hidden);
+    }
+
+    /// Esc on an external column disables the monitor without changing the
+    /// stored owned-column selection or captured output.
+    #[test]
+    fn esc_on_an_external_column_closes_only_the_monitor() {
         let staged = staged_output();
         assert!(staged.is_some(), "the staged monitor fixture builds");
         let Some(mut staged) = staged else { return };
@@ -2203,15 +2235,16 @@ mod tests {
             staged.app.panes.output.selection().is_visual(),
             "the selection is stored, just not on screen"
         );
+        let captured_output = staged.app.inflight.example_output().to_vec();
+
+        press(&mut staged.app, KeyCode::Esc);
 
         assert!(matches!(
-            classify_output_cancel_preflight(
-                &staged.app,
-                KeyCode::Esc,
-                &KeyBind::from(KeyCode::Esc)
-            ),
-            OutputCancelPreflight::Pass
+            staged.app.compile_visibility_state,
+            CompileVisibilityState::Off
         ));
+        assert!(staged.app.panes.output.selection().is_visual());
+        assert_eq!(staged.app.inflight.example_output(), captured_output);
     }
 
     #[test]

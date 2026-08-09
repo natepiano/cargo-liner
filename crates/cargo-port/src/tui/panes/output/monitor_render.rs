@@ -9,6 +9,7 @@ use std::time::Instant;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
@@ -17,10 +18,13 @@ use ratatui::widgets::Borders;
 use ratatui::widgets::Paragraph;
 use tui_pane::CopySelectionResult;
 use tui_pane::label_color;
+use tui_pane::secondary_text_color;
+use tui_pane::success_color;
 
 use super::constants::COLUMN_DIVIDER_WIDTH;
 use super::constants::COLUMN_HEADER_HEIGHT;
 use super::constants::COLUMN_STRIP_MINIMUM_HEIGHT;
+use super::constants::COMPILER_KIND_LABEL_WIDTH;
 use super::constants::MINIMUM_READABLE_COLUMN_WIDTH;
 use super::constants::MONITOR_INDICATOR_HEIGHT;
 use super::constants::OWNED_OUTPUT_SEPARATOR_HEIGHT;
@@ -864,8 +868,10 @@ fn render_column(
         cursor.target(),
         OutputCursorTarget::Header(build_session_id) if build_session_id == column.build_session_id()
     );
-    for (index, text) in column.header_fields(now).into_iter().enumerate() {
-        let line = Line::from(Span::raw(format!(" {text}")));
+    for (index, line) in column_header_lines(column.header_fields(now))
+        .into_iter()
+        .enumerate()
+    {
         hit_map.record(
             hit_map::row_rect(area, lines.len()),
             OutputMonitorHit::Header {
@@ -889,7 +895,10 @@ fn render_column(
         .enumerate()
         .skip(activity_scroll)
     {
-        let line = Line::from(Span::raw(format!(" {}", activity_label(compile_activity))));
+        let line = compiler_activity_line(
+            compile_activity.compiler_kind(),
+            &crate_identity_label(compile_activity.compiled_crate_identity()),
+        );
         hit_map.record(
             hit_map::row_rect(area, lines.len()),
             OutputMonitorHit::Activity {
@@ -929,9 +938,38 @@ fn render_column(
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-/// The text of the activity row `compile_activity_id` names, as a copy
-/// payload. The row is a live sample rather than a transcript, so what is
-/// copied is exactly the line drawn — the same string the user is looking at.
+/// Style the fixed build identity as one grouped header above the live
+/// compiler rows without consuming another row of the column.
+fn column_header_lines(
+    [command, checkout, build_details, state]: [String; COLUMN_HEADER_HEIGHT],
+) -> [Line<'static>; COLUMN_HEADER_HEIGHT] {
+    let rail_style = Style::default().fg(label_color());
+    let command_style = Style::default().add_modifier(Modifier::BOLD);
+    let metadata_style = Style::default().fg(secondary_text_color());
+    let state_style = Style::default().fg(label_color());
+
+    [
+        Line::from(vec![
+            Span::styled(" ┌ ", rail_style),
+            Span::styled(command, command_style),
+        ]),
+        Line::from(vec![
+            Span::styled(" │ ", rail_style),
+            Span::styled(checkout, metadata_style),
+        ]),
+        Line::from(vec![
+            Span::styled(" │ ", rail_style),
+            Span::styled(build_details, metadata_style),
+        ]),
+        Line::from(vec![
+            Span::styled(" └ ", rail_style),
+            Span::styled(state, state_style),
+        ]),
+    ]
+}
+
+/// The text of the activity row `compile_activity_id` names, without rendering
+/// padding or color. The row is a live sample rather than a transcript.
 pub(super) fn activity_row_text(
     monitor_presentation: MonitorPresentation<'_>,
     compile_activity_id: &CompileActivityId,
@@ -967,7 +1005,7 @@ pub(super) fn unattributed_row_text(
         })
 }
 
-/// One activity row: which compiler is running and what it is compiling.
+/// The unstyled copy payload for one compile activity.
 fn activity_label(compile_activity: &CompileActivity) -> String {
     format!(
         "{} {}",
@@ -986,6 +1024,23 @@ const fn compiler_kind_label(compiler_kind: CompilerKind) -> &'static str {
         CompilerKind::Linker => "link",
         CompilerKind::Wrapper => "wrapper",
     }
+}
+
+/// Render a right-aligned compiler-kind keyword followed by activity details
+/// that begin at the same column for every [`CompilerKind`].
+fn compiler_activity_line(compiler_kind: CompilerKind, activity_details: &str) -> Line<'static> {
+    let keyword = compiler_kind_label(compiler_kind);
+    let keyword_style = Style::default()
+        .fg(success_color())
+        .add_modifier(Modifier::BOLD);
+    let activity_details_style = Style::default().fg(secondary_text_color());
+    Line::from(vec![
+        Span::styled(
+            format!(" {keyword:>COMPILER_KIND_LABEL_WIDTH$}"),
+            keyword_style,
+        ),
+        Span::styled(format!(" {activity_details}"), activity_details_style),
+    ])
 }
 
 /// What an activity is compiling, at whatever precision was resolved.
@@ -1036,10 +1091,10 @@ fn render_unattributed_section(
         .enumerate()
         .take(drawn_rows)
     {
-        let line = Line::from(Span::raw(format!(
-            " {}",
-            unattributed_label(unattributed_activity)
-        )));
+        let line = compiler_activity_line(
+            unattributed_activity.compiler_kind(),
+            &unattributed_details(unattributed_activity),
+        );
         hit_map.record(
             hit_map::row_rect(area, lines.len()),
             OutputMonitorHit::Unattributed {
@@ -1080,6 +1135,15 @@ fn unattributed_caption(unattributed_section_layout: UnattributedSectionLayout) 
 
 /// One unattributed row, naming why it could not be attributed.
 fn unattributed_label(unattributed_activity: &UnattributedCompileActivity) -> String {
+    format!(
+        "{} {}",
+        compiler_kind_label(unattributed_activity.compiler_kind()),
+        unattributed_details(unattributed_activity),
+    )
+}
+
+/// The crate identity and attribution note that follow the compiler keyword.
+fn unattributed_details(unattributed_activity: &UnattributedCompileActivity) -> String {
     let reason = match unattributed_activity.compiler_attribution() {
         CompilerAttribution::Ambiguous { .. } => "ambiguous",
         CompilerAttribution::Confirmed(_)
@@ -1087,8 +1151,7 @@ fn unattributed_label(unattributed_activity: &UnattributedCompileActivity) -> St
         | CompilerAttribution::Unattributed => "no session",
     };
     format!(
-        "{} {} — {reason}",
-        compiler_kind_label(unattributed_activity.compiler_kind()),
+        "{} — {reason}",
         crate_identity_label(unattributed_activity.compiled_crate_identity()),
     )
 }
@@ -1196,6 +1259,71 @@ mod tests {
                 rendered.contains(expected_truth),
                 "terminal projection preserves its semantic outcome: {rendered:?}"
             );
+        }
+    }
+
+    #[test]
+    fn column_header_groups_fixed_metadata_above_live_activity() {
+        let lines = column_header_lines([
+            "cargo build".to_string(),
+            "/tmp/example".to_string(),
+            "dev · pid 9422 · 31s".to_string(),
+            "compiling".to_string(),
+        ]);
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect();
+
+        assert_eq!(
+            rendered,
+            [
+                " ┌ cargo build",
+                " │ /tmp/example",
+                " │ dev · pid 9422 · 31s",
+                " └ compiling",
+            ]
+        );
+        assert_eq!(lines[0].spans[0].style.fg, Some(label_color()));
+        assert!(
+            lines[0].spans[1]
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
+        assert_eq!(lines[1].spans[1].style.fg, Some(secondary_text_color()));
+        assert_eq!(lines[2].spans[1].style.fg, Some(secondary_text_color()));
+        assert_eq!(lines[3].spans[1].style.fg, Some(label_color()));
+    }
+
+    #[test]
+    fn compiler_keywords_share_a_right_edge_and_contrast_with_activity_details() {
+        let cases = [
+            (CompilerKind::Rustc, "    rustc demo"),
+            (CompilerKind::ClippyDriver, "   clippy demo"),
+            (CompilerKind::Rustdoc, "  rustdoc demo"),
+            (CompilerKind::BuildScript, " build.rs demo"),
+            (CompilerKind::Linker, "     link demo"),
+            (CompilerKind::Wrapper, "  wrapper demo"),
+        ];
+
+        for (compiler_kind, expected) in cases {
+            let line = compiler_activity_line(compiler_kind, "demo");
+            let rendered: String = line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
+
+            assert_eq!(rendered, expected);
+            assert_eq!(line.spans[0].style.fg, Some(success_color()));
+            assert!(line.spans[0].style.add_modifier.contains(Modifier::BOLD));
+            assert_eq!(line.spans[1].style.fg, Some(secondary_text_color()));
         }
     }
 
