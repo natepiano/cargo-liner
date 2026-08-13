@@ -1,5 +1,6 @@
 #[cfg(test)]
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
@@ -316,6 +317,78 @@ impl GitHubRateLimitMode {
     pub(crate) const fn is_forced(self) -> bool { matches!(self, Self::Forced) }
 }
 
+/// Whether a crates.io release group includes every publishable member of the
+/// representative crate's root workspace.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "bool", into = "bool")]
+pub enum WorkspaceMemberInclusion {
+    Include,
+    #[default]
+    Exclude,
+}
+
+impl From<bool> for WorkspaceMemberInclusion {
+    fn from(include: bool) -> Self {
+        if include {
+            Self::Include
+        } else {
+            Self::Exclude
+        }
+    }
+}
+
+impl From<WorkspaceMemberInclusion> for bool {
+    fn from(inclusion: WorkspaceMemberInclusion) -> Self {
+        matches!(inclusion, WorkspaceMemberInclusion::Include)
+    }
+}
+
+impl WorkspaceMemberInclusion {
+    pub(crate) const fn includes(self) -> bool { matches!(self, Self::Include) }
+}
+
+/// Crates that publish one coordinated release represented by a single crate.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CratesIoReleaseGroupConfig {
+    /// Crate whose version change produces the release toast.
+    #[serde(default)]
+    pub representative:    String,
+    /// Toast label. Empty uses `representative`.
+    #[serde(default)]
+    pub label:             String,
+    /// Include publishable members of a root workspace package named by
+    /// `representative`.
+    #[serde(default)]
+    pub workspace_members: WorkspaceMemberInclusion,
+    /// Exact additional crate names whose individual release toasts are
+    /// represented by `representative`.
+    #[serde(default)]
+    pub members:           Vec<String>,
+}
+
+impl CratesIoReleaseGroupConfig {
+    pub(crate) const fn includes_workspace_members(&self) -> bool {
+        self.workspace_members.includes()
+    }
+
+    pub(crate) fn toast_label(&self) -> &str {
+        if self.label.is_empty() {
+            &self.representative
+        } else {
+            &self.label
+        }
+    }
+}
+
+/// crates.io release-notification settings.
+#[derive(Clone, Debug, Default, PartialEq, Eq, confique::Config, Serialize)]
+pub struct CratesIoConfig {
+    /// Groups of crates that publish together. Each group emits one release
+    /// toast through its representative crate.
+    #[config(default = [])]
+    pub release_groups: Vec<CratesIoReleaseGroupConfig>,
+}
+
 /// Cache storage settings shared by CI and lint-history data.
 #[derive(Clone, Debug, Default, PartialEq, Eq, confique::Config, Serialize)]
 pub struct CacheConfig {
@@ -608,6 +681,7 @@ pub(crate) fn parse_cache_size(value: &str) -> Result<ParsedCacheSize, String> {
 }
 
 fn normalize_config(mut cargo_port_config: CargoPortConfig) -> Result<CargoPortConfig, String> {
+    normalize_crates_io_release_groups(&mut cargo_port_config.crates_io.release_groups)?;
     cargo_port_config.lint.commands = normalize_lint_commands(&cargo_port_config.lint.commands);
     cargo_port_config.lint.cache_size = cargo_port_config.lint.normalized_cache_size()?;
     cargo_port_config.cpu.poll_ms = cargo_port_config.cpu.poll_ms.max(MIN_CPU_POLL_MS);
@@ -627,6 +701,65 @@ fn normalize_config(mut cargo_port_config: CargoPortConfig) -> Result<CargoPortC
     cargo_port_config.tui.discovery_shimmer_secs =
         normalize_non_negative_secs(cargo_port_config.tui.discovery_shimmer_secs);
     Ok(cargo_port_config)
+}
+
+fn normalize_crates_io_release_groups(
+    release_groups: &mut [CratesIoReleaseGroupConfig],
+) -> Result<(), String> {
+    let mut configured_crates = HashSet::new();
+
+    for (group_index, release_group) in release_groups.iter_mut().enumerate() {
+        let group_field = format!("crates_io.release_groups[{group_index}]");
+        release_group.representative = normalize_crate_name(
+            &release_group.representative,
+            &format!("{group_field}.representative"),
+        )?;
+        if !configured_crates.insert(release_group.representative.clone()) {
+            return Err(format!(
+                "{}.representative duplicates crate `{}` from another release group",
+                group_field, release_group.representative
+            ));
+        }
+
+        release_group.label = release_group.label.trim().to_string();
+        if release_group.label.is_empty() {
+            release_group
+                .label
+                .clone_from(&release_group.representative);
+        }
+
+        for (member_index, member) in release_group.members.iter_mut().enumerate() {
+            *member =
+                normalize_crate_name(member, &format!("{group_field}.members[{member_index}]"))?;
+            if !configured_crates.insert(member.clone()) {
+                return Err(format!(
+                    "{group_field}.members[{member_index}] duplicates crate `{member}` from a release group"
+                ));
+            }
+        }
+
+        if !release_group.includes_workspace_members() && release_group.members.is_empty() {
+            return Err(format!(
+                "{group_field} must enable workspace_members or list at least one member"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn normalize_crate_name(value: &str, field: &str) -> Result<String, String> {
+    let name = value.trim();
+    if name.is_empty() {
+        return Err(format!("{field} must not be empty"));
+    }
+    if !name
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return Err(format!("{field} must be a valid Cargo package name"));
+    }
+    Ok(name.to_string())
 }
 
 impl CargoPortConfig {
@@ -718,6 +851,8 @@ fn normalize_non_negative_secs(secs: f64) -> f64 {
 pub struct CargoPortConfig {
     #[config(nested)]
     pub cache:      CacheConfig,
+    #[config(nested)]
+    pub crates_io:  CratesIoConfig,
     #[config(nested)]
     pub cpu:        CpuConfig,
     #[config(nested)]
@@ -1205,6 +1340,57 @@ mod tests {
         let err = CargoPortConfig::from_table(&table).expect_err("invalid branch");
 
         assert!(err.contains("tui.main_branch must not be empty"));
+    }
+
+    #[test]
+    fn crates_io_release_groups_parse_and_normalize() {
+        let table = toml::from_str::<toml::Table>(
+            "[[crates_io.release_groups]]\n\
+             representative = \" bevy \"\n\
+             workspace_members = true\n\
+             members = [\" bevy-mobile \"]\n",
+        )
+        .expect("table");
+
+        let cargo_port_config = CargoPortConfig::from_table(&table).expect("config from table");
+        let release_group = &cargo_port_config.crates_io.release_groups[0];
+
+        assert_eq!(release_group.representative, "bevy");
+        assert_eq!(release_group.label, "bevy");
+        assert_eq!(
+            release_group.workspace_members,
+            WorkspaceMemberInclusion::Include
+        );
+        assert_eq!(release_group.members, vec!["bevy-mobile"]);
+    }
+
+    #[test]
+    fn crates_io_release_groups_reject_duplicate_crate_membership() {
+        let table = toml::from_str::<toml::Table>(
+            "[[crates_io.release_groups]]\n\
+             representative = \"bevy\"\n\
+             members = [\"bevy_ecs\"]\n\
+             [[crates_io.release_groups]]\n\
+             representative = \"other\"\n\
+             members = [\"bevy_ecs\"]\n",
+        )
+        .expect("table");
+
+        let err = CargoPortConfig::from_table(&table).expect_err("duplicate crate membership");
+
+        assert!(err.contains("duplicates crate `bevy_ecs`"));
+    }
+
+    #[test]
+    fn crates_io_release_groups_reject_a_representative_without_members() {
+        let table = toml::from_str::<toml::Table>(
+            "[[crates_io.release_groups]]\nrepresentative = \"bevy\"\n",
+        )
+        .expect("table");
+
+        let err = CargoPortConfig::from_table(&table).expect_err("inactive release group");
+
+        assert!(err.contains("must enable workspace_members or list at least one member"));
     }
 
     /// An empty config file gets all defaults.

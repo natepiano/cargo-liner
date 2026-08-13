@@ -6,6 +6,13 @@
 # Default value: ""
 #root = ""
 
+[crates_io]
+# Groups of crates that publish together. Each group emits one release
+# toast through its representative crate.
+#
+# Default value: []
+#release_groups = []
+
 [cpu]
 # How often to refresh CPU utilization values in milliseconds.
 #

@@ -99,12 +99,12 @@ pub(crate) enum BackgroundMsg {
     /// Mirrors [`Self::RepoFetchComplete`].
     CratesIoFetchComplete { name: String },
     /// The periodic refresh in `App::refresh_crates_io_if_due` found a
-    /// version for `name` that differs from the one on display. The
-    /// version itself arrives via [`Self::CratesIoVersion`], one message
-    /// per path; this one carries the comparison so the release toast is
-    /// raised once per refresh rather than once per path.
+    /// version that differs from the one on display. The version itself
+    /// arrives via [`Self::CratesIoVersion`], one message per path; this one
+    /// carries the comparison and either the crate name or its configured
+    /// release-group label so the release toast is raised once per refresh.
     CratesIoNewRelease {
-        name:             String,
+        display_name:     String,
         previous_version: String,
         version:          String,
     },

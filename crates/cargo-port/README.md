@@ -332,6 +332,36 @@ Press ^k to open the Keymap editor (if you haven't already remapped it). Select 
 
 I'm not going to go through keymaps one by one as they are largely self-explanatory.
 
+## Coordinated crates.io releases
+
+Some workspaces publish many crates as one release. A release group keeps every
+crate's displayed crates.io version current while raising only one new-release
+toast, from the configured representative crate.
+
+For Bevy, add this to `config.toml`:
+
+```toml
+[[crates_io.release_groups]]
+representative = "bevy"
+label = "Bevy"
+workspace_members = true
+```
+
+`workspace_members = true` discovers the publishable members of the local root
+workspace whose package is named `bevy`. This includes names that do not use a
+`bevy_*` prefix, and it does not include vendored crates. If a coordinated
+release spans crates that cargo-port cannot discover as one workspace, list
+their exact crates.io names instead:
+
+```toml
+[[crates_io.release_groups]]
+representative = "suite"
+members = ["suite-core", "suite-tools"]
+```
+
+Each crate may belong to only one release group. `label` is optional and
+defaults to `representative`.
+
 ## Where paths live
 
 cargo-port uses the platform directories provided by the `dirs` crate:

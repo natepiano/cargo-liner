@@ -49,6 +49,7 @@ use crate::cache_paths;
 use crate::config;
 use crate::config::CargoPortConfig;
 use crate::config::CargoPortConfigurationPathResolution;
+use crate::config::CratesIoReleaseGroupConfig;
 use crate::config::LintCommandConfig;
 use crate::constants::APP_NAME;
 use crate::constants::CONFIG_FILE;
@@ -624,6 +625,12 @@ pub(super) fn settings_table_from_config(
 ) -> Result<Table, SettingsError> {
     let mut table = Table::new();
     set_cache_root(&mut table, &cargo_port_config.cache.root)?;
+    write_value(
+        &mut table,
+        "crates_io",
+        "release_groups",
+        crates_io_release_groups_value(&cargo_port_config.crates_io.release_groups),
+    )?;
     set_invert_scroll(
         &mut table,
         cargo_port_config.mouse.invert_scroll.is_inverted(),
@@ -718,6 +725,34 @@ fn default_config() -> CargoPortConfig { CargoPortConfig::default() }
 
 fn string_array_value(values: Vec<String>) -> Value {
     Value::Array(values.into_iter().map(Value::String).collect())
+}
+
+fn crates_io_release_groups_value(release_groups: &[CratesIoReleaseGroupConfig]) -> Value {
+    Value::Array(
+        release_groups
+            .iter()
+            .map(|release_group| {
+                let mut table = Table::new();
+                table.insert(
+                    "representative".to_string(),
+                    Value::String(release_group.representative.clone()),
+                );
+                table.insert(
+                    "label".to_string(),
+                    Value::String(release_group.label.clone()),
+                );
+                table.insert(
+                    "workspace_members".to_string(),
+                    Value::Boolean(release_group.workspace_members.into()),
+                );
+                table.insert(
+                    "members".to_string(),
+                    string_array_value(release_group.members.clone()),
+                );
+                Value::Table(table)
+            })
+            .collect(),
+    )
 }
 
 fn read_string_array(table: &Table, section: &str, key: &str, default: Vec<String>) -> Vec<String> {
@@ -2118,6 +2153,15 @@ mod tests {
                 .expect("load settings");
         let mut cargo_port_config = CargoPortConfig::default();
         cargo_port_config.tui.ci_run_count = 9;
+        cargo_port_config
+            .crates_io
+            .release_groups
+            .push(CratesIoReleaseGroupConfig {
+                representative:    "bevy".to_string(),
+                label:             "Bevy".to_string(),
+                workspace_members: config::WorkspaceMemberInclusion::Include,
+                members:           Vec::new(),
+            });
         let mut toast_settings = ToastSettings::default();
         toast_settings.status_toast_visible =
             ToastDuration::try_from_secs("status_toast_visible", 3.0).expect("toast duration");
@@ -2129,6 +2173,9 @@ mod tests {
 
         let saved = std::fs::read_to_string(path).expect("read saved config");
         assert!(saved.contains("ci_run_count = 9"));
+        assert!(saved.contains("[[crates_io.release_groups]]"));
+        assert!(saved.contains("representative = \"bevy\""));
+        assert!(saved.contains("workspace_members = true"));
         assert!(saved.contains("[toasts]"));
         assert!(saved.contains("status_toast_visible = 3.0"));
     }

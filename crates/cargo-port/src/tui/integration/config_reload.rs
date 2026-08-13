@@ -17,6 +17,7 @@ pub(super) enum ConfigKey {
     InlineDirs,
     DiscoveryShimmerSecs,
     CacheRoot,
+    CratesIoReleaseGroups,
     LintEnabled,
     LintInclude,
     LintExclude,
@@ -198,6 +199,9 @@ fn changed_keys(old: &CargoPortConfig, new: &CargoPortConfig) -> Vec<ConfigKey> 
     if old.cache.root != new.cache.root {
         keys.push(ConfigKey::CacheRoot);
     }
+    if old.crates_io.release_groups != new.crates_io.release_groups {
+        keys.push(ConfigKey::CratesIoReleaseGroups);
+    }
     if old.lint.enabled != new.lint.enabled {
         keys.push(ConfigKey::LintEnabled);
     }
@@ -251,12 +255,20 @@ mod tests {
         new.mouse.invert_scroll = ScrollDirection::Normal;
         new.tui.editor = "helix".to_string();
         new.tui.discovery_shimmer_secs = 4.0;
+        new.crates_io
+            .release_groups
+            .push(crate::config::CratesIoReleaseGroupConfig {
+                representative: "bevy".to_string(),
+                workspace_members: crate::config::WorkspaceMemberInclusion::Include,
+                ..crate::config::CratesIoReleaseGroupConfig::default()
+            });
 
         let keys = changed_keys(&CargoPortConfig::default(), &new);
 
         assert!(keys.contains(&ConfigKey::InvertScroll));
         assert!(keys.contains(&ConfigKey::Editor));
         assert!(keys.contains(&ConfigKey::DiscoveryShimmerSecs));
+        assert!(keys.contains(&ConfigKey::CratesIoReleaseGroups));
         assert_eq!(
             collect_reload_actions(&CargoPortConfig::default(), &new, ReloadContext::default()),
             ReloadActions::default()

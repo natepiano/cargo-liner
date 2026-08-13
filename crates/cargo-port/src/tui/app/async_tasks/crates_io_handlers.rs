@@ -61,21 +61,20 @@ impl App {
         self.sync_running_crates_io_toast();
     }
 
-    /// A background refresh found `name` published at a version other
-    /// than the one on display. The new version is already applied by
-    /// the accompanying `BackgroundMsg::CratesIoVersion` messages; this
-    /// raises the persistent toast that says so, since the refresh is
-    /// otherwise silent and a version that changes while the user is
-    /// looking elsewhere would go unnoticed.
+    /// A background refresh found a crate published at a version other than
+    /// the one on display. The new version is already applied by the
+    /// accompanying `BackgroundMsg::CratesIoVersion` messages; this raises
+    /// the persistent toast using either the crate name or its configured
+    /// release-group label.
     pub(super) fn handle_crates_io_new_release(
         &mut self,
-        name: &str,
+        display_name: &str,
         previous_version: &str,
         version: &str,
     ) {
         self.framework.toasts.push(
             CRATES_IO_NEW_RELEASE_TITLE,
-            format!("{name} {previous_version} → {version}"),
+            format!("{display_name} {previous_version} → {version}"),
         );
     }
 }

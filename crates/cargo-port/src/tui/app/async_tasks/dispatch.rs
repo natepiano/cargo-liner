@@ -171,10 +171,12 @@ impl App {
                 downloads,
             ),
             BackgroundMsg::CratesIoNewRelease {
-                name,
+                display_name,
                 previous_version,
                 version,
-            } => self.handle_crates_io_new_release(&name, &previous_version, &version),
+            } => {
+                self.handle_crates_io_new_release(&display_name, &previous_version, &version);
+            },
             BackgroundMsg::RepoMeta {
                 path,
                 stars,

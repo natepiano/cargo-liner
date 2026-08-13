@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::btree_map::Entry;
 use std::path::Path;
 use std::time::Duration;
 use std::time::Instant;
@@ -8,6 +9,7 @@ use std::time::Instant;
 use tui_pane::PERF_LOG_TARGET;
 
 use super::constants::CRATES_IO_FETCH_WORKERS;
+use crate::config::CratesIoReleaseGroupConfig;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::GitRepoPresence;
@@ -86,8 +88,9 @@ impl App {
     /// query each, fanned out to every path.
     pub(super) fn collect_crates_io_fetch_plan(&self) -> CratesIoFetchPlan {
         let mut plan = CratesIoFetchPlan::default();
+        let release_groups = &self.config.current().crates_io.release_groups;
         for entry in &self.project_list {
-            collect_plan_children(&entry.root_item, &mut plan);
+            collect_plan_children(&entry.root_item, &mut plan, release_groups);
         }
         plan
     }
@@ -193,14 +196,61 @@ impl App {
 /// under one name — one query, fanned out to every path.
 #[derive(Default)]
 pub(super) struct CratesIoFetchPlan {
-    by_name: BTreeMap<String, Vec<AbsolutePath>>,
+    by_name: BTreeMap<String, CratesIoFetchTarget>,
+}
+
+struct CratesIoFetchTarget {
+    paths:        Vec<AbsolutePath>,
+    notification: ReleaseNotification,
+}
+
+pub(super) struct CratesIoRefreshTarget {
+    pub(super) name:         String,
+    pub(super) paths:        Vec<AbsolutePath>,
+    pub(super) notification: ReleaseNotification,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum ReleaseNotification {
+    Crate,
+    Group { label: String },
+    Suppress,
+}
+
+impl ReleaseNotification {
+    fn merged(self, incoming: Self) -> Self {
+        match (self, incoming) {
+            (group @ Self::Group { .. }, _) | (_, group @ Self::Group { .. }) => group,
+            (Self::Suppress, _) | (_, Self::Suppress) => Self::Suppress,
+            (Self::Crate, Self::Crate) => Self::Crate,
+        }
+    }
+
+    pub(super) fn into_name(self, crate_name: String) -> Option<String> {
+        match self {
+            Self::Crate => Some(crate_name),
+            Self::Group { label } => Some(label),
+            Self::Suppress => None,
+        }
+    }
 }
 
 impl CratesIoFetchPlan {
-    fn insert(&mut self, name: &str, path: &AbsolutePath) {
-        let paths = self.by_name.entry(name.to_string()).or_default();
-        if !paths.contains(path) {
-            paths.push(path.clone());
+    fn insert(&mut self, name: &str, path: &AbsolutePath, notification: ReleaseNotification) {
+        match self.by_name.entry(name.to_string()) {
+            Entry::Vacant(entry) => {
+                entry.insert(CratesIoFetchTarget {
+                    paths: vec![path.clone()],
+                    notification,
+                });
+            },
+            Entry::Occupied(mut entry) => {
+                let target = entry.get_mut();
+                if !target.paths.contains(path) {
+                    target.paths.push(path.clone());
+                }
+                target.notification = target.notification.clone().merged(notification);
+            },
         }
     }
 
@@ -214,7 +264,12 @@ impl CratesIoFetchPlan {
     pub(super) fn name_for_path(&self, path: &Path) -> Option<&str> {
         self.by_name
             .iter()
-            .find(|(_, paths)| paths.iter().any(|candidate| candidate.as_path() == path))
+            .find(|(_, target)| {
+                target
+                    .paths
+                    .iter()
+                    .any(|candidate| candidate.as_path() == path)
+            })
             .map(|(name, _)| name.as_str())
     }
 
@@ -222,9 +277,9 @@ impl CratesIoFetchPlan {
     /// paths. The recovery refetch uses this to re-dispatch only the
     /// projects whose version never landed.
     fn retain_paths(&mut self, mut keep: impl FnMut(&AbsolutePath) -> bool) {
-        self.by_name.retain(|_, paths| {
-            paths.retain(&mut keep);
-            !paths.is_empty()
+        self.by_name.retain(|_, target| {
+            target.paths.retain(&mut keep);
+            !target.paths.is_empty()
         });
     }
 
@@ -238,7 +293,7 @@ impl CratesIoFetchPlan {
         checked_at: &HashMap<String, Instant>,
         now: Instant,
         min_age: Duration,
-    ) -> Option<(String, Vec<AbsolutePath>)> {
+    ) -> Option<CratesIoRefreshTarget> {
         let name = self
             .by_name
             .keys()
@@ -247,7 +302,13 @@ impl CratesIoFetchPlan {
         if query_age(checked_at, &name, now) < min_age {
             return None;
         }
-        self.by_name.remove_entry(&name)
+        self.by_name
+            .remove(&name)
+            .map(|target| CratesIoRefreshTarget {
+                name,
+                paths: target.paths,
+                notification: target.notification,
+            })
     }
 
     /// Split the plan into at most `workers` non-empty round-robin
@@ -256,8 +317,8 @@ impl CratesIoFetchPlan {
     fn into_worker_buckets(self, workers: usize) -> Vec<Vec<(String, Vec<AbsolutePath>)>> {
         let bucket_count = workers.max(1);
         let mut buckets: Vec<Vec<(String, Vec<AbsolutePath>)>> = vec![Vec::new(); bucket_count];
-        for (index, entry) in self.by_name.into_iter().enumerate() {
-            buckets[index % bucket_count].push(entry);
+        for (index, (name, target)) in self.by_name.into_iter().enumerate() {
+            buckets[index % bucket_count].push((name, target.paths));
         }
         buckets.retain(|bucket| !bucket.is_empty());
         buckets
@@ -275,38 +336,104 @@ fn query_age(checked_at: &HashMap<String, Instant>, name: &str, now: Instant) ->
 
 /// Collect one root item's publishable crates — the root package itself,
 /// workspace members, and vendored crates — into the fetch plan.
-fn collect_plan_children(item: &RootItem, plan: &mut CratesIoFetchPlan) {
-    fn push_entry(entry: &dyn ProjectFields, plan: &mut CratesIoFetchPlan) {
-        if let Some(name) = entry.crates_io_name() {
-            plan.insert(name, entry.path());
+fn collect_plan_children(
+    item: &RootItem,
+    plan: &mut CratesIoFetchPlan,
+    release_groups: &[CratesIoReleaseGroupConfig],
+) {
+    fn notification_for_entry(
+        name: &str,
+        workspace_group: Option<&CratesIoReleaseGroupConfig>,
+        release_groups: &[CratesIoReleaseGroupConfig],
+    ) -> ReleaseNotification {
+        if let Some(release_group) = workspace_group {
+            return if name == release_group.representative {
+                ReleaseNotification::Group {
+                    label: release_group.toast_label().to_string(),
+                }
+            } else {
+                ReleaseNotification::Suppress
+            };
         }
-    }
-    fn push_workspace(ws: &Workspace, plan: &mut CratesIoFetchPlan) {
-        push_entry(ws, plan);
-        for group in ws.groups() {
-            for member in group.members() {
-                push_package(member, plan);
+
+        for release_group in release_groups {
+            if release_group.members.iter().any(|member| member == name) {
+                return ReleaseNotification::Suppress;
+            }
+            if !release_group.members.is_empty() && name == release_group.representative {
+                return ReleaseNotification::Group {
+                    label: release_group.toast_label().to_string(),
+                };
             }
         }
-        for vendored in ws.vendored() {
-            push_entry(vendored, plan);
+
+        ReleaseNotification::Crate
+    }
+
+    fn push_entry(
+        entry: &dyn ProjectFields,
+        plan: &mut CratesIoFetchPlan,
+        workspace_group: Option<&CratesIoReleaseGroupConfig>,
+        release_groups: &[CratesIoReleaseGroupConfig],
+    ) {
+        if let Some(name) = entry.crates_io_name() {
+            plan.insert(
+                name,
+                entry.path(),
+                notification_for_entry(name, workspace_group, release_groups),
+            );
         }
     }
-    fn push_package(pkg: &Package, plan: &mut CratesIoFetchPlan) {
-        push_entry(pkg, plan);
-        for vendored in pkg.vendored() {
-            push_entry(vendored, plan);
+
+    fn push_workspace(
+        workspace: &Workspace,
+        plan: &mut CratesIoFetchPlan,
+        release_groups: &[CratesIoReleaseGroupConfig],
+    ) {
+        let workspace_group = workspace.crates_io_name().and_then(|name| {
+            release_groups.iter().find(|release_group| {
+                release_group.includes_workspace_members() && release_group.representative == name
+            })
+        });
+        push_entry(workspace, plan, workspace_group, release_groups);
+        for group in workspace.groups() {
+            for member in group.members() {
+                push_package(member, plan, workspace_group, release_groups);
+            }
+        }
+        for vendored in workspace.vendored() {
+            push_entry(vendored, plan, None, release_groups);
+        }
+    }
+
+    fn push_package(
+        package: &Package,
+        plan: &mut CratesIoFetchPlan,
+        workspace_group: Option<&CratesIoReleaseGroupConfig>,
+        release_groups: &[CratesIoReleaseGroupConfig],
+    ) {
+        push_entry(package, plan, workspace_group, release_groups);
+        for vendored in package.vendored() {
+            push_entry(vendored, plan, None, release_groups);
         }
     }
 
     match item {
-        RootItem::Rust(RustProject::Workspace(ws)) => push_workspace(ws, plan),
-        RootItem::Rust(RustProject::Package(pkg)) => push_package(pkg, plan),
+        RootItem::Rust(RustProject::Workspace(workspace)) => {
+            push_workspace(workspace, plan, release_groups);
+        },
+        RootItem::Rust(RustProject::Package(package)) => {
+            push_package(package, plan, None, release_groups);
+        },
         RootItem::Worktrees(group) => {
             for entry in group.iter_entries() {
                 match entry {
-                    RustProject::Workspace(ws) => push_workspace(ws, plan),
-                    RustProject::Package(pkg) => push_package(pkg, plan),
+                    RustProject::Workspace(workspace) => {
+                        push_workspace(workspace, plan, release_groups);
+                    },
+                    RustProject::Package(package) => {
+                        push_package(package, plan, None, release_groups);
+                    },
                 }
             }
         },
@@ -321,6 +448,10 @@ fn collect_plan_children(item: &RootItem, plan: &mut CratesIoFetchPlan) {
 )]
 mod tests {
     use super::*;
+    use crate::config::WorkspaceMemberInclusion;
+    use crate::project::MemberGroup;
+    use crate::project::RustInfo;
+    use crate::project::VendoredPackage;
     use crate::tui::app::async_tasks::constants::CRATES_IO_REFRESH_MIN_AGE_SECS;
 
     fn abs(raw: &str) -> AbsolutePath { AbsolutePath::from(raw) }
@@ -328,12 +459,12 @@ mod tests {
     #[test]
     fn plan_fans_duplicate_names_out_to_distinct_paths() {
         let mut plan = CratesIoFetchPlan::default();
-        plan.insert("serde", &abs("/a/serde"));
-        plan.insert("serde", &abs("/b/serde"));
-        plan.insert("serde", &abs("/a/serde"));
+        plan.insert("serde", &abs("/a/serde"), ReleaseNotification::Crate);
+        plan.insert("serde", &abs("/b/serde"), ReleaseNotification::Crate);
+        plan.insert("serde", &abs("/a/serde"), ReleaseNotification::Crate);
         assert_eq!(plan.names().len(), 1, "one name means one query");
         assert_eq!(
-            plan.by_name["serde"].len(),
+            plan.by_name["serde"].paths.len(),
             2,
             "both paths fan out; the repeated (name, path) pair dedups"
         );
@@ -342,16 +473,16 @@ mod tests {
     #[test]
     fn retain_paths_drops_emptied_names() {
         let mut plan = CratesIoFetchPlan::default();
-        plan.insert("serde", &abs("/a/serde"));
-        plan.insert("tokio", &abs("/a/tokio"));
-        plan.insert("tokio", &abs("/b/tokio"));
+        plan.insert("serde", &abs("/a/serde"), ReleaseNotification::Crate);
+        plan.insert("tokio", &abs("/a/tokio"), ReleaseNotification::Crate);
+        plan.insert("tokio", &abs("/b/tokio"), ReleaseNotification::Crate);
         plan.retain_paths(|path| path.as_path().starts_with("/b"));
         assert!(
             !plan.names().contains("serde"),
             "a name with no surviving paths leaves the plan"
         );
         assert_eq!(
-            plan.by_name["tokio"],
+            plan.by_name["tokio"].paths,
             vec![abs("/b/tokio")],
             "surviving paths stay under their name"
         );
@@ -364,7 +495,11 @@ mod tests {
         let now = base + min_age * 2;
         let mut plan = CratesIoFetchPlan::default();
         for name in ["fresh", "stale", "stalest"] {
-            plan.insert(name, &abs(&format!("/x/{name}")));
+            plan.insert(
+                name,
+                &abs(&format!("/x/{name}")),
+                ReleaseNotification::Crate,
+            );
         }
         let checked_at = HashMap::from([
             ("fresh".to_string(), now),
@@ -372,11 +507,11 @@ mod tests {
             ("stalest".to_string(), base),
         ]);
 
-        let (name, paths) = plan
+        let target = plan
             .take_stalest(&checked_at, now, min_age)
             .expect("one name is past the age gate");
-        assert_eq!(name, "stalest", "the oldest query goes first");
-        assert_eq!(paths, vec![abs("/x/stalest")]);
+        assert_eq!(target.name, "stalest", "the oldest query goes first");
+        assert_eq!(target.paths, vec![abs("/x/stalest")]);
     }
 
     #[test]
@@ -385,15 +520,15 @@ mod tests {
         let base = Instant::now();
         let now = base + min_age * 2;
         let mut plan = CratesIoFetchPlan::default();
-        plan.insert("queried", &abs("/x/queried"));
-        plan.insert("new", &abs("/x/new"));
+        plan.insert("queried", &abs("/x/queried"), ReleaseNotification::Crate);
+        plan.insert("new", &abs("/x/new"), ReleaseNotification::Crate);
         let checked_at = HashMap::from([("queried".to_string(), base)]);
 
-        let (name, _) = plan
+        let target = plan
             .take_stalest(&checked_at, now, min_age)
             .expect("the unstamped name is eligible");
         assert_eq!(
-            name, "new",
+            target.name, "new",
             "a name discovered mid-session outranks every stamped one"
         );
     }
@@ -404,7 +539,7 @@ mod tests {
         let base = Instant::now();
         let now = base + min_age.saturating_sub(Duration::from_millis(1));
         let mut plan = CratesIoFetchPlan::default();
-        plan.insert("recent", &abs("/x/recent"));
+        plan.insert("recent", &abs("/x/recent"), ReleaseNotification::Crate);
         let checked_at = HashMap::from([("recent".to_string(), base)]);
 
         assert!(
@@ -423,7 +558,11 @@ mod tests {
     fn worker_buckets_round_robin_and_drop_empties() {
         let mut plan = CratesIoFetchPlan::default();
         for name in ["a", "b", "c", "d", "e"] {
-            plan.insert(name, &abs(&format!("/x/{name}")));
+            plan.insert(
+                name,
+                &abs(&format!("/x/{name}")),
+                ReleaseNotification::Crate,
+            );
         }
         let buckets = plan.into_worker_buckets(2);
         assert_eq!(buckets.len(), 2);
@@ -438,7 +577,7 @@ mod tests {
         );
 
         let mut small = CratesIoFetchPlan::default();
-        small.insert("only", &abs("/x/only"));
+        small.insert("only", &abs("/x/only"), ReleaseNotification::Crate);
         assert_eq!(
             small.into_worker_buckets(4).len(),
             1,
@@ -449,6 +588,106 @@ mod tests {
                 .into_worker_buckets(4)
                 .is_empty(),
             "an empty plan yields no buckets"
+        );
+    }
+
+    #[test]
+    fn workspace_release_group_uses_one_representative_notification() {
+        let release_group = CratesIoReleaseGroupConfig {
+            representative:    "bevy".to_string(),
+            label:             "Bevy".to_string(),
+            workspace_members: WorkspaceMemberInclusion::Include,
+            members:           Vec::new(),
+        };
+        let workspace = Workspace {
+            path: abs("/rust/bevy"),
+            name: Some("bevy".to_string()),
+            rust: RustInfo {
+                vendored: vec![VendoredPackage {
+                    path: abs("/rust/bevy/vendor/serde"),
+                    name: Some("serde".to_string()),
+                    ..VendoredPackage::default()
+                }],
+                ..RustInfo::default()
+            },
+            groups: vec![MemberGroup::Inline {
+                members: vec![
+                    Package {
+                        path: abs("/rust/bevy/crates/bevy_ecs"),
+                        name: Some("bevy_ecs".to_string()),
+                        ..Package::default()
+                    },
+                    Package {
+                        path: abs("/rust/bevy/crates/bevy_settings"),
+                        name: Some("bevy-settings".to_string()),
+                        ..Package::default()
+                    },
+                ],
+            }],
+            ..Workspace::default()
+        };
+        let root_item = RootItem::Rust(RustProject::Workspace(workspace));
+        let mut plan = CratesIoFetchPlan::default();
+
+        collect_plan_children(&root_item, &mut plan, &[release_group]);
+
+        assert_eq!(
+            plan.by_name["bevy"].notification,
+            ReleaseNotification::Group {
+                label: "Bevy".to_string(),
+            }
+        );
+        assert_eq!(
+            plan.by_name["bevy_ecs"].notification,
+            ReleaseNotification::Suppress
+        );
+        assert_eq!(
+            plan.by_name["bevy-settings"].notification,
+            ReleaseNotification::Suppress
+        );
+        assert_eq!(
+            plan.by_name["serde"].notification,
+            ReleaseNotification::Crate,
+            "vendored crates do not inherit the workspace release group"
+        );
+    }
+
+    #[test]
+    fn explicit_release_group_applies_across_standalone_packages() {
+        let release_group = CratesIoReleaseGroupConfig {
+            representative: "suite".to_string(),
+            label: "Suite".to_string(),
+            members: vec!["suite-core".to_string()],
+            ..CratesIoReleaseGroupConfig::default()
+        };
+        let representative = RootItem::Rust(RustProject::Package(Package {
+            path: abs("/rust/suite"),
+            name: Some("suite".to_string()),
+            ..Package::default()
+        }));
+        let member = RootItem::Rust(RustProject::Package(Package {
+            path: abs("/rust/suite-core"),
+            name: Some("suite-core".to_string()),
+            ..Package::default()
+        }));
+        let mut plan = CratesIoFetchPlan::default();
+
+        collect_plan_children(
+            &representative,
+            &mut plan,
+            std::slice::from_ref(&release_group),
+        );
+        collect_plan_children(&member, &mut plan, &[release_group]);
+
+        assert_eq!(
+            plan.by_name["suite"].notification,
+            ReleaseNotification::Group {
+                label: "Suite".to_string(),
+            }
+        );
+        assert_eq!(
+            plan.by_name["suite-core"].notification,
+            ReleaseNotification::Suppress
         );
     }
 }

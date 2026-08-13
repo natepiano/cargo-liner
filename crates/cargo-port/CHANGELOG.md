@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Add configurable crates.io release groups so coordinated workspaces such as Bevy keep each crate's version current while emitting one release toast through a representative crate.
+
 ## [0.5.0] - 2026-07-30
 
 ### Added
