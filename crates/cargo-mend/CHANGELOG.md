@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- A type re-exported through a `pub(super) use` facade is no longer narrowed below the visibility of
+  a function whose signature names it. The facade boundary is now joined with the caller boundary,
+  so `--fix` stops producing `private_interfaces` errors and rolling the batch back.
+
 ## [0.18.1] - 2026-08-08
 
 ### Fixed

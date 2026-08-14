@@ -359,7 +359,7 @@ impl VisibilityConstraintGroup {
             return Some(finding);
         }
         if self.constraints.all_facades_are_resolved() {
-            return self.render_resolved_facades(required_reach.as_ref());
+            return self.render_resolved_facades(callers, package_root, required_reach.as_ref());
         }
         let mut finding = self.preferred_candidate()?.finding.clone();
         if !self.constraints.uses_caller_reconciliation() {
@@ -670,19 +670,33 @@ impl VisibilityConstraintGroup {
             .map(|candidate| candidate.finding.clone())
     }
 
+    /// A resolved facade fixes the reach the item's *own path* needs, but a
+    /// caller can reach the same declaration without writing that path — most
+    /// often by naming a function whose signature mentions the type. Joining the
+    /// caller map in keeps the two halves of this module agreed:
+    /// [`Self::declares_effective_required_boundary`] already accepts an
+    /// annotation against the joined reach, so rewriting against the facade
+    /// alone would narrow past a `ThroughSignature` caller and leave a private
+    /// type in a wider item's signature (`private_interfaces`), rolling `--fix`
+    /// back.
     fn render_resolved_facades(
         &self,
+        callers: &CallerMap,
+        package_root: &str,
         required_reach: Option<&StoredVisibilityReach>,
     ) -> Option<StoredFinding> {
-        let required_reach = required_reach?;
+        let facade_reach = required_reach?;
+        let required_reach = self
+            .caller_required_reach(callers, package_root)
+            .map_or_else(|| facade_reach.clone(), |caller| facade_reach.join(&caller));
         let declared_reach = self.constraints.uniform_declared_reach();
-        if declared_reach.as_ref() == Some(required_reach)
+        if declared_reach.as_ref() == Some(&required_reach)
             && self.constraints.all_exact_boundaries_are_eligible()
         {
             return None;
         }
         let mut finding = self.preferred_candidate()?.finding.clone();
-        if declared_reach.as_ref() != Some(required_reach) {
+        if declared_reach.as_ref() != Some(&required_reach) {
             let boundary = required_reach.boundary();
             let spelling = self.exact_boundary_spelling(boundary);
             if self.supports_rewrite(spelling) {
