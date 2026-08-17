@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- A type named in the interface of a trait impl whose trait and self type are both `pub` is no
+  longer narrowed by `suspicious_pub`. rustc requires those declarations to stay `pub` (E0446), so
+  `--fix` applied the narrowing, failed its re-check, and rolled the whole batch back.
+
 ## [0.18.2] - 2026-08-14
 
 ### Fixed

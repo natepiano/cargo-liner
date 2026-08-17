@@ -52,6 +52,7 @@ pub(in crate::compiler::visibility) enum AllowanceReason {
     ParentFacadeUsedOutsideParent,
     InternalParentFacadeBoundary,
     ExposedByOtherCrateVisibleSignature,
+    ExposedByPublicTraitImplInterface,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

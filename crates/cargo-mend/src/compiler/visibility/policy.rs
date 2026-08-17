@@ -183,6 +183,18 @@ pub(super) fn classify_suspicious_pub(
     parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
     signature_exposure: SignatureExposure,
 ) -> Result<SuspiciousPubAssessment> {
+    // `public_visibility_targets` holds the ADTs named in a trait impl
+    // interface whose trait and self type are both declared `pub`
+    // (`use_sites::record_trait_impl_interface`). rustc requires those
+    // declarations to stay `pub` (E0446), so no narrower boundary is
+    // proposable — the caller module recorded for the interface is the crate
+    // root, which on its own would read as `pub(crate)`.
+    // `maybe_record_narrow_to_pub_crate` consults the same set.
+    if ctx.public_visibility_targets.contains(&input.def_id) {
+        return Ok(SuspiciousPubAssessment::Allowed(
+            AllowanceReason::ExposedByPublicTraitImplInterface,
+        ));
+    }
     let facade_chain_reach =
         parent_facade_analysis.map_or(FacadeChainReach::Unresolved, |analysis| {
             match analysis.chain {
