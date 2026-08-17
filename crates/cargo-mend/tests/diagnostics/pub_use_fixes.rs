@@ -190,7 +190,7 @@ edition = "2024"
     assert_eq!(report.summary.errors, 0);
     assert_eq!(report.summary.warnings, 1);
     assert_eq!(report.summary.fixable_with_fix, 0);
-    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 1);
     let codes = report
         .findings
         .iter()
@@ -354,7 +354,7 @@ edition = "2024"
     assert_eq!(report.summary.errors, 0);
     assert_eq!(report.summary.warnings, 2);
     assert_eq!(report.summary.fixable_with_fix, 1);
-    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 1);
     let codes = report
         .findings
         .iter()
@@ -1112,7 +1112,7 @@ pub fn touch(_: CacheEntryStatus) {}
     assert!(codes.contains("suspicious_pub"));
     assert!(codes.contains("unused_pub"));
     assert_eq!(report.summary.fixable_with_fix, 2);
-    assert_eq!(report.summary.fixable_with_fix_pub_use, 4);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 6);
 }
 
 #[test]
@@ -1162,7 +1162,7 @@ edition = "2024"
         BTreeSet::from(["internal_parent_pub_use_facade", "unused_pub"])
     );
     assert_eq!(report.summary.fixable_with_fix, 1);
-    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 2);
 }
 
 #[test]
@@ -1212,7 +1212,7 @@ edition = "2024"
         BTreeSet::from(["internal_parent_pub_use_facade", "unused_pub"])
     );
     assert_eq!(report.summary.fixable_with_fix, 1);
-    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 3);
 }
 
 #[test]
@@ -1254,7 +1254,7 @@ edition = "2024"
         .collect::<BTreeSet<_>>();
     assert_eq!(codes, BTreeSet::from(["internal_parent_pub_use_facade"]));
     assert_eq!(report.summary.fixable_with_fix, 0);
-    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 1);
 }
 
 fn create_preserve_exports_fixture() -> TempDir {
@@ -1433,7 +1433,7 @@ edition = "2024"
         BTreeSet::from(["internal_parent_pub_use_facade", "unused_pub"])
     );
     assert_eq!(report.summary.fixable_with_fix, 3);
-    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 2);
 }
 
 #[test]
@@ -1770,5 +1770,112 @@ edition = "2024"
     assert!(
         stderr.contains("mend: applied 1 `pub use` fix(es)"),
         "apply notice missing; stderr:\n{stderr}"
+    );
+}
+
+/// Writes a crate whose only reference to a parent facade lives inside the
+/// facade's own subtree — the case `internal_parent_pub_use_facade` reports.
+/// `subtree_use_site` is the body of `src/tool/inner.rs`, which is what
+/// distinguishes an importing subtree from one that writes the path inline.
+fn write_internal_facade_fixture(temp: &TempDir, subtree_use_site: &str) {
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+    fs::create_dir_all(temp.path().join("src/tool")).expect("create src/tool");
+    for (relative_path, source) in [
+        (
+            "Cargo.toml",
+            "[package]\nname = \"internal_facade_fix_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        ),
+        (
+            "src/main.rs",
+            "mod tool;\n\nfn main() {\n    tool::touch();\n}\n",
+        ),
+        (
+            "src/tool/mod.rs",
+            "mod inner;\nmod widget;\n\npub use widget::Widget;\n\npub(crate) fn touch() {\n    inner::use_widget();\n}\n",
+        ),
+        ("src/tool/inner.rs", subtree_use_site),
+        ("src/tool/widget.rs", "pub struct Widget;\n"),
+    ] {
+        fs::write(temp.path().join(relative_path), source)
+            .unwrap_or_else(|error| panic!("write {relative_path}: {error}"));
+    }
+}
+
+fn apply_pub_use_fix(temp: &TempDir) {
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix-pub-use")
+        .output()
+        .expect("run cargo-mend --fix-pub-use");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix-pub-use failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn fix_pub_use_removes_an_internal_facade_and_repoints_its_subtree_import() {
+    let temp = tempdir().expect("create internal facade fixture dir");
+    write_internal_facade_fixture(
+        &temp,
+        "use super::Widget;\n\npub(super) fn use_widget() {\n    let _ = Widget;\n}\n",
+    );
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let finding = report
+        .findings
+        .iter()
+        .find(|finding| finding.code == DiagnosticCode::InternalParentPubUseFacade)
+        .unwrap_or_else(|| panic!("missing internal facade finding: {report:#?}"));
+    assert_eq!(finding.fix_support, FixSupport::PubUse);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 1);
+
+    apply_pub_use_fix(&temp);
+
+    let parent = fs::read_to_string(temp.path().join("src/tool/mod.rs")).expect("read parent");
+    assert!(
+        !parent.contains("pub use widget::Widget;"),
+        "facade survived the fix: {parent}"
+    );
+    assert_eq!(
+        fs::read_to_string(temp.path().join("src/tool/inner.rs")).expect("read subtree importer"),
+        "use super::widget::Widget;\n\npub(super) fn use_widget() {\n    let _ = Widget;\n}\n",
+    );
+    assert_eq!(
+        fs::read_to_string(temp.path().join("src/tool/widget.rs")).expect("read child"),
+        "pub(super) struct Widget;\n",
+    );
+}
+
+#[test]
+fn fix_pub_use_removes_an_internal_facade_and_repoints_its_inline_subtree_path() {
+    let temp = tempdir().expect("create internal facade fixture dir");
+    write_internal_facade_fixture(
+        &temp,
+        "pub(super) fn use_widget() {\n    let _ = super::Widget;\n}\n",
+    );
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 1);
+
+    apply_pub_use_fix(&temp);
+
+    let parent = fs::read_to_string(temp.path().join("src/tool/mod.rs")).expect("read parent");
+    assert!(
+        !parent.contains("pub use widget::Widget;"),
+        "facade survived the fix: {parent}"
+    );
+    // The path is rewritten in place: nothing moves to a `use` line, because the
+    // subtree never had one.
+    assert_eq!(
+        fs::read_to_string(temp.path().join("src/tool/inner.rs")).expect("read subtree path site"),
+        "pub(super) fn use_widget() {\n    let _ = super::widget::Widget;\n}\n",
+    );
+    assert_eq!(
+        fs::read_to_string(temp.path().join("src/tool/widget.rs")).expect("read child"),
+        "pub(super) struct Widget;\n",
     );
 }

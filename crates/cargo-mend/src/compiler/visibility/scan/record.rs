@@ -24,6 +24,7 @@ use super::classify::VisibilityFindingContext;
 use crate::compiler::constants::PRELUDE_MODULE_NAME;
 use crate::compiler::facade;
 use crate::compiler::facade::ParentFacadeExportStatus;
+use crate::compiler::facade::ParentFacadeFixSupport;
 use crate::compiler::facade::ParentFacadeReach;
 use crate::compiler::facade::ParentFacadeSpelling;
 use crate::compiler::persistence::FindingsSink;
@@ -1862,6 +1863,7 @@ fn record_internal_parent_facade_review(
         return Ok(());
     };
     let facade_use = status.use_syntax();
+    let fix_support = internal_parent_facade_fix_support(&status, parent_facade_analysis);
     sink.findings.push(source::build_line_finding(
         ctx.source_cache,
         &status.parent_path,
@@ -1877,7 +1879,7 @@ fn record_internal_parent_facade_review(
                 |syntax| format!("parent module `{syntax}` is acting as an internal facade"),
             ),
             suggestion: None,
-            fix_support: FixSupport::InternalParentFacade,
+            fix_support,
             related,
             visibility_annotation: None,
             // The facade scan reads source text, so it cannot see paths that
@@ -1890,7 +1892,29 @@ fn record_internal_parent_facade_review(
             exact_boundary_spelling: ExactBoundarySpelling::CratePath,
         },
     )?);
+    record_suspicious_pub_use_fact(ctx, input, Some(&status), fix_support, sink);
     Ok(())
+}
+
+/// Whether `--fix-pub-use` can delete this facade line. Removing it moves every
+/// importer under the parent onto the declaring child module, so the fixer needs
+/// two things the facade scan already decided: a boundary it can edit
+/// (`ParentFacadeFixSupport::Supported` rules out globs and other re-export
+/// spellings it cannot rewrite) and a chain that resolves to one declaring
+/// module. Anything else stays a report-only finding.
+fn internal_parent_facade_fix_support(
+    status: &ParentFacadeExportStatus,
+    parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
+) -> FixSupport {
+    let chain_resolved = matches!(
+        parent_facade_analysis.map(|analysis| analysis.chain),
+        Some(FacadeChainResolution::Resolved { .. })
+    );
+    if status.fix_support == ParentFacadeFixSupport::Supported && chain_resolved {
+        FixSupport::PubUse
+    } else {
+        FixSupport::InternalParentFacade
+    }
 }
 
 fn record_suspicious_pub_warning(

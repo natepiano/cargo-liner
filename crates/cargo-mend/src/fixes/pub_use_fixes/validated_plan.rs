@@ -13,6 +13,7 @@ use syn::ItemUse;
 use syn::UseTree;
 use syn::parse_file;
 use syn::spanned::Spanned;
+use syn::visit;
 use syn::visit::Visit;
 
 use super::parent_boundary::ParentBoundaryKey;
@@ -35,6 +36,17 @@ pub(super) struct ValidatedPubUsePlan {
 struct UseRewrite {
     original:  String,
     rewritten: String,
+}
+
+/// A facade name written inline as a path — `super::Widget`, `crate::tool::Widget` —
+/// in expression, type, or pattern position, together with the path to the
+/// declaring child module that replaces it. The span stops at the matched
+/// segment's identifier so generic arguments, turbofish, and any trailing
+/// segments (`super::Widget::new()`) survive the rewrite untouched.
+struct InlinePathRewrite {
+    span_start:  LineColumn,
+    span_end:    LineColumn,
+    replacement: String,
 }
 
 struct BaseImport<'a> {
@@ -87,6 +99,22 @@ impl Visit<'_> for PubUseFixVisitor<'_> {
                 import_group: None,
             });
         }
+    }
+
+    fn visit_path(&mut self, node: &syn::Path) {
+        if let Some(rewrite) = rewrite_inline_path(&self.current_module_path, node, self.plans) {
+            self.fixes.push(UseFix {
+                path:         self.file.to_path_buf(),
+                start:        offset(self.offsets, rewrite.span_start),
+                end:          offset(self.offsets, rewrite.span_end),
+                replacement:  rewrite.replacement,
+                import_group: None,
+            });
+        }
+        // Keep walking: a match replaces only the leading segments, so a facade
+        // name nested in the generic arguments (`Vec<super::Widget>`) is still
+        // ahead of the cursor.
+        visit::visit_path(self, node);
     }
 }
 
@@ -342,6 +370,56 @@ fn rewrite_leaf_under_base(
         },
         UseTree::Glob(_) | UseTree::Path(_) => None,
     }
+}
+
+/// Matches an inline path against the facade names the plans are removing.
+///
+/// The written path can be longer than the facade name it goes through —
+/// `super::Widget::new()` reaches `Widget` at its second segment — so every
+/// prefix is resolved to an absolute path and compared, shortest first. A
+/// single-segment path is skipped: that name came from a `use` statement, and
+/// `visit_item_use` repoints the `use` line instead.
+fn rewrite_inline_path(
+    current_module_path: &[String],
+    path: &syn::Path,
+    plans: &[&ValidatedPubUsePlan],
+) -> Option<InlinePathRewrite> {
+    // A leading `::` anchors the path at a crate name in the extern prelude, so
+    // it can never spell a module inside the crate under analysis.
+    if path.leading_colon.is_some() {
+        return None;
+    }
+    let segments = path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect::<Vec<_>>();
+
+    (2..=segments.len()).find_map(|length| {
+        let absolute = absolute_use_path(current_module_path, &segments[..length])?;
+        let plan = plans
+            .iter()
+            .find(|plan| facade_item_path(plan) == absolute)?;
+        let matched_segment = path.segments.iter().nth(length - 1)?;
+        Some(InlinePathRewrite {
+            span_start:  path.segments.first()?.ident.span().start(),
+            span_end:    matched_segment.ident.span().end(),
+            replacement: relative_path_from_module(
+                current_module_path,
+                &plan.target_item_path,
+                None,
+            ),
+        })
+    })
+}
+
+/// The absolute path of the name the parent facade publishes — what an inline
+/// path inside the subtree resolves to today, and what stops resolving once the
+/// `pub use` is deleted.
+fn facade_item_path(plan: &ValidatedPubUsePlan) -> Vec<String> {
+    let mut path = plan.parent_module_path.clone();
+    path.push(plan.exported_name.clone());
+    path
 }
 
 fn absolute_use_path(current_module_path: &[String], segments: &[String]) -> Option<Vec<String>> {

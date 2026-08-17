@@ -7,19 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `internal_parent_pub_use_facade` findings can now be fixed automatically, with
+  `cargo mend --fix-pub-use` or `--fix-all`. Mend deletes the parent `pub use`, points everything
+  below it at the child module that actually declares the item, and narrows that declaration to
+  `pub(super)`. Both ways of naming the item are rewritten: `use super::Widget;` becomes
+  `use super::widget::Widget;`, and a `super::Widget` written inline in the code becomes
+  `super::widget::Widget`. A facade that does not resolve to one declaring module — a glob
+  re-export, or a chain that leaves the crate — is still reported, but not fixed.
+
 ### Fixed
-- A type named in the interface of a trait impl whose trait and self type are both `pub` is no
-  longer narrowed by `suspicious_pub`. rustc requires those declarations to stay `pub` (E0446), so
-  `--fix` applied the narrowing, failed its re-check, and rolled the whole batch back.
-- A type named in a function signature, a const or static type, or a struct or enum field is no
-  longer narrowed below the reach of the declaration that names it. Signature types were recorded
-  only at call sites, but rustc's `private_interfaces` lint measures against the declaration
-  itself, so `--fix` left projects with fresh warnings where it had none before.
+- `suspicious_pub` no longer asks to narrow a type used by a trait impl whose trait and self type
+  are both `pub`. rustc rejects that (E0446), so `--fix` made the edit, failed its re-check, and
+  rolled the whole batch back.
+- `--fix` no longer narrows a type below the visibility of the function signature, const, static,
+  or struct field that names it. Mend measured those types at their call sites, but rustc's
+  `private_interfaces` lint measures at the declaration, so a fix could leave a project with fresh
+  warnings it did not have before.
 - `internal_parent_pub_use_facade` no longer fires on a re-export that a proc macro in another
-  crate depends on. The facade scan reads source text, so a `crate::path::Item` that exists only
-  as tokens inside another crate's `quote!` was invisible to it and the re-export looked unused
-  outside its own subtree. The verdict is now checked against the HIR use sites, which are
-  collected after macro expansion.
+  crate depends on. Mend's facade check reads source text, so a path that exists only inside
+  another crate's `quote!` was invisible to it and the re-export looked unused outside its own
+  subtree. It is now cross-checked against the uses the compiler records after macros expand.
 
 ## [0.18.2] - 2026-08-14
 

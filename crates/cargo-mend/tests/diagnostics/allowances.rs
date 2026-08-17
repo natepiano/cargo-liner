@@ -1079,7 +1079,7 @@ edition = "2024"
     assert_eq!(report.summary.errors, 0);
     assert_eq!(report.summary.warnings, 1);
     assert_eq!(report.summary.fixable_with_fix, 0);
-    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 1);
     let codes = report
         .findings
         .iter()
@@ -1128,7 +1128,7 @@ edition = "2024"
     assert_eq!(report.summary.errors, 0);
     assert_eq!(report.summary.warnings, 1);
     assert_eq!(report.summary.fixable_with_fix, 0);
-    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 1);
     let codes = report
         .findings
         .iter()
@@ -1362,7 +1362,7 @@ edition = "2024"
     assert_eq!(report.summary.errors, 0);
     assert_eq!(report.summary.warnings, 2);
     assert_eq!(report.summary.fixable_with_fix, 1);
-    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 1);
     let codes = report
         .findings
         .iter()

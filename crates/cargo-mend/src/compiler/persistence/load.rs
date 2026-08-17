@@ -52,8 +52,9 @@ pub(in crate::compiler) struct LoadedReport {
 
 /// The child declaration a `--fix pub-use` narrowing would rewrite.
 ///
-/// The driver writes a `StoredPubUseFixFact` next to the `SuspiciousPub`
-/// finding that authorizes it, so both name the same declaration. The four
+/// The driver writes a `StoredPubUseFixFact` next to the finding that
+/// authorizes it — `SuspiciousPub` on the child declaration, or
+/// `InternalParentPubUseFacade` on the parent `pub use` line. The four
 /// suppression stages inside `reconcile_cross_target_reports` can drop that
 /// finding afterwards; a fact whose site no longer appears in
 /// `StoredReport::findings` would let the fixer apply a narrowing the
@@ -65,13 +66,24 @@ struct PubUseNarrowingSite {
     item_name: String,
 }
 
-impl From<&StoredPubUseFixFact> for PubUseNarrowingSite {
-    fn from(fact: &StoredPubUseFixFact) -> Self {
-        Self {
-            path:      fact.child_path.clone(),
-            line:      fact.child_line,
-            item_name: fact.child_item_name.clone(),
-        }
+impl PubUseNarrowingSite {
+    /// The two lines a single `pub use` fix can be advertised on. One edit,
+    /// two diagnostics: `suspicious_pub` reports it on the child declaration,
+    /// `internal_parent_pub_use_facade` reports it on the parent `pub use`
+    /// line. Either surviving finding keeps the fact.
+    fn advertising_sites(fact: &StoredPubUseFixFact) -> [Self; 2] {
+        [
+            Self {
+                path:      fact.child_path.clone(),
+                line:      fact.child_line,
+                item_name: fact.child_item_name.clone(),
+            },
+            Self {
+                path:      fact.parent_path.clone(),
+                line:      fact.parent_line,
+                item_name: fact.child_item_name.clone(),
+            },
+        ]
     }
 }
 
@@ -196,9 +208,11 @@ fn discard_fix_facts_for_suppressed_findings(reports: &mut [StoredReport]) {
                 })
             })
             .collect();
-        report
-            .pub_use_fix_facts
-            .retain(|fact| narrowing_sites.contains(&PubUseNarrowingSite::from(fact)));
+        report.pub_use_fix_facts.retain(|fact| {
+            PubUseNarrowingSite::advertising_sites(fact)
+                .iter()
+                .any(|site| narrowing_sites.contains(site))
+        });
     }
 }
 

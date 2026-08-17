@@ -597,8 +597,11 @@ That can be intentional, but it is worth review because it usually means one of 
 - the parent boundary is acting as an internal namespace and should stay that way intentionally
 - or the subtree should import the child module directly instead of routing through the parent
 
-Cargo-mend does not auto-fix this case because removing the facade also requires choosing which
-child-module path each caller should import.
+`cargo mend --fix-pub-use` can rewrite these cases automatically. It deletes the parent `pub use`,
+repoints every reference inside the subtree at the declaring child module — both `use` statements
+and paths written inline — and narrows the child declaration to `pub(super)`. The facade is left in
+place when the re-export cannot be resolved to a single declaring module, such as a `pub use ... *`
+glob or a chain that leaves the crate.
 
 <a id="narrow-to-pub-crate"></a>
 ### Narrow `pub` to `pub(crate)`

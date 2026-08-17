@@ -1525,3 +1525,37 @@ fn a_facade_a_proc_macro_reaches_is_not_reported_as_internal() {
         "a facade used only inside its own subtree must still be reported: {report:#?}"
     );
 }
+
+#[test]
+fn facade_fix_leaves_a_facade_a_proc_macro_reaches_in_place() {
+    let temp = tempdir().expect("create macro consumed facade fixture dir");
+    write_macro_consumed_facade_fixture(&temp);
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix-pub-use")
+        .output()
+        .expect("run cargo-mend --fix-pub-use");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix-pub-use failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // The fix facts are recorded before the cross-target caller analysis runs,
+    // so both facades have one. Only the finding that survived that analysis may
+    // reach the fixer — deleting the `Widget` re-export would leave the
+    // macro-generated `crate::tool::Widget` unresolved.
+    let parent = fs::read_to_string(temp.path().join("app/src/tool/mod.rs"))
+        .expect("read fixed parent module");
+    assert!(
+        parent.contains("pub use widget::Widget;"),
+        "the fixer removed a facade a proc macro reaches: {parent}"
+    );
+    assert!(
+        !parent.contains("pub use local_only::LocalOnly;"),
+        "the fixer left an internal facade in place: {parent}"
+    );
+}
