@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer narrowed below the reach of the declaration that names it. Signature types were recorded
   only at call sites, but rustc's `private_interfaces` lint measures against the declaration
   itself, so `--fix` left projects with fresh warnings where it had none before.
+- `internal_parent_pub_use_facade` no longer fires on a re-export that a proc macro in another
+  crate depends on. The facade scan reads source text, so a `crate::path::Item` that exists only
+  as tokens inside another crate's `quote!` was invisible to it and the re-export looked unused
+  outside its own subtree. The verdict is now checked against the HIR use sites, which are
+  collected after macro expansion.
 
 ## [0.18.2] - 2026-08-14
 

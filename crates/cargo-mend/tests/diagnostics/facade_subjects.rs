@@ -1450,3 +1450,78 @@ fn equal_reach_crate_and_other_spellings_do_not_recommend_narrowing() {
         );
     }
 }
+
+fn write_macro_consumed_facade_fixture(temp: &TempDir) {
+    for (relative_path, source) in [
+        (
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"app\", \"macros\"]\nresolver = \"3\"\n",
+        ),
+        ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
+        (
+            "app/Cargo.toml",
+            "[package]\nname = \"macro_consumed_facade_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\nmacros_fixture = { path = \"../macros\" }\n",
+        ),
+        (
+            "app/src/main.rs",
+            "mod consumer;\nmod tool;\n\nfn main() {\n    consumer::run();\n}\n",
+        ),
+        (
+            "app/src/consumer.rs",
+            "macros_fixture::make_widget!();\n\npub(crate) fn run() {\n    crate::tool::touch();\n    let _ = make();\n}\n",
+        ),
+        (
+            "app/src/tool/mod.rs",
+            "mod inner;\nmod local_only;\nmod widget;\n\npub use local_only::LocalOnly;\npub use widget::Widget;\n\npub(crate) fn touch() {\n    inner::use_both();\n}\n",
+        ),
+        (
+            "app/src/tool/inner.rs",
+            "use super::LocalOnly;\nuse super::Widget;\n\npub(super) fn use_both() {\n    let _ = LocalOnly;\n    let _ = Widget;\n}\n",
+        ),
+        ("app/src/tool/local_only.rs", "pub struct LocalOnly;\n"),
+        ("app/src/tool/widget.rs", "pub struct Widget;\n"),
+        (
+            "macros/Cargo.toml",
+            "[package]\nname = \"macros_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\nproc-macro = true\n",
+        ),
+        (
+            "macros/src/lib.rs",
+            "use proc_macro::TokenStream;\n\n#[proc_macro]\npub fn make_widget(_: TokenStream) -> TokenStream {\n    \"fn make() -> crate::tool::Widget { crate::tool::Widget }\"\n        .parse()\n        .expect(\"parse generated widget factory\")\n}\n",
+        ),
+    ] {
+        let path = temp.path().join(relative_path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create fixture source directory");
+        }
+        fs::write(path, source).expect("write fixture source");
+    }
+}
+
+// The facade scan reads source text, so a path a proc macro in another crate
+// emits is invisible to it: `crate::tool::Widget` lives only inside
+// `macros_fixture`'s generated token stream. Both facades below are imported
+// relatively from inside `crate::tool`, which is what makes them candidates —
+// only the HIR use sites, collected after macro expansion, separate the one
+// that also serves `crate::consumer` from the one that does not.
+#[test]
+fn a_facade_a_proc_macro_reaches_is_not_reported_as_internal() {
+    let temp = tempdir().expect("create macro consumed facade fixture dir");
+    write_macro_consumed_facade_fixture(&temp);
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let facade_finding = |item: &str| {
+        report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::InternalParentPubUseFacade
+                && finding.path == "app/src/tool/mod.rs"
+                && finding.item.as_deref() == Some(item)
+        })
+    };
+    assert!(
+        !facade_finding("pub use Widget"),
+        "a facade reached by macro-generated code must not be reported as internal: {report:#?}"
+    );
+    assert!(
+        facade_finding("pub use LocalOnly"),
+        "a facade used only inside its own subtree must still be reported: {report:#?}"
+    );
+}

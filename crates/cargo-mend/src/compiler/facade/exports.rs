@@ -155,6 +155,11 @@ pub(in crate::compiler) struct ParentFacadeExportStatus {
     pub parent_path:         PathBuf,
     pub parent_rel_path:     String,
     pub parent_line:         usize,
+    /// Def-path of the module holding the `use` item — the subtree the facade
+    /// is claimed to serve internally. Spelled by `TyCtxt::def_path_str`, the
+    /// same way `use_sites::def_path_string` spells caller modules, so
+    /// `caller_aware` can test callers against it directly.
+    pub boundary_def_path:   String,
 }
 
 impl ParentFacadeExportStatus {
@@ -268,6 +273,7 @@ pub(in crate::compiler) fn parent_facade_export_status(
         parent_path: parent_boundary.boundary_file,
         parent_rel_path,
         parent_line,
+        boundary_def_path: tcx.def_path_str(owner_module.to_def_id()),
     }))
 }
 

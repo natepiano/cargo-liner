@@ -1880,8 +1880,13 @@ fn record_internal_parent_facade_review(
             fix_support: FixSupport::InternalParentFacade,
             related,
             visibility_annotation: None,
-            item_def_path: None,
-            narrower_scope_def_path: None,
+            // The facade scan reads source text, so it cannot see paths that
+            // exist only as tokens a proc macro in another crate emits. Naming
+            // the item and the subtree here hands the verdict to
+            // `caller_aware`, whose HIR use sites are collected after macro
+            // expansion and do see them.
+            item_def_path: Some(use_sites::def_path_string(ctx.tcx, input.def_id)),
+            narrower_scope_def_path: Some(status.boundary_def_path.clone()),
             exact_boundary_spelling: ExactBoundarySpelling::CratePath,
         },
     )?);

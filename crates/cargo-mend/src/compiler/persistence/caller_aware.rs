@@ -151,6 +151,9 @@ fn retain_narrowing_finding(
     let Some(item_callers) = callers_for_package(callers, package_root, item_path) else {
         return true;
     };
+    if finding.diagnostic_code == DiagnosticCode::InternalParentPubUseFacade {
+        return facade_serves_only_its_subtree(item_callers, narrower_scope);
+    }
     if item_callers
         .semantic_reaching
         .iter()
@@ -182,6 +185,24 @@ fn retain_narrowing_finding(
         ));
     }
     true
+}
+
+/// Whether every module holding an expression, type, or signature reference to
+/// the item sits inside the facade's own subtree. A reference from outside can
+/// only be reaching the item through the parent `pub use`, which makes that
+/// re-export a real entry point rather than an internal convenience — removing
+/// it would stop the crate compiling.
+///
+/// Only `semantic_reaching` answers this. `reaching` also carries
+/// `DeclarationInterface` sites, which never prove anyone uses the item, and
+/// `naming` carries the facade's own `pub(crate) use` under the boundary it
+/// writes — the crate root — so every `pub(crate)` facade would look like it
+/// had an outside caller.
+fn facade_serves_only_its_subtree(item_callers: &ItemCallers, subtree: &str) -> bool {
+    item_callers
+        .semantic_reaching
+        .iter()
+        .all(|caller| visibility::def_path_is_descendant(caller, subtree))
 }
 
 pub(super) fn callers_for_package<'a>(

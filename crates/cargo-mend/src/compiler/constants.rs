@@ -62,7 +62,7 @@ pub(super) const JSON_FILE_EXTENSION: &str = "json";
 
 // findings
 pub(super) const FINDINGS_DIR_NAME: &str = "mend-findings";
-pub(super) const FINDINGS_SCHEMA_VERSION: u32 = 28;
+pub(super) const FINDINGS_SCHEMA_VERSION: u32 = 29;
 
 // progress indicator
 pub(super) const PROGRESS_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
