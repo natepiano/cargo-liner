@@ -72,6 +72,7 @@ use super::session::CargoSubcommand;
 use super::session::LiveOwnedRoot;
 use super::session::OperativeCargoCommand;
 use super::session::OwnedRootEvidence;
+use super::session::RootCpuActivity;
 use super::session::ScopeAttribution;
 use super::session::SessionRootObservation;
 use super::session::SessionScope;
@@ -87,6 +88,7 @@ use crate::process_observation::snapshot::ParentWalkDepth;
 use crate::process_observation::snapshot::ProcessFieldObservation;
 use crate::process_observation::snapshot::ProcessIncarnationEvidence;
 use crate::process_observation::snapshot::ProcessObservationSnapshot;
+use crate::process_observation::snapshot::RunningProcessMetricsObservation;
 use crate::project::AbsolutePath;
 use crate::project::CanonicalCheckoutRoot;
 use crate::project::CanonicalPackageOwnership;
@@ -693,6 +695,30 @@ pub(super) fn classify(input: BuildClassificationInput<'_>) -> BuildClassificati
     }
 }
 
+/// How the Cargo root itself spent this cycle, from the running-process metrics
+/// the refresh collected.
+///
+/// The metrics cover every process the full-system refresh discovered, so a root
+/// has a sample whenever the cycle collected them at all; a cycle that ran for
+/// the compile monitor alone collects none, which is
+/// [`RootCpuActivity::Unobserved`] rather than a substituted value.
+fn root_cpu_activity(
+    process_observation_snapshot: &ProcessObservationSnapshot,
+    root_identity: &ProcessIdentity,
+) -> RootCpuActivity {
+    match process_observation_snapshot.running_process_metrics() {
+        RunningProcessMetricsObservation::NotRequested => RootCpuActivity::Unobserved,
+        RunningProcessMetricsObservation::Observed(running_process_metrics) => {
+            running_process_metrics.get(root_identity).map_or(
+                RootCpuActivity::Unobserved,
+                |running_process_metrics_record| {
+                    RootCpuActivity::from(running_process_metrics_record.cpu_percent())
+                },
+            )
+        },
+    }
+}
+
 /// One `BuildSession` per Cargo root that is compiling this cycle — a root
 /// whose argv compiles, a root a compiler was attached to, or a root the
 /// `first_seen_ledger` already promoted. Each session carries the profile
@@ -740,6 +766,7 @@ fn build_sessions_for_compiling_roots(
                 SessionRootObservation::new(
                     cargo_root.identity.clone(),
                     first_sighting.first_observed_at(),
+                    root_cpu_activity(input.process_observation_snapshot, &cargo_root.identity),
                 ),
                 first_sighting.first_seen(),
             )

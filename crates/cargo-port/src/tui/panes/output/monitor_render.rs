@@ -9,12 +9,14 @@ use std::time::Instant;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use tui_pane::CopySelectionResult;
+use tui_pane::error_color;
 use tui_pane::label_color;
 use tui_pane::secondary_text_color;
 use tui_pane::success_color;
@@ -35,12 +37,14 @@ use super::hit_map::HitRegion;
 use super::hit_map::MonitorHitMap;
 use super::hit_map::OutputMonitorHit;
 use super::presentation;
+use super::presentation::ColumnHeaderDisplay;
 use super::presentation::MonitorColumn;
 use super::presentation::MonitorColumns;
 use super::presentation::MonitorEmptyPresentation;
 use super::presentation::MonitorEmptyState;
 use super::presentation::MonitorEmptyStateIndexNote;
 use super::presentation::MonitorPresentation;
+use super::presentation::MonitorStateEmphasis;
 use super::presentation::OutputBuildSetTerminationAggregateProjection;
 use super::presentation::OwnedOutputPresentation;
 use super::render;
@@ -890,7 +894,7 @@ fn render_column(
         cursor.target(),
         OutputCursorTarget::Header(build_session_id) if build_session_id == column.build_session_id()
     );
-    for (index, line) in column_header_lines(column.header_fields(now))
+    for (index, line) in column_header_lines(column.column_header(now))
         .into_iter()
         .enumerate()
     {
@@ -963,12 +967,14 @@ fn render_column(
 /// Style the fixed build identity as one grouped header above the live
 /// compiler rows without consuming another row of the column.
 fn column_header_lines(
-    [command, checkout, build_details, state]: [String; COLUMN_HEADER_HEIGHT],
+    column_header_display: ColumnHeaderDisplay,
 ) -> [Line<'static>; COLUMN_HEADER_HEIGHT] {
+    let ([command, checkout, build_details, state], state_emphasis) =
+        column_header_display.into_parts();
     let rail_style = Style::default().fg(label_color());
     let command_style = Style::default().add_modifier(Modifier::BOLD);
     let metadata_style = Style::default().fg(secondary_text_color());
-    let state_style = Style::default().fg(label_color());
+    let state_style = Style::default().fg(state_color(state_emphasis));
 
     [
         Line::from(vec![
@@ -988,6 +994,18 @@ fn column_header_lines(
             Span::styled(state, state_style),
         ]),
     ]
+}
+
+/// The color a column's state row reads in.
+///
+/// A session waiting on another session's build-directory lock is drawn in the
+/// same color a lock-blocked lint command is, so one glance across the panes
+/// separates work in progress from work that cannot start.
+fn state_color(monitor_state_emphasis: MonitorStateEmphasis) -> Color {
+    match monitor_state_emphasis {
+        MonitorStateEmphasis::Ordinary => label_color(),
+        MonitorStateEmphasis::LockBlocked => error_color(),
+    }
 }
 
 /// The text of the activity row `compile_activity_id` names, without rendering
@@ -1286,12 +1304,15 @@ mod tests {
 
     #[test]
     fn column_header_groups_fixed_metadata_above_live_activity() {
-        let lines = column_header_lines([
-            "cargo build".to_string(),
-            "/tmp/example".to_string(),
-            "dev · pid 9422 · 31s".to_string(),
-            "compiling".to_string(),
-        ]);
+        let lines = column_header_lines(ColumnHeaderDisplay::for_test(
+            [
+                "cargo build".to_string(),
+                "/tmp/example".to_string(),
+                "dev · pid 9422 · 31s".to_string(),
+                "compiling".to_string(),
+            ],
+            MonitorStateEmphasis::Ordinary,
+        ));
         let rendered: Vec<String> = lines
             .iter()
             .map(|line| {
@@ -1321,6 +1342,22 @@ mod tests {
         assert_eq!(lines[1].spans[1].style.fg, Some(secondary_text_color()));
         assert_eq!(lines[2].spans[1].style.fg, Some(secondary_text_color()));
         assert_eq!(lines[3].spans[1].style.fg, Some(label_color()));
+    }
+
+    #[test]
+    fn a_state_row_waiting_on_a_lock_holder_reads_in_the_blocked_color() {
+        let lines = column_header_lines(ColumnHeaderDisplay::for_test(
+            [
+                "cargo clippy".to_string(),
+                "~/rust/cargo-port".to_string(),
+                "dev · pid 9422 · 31s".to_string(),
+                "idle · waiting on pid 9421".to_string(),
+            ],
+            MonitorStateEmphasis::LockBlocked,
+        ));
+
+        assert_eq!(lines[3].spans[1].style.fg, Some(error_color()));
+        assert_eq!(lines[1].spans[1].style.fg, Some(secondary_text_color()));
     }
 
     #[test]

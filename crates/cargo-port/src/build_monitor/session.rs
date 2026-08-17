@@ -10,9 +10,11 @@ use super::classify::CargoSubcommandRecognition;
 use super::classify::RecognizedCargoRoot;
 use super::constants::DEBUG_BUILD_DIRECTORY;
 use super::constants::DEV_PROFILE;
+use super::constants::PARKED_ROOT_CPU_PERCENT_CEILING;
 use super::constants::RELEASE_PROFILE;
 use crate::process_observation::identity::ProcessIdentity;
 use crate::process_observation::identity::ProcessIncarnation;
+use crate::process_observation::snapshot::ProcessCpuPercent;
 use crate::project::CanonicalCheckoutRoot;
 use crate::project::CanonicalTargetDirectory;
 use crate::tui::OwnedRunId;
@@ -377,6 +379,38 @@ pub(crate) enum CargoCommandSelector {
     AllTargets,
 }
 
+/// Whether the Cargo root process itself consumed CPU over the cycle that
+/// observed it.
+///
+/// This separates a root that is doing its own work from one parked in the
+/// kernel. It names what was measured and nothing more: parked is what waiting
+/// on the build-directory lock looks like, but it is equally what a root
+/// waiting on a test binary it launched looks like, so the reason a root is
+/// parked comes from [`BuildLockContention`](super::BuildLockContention), not
+/// from this value.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum RootCpuActivity {
+    /// The root consumed CPU: it is running its own resolution, manifest, or
+    /// fingerprint work rather than waiting on anything.
+    Working,
+    /// The root consumed no measurable CPU over the cycle.
+    Parked,
+    /// The cycle carried no CPU sample for this root, because it did not
+    /// collect running-process metrics.
+    #[default]
+    Unobserved,
+}
+
+impl From<ProcessCpuPercent> for RootCpuActivity {
+    fn from(process_cpu_percent: ProcessCpuPercent) -> Self {
+        if process_cpu_percent.get() <= PARKED_ROOT_CPU_PERCENT_CEILING {
+            Self::Parked
+        } else {
+            Self::Working
+        }
+    }
+}
+
 /// The Cargo root process a session was classified from, as this cycle saw it.
 ///
 /// The identity is the strong one, so a same-PID exec cannot make a stale row
@@ -386,6 +420,7 @@ pub(crate) enum CargoCommandSelector {
 pub(crate) struct SessionRootObservation {
     root_identity:     ProcessIdentity,
     first_observed_at: Instant,
+    root_cpu_activity: RootCpuActivity,
 }
 
 impl SessionRootObservation {
@@ -393,10 +428,15 @@ impl SessionRootObservation {
     /// first-seen ledger recorded when the root was first observed, so it does
     /// not move while the root lives and elapsed build time is computable from
     /// it.
-    pub(super) const fn new(root_identity: ProcessIdentity, first_observed_at: Instant) -> Self {
+    pub(super) const fn new(
+        root_identity: ProcessIdentity,
+        first_observed_at: Instant,
+        root_cpu_activity: RootCpuActivity,
+    ) -> Self {
         Self {
             root_identity,
             first_observed_at,
+            root_cpu_activity,
         }
     }
 
@@ -408,6 +448,9 @@ impl SessionRootObservation {
 
     /// When the root was first observed, not when this cycle re-observed it.
     pub(crate) const fn first_observed_at(&self) -> Instant { self.first_observed_at }
+
+    /// Whether the root itself was working or parked over this cycle.
+    pub(crate) const fn root_cpu_activity(&self) -> RootCpuActivity { self.root_cpu_activity }
 }
 
 /// One classified Cargo build session.
@@ -480,4 +523,31 @@ impl BuildSession {
 
     /// The cycle in which this session was first observed.
     pub(super) const fn first_seen(&self) -> BuildClassificationCycle { self.first_seen }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PARKED_ROOT_CPU_PERCENT_CEILING;
+    use super::ProcessCpuPercent;
+    use super::RootCpuActivity;
+
+    /// The ceiling is the parked side of the split, so a root sampled exactly at
+    /// it is not called working.
+    #[test]
+    fn a_root_at_the_ceiling_is_parked_and_one_above_it_is_working() {
+        assert_eq!(
+            RootCpuActivity::from(ProcessCpuPercent::for_test(PARKED_ROOT_CPU_PERCENT_CEILING)),
+            RootCpuActivity::Parked
+        );
+        assert_eq!(
+            RootCpuActivity::from(ProcessCpuPercent::for_test(0.0)),
+            RootCpuActivity::Parked
+        );
+        assert_eq!(
+            RootCpuActivity::from(ProcessCpuPercent::for_test(
+                PARKED_ROOT_CPU_PERCENT_CEILING * 2.0
+            )),
+            RootCpuActivity::Working
+        );
+    }
 }

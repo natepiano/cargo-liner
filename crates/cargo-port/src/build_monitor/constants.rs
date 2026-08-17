@@ -1,5 +1,12 @@
 //! Values shared by build-session classification and its support caches.
 
+// build lock contention
+/// CPU percent at or below which a Cargo root counts as parked rather than
+/// working. A root waiting on the build-directory lock sits in `flock` and
+/// consumes none; one resolving dependencies, reading `cargo metadata`, or
+/// checking fingerprints consumes measurably more.
+pub(super) const PARKED_ROOT_CPU_PERCENT_CEILING: f32 = 1.0;
+
 // cache eviction
 use std::time::Duration;
 /// Most build sessions whose observed build directory is remembered at once.

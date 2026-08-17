@@ -17,7 +17,10 @@ use super::scope::BuildScopeKey;
 use super::session::LiveOwnedRoot;
 use super::session::OwnedRootEvidence;
 use super::session::OwnedRootLifecycle;
+use super::session::RootCpuActivity;
+use super::snapshot::BuildLockContention;
 use super::snapshot::BuildSessionActivity;
+use super::snapshot::MonitorData;
 use super::snapshot::MonitorDataActionability;
 use super::snapshot::MonitorDisplay;
 use super::snapshot::MonitorObservation;
@@ -81,13 +84,102 @@ fn a_session_the_scope_covers_is_stored_fresh() -> Result<(), Box<dyn std::error
     );
     assert_eq!(
         monitor_session_row.build_session_activity(),
-        BuildSessionActivity::ActiveWithoutCompiler
+        BuildSessionActivity::ActiveWithoutCompiler(RootCpuActivity::Unobserved)
     );
     assert_eq!(
         build_monitor.monitor_snapshot().observation(),
         MonitorObservation::Observed(monitor_data.observed_at())
     );
     Ok(())
+}
+
+/// Sessions writing to one target directory serialize behind Cargo's lock on
+/// it, so the one session with a compiler is holding that lock and the session
+/// beside it is waiting on that holder's pid.
+#[test]
+fn one_compiling_session_makes_the_session_sharing_its_target_directory_wait()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut fixture = ClassificationFixture::new()?;
+    let holder_root = fixture.cargo_root_with_pid(201, &["cargo", "build"]);
+    let waiting_root = fixture.cargo_root_with_pid(202, &["cargo", "check"]);
+    let compiler = fixture.compiler_under(301, &holder_root);
+    let build_classification = fixture.classify(&[holder_root, waiting_root, compiler]);
+    let canonical_checkout_root = std::fs::canonicalize(&fixture.checkout_root)?;
+    let mut build_monitor = BuildMonitor::default();
+
+    build_monitor.record_classification(completed(
+        scope_key_for(&canonical_checkout_root),
+        OwnedRootEvidence::NoLiveRoot,
+        build_classification,
+    ));
+
+    let MonitorSnapshot::Fresh(monitor_data) = build_monitor.monitor_snapshot() else {
+        panic!("a stored cycle is fresh");
+    };
+    assert_eq!(
+        build_lock_contention_for_root_pid(monitor_data, 201)?,
+        BuildLockContention::Holding
+    );
+    assert_eq!(
+        build_lock_contention_for_root_pid(monitor_data, 202)?,
+        BuildLockContention::WaitingBehind { holder_pid: 201 }
+    );
+    Ok(())
+}
+
+/// Two sessions compiling into one target directory cannot both hold its lock,
+/// so the cycle names no holder rather than picking one.
+#[test]
+fn two_compiling_sessions_sharing_a_target_directory_name_no_lock_holder()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut fixture = ClassificationFixture::new()?;
+    let first_root = fixture.cargo_root_with_pid(201, &["cargo", "build"]);
+    let second_root = fixture.cargo_root_with_pid(202, &["cargo", "check"]);
+    let first_compiler = fixture.compiler_under(301, &first_root);
+    let second_compiler = fixture.compiler_under(302, &second_root);
+    let build_classification =
+        fixture.classify(&[first_root, second_root, first_compiler, second_compiler]);
+    let canonical_checkout_root = std::fs::canonicalize(&fixture.checkout_root)?;
+    let mut build_monitor = BuildMonitor::default();
+
+    build_monitor.record_classification(completed(
+        scope_key_for(&canonical_checkout_root),
+        OwnedRootEvidence::NoLiveRoot,
+        build_classification,
+    ));
+
+    let MonitorSnapshot::Fresh(monitor_data) = build_monitor.monitor_snapshot() else {
+        panic!("a stored cycle is fresh");
+    };
+    assert_eq!(
+        build_lock_contention_for_root_pid(monitor_data, 201)?,
+        BuildLockContention::Undetermined
+    );
+    assert_eq!(
+        build_lock_contention_for_root_pid(monitor_data, 202)?,
+        BuildLockContention::Undetermined
+    );
+    Ok(())
+}
+
+/// The stored row for one Cargo root pid, named by pid so a test states the
+/// session it means rather than the order classification produced.
+fn build_lock_contention_for_root_pid(
+    monitor_data: &MonitorData,
+    root_pid: u32,
+) -> Result<BuildLockContention, Box<dyn std::error::Error>> {
+    Ok(monitor_data
+        .session_rows()
+        .iter()
+        .find(|monitor_session_row| {
+            monitor_session_row
+                .build_session()
+                .root_observation()
+                .root_pid()
+                == root_pid
+        })
+        .ok_or_else(|| format!("the scope covers the session at root pid {root_pid}"))?
+        .build_lock_contention())
 }
 
 /// The worker classifies every host session and this is the only site that

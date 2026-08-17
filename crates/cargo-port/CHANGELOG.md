@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Add configurable crates.io release groups so coordinated workspaces such as Bevy keep each crate's version current while emitting one release toast through a representative crate.
 
+### Changed
+- Abbreviate the home directory to `~` in Output pane build monitor column headings, so the narrow column shows more of the checkout path.
+- Split the build monitor's `active` state, which previously covered both a Cargo run doing its own resolution and fingerprint work and one parked waiting for a lock. A root consuming no CPU now reads `idle`, and when several live sessions build into the same target directory and exactly one of them has compiler children, that one reads `lock holder` while the rest read `waiting on pid N` in the same red a lock-blocked lint command uses.
+
 ## [0.5.0] - 2026-07-30
 
 ### Added

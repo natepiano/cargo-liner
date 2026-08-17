@@ -12,6 +12,7 @@ use super::activity::UnattributedCompileActivity;
 use super::scope::BuildScopeKey;
 use super::session::BuildSession;
 use super::session::BuildSessionId;
+use super::session::RootCpuActivity;
 use crate::tui::OwnedRunId;
 
 /// What one live build session is doing, as this cycle's attributed compile
@@ -41,8 +42,9 @@ pub(crate) enum BuildSessionActivity {
     /// A linker is running beneath a compiler or build script.
     Linking,
     /// The Cargo root is live with no compiler, build script, or linker child
-    /// this cycle.
-    ActiveWithoutCompiler,
+    /// this cycle, and the root itself was working or parked as the payload
+    /// says.
+    ActiveWithoutCompiler(RootCpuActivity),
 }
 
 impl BuildSessionActivity {
@@ -52,8 +54,11 @@ impl BuildSessionActivity {
     /// Compilers outrank the build script and linker children they spawn, so a
     /// session that is compiling reads as compiling even while one crate's
     /// linker is running.
-    fn from_attributed_activities(compile_activities: &[CompileActivity]) -> Self {
-        let mut build_session_activity = Self::ActiveWithoutCompiler;
+    fn from_attributed_activities(
+        compile_activities: &[CompileActivity],
+        root_cpu_activity: RootCpuActivity,
+    ) -> Self {
+        let mut build_session_activity = Self::ActiveWithoutCompiler(root_cpu_activity);
         for compile_activity in compile_activities {
             let observed = match compile_activity.compiler_kind() {
                 CompilerKind::Rustc
@@ -79,7 +84,7 @@ impl BuildSessionActivity {
 
     const fn precedence(self) -> u8 {
         match self {
-            Self::ActiveWithoutCompiler => 0,
+            Self::ActiveWithoutCompiler(_) => 0,
             Self::Linking => 1,
             Self::RunningBuildScript => 2,
             Self::Compiling => 3,
@@ -99,6 +104,29 @@ pub(crate) enum MonitorSessionOwnership {
     External,
 }
 
+/// Where a session sits in the queue for its Cargo build-directory lock.
+///
+/// Cargo holds an exclusive lock on the build directory for a whole build, so
+/// concurrent runs against one target directory serialize. Sessions sharing a
+/// determined target directory are therefore a queue, and the one with compiler
+/// children is the one building. This is read off the classification alone: no
+/// lock file is opened and no lock state is queried, so every state below is a
+/// statement about the observed sessions rather than about the lock itself.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum BuildLockContention {
+    /// This session has compiler children while other sessions writing to the
+    /// same target directory have none.
+    Holding,
+    /// Another session writing to this session's target directory is the only
+    /// one with compiler children.
+    WaitingBehind { holder_pid: u32 },
+    /// No queue was established: the target directory is unobservable, no other
+    /// session writes to it, or the sessions that do leave no single one with
+    /// compiler children.
+    #[default]
+    Undetermined,
+}
+
 /// One build session as the monitor pane shows it.
 ///
 /// The attributed activities travel with the row rather than being looked back
@@ -108,6 +136,7 @@ pub(crate) enum MonitorSessionOwnership {
 pub(crate) struct MonitorSessionRow {
     build_session:          BuildSession,
     build_session_activity: BuildSessionActivity,
+    build_lock_contention:  BuildLockContention,
     compile_activities:     Vec<CompileActivity>,
     session_ownership:      MonitorSessionOwnership,
 }
@@ -124,6 +153,11 @@ impl MonitorSessionRow {
     /// What this session is doing, as attributed activities name it.
     pub(crate) const fn build_session_activity(&self) -> BuildSessionActivity {
         self.build_session_activity
+    }
+
+    /// Where this session sits in the queue for its build-directory lock.
+    pub(crate) const fn build_lock_contention(&self) -> BuildLockContention {
+        self.build_lock_contention
     }
 
     /// The activities this cycle attributed to this session, in classification
@@ -190,12 +224,16 @@ impl MonitorData {
         build_session: BuildSession,
         compile_activities: Vec<CompileActivity>,
         session_ownership: MonitorSessionOwnership,
+        build_lock_contention: BuildLockContention,
     ) -> MonitorSessionRow {
-        let build_session_activity =
-            BuildSessionActivity::from_attributed_activities(&compile_activities);
+        let build_session_activity = BuildSessionActivity::from_attributed_activities(
+            &compile_activities,
+            build_session.root_observation().root_cpu_activity(),
+        );
         MonitorSessionRow {
             build_session,
             build_session_activity,
+            build_lock_contention,
             compile_activities,
             session_ownership,
         }

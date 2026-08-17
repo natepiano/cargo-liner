@@ -11,8 +11,10 @@ use std::time::Instant;
 
 use tui_pane::format_progressive;
 
+use super::constants::COLUMN_HEADER_HEIGHT;
 use super::constants::MINIMUM_READABLE_COLUMN_WIDTH;
 use crate::build_monitor::AdditionalBuildExclusion;
+use crate::build_monitor::BuildLockContention;
 use crate::build_monitor::BuildProfileLabel;
 use crate::build_monitor::BuildSessionActivity;
 use crate::build_monitor::BuildSessionId;
@@ -29,10 +31,12 @@ use crate::build_monitor::MonitorSessionOwnership;
 use crate::build_monitor::MonitorSessionRow;
 use crate::build_monitor::MonitorSnapshot;
 use crate::build_monitor::MonitorStaleness;
+use crate::build_monitor::RootCpuActivity;
 use crate::build_monitor::SessionScope;
 use crate::build_monitor::TargetDirectoryEvidence;
 use crate::build_monitor::UnattributedCompileActivity;
 use crate::project::DisplayPath;
+use crate::project::home_relative_path;
 use crate::tui::OwnedRunId;
 use crate::tui::compile_visibility::CompileVisibilityState;
 use crate::tui::compile_visibility::MonitorScopeResolution;
@@ -252,6 +256,49 @@ pub(super) struct MonitorColumn<'a> {
     build_termination_lifecycle: BuildTerminationLifecycle,
 }
 
+/// How a column's state row reads against the rest of its header.
+///
+/// A session stopped behind another session's build-directory lock is making no
+/// progress and cannot until that holder finishes, which is the one state the
+/// column has to say at a glance rather than by its wording alone.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum MonitorStateEmphasis {
+    /// Nothing in the state row has to stand out.
+    #[default]
+    Ordinary,
+    /// The session is stopped until the lock holder its row names finishes.
+    LockBlocked,
+}
+
+/// The rows of one column's header, with how its last row reads.
+///
+/// The emphasis travels with the rows rather than beside them so a draw site
+/// cannot style one column's state row from another column's standing.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct ColumnHeaderDisplay {
+    rows:           [String; COLUMN_HEADER_HEIGHT],
+    state_emphasis: MonitorStateEmphasis,
+}
+
+impl ColumnHeaderDisplay {
+    /// Header rows standing in for a column, for tests that draw one directly.
+    #[cfg(test)]
+    pub(super) const fn for_test(
+        rows: [String; COLUMN_HEADER_HEIGHT],
+        state_emphasis: MonitorStateEmphasis,
+    ) -> Self {
+        Self {
+            rows,
+            state_emphasis,
+        }
+    }
+
+    /// The header rows top to bottom, and the emphasis the last of them reads in.
+    pub(super) fn into_parts(self) -> ([String; COLUMN_HEADER_HEIGHT], MonitorStateEmphasis) {
+        (self.rows, self.state_emphasis)
+    }
+}
+
 /// Confirmation data derived from a displayed root Cargo session.
 ///
 /// It is intentionally insufficient to authorize anything: the modal owns a
@@ -266,6 +313,7 @@ pub(crate) struct SelectedBuildTerminationConfirmationDisplay {
     compiler_child_count:    usize,
     profile:                 String,
     state:                   String,
+    state_emphasis:          MonitorStateEmphasis,
 }
 
 /// Display data frozen beside opaque authority for all root rows shown in the
@@ -307,18 +355,21 @@ impl SelectedBuildTerminationConfirmationDisplay {
 
     pub(crate) const fn compiler_child_count(&self) -> usize { self.compiler_child_count }
 
-    fn header_fields(&self) -> [String; 4] {
-        [
-            self.operative_cargo_command.clone(),
-            self.checkout.clone(),
-            format!(
-                "{} · pid {} · {}",
-                self.profile,
-                self.root_pid,
-                format_progressive(self.start_age.as_secs()),
-            ),
-            self.state.clone(),
-        ]
+    fn column_header(&self) -> ColumnHeaderDisplay {
+        ColumnHeaderDisplay {
+            rows:           [
+                self.operative_cargo_command.clone(),
+                self.checkout.clone(),
+                format!(
+                    "{} · pid {} · {}",
+                    self.profile,
+                    self.root_pid,
+                    format_progressive(self.start_age.as_secs()),
+                ),
+                self.state.clone(),
+            ],
+            state_emphasis: self.state_emphasis,
+        }
     }
 }
 
@@ -359,6 +410,11 @@ impl<'a> MonitorColumn<'a> {
         self.monitor_session_row.build_session_activity()
     }
 
+    /// Where this session sits in the queue for its build-directory lock.
+    pub(super) const fn build_lock_contention(self) -> BuildLockContention {
+        self.monitor_session_row.build_lock_contention()
+    }
+
     /// Whether Cargo Port launched the run behind this column.
     pub(super) const fn session_ownership(self) -> MonitorSessionOwnership {
         self.monitor_session_row.session_ownership()
@@ -393,9 +449,9 @@ impl<'a> MonitorColumn<'a> {
         }
     }
 
-    pub(super) fn header_fields(self, now: Instant) -> [String; 4] {
+    pub(super) fn column_header(self, now: Instant) -> ColumnHeaderDisplay {
         self.selected_build_termination_confirmation_display(now)
-            .header_fields()
+            .column_header()
     }
 
     fn selected_build_termination_confirmation_display(
@@ -412,6 +468,10 @@ impl<'a> MonitorColumn<'a> {
             compiler_child_count:    self.monitor_session_row.compile_activities().len(),
             profile:                 profile_label(self),
             state:                   state_label(self),
+            state_emphasis:          state_emphasis(
+                self.build_termination_lifecycle(),
+                self.build_lock_contention(),
+            ),
         }
     }
 }
@@ -468,14 +528,18 @@ fn selector_label(cargo_command_selector: &CargoCommandSelector) -> String {
 }
 
 /// The checkout this session builds, falling back to where it writes when no
-/// method related it to the project list.
+/// method related it to the project list. Paths under the home directory are
+/// written `~/…` so the narrow monitor column shows more of the path.
 fn checkout_label(monitor_column: MonitorColumn<'_>) -> String {
     let build_session = monitor_column.session_row().build_session();
     match build_session.session_scope() {
-        SessionScope::Resolved { root, .. } => root.path().to_string(),
+        SessionScope::Resolved { root, .. } => home_relative_path(root.path().as_path()),
         SessionScope::Unresolved => match build_session.session_target_directory().evidence() {
             TargetDirectoryEvidence::Determined(canonical_target_directory) => {
-                format!("writes {}", canonical_target_directory.path())
+                format!(
+                    "writes {}",
+                    home_relative_path(canonical_target_directory.path().as_path())
+                )
             },
             TargetDirectoryEvidence::Unobservable => "checkout unresolved".to_string(),
         },
@@ -504,16 +568,66 @@ fn state_label(monitor_column: MonitorColumn<'_>) -> String {
         BuildTerminationLifecycle::AlreadyGone => "already gone".to_string(),
         BuildTerminationLifecycle::RetryUnavailable => "termination incomplete".to_string(),
         BuildTerminationLifecycle::Observed => {
-            let activity = match monitor_column.build_session_activity() {
-                BuildSessionActivity::Compiling => "compiling",
-                BuildSessionActivity::RunningBuildScript => "build script",
-                BuildSessionActivity::Linking => "linking",
-                BuildSessionActivity::ActiveWithoutCompiler => "active",
-            };
+            let activity = activity_label(
+                monitor_column.build_session_activity(),
+                monitor_column.build_lock_contention(),
+            );
             match monitor_column.session_ownership() {
                 MonitorSessionOwnership::Owned(_) => format!("{activity} · launched here"),
-                MonitorSessionOwnership::External => activity.to_string(),
+                MonitorSessionOwnership::External => activity,
             }
+        },
+    }
+}
+
+/// What the session is doing, followed by its place in the build-directory lock
+/// queue when this cycle put it in one.
+///
+/// A root with no compiler children reads as idle only when it also consumed no
+/// CPU: Cargo does its own resolution and fingerprint work before the first
+/// `rustc` exists, and that work is not idleness. Which of the two a parked root
+/// is waiting on is what the lock queue answers.
+pub(super) fn activity_label(
+    build_session_activity: BuildSessionActivity,
+    build_lock_contention: BuildLockContention,
+) -> String {
+    let activity = match build_session_activity {
+        BuildSessionActivity::Compiling => "compiling",
+        BuildSessionActivity::RunningBuildScript => "build script",
+        BuildSessionActivity::Linking => "linking",
+        BuildSessionActivity::ActiveWithoutCompiler(RootCpuActivity::Parked) => "idle",
+        BuildSessionActivity::ActiveWithoutCompiler(
+            RootCpuActivity::Working | RootCpuActivity::Unobserved,
+        ) => "active",
+    };
+    match build_lock_contention {
+        BuildLockContention::Holding => format!("{activity} · lock holder"),
+        BuildLockContention::WaitingBehind { holder_pid } => {
+            format!("{activity} · waiting on pid {holder_pid}")
+        },
+        BuildLockContention::Undetermined => activity.to_string(),
+    }
+}
+
+/// Whether the state row says the session is stopped behind another session.
+///
+/// Only a session the monitor is still observing can be waiting: once a
+/// termination is under way the row reports what happened to the session, and
+/// the lock queue it was in before that no longer describes it.
+pub(super) const fn state_emphasis(
+    build_termination_lifecycle: BuildTerminationLifecycle,
+    build_lock_contention: BuildLockContention,
+) -> MonitorStateEmphasis {
+    match build_termination_lifecycle {
+        BuildTerminationLifecycle::Terminating
+        | BuildTerminationLifecycle::GoneAfterSignaling
+        | BuildTerminationLifecycle::AlreadyGone
+        | BuildTerminationLifecycle::RetryUnavailable => MonitorStateEmphasis::Ordinary,
+        BuildTerminationLifecycle::Observed => match build_lock_contention {
+            BuildLockContention::WaitingBehind { .. } => MonitorStateEmphasis::LockBlocked,
+            BuildLockContention::Holding | BuildLockContention::Undetermined => {
+                MonitorStateEmphasis::Ordinary
+            },
         },
     }
 }

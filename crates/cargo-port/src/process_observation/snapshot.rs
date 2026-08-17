@@ -346,6 +346,11 @@ pub(crate) struct ProcessCpuPercent(u32);
 impl ProcessCpuPercent {
     pub(super) const fn from_sysinfo(cpu_percent: f32) -> Self { Self(cpu_percent.to_bits()) }
 
+    /// Name one sample directly, for tests that need a percentage without a
+    /// host refresh behind it.
+    #[cfg(test)]
+    pub(crate) const fn for_test(cpu_percent: f32) -> Self { Self(cpu_percent.to_bits()) }
+
     pub(crate) const fn get(self) -> f32 { f32::from_bits(self.0) }
 }
 

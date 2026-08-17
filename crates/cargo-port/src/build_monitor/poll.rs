@@ -9,6 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::collections::HashMap;
 
 use super::BuildMonitor;
 use super::activity::AttributedSession;
@@ -20,11 +21,14 @@ use super::classify::BuildClassification;
 use super::execution::CompletedBuildClassification;
 use super::scope::BuildScopeActionability;
 use super::scope::BuildScopeKey;
+use super::session::BuildSession;
 use super::session::BuildSessionId;
 use super::session::LiveOwnedRoot;
 use super::session::OwnedRootEvidence;
 use super::session::ScopeAttribution;
 use super::session::SessionScope;
+use super::session::TargetDirectoryEvidence;
+use super::snapshot::BuildLockContention;
 use super::snapshot::MonitorData;
 use super::snapshot::MonitorSessionOwnership;
 use super::snapshot::MonitorSessionRow;
@@ -36,6 +40,7 @@ use super::termination::ExternalBuildTerminationAuthority;
 use super::termination::OwnedBuildTerminationAuthority;
 use super::termination::OwnedTerminationSupport;
 use crate::project::CanonicalCheckoutRoot;
+use crate::project::CanonicalTargetDirectory;
 
 impl BuildMonitor {
     /// Store one completed classification as the latest presentation snapshot.
@@ -178,6 +183,7 @@ fn scoped_monitor_data(
     build_classification: &BuildClassification,
     owned_root_evidence: &OwnedRootEvidence,
 ) -> MonitorData {
+    let build_lock_contention_by_session = build_lock_contention_by_session(build_classification);
     let session_rows: Vec<MonitorSessionRow> = build_classification
         .build_sessions()
         .iter()
@@ -198,6 +204,10 @@ fn scoped_monitor_data(
                 build_session.clone(),
                 compile_activities,
                 session_ownership,
+                build_lock_contention_by_session
+                    .get(build_session.build_session_id())
+                    .copied()
+                    .unwrap_or_default(),
             ))
         })
         .collect();
@@ -225,6 +235,71 @@ fn scoped_monitor_data(
     )
 }
 
+/// Where every live session sits in the queue for its build-directory lock.
+///
+/// Sessions writing to one canonical target directory serialize behind Cargo's
+/// exclusive lock on it, so a set of them is a queue and the one with compiler
+/// children is the one building. A set that leaves no single such session names
+/// no holder: an observation cycle can straddle a handoff, and a claim about who
+/// blocks whom is worth nothing if it can name two holders at once.
+///
+/// Runs over the whole classification rather than the narrowed rows, so a holder
+/// the current scope does not cover still accounts for the waiters it blocks. A
+/// session whose target directory is
+/// [`Unobservable`](super::session::TargetDirectoryEvidence::Unobservable) —
+/// `CARGO_TARGET_DIR` and `build.target-dir` are set in the environment, which
+/// process observation does not read — joins no set and stays
+/// [`Undetermined`](BuildLockContention::Undetermined).
+fn build_lock_contention_by_session(
+    build_classification: &BuildClassification,
+) -> HashMap<&BuildSessionId, BuildLockContention> {
+    let mut sessions_by_target_directory: HashMap<&CanonicalTargetDirectory, Vec<&BuildSession>> =
+        HashMap::new();
+    for build_session in build_classification.build_sessions() {
+        if let TargetDirectoryEvidence::Determined(canonical_target_directory) =
+            build_session.session_target_directory().evidence()
+        {
+            sessions_by_target_directory
+                .entry(canonical_target_directory)
+                .or_default()
+                .push(build_session);
+        }
+    }
+    let mut build_lock_contention_by_session = HashMap::new();
+    for sessions_sharing_target_directory in sessions_by_target_directory.into_values() {
+        if sessions_sharing_target_directory.len() < 2 {
+            continue;
+        }
+        let compiling_sessions: Vec<&BuildSession> = sessions_sharing_target_directory
+            .iter()
+            .copied()
+            .filter(|build_session| {
+                build_classification
+                    .compile_activities()
+                    .iter()
+                    .any(|compile_activity| {
+                        activity_names_session(compile_activity, build_session.build_session_id())
+                    })
+            })
+            .collect();
+        let [holder] = compiling_sessions.as_slice() else {
+            continue;
+        };
+        let holder_pid = holder.root_observation().root_pid();
+        for build_session in sessions_sharing_target_directory {
+            let build_lock_contention =
+                if build_session.build_session_id() == holder.build_session_id() {
+                    BuildLockContention::Holding
+                } else {
+                    BuildLockContention::WaitingBehind { holder_pid }
+                };
+            build_lock_contention_by_session
+                .insert(build_session.build_session_id(), build_lock_contention);
+        }
+    }
+    build_lock_contention_by_session
+}
+
 /// The activities this cycle resolved to one session, in classification order.
 fn attributed_activities(
     build_session_id: &BuildSessionId,
@@ -232,15 +307,21 @@ fn attributed_activities(
 ) -> Vec<CompileActivity> {
     compile_activities
         .iter()
-        .filter(|compile_activity| {
-            matches!(
-                compile_activity.compiler_attribution().attributed_session(),
-                AttributedSession::Session(attributed_session_id)
-                    if attributed_session_id == build_session_id
-            )
-        })
+        .filter(|compile_activity| activity_names_session(compile_activity, build_session_id))
         .cloned()
         .collect()
+}
+
+/// Whether attribution resolved one activity to exactly this session.
+fn activity_names_session(
+    compile_activity: &CompileActivity,
+    build_session_id: &BuildSessionId,
+) -> bool {
+    matches!(
+        compile_activity.compiler_attribution().attributed_session(),
+        AttributedSession::Session(attributed_session_id)
+            if attributed_session_id == build_session_id
+    )
 }
 
 /// Whether the narrowed scope still has to explain one unattributed activity.

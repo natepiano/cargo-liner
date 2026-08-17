@@ -9,14 +9,19 @@ use super::presentation::MonitorColumns;
 use super::presentation::MonitorEmptyState;
 use super::presentation::MonitorEmptyStateIndexNote;
 use super::presentation::MonitorPresentation;
+use super::presentation::MonitorStateEmphasis;
 use super::presentation::MonitorVisibility;
 use super::presentation::OutputCopyAvailability;
 use super::presentation::OutputPaneVisibility;
 use super::presentation::OutputPresentation;
 use super::presentation::OwnedOutputVisibility;
+use super::presentation::activity_label;
+use super::presentation::state_emphasis;
 use super::selection::OutputCursor;
 use super::selection::OutputCursorTarget;
 use crate::build_monitor;
+use crate::build_monitor::BuildLockContention;
+use crate::build_monitor::BuildSessionActivity;
 use crate::build_monitor::BuildSessionId;
 use crate::build_monitor::BuildTerminationLifecycle;
 use crate::build_monitor::BuildTerminationLifecycleRegistry;
@@ -24,6 +29,7 @@ use crate::build_monitor::ClassifiedRoot;
 use crate::build_monitor::CompileActivityId;
 use crate::build_monitor::CompilerAttribution;
 use crate::build_monitor::MonitorSnapshot;
+use crate::build_monitor::RootCpuActivity;
 use crate::process_observation::identity::ProcessIdentity;
 use crate::process_observation::identity::ProcessIncarnation;
 use crate::process_termination::TerminationTargetResult;
@@ -607,5 +613,73 @@ fn a_cursor_falls_back_when_what_it_named_is_gone() {
         after_exec.target(),
         &OutputCursorTarget::Header(build_session_ids[0].clone()),
         "a re-execed pid is a different session, so the cursor falls back"
+    );
+}
+
+/// A root with no compilers reads as idle only when it also burned no CPU, and
+/// the lock queue is what names the pid it is waiting on.
+#[test]
+fn a_parked_root_behind_a_lock_holder_names_the_pid_it_waits_on() {
+    assert_eq!(
+        activity_label(
+            BuildSessionActivity::ActiveWithoutCompiler(RootCpuActivity::Parked),
+            BuildLockContention::WaitingBehind { holder_pid: 53_430 },
+        ),
+        "idle · waiting on pid 53430"
+    );
+    assert_eq!(
+        activity_label(
+            BuildSessionActivity::Compiling,
+            BuildLockContention::Holding,
+        ),
+        "compiling · lock holder"
+    );
+    assert_eq!(
+        activity_label(
+            BuildSessionActivity::ActiveWithoutCompiler(RootCpuActivity::Working),
+            BuildLockContention::Undetermined,
+        ),
+        "active"
+    );
+    assert_eq!(
+        activity_label(
+            BuildSessionActivity::ActiveWithoutCompiler(RootCpuActivity::Unobserved),
+            BuildLockContention::Undetermined,
+        ),
+        "active"
+    );
+}
+
+/// Waiting on a lock holder is the state the column draws differently, and only
+/// while the session is one the monitor is still observing.
+#[test]
+fn only_an_observed_session_waiting_on_a_lock_holder_reads_as_blocked() {
+    assert_eq!(
+        state_emphasis(
+            BuildTerminationLifecycle::Observed,
+            BuildLockContention::WaitingBehind { holder_pid: 53_430 },
+        ),
+        MonitorStateEmphasis::LockBlocked
+    );
+    assert_eq!(
+        state_emphasis(
+            BuildTerminationLifecycle::Observed,
+            BuildLockContention::Holding,
+        ),
+        MonitorStateEmphasis::Ordinary
+    );
+    assert_eq!(
+        state_emphasis(
+            BuildTerminationLifecycle::Observed,
+            BuildLockContention::Undetermined,
+        ),
+        MonitorStateEmphasis::Ordinary
+    );
+    assert_eq!(
+        state_emphasis(
+            BuildTerminationLifecycle::Terminating,
+            BuildLockContention::WaitingBehind { holder_pid: 53_430 },
+        ),
+        MonitorStateEmphasis::Ordinary
     );
 }
