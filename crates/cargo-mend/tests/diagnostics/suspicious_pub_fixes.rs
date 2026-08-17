@@ -267,6 +267,111 @@ edition = "2024"
     );
 }
 
+#[test]
+fn fix_keeps_pub_required_by_a_wider_declarations_own_signature() {
+    // Regression: rustc's `private_interfaces` compares a named type's reach
+    // against the *declaration* that names it, not against that declaration's
+    // callers. `pub fn plan(&self) -> BuildPlan` on a type re-exported at
+    // `pub(crate)` needs `BuildPlan` usable crate-wide even though nothing
+    // outside `crate::app_tools` calls it, and `pub launch: LaunchReport` needs
+    // `LaunchReport` usable wherever the field is reachable. Signature types
+    // were only recorded at call sites, so `--fix` narrowed both to the facade
+    // boundary and the run came back with fresh `private_interfaces` warnings.
+    let temp = tempdir().expect("create declaration interface fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Required);
+    write_sources(
+        temp.path(),
+        &[
+            (
+                "Cargo.toml",
+                r#"[package]
+name = "declaration_interface_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+            ),
+            (
+                "src/main.rs",
+                "mod app_tools;\n\nuse app_tools::Planner;\n\nfn main() {\n    let planner = Planner;\n    println!(\"{} {}\", planner.plan().steps, app_tools::summary().launch.pid);\n}\n",
+            ),
+            (
+                "src/app_tools/mod.rs",
+                "mod launch;\nmod planner;\nmod report;\n\npub(crate) use planner::Planner;\n\npub(crate) fn summary() -> report::Summary { report::summary() }\n",
+            ),
+            (
+                "src/app_tools/planner.rs",
+                "use super::launch::BuildPlan;\nuse super::launch::Internal;\n\npub(crate) struct Planner;\n\nimpl Planner {\n    pub fn plan(&self) -> BuildPlan { super::launch::build_plan() }\n}\n\npub(super) fn internal() -> Internal { super::launch::internal() }\n",
+            ),
+            (
+                "src/app_tools/report.rs",
+                "use super::launch::LaunchReport;\n\npub(crate) struct Summary {\n    pub launch: LaunchReport,\n}\n\npub(crate) fn summary() -> Summary { Summary { launch: super::launch::launch() } }\n",
+            ),
+            (
+                "src/app_tools/launch/mod.rs",
+                "mod config;\n\npub(super) use config::BuildPlan;\npub(super) use config::Internal;\npub(super) use config::LaunchReport;\n\npub(super) fn build_plan() -> BuildPlan { BuildPlan { steps: 2 } }\npub(super) fn internal() -> Internal { Internal { id: 3 } }\npub(super) fn launch() -> LaunchReport { LaunchReport { pid: 7 } }\n",
+            ),
+            (
+                "src/app_tools/launch/config.rs",
+                "pub struct BuildPlan {\n    pub steps: usize,\n}\n\npub struct LaunchReport {\n    pub pid: u32,\n}\n\npub struct Internal {\n    pub id: u32,\n}\n",
+            ),
+        ],
+    );
+
+    let manifest = temp.path().join("Cargo.toml");
+    let check = cargo_command()
+        .arg("check")
+        .arg("--manifest-path")
+        .arg(&manifest)
+        .output()
+        .expect("check declaration interface fixture");
+    assert!(
+        check.status.success(),
+        "fixture must compile before mend: {}\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr),
+    );
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(&manifest)
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let config = fs::read_to_string(temp.path().join("src/app_tools/launch/config.rs"))
+        .expect("read fixed config source");
+    assert!(
+        config.contains("pub(crate) struct BuildPlan"),
+        "`BuildPlan` is named by a `pub(crate)`-reachable method and must stay usable there:\n{config}",
+    );
+    assert!(
+        config.contains("pub(crate) struct LaunchReport"),
+        "`LaunchReport` is named by a `pub(crate)`-reachable field and must stay usable there:\n{config}",
+    );
+    assert!(
+        config.contains("pub(in crate::app_tools) struct Internal"),
+        "`Internal` reaches no wider declaration and must still be narrowed:\n{config}",
+    );
+
+    let fixed_check = cargo_command()
+        .arg("check")
+        .arg("--manifest-path")
+        .arg(&manifest)
+        .output()
+        .expect("check fixed declaration interface fixture");
+    let fixed_stderr = String::from_utf8_lossy(&fixed_check.stderr);
+    assert!(
+        fixed_check.status.success() && !fixed_stderr.contains("more private than"),
+        "the fixed fixture must compile without `private_interfaces` warnings: {fixed_stderr}",
+    );
+}
+
 fn write_sources(root: &std::path::Path, sources: &[(&str, &str)]) {
     for (relative_path, source) in sources {
         let path = root.join(relative_path);

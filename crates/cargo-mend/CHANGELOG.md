@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A type named in the interface of a trait impl whose trait and self type are both `pub` is no
   longer narrowed by `suspicious_pub`. rustc requires those declarations to stay `pub` (E0446), so
   `--fix` applied the narrowing, failed its re-check, and rolled the whole batch back.
+- A type named in a function signature, a const or static type, or a struct or enum field is no
+  longer narrowed below the reach of the declaration that names it. Signature types were recorded
+  only at call sites, but rustc's `private_interfaces` lint measures against the declaration
+  itself, so `--fix` left projects with fresh warnings where it had none before.
 
 ## [0.18.2] - 2026-08-14
 

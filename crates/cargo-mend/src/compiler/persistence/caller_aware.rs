@@ -96,6 +96,10 @@ fn collect_callers(reports: &[StoredReport]) -> CallerMap {
                         .restricted_imports
                         .insert(site.caller_module_def_path.clone());
                 },
+                // `reaching` only: a declaration's own signature caps how far
+                // the annotation may narrow without proving anyone uses the
+                // item, so it must not suppress the narrowing finding.
+                UseSiteReference::DeclarationInterface => {},
             }
         }
     }

@@ -47,6 +47,12 @@ pub(in crate::compiler) enum UseSiteReference {
     ThroughSignature,
     PrivateImport,
     RestrictedImport,
+    /// No caller at all: the declaration's own signature names the item, so
+    /// rustc requires it to stay visible wherever that declaration is reachable
+    /// (`private_interfaces`). It caps how far the annotation may narrow, but
+    /// unlike the other kinds it never proves anyone uses the item, so it must
+    /// not suppress a narrowing finding.
+    DeclarationInterface,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -56,6 +56,7 @@ impl UseSiteIndex {
                     UseSiteReference::PrivateImport | UseSiteReference::RestrictedImport,
                     UseSiteReference::ThroughSignature
                 )
+                | (UseSiteReference::DeclarationInterface, _)
         ) {
             *recorded = reference;
         }

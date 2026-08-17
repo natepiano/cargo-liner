@@ -50,6 +50,8 @@ use rustc_hir::intravisit::walk_item;
 use rustc_hir::intravisit::walk_trait_item;
 use rustc_hir::intravisit::walk_trait_ref;
 use rustc_middle::hir::nested_filter::All;
+use rustc_middle::middle::privacy::EffectiveVisibilities;
+use rustc_middle::middle::privacy::Level;
 use rustc_middle::ty;
 use rustc_middle::ty::AssocContainer;
 use rustc_middle::ty::TyCtxt;
@@ -799,6 +801,7 @@ struct UseSiteCollector<'a, 'tcx> {
     /// occurrence.
     out:                       &'a mut FxHashSet<(DefId, DefId, UseSiteReference)>,
     public_visibility_targets: &'a mut FxHashSet<LocalDefId>,
+    effective_visibilities:    &'a EffectiveVisibilities,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -807,6 +810,7 @@ enum InterfaceVisibility {
     Restricted,
 }
 
+#[derive(Clone, Copy)]
 struct InterfaceReach {
     module:     DefId,
     visibility: InterfaceVisibility,
@@ -1002,6 +1006,7 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
                     arg_type,
                     self_adt,
                     interface_reach.visibility,
+                    UseSiteReference::ThroughSignature,
                     &mut seen,
                 );
             }
@@ -1018,6 +1023,7 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
                         assoc_type,
                         self_adt,
                         interface_reach.visibility,
+                        UseSiteReference::ThroughSignature,
                         &mut seen,
                     );
                 },
@@ -1028,6 +1034,7 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
                             input_or_output,
                             self_adt,
                             interface_reach.visibility,
+                            UseSiteReference::ThroughSignature,
                             &mut seen,
                         );
                     }
@@ -1080,6 +1087,7 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
         component_type: ty::Ty<'tcx>,
         self_adt: Option<DefId>,
         interface_visibility: InterfaceVisibility,
+        reference: UseSiteReference,
         seen: &mut FxHashSet<DefId>,
     ) {
         for arg in component_type.walk() {
@@ -1093,9 +1101,127 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
                     self.public_visibility_targets
                         .insert(adt_def.did().expect_local());
                 }
-                self.push_site(adt_def.did(), UseSiteReference::ThroughSignature);
+                self.push_site(adt_def.did(), reference);
             }
         }
+    }
+
+    /// Record every local ADT named in a declaration's own interface — a
+    /// function signature, a const/static type, or a struct/enum field type —
+    /// as used from the widest module that declaration is reachable from.
+    /// rustc's `private_interfaces` lint compares the two: `pub fn
+    /// to_launch_params(&self) -> LaunchParams` on a type reachable at
+    /// `pub(crate)` warns as soon as `LaunchParams` drops below `pub(crate)`,
+    /// even when nothing calls the method. `record_fn_signature_components`
+    /// only fires at call sites, so a declaration with no caller wide enough
+    /// left `--fix` free to narrow the named type and introduce the warning.
+    fn record_declaration_interface(&mut self, def_id: LocalDefId) {
+        let Some(reach) = self.declaration_reach(def_id) else {
+            return;
+        };
+        match self.tcx.def_kind(def_id.to_def_id()) {
+            DefKind::Fn | DefKind::AssocFn => {
+                let signature = self.tcx.fn_sig(def_id).instantiate_identity();
+                let self_adt = self.impl_self_adt(def_id);
+                let inputs_and_output = signature.skip_binder().inputs_and_output;
+                self.record_reachable_component_types(reach, self_adt, inputs_and_output);
+            },
+            DefKind::Const { .. } | DefKind::Static { .. } | DefKind::AssocConst { .. } => {
+                let declared_type = self
+                    .tcx
+                    .type_of(def_id)
+                    .instantiate_identity()
+                    .skip_normalization();
+                let self_adt = self.impl_self_adt(def_id);
+                self.record_reachable_component_types(reach, self_adt, [declared_type]);
+            },
+            _ => {},
+        }
+    }
+
+    /// Field types are checked against the field's own reach, not the type's:
+    /// `pub spawn_insert_example: Option<SpawnInsertExample>` on a `TypeGuide`
+    /// reachable at `pub(in crate::brp_tools)` requires `SpawnInsertExample` to
+    /// stay usable from there. The owning ADT is skipped — narrowing it narrows
+    /// its fields with it.
+    fn record_field_declaration_interfaces(&mut self, adt_def_id: LocalDefId) {
+        let self_adt = Some(adt_def_id.to_def_id());
+        let fields: Vec<DefId> = self
+            .tcx
+            .adt_def(adt_def_id)
+            .all_fields()
+            .map(|field| field.did)
+            .collect();
+        for field in fields {
+            let Some(local_field) = field.as_local() else {
+                continue;
+            };
+            let Some(reach) = self.declaration_reach(local_field) else {
+                continue;
+            };
+            let field_type = self
+                .tcx
+                .type_of(field)
+                .instantiate_identity()
+                .skip_normalization();
+            self.record_reachable_component_types(reach, self_adt, [field_type]);
+        }
+    }
+
+    /// The widest module a declaration is reachable from, as rustc's
+    /// `private_interfaces` lint computes it: the effective visibility at
+    /// `Level::Reachable`, which already accounts for private ancestor modules
+    /// and widening `pub use` re-exports. No entry means the declaration is
+    /// reachable from nowhere outside its own module and constrains nothing.
+    fn declaration_reach(&self, def_id: LocalDefId) -> Option<InterfaceReach> {
+        let effective_visibility = self.effective_visibilities.effective_vis(def_id)?;
+        match effective_visibility.at_level(Level::Reachable).to_def_id() {
+            Visibility::Public => Some(InterfaceReach {
+                module:     CRATE_DEF_ID.to_def_id(),
+                visibility: InterfaceVisibility::Public,
+            }),
+            Visibility::Restricted(module) => Some(InterfaceReach {
+                module,
+                visibility: InterfaceVisibility::Restricted,
+            }),
+        }
+    }
+
+    fn record_reachable_component_types(
+        &mut self,
+        reach: InterfaceReach,
+        self_adt: Option<DefId>,
+        component_types: impl IntoIterator<Item = ty::Ty<'tcx>>,
+    ) {
+        let previous_module = self.current_module;
+        self.current_module = reach.module;
+        let mut seen = FxHashSet::default();
+        for component_type in component_types {
+            self.record_interface_component_types(
+                component_type,
+                self_adt,
+                reach.visibility,
+                UseSiteReference::DeclarationInterface,
+                &mut seen,
+            );
+        }
+        self.current_module = previous_module;
+    }
+
+    /// The self type of the impl block a declaration belongs to, if any. A
+    /// method's signature always names its own self type, and its reach is
+    /// bounded by that type's, so the mention imposes no floor on it.
+    fn impl_self_adt(&self, def_id: LocalDefId) -> Option<DefId> {
+        let parent = self.tcx.parent(def_id.to_def_id());
+        if !matches!(self.tcx.def_kind(parent), DefKind::Impl { .. }) {
+            return None;
+        }
+        self.tcx
+            .type_of(parent)
+            .instantiate_identity()
+            .skip_normalization()
+            .ty_adt_def()
+            .map(ty::AdtDef::did)
     }
 
     /// True when `field` is visible beyond `owning_module` — i.e. its
@@ -1363,19 +1489,30 @@ pub(super) fn collect_use_sites(
         current_module: CRATE_DEF_ID.to_def_id(),
         out: &mut pairs,
         public_visibility_targets,
+        effective_visibilities: tcx.effective_visibilities(()),
     };
     let crate_items = tcx.hir_crate_items(());
     for item_id in crate_items.free_items() {
         let item = tcx.hir_item(item_id);
         collector.visit_item(item);
+        let item_def_id = item.owner_id.def_id;
+        if matches!(
+            tcx.def_kind(item_def_id.to_def_id()),
+            DefKind::Struct | DefKind::Union | DefKind::Enum
+        ) {
+            collector.record_field_declaration_interfaces(item_def_id);
+        }
+        collector.record_declaration_interface(item_def_id);
     }
     for impl_item_id in crate_items.impl_items() {
         let impl_item = tcx.hir_impl_item(impl_item_id);
         collector.visit_impl_item(impl_item);
+        collector.record_declaration_interface(impl_item.owner_id.def_id);
     }
     for trait_item_id in crate_items.trait_items() {
         let trait_item = tcx.hir_trait_item(trait_item_id);
         collector.visit_trait_item(trait_item);
+        collector.record_declaration_interface(trait_item.owner_id.def_id);
     }
 
     let mut index = UseSiteIndex::default();
