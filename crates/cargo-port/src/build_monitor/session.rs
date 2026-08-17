@@ -450,7 +450,7 @@ impl SessionRootObservation {
     pub(crate) const fn first_observed_at(&self) -> Instant { self.first_observed_at }
 
     /// Whether the root itself was working or parked over this cycle.
-    pub(crate) const fn root_cpu_activity(&self) -> RootCpuActivity { self.root_cpu_activity }
+    pub(super) const fn root_cpu_activity(&self) -> RootCpuActivity { self.root_cpu_activity }
 }
 
 /// One classified Cargo build session.

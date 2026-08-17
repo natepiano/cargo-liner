@@ -5,6 +5,7 @@ use std::num::NonZeroU64;
 use std::sync::OnceLock;
 
 use super::constants::MINIMUM_READABLE_COLUMN_WIDTH;
+use super::presentation;
 use super::presentation::MonitorColumns;
 use super::presentation::MonitorEmptyState;
 use super::presentation::MonitorEmptyStateIndexNote;
@@ -15,8 +16,6 @@ use super::presentation::OutputCopyAvailability;
 use super::presentation::OutputPaneVisibility;
 use super::presentation::OutputPresentation;
 use super::presentation::OwnedOutputVisibility;
-use super::presentation::activity_label;
-use super::presentation::state_emphasis;
 use super::selection::OutputCursor;
 use super::selection::OutputCursorTarget;
 use crate::build_monitor;
@@ -621,28 +620,28 @@ fn a_cursor_falls_back_when_what_it_named_is_gone() {
 #[test]
 fn a_parked_root_behind_a_lock_holder_names_the_pid_it_waits_on() {
     assert_eq!(
-        activity_label(
+        presentation::activity_label(
             BuildSessionActivity::ActiveWithoutCompiler(RootCpuActivity::Parked),
             BuildLockContention::WaitingBehind { holder_pid: 53_430 },
         ),
         "idle · waiting on pid 53430"
     );
     assert_eq!(
-        activity_label(
+        presentation::activity_label(
             BuildSessionActivity::Compiling,
             BuildLockContention::Holding,
         ),
         "compiling · lock holder"
     );
     assert_eq!(
-        activity_label(
+        presentation::activity_label(
             BuildSessionActivity::ActiveWithoutCompiler(RootCpuActivity::Working),
             BuildLockContention::Undetermined,
         ),
         "active"
     );
     assert_eq!(
-        activity_label(
+        presentation::activity_label(
             BuildSessionActivity::ActiveWithoutCompiler(RootCpuActivity::Unobserved),
             BuildLockContention::Undetermined,
         ),
@@ -655,28 +654,28 @@ fn a_parked_root_behind_a_lock_holder_names_the_pid_it_waits_on() {
 #[test]
 fn only_an_observed_session_waiting_on_a_lock_holder_reads_as_blocked() {
     assert_eq!(
-        state_emphasis(
+        presentation::state_emphasis(
             BuildTerminationLifecycle::Observed,
             BuildLockContention::WaitingBehind { holder_pid: 53_430 },
         ),
         MonitorStateEmphasis::LockBlocked
     );
     assert_eq!(
-        state_emphasis(
+        presentation::state_emphasis(
             BuildTerminationLifecycle::Observed,
             BuildLockContention::Holding,
         ),
         MonitorStateEmphasis::Ordinary
     );
     assert_eq!(
-        state_emphasis(
+        presentation::state_emphasis(
             BuildTerminationLifecycle::Observed,
             BuildLockContention::Undetermined,
         ),
         MonitorStateEmphasis::Ordinary
     );
     assert_eq!(
-        state_emphasis(
+        presentation::state_emphasis(
             BuildTerminationLifecycle::Terminating,
             BuildLockContention::WaitingBehind { holder_pid: 53_430 },
         ),

@@ -35,8 +35,8 @@ use crate::build_monitor::RootCpuActivity;
 use crate::build_monitor::SessionScope;
 use crate::build_monitor::TargetDirectoryEvidence;
 use crate::build_monitor::UnattributedCompileActivity;
+use crate::project;
 use crate::project::DisplayPath;
-use crate::project::home_relative_path;
 use crate::tui::OwnedRunId;
 use crate::tui::compile_visibility::CompileVisibilityState;
 use crate::tui::compile_visibility::MonitorScopeResolution;
@@ -533,12 +533,12 @@ fn selector_label(cargo_command_selector: &CargoCommandSelector) -> String {
 fn checkout_label(monitor_column: MonitorColumn<'_>) -> String {
     let build_session = monitor_column.session_row().build_session();
     match build_session.session_scope() {
-        SessionScope::Resolved { root, .. } => home_relative_path(root.path().as_path()),
+        SessionScope::Resolved { root, .. } => project::home_relative_path(root.path().as_path()),
         SessionScope::Unresolved => match build_session.session_target_directory().evidence() {
             TargetDirectoryEvidence::Determined(canonical_target_directory) => {
                 format!(
                     "writes {}",
-                    home_relative_path(canonical_target_directory.path().as_path())
+                    project::home_relative_path(canonical_target_directory.path().as_path())
                 )
             },
             TargetDirectoryEvidence::Unobservable => "checkout unresolved".to_string(),
