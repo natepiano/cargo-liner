@@ -245,9 +245,11 @@ pub(in crate::tui) fn collect_reload_actions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::CratesIoReleaseGroupConfig;
     use crate::config::LintIndicator;
     use crate::config::NonRustInclusion;
     use crate::config::ScrollDirection;
+    use crate::config::WorkspaceMemberInclusion;
 
     #[test]
     fn changed_keys_include_value_only_settings_without_actions() {
@@ -257,9 +259,9 @@ mod tests {
         new.tui.discovery_shimmer_secs = 4.0;
         new.crates_io
             .release_groups
-            .push(crate::config::CratesIoReleaseGroupConfig {
+            .push(CratesIoReleaseGroupConfig {
                 representative: "bevy".to_string(),
-                workspace_members: crate::config::WorkspaceMemberInclusion::Include,
+                workspace_members: WorkspaceMemberInclusion::Include,
                 ..crate::config::CratesIoReleaseGroupConfig::default()
             });
 

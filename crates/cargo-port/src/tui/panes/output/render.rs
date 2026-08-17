@@ -4,14 +4,18 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
+use tui_pane::PaneRule;
 use tui_pane::finder_match_bg;
 use tui_pane::label_color;
+use unicode_width::UnicodeWidthStr;
 
+use super::constants::COLUMN_DIVIDER_WIDTH;
 use super::constants::PANE_BORDER_COLUMNS;
 use super::constants::PANE_CHROME_ROWS;
 use super::hit_map::MonitorHitMap;
 use super::monitor_render;
 use super::monitor_render::ColumnActivityExtent;
+use super::monitor_render::MonitorDividers;
 use super::monitor_render::OwnedBody;
 use super::monitor_render::SelectedColumnScroll;
 use super::pane::OutputPane;
@@ -85,10 +89,16 @@ pub(super) fn render_output_pane_body(
     // read the viewport length this frame's buffer just set, so it is built
     // after the sync rather than from the previous frame's length.
     let focused = pane.focus.is_focused();
-    let block = tui_pane::default_pane_chrome()
-        .with_inactive_border(Style::default().fg(label_color()))
-        .block(output_title(pane, ctx), focused);
-    frame.render_widget(block, area);
+    let pane_chrome =
+        tui_pane::default_pane_chrome().with_inactive_border(Style::default().fg(label_color()));
+    let border_style = if focused {
+        pane_chrome.active_border
+    } else {
+        pane_chrome.inactive_border
+    };
+    let title = output_title(pane, ctx);
+    let title_width = title.width();
+    frame.render_widget(pane_chrome.block(title, focused), area);
 
     let selected_range = pane.selected_range(source);
     match ctx.output_presentation.monitor() {
@@ -110,7 +120,7 @@ pub(super) fn render_output_pane_body(
                 )),
             };
             let mut monitor_hit_map = MonitorHitMap::new();
-            monitor_render::render_monitor_half(
+            let monitor_dividers = monitor_render::render_monitor_half(
                 frame,
                 inner,
                 monitor_presentation,
@@ -119,9 +129,79 @@ pub(super) fn render_output_pane_body(
                 selected_column_scroll,
                 &mut monitor_hit_map,
             );
+            render_monitor_dividers(
+                frame,
+                MonitorDividerGeometry {
+                    area,
+                    inner,
+                    title_width,
+                },
+                &monitor_dividers,
+                border_style,
+            );
             pane.set_monitor_hit_map(monitor_hit_map);
         },
     }
+}
+
+/// Where the monitor's vertical rules are drawn: the bordered pane rect, the
+/// rect inside it the monitor drew into, and how many cells the title took on
+/// the top border row.
+#[derive(Clone, Copy)]
+struct MonitorDividerGeometry {
+    /// The bordered pane rect, whose first and last rows carry the connectors.
+    area:        Rect,
+    /// The rect inside the border that the monitor's columns were drawn into.
+    inner:       Rect,
+    /// Cells the pane title occupies on the top border row.
+    title_width: usize,
+}
+
+/// Draw the monitor's column rules over the full inner height and cap each one
+/// where it meets the pane border, so the columns close into the pane's box
+/// instead of ending a row short of the top and bottom border rows.
+///
+/// Drawn after the monitor's own content: the indicator row, the unattributed
+/// section, and the termination-result rows all span the full width, so a rule
+/// drawn before them would be overwritten where it crosses their text.
+///
+/// A `┬` is dropped where the title already occupies the top border row —
+/// writing one there would replace a title character.
+fn render_monitor_dividers(
+    frame: &mut Frame,
+    monitor_divider_geometry: MonitorDividerGeometry,
+    monitor_dividers: &MonitorDividers,
+    border_style: Style,
+) {
+    let MonitorDividerGeometry {
+        area,
+        inner,
+        title_width,
+    } = monitor_divider_geometry;
+    if inner.height == 0 {
+        return;
+    }
+    let title_end = inner
+        .x
+        .saturating_add(u16::try_from(title_width).unwrap_or(u16::MAX));
+    let bottom_border_y = area.bottom().saturating_sub(1);
+    let mut rules = Vec::new();
+    for x in monitor_dividers.rule_columns() {
+        rules.push(PaneRule::Vertical {
+            area: Rect::new(x, inner.y, COLUMN_DIVIDER_WIDTH, inner.height),
+        });
+        if x >= title_end {
+            rules.push(PaneRule::Symbol {
+                area:  Rect::new(x, area.y, COLUMN_DIVIDER_WIDTH, 1),
+                glyph: '┬',
+            });
+        }
+        rules.push(PaneRule::Symbol {
+            area:  Rect::new(x, bottom_border_y, COLUMN_DIVIDER_WIDTH, 1),
+            glyph: '┴',
+        });
+    }
+    tui_pane::render_rules(frame, &rules, border_style);
 }
 
 /// The monitor-off view: Cargo Port's own captured output filling the pane, as
@@ -245,5 +325,72 @@ fn output_title(pane: &OutputPane, ctx: &PaneRenderCtx<'_>) -> String {
         " Output (y copy · Esc close) ".to_string()
     } else {
         " Output (Esc to close) ".to_string()
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::panic, reason = "tests should panic on unexpected values")]
+mod tests {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::widgets::Block;
+    use ratatui::widgets::Borders;
+
+    use super::*;
+
+    const PANE_HEIGHT: u16 = 8;
+    const PANE_WIDTH: u16 = 40;
+    const RULE_X: u16 = 20;
+    const TITLE: &str = " Output ";
+
+    /// Draw a bordered pane with one monitor rule at [`RULE_X`] and return the
+    /// glyph in every cell of that x column, top border row first.
+    fn rule_column_glyphs() -> Vec<String> {
+        let backend = TestBackend::new(PANE_WIDTH, PANE_HEIGHT);
+        let mut terminal =
+            Terminal::new(backend).unwrap_or_else(|error| panic!("create test terminal: {error}"));
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                let inner = Rect::new(
+                    area.x.saturating_add(1),
+                    area.y.saturating_add(1),
+                    area.width.saturating_sub(PANE_BORDER_COLUMNS),
+                    area.height.saturating_sub(PANE_CHROME_ROWS),
+                );
+                frame.render_widget(Block::default().borders(Borders::ALL).title(TITLE), area);
+                render_monitor_dividers(
+                    frame,
+                    MonitorDividerGeometry {
+                        area,
+                        inner,
+                        title_width: TITLE.width(),
+                    },
+                    &MonitorDividers::for_test(vec![RULE_X]),
+                    Style::default(),
+                );
+            })
+            .unwrap_or_else(|error| panic!("draw test frame: {error}"));
+        let buffer = terminal.backend().buffer();
+        (0..PANE_HEIGHT)
+            .map(|y| buffer[(RULE_X, y)].symbol().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a_monitor_rule_runs_between_connectors_on_both_border_rows() {
+        let glyphs = rule_column_glyphs();
+        let (first, rest) = glyphs
+            .split_first()
+            .unwrap_or_else(|| panic!("the pane is {PANE_HEIGHT} rows tall"));
+        let (last, body) = rest
+            .split_last()
+            .unwrap_or_else(|| panic!("the pane has a bottom border row"));
+        assert_eq!(first, "┬", "the top border row tees into the rule");
+        assert_eq!(last, "┴", "the bottom border row tees into the rule");
+        assert!(
+            body.iter().all(|glyph| glyph == "│"),
+            "the rule fills every inner row: {glyphs:?}"
+        );
     }
 }

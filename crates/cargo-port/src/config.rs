@@ -344,7 +344,7 @@ impl From<WorkspaceMemberInclusion> for bool {
 }
 
 impl WorkspaceMemberInclusion {
-    pub(crate) const fn includes(self) -> bool { matches!(self, Self::Include) }
+    const fn includes(self) -> bool { matches!(self, Self::Include) }
 }
 
 /// Crates that publish one coordinated release represented by a single crate.

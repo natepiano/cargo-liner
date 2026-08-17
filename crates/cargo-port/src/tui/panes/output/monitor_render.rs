@@ -13,8 +13,6 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use ratatui::widgets::Block;
-use ratatui::widgets::Borders;
 use ratatui::widgets::Paragraph;
 use tui_pane::CopySelectionResult;
 use tui_pane::label_color;
@@ -69,6 +67,28 @@ use crate::tui::state::OwnedRunCompletionMarker;
 use crate::tui::state::OwnedRunOutputTitleRef;
 use crate::tui::state::OwnedRunRunningLabelRef;
 
+/// The x columns the monitor wants a vertical rule drawn at: one per column
+/// past the first, plus the pinned owned column's left edge when one is drawn.
+///
+/// The monitor decides where the rules go but does not draw them.
+/// [`super::render::render_output_pane_body`] does, after the monitor's content,
+/// so each rule spans the whole inner pane and meets the pane border with a
+/// `┬`/`┴` connector instead of stopping a row short of both border rows.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) struct MonitorDividers(Vec<u16>);
+
+impl MonitorDividers {
+    /// Rules at the given absolute x columns, standing in for a monitor draw.
+    #[cfg(test)]
+    pub(super) const fn for_test(rule_columns: Vec<u16>) -> Self { Self(rule_columns) }
+
+    /// Record a rule at absolute x column `x`.
+    fn push(&mut self, x: u16) { self.0.push(x); }
+
+    /// Every rule's x column, left to right.
+    pub(super) fn rule_columns(&self) -> impl Iterator<Item = u16> + '_ { self.0.iter().copied() }
+}
+
 /// Cargo Port's own captured output as the monitor draws it: the presentation
 /// value, the buffer the selection reads, and the rows that selection covers.
 ///
@@ -108,6 +128,8 @@ impl<'a> OwnedBody<'a> {
 /// never by the current lifecycle identity. When that producer is one of the
 /// scope's sessions the body extends its column; when it is not, the body is
 /// pinned as its own column beside them and stays out of the scope's columns.
+///
+/// Returns the x columns the pane chrome draws the vertical rules at.
 pub(super) fn render_monitor_half(
     frame: &mut Frame,
     area: Rect,
@@ -116,9 +138,9 @@ pub(super) fn render_monitor_half(
     cursor: &OutputCursor,
     selected_column_scroll: SelectedColumnScroll,
     hit_map: &mut MonitorHitMap,
-) {
+) -> MonitorDividers {
     let Some(owned_body) = owned_body else {
-        render_monitor(
+        return render_monitor(
             frame,
             area,
             monitor_presentation,
@@ -127,10 +149,9 @@ pub(super) fn render_monitor_half(
             selected_column_scroll,
             hit_map,
         );
-        return;
     };
     if producer_is_in_scope(monitor_presentation, owned_body.owned.producer()) {
-        render_monitor(
+        return render_monitor(
             frame,
             area,
             monitor_presentation,
@@ -139,7 +160,6 @@ pub(super) fn render_monitor_half(
             selected_column_scroll,
             hit_map,
         );
-        return;
     }
     let pin_width = pinned_column_width(area.width);
     let monitor_area = Rect::new(
@@ -148,7 +168,7 @@ pub(super) fn render_monitor_half(
         area.width.saturating_sub(pin_width),
         area.height,
     );
-    render_monitor(
+    let mut dividers = render_monitor(
         frame,
         monitor_area,
         monitor_presentation,
@@ -163,7 +183,11 @@ pub(super) fn render_monitor_half(
         pin_width,
         area.height,
     );
+    if pin_width > 0 {
+        dividers.push(pin_area.x);
+    }
     render_pinned_owned(frame, pin_area, owned_body, cursor, hit_map);
+    dividers
 }
 
 /// Whether the run that produced the retained output is one of the scope's own
@@ -350,12 +374,8 @@ fn render_pinned_owned(
     if area.width == 0 || area.height == 0 {
         return;
     }
-    frame.render_widget(
-        Block::new()
-            .borders(Borders::LEFT)
-            .border_style(Style::default().fg(label_color())),
-        area,
-    );
+    // The rule along `area.x` is left to the pane chrome; only the text inset
+    // it costs is taken here.
     let text_area = Rect::new(
         area.x.saturating_add(COLUMN_DIVIDER_WIDTH),
         area.y,
@@ -457,9 +477,9 @@ fn render_monitor(
     cursor: &OutputCursor,
     selected_column_scroll: SelectedColumnScroll,
     hit_map: &mut MonitorHitMap,
-) {
+) -> MonitorDividers {
     if area.height < MONITOR_INDICATOR_HEIGHT {
-        return;
+        return MonitorDividers::default();
     }
     let (monitor_staleness, terminal_record_count) = match monitor_presentation {
         MonitorPresentation::Empty(monitor_empty_presentation) => (
@@ -484,7 +504,7 @@ fn render_monitor(
         area.height.saturating_sub(MONITOR_INDICATOR_HEIGHT),
     );
     if body.height == 0 {
-        return;
+        return MonitorDividers::default();
     }
     match monitor_presentation {
         MonitorPresentation::Empty(monitor_empty_presentation) => {
@@ -493,18 +513,17 @@ fn render_monitor(
                 Paragraph::new(empty_state_lines(monitor_empty_presentation)),
                 body,
             );
+            MonitorDividers::default()
         },
-        MonitorPresentation::Columns(monitor_columns) => {
-            render_columns_with_terminal_records(
-                frame,
-                body,
-                monitor_columns,
-                owned_body,
-                cursor,
-                selected_column_scroll,
-                hit_map,
-            );
-        },
+        MonitorPresentation::Columns(monitor_columns) => render_columns_with_terminal_records(
+            frame,
+            body,
+            monitor_columns,
+            owned_body,
+            cursor,
+            selected_column_scroll,
+            hit_map,
+        ),
     }
 }
 
@@ -519,7 +538,7 @@ fn render_columns_with_terminal_records(
     cursor: &OutputCursor,
     selected_column_scroll: SelectedColumnScroll,
     hit_map: &mut MonitorHitMap,
-) {
+) -> MonitorDividers {
     let terminal_records: Vec<_> = monitor_columns.terminal_records().collect();
     let terminal_record_lines = termination_result_lines(&terminal_records);
     let terminal_record_height = u16::try_from(terminal_record_lines.len())
@@ -531,7 +550,7 @@ fn render_columns_with_terminal_records(
         area.width,
         area.height.saturating_sub(terminal_record_height),
     );
-    if live_columns_area.height > 0 {
+    let dividers = if live_columns_area.height > 0 {
         render_columns(
             frame,
             live_columns_area,
@@ -540,8 +559,10 @@ fn render_columns_with_terminal_records(
             cursor,
             selected_column_scroll,
             hit_map,
-        );
-    }
+        )
+    } else {
+        MonitorDividers::default()
+    };
     if terminal_record_height > 0 {
         let terminal_record_area = Rect::new(
             area.x,
@@ -551,6 +572,7 @@ fn render_columns_with_terminal_records(
         );
         frame.render_widget(Paragraph::new(terminal_record_lines), terminal_record_area);
     }
+    dividers
 }
 
 /// The always-visible enabled indicator, carrying the staleness marker.
@@ -689,7 +711,7 @@ fn render_columns(
     cursor: &OutputCursor,
     selected_column_scroll: SelectedColumnScroll,
     hit_map: &mut MonitorHitMap,
-) {
+) -> MonitorDividers {
     let unattributed_section_layout =
         UnattributedSectionLayout::within(area.height, monitor_columns);
     let strip = Rect::new(
@@ -699,7 +721,7 @@ fn render_columns(
         area.height
             .saturating_sub(unattributed_section_layout.height),
     );
-    render_column_strip(
+    let dividers = render_column_strip(
         frame,
         strip,
         monitor_columns,
@@ -725,6 +747,7 @@ fn render_columns(
             hit_map,
         );
     }
+    dividers
 }
 
 /// How many rows the scope-level unattributed section takes, and how many of
@@ -775,7 +798,8 @@ impl UnattributedSectionLayout {
     }
 }
 
-/// Draw the visible window of columns, evenly splitting the strip.
+/// Draw the visible window of columns, evenly splitting the strip, and report
+/// the x columns their separating rules belong at.
 fn render_column_strip(
     frame: &mut Frame,
     area: Rect,
@@ -784,9 +808,10 @@ fn render_column_strip(
     cursor: &OutputCursor,
     selected_column_scroll: SelectedColumnScroll,
     hit_map: &mut MonitorHitMap,
-) {
+) -> MonitorDividers {
+    let mut dividers = MonitorDividers::default();
     if area.height == 0 || area.width == 0 {
-        return;
+        return dividers;
     }
     let window = monitor_columns.window(area.width, cursor.column_index());
     let drawn: Vec<(usize, MonitorColumn<'_>)> = monitor_columns
@@ -795,10 +820,10 @@ fn render_column_strip(
         .filter(|(column_index, _)| window.contains(*column_index))
         .collect();
     let Ok(drawn_count) = u16::try_from(drawn.len()) else {
-        return;
+        return dividers;
     };
     if drawn_count == 0 {
-        return;
+        return dividers;
     }
     let column_width = area.width / drawn_count;
     for (offset, (column_index, column)) in drawn.into_iter().enumerate() {
@@ -812,16 +837,12 @@ fn render_column_strip(
             area.height,
         );
         // A single column takes the full width with no rule; every later column
-        // draws the rule that separates it from the one on its left.
+        // gives up its first cell to the rule that separates it from the one on
+        // its left. The pane chrome draws that rule.
         let text_area = if offset == 0 {
             column_area
         } else {
-            frame.render_widget(
-                Block::new()
-                    .borders(Borders::LEFT)
-                    .border_style(Style::default().fg(label_color())),
-                column_area,
-            );
+            dividers.push(column_area.x);
             Rect::new(
                 column_area.x.saturating_add(COLUMN_DIVIDER_WIDTH),
                 column_area.y,
@@ -842,6 +863,7 @@ fn render_column_strip(
             hit_map,
         );
     }
+    dividers
 }
 
 /// One root Cargo invocation: its header fields, then one selectable row per

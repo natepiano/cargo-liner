@@ -2037,6 +2037,7 @@ pub(super) fn focus_terminal_command(app: &mut App) {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use super::config::WorkspaceMemberInclusion;
     use super::*;
 
     #[test]
@@ -2159,7 +2160,7 @@ mod tests {
             .push(CratesIoReleaseGroupConfig {
                 representative:    "bevy".to_string(),
                 label:             "Bevy".to_string(),
-                workspace_members: config::WorkspaceMemberInclusion::Include,
+                workspace_members: WorkspaceMemberInclusion::Include,
                 members:           Vec::new(),
             });
         let mut toast_settings = ToastSettings::default();

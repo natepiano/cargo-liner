@@ -142,7 +142,7 @@ mod tests {
     use crate::project::Workspace;
     use crate::scan::BackgroundMsg;
     use crate::tui::app::async_tasks::constants::CRATES_IO_NEW_RELEASE_TITLE;
-    use crate::tui::test_support::make_app_with_config;
+    use crate::tui::test_support;
 
     #[test]
     fn refresh_is_due_only_after_the_full_interval() {
@@ -189,7 +189,7 @@ mod tests {
                 workspace_members: WorkspaceMemberInclusion::Include,
                 members:           Vec::new(),
             });
-        let mut app = make_app_with_config(
+        let mut app = test_support::make_app_with_config(
             &[
                 RootItem::Rust(RustProject::Workspace(workspace)),
                 RootItem::Rust(RustProject::Package(ecs)),
