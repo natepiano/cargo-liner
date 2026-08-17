@@ -349,8 +349,43 @@ pub(super) fn spawn_priority_fetch(app: &App, _: &str, abs_path: &str, name: Opt
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::time::Duration;
+    #[cfg(unix)]
+    use std::time::Instant;
+
     use super::*;
+    #[cfg(unix)]
+    use crate::support;
     use crate::tui::panes::BuildMode;
+
+    /// How long the cleanup assertions wait for a killed process to leave the
+    /// process table.
+    #[cfg(unix)]
+    const PROCESS_EXIT_DEADLINE: Duration = Duration::from_secs(5);
+    /// Gap between `kill(pid, 0)` probes while waiting out
+    /// [`PROCESS_EXIT_DEADLINE`].
+    #[cfg(unix)]
+    const PROCESS_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+    /// Whether a `kill(pid, 0)` probe still reaches a process or process group.
+    #[cfg(unix)]
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum ProcessVisibility {
+        Visible,
+        Gone,
+    }
+
+    #[cfg(unix)]
+    impl From<bool> for ProcessVisibility {
+        fn from(signal_reaches_target: bool) -> Self {
+            if signal_reaches_target {
+                Self::Visible
+            } else {
+                Self::Gone
+            }
+        }
+    }
 
     fn pending_example_run(cargo_package_invocation: CargoPackageInvocation) -> PendingExampleRun {
         PendingExampleRun {
@@ -421,26 +456,44 @@ mod tests {
             .ok_or_else(|| io::Error::other("missing descendant PID stream"))?;
         let mut descendant_pid = String::new();
         BufReader::new(stdout).read_line(&mut descendant_pid)?;
-        let descendant_pid = descendant_pid.trim();
+        let descendant_pid: u32 = descendant_pid
+            .trim()
+            .parse()
+            .map_err(|_| io::Error::other("descendant PID stream did not carry a pid"))?;
 
         let process_group_id = child.id();
         state::discard_unverified_owned_process_group(&mut child);
 
         assert!(child.try_wait()?.is_some());
-        assert!(
-            !Command::new("kill")
-                .arg("-0")
-                .arg(format!("-{process_group_id}"))
-                .status()?
-                .success()
+        assert_eq!(
+            visibility_before_deadline(|| support::process_group_exists(process_group_id).into()),
+            ProcessVisibility::Gone
         );
-        assert!(
-            !Command::new("kill")
-                .arg("-0")
-                .arg(descendant_pid)
-                .status()?
-                .success()
+        assert_eq!(
+            visibility_before_deadline(|| support::process_exists(descendant_pid).into()),
+            ProcessVisibility::Gone
         );
         Ok(())
+    }
+
+    /// Probe until the target is gone or [`PROCESS_EXIT_DEADLINE`] passes, and
+    /// report the last observation.
+    ///
+    /// One probe taken straight after the kill is not enough: `SIGKILL` stops the
+    /// process immediately but leaves it in the process table answering
+    /// `kill(pid, 0)` until its parent reaps it, and a descendant orphaned by the
+    /// group kill waits on init to do that.
+    #[cfg(unix)]
+    fn visibility_before_deadline(
+        mut probe_target: impl FnMut() -> ProcessVisibility,
+    ) -> ProcessVisibility {
+        let deadline = Instant::now() + PROCESS_EXIT_DEADLINE;
+        loop {
+            let process_visibility = probe_target();
+            if process_visibility == ProcessVisibility::Gone || Instant::now() >= deadline {
+                return process_visibility;
+            }
+            thread::sleep(PROCESS_EXIT_POLL_INTERVAL);
+        }
     }
 }
