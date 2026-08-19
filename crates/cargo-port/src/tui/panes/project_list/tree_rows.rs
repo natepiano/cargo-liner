@@ -653,7 +653,7 @@ fn renders_primary_marker(group: &WorktreeGroup, wi: usize) -> bool {
 fn disk_suffix_for_state(
     disk: &str,
     deleted: bool,
-    health: project::WorktreeHealth,
+    health: WorktreeHealth,
 ) -> (&str, Option<&'static str>, Option<Style>) {
     if deleted {
         (

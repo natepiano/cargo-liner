@@ -5,6 +5,8 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
+#[cfg(target_os = "macos")]
+use tui_pane::CoreCluster;
 use tui_pane::CpuUsage;
 use tui_pane::PaneFocusState;
 use tui_pane::PaneRule;
@@ -102,7 +104,7 @@ fn cpu_bar_line(
     core_number: usize,
     number_width: usize,
     percent: u8,
-    #[cfg(target_os = "macos")] core_cluster: Option<tui_pane::CoreCluster>,
+    #[cfg(target_os = "macos")] core_cluster: Option<CoreCluster>,
     cpu_cfg: &CpuConfig,
 ) -> Line<'static> {
     let filled = tui_pane::cpu_filled_cells(percent);
@@ -117,8 +119,8 @@ fn cpu_bar_line(
         || format!("{core_number:>number_width$} "),
         |core_cluster| {
             let marker = match core_cluster {
-                tui_pane::CoreCluster::Performance => "P",
-                tui_pane::CoreCluster::Efficiency => "E",
+                CoreCluster::Performance => "P",
+                CoreCluster::Efficiency => "E",
             };
             format!("{core_number:>number_width$} {marker} ")
         },
@@ -719,6 +721,8 @@ fn render_cores_affordance(frame: &mut Frame, layout: &CpuPanelLayout, cursor_po
 mod tests {
     use ratatui::layout::Rect;
     use ratatui::text::Line;
+    #[cfg(target_os = "macos")]
+    use tui_pane::CoreCluster;
     use tui_pane::text_default;
 
     use super::cpu_bar_line;
@@ -864,8 +868,8 @@ mod tests {
     fn cluster_marker_keeps_the_content_width() {
         let config = CpuConfig::default();
         for core_cluster in [
-            Some(tui_pane::CoreCluster::Performance),
-            Some(tui_pane::CoreCluster::Efficiency),
+            Some(CoreCluster::Performance),
+            Some(CoreCluster::Efficiency),
             None,
         ] {
             let line = cpu_bar_line(12, 2, 35, core_cluster, &config);
