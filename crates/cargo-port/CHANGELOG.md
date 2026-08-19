@@ -5,16 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0] - 2026-08-19
 
 ### Added
+- Add a build monitor to the Output pane (`C`): an opt-in view of the Cargo builds running under the selected project or workspace, whatever started them, shown as one column per build session with a row per compile activity and a count of any processes it could not attribute to a session.
+- Report each monitored session's state: `idle` for a Cargo root consuming no CPU, `active` while it resolves dependencies or compiles, and — when several sessions build into one target directory — `lock holder` for the one holding the build-directory lock, with `waiting on pid N` in red for the rest.
+- Terminate builds from the monitor behind a confirmation prompt: `alt-k` for the selected build, `alt-shift-k` for every build in scope. Each process group is signaled leaf-first with process identity revalidated immediately before signaling, and every root reports its own outcome, including roots the transaction refused.
+- Add `tui.exclude_dirs`, a directory-name glob denylist applied to both the initial scan and the filesystem watcher, so scratch trees such as a test run's `.tmpXXXXXX` checkouts never enter the Project List.
 - Add configurable crates.io release groups so coordinated workspaces such as Bevy keep each crate's version current while emitting one release toast through a representative crate.
 - Mark each CPU pane core row with its Apple Silicon cluster (`P` or `E`), read from the IORegistry device tree on macOS.
 - Show the sccache cache size and overall hit rate on the right of the status line, re-read every 10 seconds on a background worker; the segment stays hidden when sccache is not installed or does not report both values.
 
-### Changed
-- Abbreviate the home directory to `~` in Output pane build monitor column headings, so the narrow column shows more of the checkout path.
-- Split the build monitor's `active` state, which previously covered both a Cargo run doing its own resolution and fingerprint work and one parked waiting for a lock. A root consuming no CPU now reads `idle`, and when several live sessions build into the same target directory and exactly one of them has compiler children, that one reads `lock holder` while the rest read `waiting on pid N` in the same red a lock-blocked lint command uses.
+### Fixed
+- Pair a priority crates.io fetch's crate name with the path it was selected from, instead of reading the name from the detail pane's previous render, so a fetch fired during a tree rebuild no longer stores one crate's version on another crate's row and then reports the mismatch as a "New release" toast.
 
 ## [0.5.0] - 2026-07-30
 
