@@ -464,6 +464,207 @@ mod tests {
     }
 }
 
+/// A `#[cfg(test)] use` binds the name only in test builds. An ungated
+/// occurrence of the same path must stay fully qualified — rewriting it bare
+/// leaves non-test builds without an import, and inserting an ungated `use`
+/// would collide with the gated one. A gated occurrence is still rewritten
+/// through the gated import.
+#[test]
+fn cfg_test_gated_existing_import_keeps_ungated_path_qualified() {
+    let temp = tempdir().expect("create cfg-gated existing import fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "cfg_gated_existing_import_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create fixture source directory");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        r#"mod types {
+    pub enum Layout {
+        Sampleable,
+        Other,
+    }
+}
+
+#[cfg(test)]
+use crate::types::Layout;
+
+fn pick() -> u8 {
+    match crate::types::Layout::Sampleable {
+        crate::types::Layout::Sampleable => 1,
+        crate::types::Layout::Other => 2,
+    }
+}
+
+#[cfg(test)]
+fn pick_in_tests() -> crate::types::Layout {
+    crate::types::Layout::Other
+}
+
+fn main() {
+    let _ = pick();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uses_layout() {
+        let _ = Layout::Other;
+        let _ = pick_in_tests();
+    }
+}
+"#,
+    )
+    .expect("write fixture main");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let main_source =
+        fs::read_to_string(temp.path().join("src/main.rs")).expect("read fixed fixture");
+    assert!(
+        main_source.contains("match crate::types::Layout::Sampleable"),
+        "ungated occurrence must stay qualified when the only import is cfg(test)-gated:\n{main_source}"
+    );
+    assert!(
+        main_source.contains("#[cfg(test)]\nuse crate::types::Layout;"),
+        "the gated import must survive unchanged:\n{main_source}"
+    );
+    assert!(
+        main_source.contains("fn pick_in_tests() -> Layout {\n    Layout::Other\n}"),
+        "cfg(test)-gated occurrence should be rewritten through the gated import:\n{main_source}"
+    );
+
+    for cargo_arguments in [&[][..], &["--tests"][..]] {
+        let check = cargo_command()
+            .arg("check")
+            .args(cargo_arguments)
+            .arg("--manifest-path")
+            .arg(temp.path().join("Cargo.toml"))
+            .output()
+            .expect("check fixed cfg-gated existing import fixture");
+        assert!(
+            check.status.success(),
+            "fixed fixture failed for cargo arguments {cargo_arguments:?}: {}\n{}",
+            String::from_utf8_lossy(&check.stdout),
+            String::from_utf8_lossy(&check.stderr)
+        );
+    }
+}
+
+/// A nested module that sees `io` only through `use super::*;` must resolve
+/// `io::ErrorKind` to the same absolute `std::io::ErrorKind` the file scope
+/// resolves to. Before ancestor resolution the nested scope produced
+/// `use super::io::ErrorKind;`, the same-name/different-path group was
+/// dropped whole, and `--fix` reported the fixes applied while editing
+/// nothing.
+#[test]
+fn glob_visible_parent_import_resolves_to_shared_absolute_use() {
+    let temp = tempdir().expect("create glob-visible parent import fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "glob_visible_parent_import_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create fixture source directory");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        r#"use std::io;
+
+fn not_found_kind() -> io::ErrorKind {
+    io::ErrorKind::NotFound
+}
+
+mod codec {
+    use super::*;
+
+    pub fn invalid_kind() -> io::ErrorKind {
+        io::ErrorKind::InvalidData
+    }
+}
+
+fn main() {
+    let _ = not_found_kind();
+    let _ = codec::invalid_kind();
+}
+"#,
+    )
+    .expect("write fixture main");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let main_source =
+        fs::read_to_string(temp.path().join("src/main.rs")).expect("read fixed fixture");
+    assert!(
+        main_source.contains("use std::io::ErrorKind;"),
+        "both scopes should import the shared absolute path:\n{main_source}"
+    );
+    assert!(
+        !main_source.contains("use super::io::ErrorKind;"),
+        "the nested scope must not fall back to a super-qualified import:\n{main_source}"
+    );
+    assert!(
+        main_source.contains("fn not_found_kind() -> ErrorKind {\n    ErrorKind::NotFound\n}"),
+        "the file-scope occurrences should be rewritten bare:\n{main_source}"
+    );
+    assert!(
+        main_source
+            .contains("fn invalid_kind() -> ErrorKind {\n        ErrorKind::InvalidData\n    }"),
+        "the nested occurrences should be rewritten bare:\n{main_source}"
+    );
+    assert!(
+        !main_source.contains("io::ErrorKind::"),
+        "no qualified occurrence should remain:\n{main_source}"
+    );
+
+    let check = cargo_command()
+        .arg("check")
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .output()
+        .expect("check fixed glob-visible parent import fixture");
+    assert!(
+        check.status.success(),
+        "fixed fixture failed to compile: {}\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
+    );
+}
+
 #[test]
 fn synthesized_import_keeps_only_mixed_cfg_attr_gate() {
     let temp = tempdir().expect("create mixed cfg_attr fixture dir");

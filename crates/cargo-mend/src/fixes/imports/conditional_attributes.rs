@@ -30,6 +30,16 @@ impl ConditionalAttributes {
 
     pub(in crate::fixes) fn extend(&mut self, other: Self) { self.source.extend(other.source); }
 
+    /// True when every gate in `self` also appears in `other` — an item gated
+    /// by `self` is compiled in every configuration where a site gated by
+    /// `other` is. Gates are compared by source text, so differently spelled
+    /// but equivalent predicates conservatively compare unequal.
+    pub(in crate::fixes) fn is_subset_of(&self, other: &Self) -> bool {
+        self.source
+            .iter()
+            .all(|attribute| other.source.contains(attribute))
+    }
+
     pub(in crate::fixes) const fn is_empty(&self) -> bool { self.source.is_empty() }
 
     pub(in crate::fixes) const fn len(&self) -> usize { self.source.len() }

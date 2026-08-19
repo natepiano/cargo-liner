@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `--fix` no longer fails and rolls everything back when a file already imports a type, but only
+  for tests (`#[cfg(test)] use ...`). Mend thought the import was always there and skipped adding
+  the one the normal build needed.
+- Fixed a case where mend said "applied N import fix(es)" but changed nothing. If a type was used
+  both at the top of a file and inside a nested module, mend could pick two different import paths
+  for it, refuse to apply either, and still count them as applied. It now picks one path for both,
+  and anything it can't fix is no longer counted as applied.
+
 ## [0.18.3] - 2026-08-17
 
 ### Added

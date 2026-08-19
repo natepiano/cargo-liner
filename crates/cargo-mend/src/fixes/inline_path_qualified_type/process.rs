@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -35,11 +36,11 @@ impl ImportAttributePlan {
     fn get(&self, key: &ImportKey) -> Option<&ConditionalAttributes> { self.attributes.get(key) }
 }
 
-struct ResolvedOccurrence {
+pub(super) struct ResolvedOccurrence {
     byte_start:             usize,
     byte_end:               usize,
     scope_id:               Option<usize>,
-    import_path:            String,
+    pub(super) import_path: String,
     conditional_attributes: ConditionalAttributes,
 }
 
@@ -115,6 +116,21 @@ pub(super) fn process_occurrence(
         return;
     }
 
+    // A `#[cfg(test)] use hana_effects::ImageSourceLayout;` does not cover a
+    // non-test occurrence of `hana_effects::ImageSourceLayout::Sampleable`:
+    // rewriting it bare would fail to resolve outside test builds, and adding
+    // an ungated import would collide with the gated one. Leave the
+    // occurrence fully qualified.
+    if scope.is_some_and(|scope| {
+        scope.existing_binding_gated_out(
+            &import_path,
+            &occ.import_name,
+            &resolved.conditional_attributes,
+        )
+    }) {
+        return;
+    }
+
     let source_line = ctx
         .text
         .lines()
@@ -161,8 +177,8 @@ pub(super) fn process_occurrence(
     };
     let scope = &ctx.scopes[scope_id];
 
-    if !scope.existing_imports.contains(&import_path)
-        && !scope.existing_reexport_names.contains(&occ.import_name)
+    if !scope.existing_imports.contains_key(&import_path)
+        && !scope.existing_reexport_names.contains_key(&occ.import_name)
         && inserted_use_paths.insert((scope_id, import_path.clone()))
     {
         let use_path = scope::canonicalize_inserted_use_path(scope, &import_path);
@@ -180,7 +196,7 @@ pub(super) fn process_occurrence(
     }
 }
 
-fn resolve_occurrence(
+pub(super) fn resolve_occurrence(
     occurrence: &InlinePathOccurrence,
     ctx: &OccurrenceContext<'_>,
 ) -> ResolvedOccurrence {
@@ -196,6 +212,17 @@ fn resolve_occurrence(
         || occurrence.import_path.clone(),
         |scope| absolutize_import_path(&occurrence.import_path, &scope.existing_imports),
     );
+    // A nested module often sees the leading segment only through a glob
+    // (`use super::*;`), so its own scope cannot absolutize. Resolve through
+    // ancestor imports before falling back to a `super::`-qualified path:
+    // every occurrence of `io::ErrorKind` then agrees on `std::io::ErrorKind`
+    // instead of the nested scope alone producing `super::io::ErrorKind` —
+    // a same-name/different-path group the combining layer would drop whole.
+    let import_path = if import_path == occurrence.import_path {
+        absolutize_through_ancestors(ctx.scopes, scope_id, &occurrence.import_path)
+    } else {
+        import_path
+    };
     let (import_path, mut conditional_attributes) = if import_path == occurrence.import_path
         && let Some(scope_id) = scope_id
         && let Some(parent_import) =
@@ -257,11 +284,44 @@ fn shadows_prelude(name: &str) -> bool {
     )
 }
 
+/// Resolve a partial path against ancestor scopes' imports, nearest ancestor
+/// first, mirroring how the name shadows outward at the occurrence site. The
+/// produced import is absolute, so it does not depend on the ancestor's
+/// import staying in place.
+fn absolutize_through_ancestors(
+    scopes: &[ScopeInfo],
+    scope_id: Option<usize>,
+    import_path: &str,
+) -> String {
+    let Some(scope_id) = scope_id else {
+        return import_path.to_string();
+    };
+    let current = &scopes[scope_id];
+    let mut ancestors: Vec<&ScopeInfo> = scopes
+        .iter()
+        .filter(|scope| {
+            scope.module_path.len() < current.module_path.len()
+                && current.module_path.starts_with(&scope.module_path)
+        })
+        .collect();
+    ancestors.sort_by_key(|scope| Reverse(scope.module_path.len()));
+    for ancestor in ancestors {
+        let candidate = absolutize_import_path(import_path, &ancestor.existing_imports);
+        if candidate != import_path {
+            return candidate;
+        }
+    }
+    import_path.to_string()
+}
+
 /// Resolve a partial path like `fmt::Display` against the file's existing
 /// imports. If `use std::fmt;` is already in scope, `fmt::Display` becomes
 /// `std::fmt::Display`. The returned import is self-contained — it doesn't
 /// rely on a sibling module import staying in place.
-fn absolutize_import_path(import_path: &str, existing_imports: &BTreeSet<String>) -> String {
+fn absolutize_import_path(
+    import_path: &str,
+    existing_imports: &BTreeMap<String, BTreeSet<ConditionalAttributes>>,
+) -> String {
     let Some((leading, rest)) = import_path.split_once("::") else {
         return import_path.to_string();
     };
@@ -275,7 +335,7 @@ fn absolutize_import_path(import_path: &str, existing_imports: &BTreeSet<String>
     // segment matches `leading` and which has at least one parent segment).
     // Without a parent segment, the existing import is itself a top-level
     // crate name — already absolute.
-    for existing in existing_imports {
+    for existing in existing_imports.keys() {
         let Some((parent, last)) = existing.rsplit_once("::") else {
             continue;
         };
@@ -290,8 +350,14 @@ fn absolutize_import_path(import_path: &str, existing_imports: &BTreeSet<String>
 /// - map to multiple distinct paths (ambiguous), or
 /// - are already used bare in the file (importing would shadow the existing usage, e.g. prelude
 ///   `Result<T, E>` shadowed by `use crate::error::Result;`).
+///
+/// Compares the resolved import paths, not the paths as written: two scopes
+/// writing the same `io::ErrorKind` can still resolve through different `io`
+/// bindings, and detecting that here keeps the findings out of the report
+/// instead of advertising fixes the combining layer would silently drop.
 pub(super) fn find_collision_names(
     occurrences: &[InlinePathOccurrence],
+    resolved_import_paths: &[String],
     bare_type_names: &BTreeSet<String>,
     existing_imports: &BTreeSet<String>,
 ) -> BTreeSet<String> {
@@ -300,11 +366,11 @@ pub(super) fn find_collision_names(
     // If more than one distinct path maps to the same import name, the
     // imports would collide — skip them all.
     let mut name_to_paths: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-    for occ in occurrences {
+    for (occ, resolved) in occurrences.iter().zip(resolved_import_paths) {
         name_to_paths
             .entry(&occ.import_name)
             .or_default()
-            .insert(&occ.import_path);
+            .insert(resolved.as_str());
     }
 
     let mut collisions = BTreeSet::new();

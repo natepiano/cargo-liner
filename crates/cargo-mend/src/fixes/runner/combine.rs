@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use super::FixScans;
 use super::MendRunner;
 use crate::fixes::imports;
+use crate::fixes::imports::UseFix;
 use crate::fixes::imports::ValidatedFixSet;
 use crate::reporting::MendFailure;
 
@@ -63,7 +64,7 @@ impl MendRunner<'_> {
 
 /// Drops grouped import fixes that reserve the same bare name for different
 /// full paths within one file. Untagged fixes pass through unchanged.
-fn drop_conflicting_import_groups(fixes: Vec<imports::UseFix>) -> Vec<imports::UseFix> {
+fn drop_conflicting_import_groups(fixes: Vec<UseFix>) -> Vec<UseFix> {
     let mut bare_name_to_paths: BTreeMap<(PathBuf, String), BTreeSet<String>> = BTreeMap::new();
     for fix in &fixes {
         if let Some(group) = &fix.import_group {

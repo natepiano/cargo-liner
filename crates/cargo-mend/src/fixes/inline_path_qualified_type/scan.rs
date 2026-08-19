@@ -101,32 +101,46 @@ fn scan_file(
         return Ok((Vec::new(), Vec::new()));
     }
 
-    let collision_names = process::find_collision_names(
-        &visitor.occurrences,
-        &visitor.bare_type_names,
-        &scopes
-            .iter()
-            .flat_map(|scope| scope.existing_imports.iter().cloned())
-            .collect(),
-    );
-
     let display_path = path
         .strip_prefix(analysis_root)
         .unwrap_or(path)
         .to_string_lossy()
         .replace('\\', "/");
 
-    let mut findings = Vec::new();
-    let mut fixes = Vec::new();
-    let mut inserted_use_paths: BTreeSet<(usize, String)> = BTreeSet::new();
-
-    let ctx = OccurrenceContext {
+    // Collision detection needs every occurrence's resolved import path, and
+    // resolution never consults the collision set, so resolve once against a
+    // context with no collisions recorded yet.
+    let no_collision_names = BTreeSet::new();
+    let resolve_ctx = OccurrenceContext {
         path,
         display_path: &display_path,
         text: &text,
         offsets: &offsets,
         scopes: &scopes,
+        collision_names: &no_collision_names,
+    };
+    let resolved_import_paths: Vec<String> = visitor
+        .occurrences
+        .iter()
+        .map(|occurrence| process::resolve_occurrence(occurrence, &resolve_ctx).import_path)
+        .collect();
+    let collision_names = process::find_collision_names(
+        &visitor.occurrences,
+        &resolved_import_paths,
+        &visitor.bare_type_names,
+        &scopes
+            .iter()
+            .flat_map(|scope| scope.existing_imports.keys().cloned())
+            .collect(),
+    );
+
+    let mut findings = Vec::new();
+    let mut fixes = Vec::new();
+    let mut inserted_use_paths: BTreeSet<(usize, String)> = BTreeSet::new();
+
+    let ctx = OccurrenceContext {
         collision_names: &collision_names,
+        ..resolve_ctx
     };
     let import_attribute_plan = process::plan_import_attributes(&visitor.occurrences, &ctx);
 

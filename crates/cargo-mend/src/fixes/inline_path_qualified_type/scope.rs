@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 use syn::Item;
+use syn::ItemUse;
 use syn::Visibility;
 use syn::spanned::Spanned;
 
@@ -17,10 +18,14 @@ pub(super) struct ScopeInfo {
     pub(super) insertion_offset:        usize,
     pub(super) indent:                  String,
     pub(super) module_path:             Vec<String>,
-    pub(super) existing_imports:        BTreeSet<String>,
+    /// Import path of each existing `use` binding, mapped to the cfg gates of
+    /// every `use` item that binds it.
+    pub(super) existing_imports:        BTreeMap<String, BTreeSet<ConditionalAttributes>>,
     private_imports:                    BTreeMap<String, BTreeSet<String>>,
     import_attributes:                  BTreeMap<String, BTreeSet<ConditionalAttributes>>,
-    pub(super) existing_reexport_names: BTreeSet<String>,
+    /// Name bound by each existing `pub use` (or other re-export), mapped to
+    /// the cfg gates of every re-export that binds it.
+    pub(super) existing_reexport_names: BTreeMap<String, BTreeSet<ConditionalAttributes>>,
 }
 
 impl ScopeInfo {
@@ -28,6 +33,27 @@ impl ScopeInfo {
         self.private_imports
             .get(name)
             .is_some_and(|paths| paths.iter().any(|existing| existing != path))
+    }
+
+    /// True when the only existing bindings for this path or name are cfg-gated
+    /// behind attributes the occurrence does not share — e.g. a
+    /// `#[cfg(test)] use` while the occurrence compiles in non-test builds.
+    /// Rewriting the qualified path would then reference an import that is
+    /// configured out, and inserting an ungated `use` would collide with the
+    /// gated one, so such occurrences must be left fully qualified.
+    pub(super) fn existing_binding_gated_out(
+        &self,
+        import_path: &str,
+        import_name: &str,
+        occurrence_attributes: &ConditionalAttributes,
+    ) -> bool {
+        binding_gated_out(
+            self.existing_imports.get(import_path),
+            occurrence_attributes,
+        ) || binding_gated_out(
+            self.existing_reexport_names.get(import_name),
+            occurrence_attributes,
+        )
     }
 
     fn import_attributes(&self, name: &str) -> Option<ConditionalAttributes> {
@@ -62,16 +88,56 @@ pub(super) struct ScopeCollectionContext<'a> {
     pub(super) scopes:  &'a mut Vec<ScopeInfo>,
 }
 
+#[derive(Default)]
+struct ScopeImports {
+    existing_imports:        BTreeMap<String, BTreeSet<ConditionalAttributes>>,
+    private_imports:         BTreeMap<String, BTreeSet<String>>,
+    import_attributes:       BTreeMap<String, BTreeSet<ConditionalAttributes>>,
+    existing_reexport_names: BTreeMap<String, BTreeSet<ConditionalAttributes>>,
+}
+
+impl ScopeImports {
+    fn record(&mut self, text: &str, offsets: &[usize], item_use: &ItemUse) {
+        let attributes = ConditionalAttributes::from_attributes(text, offsets, &item_use.attrs);
+        for binding in imports::collect_use_bindings(&item_use.tree) {
+            let Some(name) = binding.name() else {
+                continue;
+            };
+            self.import_attributes
+                .entry(name.to_string())
+                .or_default()
+                .insert(attributes.clone());
+            if binding.binds_path_leaf() {
+                self.existing_imports
+                    .entry(binding.path().to_string())
+                    .or_default()
+                    .insert(attributes.clone());
+            }
+            match &item_use.vis {
+                Visibility::Inherited => {
+                    self.private_imports
+                        .entry(name.to_string())
+                        .or_default()
+                        .insert(binding.path().to_string());
+                },
+                _ => {
+                    self.existing_reexport_names
+                        .entry(name.to_string())
+                        .or_default()
+                        .insert(attributes.clone());
+                },
+            }
+        }
+    }
+}
+
 pub(super) fn collect_scopes(
     items: &[Item],
     span: ScopeSpan,
     module_path: &[String],
     scope_collection_context: &mut ScopeCollectionContext<'_>,
 ) {
-    let mut existing_imports = BTreeSet::new();
-    let mut private_imports: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    let mut import_attributes: BTreeMap<String, BTreeSet<ConditionalAttributes>> = BTreeMap::new();
-    let mut existing_reexport_names = BTreeSet::new();
+    let mut scope_imports = ScopeImports::default();
     let mut last_use_start = None;
     let mut last_use_end = None;
     let mut first_item_start = None;
@@ -85,34 +151,11 @@ pub(super) fn collect_scopes(
         first_item_start.get_or_insert(item_start);
 
         if let Item::Use(item_use) = item {
-            let attributes = ConditionalAttributes::from_attributes(
+            scope_imports.record(
                 scope_collection_context.text,
                 scope_collection_context.offsets,
-                &item_use.attrs,
+                item_use,
             );
-            for binding in imports::collect_use_bindings(&item_use.tree) {
-                let Some(name) = binding.name() else {
-                    continue;
-                };
-                import_attributes
-                    .entry(name.to_string())
-                    .or_default()
-                    .insert(attributes.clone());
-                if binding.binds_path_leaf() {
-                    existing_imports.insert(binding.path().to_string());
-                }
-                match &item_use.vis {
-                    Visibility::Inherited => {
-                        private_imports
-                            .entry(name.to_string())
-                            .or_default()
-                            .insert(binding.path().to_string());
-                    },
-                    _ => {
-                        existing_reexport_names.insert(name.to_string());
-                    },
-                }
-            }
             last_use_start = Some(item_start);
             let item_end = offsets::offset(
                 scope_collection_context.text,
@@ -138,10 +181,10 @@ pub(super) fn collect_scopes(
         insertion_offset,
         indent,
         module_path: module_path.to_vec(),
-        existing_imports,
-        private_imports,
-        import_attributes,
-        existing_reexport_names,
+        existing_imports: scope_imports.existing_imports,
+        private_imports: scope_imports.private_imports,
+        import_attributes: scope_imports.import_attributes,
+        existing_reexport_names: scope_imports.existing_reexport_names,
     });
 
     for item in items {
@@ -208,6 +251,19 @@ pub(super) fn qualify_through_parent_scope(
     Some(ParentImport {
         path: format!("{}{import_path}", "super::".repeat(levels)),
         conditional_attributes,
+    })
+}
+
+/// A binding is gated out when it exists but none of its `use` items are
+/// active in every configuration the occurrence compiles in.
+fn binding_gated_out(
+    attribute_sets: Option<&BTreeSet<ConditionalAttributes>>,
+    occurrence_attributes: &ConditionalAttributes,
+) -> bool {
+    attribute_sets.is_some_and(|sets| {
+        !sets
+            .iter()
+            .any(|attributes| attributes.is_subset_of(occurrence_attributes))
     })
 }
 
