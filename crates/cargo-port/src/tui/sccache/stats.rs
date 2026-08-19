@@ -1,5 +1,7 @@
 use unicode_width::UnicodeWidthStr;
 
+use crate::sccache;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum StatContext {
     Stats,
@@ -38,7 +40,7 @@ fn parse_stat_line(text: &str, context: &mut StatContext) -> ParsedStatLine {
             context: StatContext::NonCacheableReasons,
         };
     }
-    if let Some((label, value)) = split_aligned_stat(trimmed) {
+    if let Some((label, value)) = sccache::split_aligned_stat(trimmed) {
         if label == "Cache location" {
             *context = StatContext::Stats;
         }
@@ -168,29 +170,6 @@ impl<'a> NumericValue<'a> {
     }
 
     fn left_width(self) -> usize { self.sign.width() + self.integer.width() }
-}
-
-fn split_aligned_stat(text: &str) -> Option<(&str, &str)> {
-    let mut gap_start = None;
-    let mut gap_len = 0;
-    for (idx, ch) in text.char_indices() {
-        if ch.is_whitespace() {
-            gap_start.get_or_insert(idx);
-            gap_len += 1;
-            continue;
-        }
-        if gap_len >= 2 {
-            let start = gap_start?;
-            let label = text[..start].trim_end();
-            let value = text[idx..].trim();
-            if !label.is_empty() && !value.is_empty() {
-                return Some((label, value));
-            }
-        }
-        gap_start = None;
-        gap_len = 0;
-    }
-    None
 }
 
 #[cfg(test)]

@@ -162,4 +162,10 @@ pub(crate) const DEFAULT_CACHE_SIZE: &str = "512 MiB";
 
 // src sccache
 pub(crate) const SCCACHE_BINARY: &str = "sccache";
+/// `sccache --show-stats` label whose value is the on-disk cache size.
+pub(crate) const SCCACHE_CACHE_SIZE_LABEL: &str = "Cache size";
+/// `sccache --show-stats` label whose value is the overall hit rate. The
+/// per-language `Cache hits rate (Rust)` is a different label and does not
+/// match.
+pub(crate) const SCCACHE_HIT_RATE_LABEL: &str = "Cache hits rate";
 pub(crate) const SCCACHE_STATS_ARG: &str = "--show-stats";

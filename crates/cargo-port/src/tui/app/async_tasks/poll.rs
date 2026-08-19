@@ -16,6 +16,7 @@ use crate::tui::app::poll_background_stats::PollBackgroundStats;
 use crate::tui::app::poll_background_stats::RebuildStatus;
 use crate::tui::panes::CiFetchKind;
 use crate::tui::panes::PendingCiFetch;
+use crate::tui::sccache;
 use crate::tui::state::OwnedRunMessageUpdate;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
@@ -47,6 +48,7 @@ impl App {
         let now = Instant::now();
         self.refresh_project_storage_if_due(now);
         self.refresh_crates_io_if_due(now);
+        sccache::refresh_summary_if_due(self, now);
 
         stats.tree_results = 0;
         stats.fit_results = 0;
@@ -291,6 +293,7 @@ pub(super) const fn record_background_msg_kind(
         | BackgroundMsg::LanguageStatsBatch { .. }
         | BackgroundMsg::TestCountsBatch { .. }
         | BackgroundMsg::SccacheStats { .. }
+        | BackgroundMsg::SccacheSummary(_)
         | BackgroundMsg::CargoMetadata { .. }
         | BackgroundMsg::OutOfTreeTargetSize { .. }
         | BackgroundMsg::AppearanceChanged(_) => {},

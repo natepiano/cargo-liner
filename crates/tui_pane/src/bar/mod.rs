@@ -40,6 +40,8 @@ pub use status_bar::StatusBar;
 pub use status_line::ScanIndicator;
 pub use status_line::StatusLine;
 pub use status_line::StatusLineGlobal;
+pub use status_line::StatusLineNote;
 pub use status_line::render as render_status_line;
 pub use status_line::status_line_global_spans;
+pub use status_line::status_line_note_spans;
 pub use visibility::Visibility;

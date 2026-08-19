@@ -177,6 +177,7 @@ use super::project_list::ProjectListRowDisplayPathResolution;
 pub(super) use super::project_list::VisibleRow;
 use super::render_context::PaneRenderCtx;
 use super::running_targets::RunningTargetTerminationCapability;
+use super::sccache::SccacheStatusLine;
 use super::settings;
 use super::settings::SettingOption;
 use super::settings::StartupSettings;
@@ -367,6 +368,10 @@ pub(super) struct App {
     pub(super) overlays:                                    Overlays,
     /// The only owner of a [`ConfirmAction`] and its [`ConfirmationReadiness`].
     confirmation_modal_state:                               ConfirmationModalState,
+    /// sccache segment on the right of the status line. Owns the last
+    /// `sccache --show-stats` summary and the poll cycle that refreshes it;
+    /// the segment is absent until sccache reports both fields.
+    pub(super) sccache_status_line:                         SccacheStatusLine,
     pub(super) animation_started:                           Instant,
     /// Time the project-volume capacity was last requested. This refreshes on
     /// disk-watch updates and at a low fixed cadence for external disk use.

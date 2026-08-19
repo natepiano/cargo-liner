@@ -87,6 +87,21 @@ impl<A: Action> StatusLineGlobal<A> {
     }
 }
 
+/// One informational label/value segment on the right of the status line.
+///
+/// Notes render before the global shortcut slots and carry no key binding,
+/// so unlike those slots they stay visible while the focused pane is in
+/// [`Mode::TextInput`](crate::Mode::TextInput). The framework styles them
+/// with the same label/value pair as the left-side uptime segment; the app
+/// supplies only the text.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct StatusLineNote {
+    /// Leading label, including any padding spaces — the framework adds none.
+    pub label: String,
+    /// Value following the label.
+    pub value: String,
+}
+
 /// Whether the status line shows its framework-owned scan indicator.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ScanIndicator {
@@ -102,6 +117,9 @@ pub struct StatusLine<'a, A: Action> {
     pub uptime_secs:    u64,
     /// Framework-owned scanning indicator state.
     pub scan_indicator: ScanIndicator,
+    /// Informational segments for the right side, rendered before
+    /// `globals`.
+    pub notes:          &'a [StatusLineNote],
     /// Ordered global slots for the right side of the status line.
     pub globals:        &'a [StatusLineGlobal<A>],
 }
@@ -112,11 +130,13 @@ impl<'a, A: Action> StatusLine<'a, A> {
     pub const fn new(
         uptime_secs: u64,
         scan_indicator: ScanIndicator,
+        notes: &'a [StatusLineNote],
         globals: &'a [StatusLineGlobal<A>],
     ) -> Self {
         Self {
             uptime_secs,
             scan_indicator,
+            notes,
             globals,
         }
     }
@@ -155,13 +175,34 @@ pub fn render<Ctx, G>(
     left_spans.extend(bar.nav);
 
     let center_spans = bar.pane_action;
-    let right_spans = if bar.global.is_empty() {
-        Vec::new()
-    } else {
-        status_line_global_spans::<Ctx, G>(keymap, status.globals, palette)
-    };
+    let mut right_spans = status_line_note_spans(status.notes, palette);
+    if !bar.global.is_empty() {
+        right_spans.extend(status_line_global_spans::<Ctx, G>(
+            keymap,
+            status.globals,
+            palette,
+        ));
+    }
 
     render_sections(frame, area, palette, left_spans, center_spans, right_spans);
+}
+
+/// Style informational status-line notes with the label/value pair the
+/// uptime segment uses.
+#[must_use]
+pub fn status_line_note_spans(
+    notes: &[StatusLineNote],
+    palette: &BarPalette,
+) -> Vec<Span<'static>> {
+    notes
+        .iter()
+        .flat_map(|note| {
+            [
+                Span::styled(note.label.clone(), palette.status_label_style),
+                Span::styled(format!("{} ", note.value), palette.status_value_style),
+            ]
+        })
+        .collect()
 }
 
 /// Resolve and style status-line global slots.

@@ -11,6 +11,7 @@ use crate::scan::BackgroundMsg;
 use crate::tui::app::App;
 use crate::tui::app::scan_state::ScanPhase;
 use crate::tui::project_list::ProjectList;
+use crate::tui::sccache;
 
 impl App {
     /// Bump `data_generation` only when a background message can change
@@ -237,6 +238,9 @@ impl App {
             },
             BackgroundMsg::SccacheStats { request_id, result } => {
                 self.overlays.sccache_pane.apply_result(request_id, result);
+            },
+            BackgroundMsg::SccacheSummary(summary) => {
+                sccache::apply_summary(self, summary);
             },
             BackgroundMsg::CargoMetadata {
                 workspace_root,

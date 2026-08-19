@@ -28,6 +28,7 @@ use tui_pane::ResolvedPaneLayout;
 use tui_pane::ScanIndicator;
 use tui_pane::StatusLine;
 use tui_pane::StatusLineGlobal;
+use tui_pane::StatusLineNote;
 use tui_pane::ToastsRenderCtx;
 use tui_pane::accent_color;
 use tui_pane::error_color;
@@ -711,7 +712,14 @@ pub(super) fn cargo_port_right_text_for_test(
     }
 }
 
+/// Informational right-side segments: the sccache summary while sccache is
+/// reporting one, nothing otherwise.
+fn cargo_port_status_line_notes(app: &App) -> Vec<StatusLineNote> {
+    app.sccache_status_line.note().into_iter().collect()
+}
+
 pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let notes = cargo_port_status_line_notes(app);
     let globals = cargo_port_status_line_globals(app);
     let status = StatusLine::new(
         app.animation_started.elapsed().as_secs(),
@@ -720,6 +728,7 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             ScanIndicator::Shown
         },
+        &notes,
         &globals,
     );
     render_framework_status_line::<App, AppGlobalAction>(

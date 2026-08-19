@@ -62,6 +62,7 @@ use crate::tui::process_refresh::AppProcessRefreshExecutor;
 use crate::tui::process_refresh::CompileClassificationInFlight;
 use crate::tui::project_list::ProjectList;
 use crate::tui::running_targets::RUNNING_TARGETS_REFRESH_INTERVAL;
+use crate::tui::sccache::SccacheStatusLine;
 use crate::tui::settings::StartupSettings;
 use crate::tui::startup_services::StartupEffect;
 use crate::tui::startup_services::StartupEnvironment;
@@ -316,6 +317,7 @@ impl AppBuilder<Started> {
             visited_panes: std::iter::once(AppPaneId::ProjectList).collect(),
             overlays,
             confirmation_modal_state: ConfirmationModalState::Closed,
+            sccache_status_line: SccacheStatusLine::new(),
             animation_started: Instant::now(),
             storage_refresh_at: Instant::now(),
             crates_io_refresh_at: Instant::now(),

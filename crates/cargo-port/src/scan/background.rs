@@ -28,6 +28,7 @@ use crate::project::RootItem;
 use crate::project::Submodule;
 use crate::project::TestCounts;
 use crate::project::WorkspaceMetadata;
+use crate::sccache::SccacheSummary;
 use crate::sccache::StatsResult as SccacheStatsResult;
 
 /// Messages sent from background threads to the main event loop.
@@ -209,6 +210,8 @@ pub(crate) enum BackgroundMsg {
         request_id: u64,
         result:     SccacheStatsResult,
     },
+    /// Periodic `sccache --show-stats` summary for the status-line segment.
+    SccacheSummary(SccacheSummary),
     /// `cargo metadata --no-deps --offline` result for one workspace root.
     /// The `fingerprint` was captured *before* the spawn; callers recompute
     /// at merge time and discard the result on mismatch. `generation`
@@ -298,6 +301,7 @@ impl BackgroundMsg {
             | Self::TestCountsBatch { .. }
             // On-demand tooling overlay data does not affect project detail.
             | Self::SccacheStats { .. }
+            | Self::SccacheSummary(_)
             // Fetch lifecycle is reflected via toasts, not detail data.
             | Self::RepoFetchQueued { .. }
             | Self::RepoFetchComplete { .. }
