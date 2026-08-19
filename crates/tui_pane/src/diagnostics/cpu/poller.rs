@@ -10,6 +10,8 @@ use super::System;
 use super::cpu_breakdown;
 use super::cpu_percent;
 use super::normalize_cpu_label;
+#[cfg(target_os = "macos")]
+use super::read_core_clusters;
 use super::read_cpu_breakdown_raw;
 #[cfg(not(target_os = "windows"))]
 use super::read_gpu_usage;
@@ -37,6 +39,11 @@ pub struct CpuPoller {
     /// DRM `fdinfo` engine-utilization sampler (Linux fallback).
     #[cfg(target_os = "linux")]
     fdinfo_gpu:             FdinfoGpuSampler,
+    /// Maps each [`System::cpus`] index to its [`CoreCluster`], read once from
+    /// the `IORegistry` device tree. `None` when the tree exposes no
+    /// `cluster-type` (Intel Macs) or the map did not cover every core.
+    #[cfg(target_os = "macos")]
+    core_clusters:          Option<Vec<CoreCluster>>,
 }
 
 impl Default for CpuPoller {
@@ -52,6 +59,8 @@ impl CpuPoller {
             RefreshKind::nothing().with_cpu(CpuRefreshKind::everything()),
         );
         system.refresh_cpu_all();
+        #[cfg(target_os = "macos")]
+        let core_clusters = read_core_clusters(system.cpus().len());
         Self {
             system,
             last_breakdown_raw: read_cpu_breakdown_raw(),
@@ -62,6 +71,8 @@ impl CpuPoller {
             gpu_query: GpuQuery::new(),
             #[cfg(target_os = "linux")]
             fdinfo_gpu: FdinfoGpuSampler::new(),
+            #[cfg(target_os = "macos")]
+            core_clusters,
         }
     }
 
@@ -73,14 +84,19 @@ impl CpuPoller {
     pub fn poll(&mut self) -> CpuUsage {
         self.system.refresh_cpu_all();
 
+        #[cfg(target_os = "macos")]
+        let core_clusters = self.core_clusters.as_deref();
         let cores = self
             .system
             .cpus()
             .iter()
             .enumerate()
             .map(|(index, cpu)| CpuCoreUsage {
-                label:   normalize_cpu_label(cpu.name(), index),
-                percent: cpu_percent(cpu.cpu_usage()),
+                label:                               normalize_cpu_label(cpu.name(), index),
+                percent:                             cpu_percent(cpu.cpu_usage()),
+                #[cfg(target_os = "macos")]
+                cluster:                             core_clusters
+                    .and_then(|clusters| clusters.get(index).copied()),
             })
             .collect::<Vec<_>>();
 
@@ -114,6 +130,19 @@ impl CpuPoller {
     }
 }
 
+/// Which cluster of an Apple Silicon processor a core belongs to.
+///
+/// Read from the `cluster-type` property the `IORegistry` publishes on each
+/// `IOPlatformDevice` cpu node, keyed by that node's `logical-cpu-id`.
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CoreCluster {
+    /// Performance core — the `P` cluster.
+    Performance,
+    /// Efficiency core — the `E` cluster.
+    Efficiency,
+}
+
 /// Per-core CPU usage sample.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CpuCoreUsage {
@@ -121,6 +150,9 @@ pub struct CpuCoreUsage {
     pub label:   String,
     /// Utilization percentage rounded to a `u8` in `0..=100`.
     pub percent: u8,
+    /// Cluster this core belongs to, when the device tree maps every core.
+    #[cfg(target_os = "macos")]
+    pub cluster: Option<CoreCluster>,
 }
 
 /// Aggregate CPU/GPU sample produced by `CpuPoller::poll`.
@@ -144,8 +176,10 @@ impl CpuUsage {
             total_percent: 0,
             cores:         (0..core_count)
                 .map(|index| CpuCoreUsage {
-                    label:   format!("CPU {}", index + 1),
-                    percent: 0,
+                    label:                               format!("CPU {}", index + 1),
+                    percent:                             0,
+                    #[cfg(target_os = "macos")]
+                    cluster:                             None,
                 })
                 .collect(),
             breakdown:     CpuBreakdown::default(),

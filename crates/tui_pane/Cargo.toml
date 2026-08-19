@@ -32,11 +32,12 @@ tracing            = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 unicode-width      = { workspace = true }
 
-# Already in the tree via sysinfo with these exact features, so the direct
-# dependency adds no compile units; used for the IOKit GPU sampler.
+# Used for the IOKit GPU sampler and the P/E core cluster map. Every feature
+# but "CFData" is already in the tree via sysinfo.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-core-foundation = { workspace = true, features = [
   "CFBase",
+  "CFData",
   "CFDictionary",
   "CFNumber",
   "CFString",

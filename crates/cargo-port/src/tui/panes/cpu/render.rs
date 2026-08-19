@@ -94,10 +94,15 @@ impl CpuSelectableRow {
 /// followed by a one-cell margin before the block glyphs. Digits render in
 /// the default text color; the fill behind the number and margin is drawn as
 /// background shading, so the bar still spans its full width.
+///
+/// On macOS a `P` / `E` cluster marker follows the core number. The cluster
+/// map is all-or-nothing, so either every row carries a marker or none do and
+/// the number field keeps one width across the pane.
 fn cpu_bar_line(
     core_number: usize,
     number_width: usize,
     percent: u8,
+    #[cfg(target_os = "macos")] core_cluster: Option<tui_pane::CoreCluster>,
     cpu_cfg: &CpuConfig,
 ) -> Line<'static> {
     let filled = tui_pane::cpu_filled_cells(percent);
@@ -107,6 +112,18 @@ fn cpu_bar_line(
         cpu_cfg.medium_utilization_max_percent,
     )
     .color();
+    #[cfg(target_os = "macos")]
+    let number_text = core_cluster.map_or_else(
+        || format!("{core_number:>number_width$} "),
+        |core_cluster| {
+            let marker = match core_cluster {
+                tui_pane::CoreCluster::Performance => "P",
+                tui_pane::CoreCluster::Efficiency => "E",
+            };
+            format!("{core_number:>number_width$} {marker} ")
+        },
+    );
+    #[cfg(not(target_os = "macos"))]
     let number_text = format!("{core_number:>number_width$} ");
     let (number_on_filled, number_past_fill) = number_text.split_at(filled.min(number_text.len()));
     let number_filled_span = Span::styled(
@@ -429,6 +446,8 @@ fn render_core_rows(
                 core_index + 1,
                 number_width,
                 core.percent,
+                #[cfg(target_os = "macos")]
+                core.cluster,
                 cpu_cfg,
             )),
         );
@@ -699,6 +718,7 @@ fn render_cores_affordance(frame: &mut Frame, layout: &CpuPanelLayout, cursor_po
 #[cfg(test)]
 mod tests {
     use ratatui::layout::Rect;
+    use ratatui::text::Line;
     use tui_pane::text_default;
 
     use super::cpu_bar_line;
@@ -717,6 +737,19 @@ mod tests {
     // rows), so the same 12-row inner leaves a 4-row band and a 23-row inner
     // fits every core. The cores band's resolved scroll offset is box index
     // 1's `scroll_offset`.
+    /// Build a core row with the default config, supplying the macOS-only
+    /// cluster argument as unmapped so the bar assertions stay platform-neutral.
+    fn bar_line_for_test(core_number: usize, number_width: usize, percent: u8) -> Line<'static> {
+        cpu_bar_line(
+            core_number,
+            number_width,
+            percent,
+            #[cfg(target_os = "macos")]
+            None,
+            &CpuConfig::default(),
+        )
+    }
+
     fn cores_offset(inner_height: u16, cursor: usize, prior: usize) -> usize {
         let inner = Rect {
             x:      0,
@@ -773,7 +806,7 @@ mod tests {
         // 35% fills 4 of 10 cells, so a 2-wide number plus its margin sit
         // entirely on the fill (as background shading) and the bar
         // continues with one block glyph.
-        let line = cpu_bar_line(12, 2, 35, &CpuConfig::default());
+        let line = bar_line_for_test(12, 2, 35);
         assert_eq!(line.spans[1].content, "12 ");
         assert_eq!(line.spans[1].style.fg, Some(text_default()));
         assert!(line.spans[1].style.bg.is_some());
@@ -785,7 +818,7 @@ mod tests {
     fn core_number_splits_at_the_fill_boundary() {
         // 10% fills 1 cell: the first digit is shaded by the fill, the
         // second digit and the margin render on the row background.
-        let line = cpu_bar_line(12, 2, 10, &CpuConfig::default());
+        let line = bar_line_for_test(12, 2, 10);
         assert_eq!(line.spans[1].content, "1");
         assert_eq!(line.spans[2].content, "2 ");
         assert_eq!(line.spans[2].style.fg, Some(text_default()));
@@ -795,7 +828,7 @@ mod tests {
 
     #[test]
     fn single_digit_core_number_is_right_aligned() {
-        let line = cpu_bar_line(3, 2, 0, &CpuConfig::default());
+        let line = bar_line_for_test(3, 2, 0);
         assert_eq!(line.spans[1].content, "");
         assert_eq!(line.spans[2].content, " 3 ");
     }
@@ -803,7 +836,39 @@ mod tests {
     #[test]
     fn embedded_core_number_keeps_the_content_width() {
         for percent in [0, 10, 35, 100] {
-            let line = cpu_bar_line(12, 2, percent, &CpuConfig::default());
+            let line = bar_line_for_test(12, 2, percent);
+            assert_eq!(line.width(), usize::from(CPU_CONTENT_WIDTH));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn cluster_marker_follows_the_core_number() {
+        let config = CpuConfig::default();
+        let row = |core_cluster| {
+            cpu_bar_line(12, 2, 35, core_cluster, &config)
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        };
+        assert!(row(Some(tui_pane::CoreCluster::Performance)).starts_with(" 12 P "));
+        assert!(row(Some(tui_pane::CoreCluster::Efficiency)).starts_with(" 12 E "));
+        // An unmapped core keeps the pre-marker number field, so the bar's
+        // block glyphs resume right after the number's one-cell margin.
+        assert!(row(None).starts_with(" 12 █"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn cluster_marker_keeps_the_content_width() {
+        let config = CpuConfig::default();
+        for core_cluster in [
+            Some(tui_pane::CoreCluster::Performance),
+            Some(tui_pane::CoreCluster::Efficiency),
+            None,
+        ] {
+            let line = cpu_bar_line(12, 2, 35, core_cluster, &config);
             assert_eq!(line.width(), usize::from(CPU_CONTENT_WIDTH));
         }
     }

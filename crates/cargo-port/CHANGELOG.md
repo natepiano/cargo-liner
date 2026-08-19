@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Add configurable crates.io release groups so coordinated workspaces such as Bevy keep each crate's version current while emitting one release toast through a representative crate.
+- Mark each CPU pane core row with its Apple Silicon cluster (`P` or `E`), read from the IORegistry device tree on macOS.
 
 ### Changed
 - Abbreviate the home directory to `~` in Output pane build monitor column headings, so the narrow column shows more of the checkout path.

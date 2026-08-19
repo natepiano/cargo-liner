@@ -8,6 +8,8 @@ use std::process::Command;
 use std::time::Instant;
 
 #[cfg(target_os = "macos")]
+use super::CFData;
+#[cfg(target_os = "macos")]
 use super::CFDictionary;
 #[cfg(target_os = "macos")]
 use super::CFNumber;
@@ -17,6 +19,8 @@ use super::CFRetained;
 use super::CFString;
 #[cfg(target_os = "macos")]
 use super::CFType;
+#[cfg(target_os = "macos")]
+use super::CoreCluster;
 use super::CpuBreakdownRaw;
 #[cfg(target_os = "windows")]
 use super::GPU_COUNTER_PATH;
@@ -138,6 +142,99 @@ pub(super) fn read_gpu_usage() -> GpuUsage {
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 pub(super) fn read_gpu_usage() -> GpuUsage { GpuUsage::default() }
+
+/// Map every logical core index to its [`CoreCluster`] by walking the
+/// `IOPlatformDevice` cpu nodes, pairing each node's `logical-cpu-id` with its
+/// `cluster-type`.
+///
+/// Returns `None` unless the walk assigns a cluster to all `core_count` cores,
+/// so a partial or absent device tree (Intel Macs publish no `cluster-type`)
+/// yields no map rather than a map that mislabels the cores it did not cover.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code, reason = "IOKit FFI reads the cpu node cluster map")]
+pub(super) fn read_core_clusters(core_count: usize) -> Option<Vec<CoreCluster>> {
+    // SAFETY: the argument is a valid NUL-terminated C string the call
+    // copies into the returned matching dictionary.
+    let matching = unsafe { IOServiceMatching(c"IOPlatformDevice".as_ptr()) }?;
+    // `IOServiceGetMatchingServices` consumes one dictionary reference, so
+    // hand it a second retain and let `matching` release the original.
+    let matching = CFRetained::<CFDictionary>::from(&*matching);
+
+    let mut services: io_iterator_t = 0;
+    // SAFETY: `services` is a valid out-param; the call consumes the
+    // `matching` reference handed to it.
+    let result = unsafe {
+        IOServiceGetMatchingServices(kIOMainPortDefault, Some(matching), &raw mut services)
+    };
+    if result != KERN_SUCCESS {
+        return None;
+    }
+
+    let mut clusters = vec![None; core_count];
+    loop {
+        let device = IOIteratorNext(services);
+        if device == 0 {
+            break;
+        }
+        let entry = core_cluster_entry(device);
+        IOObjectRelease(device);
+        if let Some((logical_cpu_id, core_cluster)) = entry
+            && let Some(slot) = clusters.get_mut(logical_cpu_id)
+        {
+            *slot = Some(core_cluster);
+        }
+    }
+    IOObjectRelease(services);
+    // A `None` left in any slot collects to `None`, discarding a partial map.
+    clusters.into_iter().collect()
+}
+
+/// Read one cpu node's `logical-cpu-id` and `cluster-type` pair. Nodes that
+/// carry neither — every non-cpu `IOPlatformDevice` — yield `None`.
+#[cfg(target_os = "macos")]
+fn core_cluster_entry(device: u32) -> Option<(usize, CoreCluster)> {
+    let core_cluster = match registry_data(device, "cluster-type")?.first()? {
+        b'P' => CoreCluster::Performance,
+        b'E' => CoreCluster::Efficiency,
+        _ => return None,
+    };
+    let logical_cpu_id = usize::try_from(registry_number(device, "logical-cpu-id")?).ok()?;
+    Some((logical_cpu_id, core_cluster))
+}
+
+/// Fetch a `CFData` registry property as owned bytes.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code, reason = "IOKit FFI reads the cpu node cluster map")]
+fn registry_data(device: u32, key: &'static str) -> Option<Vec<u8>> {
+    // SAFETY: `device` is a live service handle from `IOIteratorNext`; the key
+    // outlives the call and the retained result is consumed locally.
+    let value = unsafe {
+        IORegistryEntryCreateCFProperty(
+            device,
+            Some(&CFString::from_static_str(key)),
+            kCFAllocatorDefault,
+            0,
+        )
+    }?;
+    Some(value.downcast::<CFData>().ok()?.to_vec())
+}
+
+/// Fetch a `CFNumber` registry property.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code, reason = "IOKit FFI reads the cpu node cluster map")]
+fn registry_number(device: u32, key: &'static str) -> Option<i64> {
+    // SAFETY: `device` is a live service handle from `IOIteratorNext`; the key
+    // outlives the call and the retained result is consumed locally.
+    let value = unsafe {
+        IORegistryEntryCreateCFProperty(
+            device,
+            Some(&CFString::from_static_str(key)),
+            kCFAllocatorDefault,
+            0,
+        )
+    }?;
+    value.downcast::<CFNumber>().ok()?.as_i64()
+}
 
 #[cfg(target_os = "macos")]
 #[allow(
@@ -702,5 +799,42 @@ impl Drop for GpuQuery {
     fn drop(&mut self) {
         // SAFETY: `self.query` was opened by PdhOpenQueryW and is closed once.
         unsafe { PdhCloseQuery(self.query) };
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use std::thread::available_parallelism;
+
+    use super::CoreCluster;
+    use super::read_core_clusters;
+
+    /// Logical core count as the OS reports it, standing in for the
+    /// `System::cpus` length the poller passes in.
+    fn core_count() -> Option<usize> { available_parallelism().ok().map(usize::from) }
+
+    #[test]
+    fn a_core_count_the_device_tree_cannot_fill_yields_no_map() {
+        let Some(core_count) = core_count() else {
+            return;
+        };
+        assert_eq!(read_core_clusters(core_count * 2), None);
+    }
+
+    #[test]
+    fn the_map_assigns_a_cluster_to_every_logical_core() {
+        let Some(core_count) = core_count() else {
+            return;
+        };
+        // Intel Macs publish no `cluster-type`, so no map is the right answer
+        // there and there is nothing further to assert.
+        let Some(core_clusters) = read_core_clusters(core_count) else {
+            return;
+        };
+        assert_eq!(core_clusters.len(), core_count);
+        // Every Apple Silicon part ships both cluster types, so a map that
+        // reports only one means the walk read the wrong property.
+        assert!(core_clusters.contains(&CoreCluster::Performance));
+        assert!(core_clusters.contains(&CoreCluster::Efficiency));
     }
 }

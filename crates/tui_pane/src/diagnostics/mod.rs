@@ -12,6 +12,8 @@ mod perf_log;
 
 pub use constants::PERF_LOG_TARGET;
 pub use cpu::CPU_SMOOTHING_WINDOW_POLLS;
+#[cfg(target_os = "macos")]
+pub use cpu::CoreCluster;
 pub use cpu::CpuBreakdown;
 pub use cpu::CpuCoreUsage;
 pub use cpu::CpuMonitor;

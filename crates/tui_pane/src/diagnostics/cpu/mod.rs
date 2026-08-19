@@ -21,6 +21,8 @@ use crossbeam_channel::Receiver;
 use crossbeam_channel::RecvTimeoutError;
 use crossbeam_channel::Sender;
 #[cfg(target_os = "macos")]
+use objc2_core_foundation::CFData;
+#[cfg(target_os = "macos")]
 use objc2_core_foundation::CFDictionary;
 #[cfg(target_os = "macos")]
 use objc2_core_foundation::CFNumber;
@@ -87,9 +89,13 @@ use percent::rounded_percent;
 use platform::FdinfoGpuSampler;
 #[cfg(target_os = "windows")]
 use platform::GpuQuery;
+#[cfg(target_os = "macos")]
+use platform::read_core_clusters;
 use platform::read_cpu_breakdown_raw;
 #[cfg(not(target_os = "windows"))]
 use platform::read_gpu_usage;
+#[cfg(target_os = "macos")]
+pub use poller::CoreCluster;
 pub use poller::CpuBreakdown;
 pub use poller::CpuCoreUsage;
 pub use poller::CpuPoller;
