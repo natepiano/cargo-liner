@@ -7,6 +7,10 @@ with `tui_pane` promoted from a child of `cargo-port` to a peer crate.
 Both existing GitHub repos are archived in place with a `MOVED →` description.
 Git history from both is grafted into the new repo, so blame survives.
 
+**Status (2026-08-20):** Phases 0–2 done. `cargo-mend` is untouched and still
+develops in its own repo. The one Phase 1 acceptance gate not yet exercised is
+the `/release cargo-port … dry-run` rehearsal (step 12).
+
 ## Target layout
 
 ```
@@ -101,13 +105,18 @@ all of them fail quietly if skipped.
 | 7 | `~/.claude` tooling references the old dirs | `scripts/clean-fix/clean-fix.conf` `[build]`, `[projects]`, and `[project_env]`; `.claude/settings.local.json`; `commands/mend_fix.md` (hard-codes `/Users/natemccoy/rust/cargo-mend`). | `clean-fix.conf` already supports the `<dir>/<subpath>` member form used by every `bevy_hana/crates/*` entry, so this is a config rewrite, not a code change. Left undone, nightly clean-fix silently stops covering both tools. |
 | 8 | `git-filter-repo` is not installed | — | `brew install git-filter-repo` in Phase 0. |
 | 9 | Repo name collides with an unrelated crates.io crate | `cargo-liner` exists on crates.io as an unrelated tool. | No conflict in practice — `cargo-liner` is a repo name only and is never published as a crate, exactly as `hana` is a repo name and not a crate. Worth knowing it will muddy search results. |
+| 10 | Scripts that derive a repo root from their own directory | `scripts/check-no-test-abort.sh` computed `SCRIPT_DIR/..`. Left at `crates/cargo-port/scripts/`, that resolved to the crate dir, so the abort-inventory gate silently stopped scanning `tui_pane` and still reported OK. | Moved to the workspace root `scripts/`, where the existing `SCRIPT_DIR/..` idiom is correct again. Phase 3 must audit `cargo-mend`'s `.github/scripts/validate-ci.sh` the same way. Found only by reading the script — it passes either way. |
+| 11 | `git mv <crate>/.claude .claude` nests instead of renaming | A root `.claude/` already existed (local session settings), so git moved the directory *into* it, producing `.claude/.claude/config/release.toml`. `taplo fmt` surfaced it by listing both copies. | Move the contents, or confirm the destination is absent first. Phase 3 hits this again with `cargo-mend`'s `.claude/`, which also holds a `scripts/release/` tree. |
+| 12 | README and doc path references | `LICENSE-MIT`/`LICENSE-APACHE` moved to the root, so relative links from `crates/cargo-port/README.md` broke; the CI badge and `git clone` instructions still named the old repo; `docs/tooltip.md` (an unimplemented plan) carried 20 `tui_pane/…` paths. | License links became absolute `github.com/natepiano/cargo-liner/blob/main/…` URLs, which resolve on GitHub and on crates.io alike. `tooltip.md` paths rewritten. Historical as-built and completed-plan docs left as written — they describe past work. |
+| 13 | Actions is slow to register a workflow on a brand-new repo | For ~25s after the initial push, `gh run list` showed no run at all while `gh workflow list` already reported the workflow `active`. A manual `gh workflow run` filled the gap, and when the push-triggered run finally started, `cancel-in-progress` cancelled the manual one. | Wait rather than dispatch. Also note `gh run watch --exit-status` exits 0 on a **cancelled** run — it only fails on `failure`, so a cancelled run reads as success. Check `conclusion` explicitly. |
+| 14 | `mktemp -t` fails under the command sandbox | `check-no-test-abort.sh` dies with `mkstemp failed … Operation not permitted`. | Run it with the sandbox disabled. It is a sandbox limit, not a defect in the script — do not "fix" the script. |
 
 ## Phases
 
 `cargo-mend` has uncommitted work in progress, so it is untouched until Phase 3.
 It keeps developing in its own repo while Phases 1–2 run.
 
-### Phase 0 — prerequisites
+### Phase 0 — prerequisites — done 2026-08-20
 
 No repository is modified.
 
@@ -116,17 +125,23 @@ No repository is modified.
    the graft supplies the initial commit history).
 3. Confirm `~/rust/cargo-port` has a clean working tree and `main` is pushed.
 
-### Phase 1 — build the monorepo from cargo-port's history
+### Phase 1 — build the monorepo from cargo-port's history — done 2026-08-20
 
 1. Fresh single-branch clone to `~/rust/cargo-liner`
    (`git clone --single-branch --branch main`; `filter-repo` requires a fresh clone
    and this drops the release branches in one move).
 2. `git filter-repo --to-subdirectory-filter crates/cargo-port`, then a second pass
    `--path-rename crates/cargo-port/tui_pane/:crates/tui_pane/`, then
-   `--tag-rename '':'cargo-port-'`.
+   `--tag-rename '':'cargo-port-'`. The rename also prefixes the two non-release
+   tags (`phase-0-start`, `project-list-refactor-start`); harmless, since
+   `--match "cargo-port-v*"` still selects only releases.
 3. One ordinary commit lifts the shared files back to the root: `rustfmt.toml`,
-   `taplo.toml`, `LICENSE-MIT`, `LICENSE-APACHE`, `.gitignore`, `.github/`,
-   `.claude/`, `.obsidian/`. Everything else stays inside `crates/cargo-port/` —
+   `taplo.toml`, `LICENSE-MIT`, `LICENSE-APACHE`, `.gitignore`, `.cargo/`,
+   `.github/`, `.claude/`, `Cargo.lock`, and `scripts/check-no-test-abort.sh`
+   (friction 10). Watch the `.claude/` nesting trap in friction 11. Also re-seed
+   `.git/info/exclude` — it is local-only, so the graft does not carry it, and
+   without it `settings.local.json` and the claude-code runtime files show up as
+   untracked. Everything else stays inside `crates/cargo-port/` —
    including `assets/`, `tests/`, `scripts/`, and `docs/`, so the README image
    links and the `exclude = ["assets/"]` manifest key need no edits. Only genuinely
    cross-tool docs (this file among them) move to the root `docs/`.
@@ -143,7 +158,7 @@ No repository is modified.
 8. `.claude/config/release.toml`: drop `workspace_publish`, add the `tui_pane`
    `[[publish_path_pins]]` entry at `0.6.0`, add `install_verify` plus the
    dispatching `install_verify.sh`.
-9. Apply the two shared release-skill edits described above. They are only strictly
+9. Apply the two shared release-skill edits described above (**applied**). They are only strictly
    needed once a second binary lands, but doing them here means the Phase 1 dry-run
    exercises the same code path the real releases will use.
 10. Gates: `cargo build --workspace`, `cargo +nightly fmt --all -- --check`,
@@ -153,15 +168,23 @@ No repository is modified.
 11. Push `main` and the renamed tags to `natepiano/cargo-liner`; watch CI green.
 12. `/release cargo-port 0.7.0 dry-run` — rehearses single-package mode, the
     `tui_pane` path pin, and `install_verify` dispatch without publishing.
+    **Not yet run.** Everything else in Phase 1 is verified; this is the one
+    gate still outstanding and should run before Phase 5.
 
-### Phase 2 — archive the cargo-port repo
+### Phase 2 — archive the cargo-port repo — done 2026-08-20
 
 1. `gh repo edit natepiano/cargo-port --description "MOVED → github.com/natepiano/cargo-liner (crates/cargo-port) — …"`, then `gh repo archive`.
    Matches the `bevy_lagrange` precedent; the URL keeps resolving, so the
    `repository` link on every already-published `cargo-port` version still works.
-2. Update `~/.claude` tooling for the new paths: `clean-fix.conf` `[build]` and
-   `[projects]` entries become `cargo-liner/crates/cargo-port` and
-   `cargo-liner/crates/tui_pane`; fix the `settings.local.json` path.
+2. Update `~/.claude` tooling for the new paths. `clean-fix.conf` `[build]`
+   becomes the bare `cargo-liner` entry, which builds the whole workspace the way
+   the `bevy_hana` root entry does. `[projects]` uses the member form
+   `cargo-liner/crates/cargo-port`, because the history key is the entry's last
+   path segment — so style-eval history carries over unbroken — plus a new
+   `cargo-liner/crates/tui_pane` entry. That second entry starts a fresh style
+   identity: `tui_pane` was previously covered by cargo-port's workspace-wide
+   eval and now, as a peer, gets its own, matching how each `bevy_hana` member is
+   listed separately.
 3. Leave `~/rust/cargo-port` on disk. Removing the local checkout is a separate,
    explicitly confirmed step after the new repo has proven itself.
 
