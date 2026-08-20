@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Move development into the `natepiano/cargo-liner` workspace, where cargo-port now lives at `crates/cargo-port` alongside the `tui_pane` framework it is built on. Installation and usage are unchanged: `cargo install cargo-port`.
+
 ## [0.6.0] - 2026-08-19
 
 ### Added

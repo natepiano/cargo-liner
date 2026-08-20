@@ -7,6 +7,9 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ## [Unreleased]
 
+### Changed
+- Move development into the `natepiano/cargo-liner` workspace, where `tui_pane` now lives at `crates/tui_pane` as a peer of the tools built on it rather than as a subdirectory of cargo-port. The published crate is unchanged.
+
 ## [0.6.0] - 2026-08-19
 
 ### Added
