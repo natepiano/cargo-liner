@@ -1,8 +1,8 @@
 # cargo-port
 
-[![CI](https://github.com/natepiano/cargo-port/actions/workflows/ci.yml/badge.svg)](https://github.com/natepiano/cargo-port/actions/workflows/ci.yml)
+[![CI](https://github.com/natepiano/cargo-liner/actions/workflows/ci.yml/badge.svg)](https://github.com/natepiano/cargo-liner/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/cargo-port.svg)](https://crates.io/crates/cargo-port)
-[![license](https://img.shields.io/crates/l/cargo-port.svg)](LICENSE-MIT)
+[![license](https://img.shields.io/crates/l/cargo-port.svg)](https://github.com/natepiano/cargo-liner/blob/main/LICENSE-MIT)
 
 <img src="assets/dashboard.gif" alt="cargo-port dashboard showing project tree, worktree details, Git status, CPU and GPU diagnostics, targets, lint runs, and CI runs" width="100%">
 
@@ -37,10 +37,10 @@ cargo port
 Or build the current `main` branch:
 
 ```bash
-git clone https://github.com/natepiano/cargo-port.git
-cd cargo-port
-cargo build
-cargo run
+git clone https://github.com/natepiano/cargo-liner.git
+cd cargo-liner
+cargo build -p cargo-port
+cargo run -p cargo-port
 ```
 
 ### Enable GitHub metadata
@@ -174,7 +174,7 @@ cargo-port supports light / dark mode and will follow your OS's settings if you 
 
 **User themes**
 
-User themes are optional TOML files placed in `dirs::config_dir()/cargo-port/themes/`. The app does not create this directory or seed theme files there; use the theme TOML files in the repository’s `tui_pane/themes/` directory as examples.
+User themes are optional TOML files placed in `dirs::config_dir()/cargo-port/themes/`. The app does not create this directory or seed theme files there; use the theme TOML files in the repository’s `crates/tui_pane/themes/` directory as examples.
 
 ### Project tree
 
@@ -387,8 +387,8 @@ Tested primarily on macos, limited testing on windows and linux.
 `cargo-port` is free, open source and permissively licensed!
 Except where noted (below and/or in individual files), all code in this repository is dual-licensed under either:
 
-* MIT License ([LICENSE-MIT](LICENSE-MIT) or [http://opensource.org/licenses/MIT](http://opensource.org/licenses/MIT))
-* Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or [http://www.apache.org/licenses/LICENSE-2.0](http://www.apache.org/licenses/LICENSE-2.0))
+* MIT License ([LICENSE-MIT](https://github.com/natepiano/cargo-liner/blob/main/LICENSE-MIT) or [http://opensource.org/licenses/MIT](http://opensource.org/licenses/MIT))
+* Apache License, Version 2.0 ([LICENSE-APACHE](https://github.com/natepiano/cargo-liner/blob/main/LICENSE-APACHE) or [http://www.apache.org/licenses/LICENSE-2.0](http://www.apache.org/licenses/LICENSE-2.0))
 
 at your option.
 

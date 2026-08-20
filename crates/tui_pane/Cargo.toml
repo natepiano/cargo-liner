@@ -1,14 +1,15 @@
 [package]
-authors     = ["natepiano"]
-categories  = ["command-line-utilities", "development-tools"]
-description = "Reusable ratatui pane framework: keymap, status bar, framework panes."
-edition     = "2024"
-keywords    = ["keymap", "pane", "ratatui", "tui"]
-license     = "MIT OR Apache-2.0"
-name        = "tui_pane"
-readme      = "README.md"
-repository  = "https://github.com/natepiano/cargo-port"
-version     = "0.7.0-dev"
+authors.workspace    = true
+categories           = ["command-line-utilities", "development-tools"]
+description          = "Reusable ratatui pane framework: keymap, status bar, framework panes."
+edition.workspace    = true
+homepage             = "https://github.com/natepiano/cargo-liner/tree/main/crates/tui_pane"
+keywords             = ["keymap", "pane", "ratatui", "tui"]
+license.workspace    = true
+name                 = "tui_pane"
+readme               = "README.md"
+repository.workspace = true
+version              = "0.7.0-dev"
 
 [lints]
 workspace = true
@@ -44,6 +45,3 @@ objc2-core-foundation = { workspace = true, features = [
   "std",
 ] }
 objc2-io-kit = { workspace = true, features = ["libc", "std"] }
-
-[dev-dependencies]
-# none in Phase 1; later phases add only std + the crate's own types.

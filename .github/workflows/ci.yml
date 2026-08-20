@@ -23,6 +23,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Per-tool gate for the expensive jobs. The workspace holds independent tools
+  # with different toolchain needs, so a change to one must not pay for the
+  # others' build, test, and platform matrices. Shared files (root manifests,
+  # lockfile, lint and format config, this workflow) turn every filter on.
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      cargo_port: ${{ steps.filter.outputs.cargo_port }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            shared: &shared
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rustfmt.toml'
+              - 'taplo.toml'
+              - '.cargo/**'
+              - '.github/workflows/ci.yml'
+            cargo_port:
+              - *shared
+              - 'crates/cargo-port/**'
+              - 'crates/tui_pane/**'
+
   format:
     name: Format Check
     runs-on: ubuntu-latest
@@ -83,6 +111,8 @@ jobs:
 
   build:
     name: Build Check
+    needs: changes
+    if: needs.changes.outputs.cargo_port == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -107,10 +137,12 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build release examples
-        run: cargo build --release --all-features --workspace --examples
+        run: cargo build --release --all-features -p cargo-port -p tui_pane --examples
 
   test:
     name: Test Suite
+    needs: changes
+    if: needs.changes.outputs.cargo_port == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -146,7 +178,7 @@ jobs:
 
       # Build only test targets here. Example compilation belongs in Build Check.
       - name: Run test targets
-        run: cargo nextest run --all-features --workspace --tests
+        run: cargo nextest run --all-features -p cargo-port -p tui_pane --tests
 
         env:
           WGPU_BACKEND: "gl"
@@ -197,6 +229,8 @@ jobs:
   # only — the test suite assumes a Unix host.
   windows:
     name: Windows Build Check
+    needs: changes
+    if: needs.changes.outputs.cargo_port == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
@@ -213,9 +247,10 @@ jobs:
         uses: taiki-e/install-action@nextest
 
       - name: Check all targets
-        run: cargo check --workspace --all-targets --all-features
+        run: cargo check -p cargo-port -p tui_pane --all-targets --all-features
 
-      # The rest of the suite assumes a Unix host, but `src/project/paths.rs`
-      # asserts on `std::path::Prefix` behavior that only exists here.
+      # The rest of the suite assumes a Unix host, but
+      # `crates/cargo-port/src/project/paths.rs` asserts on `std::path::Prefix`
+      # behavior that only exists here.
       - name: Run Windows path tests
-        run: cargo nextest run --workspace -E 'test(/^project::paths::/)'
+        run: cargo nextest run -p cargo-port -E 'test(/^project::paths::/)'

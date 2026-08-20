@@ -47,7 +47,7 @@ Render order matters. `cargo-port` draws tiled panes, status bar, toasts, framew
 
 ## Core API Shape
 
-Add `tui_pane/src/tooltip.rs` and re-export the stable API from `tui_pane/src/lib.rs`.
+Add `crates/tui_pane/src/tooltip.rs` and re-export the stable API from `crates/tui_pane/src/lib.rs`.
 
 ```rust
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -329,7 +329,7 @@ Theme compatibility is required:
 - Theme-file parsing should accept old schema-1 theme files without a `[tooltip]` group.
 - Implement compatibility with `Option<TooltipTheme>` on the file input type or serde defaults in the file-layer type, then fill appearance-appropriate defaults in `into_theme`.
 - Add a regression test that parses a pre-tooltip schema-1 custom theme and fills tooltip defaults.
-- Update `tui_pane/themes/*.toml` templates and keep the round-trip tests.
+- Update `crates/tui_pane/themes/*.toml` templates and keep the round-trip tests.
 
 Accessors:
 
@@ -641,14 +641,14 @@ Copy inventory:
 
 Files:
 
-- `tui_pane/src/tooltip.rs`
-- `tui_pane/src/lib.rs`
-- `tui_pane/src/theme/mod.rs`
-- `tui_pane/src/theme/accessors.rs`
-- `tui_pane/src/theme/builtins.rs`
-- `tui_pane/themes/*.toml`
-- `tui_pane/tests/themes.rs`
-- new `tui_pane/tests/tooltips.rs`
+- `crates/tui_pane/src/tooltip.rs`
+- `crates/tui_pane/src/lib.rs`
+- `crates/tui_pane/src/theme/mod.rs`
+- `crates/tui_pane/src/theme/accessors.rs`
+- `crates/tui_pane/src/theme/builtins.rs`
+- `crates/tui_pane/themes/*.toml`
+- `crates/tui_pane/tests/themes.rs`
+- new `crates/tui_pane/tests/tooltips.rs`
 
 Work:
 
@@ -691,7 +691,7 @@ Tests:
 
 Files:
 
-- `tui_pane/src/framework/mod.rs`
+- `crates/tui_pane/src/framework/mod.rs`
 - `src/tui/render.rs`
 - `src/tui/input/mod.rs`
 - `src/tui/app/mod.rs`
@@ -726,10 +726,10 @@ Tests:
 
 Files:
 
-- `tui_pane/src/pane/chrome.rs`
-- `tui_pane/src/pane/title.rs`
-- `tui_pane/src/pane/mod.rs`
-- `tui_pane/tests/tooltips.rs`
+- `crates/tui_pane/src/pane/chrome.rs`
+- `crates/tui_pane/src/pane/title.rs`
+- `crates/tui_pane/src/pane/mod.rs`
+- `crates/tui_pane/tests/tooltips.rs`
 
 Work:
 
@@ -783,10 +783,10 @@ Tests:
 
 Files:
 
-- `tui_pane/src/bar/status_line.rs`
-- `tui_pane/src/bar/status_bar.rs`
-- `tui_pane/src/bar/slot.rs`
-- `tui_pane/src/bar/tests.rs`
+- `crates/tui_pane/src/bar/status_line.rs`
+- `crates/tui_pane/src/bar/status_bar.rs`
+- `crates/tui_pane/src/bar/slot.rs`
+- `crates/tui_pane/src/bar/tests.rs`
 - `src/tui/render.rs`
 
 Work:

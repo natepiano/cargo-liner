@@ -1,0 +1,16 @@
+# cargo-liner holds independent tools on independent cadences, so every release
+# is a single-package release: `/release <crate> X.Y.Z`. Deliberately no
+# `workspace_publish` and no `[[publish_phases]]` — both ship every crate
+# together, which is what independent versioning has to avoid.
+
+install_verify        = "crates/cargo-port"
+install_verify_script = ".claude/scripts/release/install_verify.sh"
+
+# `tui_pane` is a path-only workspace dependency on main. cargo publish rejects a
+# path-only dep, so the release branch rewrites it to the version below and
+# commits that pin there; main keeps the path by construction. STEP 11 of
+# /release bumps this automatically after a tui_pane release — left stale, a
+# cargo-port release silently publishes against an older tui_pane API.
+[[publish_path_pins]]
+dep     = "tui_pane"
+version = "0.6.0"
