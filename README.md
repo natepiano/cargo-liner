@@ -8,6 +8,8 @@ A fleet of cargo tools, and the terminal-UI framework they share.
 
 - [cargo-port](crates/cargo-port) — a terminal dashboard for your Rust workspaces
   and projects [![crates.io](https://img.shields.io/crates/v/cargo-port.svg)](https://crates.io/crates/cargo-port)
+- [cargo-tile](crates/cargo-tile) — a terminal UI cargo tool (early skeleton,
+  unpublished)
 - [tui_pane](crates/tui_pane) — reusable `ratatui` pane framework: keymaps, status
   bar, framework panes [![crates.io](https://img.shields.io/crates/v/tui_pane.svg)](https://crates.io/crates/tui_pane)
 

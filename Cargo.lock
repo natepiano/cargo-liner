@@ -552,6 +552,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cargo-tile"
+version = "0.1.0"
+dependencies = [
+ "ratatui",
+ "tui_pane",
+]
+
+[[package]]
 name = "cargo_metadata"
 version = "0.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

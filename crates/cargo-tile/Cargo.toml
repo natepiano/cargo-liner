@@ -1,0 +1,21 @@
+[package]
+authors.workspace    = true
+categories           = ["command-line-utilities", "development-tools"]
+description          = "A terminal UI cargo tool"
+edition.workspace    = true
+homepage             = "https://github.com/natepiano/cargo-liner/tree/main/crates/cargo-tile"
+keywords             = ["cargo", "rust", "tile", "tui"]
+license.workspace    = true
+name                 = "cargo-tile"
+readme               = "README.md"
+repository.workspace = true
+version              = "0.1.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+ratatui = { workspace = true }
+
+# tui_pane provides the framework used by the binary.
+tui_pane = { workspace = true }
