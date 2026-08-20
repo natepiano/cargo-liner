@@ -120,7 +120,7 @@ static FORBIDDEN_PUB_IN_CRATE: DiagnosticSpec = DiagnosticSpec {
     },
     inline_help: None,
     help_anchor: "forbidden-pub-in-crate",
-    detail_mode: DetailMode::None,
+    detail_mode: DetailMode::MessageAndRelated,
     fix_support: FixSupport::None,
 };
 static REVIEW_PUB_MOD: DiagnosticSpec = DiagnosticSpec {
@@ -680,7 +680,7 @@ mod tests {
             ),
             (
                 DiagnosticCode::ForbiddenPubInCrate,
-                "no policy-allowed visibility keeps this item reachable where it is used: private and `pub(super)` are too narrow, and no facade caps `pub`",
+                "no allowed visibility keeps this item reachable from its callers: private and `pub(super)` are too narrow, and `pub` needs a re-export to cap it",
             ),
         ] {
             let finding = Finding {

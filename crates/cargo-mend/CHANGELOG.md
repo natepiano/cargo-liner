@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `forbidden_pub_in_crate` now explains itself. The finding read "is forbidden by policy" without
+  naming the policy, and suggested "add an explicit facade" without defining the term or saying what
+  the facade fixes, leaving no way to tell a real problem from a false one. Findings whose repair is
+  a re-export now carry a note naming `pub_in_path` and describing the gap in the reader's own
+  terms: every caller in the boundary module may use the item but must still spell out its full
+  path, and the policy accepts the boundary only once a re-export publishes the item under the
+  boundary's own path. Both the note and the suggestion name the item, so the re-export to add can
+  be read straight off the diagnostic instead of "re-export it from"; a `use` item is named by the
+  identifier it introduces rather than by the `{use#0}` the compiler calls it internally. The
+  headline for the structural case drops "no facade caps `pub`" for the visibilities it actually
+  ruled out. The README section works through both repairs — adding the re-export, and moving the
+  item instead.
+
 ### Fixed
 - An exact-boundary `pub(in crate::...) use` re-export is now accepted under `pub_in_path =
   "required"` (the default) and `"permitted"`, on the same terms as a declaration, and under
@@ -15,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   run printed "is forbidden by policy" on every such re-export with no help line and no
   configuration that could clear them. `consider using: pub` is still withheld from a `use` item,
   where widening the re-export past the item it names would not compile.
-- A `pub(in crate::...) use` re-export that no facade covers now names the facade that would
+- A `pub(in crate::...) use` re-export that no facade covers now names the re-export that would
   accept it, rather than printing with no help line at all. Every repair offered there is derived
   from the caller set, and resolved paths name the imported target rather than the alias, so that
   set is never available for a `use` item and the branch returned no suggestion. The facade path is

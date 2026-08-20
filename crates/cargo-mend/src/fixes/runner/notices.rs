@@ -16,7 +16,7 @@ impl FixScans<'_> {
     /// Only the fixers that move or rewrite a `use` item share one total. Each
     /// remaining fixer edits a visibility annotation, so it reports under its
     /// own `FixKind` rather than being counted as an import fix.
-    fn enabled_kinds(self) -> [(FixKind, bool); 5] {
+    const fn enabled_kinds(self) -> [(FixKind, bool); 5] {
         [
             (
                 FixKind::Import,

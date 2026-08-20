@@ -177,13 +177,7 @@ fn scan_file(
     let existing_module_imports =
         collect_existing_module_imports(&syntax, source_root, &current_module_path);
 
-    let mut module_to_functions: BTreeMap<String, Vec<RawCandidate>> = BTreeMap::new();
-    for candidate in detector.candidates {
-        module_to_functions
-            .entry(candidate.module_path.clone())
-            .or_default()
-            .push(candidate);
-    }
+    let mut module_to_functions = group_candidates_by_module(detector.candidates);
 
     drop_colliding_candidates(
         &existing_module_imports,
@@ -251,6 +245,19 @@ fn scan_file(
     }
 
     Ok((findings, fixes))
+}
+
+fn group_candidates_by_module(
+    candidates: Vec<RawCandidate>,
+) -> BTreeMap<String, Vec<RawCandidate>> {
+    let mut grouped: BTreeMap<String, Vec<RawCandidate>> = BTreeMap::new();
+    for candidate in candidates {
+        grouped
+            .entry(candidate.module_path.clone())
+            .or_default()
+            .push(candidate);
+    }
+    grouped
 }
 
 fn collect_declared_modules(syntax: &File) -> BTreeSet<String> {

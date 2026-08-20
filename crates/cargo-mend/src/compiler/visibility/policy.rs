@@ -362,6 +362,7 @@ pub(super) enum OverbroadPubCrateSuggestionReason {
     PublicSignatureExposure,
     NoFacadeRepair {
         boundary_path: String,
+        item_def_path: String,
         repair:        NoFacadeVisibilityRepair,
     },
     ExactPubSuperParentFacade {
@@ -408,8 +409,9 @@ pub(super) fn overbroad_pub_crate_suggestion(reason: OverbroadPubCrateSuggestion
         },
         OverbroadPubCrateSuggestionReason::NoFacadeRepair {
             boundary_path,
+            item_def_path,
             repair,
-        } => no_facade_suggestion(repair, &boundary_path),
+        } => no_facade_suggestion(repair, &boundary_path, &item_def_path),
         OverbroadPubCrateSuggestionReason::ExactPubSuperParentFacade { boundary_path } => {
             format!(
                 "the parent module re-exports this with `pub(super) use` to `{boundary_path}`; \
@@ -448,10 +450,10 @@ pub(in crate::compiler) enum NoFacadeVisibilityRepair {
 
 impl NoFacadeVisibilityRepair {
     const REMOVE_ANNOTATION_SUGGESTION: &str = "consider removing the visibility";
-    const STRUCTURAL_HEADLINE: &str = "no policy-allowed visibility keeps this item reachable where it is used: private and \
-         `pub(super)` are too narrow, and no facade caps `pub`";
+    const STRUCTURAL_HEADLINE: &str = "no allowed visibility keeps this item reachable from its callers: private and \
+         `pub(super)` are too narrow, and `pub` needs a re-export to cap it";
 
-    fn suggestion(self, boundary_path: &str) -> String {
+    fn suggestion(self, boundary_path: &str, item_def_path: &str) -> String {
         match self {
             Self::RemoveAnnotation => String::from(Self::REMOVE_ANNOTATION_SUGGESTION),
             Self::UseParentVisibility => consider_using("pub(super)"),
@@ -459,7 +461,7 @@ impl NoFacadeVisibilityRepair {
             | Self::StructuralMigrationForSignatureReach { .. } => {
                 format!(
                     "move the item into `{boundary_path}`, or {}",
-                    add_facade_suggestion(boundary_path)
+                    add_facade_suggestion(boundary_path, item_def_path)
                 )
             },
         }
@@ -519,15 +521,92 @@ pub(super) fn permit_pub_in_path() -> String { String::from("set `pub_in_path = 
 /// an operation a re-export cannot perform, and every caller-derived repair
 /// needs a caller set that resolved paths do not give for an alias. The facade
 /// asks nothing of the caller set: `boundary_path` comes from the annotation.
-pub(super) fn add_facade_suggestion(boundary_path: &str) -> String {
-    format!("add an explicit facade at `{boundary_path}` and rerun `cargo mend`")
+///
+/// Phrased as what the re-export accomplishes rather than as "add a facade":
+/// `facade` is this crate's word, and a reader meeting the diagnostic for the
+/// first time has no definition for it. [`missing_facade_note`] states the gap
+/// the re-export closes.
+pub(super) fn add_facade_suggestion(boundary_path: &str, item_def_path: &str) -> String {
+    let item = facade_reexport_path(boundary_path, item_def_path)
+        .map_or_else(|| String::from("it"), |path| format!("`{path}`"));
+    format!(
+        "re-export {item} from `{boundary_path}` so callers can name it there, then rerun \
+         `cargo mend`"
+    )
+}
+
+/// The path the re-export would spell, written from inside `boundary_path`.
+///
+/// The reader is being asked to add the re-export in `boundary_path`, so naming
+/// the item from anywhere else makes them translate it themselves. An item that
+/// does not sit under the boundary has no relative spelling and keeps its
+/// `crate::`-rooted path.
+///
+/// `None` when the path ends in a compiler-generated segment such as `{use#0}`,
+/// which names nothing the reader could write.
+fn facade_reexport_path(boundary_path: &str, item_def_path: &str) -> Option<String> {
+    let rooted = crate_rooted_def_path(item_def_path);
+    if is_synthetic_segment(last_def_path_segment(&rooted)) {
+        return None;
+    }
+    let relative = rooted
+        .strip_prefix(boundary_path)
+        .and_then(|rest| rest.strip_prefix("::"))
+        .map(String::from);
+    Some(relative.unwrap_or(rooted))
+}
+
+/// The name a def path introduces, with no module qualification.
+fn last_def_path_segment(def_path: &str) -> &str {
+    def_path
+        .rsplit_once("::")
+        .map_or(def_path, |(_, last)| last)
+}
+
+/// Whether a def-path segment is one rustc synthesized rather than one written
+/// in the source, such as the `{use#0}` it gives an import binding.
+fn is_synthetic_segment(segment: &str) -> bool { segment.starts_with('{') }
+
+/// Why an exact `pub(in path)` boundary with no re-export behind it is reported.
+///
+/// The headline says "forbidden by policy" without naming the policy, and the
+/// suggestion says what to write without saying what it fixes. This names
+/// `pub_in_path` and states the gap: the annotation grants visibility at
+/// `boundary_path`, while the item can still only be named through
+/// `item_module`. Rendered as the finding's `= note:` line.
+///
+/// `None` when the two paths are the same, where there is no gap to describe.
+pub(super) fn missing_facade_note(boundary_path: &str, item_def_path: &str) -> Option<String> {
+    // `item_def_path` arrives as a bare def path (`a::b::Name`). The annotation
+    // the reader is looking at spells its boundary from `crate::`, and a note
+    // that sets `crate::a` beside `a::b` reads as two unrelated modules.
+    let item_path = crate_rooted_def_path(item_def_path);
+    let item_module = parent_scope_def_path(&item_path);
+    // Both halves of the note name the item, so a path rustc generated leaves
+    // nothing to say: `{use#0}` is not a spelling the reader can compare.
+    if is_synthetic_segment(last_def_path_segment(&item_path)) {
+        return None;
+    }
+    (boundary_path != item_module).then(|| {
+        // Both halves of the gap are named as paths the reader can go and look
+        // at: the one callers are stuck writing, and the one a re-export would
+        // give them. Saying it in the abstract -- "publishes the item at the
+        // boundary" -- leaves them to work out both.
+        let name = last_def_path_segment(&item_path);
+        format!(
+            "every caller in `{boundary_path}` may use this item, but they must still spell it \
+             `{item_path}`. `pub_in_path` allows this boundary only when a re-export publishes \
+             the item as `{boundary_path}::{name}`"
+        )
+    })
 }
 
 pub(in crate::compiler) fn no_facade_suggestion(
     repair: NoFacadeVisibilityRepair,
     boundary_path: &str,
+    item_def_path: &str,
 ) -> String {
-    repair.suggestion(boundary_path)
+    repair.suggestion(boundary_path, item_def_path)
 }
 
 pub(in crate::compiler) fn no_facade_headline(
@@ -1153,6 +1232,7 @@ mod tests {
         assert_eq!(
             overbroad_pub_crate_suggestion(OverbroadPubCrateSuggestionReason::NoFacadeRepair {
                 boundary_path: String::from("crate::a"),
+                item_def_path: String::from("a::b::c::Thing"),
                 repair:        NoFacadeVisibilityRepair::RemoveAnnotation,
             },),
             "consider removing the visibility",
@@ -1160,6 +1240,7 @@ mod tests {
         assert_eq!(
             overbroad_pub_crate_suggestion(OverbroadPubCrateSuggestionReason::NoFacadeRepair {
                 boundary_path: String::from("crate::a"),
+                item_def_path: String::from("a::b::c::Thing"),
                 repair:        NoFacadeVisibilityRepair::UseParentVisibility,
             },),
             "consider using: `pub(super)`",
@@ -1167,10 +1248,11 @@ mod tests {
         assert_eq!(
             overbroad_pub_crate_suggestion(OverbroadPubCrateSuggestionReason::NoFacadeRepair {
                 boundary_path: String::from("crate::a"),
+                item_def_path: String::from("a::b::c::Thing"),
                 repair:        NoFacadeVisibilityRepair::StructuralMigrationForCallerLocations,
             },),
-            "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun \
-             `cargo mend`",
+            "move the item into `crate::a`, or re-export `b::c::Thing` from `crate::a` so \
+             callers can name it there, then rerun `cargo mend`",
         );
     }
 
@@ -1232,9 +1314,9 @@ mod tests {
             | NoFacadeVisibilityRepair::StructuralMigrationForSignatureReach { .. } => false,
         });
         assert_eq!(
-            repair.suggestion("crate::a"),
-            "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun \
-             `cargo mend`",
+            repair.suggestion("crate::a", "a::b::c::Thing"),
+            "move the item into `crate::a`, or re-export `b::c::Thing` from `crate::a` so \
+             callers can name it there, then rerun `cargo mend`",
         );
     }
 

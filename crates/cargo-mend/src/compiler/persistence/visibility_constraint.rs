@@ -366,7 +366,9 @@ impl VisibilityConstraintGroup {
         if self.constraints.all_facades_are_resolved() {
             return self.render_resolved_facades(callers, package_root, required_reach.as_ref());
         }
-        let mut finding = self.preferred_candidate()?.finding.clone();
+        let candidate = self.preferred_candidate()?;
+        let mut finding = candidate.finding.clone();
+        let item_def_path = candidate.constraint.declaration.item_def_path.clone();
         if !self.constraints.uses_caller_reconciliation() {
             return Some(finding);
         }
@@ -413,7 +415,11 @@ impl VisibilityConstraintGroup {
             }
             finding.exact_boundary_spelling = ExactBoundarySpelling::CratePath;
             finding.message = visibility::no_facade_headline(repair, finding.message);
-            finding.suggestion = Some(visibility::no_facade_suggestion(repair, &boundary));
+            finding.suggestion = Some(visibility::no_facade_suggestion(
+                repair,
+                &boundary,
+                &item_def_path,
+            ));
         }
         Some(finding)
     }
@@ -568,6 +574,11 @@ impl VisibilityConstraintGroup {
             ExactBoundarySpelling::Private => String::from("consider removing the visibility"),
             ExactBoundarySpelling::Public => String::from("consider using: `pub`"),
         });
+        // `visibility::missing_facade_note` explains a suggestion that asks for
+        // a re-export. The suggestion just written asks for a visibility change
+        // instead, and the note's claim that nothing names the item at the
+        // boundary is what resolving one disproved.
+        finding.related = None;
         finding.message = match finding.diagnostic_code {
             DiagnosticCode::OverbroadPubCrate => {
                 String::from("`pub(crate)` is broader than required")

@@ -322,8 +322,52 @@ can see the item, not who owns it.
 Always spell this boundary from `crate::`. `pub(in super::super)` can name the same module, but
 forces readers to count levels and changes meaning when the file moves.
 
-Exact-boundary repairs apply to declarations and fields. A `use` line selects its own reach, so
-`pub(super)`, `pub(crate)`, and `pub` already express what it needs.
+Exact-boundary repairs apply to declarations, fields, and `pub use` re-exports alike — a re-export
+earns the boundary on the same terms a declaration does. mend will not offer to narrow a
+re-export's visibility, though: resolved paths name the imported item, not the alias, so it can see
+where the item is used but not where the alias is.
+
+#### When no facade covers the boundary
+
+The annotation grants visibility; it does not create a path. `pub(in crate::animation::sequence)`
+lets every module under `animation::sequence` *see* the item, but the item is only *nameable* where
+its own declaration or `use` line puts it. When those two disagree, mend reports the gap:
+
+```rust
+// crates/hana_lagrange/src/animation/sequence/request/mod.rs
+mod journey;
+pub(in crate::animation::sequence) use journey::RetainedCameraJourneyOrigin;
+
+// crates/hana_lagrange/src/animation/sequence/playback/emission.rs
+use crate::animation::sequence::request::RetainedCameraJourneyOrigin;
+//                              ^^^^^^^^ still reaching through `request`
+```
+
+The permission reaches `animation::sequence`; the path stops at `animation::sequence::request`.
+Two costs follow. Callers are coupled to the internals of `request`, so renaming or moving
+`journey` breaks every one of them. And nothing at `animation::sequence` records that the item is
+shared across the subtree — to find out what the subtree shares with itself, you would have to
+search it for annotations.
+
+The repair is a re-export at the module the annotation names. That re-export is what mend calls a
+facade:
+
+```rust
+// crates/hana_lagrange/src/animation/sequence/mod.rs
+pub(in crate::animation::sequence) use request::RetainedCameraJourneyOrigin;
+
+// crates/hana_lagrange/src/animation/sequence/playback/emission.rs
+use crate::animation::sequence::RetainedCameraJourneyOrigin;
+```
+
+The path now reaches as far as the visibility does, `sequence/mod.rs` lists what the subtree shares
+with itself, and `request` can be reorganized without touching its consumers.
+
+Moving the item is the other repair, and sometimes the better one. If the item is not specific to
+the module holding it — `journey` above is a `sequence` concept living under `request` — moving it
+to `crate::animation::sequence` removes the need for a facade entirely. mend reports the gap and
+names the facade; which repair fits is a design decision, which is why this diagnostic has no
+`--fix`.
 
 Do not use this form to avoid moving an item. If the required path is long or names a module
 unrelated to the item, the item belongs in a different module. It is not a way to widen access:

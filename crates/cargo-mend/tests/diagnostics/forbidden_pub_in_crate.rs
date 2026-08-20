@@ -410,8 +410,16 @@ edition = "2024"
     assert_headline_and_help(
         &report,
         "src/a/b.rs",
-        "use of `pub(in crate::a)` on a `use` item is forbidden by policy",
-        "add an explicit facade at `crate::a` and rerun `cargo mend`",
+        "use of `pub(in crate::a)` outside an exact facade boundary is forbidden by policy",
+        "re-export `b::Thing` from `crate::a` so callers can name it there, then rerun `cargo \
+         mend`",
+    );
+    assert_note(
+        &report,
+        "src/a/b.rs",
+        "every caller in `crate::a` may use this item, but they must still spell it \
+         `crate::a::b::Thing`. `pub_in_path` allows this boundary only when a re-export publishes \
+         the item as `crate::a::Thing`",
     );
 }
 
@@ -1076,8 +1084,8 @@ fn cross_target_resolved_facade_preserves_joined_reexport_boundary() {
     assert_headline_and_help(
         &with_facade_report,
         "src/a/target.rs",
-        "no policy-allowed visibility keeps this item reachable where it is used: private and `pub(super)` are too narrow, and no facade caps `pub`",
-        "move the item into `crate::a::b`, or add an explicit facade at `crate::a::b` and rerun `cargo mend`",
+        "no allowed visibility keeps this item reachable from its callers: private and `pub(super)` are too narrow, and `pub` needs a re-export to cap it",
+        "move the item into `crate::a::b`, or re-export `c::d::Target` from `crate::a::b` so callers can name it there, then rerun `cargo mend`",
     );
     assert!(
         with_facade_report.findings.iter().all(|finding| {
@@ -1256,11 +1264,16 @@ edition = "2024"
                 && finding.code == DiagnosticCode::ForbiddenPubInCrate
         })
         .unwrap_or_else(|| panic!("missing restricted use finding: {report:#?}"));
-    assert_eq!(
-        finding.help,
-        vec![String::from(
-            "add an explicit facade at `crate::a` and rerun `cargo mend`"
-        )],
+    assert!(
+        finding.help.iter().any(|line| line
+            == "re-export `b::Thing` from `crate::a` so callers can name it there, then rerun \
+                `cargo mend`"),
+        "a `use` item must be offered the re-export: {finding:#?}"
+    );
+    assert!(
+        !finding.help.iter().any(|line| {
+            line.contains("consider removing the visibility") || line.contains("consider using")
+        }),
         "a `use` item must not be told to remove or narrow its visibility: {finding:#?}"
     );
 }
@@ -1601,6 +1614,23 @@ fn assert_headline_and_help(report: &Report, suffix: &str, headline: &str, help:
     assert!(
         finding.help.iter().any(|line| line == help),
         "missing help {help:?} for {headline:?}: {:?}",
+        finding.help,
+    );
+}
+
+/// Asserts the finding reported for `suffix` carries `note`.
+///
+/// The note says why the suggestion is the one being offered;
+/// [`assert_headline_and_help`] covers the suggestion itself.
+fn assert_note(report: &Report, suffix: &str, note: &str) {
+    let finding = report
+        .findings
+        .iter()
+        .find(|finding| finding.path.ends_with(suffix))
+        .unwrap_or_else(|| panic!("missing finding for {suffix}: {:?}", report.findings));
+    assert!(
+        finding.help.iter().any(|line| line == note),
+        "missing note {note:?} for {suffix}: {:?}",
         finding.help,
     );
 }

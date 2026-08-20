@@ -3560,7 +3560,7 @@ fn assert_canonical_pub_in_spelling_respects_signature_reach(
     assert!(
         target_finding.help.iter().any(|line| {
             line
-                == "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend`"
+                == "move the item into `crate::a`, or re-export `b::c::Target` from `crate::a` so callers can name it there, then rerun `cargo mend`"
         }),
         "signature reach must replace canonical narrowing advice: {report:#?}",
     );
@@ -3648,7 +3648,7 @@ edition = "2024"
     assert!(
         target_finding.help.iter().any(|line| {
             line
-                == "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend`"
+                == "move the item into `crate::a`, or re-export `b::c::Target` from `crate::a` so callers can name it there, then rerun `cargo mend`"
         }),
         "the wider signature must replace pub(super) fixer advice: {report:#?}",
     );
@@ -3701,7 +3701,7 @@ edition = "2024"
     assert!(
         target_finding.help.iter().any(|line| {
             line
-                == "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend`"
+                == "move the item into `crate::a`, or re-export `b::c::Target` from `crate::a` so callers can name it there, then rerun `cargo mend`"
         }),
         "the independent signature must preserve the crate::a floor: {report:#?}",
     );
@@ -3807,7 +3807,7 @@ edition = "2024"
     assert!(
         target_finding.help.iter().any(|line| {
             line
-                == "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend`"
+                == "move the item into `crate::a`, or re-export `b::c::d::Target` from `crate::a` so callers can name it there, then rerun `cargo mend`"
         }),
         "the retained outer facade must replace pub(super) fixer advice: {report:#?}",
     );
@@ -3857,7 +3857,7 @@ edition = "2024"
     assert!(
         target_finding.help.iter().any(|line| {
             line
-                == "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend`"
+                == "move the item into `crate::a`, or re-export `b::c::d::Target` from `crate::a` so callers can name it there, then rerun `cargo mend`"
         }),
         "the retained outer facade must preserve the crate::a requirement: {report:#?}",
     );
@@ -3919,7 +3919,7 @@ edition = "2024"
     assert!(
         target_finding.help.iter().any(|line| {
             line
-                == "move the item into `crate::a`, or add an explicit facade at `crate::a` and rerun `cargo mend`"
+                == "move the item into `crate::a`, or re-export `b::c::d::Target` from `crate::a` so callers can name it there, then rerun `cargo mend`"
         }),
         "the signature and retained facade reaches must join at crate::a: {report:#?}",
     );

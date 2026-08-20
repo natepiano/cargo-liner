@@ -325,13 +325,11 @@ fn stored_matches_selected_root(
     selected_root_strings
         .iter()
         .any(|root| root == &stored.package_root)
-        || fs::canonicalize(Path::new(&stored.package_root))
-            .ok()
-            .is_some_and(|stored_root| {
-                selected_canonical_roots
-                    .iter()
-                    .any(|selected_root| selected_root == &stored_root)
-            })
+        || fs::canonicalize(Path::new(&stored.package_root)).is_ok_and(|stored_root| {
+            selected_canonical_roots
+                .iter()
+                .any(|selected_root| selected_root == &stored_root)
+        })
         || (stored.package_root.is_empty() && selected_roots.len() == 1)
 }
 

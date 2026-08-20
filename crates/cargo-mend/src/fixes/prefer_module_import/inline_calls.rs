@@ -145,29 +145,7 @@ pub(super) fn build_inline_call_findings_and_fixes(
             .unwrap_or_default()
             .to_string();
 
-        let (message, suggestion) = if candidate.import_target == ImportTarget::ParentModule {
-            (
-                format!(
-                    "use `super::{}` instead of the fully-qualified path",
-                    candidate.function_name
-                ),
-                Some(format!(
-                    "rewrite the call as `super::{}`",
-                    candidate.function_name
-                )),
-            )
-        } else {
-            (
-                format!(
-                    "import the module `{}` instead of using the fully-qualified path for `{}`",
-                    candidate.module_name, candidate.function_name
-                ),
-                Some(format!(
-                    "add `use {};` and call `{}::{}`",
-                    candidate.module_path, candidate.module_name, candidate.function_name
-                )),
-            )
-        };
+        let (message, suggestion) = inline_call_text(candidate);
 
         findings.push(Finding {
             severity: Severity::Warning,
@@ -229,6 +207,32 @@ pub(super) fn build_inline_call_findings_and_fixes(
     }
 
     (findings, fixes)
+}
+
+fn inline_call_text(candidate: &InlineCallCandidate) -> (String, Option<String>) {
+    if candidate.import_target == ImportTarget::ParentModule {
+        (
+            format!(
+                "use `super::{}` instead of the fully-qualified path",
+                candidate.function_name
+            ),
+            Some(format!(
+                "rewrite the call as `super::{}`",
+                candidate.function_name
+            )),
+        )
+    } else {
+        (
+            format!(
+                "import the module `{}` instead of using the fully-qualified path for `{}`",
+                candidate.module_name, candidate.function_name
+            ),
+            Some(format!(
+                "add `use {};` and call `{}::{}`",
+                candidate.module_path, candidate.module_name, candidate.function_name
+            )),
+        )
+    }
 }
 
 /// The gate each imported module's `use` must carry, keyed by absolute module

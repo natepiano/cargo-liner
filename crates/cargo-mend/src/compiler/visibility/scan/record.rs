@@ -803,6 +803,7 @@ fn overbroad_pub_crate_no_facade_advice(
     OverbroadPubCrateNoFacadeAdvice::SuggestionReason(
         OverbroadPubCrateSuggestionReason::NoFacadeRepair {
             boundary_path,
+            item_def_path: display_def_path(ctx, item),
             repair,
         },
     )
@@ -848,7 +849,11 @@ fn record_forbidden_pub_in_crate(
     ) {
         return Ok(false);
     }
-    let (message, suggestion) = forbidden_pub_in_advice(
+    let ForbiddenPubInText {
+        message,
+        suggestion,
+        note,
+    } = forbidden_pub_in_advice(
         ctx,
         item,
         annotation,
@@ -857,7 +862,7 @@ fn record_forbidden_pub_in_crate(
         signature_exposure,
         sink,
     )
-    .into_message_and_suggestion();
+    .into_finding_text();
     let finding = source::build_finding(
         ctx.tcx,
         item.file_path,
@@ -869,7 +874,7 @@ fn record_forbidden_pub_in_crate(
             message,
             suggestion,
             fix_support: FixSupport::None,
-            related: None,
+            related: note,
             visibility_annotation: None,
             item_def_path: None,
             narrower_scope_def_path: None,
@@ -910,6 +915,14 @@ enum CanonicalPubInSpelling {
     Current,
 }
 
+/// The three text slots a `forbidden_pub_in_crate` finding fills: the headline,
+/// the `| help:` line beneath the span, and the `= note:` line under both.
+struct ForbiddenPubInText {
+    message:    String,
+    suggestion: Option<String>,
+    note:       Option<String>,
+}
+
 enum ForbiddenPubInAdvice {
     NoSuggestion {
         message: String,
@@ -928,12 +941,37 @@ enum ForbiddenPubInAdvice {
         message:    String,
         suggestion: String,
     },
+    /// Any of the above, plus the note saying why it is being offered.
+    ///
+    /// A wrapper rather than a field on each variant: only the repairs that ask
+    /// for a re-export have something to explain, and the rest would carry a
+    /// permanently empty slot.
+    Explained {
+        advice: Box<Self>,
+        note:   String,
+    },
 }
 
 impl ForbiddenPubInAdvice {
-    fn into_message_and_suggestion(self) -> (String, Option<String>) {
+    /// Attaches the note saying why this repair is the one being offered, when
+    /// there is a gap to describe.
+    fn explained_by(self, note: Option<String>) -> Self {
+        match note {
+            Some(note) => Self::Explained {
+                advice: Box::new(self),
+                note,
+            },
+            None => self,
+        }
+    }
+
+    fn into_finding_text(self) -> ForbiddenPubInText {
         match self {
-            Self::NoSuggestion { message } => (message, None),
+            Self::NoSuggestion { message } => ForbiddenPubInText {
+                message,
+                suggestion: None,
+                note: None,
+            },
             Self::SuggestionWithoutCallerRefinement {
                 message,
                 suggestion,
@@ -947,7 +985,15 @@ impl ForbiddenPubInAdvice {
             | Self::StructuralSuggestionControlledBySignatureReach {
                 message,
                 suggestion,
-            } => (message, Some(suggestion)),
+            } => ForbiddenPubInText {
+                message,
+                suggestion: Some(suggestion),
+                note: None,
+            },
+            Self::Explained { advice, note } => ForbiddenPubInText {
+                note: Some(note),
+                ..advice.into_finding_text()
+            },
         }
     }
 
@@ -981,6 +1027,10 @@ impl ForbiddenPubInAdvice {
             } => Self::StructuralSuggestionControlledBySignatureReach {
                 message,
                 suggestion: format!("{preceding_repair} — {suggestion}"),
+            },
+            Self::Explained { advice, note } => Self::Explained {
+                advice: Box::new(advice.prepend_repair(preceding_repair)),
+                note,
             },
         }
     }
@@ -1297,7 +1347,11 @@ fn canonical_pub_in_spelling_advice(
                  `{boundary_path}`",
                 canonical_annotation.source()
             ),
-            suggestion: policy::no_facade_suggestion(repair, &boundary_path),
+            suggestion: policy::no_facade_suggestion(
+                repair,
+                &boundary_path,
+                &use_sites::def_path_string(ctx.tcx, item.def_id),
+            ),
         };
     }
     ForbiddenPubInAdvice::SuggestionWithoutCallerRefinement {
@@ -1468,6 +1522,7 @@ fn no_facade_pub_in_advice(
     let boundary_path = policy::canonical_pub_in_boundary(&item_module, annotation.source())
         .or_else(|| visibility_reach_boundary_path(annotation_reach, ctx))
         .unwrap_or_else(|| String::from("crate"));
+    let item_def_path = use_sites::def_path_string(ctx.tcx, item.def_id);
 
     if item.category == ItemCategory::Use {
         // Resolved paths name the imported target, not the local `use` item, so
@@ -1475,16 +1530,14 @@ fn no_facade_pub_in_advice(
         // whether the alias still has users. That rules out every caller-derived
         // repair. The facade survives: `boundary_path` is read off the
         // annotation, so naming it asks nothing of the callers.
+        let display_path = display_def_path(ctx, item);
         return ForbiddenPubInAdvice::SuggestionWithoutCallerRefinement {
-            message:    format!(
-                "use of `{}` on a `use` item is forbidden by policy",
-                annotation.display_source()
-            ),
-            suggestion: policy::add_facade_suggestion(&boundary_path),
-        };
+            message:    policy::forbidden_pub_in_headline(annotation.source()),
+            suggestion: policy::add_facade_suggestion(&boundary_path, &display_path),
+        }
+        .explained_by(policy::missing_facade_note(&boundary_path, &display_path));
     }
 
-    let item_def_path = use_sites::def_path_string(ctx.tcx, item.def_id);
     let parent_scope = if finding_context.logical_module_depth == 0 {
         ""
     } else {
@@ -1507,13 +1560,25 @@ fn no_facade_pub_in_advice(
         repair,
         policy::forbidden_pub_in_headline(annotation.source()),
     );
-    let suggestion = policy::no_facade_suggestion(repair, &boundary_path);
+    let suggestion = policy::no_facade_suggestion(repair, &boundary_path, &item_def_path);
+    // Only the repairs that ask for a re-export have a reach gap to describe.
+    // `RemoveAnnotation` and `UseParentVisibility` name a narrower visibility
+    // instead, and no facade would help them.
+    let note = match repair {
+        NoFacadeVisibilityRepair::StructuralMigrationForCallerLocations
+        | NoFacadeVisibilityRepair::StructuralMigrationForSignatureReach { .. } => {
+            policy::missing_facade_note(&boundary_path, &item_def_path)
+        },
+        NoFacadeVisibilityRepair::RemoveAnnotation
+        | NoFacadeVisibilityRepair::UseParentVisibility => None,
+    };
     match repair {
         NoFacadeVisibilityRepair::StructuralMigrationForSignatureReach { .. } => {
             ForbiddenPubInAdvice::StructuralSuggestionControlledBySignatureReach {
                 message,
                 suggestion,
             }
+            .explained_by(note)
         },
         NoFacadeVisibilityRepair::RemoveAnnotation
         | NoFacadeVisibilityRepair::UseParentVisibility
@@ -1524,8 +1589,30 @@ fn no_facade_pub_in_advice(
                 item_def_path,
                 narrower_scope_def_path: item_module,
             }
+            .explained_by(note)
         },
     }
+}
+
+/// The def path to print for `item`, as the reader would write it.
+///
+/// `def_path_str` renders a `use` binding as `{use#0}`: the import introduces a
+/// name but no def-path segment carrying it. Every other item already spells
+/// its own name, so only the import needs HIR's ident substituted back in.
+/// Findings keep the unmodified def path, which is the key callers are indexed
+/// under.
+fn display_def_path(ctx: &VisibilityContext<'_, '_>, item: &ItemInfo<'_>) -> String {
+    let def_path = use_sites::def_path_string(ctx.tcx, item.def_id);
+    let (module, last) = def_path
+        .rsplit_once("::")
+        .unwrap_or(("", def_path.as_str()));
+    let Some(name) = item.name.filter(|_| last.starts_with('{')) else {
+        return def_path;
+    };
+    if module.is_empty() {
+        return String::from(name);
+    }
+    format!("{module}::{name}")
 }
 
 fn current_pass_callers(sink: &FindingsSink, item_def_path: &str) -> BTreeSet<String> {
@@ -2238,7 +2325,7 @@ fn suspicious_pub_advice(
                 Some(Ordering::Equal | Ordering::Greater)
             )
         {
-            return structural_facade_cleanup_advice(ctx, kind_label, required_reach);
+            return structural_facade_cleanup_advice(ctx, kind_label, required_reach, input.def_id);
         }
         return SuspiciousPubAdvice::Narrowing {
             suggestion:              policy::consider_using("pub(super)"),
@@ -2288,7 +2375,7 @@ fn suspicious_pub_advice(
             replacement:             NarrowingReplacement::Unavailable,
         };
     }
-    structural_signature_advice(ctx, kind_label, required)
+    structural_signature_advice(ctx, kind_label, required, input.def_id)
 }
 
 fn structural_unresolvable_facade_cleanup_advice(
@@ -2312,6 +2399,7 @@ fn structural_facade_cleanup_advice(
     ctx: &VisibilityContext<'_, '_>,
     kind_label: &str,
     required: VisibilityReach,
+    def_id: LocalDefId,
 ) -> SuspiciousPubAdvice {
     let boundary_path = visibility_reach_boundary_path(required, ctx)
         .unwrap_or_else(|| String::from("crate-external"));
@@ -2323,6 +2411,7 @@ fn structural_facade_cleanup_advice(
         suggestion: policy::no_facade_suggestion(
             NoFacadeVisibilityRepair::StructuralMigrationForSignatureReach { required },
             &boundary_path,
+            &use_sites::def_path_string(ctx.tcx, def_id),
         ),
     }
 }
@@ -2331,6 +2420,7 @@ fn structural_signature_advice(
     ctx: &VisibilityContext<'_, '_>,
     kind_label: &str,
     required: VisibilityReach,
+    def_id: LocalDefId,
 ) -> SuspiciousPubAdvice {
     let boundary_path = visibility_reach_boundary_path(required, ctx)
         .unwrap_or_else(|| String::from("crate-external"));
@@ -2342,6 +2432,7 @@ fn structural_signature_advice(
         suggestion: policy::no_facade_suggestion(
             NoFacadeVisibilityRepair::StructuralMigrationForSignatureReach { required },
             &boundary_path,
+            &use_sites::def_path_string(ctx.tcx, def_id),
         ),
     }
 }
