@@ -1127,8 +1127,6 @@ pub(crate) fn set_active_config(cargo_port_config: &CargoPortConfig) {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
-    use confique::Config as _;
-
     use super::*;
     use crate::test_support;
 

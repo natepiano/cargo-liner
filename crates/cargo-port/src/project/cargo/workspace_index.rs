@@ -296,7 +296,7 @@ impl CanonicalWorkspaceCandidates {
         }
     }
 
-    fn ownership_evidence(&self) -> ExactWorkspaceOwnershipEvidence<'_> {
+    const fn ownership_evidence(&self) -> ExactWorkspaceOwnershipEvidence<'_> {
         match self.0.as_slice() {
             [] => ExactWorkspaceOwnershipEvidence::Unavailable,
             [workspace_index] => ExactWorkspaceOwnershipEvidence::Unique(*workspace_index),

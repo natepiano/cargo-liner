@@ -387,8 +387,7 @@ fn get_git_status(project_dir: &Path, repo_root: &Path) -> GitStatus {
                 &relative_path,
             ])
             .status()
-            .ok()
-            .is_some_and(|status| status.success());
+            .is_ok_and(|status| status.success());
         if ignored {
             let state = GitStatus::Ignored;
             tracing::trace!(

@@ -422,7 +422,7 @@ fn starts_with(bytes: &[u8], index: usize, pattern: &[u8]) -> bool {
         .is_some_and(|candidate| candidate == pattern)
 }
 
-fn skip_line_comment(bytes: &[u8], mut index: usize) -> usize {
+const fn skip_line_comment(bytes: &[u8], mut index: usize) -> usize {
     while index < bytes.len() && bytes[index] != b'\n' {
         index += 1;
     }
@@ -478,7 +478,7 @@ fn skip_raw_string(bytes: &[u8], index: usize, hash_count: usize) -> usize {
     cursor
 }
 
-fn skip_quoted_string(bytes: &[u8], mut index: usize) -> usize {
+const fn skip_quoted_string(bytes: &[u8], mut index: usize) -> usize {
     index += 1;
     while index < bytes.len() {
         match bytes[index] {
@@ -490,7 +490,7 @@ fn skip_quoted_string(bytes: &[u8], mut index: usize) -> usize {
     index
 }
 
-fn char_literal_end(bytes: &[u8], index: usize) -> Option<usize> {
+const fn char_literal_end(bytes: &[u8], index: usize) -> Option<usize> {
     let mut cursor = index + 1;
     while cursor < bytes.len() && cursor <= index + 6 && bytes[cursor] != b'\n' {
         match bytes[cursor] {
