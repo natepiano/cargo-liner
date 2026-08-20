@@ -582,6 +582,23 @@ impl VisibilityConstraintGroup {
                     ExactBoundarySpelling::Public => String::from("`pub`"),
                 }
             ),
+            // The structural headline says nothing keeps this item reachable.
+            // That held for the single-crate view that wrote it; resolving a
+            // boundary here disproves it. Left alone it printed "`pub(super)`
+            // is too narrow" directly above "help: consider using:
+            // `pub(super)`" on 13 findings of one workspace. Restoring the
+            // policy headline it replaced puts the finding back in step with
+            // its own suggestion.
+            DiagnosticCode::ForbiddenPubInCrate
+                if visibility::is_structural_headline(&finding.message) =>
+            {
+                self.constraints.constraints.first().map_or_else(
+                    || finding.message.clone(),
+                    |constraint| {
+                        visibility::forbidden_pub_in_headline(&constraint.visibility_annotation)
+                    },
+                )
+            },
             _ => finding.message.clone(),
         };
         // Only claim fixable when `fixes::restricted_annotation` will actually
@@ -976,6 +993,7 @@ fn common_def_path_ancestor(left: &str, right: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::CallerMap;
+    use super::NoFacadeVisibilityRepair;
     use super::StoredCallerReconciliation;
     use super::StoredConstraintOutcome;
     use super::StoredExactBoundaryAcceptance;
@@ -988,6 +1006,7 @@ mod tests {
     use super::StoredVisibilitySpelling;
     use super::VisibilityConstraintGroup;
     use super::VisibilityConstraintSet;
+    use super::visibility;
     use crate::compiler::constants::FINDINGS_SCHEMA_VERSION;
     use crate::compiler::persistence::StoredFinding;
     use crate::compiler::persistence::StoredReport;
@@ -1203,6 +1222,61 @@ mod tests {
         assert!(
             root_group.render(&root_callers, "/package").is_none(),
             "`pub(crate)` is already exact for crate-wide callers"
+        );
+    }
+
+    /// The scan writes the structural headline from the one crate it compiled,
+    /// where nothing reached the callers. When the cross-crate pass then
+    /// resolves a boundary, that headline is stale: it denies the very
+    /// visibility the finding's own `help:` line goes on to suggest.
+    #[test]
+    fn a_resolved_boundary_withdraws_the_headline_that_denied_one_exists() {
+        let constraint = constraint(StoredFacadeConstraint::Impossible, None);
+        let structural_headline = visibility::no_facade_headline(
+            NoFacadeVisibilityRepair::StructuralMigrationForCallerLocations,
+            String::from("replaced by the structural headline"),
+        );
+        let mut group = VisibilityConstraintGroup::default();
+        group.include(0, constraint, Some(finding(&structural_headline)));
+
+        let callers = caller_map("crate::a::b::item", "crate::other");
+        let rendered = group.render(&callers, "/package");
+        assert!(
+            rendered.is_some(),
+            "a cross-scope caller retains the finding"
+        );
+        let Some(rendered) = rendered else {
+            return;
+        };
+
+        assert_eq!(
+            rendered.suggestion.as_deref(),
+            Some("consider using: `pub(crate)`"),
+        );
+        assert_eq!(
+            rendered.message,
+            "use of `pub(in crate::a)` outside an exact facade boundary is forbidden by policy",
+        );
+    }
+
+    /// Only the structural headline is withdrawn. The other
+    /// `forbidden_pub_in_crate` headlines describe why the annotation is
+    /// forbidden, which resolving a boundary does not contradict.
+    #[test]
+    fn a_resolved_boundary_keeps_a_headline_that_never_denied_one_exists() {
+        let constraint = constraint(StoredFacadeConstraint::Impossible, None);
+        let mut group = VisibilityConstraintGroup::default();
+        group.include(
+            0,
+            constraint,
+            Some(finding("parent facade caps reach at `pub(crate)`")),
+        );
+
+        let callers = caller_map("crate::a::b::item", "crate::other");
+        let rendered = group.render(&callers, "/package");
+        assert_eq!(
+            rendered.map(|finding| finding.message),
+            Some(String::from("parent facade caps reach at `pub(crate)`")),
         );
     }
 

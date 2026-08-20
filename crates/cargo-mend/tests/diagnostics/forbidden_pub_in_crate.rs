@@ -310,6 +310,111 @@ edition = "2024"
     }
 }
 
+/// A `use` item earns the escape hatch on the same terms a declaration does.
+///
+/// The annotation already sits at the parent facade boundary, so the spelling
+/// is the entire complaint and permitting the spelling answers it. Both the
+/// acceptance gate and the help line used to be gated on
+/// `ItemCategory::Declaration`, which left a re-export line with no suggestion
+/// and no setting that could clear it.
+#[test]
+fn exact_crate_rooted_boundary_on_a_use_item_is_accepted_when_enabled() {
+    for (pub_in_path, expected_codes) in [
+        ("forbidden", vec![DiagnosticCode::ForbiddenPubInCrate]),
+        ("permitted", Vec::new()),
+        ("required", Vec::new()),
+    ] {
+        let temp = tempdir().expect("create temp fixture dir");
+        write_sources(
+            &temp,
+            &[
+                (
+                    "Cargo.toml",
+                    r#"[package]
+name = "exact_boundary_use_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+                ),
+                (
+                    "mend.toml",
+                    &format!("[visibility]\npub_in_path = \"{pub_in_path}\"\n"),
+                ),
+                ("src/lib.rs", "mod a;\n"),
+                ("src/a.rs", "mod b;\nfn use_exact() { b::exact(); }\n"),
+                ("src/a/b.rs", "mod c;\npub(super) use c::exact;\n"),
+                ("src/a/b/c.rs", "mod d;\npub(in crate::a) use d::exact;\n"),
+                ("src/a/b/c/d.rs", "pub fn exact() {}\n"),
+            ],
+        );
+
+        let report = run_mend_json(&temp.path().join("Cargo.toml"));
+        assert_codes(&report, "src/a/b/c.rs", &expected_codes);
+        if pub_in_path == "forbidden" {
+            // No `consider using: `pub`` here: a `pub use` cannot be wider than
+            // the item it re-exports, and mend has not proven this target wide
+            // enough to take one.
+            assert_headline_and_help(
+                &report,
+                "src/a/b/c.rs",
+                "use of `pub(in crate::a)` is disabled by project visibility policy",
+                "set `pub_in_path = \"permitted\"`",
+            );
+        }
+    }
+}
+
+/// A `use` item no facade covers still names the repair it can act on.
+///
+/// Resolved paths name the imported target, not the alias, so no caller set is
+/// available and every caller-derived repair is out of reach — the branch used
+/// to return no suggestion at all. The facade is not caller-derived: its path is
+/// read off the annotation. `cfg(test)` on the re-export and on its only
+/// consumer is what keeps the cross-crate pass from resolving a boundary, and a
+/// resolved boundary would overwrite the suggestion under test.
+#[test]
+fn no_facade_use_item_names_the_facade_that_would_allow_it() {
+    let temp = tempdir().expect("create temp fixture dir");
+    write_sources(
+        &temp,
+        &[
+            (
+                "Cargo.toml",
+                r#"[package]
+name = "no_facade_use_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+            ),
+            ("src/lib.rs", "mod a;\n"),
+            ("src/a.rs", "mod b;\nmod c;\n"),
+            (
+                "src/a/b.rs",
+                "mod d;\n#[cfg(test)]\npub(in crate::a) use d::Thing;\n",
+            ),
+            ("src/a/b/d.rs", "pub(in crate::a) struct Thing;\n"),
+            (
+                "src/a/c.rs",
+                "#[cfg(test)]\nmod tests {\n    use crate::a::b::Thing;\n\n    #[test]\n    \
+                 fn constructs() {\n        let _ = Thing;\n    }\n}\n",
+            ),
+        ],
+    );
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert_codes(
+        &report,
+        "src/a/b.rs",
+        &[DiagnosticCode::ForbiddenPubInCrate],
+    );
+    assert_headline_and_help(
+        &report,
+        "src/a/b.rs",
+        "use of `pub(in crate::a)` on a `use` item is forbidden by policy",
+        "add an explicit facade at `crate::a` and rerun `cargo mend`",
+    );
+}
+
 #[test]
 fn required_setting_reviews_bare_pub_behind_restricted_facade() {
     for (pub_in_path, expected_codes) in [
@@ -902,10 +1007,14 @@ edition = "2024"
         "an already-restricted annotation must not advertise a fix mend cannot \
          apply: {report:#?}",
     );
+    // The scanned crate saw no repair and stamped the structural headline. The
+    // cross-crate pass then resolved `crate::root::panel`, so that headline no
+    // longer describes this finding — it would deny the visibility the help
+    // line goes on to name.
     assert_headline_and_help(
         &report,
         "src/root/panel/conversion/saved.rs",
-        "no policy-allowed visibility keeps this item reachable where it is used: private and `pub(super)` are too narrow, and no facade caps `pub`",
+        "use of `pub(in crate::root)` outside an exact facade boundary is forbidden by policy",
         "consider using: `pub(in crate::root::panel)`",
     );
 }
@@ -1103,6 +1212,13 @@ edition = "2024"
     );
 }
 
+/// A `use` item is never handed a replacement visibility.
+///
+/// `reads_alias` names the target through `b::Thing`, so the caller set mend can
+/// resolve describes `child::Thing` rather than the alias. It cannot say whether
+/// the alias still has users, and acting on it would tell this line to drop or
+/// narrow the visibility holding the re-export up. The facade is the one repair
+/// that survives, because its path is read off the annotation.
 #[test]
 fn caller_analysis_withholds_replacement_for_use_items() {
     let temp = tempdir().expect("create use-item caller fixture dir");
@@ -1140,9 +1256,12 @@ edition = "2024"
                 && finding.code == DiagnosticCode::ForbiddenPubInCrate
         })
         .unwrap_or_else(|| panic!("missing restricted use finding: {report:#?}"));
-    assert!(
-        finding.help.is_empty(),
-        "a `use` item must not be told to remove its visibility: {finding:#?}"
+    assert_eq!(
+        finding.help,
+        vec![String::from(
+            "add an explicit facade at `crate::a` and rerun `cargo mend`"
+        )],
+        "a `use` item must not be told to remove or narrow its visibility: {finding:#?}"
     );
 }
 

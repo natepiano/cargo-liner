@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- An exact-boundary `pub(in crate::...) use` re-export is now accepted under `pub_in_path =
+  "required"` (the default) and `"permitted"`, on the same terms as a declaration, and under
+  `"forbidden"` the finding names the setting that turns the spelling complaint off. Both the
+  acceptance gate and that help line required the item to be a declaration, so on one workspace a
+  run printed "is forbidden by policy" on every such re-export with no help line and no
+  configuration that could clear them. `consider using: pub` is still withheld from a `use` item,
+  where widening the re-export past the item it names would not compile.
+- A `pub(in crate::...) use` re-export that no facade covers now names the facade that would
+  accept it, rather than printing with no help line at all. Every repair offered there is derived
+  from the caller set, and resolved paths name the imported target rather than the alias, so that
+  set is never available for a `use` item and the branch returned no suggestion. The facade path is
+  read off the annotation and asks nothing of the callers.
 - `--fix` no longer drops a `#[cfg]` written on a statement. A gate on a statement attaches to the
   statement's expression, which neither import pass looked at, so both emitted ungated `use` lines
   for items that are configured out (E0432).
@@ -40,6 +52,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crate::orbit_cam::controller::x` and `crate::free_cam::controller::y` to module imports would
   give one file two `use controller;` lines (E0252) with the call sites resolving to whichever won
   (E0425). Mend already declined to apply the pair, but still reported both as fixable on every run.
+- A `forbidden_pub_in_crate` finding no longer denies that any visibility works while suggesting one.
+  Mend writes "no policy-allowed visibility keeps this item reachable" from the single crate it
+  compiled; the cross-crate pass then resolves a boundary but left that line in place, so on one
+  workspace 13 findings printed "`pub(super)` is too narrow" directly above "help: consider using:
+  `pub(super)`". Resolving a boundary now restores the policy headline the finding started with.
 - A finding mend can fix on its own now reports as a warning whatever severity it was recorded with.
   Severity is written when a finding is created, and only two places write `error` - the ones whose
   findings need a person to decide something. The cross-crate pass could later mark one of those

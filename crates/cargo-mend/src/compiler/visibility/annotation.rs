@@ -83,12 +83,7 @@ impl<'source> VisibilityAnnotation<'source> {
     }
 
     pub(super) fn display_source(&self) -> String {
-        self.source()
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .replace("( ", "(")
-            .replace(" )", ")")
+        super::policy::normalized_annotation_source(self.source())
     }
 
     pub(super) const fn syntax(&self) -> VisibilitySyntax {

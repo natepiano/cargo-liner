@@ -1035,6 +1035,15 @@ fn forbidden_pub_in_advice(
     }
 }
 
+/// Whether `pub_in_path` accepts this annotation as written.
+///
+/// Both `permitted` and `required` — the default — accept an exact,
+/// crate-rooted boundary; only `forbidden` refuses one. A `use` item earns that
+/// acceptance on the same terms a declaration does: the spelling is the whole
+/// complaint, and a setting that permits the spelling answers it. Only the
+/// caller-derived arm below stays closed to `use` items, which
+/// [`facade_less_boundary_matches_callers`] enforces for itself. Modules are
+/// left out: `pub mod` answers to its own policy.
 fn exact_pub_in_boundary_is_allowed(
     ctx: &VisibilityContext<'_, '_>,
     item: &ItemInfo<'_>,
@@ -1046,7 +1055,7 @@ fn exact_pub_in_boundary_is_allowed(
     matches!(
         ctx.settings.visibility_config.pub_in_path,
         PubInPath::Permitted | PubInPath::Required
-    ) && item.category == ItemCategory::Declaration
+    ) && matches!(item.category, ItemCategory::Declaration | ItemCategory::Use)
         && matches!(
             annotation.syntax(),
             VisibilitySyntax::InPath(PathSpelling::CrateRooted)
@@ -1067,6 +1076,13 @@ fn facade_less_boundary_matches_callers(
     annotation: &VisibilityAnnotation<'_>,
     sink: &FindingsSink,
 ) -> bool {
+    if item.category == ItemCategory::Use {
+        // Resolved paths name the imported target, not the local `use` item, so
+        // the caller set gathered below describes the target. It cannot show
+        // where the alias is used, and so cannot show that this boundary covers
+        // them.
+        return false;
+    }
     if !facade_less_annotation_repair_is_supported(ctx, item.def_id) {
         return false;
     }
@@ -1313,21 +1329,32 @@ fn resolved_pub_in_advice(
         annotation.syntax(),
         VisibilitySyntax::InPath(PathSpelling::CrateRooted)
     ) && comparison == Some(Ordering::Equal)
-        && item.category == ItemCategory::Declaration
+        && matches!(item.category, ItemCategory::Declaration | ItemCategory::Use)
         && matches!(
             ctx.settings.visibility_config.pub_in_path,
             PubInPath::Forbidden
         )
     {
+        // The annotation already sits at the exact boundary, so the spelling is
+        // the entire complaint and the setting that permits it is the whole
+        // answer. A declaration can also widen to `pub` and let the facade cap
+        // the reach; a `use` item is not offered that, because a `pub use` of a
+        // narrower item is E0364 and proving the target wide enough is not work
+        // this function does.
+        let suggestion = match item.category {
+            ItemCategory::Declaration => format!(
+                "{}; or {}",
+                policy::consider_using("pub"),
+                policy::permit_pub_in_path()
+            ),
+            ItemCategory::Module | ItemCategory::Use => policy::permit_pub_in_path(),
+        };
         return ForbiddenPubInAdvice::SuggestionWithoutCallerRefinement {
-            message:    format!(
+            message: format!(
                 "use of `{}` is disabled by project visibility policy",
                 annotation.display_source()
             ),
-            suggestion: format!(
-                "{}; or set `pub_in_path = \"permitted\"`",
-                policy::consider_using("pub")
-            ),
+            suggestion,
         };
     }
     if comparison == Some(Ordering::Equal) {
@@ -1437,27 +1464,32 @@ fn no_facade_pub_in_advice(
         _ => {},
     }
 
+    let item_module = use_sites::parent_module_def_path(ctx.tcx, item.def_id);
+    let boundary_path = policy::canonical_pub_in_boundary(&item_module, annotation.source())
+        .or_else(|| visibility_reach_boundary_path(annotation_reach, ctx))
+        .unwrap_or_else(|| String::from("crate"));
+
     if item.category == ItemCategory::Use {
-        // Resolved paths name the imported target, not the local `use` item,
-        // so an empty caller set cannot prove that its alias has no users.
-        return ForbiddenPubInAdvice::NoSuggestion {
-            message: format!(
+        // Resolved paths name the imported target, not the local `use` item, so
+        // the caller set gathered below describes the target and cannot say
+        // whether the alias still has users. That rules out every caller-derived
+        // repair. The facade survives: `boundary_path` is read off the
+        // annotation, so naming it asks nothing of the callers.
+        return ForbiddenPubInAdvice::SuggestionWithoutCallerRefinement {
+            message:    format!(
                 "use of `{}` on a `use` item is forbidden by policy",
                 annotation.display_source()
             ),
+            suggestion: policy::add_facade_suggestion(&boundary_path),
         };
     }
 
     let item_def_path = use_sites::def_path_string(ctx.tcx, item.def_id);
-    let item_module = use_sites::parent_module_def_path(ctx.tcx, item.def_id);
     let parent_scope = if finding_context.logical_module_depth == 0 {
         ""
     } else {
         policy::parent_scope_def_path(&item_module)
     };
-    let boundary_path = policy::canonical_pub_in_boundary(&item_module, annotation.source())
-        .or_else(|| visibility_reach_boundary_path(annotation_reach, ctx))
-        .unwrap_or_else(|| String::from("crate"));
     let callers = current_pass_callers(sink, &item_def_path);
     let caller_repair = policy::classify_no_facade_callers(&item_module, parent_scope, &callers);
     let repair = merge_no_facade_signature_reach(ctx, item, caller_repair, signature_exposure);
@@ -1473,10 +1505,7 @@ fn no_facade_pub_in_advice(
     };
     let message = policy::no_facade_headline(
         repair,
-        format!(
-            "use of `{}` outside an exact facade boundary is forbidden by policy",
-            annotation.display_source()
-        ),
+        policy::forbidden_pub_in_headline(annotation.source()),
     );
     let suggestion = policy::no_facade_suggestion(repair, &boundary_path);
     match repair {

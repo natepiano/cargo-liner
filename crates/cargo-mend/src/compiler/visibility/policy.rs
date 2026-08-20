@@ -456,10 +456,12 @@ impl NoFacadeVisibilityRepair {
             Self::RemoveAnnotation => String::from(Self::REMOVE_ANNOTATION_SUGGESTION),
             Self::UseParentVisibility => consider_using("pub(super)"),
             Self::StructuralMigrationForCallerLocations
-            | Self::StructuralMigrationForSignatureReach { .. } => format!(
-                "move the item into `{boundary_path}`, or add an explicit facade at \
-                 `{boundary_path}` and rerun `cargo mend`"
-            ),
+            | Self::StructuralMigrationForSignatureReach { .. } => {
+                format!(
+                    "move the item into `{boundary_path}`, or {}",
+                    add_facade_suggestion(boundary_path)
+                )
+            },
         }
     }
 
@@ -504,6 +506,23 @@ pub(super) fn consider_using(visibility: &str) -> String {
     format!("consider using: `{visibility}`")
 }
 
+/// The one phrasing for the setting that turns off the `pub(in path)` spelling
+/// complaint.
+///
+/// Every finding raised solely on that spelling names the escape hatch from
+/// here, whether or not it can also offer a replacement visibility.
+pub(super) fn permit_pub_in_path() -> String { String::from("set `pub_in_path = \"permitted\"`") }
+
+/// The facade half of [`NoFacadeVisibilityRepair`]'s structural suggestion.
+///
+/// A `use` item is offered this alone. The other half — moving the item — names
+/// an operation a re-export cannot perform, and every caller-derived repair
+/// needs a caller set that resolved paths do not give for an alias. The facade
+/// asks nothing of the caller set: `boundary_path` comes from the annotation.
+pub(super) fn add_facade_suggestion(boundary_path: &str) -> String {
+    format!("add an explicit facade at `{boundary_path}` and rerun `cargo mend`")
+}
+
 pub(in crate::compiler) fn no_facade_suggestion(
     repair: NoFacadeVisibilityRepair,
     boundary_path: &str,
@@ -516,6 +535,43 @@ pub(in crate::compiler) fn no_facade_headline(
     generic_headline: String,
 ) -> String {
     repair.headline(generic_headline)
+}
+
+/// The `forbidden_pub_in_crate` headline for an annotation policy allows only
+/// at an exact facade boundary.
+///
+/// [`NoFacadeVisibilityRepair::headline`] swaps this for
+/// [`NoFacadeVisibilityRepair::STRUCTURAL_HEADLINE`] when the scanned crate
+/// shows no repair in reach. Both the scan that first writes it and
+/// `persistence::visibility_constraint::apply_rewrite`, which puts it back once
+/// the cross-crate pass has resolved a boundary, phrase it from here.
+pub(in crate::compiler) fn forbidden_pub_in_headline(annotation_source: &str) -> String {
+    format!(
+        "use of `{}` outside an exact facade boundary is forbidden by policy",
+        normalized_annotation_source(annotation_source)
+    )
+}
+
+/// Whether `message` is the headline [`NoFacadeVisibilityRepair::headline`]
+/// writes when it finds no repair.
+///
+/// A finding carrying it has been told no visibility works. Callers that later
+/// prove one — the cross-crate pass resolving a boundary — use this to find the
+/// claim they have to withdraw.
+pub(in crate::compiler) fn is_structural_headline(message: &str) -> bool {
+    message == NoFacadeVisibilityRepair::STRUCTURAL_HEADLINE
+}
+
+/// A visibility annotation with its interior whitespace collapsed, so a
+/// `pub(in\n    crate::a)` split across lines reads as one phrase in a
+/// diagnostic.
+pub(super) fn normalized_annotation_source(annotation_source: &str) -> String {
+    annotation_source
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace("( ", "(")
+        .replace(" )", ")")
 }
 
 pub(in crate::compiler) fn classify_no_facade_callers(
