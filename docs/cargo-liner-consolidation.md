@@ -7,9 +7,11 @@ with `tui_pane` promoted from a child of `cargo-port` to a peer crate.
 Both existing GitHub repos are archived in place with a `MOVED →` description.
 Git history from both is grafted into the new repo, so blame survives.
 
-**Status (2026-08-20):** Phases 0–2 done. `cargo-mend` is untouched and still
-develops in its own repo. The one Phase 1 acceptance gate not yet exercised is
-the `/release cargo-port … dry-run` rehearsal (step 12).
+**Status (2026-08-20):** Phases 0–2 done, including the step 12 release
+rehearsal. `cargo-mend` is untouched and still develops in its own repo. Two
+items are open before Phase 5: CI clippy is red from toolchain drift (row 15),
+and the shared release skill cannot complete a dry-run for any project using
+`[[publish_path_pins]]` (row 16).
 
 ## Target layout
 
@@ -110,6 +112,8 @@ all of them fail quietly if skipped.
 | 12 | README and doc path references | `LICENSE-MIT`/`LICENSE-APACHE` moved to the root, so relative links from `crates/cargo-port/README.md` broke; the CI badge and `git clone` instructions still named the old repo; `docs/tooltip.md` (an unimplemented plan) carried 20 `tui_pane/…` paths. | License links became absolute `github.com/natepiano/cargo-liner/blob/main/…` URLs, which resolve on GitHub and on crates.io alike. `tooltip.md` paths rewritten. Historical as-built and completed-plan docs left as written — they describe past work. |
 | 13 | Actions is slow to register a workflow on a brand-new repo | For ~25s after the initial push, `gh run list` showed no run at all while `gh workflow list` already reported the workflow `active`. A manual `gh workflow run` filled the gap, and when the push-triggered run finally started, `cancel-in-progress` cancelled the manual one. | Wait rather than dispatch. Also note `gh run watch --exit-status` exits 0 on a **cancelled** run — it only fails on `failure`, so a cancelled run reads as success. Check `conclusion` explicitly. |
 | 14 | `mktemp -t` fails under the command sandbox | `check-no-test-abort.sh` dies with `mkstemp failed … Operation not permitted`. | Run it with the sandbox disabled. It is a sandbox limit, not a defect in the script — do not "fix" the script. |
+| 15 | CI installs `stable`, the toolchain moves, clippy tightens | `dtolnay/rust-toolchain@master` with `toolchain: stable` resolves to whatever stable is current, while local was rustc 1.97.0 (2026-07-07). Local clippy passed; CI's newer clippy failed on 5 findings in untouched cargo-port source — an unused `use confique::Config as _;` in a test module, four `missing_const_for_fn`, and one `.ok().is_some_and(..)` on a `Result`. | Not a migration regression — the old repo ran the identical `cargo clippy --workspace --all-targets --all-features -- -D warnings`. Diagnose by comparing `rustc --version` against the CI log before assuming the merge broke something. `rustup update stable` reproduces it locally. Per the const-eligibility rule these are simply fixed, not escalated. |
+| 16 | `/release` dry-run cannot complete for a project with `[[publish_path_pins]]` | STEP 6 pins path-only deps *before* the publish dry-run, but under `--dry-run` `pin_path_deps.sh` only reports. `cargo publish --dry-run` then runs against the unpinned manifest and always fails with `dependency 'tui_pane' does not specify a version`. The step whose purpose is to make publish possible is the step dry-run skips. | A gap in `~/.claude/commands/release.md` STEP 6, not in cargo-liner — it hits `bevy_hana`'s `bevy_kana` pin identically. Cleanest fix: have `pin_path_deps.sh` apply the rewrite even in dry-run, skip only the commit, and restore `Cargo.toml`/`Cargo.lock` after the publish dry-run, so one script owns both the edit and its undo. |
 
 ## Phases
 
@@ -168,8 +172,18 @@ No repository is modified.
 11. Push `main` and the renamed tags to `natepiano/cargo-liner`; watch CI green.
 12. `/release cargo-port 0.7.0 dry-run` — rehearses single-package mode, the
     `tui_pane` path pin, and `install_verify` dispatch without publishing.
-    **Not yet run.** Everything else in Phase 1 is verified; this is the one
-    gate still outstanding and should run before Phase 5.
+    **Run 2026-08-20.** Every step behaved correctly: `release-cargo-port-0.7.0`
+    for the branch, `cargo-port-v0.7.0` for the tag, `cargo-port` bumped alone
+    while `tui_pane` stayed at `0.7.0-dev`, `update_workspace_deps --auto`
+    correctly no-opped on the path-only entry, and all four `install_verify.sh`
+    dispatch branches returned the right code. The publish step is the one that
+    cannot pass in dry-run mode — see friction row 16; applying the pin by hand
+    makes it pass cleanly, which also confirms current cargo-port source still
+    compiles against the published `tui_pane` 0.6.0.
+
+    One content gap, not a mechanism gap: `crates/cargo-port/CHANGELOG.md` has an
+    empty `[Unreleased]`. A real 0.7.0 needs entries first — at minimum the move
+    to `natepiano/cargo-liner`.
 
 ### Phase 2 — archive the cargo-port repo — done 2026-08-20
 
