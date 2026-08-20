@@ -847,8 +847,15 @@ fn no_facade_callers_select_only_compiling_advice() {
     }
 }
 
+/// The cross-crate pass resolves an exact boundary here, but the declaration is
+/// already written `pub(in crate::root)` and `fixes::restricted_annotation`
+/// rewrites only a bare `pub`, `pub(crate)`, and `pub(in crate)`. Advertising a
+/// fix anyway is what made `--fix-all` loop: every run reported it fixable,
+/// wrote nothing, and reported it again. Applying it unconditionally is not the
+/// answer either — that was tried on a real workspace and rustc rejected the
+/// narrowed declaration with E0446, restricted type in public interface.
 #[test]
-fn caller_derived_boundary_is_directly_fixable() {
+fn caller_derived_boundary_is_reported_without_advertising_a_fix() {
     let temp = tempdir().expect("create caller-boundary fixture dir");
     write_sources(
         &temp,
@@ -891,8 +898,9 @@ edition = "2024"
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert_eq!(
-        report.summary.fixable_with_fix, 1,
-        "the resolved caller boundary must advertise one direct fix: {report:#?}",
+        report.summary.fixable_with_fix, 0,
+        "an already-restricted annotation must not advertise a fix mend cannot \
+         apply: {report:#?}",
     );
     assert_headline_and_help(
         &report,

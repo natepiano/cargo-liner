@@ -6,8 +6,10 @@ use std::path::PathBuf;
 use super::FixScans;
 use super::MendRunner;
 use crate::fixes::imports;
+use crate::fixes::imports::TaggedFix;
 use crate::fixes::imports::UseFix;
 use crate::fixes::imports::ValidatedFixSet;
+use crate::reporting::FixKind;
 use crate::reporting::MendFailure;
 
 impl MendRunner<'_> {
@@ -19,41 +21,48 @@ impl MendRunner<'_> {
             .map(|fix| (fix.path.as_path(), fix.start, fix.end))
             .collect();
 
+        // Each pass tags its fixes with the notice they report under here,
+        // where the pass is still known. The tag rides through the conflicting-
+        // group drop and through dedup, so what the run announces is what it
+        // wrote rather than what it scanned.
         let mut fixes = Vec::new();
 
         if let Some(scan) = fix_scans.imports {
-            for fix in scan.fixes.iter() {
-                let overlaps = prefer_ranges.iter().any(|(path, start, end)| {
-                    fix.path.as_path() == *path && fix.start < *end && *start < fix.end
-                });
-                if !overlaps {
-                    fixes.push(fix.clone());
-                }
-            }
+            fixes.extend(tag(
+                Some(FixKind::Import),
+                scan.fixes.iter().filter(|fix| {
+                    !prefer_ranges.iter().any(|(path, start, end)| {
+                        fix.path.as_path() == *path && fix.start < *end && *start < fix.end
+                    })
+                }),
+            ));
         }
         if let Some(scan) = fix_scans.module_imports {
-            fixes.extend(scan.fixes.iter().cloned());
+            fixes.extend(tag(Some(FixKind::Import), scan.fixes.iter()));
         }
         if let Some(scan) = fix_scans.inline_types {
-            fixes.extend(scan.fixes.iter().cloned());
+            fixes.extend(tag(Some(FixKind::Import), scan.fixes.iter()));
         }
         if let Some(scan) = fix_scans.unused_pub {
-            fixes.extend(scan.fixes.iter().cloned());
+            fixes.extend(tag(Some(FixKind::PubRemoval), scan.fixes.iter()));
         }
         if let Some(scan) = fix_scans.narrowed_pub {
-            fixes.extend(scan.fixes.iter().cloned());
+            fixes.extend(tag(Some(FixKind::Narrowing), scan.fixes.iter()));
         }
         if let Some(scan) = fix_scans.restricted_annotation {
-            fixes.extend(scan.fixes.iter().cloned());
+            fixes.extend(tag(Some(FixKind::Annotation), scan.fixes.iter()));
         }
         if let Some(scan) = fix_scans.field_visibility {
-            fixes.extend(scan.fixes.iter().cloned());
+            fixes.extend(tag(Some(FixKind::FieldVisibility), scan.fixes.iter()));
         }
         if let Some(scan) = fix_scans.imports_at_top {
-            fixes.extend(scan.fixes.iter().cloned());
+            fixes.extend(tag(Some(FixKind::Import), scan.fixes.iter()));
         }
+        // `pub_use` tallies its own applied and skipped edits at scan time and
+        // renders its own notice, so its fixes carry no kind and are counted
+        // nowhere else.
         if let Some(scan) = fix_scans.pub_use {
-            fixes.extend(scan.fixes.iter().cloned());
+            fixes.extend(tag(None, scan.fixes.iter()));
         }
 
         let fixes = drop_conflicting_import_groups(fixes);
@@ -62,14 +71,25 @@ impl MendRunner<'_> {
     }
 }
 
+/// Pairs each fix with the notice kind of the pass that proposed it.
+fn tag<'a>(
+    fix_kind: Option<FixKind>,
+    fixes: impl Iterator<Item = &'a UseFix>,
+) -> impl Iterator<Item = TaggedFix> {
+    fixes.map(move |fix| TaggedFix {
+        fix_kind,
+        fix: fix.clone(),
+    })
+}
+
 /// Drops grouped import fixes that reserve the same bare name for different
 /// full paths within one file. Untagged fixes pass through unchanged.
-fn drop_conflicting_import_groups(fixes: Vec<UseFix>) -> Vec<UseFix> {
+fn drop_conflicting_import_groups(fixes: Vec<TaggedFix>) -> Vec<TaggedFix> {
     let mut bare_name_to_paths: BTreeMap<(PathBuf, String), BTreeSet<String>> = BTreeMap::new();
-    for fix in &fixes {
-        if let Some(group) = &fix.import_group {
+    for tagged in &fixes {
+        if let Some(group) = &tagged.fix.import_group {
             bare_name_to_paths
-                .entry((fix.path.clone(), group.bare_name.clone()))
+                .entry((tagged.fix.path.clone(), group.bare_name.clone()))
                 .or_default()
                 .insert(group.full_path.clone());
         }
@@ -87,9 +107,9 @@ fn drop_conflicting_import_groups(fixes: Vec<UseFix>) -> Vec<UseFix> {
 
     fixes
         .into_iter()
-        .filter(|fix| {
-            fix.import_group.as_ref().is_none_or(|group| {
-                !conflicting.contains(&(fix.path.clone(), group.bare_name.clone()))
+        .filter(|tagged| {
+            tagged.fix.import_group.as_ref().is_none_or(|group| {
+                !conflicting.contains(&(tagged.fix.path.clone(), group.bare_name.clone()))
             })
         })
         .collect()
@@ -101,6 +121,7 @@ mod tests {
 
     use super::FixScans;
     use super::MendRunner;
+    use super::TaggedFix;
     use super::ValidatedFixSet;
     use super::drop_conflicting_import_groups;
     use crate::fixes::imports::ImportGroup;
@@ -123,6 +144,22 @@ mod tests {
 
     fn untagged(path: &str, start: usize, replacement: &str) -> UseFix {
         range_fix(path, start, start, replacement, None)
+    }
+
+    /// Exercises the drop over plain `UseFix` values; the notice kind rides
+    /// along untouched, so the tests only care about the fixes.
+    fn drop_conflicts(fixes: Vec<UseFix>) -> Vec<UseFix> {
+        let tagged = fixes
+            .into_iter()
+            .map(|fix| TaggedFix {
+                fix_kind: None,
+                fix,
+            })
+            .collect();
+        drop_conflicting_import_groups(tagged)
+            .into_iter()
+            .map(|tagged| tagged.fix)
+            .collect()
     }
 
     fn range_fix(
@@ -254,7 +291,7 @@ mod tests {
                 "crate::foo::Baz",
             ),
         ];
-        let result = drop_conflicting_import_groups(fixes);
+        let result = drop_conflicts(fixes);
         assert_eq!(result.len(), 3);
     }
 
@@ -278,7 +315,7 @@ mod tests {
             ),
             tagged("src/a.rs", 75, "Package", "Package", "crate::b::Package"),
         ];
-        let result = drop_conflicting_import_groups(fixes);
+        let result = drop_conflicts(fixes);
         assert!(
             result.is_empty(),
             "conflicting-group fixes should all be dropped, got {result:?}"
@@ -298,7 +335,7 @@ mod tests {
             tagged("src/a.rs", 50, "Package", "Package", "crate::a::Package"),
             tagged("src/a.rs", 80, "Package", "Package", "crate::a::Package"),
         ];
-        let result = drop_conflicting_import_groups(fixes);
+        let result = drop_conflicts(fixes);
         assert_eq!(result.len(), 3);
     }
 
@@ -320,7 +357,7 @@ mod tests {
                 "crate::b::Package",
             ),
         ];
-        let result = drop_conflicting_import_groups(fixes);
+        let result = drop_conflicts(fixes);
         assert_eq!(result.len(), 2);
     }
 
@@ -343,7 +380,7 @@ mod tests {
             ),
             untagged("src/a.rs", 100, "use super::other;"),
         ];
-        let result = drop_conflicting_import_groups(fixes);
+        let result = drop_conflicts(fixes);
         assert_eq!(result.len(), 1);
         assert!(result[0].import_group.is_none());
     }

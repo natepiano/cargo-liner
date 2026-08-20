@@ -38,6 +38,11 @@ pub(super) fn scan_from_report(report: &Report) -> Result<RestrictedAnnotationSc
         };
         let (expected_form, expected_annotation) = match &finding.item_visibility.written {
             WrittenVisibility::Bare => (VisibilityAnnotationForm::Bare, "pub"),
+            // Only these two restricted spellings. Rewriting an arbitrary
+            // `pub(in crate::a::b)` to a boundary resolved from callers does not
+            // compile on a real workspace — it was tried, and `--fix` rolled the
+            // whole batch back. `visibility_constraint::apply_rewrite` is what
+            // must not promote those findings; see `SUPPORTED_ANNOTATIONS` there.
             WrittenVisibility::Restricted(source)
                 if source == "pub(crate)" || source == "pub(in crate)" =>
             {
@@ -55,6 +60,13 @@ pub(super) fn scan_from_report(report: &Report) -> Result<RestrictedAnnotationSc
         // The source may have moved on since the report was written. Only edit
         // the exact annotation the compiler pass classified.
         if !matches_expected_annotation(&source, site, expected_form, expected_annotation) {
+            continue;
+        }
+        // An edit that writes back the bytes it replaces is not a fix. It would
+        // be counted as applied, leave the file untouched, and the finding would
+        // return unchanged on the next run — a `--fix-all` that never converges.
+        if !replacement.is_empty() && source.get(site.start..site.end) == Some(replacement.as_str())
+        {
             continue;
         }
         // One rewrite per declaration site. The same item is reported once per

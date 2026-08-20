@@ -10,6 +10,7 @@ use syn::File;
 use syn::Item;
 use syn::ItemMod;
 use syn::ItemUse;
+use syn::UseTree;
 use syn::parse_file;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
@@ -28,6 +29,7 @@ use super::references::ReferenceCollector;
 use super::support;
 use crate::compiler::SOURCE_DIR_SRC;
 use crate::config::DiagnosticCode;
+use crate::fixes::imports::ConditionalAttributes;
 use crate::fixes::imports::ImportGroup;
 use crate::fixes::imports::UseFix;
 use crate::fixes::imports::ValidatedFixSet;
@@ -158,10 +160,13 @@ fn scan_file(
 
     let mut inline_detector = InlineCallDetector {
         source_root,
+        text: &text,
+        offsets: &offsets,
         current_module_path: &current_module_path,
         declared_modules: &declared_modules,
         candidates: Vec::new(),
         inline_mod_depth: 0,
+        conditional_attributes: ConditionalAttributes::default(),
     };
     Visit::visit_file(&mut inline_detector, &syntax);
 
@@ -187,6 +192,14 @@ fn scan_file(
     );
 
     drop_attribute_referenced_candidates(&syntax, &mut module_to_functions);
+
+    drop_candidates_reimported_by_inline_modules(&syntax, &mut module_to_functions);
+
+    // Last, so the drops above get to un-collide a pair by removing one side.
+    drop_candidates_colliding_with_each_other(
+        &mut module_to_functions,
+        &mut inline_detector.candidates,
+    );
 
     if module_to_functions.is_empty() && inline_detector.candidates.is_empty() {
         return Ok((Vec::new(), Vec::new()));
@@ -307,6 +320,65 @@ impl Visit<'_> for ExistingModuleImportCollector<'_> {
     }
 }
 
+/// Drop candidates that would bind one module name to two different modules in
+/// the same scope. Two deep imports whose modules share a leaf name — say
+/// `crate::orbit_cam::controller` alongside `crate::free_cam::controller` — each
+/// want `use <leaf>;`, which collides (E0252) and leaves the call sites
+/// resolving to whichever import won (E0425).
+///
+/// The combining layer drops these fixes before anything is written, so
+/// reporting them advertised a fix that never arrived: every run named the same
+/// two imports as fixable, wrote nothing, and named them again. Leave them
+/// untouched, as [`drop_colliding_candidates`] does for the same collision
+/// against an import the file already has.
+fn drop_candidates_colliding_with_each_other(
+    module_to_functions: &mut BTreeMap<String, Vec<RawCandidate>>,
+    inline_candidates: &mut Vec<InlineCallCandidate>,
+) {
+    // Inline call candidates are only detected at file top level, so their
+    // scope is always the empty chain — the same key the detector gives a
+    // top-level `RawCandidate`.
+    let mut name_to_modules: BTreeMap<(Vec<String>, String), BTreeSet<Vec<String>>> =
+        BTreeMap::new();
+    for candidate in module_to_functions.values().flatten() {
+        name_to_modules
+            .entry((
+                candidate.inline_scope.clone(),
+                candidate.module_name.clone(),
+            ))
+            .or_default()
+            .insert(candidate.absolute_module.clone());
+    }
+    for candidate in inline_candidates.iter() {
+        name_to_modules
+            .entry((Vec::new(), candidate.module_name.clone()))
+            .or_default()
+            .insert(candidate.absolute_module.clone());
+    }
+
+    let colliding: BTreeSet<(Vec<String>, String)> = name_to_modules
+        .into_iter()
+        .filter(|(_, modules)| modules.len() > 1)
+        .map(|(key, _)| key)
+        .collect();
+
+    if colliding.is_empty() {
+        return;
+    }
+
+    module_to_functions.retain(|_, functions| {
+        functions.retain(|candidate| {
+            !colliding.contains(&(
+                candidate.inline_scope.clone(),
+                candidate.module_name.clone(),
+            ))
+        });
+        !functions.is_empty()
+    });
+    inline_candidates
+        .retain(|candidate| !colliding.contains(&(Vec::new(), candidate.module_name.clone())));
+}
+
 /// Drop candidates whose target module name is already bound in the same scope
 /// to a *different* module. Introducing `use <module>;` would collide with that
 /// existing import (E0252), and rewriting the call to `name::fn(...)` would
@@ -368,6 +440,107 @@ fn module_name_collides(
 /// Inline call candidates are unaffected: they add a module import and shorten a
 /// path that is already fully qualified, so nothing an attribute names stops
 /// resolving.
+/// Drop candidates an inline `mod` re-imports from the file's own top level.
+///
+/// `#[cfg(test)] mod tests { use super::reflect_component_for; }` sitting under
+/// a file-scope `use crate::capabilities::reflect_component_for;` names that
+/// file-scope binding. Rewriting the outer import to `use crate::capabilities;`
+/// leaves the inner `use` naming nothing (E0432), and the module has no
+/// `capabilities` binding to reach the function through (E0433). The pair only
+/// works rewritten together, so leave both alone and report nothing rather than
+/// emit a fix that compiles in the file but not in the module below it.
+///
+/// A glob (`use super::*;`) is not a re-import: it makes whatever the file
+/// binds visible, so the new `use crate::capabilities;` arrives with it and the
+/// references inside the module follow the rewrite normally.
+fn drop_candidates_reimported_by_inline_modules(
+    syntax: &File,
+    module_to_functions: &mut BTreeMap<String, Vec<RawCandidate>>,
+) {
+    let mut collector = InlineSuperReimportCollector {
+        inline_mod_depth: 0,
+        names:            BTreeSet::new(),
+    };
+    Visit::visit_file(&mut collector, syntax);
+    if collector.names.is_empty() {
+        return;
+    }
+
+    module_to_functions.retain(|_, functions| {
+        functions.retain(|candidate| {
+            !candidate.inline_scope.is_empty()
+                || !collector.names.contains(&candidate.function_name)
+        });
+        !functions.is_empty()
+    });
+}
+
+struct InlineSuperReimportCollector {
+    inline_mod_depth: usize,
+    names:            BTreeSet<String>,
+}
+
+impl Visit<'_> for InlineSuperReimportCollector {
+    fn visit_item_mod(&mut self, node: &ItemMod) {
+        if node.content.is_some() {
+            self.inline_mod_depth += 1;
+            visit_item_mod(self, node);
+            self.inline_mod_depth -= 1;
+        } else {
+            visit_item_mod(self, node);
+        }
+    }
+
+    fn visit_item_use(&mut self, node: &ItemUse) {
+        if self.inline_mod_depth == 0 {
+            return;
+        }
+        collect_super_reimports(
+            &node.tree,
+            &mut Vec::new(),
+            self.inline_mod_depth,
+            &mut self.names,
+        );
+    }
+}
+
+/// Leaf names of `use` paths that climb exactly `depth` `super` segments — from
+/// inside an inline `mod` nested `depth` deep, that is the file's own top level.
+fn collect_super_reimports(
+    tree: &UseTree,
+    prefix: &mut Vec<String>,
+    depth: usize,
+    names: &mut BTreeSet<String>,
+) {
+    match tree {
+        UseTree::Path(path) => {
+            prefix.push(path.ident.to_string());
+            collect_super_reimports(&path.tree, prefix, depth, names);
+            prefix.pop();
+        },
+        UseTree::Name(name) => {
+            if reaches_file_top_level(prefix, depth) {
+                names.insert(name.ident.to_string());
+            }
+        },
+        UseTree::Rename(rename) => {
+            if reaches_file_top_level(prefix, depth) {
+                names.insert(rename.ident.to_string());
+            }
+        },
+        UseTree::Group(group) => {
+            for item in &group.items {
+                collect_super_reimports(item, prefix, depth, names);
+            }
+        },
+        UseTree::Glob(_) => {},
+    }
+}
+
+fn reaches_file_top_level(prefix: &[String], depth: usize) -> bool {
+    prefix.len() == depth && prefix.iter().all(|segment| segment == "super")
+}
+
 fn drop_attribute_referenced_candidates(
     syntax: &File,
     module_to_functions: &mut BTreeMap<String, Vec<RawCandidate>>,

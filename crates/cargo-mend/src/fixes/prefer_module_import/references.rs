@@ -10,13 +10,16 @@ use syn::ExprClosure;
 use syn::ExprForLoop;
 use syn::FieldValue;
 use syn::FnArg;
+use syn::Ident;
 use syn::ImplItemFn;
+use syn::Item;
 use syn::ItemFn;
 use syn::ItemMod;
 use syn::ItemUse;
 use syn::Local;
 use syn::Macro;
 use syn::Pat;
+use syn::Stmt;
 use syn::TraitItemFn;
 use syn::visit;
 use syn::visit::Visit;
@@ -46,10 +49,12 @@ enum PreviousToken {
     Other,
     JointColon,
     ColonColon,
+    JointDot,
+    Dot,
 }
 
 impl PreviousToken {
-    const fn allows_bare_reference(self) -> bool { !matches!(self, Self::ColonColon) }
+    const fn allows_bare_reference(self) -> bool { !matches!(self, Self::ColonColon | Self::Dot) }
 
     const fn after_colon(self, spacing: Spacing) -> Self {
         match self {
@@ -59,9 +64,23 @@ impl PreviousToken {
         }
     }
 
+    /// A single `.` introduces a field access or a method name — `progress.normalized()`
+    /// names an inherent method, never a path root, so rewriting the ident to
+    /// `ledger::normalized` produces `progress.ledger::normalized()`, which the
+    /// macro matcher rejects with "no rules expected `::`". `..` and `..=` are
+    /// range operators whose endpoint *is* a value path, so they must keep
+    /// allowing the ident that follows.
+    const fn after_dot(self, spacing: Spacing) -> Self {
+        match self {
+            Self::JointDot => Self::Other,
+            _ if matches!(spacing, Spacing::Joint) => Self::JointDot,
+            _ => Self::Dot,
+        }
+    }
+
     const fn after_group(self) -> Self {
         match self {
-            Self::ColonColon => Self::Other,
+            Self::ColonColon | Self::Dot => Self::Other,
             other => other,
         }
     }
@@ -84,8 +103,6 @@ impl<'a> ReferenceCollector<'a> {
 
     fn enter_scope_with(&mut self, bindings: BTreeSet<String>) { self.scopes.push(bindings); }
 
-    fn enter_scope(&mut self) { self.scopes.push(BTreeSet::new()); }
-
     fn exit_scope(&mut self) { self.scopes.pop(); }
 }
 
@@ -93,17 +110,25 @@ impl Visit<'_> for ReferenceCollector<'_> {
     fn visit_item_use(&mut self, _: &ItemUse) {}
 
     fn visit_item_mod(&mut self, node: &ItemMod) {
-        if node.content.is_some() {
-            self.inline_mod_depth += 1;
+        let Some((_, items)) = &node.content else {
             visit::visit_item_mod(self, node);
-            self.inline_mod_depth -= 1;
-        } else {
-            visit::visit_item_mod(self, node);
-        }
+            return;
+        };
+        // An inline `mod` does not inherit the file's imports: a bare name
+        // inside it resolves to the module's own items and `use` bindings.
+        // `#[cfg(test)] mod tests { fn reconcile(..) {..} }` next to a
+        // file-scope `use crate::reconcile::reconcile;` is the case that
+        // matters — rewriting the call to `reconcile::reconcile()` resolves
+        // to the local fn, not a module (E0433).
+        self.inline_mod_depth += 1;
+        self.enter_scope_with(item_bindings(items));
+        visit::visit_item_mod(self, node);
+        self.exit_scope();
+        self.inline_mod_depth -= 1;
     }
 
     fn visit_block(&mut self, block: &Block) {
-        self.enter_scope();
+        self.enter_scope_with(block_item_bindings(block));
         visit::visit_block(self, block);
         self.exit_scope();
     }
@@ -132,7 +157,7 @@ impl Visit<'_> for ReferenceCollector<'_> {
         let mut params = BTreeSet::new();
         collect_fn_param_bindings(item.sig.inputs.iter(), &mut params);
         self.enter_scope_with(params);
-        visit::visit_block(self, &item.block);
+        self.visit_block(&item.block);
         self.exit_scope();
     }
 
@@ -143,7 +168,7 @@ impl Visit<'_> for ReferenceCollector<'_> {
         let mut params = BTreeSet::new();
         collect_fn_param_bindings(item.sig.inputs.iter(), &mut params);
         self.enter_scope_with(params);
-        visit::visit_block(self, &item.block);
+        self.visit_block(&item.block);
         self.exit_scope();
     }
 
@@ -155,7 +180,7 @@ impl Visit<'_> for ReferenceCollector<'_> {
             let mut params = BTreeSet::new();
             collect_fn_param_bindings(item.sig.inputs.iter(), &mut params);
             self.enter_scope_with(params);
-            visit::visit_block(self, body);
+            self.visit_block(body);
             self.exit_scope();
         }
     }
@@ -184,7 +209,7 @@ impl Visit<'_> for ReferenceCollector<'_> {
         let mut bindings = BTreeSet::new();
         collect_pat_bindings(&for_loop.pat, &mut bindings);
         self.enter_scope_with(bindings);
-        visit::visit_block(self, &for_loop.body);
+        self.visit_block(&for_loop.body);
         self.exit_scope();
     }
 
@@ -242,15 +267,80 @@ impl Visit<'_> for ReferenceCollector<'_> {
     }
 
     fn visit_macro(&mut self, node: &Macro) {
+        // The token scanner sees idents, not scopes, so filter its hits
+        // against the bindings in scope at the macro call site.
+        let mut collected = Vec::new();
         collect_bare_refs_from_tokens(
             &node.tokens,
             self.offsets,
             self.imported_names,
             self.inline_mod_depth,
-            &mut self.references,
+            &mut collected,
         );
+        collected.retain(|reference| !self.is_shadowed(&reference.name));
+        self.references.append(&mut collected);
         visit::visit_macro(self, node);
     }
+}
+
+/// Names the items in an inline `mod` body bind in that module.
+fn item_bindings(items: &[Item]) -> BTreeSet<String> {
+    let mut bindings = BTreeSet::new();
+    for item in items {
+        collect_item_bindings(item, &mut bindings);
+    }
+    bindings
+}
+
+/// Names the items declared directly in `block` bind in it.
+fn block_item_bindings(block: &Block) -> BTreeSet<String> {
+    let mut bindings = BTreeSet::new();
+    for stmt in &block.stmts {
+        if let Stmt::Item(item) = stmt {
+            collect_item_bindings(item, &mut bindings);
+        }
+    }
+    bindings
+}
+
+/// The name `item` declares in its enclosing module or block. Declarations are
+/// in scope throughout that whole scope no matter where they sit in it, so
+/// callers collect these before visiting the scope's contents.
+///
+/// `use` is deliberately absent. A `use` binding is exactly what this pass
+/// rewrites, so counting one as a shadow would suppress the reference rewrites
+/// while the import itself still changed — `use crate::disk::worker::channels;`
+/// with the call left as bare `contents_match(..)` (E0425). Inline modules that
+/// re-import a name from the file's own top level are handled by dropping the
+/// candidate instead, in `scan::drop_candidates_reimported_by_inline_modules`.
+///
+/// `Item` is `#[non_exhaustive]`; a variant syn adds later declares no name
+/// here, which at worst rewrites a reference this collector should have left
+/// alone — the exposure the collector had before declarations were tracked.
+fn collect_item_bindings(item: &Item, bindings: &mut BTreeSet<String>) {
+    match item {
+        Item::Const(node) => insert_ident(&node.ident, bindings),
+        Item::Enum(node) => insert_ident(&node.ident, bindings),
+        Item::ExternCrate(node) => insert_ident(&node.ident, bindings),
+        Item::Fn(node) => insert_ident(&node.sig.ident, bindings),
+        Item::Macro(node) => {
+            if let Some(ident) = &node.ident {
+                insert_ident(ident, bindings);
+            }
+        },
+        Item::Mod(node) => insert_ident(&node.ident, bindings),
+        Item::Static(node) => insert_ident(&node.ident, bindings),
+        Item::Struct(node) => insert_ident(&node.ident, bindings),
+        Item::Trait(node) => insert_ident(&node.ident, bindings),
+        Item::TraitAlias(node) => insert_ident(&node.ident, bindings),
+        Item::Type(node) => insert_ident(&node.ident, bindings),
+        Item::Union(node) => insert_ident(&node.ident, bindings),
+        _ => {},
+    }
+}
+
+fn insert_ident(ident: &Ident, bindings: &mut BTreeSet<String>) {
+    bindings.insert(ident.to_string());
 }
 
 fn collect_pat_bindings(pat: &Pat, bindings: &mut BTreeSet<String>) {
@@ -331,11 +421,11 @@ pub(super) fn collect_bare_refs_from_tokens(
                 previous_token = PreviousToken::Other;
             },
             TokenTree::Punct(ref punct) => {
-                if punct.as_char() == ':' {
-                    previous_token = previous_token.after_colon(punct.spacing());
-                } else {
-                    previous_token = PreviousToken::Other;
-                }
+                previous_token = match punct.as_char() {
+                    ':' => previous_token.after_colon(punct.spacing()),
+                    '.' => previous_token.after_dot(punct.spacing()),
+                    _ => PreviousToken::Other,
+                };
             },
             TokenTree::Group(ref group) => {
                 collect_bare_refs_from_tokens(

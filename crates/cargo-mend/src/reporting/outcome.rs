@@ -55,6 +55,47 @@ pub(crate) enum FixKind {
     FieldVisibility,
 }
 
+/// How many edits of each [`FixKind`] a run wrote to disk.
+///
+/// The tally has to travel from the applier to the notice because fixes are
+/// discarded between the scan and the write: conflicting import groups are
+/// dropped, byte-identical edits collapse, and a range that no longer fits its
+/// file is skipped. Counting the scan's findings instead announced work that
+/// never happened — the same "applied 4 import fix(es)" on every run with the
+/// files untouched, which reads as a `--fix-all` that never converges.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct AppliedFixCounts {
+    import:           usize,
+    pub_removal:      usize,
+    narrowing:        usize,
+    annotation:       usize,
+    field_visibility: usize,
+}
+
+impl AppliedFixCounts {
+    /// Records one edit written for `fix_kind`.
+    pub(crate) const fn record(&mut self, fix_kind: FixKind) {
+        match fix_kind {
+            FixKind::Import => self.import += 1,
+            FixKind::PubRemoval => self.pub_removal += 1,
+            FixKind::Narrowing => self.narrowing += 1,
+            FixKind::Annotation => self.annotation += 1,
+            FixKind::FieldVisibility => self.field_visibility += 1,
+        }
+    }
+
+    /// Edits written for `fix_kind`.
+    pub(crate) const fn count(self, fix_kind: FixKind) -> usize {
+        match fix_kind {
+            FixKind::Import => self.import,
+            FixKind::PubRemoval => self.pub_removal,
+            FixKind::Narrowing => self.narrowing,
+            FixKind::Annotation => self.annotation,
+            FixKind::FieldVisibility => self.field_visibility,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FixNotice {
     fix_kind: FixKind,

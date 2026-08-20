@@ -29,10 +29,16 @@ impl MendRunner<'_> {
                 applied_pub_use: 0,
             }),
             OperationIntent::DryRun => {
+                // Count the validated set, not the scans: a dry run must
+                // preview the edits an apply would write, and combining is
+                // where conflicting groups are dropped and duplicates collapse.
+                let fix_scans = planned.fix_scans();
+                let previewed = Self::combined_fixes(fix_scans)?;
                 let notice = Self::build_fix_notice(
                     planned.operation_mode.intent,
                     Some(&planned.report),
-                    planned.fix_scans(),
+                    fix_scans,
+                    previewed.counts(),
                 );
                 Ok(ExecutionOutcome {
                     compiler_warning_facts: planned.report.facts.compiler_warning_facts,

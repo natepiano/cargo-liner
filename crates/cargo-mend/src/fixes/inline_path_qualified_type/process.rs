@@ -62,13 +62,8 @@ pub(super) fn plan_import_attributes(
 
     let mut attributes = BTreeMap::new();
     for (key, candidates) in grouped {
-        let ungated = ConditionalAttributes::default();
-        if candidates.contains(&ungated) {
-            attributes.insert(key, ungated);
-        } else if candidates.len() == 1
-            && let Some(candidate) = candidates.first()
-        {
-            attributes.insert(key, candidate.clone());
+        if let Some(covering) = ConditionalAttributes::covering(&candidates) {
+            attributes.insert(key, covering);
         }
     }
     ImportAttributePlan { attributes }

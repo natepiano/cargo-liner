@@ -2,6 +2,7 @@ use super::MendRunner;
 use super::RunPlan;
 use crate::compiler::BuildOutputMode;
 use crate::fixes::imports;
+use crate::reporting::AppliedFixCounts;
 use crate::reporting::AppliedFixes;
 use crate::reporting::CompilerFailureCause;
 use crate::reporting::ExecutionOutcome;
@@ -23,6 +24,7 @@ impl MendRunner<'_> {
                 planned.operation_mode.intent,
                 Some(&planned.report),
                 fix_scans,
+                AppliedFixCounts::default(),
             );
             let warning_facts = planned.report.facts.compiler_warning_facts;
             return Ok(ExecutionOutcome {
@@ -37,7 +39,7 @@ impl MendRunner<'_> {
         }
 
         let snapshots = imports::snapshot_files(&fixes).map_err(MendFailure::Unexpected)?;
-        imports::apply_fixes(&fixes).map_err(MendFailure::Unexpected)?;
+        let applied = imports::apply_fixes(&fixes).map_err(MendFailure::Unexpected)?;
         let validation_output_mode = if self.output_format == OutputFormat::Json {
             BuildOutputMode::Json
         } else {
@@ -50,6 +52,7 @@ impl MendRunner<'_> {
                     planned.operation_mode.intent,
                     Some(&validation.report),
                     fix_scans,
+                    applied,
                 );
                 let warning_facts = validation.report.facts.compiler_warning_facts;
                 Ok(ExecutionOutcome {

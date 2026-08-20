@@ -162,7 +162,7 @@ fn rustc_diagnostic(finding: &Finding, span: RustcSpan) -> RustcDiagnostic {
         children.push(child(RUSTC_LEVEL_HELP, note.to_string(), Vec::new()));
     }
 
-    let level = severity_level(finding.severity);
+    let level = severity_level(diagnostics::effective_severity(finding));
     RustcDiagnostic {
         rendered: render_diagnostic(finding, &span, level),
         message_type: CARGO_MESSAGE_TYPE_DIAGNOSTIC,

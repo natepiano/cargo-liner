@@ -2691,3 +2691,95 @@ fn main() {}
         "fully-qualified path should be rewritten, got:\n{main_rs}"
     );
 }
+
+/// A `#[cfg]` written on a statement attaches to the statement's expression,
+/// not to any item, so the visitor sees the gate only through that expression.
+/// Missing it makes the synthesized `use` ungated while the target item stays
+/// configured out — E0432 in every build without the feature.
+#[test]
+fn statement_cfg_gate_reaches_synthesized_import() {
+    let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "inline_stmt_cfg_fixture"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+test = []
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod reporter;\nmod plugin;\nfn main() { plugin::build(&mut plugin::App); }\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/reporter.rs"),
+        r#"#[cfg(any(test, feature = "test"))]
+#[derive(Default)]
+pub struct InjectedDisplays {
+    pub entities: Vec<u32>,
+}
+"#,
+    )
+    .expect("write reporter module");
+    fs::write(
+        temp.path().join("src/plugin.rs"),
+        r#"pub struct App;
+
+impl App {
+    pub fn init_resource<T: Default>(&mut self) {}
+}
+
+pub fn build(app: &mut App) {
+    #[cfg(any(test, feature = "test"))]
+    app.init_resource::<crate::reporter::InjectedDisplays>();
+}
+"#,
+    )
+    .expect("write plugin module");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let plugin = fs::read_to_string(temp.path().join("src/plugin.rs")).expect("read fixed plugin");
+    assert!(
+        plugin.contains(
+            "#[cfg(any(test, feature = \"test\"))]\nuse crate::reporter::InjectedDisplays;"
+        ),
+        "expected the synthesized import to inherit the statement's cfg, got:\n{plugin}"
+    );
+
+    for cargo_arguments in [&[][..], &["--features", "test"][..]] {
+        let check = cargo_command()
+            .arg("check")
+            .arg("--all-targets")
+            .args(cargo_arguments)
+            .arg("--manifest-path")
+            .arg(temp.path().join("Cargo.toml"))
+            .output()
+            .expect("check fixed statement-gated fixture");
+        assert!(
+            check.status.success(),
+            "fixed fixture failed for cargo arguments {cargo_arguments:?}: {}\n{}",
+            String::from_utf8_lossy(&check.stdout),
+            String::from_utf8_lossy(&check.stderr)
+        );
+    }
+}

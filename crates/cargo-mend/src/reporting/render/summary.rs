@@ -86,7 +86,7 @@ fn mend_fixable_counts(report: &Report, severity: Severity) -> MendFixableCounts
     for finding in report
         .findings
         .iter()
-        .filter(|finding| finding.severity == severity)
+        .filter(|finding| diagnostics::effective_severity(finding) == severity)
     {
         match diagnostics::effective_fixability(finding).summary_bucket() {
             Some(FixSummaryBucket::Standard) => counts.standard += 1,
@@ -590,8 +590,15 @@ mod tests {
         assert!(!output.contains("mend errors -"));
     }
 
+    /// Severity is stored per finding, and only two sites write
+    /// `Severity::Error` — the ones whose findings need a person to decide
+    /// something. The cross-crate pass can later resolve one of those to an
+    /// exact boundary and mark it fixable, and the stored severity does not
+    /// follow. Reporting derives it instead, so one rule holds everywhere:
+    /// anything mend can fix on its own is a warning, and an error is work only
+    /// a person can do.
     #[test]
-    fn fixable_error_advertises_its_command_in_the_diagnostic_and_error_block() {
+    fn a_fixable_finding_reports_as_a_warning_whatever_severity_it_carries() {
         let output = reporting::render_human_report(
             &fixable_error_report(),
             &compiler_stats(0, 0),
@@ -599,18 +606,22 @@ mod tests {
         );
 
         assert!(
-            output.contains("this error is auto-fixable with `cargo mend --fix`"),
-            "fixable error must advertise its command:\n{output}"
+            output.contains("this warning is auto-fixable with `cargo mend --fix`"),
+            "a fixable finding must advertise its command as a warning:\n{output}"
         );
         assert!(
-            output.contains("errors: 1 mend error (1 fixable with `cargo mend --fix`)"),
-            "error block must count the fixable error:\n{output}"
+            output.contains("1 mend warning"),
+            "a fixable finding belongs in the warning summary:\n{output}"
+        );
+        assert!(
+            !output.contains("errors:"),
+            "no error block when every finding is fixable:\n{output}"
         );
         assert!(!output.contains("not auto-fixable"));
     }
 
     #[test]
-    fn warning_summary_does_not_count_fixable_errors_as_warnings() {
+    fn warning_summary_counts_a_fixable_error_finding_among_the_fixable_warnings() {
         let mut report = mend_warning_report();
         report.findings.extend(fixable_error_report().findings);
         report.refresh_summary();
@@ -623,10 +634,13 @@ mod tests {
             .expect("missing mend warning summary row");
 
         assert!(
-            warning_row.contains("1 fixable with `cargo mend --fix`"),
-            "warning row must count only fixable warnings:\n{output}"
+            warning_row.contains("2 mend warnings"),
+            "a fixable finding recorded as an error still reports as a warning:\n{output}"
         );
-        assert!(!warning_row.contains("2 fixable"));
+        assert!(
+            warning_row.contains("2 fixable with `cargo mend --fix`"),
+            "both fixable findings belong in the warning row's fixable count:\n{output}"
+        );
     }
 
     #[test]

@@ -14,7 +14,7 @@ use crate::reporting::diagnostics::Finding;
 use crate::reporting::diagnostics::Severity;
 
 pub(super) fn render_finding(output: &mut String, finding: &Finding, color_mode: ColorMode) {
-    let severity = severity_label(finding.severity, color_mode);
+    let severity = severity_label(diagnostics::effective_severity(finding), color_mode);
     let headline = diagnostics::finding_headline(finding);
     let line_label = finding.line.to_string();
     let gutter_width = line_label.len();

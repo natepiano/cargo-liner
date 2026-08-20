@@ -316,6 +316,11 @@ struct VisibilityConstraintGroup {
     report_index: Option<usize>,
 }
 
+/// The written annotations `fixes::restricted_annotation` knows how to rewrite.
+/// A finding whose annotation is not one of these is reported, never promoted to
+/// fixable.
+const SUPPORTED_ANNOTATIONS: [&str; 3] = ["pub", "pub(crate)", "pub(in crate)"];
+
 impl VisibilityConstraintGroup {
     fn include(
         &mut self,
@@ -579,7 +584,25 @@ impl VisibilityConstraintGroup {
             ),
             _ => finding.message.clone(),
         };
-        finding.fix_support = FixSupport::RestrictedAnnotation;
+        // Only claim fixable when `fixes::restricted_annotation` will actually
+        // rewrite this annotation. It edits a bare `pub`, `pub(crate)`, and
+        // `pub(in crate)` and nothing else, so promoting a
+        // `pub(in crate::a::b)` finding advertised a fix that never arrived:
+        // every run reported it as fixable, applied nothing, and reported it
+        // again. Widening the applier instead was tried and rolled back — a
+        // boundary resolved from callers is not a compiling rewrite for an
+        // already-restricted annotation.
+        finding.fix_support = if self
+            .constraints
+            .constraints
+            .first()
+            .is_some_and(|constraint| {
+                SUPPORTED_ANNOTATIONS.contains(&constraint.visibility_annotation.as_str())
+            }) {
+            FixSupport::RestrictedAnnotation
+        } else {
+            FixSupport::None
+        };
         if let Some(constraint) = self.constraints.constraints.first() {
             finding.visibility_annotation = Some(constraint.visibility_annotation.clone());
             finding.item_def_path = Some(constraint.declaration.item_def_path.clone());

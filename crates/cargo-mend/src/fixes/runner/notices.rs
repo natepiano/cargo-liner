@@ -1,6 +1,7 @@
 use super::FixScans;
 use super::MendRunner;
 use crate::config::OperationIntent;
+use crate::reporting::AppliedFixCounts;
 use crate::reporting::ExecutionNotice;
 use crate::reporting::FixKind;
 use crate::reporting::FixNotice;
@@ -9,54 +10,46 @@ use crate::reporting::PubUseNotice;
 use crate::reporting::Report;
 
 impl FixScans<'_> {
+    /// Which kinds this run had a fixer for. A kind that ran and edited nothing
+    /// still has a notice to render; a kind that never ran has none.
+    ///
     /// Only the fixers that move or rewrite a `use` item share one total. Each
     /// remaining fixer edits a visibility annotation, so it reports under its
     /// own `FixKind` rather than being counted as an import fix.
-    fn notice_counts(self) -> [(FixKind, Option<usize>); 5] {
+    fn enabled_kinds(self) -> [(FixKind, bool); 5] {
         [
-            (FixKind::Import, self.import_fix_notice_count()),
             (
-                FixKind::PubRemoval,
-                self.unused_pub.map(|scan| scan.fixes.len()),
+                FixKind::Import,
+                self.imports.is_some()
+                    || self.module_imports.is_some()
+                    || self.inline_types.is_some()
+                    || self.imports_at_top.is_some(),
             ),
-            (
-                FixKind::Narrowing,
-                self.narrowed_pub.map(|scan| scan.fixes.len()),
-            ),
-            (
-                FixKind::Annotation,
-                self.restricted_annotation.map(|scan| scan.fixes.len()),
-            ),
-            (
-                FixKind::FieldVisibility,
-                self.field_visibility.map(|scan| scan.fixes.len()),
-            ),
+            (FixKind::PubRemoval, self.unused_pub.is_some()),
+            (FixKind::Narrowing, self.narrowed_pub.is_some()),
+            (FixKind::Annotation, self.restricted_annotation.is_some()),
+            (FixKind::FieldVisibility, self.field_visibility.is_some()),
         ]
-    }
-
-    fn import_fix_notice_count(self) -> Option<usize> {
-        [
-            self.imports.map(|scan| scan.findings.len()),
-            self.module_imports.map(|scan| scan.findings.len()),
-            self.inline_types.map(|scan| scan.findings.len()),
-            self.imports_at_top.map(|scan| scan.findings.len()),
-        ]
-        .into_iter()
-        .flatten()
-        .reduce(|total, count| total + count)
     }
 }
 
 impl MendRunner<'_> {
+    /// `applied` is what this run wrote to disk, or in a dry run what the
+    /// validated set would write. It is not the scans' finding count: fixes are
+    /// dropped for conflicting import groups, collapsed when two passes propose
+    /// the same edit, and skipped when a range no longer fits its file, so a
+    /// finding count announces edits that were already discarded.
     pub(super) fn build_fix_notice(
         intent: OperationIntent,
         report: Option<&Report>,
         fix_scans: FixScans<'_>,
+        applied: AppliedFixCounts,
     ) -> Option<ExecutionNotice> {
         let enabled = fix_scans
-            .notice_counts()
+            .enabled_kinds()
             .into_iter()
-            .filter_map(|(fix_kind, count)| count.map(|count| (fix_kind, count)))
+            .filter(|&(_, enabled)| enabled)
+            .map(|(fix_kind, _)| (fix_kind, applied.count(fix_kind)))
             .collect::<Vec<_>>();
 
         // Name only the kinds that edited something, so a run that removes one
@@ -104,6 +97,8 @@ impl MendRunner<'_> {
 mod tests {
     use std::path::PathBuf;
 
+    use super::AppliedFixCounts;
+    use super::FixKind;
     use super::FixScans;
     use super::MendRunner;
     use crate::config::OperationIntent;
@@ -141,6 +136,12 @@ mod tests {
 
     fn unused_pub_scan(fixes: Vec<UseFix>) -> UnusedPubScan { UnusedPubScan { fixes } }
 
+    fn one_applied(fix_kind: FixKind) -> AppliedFixCounts {
+        let mut applied = AppliedFixCounts::default();
+        applied.record(fix_kind);
+        applied
+    }
+
     fn use_fix() -> UseFix {
         UseFix {
             path:         PathBuf::from("src/lib.rs"),
@@ -158,6 +159,7 @@ mod tests {
             OperationIntent::Apply,
             None,
             fix_scans_with_field_visibility(&field_visibility),
+            one_applied(FixKind::FieldVisibility),
         );
 
         assert_eq!(
@@ -173,6 +175,7 @@ mod tests {
             OperationIntent::Apply,
             None,
             fix_scans_with_field_visibility(&field_visibility),
+            AppliedFixCounts::default(),
         );
 
         assert_eq!(
@@ -189,6 +192,7 @@ mod tests {
             OperationIntent::Apply,
             None,
             fix_scans_with_unused_pub_and_field_visibility(&unused_pub, &field_visibility),
+            one_applied(FixKind::PubRemoval),
         );
 
         assert_eq!(
@@ -205,6 +209,7 @@ mod tests {
             OperationIntent::Apply,
             None,
             fix_scans_with_unused_pub_and_field_visibility(&unused_pub, &field_visibility),
+            AppliedFixCounts::default(),
         );
 
         assert_eq!(

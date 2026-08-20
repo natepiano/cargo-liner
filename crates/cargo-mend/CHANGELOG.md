@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `--fix` no longer drops a `#[cfg]` written on a statement. A gate on a statement attaches to the
+  statement's expression, which neither import pass looked at, so both emitted ungated `use` lines
+  for items that are configured out (E0432).
+- `--fix` no longer rewrites a method call as if it were a free function. Inside a macro,
+  `progress.normalized()` could become `progress.ledger::normalized()`, which the macro matcher
+  rejects with "no rules expected `::`".
+- `prefer_module_import` now treats a local declaration as shadowing the imported name. A file
+  importing `crate::reconcile::reconcile` alongside a `#[cfg(test)] mod tests` that declares its own
+  `fn reconcile` had the test's bare call rewritten to the module path, which resolved to the local
+  function (E0433).
+- `prefer_module_import` no longer half-rewrites an import that an inline module re-imports from the
+  file's own top level. `use super::reflect_component_for;` inside `mod tests` names the file-scope
+  binding, so rewriting only the outer import left the inner one naming nothing (E0432). Mend now
+  leaves both alone and reports nothing. A glob (`use super::*;`) is unaffected — it carries the
+  rewritten import in.
+- `--fix` now carries `#[cfg]` gates from `impl` and `trait` associated items into the imports it
+  synthesizes inside them; they were never tracked before.
+- `--fix-all` no longer repeats the same output forever. Mend advertised a fix for declarations
+  already written `pub(in crate::...)`: the cross-crate pass resolved an exact boundary and marked
+  the finding auto-fixable, but the applier rewrites only a bare `pub`, `pub(crate)`, and
+  `pub(in crate)`, so every run reported the fix, wrote nothing, and reported it again. Those
+  findings are now reported as manual work. Writing the resolved boundary is not safe in general -
+  on a real workspace it narrowed a type named in a wider signature, which rustc rejects with E0446.
+- "applied N fix(es)" now counts the edits mend actually wrote. Fixes are discarded between the scan
+  and the write - conflicting import groups are dropped, byte-identical edits from two passes
+  collapse into one, a range that no longer fits its file is skipped - but the count came from the
+  scan's findings, so a run that changed nothing still reported "applied 4 import fix(es)". A
+  `--dry-run` preview counts the same way.
+- `prefer_module_import` no longer reports two imports whose modules share a leaf name. Rewriting
+  `crate::orbit_cam::controller::x` and `crate::free_cam::controller::y` to module imports would
+  give one file two `use controller;` lines (E0252) with the call sites resolving to whichever won
+  (E0425). Mend already declined to apply the pair, but still reported both as fixable on every run.
+- A finding mend can fix on its own now reports as a warning whatever severity it was recorded with.
+  Severity is written when a finding is created, and only two places write `error` - the ones whose
+  findings need a person to decide something. The cross-crate pass could later mark one of those
+  fixable without the severity following, producing lines like "38 mend errors (23 fixable)". An
+  error now means work only a person can do.
+
 ## [0.18.4] - 2026-08-19
 
 ### Fixed

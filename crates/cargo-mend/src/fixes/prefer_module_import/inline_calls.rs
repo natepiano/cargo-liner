@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -14,6 +15,10 @@ use super::scan::InlineCallFindingInputs;
 use super::scan::ScanFileContext;
 use super::support;
 use crate::config::DiagnosticCode;
+use crate::fixes::imports;
+use crate::fixes::imports::ConditionalAttributes;
+use crate::fixes::imports::GateSource;
+use crate::fixes::imports::GateTracking;
 use crate::fixes::imports::ImportGroup;
 use crate::fixes::imports::UseFix;
 use crate::reporting::Finding;
@@ -23,28 +28,50 @@ use crate::reporting::Severity;
 use crate::rust_syntax::PathAnchor;
 
 pub(super) struct InlineCallCandidate {
-    pub(super) function_name:   String,
-    pub(super) module_name:     String,
-    pub(super) module_path:     String,
-    pub(super) absolute_module: Vec<String>,
-    pub(super) prefix_start:    LineColumn,
-    pub(super) leaf_start:      LineColumn,
-    pub(super) full_span_start: LineColumn,
-    pub(super) full_span_end:   LineColumn,
+    pub(super) function_name:          String,
+    pub(super) module_name:            String,
+    pub(super) module_path:            String,
+    pub(super) absolute_module:        Vec<String>,
+    pub(super) prefix_start:           LineColumn,
+    pub(super) leaf_start:             LineColumn,
+    pub(super) full_span_start:        LineColumn,
+    pub(super) full_span_end:          LineColumn,
     /// True when the target module is the file's own parent module.
     /// Rewrite the call to `super::function_name(...)` and add no `use`.
-    pub(super) import_target:   ImportTarget,
+    pub(super) import_target:          ImportTarget,
+    /// `#[cfg]` gates enclosing the call site. The synthesized
+    /// `use module;` must repeat them or it fails to resolve in builds where
+    /// the target module is configured out.
+    pub(super) conditional_attributes: ConditionalAttributes,
 }
 
 pub(super) struct InlineCallDetector<'a> {
-    pub(super) source_root:         &'a Path,
-    pub(super) current_module_path: &'a [String],
-    pub(super) declared_modules:    &'a BTreeSet<String>,
-    pub(super) candidates:          Vec<InlineCallCandidate>,
-    pub(super) inline_mod_depth:    usize,
+    pub(super) source_root:            &'a Path,
+    pub(super) text:                   &'a str,
+    pub(super) offsets:                &'a [usize],
+    pub(super) current_module_path:    &'a [String],
+    pub(super) declared_modules:       &'a BTreeSet<String>,
+    pub(super) candidates:             Vec<InlineCallCandidate>,
+    pub(super) inline_mod_depth:       usize,
+    pub(super) conditional_attributes: ConditionalAttributes,
+}
+
+impl GateTracking for InlineCallDetector<'_> {
+    fn gate_source(&self) -> GateSource<'_> {
+        GateSource {
+            text:         self.text,
+            line_offsets: self.offsets,
+        }
+    }
+
+    fn conditional_attributes_mut(&mut self) -> &mut ConditionalAttributes {
+        &mut self.conditional_attributes
+    }
 }
 
 impl Visit<'_> for InlineCallDetector<'_> {
+    imports::gate_tracking_visit!();
+
     fn visit_item_use(&mut self, _: &ItemUse) {}
 
     fn visit_item_mod(&mut self, node: &ItemMod) {
@@ -66,6 +93,7 @@ impl Visit<'_> for InlineCallDetector<'_> {
             self.current_module_path,
             self.declared_modules,
             node,
+            self.conditional_attributes.clone(),
         ) {
             self.candidates.push(candidate);
         }
@@ -81,8 +109,24 @@ pub(super) fn build_inline_call_findings_and_fixes(
     let mut findings = Vec::new();
     let mut fixes = Vec::new();
     let mut inserted_modules: BTreeSet<Vec<String>> = BTreeSet::new();
+    let covering_gates = covering_gates(inline_inputs.candidates);
 
     for candidate in inline_inputs.candidates {
+        // One `use module;` per file serves every call site, so it has to
+        // carry a gate that covers all of them. Call sites whose gates
+        // disagree share no such import — those stay fully qualified, and
+        // reporting a finding without an applicable fix would only invite the
+        // rewrite that breaks the build.
+        let import_attributes = match candidate.import_target {
+            // The call becomes `super::function(...)`; no import is inserted,
+            // so the call site's gates do not constrain anything.
+            ImportTarget::ParentModule => None,
+            ImportTarget::OtherModule => match covering_gates.get(&candidate.absolute_module) {
+                Some(attributes) => Some(attributes),
+                None => continue,
+            },
+        };
+
         let prefix_start_byte = support::offset(file_context.offsets, candidate.prefix_start);
         let leaf_start_byte = support::offset(file_context.offsets, candidate.leaf_start);
         let full_start_byte = support::offset(file_context.offsets, candidate.full_span_start);
@@ -159,9 +203,9 @@ pub(super) fn build_inline_call_findings_and_fixes(
             import_group: group.clone(),
         });
 
-        if candidate.import_target == ImportTarget::ParentModule {
+        let Some(import_attributes) = import_attributes else {
             continue;
-        }
+        };
         if inline_inputs
             .will_import_modules
             .contains(&candidate.absolute_module)
@@ -175,7 +219,11 @@ pub(super) fn build_inline_call_findings_and_fixes(
             path:         file_context.path.to_path_buf(),
             start:        inline_inputs.file_insertion_offset,
             end:          inline_inputs.file_insertion_offset,
-            replacement:  format!("use {};\n", candidate.module_path),
+            replacement:  format!(
+                "{}use {};\n",
+                import_attributes.render(""),
+                candidate.module_path
+            ),
             import_group: group,
         });
     }
@@ -183,11 +231,36 @@ pub(super) fn build_inline_call_findings_and_fixes(
     (findings, fixes)
 }
 
+/// The gate each imported module's `use` must carry, keyed by absolute module
+/// path. Modules whose call sites sit under gates that disagree are absent,
+/// which tells the caller to leave those calls fully qualified.
+fn covering_gates(
+    candidates: &[InlineCallCandidate],
+) -> BTreeMap<Vec<String>, ConditionalAttributes> {
+    let mut grouped: BTreeMap<Vec<String>, BTreeSet<ConditionalAttributes>> = BTreeMap::new();
+    for candidate in candidates {
+        if candidate.import_target == ImportTarget::ParentModule {
+            continue;
+        }
+        grouped
+            .entry(candidate.absolute_module.clone())
+            .or_default()
+            .insert(candidate.conditional_attributes.clone());
+    }
+    grouped
+        .into_iter()
+        .filter_map(|(module, gates)| {
+            ConditionalAttributes::covering(&gates).map(|covering| (module, covering))
+        })
+        .collect()
+}
+
 fn analyze_inline_call(
     source_root: &Path,
     current_module_path: &[String],
     declared_modules: &BTreeSet<String>,
     node: &ExprPath,
+    conditional_attributes: ConditionalAttributes,
 ) -> Option<InlineCallCandidate> {
     let path = &node.path;
     let segments: Vec<String> = path
@@ -256,5 +329,6 @@ fn analyze_inline_call(
         full_span_start: path.span().start(),
         full_span_end: path.span().end(),
         import_target,
+        conditional_attributes,
     })
 }

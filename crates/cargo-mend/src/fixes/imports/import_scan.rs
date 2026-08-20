@@ -7,7 +7,9 @@ use anyhow::Error;
 use anyhow::Result;
 use anyhow::bail;
 
+use crate::reporting::AppliedFixCounts;
 use crate::reporting::Finding;
+use crate::reporting::FixKind;
 
 pub(in crate::fixes) struct ImportScan {
     pub findings: Vec<Finding>,
@@ -38,42 +40,101 @@ pub(in crate::fixes) struct UseFix {
     pub import_group: Option<ImportGroup>,
 }
 
+/// A fix paired with the notice kind it reports under once it is written.
+///
+/// `fix_kind` is `None` for the `pub_use` pass, which tallies its own applied
+/// and skipped edits at scan time and renders its own notice.
+#[derive(Debug, Clone)]
+pub(in crate::fixes) struct TaggedFix {
+    pub fix_kind: Option<FixKind>,
+    pub fix:      UseFix,
+}
+
 #[derive(Debug, Clone)]
 pub(in crate::fixes) struct ValidatedFixSet {
-    fixes: Vec<UseFix>,
+    fixes: Vec<TaggedFix>,
 }
 
 impl ValidatedFixSet {
     pub(in crate::fixes) const fn is_empty(&self) -> bool { self.fixes.is_empty() }
 
-    pub(in crate::fixes) fn iter(&self) -> impl Iterator<Item = &UseFix> { self.fixes.iter() }
+    pub(in crate::fixes) fn iter(&self) -> impl Iterator<Item = &UseFix> {
+        self.fixes.iter().map(|tagged| &tagged.fix)
+    }
+
+    pub(in crate::fixes) fn tagged(&self) -> impl Iterator<Item = &TaggedFix> { self.fixes.iter() }
+
+    /// What applying this set would write, per notice kind. A dry run counts
+    /// this rather than the scans' findings, because dedup and the
+    /// conflicting-import-group drop both happen before a set exists.
+    pub(in crate::fixes) fn counts(&self) -> AppliedFixCounts {
+        let mut counts = AppliedFixCounts::default();
+        for tagged in &self.fixes {
+            if let Some(fix_kind) = tagged.fix_kind {
+                counts.record(fix_kind);
+            }
+        }
+        counts
+    }
 }
 
+/// A scan's own fixes, before the runner combines them. Nothing writes these
+/// directly — `runner::combine` tags every fix with the kind of the pass it came
+/// from on the way into the applied set — so they carry no kind here.
 impl TryFrom<Vec<UseFix>> for ValidatedFixSet {
     type Error = Error;
 
-    fn try_from(mut fixes: Vec<UseFix>) -> Result<Self> {
-        for fix in &mut fixes {
-            fix.path = fs::canonicalize(&fix.path).unwrap_or_else(|_| fix.path.clone());
+    fn try_from(fixes: Vec<UseFix>) -> Result<Self> {
+        Self::try_from(
+            fixes
+                .into_iter()
+                .map(|fix| TaggedFix {
+                    fix_kind: None,
+                    fix,
+                })
+                .collect::<Vec<_>>(),
+        )
+    }
+}
+
+impl TryFrom<Vec<TaggedFix>> for ValidatedFixSet {
+    type Error = Error;
+
+    fn try_from(mut fixes: Vec<TaggedFix>) -> Result<Self> {
+        for tagged in &mut fixes {
+            tagged.fix.path =
+                fs::canonicalize(&tagged.fix.path).unwrap_or_else(|_| tagged.fix.path.clone());
         }
         fixes.sort_by(|left, right| {
-            (&left.path, left.start, left.end, &left.replacement).cmp(&(
-                &right.path,
-                right.start,
-                right.end,
-                &right.replacement,
-            ))
+            (
+                &left.fix.path,
+                left.fix.start,
+                left.fix.end,
+                &left.fix.replacement,
+            )
+                .cmp(&(
+                    &right.fix.path,
+                    right.fix.start,
+                    right.fix.end,
+                    &right.fix.replacement,
+                ))
         });
+        // Two passes proposing the byte-identical edit collapse to one. The sort
+        // is stable, so the survivor — and the kind credited with it — is the one
+        // `runner::combine` collected first.
         fixes.dedup_by(|left, right| {
-            left.path == right.path
-                && left.start == right.start
-                && left.end == right.end
-                && left.replacement == right.replacement
+            left.fix.path == right.fix.path
+                && left.fix.start == right.fix.start
+                && left.fix.end == right.fix.end
+                && left.fix.replacement == right.fix.replacement
         });
 
         let mut by_file: BTreeMap<&Path, Vec<&UseFix>> = BTreeMap::new();
-        for fix in &fixes {
-            by_file.entry(fix.path.as_path()).or_default().push(fix);
+        for tagged in &fixes {
+            by_file
+                .entry(tagged.fix.path.as_path())
+                .or_default()
+                .push(&tagged.fix);
         }
 
         for (path, mut file_fixes) in by_file {

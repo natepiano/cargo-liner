@@ -1385,6 +1385,94 @@ fn example() -> String {
     );
 }
 
+/// Two deep imports whose modules share a leaf name each want `use controller;`.
+/// The combining layer drops both before anything is written, so reporting them
+/// named the same two fixes on every run and applied neither — the shape that
+/// left `--fix-all` printing identical output forever.
+#[test]
+fn skips_function_imports_whose_modules_share_a_leaf_name() {
+    let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "leaf_name_collision_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/orbit_cam")).expect("create src/orbit_cam");
+    fs::create_dir_all(temp.path().join("src/free_cam")).expect("create src/free_cam");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod free_cam;\nmod installation;\nmod orbit_cam;\nfn main() { installation::install(); }\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/orbit_cam/mod.rs"),
+        "pub(crate) mod controller;\n",
+    )
+    .expect("write orbit_cam mod");
+    fs::write(
+        temp.path().join("src/orbit_cam/controller.rs"),
+        "pub(crate) fn install_orbit() {}\n",
+    )
+    .expect("write orbit_cam::controller");
+    fs::write(
+        temp.path().join("src/free_cam/mod.rs"),
+        "pub(crate) mod controller;\n",
+    )
+    .expect("write free_cam mod");
+    fs::write(
+        temp.path().join("src/free_cam/controller.rs"),
+        "pub(crate) fn install_free() {}\n",
+    )
+    .expect("write free_cam::controller");
+    let installation = temp.path().join("src/installation.rs");
+    fs::write(
+        &installation,
+        r"use crate::free_cam::controller::install_free;
+use crate::orbit_cam::controller::install_orbit;
+
+pub(crate) fn install() {
+    install_orbit();
+    install_free();
+}
+",
+    )
+    .expect("write installation");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        !report
+            .findings
+            .iter()
+            .any(|f| f.code == DiagnosticCode::PreferModuleImport),
+        "a leaf-name collision must not be reported as fixable: {report:#?}"
+    );
+
+    let before = fs::read_to_string(&installation).expect("read installation");
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let after = fs::read_to_string(&installation).expect("read installation after fix");
+    assert_eq!(
+        before, after,
+        "both colliding imports must be left untouched, got:\n{after}"
+    );
+}
+
 #[test]
 fn skips_function_import_when_name_collides_with_other_module() {
     // Two distinct modules share the bare name `geometry`:
@@ -2845,4 +2933,262 @@ fn example() -> i32 {
         "a function named by an attribute string must not be flagged: {:?}",
         report.findings
     );
+}
+
+/// The inline-call rewrite inserts `use module;` at file scope. When the only
+/// call sites sit under a `#[cfg]`, that import must repeat the gate — an
+/// ungated `use` of a configured-out module is E0432.
+#[test]
+fn statement_cfg_gate_reaches_inserted_module_import() {
+    let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "inline_call_cfg_fixture"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+test = []
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "#[cfg(any(test, feature = \"test\"))]\nmod adapter;\nmod plugin;\nfn main() { plugin::build(); }\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/adapter.rs"),
+        "pub fn install_topology() {}\n",
+    )
+    .expect("write adapter module");
+    fs::write(
+        temp.path().join("src/plugin.rs"),
+        r#"pub fn build() {
+    #[cfg(any(test, feature = "test"))]
+    crate::adapter::install_topology();
+}
+"#,
+    )
+    .expect("write plugin module");
+
+    assert_prefer_module_fixture_compiles(&temp.path().join("Cargo.toml"));
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let plugin = fs::read_to_string(temp.path().join("src/plugin.rs")).expect("read fixed plugin");
+    assert!(
+        plugin.contains("#[cfg(any(test, feature = \"test\"))]\nuse crate::adapter;"),
+        "expected the inserted module import to inherit the statement's cfg, got:\n{plugin}"
+    );
+
+    for cargo_arguments in [&[][..], &["--features", "test"][..]] {
+        let check = cargo_command()
+            .arg("check")
+            .arg("--all-targets")
+            .args(cargo_arguments)
+            .arg("--manifest-path")
+            .arg(temp.path().join("Cargo.toml"))
+            .output()
+            .expect("check fixed inline-call fixture");
+        assert!(
+            check.status.success(),
+            "fixed fixture failed for cargo arguments {cargo_arguments:?}: {}\n{}",
+            String::from_utf8_lossy(&check.stdout),
+            String::from_utf8_lossy(&check.stderr)
+        );
+    }
+}
+
+fn write_lib_fixture(directory: &Path, package: &str, modules: &[(&str, &str)]) {
+    fs::write(
+        directory.join("Cargo.toml"),
+        format!("[package]\nname = \"{package}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(directory.join("src")).expect("create fixture src");
+    for (name, contents) in modules {
+        fs::write(directory.join("src").join(name), contents).expect("write fixture module");
+    }
+}
+
+fn run_mend_fix(manifest_path: &Path) {
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(manifest_path)
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn method_call_in_macro_keeps_its_bare_method_name() {
+    let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+
+    write_lib_fixture(
+        temp.path(),
+        "macro_method_fixture",
+        &[
+            ("lib.rs", "mod ledger;\nmod sequence;\n"),
+            (
+                "ledger.rs",
+                r"pub struct Progress(f32);
+
+impl Progress {
+    pub const fn normalized(self) -> f32 { self.0 }
+}
+
+pub fn normalized(elapsed: f32, total: f32) -> f32 { elapsed / total }
+",
+            ),
+            (
+                "sequence.rs",
+                r"use crate::ledger::Progress;
+use crate::ledger::normalized;
+
+pub fn span(elapsed: f32, total: f32) -> f32 { normalized(elapsed, total) }
+
+pub fn check(progress: Progress) { assert_eq!(progress.normalized(), 0.5); }
+",
+            ),
+        ],
+    );
+    assert_prefer_module_fixture_compiles(&temp.path().join("Cargo.toml"));
+
+    run_mend_fix(&temp.path().join("Cargo.toml"));
+
+    let sequence =
+        fs::read_to_string(temp.path().join("src/sequence.rs")).expect("read fixed sequence");
+    assert!(
+        sequence.contains("ledger::normalized(elapsed, total)"),
+        "expected the free-function call to be module qualified, got:\n{sequence}"
+    );
+    assert!(
+        sequence.contains("progress.normalized()"),
+        "an inherent method named like the import must stay bare inside a macro, got:\n{sequence}"
+    );
+    assert_prefer_module_fixture_compiles(&temp.path().join("Cargo.toml"));
+}
+
+#[test]
+fn local_fn_in_inline_module_shadows_the_imported_function() {
+    let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+
+    write_lib_fixture(
+        temp.path(),
+        "shadowed_fn_fixture",
+        &[
+            ("lib.rs", "mod plugin;\nmod reconcile;\n"),
+            (
+                "reconcile.rs",
+                "pub fn reconcile(value: u32) -> u32 { value }\n",
+            ),
+            (
+                "plugin.rs",
+                r"use crate::reconcile::reconcile;
+
+pub fn build() -> u32 { reconcile(1) }
+
+#[cfg(test)]
+mod tests {
+    fn reconcile() -> u32 { 7 }
+
+    #[test]
+    fn the_local_definition_wins() {
+        let staged = reconcile();
+        assert_eq!(staged, 7);
+    }
+}
+",
+            ),
+        ],
+    );
+    assert_prefer_module_fixture_compiles(&temp.path().join("Cargo.toml"));
+
+    run_mend_fix(&temp.path().join("Cargo.toml"));
+
+    let plugin = fs::read_to_string(temp.path().join("src/plugin.rs")).expect("read fixed plugin");
+    assert!(
+        plugin.contains("reconcile::reconcile(1)"),
+        "expected the file-scope call to be module qualified, got:\n{plugin}"
+    );
+    assert!(
+        plugin.contains("let staged = reconcile();"),
+        "a call to the inline module's own fn must stay bare, got:\n{plugin}"
+    );
+    assert_prefer_module_fixture_compiles(&temp.path().join("Cargo.toml"));
+}
+
+#[test]
+fn inline_module_reimport_keeps_the_function_import() {
+    let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+
+    write_lib_fixture(
+        temp.path(),
+        "reimported_fn_fixture",
+        &[
+            ("lib.rs", "mod capabilities;\nmod reconcile;\n"),
+            (
+                "capabilities.rs",
+                "pub fn reflect_component_for(value: u32) -> u32 { value + 1 }\n",
+            ),
+            (
+                "reconcile.rs",
+                r"use crate::capabilities::reflect_component_for;
+
+pub fn run(value: u32) -> u32 { reflect_component_for(value) }
+
+#[cfg(test)]
+mod tests {
+    use super::reflect_component_for;
+
+    #[test]
+    fn reflects_the_component() {
+        let reflected = reflect_component_for(1);
+        assert_eq!(reflected, 2);
+    }
+}
+",
+            ),
+        ],
+    );
+    assert_prefer_module_fixture_compiles(&temp.path().join("Cargo.toml"));
+
+    run_mend_fix(&temp.path().join("Cargo.toml"));
+
+    let reconcile =
+        fs::read_to_string(temp.path().join("src/reconcile.rs")).expect("read fixed reconcile");
+    assert!(
+        reconcile.contains("use crate::capabilities::reflect_component_for;"),
+        "an inline module re-importing the name pins the file-scope import, got:\n{reconcile}"
+    );
+    assert!(
+        reconcile.contains("use super::reflect_component_for;"),
+        "the inline module's own import must be left intact, got:\n{reconcile}"
+    );
+    assert_prefer_module_fixture_compiles(&temp.path().join("Cargo.toml"));
 }

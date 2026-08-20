@@ -464,12 +464,12 @@ impl Report {
             errors:                   self
                 .findings
                 .iter()
-                .filter(|f| f.severity == Severity::Error)
+                .filter(|f| effective_severity(f) == Severity::Error)
                 .count(),
             warnings:                 self
                 .findings
                 .iter()
-                .filter(|f| f.severity == Severity::Warning)
+                .filter(|f| effective_severity(f) == Severity::Warning)
                 .count(),
             fixable_with_fix:         self
                 .findings
@@ -516,8 +516,24 @@ pub(super) fn effective_fixability(finding: &Finding) -> FixSupport {
     }
 }
 
+/// The severity to report for `finding`.
+///
+/// `Severity::Error` is written at the two sites whose findings need a person to
+/// decide something — `forbidden_pub_in_crate` and `review_pub_mod`. The
+/// cross-crate pass in `persistence::visibility_constraint` can later resolve one
+/// of those to an exact boundary and mark it fixable, and the stored severity
+/// does not follow. Deriving it here keeps one rule: anything mend can fix on its
+/// own is a warning, and an error is work only a person can do.
+pub(super) fn effective_severity(finding: &Finding) -> Severity {
+    if effective_fixability(finding).summary_bucket().is_some() {
+        Severity::Warning
+    } else {
+        finding.severity
+    }
+}
+
 pub(super) fn fixability_note(finding: &Finding) -> Option<&'static str> {
-    effective_fixability(finding).note(finding.severity)
+    effective_fixability(finding).note(effective_severity(finding))
 }
 
 pub(super) fn finding_headline(finding: &Finding) -> String {

@@ -1,15 +1,11 @@
 use std::collections::BTreeSet;
 
 use proc_macro2::LineColumn;
-use syn::Attribute;
 use syn::ExprPath;
 use syn::ExprStruct;
-use syn::Field;
 use syn::GenericParam;
 use syn::Generics;
-use syn::ImplItemConst;
 use syn::ImplItemFn;
-use syn::ImplItemType;
 use syn::ItemConst;
 use syn::ItemEnum;
 use syn::ItemFn;
@@ -20,19 +16,18 @@ use syn::ItemStruct;
 use syn::ItemTrait;
 use syn::ItemType;
 use syn::ItemUse;
-use syn::Local;
 use syn::PatStruct;
 use syn::PatTupleStruct;
 use syn::Path;
-use syn::TraitItemConst;
 use syn::TraitItemFn;
-use syn::TraitItemType;
 use syn::TypePath;
-use syn::Variant;
 use syn::visit;
 use syn::visit::Visit;
 
+use crate::fixes::imports;
 use crate::fixes::imports::ConditionalAttributes;
+use crate::fixes::imports::GateSource;
+use crate::fixes::imports::GateTracking;
 use crate::rust_syntax::PathAnchor;
 
 pub(super) struct InlinePathOccurrence {
@@ -84,20 +79,18 @@ impl InlinePathVisitor<'_> {
     fn is_active_generic(&self, name: &str) -> bool {
         self.generic_scopes.iter().any(|scope| scope.contains(name))
     }
+}
 
-    fn push_conditional_attributes(&mut self, attributes: &[Attribute]) -> usize {
-        let previous_len = self.conditional_attributes.len();
-        self.conditional_attributes
-            .extend(ConditionalAttributes::from_attributes(
-                self.text,
-                self.offsets,
-                attributes,
-            ));
-        previous_len
+impl GateTracking for InlinePathVisitor<'_> {
+    fn gate_source(&self) -> GateSource<'_> {
+        GateSource {
+            text:         self.text,
+            line_offsets: self.offsets,
+        }
     }
 
-    fn restore_conditional_attributes(&mut self, previous_len: usize) {
-        self.conditional_attributes.truncate(previous_len);
+    fn conditional_attributes_mut(&mut self) -> &mut ConditionalAttributes {
+        &mut self.conditional_attributes
     }
 }
 
@@ -220,6 +213,8 @@ impl InlinePathVisitor<'_> {
 }
 
 impl Visit<'_> for InlinePathVisitor<'_> {
+    imports::gate_tracking_visit!();
+
     fn visit_item_use(&mut self, _: &ItemUse) {
         // Skip use statements — they are imports, not inline code
     }
@@ -272,51 +267,42 @@ impl Visit<'_> for InlinePathVisitor<'_> {
     }
 
     fn visit_item_struct(&mut self, node: &ItemStruct) {
-        let previous_attributes = self.push_conditional_attributes(&node.attrs);
         if self.mod_depth == 0 {
             self.bare_type_names.insert(node.ident.to_string());
         }
         self.push_generics(&node.generics);
         visit::visit_item_struct(self, node);
         self.pop_generics();
-        self.restore_conditional_attributes(previous_attributes);
     }
 
     fn visit_item_enum(&mut self, node: &ItemEnum) {
-        let previous_attributes = self.push_conditional_attributes(&node.attrs);
         if self.mod_depth == 0 {
             self.bare_type_names.insert(node.ident.to_string());
         }
         self.push_generics(&node.generics);
         visit::visit_item_enum(self, node);
         self.pop_generics();
-        self.restore_conditional_attributes(previous_attributes);
     }
 
     fn visit_item_type(&mut self, node: &ItemType) {
-        let previous_attributes = self.push_conditional_attributes(&node.attrs);
         if self.mod_depth == 0 {
             self.bare_type_names.insert(node.ident.to_string());
         }
         self.push_generics(&node.generics);
         visit::visit_item_type(self, node);
         self.pop_generics();
-        self.restore_conditional_attributes(previous_attributes);
     }
 
     fn visit_item_trait(&mut self, node: &ItemTrait) {
-        let previous_attributes = self.push_conditional_attributes(&node.attrs);
         if self.mod_depth == 0 {
             self.bare_type_names.insert(node.ident.to_string());
         }
         self.push_generics(&node.generics);
         visit::visit_item_trait(self, node);
         self.pop_generics();
-        self.restore_conditional_attributes(previous_attributes);
     }
 
     fn visit_item_fn(&mut self, node: &ItemFn) {
-        let previous_attributes = self.push_conditional_attributes(&node.attrs);
         if self.mod_depth == 0 {
             self.bare_type_names.insert(node.sig.ident.to_string());
         }
@@ -328,45 +314,35 @@ impl Visit<'_> for InlinePathVisitor<'_> {
         self.push_generics(&node.sig.generics);
         visit::visit_item_fn(self, node);
         self.pop_generics();
-        self.restore_conditional_attributes(previous_attributes);
     }
 
     fn visit_impl_item_fn(&mut self, node: &ImplItemFn) {
-        let previous_attributes = self.push_conditional_attributes(&node.attrs);
         self.push_generics(&node.sig.generics);
         visit::visit_impl_item_fn(self, node);
         self.pop_generics();
-        self.restore_conditional_attributes(previous_attributes);
     }
 
     fn visit_trait_item_fn(&mut self, node: &TraitItemFn) {
-        let previous_attributes = self.push_conditional_attributes(&node.attrs);
         self.push_generics(&node.sig.generics);
         visit::visit_trait_item_fn(self, node);
         self.pop_generics();
-        self.restore_conditional_attributes(previous_attributes);
     }
 
     fn visit_item_const(&mut self, node: &ItemConst) {
-        let previous_attributes = self.push_conditional_attributes(&node.attrs);
         if self.mod_depth == 0 {
             self.bare_type_names.insert(node.ident.to_string());
         }
         visit::visit_item_const(self, node);
-        self.restore_conditional_attributes(previous_attributes);
     }
 
     fn visit_item_static(&mut self, node: &ItemStatic) {
-        let previous_attributes = self.push_conditional_attributes(&node.attrs);
         if self.mod_depth == 0 {
             self.bare_type_names.insert(node.ident.to_string());
         }
         visit::visit_item_static(self, node);
-        self.restore_conditional_attributes(previous_attributes);
     }
 
     fn visit_item_impl(&mut self, node: &ItemImpl) {
-        let previous_attributes = self.push_conditional_attributes(&node.attrs);
         // `impl Trait for Type` — the trait path is `ItemImpl::trait_`, a bare
         // `syn::Path` not visited as a `TypePath`. Inspect it directly.
         self.push_generics(&node.generics);
@@ -381,49 +357,6 @@ impl Visit<'_> for InlinePathVisitor<'_> {
         }
         visit::visit_item_impl(self, node);
         self.pop_generics();
-        self.restore_conditional_attributes(previous_attributes);
-    }
-
-    fn visit_field(&mut self, node: &Field) {
-        let previous_attributes = self.push_conditional_attributes(&node.attrs);
-        visit::visit_field(self, node);
-        self.restore_conditional_attributes(previous_attributes);
-    }
-
-    fn visit_variant(&mut self, node: &Variant) {
-        let previous_attributes = self.push_conditional_attributes(&node.attrs);
-        visit::visit_variant(self, node);
-        self.restore_conditional_attributes(previous_attributes);
-    }
-
-    fn visit_local(&mut self, node: &Local) {
-        let previous_attributes = self.push_conditional_attributes(&node.attrs);
-        visit::visit_local(self, node);
-        self.restore_conditional_attributes(previous_attributes);
-    }
-
-    fn visit_impl_item_const(&mut self, node: &ImplItemConst) {
-        let previous_attributes = self.push_conditional_attributes(&node.attrs);
-        visit::visit_impl_item_const(self, node);
-        self.restore_conditional_attributes(previous_attributes);
-    }
-
-    fn visit_impl_item_type(&mut self, node: &ImplItemType) {
-        let previous_attributes = self.push_conditional_attributes(&node.attrs);
-        visit::visit_impl_item_type(self, node);
-        self.restore_conditional_attributes(previous_attributes);
-    }
-
-    fn visit_trait_item_const(&mut self, node: &TraitItemConst) {
-        let previous_attributes = self.push_conditional_attributes(&node.attrs);
-        visit::visit_trait_item_const(self, node);
-        self.restore_conditional_attributes(previous_attributes);
-    }
-
-    fn visit_trait_item_type(&mut self, node: &TraitItemType) {
-        let previous_attributes = self.push_conditional_attributes(&node.attrs);
-        visit::visit_trait_item_type(self, node);
-        self.restore_conditional_attributes(previous_attributes);
     }
 
     fn visit_pat_tuple_struct(&mut self, node: &PatTupleStruct) {

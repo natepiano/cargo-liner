@@ -2861,11 +2861,15 @@ edition = "2024"
             .any(|line| line == "consider using: `pub(crate)`"),
         "the outer glob must widen the nested signature requirement to pub(crate): {report:#?}",
     );
+    // `pub(in crate::a)` is already restricted, and the applier rewrites only a
+    // bare `pub`, `pub(crate)`, and `pub(in crate)`. The widened boundary is
+    // advice for a person, not an edit mend will make.
     assert!(
-        target_finding
+        !target_finding
             .help
             .iter()
-            .any(|line| line == "this error is auto-fixable with `cargo mend --fix`")
+            .any(|line| line.contains("auto-fixable")),
+        "an already-restricted annotation must not advertise a fix: {report:#?}",
     );
     assert!(
         report.findings.iter().any(|finding| {
