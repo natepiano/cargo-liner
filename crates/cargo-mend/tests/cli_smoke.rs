@@ -1,3 +1,6 @@
+//! End-to-end coverage of the `cargo mend` command line: argument handling,
+//! report rendering, and exit codes, exercised against fixture workspaces.
+
 #![allow(
     clippy::expect_used,
     reason = "tests should panic on unexpected values"

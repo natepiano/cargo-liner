@@ -1,3 +1,6 @@
+//! Diagnostic coverage: each module drives a fixture workspace through a
+//! single mend diagnostic and asserts the findings and fixes it reports.
+
 #![allow(
     clippy::expect_used,
     reason = "tests should panic on unexpected values"

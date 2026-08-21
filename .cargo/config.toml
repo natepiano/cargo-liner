@@ -1,0 +1,10 @@
+# cargo-mend needs `#![feature(rustc_private)]`, which requires a nightly
+# compiler or this escape hatch on stable. Cargo has no per-package env, so at
+# the workspace root it applies to every crate here, not just cargo-mend.
+#
+# The exposure is that another crate could add a `#![feature(...)]` attribute
+# and compile on stable without anyone noticing. The `cargo-port-no-bootstrap`
+# CI job guards against that by building cargo-port with RUSTC_BOOTSTRAP
+# cleared, so an accidental nightly feature fails there.
+[env]
+RUSTC_BOOTSTRAP = "1"

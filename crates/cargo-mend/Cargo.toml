@@ -1,14 +1,15 @@
 [package]
-authors     = ["natepiano"]
-categories  = ["development-tools::cargo-plugins"]
-description = "Opinionated visibility auditing for Rust crates and workspaces"
-edition     = "2024"
-homepage    = "https://github.com/natepiano/cargo-mend"
-keywords    = ["cargo", "lints", "visibility"]
-license     = "MIT OR Apache-2.0"
-name        = "cargo-mend"
-repository  = "https://github.com/natepiano/cargo-mend"
-version     = "0.20.0-dev"
+authors.workspace    = true
+categories           = ["development-tools::cargo-plugins"]
+description          = "Opinionated visibility auditing for Rust crates and workspaces"
+edition.workspace    = true
+homepage             = "https://github.com/natepiano/cargo-liner/tree/main/crates/cargo-mend"
+keywords             = ["cargo", "lints", "visibility"]
+license.workspace    = true
+name                 = "cargo-mend"
+readme               = "README.md"
+repository.workspace = true
+version              = "0.20.0-dev"
 
 [[test]]
 name = "diagnostics"
@@ -17,34 +18,23 @@ path = "tests/diagnostics/mod.rs"
 [features]
 test-counters = []
 
-[lints.clippy]
-all                             = { level = "deny", priority = -1 }
-allow_attributes_without_reason = "deny"
-cargo                           = { level = "deny", priority = -1 }
-expect_used                     = "deny"
-multiple_crate_versions         = "allow"
-nursery                         = { level = "deny", priority = -1 }
-panic                           = "deny"
-pedantic                        = { level = "deny", priority = -1 }
-redundant_pub_crate             = "allow"                           # cargo mend is the visibility authority, not clippy
-self_named_module_files         = "deny"                            # use module/mod.rs (directory form) when a module has submodules
-unreachable                     = "deny"
-unwrap_used                     = "deny"
+[lints]
+workspace = true
 
 [dependencies]
-anyhow         = "1.0"
-cargo_metadata = "0.23"
-clap           = { version = "4.6.6", features = ["derive"] }
-dirs           = "6.0"
-proc-macro2    = { version = "1.0", features = ["span-locations"] }
-quote          = "1.0"
-rayon          = "1.12.0"
-regex          = "1.13.1"
-rustc-hash     = "2"
-serde          = { version = "1.0", features = ["derive"] }
-serde_json     = "1.0"
-syn            = { version = "3.0.3", features = ["full", "visit"] }
-tempfile       = "3.27.0"
-toml           = "1.1.4"
-toml_edit      = "0.25"
-walkdir        = "2.5"
+anyhow         = { workspace = true }
+cargo_metadata = { workspace = true }
+clap           = { workspace = true, features = ["derive"] }
+dirs           = { workspace = true }
+proc-macro2    = { workspace = true, features = ["span-locations"] }
+quote          = { workspace = true }
+rayon          = { workspace = true }
+regex          = { workspace = true }
+rustc-hash     = { workspace = true }
+serde          = { workspace = true, features = ["derive"] }
+serde_json     = { workspace = true }
+syn            = { workspace = true, features = ["full", "visit"] }
+tempfile       = { workspace = true }
+toml           = { workspace = true }
+toml_edit      = { workspace = true }
+walkdir        = { workspace = true }

@@ -7,14 +7,13 @@ with `tui_pane` promoted from a child of `cargo-port` to a peer crate.
 Both existing GitHub repos are archived in place with a `MOVED →` description.
 Git history from both is grafted into the new repo, so blame survives.
 
-**Status (2026-08-21):** Phases 0–2 complete and the release path is working.
-cargo-port is fully migrated: CI is green on all eight jobs, every local gate
-passes on stable 1.98, and `natepiano/cargo-port` is archived with a move
-notice. The shared release skill's dry-run gap is fixed, and `publish_path_pins`
-no longer carries a hardcoded version — `/release` resolves it from crates.io
-and halts when the pinned crate has unpublished changes (rows 16 and 18).
-`cargo-mend` is untouched and still develops in its own repo — Phase 3 moves it
-next.
+**Status (2026-08-21):** Phases 0–3 complete. cargo-port, tui_pane, and
+cargo-mend all live in `natepiano/cargo-liner` with grafted history. Every local
+gate is green on stable 1.98 — build, `clippy -D warnings`, 2482 tests, fmt,
+taplo, `cargo mend --fail-on-warn`, and `cargo install --path` for both binaries.
+`natepiano/cargo-port` is archived; **Phase 4 archives `natepiano/cargo-mend`**
+and is the only step left. The release path resolves its `tui_pane` pin from
+crates.io and halts on unpublished drift (rows 16 and 18).
 
 ## Target layout
 
@@ -103,7 +102,7 @@ all of them fail quietly if skipped.
 |---|---|---|---|
 | 1 | `RUSTC_BOOTSTRAP=1` becomes workspace-wide | `cargo-mend` needs it for `#![feature(rustc_private)]` in `src/main.rs`; it sets it repo-wide in `.cargo/config.toml [env]`. Cargo has no per-package env, so at the monorepo root it applies to `cargo-port` too. | `cargo-port` and `tui_pane` have no `#![feature]` attributes today, so the only risk is that one could be added and silently compile on stable. Keep the root `[env]` and add a CI job that builds `cargo-port` with `RUSTC_BOOTSTRAP` cleared. |
 | 2 | `build.rs` rerun triggers break | `cargo-mend/build.rs` emits `cargo:rerun-if-changed=.git/HEAD` and `.git/refs/heads`, resolved relative to the package root. At `crates/cargo-mend/` those paths stop existing. | Rewrite to `../../.git/HEAD` and `../../.git/refs/heads`. Without this the stale `MEND_GIT_HASH` / `MEND_BUILD_ID` bug those directives were added to prevent returns, and mend silently serves cached findings from an older build. |
-| 3 | `unsafe_code` and `undocumented_unsafe_blocks` | `cargo-port`'s workspace lints deny both; `cargo-mend` has neither today and has 4 `unsafe` sites in `src/main.rs`. | Add `// SAFETY:` comments and one reasoned `#[allow(unsafe_code, reason = …)]`. `missing_docs` costs nothing — `cargo-mend` is bin-only with no public API surface. |
+| 3 | `unsafe_code` and `undocumented_unsafe_blocks` | `cargo-port`'s workspace lints deny both; `cargo-mend` has neither today and has 4 `unsafe` sites in `src/main.rs`. | Add `// SAFETY:` comments and one reasoned `#[allow(unsafe_code, reason = …)]`. `missing_docs` was expected to cost nothing since `cargo-mend` is bin-only, but it denies at *crate* level: `missing documentation for the crate` fired on all four crate roots — `build.rs`, `src/main.rs`, `tests/cli_smoke.rs`, and `tests/diagnostics/mod.rs`. Each got a `//!` block. |
 | 4 | CI cost triples | `cargo-mend` jobs need `rust-src, rustc-dev, llvm-tools-preview`; `cargo-port` jobs need the Linux apt package set plus a Windows job. | One workflow with hana's `dorny/paths-filter` `changes` job. Shared `format`/`taplo` always run; each tool's build/test/clippy jobs gate on its own `crates/<name>/**` filter. |
 | 5 | Tag collision | Both repos have `v0.6.0`, `v0.5.0`, etc. A naive graft cannot hold both. | `git filter-repo --tag-rename` during each import: `v*` → `cargo-port-v*` and `cargo-mend-v*`. This also matches what `/release` generates going forward, so `git describe --match "${PACKAGE}-v*"` finds historical tags for changelog generation. Originals stay untouched in the archived repos. |
 | 6 | Release branches | `cargo-mend` has ~40 `release-0.x` remote branches, `cargo-port` ~20. | Import `main` only. They are fire-and-forget snapshots and remain reachable in the archived repos. |
@@ -236,6 +235,19 @@ Prerequisite: the in-flight `cargo-mend` work is committed and pushed.
    `.claude/scripts/release/install_verify.sh` is folded into it and deleted.
 7. Gates: the full Phase 1 gate list plus `cargo install --path crates/cargo-mend`
    and `/release cargo-mend 0.19.0 dry-run`.
+
+**As built.** All seven steps landed as written, with three deviations worth
+keeping: the repo has `merge.ff=only`, so step 2 needs an explicit `--no-ff`;
+cargo-mend's `.cargo/config.toml` had to move to the repo *root*, since a
+per-package `.cargo/` is ignored on workspace-root builds and `RUSTC_BOOTSTRAP`
+would have been silently unset; and `missing_docs` denies at crate level, not
+just on public API (row 3). The graft also carried in cargo-mend's own
+`.github/`, `Cargo.lock`, `rustfmt.toml`, `taplo.toml`, and `.gitignore`, all
+deleted — its rustfmt config differed from the root only in comment wording, and
+`cargo +nightly fmt` rewrote nothing after the merge, confirming they matched.
+The `Mend Check` CI job now installs from `crates/cargo-mend` rather than
+crates.io, so the workspace is linted by the tool it develops; the tradeoff is
+that breaking cargo-mend also fails that gate.
 
 ### Phase 4 — archive the cargo-mend repo
 

@@ -1,3 +1,9 @@
+//! `cargo mend` — opinionated visibility auditing for Rust crates and workspaces.
+//!
+//! Drives the compiler through `rustc_private` to resolve every path a crate
+//! exposes, then reports items whose visibility is wider than their use
+//! requires, along with the narrowing each one allows.
+
 #![feature(rustc_private)]
 
 extern crate rustc_driver;
@@ -313,30 +319,48 @@ mod tests {
     use crate::reporting::CLICOLOR_FORCE_ENV;
     use crate::reporting::ColorMode;
 
+    /// Restores an environment variable to its previous value on drop.
+    ///
+    /// `env::set_var` and `env::remove_var` are unsafe in edition 2024 because a
+    /// concurrent read from another thread is undefined behaviour. The suite runs
+    /// under `cargo nextest`, which gives every test its own process, so nothing
+    /// else observes these variables while a guard is alive.
     struct EnvGuard {
         key:      &'static str,
         previous: Option<OsString>,
     }
 
+    #[allow(
+        unsafe_code,
+        reason = "std::env mutation is unsafe in edition 2024; see EnvGuard"
+    )]
     impl EnvGuard {
         fn set(key: &'static str, value: &'static str) -> Self {
             let previous = env::var_os(key);
+            // SAFETY: one test per process, so no concurrent reader. See EnvGuard.
             unsafe { env::set_var(key, value) };
             Self { key, previous }
         }
 
         fn remove(key: &'static str) -> Self {
             let previous = env::var_os(key);
+            // SAFETY: one test per process, so no concurrent reader. See EnvGuard.
             unsafe { env::remove_var(key) };
             Self { key, previous }
         }
     }
 
+    #[allow(
+        unsafe_code,
+        reason = "std::env mutation is unsafe in edition 2024; see EnvGuard"
+    )]
     impl Drop for EnvGuard {
         fn drop(&mut self) {
             if let Some(previous) = &self.previous {
+                // SAFETY: one test per process, so no concurrent reader. See EnvGuard.
                 unsafe { env::set_var(self.key, previous) };
             } else {
+                // SAFETY: one test per process, so no concurrent reader. See EnvGuard.
                 unsafe { env::remove_var(self.key) };
             }
         }

@@ -32,6 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       cargo_port: ${{ steps.filter.outputs.cargo_port }}
+      cargo_mend: ${{ steps.filter.outputs.cargo_mend }}
     steps:
       - uses: actions/checkout@v6
 
@@ -50,6 +51,9 @@ jobs:
               - *shared
               - 'crates/cargo-port/**'
               - 'crates/tui_pane/**'
+            cargo_mend:
+              - *shared
+              - 'crates/cargo-mend/**'
 
   format:
     name: Format Check
@@ -186,6 +190,57 @@ jobs:
           RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
 
 
+  mend_build:
+    name: cargo-mend Build Check
+    needs: changes
+    if: needs.changes.outputs.cargo_mend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # cargo-mend links `rustc_private`, so it needs the compiler's own
+      # libraries, not just the toolchain.
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: rust-src, rustc-dev, llvm-tools-preview
+
+      - name: Install mold linker
+        uses: rui314/setup-mold@v1
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build all targets
+        run: cargo build -p cargo-mend --all-targets --all-features
+
+  mend_test:
+    name: cargo-mend Test Suite
+    needs: changes
+    if: needs.changes.outputs.cargo_mend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: rust-src, rustc-dev, llvm-tools-preview
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Install mold linker
+        uses: rui314/setup-mold@v1
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run test targets
+        run: cargo nextest run -p cargo-mend --all-features --tests
+
   mend:
     name: Mend Check
     runs-on: ubuntu-latest
@@ -212,8 +267,11 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
+      # Build the mend in this repo rather than pulling the last crates.io
+      # release, so the workspace is linted by the tool it develops. The
+      # tradeoff is that breaking cargo-mend also fails this gate.
       - name: Install cargo-mend
-        run: cargo install cargo-mend
+        run: cargo install --path crates/cargo-mend
         env:
           RUSTC_BOOTSTRAP: 1
 
@@ -223,6 +281,41 @@ jobs:
           CARGO_TERM_COLOR: never
 
   # Add repo-specific jobs after the standard jobs above.
+
+  # The workspace sets RUSTC_BOOTSTRAP=1 in .cargo/config.toml for cargo-mend's
+  # `#![feature(rustc_private)]`, and cargo has no per-package env, so every
+  # crate here can reach nightly features by accident. Cargo's `[env]` does not
+  # override a variable already present, so setting it to 0 here disables the
+  # escape hatch and a stray `#![feature(...)]` fails to compile.
+  no_bootstrap:
+    name: Stable Without Bootstrap
+    needs: changes
+    if: needs.changes.outputs.cargo_port == 'true'
+    runs-on: ubuntu-latest
+    env:
+      RUSTC_BOOTSTRAP: "0"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Install mold linker
+        uses: rui314/setup-mold@v1
+
+      - name: Install and cache Linux dependencies
+        uses: natepiano/cache-apt-pkgs-action@1a93bf1cfca3126459c9aea5af90d717f9ea216f
+        with:
+          packages: libudev-dev libasound2-dev pkg-config clang libwayland-dev libxkbcommon-dev
+          version: 1.0
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check without the nightly escape hatch
+        run: cargo check -p cargo-port -p tui_pane -p cargo-tile --all-targets
 
   # cargo-port ships to Windows users via `cargo install`, and the Unix-only
   # jobs above cannot see a `#[cfg]` mistake in a Windows code path. Compile

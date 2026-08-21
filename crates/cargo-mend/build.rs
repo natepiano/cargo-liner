@@ -1,3 +1,10 @@
+//! Build script for `cargo-mend`.
+//!
+//! Stamps the binary with the git commit and a per-build id that mend's
+//! findings cache is keyed on, records the sysroot the driver was built
+//! against, and on Unix points the linker and runtime loader at the
+//! `librustc_driver` and LLVM shared libraries that `rustc_private` needs.
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::io;
 use std::path::PathBuf;
@@ -11,8 +18,10 @@ fn main() {
     // output. New commits then ship with stale `MEND_GIT_HASH` / driver
     // build_id values — the binary works, but mend's findings cache is
     // keyed on the build_id and silently reuses stale results.
-    println!("cargo:rerun-if-changed=.git/HEAD");
-    println!("cargo:rerun-if-changed=.git/refs/heads");
+    // Resolved relative to the package root, which is `crates/cargo-mend/` in
+    // this workspace — the git directory is two levels up.
+    println!("cargo:rerun-if-changed=../../.git/HEAD");
+    println!("cargo:rerun-if-changed=../../.git/refs/heads");
     println!("cargo:rerun-if-changed=build.rs");
 
     if let Some(git_hash) = git_commit_hash() {
