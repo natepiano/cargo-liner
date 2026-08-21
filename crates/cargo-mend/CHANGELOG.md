@@ -36,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through both repairs.
 
 ### Fixed
+- A run whose only findings are errors no longer reports itself clean. The summary rolls up
+  warnings and `errors_block` reports errors separately, so an errors-only run left the summary's
+  row set empty and printed "summary: no issues found" directly beneath a block reporting 25 mend
+  errors. That run now prints no summary line at all.
 - `--fix` no longer reports a rollback it did not perform. `--fix-all` re-runs the fix pass until
   the fixable set stops shrinking, and each pass snapshotted only the files it was about to edit, so
   a failure in a later pass restored the tree to the previous pass's output while still printing

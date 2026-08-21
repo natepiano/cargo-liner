@@ -46,7 +46,9 @@ pub(crate) fn render_human_report(
         output.push_str(&errors_block);
         output.push('\n');
     }
-    output.push_str(&summary::summary_line(report, compiler_stats, color_mode));
-    output.push('\n');
+    if let Some(summary_line) = summary::summary_line(report, compiler_stats, color_mode) {
+        output.push_str(&summary_line);
+        output.push('\n');
+    }
     output
 }

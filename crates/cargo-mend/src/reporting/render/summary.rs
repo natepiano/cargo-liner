@@ -115,11 +115,18 @@ const fn fixable_category_count(
     n
 }
 
+/// The roll-up printed under the findings, or `None` when there is nothing to
+/// roll up.
+///
+/// Errors are reported by [`errors_block`] above this line and deliberately
+/// never appear here, so a run whose only findings are errors leaves `rows`
+/// empty. Saying "no issues found" there contradicts the block directly above
+/// it, so that run gets no summary line at all.
 pub(super) fn summary_line(
     report: &Report,
     compiler_stats: &CompilerStats,
     color_mode: ColorMode,
-) -> String {
+) -> Option<String> {
     let mut rows = Vec::new();
     let mend_fixables = mend_fixable_counts(report, Severity::Warning);
     let categories = fixable_category_count(mend_fixables, compiler_stats);
@@ -163,7 +170,13 @@ pub(super) fn summary_line(
     }
 
     if rows.is_empty() {
-        return format!("{} no issues found", color::dim(SUMMARY_LABEL, color_mode));
+        if report.summary.errors > 0 {
+            return None;
+        }
+        return Some(format!(
+            "{} no issues found",
+            color::dim(SUMMARY_LABEL, color_mode)
+        ));
     }
 
     // When fixables span multiple flag categories, append a `--fix-all` entry
@@ -178,7 +191,7 @@ pub(super) fn summary_line(
         });
     }
 
-    render_summary_rows(&rows, color_mode)
+    Some(render_summary_rows(&rows, color_mode))
 }
 
 fn render_summary_rows(rows: &[SummaryRow], color_mode: ColorMode) -> String {
@@ -588,6 +601,29 @@ mod tests {
         );
         // Errors must never show up in the "X fixable" summary count.
         assert!(!output.contains("mend errors -"));
+    }
+
+    /// A run whose only findings are errors must not report itself clean.
+    /// `summary_line` rolls up warnings and `errors_block` reports errors, so
+    /// an errors-only run leaves the summary's row set empty — which used to
+    /// print "no issues found" directly beneath the block that had just
+    /// reported 25 of them.
+    #[test]
+    fn errors_only_report_does_not_claim_no_issues_found() {
+        let output = reporting::render_human_report(
+            &errors_only_report(),
+            &compiler_stats(0, 0),
+            ColorMode::Disabled,
+        );
+
+        assert!(
+            output.contains("3 mend errors"),
+            "the errors block must still report the errors:\n{output}"
+        );
+        assert!(
+            !output.contains("no issues found"),
+            "a run with errors must not report itself clean:\n{output}"
+        );
     }
 
     /// Severity is stored per finding, and only two sites write
