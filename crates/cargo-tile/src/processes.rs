@@ -111,13 +111,24 @@ fn scan(system: &mut System, home: Option<&Path>) -> Vec<CargoProcess> {
             .with_cmd(UpdateKind::OnlyIfNotSet),
     );
 
+    // A process can carry the name `cargo` without being one, so the argv
+    // phase two just read is what settles it -- see `command_text`.
+    // Pruning here rather than at render time keeps a mislabelled
+    // `sccache` from claiming the compilers that belong to the cargo
+    // above it, which `attribute_compilers` is about to hand out.
+    census.cargo.retain(|pid| {
+        system
+            .process(*pid)
+            .is_some_and(|process| cargo_argv_start(process.cmd()).is_some())
+    });
+
     let counts = census.attribute_compilers();
     let mut dated: Vec<(u64, CargoProcess)> = census
         .cargo
         .iter()
         .filter_map(|pid| {
             let process = system.process(*pid)?;
-            Some((process.start_time(), row(process, *pid, &counts, home)))
+            Some((process.start_time(), row(process, *pid, &counts, home)?))
         })
         .collect();
     // Newest first, so a cargo command just fired off lands at the top.
@@ -240,8 +251,8 @@ fn row(
     pid: Pid,
     counts: &HashMap<Pid, Compiler>,
     home: Option<&Path>,
-) -> CargoProcess {
-    CargoProcess {
+) -> Option<CargoProcess> {
+    Some(CargoProcess {
         path:     process.cwd().map_or_else(
             || UNRESOLVED_PATH.to_string(),
             |cwd| home_relative(cwd, home),
@@ -250,8 +261,8 @@ fn row(
         start:    start_label(process.start_time()),
         duration: duration_label(process.run_time()),
         compiler: counts.get(&pid).cloned(),
-        command:  command_text(process.cmd()),
-    }
+        command:  command_text(process.cmd(), home)?,
+    })
 }
 
 /// Render `path` with the home directory collapsed to `~`.
@@ -293,35 +304,42 @@ fn duration_label(seconds: u64) -> String {
     }
 }
 
-/// Split argv into the program's bare name and the rest of the line.
+/// Split argv into the program's bare name and the rest of the line,
+/// answering `None` when argv does not name a cargo binary anywhere.
 ///
 /// A cargo binary installed under an alias still reads as `cargo`: the
 /// name on disk is an artifact of how it was wrapped, not of what the
 /// user typed.
-fn command_text(argv: &[OsString]) -> CommandText {
-    // A shim caught before it hands off still has its interpreter at
-    // argv[0] — `zsh /path/to/cargo check …`. Starting at the cargo
-    // binary instead renders that identically to the same command a
-    // moment later, once the real cargo is running it.
-    let start = argv.iter().position(is_cargo_binary).unwrap_or_default();
-    let program = argv.get(start).map_or_else(
-        || CARGO_DISPLAY_NAME.to_string(),
-        |first| {
-            if is_cargo_binary(first) {
-                CARGO_DISPLAY_NAME.to_string()
-            } else {
-                base_name(first)
-            }
-        },
-    );
+///
+/// The `None` case is what keeps the table honest about what a process
+/// is. [`Census::take`] classifies on [`sysinfo::Process::name`], and
+/// macOS does not always let sysinfo read a process's executable: when
+/// it cannot, the name reported is the parent's. Every `sccache` a build
+/// spawns is a child of cargo, so a whole burst of them can present as
+/// cargo at once. Their argv still reads `sccache /path/to/rustc …`,
+/// which names no cargo binary, and that is what settles it.
+fn command_text(argv: &[OsString], home: Option<&Path>) -> Option<CommandText> {
+    let start = cargo_argv_start(argv)?;
     let arguments = argv
         .iter()
         .skip(start + 1)
-        .map(|argument| argument.to_string_lossy().into_owned())
+        .map(|argument| home_relative(Path::new(argument), home))
         .collect::<Vec<_>>()
         .join(" ");
-    CommandText { program, arguments }
+    Some(CommandText {
+        program: CARGO_DISPLAY_NAME.to_string(),
+        arguments,
+    })
 }
+
+/// Where the cargo binary sits in argv, or `None` when none of it names
+/// one.
+///
+/// A shim caught before it hands off still has its interpreter at
+/// argv[0] — `zsh /path/to/cargo check …`. Starting at the cargo binary
+/// instead renders that identically to the same command a moment later,
+/// once the real cargo is running it.
+fn cargo_argv_start(argv: &[OsString]) -> Option<usize> { argv.iter().position(is_cargo_binary) }
 
 /// Whether an argv entry names a cargo binary, under any of the names one
 /// gets installed as.
@@ -339,6 +357,10 @@ fn base_name(argument: &OsString) -> String {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
 mod tests {
     use super::*;
 
@@ -381,7 +403,7 @@ mod tests {
             OsString::from("build"),
             OsString::from("--release"),
         ];
-        let text = command_text(&argv);
+        let text = command_text(&argv, None).expect("argv names a cargo binary");
         assert_eq!(text.program, "cargo");
         assert_eq!(text.arguments, "build --release");
     }
@@ -394,7 +416,7 @@ mod tests {
             OsString::from("check"),
             OsString::from("--all-targets"),
         ];
-        let text = command_text(&argv);
+        let text = command_text(&argv, None).expect("argv names a cargo binary");
         assert_eq!(text.program, "cargo");
         assert_eq!(text.arguments, "check --all-targets");
     }
@@ -405,6 +427,40 @@ mod tests {
             OsString::from("/Users/someone/.rustup/toolchains/stable/bin/cargo-tile-real"),
             OsString::from("build"),
         ];
-        assert_eq!(command_text(&argv).program, "cargo");
+        assert_eq!(
+            command_text(&argv, None)
+                .expect("argv names a cargo binary")
+                .program,
+            "cargo"
+        );
+    }
+
+    /// macOS can report an `sccache` with the name of the cargo that
+    /// spawned it, which is how one reaches [`command_text`] at all.
+    #[test]
+    fn a_compiler_wrapper_wearing_cargos_name_is_not_a_cargo_command() {
+        let argv = vec![
+            OsString::from("sccache"),
+            OsString::from("/Users/someone/.rustup/toolchains/stable/bin/rustc"),
+            OsString::from("--crate-name"),
+            OsString::from("bevy_transform"),
+        ];
+        assert!(command_text(&argv, None).is_none());
+    }
+
+    #[test]
+    fn arguments_collapse_the_home_prefix() {
+        let home = PathBuf::from("/Users/someone");
+        let argv = vec![
+            OsString::from("/Users/someone/.cargo/bin/cargo"),
+            OsString::from("check"),
+            OsString::from("--manifest-path"),
+            OsString::from("/Users/someone/rust/project/Cargo.toml"),
+        ];
+        let text = command_text(&argv, Some(&home)).expect("argv names a cargo binary");
+        assert_eq!(
+            text.arguments,
+            "check --manifest-path ~/rust/project/Cargo.toml"
+        );
     }
 }
