@@ -44,7 +44,6 @@ use crate::tui::interaction::ClickMode;
 use crate::tui::keymap;
 use crate::tui::keymap::OutputAction;
 use crate::tui::keymap::ProjectListAction;
-use crate::tui::keymap_ui;
 use crate::tui::panes;
 use crate::tui::panes::CapturedOutputRow;
 use crate::tui::panes::ColumnSelection;
@@ -466,7 +465,8 @@ fn dispatch_framework_overlay(app: &mut App, bind: &KeyBind, normalized: &KeyEve
 
     if overlay == FrameworkOverlayId::Keymap && app.framework.keymap_pane.is_capturing() {
         let command = app.framework.keymap_pane.handle_capture_key(*bind);
-        keymap_ui::handle_keymap_capture_command(app, command);
+        let keymap = Rc::clone(&app.framework_keymap);
+        tui_pane::handle_keymap_capture_command(app, &keymap, command);
         return true;
     }
 
@@ -498,18 +498,20 @@ fn dispatch_settings_overlay(app: &mut App, bind: &KeyBind) {
 }
 
 fn dispatch_keymap_overlay(app: &mut App, bind: &KeyBind, normalized: &KeyEvent) {
-    if let Some(action) = app.framework_keymap.overlay().action_for(bind) {
-        keymap_ui::dispatch_keymap_action(action, app);
+    let keymap = Rc::clone(&app.framework_keymap);
+    if let Some(action) = keymap.overlay().action_for(bind) {
+        tui_pane::dispatch_keymap_action(action, app, &keymap);
         return;
     }
-    keymap_ui::handle_keymap_navigation_key(app, normalized);
+    tui_pane::handle_keymap_navigation_key(app, &keymap, normalized.code);
 }
 
 fn dispatch_global_shortcuts_overlay(app: &mut App, bind: &KeyBind, normalized: &KeyEvent) {
-    if let Some(action) = app.framework_keymap.overlay().action_for(bind) {
+    let keymap = Rc::clone(&app.framework_keymap);
+    if let Some(action) = keymap.overlay().action_for(bind) {
         match action {
             OverlayAction::StartEdit => {
-                keymap_ui::edit_selected_global_shortcut(app);
+                tui_pane::edit_selected_global_shortcut(app, &keymap);
             },
             OverlayAction::Cancel => {
                 app.close_framework_overlay_if_open();

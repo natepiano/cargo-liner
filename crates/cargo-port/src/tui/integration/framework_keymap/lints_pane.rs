@@ -12,7 +12,7 @@ use super::lints_is_tabbable;
 use super::panes;
 
 /// `Pane<App>` + `Shortcuts<App>` host for the Lints pane.
-pub struct LintsPane;
+pub(super) struct LintsPane;
 
 impl Pane<App> for LintsPane {
     const APP_PANE_ID: AppPaneId = AppPaneId::Lints;

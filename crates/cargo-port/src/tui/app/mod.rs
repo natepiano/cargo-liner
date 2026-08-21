@@ -3433,7 +3433,6 @@ mod tests {
         use crate::tui::keymap::OutputAction;
         use crate::tui::keymap::PackageAction;
         use crate::tui::keymap::TargetsAction;
-        use crate::tui::keymap_ui;
         use crate::tui::panes;
         use crate::tui::panes::CiData;
         use crate::tui::panes::CiEmptyState;
@@ -4590,7 +4589,8 @@ mod tests {
             let _keymap_path = keymap::override_keymap_path_for_test(toml_path);
             let project = super::make_project(Some("demo"), "~/demo");
             let app = make_app(&[project]);
-            let generated = keymap_ui::current_keymap_toml(&app);
+            let keymap = Rc::clone(&app.framework_keymap);
+            let generated = tui_pane::keymap_toml(&app, &keymap);
             let expected = include_str!("../../../tests/assets/default-keymap.toml");
 
             assert_eq!(
@@ -4606,7 +4606,8 @@ mod tests {
             cargo_port_config.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
             let app = make_app_with_config_and_keymap_toml(&[project], &cargo_port_config, "");
 
-            let generated = keymap_ui::current_keymap_toml(&app);
+            let keymap = Rc::clone(&app.framework_keymap);
+            let generated = tui_pane::keymap_toml(&*app, &keymap);
 
             assert!(generated.contains("down           = \"down\""));
             assert!(generated.contains("left           = \"left\""));
@@ -4658,7 +4659,8 @@ mod tests {
             let project = super::make_project(Some("demo"), "~/demo");
             let mut app = make_app(&[project]);
 
-            keymap_ui::save_current_keymap_to_disk(&mut app);
+            let keymap = Rc::clone(&app.framework_keymap);
+            tui_pane::save_keymap_to_disk(&mut app, &keymap);
             let saved = fs::read_to_string(&toml_path).expect("read keymap toml");
 
             assert!(saved.contains("[finder]"));
@@ -4710,7 +4712,8 @@ mod tests {
             let project = super::make_project(Some("demo"), "~/demo");
             let mut app = make_app(&[project]);
 
-            keymap_ui::save_current_keymap_to_disk(&mut app);
+            let keymap = Rc::clone(&app.framework_keymap);
+            tui_pane::save_keymap_to_disk(&mut app, &keymap);
             let edited = "[output]\n# cancel = \"Esc\"\n";
             fs::write(&toml_path, edited).expect("rewrite keymap toml");
 

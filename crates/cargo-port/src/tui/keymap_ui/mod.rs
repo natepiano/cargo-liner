@@ -1,12 +1,11 @@
-//! Cargo-port app-side keymap-overlay orchestration: capture flow
-//! command routing + TOML save.
+//! Cargo-port's app-side half of the keymap overlay.
 //!
-//! Rendering and row-building live in the framework's
-//! [`tui_pane::KeymapPane::render_overlay`]; this module retains only
-//! the cargo-port-specific orchestration: dispatching overlay
-//! actions, navigation keys inside the popup, capture-command
-//! routing, conflict detection against currently-bound rows, and the
-//! TOML save / reload path.
+//! The overlay's rendering, its edit flow, and its TOML writer all
+//! live in the framework — [`tui_pane::KeymapPane`] and
+//! [`tui_pane::KeymapEditContext`]. What stays here is what only
+//! cargo-port knows: which binds vim mode generates rather than the
+//! user configuring them, and which bindings vim mode would collide
+//! with if it were turned on.
 mod controller;
 
 pub(super) use controller::*;

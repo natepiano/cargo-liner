@@ -555,7 +555,11 @@ dependencies = [
 name = "cargo-tile"
 version = "0.1.0"
 dependencies = [
+ "crossterm",
+ "dirs",
  "ratatui",
+ "serde",
+ "toml 1.1.2+spec-1.1.0",
  "tui_pane",
 ]
 

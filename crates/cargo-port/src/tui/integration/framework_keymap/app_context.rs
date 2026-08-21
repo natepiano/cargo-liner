@@ -1,3 +1,12 @@
+use std::path::Path;
+use std::path::PathBuf;
+
+use crossterm::event::KeyCode;
+use crossterm::event::KeyModifiers;
+use tui_pane::KeyBind;
+use tui_pane::KeySequence;
+use tui_pane::KeymapEditContext;
+
 use super::App;
 use super::AppContext;
 use super::CargoPortToastAction;
@@ -10,6 +19,8 @@ use super::PaneFocusState;
 use super::PaneId;
 use super::VimMode;
 use super::input;
+use crate::tui::keymap;
+use crate::tui::keymap_ui;
 
 /// Stable identifier for every app-side pane the framework keys its
 /// per-pane registries on.
@@ -158,6 +169,53 @@ impl KeymapUiContext for App {
     }
 
     fn keymap_pane_display_order(&self) -> &[AppPaneId] { KEYMAP_OVERLAY_PANE_ORDER }
+}
+
+/// Comment block the keymap writer puts above the generated tables.
+const KEYMAP_TOML_HEADER: &str = "\
+# cargo-port keymap configuration\n\
+# Edit bindings below. Format: action = \"key\" or \"modifier-key\"\n\
+# Modifiers: ctrl, alt, shift.  Examples: \"ctrl-r\", \"shift-tab\", \"q\"\n\
+# Chord steps are space-separated, e.g. \"g g\".\n\
+# Note: when vim navigation is enabled, vim navigation keys are reserved\n\
+#       for navigation and cannot be used as action keys.\n\n";
+
+impl KeymapEditContext for App {
+    type AppGlobals = AppGlobalAction;
+
+    const KEYMAP_TOML_HEADER: &'static str = KEYMAP_TOML_HEADER;
+
+    fn keymap_file_path(&self) -> Option<PathBuf> { self.keymap.path().map(Path::to_path_buf) }
+
+    fn set_keymap_inline_error(&mut self, message: String) {
+        self.overlays.set_inline_error(message);
+    }
+
+    fn clear_keymap_inline_error(&mut self) { self.overlays.clear_inline_error(); }
+
+    fn reload_keymap(&mut self, content: &str) {
+        let legacy =
+            keymap::load_keymap_from_str(content, self.config.current().tui.navigation_keys);
+        self.keymap.replace_current(legacy.keymap);
+        self.keymap.sync_stamp();
+        if let Err(err) = self.rebuild_framework_keymap_from_disk() {
+            self.show_timed_toast("Keymap reload failed", err);
+        }
+    }
+
+    /// Vim mode turns h/j/k/l into motion keys, so binding one to an
+    /// action would shadow the motion for as long as vim mode is on.
+    fn keymap_reserved_bind(&self, bind: KeyBind) -> Option<String> {
+        (self.config.navigation_keys().uses_vim()
+            && bind.mods == KeyModifiers::NONE
+            && matches!(bind.code, KeyCode::Char('h' | 'j' | 'k' | 'l')))
+        .then(|| format!("\"{}\" reserved for vim navigation", bind.display()))
+    }
+
+    fn keymap_generated_bind(&self, scope: &str, action_key: &str, bind: &KeySequence) -> bool {
+        self.config.navigation_keys().uses_vim()
+            && keymap_ui::is_generated_vim_extra(scope, action_key, bind)
+    }
 }
 
 #[cfg(test)]

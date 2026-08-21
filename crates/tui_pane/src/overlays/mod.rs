@@ -19,6 +19,7 @@
 mod constants;
 mod global_shortcuts;
 mod keymap;
+mod keymap_edit;
 mod keymap_ui;
 mod settings;
 
@@ -39,6 +40,13 @@ crate::action_enum! {
 pub use global_shortcuts::GlobalShortcutsPane;
 pub use keymap::KeymapCaptureCommand;
 pub use keymap::KeymapPane;
+pub use keymap_edit::KeymapEditContext;
+pub use keymap_edit::dispatch_keymap_action;
+pub use keymap_edit::edit_selected_global_shortcut;
+pub use keymap_edit::handle_keymap_capture_command;
+pub use keymap_edit::handle_keymap_navigation_key;
+pub use keymap_edit::keymap_toml;
+pub use keymap_edit::save_keymap_to_disk;
 pub use keymap_ui::KEYMAP_POPUP_MAX_HEIGHT;
 pub use keymap_ui::KeymapOverlayInputs;
 pub use keymap_ui::KeymapUiContext;

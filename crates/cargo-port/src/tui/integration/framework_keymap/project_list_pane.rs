@@ -17,7 +17,7 @@ use super::input;
 use super::project_list_is_tabbable;
 
 /// `Pane<App>` + `Shortcuts<App>` host for the `ProjectList` pane.
-pub struct ProjectListPane;
+pub(super) struct ProjectListPane;
 
 impl Pane<App> for ProjectListPane {
     const APP_PANE_ID: AppPaneId = AppPaneId::ProjectList;

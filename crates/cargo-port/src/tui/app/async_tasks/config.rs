@@ -1,4 +1,5 @@
 use std::fmt::Write as _;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -22,7 +23,6 @@ use crate::tui::keymap;
 use crate::tui::keymap::KeymapError;
 use crate::tui::keymap::KeymapErrorReason;
 use crate::tui::keymap::KeymapErrorReason::Parse;
-use crate::tui::keymap_ui;
 use crate::tui::startup_services::StartupEffect;
 use crate::tui::theme_roles;
 
@@ -80,7 +80,8 @@ impl App {
             self.show_keymap_warnings(&warnings);
         }
         if !result.missing_actions.is_empty() {
-            keymap_ui::save_current_keymap_to_disk(self);
+            let keymap = Rc::clone(&self.framework_keymap);
+            tui_pane::save_keymap_to_disk(self, &keymap);
             self.show_timed_toast(
                 "Keymap updated",
                 format!(
@@ -89,7 +90,8 @@ impl App {
                 ),
             );
         } else if keymap_missing {
-            keymap_ui::save_current_keymap_to_disk(self);
+            let keymap = Rc::clone(&self.framework_keymap);
+            tui_pane::save_keymap_to_disk(self, &keymap);
         }
     }
     pub(in crate::tui) fn maybe_reload_keymap_from_disk(&mut self) {
