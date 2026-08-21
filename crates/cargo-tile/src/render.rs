@@ -32,7 +32,6 @@ use tui_pane::StatusLine;
 use tui_pane::StatusLineGlobal;
 use tui_pane::StatusLineNote;
 use tui_pane::accent_color;
-use tui_pane::active_border_color;
 use tui_pane::default_pane_chrome;
 use tui_pane::draw_clipped;
 use tui_pane::error_color;
@@ -56,6 +55,7 @@ use crate::constants::COMPILER_SEPARATOR_WIDTH;
 use crate::constants::DURATION_COLUMN;
 use crate::constants::GROUP_GAP_HEIGHT;
 use crate::constants::GROUP_HEADER_HEIGHT;
+use crate::constants::MANAGED_COLUMN;
 use crate::constants::NO_PROCESSES_NOTE;
 use crate::constants::PID_COLUMN;
 use crate::constants::POPUP_CHROME_HEIGHT;
@@ -63,14 +63,18 @@ use crate::constants::POPUP_CHROME_WIDTH;
 use crate::constants::SETTINGS_POPUP_WIDTH;
 use crate::constants::START_COLUMN;
 use crate::constants::STATUS_LINE_HEIGHT;
-use crate::constants::TABLE_CELL;
+use crate::constants::SUMMARY_CELL_TITLE;
 use crate::constants::TABLE_COLUMN_SPACING;
 use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TABLE_HEADERS;
 use crate::constants::TILE_NUMBER_INDENT;
 use crate::globals::AppGlobalAction;
 use crate::processes::CargoProcess;
+use crate::processes::ManifestPath;
+use crate::roster::Roster;
+use crate::roster::TrackedRow;
 use crate::settings;
+use crate::tiles::TileContent;
 
 /// Draw one frame: panes fill the terminal above the status line, and an
 /// open overlay floats above both.
@@ -92,44 +96,83 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
 
 /// Draw the tile grid into the body above the status line.
 ///
-/// Cell one holds the running-cargo table; the rest carry their own
-/// number. [`crate::tiles`] decides where each one goes and how far
-/// through a transition it is, so what is left here is drawing.
+/// The summary cell carries one row per command; every other cell
+/// carries one command's own invocations, which is what the summary
+/// collapsed into that command's single row. [`crate::tiles`] decides
+/// where each cell goes and how far through a transition it is, so what
+/// is left here is drawing.
 ///
 /// Contents go down first and the frame over the top of them, because a
 /// border belongs to the grid rather than to either cell it divides:
 /// neighbours share one line, and [`GridLines`] is what knows the glyph
-/// each crossing wants.
+/// each crossing wants. [`SUMMARY_CELL_TITLE`] goes on through
+/// [`GridLines::add_titled`] for the same reason: a border a cell shares
+/// is drawn by the pass that owns it, so anything written there has to
+/// go in with it.
 fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect) {
-    app.tiles.set_area(area);
-    let placements = app
-        .tiles
-        .placements(area, app.loaded_config.config.tiles.initial_rows());
+    let initial_rows = app.loaded_config.config.tiles.initial_rows();
+    app.tiles.set_layout(area, initial_rows);
+    let ids = app.roster.ids();
+    app.tiles.sync(&ids, initial_rows);
+    let placements = app.tiles.placements(area, initial_rows);
     let mut grid_lines = GridLines::new(area);
     for placement in &placements {
         draw_clipped(frame.buffer_mut(), placement.frame, |buffer, inner| {
-            draw_contents(buffer, &app.processes, placement.index, inner);
+            draw_contents(buffer, &app.roster, placement.content, inner);
         });
-        grid_lines.add(placement.frame);
+        match placement.content {
+            TileContent::Summary => grid_lines.add_titled(placement.frame, SUMMARY_CELL_TITLE),
+            TileContent::Group(_) | TileContent::Empty(_) | TileContent::Gap => {
+                grid_lines.add(placement.frame);
+            },
+        }
     }
-    // Every tile draws in the unfocused shade: they are peers, and no
-    // tile carries focus. The theme's active border is still what a
-    // focused frame would light up to, so the accent is wired and
-    // waiting rather than spent on the whole grid.
+    // Each frame carries its own focus, so `GridLines` gives the lines
+    // the focused cell touches the theme's active shade and leaves
+    // every other line alone.
     grid_lines.render(frame.buffer_mut(), default_pane_chrome());
 }
 
-/// What a cell holds inside its borders: the running-cargo table for the
-/// cell that owns it, and the cell's own number for the rest, on the
-/// first row it has to give.
-fn draw_contents(buffer: &mut Buffer, processes: &[CargoProcess], index: usize, inner: Rect) {
-    if index == TABLE_CELL {
-        draw_process_table(buffer, inner, processes);
-        return;
+/// What a cell holds inside its borders.
+fn draw_contents(buffer: &mut Buffer, roster: &Roster, content: TileContent, inner: Rect) {
+    match content {
+        TileContent::Summary => draw_summary(buffer, roster, inner),
+        TileContent::Group(id) => draw_group(buffer, roster, id, inner),
+        TileContent::Empty(number) => draw_number(buffer, number, inner),
+        // The hole a finished command left, on its way out of the grid.
+        // Nothing goes in it: what the eye follows is the cells trading
+        // places with it until it reaches the end.
+        TileContent::Gap => (),
     }
+}
+
+/// The summary cell: one row per command, whatever each one is running
+/// underneath.
+///
+/// The manifest path stays out of it. A row here is already under the
+/// working directory heading its group, so the path says nothing new
+/// while costing the width the subcommand and its flags need.
+fn draw_summary(buffer: &mut Buffer, roster: &Roster, inner: Rect) {
+    let rows: Vec<&TrackedRow> = roster.groups().iter().map(|group| &group.lead).collect();
+    draw_process_table(buffer, inner, &rows, ManifestPath::Hidden);
+}
+
+/// One command's own cell: every invocation the summary put behind that
+/// command's single row, the command itself included.
+fn draw_group(buffer: &mut Buffer, roster: &Roster, id: u32, inner: Rect) {
+    let Some(group) = roster.groups().iter().find(|group| group.id == id) else {
+        return;
+    };
+    let rows: Vec<&TrackedRow> = group.rows().collect();
+    draw_process_table(buffer, inner, &rows, ManifestPath::Shown);
+}
+
+/// A cell opened with `+` that no command has claimed: its number, on
+/// the first row it has to give.
+fn draw_number(buffer: &mut Buffer, number: usize, inner: Rect) {
     Paragraph::new(Line::from(vec![
         Span::raw(TILE_NUMBER_INDENT),
-        Span::styled(index.to_string(), Style::default().fg(title_color())),
+        Span::styled(number.to_string(), Style::default().fg(title_color())),
     ]))
     .render(Rect { height: 1, ..inner }, buffer);
 }
@@ -137,19 +180,24 @@ fn draw_contents(buffer: &mut Buffer, processes: &[CargoProcess], index: usize, 
 /// The invocations sharing one working directory.
 struct PathGroup<'a> {
     /// The working directory, as it heads the group.
-    path:      &'a str,
+    path: &'a str,
     /// Every invocation running there, newest first.
-    processes: Vec<&'a CargoProcess>,
+    rows: Vec<&'a TrackedRow>,
 }
 
-/// Render the running-cargo table: one working-directory header per
-/// distinct path, with that directory's invocations tabulated beneath it.
+/// Render a cargo table: one working-directory header per distinct path,
+/// with that directory's invocations tabulated beneath it.
 ///
-/// Column widths are fitted across every process rather than per group,
-/// so the tables line up down the pane instead of stepping in and out as
+/// Column widths are fitted across every row rather than per group, so
+/// the tables line up down the cell instead of stepping in and out as
 /// the eye moves between them.
-fn draw_process_table(buffer: &mut Buffer, area: Rect, processes: &[CargoProcess]) {
-    if processes.is_empty() {
+fn draw_process_table(
+    buffer: &mut Buffer,
+    area: Rect,
+    rows: &[&TrackedRow],
+    manifest: ManifestPath,
+) {
+    if rows.is_empty() {
         Paragraph::new(vec![
             Line::from(""),
             Line::from(Span::styled(
@@ -161,10 +209,10 @@ fn draw_process_table(buffer: &mut Buffer, area: Rect, processes: &[CargoProcess
         return;
     }
 
-    // One column-label row for the whole pane. Every group's table is laid
-    // out with the same constraints and the same indent, so the labels
-    // stay over their columns without costing a row per group.
-    let constraints = fitted_constraints(processes);
+    // One column-label row for the whole cell. Every group's table is
+    // laid out with the same constraints and the same indent, so the
+    // labels stay over their columns without costing a row per group.
+    let constraints = fitted_constraints(rows);
     Table::new(Vec::<Row>::new(), constraints.iter().copied())
         .header(column_header())
         .column_spacing(TABLE_COLUMN_SPACING)
@@ -179,39 +227,42 @@ fn draw_process_table(buffer: &mut Buffer, area: Rect, processes: &[CargoProcess
     let mut remaining = area;
     remaining.y = remaining.y.saturating_add(TABLE_HEADER_HEIGHT);
     remaining.height = remaining.height.saturating_sub(TABLE_HEADER_HEIGHT);
-    for group in group_by_path(processes) {
+    for group in group_by_path(rows) {
         if remaining.height == 0 {
             break;
         }
-        let used = draw_path_group(buffer, remaining, &group, &constraints);
+        let used = draw_path_group(buffer, remaining, &group, &constraints, manifest);
         remaining.y = remaining.y.saturating_add(used);
         remaining.height = remaining.height.saturating_sub(used);
     }
 }
 
-/// Collect the processes by working directory, groups ordered by path.
+/// Collect the rows by working directory, groups ordered by path.
 ///
 /// Ordering the groups by recency instead would rank each one by its
-/// newest invocation, which moves a directory down the pane when the
+/// newest invocation, which moves a directory down the cell when the
 /// build holding its place finishes -- a reshuffle triggered by the most
 /// routine event on this screen. Path order never moves on its own.
-/// Recency is not lost: [`crate::processes::spawn`] hands back newest
-/// first and that carries into each group, so a build just fired off
-/// still heads its own directory.
+/// Recency is not lost: the rows arrive newest first and that carries
+/// into each group, so a build just fired off still heads its own
+/// directory.
 ///
-/// A linear search per process is enough: the grouping key is a path a
+/// A linear search per row is enough: the grouping key is a path a
 /// developer is building in, and there are only ever a handful of those
 /// at once.
-fn group_by_path(processes: &[CargoProcess]) -> Vec<PathGroup<'_>> {
-    let mut groups: Vec<PathGroup<'_>> = Vec::new();
-    for process in processes {
-        if let Some(group) = groups.iter_mut().find(|group| group.path == process.path) {
-            group.processes.push(process);
+fn group_by_path<'a>(rows: &[&'a TrackedRow]) -> Vec<PathGroup<'a>> {
+    let mut groups: Vec<PathGroup<'a>> = Vec::new();
+    for row in rows {
+        if let Some(group) = groups
+            .iter_mut()
+            .find(|group| group.path == row.process.path)
+        {
+            group.rows.push(row);
             continue;
         }
         groups.push(PathGroup {
-            path:      &process.path,
-            processes: vec![process],
+            path: &row.process.path,
+            rows: vec![row],
         });
     }
     groups.sort_by(|left, right| left.path.cmp(right.path));
@@ -225,6 +276,7 @@ fn draw_path_group(
     area: Rect,
     group: &PathGroup<'_>,
     constraints: &[Constraint],
+    manifest: ManifestPath,
 ) -> u16 {
     Paragraph::new(Line::from(vec![
         Span::raw(SECTION_HEADER_INDENT),
@@ -239,11 +291,11 @@ fn draw_path_group(
     );
 
     // No header on this table: the column labels are drawn once for the
-    // whole pane by `draw_process_table`, over these same constraints.
-    let rows = u16::try_from(group.processes.len()).unwrap_or(u16::MAX);
+    // whole cell by `draw_process_table`, over these same constraints.
+    let rows = u16::try_from(group.rows.len()).unwrap_or(u16::MAX);
     let table_height = area.height.saturating_sub(GROUP_HEADER_HEIGHT).min(rows);
     Table::new(
-        group.processes.iter().copied().map(process_row),
+        group.rows.iter().map(|row| process_row(row, manifest)),
         constraints.iter().copied(),
     )
     .column_spacing(TABLE_COLUMN_SPACING)
@@ -261,23 +313,25 @@ fn draw_path_group(
         .saturating_add(GROUP_GAP_HEIGHT)
 }
 
-/// Column widths fitted to the widest cell across every group.
+/// Column widths fitted to the widest cell across every row.
 ///
 /// `command` is left out of the fitting and takes whatever the other
 /// columns leave, so a long argument list truncates instead of pushing
 /// the columns that identify the invocation off the edge.
-fn fitted_constraints(processes: &[CargoProcess]) -> Vec<Constraint> {
+fn fitted_constraints(rows: &[&TrackedRow]) -> Vec<Constraint> {
     let mut widths = ColumnWidths::new(
         TABLE_HEADERS
             .iter()
             .map(|header| ColumnSpec::fit(cell_width(header)))
             .collect(),
     );
-    for process in processes {
+    for row in rows {
+        let process = &row.process;
         widths.observe_cell_usize(PID_COLUMN, process.pid.to_string().chars().count());
         widths.observe_cell_usize(START_COLUMN, process.start.chars().count());
         widths.observe_cell_usize(DURATION_COLUMN, process.duration.chars().count());
         widths.observe_cell_usize(COMPILER_COLUMN, compiler_width(process));
+        widths.observe_cell_usize(MANAGED_COLUMN, managed_text(process).chars().count());
     }
 
     let mut constraints = widths.to_constraints();
@@ -286,7 +340,7 @@ fn fitted_constraints(processes: &[CargoProcess]) -> Vec<Constraint> {
     constraints
 }
 
-/// The pane's one column-label row, drawn above the first group and
+/// The cell's one column-label row, drawn above the first group and
 /// aligned with every group's rows by [`indented`].
 fn column_header() -> Row<'static> {
     Row::new(
@@ -297,36 +351,60 @@ fn column_header() -> Row<'static> {
 }
 
 /// One table row, styled so the invocation reads before its metadata.
-fn process_row(process: &CargoProcess) -> Row<'static> {
+///
+/// A finished invocation goes flat grey for the seconds it lingers:
+/// nothing on the row is live any more, so nothing on it should still
+/// read as live.
+fn process_row(row: &TrackedRow, manifest: ManifestPath) -> Row<'static> {
+    let process = &row.process;
     let muted = Style::default().fg(label_color());
+    let program = if row.is_ended() {
+        muted
+    } else {
+        Style::default().fg(text_default())
+    };
+    let arguments = if row.is_ended() {
+        muted
+    } else {
+        Style::default().fg(success_color())
+    };
     Row::new(vec![
         Line::from(Span::styled(process.pid.to_string(), muted)),
         Line::from(Span::styled(process.start.clone(), muted)),
         Line::from(Span::styled(process.duration.clone(), muted)),
-        compiler_cell(process),
+        compiler_cell(row),
+        Line::from(Span::styled(managed_text(process), muted)),
         Line::from(vec![
-            Span::styled(
-                process.command.program.clone(),
-                Style::default().fg(text_default()),
-            ),
+            Span::styled(process.command.program.clone(), program),
             Span::raw(" "),
-            Span::styled(
-                process.command.arguments.clone(),
-                Style::default().fg(success_color()),
-            ),
+            Span::styled(process.command.line(manifest), arguments),
         ]),
     ])
 }
 
+/// The `sub` cell: how many cargo invocations this command is managing,
+/// and nothing at all for the rows that manage none.
+fn managed_text(process: &CargoProcess) -> String {
+    if process.managed == 0 {
+        return String::new();
+    }
+    process.managed.to_string()
+}
+
 /// The `compiler` cell: driver name in the active color, its count muted
 /// beside it, and nothing at all when no compile is in flight.
-fn compiler_cell(process: &CargoProcess) -> Line<'static> {
-    process
+fn compiler_cell(row: &TrackedRow) -> Line<'static> {
+    let name = if row.is_ended() {
+        Style::default().fg(label_color())
+    } else {
+        Style::default().fg(success_color())
+    };
+    row.process
         .compiler
         .as_ref()
         .map_or_else(Line::default, |compiler| {
             Line::from(vec![
-                Span::styled(compiler.name, Style::default().fg(success_color())),
+                Span::styled(compiler.name, name),
                 Span::styled(
                     format!("\u{d7}{}", compiler.count),
                     Style::default().fg(label_color()),
@@ -475,7 +553,7 @@ fn draw_settings(frame: &mut Frame, app: &mut App) {
         .min(area.height);
     let popup = PopupFrame {
         title: Some(" Settings ".to_string()),
-        border_color: active_border_color(),
+        border_color: title_color(),
         width,
         height,
     }

@@ -8,7 +8,6 @@ use tui_pane::PaneFocusState;
 use tui_pane::SECTION_HEADER_INDENT;
 use tui_pane::SECTION_ITEM_INDENT;
 use tui_pane::ViewportOverflow;
-use tui_pane::active_border_color;
 use tui_pane::keep_visible_scroll_offset;
 use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
@@ -48,7 +47,7 @@ pub(in crate::tui) fn render_sccache_popup(frame: &mut Frame<'_>, app: &mut App)
     let height = popup_height(lines.len(), frame.area().height);
     let popup = PopupFrame {
         title: Some(" Sccache Stats ".to_string()),
-        border_color: active_border_color(),
+        border_color: title_color(),
         width,
         height,
     }

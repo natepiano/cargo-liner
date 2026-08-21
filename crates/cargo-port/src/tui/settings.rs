@@ -24,7 +24,6 @@ use tui_pane::SettingsStore;
 use tui_pane::ToastDuration;
 use tui_pane::ToastSettings;
 use tui_pane::ViewportOverflow;
-use tui_pane::active_border_color;
 use tui_pane::error_color;
 use tui_pane::inline_error_color;
 use tui_pane::keep_visible_scroll_offset;
@@ -1479,7 +1478,7 @@ pub(super) fn render_settings_pane_body(
 
     let popup = PopupFrame {
         title:        Some(" Settings ".to_string()),
-        border_color: active_border_color(),
+        border_color: title_color(),
         width:        SETTINGS_POPUP_WIDTH,
         height:       inputs.popup_height,
     }

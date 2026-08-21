@@ -19,7 +19,7 @@ use crate::config::LoadedConfig;
 use crate::constants::KEYMAP_TOML_HEADER;
 use crate::globals::AppGlobalAction;
 use crate::keymap;
-use crate::processes::CargoProcess;
+use crate::roster::Roster;
 use crate::tiles::TileGrid;
 
 /// App-pane sections the keymap overlay walks, in display order. Every
@@ -52,9 +52,9 @@ pub(crate) struct App {
     /// Theme-resolution note from startup (a configured theme id that
     /// no file or built-in supplies), surfaced in the settings overlay.
     pub(crate) startup_note:  Option<String>,
-    /// The cargo invocations the last scan found. Replaced wholesale by
-    /// [`crate::processes::spawn`]'s background scanner.
-    pub(crate) processes:     Vec<CargoProcess>,
+    /// The commands the display is holding: what the last scan found,
+    /// plus whatever has finished and is still fading out of it.
+    pub(crate) roster:        Roster,
     /// The tile grid: how many cells the pane holds and the motion
     /// between one arrangement and the next.
     pub(crate) tiles:         TileGrid,
@@ -78,7 +78,7 @@ impl App {
             keymap: Rc::new(keymap),
             loaded_config,
             startup_note,
-            processes: Vec::new(),
+            roster: Roster::new(),
             tiles: TileGrid::new(),
             inline_error: None,
             started: Instant::now(),

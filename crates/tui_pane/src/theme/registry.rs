@@ -212,13 +212,13 @@ impl ThemeRegistry {
 )]
 mod tests {
     use super::*;
-    use crate::theme::fallback_theme;
+    use crate::theme;
 
     /// Stand-in for an app-supplied variant. The id is stamped into
     /// `roles` so two variants of the same appearance stay
     /// distinguishable by value.
     fn dummy_variant(id: &str, appearance: Appearance) -> ThemeVariant {
-        let mut theme = fallback_theme(appearance);
+        let mut theme = theme::fallback_theme(appearance);
         theme.roles.insert(id.to_owned(), theme.text.default);
         ThemeVariant {
             id: ThemeId::new(id),

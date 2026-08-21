@@ -15,7 +15,6 @@ use super::fallback_toast_palette;
 use super::format;
 use super::layout::ToastPaneFocus;
 use crate::ACTIVITY_SPINNER;
-use crate::active_border_color;
 use crate::inactive_border_color;
 use crate::inactive_title_color;
 use crate::title_color;
@@ -58,7 +57,7 @@ pub(super) fn render_toast(
         ToastStyle::Warning => Style::default().fg(palette.warning),
         ToastStyle::Normal => {
             if focused {
-                Style::default().fg(active_border_color())
+                Style::default().fg(title_color())
             } else {
                 Style::default().fg(inactive_border_color())
             }

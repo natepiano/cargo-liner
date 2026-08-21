@@ -28,7 +28,6 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 
 pub use self::accessors::accent_color;
-pub use self::accessors::active_border_color;
 pub use self::accessors::active_focus_color;
 pub use self::accessors::error_color;
 pub use self::accessors::finder_match_bg;
@@ -85,9 +84,10 @@ pub enum Appearance {
 /// Pane borders and titles (focused vs unfocused).
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct PaneChromeTheme {
-    /// Border of the currently focused pane.
-    pub active_border:   StyleSpec,
-    /// Border of unfocused panes.
+    /// Border of every pane.
+    ///
+    /// Focus is carried by the background tint alone, so a pane's
+    /// border shade never changes with it.
     pub inactive_border: StyleSpec,
     /// Title of the currently focused pane.
     pub active_title:    StyleSpec,

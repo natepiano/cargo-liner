@@ -18,7 +18,6 @@ appearance = "dark"
 name       = "Default Dark"
 
 [variants.pane_chrome]
-active_border   = "Yellow"
 active_title    = { color = "Yellow", bold = true }
 inactive_border = "DarkGray"
 inactive_title  = "White"

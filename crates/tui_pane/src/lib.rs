@@ -225,7 +225,6 @@ pub use theme::ThemeVariant;
 pub use theme::ThemeVariantFile;
 pub use theme::ThemesWatch;
 pub use theme::accent_color;
-pub use theme::active_border_color;
 pub use theme::active_focus_color;
 pub use theme::ensure_theme_state_installed;
 pub use theme::error_color;

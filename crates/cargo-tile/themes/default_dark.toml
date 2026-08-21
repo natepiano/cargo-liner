@@ -4,9 +4,9 @@
 # Rust constructor `default_dark()` in src/theme/builtins.rs produces
 # the same values.
 #
-# `inactive_border` is the shade the whole tile grid draws in — tiles
-# are peers, so none of them is focused. `active_border` is reserved
-# for a tile that carries focus.
+# `inactive_border` is the shade the whole tile grid draws in, focused
+# or not: a border is a cell two tiles share, so focus is carried by the
+# background tint under a tile's contents instead of by its border.
 #
 # Copy this file into ~/.config/cargo-tile/themes/ as a starting point
 # for a custom theme; rename the variant so it registers alongside the
@@ -23,7 +23,6 @@ appearance = "dark"
 name       = "Default Dark"
 
 [variants.pane_chrome]
-active_border   = "Yellow"
 active_title    = { color = "Yellow", bold = true }
 inactive_border = "DarkGray"
 inactive_title  = "White"

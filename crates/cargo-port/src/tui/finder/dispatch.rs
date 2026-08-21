@@ -22,7 +22,6 @@ use ratatui::widgets::TableState;
 use tui_pane::AppContext;
 use tui_pane::FocusedPane;
 use tui_pane::accent_color;
-use tui_pane::active_border_color;
 use tui_pane::finder_match_bg;
 use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
@@ -333,7 +332,7 @@ pub(in crate::tui) fn render_finder_pane_body(
 
     let popup = PopupFrame {
         title:        Some(title),
-        border_color: active_border_color(),
+        border_color: title_color(),
         width:        popup_width,
         height:       FINDER_POPUP_HEIGHT,
     }

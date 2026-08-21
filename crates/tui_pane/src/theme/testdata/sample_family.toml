@@ -12,7 +12,6 @@ appearance = "dark"
 name       = "Sample Dark"
 
 [variants.pane_chrome]
-active_border   = "White"
 active_title    = { color = "White", bold = true }
 inactive_border = "DarkGray"
 inactive_title  = "Gray"

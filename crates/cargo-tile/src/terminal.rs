@@ -14,12 +14,18 @@ use std::sync::mpsc::Receiver;
 use std::sync::mpsc::RecvTimeoutError;
 use std::thread;
 use std::time::Duration;
+use std::time::Instant;
 
 use crossterm::event;
+use crossterm::event::DisableMouseCapture;
+use crossterm::event::EnableMouseCapture;
 use crossterm::event::Event;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
+use crossterm::event::MouseButton;
+use crossterm::event::MouseEvent;
+use crossterm::event::MouseEventKind;
 use crossterm::execute;
 use crossterm::terminal::EnterAlternateScreen;
 use crossterm::terminal::LeaveAlternateScreen;
@@ -27,6 +33,7 @@ use crossterm::terminal::disable_raw_mode;
 use crossterm::terminal::enable_raw_mode;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use ratatui::layout::Position;
 use tui_pane::FRAME_POLL_MILLIS;
 use tui_pane::FrameworkOverlayId;
 use tui_pane::GlobalAction;
@@ -40,9 +47,14 @@ use tui_pane::overlay_is_in_text_mode;
 use crate::app::App;
 use crate::config;
 use crate::constants::BINARY_NAME;
+use crate::constants::FULL_REPAINT_SECONDS;
+use crate::constants::REPAINT_SENTINEL;
 use crate::globals::AppGlobalAction;
+use crate::interaction;
+use crate::iterm2;
+use crate::iterm2::ProfileSwitch;
 use crate::processes;
-use crate::processes::CargoProcess;
+use crate::processes::CargoGroup;
 use crate::render;
 use crate::settings;
 use crate::settings::Step;
@@ -53,6 +65,8 @@ use crate::theme;
 pub(crate) fn run() -> ExitCode {
     let loaded_config = config::load();
     let startup_note = theme::install(&loaded_config.config, config::themes_dir().as_deref());
+    // Read before the config is handed to the app, which takes it.
+    let iterm2_profile = loaded_config.config.appearance.iterm2_profile.clone();
     let mut app = match App::new(loaded_config, startup_note) {
         Ok(app) => app,
         Err(error) => {
@@ -61,8 +75,9 @@ pub(crate) fn run() -> ExitCode {
         },
     };
 
-    let mut terminal = match setup_terminal() {
-        Ok(terminal) => terminal,
+    iterm2::install_panic_restore();
+    let (mut terminal, profile_switch) = match setup_terminal(&iterm2_profile) {
+        Ok(started) => started,
         Err(error) => {
             eprintln!("cargo-tile: terminal setup: {error}");
             return ExitCode::FAILURE;
@@ -70,7 +85,7 @@ pub(crate) fn run() -> ExitCode {
     };
     let loop_result = event_loop(&mut terminal, &mut app);
     let restart_requested = app.framework.restart_requested();
-    let restore_result = restore_terminal(&mut terminal);
+    let restore_result = restore_terminal(&mut terminal, profile_switch.as_ref());
 
     if restart_requested && loop_result.is_ok() && restore_result.is_ok() {
         restart_self();
@@ -86,18 +101,41 @@ pub(crate) fn run() -> ExitCode {
 }
 
 /// Enter raw mode and the alternate screen so the app owns the whole
-/// terminal.
-fn setup_terminal() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
+/// terminal, and turn mouse reporting on so a click can pick a cell.
+///
+/// The iTerm2 profile is taken last, once the terminal is otherwise
+/// ready: a failure before that point returns without having changed
+/// anything the caller would then have to put back.
+fn setup_terminal(
+    iterm2_profile: &str,
+) -> io::Result<(Terminal<CrosstermBackend<Stdout>>, Option<ProfileSwitch>)> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    Terminal::new(CrosstermBackend::new(stdout))
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    let profile_switch = ProfileSwitch::enter(iterm2_profile, &mut stdout)?;
+    Ok((
+        Terminal::new(CrosstermBackend::new(stdout))?,
+        profile_switch,
+    ))
 }
 
 /// Undo [`setup_terminal`], leaving the shell as it was found.
-fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> {
+///
+/// The profile goes back after the alternate screen does, so the shell
+/// coming back into view is already wearing it.
+fn restore_terminal(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    profile_switch: Option<&ProfileSwitch>,
+) -> io::Result<()> {
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
+    if let Some(switch) = profile_switch {
+        switch.leave(terminal.backend_mut())?;
+    }
     terminal.show_cursor()
 }
 
@@ -112,6 +150,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
     let input = spawn_input_thread();
     let scans = processes::spawn();
     let mut dirty = true;
+    let mut repainted = Instant::now();
     while !app.framework.quit_requested() && !app.framework.restart_requested() {
         if dirty {
             // Re-borrowed every frame: rebinding a key in the keymap
@@ -132,7 +171,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
                     }
                 }
                 if resized == Resized::Yes {
-                    force_repaint(terminal)?;
+                    force_repaint(terminal);
                 }
                 dirty = true;
             },
@@ -145,9 +184,25 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
         if drain_scans(app, &scans) {
             dirty = true;
         }
+        // A finished row holds its grey for the configured spell and
+        // then goes, taking its cell with it. Nothing external announces
+        // that moment, so the poll is what notices it has arrived.
+        if app
+            .roster
+            .expire(Instant::now(), app.loaded_config.config.tiles.fade())
+        {
+            dirty = true;
+        }
         // A grid in motion repaints every poll until it settles, which
         // is the one thing here that draws without an event behind it.
         if app.tiles.tick() {
+            dirty = true;
+        }
+        // Whatever else has written to this terminal is written over
+        // here, because a difference-based draw would leave it standing.
+        if repainted.elapsed() >= Duration::from_secs(FULL_REPAINT_SECONDS) {
+            force_repaint(terminal);
+            repainted = Instant::now();
             dirty = true;
         }
     }
@@ -158,18 +213,12 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
 ///
 /// Only the newest matters: an older scan queued behind it describes a
 /// world that has already moved on.
-fn drain_scans(app: &mut App, scans: &Receiver<Vec<CargoProcess>>) -> bool {
-    let mut latest: Option<Vec<CargoProcess>> = None;
+fn drain_scans(app: &mut App, scans: &Receiver<Vec<CargoGroup>>) -> bool {
+    let mut latest: Option<Vec<CargoGroup>> = None;
     while let Ok(scan) = scans.try_recv() {
         latest = Some(scan);
     }
-    match latest {
-        Some(scan) if scan != app.processes => {
-            app.processes = scan;
-            true
-        },
-        _ => false,
-    }
+    latest.is_some_and(|scan| app.roster.observe(scan, Instant::now()))
 }
 
 /// Read events on their own thread and forward them to the render loop.
@@ -207,21 +256,55 @@ fn apply_event(app: &mut App, event: &Event) -> Resized {
             handle_key(app, key);
             Resized::No
         },
+        Event::Mouse(mouse) => {
+            handle_mouse(app, mouse);
+            Resized::No
+        },
         Event::Resize(..) => Resized::Yes,
         _ => Resized::No,
     }
 }
 
-/// Clear the screen and reset the back buffer so the next draw writes
-/// every cell.
+/// Apply one mouse event.
 ///
-/// [`Terminal::resize`] rather than [`Terminal::clear`]: `clear` opens
-/// with a `get_cursor_position` query, which writes a cursor-report
-/// escape and then blocks reading the answer out of the same stdin the
-/// input thread is reading.
-fn force_repaint(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> {
-    let area = terminal.size()?.into();
-    terminal.resize(area)
+/// Only a left press does anything. The position is recorded from every
+/// event regardless, which is what lets the framework answer where the
+/// pointer was without an event of its own to ask.
+fn handle_mouse(app: &mut App, mouse: MouseEvent) {
+    tui_pane::record_mouse_pos(mouse.column, mouse.row);
+    if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
+        return;
+    }
+    interaction::handle_click(app, Position::new(mouse.column, mouse.row));
+}
+
+/// Reset the buffer the next frame is compared against, so that draw
+/// writes every cell.
+///
+/// Neither [`Terminal::clear`] nor [`Terminal::resize`]: both blank the
+/// screen before the repaint lands, and at this cadence that blank is a
+/// visible blink every couple of seconds. Blanking is also the half of
+/// the job that is not needed -- what forces the redraw is the *other*
+/// thing those two do, resetting the buffer the next frame is compared
+/// against.
+///
+/// That reset is reachable on its own. Marking every cell of the buffer
+/// the next frame will be compared against with [`REPAINT_SENTINEL`]
+/// makes all of them differ, so the next draw writes all of them, in
+/// one pass, over what is already there. Same repaint, no blank in
+/// front of it.
+///
+/// [`Terminal::swap_buffers`] is what moves the filled buffer into the
+/// comparison slot; the frame renders into the other one.
+fn force_repaint(terminal: &mut Terminal<CrosstermBackend<Stdout>>) {
+    let buffer = terminal.current_buffer_mut();
+    let area = buffer.area;
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            buffer[(x, y)].modifier.insert(REPAINT_SENTINEL);
+        }
+    }
+    terminal.swap_buffers();
 }
 
 /// Dispatch ladder: an open overlay short-circuits, otherwise the key

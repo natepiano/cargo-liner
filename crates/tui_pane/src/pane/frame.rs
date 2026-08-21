@@ -41,8 +41,8 @@ use ratatui::text::Span;
 use ratatui::widgets::Widget;
 use unicode_width::UnicodeWidthStr;
 
+use super::chrome;
 use super::chrome::PaneChrome;
-use super::chrome::focused_pane_fill;
 use super::constants::BORDER_LINE_WIDTH;
 
 /// Where one pane's box sits for a single frame.
@@ -69,8 +69,8 @@ pub struct PaneFrame {
     shift:   i32,
     /// Bounds the drawn pane is cut off at.
     clip:    Rect,
-    /// Whether the pane holds focus, which decides the shade its lines
-    /// draw in and whether its contents sit on the focus tint.
+    /// Whether the pane holds focus, which decides whether its contents
+    /// sit on the focus tint.
     focused: bool,
 }
 
@@ -102,8 +102,7 @@ impl PaneFrame {
     ///
     /// Focus is carried by the frame rather than passed alongside it
     /// because everything that reads it -- the fill under the contents,
-    /// the shade of the lines, the shade of the title -- is handed the
-    /// frame and nothing else.
+    /// the shade of the title -- is handed the frame and nothing else.
     #[must_use]
     pub const fn with_focus(self, focused: bool) -> Self { Self { focused, ..self } }
 
@@ -197,29 +196,31 @@ pub fn draw_clipped(buffer: &mut Buffer, frame: PaneFrame, draw: impl FnOnce(&mu
         return;
     }
     if frame.is_still() {
-        fill_focus(buffer, frame, inner);
+        fill_pane(buffer, frame, inner);
         draw(buffer, inner);
         return;
     }
     let mut scratch = Buffer::empty(frame.rect);
-    fill_focus(&mut scratch, frame, inner);
+    fill_pane(&mut scratch, frame, inner);
     draw(&mut scratch, inner);
     blit(buffer, &scratch, frame);
 }
 
-/// Lay the focus tint under a focused pane's contents.
+/// Lay a pane's tint down under its contents.
 ///
 /// A pane drawn this way has no [`Block`] to carry the tint as its own
 /// background, so it goes down first instead. What the pane draws over
 /// it keeps it: a cell's style is patched rather than replaced, so a
 /// span setting only a foreground leaves the tint showing through.
 ///
+/// Only [`inner`](PaneFrame::inner) is filled, so the tint stops
+/// inside the ring of border cells and the lines [`GridLines`] draws
+/// keep the terminal's own background. A border is a cell two panes
+/// share; tinting it would hand that cell to whichever pane drew last.
+///
 /// [`Block`]: ratatui::widgets::Block
-fn fill_focus(buffer: &mut Buffer, frame: PaneFrame, inner: Rect) {
-    if !frame.focused {
-        return;
-    }
-    if let Some(fill) = focused_pane_fill() {
+fn fill_pane(buffer: &mut Buffer, frame: PaneFrame, inner: Rect) {
+    if let Some(fill) = chrome::pane_fill(frame.focused) {
         buffer.set_style(inner, fill);
     }
 }
@@ -291,21 +292,14 @@ impl Sides {
 #[derive(Clone, Copy)]
 struct GridCell {
     /// The sides a line leaves this cell by.
-    sides:   Sides,
-    /// Whether a focused pane put any of them there.
-    ///
-    /// A focused pane wins the shade of every line it touches, the one
-    /// it shares with an unfocused neighbour included, so it reads as
-    /// one lit box rather than a box with two dim sides.
-    focused: bool,
+    sides: Sides,
 }
 
 impl GridCell {
     /// A cell nothing reaches.
     const fn empty() -> Self {
         Self {
-            sides:   Sides::none(),
-            focused: false,
+            sides: Sides::none(),
         }
     }
 }
@@ -368,6 +362,10 @@ impl GridLines {
     /// Edges are added rather than assigned, so where two panes share a
     /// border the second one asks for nothing the first has not already
     /// put there and the boundary stays one line wide.
+    ///
+    /// Focus never enters into it. Every line draws in one shade, so a
+    /// cell two panes share belongs to the boundary rather than to
+    /// either side of it, and the grid comes out as one lattice.
     pub fn add(&mut self, frame: PaneFrame) {
         let rect = frame.rect;
         if rect.is_empty() {
@@ -463,10 +461,11 @@ impl GridLines {
     /// Draw every cell a line reaches, then write the titles over them
     /// and fit the labels around what the titles took.
     ///
-    /// `chrome` decides each line's shade: the active border style for a
-    /// line a focused pane touches, the inactive one for the rest.
+    /// Every line draws in `chrome`'s inactive border style. A border is
+    /// a cell two panes share, so lighting it for the focused one takes
+    /// the boundary away from the other; focus is the background tint
+    /// under the pane's contents instead.
     pub fn render(&self, buffer: &mut Buffer, chrome: PaneChrome) {
-        let focused_line = focus_tinted(chrome.active_border);
         for y in self.area.top()..self.area.bottom() {
             for x in self.area.left()..self.area.right() {
                 let Some(cell) = self.cells.get(self.index(x, y)).copied() else {
@@ -475,11 +474,9 @@ impl GridLines {
                 let Some(glyph) = glyph(cell.sides) else {
                     continue;
                 };
-                buffer[(x, y)].set_symbol(glyph).set_style(if cell.focused {
-                    focused_line
-                } else {
-                    chrome.inactive_border
-                });
+                buffer[(x, y)]
+                    .set_symbol(glyph)
+                    .set_style(chrome.inactive_border);
             }
         }
         let mut written = vec![false; self.cells.len()];
@@ -569,25 +566,26 @@ impl GridLines {
     fn write_overlay(buffer: &mut Buffer, chrome: PaneChrome, overlay: &Overlay, row: Rect) {
         let focused = overlay.frame.focused;
         let style = overlay.style.unwrap_or_else(|| chrome.title_style(focused));
-        let style = if focused { focus_tinted(style) } else { style };
         Line::from(Span::styled(overlay.text.as_str(), style)).render(row, buffer);
     }
 
-    /// Union `sides` into the cell the pane puts at (`x`, `y`) -- where
-    /// its shift moves that cell to, and nowhere at all when the shift
-    /// carries it out of the pane's clip.
+    /// Union `sides` into the cell the pane puts at (`x`, `y`).
     fn mark(&mut self, frame: PaneFrame, x: u16, y: u16, sides: Sides) {
-        let Some(y) = frame.shifted_row(y) else {
-            return;
-        };
+        if let Some(cell) = self.cell_at(frame, x, y) {
+            cell.sides = cell.sides.merge(sides);
+        }
+    }
+
+    /// The cell the pane puts at (`x`, `y`) -- where its shift moves
+    /// that cell to, and `None` at all when the shift carries it out of
+    /// the pane's clip or off the grid.
+    fn cell_at(&mut self, frame: PaneFrame, x: u16, y: u16) -> Option<&mut GridCell> {
+        let y = frame.shifted_row(y)?;
         if !holds(frame.clip, x, y) || !holds(self.area, x, y) {
-            return;
+            return None;
         }
         let index = self.index(x, y);
-        if let Some(cell) = self.cells.get_mut(index) {
-            cell.sides = cell.sides.merge(sides);
-            cell.focused |= frame.focused;
-        }
+        self.cells.get_mut(index)
     }
 
     /// Where the cell at (`x`, `y`) sits in `cells`.
@@ -639,12 +637,6 @@ const fn glyph(sides: Sides) -> Option<&'static str> {
     }
 }
 
-/// `base` laid over the focus tint, when the tint is on.
-///
-/// A focused pane's contents sit on the tint, so its border and title
-/// sit on it too rather than on a strip of bare terminal around them.
-fn focus_tinted(base: Style) -> Style { focused_pane_fill().map_or(base, |fill| fill.patch(base)) }
-
 /// Whether (`x`, `y`) falls inside `rect`.
 const fn holds(rect: Rect, x: u16, y: u16) -> bool {
     x >= rect.x && x < rect.right() && y >= rect.y && y < rect.bottom()
@@ -667,7 +659,6 @@ mod tests {
     /// Border and title shades a test can tell apart.
     fn chrome() -> PaneChrome {
         PaneChrome {
-            active_border:   Style::default().fg(Color::Green),
             inactive_border: Style::default().fg(Color::Red),
             active_title:    Style::default().fg(Color::Green),
             inactive_title:  Style::default().fg(Color::Red),
@@ -798,27 +789,45 @@ mod tests {
         );
     }
 
-    /// Two panes share one line and only one of them is focused: the
-    /// shared line takes the focused pane's shade, while the far side of
-    /// its neighbour keeps the unfocused one.
+    /// Focus leaves the lattice alone. The shared border stays the pair
+    /// of `T`s the boundary really is rather than closing into the
+    /// focused pane's own corners, so the frame around the grid carries
+    /// on through them unbroken.
     #[test]
-    fn a_focused_pane_wins_the_border_it_shares() {
-        let buffer = framed(
-            Rect::new(0, 0, 7, 3),
-            &[
-                PaneFrame::new(Rect::new(0, 0, 4, 3)).with_focus(true),
-                PaneFrame::new(Rect::new(3, 0, 4, 3)),
-            ],
-        );
+    fn focus_does_not_close_a_shared_border() {
         assert_eq!(
-            buffer[(3, 1)].fg,
-            Color::Green,
-            "the shared line belongs to the focused pane"
+            rendered(
+                Rect::new(0, 0, 4, 5),
+                &[
+                    PaneFrame::new(Rect::new(0, 0, 4, 3)).with_focus(true),
+                    PaneFrame::new(Rect::new(0, 2, 4, 3)),
+                ]
+            ),
+            [
+                "\u{250c}\u{2500}\u{2500}\u{2510}",
+                "\u{2502}  \u{2502}",
+                "\u{251c}\u{2500}\u{2500}\u{2524}",
+                "\u{2502}  \u{2502}",
+                "\u{2514}\u{2500}\u{2500}\u{2518}"
+            ]
         );
+    }
+
+    /// Where four panes meet, focus leaves the crossing a crossing. A
+    /// focused pane closing its corner there would take half an arm off
+    /// each of the two neighbours past it.
+    #[test]
+    fn focus_does_not_close_a_crossing() {
+        let quad = [
+            PaneFrame::new(Rect::new(0, 0, 4, 3)).with_focus(true),
+            PaneFrame::new(Rect::new(3, 0, 4, 3)),
+            PaneFrame::new(Rect::new(0, 2, 4, 3)),
+            PaneFrame::new(Rect::new(3, 2, 4, 3)),
+        ];
         assert_eq!(
-            buffer[(6, 1)].fg,
-            Color::Red,
-            "the unfocused pane keeps the side it shares with nobody"
+            rendered(Rect::new(0, 0, 7, 5), &quad)[2],
+            "\u{251c}\u{2500}\u{2500}\u{253c}\u{2500}\u{2500}\u{2524}",
+            "the crossing stays a crossing and both edges stay Ts"
         );
     }
 

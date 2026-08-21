@@ -4,16 +4,14 @@ use ratatui::style::Style;
 use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
 
-use super::constants::FOCUSED_PANE_TINT_BRIGHTNESS_MIDPOINT;
-use super::constants::FOCUSED_PANE_TINT_DARK_BG;
-use super::constants::FOCUSED_PANE_TINT_DARK_BLUE_DELTA;
-use super::constants::FOCUSED_PANE_TINT_DARK_GREEN_DELTA;
-use super::constants::FOCUSED_PANE_TINT_DARK_RED_DELTA;
-use super::constants::FOCUSED_PANE_TINT_LIGHT_BG;
-use super::constants::FOCUSED_PANE_TINT_LIGHT_BLUE_DELTA;
-use super::constants::FOCUSED_PANE_TINT_LIGHT_GREEN_DELTA;
-use super::constants::FOCUSED_PANE_TINT_LIGHT_RED_DELTA;
-use crate::active_border_color;
+use super::constants::PANE_TINT_ALPHA_WHOLE;
+use super::constants::PANE_TINT_BRIGHTNESS_MIDPOINT;
+use super::constants::PANE_TINT_DARK_FOCUSED_ALPHA;
+use super::constants::PANE_TINT_DARK_OVERLAY;
+use super::constants::PANE_TINT_DARK_UNFOCUSED_ALPHA;
+use super::constants::PANE_TINT_LIGHT_FOCUSED_ALPHA;
+use super::constants::PANE_TINT_LIGHT_OVERLAY;
+use super::constants::PANE_TINT_LIGHT_UNFOCUSED_ALPHA;
 use crate::focused_pane_tint_enabled;
 use crate::inactive_border_color;
 use crate::inactive_title_color;
@@ -24,9 +22,10 @@ use crate::title_color;
 /// focused / unfocused render paths of a bordered pane.
 #[derive(Clone, Copy)]
 pub struct PaneChrome {
-    /// Border style when the pane is focused.
-    pub active_border:   Style,
-    /// Border style when the pane is unfocused.
+    /// Border style every pane draws in.
+    ///
+    /// Focus is carried by the background tint alone, so a pane's
+    /// border shade never changes with it.
     pub inactive_border: Style,
     /// Title style when the pane is focused.
     pub active_title:    Style,
@@ -42,12 +41,8 @@ impl PaneChrome {
             .borders(Borders::ALL)
             .title(title)
             .title_style(self.title_style(focused))
-            .border_style(if focused {
-                self.active_border
-            } else {
-                self.inactive_border
-            });
-        if focused && let Some(fill) = focused_pane_fill() {
+            .border_style(self.inactive_border);
+        if let Some(fill) = pane_fill(focused) {
             block.style(fill)
         } else {
             block
@@ -67,16 +62,18 @@ impl PaneChrome {
 
 /// Default pane chrome.
 ///
-/// Focused: accent border + bold accent title. Unfocused: the
-/// theme's `pane_chrome.inactive_border` colour + dim title. Driving
-/// the unfocused border from the theme (rather than
-/// `Style::default()`) so every pane using this chrome draws the same
-/// shade, regardless of how a given terminal profile renders its
-/// "default foreground" colour.
+/// Every border draws in the theme's `pane_chrome.inactive_border`
+/// colour, focused or not: focus is the background tint, and a border
+/// is a cell two panes share, so lighting it makes the boundary belong
+/// to neither. Driving that shade from the theme (rather than
+/// `Style::default()`) keeps every pane the same, regardless of how a
+/// given terminal profile renders its "default foreground" colour.
+///
+/// Titles still take focus: focused gets the bold accent, unfocused
+/// the dim shade.
 #[must_use]
 pub fn default_pane_chrome() -> PaneChrome {
     PaneChrome {
-        active_border:   Style::default().fg(active_border_color()),
         inactive_border: Style::default().fg(inactive_border_color()),
         active_title:    Style::default()
             .fg(title_color())
@@ -85,44 +82,81 @@ pub fn default_pane_chrome() -> PaneChrome {
     }
 }
 
-/// The background a focused pane sits on, or `None` when the tint is
-/// switched off.
+/// The background a pane sits on, or `None` when the tint is switched
+/// off and panes are left to the terminal's own background.
+///
+/// Both states are painted, not just the focused one. A pane with no
+/// background of its own is the terminal's *default* background, which
+/// a transparent window treats differently from a painted cell, so
+/// leaving unfocused panes bare would make focus a difference in
+/// opacity rather than a difference in colour. Painting both puts them
+/// on the same footing and lets the window's transparency apply to the
+/// grid evenly.
 ///
 /// A pane drawing a [`Block`] hands this to the block as its style. A
 /// pane drawn into a shared frame has no block to carry it, so
 /// [`crate::draw_clipped`] lays it down under the contents instead.
-pub(super) fn focused_pane_fill() -> Option<Style> {
-    focused_pane_tint_enabled().then(|| Style::default().bg(focused_pane_tint()))
+pub(super) fn pane_fill(focused: bool) -> Option<Style> {
+    focused_pane_tint_enabled().then(|| Style::default().bg(pane_tint(focused)))
 }
 
-/// Subtle background tint for the focused pane.
+/// Background tint behind a pane's contents.
 ///
-/// Derived from `text.bg_focus` so it tracks the active appearance:
-/// dark themes get a small lift away from black; light themes get a
-/// small drop away from white. Terminals have no alpha channel, so
-/// this is a solid RGB nudge — see `docs/themes.md`.
-fn focused_pane_tint() -> Color {
-    match theme().text.bg_focus.color {
-        Color::Black => FOCUSED_PANE_TINT_DARK_BG,
-        Color::White => FOCUSED_PANE_TINT_LIGHT_BG,
-        Color::Rgb(r, g, b) => {
-            let avg = (u16::from(r) + u16::from(g) + u16::from(b)) / 3;
-            if avg < FOCUSED_PANE_TINT_BRIGHTNESS_MIDPOINT {
-                Color::Rgb(
-                    r.saturating_add(FOCUSED_PANE_TINT_DARK_RED_DELTA),
-                    g.saturating_add(FOCUSED_PANE_TINT_DARK_GREEN_DELTA),
-                    b.saturating_add(FOCUSED_PANE_TINT_DARK_BLUE_DELTA),
-                )
-            } else {
-                Color::Rgb(
-                    r.saturating_sub(FOCUSED_PANE_TINT_LIGHT_RED_DELTA),
-                    g.saturating_sub(FOCUSED_PANE_TINT_LIGHT_GREEN_DELTA),
-                    b.saturating_sub(FOCUSED_PANE_TINT_LIGHT_BLUE_DELTA),
-                )
-            }
-        },
-        other => other,
-    }
+/// Derived from `text.bg_focus` so it tracks the active appearance: a
+/// dark background is lifted toward a cool white, a light one settled
+/// toward the same hue at the other end. A focused pane is carried
+/// further along that same line than an unfocused one, so focus reads
+/// as more of the one shift rather than as a second colour.
+///
+/// A background this cannot read -- a named colour that is neither
+/// black nor white, or `Reset` -- is handed back untouched, because
+/// there is nothing to blend against.
+fn pane_tint(focused: bool) -> Color {
+    let (red, green, blue) = match theme().text.bg_focus.color {
+        Color::Black => (u8::MIN, u8::MIN, u8::MIN),
+        Color::White => (u8::MAX, u8::MAX, u8::MAX),
+        Color::Rgb(red, green, blue) => (red, green, blue),
+        other => return other,
+    };
+    let average = (u16::from(red) + u16::from(green) + u16::from(blue)) / 3;
+    let (overlay, focused_alpha, unfocused_alpha) = if average < PANE_TINT_BRIGHTNESS_MIDPOINT {
+        (
+            PANE_TINT_DARK_OVERLAY,
+            PANE_TINT_DARK_FOCUSED_ALPHA,
+            PANE_TINT_DARK_UNFOCUSED_ALPHA,
+        )
+    } else {
+        (
+            PANE_TINT_LIGHT_OVERLAY,
+            PANE_TINT_LIGHT_FOCUSED_ALPHA,
+            PANE_TINT_LIGHT_UNFOCUSED_ALPHA,
+        )
+    };
+    let alpha = if focused {
+        focused_alpha
+    } else {
+        unfocused_alpha
+    };
+    Color::Rgb(
+        blend(red, overlay.0, alpha),
+        blend(green, overlay.1, alpha),
+        blend(blue, overlay.2, alpha),
+    )
+}
+
+/// One channel of `base` carried `alpha` of the way toward `overlay`,
+/// where `alpha` is read against [`PANE_TINT_ALPHA_WHOLE`].
+///
+/// This is the composite an alpha channel would have done. A terminal
+/// cell's background is three opaque bytes with nowhere to put a
+/// fourth, so the blend happens here and only its result is written.
+/// A transparent terminal window composites that result again against
+/// whatever lies behind it, which is the second half of the same idea
+/// and the half this crate does not control.
+fn blend(base: u8, overlay: u8, alpha: u16) -> u8 {
+    let rest = PANE_TINT_ALPHA_WHOLE.saturating_sub(alpha);
+    let mixed = (u16::from(base) * rest + u16::from(overlay) * alpha) / PANE_TINT_ALPHA_WHOLE;
+    u8::try_from(mixed).unwrap_or(u8::MAX)
 }
 
 /// Bordered empty-state block.

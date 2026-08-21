@@ -64,10 +64,9 @@ pub(crate) fn builtins() -> Vec<ThemeVariant> {
 /// Default dark variant — cargo-port's shipped palette for dark
 /// terminals, and the value [`DEFAULT_DARK_THEME`] names.
 #[must_use]
-pub(crate) const fn default_dark() -> Theme {
+const fn default_dark() -> Theme {
     Theme {
         pane_chrome: PaneChromeTheme {
-            active_border:   StyleSpec::from_color(Color::Yellow),
             inactive_border: StyleSpec::from_color(Color::DarkGray),
             active_title:    StyleSpec::bold(Color::Yellow),
             inactive_title:  StyleSpec::from_color(Color::White),
@@ -110,10 +109,9 @@ pub(crate) const fn default_dark() -> Theme {
 /// Default light variant — each value picked for legibility on a
 /// white terminal background.
 #[must_use]
-pub(crate) const fn default_light() -> Theme {
+const fn default_light() -> Theme {
     Theme {
         pane_chrome: PaneChromeTheme {
-            active_border:   StyleSpec::from_color(Color::Rgb(180, 120, 0)),
             inactive_border: StyleSpec::from_color(Color::Rgb(140, 140, 140)),
             active_title:    StyleSpec::bold(Color::Rgb(160, 100, 0)),
             inactive_title:  StyleSpec::from_color(Color::Black),
@@ -160,10 +158,9 @@ pub(crate) const fn default_light() -> Theme {
 /// `LightGreen`, `LightRed`, `LightMagenta`) for maximum legibility
 /// under reduced-vision or glare conditions.
 #[must_use]
-pub(crate) const fn high_contrast_dark() -> Theme {
+const fn high_contrast_dark() -> Theme {
     Theme {
         pane_chrome: PaneChromeTheme {
-            active_border:   StyleSpec::bold(Color::LightYellow),
             inactive_border: StyleSpec::from_color(Color::White),
             active_title:    StyleSpec::bold(Color::LightYellow),
             inactive_title:  StyleSpec::from_color(Color::White),
@@ -209,10 +206,9 @@ pub(crate) const fn high_contrast_dark() -> Theme {
 /// fields use saturated dark colors (deep red, deep green, deep blue,
 /// deep orange) chosen for AAA-grade contrast against a white canvas.
 #[must_use]
-pub(crate) const fn high_contrast_light() -> Theme {
+const fn high_contrast_light() -> Theme {
     Theme {
         pane_chrome: PaneChromeTheme {
-            active_border:   StyleSpec::bold(Color::Rgb(140, 60, 0)),
             inactive_border: StyleSpec::from_color(Color::Black),
             active_title:    StyleSpec::bold(Color::Rgb(140, 60, 0)),
             inactive_title:  StyleSpec::from_color(Color::Black),
@@ -259,6 +255,7 @@ pub(crate) const fn high_contrast_light() -> Theme {
 )]
 mod tests {
     use tui_pane::ThemeFamily;
+    use tui_pane::ThemeVariantFile;
 
     use super::*;
 
@@ -268,7 +265,7 @@ mod tests {
 
     /// Parse one template and return its variants, asserting the
     /// schema version and the expected variant count.
-    fn variants(template: &str, expected: usize) -> Vec<tui_pane::ThemeVariantFile> {
+    fn variants(template: &str, expected: usize) -> Vec<ThemeVariantFile> {
         let family: ThemeFamily = toml::from_str(template).expect("template should parse");
         assert_eq!(family.schema, 1);
         assert_eq!(family.variants.len(), expected);

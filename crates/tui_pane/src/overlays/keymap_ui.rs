@@ -28,7 +28,6 @@ use crate::PaneFocusState;
 use crate::PaneSelectionState;
 use crate::PopupFrame;
 use crate::ViewportOverflow;
-use crate::active_border_color;
 use crate::constants::SECTION_HEADER_INDENT;
 use crate::constants::SECTION_ITEM_INDENT;
 use crate::error_color;
@@ -151,7 +150,7 @@ impl KeymapPane {
 
         let popup = PopupFrame {
             title: Some(" Keymap ".to_string()),
-            border_color: active_border_color(),
+            border_color: title_color(),
             width,
             height,
         }

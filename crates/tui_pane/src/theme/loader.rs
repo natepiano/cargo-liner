@@ -108,8 +108,8 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     use super::*;
+    use crate::theme;
     use crate::theme::Appearance;
-    use crate::theme::fallback_theme;
 
     const SAMPLE_VARIANT_NAME: &str = "Sample Dark";
 
@@ -141,12 +141,12 @@ mod tests {
             ThemeVariant {
                 id:         ThemeId::new(SAMPLE_VARIANT_NAME),
                 appearance: Appearance::Dark,
-                theme:      fallback_theme(Appearance::Dark),
+                theme:      theme::fallback_theme(Appearance::Dark),
             },
             ThemeVariant {
                 id:         ThemeId::new("Sample Light"),
                 appearance: Appearance::Light,
-                theme:      fallback_theme(Appearance::Light),
+                theme:      theme::fallback_theme(Appearance::Light),
             },
         ]
     }

@@ -36,7 +36,6 @@ use crate::SECTION_HEADER_INDENT;
 use crate::SECTION_ITEM_INDENT;
 use crate::Viewport;
 use crate::ViewportOverflow;
-use crate::active_border_color;
 use crate::label_color;
 use crate::layout;
 use crate::render_overflow_affordance;
@@ -139,7 +138,7 @@ impl GlobalShortcutsPane {
         let height = popup_height(line_count, area.height);
         let popup = PopupFrame {
             title: Some(" Global Shortcuts ".to_string()),
-            border_color: active_border_color(),
+            border_color: title_color(),
             width,
             height,
         }

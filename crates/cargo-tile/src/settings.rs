@@ -18,7 +18,9 @@ use crate::config;
 use crate::constants::APPEARANCE_MODES;
 use crate::constants::CURSOR_WIDTH;
 use crate::constants::LABEL_VALUE_GAP;
+use crate::constants::MAX_FADE_SECONDS;
 use crate::constants::MAX_INITIAL_ROWS;
+use crate::constants::MIN_FADE_SECONDS;
 use crate::constants::MIN_INITIAL_ROWS;
 use crate::constants::STEPPER_DECORATION_WIDTH;
 use crate::constants::UNRESOLVED_PATH;
@@ -34,6 +36,8 @@ enum SettingId {
     DarkTheme,
     /// `tiles.initial_rows` — cycles one through [`MAX_INITIAL_ROWS`].
     InitialRows,
+    /// `tiles.fade_seconds` — cycles zero through [`MAX_FADE_SECONDS`].
+    FadeSeconds,
     /// A reported value with nothing to change.
     ReadOnly,
 }
@@ -129,6 +133,13 @@ pub(crate) fn rows(app: &App) -> SettingsRows {
         "initial rows",
         &app.loaded_config.config.tiles.initial_rows().to_string(),
     );
+    push_stepper(
+        &mut out,
+        &mut widths,
+        SettingId::FadeSeconds,
+        "fade seconds",
+        &app.loaded_config.config.tiles.fade().as_secs().to_string(),
+    );
 
     out.rows.push(SettingsRow::section("Files"));
     push_value(
@@ -181,6 +192,15 @@ pub(crate) fn cycle(app: &mut App, step: Step) {
         apply(app);
         return;
     }
+    if id == SettingId::FadeSeconds {
+        let seconds = fade_choices();
+        let current = app.loaded_config.config.tiles.fade().as_secs().to_string();
+        app.loaded_config.config.tiles.fade_seconds = stepped(&seconds, &current, step)
+            .parse()
+            .unwrap_or(MIN_FADE_SECONDS);
+        apply(app);
+        return;
+    }
     let appearance = &mut app.loaded_config.config.appearance;
     match id {
         SettingId::Mode => {
@@ -198,7 +218,7 @@ pub(crate) fn cycle(app: &mut App, step: Step) {
             let ids = theme_ids(Appearance::Dark);
             appearance.dark_theme = stepped(&ids, &appearance.dark_theme, step);
         },
-        SettingId::InitialRows | SettingId::ReadOnly => return,
+        SettingId::FadeSeconds | SettingId::InitialRows | SettingId::ReadOnly => return,
     }
     apply(app);
 }
@@ -226,6 +246,13 @@ fn apply(app: &mut App) {
 fn initial_row_choices() -> Vec<String> {
     (MIN_INITIAL_ROWS..=MAX_INITIAL_ROWS)
         .map(|rows| rows.to_string())
+        .collect()
+}
+
+/// The values `tiles.fade_seconds` steps through.
+fn fade_choices() -> Vec<String> {
+    (MIN_FADE_SECONDS..=MAX_FADE_SECONDS)
+        .map(|seconds| seconds.to_string())
         .collect()
 }
 

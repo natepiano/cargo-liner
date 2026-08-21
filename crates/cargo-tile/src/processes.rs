@@ -1,4 +1,5 @@
-//! Discovery of the `cargo` invocations running on this machine.
+//! Discovery of the `cargo` invocations running on this machine, rolled
+//! up into the groups the display is built from.
 //!
 //! Scanning happens on a background thread and arrives over a channel, so
 //! the render loop never pays for it. Each scan is two-phase: a cheap
@@ -7,8 +8,17 @@
 //! processes that turned out to be cargo. The expensive per-process reads
 //! are therefore never spent on the `rustc` and `sccache` processes a
 //! build churns through by the hundred.
+//!
+//! What comes out is not a flat list. One command a developer typed can
+//! be a whole tree of cargo processes -- `cargo mend` driving a
+//! `cargo nextest` suite that runs `cargo check` per crate -- and a flat
+//! list reports that as a dozen unrelated rows. [`CargoGroup`] keeps the
+//! tree: the outermost invocation leads, everything running under it
+//! follows, and the summary can show one row per command with a count
+//! beside it.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::path::Path;
@@ -29,12 +39,15 @@ use sysinfo::UpdateKind;
 
 use crate::constants::CARGO_DISPLAY_NAME;
 use crate::constants::CARGO_PROCESS_NAMES;
+use crate::constants::CARGO_SUBCOMMAND_PREFIX;
 use crate::constants::COMPILER_PROCESS_NAMES;
 use crate::constants::HOME_ALIAS;
+use crate::constants::MANIFEST_PATH_FLAG;
 use crate::constants::PARENT_WALK_LIMIT;
 use crate::constants::PROCESS_POLL_MILLIS;
 use crate::constants::SECONDS_PER_HOUR;
 use crate::constants::SECONDS_PER_MINUTE;
+use crate::constants::SELF_PROCESS_NAME;
 use crate::constants::START_TIME_FORMAT;
 use crate::constants::UNRESOLVED_PATH;
 use crate::constants::UNRESOLVED_TIME;
@@ -50,8 +63,13 @@ pub(crate) struct CargoProcess {
     pub(crate) start:    String,
     /// Elapsed run time, `mm:ss` until an hour and `hh:mm:ss` past it.
     pub(crate) duration: String,
-    /// Compiler processes this invocation currently owns, if any.
+    /// Compiler processes this invocation currently owns, if any. On the
+    /// invocation leading a group this is the whole group's tally, so
+    /// the summary reports the build rather than the driver process.
     pub(crate) compiler: Option<Compiler>,
+    /// Cargo invocations running under this one. Zero for a plain
+    /// command, which is what most rows are.
+    pub(crate) managed:  usize,
     /// The command line, split so program and arguments style apart.
     pub(crate) command:  CommandText,
 }
@@ -69,15 +87,96 @@ pub(crate) struct Compiler {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CommandText {
     /// Program name, path stripped.
-    pub(crate) program:   String,
-    /// Remaining arguments, space-joined.
-    pub(crate) arguments: String,
+    pub(crate) program: String,
+    /// Remaining arguments, one entry per argv word. Held split rather
+    /// than joined because a cell may leave one of them out;
+    /// [`CommandText::line`] is what puts them back into a line.
+    arguments:          Vec<String>,
+}
+
+/// Whether a cell shows the manifest path an invocation names.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ManifestPath {
+    /// Show it, the way a command's own cell shows the whole line.
+    Shown,
+    /// Leave it out, the way the summary does. Every row there already
+    /// sits under the working directory heading its group, and cargo is
+    /// handed the manifest as an absolute path -- long enough to push
+    /// the subcommand off the edge of a narrow cell to repeat what the
+    /// header just said.
+    Hidden,
+}
+
+impl CommandText {
+    /// A command line built from its parts, for the tests elsewhere in
+    /// the crate that need an invocation to hand around.
+    #[cfg(test)]
+    pub(crate) fn of(program: &str, arguments: &[&str]) -> Self {
+        Self {
+            program:   program.to_string(),
+            arguments: arguments.iter().map(|word| (*word).to_string()).collect(),
+        }
+    }
+
+    /// The arguments as one line, the manifest path in or out.
+    pub(crate) fn line(&self, manifest: ManifestPath) -> String {
+        if manifest == ManifestPath::Shown {
+            return self.arguments.join(" ");
+        }
+        let mut kept: Vec<&str> = Vec::with_capacity(self.arguments.len());
+        let mut skipping = false;
+        for argument in &self.arguments {
+            // The word after a bare `--manifest-path` is the path it
+            // takes, and goes wherever the flag goes.
+            if std::mem::take(&mut skipping) {
+                continue;
+            }
+            if argument == MANIFEST_PATH_FLAG {
+                skipping = true;
+                continue;
+            }
+            if is_manifest_assignment(argument) {
+                continue;
+            }
+            kept.push(argument);
+        }
+        kept.join(" ")
+    }
+}
+
+/// Whether an argument is the `--manifest-path=<path>` spelling, which
+/// carries the path in the same word instead of the next one.
+fn is_manifest_assignment(argument: &str) -> bool {
+    argument
+        .strip_prefix(MANIFEST_PATH_FLAG)
+        .is_some_and(|rest| rest.starts_with('='))
+}
+
+/// One command and every cargo invocation running under it.
+///
+/// A plain `cargo build` is a group of one. A command that drives other
+/// cargo commands is one group holding all of them, which is what lets
+/// the summary carry the command that was typed with a count beside it
+/// instead of the fan-out it became.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CargoGroup {
+    /// The outermost invocation: the command that was typed, and the row
+    /// the summary carries.
+    pub(crate) lead: CargoProcess,
+    /// Everything running under [`lead`](Self::lead), newest first.
+    /// Empty for a plain command.
+    pub(crate) rest: Vec<CargoProcess>,
+}
+
+impl CargoGroup {
+    /// The group's identity, stable for as long as the command runs.
+    pub(crate) const fn id(&self) -> u32 { self.lead.pid }
 }
 
 /// Start the scanner thread and hand back the channel it publishes on.
 ///
 /// The thread ends when the receiver is dropped.
-pub(crate) fn spawn() -> Receiver<Vec<CargoProcess>> {
+pub(crate) fn spawn() -> Receiver<Vec<CargoGroup>> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         let mut system = System::new();
@@ -92,15 +191,14 @@ pub(crate) fn spawn() -> Receiver<Vec<CargoProcess>> {
     receiver
 }
 
-/// One two-phase scan, newest invocation first.
-fn scan(system: &mut System, home: Option<&Path>) -> Vec<CargoProcess> {
+/// One two-phase scan, newest group first.
+fn scan(system: &mut System, home: Option<&Path>) -> Vec<CargoGroup> {
     // Phase one: pid, name, parent and start time for everything. None of
     // the fields this asks for require a per-process read of the argument
     // area, which is what makes it cheap enough to poll continuously.
     system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
 
     let mut census = Census::take(system);
-    census.collapse_wrappers();
 
     // Phase two: the costly fields, for cargo processes only.
     system.refresh_processes_specifics(
@@ -119,27 +217,17 @@ fn scan(system: &mut System, home: Option<&Path>) -> Vec<CargoProcess> {
     census.cargo.retain(|pid| {
         system
             .process(*pid)
-            .is_some_and(|process| cargo_argv_start(process.cmd()).is_some())
+            .is_some_and(|process| names_cargo(process.cmd()))
     });
 
+    // Shims are separated from managers on argv, so this waits for phase
+    // two rather than running on names alone. The cost is reading argv
+    // for the wrappers too, which is a handful of processes against the
+    // hundreds phase two already skips.
+    census.collapse_shims(system);
+
     let counts = census.attribute_compilers();
-    let mut dated: Vec<(u64, CargoProcess)> = census
-        .cargo
-        .iter()
-        .filter_map(|pid| {
-            let process = system.process(*pid)?;
-            Some((process.start_time(), row(process, *pid, &counts, home)?))
-        })
-        .collect();
-    // Newest first, so a cargo command just fired off lands at the top.
-    //
-    // The start time is whole seconds -- sysinfo reads the kernel's
-    // `pbi_start_tvsec` and drops the microseconds beside it -- so a burst
-    // of invocations fired together all tie. Pid breaks the tie in the
-    // same direction: macOS hands them out in order, so within one second
-    // the higher pid is the later start.
-    dated.sort_by(|left, right| right.0.cmp(&left.0).then(right.1.pid.cmp(&left.1.pid)));
-    dated.into_iter().map(|(_, process)| process).collect()
+    census.groups(system, &counts, home)
 }
 
 /// What phase one learned: the parent links, the cargo processes, and the
@@ -166,10 +254,7 @@ impl Census {
                 census.parents.insert(pid, parent);
             }
             let name = process.name();
-            if CARGO_PROCESS_NAMES
-                .iter()
-                .any(|cargo| name == OsStr::new(*cargo))
-            {
+            if is_cargo_name(name) {
                 census.cargo.push(pid);
             } else if let Some(driver) = COMPILER_PROCESS_NAMES
                 .iter()
@@ -211,28 +296,81 @@ impl Census {
             .collect()
     }
 
-    /// Drop any candidate that has another candidate beneath it.
+    /// Drop every cargo that is only a shim in front of another cargo.
     ///
-    /// A shim that wraps cargo is itself named `cargo` — that is the whole
-    /// point of a shim — so one command can present as two processes: the
-    /// wrapper and the real cargo it spawned. The inner one is the process
-    /// actually doing the work, so the outer one goes.
-    fn collapse_wrappers(&mut self) {
-        let candidates = self.cargo.clone();
-        let mut wrappers: Vec<Pid> = Vec::new();
-        for &pid in &candidates {
-            let mut current = pid;
-            for _ in 0..PARENT_WALK_LIMIT {
-                let Some(&parent) = self.parents.get(&current) else {
-                    break;
-                };
-                if candidates.contains(&parent) {
-                    wrappers.push(parent);
-                }
-                current = parent;
+    /// A shim that wraps cargo is itself named `cargo` -- that is the
+    /// whole point of a shim -- so one command can present as two
+    /// processes. What separates that from a command *managing* other
+    /// cargo commands is whether the child is the same command: a shim
+    /// hands its line straight on, so the subcommand and the working
+    /// directory both match, while `cargo mend` running a `cargo nextest`
+    /// suite matches neither. The shim goes and the process doing the
+    /// work stays; the manager stays and keeps its children.
+    ///
+    /// Looping rather than one pass because a shim can stand in front of
+    /// a shim, and dropping the outer one is what reveals the next.
+    fn collapse_shims(&mut self, system: &System) {
+        loop {
+            let children = self.cargo_children();
+            let shims: Vec<Pid> = self
+                .cargo
+                .iter()
+                .copied()
+                .filter(|&pid| Self::is_shim(system, &children, pid))
+                .collect();
+            if shims.is_empty() {
+                return;
+            }
+            self.cargo.retain(|pid| !shims.contains(pid));
+        }
+    }
+
+    /// Whether `pid` is a shim in front of the one cargo beneath it.
+    fn is_shim(system: &System, children: &HashMap<Pid, Vec<Pid>>, pid: Pid) -> bool {
+        let Some(kids) = children.get(&pid) else {
+            return false;
+        };
+        let [child] = kids[..] else {
+            return false;
+        };
+        let (Some(outer), Some(inner)) = (system.process(pid), system.process(child)) else {
+            return false;
+        };
+        subcommand(outer.cmd()) == subcommand(inner.cmd()) && outer.cwd() == inner.cwd()
+    }
+
+    /// Each cargo's direct cargo children -- the tree the groups are cut
+    /// from, with a process that came out as its own ancestor dropped so
+    /// a walk of it cannot loop.
+    fn cargo_children(&self) -> HashMap<Pid, Vec<Pid>> {
+        let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
+        for &pid in &self.cargo {
+            if let Some(owner) = self.owning_cargo(pid)
+                && owner != pid
+            {
+                children.entry(owner).or_default().push(pid);
             }
         }
-        self.cargo.retain(|pid| !wrappers.contains(pid));
+        children
+    }
+
+    /// Every cargo running under `root`, at any depth.
+    fn descendants(children: &HashMap<Pid, Vec<Pid>>, root: Pid) -> Vec<Pid> {
+        let mut seen: HashSet<Pid> = HashSet::from([root]);
+        let mut queue = vec![root];
+        let mut out = Vec::new();
+        while let Some(pid) = queue.pop() {
+            let Some(kids) = children.get(&pid) else {
+                continue;
+            };
+            for &kid in kids {
+                if seen.insert(kid) {
+                    out.push(kid);
+                    queue.push(kid);
+                }
+            }
+        }
+        out
     }
 
     /// Walk `pid` up its parent chain to the cargo invocation that owns
@@ -249,25 +387,119 @@ impl Census {
         }
         None
     }
+
+    /// Every group the surviving cargo set forms, newest lead first.
+    ///
+    /// A lead ties with another when both started inside the same second
+    /// -- the start time is whole seconds, since sysinfo reads the
+    /// kernel's `pbi_start_tvsec` and drops the microseconds beside it.
+    /// Pid breaks the tie in the same direction: macOS hands them out in
+    /// order, so within one second the higher pid is the later start.
+    fn groups(
+        &self,
+        system: &System,
+        counts: &HashMap<Pid, Compiler>,
+        home: Option<&Path>,
+    ) -> Vec<CargoGroup> {
+        let children = self.cargo_children();
+        let mut dated: Vec<(u64, CargoGroup)> = self
+            .cargo
+            .iter()
+            .filter(|&&pid| self.owning_cargo(pid).is_none_or(|owner| owner == pid))
+            .filter_map(|&pid| {
+                let start = system.process(pid)?.start_time();
+                Some((start, Self::group(system, counts, home, &children, pid)?))
+            })
+            .collect();
+        dated.sort_by(|left, right| {
+            right
+                .0
+                .cmp(&left.0)
+                .then(right.1.lead.pid.cmp(&left.1.lead.pid))
+        });
+        dated.into_iter().map(|(_, group)| group).collect()
+    }
+
+    /// Build the group led by `root`.
+    fn group(
+        system: &System,
+        counts: &HashMap<Pid, Compiler>,
+        home: Option<&Path>,
+        children: &HashMap<Pid, Vec<Pid>>,
+        root: Pid,
+    ) -> Option<CargoGroup> {
+        let managed = Self::descendants(children, root);
+        let mut lead = row(
+            system.process(root)?,
+            root,
+            counts.get(&root).cloned(),
+            managed.len(),
+            home,
+        )?;
+        // The lead reports the whole group's compilers: what a developer
+        // wants off the summary row is how much work the command they
+        // typed is doing, and for a manager none of that work is running
+        // under the manager's own pid.
+        lead.compiler = aggregate_compilers(counts, std::iter::once(root).chain(managed.clone()));
+
+        let mut dated: Vec<(u64, CargoProcess)> = managed
+            .into_iter()
+            .filter_map(|pid| {
+                let process = system.process(pid)?;
+                let under = Self::descendants(children, pid).len();
+                Some((
+                    process.start_time(),
+                    row(process, pid, counts.get(&pid).cloned(), under, home)?,
+                ))
+            })
+            .collect();
+        dated.sort_by(|left, right| right.0.cmp(&left.0).then(right.1.pid.cmp(&left.1.pid)));
+        Some(CargoGroup {
+            lead,
+            rest: dated.into_iter().map(|(_, process)| process).collect(),
+        })
+    }
+}
+
+/// One compiler tally across a whole group: the highest-priority driver
+/// any member is running, totalled over all of them.
+fn aggregate_compilers(
+    counts: &HashMap<Pid, Compiler>,
+    members: impl Iterator<Item = Pid>,
+) -> Option<Compiler> {
+    let running: Vec<&Compiler> = members.filter_map(|pid| counts.get(&pid)).collect();
+    let name = COMPILER_PROCESS_NAMES
+        .iter()
+        .find(|driver| running.iter().any(|compiler| compiler.name == **driver))?;
+    Some(Compiler {
+        name,
+        count: running
+            .iter()
+            .filter(|compiler| compiler.name == *name)
+            .map(|compiler| compiler.count)
+            .sum(),
+    })
 }
 
 /// Format one cargo process into its table row.
 fn row(
     process: &Process,
     pid: Pid,
-    counts: &HashMap<Pid, Compiler>,
+    compiler: Option<Compiler>,
+    managed: usize,
     home: Option<&Path>,
 ) -> Option<CargoProcess> {
     Some(CargoProcess {
-        path:     process.cwd().map_or_else(
+        path: process.cwd().map_or_else(
             || UNRESOLVED_PATH.to_string(),
             |cwd| home_relative(cwd, home),
         ),
-        pid:      pid.as_u32(),
-        start:    start_label(process.start_time()),
+        pid: pid.as_u32(),
+        start: start_label(process.start_time()),
         duration: duration_label(process.run_time()),
-        compiler: counts.get(&pid).cloned(),
-        command:  command_text(process.cmd(), home)?,
+        compiler,
+        managed,
+        command: command_text(process.cmd(), home)?,
     })
 }
 
@@ -325,17 +557,87 @@ fn duration_label(seconds: u64) -> String {
 /// cargo at once. Their argv still reads `sccache /path/to/rustc …`,
 /// which names no cargo binary, and that is what settles it.
 fn command_text(argv: &[OsString], home: Option<&Path>) -> Option<CommandText> {
-    let start = cargo_argv_start(argv)?;
-    let arguments = argv
+    let (start, subcommand) = cargo_split(argv)?;
+    let mut arguments: Vec<String> = argv
         .iter()
-        .skip(start + 1)
+        .skip(start)
         .map(|argument| home_relative(Path::new(argument), home))
-        .collect::<Vec<_>>()
-        .join(" ");
+        .collect();
+    // An external subcommand's binary is usually handed its own name
+    // back as the first argument -- `cargo-nextest nextest run` -- but
+    // a caller invoking the binary directly skips that. Putting it back
+    // is what makes both spell the command that was typed.
+    if let Some(subcommand) = subcommand
+        && arguments.first() != Some(&subcommand)
+    {
+        arguments.insert(0, subcommand);
+    }
     Some(CommandText {
         program: CARGO_DISPLAY_NAME.to_string(),
         arguments,
     })
+}
+
+/// Where a cargo invocation's arguments start in its argv, and the
+/// subcommand its binary name carries when it is an external one.
+///
+/// Two layouts reach here. A cargo binary somewhere in argv -- the
+/// common case, and the one a shim caught mid-handoff also takes --
+/// puts the arguments straight after it. An external subcommand carries
+/// no cargo binary at all: `cargo mend` *becomes* `cargo-mend`, so the
+/// subcommand is in the process's own name and the arguments are
+/// everything after argv\[0\].
+fn cargo_split(argv: &[OsString]) -> Option<(usize, Option<String>)> {
+    if let Some(start) = cargo_argv_start(argv) {
+        return Some((start + 1, None));
+    }
+    let subcommand = external_subcommand(argv.first()?)?;
+    Some((1, Some(subcommand)))
+}
+
+/// Whether an argv belongs to a cargo invocation at all.
+///
+/// [`Census::take`] classifies on the process's own name, and a process
+/// can wear one without being one -- see [`command_text`] -- so this is
+/// what settles it.
+fn names_cargo(argv: &[OsString]) -> bool { cargo_split(argv).is_some() }
+
+/// The subcommand an argv names: the first word past the cargo binary
+/// that is neither a flag nor a `+toolchain` selector.
+fn subcommand(argv: &[OsString]) -> Option<String> {
+    let (start, external) = cargo_split(argv)?;
+    if external.is_some() {
+        return external;
+    }
+    argv.iter()
+        .skip(start)
+        .map(|argument| argument.to_string_lossy().into_owned())
+        .find(|argument| !argument.starts_with('-') && !argument.starts_with('+'))
+}
+
+/// Whether a process's own name is one a cargo invocation wears.
+///
+/// Three spellings reach here: `cargo` itself, the name a shim's
+/// wrapped binary was renamed to, and `cargo-<subcommand>` for every
+/// tool installed as an external subcommand. This binary is the one
+/// `cargo-` name left out -- cargo-tile watching the builds is not one
+/// of the builds.
+fn is_cargo_name(name: &OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    name != SELF_PROCESS_NAME
+        && (CARGO_PROCESS_NAMES.contains(&name) || name.starts_with(CARGO_SUBCOMMAND_PREFIX))
+}
+
+/// The subcommand an external cargo tool's binary name carries, or
+/// `None` when the name is not one.
+fn external_subcommand(argument: &OsString) -> Option<String> {
+    let name = base_name(argument);
+    if name == SELF_PROCESS_NAME || CARGO_PROCESS_NAMES.contains(&name.as_str()) {
+        return None;
+    }
+    Some(name.strip_prefix(CARGO_SUBCOMMAND_PREFIX)?.to_string())
 }
 
 /// Where the cargo binary sits in argv, or `None` when none of it names
@@ -411,7 +713,7 @@ mod tests {
         ];
         let text = command_text(&argv, None).expect("argv names a cargo binary");
         assert_eq!(text.program, "cargo");
-        assert_eq!(text.arguments, "build --release");
+        assert_eq!(text.line(ManifestPath::Shown), "build --release");
     }
 
     #[test]
@@ -424,7 +726,7 @@ mod tests {
         ];
         let text = command_text(&argv, None).expect("argv names a cargo binary");
         assert_eq!(text.program, "cargo");
-        assert_eq!(text.arguments, "check --all-targets");
+        assert_eq!(text.line(ManifestPath::Shown), "check --all-targets");
     }
 
     #[test]
@@ -455,6 +757,47 @@ mod tests {
     }
 
     #[test]
+    fn the_summary_drops_the_manifest_path_and_the_flag_naming_it() {
+        let argv = vec![
+            OsString::from("cargo"),
+            OsString::from("check"),
+            OsString::from("--manifest-path"),
+            OsString::from("/opt/project/Cargo.toml"),
+            OsString::from("--all-targets"),
+        ];
+        let text = command_text(&argv, None).expect("argv names a cargo binary");
+        assert_eq!(text.line(ManifestPath::Hidden), "check --all-targets");
+    }
+
+    #[test]
+    fn the_summary_drops_a_manifest_path_written_as_one_word() {
+        let argv = vec![
+            OsString::from("cargo"),
+            OsString::from("check"),
+            OsString::from("--manifest-path=/opt/project/Cargo.toml"),
+            OsString::from("--all-targets"),
+        ];
+        let text = command_text(&argv, None).expect("argv names a cargo binary");
+        assert_eq!(text.line(ManifestPath::Hidden), "check --all-targets");
+    }
+
+    /// The flag is matched whole: an argument that merely starts the
+    /// same way names something else and stays.
+    #[test]
+    fn an_argument_that_only_starts_like_the_manifest_flag_stays() {
+        let argv = vec![
+            OsString::from("cargo"),
+            OsString::from("check"),
+            OsString::from("--manifest-path-of-record"),
+        ];
+        let text = command_text(&argv, None).expect("argv names a cargo binary");
+        assert_eq!(
+            text.line(ManifestPath::Hidden),
+            "check --manifest-path-of-record"
+        );
+    }
+
+    #[test]
     fn arguments_collapse_the_home_prefix() {
         let home = PathBuf::from("/Users/someone");
         let argv = vec![
@@ -465,7 +808,7 @@ mod tests {
         ];
         let text = command_text(&argv, Some(&home)).expect("argv names a cargo binary");
         assert_eq!(
-            text.arguments,
+            text.line(ManifestPath::Shown),
             "check --manifest-path ~/rust/project/Cargo.toml"
         );
     }

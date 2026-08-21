@@ -4,6 +4,7 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -11,9 +12,12 @@ use serde::Serialize;
 use crate::constants::CONFIG_DIRNAME;
 use crate::constants::CONFIG_FILENAME;
 use crate::constants::DEFAULT_DARK_THEME;
+use crate::constants::DEFAULT_FADE_SECONDS;
 use crate::constants::DEFAULT_INITIAL_ROWS;
+use crate::constants::DEFAULT_ITERM2_PROFILE;
 use crate::constants::DEFAULT_LIGHT_THEME;
 use crate::constants::KEYMAP_FILENAME;
+use crate::constants::MAX_FADE_SECONDS;
 use crate::constants::MIN_INITIAL_ROWS;
 use crate::constants::THEMES_DIRNAME;
 
@@ -25,19 +29,24 @@ use crate::constants::THEMES_DIRNAME;
 #[serde(default)]
 pub(crate) struct AppearanceConfig {
     /// `auto` follows the terminal, `light` and `dark` pin one.
-    pub(crate) mode:        String,
+    pub(crate) mode:           String,
     /// Theme id used when the resolved appearance is light.
-    pub(crate) light_theme: String,
+    pub(crate) light_theme:    String,
     /// Theme id used when the resolved appearance is dark.
-    pub(crate) dark_theme:  String,
+    pub(crate) dark_theme:     String,
+    /// iTerm2 profile the session adopts while the app runs, switched
+    /// back to the one it came in on at exit. Empty leaves the session
+    /// alone, and so does every terminal that is not iTerm2.
+    pub(crate) iterm2_profile: String,
 }
 
 impl Default for AppearanceConfig {
     fn default() -> Self {
         Self {
-            mode:        "auto".to_string(),
-            light_theme: DEFAULT_LIGHT_THEME.to_string(),
-            dark_theme:  DEFAULT_DARK_THEME.to_string(),
+            mode:           "auto".to_string(),
+            light_theme:    DEFAULT_LIGHT_THEME.to_string(),
+            dark_theme:     DEFAULT_DARK_THEME.to_string(),
+            iterm2_profile: DEFAULT_ITERM2_PROFILE.to_string(),
         }
     }
 }
@@ -49,12 +58,17 @@ pub(crate) struct TilesConfig {
     /// Rows the first column fills before a second column opens. Read
     /// through [`TilesConfig::initial_rows`], which enforces the floor.
     pub(crate) initial_rows: usize,
+    /// Seconds a finished row stays on screen, greyed, before it and any
+    /// cell it leaves empty go. Read through
+    /// [`TilesConfig::fade`], which enforces the ceiling.
+    pub(crate) fade_seconds: u64,
 }
 
 impl Default for TilesConfig {
     fn default() -> Self {
         Self {
             initial_rows: DEFAULT_INITIAL_ROWS,
+            fade_seconds: DEFAULT_FADE_SECONDS,
         }
     }
 }
@@ -66,6 +80,13 @@ impl TilesConfig {
     /// `config.toml` is corrected rather than rejected -- the file keeps
     /// what was typed, the grid stays laid out.
     pub(crate) fn initial_rows(&self) -> usize { self.initial_rows.max(MIN_INITIAL_ROWS) }
+
+    /// How long a finished row lingers before the display lets go of it,
+    /// clamped on read for the same reason as
+    /// [`initial_rows`](Self::initial_rows).
+    pub(crate) fn fade(&self) -> Duration {
+        Duration::from_secs(self.fade_seconds.min(MAX_FADE_SECONDS))
+    }
 }
 
 /// Parsed `config.toml`. Every section defaults, so a missing file and

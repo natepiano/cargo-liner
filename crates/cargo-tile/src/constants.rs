@@ -1,5 +1,7 @@
 //! Constants for `cargo-tile`.
 
+use ratatui::style::Modifier;
+
 // configuration
 /// Directory under the OS config root holding `config.toml`,
 /// `keymap.toml`, and `themes/`.
@@ -45,6 +47,19 @@ pub(crate) const SETTINGS_POPUP_WIDTH: u16 = 64;
 /// resolved for a restart.
 pub(crate) const BINARY_NAME: &str = "cargo-tile";
 
+// iterm2
+/// Environment variable naming the terminal emulator in use.
+pub(crate) const TERM_PROGRAM_ENV: &str = "TERM_PROGRAM";
+/// Value [`TERM_PROGRAM_ENV`] carries inside iTerm2.
+pub(crate) const ITERM2_TERM_PROGRAM: &str = "iTerm.app";
+/// Environment variable iTerm2 sets to the name of the profile the
+/// session started on.
+pub(crate) const ITERM2_PROFILE_ENV: &str = "ITERM_PROFILE";
+/// iTerm2 profile the app adopts while it runs, when the user has made
+/// one by that name. Sharing the binary's name keeps the pairing
+/// obvious from the iTerm2 side.
+pub(crate) const DEFAULT_ITERM2_PROFILE: &str = BINARY_NAME;
+
 // startup
 /// Shown in the settings overlay when a path cannot be resolved on this
 /// platform.
@@ -74,6 +89,15 @@ pub(crate) const STATUS_LINE_HEIGHT: u16 = 1;
 pub(crate) const DEFAULT_INITIAL_ROWS: usize = 4;
 /// Ceiling the settings stepper walks `tiles.initial_rows` up to.
 pub(crate) const MAX_INITIAL_ROWS: usize = 8;
+/// Seconds a finished row stays on screen, greyed, before it goes, when
+/// `config.toml` says nothing.
+pub(crate) const DEFAULT_FADE_SECONDS: u64 = 3;
+/// Floor on `tiles.fade_seconds`. At zero a finished row goes on the
+/// scan that notices, which is a legitimate choice rather than a
+/// mistake -- some developers want the display to hold only what runs.
+pub(crate) const MIN_FADE_SECONDS: u64 = 0;
+/// Ceiling the settings stepper walks `tiles.fade_seconds` up to.
+pub(crate) const MAX_FADE_SECONDS: u64 = 30;
 /// Floor on `tiles.initial_rows`. At one, a second cell opens a second
 /// column rather than stacking into a second row.
 pub(crate) const MIN_INITIAL_ROWS: usize = 1;
@@ -84,14 +108,55 @@ pub(crate) const MIN_TILE_HEIGHT: u16 = 3;
 /// Columns one cell standing alone needs, its two border lines
 /// included. A cell with a neighbour to its right costs one less.
 pub(crate) const MIN_TILE_WIDTH: u16 = 8;
+/// Laid over the comparison buffer to make every cell differ from
+/// anything a frame can render, which is what turns the next draw into
+/// a full repaint.
+///
+/// The difference is carried by modifiers rather than by the symbol.
+/// An unrenderable symbol would have been the obvious choice, but
+/// ratatui measures every symbol's display width and rejects control
+/// characters on the way, so the only symbols it accepts are ones a
+/// frame could legitimately hold. Nothing in this app blinks, so the
+/// combination below is one no rendered cell ever carries.
+pub(crate) const REPAINT_SENTINEL: Modifier = Modifier::SLOW_BLINK
+    .union(Modifier::RAPID_BLINK)
+    .union(Modifier::CROSSED_OUT);
+/// How often the screen is redrawn cell for cell rather than by
+/// difference.
+///
+/// ratatui writes only the cells that changed since the last frame, so
+/// anything put on this terminal by something other than this app --
+/// a pane manager splitting the window, a stray line landing on the
+/// same tty -- stays where it is for good: both buffers agree those
+/// cells already hold what they should, and nothing ever writes over
+/// them. A redraw on this cadence is what repairs that, and it is far
+/// enough apart to cost nothing while being well inside the time it
+/// takes to notice a smear.
+pub(crate) const FULL_REPAINT_SECONDS: u64 = 2;
 /// Fixed-point scale a transition's progress is measured on, so the
 /// animation needs no floating point.
 pub(crate) const PROGRESS_SCALE: u32 = 1000;
+/// Written on the summary cell's top border, so the one cell listing
+/// every command is named rather than told apart by its contents. A
+/// manager's own cell reads much like the summary -- one row per cargo
+/// invocation it runs -- and this is what separates them at a glance.
+/// It is the only titled cell: a command's cell already says which
+/// command it is on every row it draws.
+pub(crate) const SUMMARY_CELL_TITLE: &str = "summary";
 /// The cell holding the running-cargo table. Cells are numbered from
 /// one and fill column by column, so the table is always the first.
 pub(crate) const TABLE_CELL: usize = 1;
-/// How long one grid transition takes.
+/// How long one change to the grid takes, however many single-cell
+/// steps it propagates through: one step takes all of it, and a longer
+/// ripple divides it up between them.
 pub(crate) const TILE_ANIMATION_MILLIS: u64 = 720;
+/// Floor on one step of a ripple, so a long one still reads as cells
+/// moving rather than flickering past.
+pub(crate) const MIN_STEP_MILLIS: u64 = 60;
+/// Steps the grid queues before it gives up propagating and settles the
+/// rest in one move. A whole test suite finishing at once would take
+/// longer to walk through cell by cell than anyone would watch.
+pub(crate) const MAX_PENDING_STEPS: usize = 64;
 /// Kept between a cell's left border and the number it carries, so the
 /// number is not flush against the line.
 pub(crate) const TILE_NUMBER_INDENT: &str = " ";
@@ -109,6 +174,17 @@ pub(crate) const CARGO_PROCESS_NAMES: [&str; 2] = ["cargo", "cargo-tile-real"];
 /// What a cargo binary is called in the `command` column, whatever the
 /// name it happens to be installed under.
 pub(crate) const CARGO_DISPLAY_NAME: &str = "cargo";
+/// Prefix the binary behind an external subcommand carries.
+///
+/// `cargo nextest run` does not stay a `cargo` process: cargo replaces
+/// itself with `cargo-nextest` rather than spawning it, so the command
+/// that was typed is running under a name of its own with no `cargo`
+/// left above it. Every tool installed as a cargo subcommand -- mend,
+/// clippy, nextest -- reaches the table this way.
+pub(crate) const CARGO_SUBCOMMAND_PREFIX: &str = "cargo-";
+/// The one `cargo-` binary left out of the table: this one. cargo-tile
+/// watching the builds is not one of the builds.
+pub(crate) const SELF_PROCESS_NAME: &str = BINARY_NAME;
 /// Compiler driver names counted under each cargo invocation, in
 /// reporting priority order: with a wrapper in use every `rustc` is a
 /// child of one, so `sccache` wins to avoid counting a compile twice.
@@ -130,10 +206,13 @@ pub(crate) const SECONDS_PER_HOUR: u64 = 3600;
 pub(crate) const UNRESOLVED_TIME: &str = "--:--";
 /// Home directory stand-in in the working-directory header.
 pub(crate) const HOME_ALIAS: &str = "~";
+/// The argument the summary leaves out, in either of the two spellings
+/// cargo accepts -- `--manifest-path <path>` and `--manifest-path=<path>`.
+pub(crate) const MANIFEST_PATH_FLAG: &str = "--manifest-path";
 /// Column headers, in table order. The working directory is not among
 /// them: it heads the group of invocations that share it rather than
 /// repeating on every row.
-pub(crate) const TABLE_HEADERS: [&str; 5] = ["pid", "start", "dur", "compiler", "command"];
+pub(crate) const TABLE_HEADERS: [&str; 6] = ["pid", "start", "dur", "compiler", "sub", "command"];
 /// Index of the `pid` column in [`TABLE_HEADERS`].
 pub(crate) const PID_COLUMN: usize = 0;
 /// Index of the `start` column in [`TABLE_HEADERS`].
@@ -142,9 +221,13 @@ pub(crate) const START_COLUMN: usize = 1;
 pub(crate) const DURATION_COLUMN: usize = 2;
 /// Index of the `compiler` column in [`TABLE_HEADERS`].
 pub(crate) const COMPILER_COLUMN: usize = 3;
+/// Index of the `sub` column in [`TABLE_HEADERS`], which carries how
+/// many cargo invocations a command is managing. Blank on the rows that
+/// manage nothing, which is most of them.
+pub(crate) const MANAGED_COLUMN: usize = 4;
 /// Index of the `command` column in [`TABLE_HEADERS`]. It is last, and
 /// absorbs whatever width the fitted columns leave.
-pub(crate) const COMMAND_COLUMN: usize = 4;
+pub(crate) const COMMAND_COLUMN: usize = 5;
 /// Rows the working-directory header above each group's table occupies.
 pub(crate) const GROUP_HEADER_HEIGHT: u16 = 1;
 /// Rows the column-label row at the top of the pane occupies. There is

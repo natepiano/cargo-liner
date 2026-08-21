@@ -19,10 +19,6 @@ use super::theme;
 #[must_use]
 pub fn accent_color() -> Color { theme().semantic.accent.color }
 
-/// Border color for the currently focused pane.
-#[must_use]
-pub fn active_border_color() -> Color { theme().pane_chrome.active_border.color }
-
 /// Background highlight for the currently focused pane row.
 #[must_use]
 pub fn active_focus_color() -> Color { theme().focus.active.color }
