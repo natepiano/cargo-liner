@@ -83,23 +83,30 @@ pub(crate) const SECONDS_PER_MINUTE: u64 = 60;
 pub(crate) const SECONDS_PER_HOUR: u64 = 3600;
 /// Shown in `start` when a process's timestamp cannot be interpreted.
 pub(crate) const UNRESOLVED_TIME: &str = "--:--";
-/// Home directory stand-in in the `path` column.
+/// Home directory stand-in in the working-directory header.
 pub(crate) const HOME_ALIAS: &str = "~";
-/// Column headers, in table order.
-pub(crate) const TABLE_HEADERS: [&str; 6] = ["path", "pid", "start", "dur", "compiler", "command"];
-/// Index of the `path` column in [`TABLE_HEADERS`].
-pub(crate) const PATH_COLUMN: usize = 0;
+/// Column headers, in table order. The working directory is not among
+/// them: it heads the group of invocations that share it rather than
+/// repeating on every row.
+pub(crate) const TABLE_HEADERS: [&str; 5] = ["pid", "start", "dur", "compiler", "command"];
 /// Index of the `pid` column in [`TABLE_HEADERS`].
-pub(crate) const PID_COLUMN: usize = 1;
+pub(crate) const PID_COLUMN: usize = 0;
 /// Index of the `start` column in [`TABLE_HEADERS`].
-pub(crate) const START_COLUMN: usize = 2;
+pub(crate) const START_COLUMN: usize = 1;
 /// Index of the `dur` column in [`TABLE_HEADERS`].
-pub(crate) const DURATION_COLUMN: usize = 3;
+pub(crate) const DURATION_COLUMN: usize = 2;
 /// Index of the `compiler` column in [`TABLE_HEADERS`].
-pub(crate) const COMPILER_COLUMN: usize = 4;
+pub(crate) const COMPILER_COLUMN: usize = 3;
 /// Index of the `command` column in [`TABLE_HEADERS`]. It is last, and
 /// absorbs whatever width the fitted columns leave.
-pub(crate) const COMMAND_COLUMN: usize = 5;
+pub(crate) const COMMAND_COLUMN: usize = 4;
+/// Rows the working-directory header above each group's table occupies.
+pub(crate) const GROUP_HEADER_HEIGHT: u16 = 1;
+/// Rows the column-label row at the top of the pane occupies. There is
+/// one for the whole table, not one per working-directory group.
+pub(crate) const TABLE_HEADER_HEIGHT: u16 = 1;
+/// Blank rows between one working directory's table and the next.
+pub(crate) const GROUP_GAP_HEIGHT: u16 = 1;
 /// Cells the `\u{d7}` separator occupies in a `compiler` cell.
 pub(crate) const COMPILER_SEPARATOR_WIDTH: usize = 1;
 /// Blank cells between table columns.
