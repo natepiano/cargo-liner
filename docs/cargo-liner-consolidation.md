@@ -7,12 +7,14 @@ with `tui_pane` promoted from a child of `cargo-port` to a peer crate.
 Both existing GitHub repos are archived in place with a `MOVED →` description.
 Git history from both is grafted into the new repo, so blame survives.
 
-**Status (2026-08-20):** Phases 0–2 complete. cargo-port is fully migrated: CI
-is green on all eight jobs, every local gate passes on stable 1.98, and
-`natepiano/cargo-port` is archived with a move notice. `cargo-mend` is untouched
-and still develops in its own repo — Phase 3 moves it next. One item remains
-open and it is not a cargo-liner defect: the shared release skill cannot
-complete a dry-run for any project using `[[publish_path_pins]]` (row 16).
+**Status (2026-08-21):** Phases 0–2 complete and the release path is working.
+cargo-port is fully migrated: CI is green on all eight jobs, every local gate
+passes on stable 1.98, and `natepiano/cargo-port` is archived with a move
+notice. The shared release skill's dry-run gap is fixed, and `publish_path_pins`
+no longer carries a hardcoded version — `/release` resolves it from crates.io
+and halts when the pinned crate has unpublished changes (rows 16 and 18).
+`cargo-mend` is untouched and still develops in its own repo — Phase 3 moves it
+next.
 
 ## Target layout
 
@@ -114,8 +116,9 @@ all of them fail quietly if skipped.
 | 13 | Actions is slow to register a workflow on a brand-new repo | For ~25s after the initial push, `gh run list` showed no run at all while `gh workflow list` already reported the workflow `active`. A manual `gh workflow run` filled the gap, and when the push-triggered run finally started, `cancel-in-progress` cancelled the manual one. | Wait rather than dispatch. Also note `gh run watch --exit-status` exits 0 on a **cancelled** run — it only fails on `failure`, so a cancelled run reads as success. Check `conclusion` explicitly. |
 | 14 | `mktemp -t` fails under the command sandbox | `check-no-test-abort.sh` dies with `mkstemp failed … Operation not permitted`. | Run it with the sandbox disabled. It is a sandbox limit, not a defect in the script — do not "fix" the script. |
 | 15 | CI installs `stable`, the toolchain moves, clippy tightens | `dtolnay/rust-toolchain@master` with `toolchain: stable` resolves to whatever stable is current. Stable 1.98.0 landed 2026-08-18, two days before the migration, while local was 1.97.0 — so CI failed on 5 findings in untouched cargo-port source that local clippy could not see: an unused `use confique::Config as _;` in a test module, four `missing_const_for_fn`, and one `.ok().is_some_and(..)` on a `Result`. | Not a migration regression — the old repo ran the identical clippy invocation. **Resolved**: `rustup update stable` to reproduce, then fix. Diagnose this class by comparing `rustc --version` against the CI log before suspecting the merge. |
+| 16 | `/release` dry-run could not complete for a project with `[[publish_path_pins]]`, and the pin itself never applied | STEP 6 pins path-only deps *before* the publish dry-run, but under `--dry-run` `pin_path_deps.sh` only reported, so `cargo publish --dry-run` ran against the unpinned manifest and always failed with `dependency 'tui_pane' does not specify a version`. Fixing that exposed a second defect: the rewrite matched `^<dep> = ` with a single space, while taplo aligns the `=` with padding — so on a real release the `sed` silently matched nothing and reported success. | **Resolved** in `~/.claude/commands/release.md` and its scripts, not in cargo-liner; `bevy_hana` gets the same fix. `--dry-run` now applies the pin and skips only the commit, `--restore` undoes it, `publish_crate.sh --allow-dirty` lets the uncommitted pin through a dry-run, and the rewrite is whitespace-tolerant with a post-check that fails when it changes nothing. |
 | 17 | Updating the stable toolchain breaks the installed `cargo-mend` | `cargo mend` died with `dyld: Library not loaded: @rpath/librustc_driver-<hash>.dylib`. The installed binary links `rustc_private` from the exact stable it was built against, and `rustup update` deletes that library. | Rebuild it: `RUSTC_BOOTSTRAP=1 cargo install --path <cargo-mend>`, and confirm `rustc-dev` is installed for the new toolchain first. Any stable bump breaks the mend gate this way, so Phase 3 should expect it. If the cargo-mend tree has uncommitted work, build from a throwaway clone at its committed HEAD rather than the dirty tree. |
-| 16 | `/release` dry-run cannot complete for a project with `[[publish_path_pins]]` | STEP 6 pins path-only deps *before* the publish dry-run, but under `--dry-run` `pin_path_deps.sh` only reports. `cargo publish --dry-run` then runs against the unpinned manifest and always fails with `dependency 'tui_pane' does not specify a version`. The step whose purpose is to make publish possible is the step dry-run skips. | A gap in `~/.claude/commands/release.md` STEP 6, not in cargo-liner — it hits `bevy_hana`'s `bevy_kana` pin identically. Cleanest fix: have `pin_path_deps.sh` apply the rewrite even in dry-run, skip only the commit, and restore `Cargo.toml`/`Cargo.lock` after the publish dry-run, so one script owns both the edit and its undo. |
+| 18 | A consumer release stops when the shared library has unpublished changes | The first working dry-run failed with 49 `not found in crate \`tui_pane\`` errors: cargo-port on main uses `frame_inner`, `overflow_affordance_label`, and `rule_title_label`, none of which exist in published `tui_pane 0.6.0`. The two crates co-develop in one repo, so the shared library drifts ahead of its published version within a cycle. | Expected, not a defect. `resolve_path_pins.sh` now reports the drift by name before the dry-run instead of letting it surface as a wall of compile errors inside the publish verify build. When tui_pane is unchanged since its published version the pin resolves silently and the release is one command; only actual drift makes it two — `/release tui_pane X.Y.Z`, then `/release cargo-port X.Y.Z`. Picking tui_pane's version is a semver judgment, which is why drift stays a stop rather than an automatic cascade. |
 
 ## Phases
 

@@ -7,10 +7,13 @@ install_verify        = "crates/cargo-port"
 install_verify_script = ".claude/scripts/release/install_verify.sh"
 
 # `tui_pane` is a path-only workspace dependency on main. cargo publish rejects a
-# path-only dep, so the release branch rewrites it to the version below and
-# commits that pin there; main keeps the path by construction. STEP 11 of
-# /release bumps this automatically after a tui_pane release — left stale, a
-# cargo-port release silently publishes against an older tui_pane API.
+# path-only dep, so the release branch rewrites it to a published version and
+# commits that pin there; main keeps the path by construction.
+#
+# No `version` here on purpose. /release resolves it from crates.io at release
+# time and diffs `crates/tui_pane` against what that version actually published,
+# stopping the release when the two have drifted. tui_pane and its consumers
+# develop in the same repo and change together, so a hardcoded version goes
+# stale within a cycle and publishes against an API this repo no longer builds.
 [[publish_path_pins]]
-dep     = "tui_pane"
-version = "0.6.0"
+dep = "tui_pane"
