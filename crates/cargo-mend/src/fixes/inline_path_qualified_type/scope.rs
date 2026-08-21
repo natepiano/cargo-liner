@@ -1,0 +1,303 @@
+use std::cmp::Reverse;
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+
+use syn::Item;
+use syn::ItemUse;
+use syn::Visibility;
+use syn::spanned::Spanned;
+
+use super::offsets;
+use crate::fixes::imports;
+use crate::fixes::imports::ConditionalAttributes;
+use crate::rust_syntax::PathAnchor;
+
+pub(super) struct ScopeInfo {
+    pub(super) span_start:              usize,
+    pub(super) span_end:                usize,
+    pub(super) insertion_offset:        usize,
+    pub(super) indent:                  String,
+    pub(super) module_path:             Vec<String>,
+    /// Import path of each existing `use` binding, mapped to the cfg gates of
+    /// every `use` item that binds it.
+    pub(super) existing_imports:        BTreeMap<String, BTreeSet<ConditionalAttributes>>,
+    private_imports:                    BTreeMap<String, BTreeSet<String>>,
+    import_attributes:                  BTreeMap<String, BTreeSet<ConditionalAttributes>>,
+    /// Name bound by each existing `pub use` (or other re-export), mapped to
+    /// the cfg gates of every re-export that binds it.
+    pub(super) existing_reexport_names: BTreeMap<String, BTreeSet<ConditionalAttributes>>,
+}
+
+impl ScopeInfo {
+    pub(super) fn has_private_import_conflict(&self, name: &str, path: &str) -> bool {
+        self.private_imports
+            .get(name)
+            .is_some_and(|paths| paths.iter().any(|existing| existing != path))
+    }
+
+    /// True when the only existing bindings for this path or name are cfg-gated
+    /// behind attributes the occurrence does not share — e.g. a
+    /// `#[cfg(test)] use` while the occurrence compiles in non-test builds.
+    /// Rewriting the qualified path would then reference an import that is
+    /// configured out, and inserting an ungated `use` would collide with the
+    /// gated one, so such occurrences must be left fully qualified.
+    pub(super) fn existing_binding_gated_out(
+        &self,
+        import_path: &str,
+        import_name: &str,
+        occurrence_attributes: &ConditionalAttributes,
+    ) -> bool {
+        binding_gated_out(
+            self.existing_imports.get(import_path),
+            occurrence_attributes,
+        ) || binding_gated_out(
+            self.existing_reexport_names.get(import_name),
+            occurrence_attributes,
+        )
+    }
+
+    fn import_attributes(&self, name: &str) -> Option<ConditionalAttributes> {
+        let attributes = self.import_attributes.get(name)?;
+        if attributes.contains(&ConditionalAttributes::default()) {
+            return Some(ConditionalAttributes::default());
+        }
+        (attributes.len() == 1)
+            .then(|| attributes.first().cloned())
+            .flatten()
+    }
+}
+
+pub(super) struct ParentImport {
+    pub(super) path:                   String,
+    pub(super) conditional_attributes: ConditionalAttributes,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ScopeSpan {
+    start: usize,
+    end:   usize,
+}
+
+impl ScopeSpan {
+    pub(super) const fn new(start: usize, end: usize) -> Self { Self { start, end } }
+}
+
+pub(super) struct ScopeCollectionContext<'a> {
+    pub(super) text:    &'a str,
+    pub(super) offsets: &'a [usize],
+    pub(super) scopes:  &'a mut Vec<ScopeInfo>,
+}
+
+#[derive(Default)]
+struct ScopeImports {
+    existing_imports:        BTreeMap<String, BTreeSet<ConditionalAttributes>>,
+    private_imports:         BTreeMap<String, BTreeSet<String>>,
+    import_attributes:       BTreeMap<String, BTreeSet<ConditionalAttributes>>,
+    existing_reexport_names: BTreeMap<String, BTreeSet<ConditionalAttributes>>,
+}
+
+impl ScopeImports {
+    fn record(&mut self, text: &str, offsets: &[usize], item_use: &ItemUse) {
+        let attributes = ConditionalAttributes::from_attributes(text, offsets, &item_use.attrs);
+        for binding in imports::collect_use_bindings(&item_use.tree) {
+            let Some(name) = binding.name() else {
+                continue;
+            };
+            self.import_attributes
+                .entry(name.to_string())
+                .or_default()
+                .insert(attributes.clone());
+            if binding.binds_path_leaf() {
+                self.existing_imports
+                    .entry(binding.path().to_string())
+                    .or_default()
+                    .insert(attributes.clone());
+            }
+            match &item_use.vis {
+                Visibility::Inherited => {
+                    self.private_imports
+                        .entry(name.to_string())
+                        .or_default()
+                        .insert(binding.path().to_string());
+                },
+                _ => {
+                    self.existing_reexport_names
+                        .entry(name.to_string())
+                        .or_default()
+                        .insert(attributes.clone());
+                },
+            }
+        }
+    }
+}
+
+pub(super) fn collect_scopes(
+    items: &[Item],
+    span: ScopeSpan,
+    module_path: &[String],
+    scope_collection_context: &mut ScopeCollectionContext<'_>,
+) {
+    let mut scope_imports = ScopeImports::default();
+    let mut last_use_start = None;
+    let mut last_use_end = None;
+    let mut first_item_start = None;
+
+    for item in items {
+        let item_start = offsets::offset(
+            scope_collection_context.text,
+            scope_collection_context.offsets,
+            item.span().start(),
+        );
+        first_item_start.get_or_insert(item_start);
+
+        if let Item::Use(item_use) = item {
+            scope_imports.record(
+                scope_collection_context.text,
+                scope_collection_context.offsets,
+                item_use,
+            );
+            last_use_start = Some(item_start);
+            let item_end = offsets::offset(
+                scope_collection_context.text,
+                scope_collection_context.offsets,
+                item_use.span().end(),
+            );
+            last_use_end = Some(
+                if scope_collection_context.text.as_bytes().get(item_end) == Some(&b'\n') {
+                    item_end + 1
+                } else {
+                    item_end
+                },
+            );
+        }
+    }
+
+    let anchor_offset = last_use_start.or(first_item_start).unwrap_or(span.start);
+    let insertion_offset = last_use_end.or(first_item_start).unwrap_or(span.end);
+    let indent = indentation_at(scope_collection_context.text, anchor_offset);
+    scope_collection_context.scopes.push(ScopeInfo {
+        span_start: span.start,
+        span_end: span.end,
+        insertion_offset,
+        indent,
+        module_path: module_path.to_vec(),
+        existing_imports: scope_imports.existing_imports,
+        private_imports: scope_imports.private_imports,
+        import_attributes: scope_imports.import_attributes,
+        existing_reexport_names: scope_imports.existing_reexport_names,
+    });
+
+    for item in items {
+        if let Item::Mod(item_mod) = item
+            && let Some((_, child_items)) = &item_mod.content
+        {
+            let mut child_module_path = module_path.to_vec();
+            child_module_path.push(item_mod.ident.to_string());
+            collect_scopes(
+                child_items,
+                ScopeSpan::new(
+                    offsets::offset(
+                        scope_collection_context.text,
+                        scope_collection_context.offsets,
+                        item_mod.span().start(),
+                    ),
+                    offsets::offset(
+                        scope_collection_context.text,
+                        scope_collection_context.offsets,
+                        item_mod.span().end(),
+                    ),
+                ),
+                &child_module_path,
+                scope_collection_context,
+            );
+        }
+    }
+}
+
+pub(super) fn find_innermost_scope(scopes: &[ScopeInfo], byte_offset: usize) -> Option<usize> {
+    scopes
+        .iter()
+        .enumerate()
+        .filter(|(_, scope)| scope.span_start <= byte_offset && byte_offset < scope.span_end)
+        .max_by_key(|(_, scope)| (scope.span_start, Reverse(scope.span_end)))
+        .map(|(scope_id, _)| scope_id)
+}
+
+pub(super) fn qualify_through_parent_scope(
+    scopes: &[ScopeInfo],
+    scope_id: usize,
+    import_path: &str,
+) -> Option<ParentImport> {
+    let leading = import_path.split("::").next()?;
+    if PathAnchor::from(leading) != PathAnchor::Name {
+        return None;
+    }
+
+    let current = &scopes[scope_id];
+    let (parent, conditional_attributes) = scopes
+        .iter()
+        .filter_map(|scope| {
+            if scope.module_path.len() >= current.module_path.len()
+                || !current.module_path.starts_with(&scope.module_path)
+            {
+                return None;
+            }
+            scope
+                .import_attributes(leading)
+                .map(|attributes| (scope, attributes))
+        })
+        .max_by_key(|(scope, _)| scope.module_path.len())?;
+    let levels = current.module_path.len() - parent.module_path.len();
+    Some(ParentImport {
+        path: format!("{}{import_path}", "super::".repeat(levels)),
+        conditional_attributes,
+    })
+}
+
+/// A binding is gated out when it exists but none of its `use` items are
+/// active in every configuration the occurrence compiles in.
+fn binding_gated_out(
+    attribute_sets: Option<&BTreeSet<ConditionalAttributes>>,
+    occurrence_attributes: &ConditionalAttributes,
+) -> bool {
+    attribute_sets.is_some_and(|sets| {
+        !sets
+            .iter()
+            .any(|attributes| attributes.is_subset_of(occurrence_attributes))
+    })
+}
+
+fn indentation_at(text: &str, byte_offset: usize) -> String {
+    let line_start = text[..byte_offset]
+        .rfind('\n')
+        .map_or(0, |offset| offset + 1);
+    text[line_start..byte_offset]
+        .chars()
+        .take_while(char::is_ascii_whitespace)
+        .collect()
+}
+
+pub(super) fn canonicalize_inserted_use_path(scope: &ScopeInfo, full_path: &str) -> String {
+    let segments: Vec<&str> = full_path.split("::").collect();
+    let super_count = segments
+        .iter()
+        .take_while(|segment| PathAnchor::from(**segment) == PathAnchor::Super)
+        .count();
+    if super_count < 2 || super_count > scope.module_path.len() {
+        return full_path.to_string();
+    }
+
+    let mut absolute_segments = Vec::with_capacity(1 + scope.module_path.len() + segments.len());
+    absolute_segments.push("crate".to_string());
+    absolute_segments.extend(
+        scope.module_path[..scope.module_path.len() - super_count]
+            .iter()
+            .cloned(),
+    );
+    absolute_segments.extend(
+        segments[super_count..]
+            .iter()
+            .map(|segment| (*segment).to_string()),
+    );
+    absolute_segments.join("::")
+}

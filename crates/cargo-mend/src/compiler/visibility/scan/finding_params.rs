@@ -1,0 +1,69 @@
+use std::path::Path;
+
+use rustc_span::Span;
+use rustc_span::def_id::LocalDefId;
+
+use super::ItemCategory;
+use super::classify::CrateKind;
+use super::classify::ModuleLocation;
+use super::classify::ParentVisibility;
+use crate::compiler::facade::ParentFacadeExportStatus;
+use crate::compiler::visibility::annotation::VisibilitySyntax;
+use crate::config::DiagnosticCode;
+use crate::reporting::ExactBoundarySpelling;
+use crate::reporting::FixSupport;
+use crate::reporting::Severity;
+
+pub(in crate::compiler::visibility) struct FindingParams {
+    pub severity:                Severity,
+    pub diagnostic_code:         DiagnosticCode,
+    pub item:                    Option<String>,
+    pub message:                 String,
+    pub suggestion:              Option<String>,
+    pub fix_support:             FixSupport,
+    pub related:                 Option<String>,
+    pub visibility_annotation:   Option<String>,
+    pub item_def_path:           Option<String>,
+    pub narrower_scope_def_path: Option<String>,
+    pub exact_boundary_spelling: ExactBoundarySpelling,
+}
+
+pub(in crate::compiler::visibility) struct SuspiciousPubInput<'a> {
+    pub def_id:            LocalDefId,
+    pub file_path:         &'a Path,
+    pub config_rel_path:   Option<&'a str>,
+    pub parent_visibility: ParentVisibility,
+    pub module_location:   ModuleLocation,
+    pub crate_kind:        CrateKind,
+    pub kind_label:        Option<&'static str>,
+    pub name:              Option<&'a str>,
+    pub highlight_span:    Span,
+    pub visibility_syntax: VisibilitySyntax,
+    pub category:          ItemCategory,
+    pub facade_subject:    LocalDefId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::compiler::visibility) enum AllowanceReason {
+    Allowlist,
+    ParentIsPublic,
+    ShallowPrivatePolicy,
+    ReachablePublicApi,
+    ParentFacadeUsedOutsideParent,
+    InternalParentFacadeBoundary,
+    ExposedByOtherCrateVisibleSignature,
+    ExposedByPublicTraitImplInterface,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::compiler::visibility) enum SuspiciousPubAssessment {
+    Allowed(AllowanceReason),
+    ReviewInternalParentFacade {
+        related: Option<String>,
+    },
+    Warn {
+        fix_support:          FixSupport,
+        related:              Option<String>,
+        stale_parent_pub_use: Option<ParentFacadeExportStatus>,
+    },
+}

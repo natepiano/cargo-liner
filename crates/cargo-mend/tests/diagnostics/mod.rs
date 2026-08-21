@@ -1,0 +1,33 @@
+#![allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+#![allow(
+    clippy::unwrap_used,
+    reason = "tests should panic on unexpected values"
+)]
+#![allow(clippy::panic, reason = "tests should panic on unexpected values")]
+#![allow(
+    clippy::needless_raw_string_hashes,
+    reason = "test fixtures use raw strings with varying hash counts for readability"
+)]
+
+mod allowances;
+mod facade_signature_reach;
+mod facade_subjects;
+mod field_visibility_wider_than_type;
+mod fix_rollback;
+mod forbidden_pub_in_crate;
+mod import_fixes;
+mod imports_at_top;
+mod inline_path_fixes;
+mod narrow_pub_crate;
+mod overbroad_pub_crate;
+mod prefer_module_import;
+mod prelude_pub_mod;
+mod pub_use_fixes;
+mod rendering;
+#[path = "../support/mod.rs"]
+mod support;
+mod suspicious_pub_fixes;
+mod unused_pub;

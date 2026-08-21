@@ -1,0 +1,108 @@
+use std::collections::BTreeMap;
+
+use serde::Deserialize;
+use serde::Serialize;
+
+use super::diagnostic_code::DiagnosticCode;
+use super::diagnostic_status::DiagnosticStatus;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct DiagnosticsConfig {
+    #[serde(flatten)]
+    rules: BTreeMap<DiagnosticCode, DiagnosticStatus>,
+}
+
+impl DiagnosticsConfig {
+    pub(crate) fn is_enabled(&self, code: DiagnosticCode) -> DiagnosticStatus {
+        self.rules
+            .get(&code)
+            .copied()
+            .unwrap_or(DiagnosticStatus::Enabled)
+    }
+
+    pub(crate) fn entries(&self) -> Vec<(DiagnosticCode, DiagnosticStatus)> {
+        DiagnosticCode::ALL
+            .iter()
+            .map(|code| (*code, self.is_enabled(*code)))
+            .collect()
+    }
+
+    pub(crate) fn merge_project(&self, project: &Self) -> Self {
+        let mut rules = self.rules.clone();
+        for (code, enabled) in &project.rules {
+            rules.insert(*code, *enabled);
+        }
+        Self { rules }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DiagnosticCode;
+    use super::DiagnosticStatus;
+    use super::DiagnosticsConfig;
+
+    #[test]
+    fn is_enabled_reflects_config_values() {
+        let mut diagnostics_config = DiagnosticsConfig::default();
+        assert_eq!(
+            diagnostics_config.is_enabled(DiagnosticCode::PreferModuleImport),
+            DiagnosticStatus::Enabled
+        );
+        diagnostics_config.rules.insert(
+            DiagnosticCode::PreferModuleImport,
+            DiagnosticStatus::Disabled,
+        );
+        assert_eq!(
+            diagnostics_config.is_enabled(DiagnosticCode::PreferModuleImport),
+            DiagnosticStatus::Disabled
+        );
+    }
+
+    #[test]
+    fn missing_code_defaults_to_enabled() {
+        let diagnostics_config = DiagnosticsConfig::default();
+        assert_eq!(
+            diagnostics_config.is_enabled(DiagnosticCode::OverbroadPubCrate),
+            DiagnosticStatus::Enabled
+        );
+    }
+
+    #[test]
+    fn legacy_overbroad_pub_crate_key_is_accepted() {
+        assert!(matches!(
+            toml::from_str::<DiagnosticsConfig>("forbidden_pub_crate = false"),
+            Ok(diagnostics_config)
+                if diagnostics_config.is_enabled(DiagnosticCode::OverbroadPubCrate)
+                    == DiagnosticStatus::Disabled
+        ));
+    }
+
+    #[test]
+    fn merge_project_overrides_global() {
+        let mut global = DiagnosticsConfig::default();
+        global.rules.insert(
+            DiagnosticCode::PreferModuleImport,
+            DiagnosticStatus::Disabled,
+        );
+
+        let mut project = DiagnosticsConfig::default();
+        project.rules.insert(
+            DiagnosticCode::PreferModuleImport,
+            DiagnosticStatus::Enabled,
+        );
+        project
+            .rules
+            .insert(DiagnosticCode::SuspiciousPub, DiagnosticStatus::Disabled);
+
+        let merged = global.merge_project(&project);
+        assert_eq!(
+            merged.is_enabled(DiagnosticCode::PreferModuleImport),
+            DiagnosticStatus::Enabled
+        );
+        assert_eq!(
+            merged.is_enabled(DiagnosticCode::SuspiciousPub),
+            DiagnosticStatus::Disabled
+        );
+    }
+}

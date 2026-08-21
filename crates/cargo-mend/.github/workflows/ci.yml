@@ -1,0 +1,234 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_TERM_PROGRESS_WHEN: always
+  CARGO_TERM_PROGRESS_WIDTH: 80
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  format:
+    name: Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          components: rustfmt
+
+      - name: Install taplo
+        uses: taiki-e/install-action@taplo-cli
+
+      - name: Check Rust formatting
+        run: cargo +nightly fmt -- --check
+
+      - name: Check TOML formatting
+        run: taplo fmt --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: clippy, rust-src, rustc-dev, llvm-tools-preview
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run clippy
+        run: cargo +stable clippy --all-targets
+
+  build:
+    name: Build Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: rust-src, rustc-dev, llvm-tools-preview
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release
+        run: cargo build --release
+
+  install-check:
+    name: Linux Install Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: rust-src, rustc-dev, llvm-tools-preview
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-mend
+        run: RUSTC_BOOTSTRAP=1 cargo +stable install --path . --root /tmp/cargo-mend-install
+
+      - name: Check installed binary
+        run: /tmp/cargo-mend-install/bin/cargo-mend --help
+
+      - name: Check cargo subcommand wiring
+        run: PATH="/tmp/cargo-mend-install/bin:$PATH" cargo mend --help
+
+  windows-install-check:
+    name: Windows Install Check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: rust-src, rustc-dev, llvm-tools-preview
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-mend
+        shell: pwsh
+        run: |
+          $env:RUSTC_BOOTSTRAP = '1'
+          cargo +stable install --path . --debug --root "$env:RUNNER_TEMP\\cargo-mend-install"
+
+      - name: Check installed binary
+        shell: pwsh
+        run: |
+          $sysroot = rustc --print sysroot
+          $rustHostTriple = (rustc -vV | Select-String '^host: ').ToString().Split(' ')[1]
+          $toolchainBin = Join-Path $sysroot 'bin'
+          $rustlibBin = Join-Path $sysroot "lib\rustlib\$rustHostTriple\bin"
+          $rustlibLib = Join-Path $sysroot "lib\rustlib\$rustHostTriple\lib"
+          $env:PATH = "$toolchainBin;$rustlibBin;$rustlibLib;$env:PATH"
+          & "$env:RUNNER_TEMP\cargo-mend-install\bin\cargo-mend.exe" --help
+
+      - name: Check cargo subcommand wiring
+        shell: pwsh
+        run: |
+          $sysroot = rustc --print sysroot
+          $rustHostTriple = (rustc -vV | Select-String '^host: ').ToString().Split(' ')[1]
+          $toolchainBin = Join-Path $sysroot 'bin'
+          $rustlibBin = Join-Path $sysroot "lib\rustlib\$rustHostTriple\bin"
+          $rustlibLib = Join-Path $sysroot "lib\rustlib\$rustHostTriple\lib"
+          $env:PATH = "$toolchainBin;$rustlibBin;$rustlibLib;$env:PATH"
+          $env:PATH = "$env:RUNNER_TEMP\cargo-mend-install\bin;$env:PATH"
+          cargo mend --help
+
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: rust-src, rustc-dev, llvm-tools-preview
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo nextest run
+
+  self-check:
+    name: Self Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: rust-src, rustc-dev, llvm-tools-preview
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run mend on itself
+        run: cargo run -- --fail-on-warn
+
+      - name: Force cache miss and re-run (exercises fallback path)
+        run: |
+          touch src/main.rs
+          cargo run -- --fail-on-warn
+
+  cross-toolchain:
+    name: Cross-Toolchain Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: rust-src, rustc-dev, llvm-tools-preview
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build mend (nightly via rust-toolchain.toml)
+        run: cargo build
+
+      - name: Create test fixture using stable
+        run: |
+          mkdir -p /tmp/mend-fixture/src
+          cat > /tmp/mend-fixture/Cargo.toml << 'TOML'
+          [package]
+          name = "mend-fixture"
+          version = "0.1.0"
+          edition = "2024"
+          TOML
+          cat > /tmp/mend-fixture/rust-toolchain.toml << 'TOML'
+          [toolchain]
+          channel = "stable"
+          TOML
+          cat > /tmp/mend-fixture/src/main.rs << 'RS'
+          fn main() { println!("hello"); }
+          RS
+
+      - name: Run nightly-built mend on stable fixture
+        run: cargo run -- --manifest-path /tmp/mend-fixture/Cargo.toml
+
+      - name: Force cache miss and re-run on stable fixture
+        run: |
+          touch /tmp/mend-fixture/src/main.rs
+          cargo run -- --manifest-path /tmp/mend-fixture/Cargo.toml

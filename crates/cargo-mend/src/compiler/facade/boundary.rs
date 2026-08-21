@@ -1,0 +1,408 @@
+use std::borrow::Cow;
+use std::cell::RefCell;
+use std::fs;
+use std::path::Path;
+use std::path::PathBuf;
+use std::rc::Rc;
+
+use rustc_hash::FxHashMap;
+use rustc_hash::FxHashSet;
+use rustc_middle::ty::TyCtxt;
+use rustc_span::FileName;
+use rustc_span::Span;
+use rustc_span::def_id::CRATE_DEF_ID;
+use rustc_span::def_id::LocalDefId;
+
+use crate::compiler::source_cache::SourceCache;
+
+#[derive(Debug, Clone)]
+pub(super) struct ParentBoundary {
+    pub boundary_file: PathBuf,
+    pub module_path:   Vec<String>,
+}
+
+pub(in crate::compiler) struct LogicalParentBoundary {
+    module:      LocalDefId,
+    module_path: Vec<String>,
+}
+
+impl LogicalParentBoundary {
+    pub(in crate::compiler) const fn module(&self) -> LocalDefId { self.module }
+
+    pub(in crate::compiler) fn module_path(&self) -> &[String] { &self.module_path }
+}
+
+/// One module a source file defines: its full path from the crate root, and the
+/// suffix of that path below the file's own root module.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::compiler) struct ModuleContext {
+    pub path:   Vec<String>,
+    pub suffix: Vec<String>,
+}
+
+#[derive(Debug, Default)]
+pub(in crate::compiler) struct ModuleSourceMap {
+    modules_by_file:            FxHashMap<PathBuf, Vec<LocalDefId>>,
+    files_by_module:            FxHashMap<LocalDefId, Vec<PathBuf>>,
+    modules_by_path:            FxHashMap<Vec<String>, LocalDefId>,
+    /// Each module's enclosing module, so an ancestry walk is a map lookup per
+    /// level instead of a `parent_module_from_def_id` query per level. The
+    /// exposure scan walks ancestry once per item per file per module scope,
+    /// which made that query the single most expensive thing mend asked the
+    /// compiler for.
+    parent_by_module:           FxHashMap<LocalDefId, LocalDefId>,
+    structural_parents_by_file: FxHashMap<PathBuf, Vec<Vec<String>>>,
+    crate_files:                FxHashSet<PathBuf>,
+    canonical_by_source_file:   FxHashMap<PathBuf, PathBuf>,
+    canonical_by_span_file:     FxHashMap<PathBuf, PathBuf>,
+    module_contexts_by_file:    RefCell<FxHashMap<PathBuf, Rc<[ModuleContext]>>>,
+}
+
+impl ModuleSourceMap {
+    /// The modules `source_file` defines, computed once per file per run.
+    ///
+    /// The contexts depend only on the file — `tcx` and this map are fixed for a
+    /// run — but the facade scans ask for them once per file *per re-export
+    /// occurrence*, which on a crate with many re-exports repeats
+    /// `root_modules_for_file` and the whole-file suffix scan thousands of times
+    /// over.
+    ///
+    /// Returns `Rc`, not a borrow: callers iterate the contexts while calling
+    /// back into this map, and an outstanding `RefCell` borrow across that loop
+    /// would panic.
+    pub(in crate::compiler) fn module_contexts(
+        &self,
+        source_file: &Path,
+        compute: impl FnOnce() -> Vec<ModuleContext>,
+    ) -> Rc<[ModuleContext]> {
+        let cached = self
+            .module_contexts_by_file
+            .borrow()
+            .get(source_file)
+            .map(Rc::clone);
+        if let Some(cached) = cached {
+            return cached;
+        }
+        let computed: Rc<[ModuleContext]> = compute().into();
+        self.module_contexts_by_file
+            .borrow_mut()
+            .insert(source_file.to_path_buf(), Rc::clone(&computed));
+        computed
+    }
+
+    pub(in crate::compiler) fn new(tcx: TyCtxt<'_>, source_cache: &SourceCache) -> Self {
+        let canonical_by_source_file: FxHashMap<PathBuf, PathBuf> = source_cache
+            .source_files()
+            .into_iter()
+            .map(|path| {
+                let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+                (path.to_path_buf(), canonical)
+            })
+            .collect();
+        let mut module_sources = Self {
+            structural_parents_by_file: source_cache.structural_parent_module_paths().clone(),
+            crate_files: canonical_by_source_file.values().cloned().collect(),
+            canonical_by_source_file,
+            canonical_by_span_file: canonical_span_files(tcx),
+            ..Self::default()
+        };
+        module_sources
+            .modules_by_path
+            .insert(Vec::new(), CRATE_DEF_ID);
+        for item_id in tcx.hir_crate_items(()).free_items() {
+            let item = tcx.hir_item(item_id);
+            let Some(source_file) = module_sources.canonical_span_file(tcx, item.span) else {
+                continue;
+            };
+            let module: LocalDefId = tcx.parent_module_from_def_id(item.owner_id.def_id).into();
+            module_sources.insert(module, source_file);
+        }
+        tcx.hir_for_each_module(|module| {
+            let module_def_id = module.to_local_def_id();
+            module_sources
+                .modules_by_path
+                .insert(module_path(tcx, module_def_id), module_def_id);
+            if module_def_id != CRATE_DEF_ID {
+                module_sources.parent_by_module.insert(
+                    module_def_id,
+                    tcx.parent_module_from_def_id(module_def_id).into(),
+                );
+            }
+            let (hir_module, _, _) = tcx.hir_get_module(module);
+            if let Some(source_file) =
+                module_sources.canonical_span_file(tcx, hir_module.spans.inner_span)
+            {
+                module_sources.insert(module_def_id, source_file);
+            }
+        });
+        module_sources
+    }
+
+    fn insert(&mut self, module: LocalDefId, source_file: PathBuf) {
+        let modules = self.modules_by_file.entry(source_file.clone()).or_default();
+        if !modules.contains(&module) {
+            modules.push(module);
+        }
+        let files = self.files_by_module.entry(module).or_default();
+        if !files.contains(&source_file) {
+            files.push(source_file);
+        }
+    }
+
+    /// Canonical form of `source_file`, taken from the table built in `new`
+    /// when the path came from the `SourceCache`.
+    ///
+    /// The exposure walk calls `root_modules_for_file` once per evaluated item
+    /// per source file, so canonicalizing there runs `realpath` — one
+    /// `getattrlist` syscall per path component — in the innermost loop. The
+    /// declaration searches in `exposure::detect` sit in the same loop and
+    /// canonicalize the same paths, so they share this table.
+    pub(in crate::compiler) fn canonical_source_file<'path>(
+        &'path self,
+        source_file: &'path Path,
+    ) -> Cow<'path, Path> {
+        self.canonical_by_source_file.get(source_file).map_or_else(
+            || {
+                Cow::Owned(
+                    fs::canonicalize(source_file).unwrap_or_else(|_| source_file.to_path_buf()),
+                )
+            },
+            |canonical| Cow::Borrowed(canonical.as_path()),
+        )
+    }
+
+    /// Canonical path of the file `span` originates in, or `None` for a span
+    /// with no real file behind it.
+    ///
+    /// Resolving a span's file is otherwise a `realpath` call per span, and the
+    /// exposure walk resolves one span per candidate declaration and one per
+    /// struct field. Spans in a file all report the same path, so the table
+    /// built in `new` answers from memory; a file that entered the source map
+    /// after that (external crate sources are loaded on demand) falls back to
+    /// the syscall.
+    pub(in crate::compiler) fn canonical_span_file(
+        &self,
+        tcx: TyCtxt<'_>,
+        span: Span,
+    ) -> Option<PathBuf> {
+        let file = tcx.sess.source_map().lookup_char_pos(span.lo()).file;
+        let FileName::Real(real) = &file.name else {
+            return None;
+        };
+        let local_path = real.local_path()?;
+        Some(
+            self.canonical_by_span_file
+                .get(local_path)
+                .cloned()
+                .unwrap_or_else(|| {
+                    fs::canonicalize(local_path).unwrap_or_else(|_| local_path.to_path_buf())
+                }),
+        )
+    }
+
+    /// Whether `span` originates in `canonical_file`.
+    ///
+    /// `canonical_file` must already be canonical: `canonical_span_file`
+    /// canonicalizes what it returns, so an uncanonical argument never compares
+    /// equal.
+    pub(in crate::compiler) fn span_is_in_file(
+        &self,
+        tcx: TyCtxt<'_>,
+        span: Span,
+        canonical_file: &Path,
+    ) -> bool {
+        self.canonical_span_file(tcx, span)
+            .is_some_and(|file| file == canonical_file)
+    }
+
+    pub(in crate::compiler) fn root_modules_for_file(
+        &self,
+        tcx: TyCtxt<'_>,
+        source_file: &Path,
+    ) -> Vec<LocalDefId> {
+        let canonical = self.canonical_source_file(source_file);
+        let canonical_source_file: &Path = canonical.as_ref();
+        let root_modules = self
+            .modules_by_file
+            .get(canonical_source_file)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|module| {
+                if *module == CRATE_DEF_ID {
+                    return true;
+                }
+                let parent = self.parent_module(tcx, *module);
+                self.files_by_module.get(&parent).is_none_or(|files| {
+                    !files
+                        .iter()
+                        .any(|file| file.as_path() == canonical_source_file)
+                })
+            })
+            .collect::<Vec<_>>();
+        if !root_modules.is_empty() || !self.crate_files.contains(canonical_source_file) {
+            return root_modules;
+        }
+        let mut structural_roots = Vec::new();
+        for parent_path in self
+            .structural_parents_by_file
+            .get(canonical_source_file)
+            .into_iter()
+            .flatten()
+        {
+            let module = self.nearest_active_ancestor(parent_path);
+            if !structural_roots.contains(&module) {
+                structural_roots.push(module);
+            }
+        }
+        if structural_roots.is_empty() {
+            vec![CRATE_DEF_ID]
+        } else {
+            structural_roots
+        }
+    }
+
+    /// The module enclosing `module`.
+    ///
+    /// Served from the table built in `new`, falling back to the compiler query
+    /// for a def id that table does not cover — every module does, but items and
+    /// synthesized def ids reach this too.
+    fn parent_module(&self, tcx: TyCtxt<'_>, module: LocalDefId) -> LocalDefId {
+        self.parent_by_module
+            .get(&module)
+            .copied()
+            .unwrap_or_else(|| tcx.parent_module_from_def_id(module).into())
+    }
+
+    /// Whether `candidate` is `ancestor` or is nested inside it.
+    pub(in crate::compiler) fn module_is_within(
+        &self,
+        tcx: TyCtxt<'_>,
+        mut candidate: LocalDefId,
+        ancestor: LocalDefId,
+    ) -> bool {
+        loop {
+            if candidate == ancestor {
+                return true;
+            }
+            if candidate == CRATE_DEF_ID {
+                return false;
+            }
+            candidate = self.parent_module(tcx, candidate);
+        }
+    }
+
+    fn nearest_active_ancestor(&self, module_path: &[String]) -> LocalDefId {
+        for path_length in (0..=module_path.len()).rev() {
+            if let Some(module) = self.modules_by_path.get(&module_path[..path_length]) {
+                return *module;
+            }
+        }
+        CRATE_DEF_ID
+    }
+
+    pub(in crate::compiler) fn source_files(&self, module: LocalDefId) -> &[PathBuf] {
+        self.files_by_module.get(&module).map_or(&[], Vec::as_slice)
+    }
+
+    pub(in crate::compiler) fn file_contains_module_path(
+        &self,
+        tcx: TyCtxt<'_>,
+        source_file: &Path,
+        expected: &[String],
+    ) -> bool {
+        let canonical_source_file = self.canonical_source_file(source_file);
+        self.modules_by_file
+            .get(canonical_source_file.as_ref())
+            .is_some_and(|modules| {
+                modules
+                    .iter()
+                    .any(|module| module_path(tcx, *module) == expected)
+            })
+    }
+}
+
+/// Locate a facade's owning module from the compiler-resolved `use` item.
+///
+/// This path is intentionally used only after HIR has selected a re-export.
+/// The source path supplies reporting and usage-analysis metadata; it never
+/// decides whether a facade exists.
+pub(super) fn parent_boundary_for_reexport(
+    tcx: TyCtxt<'_>,
+    owner_module: LocalDefId,
+    use_span: Span,
+) -> Option<ParentBoundary> {
+    let boundary_file = real_file_path(tcx, use_span)?;
+    let module_path = if owner_module == CRATE_DEF_ID {
+        Vec::new()
+    } else {
+        tcx.def_path_str(owner_module.to_def_id())
+            .split("::")
+            .filter(|segment| !segment.is_empty())
+            .map(String::from)
+            .collect()
+    };
+    Some(ParentBoundary {
+        boundary_file,
+        module_path,
+    })
+}
+
+pub(super) fn logical_parent_boundary_for_child(
+    tcx: TyCtxt<'_>,
+    child_item: LocalDefId,
+) -> Option<LogicalParentBoundary> {
+    let child_module: LocalDefId = tcx.parent_module_from_def_id(child_item).into();
+    if child_module == CRATE_DEF_ID {
+        return None;
+    }
+    let module: LocalDefId = tcx.parent_module_from_def_id(child_module).into();
+    Some(LogicalParentBoundary {
+        module,
+        module_path: module_path(tcx, module),
+    })
+}
+
+pub(super) fn module_path(tcx: TyCtxt<'_>, module: LocalDefId) -> Vec<String> {
+    if module == CRATE_DEF_ID {
+        return Vec::new();
+    }
+    tcx.def_path_str(module.to_def_id())
+        .split("::")
+        .filter(|segment| !segment.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+/// Canonical form of every real file the compiler has loaded, keyed by the path
+/// the compiler reports for it.
+///
+/// Canonicalizing once per file here replaces canonicalizing once per span
+/// resolved during the exposure walk, which is many thousands of `realpath`
+/// calls over the same few hundred paths.
+fn canonical_span_files(tcx: TyCtxt<'_>) -> FxHashMap<PathBuf, PathBuf> {
+    tcx.sess
+        .source_map()
+        .files()
+        .iter()
+        .filter_map(|file| match &file.name {
+            FileName::Real(real) => real.local_path().map(Path::to_path_buf),
+            _ => None,
+        })
+        .map(|path| {
+            let canonical = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+            (path, canonical)
+        })
+        .collect()
+}
+
+fn real_file_path(tcx: TyCtxt<'_>, span: Span) -> Option<PathBuf> {
+    let source_map = tcx.sess.source_map();
+    let file = source_map.lookup_char_pos(span.lo()).file;
+    match file.name.clone() {
+        FileName::Real(real) => real
+            .local_path()
+            .map(|path| fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())),
+        _ => None,
+    }
+}
