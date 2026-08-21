@@ -31,7 +31,7 @@ jobs:
     name: Detect Changes
     runs-on: ubuntu-latest
     outputs:
-      cargo_port: ${{ steps.filter.outputs.cargo_port }}
+      stable_crates: ${{ steps.filter.outputs.stable_crates }}
       cargo_mend: ${{ steps.filter.outputs.cargo_mend }}
     steps:
       - uses: actions/checkout@v6
@@ -47,10 +47,14 @@ jobs:
               - 'taplo.toml'
               - '.cargo/**'
               - '.github/workflows/ci.yml'
-            cargo_port:
+            # Every crate except cargo-mend, matched by exclusion so a new crate
+            # is covered the moment it lands. cargo-mend is split out because it
+            # links `rustc_private` and needs compiler components the other jobs
+            # do not install.
+            stable_crates:
               - *shared
-              - 'crates/cargo-port/**'
-              - 'crates/tui_pane/**'
+              - 'crates/**'
+              - '!crates/cargo-mend/**'
             cargo_mend:
               - *shared
               - 'crates/cargo-mend/**'
@@ -90,11 +94,13 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # `--workspace` reaches cargo-mend, which links `rustc_private`, so this
+      # job needs the compiler's own libraries as well as clippy.
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
-          components: clippy
+          components: clippy, rust-src, rustc-dev, llvm-tools-preview
 
 
       - name: Install mold linker
@@ -116,7 +122,7 @@ jobs:
   build:
     name: Build Check
     needs: changes
-    if: needs.changes.outputs.cargo_port == 'true'
+    if: needs.changes.outputs.stable_crates == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -141,12 +147,12 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build release examples
-        run: cargo build --release --all-features -p cargo-port -p tui_pane --examples
+        run: cargo build --release --all-features --workspace --exclude cargo-mend --examples
 
   test:
     name: Test Suite
     needs: changes
-    if: needs.changes.outputs.cargo_port == 'true'
+    if: needs.changes.outputs.stable_crates == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -182,7 +188,7 @@ jobs:
 
       # Build only test targets here. Example compilation belongs in Build Check.
       - name: Run test targets
-        run: cargo nextest run --all-features -p cargo-port -p tui_pane --tests
+        run: cargo nextest run --all-features --workspace --exclude cargo-mend --tests
 
         env:
           WGPU_BACKEND: "gl"
@@ -290,7 +296,7 @@ jobs:
   no_bootstrap:
     name: Stable Without Bootstrap
     needs: changes
-    if: needs.changes.outputs.cargo_port == 'true'
+    if: needs.changes.outputs.stable_crates == 'true'
     runs-on: ubuntu-latest
     env:
       RUSTC_BOOTSTRAP: "0"
@@ -315,7 +321,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Check without the nightly escape hatch
-        run: cargo check -p cargo-port -p tui_pane -p cargo-tile --all-targets
+        run: cargo check --workspace --exclude cargo-mend --all-targets
 
   # cargo-port ships to Windows users via `cargo install`, and the Unix-only
   # jobs above cannot see a `#[cfg]` mistake in a Windows code path. Compile
@@ -323,7 +329,7 @@ jobs:
   windows:
     name: Windows Build Check
     needs: changes
-    if: needs.changes.outputs.cargo_port == 'true'
+    if: needs.changes.outputs.stable_crates == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
