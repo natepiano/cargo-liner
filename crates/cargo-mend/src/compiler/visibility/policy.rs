@@ -726,6 +726,26 @@ pub(in crate::compiler) fn resolved_boundary_note(replacement: &str) -> String {
     format!("{replacement} is the narrowest visibility that covers everything reaching this item")
 }
 
+/// Why a wider visibility is being suggested but not applied.
+///
+/// [`resolved_boundary_note`] says where the boundary came from, which is the
+/// answer whenever mend can reach it in one edit. It cannot when the item is
+/// the self type of a trait impl naming a narrower type: widening the item
+/// widens the impl, and rustc then rejects the impl for exposing that type
+/// (E0446). Naming both the type and the impl turns a fix mend silently
+/// declines into a repair the reader can carry out — widen the named type,
+/// then run `--fix` again.
+pub(in crate::compiler) fn interface_leak_note(
+    replacement: &str,
+    leaked_type: &str,
+    impl_header: &str,
+) -> String {
+    format!(
+        "{replacement} would expose `{leaked_type}` through `{impl_header}`, which rustc rejects \
+         (E0446) — widen `{leaked_type}` first"
+    )
+}
+
 /// A visibility annotation with its interior whitespace collapsed, so a
 /// `pub(in\n    crate::a)` split across lines reads as one phrase in a
 /// diagnostic.

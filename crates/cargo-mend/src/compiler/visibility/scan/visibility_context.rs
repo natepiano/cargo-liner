@@ -32,6 +32,8 @@ use crate::compiler::settings::DriverSettings;
 use crate::compiler::source_cache;
 use crate::compiler::source_cache::SourceCache;
 use crate::compiler::visibility::field;
+use crate::compiler::visibility::interface_ceiling;
+use crate::compiler::visibility::interface_ceiling::InterfaceCeiling;
 use crate::compiler::visibility::source;
 use crate::compiler::visibility::use_sites;
 use crate::compiler::visibility::use_sites::ParentFacadeAnalysis;
@@ -46,6 +48,9 @@ pub(in crate::compiler::visibility) struct VisibilityContext<'a, 'tcx> {
     pub effective_visibilities:    &'a EffectiveVisibilities,
     pub source_cache:              &'a SourceCache,
     pub public_visibility_targets: &'a FxHashSet<LocalDefId>,
+    /// Per ADT, how far it may be widened before one of its trait impls leaves
+    /// a narrower type in its interface. Absent means nothing caps it.
+    pub interface_ceilings:        &'a FxHashMap<LocalDefId, InterfaceCeiling>,
     pub reexport_index:            &'a ReexportIndex,
     pub module_sources:            &'a ModuleSourceMap,
     parent_facade_analyses:        RefCell<FxHashMap<LocalDefId, Option<ParentFacadeAnalysis<'a>>>>,
@@ -121,6 +126,7 @@ pub(in crate::compiler::visibility) fn collect_and_store_findings(
     let module_sources = ModuleSourceMap::new(tcx, &source_cache);
     let mut public_visibility_targets = FxHashSet::default();
     sink.use_sites = use_sites::collect_use_sites(tcx, &mut public_visibility_targets);
+    let interface_ceilings = interface_ceiling::collect_interface_ceilings(tcx);
     let ctx = VisibilityContext {
         tcx,
         settings,
@@ -129,6 +135,7 @@ pub(in crate::compiler::visibility) fn collect_and_store_findings(
         effective_visibilities: tcx.effective_visibilities(()),
         source_cache: &source_cache,
         public_visibility_targets: &public_visibility_targets,
+        interface_ceilings: &interface_ceilings,
         reexport_index: &reexport_index,
         module_sources: &module_sources,
         parent_facade_analyses: RefCell::new(FxHashMap::default()),

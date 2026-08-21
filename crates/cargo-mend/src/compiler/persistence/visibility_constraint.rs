@@ -23,6 +23,21 @@ pub(in crate::compiler) enum StoredVisibilityReach {
     Restricted { boundary: String },
 }
 
+/// The inverse of [`StoredVisibilityReach::boundary`]: the vocabulary every
+/// producer in this module already speaks, where `crate-external` means `pub`
+/// and `crate` means `pub(crate)`.
+impl From<&str> for StoredVisibilityReach {
+    fn from(boundary: &str) -> Self {
+        match boundary {
+            "crate-external" => Self::Public,
+            "crate" => Self::Crate,
+            restricted => Self::Restricted {
+                boundary: restricted.to_string(),
+            },
+        }
+    }
+}
+
 impl StoredVisibilityReach {
     pub(in crate::compiler) fn join(&self, other: &Self) -> Self {
         match (self, other) {
@@ -45,6 +60,13 @@ impl StoredVisibilityReach {
             Self::Crate => String::from("pub(crate)"),
             Self::Restricted { boundary } => format!("pub(in {boundary})"),
         }
+    }
+
+    /// Whether `self` reaches anywhere `ceiling` does not. Joining takes the
+    /// wider of the two, so a join that is still the ceiling means `self` is
+    /// inside it.
+    pub(in crate::compiler) fn exceeds(&self, ceiling: &Self) -> bool {
+        self.join(ceiling) != *ceiling
     }
 
     pub(in crate::compiler) fn boundary(&self) -> &str {
@@ -117,6 +139,22 @@ pub(in crate::compiler) enum StoredConstraintOutcome {
     Finding,
 }
 
+/// What a widening of this item's visibility would leak, and how far it can be
+/// widened without leaking it.
+///
+/// Widening an item raises the effective visibility of every trait impl it is
+/// the self type of, and rustc then requires every type in those impls'
+/// interfaces to be at least that visible (E0446). See
+/// `visibility::interface_ceiling` for how the boundary is derived.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub(in crate::compiler) struct StoredInterfaceCeiling {
+    pub reach:       StoredVisibilityReach,
+    /// Crate-rooted path of the type left behind: `crate::a::b::c::PrepError`.
+    pub leaked_type: String,
+    /// The impl that would expose it: `impl TryFrom<u8> for Thing`.
+    pub impl_header: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(in crate::compiler) struct StoredVisibilityConstraint {
     pub diagnostic_code:            DiagnosticCode,
@@ -126,6 +164,10 @@ pub(in crate::compiler) struct StoredVisibilityConstraint {
     pub declared_reach:             StoredVisibilityReach,
     pub spelling:                   StoredVisibilitySpelling,
     pub signature_requirement:      Option<StoredVisibilityReach>,
+    /// How far this item may be widened before a trait impl of it leaves a
+    /// narrower type in its own interface. `None` means nothing caps it.
+    #[serde(default)]
+    pub interface_ceiling:          Option<StoredInterfaceCeiling>,
     pub facade:                     StoredFacadeConstraint,
     pub exact_boundary_acceptance:  StoredExactBoundaryAcceptance,
     /// Whether the declaration form alone lets mend edit this annotation.
@@ -333,23 +375,6 @@ struct VisibilityConstraintGroup {
     report_index: Option<usize>,
 }
 
-/// The written annotations `fixes::restricted_annotation` knows how to rewrite.
-/// A finding whose annotation is not one of these is reported, never promoted to
-/// fixable.
-/// Spellings whose annotation `fixes::restricted_annotation` will retarget to a
-/// boundary resolved from callers. Removing an annotation is not gated on this;
-/// see the `fix_support` assignment in [`VisibilityConstraintGroup::apply_rewrite`].
-const RETARGETABLE_ANNOTATIONS: [&str; 3] = ["pub", "pub(crate)", "pub(in crate)"];
-
-/// Whether replacing `annotation` with `spelling` can only widen the item's
-/// reach.
-///
-/// A widening keeps every name that resolved before it, so it compiles whatever
-/// the caller analysis did not see. That is what separates it from the retarget
-/// gated by [`RETARGETABLE_ANNOTATIONS`], where a use the pass missed is a use
-/// the narrower boundary breaks. Any restricted spelling is contained in
-/// `pub(crate)`, and every spelling is contained in `pub`; a bare `pub` narrowed
-/// to `pub(crate)` is the case this must exclude.
 /// Whether replacing the annotation with `spelling` at `boundary` changes what
 /// can name the item, rather than only how the same reach is spelled.
 ///
@@ -386,6 +411,14 @@ fn replacement_spelling(spelling: ExactBoundarySpelling, boundary: &str) -> Stri
     }
 }
 
+/// Whether replacing `annotation` with `spelling` can only widen the item's
+/// reach.
+///
+/// Any restricted spelling is contained in `pub(crate)`, and every spelling is
+/// contained in `pub`; a bare `pub` narrowed to `pub(crate)` is the case this
+/// must exclude. [`VisibilityConstraintGroup::interface_leak`] is the only
+/// caller, because widening is the edit that can raise a trait impl past a type
+/// its own interface names.
 fn replacement_only_widens(spelling: ExactBoundarySpelling, annotation: &str) -> bool {
     match spelling {
         ExactBoundarySpelling::Public => annotation != "pub",
@@ -657,12 +690,35 @@ impl VisibilityConstraintGroup {
                 || self.constraints.all_exact_paths_are_allowed())
     }
 
+    /// The ceiling a widening would break through, if it would.
+    ///
+    /// Only a widening can. The item keeps every trait impl it is the self type
+    /// of, and raising the item raises those impls with it, so a type their
+    /// interfaces name that sits below the new boundary is one rustc will
+    /// reject (E0446). A narrowing or a respelling of the same reach moves no
+    /// impl above anything.
+    fn interface_leak(
+        &self,
+        boundary: &str,
+        spelling: ExactBoundarySpelling,
+    ) -> Option<&StoredInterfaceCeiling> {
+        let constraint = self.constraints.constraints.first()?;
+        if !replacement_only_widens(spelling, &constraint.visibility_annotation) {
+            return None;
+        }
+        let ceiling = constraint.interface_ceiling.as_ref()?;
+        StoredVisibilityReach::from(boundary)
+            .exceeds(&ceiling.reach)
+            .then_some(ceiling)
+    }
+
     fn apply_rewrite(
         &self,
         finding: &mut StoredFinding,
         boundary: &str,
         spelling: ExactBoundarySpelling,
     ) {
+        let interface_leak = self.interface_leak(boundary, spelling);
         finding.suggestion = Some(match spelling {
             ExactBoundarySpelling::CratePath => {
                 format!("consider using: `pub(in {boundary})`")
@@ -680,9 +736,24 @@ impl VisibilityConstraintGroup {
         // wherever that has something to say, and keeps this where it does not.
         // Removing an annotation names no visibility for the note to report, and
         // `RemoveAnnotation` is the repair whose caller note always does.
-        finding.related = (matches!(finding.diagnostic_code, DiagnosticCode::ForbiddenPubInCrate)
-            && spelling != ExactBoundarySpelling::Private)
-            .then(|| visibility::resolved_boundary_note(&replacement_spelling(spelling, boundary)));
+        finding.related = interface_leak.map_or_else(
+            || {
+                (matches!(finding.diagnostic_code, DiagnosticCode::ForbiddenPubInCrate)
+                    && spelling != ExactBoundarySpelling::Private)
+                    .then(|| {
+                        visibility::resolved_boundary_note(&replacement_spelling(
+                            spelling, boundary,
+                        ))
+                    })
+            },
+            |leak| {
+                Some(visibility::interface_leak_note(
+                    &replacement_spelling(spelling, boundary),
+                    &leak.leaked_type,
+                    &leak.impl_header,
+                ))
+            },
+        );
         finding.message = match finding.diagnostic_code {
             DiagnosticCode::OverbroadPubCrate => {
                 String::from("`pub(crate)` is broader than required")
@@ -727,34 +798,32 @@ impl VisibilityConstraintGroup {
             },
             _ => finding.message.clone(),
         };
-        // Only claim fixable when `fixes::restricted_annotation` will actually
-        // edit this annotation, which splits on what the edit does. Removing one
-        // resolves no path, so `ExactBoundarySpelling::Private` promotes
-        // whatever the annotation said, and a replacement that only widens keeps
-        // every name that already resolved, so it compiles whatever the caller
-        // scan missed. What is left is a retarget that narrows, confined to
-        // `RETARGETABLE_ANNOTATIONS`: promoting a `pub(in crate::a::b)` for that
-        // advertised a fix that never arrived — every run reported it as
-        // fixable, applied nothing, and reported it again — and letting the
-        // applier narrow an already-restricted annotation to a caller-derived
-        // boundary was tried and rolled back, because a use the scan did not see
-        // is a use that boundary breaks.
-        finding.fix_support = self
-            .constraints
-            .constraints
-            .first()
-            .filter(|constraint| {
-                let annotation = constraint.visibility_annotation.as_str();
-                spelling == ExactBoundarySpelling::Private
-                    || replacement_only_widens(spelling, annotation)
-                    || RETARGETABLE_ANNOTATIONS.contains(&annotation)
-            })
-            .map_or(FixSupport::None, |_| FixSupport::RestrictedAnnotation);
+        // Every call site is already behind `Self::supports_rewrite`, which
+        // decides whether the declaration form can be edited at all and whether
+        // `pub_in_path` allows the spelling. That leaves the resolved boundary,
+        // and the one thing that disqualifies it is a leak through a trait impl.
+        //
+        // This used to also require the written annotation be `pub`,
+        // `pub(crate)`, or `pub(in crate)`, so a `pub(in crate::a)` narrowing to
+        // `pub(in crate::a::b)` was suggested and never applied. That list was
+        // added after a `--fix` on hana_valence_arrangements rolled back with
+        // two E0446s, and it named the wrong culprit: those errors came from
+        // narrowing an item a wider item's signature still named, which is what
+        // `signature_requirement` now folds into the boundary. The written
+        // spelling never bore on whether the scan saw every use — the 395
+        // retargets mend already applied from the three listed spellings carry
+        // that risk identically. Applying all 17 held-back narrowings at once
+        // leaves `cargo check --workspace --all-targets` clean.
+        finding.fix_support = if interface_leak.is_none() {
+            FixSupport::RestrictedAnnotation
+        } else {
+            FixSupport::None
+        };
         if let Some(constraint) = self.constraints.constraints.first() {
             finding.visibility_annotation = Some(constraint.visibility_annotation.clone());
             finding.item_def_path = Some(constraint.declaration.item_def_path.clone());
         }
-        finding.narrower_scope_def_path = Some(match spelling {
+        finding.narrower_scope_def_path = interface_leak.is_none().then(|| match spelling {
             ExactBoundarySpelling::CratePath | ExactBoundarySpelling::Parent => boundary
                 .strip_prefix("crate::")
                 .unwrap_or(boundary)
@@ -775,13 +844,7 @@ impl VisibilityConstraintGroup {
         if self.constraints.all_facades_are_impossible() {
             return caller_boundary;
         }
-        let caller_reach = if caller_boundary == "crate" {
-            StoredVisibilityReach::Crate
-        } else {
-            StoredVisibilityReach::Restricted {
-                boundary: caller_boundary,
-            }
-        };
+        let caller_reach = StoredVisibilityReach::from(caller_boundary.as_str());
         required_reach.map_or_else(
             || caller_reach.boundary().to_string(),
             |required| required.join(&caller_reach).boundary().to_string(),
@@ -1582,6 +1645,7 @@ mod tests {
             },
             visibility_annotation: String::from("pub(in crate::a)"),
             declared_reach: restricted("crate::a"),
+            interface_ceiling: None,
             spelling: StoredVisibilitySpelling::ExactPath,
             signature_requirement,
             facade,
@@ -1622,6 +1686,7 @@ mod tests {
                 "exact_boundary_acceptance",
                 "exact_path_policy",
                 "facade",
+                "interface_ceiling",
                 "outcome",
                 "signature_requirement",
                 "source",

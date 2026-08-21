@@ -34,6 +34,7 @@ use crate::compiler::persistence::StoredExactBoundaryAcceptance;
 use crate::compiler::persistence::StoredExactPathPolicy;
 use crate::compiler::persistence::StoredFacadeConstraint;
 use crate::compiler::persistence::StoredFinding;
+use crate::compiler::persistence::StoredInterfaceCeiling;
 use crate::compiler::persistence::StoredPubUseFixFact;
 use crate::compiler::persistence::StoredVisibilityConstraint;
 use crate::compiler::persistence::StoredVisibilityDeclaration;
@@ -340,6 +341,16 @@ fn record_visibility_constraint(
         SignatureExposure::Contained => None,
         SignatureExposure::ExposedAt(reach) => stored_visibility_reach(reach, ctx),
     };
+    let interface_ceiling = ctx
+        .interface_ceilings
+        .get(&item.def_id)
+        .and_then(|ceiling| {
+            Some(StoredInterfaceCeiling {
+                reach:       stored_visibility_reach(ceiling.reach, ctx)?,
+                leaked_type: ceiling.leaked_type.clone(),
+                impl_header: ceiling.impl_header.clone(),
+            })
+        });
     let facade = match parent_facade_analysis.map(|analysis| analysis.chain) {
         Some(FacadeChainResolution::Resolved { required }) => {
             let Some(required) = stored_visibility_reach(required, ctx) else {
@@ -387,6 +398,7 @@ fn record_visibility_constraint(
             declared_reach,
             spelling: stored_visibility_spelling(annotation.syntax()),
             signature_requirement,
+            interface_ceiling,
             facade,
             exact_boundary_acceptance,
             annotation_edit_acceptance,
@@ -402,6 +414,11 @@ fn record_visibility_constraint(
 /// Whether the item's declaration form lets mend edit its visibility
 /// annotation at all.
 ///
+/// `forbidden_pub_in_crate` accepts a `use` re-export here as well as a
+/// declaration. It once took declarations only, which left a re-export whose
+/// boundary mend had already resolved reported on every run and repaired on
+/// none.
+///
 /// [`exact_boundary_acceptance`] answers the neighboring question — whether the
 /// boundary the annotation already names is acceptable as written — and folds
 /// `pub_in_path` into its answer. That setting governs what mend may *write*, so
@@ -410,7 +427,7 @@ fn record_visibility_constraint(
 /// `pub(in crate::a)` have its annotation removed under
 /// `pub_in_path = "forbidden"` — the only setting under which
 /// `forbidden_pub_in_crate` fires at all.
-fn annotation_edit_acceptance(
+const fn annotation_edit_acceptance(
     item: &ItemInfo<'_>,
     annotation: &VisibilityAnnotation<'_>,
     diagnostic_code: DiagnosticCode,
@@ -423,7 +440,17 @@ fn annotation_edit_acceptance(
             )
         },
         DiagnosticCode::ForbiddenPubInCrate => {
-            item.category == ItemCategory::Declaration
+            // A `use` re-export carries an annotation like any declaration, and
+            // the boundary mend resolves for it comes from the same caller map:
+            // `UseSiteCollector::record_qpath` records the *target* def for every
+            // mention, whichever path named it, so a use that travels through the
+            // re-export lands in the same set as one that names the declaration
+            // directly. That makes the resolved boundary a conservative floor for
+            // a re-export rather than a narrower one.
+            //
+            // `Module` stays out: a `mod` line's visibility governs a whole
+            // subtree, which is a review decision rather than a rewrite.
+            matches!(item.category, ItemCategory::Declaration | ItemCategory::Use)
                 && matches!(
                     annotation.syntax(),
                     VisibilitySyntax::InPath(PathSpelling::CrateRooted)
@@ -456,7 +483,7 @@ fn annotation_edit_acceptance(
 /// This is [`annotation_edit_acceptance`] plus the `pub_in_path` setting. Only
 /// `forbidden_pub_in_crate` consults that setting: it is the diagnostic whose
 /// annotation names an exact path, and the other two never do.
-fn exact_boundary_acceptance(
+const fn exact_boundary_acceptance(
     ctx: &VisibilityContext<'_, '_>,
     item: &ItemInfo<'_>,
     annotation: &VisibilityAnnotation<'_>,

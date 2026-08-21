@@ -1,5 +1,6 @@
 mod annotation;
 mod field;
+mod interface_ceiling;
 mod policy;
 mod scan;
 mod source;
@@ -15,6 +16,7 @@ pub(super) use policy::common_ancestor_def_path;
 pub(super) use policy::crate_rooted_def_path;
 pub(super) use policy::def_path_is_descendant;
 pub(super) use policy::forbidden_pub_in_headline;
+pub(super) use policy::interface_leak_note;
 pub(super) use policy::is_annotation_policy_headline;
 pub(super) use policy::no_facade_caller_note;
 pub(super) use policy::no_facade_headline;

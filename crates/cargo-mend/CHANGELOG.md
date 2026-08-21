@@ -8,14 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
-- `forbidden_pub_in_crate` is now a fixable warning in the two cases mend can repair by itself. When
-  nothing outside the declaring module uses the item, `--fix` deletes the annotation. When the item
-  needs a wider boundary than its annotation carries — a `pub(in crate::animation)` type held in a
-  `pub(crate)` field or signature — `--fix` writes the wider visibility. Everything else stays an
-  error: a `mod` line, a `use` re-export, a repair that is a facade or a move, and any narrowing to
-  a caller-derived boundary, since widening keeps every name that already resolved but narrowing can
-  break a caller the scan never saw.
-- The findings cache schema moved with that change, so the first run after upgrading re-analyzes
+- `forbidden_pub_in_crate` is now a fixable warning wherever mend resolves a boundary it can write,
+  whatever the annotation already spells. When nothing outside the declaring module uses the item,
+  `--fix` deletes the annotation; otherwise it writes the narrowest visibility that covers
+  everything reaching the item, narrowing a `pub(in crate::animation)` to
+  `pub(in crate::animation::sequence)` as readily as widening one to `pub(crate)`. Previously a
+  narrowing was only written when the annotation being replaced was `pub`, `pub(crate)`, or
+  `pub(in crate)`, which left an already-restricted annotation reported on every run and repaired on
+  none. Errors remain for a `mod` line, a repair that is a facade or a move, and a widening rustc
+  would reject.
+- A `pub(in crate::…)` `use` re-export is repaired like any declaration, on the same caller-derived
+  boundary. It previously printed that boundary under `help: consider using:` and then declined to
+  write it, so a re-export mend had already solved was reported on every run and repaired on none.
+  Recording a use against the definition it resolves to, whichever path named it, is what makes the
+  boundary cover callers of the re-export and of the declaration alike. A `mod` line stays an
+  error — its visibility governs a whole subtree, which is a review decision rather than a rewrite.
+- The findings cache schema moved with those changes, so the first run after upgrading re-analyzes
   instead of answering from a cache the previous binary wrote.
 - `forbidden_pub_in_crate` now explains itself. It read "use of `pub(in crate::animation)` outside
   an exact facade boundary is forbidden by policy" and suggested "add an explicit facade", naming
@@ -33,6 +41,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it ruled out instead of saying "no facade caps `pub`".
 
 ### Fixed
+- `--fix` no longer offers a widening that rustc rejects. Raising an item's visibility raises every
+  trait impl it is the self type of, and rustc then requires every type in those impls' interfaces
+  to be at least that visible — so widening a type whose `impl TryFrom<u8> for Thing` names a
+  narrower error type failed with E0446 and rolled the whole batch back. Mend now derives that
+  ceiling and reports the finding without a fix, over a note naming what would leak and where:
+  "`pub` would expose `crate::a::b::c::PrepError` through `impl TryFrom<u8> for Thing`, which rustc
+  rejects (E0446) — widen `crate::a::b::c::PrepError` first". Widening the named type first and
+  re-running applies the rest.
 - Following the facade suggestion on a `pub(in crate::...) use` re-export now ends. The suggested
   re-export is itself a `pub(in crate::...) use` with no facade above it, so applying it moved the
   finding onto the new line, whose suggestion then asked for a re-export into the module that line
