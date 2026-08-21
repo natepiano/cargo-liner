@@ -139,10 +139,10 @@ stability guarantee and `cargo-mend` is sensitive to the exact rustc version use
 `cargo-mend` links against the compiler internals of the toolchain that builds it, so releases are
 tied to a specific rustc version. Build and run each release with its matching toolchain:
 
-| `cargo-mend` | rustc |
-|--------------|-------|
-| 0.17+        | 1.97  |
-| 0.16.x       | 1.96  |
+| `cargo-mend` | rustc     |
+|--------------|-----------|
+| 0.17+        | 1.97-1.98 |
+| 0.16.x       | 1.96      |
 
 Install the `rustc-dev` component, then install `cargo-mend` with the stable toolchain plus
 `RUSTC_BOOTSTRAP=1`. Nightly-built binaries can fail against stable projects with `E0514`
