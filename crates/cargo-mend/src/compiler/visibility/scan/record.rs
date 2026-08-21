@@ -355,6 +355,7 @@ fn record_visibility_constraint(
     };
     let exact_boundary_acceptance =
         exact_boundary_acceptance(ctx, item, annotation, diagnostic_code);
+    let annotation_edit_acceptance = annotation_edit_acceptance(item, annotation, diagnostic_code);
     let pub_in_reconciles_callers = diagnostic_code == DiagnosticCode::ForbiddenPubInCrate
         && matches!(annotation.syntax(), VisibilitySyntax::InPath(_));
     let pub_crate_reconciles_callers = diagnostic_code == DiagnosticCode::OverbroadPubCrate
@@ -388,6 +389,7 @@ fn record_visibility_constraint(
             signature_requirement,
             facade,
             exact_boundary_acceptance,
+            annotation_edit_acceptance,
             exact_path_policy: match ctx.settings.visibility_config.pub_in_path {
                 PubInPath::Forbidden => StoredExactPathPolicy::Forbidden,
                 PubInPath::Permitted | PubInPath::Required => StoredExactPathPolicy::Allowed,
@@ -397,8 +399,18 @@ fn record_visibility_constraint(
         });
 }
 
-fn exact_boundary_acceptance(
-    ctx: &VisibilityContext<'_, '_>,
+/// Whether the item's declaration form lets mend edit its visibility
+/// annotation at all.
+///
+/// [`exact_boundary_acceptance`] answers the neighboring question — whether the
+/// boundary the annotation already names is acceptable as written — and folds
+/// `pub_in_path` into its answer. That setting governs what mend may *write*, so
+/// it bears on a replacement that spells an exact path and not on one that
+/// removes the annotation. Keeping the two apart is what lets a bounded
+/// `pub(in crate::a)` have its annotation removed under
+/// `pub_in_path = "forbidden"` — the only setting under which
+/// `forbidden_pub_in_crate` fires at all.
+fn annotation_edit_acceptance(
     item: &ItemInfo<'_>,
     annotation: &VisibilityAnnotation<'_>,
     diagnostic_code: DiagnosticCode,
@@ -416,10 +428,6 @@ fn exact_boundary_acceptance(
                     annotation.syntax(),
                     VisibilitySyntax::InPath(PathSpelling::CrateRooted)
                 )
-                && matches!(
-                    ctx.settings.visibility_config.pub_in_path,
-                    PubInPath::Permitted | PubInPath::Required
-                )
         },
         DiagnosticCode::SuspiciousPub => matches!(annotation.syntax(), VisibilitySyntax::Public),
         DiagnosticCode::ReviewPubMod
@@ -436,6 +444,32 @@ fn exact_boundary_acceptance(
     };
     if eligible {
         StoredExactBoundaryAcceptance::Eligible
+    } else {
+        StoredExactBoundaryAcceptance::Ineligible
+    }
+}
+
+/// Whether the boundary the annotation already names is acceptable as written,
+/// which every suppression path in `persistence::visibility_constraint` asks
+/// before dropping a finding.
+///
+/// This is [`annotation_edit_acceptance`] plus the `pub_in_path` setting. Only
+/// `forbidden_pub_in_crate` consults that setting: it is the diagnostic whose
+/// annotation names an exact path, and the other two never do.
+fn exact_boundary_acceptance(
+    ctx: &VisibilityContext<'_, '_>,
+    item: &ItemInfo<'_>,
+    annotation: &VisibilityAnnotation<'_>,
+    diagnostic_code: DiagnosticCode,
+) -> StoredExactBoundaryAcceptance {
+    let policy_permits_the_spelling =
+        !matches!(diagnostic_code, DiagnosticCode::ForbiddenPubInCrate)
+            || matches!(
+                ctx.settings.visibility_config.pub_in_path,
+                PubInPath::Permitted | PubInPath::Required
+            );
+    if policy_permits_the_spelling {
+        annotation_edit_acceptance(item, annotation, diagnostic_code)
     } else {
         StoredExactBoundaryAcceptance::Ineligible
     }
@@ -1561,16 +1595,19 @@ fn no_facade_pub_in_advice(
         policy::forbidden_pub_in_headline(annotation.source()),
     );
     let suggestion = policy::no_facade_suggestion(repair, &boundary_path, &item_def_path);
-    // Only the repairs that ask for a re-export have a reach gap to describe.
-    // `RemoveAnnotation` and `UseParentVisibility` name a narrower visibility
-    // instead, and no facade would help them.
+    // The two repairs split on what the reader has to be convinced of. A
+    // re-export closes a gap between reach and path, which needs both named. A
+    // narrower visibility rests on where the item is used, which needs that
+    // scope named instead.
     let note = match repair {
         NoFacadeVisibilityRepair::StructuralMigrationForCallerLocations
         | NoFacadeVisibilityRepair::StructuralMigrationForSignatureReach { .. } => {
             policy::missing_facade_note(&boundary_path, &item_def_path)
         },
         NoFacadeVisibilityRepair::RemoveAnnotation
-        | NoFacadeVisibilityRepair::UseParentVisibility => None,
+        | NoFacadeVisibilityRepair::UseParentVisibility => {
+            policy::no_facade_caller_note(repair, &item_module, parent_scope)
+        },
     };
     match repair {
         NoFacadeVisibilityRepair::StructuralMigrationForSignatureReach { .. } => {

@@ -601,6 +601,41 @@ pub(super) fn missing_facade_note(boundary_path: &str, item_def_path: &str) -> O
     })
 }
 
+/// Why a visibility narrower than the annotation reaches every use of the item.
+///
+/// The suggestion names what to write and stops there, which leaves no way to
+/// tell a correct call from a wrong one. Both repairs here are decided by where
+/// the item is used, so the note names that scope: a reader who knows of a use
+/// outside it has found a wrong answer, and one who does not is done. Rendered
+/// as the finding's `= note:` line.
+///
+/// `None` for the repairs that ask for a re-export, which
+/// [`missing_facade_note`] explains instead, and for a scope that spans the
+/// whole crate, where naming it rules nothing out.
+pub(in crate::compiler) fn no_facade_caller_note(
+    repair: NoFacadeVisibilityRepair,
+    item_module: &str,
+    parent_scope: &str,
+) -> Option<String> {
+    let (scope, reach) = match repair {
+        NoFacadeVisibilityRepair::RemoveAnnotation => (
+            item_module,
+            "where the item is reachable with no visibility annotation at all",
+        ),
+        NoFacadeVisibilityRepair::UseParentVisibility => {
+            (parent_scope, "which `pub(super)` already reaches")
+        },
+        NoFacadeVisibilityRepair::StructuralMigrationForCallerLocations
+        | NoFacadeVisibilityRepair::StructuralMigrationForSignatureReach { .. } => return None,
+    };
+    (!scope.is_empty() && scope != "crate").then(|| {
+        format!(
+            "no use of this item was found outside `{}`, {reach}",
+            crate_rooted_def_path(scope)
+        )
+    })
+}
+
 pub(in crate::compiler) fn no_facade_suggestion(
     repair: NoFacadeVisibilityRepair,
     boundary_path: &str,
@@ -631,14 +666,48 @@ pub(in crate::compiler) fn forbidden_pub_in_headline(annotation_source: &str) ->
     )
 }
 
-/// Whether `message` is the headline [`NoFacadeVisibilityRepair::headline`]
-/// writes when it finds no repair.
+/// Whether `message` is one of the two headlines written for the annotation
+/// policy itself, rather than a more specific one naming what caps the item.
 ///
-/// A finding carrying it has been told no visibility works. Callers that later
-/// prove one — the cross-crate pass resolving a boundary — use this to find the
-/// claim they have to withdraw.
-pub(in crate::compiler) fn is_structural_headline(message: &str) -> bool {
+/// [`forbidden_pub_in_headline`] states the policy that rejected the spelling,
+/// and the structural headline [`NoFacadeVisibilityRepair::headline`] writes says
+/// no visibility works. A resolved boundary replaces both. A headline such as
+/// "parent facade caps reach at `pub(crate)`" says why the annotation is
+/// forbidden in terms resolving a boundary does not contradict, so it survives.
+pub(in crate::compiler) fn is_annotation_policy_headline(
+    message: &str,
+    annotation_source: &str,
+) -> bool {
     message == NoFacadeVisibilityRepair::STRUCTURAL_HEADLINE
+        || message == forbidden_pub_in_headline(annotation_source)
+}
+
+/// The `forbidden_pub_in_crate` headline for an annotation whose replacement
+/// changes what can name the item.
+///
+/// [`forbidden_pub_in_headline`] states the rule that rejected the spelling,
+/// which is all the scan pass knows. Once the cross-crate pass resolves a
+/// boundary the finding is no longer about the spelling: the suggestion under it
+/// names a different reach, so the headline names the annotation that does not
+/// carry it. A replacement that respells the same reach keeps the policy
+/// headline, which is the true statement there.
+pub(in crate::compiler) fn resolved_boundary_headline(annotation_source: &str) -> String {
+    format!(
+        "`{}` is not the boundary this item's callers require",
+        normalized_annotation_source(annotation_source)
+    )
+}
+
+/// Why the resolved boundary is the one being suggested.
+///
+/// [`no_facade_caller_note`] answers this by naming the scope no use was found
+/// outside of, and declines a boundary spanning the whole crate, where naming
+/// the scope rules nothing out. That left the crate-wide suggestion alone under
+/// a headline about facades, with nothing saying where `pub(crate)` came from.
+/// Signature exposure decides this boundary as much as call sites do, so the
+/// note names everything that reaches the item rather than its callers.
+pub(in crate::compiler) fn resolved_boundary_note(replacement: &str) -> String {
+    format!("{replacement} is the narrowest visibility that covers everything reaching this item")
 }
 
 /// A visibility annotation with its interior whitespace collapsed, so a

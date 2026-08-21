@@ -16,6 +16,7 @@ mod allowances;
 mod facade_signature_reach;
 mod facade_subjects;
 mod field_visibility_wider_than_type;
+mod fix_rollback;
 mod forbidden_pub_in_crate;
 mod import_fixes;
 mod imports_at_top;

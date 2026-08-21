@@ -12,6 +12,27 @@ use crate::reporting::NarrowerScope;
 use crate::reporting::Report;
 use crate::reporting::WrittenVisibility;
 
+/// Restricted spellings whose annotation may be rewritten to a boundary the
+/// compiler pass resolved from callers. Any other restricted spelling is
+/// retargeted only by hand; see [`AnnotationEdit::Retarget`].
+const RETARGETABLE_ANNOTATIONS: [&str; 2] = ["pub(crate)", "pub(in crate)"];
+
+/// What the replacement does to the item's reach, which is what decides whether
+/// the spelling being replaced constrains it.
+///
+/// Only [`Self::Retarget`] depends on the compiler pass having seen every use.
+/// The other two compile whatever it missed, so they apply to any spelling:
+/// [`Self::Removal`] leaves the item private to the module that declares it,
+/// which the pass already proved reaches every recorded use, and [`Self::Widen`]
+/// keeps every name that resolved before resolving. A retarget writes a boundary
+/// resolved from callers and is confined to [`RETARGETABLE_ANNOTATIONS`].
+#[derive(Clone, Copy)]
+enum AnnotationEdit {
+    Removal,
+    Widen,
+    Retarget,
+}
+
 pub(super) struct RestrictedAnnotationScan {
     pub fixes: Vec<UseFix>,
 }
@@ -28,28 +49,44 @@ pub(super) fn scan_from_report(report: &Report) -> Result<RestrictedAnnotationSc
     let mut fixes = Vec::new();
     let mut rewritten_sites: BTreeSet<String> = BTreeSet::new();
     for finding in &report.findings {
-        let replacement = match &finding.item_visibility.narrower_scope {
-            NarrowerScope::ExactBoundary(def_path) => format!("pub(in crate::{def_path})"),
-            NarrowerScope::ExactParentBoundary(_) => String::from("pub(super)"),
-            NarrowerScope::CrateBoundary => String::from("pub(crate)"),
-            NarrowerScope::Private => String::new(),
-            NarrowerScope::PublicBoundary => String::from("pub"),
+        let (replacement, annotation_edit) = match &finding.item_visibility.narrower_scope {
+            NarrowerScope::ExactBoundary(def_path) => (
+                format!("pub(in crate::{def_path})"),
+                AnnotationEdit::Retarget,
+            ),
+            NarrowerScope::ExactParentBoundary(_) => {
+                (String::from("pub(super)"), AnnotationEdit::Retarget)
+            },
+            NarrowerScope::CrateBoundary => (String::from("pub(crate)"), AnnotationEdit::Widen),
+            NarrowerScope::Private => (String::new(), AnnotationEdit::Removal),
+            NarrowerScope::PublicBoundary => (String::from("pub"), AnnotationEdit::Widen),
             NarrowerScope::Unproposed | NarrowerScope::SuppressionKey(_) => continue,
         };
-        let (expected_form, expected_annotation) = match &finding.item_visibility.written {
-            WrittenVisibility::Bare => (VisibilityAnnotationForm::Bare, "pub"),
-            // Only these two restricted spellings. Rewriting an arbitrary
-            // `pub(in crate::a::b)` to a boundary resolved from callers does not
-            // compile on a real workspace — it was tried, and `--fix` rolled the
-            // whole batch back. `visibility_constraint::apply_rewrite` is what
-            // must not promote those findings; see `SUPPORTED_ANNOTATIONS` there.
-            WrittenVisibility::Restricted(source)
-                if source == "pub(crate)" || source == "pub(in crate)" =>
-            {
-                (VisibilityAnnotationForm::Restricted, source.as_str())
-            },
-            WrittenVisibility::Unknown | WrittenVisibility::Restricted(_) => continue,
-        };
+        let (expected_form, expected_annotation) =
+            match (&finding.item_visibility.written, annotation_edit) {
+                (WrittenVisibility::Bare, _) => (VisibilityAnnotationForm::Bare, "pub"),
+                // A restricted spelling is contained in `pub(crate)`, and every
+                // spelling is contained in `pub`, so widening to either keeps
+                // whatever the pass did not see. Bare `pub` reaches this match
+                // through the arm above, which is where a *narrowing* to
+                // `pub(crate)` belongs.
+                (
+                    WrittenVisibility::Restricted(source),
+                    AnnotationEdit::Removal | AnnotationEdit::Widen,
+                ) => (VisibilityAnnotationForm::Restricted, source.as_str()),
+                // Retargeting is the case that broke. Rewriting an arbitrary
+                // `pub(in crate::a::b)` to a boundary resolved from callers does
+                // not compile on a real workspace — it was tried, and `--fix`
+                // rolled the whole batch back.
+                // `visibility_constraint::apply_rewrite` gates the same split;
+                // see `RETARGETABLE_ANNOTATIONS` there.
+                (WrittenVisibility::Restricted(source), AnnotationEdit::Retarget)
+                    if RETARGETABLE_ANNOTATIONS.contains(&source.as_str()) =>
+                {
+                    (VisibilityAnnotationForm::Restricted, source.as_str())
+                },
+                (WrittenVisibility::Unknown | WrittenVisibility::Restricted(_), _) => continue,
+            };
         let absolute_path = root.join(&finding.path);
         let source = fs::read_to_string(&absolute_path)
             .with_context(|| format!("failed to read {}", absolute_path.display()))?;

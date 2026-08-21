@@ -80,13 +80,16 @@ pub_in_path = "required"
 Use the allowlists sparingly. The default assumption should be that the code structure is wrong before
 the policy is wrong.
 
-`pub_in_path` controls exact crate-rooted `pub(in crate::path)` boundaries on declarations and
-fields:
+`pub_in_path` controls exact crate-rooted `pub(in crate::path)` boundaries on declarations, fields,
+and `use` re-exports:
 
 - `forbidden` rejects them
 - `permitted` accepts them when they exactly match a caller, signature, or parent-facade boundary
 - `required` (the default) also asks `suspicious_pub` to recommend that boundary instead of bare
   `pub`, and `cargo mend --fix` rewrites the declaration or field
+
+A `use` re-export is accepted on the same terms as a declaration, but is never rewritten to a wider
+visibility: widening the re-export past the item it names would not compile.
 
 Other restricted spellings, such as `pub(in crate)`, relative `pub(in super::...)` paths, and
 boundaries that do not match the proven reach remain diagnostics.
@@ -366,8 +369,51 @@ with itself, and `request` can be reorganized without touching its consumers.
 Moving the item is the other repair, and sometimes the better one. If the item is not specific to
 the module holding it — `journey` above is a `sequence` concept living under `request` — moving it
 to `crate::animation::sequence` removes the need for a facade entirely. mend reports the gap and
-names the facade; which repair fits is a design decision, which is why this diagnostic has no
-`--fix`.
+names the facade; which repair fits is a design decision, which is why this case has no `--fix`.
+
+#### When nothing outside the module uses the item
+
+A third case needs neither repair. If no use of the item was found outside the module that declares
+it, the item is already reachable there with no annotation at all, and the annotation is the whole
+problem:
+
+```rust
+// crates/hana_lagrange/src/animation/sequence/controller_installation.rs
+pub(in crate::animation) struct CameraControllerInstallation {
+    pub(in crate::animation) identity: CameraControllerInstallationIdentity,
+}
+```
+
+mend reports this as a warning rather than an error and `--fix` deletes the annotation, because
+deleting one resolves no path and so needs no design decision. The repair applies to declarations
+and fields; a `mod` line and a `use` re-export keep the error, since a module's visibility caps
+every item inside it and a re-export exists to be named elsewhere.
+
+#### When the item needs a wider boundary than it has
+
+A fourth case is repaired by widening. An item can be used only from inside the module its
+annotation names and still need a wider boundary, because a `pub(crate)` field or signature carries
+it further than its own uses do:
+
+```rust
+// crates/hana_lagrange/src/animation/sequence/playback/pose.rs
+pub(in crate::animation) struct OrbitCameraPose { /* ... */ }
+
+// crates/hana_lagrange/src/animation/sequence.rs
+pub(crate) struct Carrier {
+    pub(crate) pose: OrbitCameraPose,
+}
+```
+
+`Carrier::pose` is readable anywhere in the crate, so `OrbitCameraPose` has to be too. mend reports
+this as a warning and `--fix` writes `pub(crate)`, because `pub(in crate::animation)` is contained
+in `pub(crate)`: the wider boundary keeps every name that already resolved, so a use the caller scan
+did not see still compiles.
+
+Narrowing is the case this excludes. When the resolved boundary is narrower than the annotation —
+`pub(in crate::animation)` on an item whose callers all sit in the parent module, where `pub(super)`
+would do — the finding stays an error. A caller the scan missed would no longer reach the item, and
+that is a build break rather than a warning.
 
 Do not use this form to avoid moving an item. If the required path is long or names a module
 unrelated to the item, the item belongs in a different module. It is not a way to widen access:

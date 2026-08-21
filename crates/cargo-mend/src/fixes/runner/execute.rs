@@ -14,7 +14,7 @@ use crate::reporting::ExecutionOutcome;
 use crate::reporting::MendFailure;
 
 impl MendRunner<'_> {
-    pub(super) fn execute(&self, planned: RunPlan) -> Result<ExecutionOutcome, MendFailure> {
+    pub(super) fn execute(&mut self, planned: RunPlan) -> Result<ExecutionOutcome, MendFailure> {
         let check_duration = planned.check_duration;
         let compiler_warnings = planned.compiler_warnings;
         let compiler_fixable = planned.compiler_fixable;

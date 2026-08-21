@@ -8,20 +8,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- `forbidden_pub_in_crate` is a fixable warning when nothing outside the declaring module uses the
+  item, and `--fix` deletes the annotation from declarations and fields. A `mod` line, a `use`
+  re-export, and any case whose repair is a facade or a move stay errors. The findings cache schema
+  moved with this, so the first run after upgrading re-analyzes instead of answering from a cache
+  the previous binary wrote.
+- `forbidden_pub_in_crate` is a fixable warning when the item needs a wider boundary than its
+  annotation carries — a `pub(in crate::animation)` type held in a `pub(crate)` field or signature —
+  and `--fix` writes the wider visibility. Narrowing to a caller-derived boundary stays an error:
+  widening keeps every name that already resolved, while narrowing can break a caller the scan
+  never saw.
+- `forbidden_pub_in_crate` names the annotation instead of the policy once a boundary is resolved.
+  "use of `pub(in crate::animation)` outside an exact facade boundary is forbidden by policy" sat
+  above a bare suggestion of `pub(crate)`, explaining neither the term nor where `pub(crate)` came
+  from. The headline now reads "`pub(in crate::animation)` is not the boundary this item's callers
+  require", over a note naming `pub(crate)` as the narrowest visibility covering everything that
+  reaches the item. A replacement that only respells the same reach keeps the policy headline.
 - `forbidden_pub_in_crate` now explains itself. The finding read "is forbidden by policy" without
-  naming the policy, and suggested "add an explicit facade" without defining the term or saying what
-  the facade fixes, leaving no way to tell a real problem from a false one. Findings whose repair is
-  a re-export now carry a note naming `pub_in_path` and describing the gap in the reader's own
-  terms: every caller in the boundary module may use the item but must still spell out its full
-  path, and the policy accepts the boundary only once a re-export publishes the item under the
-  boundary's own path. Both the note and the suggestion name the item, so the re-export to add can
-  be read straight off the diagnostic instead of "re-export it from"; a `use` item is named by the
-  identifier it introduces rather than by the `{use#0}` the compiler calls it internally. The
-  headline for the structural case drops "no facade caps `pub`" for the visibilities it actually
-  ruled out. The README section works through both repairs — adding the re-export, and moving the
-  item instead.
+  naming the policy and suggested "add an explicit facade" without defining the term, leaving no way
+  to tell a real problem from a false one. Findings whose repair is a re-export now name
+  `pub_in_path` and state the gap: every caller in the boundary module may use the item but must
+  still spell its full path, and the policy accepts the boundary only once a re-export publishes the
+  item under the boundary's own path. Both the note and the suggestion name the item, so the
+  re-export to add reads straight off the diagnostic, and a `use` item is named by the identifier it
+  introduces rather than the `{use#0}` the compiler calls it internally. The structural headline
+  drops "no facade caps `pub`" for the visibilities it actually ruled out, and the README works
+  through both repairs.
 
 ### Fixed
+- `--fix` no longer reports a rollback it did not perform. `--fix-all` re-runs the fix pass until
+  the fixable set stops shrinking, and each pass snapshotted only the files it was about to edit, so
+  a failure in a later pass restored the tree to the previous pass's output while still printing
+  "changes were rolled back". On one workspace that left a collapsed re-export, a narrowed
+  declaration, and a rewritten import on disk. The snapshot now spans the whole invocation, and a
+  restore that fails on one file still attempts the rest.
 - An exact-boundary `pub(in crate::...) use` re-export is now accepted under `pub_in_path =
   "required"` (the default) and `"permitted"`, on the same terms as a declaration, and under
   `"forbidden"` the finding names the setting that turns the spelling complaint off. Both the

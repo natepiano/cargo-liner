@@ -12,7 +12,7 @@ use crate::reporting::OutputFormat;
 use crate::reporting::RollbackStatus;
 
 impl MendRunner<'_> {
-    pub(super) fn apply(&self, planned: RunPlan) -> Result<ExecutionOutcome, MendFailure> {
+    pub(super) fn apply(&mut self, planned: RunPlan) -> Result<ExecutionOutcome, MendFailure> {
         let plan_check_duration = planned.check_duration;
         let compiler_warnings = planned.compiler_warnings;
         let compiler_fixable = planned.compiler_fixable;
@@ -38,7 +38,12 @@ impl MendRunner<'_> {
             });
         }
 
-        let snapshots = imports::snapshot_files(&fixes).map_err(MendFailure::Unexpected)?;
+        // Recorded before the write, and into a snapshot the runner keeps for
+        // the whole invocation: an earlier pass's edits are already on disk and
+        // a rollback owes the user the tree they started with.
+        self.session_snapshot
+            .record(&fixes)
+            .map_err(MendFailure::Unexpected)?;
         let applied = imports::apply_fixes(&fixes).map_err(MendFailure::Unexpected)?;
         let validation_output_mode = if self.output_format == OutputFormat::Json {
             BuildOutputMode::Json
@@ -66,7 +71,9 @@ impl MendRunner<'_> {
                 })
             },
             Err(err) => {
-                let rollback_status = imports::restore_files(&snapshots)
+                let rollback_status = self
+                    .session_snapshot
+                    .restore()
                     .map_or(RollbackStatus::RestoreFailed, |()| RollbackStatus::Restored);
                 let cause = match err {
                     MendFailure::Analysis(a) => a.cause,

@@ -43,6 +43,8 @@ pub(super) fn strip_ansi(input: &str) -> String {
     ansi.replace_all(input, "").into_owned()
 }
 
+/// The severity a finding carries before fixability is taken into account.
+/// [`expected_summary`] applies the rest of the rule.
 const fn severity_for_code(code: DiagnosticCode) -> &'static str {
     match code {
         DiagnosticCode::ForbiddenPubInCrate | DiagnosticCode::ReviewPubMod => "error",
@@ -59,18 +61,25 @@ fn expected_summary(report: &Report) -> Summary {
     };
 
     for finding in &report.findings {
-        match severity_for_code(finding.code) {
-            "error" => summary.errors += 1,
-            _ => summary.warnings += 1,
-        }
-
         // Count what the diagnostic advertised, not what its code defaults to:
         // a per-finding route such as `suspicious_pub`'s exact-boundary rewrite
         // is invisible in `DiagnosticSpec::fix_support`.
-        match AdvertisedFix::from_notes(finding.help.iter().map(String::as_str)) {
+        let advertised = AdvertisedFix::from_notes(finding.help.iter().map(String::as_str));
+        match advertised {
             AdvertisedFix::NotOffered => {},
             AdvertisedFix::WithFix => summary.fixable_with_fix += 1,
             AdvertisedFix::WithFixPubUse => summary.fixable_with_fix_pub_use += 1,
+        }
+
+        // Severity is per finding, not per code: `reporting::diagnostics::
+        // effective_severity` reports anything mend can repair on its own as a
+        // warning, so only an unfixable finding keeps its code's error level.
+        // `forbidden_pub_in_crate` lands on both sides of this — a bounded
+        // `pub(in crate::a)` whose annotation `--fix` deletes is a warning,
+        // while one needing a hand-built facade stays an error.
+        match (advertised, severity_for_code(finding.code)) {
+            (AdvertisedFix::NotOffered, "error") => summary.errors += 1,
+            _ => summary.warnings += 1,
         }
     }
 

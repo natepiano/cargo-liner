@@ -15,10 +15,13 @@ pub(super) use policy::common_ancestor_def_path;
 pub(super) use policy::crate_rooted_def_path;
 pub(super) use policy::def_path_is_descendant;
 pub(super) use policy::forbidden_pub_in_headline;
-pub(super) use policy::is_structural_headline;
+pub(super) use policy::is_annotation_policy_headline;
+pub(super) use policy::no_facade_caller_note;
 pub(super) use policy::no_facade_headline;
 pub(super) use policy::no_facade_suggestion;
 pub(super) use policy::parent_scope_def_path;
+pub(super) use policy::resolved_boundary_headline;
+pub(super) use policy::resolved_boundary_note;
 use rustc_middle::ty::TyCtxt;
 pub(super) use use_sites::ReexportIndex;
 

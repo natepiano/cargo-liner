@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 
+use super::session_snapshot::SessionSnapshot;
 use crate::config::LoadedConfig;
 use crate::config::OperationMode;
 use crate::fixes::field_visibility::FieldVisibilityFixScan;
@@ -22,11 +23,15 @@ use crate::selection::CargoCheckPlan;
 use crate::selection::Selection;
 
 pub(crate) struct MendRunner<'a> {
-    pub(super) selection:     &'a Selection,
-    pub(super) cargo_plan:    &'a CargoCheckPlan,
-    pub(super) loaded_config: &'a LoadedConfig,
-    pub(super) color_mode:    ColorMode,
-    pub(super) output_format: OutputFormat,
+    pub(super) selection:        &'a Selection,
+    pub(super) cargo_plan:       &'a CargoCheckPlan,
+    pub(super) loaded_config:    &'a LoadedConfig,
+    pub(super) color_mode:       ColorMode,
+    pub(super) output_format:    OutputFormat,
+    /// Spans every convergence pass, so a failed pass rolls the invocation back
+    /// to the tree the user started with rather than to the previous pass's
+    /// output. See [`SessionSnapshot`].
+    pub(super) session_snapshot: SessionSnapshot,
 }
 
 impl<'a> MendRunner<'a> {
@@ -43,11 +48,12 @@ impl<'a> MendRunner<'a> {
             loaded_config,
             color_mode,
             output_format,
+            session_snapshot: SessionSnapshot::new(),
         }
     }
 
     pub(crate) fn run(
-        &self,
+        &mut self,
         operation_mode: OperationMode,
     ) -> Result<ExecutionOutcome, MendFailure> {
         let planned = self.plan(operation_mode)?;

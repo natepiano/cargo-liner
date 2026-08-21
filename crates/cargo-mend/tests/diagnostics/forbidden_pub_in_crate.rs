@@ -913,7 +913,7 @@ fn no_facade_callers_select_only_compiling_advice() {
             "mod b;\n",
             "mod c;\n",
             "pub(in crate::a) fn helper() {}\nfn local() { helper(); }\n",
-            "use of `pub(in crate::a)` outside an exact facade boundary is forbidden by policy",
+            "`pub(in crate::a)` is not the boundary this item's callers require",
             "consider removing the visibility",
         ),
         (
@@ -921,7 +921,7 @@ fn no_facade_callers_select_only_compiling_advice() {
             "mod b;\n",
             "mod c;\nfn parent() { c::helper(); }\n",
             "pub(in crate::a) fn helper() {}\n",
-            "use of `pub(in crate::a)` outside an exact facade boundary is forbidden by policy",
+            "`pub(in crate::a)` is not the boundary this item's callers require",
             "consider using: `pub(super)`",
         ),
         (
@@ -1022,7 +1022,7 @@ edition = "2024"
     assert_headline_and_help(
         &report,
         "src/root/panel/conversion/saved.rs",
-        "use of `pub(in crate::root)` outside an exact facade boundary is forbidden by policy",
+        "`pub(in crate::root)` is not the boundary this item's callers require",
         "consider using: `pub(in crate::root::panel)`",
     );
 }
@@ -1059,7 +1059,7 @@ fn sibling_binary_caller_accepts_its_exact_boundary() {
     assert_headline_and_help(
         &lib_only_report,
         "src/a/c.rs",
-        "use of `pub(in crate::a)` outside an exact facade boundary is forbidden by policy",
+        "`pub(in crate::a)` is not the boundary this item's callers require",
         "consider removing the visibility",
     );
 
@@ -1075,7 +1075,7 @@ fn cross_target_resolved_facade_preserves_joined_reexport_boundary() {
     assert_headline_and_help(
         &signature_only_report,
         "src/a/target.rs",
-        "use of `pub(in crate::a)` outside an exact facade boundary is forbidden by policy",
+        "`pub(in crate::a)` is not the boundary this item's callers require",
         "consider using: `pub(super)`",
     );
 
@@ -1144,7 +1144,7 @@ edition = "2024"
     assert_headline_and_help(
         &report,
         "member-a/src/lib.rs",
-        "use of `pub(in crate::a)` outside an exact facade boundary is forbidden by policy",
+        "`pub(in crate::a)` is not the boundary this item's callers require",
         "consider removing the visibility",
     );
     assert_codes(&report, "member-b/src/lib.rs", &[]);
@@ -1575,6 +1575,243 @@ edition = "2024"
         "pub(in crate::a) fn exact() {}\n",
         "the shared declaration must be rewritten exactly once"
     );
+}
+
+/// A bounded `pub(in crate::…)` is auto-fixable, but only by removing it, and
+/// only on a declaration.
+///
+/// `pub_in_path = "forbidden"` is the one setting under which this diagnostic
+/// fires, and `exact_boundary_acceptance` used to fold that setting in, so no
+/// `forbidden_pub_in_crate` finding could ever be promoted to fixable. Removing
+/// an annotation spells no path, so the setting does not bear on it — hence the
+/// split into `annotation_edit_acceptance`. The module keeps its error: a
+/// module's visibility caps every item inside it, while the caller scan proves
+/// only what names the module itself. The function keeps its error for the other
+/// reason — `pub(super)` retargets an annotation rather than removing one, and
+/// retargeting an already-restricted annotation is the rewrite that was rolled
+/// back.
+#[test]
+fn bounded_pub_in_path_is_fixable_only_by_removal_on_a_declaration() {
+    let module_declaration = "pub(in crate::animation) mod installation;\n\npub(super) fn run() { installation::install(); }\n";
+    let temp = tempdir().expect("create bounded pub-in-path fixture dir");
+    write_sources(
+        &temp,
+        &[
+            (
+                "Cargo.toml",
+                r#"[package]
+name = "bounded_pub_in_path_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+            ),
+            ("mend.toml", "[visibility]\npub_in_path = \"forbidden\"\n"),
+            (
+                "src/lib.rs",
+                "mod animation;\n\npub fn start() { animation::drive(); }\n",
+            ),
+            (
+                "src/animation.rs",
+                "mod sequence;\n\npub(crate) fn drive() { sequence::run(); }\n",
+            ),
+            ("src/animation/sequence.rs", module_declaration),
+            (
+                "src/animation/sequence/installation.rs",
+                "pub(in crate::animation) struct Identity;\n\npub(in crate::animation) struct \
+                 Installation {\n    pub(in crate::animation) identity: Identity,\n}\n\npub(in \
+                 crate::animation) fn install() {\n    let installation = Installation { identity: \
+                 Identity };\n    let _ = &installation.identity;\n}\n",
+            ),
+        ],
+    );
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    for suffix in [
+        "src/animation/sequence.rs",
+        "src/animation/sequence/installation.rs",
+    ] {
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.path.ends_with(suffix)
+                    && finding.code == DiagnosticCode::ForbiddenPubInCrate),
+            "expected a forbidden_pub_in_crate finding for {suffix}: {report:#?}"
+        );
+    }
+
+    // The run exits non-zero: the module and the function are still reported and
+    // neither is repairable here, which is the other half of what this asserts.
+    mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+
+    assert_eq!(
+        fs::read_to_string(temp.path().join("src/animation/sequence/installation.rs"))
+            .expect("read fixed declarations"),
+        "struct Identity;\n\nstruct Installation {\n    identity: Identity,\n}\n\npub(in \
+         crate::animation) fn install() {\n    let installation = Installation { identity: \
+         Identity };\n    let _ = &installation.identity;\n}\n",
+        "only the removable declarations may lose their annotation"
+    );
+    assert_eq!(
+        fs::read_to_string(temp.path().join("src/animation/sequence.rs"))
+            .expect("read module declaration"),
+        module_declaration,
+        "a module declaration must not be rewritten"
+    );
+}
+
+/// A bounded `pub(in crate::…)` is auto-fixable when the resolved boundary
+/// widens the annotation, and not when it narrows one.
+///
+/// `Pose` reaches the crate root through `Carrier::pose`, so the boundary the
+/// item needs is `crate`. `pub(in crate::animation)` is contained in
+/// `pub(crate)`, so writing the wider boundary keeps every name that already
+/// resolved, and a use the caller scan missed still compiles — that is what
+/// makes the rewrite safe to apply unattended. `build` is the control: every
+/// call sits in `crate::animation`, so its resolved boundary is the parent
+/// module and `pub(super)` would narrow the annotation. Narrowing to a
+/// caller-derived boundary is the rewrite that broke builds on an unseen caller
+/// and was rolled back, so it stays an error for a person to make.
+#[test]
+fn bounded_pub_in_path_is_fixable_only_when_the_boundary_widens_it() {
+    let narrowing_declaration = "pub(in crate::animation) fn build() -> Pose {\n    Pose\n}\n";
+    let sequence_source =
+        format!("pub(in crate::animation) struct Pose;\n\n{narrowing_declaration}");
+    let temp = create_widening_boundary_fixture(&sequence_source);
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let finding_at = |line_start: usize| {
+        report
+            .findings
+            .iter()
+            .find(|finding| {
+                finding.code == DiagnosticCode::ForbiddenPubInCrate
+                    && finding.path.ends_with("src/animation/sequence.rs")
+                    && finding.line_start == line_start
+            })
+            .unwrap_or_else(|| panic!("missing finding at sequence.rs:{line_start}: {report:#?}"))
+    };
+
+    let widening = finding_at(1);
+    assert!(
+        widening
+            .help
+            .iter()
+            .any(|line| line == "consider using: `pub(crate)`"),
+        "the crate-rooted boundary must be suggested: {report:#?}"
+    );
+    // The policy headline describes a spelling rule, which is no longer what
+    // this finding is about once a wider boundary is resolved, and the note is
+    // the only line that says where `pub(crate)` came from.
+    assert_eq!(
+        widening.headline,
+        "`pub(in crate::animation)` is not the boundary this item's callers require",
+        "a resolved wider boundary must replace the policy headline: {report:#?}"
+    );
+    assert!(
+        widening.help.iter().any(|line| line
+            == "`pub(crate)` is the narrowest visibility that covers everything reaching this \
+                item"),
+        "the resolved boundary must be explained: {report:#?}"
+    );
+    assert_eq!(
+        AdvertisedFix::from_notes(widening.help.iter().map(String::as_str)),
+        AdvertisedFix::WithFix,
+        "a widening retarget must advertise a fix: {report:#?}"
+    );
+
+    let narrowing = finding_at(3);
+    assert!(
+        narrowing
+            .help
+            .iter()
+            .any(|line| line == "consider using: `pub(super)`"),
+        "the parent boundary must be suggested: {report:#?}"
+    );
+    // `crate::animation` is this item's parent module, so `pub(super)` reaches
+    // exactly what the annotation already reaches. Nothing about the boundary
+    // changed, and the policy that rejects the spelling is still the whole
+    // finding.
+    assert_eq!(
+        narrowing.headline,
+        "use of `pub(in crate::animation)` outside an exact facade boundary is forbidden by policy",
+        "a respelling of the same reach must keep the policy headline: {report:#?}"
+    );
+    assert_eq!(
+        AdvertisedFix::from_notes(narrowing.help.iter().map(String::as_str)),
+        AdvertisedFix::NotOffered,
+        "a narrowing retarget must not advertise a fix: {report:#?}"
+    );
+
+    // Severity is derived from fixability, so the widening is the warning and
+    // the narrowing the error without either being stored that way.
+    assert_eq!(
+        (report.summary.errors, report.summary.warnings),
+        (1, 1),
+        "severity must follow fixability: {report:#?}"
+    );
+
+    mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+
+    assert_eq!(
+        fs::read_to_string(temp.path().join("src/animation/sequence.rs"))
+            .expect("read fixed sequence module"),
+        format!("pub(crate) struct Pose;\n\n{narrowing_declaration}"),
+        "only the widening may be applied"
+    );
+}
+
+/// The widening-boundary fixture: `Pose` is used only inside
+/// `crate::animation`, but `Carrier::pose` carries it to the crate root, so
+/// `Pose` needs a wider boundary than its annotation while `build` needs only a
+/// respelling of the reach it already has.
+fn create_widening_boundary_fixture(sequence_source: &str) -> TempDir {
+    let temp = tempdir().expect("create widening boundary fixture dir");
+    write_sources(
+        &temp,
+        &[
+            (
+                "Cargo.toml",
+                r#"[package]
+name = "widening_boundary_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+            ),
+            // `overbroad_pub_crate` is off because it fires on `Carrier::pose`,
+            // whose `pub(crate)` no caller outside `crate::animation` reads.
+            // That field is what holds `Pose` open at the crate root, so the
+            // fixture cannot drop it without losing the case under test.
+            (
+                "mend.toml",
+                "[diagnostics]\noverbroad_pub_crate = false\n\n[visibility]\npub_in_path = \
+                 \"forbidden\"\n",
+            ),
+            (
+                "src/lib.rs",
+                "mod animation;\n\npub fn start() {\n    let carrier = animation::carrier();\n    \
+                 let _ = size_of_val(&carrier);\n}\n",
+            ),
+            (
+                "src/animation.rs",
+                "mod sequence;\n\nuse sequence::Pose;\n\npub(crate) struct Carrier {\n    \
+                 pub(crate) pose: Pose,\n}\n\npub(crate) fn carrier() -> Carrier {\n    Carrier \
+                 {\n        pose: sequence::build(),\n    }\n}\n",
+            ),
+            ("src/animation/sequence.rs", sequence_source),
+        ],
+    );
+    temp
 }
 
 fn write_sources(temp: &TempDir, sources: &[(&str, &str)]) {

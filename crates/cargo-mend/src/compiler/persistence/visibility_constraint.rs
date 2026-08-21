@@ -119,20 +119,24 @@ pub(in crate::compiler) enum StoredConstraintOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(in crate::compiler) struct StoredVisibilityConstraint {
-    pub diagnostic_code:           DiagnosticCode,
-    pub source:                    StoredVisibilitySource,
-    pub declaration:               StoredVisibilityDeclaration,
-    pub visibility_annotation:     String,
-    pub declared_reach:            StoredVisibilityReach,
-    pub spelling:                  StoredVisibilitySpelling,
-    pub signature_requirement:     Option<StoredVisibilityReach>,
-    pub facade:                    StoredFacadeConstraint,
-    pub exact_boundary_acceptance: StoredExactBoundaryAcceptance,
+    pub diagnostic_code:            DiagnosticCode,
+    pub source:                     StoredVisibilitySource,
+    pub declaration:                StoredVisibilityDeclaration,
+    pub visibility_annotation:      String,
+    pub declared_reach:             StoredVisibilityReach,
+    pub spelling:                   StoredVisibilitySpelling,
+    pub signature_requirement:      Option<StoredVisibilityReach>,
+    pub facade:                     StoredFacadeConstraint,
+    pub exact_boundary_acceptance:  StoredExactBoundaryAcceptance,
+    /// Whether the declaration form alone lets mend edit this annotation.
+    /// Independent of `pub_in_path`, which governs only what a replacement may
+    /// spell.
+    pub annotation_edit_acceptance: StoredExactBoundaryAcceptance,
     /// Project policy for an exact `pub(in crate::...)` replacement.
     #[serde(default)]
-    pub exact_path_policy:         StoredExactPathPolicy,
-    pub caller_reconciliation:     StoredCallerReconciliation,
-    pub outcome:                   StoredConstraintOutcome,
+    pub exact_path_policy:          StoredExactPathPolicy,
+    pub caller_reconciliation:      StoredCallerReconciliation,
+    pub outcome:                    StoredConstraintOutcome,
 }
 
 impl StoredVisibilityConstraint {
@@ -227,6 +231,19 @@ impl VisibilityConstraintSet {
             .all(|constraint| constraint.exact_path_policy == StoredExactPathPolicy::Allowed)
     }
 
+    /// Whether every constraint's declaration form lets mend edit its
+    /// visibility annotation, with no question of what the replacement spells.
+    ///
+    /// [`Self::all_exact_boundaries_are_eligible`] is the suppression-side
+    /// question and folds `pub_in_path` in; this one deliberately does not, so
+    /// [`VisibilityConstraintGroup::supports_rewrite`] can apply the setting
+    /// against `ExactBoundarySpelling::CratePath` alone.
+    fn all_annotation_edits_are_eligible(&self) -> bool {
+        self.constraints.iter().all(|constraint| {
+            constraint.annotation_edit_acceptance == StoredExactBoundaryAcceptance::Eligible
+        })
+    }
+
     fn uniform_declared_reach(&self) -> Option<StoredVisibilityReach> {
         let mut reaches = self
             .constraints
@@ -319,7 +336,67 @@ struct VisibilityConstraintGroup {
 /// The written annotations `fixes::restricted_annotation` knows how to rewrite.
 /// A finding whose annotation is not one of these is reported, never promoted to
 /// fixable.
-const SUPPORTED_ANNOTATIONS: [&str; 3] = ["pub", "pub(crate)", "pub(in crate)"];
+/// Spellings whose annotation `fixes::restricted_annotation` will retarget to a
+/// boundary resolved from callers. Removing an annotation is not gated on this;
+/// see the `fix_support` assignment in [`VisibilityConstraintGroup::apply_rewrite`].
+const RETARGETABLE_ANNOTATIONS: [&str; 3] = ["pub", "pub(crate)", "pub(in crate)"];
+
+/// Whether replacing `annotation` with `spelling` can only widen the item's
+/// reach.
+///
+/// A widening keeps every name that resolved before it, so it compiles whatever
+/// the caller analysis did not see. That is what separates it from the retarget
+/// gated by [`RETARGETABLE_ANNOTATIONS`], where a use the pass missed is a use
+/// the narrower boundary breaks. Any restricted spelling is contained in
+/// `pub(crate)`, and every spelling is contained in `pub`; a bare `pub` narrowed
+/// to `pub(crate)` is the case this must exclude.
+/// Whether replacing the annotation with `spelling` at `boundary` changes what
+/// can name the item, rather than only how the same reach is spelled.
+///
+/// `pub(in crate::a)` on an item whose parent module is `crate::a` reaches
+/// exactly what `pub(super)` reaches, so a rewrite between the two is a spelling
+/// change and the policy headline still describes it. A rewrite to a different
+/// reach is about what uses the item instead, which is what
+/// [`visibility::resolved_boundary_headline`] says.
+fn replacement_changes_reach(
+    spelling: ExactBoundarySpelling,
+    declared_reach: &StoredVisibilityReach,
+    boundary: &str,
+) -> bool {
+    match spelling {
+        ExactBoundarySpelling::Public => *declared_reach != StoredVisibilityReach::Public,
+        ExactBoundarySpelling::Crate => *declared_reach != StoredVisibilityReach::Crate,
+        ExactBoundarySpelling::Private => true,
+        ExactBoundarySpelling::CratePath | ExactBoundarySpelling::Parent => !matches!(
+            declared_reach,
+            StoredVisibilityReach::Restricted { boundary: declared } if declared == boundary
+        ),
+    }
+}
+
+/// How the resolved boundary is written, for a message that names it outside a
+/// `consider using:` suggestion.
+fn replacement_spelling(spelling: ExactBoundarySpelling, boundary: &str) -> String {
+    match spelling {
+        ExactBoundarySpelling::CratePath => format!("`pub(in {boundary})`"),
+        ExactBoundarySpelling::Parent => String::from("`pub(super)`"),
+        ExactBoundarySpelling::Crate => String::from("`pub(crate)`"),
+        ExactBoundarySpelling::Private => String::from("private"),
+        ExactBoundarySpelling::Public => String::from("`pub`"),
+    }
+}
+
+fn replacement_only_widens(spelling: ExactBoundarySpelling, annotation: &str) -> bool {
+    match spelling {
+        ExactBoundarySpelling::Public => annotation != "pub",
+        ExactBoundarySpelling::Crate => {
+            !matches!(annotation, "pub" | "pub(crate)" | "pub(in crate)")
+        },
+        ExactBoundarySpelling::CratePath
+        | ExactBoundarySpelling::Parent
+        | ExactBoundarySpelling::Private => false,
+    }
+}
 
 impl VisibilityConstraintGroup {
     fn include(
@@ -369,6 +446,11 @@ impl VisibilityConstraintGroup {
         let candidate = self.preferred_candidate()?;
         let mut finding = candidate.finding.clone();
         let item_def_path = candidate.constraint.declaration.item_def_path.clone();
+        let item_module = candidate
+            .constraint
+            .declaration
+            .item_module_def_path
+            .clone();
         if !self.constraints.uses_caller_reconciliation() {
             return Some(finding);
         }
@@ -420,7 +502,23 @@ impl VisibilityConstraintGroup {
                 &boundary,
                 &item_def_path,
             ));
+            finding.related = None;
         }
+        // Whichever branch ran replaced the scan pass's suggestion, and its note
+        // with it: that note was written from one target's callers, and the
+        // repair above was reclassified over every target's. Rewriting the note
+        // from the surviving repair keeps it from arguing for a repair that is
+        // no longer being offered. `no_facade_caller_note` declines a boundary
+        // spanning the whole crate, and `apply_rewrite` is the branch with a
+        // resolved boundary to name there, so its note stands when this one has
+        // nothing to say.
+        let resolved_boundary_note = finding.related.take();
+        finding.related = visibility::no_facade_caller_note(
+            repair,
+            &item_module,
+            visibility::parent_scope_def_path(&item_module),
+        )
+        .or(resolved_boundary_note);
         Some(finding)
     }
 
@@ -554,7 +652,7 @@ impl VisibilityConstraintGroup {
     }
 
     fn supports_rewrite(&self, spelling: ExactBoundarySpelling) -> bool {
-        self.constraints.all_exact_boundaries_are_eligible()
+        self.constraints.all_annotation_edits_are_eligible()
             && (spelling != ExactBoundarySpelling::CratePath
                 || self.constraints.all_exact_paths_are_allowed())
     }
@@ -577,60 +675,81 @@ impl VisibilityConstraintGroup {
         // `visibility::missing_facade_note` explains a suggestion that asks for
         // a re-export. The suggestion just written asks for a visibility change
         // instead, and the note's claim that nothing names the item at the
-        // boundary is what resolving one disproved.
-        finding.related = None;
+        // boundary is what resolving one disproved. What replaces it says why
+        // this boundary; the caller prefers `visibility::no_facade_caller_note`
+        // wherever that has something to say, and keeps this where it does not.
+        // Removing an annotation names no visibility for the note to report, and
+        // `RemoveAnnotation` is the repair whose caller note always does.
+        finding.related = (matches!(finding.diagnostic_code, DiagnosticCode::ForbiddenPubInCrate)
+            && spelling != ExactBoundarySpelling::Private)
+            .then(|| visibility::resolved_boundary_note(&replacement_spelling(spelling, boundary)));
         finding.message = match finding.diagnostic_code {
             DiagnosticCode::OverbroadPubCrate => {
                 String::from("`pub(crate)` is broader than required")
             },
             DiagnosticCode::SuspiciousPub => format!(
                 "the narrowest proven visibility is {}",
-                match spelling {
-                    ExactBoundarySpelling::CratePath => format!("`pub(in {boundary})`"),
-                    ExactBoundarySpelling::Parent => String::from("`pub(super)`"),
-                    ExactBoundarySpelling::Crate => String::from("`pub(crate)`"),
-                    ExactBoundarySpelling::Private => String::from("private"),
-                    ExactBoundarySpelling::Public => String::from("`pub`"),
-                }
+                replacement_spelling(spelling, boundary)
             ),
-            // The structural headline says nothing keeps this item reachable.
-            // That held for the single-crate view that wrote it; resolving a
-            // boundary here disproves it. Left alone it printed "`pub(super)`
-            // is too narrow" directly above "help: consider using:
-            // `pub(super)`" on 13 findings of one workspace. Restoring the
-            // policy headline it replaced puts the finding back in step with
-            // its own suggestion.
-            DiagnosticCode::ForbiddenPubInCrate
-                if visibility::is_structural_headline(&finding.message) =>
-            {
+            // Two scan-pass headlines arrive here and neither survives a
+            // resolved boundary. The structural one says nothing keeps this item
+            // reachable, which held for the single-crate view that wrote it;
+            // left alone it printed "`pub(super)` is too narrow" directly above
+            // "help: consider using: `pub(super)`" on 13 findings of one
+            // workspace. The policy one says the spelling sits outside an exact
+            // facade boundary, which stays true only while the repair is a
+            // facade — over a suggestion naming a wider visibility it explains
+            // nothing about why that visibility. So a replacement that changes
+            // the item's reach takes the headline naming the annotation, and a
+            // respelling of the same reach keeps the policy headline, which is
+            // what it is still about. `is_annotation_policy_headline` holds the
+            // line at those two: a headline naming what caps the item says more
+            // than either, and resolving a boundary does not contradict it.
+            DiagnosticCode::ForbiddenPubInCrate => {
                 self.constraints.constraints.first().map_or_else(
                     || finding.message.clone(),
                     |constraint| {
-                        visibility::forbidden_pub_in_headline(&constraint.visibility_annotation)
+                        let annotation = constraint.visibility_annotation.as_str();
+                        if !visibility::is_annotation_policy_headline(&finding.message, annotation)
+                        {
+                            finding.message.clone()
+                        } else if replacement_changes_reach(
+                            spelling,
+                            &constraint.declared_reach,
+                            boundary,
+                        ) {
+                            visibility::resolved_boundary_headline(annotation)
+                        } else {
+                            visibility::forbidden_pub_in_headline(annotation)
+                        }
                     },
                 )
             },
             _ => finding.message.clone(),
         };
         // Only claim fixable when `fixes::restricted_annotation` will actually
-        // rewrite this annotation. It edits a bare `pub`, `pub(crate)`, and
-        // `pub(in crate)` and nothing else, so promoting a
-        // `pub(in crate::a::b)` finding advertised a fix that never arrived:
-        // every run reported it as fixable, applied nothing, and reported it
-        // again. Widening the applier instead was tried and rolled back — a
-        // boundary resolved from callers is not a compiling rewrite for an
-        // already-restricted annotation.
-        finding.fix_support = if self
+        // edit this annotation, which splits on what the edit does. Removing one
+        // resolves no path, so `ExactBoundarySpelling::Private` promotes
+        // whatever the annotation said, and a replacement that only widens keeps
+        // every name that already resolved, so it compiles whatever the caller
+        // scan missed. What is left is a retarget that narrows, confined to
+        // `RETARGETABLE_ANNOTATIONS`: promoting a `pub(in crate::a::b)` for that
+        // advertised a fix that never arrived — every run reported it as
+        // fixable, applied nothing, and reported it again — and letting the
+        // applier narrow an already-restricted annotation to a caller-derived
+        // boundary was tried and rolled back, because a use the scan did not see
+        // is a use that boundary breaks.
+        finding.fix_support = self
             .constraints
             .constraints
             .first()
-            .is_some_and(|constraint| {
-                SUPPORTED_ANNOTATIONS.contains(&constraint.visibility_annotation.as_str())
-            }) {
-            FixSupport::RestrictedAnnotation
-        } else {
-            FixSupport::None
-        };
+            .filter(|constraint| {
+                let annotation = constraint.visibility_annotation.as_str();
+                spelling == ExactBoundarySpelling::Private
+                    || replacement_only_widens(spelling, annotation)
+                    || RETARGETABLE_ANNOTATIONS.contains(&annotation)
+            })
+            .map_or(FixSupport::None, |_| FixSupport::RestrictedAnnotation);
         if let Some(constraint) = self.constraints.constraints.first() {
             finding.visibility_annotation = Some(constraint.visibility_annotation.clone());
             finding.item_def_path = Some(constraint.declaration.item_def_path.clone());
@@ -1002,6 +1121,10 @@ fn common_def_path_ancestor(left: &str, right: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
 mod tests {
     use super::CallerMap;
     use super::NoFacadeVisibilityRepair;
@@ -1266,7 +1389,7 @@ mod tests {
         );
         assert_eq!(
             rendered.message,
-            "use of `pub(in crate::a)` outside an exact facade boundary is forbidden by policy",
+            "`pub(in crate::a)` is not the boundary this item's callers require",
         );
     }
 
@@ -1463,10 +1586,52 @@ mod tests {
             signature_requirement,
             facade,
             exact_boundary_acceptance: StoredExactBoundaryAcceptance::Eligible,
+            annotation_edit_acceptance: StoredExactBoundaryAcceptance::Eligible,
             exact_path_policy: StoredExactPathPolicy::Allowed,
             caller_reconciliation: StoredCallerReconciliation::CallerAware,
             outcome: StoredConstraintOutcome::Finding,
         }
+    }
+
+    /// A cache written by an older binary must be rejected outright, never
+    /// loaded with a missing field filled in from a default. Defaulting
+    /// `annotation_edit_acceptance` to `Ineligible` once made a stale cache
+    /// report the pre-fix severity, which reads as an unfixed finding rather
+    /// than an unrefreshed cache. Adding, removing, or renaming a field changes
+    /// what an older cache can supply, so this list and
+    /// `FINDINGS_SCHEMA_VERSION` move together.
+    #[test]
+    fn changing_the_stored_constraint_shape_requires_a_schema_version_bump() {
+        let stored = serde_json::to_value(constraint(StoredFacadeConstraint::Absent, None))
+            .expect("serialize stored constraint");
+        let fields: Vec<&str> = stored
+            .as_object()
+            .expect("stored constraint serializes to a JSON object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+
+        assert_eq!(
+            fields,
+            [
+                "annotation_edit_acceptance",
+                "caller_reconciliation",
+                "declaration",
+                "declared_reach",
+                "diagnostic_code",
+                "exact_boundary_acceptance",
+                "exact_path_policy",
+                "facade",
+                "outcome",
+                "signature_requirement",
+                "source",
+                "spelling",
+                "visibility_annotation",
+            ],
+            "stored constraint fields changed; bump FINDINGS_SCHEMA_VERSION (currently \
+             {FINDINGS_SCHEMA_VERSION}) so a cache written by the previous binary is rejected \
+             instead of loaded"
+        );
     }
 
     fn finding(message: &str) -> StoredFinding {

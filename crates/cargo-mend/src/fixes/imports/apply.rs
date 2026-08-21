@@ -1,9 +1,7 @@
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
-use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
-use std::path::PathBuf;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -45,26 +43,4 @@ pub(in crate::fixes) fn apply_fixes(fixes: &ValidatedFixSet) -> Result<AppliedFi
     }
 
     Ok(applied)
-}
-
-pub(in crate::fixes) fn snapshot_files(fixes: &ValidatedFixSet) -> Result<Vec<(PathBuf, String)>> {
-    let mut unique_paths = BTreeSet::new();
-    for fix in fixes.iter() {
-        unique_paths.insert(fix.path.clone());
-    }
-
-    let mut snapshots = Vec::new();
-    for path in unique_paths {
-        let text = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        snapshots.push((path, text));
-    }
-    Ok(snapshots)
-}
-
-pub(in crate::fixes) fn restore_files(snapshots: &[(PathBuf, String)]) -> Result<()> {
-    for (path, text) in snapshots {
-        fs::write(path, text).with_context(|| format!("failed to restore {}", path.display()))?;
-    }
-    Ok(())
 }

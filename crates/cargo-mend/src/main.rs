@@ -123,7 +123,7 @@ fn run() -> Result<ExitCode, MendFailure> {
     let color_mode = color_mode();
     let output_format = cli.output_format;
     let start = Instant::now();
-    let runner = MendRunner::new(
+    let mut runner = MendRunner::new(
         &selection,
         &cargo_plan,
         &loaded_config,

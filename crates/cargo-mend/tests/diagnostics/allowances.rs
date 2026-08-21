@@ -2861,15 +2861,16 @@ edition = "2024"
             .any(|line| line == "consider using: `pub(crate)`"),
         "the outer glob must widen the nested signature requirement to pub(crate): {report:#?}",
     );
-    // `pub(in crate::a)` is already restricted, and the applier rewrites only a
-    // bare `pub`, `pub(crate)`, and `pub(in crate)`. The widened boundary is
-    // advice for a person, not an edit mend will make.
+    // `pub(in crate::a)` is contained in `pub(crate)`, so writing the widened
+    // boundary keeps every name that already resolved. A use the caller pass did
+    // not see still compiles, which is what makes this an edit `--fix` applies
+    // rather than advice for a person. A retarget that narrows stays manual.
     assert!(
-        !target_finding
+        target_finding
             .help
             .iter()
             .any(|line| line.contains("auto-fixable")),
-        "an already-restricted annotation must not advertise a fix: {report:#?}",
+        "widening an already-restricted annotation must advertise a fix: {report:#?}",
     );
     assert!(
         report.findings.iter().any(|finding| {
@@ -3111,7 +3112,7 @@ edition = "2024"
     assert_eq!(target_finding.code, DiagnosticCode::ForbiddenPubInCrate);
     assert_eq!(
         target_finding.headline,
-        "use of `pub(in crate::a)` outside an exact facade boundary is forbidden by policy"
+        "`pub(in crate::a)` is not the boundary this item's callers require"
     );
     assert!(
         target_finding

@@ -275,9 +275,17 @@ fn assert_rendered_diagnostics(report: &Report, rendered: &str) {
 }
 
 fn assert_forbidden_visibility_json(output: &str, report: &Report) {
+    // `forbidden_pub_in_crate` is no longer uniformly an error. Cargo's level
+    // follows `reporting::diagnostics::effective_severity`, which reports
+    // anything mend can fix itself as a warning, and the fixture's
+    // `pub(in crate::private_parent) fn subtree_only` has no caller outside its
+    // own module — so `--fix` removes the annotation and the finding renders as
+    // a fixable warning. The cases mend cannot repair on its own still render
+    // as errors; `bounded_pub_in_path_is_fixable_only_for_declarations` covers
+    // both halves against one fixture.
     let expected_diagnostics = [
         ("overbroad_pub_crate", "warning"),
-        ("forbidden_pub_in_crate", "error"),
+        ("forbidden_pub_in_crate", "warning"),
     ];
 
     for (code, expected_level) in expected_diagnostics {
@@ -342,7 +350,8 @@ fn assert_forbidden_visibility_json(output: &str, report: &Report) {
 fn assert_forbidden_visibility_human(rendered: &str, report: &Report) {
     for (code, level) in [
         (DiagnosticCode::OverbroadPubCrate, "warning"),
-        (DiagnosticCode::ForbiddenPubInCrate, "error"),
+        // Fixable now — see the note in `assert_forbidden_visibility_json`.
+        (DiagnosticCode::ForbiddenPubInCrate, "warning"),
     ] {
         let headline = report
             .findings
