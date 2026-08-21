@@ -8,6 +8,8 @@ use rustc_span::def_id::LocalDefId;
 use syn::VisRestricted;
 use syn::Visibility as SyntaxVisibility;
 
+use super::policy;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PathSpelling {
     CrateRooted,
@@ -83,7 +85,7 @@ impl<'source> VisibilityAnnotation<'source> {
     }
 
     pub(super) fn display_source(&self) -> String {
-        super::policy::normalized_annotation_source(self.source())
+        policy::normalized_annotation_source(self.source())
     }
 
     pub(super) const fn syntax(&self) -> VisibilitySyntax {
