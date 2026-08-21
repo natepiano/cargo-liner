@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Move development into the `natepiano/cargo-liner` workspace, where cargo-mend now lives at `crates/cargo-mend` alongside the other cargo tools. Installation and usage are unchanged: `cargo install cargo-mend`.
+
 ## [0.19.0] - 2026-08-21
 
 ### Changed
