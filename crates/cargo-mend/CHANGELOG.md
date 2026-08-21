@@ -8,69 +8,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
-- `forbidden_pub_in_crate` is a fixable warning when nothing outside the declaring module uses the
-  item, and `--fix` deletes the annotation from declarations and fields. A `mod` line, a `use`
-  re-export, and any case whose repair is a facade or a move stay errors. The findings cache schema
-  moved with this, so the first run after upgrading re-analyzes instead of answering from a cache
-  the previous binary wrote.
-- `forbidden_pub_in_crate` is a fixable warning when the item needs a wider boundary than its
-  annotation carries — a `pub(in crate::animation)` type held in a `pub(crate)` field or signature —
-  and `--fix` writes the wider visibility. Narrowing to a caller-derived boundary stays an error:
-  widening keeps every name that already resolved, while narrowing can break a caller the scan
-  never saw.
-- `forbidden_pub_in_crate` names the annotation instead of the policy once a boundary is resolved.
-  "use of `pub(in crate::animation)` outside an exact facade boundary is forbidden by policy" sat
-  above a bare suggestion of `pub(crate)`, explaining neither the term nor where `pub(crate)` came
-  from. The headline now reads "`pub(in crate::animation)` is not the boundary this item's callers
-  require", over a note naming `pub(crate)` as the narrowest visibility covering everything that
-  reaches the item. A replacement that only respells the same reach keeps the policy headline.
-- `forbidden_pub_in_crate` now explains itself. The finding read "use of `pub(in crate::animation)`
-  outside an exact facade boundary is forbidden by policy" and suggested "add an explicit facade",
-  naming neither the policy nor the term, leaving no way to tell a real problem from a false one.
-  The headline now states the gap directly — "`pub(in crate::animation)` is not the path callers use
-  to name this item" — over a note that names `pub_in_path`, the path the annotation demands, and
-  the deeper path callers are stuck writing instead. The suggestion is the line to paste:
-  "add `pub(in crate::animation) use sequence::playback::Origin;` to `crate::animation`". A
-  `use` item is named by the identifier it introduces rather than the `{use#0}` the compiler calls
-  it internally. The structural headline drops "no facade caps `pub`" for the visibilities it
-  actually ruled out, and the README works through both repairs.
+- `forbidden_pub_in_crate` is now a fixable warning in the two cases mend can repair by itself. When
+  nothing outside the declaring module uses the item, `--fix` deletes the annotation. When the item
+  needs a wider boundary than its annotation carries — a `pub(in crate::animation)` type held in a
+  `pub(crate)` field or signature — `--fix` writes the wider visibility. Everything else stays an
+  error: a `mod` line, a `use` re-export, a repair that is a facade or a move, and any narrowing to
+  a caller-derived boundary, since widening keeps every name that already resolved but narrowing can
+  break a caller the scan never saw.
+- The findings cache schema moved with that change, so the first run after upgrading re-analyzes
+  instead of answering from a cache the previous binary wrote.
+- `forbidden_pub_in_crate` now explains itself. It read "use of `pub(in crate::animation)` outside
+  an exact facade boundary is forbidden by policy" and suggested "add an explicit facade", naming
+  neither the policy nor the term. The headline now states the gap — "`pub(in crate::animation)` is
+  not the path callers use to name this item" — over a note that names `pub_in_path`, the path the
+  annotation demands, and the deeper path callers are stuck writing instead. The suggestion is the
+  line to paste: "add `pub(in crate::animation) use sequence::playback::Origin;` to
+  `crate::animation`".
+- Once the cross-crate pass resolves a wider boundary, that finding reads instead
+  "`pub(in crate::animation)` is not the boundary this item's callers require", over a note naming
+  the narrowest visibility that covers everything reaching the item. A replacement that only
+  respells the same reach keeps the policy headline.
+- A `use` item is reported by the identifier it introduces rather than the `{use#0}` the compiler
+  calls it internally, and the headline for an item with no repair in reach names the visibilities
+  it ruled out instead of saying "no facade caps `pub`".
 
 ### Fixed
 - Following the facade suggestion on a `pub(in crate::...) use` re-export now ends. The suggested
   re-export is itself a `pub(in crate::...) use` with no facade above it, so applying it moved the
-  same finding onto the new line, whose suggestion then asked for a re-export into the module that
-  line already sits in. Nothing satisfied the check: dropping the annotation instead stopped the
-  line counting as a facade and brought the original finding back. An annotation whose boundary
-  names the re-export's own module is now accepted — a re-export at the boundary is the whole
-  repair, and `pub(in P)` on an item in `P` already reaches everything below `P`.
-- A run whose only findings are errors no longer reports itself clean. The summary rolls up
-  warnings and `errors_block` reports errors separately, so an errors-only run left the summary's
-  row set empty and printed "summary: no issues found" directly beneath a block reporting 25 mend
-  errors. That run now prints no summary line at all.
+  finding onto the new line, whose suggestion then asked for a re-export into the module that line
+  already sits in — and dropping the annotation instead stopped the line counting as a facade and
+  brought the original finding back. An annotation whose boundary names the re-export's own module
+  is now accepted: `pub(in P)` on an item in `P` already reaches everything below `P`.
+- A run whose only findings are errors no longer reports itself clean. The summary rolls up warnings
+  while errors are reported separately, so an errors-only run printed "summary: no issues found"
+  directly beneath a block listing 25 mend errors. That run now prints no summary line.
 - `--fix` no longer reports a rollback it did not perform. `--fix-all` re-runs the fix pass until
   the fixable set stops shrinking, and each pass snapshotted only the files it was about to edit, so
   a failure in a later pass restored the tree to the previous pass's output while still printing
-  "changes were rolled back". On one workspace that left a collapsed re-export, a narrowed
+  "changes were rolled back" — on one workspace leaving a collapsed re-export, a narrowed
   declaration, and a rewritten import on disk. The snapshot now spans the whole invocation, and a
   restore that fails on one file still attempts the rest.
-- An exact-boundary `pub(in crate::...) use` re-export is now accepted under `pub_in_path =
-  "required"` (the default) and `"permitted"`, on the same terms as a declaration, and under
+- An exact-boundary `pub(in crate::...) use` re-export is now accepted under `pub_in_path` set to
+  `"required"` (the default) or `"permitted"`, on the same terms as a declaration, and under
   `"forbidden"` the finding names the setting that turns the spelling complaint off. Both the
-  acceptance gate and that help line required the item to be a declaration, so on one workspace a
-  run printed "is forbidden by policy" on every such re-export with no help line and no
-  configuration that could clear them. `consider using: pub` is still withheld from a `use` item,
-  where widening the re-export past the item it names would not compile.
+  acceptance gate and that help line required a declaration, so one workspace saw "is forbidden by
+  policy" on every such re-export with no help line and no configuration that could clear them.
+  `consider using: pub` is still withheld from a `use` item, where widening the re-export past the
+  item it names would not compile.
 - A `pub(in crate::...) use` re-export that no facade covers now names the re-export that would
-  accept it, rather than printing with no help line at all. Every repair offered there is derived
-  from the caller set, and resolved paths name the imported target rather than the alias, so that
-  set is never available for a `use` item and the branch returned no suggestion. The facade path is
-  read off the annotation and asks nothing of the callers.
+  accept it, rather than printing with no help line at all. Every other repair offered there is
+  derived from the caller set, which is never available for a `use` item because resolved paths name
+  the imported target rather than the alias. The facade path is read off the annotation instead.
 - `--fix` no longer drops a `#[cfg]` written on a statement. A gate on a statement attaches to the
   statement's expression, which neither import pass looked at, so both emitted ungated `use` lines
   for items that are configured out (E0432).
 - `--fix` no longer rewrites a method call as if it were a free function. Inside a macro,
   `progress.normalized()` could become `progress.ledger::normalized()`, which the macro matcher
   rejects with "no rules expected `::`".
+- `--fix` now carries `#[cfg]` gates from `impl` and `trait` associated items into the imports it
+  synthesizes inside them; they were never tracked before.
 - `prefer_module_import` now treats a local declaration as shadowing the imported name. A file
   importing `crate::reconcile::reconcile` alongside a `#[cfg(test)] mod tests` that declares its own
   `fn reconcile` had the test's bare call rewritten to the module path, which resolved to the local
@@ -80,33 +76,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   binding, so rewriting only the outer import left the inner one naming nothing (E0432). Mend now
   leaves both alone and reports nothing. A glob (`use super::*;`) is unaffected — it carries the
   rewritten import in.
-- `--fix` now carries `#[cfg]` gates from `impl` and `trait` associated items into the imports it
-  synthesizes inside them; they were never tracked before.
-- `--fix-all` no longer repeats the same output forever. Mend advertised a fix for declarations
-  already written `pub(in crate::...)`: the cross-crate pass resolved an exact boundary and marked
-  the finding auto-fixable, but the applier rewrites only a bare `pub`, `pub(crate)`, and
-  `pub(in crate)`, so every run reported the fix, wrote nothing, and reported it again. Those
-  findings are now reported as manual work. Writing the resolved boundary is not safe in general -
-  on a real workspace it narrowed a type named in a wider signature, which rustc rejects with E0446.
-- "applied N fix(es)" now counts the edits mend actually wrote. Fixes are discarded between the scan
-  and the write - conflicting import groups are dropped, byte-identical edits from two passes
-  collapse into one, a range that no longer fits its file is skipped - but the count came from the
-  scan's findings, so a run that changed nothing still reported "applied 4 import fix(es)". A
-  `--dry-run` preview counts the same way.
 - `prefer_module_import` no longer reports two imports whose modules share a leaf name. Rewriting
   `crate::orbit_cam::controller::x` and `crate::free_cam::controller::y` to module imports would
   give one file two `use controller;` lines (E0252) with the call sites resolving to whichever won
   (E0425). Mend already declined to apply the pair, but still reported both as fixable on every run.
-- A `forbidden_pub_in_crate` finding no longer denies that any visibility works while suggesting one.
-  Mend writes "no policy-allowed visibility keeps this item reachable" from the single crate it
+- `--fix-all` no longer repeats the same output forever. Mend advertised a fix for declarations
+  already written `pub(in crate::...)`: the cross-crate pass resolved an exact boundary and marked
+  the finding auto-fixable, but the applier rewrites only a bare `pub`, `pub(crate)`, and
+  `pub(in crate)`, so every run reported the fix, wrote nothing, and reported it again. Those
+  findings are now reported as manual work — writing the resolved boundary can narrow a type named
+  in a wider signature, which rustc rejects with E0446.
+- "applied N fix(es)" now counts the edits mend actually wrote. Fixes are discarded between the scan
+  and the write — conflicting import groups are dropped, byte-identical edits from two passes
+  collapse into one, a range that no longer fits its file is skipped — but the count came from the
+  scan's findings, so a run that changed nothing still reported "applied 4 import fix(es)". A
+  `--dry-run` preview counts the same way.
+- A `forbidden_pub_in_crate` finding no longer denies that any visibility works while suggesting
+  one. Mend writes "no policy-allowed visibility keeps this item reachable" from the single crate it
   compiled; the cross-crate pass then resolves a boundary but left that line in place, so on one
   workspace 13 findings printed "`pub(super)` is too narrow" directly above "help: consider using:
   `pub(super)`". Resolving a boundary now restores the policy headline the finding started with.
-- A finding mend can fix on its own now reports as a warning whatever severity it was recorded with.
-  Severity is written when a finding is created, and only two places write `error` - the ones whose
-  findings need a person to decide something. The cross-crate pass could later mark one of those
-  fixable without the severity following, producing lines like "38 mend errors (23 fixable)". An
-  error now means work only a person can do.
+- A finding mend can fix on its own now reports as a warning, whatever severity it was recorded
+  with. Only two places write `error`, both for findings that need a person to decide something, but
+  the cross-crate pass could later mark one of those fixable without the severity following,
+  producing lines like "38 mend errors (23 fixable)". An error now means work only a person can do.
 
 ## [0.18.4] - 2026-08-19
 
