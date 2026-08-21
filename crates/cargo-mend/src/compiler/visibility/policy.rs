@@ -527,11 +527,19 @@ pub(super) fn permit_pub_in_path() -> String { String::from("set `pub_in_path = 
 /// first time has no definition for it. [`missing_facade_note`] states the gap
 /// the re-export closes.
 pub(super) fn add_facade_suggestion(boundary_path: &str, item_def_path: &str) -> String {
-    let item = facade_reexport_path(boundary_path, item_def_path)
-        .map_or_else(|| String::from("it"), |path| format!("`{path}`"));
-    format!(
-        "re-export {item} from `{boundary_path}` so callers can name it there, then rerun \
-         `cargo mend`"
+    facade_reexport_path(boundary_path, item_def_path).map_or_else(
+        || {
+            format!(
+                "re-export the item from `{boundary_path}` so callers can name it there, then \
+                 rerun `cargo mend`"
+            )
+        },
+        |reexport_path| {
+            format!(
+                "add `pub(in {boundary_path}) use {reexport_path};` to `{boundary_path}`, then \
+                 rerun `cargo mend`"
+            )
+        },
     )
 }
 
@@ -594,9 +602,9 @@ pub(super) fn missing_facade_note(boundary_path: &str, item_def_path: &str) -> O
         // boundary" -- leaves them to work out both.
         let name = last_def_path_segment(&item_path);
         format!(
-            "every caller in `{boundary_path}` may use this item, but they must still spell it \
-             `{item_path}`. `pub_in_path` allows this boundary only when a re-export publishes \
-             the item as `{boundary_path}::{name}`"
+            "`pub_in_path` accepts this boundary only when the item is nameable as \
+             `{boundary_path}::{name}`. Callers reach it as `{item_path}` instead, below the \
+             `{boundary_path}` the annotation names"
         )
     })
 }
@@ -651,8 +659,16 @@ pub(in crate::compiler) fn no_facade_headline(
     repair.headline(generic_headline)
 }
 
-/// The `forbidden_pub_in_crate` headline for an annotation policy allows only
-/// at an exact facade boundary.
+/// The `forbidden_pub_in_crate` headline for an annotation whose path is not the
+/// one callers write.
+///
+/// `pub_in_path` accepts `pub(in P)` only when the item is nameable as exactly
+/// `P::Name`. The previous wording — "use of `pub(in P)` outside an exact facade
+/// boundary is forbidden by policy" — read as a complaint about *where* the
+/// annotation sat, sending the reader to look for a wrong location that does not
+/// exist, and leaned on "facade", a word this crate defines nowhere the reader
+/// can see. This states the rule instead. Only the annotation is in scope here,
+/// so the paths themselves are named by [`missing_facade_note`].
 ///
 /// [`NoFacadeVisibilityRepair::headline`] swaps this for
 /// [`NoFacadeVisibilityRepair::STRUCTURAL_HEADLINE`] when the scanned crate
@@ -661,7 +677,7 @@ pub(in crate::compiler) fn no_facade_headline(
 /// the cross-crate pass has resolved a boundary, phrase it from here.
 pub(in crate::compiler) fn forbidden_pub_in_headline(annotation_source: &str) -> String {
     format!(
-        "use of `{}` outside an exact facade boundary is forbidden by policy",
+        "`{}` is not the path callers use to name this item",
         normalized_annotation_source(annotation_source)
     )
 }
@@ -1320,8 +1336,8 @@ mod tests {
                 item_def_path: String::from("a::b::c::Thing"),
                 repair:        NoFacadeVisibilityRepair::StructuralMigrationForCallerLocations,
             },),
-            "move the item into `crate::a`, or re-export `b::c::Thing` from `crate::a` so \
-             callers can name it there, then rerun `cargo mend`",
+            "move the item into `crate::a`, or add `pub(in crate::a) use b::c::Thing;` to \
+             `crate::a`, then rerun `cargo mend`",
         );
     }
 
@@ -1384,8 +1400,8 @@ mod tests {
         });
         assert_eq!(
             repair.suggestion("crate::a", "a::b::c::Thing"),
-            "move the item into `crate::a`, or re-export `b::c::Thing` from `crate::a` so \
-             callers can name it there, then rerun `cargo mend`",
+            "move the item into `crate::a`, or add `pub(in crate::a) use b::c::Thing;` to \
+             `crate::a`, then rerun `cargo mend`",
         );
     }
 

@@ -24,18 +24,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from. The headline now reads "`pub(in crate::animation)` is not the boundary this item's callers
   require", over a note naming `pub(crate)` as the narrowest visibility covering everything that
   reaches the item. A replacement that only respells the same reach keeps the policy headline.
-- `forbidden_pub_in_crate` now explains itself. The finding read "is forbidden by policy" without
-  naming the policy and suggested "add an explicit facade" without defining the term, leaving no way
-  to tell a real problem from a false one. Findings whose repair is a re-export now name
-  `pub_in_path` and state the gap: every caller in the boundary module may use the item but must
-  still spell its full path, and the policy accepts the boundary only once a re-export publishes the
-  item under the boundary's own path. Both the note and the suggestion name the item, so the
-  re-export to add reads straight off the diagnostic, and a `use` item is named by the identifier it
-  introduces rather than the `{use#0}` the compiler calls it internally. The structural headline
-  drops "no facade caps `pub`" for the visibilities it actually ruled out, and the README works
-  through both repairs.
+- `forbidden_pub_in_crate` now explains itself. The finding read "use of `pub(in crate::animation)`
+  outside an exact facade boundary is forbidden by policy" and suggested "add an explicit facade",
+  naming neither the policy nor the term, leaving no way to tell a real problem from a false one.
+  The headline now states the gap directly — "`pub(in crate::animation)` is not the path callers use
+  to name this item" — over a note that names `pub_in_path`, the path the annotation demands, and
+  the deeper path callers are stuck writing instead. The suggestion is the line to paste:
+  "add `pub(in crate::animation) use sequence::playback::Origin;` to `crate::animation`". A
+  `use` item is named by the identifier it introduces rather than the `{use#0}` the compiler calls
+  it internally. The structural headline drops "no facade caps `pub`" for the visibilities it
+  actually ruled out, and the README works through both repairs.
 
 ### Fixed
+- Following the facade suggestion on a `pub(in crate::...) use` re-export now ends. The suggested
+  re-export is itself a `pub(in crate::...) use` with no facade above it, so applying it moved the
+  same finding onto the new line, whose suggestion then asked for a re-export into the module that
+  line already sits in. Nothing satisfied the check: dropping the annotation instead stopped the
+  line counting as a facade and brought the original finding back. An annotation whose boundary
+  names the re-export's own module is now accepted — a re-export at the boundary is the whole
+  repair, and `pub(in P)` on an item in `P` already reaches everything below `P`.
 - A run whose only findings are errors no longer reports itself clean. The summary rolls up
   warnings and `errors_block` reports errors separately, so an errors-only run left the summary's
   row set empty and printed "summary: no issues found" directly beneath a block reporting 25 mend

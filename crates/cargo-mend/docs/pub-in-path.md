@@ -904,12 +904,12 @@ Only the first row is new. Still rejected: any `pub(in <path>)` where `<path>` i
 | Exact annotation already written, `Permitted`/`Required` | *(no finding)* | — |
 | Exact annotation under `Forbidden` | ``use of `pub(in crate::video_plane)` is disabled by project visibility policy`` | ``consider using: `pub`; or set `pub_in_path = "permitted"` `` |
 | Crate boundary | ``parent facade caps reach at `pub(crate)` `` | ``consider using: `pub(crate)` `` |
-| No facade, all callers in the defining module | ``use of `pub(in crate::a)` outside an exact facade boundary is forbidden by policy`` | `consider removing the visibility` |
+| No facade, all callers in the defining module | ``` `pub(in crate::a)` is not the path callers use to name this item ``` | `consider removing the visibility` |
 | No facade, all callers within the parent scope | *(same)* | ``consider using: `pub(super)` `` |
 | Glob blocks resolution | `parent facade does not provide a resolvable visibility boundary` | ``facade at <path>:<line> uses `*`; replace it with an explicit re-export before using `pub(in ...)` `` |
 | Redundant spelling, canonical reach valid | ``` `pub(in crate)` is a redundant spelling of `pub(crate)` ``` | ``consider using: `pub(crate)` `` (analogous for `self`/`super`) |
 | Too-wide path | ``` `pub(in crate)` is wider than the exact parent facade boundary ``` | ``consider using: `pub(in crate::video_plane)` `` |
-| No visibility-only rewrite compiles | ``no allowed visibility keeps this item reachable from its callers: private and `pub(super)` are too narrow, and `pub` needs a re-export to cap it`` | ``move the item into `crate::a`, or re-export `b::c::Target` from `crate::a` so callers can name it there, then rerun `cargo mend` `` |
+| No visibility-only rewrite compiles | ``no allowed visibility keeps this item reachable from its callers: private and `pub(super)` are too narrow, and `pub` needs a re-export to cap it`` | ``move the item into `crate::a`, or add `pub(in crate::a) use b::c::Target;` to `crate::a`, then rerun `cargo mend` `` |
 
 **There is no "Restricted `use` blocks resolution" row.** It was deleted when Phase 5's pending decision resolved: `FacadeChainBlocker::UnsupportedVisibility` is gone, a `pub(in crate::a) use` hop is joinable, and no advice row is needed for it. Do not add one back — resolved reach alone never establishes that a facade was *written* `pub(in ...)`, so any such row would have to be gated on `ParentFacadeExportStatus::use_syntax()` (`facade/exports.rs:86-96`) returning `Some`, and quoting a modifier the tool did not read is exactly the class of defect that consumed three of Phase 4's eleven fix passes. The glob row above is safe as written: `FacadeUseKind::Glob` is a HIR use-kind, not a spelling.
 

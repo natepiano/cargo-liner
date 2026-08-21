@@ -933,10 +933,7 @@ fn record_forbidden_pub_in_crate(
 
 fn public_signature_pub_in_advice(annotation: &VisibilityAnnotation<'_>) -> ForbiddenPubInAdvice {
     let suggestion_reason = OverbroadPubCrateSuggestionReason::PublicSignatureExposure;
-    let generic_message = format!(
-        "use of `{}` outside an exact facade boundary is forbidden by policy",
-        annotation.display_source()
-    );
+    let generic_message = policy::forbidden_pub_in_headline(&annotation.display_source());
     ForbiddenPubInAdvice::SuggestionWithoutCallerRefinement {
         message:    suggestion_reason.headline(generic_message),
         suggestion: policy::overbroad_pub_crate_suggestion(suggestion_reason),
@@ -1126,8 +1123,9 @@ fn forbidden_pub_in_advice(
 /// acceptance on the same terms a declaration does: the spelling is the whole
 /// complaint, and a setting that permits the spelling answers it. Only the
 /// caller-derived arm below stays closed to `use` items, which
-/// [`facade_less_boundary_matches_callers`] enforces for itself. Modules are
-/// left out: `pub mod` answers to its own policy.
+/// [`facade_less_boundary_matches_callers`] enforces for itself; the arm a
+/// `use` item does earn is [`pub_in_boundary_is_the_items_own_module`]. Modules
+/// are left out: `pub mod` answers to its own policy.
 fn exact_pub_in_boundary_is_allowed(
     ctx: &VisibilityContext<'_, '_>,
     item: &ItemInfo<'_>,
@@ -1151,7 +1149,31 @@ fn exact_pub_in_boundary_is_allowed(
                     .compare(required, ctx.tcx)
                     == Some(Ordering::Equal)
             })
-            || facade_less_boundary_matches_callers(ctx, item, annotation, sink))
+            || facade_less_boundary_matches_callers(ctx, item, annotation, sink)
+            || pub_in_boundary_is_the_items_own_module(ctx, item, annotation))
+}
+
+/// Whether the boundary the annotation names is the module the `use` item is
+/// already declared in.
+///
+/// [`facade_less_boundary_matches_callers`] refuses every `use` item, because
+/// resolved paths name the imported target rather than the alias, so
+/// [`no_facade_pub_in_advice`] answers with [`policy::add_facade_suggestion`] —
+/// which, for an alias already declared at the boundary, asks for a re-export
+/// of the item into the module holding the line being reported. There is
+/// nothing for that re-export to add: `pub(in P)` on an item in `P` reaches the
+/// whole `P` subtree, which is exactly where a name at `P` is already visible.
+fn pub_in_boundary_is_the_items_own_module(
+    ctx: &VisibilityContext<'_, '_>,
+    item: &ItemInfo<'_>,
+    annotation: &VisibilityAnnotation<'_>,
+) -> bool {
+    if item.category != ItemCategory::Use {
+        return false;
+    }
+    let item_module = use_sites::parent_module_def_path(ctx.tcx, item.def_id);
+    policy::canonical_pub_in_boundary(&item_module, annotation.source())
+        == Some(policy::crate_rooted_def_path(&item_module))
 }
 
 fn facade_less_boundary_matches_callers(
@@ -1522,10 +1544,7 @@ fn no_facade_pub_in_advice(
 ) -> ForbiddenPubInAdvice {
     if signature_exposure.reaches_outside_crate() {
         let suggestion_reason = OverbroadPubCrateSuggestionReason::PublicSignatureExposure;
-        let generic_message = format!(
-            "use of `{}` outside an exact facade boundary is forbidden by policy",
-            annotation.display_source()
-        );
+        let generic_message = policy::forbidden_pub_in_headline(&annotation.display_source());
         return ForbiddenPubInAdvice::SuggestionWithoutCallerRefinement {
             message:    suggestion_reason.headline(generic_message),
             suggestion: policy::overbroad_pub_crate_suggestion(suggestion_reason),

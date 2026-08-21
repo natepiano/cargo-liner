@@ -676,7 +676,7 @@ mod tests {
             ),
             (
                 DiagnosticCode::ForbiddenPubInCrate,
-                "use of `pub(in crate::a)` outside an exact facade boundary is forbidden by policy",
+                "`pub(in crate::a)` is not the path callers use to name this item",
             ),
             (
                 DiagnosticCode::ForbiddenPubInCrate,

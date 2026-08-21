@@ -410,16 +410,15 @@ edition = "2024"
     assert_headline_and_help(
         &report,
         "src/a/b.rs",
-        "use of `pub(in crate::a)` outside an exact facade boundary is forbidden by policy",
-        "re-export `b::Thing` from `crate::a` so callers can name it there, then rerun `cargo \
-         mend`",
+        "`pub(in crate::a)` is not the path callers use to name this item",
+        "add `pub(in crate::a) use b::Thing;` to `crate::a`, then rerun `cargo mend`",
     );
     assert_note(
         &report,
         "src/a/b.rs",
-        "every caller in `crate::a` may use this item, but they must still spell it \
-         `crate::a::b::Thing`. `pub_in_path` allows this boundary only when a re-export publishes \
-         the item as `crate::a::Thing`",
+        "`pub_in_path` accepts this boundary only when the item is nameable as \
+         `crate::a::Thing`. Callers reach it as `crate::a::b::Thing` instead, below the \
+         `crate::a` the annotation names",
     );
 }
 
@@ -798,7 +797,7 @@ edition = "2024"
         assert_headline_and_help(
             &report,
             "src/a/b/c.rs",
-            "use of `pub(in super::super)` outside an exact facade boundary is forbidden by policy",
+            "`pub(in super::super)` is not the path callers use to name this item",
             "consider removing the visibility",
         );
     }
@@ -1085,7 +1084,7 @@ fn cross_target_resolved_facade_preserves_joined_reexport_boundary() {
         &with_facade_report,
         "src/a/target.rs",
         "no allowed visibility keeps this item reachable from its callers: private and `pub(super)` are too narrow, and `pub` needs a re-export to cap it",
-        "move the item into `crate::a::b`, or re-export `c::d::Target` from `crate::a::b` so callers can name it there, then rerun `cargo mend`",
+        "move the item into `crate::a::b`, or add `pub(in crate::a::b) use c::d::Target;` to `crate::a::b`, then rerun `cargo mend`",
     );
     assert!(
         with_facade_report.findings.iter().all(|finding| {
@@ -1215,7 +1214,7 @@ edition = "2024"
     assert_headline_and_help(
         &report,
         "src/a/b.rs",
-        "use of `pub(in crate::a)` outside an exact facade boundary is forbidden by policy",
+        "`pub(in crate::a)` is not the path callers use to name this item",
         "consider using: `pub(super)`",
     );
 }
@@ -1266,8 +1265,7 @@ edition = "2024"
         .unwrap_or_else(|| panic!("missing restricted use finding: {report:#?}"));
     assert!(
         finding.help.iter().any(|line| line
-            == "re-export `b::Thing` from `crate::a` so callers can name it there, then rerun \
-                `cargo mend`"),
+            == "add `pub(in crate::a) use b::Thing;` to `crate::a`, then rerun `cargo mend`"),
         "a `use` item must be offered the re-export: {finding:#?}"
     );
     assert!(
@@ -1275,6 +1273,81 @@ edition = "2024"
             line.contains("consider removing the visibility") || line.contains("consider using")
         }),
         "a `use` item must not be told to remove or narrow its visibility: {finding:#?}"
+    );
+}
+
+/// Following the facade suggestion has to end somewhere.
+///
+/// `caller_analysis_withholds_replacement_for_use_items` establishes the
+/// suggestion this fixture applies: add `pub(in crate::a) use b::Thing;` to
+/// `crate::a`. The added line is itself a `pub(in crate::a) use`, and no facade
+/// stands above it, so the same advice fires on the repair unless
+/// `pub_in_boundary_is_the_items_own_module` accepts a boundary that names the
+/// alias's own module. Without it the reader is sent to add a re-export of
+/// `Thing` into the module the re-export already sits in.
+///
+/// `src/a/local.rs` is the control the acceptance must not swallow. Its
+/// annotation also names its own module, but it sits on a declaration, and
+/// `pub_in_boundary_is_the_items_own_module` is limited to `ItemCategory::Use`
+/// so that declarations keep going through
+/// `facade_less_boundary_matches_callers`, which can measure their callers and
+/// answer. Dropping that limit silences this half while the assertions above
+/// stay green.
+#[test]
+fn advised_facade_converges_once_it_reaches_the_boundary() {
+    let temp = tempdir().expect("create converging facade fixture dir");
+    write_sources(
+        &temp,
+        &[
+            (
+                "Cargo.toml",
+                r#"[package]
+name = "converging-facade-fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+            ),
+            ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
+            ("src/lib.rs", "mod a;\n"),
+            (
+                "src/a.rs",
+                "mod b;\nmod local;\nmod reader;\npub(in crate::a) use b::Thing;\n",
+            ),
+            (
+                "src/a/b.rs",
+                "mod child;\npub(in crate::a) use child::Thing;\n",
+            ),
+            ("src/a/b/child.rs", "pub(in crate::a) struct Thing;\n"),
+            (
+                "src/a/local.rs",
+                "pub(in crate::a::local) struct Local;\npub(in crate::a::local) fn reads_local() -> Local { Local }\n",
+            ),
+            (
+                "src/a/reader.rs",
+                "fn reads_facade() { let _: crate::a::Thing = crate::a::Thing; }\n",
+            ),
+        ],
+    );
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let unconverged: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|finding| {
+            finding.code == DiagnosticCode::ForbiddenPubInCrate
+                && !finding.path.ends_with("src/a/local.rs")
+        })
+        .collect();
+    assert!(
+        unconverged.is_empty(),
+        "the applied facade must leave no forbidden `pub(in ...)` behind: {unconverged:#?}",
+    );
+    assert!(
+        report.findings.iter().any(|finding| {
+            finding.code == DiagnosticCode::ForbiddenPubInCrate
+                && finding.path.ends_with("src/a/local.rs")
+        }),
+        "a declaration whose boundary names its own module must stay flagged: {report:#?}",
     );
 }
 
@@ -1483,7 +1556,7 @@ fn assert_rejected_annotations(report: &Report) {
     assert_headline_and_help(
         report,
         "src/outer/grandchild.rs",
-        "use of `pub(in super::super)` outside an exact facade boundary is forbidden by policy",
+        "`pub(in super::super)` is not the path callers use to name this item",
         "consider removing the visibility",
     );
     assert_headline_and_help(
@@ -1513,7 +1586,7 @@ fn assert_rejected_annotations(report: &Report) {
     assert_headline_and_help(
         report,
         "src/fields/inner.rs",
-        "use of `pub(in super::super)` outside an exact facade boundary is forbidden by policy",
+        "`pub(in super::super)` is not the path callers use to name this item",
         "consider removing the visibility",
     );
 }
@@ -1739,7 +1812,7 @@ fn bounded_pub_in_path_is_fixable_only_when_the_boundary_widens_it() {
     // finding.
     assert_eq!(
         narrowing.headline,
-        "use of `pub(in crate::animation)` outside an exact facade boundary is forbidden by policy",
+        "`pub(in crate::animation)` is not the path callers use to name this item",
         "a respelling of the same reach must keep the policy headline: {report:#?}"
     );
     assert_eq!(
