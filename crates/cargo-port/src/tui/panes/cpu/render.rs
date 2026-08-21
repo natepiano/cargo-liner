@@ -5,10 +5,10 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
+#[cfg(target_os = "macos")]
 use tui_pane::CoreCluster;
 use tui_pane::CpuUsage;
 use tui_pane::PaneFocusState;
-#[cfg(target_os = "macos")]
 use tui_pane::PaneFrameChrome;
 use tui_pane::Region;
 use tui_pane::Size;
