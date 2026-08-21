@@ -329,7 +329,7 @@ Theme compatibility is required:
 - Theme-file parsing should accept old schema-1 theme files without a `[tooltip]` group.
 - Implement compatibility with `Option<TooltipTheme>` on the file input type or serde defaults in the file-layer type, then fill appearance-appropriate defaults in `into_theme`.
 - Add a regression test that parses a pre-tooltip schema-1 custom theme and fills tooltip defaults.
-- Update `crates/tui_pane/themes/*.toml` templates and keep the round-trip tests.
+- Update the `crates/cargo-port/themes/*.toml` and `crates/cargo-tile/themes/*.toml` templates and keep the round-trip tests.
 
 Accessors:
 
@@ -645,9 +645,10 @@ Files:
 - `crates/tui_pane/src/lib.rs`
 - `crates/tui_pane/src/theme/mod.rs`
 - `crates/tui_pane/src/theme/accessors.rs`
-- `crates/tui_pane/src/theme/builtins.rs`
-- `crates/tui_pane/themes/*.toml`
-- `crates/tui_pane/tests/themes.rs`
+- `crates/cargo-port/src/themes/builtins.rs`
+- `crates/cargo-port/themes/*.toml`
+- `crates/cargo-tile/src/theme/builtins.rs`
+- `crates/cargo-tile/themes/*.toml`
 - new `crates/tui_pane/tests/tooltips.rs`
 
 Work:

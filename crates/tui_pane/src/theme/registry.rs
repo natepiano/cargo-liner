@@ -1,11 +1,11 @@
 //! Registry of theme variants — built-ins plus user-loaded.
 //!
 //! The registry is the single source of truth for "what themes exist
-//! right now." Phase 2 owns its construction (built-ins seeded by
-//! [`ThemeRegistry::new_with_builtins`]; user themes registered via
-//! [`ThemeRegistry::register`] from client scan code). Phase
-//! 3 resolves config theme names against this registry; Phase 4
-//! populates settings dropdowns from it.
+//! right now." The client app seeds it with the variants it compiles
+//! in ([`ThemeRegistry::new_with_builtins`]) and adds whatever the
+//! user's themes directory yields ([`ThemeRegistry::register`]); the
+//! resolver then matches config theme names against it and the
+//! settings UI lists it.
 
 use std::fmt;
 use std::fmt::Display;
@@ -15,11 +15,6 @@ use std::sync::Arc;
 
 use super::Appearance;
 use super::Theme;
-use super::builtins;
-pub use super::constants::BUILTIN_DARK_NAME;
-pub use super::constants::BUILTIN_HC_DARK_NAME;
-pub use super::constants::BUILTIN_HC_LIGHT_NAME;
-pub use super::constants::BUILTIN_LIGHT_NAME;
 
 /// Cheaply cloneable identifier for a theme variant. Backed by an
 /// `Arc<str>` so the registry, config, and runtime references share
@@ -135,33 +130,18 @@ impl ThemeRegistry {
         }
     }
 
-    /// Seed the registry with the compiled-in variants:
-    /// [`BUILTIN_DARK_NAME`], [`BUILTIN_LIGHT_NAME`],
-    /// [`BUILTIN_HC_DARK_NAME`], [`BUILTIN_HC_LIGHT_NAME`].
+    /// Seed the registry with the variants the app compiles in.
+    ///
+    /// The framework contributes no colors: `builtins` is entirely the
+    /// app's own set, listed in the order it wants the settings UI to
+    /// offer them. User `themes/*.toml` variants layer on top via
+    /// [`register`](Self::register), overriding by id.
     #[must_use]
-    pub fn new_with_builtins() -> Self {
-        let mut registry = Self::empty();
-        registry.variants.push(ThemeVariant {
-            id:         ThemeId::new(BUILTIN_DARK_NAME),
-            appearance: Appearance::Dark,
-            theme:      builtins::default_dark(),
-        });
-        registry.variants.push(ThemeVariant {
-            id:         ThemeId::new(BUILTIN_LIGHT_NAME),
-            appearance: Appearance::Light,
-            theme:      builtins::default_light(),
-        });
-        registry.variants.push(ThemeVariant {
-            id:         ThemeId::new(BUILTIN_HC_DARK_NAME),
-            appearance: Appearance::Dark,
-            theme:      builtins::high_contrast_dark(),
-        });
-        registry.variants.push(ThemeVariant {
-            id:         ThemeId::new(BUILTIN_HC_LIGHT_NAME),
-            appearance: Appearance::Light,
-            theme:      builtins::high_contrast_light(),
-        });
-        registry
+    pub fn new_with_builtins(builtins: Vec<ThemeVariant>) -> Self {
+        Self {
+            variants: builtins,
+            status:   RegistryStatus::default(),
+        }
     }
 
     /// Register a variant. If an existing variant shares the id, it is
@@ -232,26 +212,33 @@ impl ThemeRegistry {
 )]
 mod tests {
     use super::*;
+    use crate::theme::fallback_theme;
 
+    /// Stand-in for an app-supplied variant. The id is stamped into
+    /// `roles` so two variants of the same appearance stay
+    /// distinguishable by value.
     fn dummy_variant(id: &str, appearance: Appearance) -> ThemeVariant {
+        let mut theme = fallback_theme(appearance);
+        theme.roles.insert(id.to_owned(), theme.text.default);
         ThemeVariant {
             id: ThemeId::new(id),
             appearance,
-            theme: builtins::default_dark(),
+            theme,
         }
     }
 
     #[test]
-    fn new_with_builtins_seeds_four_named_variants() {
-        let registry = ThemeRegistry::new_with_builtins();
-        assert_eq!(registry.len(), 4);
-        assert!(registry.find(&ThemeId::new(BUILTIN_DARK_NAME)).is_some());
-        assert!(registry.find(&ThemeId::new(BUILTIN_LIGHT_NAME)).is_some());
-        assert!(registry.find(&ThemeId::new(BUILTIN_HC_DARK_NAME)).is_some());
+    fn new_with_builtins_takes_the_app_supplied_set() {
+        let registry = ThemeRegistry::new_with_builtins(vec![
+            dummy_variant("App Dark", Appearance::Dark),
+            dummy_variant("App Light", Appearance::Light),
+        ]);
+        assert_eq!(registry.len(), 2);
+        assert!(registry.find(&ThemeId::new("App Dark")).is_some());
+        assert!(registry.find(&ThemeId::new("App Light")).is_some());
         assert!(
-            registry
-                .find(&ThemeId::new(BUILTIN_HC_LIGHT_NAME))
-                .is_some()
+            registry.status().overridden.is_empty(),
+            "seeding is not an override"
         );
     }
 
@@ -265,35 +252,37 @@ mod tests {
 
     #[test]
     fn register_replaces_existing_variant_with_same_id() {
-        let mut registry = ThemeRegistry::new_with_builtins();
+        let mut registry = ThemeRegistry::new_with_builtins(vec![
+            dummy_variant("App Dark", Appearance::Dark),
+            dummy_variant("App Light", Appearance::Light),
+        ]);
+        let replacement = dummy_variant("Overridden", Appearance::Dark);
         let replacement = ThemeVariant {
-            id:         ThemeId::new(BUILTIN_DARK_NAME),
-            appearance: Appearance::Dark,
-            theme:      builtins::default_light(),
+            id: ThemeId::new("App Dark"),
+            ..replacement
         };
+        let expected = replacement.theme.clone();
         let outcome = registry.register(replacement);
-        assert_eq!(
-            outcome,
-            RegisterOutcome::Overrode(ThemeId::new(BUILTIN_DARK_NAME))
-        );
-        assert_eq!(registry.len(), 4, "override must replace in place");
+        assert_eq!(outcome, RegisterOutcome::Overrode(ThemeId::new("App Dark")));
+        assert_eq!(registry.len(), 2, "override must replace in place");
         assert_eq!(
             registry
-                .find(&ThemeId::new(BUILTIN_DARK_NAME))
+                .find(&ThemeId::new("App Dark"))
                 .expect("replacement findable")
                 .theme,
-            builtins::default_light(),
+            expected,
             "override took effect"
         );
-        assert_eq!(
-            registry.status().overridden,
-            vec![ThemeId::new(BUILTIN_DARK_NAME)]
-        );
+        assert_eq!(registry.status().overridden, vec![ThemeId::new("App Dark")]);
     }
 
     #[test]
     fn variants_by_appearance_filters() {
-        let registry = ThemeRegistry::new_with_builtins();
+        let registry = ThemeRegistry::new_with_builtins(vec![
+            dummy_variant("App Dark", Appearance::Dark),
+            dummy_variant("App Light", Appearance::Light),
+            dummy_variant("App HC Dark", Appearance::Dark),
+        ]);
         let darks: Vec<_> = registry
             .variants_by_appearance(Appearance::Dark)
             .map(|v| v.id.as_str())
@@ -302,8 +291,8 @@ mod tests {
             .variants_by_appearance(Appearance::Light)
             .map(|v| v.id.as_str())
             .collect();
-        assert_eq!(darks, vec![BUILTIN_DARK_NAME, BUILTIN_HC_DARK_NAME]);
-        assert_eq!(lights, vec![BUILTIN_LIGHT_NAME, BUILTIN_HC_LIGHT_NAME]);
+        assert_eq!(darks, vec!["App Dark", "App HC Dark"]);
+        assert_eq!(lights, vec!["App Light"]);
     }
 
     #[test]

@@ -1,7 +1,5 @@
 use ratatui::style::Color;
 use tui_pane::Appearance;
-use tui_pane::BUILTIN_HC_DARK_NAME;
-use tui_pane::BUILTIN_HC_LIGHT_NAME;
 use tui_pane::StyleSpec;
 use tui_pane::Theme;
 use tui_pane::ThemeId;
@@ -15,6 +13,8 @@ use super::constants::GIT_UNTRACKED;
 use super::constants::LANGUAGE_SUBTOTAL;
 use super::constants::ROLE_KEYS;
 use super::constants::TARGET_BENCH;
+use crate::constants::DEFAULT_HC_DARK_THEME;
+use crate::constants::DEFAULT_HC_LIGHT_THEME;
 
 #[derive(Clone, Copy)]
 enum RolePalette {
@@ -64,8 +64,8 @@ fn role_color(role: &str) -> Color {
 
 fn palette_for(id: Option<&ThemeId>, appearance: Appearance) -> RolePalette {
     match id.map(ThemeId::as_str) {
-        Some(BUILTIN_HC_DARK_NAME) => RolePalette::HighContrastDark,
-        Some(BUILTIN_HC_LIGHT_NAME) => RolePalette::HighContrastLight,
+        Some(DEFAULT_HC_DARK_THEME) => RolePalette::HighContrastDark,
+        Some(DEFAULT_HC_LIGHT_THEME) => RolePalette::HighContrastLight,
         _ => match appearance {
             Appearance::Dark => RolePalette::DefaultDark,
             Appearance::Light => RolePalette::DefaultLight,

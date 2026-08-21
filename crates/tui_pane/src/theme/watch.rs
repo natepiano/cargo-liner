@@ -106,12 +106,12 @@ mod tests {
         f.sync_all().expect("sync temp file");
     }
 
-    const MINIMAL_DARK_FAMILY: &str = include_str!("../../themes/default_dark.toml");
+    const SAMPLE_FAMILY: &str = include_str!("testdata/sample_family.toml");
 
     #[test]
     fn themes_watch_reports_initial_no_change() {
         let dir = temp_dir("watch_initial");
-        write_file(&dir.join("a.toml"), MINIMAL_DARK_FAMILY);
+        write_file(&dir.join("a.toml"), SAMPLE_FAMILY);
         let mut watch = ThemesWatch::new(Some(dir));
         assert!(
             watch.take_change().is_none(),
@@ -124,7 +124,7 @@ mod tests {
         let dir = temp_dir("watch_new");
         let mut watch = ThemesWatch::new(Some(dir.clone()));
         assert!(watch.take_change().is_none());
-        write_file(&dir.join("new.toml"), MINIMAL_DARK_FAMILY);
+        write_file(&dir.join("new.toml"), SAMPLE_FAMILY);
         assert!(watch.take_change().is_some(), "addition should fire");
         assert!(
             watch.take_change().is_none(),

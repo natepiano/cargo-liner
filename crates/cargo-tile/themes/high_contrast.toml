@@ -1,12 +1,16 @@
-# High Contrast — compiled-in built-in mirrored as TOML.
+# High Contrast — cargo-tile's built-in high-contrast pair, mirrored as
+# TOML.
 #
 # This file is documentation. The app does NOT load it at startup; the
-# Rust constructors `tui_pane::high_contrast_dark()` and
-# `tui_pane::high_contrast_light()` produce the same values. Copy this
-# file into your app's theme directory as a starting point for a
-# custom theme.
+# Rust constructors `high_contrast_dark()` and `high_contrast_light()`
+# in src/theme/builtins.rs produce the same values.
 #
-# The test in tui_pane/tests/themes.rs locks this file against drift.
+# Copy this file into ~/.config/cargo-tile/themes/ as a starting point
+# for a custom theme; rename the variant so it registers alongside the
+# built-in instead of replacing it. themes/starter.toml is the same
+# idea already renamed.
+#
+# The tests in src/theme/builtins.rs lock this file against drift.
 
 name   = "High Contrast"
 schema = 1

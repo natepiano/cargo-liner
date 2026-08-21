@@ -12,6 +12,9 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - Make `Keymap::scope_toml_name_for` public: the pane-id to TOML-scope-name mapping the keymap already holds, which apps were re-deriving by hand.
 
 ### Changed
+- **Breaking:** theme *content* now belongs to the embedding app, not to this crate. The four compiled-in palettes (`default_dark`, `default_light`, `high_contrast_dark`, `high_contrast_light`), the `BUILTIN_*_NAME` id constants, and the `themes/*.toml` templates are gone; an app defines its own variants and passes them in. `ThemeRegistry::new_with_builtins` takes a `Vec<ThemeVariant>` and `ThemeRegistry::from_dir_with_builtins` takes one after `dir`. Two apps built on the framework can now be retuned independently. `fallback_theme(appearance)` replaces the old built-ins wherever the crate itself needs a palette: an empty registry, or a `ThemeState` installed before startup ran.
+- **Breaking:** a `resolve_active` miss now falls back to the first registered variant of the resolved appearance — the app's own default — rather than to a framework palette. `fallback_theme` stands in only when the registry holds nothing for that appearance.
+- **Breaking:** remove `PaneChrome::with_inactive_border`, which had no remaining consumer once cargo-tile stopped forcing its grid to the focused shade.
 - Move development into the `natepiano/cargo-liner` workspace, where `tui_pane` now lives at `crates/tui_pane` as a peer of the tools built on it rather than as a subdirectory of cargo-port. The published crate is unchanged.
 
 ## [0.6.0] - 2026-08-19

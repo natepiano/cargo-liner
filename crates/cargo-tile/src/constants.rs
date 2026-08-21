@@ -6,6 +6,17 @@
 pub(crate) const CONFIG_DIRNAME: &str = "cargo-tile";
 /// App configuration file, read at startup for its `[appearance]` section.
 pub(crate) const CONFIG_FILENAME: &str = "config.toml";
+/// Id of the built-in dark variant, and the `appearance.dark_theme`
+/// default. Defined in [`crate::theme`], not in `tui_pane`: theme
+/// content belongs to the app.
+pub(crate) const DEFAULT_DARK_THEME: &str = "Default Dark";
+/// Id of the built-in high-contrast dark variant.
+pub(crate) const DEFAULT_HC_DARK_THEME: &str = "High Contrast Dark";
+/// Id of the built-in high-contrast light variant.
+pub(crate) const DEFAULT_HC_LIGHT_THEME: &str = "High Contrast Light";
+/// Id of the built-in light variant, and the `appearance.light_theme`
+/// default.
+pub(crate) const DEFAULT_LIGHT_THEME: &str = "Default Light";
 /// Keymap overrides loaded by [`tui_pane::KeymapBuilder::load_toml`].
 pub(crate) const KEYMAP_FILENAME: &str = "keymap.toml";
 /// Per-user theme directory scanned by

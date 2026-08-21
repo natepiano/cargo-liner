@@ -1,27 +1,72 @@
-//! Compiled-in default themes.
+//! cargo-tile's compiled-in theme variants.
 //!
-//! Values mirror the Phase 1 audit in `docs/themes.md`. The starter
-//! TOML templates in `tui_pane/themes/` round-trip to these
-//! constructors; the test in `tui_pane/tests/themes.rs` locks it.
+//! `tui_pane` supplies the theme machinery — the types, the registry,
+//! the resolver, the directory watch — and none of the colors. Every
+//! palette this app ships lives here, so retuning cargo-tile's grid
+//! cannot move cargo-port's panes.
+//!
+//! [`builtins`] is what [`install`](super::install) hands to
+//! [`ThemeRegistry::from_dir_with_builtins`](tui_pane::ThemeRegistry::from_dir_with_builtins);
+//! user `themes/*.toml` variants layer on top, replacing a built-in
+//! when the names match. The `cargo-tile/themes/*.toml` templates
+//! mirror these constructors as copyable documentation, locked against
+//! drift by the tests at the bottom of this file.
 
 use std::collections::BTreeMap;
 
 use ratatui::style::Color;
+use tui_pane::Appearance;
+use tui_pane::DiskUsageTheme;
+use tui_pane::FinderTheme;
+use tui_pane::FocusTheme;
+use tui_pane::PaneChromeTheme;
+use tui_pane::SemanticTheme;
+use tui_pane::StatusTheme;
+use tui_pane::StyleSpec;
+use tui_pane::TextTheme;
+use tui_pane::Theme;
+use tui_pane::ThemeId;
+use tui_pane::ThemeVariant;
 
-use super::DiskUsageTheme;
-use super::FinderTheme;
-use super::FocusTheme;
-use super::PaneChromeTheme;
-use super::SemanticTheme;
-use super::StatusTheme;
-use super::StyleSpec;
-use super::TextTheme;
-use super::Theme;
+use crate::constants::DEFAULT_DARK_THEME;
+use crate::constants::DEFAULT_HC_DARK_THEME;
+use crate::constants::DEFAULT_HC_LIGHT_THEME;
+use crate::constants::DEFAULT_LIGHT_THEME;
 
-/// Built-in dark variant. Matches the pre-theme constant values
-/// audited in `docs/themes.md` so the migration is behavior-preserving.
+/// The variants cargo-tile compiles in, in the order the settings
+/// stepper offers them.
+pub(crate) fn builtins() -> Vec<ThemeVariant> {
+    vec![
+        ThemeVariant {
+            id:         ThemeId::new(DEFAULT_DARK_THEME),
+            appearance: Appearance::Dark,
+            theme:      default_dark(),
+        },
+        ThemeVariant {
+            id:         ThemeId::new(DEFAULT_LIGHT_THEME),
+            appearance: Appearance::Light,
+            theme:      default_light(),
+        },
+        ThemeVariant {
+            id:         ThemeId::new(DEFAULT_HC_DARK_THEME),
+            appearance: Appearance::Dark,
+            theme:      high_contrast_dark(),
+        },
+        ThemeVariant {
+            id:         ThemeId::new(DEFAULT_HC_LIGHT_THEME),
+            appearance: Appearance::Light,
+            theme:      high_contrast_light(),
+        },
+    ]
+}
+
+/// Default dark variant, named by [`DEFAULT_DARK_THEME`].
+///
+/// `inactive_border` is the shade every tile draws in — tiles are
+/// peers, so none is focused — and `active_border` is what a tile
+/// would light up to if one ever were.
 #[must_use]
-pub const fn default_dark() -> Theme {
+pub(crate) const fn default_dark() -> Theme {
     Theme {
         pane_chrome: PaneChromeTheme {
             active_border:   StyleSpec::from_color(Color::Yellow),
@@ -64,10 +109,10 @@ pub const fn default_dark() -> Theme {
     }
 }
 
-/// Built-in light variant. Picks each value for legibility on a white
-/// terminal background per the `docs/themes.md` design table.
+/// Default light variant, named by [`DEFAULT_LIGHT_THEME`]. Each
+/// value is picked for legibility on a white terminal background.
 #[must_use]
-pub const fn default_light() -> Theme {
+pub(crate) const fn default_light() -> Theme {
     Theme {
         pane_chrome: PaneChromeTheme {
             active_border:   StyleSpec::from_color(Color::Rgb(180, 120, 0)),
@@ -110,14 +155,14 @@ pub const fn default_light() -> Theme {
     }
 }
 
-/// High-contrast dark variant.
+/// High-contrast dark variant, named by [`DEFAULT_HC_DARK_THEME`].
 ///
 /// Pure white on pure black with bold modifiers throughout; accent
 /// fields use the bright ANSI palette (`LightYellow`, `LightCyan`,
 /// `LightGreen`, `LightRed`, `LightMagenta`) for maximum legibility
 /// under reduced-vision or glare conditions.
 #[must_use]
-pub const fn high_contrast_dark() -> Theme {
+pub(crate) const fn high_contrast_dark() -> Theme {
     Theme {
         pane_chrome: PaneChromeTheme {
             active_border:   StyleSpec::bold(Color::LightYellow),
@@ -160,13 +205,13 @@ pub const fn high_contrast_dark() -> Theme {
     }
 }
 
-/// High-contrast light variant.
+/// High-contrast light variant, named by [`DEFAULT_HC_LIGHT_THEME`].
 ///
 /// Pure black on pure white with bold modifiers throughout; accent
 /// fields use saturated dark colors (deep red, deep green, deep blue,
 /// deep orange) chosen for AAA-grade contrast against a white canvas.
 #[must_use]
-pub const fn high_contrast_light() -> Theme {
+pub(crate) const fn high_contrast_light() -> Theme {
     Theme {
         pane_chrome: PaneChromeTheme {
             active_border:   StyleSpec::bold(Color::Rgb(140, 60, 0)),
@@ -206,5 +251,92 @@ pub const fn high_contrast_light() -> Theme {
             high: StyleSpec::bold(Color::Rgb(180, 0, 0)),
         },
         roles:       BTreeMap::new(),
+    }
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use tui_pane::ThemeFamily;
+    use tui_pane::ThemeVariantFile;
+
+    use super::*;
+
+    const DARK_TEMPLATE: &str = include_str!("../../themes/default_dark.toml");
+    const HC_TEMPLATE: &str = include_str!("../../themes/high_contrast.toml");
+    const LIGHT_TEMPLATE: &str = include_str!("../../themes/default_light.toml");
+    const STARTER_TEMPLATE: &str = include_str!("../../themes/starter.toml");
+
+    /// Parse one template and return its variants, asserting the schema
+    /// version and the expected variant count.
+    fn variants(template: &str, expected: usize) -> Vec<ThemeVariantFile> {
+        let family: ThemeFamily = toml::from_str(template).expect("template should parse");
+        assert_eq!(family.schema, 1);
+        assert_eq!(family.variants.len(), expected);
+        family.variants
+    }
+
+    #[test]
+    fn dark_template_matches_constructor() {
+        let variant = variants(DARK_TEMPLATE, 1).remove(0);
+        assert_eq!(variant.name, DEFAULT_DARK_THEME);
+        assert_eq!(variant.appearance, Appearance::Dark);
+        assert_eq!(variant.into_theme(), default_dark());
+    }
+
+    #[test]
+    fn light_template_matches_constructor() {
+        let variant = variants(LIGHT_TEMPLATE, 1).remove(0);
+        assert_eq!(variant.name, DEFAULT_LIGHT_THEME);
+        assert_eq!(variant.appearance, Appearance::Light);
+        assert_eq!(variant.into_theme(), default_light());
+    }
+
+    #[test]
+    fn hc_template_matches_constructors() {
+        let mut both = variants(HC_TEMPLATE, 2);
+        let light = both.remove(1);
+        let dark = both.remove(0);
+        assert_eq!(dark.name, DEFAULT_HC_DARK_THEME);
+        assert_eq!(dark.appearance, Appearance::Dark);
+        assert_eq!(dark.into_theme(), high_contrast_dark());
+        assert_eq!(light.name, DEFAULT_HC_LIGHT_THEME);
+        assert_eq!(light.appearance, Appearance::Light);
+        assert_eq!(light.into_theme(), high_contrast_light());
+    }
+
+    /// The starter is a copy-me template, not a mirror, so it only has
+    /// to parse and to carry a name that will not collide with a
+    /// built-in when a user drops it in.
+    #[test]
+    fn starter_template_parses_under_its_own_name() {
+        let variant = variants(STARTER_TEMPLATE, 1).remove(0);
+        assert_eq!(variant.appearance, Appearance::Dark);
+        assert!(
+            !builtins()
+                .iter()
+                .any(|builtin| builtin.id.as_str() == variant.name),
+            "starter must not shadow a built-in on drop-in"
+        );
+    }
+
+    #[test]
+    fn builtins_are_the_four_named_variants() {
+        let ids: Vec<_> = builtins()
+            .into_iter()
+            .map(|v| v.id.as_str().to_owned())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                DEFAULT_DARK_THEME,
+                DEFAULT_LIGHT_THEME,
+                DEFAULT_HC_DARK_THEME,
+                DEFAULT_HC_LIGHT_THEME,
+            ]
+        );
     }
 }

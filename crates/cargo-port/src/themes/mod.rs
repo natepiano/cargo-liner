@@ -1,12 +1,15 @@
-//! Per-user themes directory path for cargo-port.
+//! cargo-port's themes: the palettes it ships and where user files live.
 //!
 //! The framework owns theme types, registry assembly, the directory
-//! watch, the resolver, and the OS appearance poller. The app owns
-//! the on-disk location: `dirs::config_dir() / "cargo-port" / "themes"`.
+//! watch, the resolver, and the OS appearance poller — machinery, no
+//! colors. The app owns the palettes ([`builtins()`]) and the on-disk
+//! location: `dirs::config_dir() / "cargo-port" / "themes"`.
 
+mod builtins;
 mod constants;
 mod paths;
 
+pub(crate) use builtins::builtins;
 #[cfg(test)]
 pub(crate) use paths::ThemesDirOverrideGuard;
 #[cfg(test)]

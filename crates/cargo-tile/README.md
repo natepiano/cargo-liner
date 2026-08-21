@@ -82,12 +82,22 @@ light_theme = "Default Light"
 dark_theme  = "Default Dark"
 ```
 
-`Default Light` and `Default Dark` are compiled in. For custom colors, copy
-[`themes/starter.toml`](themes/starter.toml) into `themes/` under the config
-directory and set `dark_theme` (or `light_theme`) to the variant name inside it.
-Theme files are strict: every section must be present, and unknown keys are
-rejected. A theme id that matches nothing falls back to the built-in and the
-substitution is reported in the settings overlay.
+Four variants are compiled in: `Default Dark`, `Default Light`,
+`High Contrast Dark`, and `High Contrast Light`. They are cargo-tile's own —
+`tui_pane` supplies the theme machinery and none of the colors — and live in
+[`src/theme/builtins.rs`](src/theme/builtins.rs), mirrored as TOML under
+[`themes/`](themes/) so they can be read and copied.
+
+For custom colors, copy [`themes/starter.toml`](themes/starter.toml) into
+`themes/` under the config directory and set `dark_theme` (or `light_theme`) to
+the variant name inside it. Theme files are strict: every section must be
+present, and unknown keys are rejected. A theme id that matches nothing falls
+back to another variant of the same appearance and the substitution is reported
+in the settings overlay.
+
+The grid draws in `pane_chrome.inactive_border`: tiles are peers, so none of
+them is focused. `pane_chrome.active_border` is what a tile would light up to
+if one ever carried focus.
 
 ### keys
 

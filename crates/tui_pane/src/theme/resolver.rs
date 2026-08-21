@@ -13,7 +13,7 @@ use super::Appearance;
 use super::Theme;
 use super::ThemeId;
 use super::ThemeRegistry;
-use super::builtins;
+use super::fallback_theme;
 
 /// Theme-selection strategy parsed from a config `mode` string.
 ///
@@ -94,10 +94,13 @@ impl ThemeRegistry {
     /// appearance. `os` is the last OS appearance reported by the
     /// poller (or `None` before the poller has emitted).
     ///
-    /// A miss falls back to the appearance-matched built-in
-    /// (`default_dark` / `default_light`) so the app stays usable
-    /// even when the configured id is a typo. An invalid `mode_string`
-    /// falls back to dark and is reported via `mode_error`.
+    /// A miss falls back to the first registered variant of the
+    /// resolved appearance — the app's own default, since the app
+    /// seeds the registry — so a typo in the configured id still
+    /// leaves a usable palette. [`fallback_theme`] stands in only when
+    /// the registry holds nothing for that appearance. An invalid
+    /// `mode_string` falls back to dark and is reported via
+    /// `mode_error`.
     #[must_use]
     pub fn resolve_active(
         &self,
@@ -119,10 +122,11 @@ impl ThemeRegistry {
         let hit = self.find(&id);
         let theme = hit.map_or_else(
             || {
-                Arc::new(match appearance {
-                    Appearance::Light => builtins::default_light(),
-                    Appearance::Dark => builtins::default_dark(),
-                })
+                Arc::new(
+                    self.variants_by_appearance(appearance)
+                        .next()
+                        .map_or_else(|| fallback_theme(appearance), |v| v.theme.clone()),
+                )
             },
             |variant| Arc::new(variant.theme.clone()),
         );
@@ -139,6 +143,29 @@ impl ThemeRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::ThemeVariant;
+
+    /// Stand-in for an app-supplied variant. The id is stamped into
+    /// `roles` so a registry hit is distinguishable by value from the
+    /// framework's [`fallback_theme`].
+    fn variant(id: &str, appearance: Appearance) -> ThemeVariant {
+        let mut theme = fallback_theme(appearance);
+        theme.roles.insert(id.to_owned(), theme.text.default);
+        ThemeVariant {
+            id: ThemeId::new(id),
+            appearance,
+            theme,
+        }
+    }
+
+    /// A two-variant app set, dark listed first so it is also the
+    /// appearance-matched miss target.
+    fn app_registry() -> ThemeRegistry {
+        ThemeRegistry::new_with_builtins(vec![
+            variant("App Dark", Appearance::Dark),
+            variant("App Light", Appearance::Light),
+        ])
+    }
 
     #[test]
     fn appearance_mode_parse_accepts_canonical_forms() {
@@ -169,63 +196,62 @@ mod tests {
 
     #[test]
     fn resolve_active_hits_registry_for_pinned_dark() {
-        let registry = ThemeRegistry::new_with_builtins();
-        let resolved = registry.resolve_active("dark", "Default Light", "Default Dark", None);
+        let registry = app_registry();
+        let resolved = registry.resolve_active("dark", "App Light", "App Dark", None);
         assert!(resolved.miss.is_none());
         assert!(resolved.mode_error.is_none());
-        assert_eq!(*resolved.theme, builtins::default_dark());
+        assert_eq!(*resolved.theme, variant("App Dark", Appearance::Dark).theme);
     }
 
     #[test]
-    fn resolve_active_miss_falls_back_to_builtin() {
-        let registry = ThemeRegistry::new_with_builtins();
-        let resolved = registry.resolve_active("dark", "Default Light", "Nonexistent", None);
+    fn resolve_active_miss_falls_back_to_first_matching_appearance() {
+        let registry = app_registry();
+        let resolved = registry.resolve_active("dark", "App Light", "Nonexistent", None);
         assert_eq!(resolved.miss, Some(ThemeId::new("Nonexistent")));
-        assert_eq!(*resolved.theme, builtins::default_dark());
+        assert_eq!(
+            *resolved.theme,
+            variant("App Dark", Appearance::Dark).theme,
+            "a typo lands on the app's own dark variant, not a framework palette"
+        );
+    }
+
+    #[test]
+    fn resolve_active_miss_on_empty_registry_falls_back_to_framework_theme() {
+        let registry = ThemeRegistry::empty();
+        let resolved = registry.resolve_active("dark", "App Light", "App Dark", None);
+        assert_eq!(resolved.miss, Some(ThemeId::new("App Dark")));
+        assert_eq!(*resolved.theme, fallback_theme(Appearance::Dark));
     }
 
     #[test]
     fn resolve_active_invalid_mode_falls_back_to_dark_with_error() {
-        let registry = ThemeRegistry::new_with_builtins();
-        let resolved = registry.resolve_active(
-            "rainbow",
-            "Default Light",
-            "Default Dark",
-            Some(Appearance::Light),
-        );
+        let registry = app_registry();
+        let resolved =
+            registry.resolve_active("rainbow", "App Light", "App Dark", Some(Appearance::Light));
         assert!(resolved.mode_error.is_some());
         assert!(resolved.miss.is_none());
-        assert_eq!(*resolved.theme, builtins::default_dark());
+        assert_eq!(*resolved.theme, variant("App Dark", Appearance::Dark).theme);
     }
 
     #[test]
     fn resolve_active_auto_uses_os_appearance_when_present() {
-        let registry = ThemeRegistry::new_with_builtins();
-        let resolved = registry.resolve_active(
-            "auto",
-            "Default Light",
-            "Default Dark",
-            Some(Appearance::Light),
+        let registry = app_registry();
+        let resolved =
+            registry.resolve_active("auto", "App Light", "App Dark", Some(Appearance::Light));
+        assert_eq!(
+            *resolved.theme,
+            variant("App Light", Appearance::Light).theme
         );
-        assert_eq!(*resolved.theme, builtins::default_light());
     }
 
     #[test]
     fn resolve_active_reports_resolved_appearance() {
-        let registry = ThemeRegistry::new_with_builtins();
-        let pinned = registry.resolve_active(
-            "dark",
-            "Default Light",
-            "Default Dark",
-            Some(Appearance::Light),
-        );
+        let registry = app_registry();
+        let pinned =
+            registry.resolve_active("dark", "App Light", "App Dark", Some(Appearance::Light));
         assert_eq!(pinned.appearance, Appearance::Dark);
-        let auto = registry.resolve_active(
-            "auto",
-            "Default Light",
-            "Default Dark",
-            Some(Appearance::Light),
-        );
+        let auto =
+            registry.resolve_active("auto", "App Light", "App Dark", Some(Appearance::Light));
         assert_eq!(auto.appearance, Appearance::Light);
     }
 }

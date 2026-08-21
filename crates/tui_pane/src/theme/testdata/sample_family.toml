@@ -1,0 +1,51 @@
+# Test fixture for the loader and watch unit tests.
+#
+# A syntactically complete one-variant family with no meaning beyond
+# "this parses". Theme content belongs to the apps, so this crate ships
+# no real palettes to point a test at.
+
+name   = "Sample"
+schema = 1
+
+[[variants]]
+appearance = "dark"
+name       = "Sample Dark"
+
+[variants.pane_chrome]
+active_border   = "White"
+active_title    = { color = "White", bold = true }
+inactive_border = "DarkGray"
+inactive_title  = "Gray"
+
+[variants.focus]
+active     = { r = 125, g = 125, b = 125 }
+hover      = { r = 80, g = 80, b = 80 }
+remembered = { r = 40, g = 40, b = 40 }
+
+[variants.semantic]
+accent       = "Cyan"
+error        = "Red"
+inline_error = "Yellow"
+label        = "Gray"
+success      = "Green"
+warning      = "Yellow"
+
+[variants.text]
+bg_focus  = "Black"
+bright    = "Cyan"
+default   = "White"
+dim       = "DarkGray"
+secondary = "Gray"
+
+[variants.roles]
+
+[variants.status]
+bar = "DarkGray"
+
+[variants.finder]
+match_bg = { r = 0, g = 90, b = 100 }
+
+[variants.disk_usage]
+high = "Red"
+low  = "Green"
+mid  = "White"

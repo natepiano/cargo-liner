@@ -22,14 +22,18 @@ struct FailedFile {
 }
 
 impl ThemeRegistry {
-    /// Build a registry seeded with the compiled-in built-ins and
-    /// extended with every variant registered from `dir` (if `Some`).
+    /// Build a registry seeded with the app's `builtins` and extended
+    /// with every variant registered from `dir` (if `Some`).
+    ///
+    /// `builtins` is the app's own compiled-in set — see
+    /// [`ThemeRegistry::new_with_builtins`]. A user variant sharing an
+    /// id with one of them replaces it in place.
     ///
     /// Returns the assembled registry; the caller installs or replaces
     /// it via [`crate::install_theme_state`] / [`crate::replace_registry`].
     #[must_use]
-    pub fn from_dir_with_builtins(dir: Option<&Path>) -> Self {
-        let mut registry = Self::new_with_builtins();
+    pub fn from_dir_with_builtins(dir: Option<&Path>, builtins: Vec<ThemeVariant>) -> Self {
+        let mut registry = Self::new_with_builtins(builtins);
         let Some(dir) = dir else {
             return registry;
         };
@@ -104,8 +108,10 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     use super::*;
-    use crate::theme::BUILTIN_DARK_NAME;
-    use crate::theme::BUILTIN_LIGHT_NAME;
+    use crate::theme::Appearance;
+    use crate::theme::fallback_theme;
+
+    const SAMPLE_VARIANT_NAME: &str = "Sample Dark";
 
     static SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -125,33 +131,53 @@ mod tests {
         f.sync_all().expect("sync temp file");
     }
 
-    const MINIMAL_DARK_FAMILY: &str = include_str!("../../themes/default_dark.toml");
+    const SAMPLE_FAMILY: &str = include_str!("testdata/sample_family.toml");
+
+    /// Two stand-ins for an app's compiled-in set. The dark one shares
+    /// its id with the variant in `SAMPLE_FAMILY` so the override path
+    /// has something to collide with.
+    fn app_builtins() -> Vec<ThemeVariant> {
+        vec![
+            ThemeVariant {
+                id:         ThemeId::new(SAMPLE_VARIANT_NAME),
+                appearance: Appearance::Dark,
+                theme:      fallback_theme(Appearance::Dark),
+            },
+            ThemeVariant {
+                id:         ThemeId::new("Sample Light"),
+                appearance: Appearance::Light,
+                theme:      fallback_theme(Appearance::Light),
+            },
+        ]
+    }
 
     #[test]
     fn missing_directory_returns_only_builtins() {
-        let registry =
-            ThemeRegistry::from_dir_with_builtins(Some(Path::new("/definitely/not/a/dir/xyzzy")));
-        assert_eq!(registry.len(), 4);
-        assert!(registry.find(&ThemeId::new(BUILTIN_DARK_NAME)).is_some());
-        assert!(registry.find(&ThemeId::new(BUILTIN_LIGHT_NAME)).is_some());
+        let registry = ThemeRegistry::from_dir_with_builtins(
+            Some(Path::new("/definitely/not/a/dir/xyzzy")),
+            app_builtins(),
+        );
+        assert_eq!(registry.len(), 2);
+        assert!(registry.find(&ThemeId::new(SAMPLE_VARIANT_NAME)).is_some());
+        assert!(registry.find(&ThemeId::new("Sample Light")).is_some());
         assert!(registry.status().failed_files.is_empty());
     }
 
     #[test]
     fn no_directory_argument_returns_only_builtins() {
-        let registry = ThemeRegistry::from_dir_with_builtins(None);
-        assert_eq!(registry.len(), 4);
+        let registry = ThemeRegistry::from_dir_with_builtins(None, app_builtins());
+        assert_eq!(registry.len(), 2);
     }
 
     #[test]
     fn user_variant_overrides_builtin_with_same_name() {
         let dir = temp_dir("override");
-        write_file(&dir.join("override.toml"), MINIMAL_DARK_FAMILY);
-        let registry = ThemeRegistry::from_dir_with_builtins(Some(&dir));
-        assert_eq!(registry.len(), 4, "override must replace in place");
+        write_file(&dir.join("override.toml"), SAMPLE_FAMILY);
+        let registry = ThemeRegistry::from_dir_with_builtins(Some(&dir), app_builtins());
+        assert_eq!(registry.len(), 2, "override must replace in place");
         assert_eq!(
             registry.status().overridden,
-            vec![ThemeId::new(BUILTIN_DARK_NAME)]
+            vec![ThemeId::new(SAMPLE_VARIANT_NAME)]
         );
     }
 
@@ -159,8 +185,8 @@ mod tests {
     fn parse_failure_is_recorded_not_fatal() {
         let dir = temp_dir("badparse");
         write_file(&dir.join("bad.toml"), "this is not = valid toml [\n");
-        let registry = ThemeRegistry::from_dir_with_builtins(Some(&dir));
-        assert_eq!(registry.len(), 4, "built-ins survive a parse error");
+        let registry = ThemeRegistry::from_dir_with_builtins(Some(&dir), app_builtins());
+        assert_eq!(registry.len(), 2, "built-ins survive a parse error");
         assert_eq!(registry.status().failed_files.len(), 1);
         let (path, err) = &registry.status().failed_files[0];
         assert!(path.ends_with("bad.toml"));

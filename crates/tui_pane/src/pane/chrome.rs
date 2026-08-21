@@ -63,15 +63,6 @@ impl PaneChrome {
             self.inactive_title
         }
     }
-
-    /// Replace the inactive border style.
-    #[must_use]
-    pub const fn with_inactive_border(self, inactive_border: Style) -> Self {
-        Self {
-            inactive_border,
-            ..self
-        }
-    }
 }
 
 /// Default pane chrome.

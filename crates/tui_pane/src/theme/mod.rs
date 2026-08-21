@@ -6,13 +6,14 @@
 //! loop snapshots the active theme into a per-frame `Arc<Theme>` so
 //! every cell of one frame sees one consistent palette.
 //!
-//! Phase 1 ships two compiled-in built-ins ([`builtins::default_dark`]
-//! and [`builtins::default_light`]); later phases add a user-themes
-//! registry and TOML-file loading.
+//! Theme *content* belongs to the client app, not to this crate. An
+//! app compiles in its own variants and seeds a [`ThemeRegistry`] with
+//! them; the only palette defined here is [`fallback_theme`], reached
+//! when the registry has nothing that applies.
 
 mod accessors;
-mod builtins;
 mod constants;
+mod fallback;
 mod loader;
 mod poller;
 mod registry;
@@ -46,15 +47,8 @@ pub use self::accessors::success_color;
 pub use self::accessors::text_default;
 pub use self::accessors::title_color;
 pub use self::accessors::warning_color;
-pub use self::builtins::default_dark;
-pub use self::builtins::default_light;
-pub use self::builtins::high_contrast_dark;
-pub use self::builtins::high_contrast_light;
+pub use self::fallback::fallback_theme;
 pub use self::poller::spawn_appearance_poller;
-pub use self::registry::BUILTIN_DARK_NAME;
-pub use self::registry::BUILTIN_HC_DARK_NAME;
-pub use self::registry::BUILTIN_HC_LIGHT_NAME;
-pub use self::registry::BUILTIN_LIGHT_NAME;
 pub use self::registry::RegisterOutcome;
 pub use self::registry::RegistryStatus;
 pub use self::registry::ThemeId;

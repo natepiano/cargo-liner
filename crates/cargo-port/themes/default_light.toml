@@ -1,0 +1,57 @@
+# Default Light — cargo-port's built-in light palette, mirrored as TOML.
+#
+# This file is documentation. The app does NOT load it at startup; the
+# Rust constructor `default_light()` in src/themes/builtins.rs produces
+# the same values.
+#
+# Copy this file into ~/.config/cargo-port/themes/ as a starting point
+# for a custom theme; rename the variant so it registers alongside the
+# built-in instead of replacing it.
+#
+# The tests in src/themes/builtins.rs lock this file against drift.
+
+name   = "Default"
+schema = 1
+
+[[variants]]
+appearance = "light"
+name       = "Default Light"
+
+[variants.pane_chrome]
+active_border   = { r = 180, g = 120, b = 0 }
+active_title    = { color = { r = 160, g = 100, b = 0 }, bold = true }
+inactive_border = { r = 140, g = 140, b = 140 }
+inactive_title  = "Black"
+
+[variants.focus]
+active     = { r = 200, g = 200, b = 200 }
+hover      = { r = 220, g = 220, b = 220 }
+remembered = { r = 235, g = 235, b = 235 }
+
+[variants.semantic]
+accent       = { r = 0, g = 95, b = 135 }
+error        = { r = 170, g = 0, b = 0 }
+inline_error = { r = 180, g = 95, b = 0 }
+label        = { r = 60, g = 100, b = 90 }
+success      = { r = 0, g = 120, b = 0 }
+warning      = { r = 180, g = 95, b = 0 }
+
+[variants.text]
+bg_focus  = "White"
+bright    = { r = 0, g = 95, b = 135 }
+default   = "Black"
+dim       = { r = 130, g = 130, b = 130 }
+secondary = { r = 70, g = 70, b = 70 }
+
+[variants.roles]
+
+[variants.status]
+bar = { r = 220, g = 220, b = 220 }
+
+[variants.finder]
+match_bg = { r = 255, g = 245, b = 180 }
+
+[variants.disk_usage]
+high = { r = 200, g = 0, b = 0 }
+low  = { r = 0, g = 140, b = 0 }
+mid  = { r = 90, g = 90, b = 90 }

@@ -112,14 +112,11 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect) {
         });
         grid_lines.add(placement.frame);
     }
-    // No tile is the focused one -- they are peers, and the grid is the
-    // whole screen -- so the unfocused shade is set to the focused one
-    // and every line comes out the same.
-    let chrome = default_pane_chrome();
-    grid_lines.render(
-        frame.buffer_mut(),
-        chrome.with_inactive_border(chrome.active_border),
-    );
+    // Every tile draws in the unfocused shade: they are peers, and no
+    // tile carries focus. The theme's active border is still what a
+    // focused frame would light up to, so the accent is wired and
+    // waiting rather than spent on the whole grid.
+    grid_lines.render(frame.buffer_mut(), default_pane_chrome());
 }
 
 /// What a cell holds inside its borders: the running-cargo table for the

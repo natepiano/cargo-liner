@@ -204,7 +204,10 @@ impl App {
         if effect == StartupEffect::Suppressed {
             return;
         }
-        let mut registry = tui_pane::ThemeRegistry::from_dir_with_builtins(self.themes.dir());
+        let mut registry = tui_pane::ThemeRegistry::from_dir_with_builtins(
+            self.themes.dir(),
+            crate::themes::builtins(),
+        );
         theme_roles::apply_role_defaults_to_registry(&mut registry);
         let failed = registry.status().failed_files.clone();
         let overridden = registry.status().overridden.clone();

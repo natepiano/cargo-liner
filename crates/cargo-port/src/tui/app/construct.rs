@@ -172,12 +172,15 @@ impl AppBuilder<Channeled> {
         startup_services.install_active_config(&inputs.cargo_port_config);
         let themes_dir_resolution = startup_services.themes_dir();
         let themes_dir = themes_dir_resolution.clone().into_external_path();
-        let mut registry = tui_pane::ThemeRegistry::from_dir_with_builtins(themes_dir.as_deref());
+        let mut registry = tui_pane::ThemeRegistry::from_dir_with_builtins(
+            themes_dir.as_deref(),
+            crate::themes::builtins(),
+        );
         theme_roles::apply_role_defaults_to_registry(&mut registry);
         // Resolve the initial theme from the loaded `[appearance]`
         // section against the just-built registry. Misses fall back to
-        // the appearance-matched built-in silently here — toast
-        // machinery is not yet wired this early in startup, and
+        // the app's own appearance-matched variant silently here —
+        // toast machinery is not yet wired this early in startup, and
         // surface for the miss arrives through the settings UI badge.
         let resolved = registry.resolve_active(
             &inputs.cargo_port_config.appearance.mode,

@@ -1,0 +1,101 @@
+# High Contrast — cargo-port's built-in high-contrast pair, mirrored as
+# TOML.
+#
+# This file is documentation. The app does NOT load it at startup; the
+# Rust constructors `high_contrast_dark()` and `high_contrast_light()`
+# in src/themes/builtins.rs produce the same values.
+#
+# Copy this file into ~/.config/cargo-port/themes/ as a starting point
+# for a custom theme; rename the variant so it registers alongside the
+# built-in instead of replacing it.
+#
+# The tests in src/themes/builtins.rs lock this file against drift.
+
+name   = "High Contrast"
+schema = 1
+
+[[variants]]
+appearance = "dark"
+name       = "High Contrast Dark"
+
+[variants.pane_chrome]
+active_border   = { color = "LightYellow", bold = true }
+active_title    = { color = "LightYellow", bold = true }
+inactive_border = "White"
+inactive_title  = "White"
+
+[variants.focus]
+active     = { r = 0, g = 60, b = 100 }
+hover      = { r = 0, g = 40, b = 70 }
+remembered = { r = 0, g = 25, b = 50 }
+
+[variants.semantic]
+accent       = { color = "LightCyan", bold = true }
+error        = { color = "LightRed", bold = true }
+inline_error = { color = "LightYellow", bold = true }
+label        = "White"
+success      = { color = "LightGreen", bold = true }
+warning      = { color = "LightYellow", bold = true }
+
+[variants.text]
+bg_focus  = "Black"
+bright    = { color = "LightYellow", bold = true }
+default   = "White"
+dim       = "Gray"
+secondary = "White"
+
+[variants.roles]
+
+[variants.status]
+bar = { r = 60, g = 60, b = 60 }
+
+[variants.finder]
+match_bg = "LightYellow"
+
+[variants.disk_usage]
+high = { color = "LightRed", bold = true }
+low  = { color = "LightGreen", bold = true }
+mid  = "White"
+
+[[variants]]
+appearance = "light"
+name       = "High Contrast Light"
+
+[variants.pane_chrome]
+active_border   = { color = { r = 140, g = 60, b = 0 }, bold = true }
+active_title    = { color = { r = 140, g = 60, b = 0 }, bold = true }
+inactive_border = "Black"
+inactive_title  = "Black"
+
+[variants.focus]
+active     = { r = 255, g = 230, b = 100 }
+hover      = { r = 255, g = 245, b = 180 }
+remembered = { r = 255, g = 250, b = 220 }
+
+[variants.semantic]
+accent       = { color = { r = 0, g = 0, b = 140 }, bold = true }
+error        = { color = { r = 180, g = 0, b = 0 }, bold = true }
+inline_error = { color = { r = 140, g = 60, b = 0 }, bold = true }
+label        = "Black"
+success      = { color = { r = 0, g = 100, b = 0 }, bold = true }
+warning      = { color = { r = 140, g = 60, b = 0 }, bold = true }
+
+[variants.text]
+bg_focus  = "White"
+bright    = { color = { r = 140, g = 60, b = 0 }, bold = true }
+default   = "Black"
+dim       = { r = 80, g = 80, b = 80 }
+secondary = "Black"
+
+[variants.roles]
+
+[variants.status]
+bar = { r = 210, g = 210, b = 210 }
+
+[variants.finder]
+match_bg = { r = 255, g = 230, b = 100 }
+
+[variants.disk_usage]
+high = { color = { r = 180, g = 0, b = 0 }, bold = true }
+low  = { color = { r = 0, g = 100, b = 0 }, bold = true }
+mid  = "Black"

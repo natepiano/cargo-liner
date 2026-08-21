@@ -4,9 +4,10 @@ use std::sync::RwLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
+use super::Appearance;
 use super::Theme;
 use super::ThemeRegistry;
-use super::default_dark;
+use super::fallback_theme;
 
 /// Global container for the active theme and the variant registry.
 ///
@@ -32,17 +33,16 @@ pub struct ThemeState {
 }
 
 impl ThemeState {
-    /// Build a [`ThemeState`] with a seeded built-ins registry and the
-    /// given initial active theme. Phase 1 callers that don't yet
-    /// supply a registry use this constructor.
+    /// Build a [`ThemeState`] with an empty registry and the given
+    /// initial active theme. For callers that render before any app
+    /// variants exist; production startup uses
+    /// [`with_registry`](Self::with_registry).
     #[must_use]
-    pub fn new(initial: Theme) -> Self {
-        Self::with_registry(ThemeRegistry::new_with_builtins(), initial)
-    }
+    pub fn new(initial: Theme) -> Self { Self::with_registry(ThemeRegistry::empty(), initial) }
 
     /// Build a [`ThemeState`] with a caller-supplied registry and
-    /// initial active theme. Phase 2's app startup uses this after
-    /// scanning the user themes directory.
+    /// initial active theme. App startup uses this after scanning the
+    /// user themes directory.
     #[must_use]
     pub fn with_registry(registry: ThemeRegistry, initial: Theme) -> Self {
         Self {
@@ -63,21 +63,24 @@ static THEME_STATE: OnceLock<ThemeState> = OnceLock::new();
 /// previously-installed state.
 pub fn install_theme_state(state: ThemeState) { let _ = THEME_STATE.set(state); }
 
-/// Install the dark built-in plus the built-ins registry if no theme
-/// state is present yet.
+/// Install the neutral dark [`fallback_theme`] and an empty registry
+/// if no theme state is present yet.
 ///
 /// Idempotent — repeated calls are a no-op once installation has
 /// succeeded. Use this from app startup paths that may run more than
 /// once per process; production startup prefers [`install_theme_state`]
-/// with an explicit registry.
-pub fn ensure_theme_state_installed() { install_theme_state(ThemeState::new(default_dark())); }
+/// with the app's own registry.
+pub fn ensure_theme_state_installed() {
+    install_theme_state(ThemeState::new(fallback_theme(Appearance::Dark)));
+}
 
 /// Snapshot of the currently active theme.
 ///
 /// Cheap to call (`RwLock` read + `Arc` clone). If no theme state has
 /// been installed yet (tests that exercise render code without going
-/// through full app startup, for example), the dark built-in plus a
-/// built-ins-only registry are installed on first access. App startup
+/// through full app startup, for example), the neutral dark
+/// [`fallback_theme`] plus an empty registry are installed on first
+/// access. App startup
 /// may call [`install_theme_state`] or [`ensure_theme_state_installed`]
 /// explicitly to make the initial value deterministic.
 ///
@@ -88,7 +91,7 @@ pub fn ensure_theme_state_installed() { install_theme_state(ThemeState::new(defa
 /// in a recoverable state.
 #[must_use]
 pub fn theme() -> Arc<Theme> {
-    let state = THEME_STATE.get_or_init(|| ThemeState::new(default_dark()));
+    let state = installed_state();
     #[expect(
         clippy::expect_used,
         reason = "RwLock poisoning here means a previous panic during a theme swap; \
@@ -108,7 +111,7 @@ pub fn theme() -> Arc<Theme> {
 /// Panics if the underlying `RwLock` is poisoned.
 #[must_use]
 pub fn registry() -> Arc<ThemeRegistry> {
-    let state = THEME_STATE.get_or_init(|| ThemeState::new(default_dark()));
+    let state = installed_state();
     #[expect(
         clippy::expect_used,
         reason = "RwLock poisoning here means a previous panic during a registry swap; \
@@ -128,7 +131,7 @@ pub fn registry() -> Arc<ThemeRegistry> {
 ///
 /// Panics if the underlying `RwLock` is poisoned.
 pub fn set_active_theme(new_theme: Arc<Theme>) {
-    let state = THEME_STATE.get_or_init(|| ThemeState::new(default_dark()));
+    let state = installed_state();
     #[expect(
         clippy::expect_used,
         reason = "RwLock poisoning here means a previous panic during a theme swap; \
@@ -146,7 +149,7 @@ pub fn set_active_theme(new_theme: Arc<Theme>) {
 /// yet.
 #[must_use]
 pub fn focused_pane_tint_enabled() -> bool {
-    let state = THEME_STATE.get_or_init(|| ThemeState::new(default_dark()));
+    let state = installed_state();
     state.focused_pane_tint.load(Ordering::Relaxed)
 }
 
@@ -155,7 +158,7 @@ pub fn focused_pane_tint_enabled() -> bool {
 /// Idempotent; subsequent renders pick up the new value on the next
 /// frame.
 pub fn set_focused_pane_tint(enabled: bool) {
-    let state = THEME_STATE.get_or_init(|| ThemeState::new(default_dark()));
+    let state = installed_state();
     state.focused_pane_tint.store(enabled, Ordering::Relaxed);
 }
 
@@ -167,7 +170,7 @@ pub fn set_focused_pane_tint(enabled: bool) {
 ///
 /// Panics if the underlying `RwLock` is poisoned.
 pub fn replace_registry(new_registry: ThemeRegistry) {
-    let state = THEME_STATE.get_or_init(|| ThemeState::new(default_dark()));
+    let state = installed_state();
     #[expect(
         clippy::expect_used,
         reason = "RwLock poisoning here means a previous panic during a registry swap; \
@@ -175,4 +178,15 @@ pub fn replace_registry(new_registry: ThemeRegistry) {
     )]
     let mut slot = state.registry.write().expect("registry RwLock poisoned");
     *slot = Arc::new(new_registry);
+}
+
+/// The installed [`ThemeState`], installing a neutral one first if
+/// startup has not run.
+///
+/// Every accessor below funnels through here, so render code that
+/// runs before an app has seeded its registry gets a coherent — if
+/// deliberately plain — palette instead of a panic. See
+/// [`fallback_theme`].
+fn installed_state() -> &'static ThemeState {
+    THEME_STATE.get_or_init(|| ThemeState::new(fallback_theme(Appearance::Dark)))
 }

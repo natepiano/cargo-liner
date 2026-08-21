@@ -174,7 +174,7 @@ cargo-port supports light / dark mode and will follow your OS's settings if you 
 
 **User themes**
 
-User themes are optional TOML files placed in `dirs::config_dir()/cargo-port/themes/`. The app does not create this directory or seed theme files there; use the theme TOML files in the repository’s `crates/tui_pane/themes/` directory as examples.
+User themes are optional TOML files placed in `dirs::config_dir()/cargo-port/themes/`. The app does not create this directory or seed theme files there; use the theme TOML files in this crate’s `themes/` directory as examples — they mirror the compiled-in built-ins exactly.
 
 ### Project tree
 

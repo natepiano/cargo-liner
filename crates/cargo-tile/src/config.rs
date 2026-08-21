@@ -7,20 +7,20 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 use serde::Serialize;
-use tui_pane::BUILTIN_DARK_NAME;
-use tui_pane::BUILTIN_LIGHT_NAME;
 
 use crate::constants::CONFIG_DIRNAME;
 use crate::constants::CONFIG_FILENAME;
+use crate::constants::DEFAULT_DARK_THEME;
 use crate::constants::DEFAULT_INITIAL_ROWS;
+use crate::constants::DEFAULT_LIGHT_THEME;
 use crate::constants::KEYMAP_FILENAME;
 use crate::constants::MIN_INITIAL_ROWS;
 use crate::constants::THEMES_DIRNAME;
 
 /// Which appearance the app resolves at startup and which theme id
 /// serves each one. Theme ids name a variant from
-/// [`crate::theme`]'s registry: a built-in, or one declared in a
-/// `themes/*.toml` file.
+/// [`crate::theme`]'s registry: one of the app's own built-ins, or one
+/// declared in a `themes/*.toml` file.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub(crate) struct AppearanceConfig {
@@ -36,8 +36,8 @@ impl Default for AppearanceConfig {
     fn default() -> Self {
         Self {
             mode:        "auto".to_string(),
-            light_theme: BUILTIN_LIGHT_NAME.to_string(),
-            dark_theme:  BUILTIN_DARK_NAME.to_string(),
+            light_theme: DEFAULT_LIGHT_THEME.to_string(),
+            dark_theme:  DEFAULT_DARK_THEME.to_string(),
         }
     }
 }

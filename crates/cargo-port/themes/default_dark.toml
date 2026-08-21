@@ -1,11 +1,14 @@
-# Default Dark — compiled-in built-in mirrored as TOML.
+# Default Dark — cargo-port's built-in dark palette, mirrored as TOML.
 #
 # This file is documentation. The app does NOT load it at startup; the
-# Rust constructor `tui_pane::default_dark()` produces the same values.
-# Copy this file into your app's theme directory as a starting point
-# for a custom theme.
+# Rust constructor `default_dark()` in src/themes/builtins.rs produces
+# the same values.
 #
-# The test in tui_pane/tests/themes.rs locks this file against drift.
+# Copy this file into ~/.config/cargo-port/themes/ as a starting point
+# for a custom theme; rename the variant so it registers alongside the
+# built-in instead of replacing it.
+#
+# The tests in src/themes/builtins.rs lock this file against drift.
 
 name   = "Default"
 schema = 1
