@@ -11,7 +11,11 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Block;
 use ratatui::widgets::Paragraph;
+use ratatui::widgets::Row;
+use ratatui::widgets::Table;
 use tui_pane::BarPalette;
+use tui_pane::ColumnSpec;
+use tui_pane::ColumnWidths;
 use tui_pane::FrameworkOverlayId;
 use tui_pane::Keymap;
 use tui_pane::KeymapPane;
@@ -39,12 +43,22 @@ use tui_pane::text_default;
 use tui_pane::title_color;
 
 use crate::app::App;
-use crate::constants::PLACEHOLDER_BODY;
+use crate::constants::COMMAND_COLUMN;
+use crate::constants::COMPILER_COLUMN;
+use crate::constants::COMPILER_SEPARATOR_WIDTH;
+use crate::constants::DURATION_COLUMN;
+use crate::constants::NO_PROCESSES_NOTE;
+use crate::constants::PATH_COLUMN;
+use crate::constants::PID_COLUMN;
 use crate::constants::POPUP_CHROME_HEIGHT;
 use crate::constants::POPUP_CHROME_WIDTH;
 use crate::constants::SETTINGS_POPUP_WIDTH;
+use crate::constants::START_COLUMN;
 use crate::constants::STATUS_LINE_HEIGHT;
+use crate::constants::TABLE_COLUMN_SPACING;
+use crate::constants::TABLE_HEADERS;
 use crate::globals::AppGlobalAction;
+use crate::processes::CargoProcess;
 use crate::settings;
 
 /// Draw one frame: panes fill the terminal above the status line, and an
@@ -65,26 +79,128 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
     }
 }
 
-/// Draw the app's panes. One placeholder pane in the template; a real
-/// app splits `area` with [`Layout`] and draws one pane per
-/// [`crate::app::AppPaneId`].
-fn draw_panes(frame: &mut Frame, _app: &App, area: Rect) {
+/// Draw the app's panes. One pane here — the running-cargo table —
+/// filling the body above the status line. A larger app splits `area`
+/// with [`Layout`] and draws one pane per [`crate::app::AppPaneId`].
+fn draw_panes(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::bordered()
         .border_style(Style::default().fg(active_border_color()))
         .title(Span::styled(
             " cargo-tile ",
             Style::default().fg(title_color()),
         ));
-    let body = Paragraph::new(vec![
-        Line::from(""),
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    draw_process_table(frame, inner, &app.processes);
+}
+
+/// Render the running-cargo table, fitting every column to its widest
+/// cell and letting `command` absorb whatever width is left.
+fn draw_process_table(frame: &mut Frame, area: Rect, processes: &[CargoProcess]) {
+    if processes.is_empty() {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    format!("{SECTION_HEADER_INDENT}{NO_PROCESSES_NOTE}"),
+                    Style::default().fg(label_color()),
+                )),
+            ]),
+            area,
+        );
+        return;
+    }
+
+    let mut widths = ColumnWidths::new(
+        TABLE_HEADERS
+            .iter()
+            .map(|header| ColumnSpec::fit(header_width(header)))
+            .collect(),
+    );
+    for process in processes {
+        widths.observe_cell_usize(PATH_COLUMN, process.path.chars().count());
+        widths.observe_cell_usize(PID_COLUMN, process.pid.to_string().chars().count());
+        widths.observe_cell_usize(START_COLUMN, process.start.chars().count());
+        widths.observe_cell_usize(DURATION_COLUMN, process.duration.chars().count());
+        widths.observe_cell_usize(COMPILER_COLUMN, compiler_width(process));
+    }
+
+    let header = Row::new(
+        TABLE_HEADERS
+            .iter()
+            .map(|label| Span::styled((*label).to_string(), Style::default().fg(label_color()))),
+    );
+    let rows = processes.iter().map(process_row);
+
+    // The first five columns are sized to content; `command` takes the
+    // remainder so a long argument list truncates instead of pushing the
+    // columns that identify the invocation off the edge.
+    let mut constraints = widths.to_constraints();
+    let _ = constraints.pop();
+    constraints.push(Constraint::Min(header_width(TABLE_HEADERS[COMMAND_COLUMN])));
+
+    frame.render_widget(
+        Table::new(rows, constraints)
+            .header(header)
+            .column_spacing(TABLE_COLUMN_SPACING),
+        area,
+    );
+}
+
+/// One table row, styled so the invocation reads before its metadata.
+fn process_row(process: &CargoProcess) -> Row<'static> {
+    let muted = Style::default().fg(label_color());
+    Row::new(vec![
         Line::from(Span::styled(
-            format!("{SECTION_HEADER_INDENT}{PLACEHOLDER_BODY}"),
+            process.path.clone(),
             Style::default().fg(text_default()),
         )),
+        Line::from(Span::styled(process.pid.to_string(), muted)),
+        Line::from(Span::styled(process.start.clone(), muted)),
+        Line::from(Span::styled(process.duration.clone(), muted)),
+        compiler_cell(process),
+        Line::from(vec![
+            Span::styled(
+                process.command.program.clone(),
+                Style::default().fg(text_default()),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                process.command.arguments.clone(),
+                Style::default().fg(success_color()),
+            ),
+        ]),
     ])
-    .block(block);
-    frame.render_widget(body, area);
 }
+
+/// The `compiler` cell: driver name in the active color, its count muted
+/// beside it, and nothing at all when no compile is in flight.
+fn compiler_cell(process: &CargoProcess) -> Line<'static> {
+    process
+        .compiler
+        .as_ref()
+        .map_or_else(Line::default, |compiler| {
+            Line::from(vec![
+                Span::styled(compiler.name, Style::default().fg(success_color())),
+                Span::styled(
+                    format!("\u{d7}{}", compiler.count),
+                    Style::default().fg(label_color()),
+                ),
+            ])
+        })
+}
+
+/// Cells the `compiler` column needs for one row.
+fn compiler_width(process: &CargoProcess) -> usize {
+    process.compiler.as_ref().map_or(0, |compiler| {
+        compiler.name.chars().count()
+            + COMPILER_SEPARATOR_WIDTH
+            + compiler.count.to_string().chars().count()
+    })
+}
+
+/// A header label's width, clamped into the column-width type.
+fn header_width(label: &str) -> u16 { u16::try_from(label.chars().count()).unwrap_or(u16::MAX) }
 
 /// Draw the framework status line.
 ///

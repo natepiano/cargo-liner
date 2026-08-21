@@ -19,6 +19,7 @@ use crate::config::LoadedConfig;
 use crate::constants::KEYMAP_TOML_HEADER;
 use crate::globals::AppGlobalAction;
 use crate::keymap;
+use crate::processes::CargoProcess;
 
 /// App-pane sections the keymap overlay walks, in display order. Every
 /// [`AppPaneId`] belongs here or its pane-local shortcuts go unlisted.
@@ -50,6 +51,9 @@ pub(crate) struct App {
     /// Theme-resolution note from startup (a configured theme id that
     /// no file or built-in supplies), surfaced in the settings overlay.
     pub(crate) startup_note:  Option<String>,
+    /// The cargo invocations the last scan found. Replaced wholesale by
+    /// [`crate::processes::spawn`]'s background scanner.
+    pub(crate) processes:     Vec<CargoProcess>,
     /// Message shown on the keymap overlay's selected row after a
     /// rejected capture.
     inline_error:             Option<String>,
@@ -70,6 +74,7 @@ impl App {
             keymap: Rc::new(keymap),
             loaded_config,
             startup_note,
+            processes: Vec::new(),
             inline_error: None,
             started: Instant::now(),
         })

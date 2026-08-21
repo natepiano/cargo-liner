@@ -39,6 +39,8 @@ use tui_pane::overlay_is_in_text_mode;
 use crate::app::App;
 use crate::config;
 use crate::constants::BINARY_NAME;
+use crate::processes;
+use crate::processes::CargoProcess;
 use crate::render;
 use crate::settings;
 use crate::settings::Step;
@@ -101,11 +103,12 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Re
 /// the matching lifecycle flag.
 ///
 /// Drawing is demand-driven: a frame is painted only when an event
-/// arrived. With nobody typing there is nothing to repaint, so an idle
-/// app costs essentially nothing. An app with live data marks itself
-/// dirty when that data changes.
+/// arrived or the process scan came back different. With nothing
+/// building and nobody typing there is nothing to repaint, so an idle
+/// app costs essentially nothing.
 fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::Result<()> {
     let input = spawn_input_thread();
+    let scans = processes::spawn();
     let mut dirty = true;
     while !app.framework.quit_requested() && !app.framework.restart_requested() {
         if dirty {
@@ -137,8 +140,29 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
             // spin on a disconnected channel.
             Err(RecvTimeoutError::Disconnected) => return Ok(()),
         }
+        if drain_scans(app, &scans) {
+            dirty = true;
+        }
     }
     Ok(())
+}
+
+/// Take the newest process scan, reporting whether it changed anything.
+///
+/// Only the newest matters: an older scan queued behind it describes a
+/// world that has already moved on.
+fn drain_scans(app: &mut App, scans: &Receiver<Vec<CargoProcess>>) -> bool {
+    let mut latest: Option<Vec<CargoProcess>> = None;
+    while let Ok(scan) = scans.try_recv() {
+        latest = Some(scan);
+    }
+    match latest {
+        Some(scan) if scan != app.processes => {
+            app.processes = scan;
+            true
+        },
+        _ => false,
+    }
 }
 
 /// Read events on their own thread and forward them to the render loop.

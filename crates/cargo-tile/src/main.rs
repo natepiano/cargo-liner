@@ -6,6 +6,7 @@ mod config;
 mod constants;
 mod globals;
 mod keymap;
+mod processes;
 mod render;
 mod settings;
 mod terminal;

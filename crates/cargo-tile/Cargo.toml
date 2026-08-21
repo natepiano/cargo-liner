@@ -15,10 +15,12 @@ version              = "0.1.0"
 workspace = true
 
 [dependencies]
+chrono    = { workspace = true }
 crossterm = { workspace = true }
 dirs      = { workspace = true }
 ratatui   = { workspace = true }
 serde     = { workspace = true, features = ["derive"] }
+sysinfo   = { workspace = true }
 toml      = { workspace = true }
 
 # tui_pane provides the framework used by the binary.
