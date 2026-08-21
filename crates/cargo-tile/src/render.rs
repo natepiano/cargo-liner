@@ -50,6 +50,7 @@ use crate::constants::DURATION_COLUMN;
 use crate::constants::GROUP_GAP_HEIGHT;
 use crate::constants::GROUP_HEADER_HEIGHT;
 use crate::constants::NO_PROCESSES_NOTE;
+use crate::constants::PANE_TITLE;
 use crate::constants::PID_COLUMN;
 use crate::constants::POPUP_CHROME_HEIGHT;
 use crate::constants::POPUP_CHROME_WIDTH;
@@ -87,10 +88,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
 fn draw_panes(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::bordered()
         .border_style(Style::default().fg(active_border_color()))
-        .title(Span::styled(
-            " cargo-tile ",
-            Style::default().fg(title_color()),
-        ));
+        .title(Span::styled(PANE_TITLE, Style::default().fg(title_color())));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     draw_process_table(frame, inner, &app.processes);

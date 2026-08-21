@@ -42,6 +42,9 @@ pub(crate) const UNRESOLVED_PATH: &str = "unavailable";
 // status line and overlays
 /// Section heading the keymap overlay gives this app's globals scope.
 pub(crate) const APP_GLOBALS_SECTION: &str = "App Shortcuts";
+/// Title on the pane border. The version is read from the manifest at
+/// compile time, so a running instance always says which build it is.
+pub(crate) const PANE_TITLE: &str = concat!(" cargo-tile ", env!("CARGO_PKG_VERSION"), " ");
 /// Rows the status line occupies along the bottom of the terminal.
 pub(crate) const STATUS_LINE_HEIGHT: u16 = 1;
 
