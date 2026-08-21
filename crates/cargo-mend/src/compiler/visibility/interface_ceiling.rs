@@ -26,12 +26,15 @@ use rustc_hir::def::DefKind;
 use rustc_hir::def_id::DefId;
 use rustc_hir::def_id::LocalDefId;
 use rustc_middle::ty;
+use rustc_middle::ty::TraitRef;
+use rustc_middle::ty::Ty;
 use rustc_middle::ty::TyCtxt;
+use rustc_middle::ty::TyKind;
 use rustc_middle::ty::print::PrintTraitRefExt;
 use rustc_middle::ty::print::with_forced_trimmed_paths;
 
 use super::annotation::VisibilityReach;
-use super::policy::crate_rooted_def_path;
+use super::policy;
 
 /// The narrowest type in a trait impl's interface, and what it means for the
 /// impl's self type.
@@ -100,7 +103,7 @@ pub(super) fn collect_interface_ceilings(
 fn impl_ceiling<'tcx>(
     tcx: TyCtxt<'tcx>,
     impl_def: LocalDefId,
-    trait_ref: ty::TraitRef<'tcx>,
+    trait_ref: TraitRef<'tcx>,
     self_adt: DefId,
 ) -> Option<InterfaceCeiling> {
     let trait_reach = VisibilityReach::from(tcx.visibility(trait_ref.def_id));
@@ -109,7 +112,7 @@ fn impl_ceiling<'tcx>(
         .flat_map(ty::Ty::walk)
         .filter_map(ty::GenericArg::as_type)
         .filter_map(|component_type| match component_type.kind() {
-            ty::TyKind::Adt(adt_def, _) => Some(adt_def.did()),
+            TyKind::Adt(adt_def, _) => Some(adt_def.did()),
             _ => None,
         })
         .filter(|component| component.is_local() && *component != self_adt)
@@ -124,7 +127,7 @@ fn impl_ceiling<'tcx>(
         )?;
     Some(InterfaceCeiling {
         reach,
-        leaked_type: crate_rooted_def_path(&tcx.def_path_str(leaked_def_id)),
+        leaked_type: policy::crate_rooted_def_path(&tcx.def_path_str(leaked_def_id)),
         impl_header: impl_header(trait_ref),
     })
 }
@@ -135,9 +138,9 @@ fn impl_ceiling<'tcx>(
 fn interface_components<'tcx>(
     tcx: TyCtxt<'tcx>,
     impl_def: LocalDefId,
-    trait_ref: ty::TraitRef<'tcx>,
-) -> Vec<ty::Ty<'tcx>> {
-    let mut components: Vec<ty::Ty<'tcx>> = trait_ref
+    trait_ref: TraitRef<'tcx>,
+) -> Vec<Ty<'tcx>> {
+    let mut components: Vec<Ty<'tcx>> = trait_ref
         .args
         .iter()
         .filter_map(ty::GenericArg::as_type)
@@ -166,7 +169,7 @@ fn interface_components<'tcx>(
 /// line to search for — the untrimmed form spells the same impl
 /// `impl std::convert::TryFrom<u8> for a::b::c::pose::Thing`, which appears in
 /// no file.
-fn impl_header(trait_ref: ty::TraitRef<'_>) -> String {
+fn impl_header(trait_ref: TraitRef<'_>) -> String {
     with_forced_trimmed_paths!(format!(
         "impl {} for {}",
         trait_ref.print_only_trait_path(),
