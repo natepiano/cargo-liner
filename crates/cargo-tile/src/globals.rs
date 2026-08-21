@@ -1,51 +1,28 @@
-//! The app-globals scope: this template's extension point for global
-//! shortcuts that are not the framework's own.
+//! The app-globals scope: this app's global shortcuts, the ones the
+//! framework does not already own.
 //!
 //! [`tui_pane::GlobalAction`] owns quit, restart, pane cycling, and the
 //! settings / keymap / shortcut overlays — those need no registration
-//! here. This scope is for the shortcuts a *particular* app adds on top,
-//! and it starts empty: [`AppGlobalAction`] has no variants, so the
-//! status line shows only framework globals and `[global]` in
-//! `keymap.toml` accepts only framework action names.
+//! here. This scope is for the shortcuts *this* app adds on top, and it
+//! holds the two that drive the tile grid. The framework picks up the
+//! rest from the registration in [`crate::keymap`]: TOML loading, the
+//! status-line slots, and the rows in the keymap overlay.
 //!
-//! To add one, give the enum a variant through
-//! [`tui_pane::action_enum!`], list it in [`Globals::render_order`], bind
-//! a default key in [`Globals::defaults`], and handle it in
-//! [`dispatch`]. The framework picks up the rest — TOML loading, the
-//! status-line slot, and the row in the keymap overlay.
+//! To add another, give the enum a variant, bind a default key in
+//! [`Globals::defaults`], and handle it in [`dispatch`].
 
-use std::fmt;
-use std::fmt::Display;
-use std::fmt::Formatter;
-
-use tui_pane::Action;
 use tui_pane::Bindings;
 use tui_pane::Globals;
 
 use crate::app::App;
 use crate::constants::APP_GLOBALS_SECTION;
 
-/// This app's global actions. Uninhabited until the app adds one, which
-/// is what makes every method below trivially exhaustive.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum AppGlobalAction {}
-
-impl Display for AppGlobalAction {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.description())
+tui_pane::action_enum! {
+    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+    pub(crate) enum AppGlobalAction {
+        AddTile    => ("add_tile",    "Add a tile");
+        RemoveTile => ("remove_tile", "Remove a tile");
     }
-}
-
-impl Action for AppGlobalAction {
-    const ALL: &'static [Self] = &[];
-
-    fn toml_key(self) -> &'static str { match self {} }
-
-    fn bar_label(self) -> &'static str { match self {} }
-
-    fn description(self) -> &'static str { match self {} }
-
-    fn from_toml_key(_key: &str) -> Option<Self> { None }
 }
 
 impl Globals<App> for AppGlobalAction {
@@ -53,13 +30,25 @@ impl Globals<App> for AppGlobalAction {
 
     const SECTION_NAME: &'static str = APP_GLOBALS_SECTION;
 
-    fn render_order() -> &'static [Self::Actions] { Self::ALL }
+    fn render_order() -> &'static [Self::Actions] { <Self as tui_pane::Action>::ALL }
 
-    fn defaults() -> Bindings<Self::Actions> { Bindings::new() }
+    fn defaults() -> Bindings<Self::Actions> {
+        tui_pane::bindings! {
+            '+' => Self::AddTile,
+            '-' => Self::RemoveTile,
+        }
+    }
 
     fn dispatcher() -> fn(Self::Actions, &mut App) { dispatch }
 }
 
-/// Run one app-global action. Unreachable while [`AppGlobalAction`] has
-/// no variants, and the place to grow a `match` once it does.
-const fn dispatch(action: AppGlobalAction, _app: &mut App) { match action {} }
+/// Run one app-global action.
+fn dispatch(action: AppGlobalAction, app: &mut App) {
+    match action {
+        AppGlobalAction::AddTile => {
+            let initial_rows = app.loaded_config.config.tiles.initial_rows();
+            app.tiles.add(initial_rows);
+        },
+        AppGlobalAction::RemoveTile => app.tiles.remove(),
+    }
+}

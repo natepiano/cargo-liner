@@ -12,7 +12,9 @@ use tui_pane::BUILTIN_LIGHT_NAME;
 
 use crate::constants::CONFIG_DIRNAME;
 use crate::constants::CONFIG_FILENAME;
+use crate::constants::DEFAULT_INITIAL_ROWS;
 use crate::constants::KEYMAP_FILENAME;
+use crate::constants::MIN_INITIAL_ROWS;
 use crate::constants::THEMES_DIRNAME;
 
 /// Which appearance the app resolves at startup and which theme id
@@ -40,6 +42,32 @@ impl Default for AppearanceConfig {
     }
 }
 
+/// How the tile grid grows.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub(crate) struct TilesConfig {
+    /// Rows the first column fills before a second column opens. Read
+    /// through [`TilesConfig::initial_rows`], which enforces the floor.
+    pub(crate) initial_rows: usize,
+}
+
+impl Default for TilesConfig {
+    fn default() -> Self {
+        Self {
+            initial_rows: DEFAULT_INITIAL_ROWS,
+        }
+    }
+}
+
+impl TilesConfig {
+    /// Rows before a second column opens, never below one.
+    ///
+    /// Clamped on read rather than at load so a hand-edited zero in
+    /// `config.toml` is corrected rather than rejected -- the file keeps
+    /// what was typed, the grid stays laid out.
+    pub(crate) fn initial_rows(&self) -> usize { self.initial_rows.max(MIN_INITIAL_ROWS) }
+}
+
 /// Parsed `config.toml`. Every section defaults, so a missing file and
 /// an empty file behave the same.
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -47,6 +75,8 @@ impl Default for AppearanceConfig {
 pub(crate) struct Config {
     /// `[appearance]` — theme selection.
     pub(crate) appearance: AppearanceConfig,
+    /// `[tiles]` — how the tile grid grows.
+    pub(crate) tiles:      TilesConfig,
 }
 
 /// A load attempt: the config that will be used, plus the parse error

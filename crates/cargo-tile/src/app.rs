@@ -20,6 +20,7 @@ use crate::constants::KEYMAP_TOML_HEADER;
 use crate::globals::AppGlobalAction;
 use crate::keymap;
 use crate::processes::CargoProcess;
+use crate::tiles::TileGrid;
 
 /// App-pane sections the keymap overlay walks, in display order. Every
 /// [`AppPaneId`] belongs here or its pane-local shortcuts go unlisted.
@@ -54,6 +55,9 @@ pub(crate) struct App {
     /// The cargo invocations the last scan found. Replaced wholesale by
     /// [`crate::processes::spawn`]'s background scanner.
     pub(crate) processes:     Vec<CargoProcess>,
+    /// The tile grid: how many cells the pane holds and the motion
+    /// between one arrangement and the next.
+    pub(crate) tiles:         TileGrid,
     /// Message shown on the keymap overlay's selected row after a
     /// rejected capture.
     inline_error:             Option<String>,
@@ -75,6 +79,7 @@ impl App {
             loaded_config,
             startup_note,
             processes: Vec::new(),
+            tiles: TileGrid::new(),
             inline_error: None,
             started: Instant::now(),
         })

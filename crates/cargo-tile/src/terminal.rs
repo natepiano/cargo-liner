@@ -30,6 +30,7 @@ use ratatui::backend::CrosstermBackend;
 use tui_pane::FRAME_POLL_MILLIS;
 use tui_pane::FrameworkOverlayId;
 use tui_pane::GlobalAction;
+use tui_pane::Globals;
 use tui_pane::KeyBind;
 use tui_pane::Keymap;
 use tui_pane::OverlayAction;
@@ -39,6 +40,7 @@ use tui_pane::overlay_is_in_text_mode;
 use crate::app::App;
 use crate::config;
 use crate::constants::BINARY_NAME;
+use crate::globals::AppGlobalAction;
 use crate::processes;
 use crate::processes::CargoProcess;
 use crate::render;
@@ -143,6 +145,11 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
         if drain_scans(app, &scans) {
             dirty = true;
         }
+        // A grid in motion repaints every poll until it settles, which
+        // is the one thing here that draws without an event behind it.
+        if app.tiles.tick() {
+            dirty = true;
+        }
     }
     Ok(())
 }
@@ -237,6 +244,13 @@ fn handle_key(app: &mut App, key: KeyEvent) {
     }
     if let Some(action) = keymap.framework_globals().action_for(&bind) {
         keymap.dispatch_framework_global(action, app);
+        return;
+    }
+    if let Some(action) = keymap
+        .globals::<AppGlobalAction>()
+        .and_then(|scope| scope.action_for(&bind))
+    {
+        AppGlobalAction::dispatcher()(action, app);
     }
 }
 

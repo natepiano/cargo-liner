@@ -11,6 +11,7 @@ mod render;
 mod settings;
 mod terminal;
 mod theme;
+mod tiles;
 
 use std::process::ExitCode;
 

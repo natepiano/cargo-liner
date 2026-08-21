@@ -342,7 +342,7 @@ fn command_text(argv: &[OsString], home: Option<&Path>) -> Option<CommandText> {
 /// one.
 ///
 /// A shim caught before it hands off still has its interpreter at
-/// argv[0] — `zsh /path/to/cargo check …`. Starting at the cargo binary
+/// argv\[0\] — `zsh /path/to/cargo check …`. Starting at the cargo binary
 /// instead renders that identically to the same command a moment later,
 /// once the real cargo is running it.
 fn cargo_argv_start(argv: &[OsString]) -> Option<usize> { argv.iter().position(is_cargo_binary) }

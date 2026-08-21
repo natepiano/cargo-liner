@@ -42,18 +42,49 @@ pub(crate) const UNRESOLVED_PATH: &str = "unavailable";
 // status line and overlays
 /// Section heading the keymap overlay gives this app's globals scope.
 pub(crate) const APP_GLOBALS_SECTION: &str = "App Shortcuts";
-/// Title on the pane border. The version is read from the manifest at
-/// compile time, so a running instance always says which build it is.
-pub(crate) const PANE_TITLE: &str = concat!(" cargo-tile ", env!("CARGO_PKG_VERSION"), " ");
-/// Rows the status line occupies along the bottom of the terminal.
-pub(crate) const STATUS_LINE_HEIGHT: u16 = 1;
-
+/// Label leading the status line's version note. The spaces around it
+/// are its padding -- the framework adds none.
+pub(crate) const APP_NAME: &str = " cargo-tile ";
+/// Version shown beside [`APP_NAME`], read from the manifest at compile
+/// time so a running instance always says which build it is.
+pub(crate) const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Comment block the keymap editor writes above the generated tables.
 pub(crate) const KEYMAP_TOML_HEADER: &str = "\
 # cargo-tile keymap configuration\n\
 # Edit bindings below. Format: action = \"key\" or \"modifier-key\"\n\
 # Modifiers: ctrl, alt, shift.  Examples: \"ctrl-k\", \"shift-tab\", \"q\"\n\
 # Chord steps are space-separated, e.g. \"g g\".\n\n";
+/// Rows the status line occupies along the bottom of the terminal.
+pub(crate) const STATUS_LINE_HEIGHT: u16 = 1;
+
+// tiles
+/// Rows the first column fills before a second column opens, when
+/// `config.toml` says nothing.
+pub(crate) const DEFAULT_INITIAL_ROWS: usize = 4;
+/// Ceiling the settings stepper walks `tiles.initial_rows` up to.
+pub(crate) const MAX_INITIAL_ROWS: usize = 8;
+/// Floor on `tiles.initial_rows`. At one, a second cell opens a second
+/// column rather than stacking into a second row.
+pub(crate) const MIN_INITIAL_ROWS: usize = 1;
+/// Rows one cell standing alone needs: a border line, a line of
+/// content, and a border line. A cell with a neighbour below costs one
+/// less, because the two share that line.
+pub(crate) const MIN_TILE_HEIGHT: u16 = 3;
+/// Columns one cell standing alone needs, its two border lines
+/// included. A cell with a neighbour to its right costs one less.
+pub(crate) const MIN_TILE_WIDTH: u16 = 8;
+/// Fixed-point scale a transition's progress is measured on, so the
+/// animation needs no floating point.
+pub(crate) const PROGRESS_SCALE: u32 = 1000;
+/// The cell holding the running-cargo table. Cells are numbered from
+/// one and fill column by column, so the table is always the first.
+pub(crate) const TABLE_CELL: usize = 1;
+/// How long one grid transition takes.
+pub(crate) const TILE_ANIMATION_MILLIS: u64 = 720;
+/// Kept between a cell's left border and the number it carries, so the
+/// number is not flush against the line.
+pub(crate) const TILE_NUMBER_INDENT: &str = " ";
+
 // running-cargo table
 /// Process names that are the genuine cargo binary.
 ///

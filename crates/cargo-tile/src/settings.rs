@@ -18,6 +18,8 @@ use crate::config;
 use crate::constants::APPEARANCE_MODES;
 use crate::constants::CURSOR_WIDTH;
 use crate::constants::LABEL_VALUE_GAP;
+use crate::constants::MAX_INITIAL_ROWS;
+use crate::constants::MIN_INITIAL_ROWS;
 use crate::constants::STEPPER_DECORATION_WIDTH;
 use crate::constants::UNRESOLVED_PATH;
 
@@ -30,6 +32,8 @@ enum SettingId {
     LightTheme,
     /// `appearance.dark_theme` — cycles the registry's dark variants.
     DarkTheme,
+    /// `tiles.initial_rows` — cycles one through [`MAX_INITIAL_ROWS`].
+    InitialRows,
     /// A reported value with nothing to change.
     ReadOnly,
 }
@@ -117,6 +121,15 @@ pub(crate) fn rows(app: &App) -> SettingsRows {
         &appearance.dark_theme,
     );
 
+    out.rows.push(SettingsRow::section("Tiles"));
+    push_stepper(
+        &mut out,
+        &mut widths,
+        SettingId::InitialRows,
+        "initial rows",
+        &app.loaded_config.config.tiles.initial_rows().to_string(),
+    );
+
     out.rows.push(SettingsRow::section("Files"));
     push_value(
         &mut out,
@@ -159,6 +172,15 @@ pub(crate) fn cycle(app: &mut App, step: Step) {
     let Some(&id) = rows(app).ids.get(selection) else {
         return;
     };
+    if id == SettingId::InitialRows {
+        let rows = initial_row_choices();
+        let current = app.loaded_config.config.tiles.initial_rows().to_string();
+        app.loaded_config.config.tiles.initial_rows = stepped(&rows, &current, step)
+            .parse()
+            .unwrap_or(MIN_INITIAL_ROWS);
+        apply(app);
+        return;
+    }
     let appearance = &mut app.loaded_config.config.appearance;
     match id {
         SettingId::Mode => {
@@ -176,7 +198,7 @@ pub(crate) fn cycle(app: &mut App, step: Step) {
             let ids = theme_ids(Appearance::Dark);
             appearance.dark_theme = stepped(&ids, &appearance.dark_theme, step);
         },
-        SettingId::ReadOnly => return,
+        SettingId::InitialRows | SettingId::ReadOnly => return,
     }
     apply(app);
 }
@@ -198,6 +220,13 @@ fn apply(app: &mut App) {
         .map(|missing| format!("theme `{missing}` not found — using a built-in"));
     tui_pane::set_active_theme(resolved.theme);
     app.loaded_config.error = config::save(&app.loaded_config.config);
+}
+
+/// The values `tiles.initial_rows` steps through.
+fn initial_row_choices() -> Vec<String> {
+    (MIN_INITIAL_ROWS..=MAX_INITIAL_ROWS)
+        .map(|rows| rows.to_string())
+        .collect()
 }
 
 /// Theme ids registered for one appearance, in registry order.

@@ -2,6 +2,7 @@
 //! bottom, and whichever framework overlay is open above them.
 
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::Constraint;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
@@ -9,14 +10,15 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use ratatui::widgets::Block;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
+use ratatui::widgets::Widget;
 use tui_pane::BarPalette;
 use tui_pane::ColumnSpec;
 use tui_pane::ColumnWidths;
 use tui_pane::FrameworkOverlayId;
+use tui_pane::GridLines;
 use tui_pane::Keymap;
 use tui_pane::KeymapPane;
 use tui_pane::PaneFocusState;
@@ -28,8 +30,11 @@ use tui_pane::ScanIndicator;
 use tui_pane::SettingsRenderOptions;
 use tui_pane::StatusLine;
 use tui_pane::StatusLineGlobal;
+use tui_pane::StatusLineNote;
 use tui_pane::accent_color;
 use tui_pane::active_border_color;
+use tui_pane::default_pane_chrome;
+use tui_pane::draw_clipped;
 use tui_pane::error_color;
 use tui_pane::hover_focus_color;
 use tui_pane::inline_error_color;
@@ -43,6 +48,8 @@ use tui_pane::text_default;
 use tui_pane::title_color;
 
 use crate::app::App;
+use crate::constants::APP_NAME;
+use crate::constants::APP_VERSION;
 use crate::constants::COMMAND_COLUMN;
 use crate::constants::COMPILER_COLUMN;
 use crate::constants::COMPILER_SEPARATOR_WIDTH;
@@ -50,16 +57,17 @@ use crate::constants::DURATION_COLUMN;
 use crate::constants::GROUP_GAP_HEIGHT;
 use crate::constants::GROUP_HEADER_HEIGHT;
 use crate::constants::NO_PROCESSES_NOTE;
-use crate::constants::PANE_TITLE;
 use crate::constants::PID_COLUMN;
 use crate::constants::POPUP_CHROME_HEIGHT;
 use crate::constants::POPUP_CHROME_WIDTH;
 use crate::constants::SETTINGS_POPUP_WIDTH;
 use crate::constants::START_COLUMN;
 use crate::constants::STATUS_LINE_HEIGHT;
+use crate::constants::TABLE_CELL;
 use crate::constants::TABLE_COLUMN_SPACING;
 use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TABLE_HEADERS;
+use crate::constants::TILE_NUMBER_INDENT;
 use crate::globals::AppGlobalAction;
 use crate::processes::CargoProcess;
 use crate::settings;
@@ -82,16 +90,51 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
     }
 }
 
-/// Draw the app's panes. One pane here — the running-cargo table —
-/// filling the body above the status line. A larger app splits `area`
-/// with [`Layout`] and draws one pane per [`crate::app::AppPaneId`].
-fn draw_panes(frame: &mut Frame, app: &App, area: Rect) {
-    let block = Block::bordered()
-        .border_style(Style::default().fg(active_border_color()))
-        .title(Span::styled(PANE_TITLE, Style::default().fg(title_color())));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    draw_process_table(frame, inner, &app.processes);
+/// Draw the tile grid into the body above the status line.
+///
+/// Cell one holds the running-cargo table; the rest carry their own
+/// number. [`crate::tiles`] decides where each one goes and how far
+/// through a transition it is, so what is left here is drawing.
+///
+/// Contents go down first and the frame over the top of them, because a
+/// border belongs to the grid rather than to either cell it divides:
+/// neighbours share one line, and [`GridLines`] is what knows the glyph
+/// each crossing wants.
+fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect) {
+    app.tiles.set_area(area);
+    let placements = app
+        .tiles
+        .placements(area, app.loaded_config.config.tiles.initial_rows());
+    let mut grid_lines = GridLines::new(area);
+    for placement in &placements {
+        draw_clipped(frame.buffer_mut(), placement.frame, |buffer, inner| {
+            draw_contents(buffer, &app.processes, placement.index, inner);
+        });
+        grid_lines.add(placement.frame);
+    }
+    // No tile is the focused one -- they are peers, and the grid is the
+    // whole screen -- so the unfocused shade is set to the focused one
+    // and every line comes out the same.
+    let chrome = default_pane_chrome();
+    grid_lines.render(
+        frame.buffer_mut(),
+        chrome.with_inactive_border(chrome.active_border),
+    );
+}
+
+/// What a cell holds inside its borders: the running-cargo table for the
+/// cell that owns it, and the cell's own number for the rest, on the
+/// first row it has to give.
+fn draw_contents(buffer: &mut Buffer, processes: &[CargoProcess], index: usize, inner: Rect) {
+    if index == TABLE_CELL {
+        draw_process_table(buffer, inner, processes);
+        return;
+    }
+    Paragraph::new(Line::from(vec![
+        Span::raw(TILE_NUMBER_INDENT),
+        Span::styled(index.to_string(), Style::default().fg(title_color())),
+    ]))
+    .render(Rect { height: 1, ..inner }, buffer);
 }
 
 /// The invocations sharing one working directory.
@@ -108,18 +151,16 @@ struct PathGroup<'a> {
 /// Column widths are fitted across every process rather than per group,
 /// so the tables line up down the pane instead of stepping in and out as
 /// the eye moves between them.
-fn draw_process_table(frame: &mut Frame, area: Rect, processes: &[CargoProcess]) {
+fn draw_process_table(buffer: &mut Buffer, area: Rect, processes: &[CargoProcess]) {
     if processes.is_empty() {
-        frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(""),
-                Line::from(Span::styled(
-                    format!("{SECTION_HEADER_INDENT}{NO_PROCESSES_NOTE}"),
-                    Style::default().fg(label_color()),
-                )),
-            ]),
-            area,
-        );
+        Paragraph::new(vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("{SECTION_HEADER_INDENT}{NO_PROCESSES_NOTE}"),
+                Style::default().fg(label_color()),
+            )),
+        ])
+        .render(area, buffer);
         return;
     }
 
@@ -127,15 +168,16 @@ fn draw_process_table(frame: &mut Frame, area: Rect, processes: &[CargoProcess])
     // out with the same constraints and the same indent, so the labels
     // stay over their columns without costing a row per group.
     let constraints = fitted_constraints(processes);
-    frame.render_widget(
-        Table::new(Vec::<Row>::new(), constraints.iter().copied())
-            .header(column_header())
-            .column_spacing(TABLE_COLUMN_SPACING),
-        Rect {
-            height: TABLE_HEADER_HEIGHT.min(area.height),
-            ..indented(area)
-        },
-    );
+    Table::new(Vec::<Row>::new(), constraints.iter().copied())
+        .header(column_header())
+        .column_spacing(TABLE_COLUMN_SPACING)
+        .render(
+            Rect {
+                height: TABLE_HEADER_HEIGHT.min(area.height),
+                ..indented(area)
+            },
+            buffer,
+        );
 
     let mut remaining = area;
     remaining.y = remaining.y.saturating_add(TABLE_HEADER_HEIGHT);
@@ -144,7 +186,7 @@ fn draw_process_table(frame: &mut Frame, area: Rect, processes: &[CargoProcess])
         if remaining.height == 0 {
             break;
         }
-        let used = draw_path_group(frame, remaining, &group, &constraints);
+        let used = draw_path_group(buffer, remaining, &group, &constraints);
         remaining.y = remaining.y.saturating_add(used);
         remaining.height = remaining.height.saturating_sub(used);
     }
@@ -182,37 +224,39 @@ fn group_by_path(processes: &[CargoProcess]) -> Vec<PathGroup<'_>> {
 /// Draw one working directory's header and table into the top of `area`,
 /// answering how many rows that took including the blank row below it.
 fn draw_path_group(
-    frame: &mut Frame,
+    buffer: &mut Buffer,
     area: Rect,
     group: &PathGroup<'_>,
     constraints: &[Constraint],
 ) -> u16 {
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::raw(SECTION_HEADER_INDENT),
-            Span::styled(group.path.to_string(), Style::default().fg(accent_color())),
-        ])),
+    Paragraph::new(Line::from(vec![
+        Span::raw(SECTION_HEADER_INDENT),
+        Span::styled(group.path.to_string(), Style::default().fg(accent_color())),
+    ]))
+    .render(
         Rect {
             height: GROUP_HEADER_HEIGHT.min(area.height),
             ..area
         },
+        buffer,
     );
 
     // No header on this table: the column labels are drawn once for the
     // whole pane by `draw_process_table`, over these same constraints.
     let rows = u16::try_from(group.processes.len()).unwrap_or(u16::MAX);
     let table_height = area.height.saturating_sub(GROUP_HEADER_HEIGHT).min(rows);
-    frame.render_widget(
-        Table::new(
-            group.processes.iter().copied().map(process_row),
-            constraints.iter().copied(),
-        )
-        .column_spacing(TABLE_COLUMN_SPACING),
+    Table::new(
+        group.processes.iter().copied().map(process_row),
+        constraints.iter().copied(),
+    )
+    .column_spacing(TABLE_COLUMN_SPACING)
+    .render(
         Rect {
             y: area.y.saturating_add(GROUP_HEADER_HEIGHT),
             height: table_height,
             ..indented(area)
         },
+        buffer,
     );
 
     GROUP_HEADER_HEIGHT
@@ -325,10 +369,14 @@ fn cell_width(text: &str) -> u16 { u16::try_from(text.chars().count()).unwrap_or
 /// bound to whatever `keymap.toml` maps it to.
 fn draw_status_line(frame: &mut Frame, app: &App, keymap: &Keymap<App>, area: Rect) {
     let globals = [StatusLineGlobal::global_shortcuts_help()];
+    let notes = [StatusLineNote {
+        label: APP_NAME.to_string(),
+        value: APP_VERSION.to_string(),
+    }];
     let status = StatusLine::new(
         app.started.elapsed().as_secs(),
         ScanIndicator::Hidden,
-        &[],
+        &notes,
         &globals,
     );
     render_status_line::<App, AppGlobalAction>(
