@@ -7,6 +7,8 @@ use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
+use crate::PaneFrameLabel;
+
 /// Scroll overflow facts for a rendered viewport.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ViewportOverflow {
@@ -316,25 +318,46 @@ pub fn render_overflow_affordance(
     overflow: ViewportOverflow,
     style: Style,
 ) {
-    let Some(label) = overflow.label() else {
+    let Some(label) = overflow_affordance_label(area, overflow, style) else {
         return;
     };
+    frame.render_widget(Paragraph::new(label.text).style(label.style), label.area);
+}
+
+/// The overflow affordance as a label for the shared frame, or `None`
+/// when there is no overflow to mark or no room to mark it in.
+///
+/// The marker sits on the pane's bottom border line, which the frame
+/// draws after its own lines -- the only order that leaves it showing.
+/// A pane rendering it itself would have whichever neighbour draws that
+/// line next come down over the top of it, which is why a pane inside a
+/// shared frame hands the label over instead of drawing it.
+#[must_use]
+pub fn overflow_affordance_label(
+    area: Rect,
+    overflow: ViewportOverflow,
+    style: Style,
+) -> Option<PaneFrameLabel> {
+    let label = overflow.label()?;
     if area.width <= 2 || area.height == 0 {
-        return;
+        return None;
     }
 
     let inner_width = area.width.saturating_sub(2);
     let label_width = u16::try_from(label.width()).unwrap_or(u16::MAX);
     if label_width == 0 || label_width > inner_width {
-        return;
+        return None;
     }
 
     let x = area
         .x
         .saturating_add(1)
         .saturating_add(inner_width.saturating_sub(label_width) / 2);
-    let affordance_area = Rect::new(x, area.bottom().saturating_sub(1), label_width, 1);
-    frame.render_widget(Paragraph::new(label).style(style), affordance_area);
+    Some(PaneFrameLabel {
+        area: Rect::new(x, area.bottom().saturating_sub(1), label_width, 1),
+        text: label,
+        style,
+    })
 }
 
 #[cfg(test)]

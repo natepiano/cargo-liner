@@ -8,18 +8,17 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use ratatui::widgets::Block;
 use ratatui::widgets::Cell;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 use tui_pane::ACTIVITY_SPINNER;
 use tui_pane::PaneFocusState;
+use tui_pane::PaneFrameChrome;
 use tui_pane::PaneTitleCount;
 use tui_pane::Viewport;
 use tui_pane::error_color;
 use tui_pane::label_color;
-use tui_pane::render_overflow_affordance;
 use tui_pane::success_color;
 use tui_pane::title_color;
 
@@ -51,11 +50,15 @@ fn lints_panel_title(data: &LintsData, focused: bool, cursor: usize) -> String {
     )
 }
 
-fn lints_panel_block(title: String, focused: bool, has_runs: bool) -> Block<'static> {
-    if has_runs {
-        tui_pane::default_pane_chrome().block(title, focused)
-    } else {
-        tui_pane::empty_pane_block(title)
+/// The frame for a pane with no lint runs to list.
+///
+/// Reported unfocused whatever the pane's own focus is, which is the
+/// dim shade `empty_pane_block` drew before the frame was shared.
+fn empty_lints_chrome(title: &str) -> PaneFrameChrome {
+    PaneFrameChrome {
+        title: title.to_string(),
+        focused: false,
+        ..PaneFrameChrome::default()
     }
 }
 
@@ -152,18 +155,20 @@ pub fn render_lints_pane_body(
     area: Rect,
     pane: &mut Lint,
     ctx: &PaneRenderCtx<'_>,
-) {
+) -> PaneFrameChrome {
     let Some(lints_data) = pane.content().cloned() else {
-        let block = lints_panel_block(" No Lint Runs ".to_string(), false, false);
-        frame.render_widget(block, area);
-        return;
+        return empty_lints_chrome(" No Lint Runs ");
     };
 
     let focused = pane.focus.is_focused();
     let title = lints_panel_title(&lints_data, focused, pane.viewport.pos());
-    let block = lints_panel_block(title, focused, !lints_data.runs.is_empty());
+    let mut chrome = PaneFrameChrome {
+        title,
+        focused: focused && !lints_data.runs.is_empty(),
+        ..PaneFrameChrome::default()
+    };
 
-    let inner = block.inner(area);
+    let inner = tui_pane::frame_inner(area);
     {
         let viewport = &mut pane.viewport;
         viewport.set_content_area(inner);
@@ -171,9 +176,8 @@ pub fn render_lints_pane_body(
     }
 
     if lints_data.runs.is_empty() {
-        frame.render_widget(block, area);
         pane.viewport.set_len(0);
-        return;
+        return chrome;
     }
 
     let viewport_clone = pane.viewport.clone();
@@ -214,20 +218,20 @@ pub fn render_lints_pane_body(
         ])
         .style(col_header_style),
     )
-    .block(block)
     .column_spacing(2)
     .row_highlight_style(Style::default());
 
     let mut table_state = TableState::default().with_selected(Some(pane.viewport.pos()));
     *table_state.offset_mut() = pane.viewport.scroll_offset();
-    frame.render_stateful_widget(table, area, &mut table_state);
+    frame.render_stateful_widget(table, inner, &mut table_state);
     pane.viewport.set_scroll_offset(table_state.offset());
-    render_overflow_affordance(
-        frame,
+    chrome.labels.extend(tui_pane::overflow_affordance_label(
         area,
         pane.viewport.overflow(),
         Style::default().fg(label_color()),
-    );
+    ));
 
     let _ = ctx;
+
+    chrome
 }

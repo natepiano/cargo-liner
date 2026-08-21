@@ -2,6 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use tui_pane::Hittable;
+use tui_pane::PaneFrameChrome;
 use tui_pane::RenderFocus;
 use tui_pane::Renderable;
 use tui_pane::Viewport;
@@ -54,12 +55,19 @@ impl PackagePane {
 }
 
 impl Renderable<PaneRenderCtx<'_>> for PackagePane {
-    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
+    fn render(
+        &mut self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        ctx: &PaneRenderCtx<'_>,
+    ) -> Option<PaneFrameChrome> {
         let styles = RenderStyles {
             readonly_label: ratatui::style::Style::default().fg(tui_pane::label_color()),
             chrome:         tui_pane::default_pane_chrome(),
         };
-        package::render_package_pane_body(frame, area, self, &styles, ctx);
+        Some(package::render_package_pane_body(
+            frame, area, self, &styles, ctx,
+        ))
     }
 }
 

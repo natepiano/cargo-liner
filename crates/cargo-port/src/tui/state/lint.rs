@@ -23,6 +23,7 @@ use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use tui_pane::Hittable;
+use tui_pane::PaneFrameChrome;
 use tui_pane::RenderFocus;
 use tui_pane::Renderable;
 use tui_pane::RunningTracker;
@@ -422,8 +423,13 @@ pub(in crate::tui) fn lint_cell_for(
 }
 
 impl Renderable<PaneRenderCtx<'_>> for Lint {
-    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
-        panes::render_lints_pane_body(frame, area, self, ctx);
+    fn render(
+        &mut self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        ctx: &PaneRenderCtx<'_>,
+    ) -> Option<PaneFrameChrome> {
+        Some(panes::render_lints_pane_body(frame, area, self, ctx))
     }
 }
 

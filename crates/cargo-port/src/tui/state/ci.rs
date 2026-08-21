@@ -24,6 +24,7 @@ use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use tui_pane::Hittable;
+use tui_pane::PaneFrameChrome;
 use tui_pane::RenderFocus;
 use tui_pane::Renderable;
 use tui_pane::ToastTaskId;
@@ -322,8 +323,13 @@ impl CiFetchTracker {
 }
 
 impl Renderable<PaneRenderCtx<'_>> for Ci {
-    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
-        panes::render_ci_pane_body(frame, area, self, ctx);
+    fn render(
+        &mut self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        ctx: &PaneRenderCtx<'_>,
+    ) -> Option<PaneFrameChrome> {
+        Some(panes::render_ci_pane_body(frame, area, self, ctx))
     }
 }
 

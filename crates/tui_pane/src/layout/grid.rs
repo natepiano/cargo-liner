@@ -86,6 +86,22 @@ impl<Id> ResolvedPaneLayout<Id> {
     /// Construct from a vec of resolved placements.
     #[must_use]
     pub const fn new(panes: Vec<ResolvedPane<Id>>) -> Self { Self { panes } }
+
+    /// The rect every resolved pane sits inside.
+    ///
+    /// This is what tells a pane on the outer edge that it has no
+    /// neighbour to share a border with, so it keeps the one it draws
+    /// itself. Empty rects are left out: a pane the layout gave no room
+    /// would otherwise drag the bounds back to the origin.
+    #[must_use]
+    pub fn bounds(&self) -> Rect {
+        self.panes
+            .iter()
+            .map(|resolved| resolved.area)
+            .filter(|area| !area.is_empty())
+            .reduce(Rect::union)
+            .unwrap_or(Rect::ZERO)
+    }
 }
 
 impl<Id: Copy + Eq> ResolvedPaneLayout<Id> {

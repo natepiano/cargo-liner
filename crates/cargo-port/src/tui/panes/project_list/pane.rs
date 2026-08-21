@@ -2,6 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use tui_pane::Hittable;
+use tui_pane::PaneFrameChrome;
 use tui_pane::RenderFocus;
 use tui_pane::Renderable;
 use tui_pane::Viewport;
@@ -41,8 +42,15 @@ impl ProjectListPane {
 }
 
 impl Renderable<PaneRenderCtx<'_>> for ProjectListPane {
-    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
-        tree_render::render_project_list_pane_body(frame, area, self, ctx);
+    fn render(
+        &mut self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        ctx: &PaneRenderCtx<'_>,
+    ) -> Option<PaneFrameChrome> {
+        Some(tree_render::render_project_list_pane_body(
+            frame, area, self, ctx,
+        ))
     }
 }
 

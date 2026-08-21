@@ -7124,7 +7124,7 @@ mod tests {
 
             assert!(
                 rendered.contains("1 of"),
-                "project list should render the framework-owned overflow marker"
+                "project list should render the framework-owned overflow marker:\n{rendered}"
             );
         }
 

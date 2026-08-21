@@ -47,8 +47,8 @@ impl PaneChrome {
             } else {
                 self.inactive_border
             });
-        if focused && focused_pane_tint_enabled() {
-            block.style(Style::default().bg(focused_pane_tint()))
+        if focused && let Some(fill) = focused_pane_fill() {
+            block.style(fill)
         } else {
             block
         }
@@ -92,6 +92,16 @@ pub fn default_pane_chrome() -> PaneChrome {
             .add_modifier(Modifier::BOLD),
         inactive_title:  Style::default().fg(inactive_title_color()),
     }
+}
+
+/// The background a focused pane sits on, or `None` when the tint is
+/// switched off.
+///
+/// A pane drawing a [`Block`] hands this to the block as its style. A
+/// pane drawn into a shared frame has no block to carry it, so
+/// [`crate::draw_clipped`] lays it down under the contents instead.
+pub(super) fn focused_pane_fill() -> Option<Style> {
+    focused_pane_tint_enabled().then(|| Style::default().bg(focused_pane_tint()))
 }
 
 /// Subtle background tint for the focused pane.

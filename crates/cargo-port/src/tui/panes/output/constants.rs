@@ -28,13 +28,6 @@ pub(super) const OWNED_OUTPUT_SEPARATOR_HEIGHT: usize = 1;
 /// The pinned owned column's caption row, naming the run and how it ended.
 pub(super) const OWNED_PIN_CAPTION_HEIGHT: usize = 1;
 
-// pane chrome
-/// Columns the pane border takes off the left and right of the pane area.
-pub(super) const PANE_BORDER_COLUMNS: u16 = 2;
-
-/// Rows the pane border takes off the top and bottom of the pane area.
-pub(super) const PANE_CHROME_ROWS: u16 = 2;
-
 // unattributed section
 /// Largest share of the monitor area the scope-level unattributed section may
 /// take while columns are on screen beside it.

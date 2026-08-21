@@ -26,6 +26,7 @@ pub use self::input::ModalHit;
 pub use self::input::dispatch_hit_test;
 pub use self::list_navigation::CycleDirection;
 pub use self::list_navigation::ListNavigation;
+pub use self::render::PaneFrameChrome;
 pub use self::render::PaneRegistry;
 pub use self::render::Renderable;
 pub use self::render::render_panes;

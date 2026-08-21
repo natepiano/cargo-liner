@@ -113,7 +113,12 @@ pub struct ToastsRenderCtx {
 }
 
 impl<Ctx: crate::AppContext> crate::Renderable<ToastsRenderCtx> for super::super::Toasts<Ctx> {
-    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &ToastsRenderCtx) {
+    fn render(
+        &mut self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        ctx: &ToastsRenderCtx,
+    ) -> Option<crate::PaneFrameChrome> {
         let focused_id = self.focused_toast_id();
         let active = self.active_views(ctx.now);
         let result = render_toasts(
@@ -125,6 +130,7 @@ impl<Ctx: crate::AppContext> crate::Renderable<ToastsRenderCtx> for super::super
             focused_id,
         );
         self.set_hits(result.hitboxes);
+        None
     }
 }
 

@@ -12,10 +12,10 @@ use ratatui::widgets::Cell;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
+use tui_pane::PaneFrameChrome;
 use tui_pane::PaneSelectionState;
 use tui_pane::PaneTitleCount;
 use tui_pane::label_color;
-use tui_pane::render_overflow_affordance;
 use unicode_width::UnicodeWidthStr;
 
 use super::CiData;
@@ -606,18 +606,21 @@ fn ci_panel_title(data: &CiData, focused_pos: Option<usize>) -> String {
 
 fn empty_ci_title(data: &CiData) -> String { data.empty_state.title() }
 
-pub fn render_ci_pane_body(frame: &mut Frame, area: Rect, pane: &mut Ci, ctx: &PaneRenderCtx<'_>) {
+pub fn render_ci_pane_body(
+    frame: &mut Frame,
+    area: Rect,
+    pane: &mut Ci,
+    ctx: &PaneRenderCtx<'_>,
+) -> PaneFrameChrome {
     let Some(ci_data) = pane.content().cloned() else {
-        render_empty_ci_block(frame, " No CI Runs ", area);
-        return;
+        return empty_ci_chrome(" No CI Runs ");
     };
 
     if !ci_data.has_runs() {
         let viewport = &mut pane.viewport;
         viewport.set_len(0);
         viewport.set_content_area(Rect::ZERO);
-        render_empty_ci_block(frame, &empty_ci_title(&ci_data), area);
-        return;
+        return empty_ci_chrome(&empty_ci_title(&ci_data));
     }
 
     let ci_focused = pane.focus.is_focused();
@@ -625,9 +628,13 @@ pub fn render_ci_pane_body(frame: &mut Frame, area: Rect, pane: &mut Ci, ctx: &P
     let focused_pos = ci_focused.then(|| pane.viewport.pos());
     let title = ci_panel_title(&ci_data, focused_pos);
 
-    let ci_block = tui_pane::default_pane_chrome().block(title, ci_focused);
+    let mut chrome = PaneFrameChrome {
+        title,
+        focused: ci_focused,
+        ..PaneFrameChrome::default()
+    };
 
-    let inner = ci_block.inner(area);
+    let inner = tui_pane::frame_inner(area);
     {
         let viewport = &mut pane.viewport;
         viewport.set_len(ci_data.runs.len());
@@ -662,27 +669,34 @@ pub fn render_ci_pane_body(frame: &mut Frame, area: Rect, pane: &mut Ci, ctx: &P
 
     let table = Table::new(rows, widths)
         .header(header)
-        .block(ci_block)
         .column_spacing(1)
         .row_highlight_style(Style::default());
 
     let mut table_state = TableState::default().with_selected(Some(pane.viewport.pos()));
     *table_state.offset_mut() = pane.viewport.scroll_offset();
-    frame.render_stateful_widget(table, area, &mut table_state);
+    frame.render_stateful_widget(table, inner, &mut table_state);
     pane.viewport.set_scroll_offset(table_state.offset());
-    render_overflow_affordance(
-        frame,
+    chrome.labels.extend(tui_pane::overflow_affordance_label(
         area,
         pane.viewport.overflow(),
         Style::default().fg(label_color()),
-    );
+    ));
 
     let _ = ctx;
+
+    chrome
 }
 
-fn render_empty_ci_block(frame: &mut Frame, title: &str, area: Rect) {
-    let block = tui_pane::empty_pane_block(title);
-    frame.render_widget(block, area);
+/// The frame for a pane with nothing to list.
+///
+/// Reported unfocused whatever the pane's own focus is, which is the
+/// dim shade `empty_pane_block` drew before the frame was shared.
+fn empty_ci_chrome(title: &str) -> PaneFrameChrome {
+    PaneFrameChrome {
+        title: title.to_string(),
+        focused: false,
+        ..PaneFrameChrome::default()
+    }
 }
 
 #[cfg(test)]

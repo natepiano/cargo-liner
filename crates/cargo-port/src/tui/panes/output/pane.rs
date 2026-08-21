@@ -6,6 +6,7 @@ use ratatui::layout::Rect;
 use tui_pane::CopySelectionResult;
 use tui_pane::Hittable;
 use tui_pane::NavAction;
+use tui_pane::PaneFrameChrome;
 use tui_pane::RenderFocus;
 use tui_pane::Renderable;
 use tui_pane::Viewport;
@@ -669,8 +670,13 @@ pub enum CapturedOutputRow {
 }
 
 impl Renderable<PaneRenderCtx<'_>> for OutputPane {
-    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
-        super::render_output_pane_body(frame, area, self, ctx);
+    fn render(
+        &mut self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        ctx: &PaneRenderCtx<'_>,
+    ) -> Option<PaneFrameChrome> {
+        Some(super::render_output_pane_body(frame, area, self, ctx))
     }
 }
 

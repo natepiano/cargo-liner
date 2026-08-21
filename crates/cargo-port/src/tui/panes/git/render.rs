@@ -9,7 +9,7 @@ use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use tui_pane::ACTIVITY_SPINNER;
 use tui_pane::PaneFocusState;
-use tui_pane::PaneRule;
+use tui_pane::PaneFrameChrome;
 use tui_pane::PaneSelectionState;
 use tui_pane::PaneTitleCount;
 use tui_pane::RuleTitle;
@@ -19,7 +19,6 @@ use tui_pane::error_color;
 use tui_pane::inactive_border_color;
 use tui_pane::inactive_title_color;
 use tui_pane::label_color;
-use tui_pane::render_overflow_affordance;
 use tui_pane::success_color;
 use tui_pane::text_default;
 use tui_pane::title_color;
@@ -172,6 +171,7 @@ fn render_git_column_inner(
     ctx: &GitRenderCtx<'_>,
     outer_area: Rect,
     inner_area: Rect,
+    chrome: &mut PaneFrameChrome,
 ) -> GitRenderLayout {
     let flat_len = ctx.fields.len();
     let pull_requests_len = ctx.data.pull_requests.rows.len();
@@ -244,15 +244,7 @@ fn render_git_column_inner(
         lines.len(),
     );
     frame.render_widget(Paragraph::new(lines).scroll((scroll_y, 0)), inner_area);
-    render_section_overlays(
-        frame,
-        &section_rules,
-        scroll_y,
-        outer_area,
-        inner_area,
-        ctx.focus,
-        ctx.styles,
-    );
+    push_section_overlays(&section_rules, scroll_y, outer_area, inner_area, chrome);
     GitRenderLayout {
         scroll_offset: usize::from(scroll_y),
         row_spans,
@@ -611,23 +603,16 @@ fn section_title_text(label: &str, len: usize, cursor: Option<usize>) -> String 
     format!("{label} {}", PaneTitleCount::Single { len, cursor }.body())
 }
 
-fn render_section_overlays(
-    frame: &mut Frame,
+/// Report each section rule, full pane width so the grid pass tees it into
+/// the side borders — and in the same pass gives it the pane's own border
+/// shade, so a focused pane stays yellow end to end.
+fn push_section_overlays(
     section_rules: &[SectionRule],
     scroll_y: u16,
     outer_area: Rect,
     inner_area: Rect,
-    focus: PaneFocusState,
-    styles: &RenderStyles,
+    chrome: &mut PaneFrameChrome,
 ) {
-    // Match the outer pane chrome — rule segments use the same border style
-    // as the pane it sits inside, so focused panes stay yellow end-to-end and
-    // unfocused panes stay at the default theme weight.
-    let rule_style = if matches!(focus, PaneFocusState::Active) {
-        styles.chrome.active_border
-    } else {
-        styles.chrome.inactive_border
-    };
     for rule in section_rules {
         let relative_y = u16::try_from(rule.inner_y).unwrap_or(u16::MAX);
         if relative_y < scroll_y {
@@ -646,21 +631,21 @@ fn render_section_overlays(
         if rule.section_focus.is_focused() {
             title_style = title_style.add_modifier(Modifier::BOLD);
         }
-        tui_pane::render_horizontal_rule(
-            frame,
-            Rect {
-                x:      outer_area.x,
-                y:      abs_y,
-                width:  outer_area.width,
-                height: 1,
-            },
-            rule_style,
-            Some(RuleTitle {
+        let rule_area = Rect {
+            x:      outer_area.x,
+            y:      abs_y,
+            width:  outer_area.width,
+            height: 1,
+        };
+        chrome.rules.push(rule_area);
+        chrome.labels.extend(tui_pane::rule_title_label(
+            rule_area,
+            RuleTitle {
                 text:  &rule.title,
                 style: title_style,
-            }),
+            },
             None,
-        );
+        ));
     }
 }
 
@@ -1059,13 +1044,11 @@ pub(super) fn render_git_pane_body(
     pane: &mut GitPane,
     styles: &RenderStyles,
     ctx: &PaneRenderCtx<'_>,
-) {
+) -> PaneFrameChrome {
     let Some(git_data) = pane.content().cloned() else {
         pane.viewport.clear_surface();
         pane.clear_row_layout();
-        let empty = tui_pane::empty_pane_block(tui_pane::pane_title("Git", &PaneTitleCount::None));
-        frame.render_widget(empty, area);
-        return;
+        return empty_git_chrome(tui_pane::pane_title("Git", &PaneTitleCount::None));
     };
 
     let flat_fields = panes::git_fields_from_data(&git_data);
@@ -1078,9 +1061,7 @@ pub(super) fn render_git_pane_body(
     if total_rows == 0 && git_data.description.as_deref().is_none_or(str::is_empty) {
         pane.viewport.clear_surface();
         pane.clear_row_layout();
-        let empty_git = tui_pane::empty_pane_block(" Not a git repo ");
-        frame.render_widget(empty_git, area);
-        return;
+        return empty_git_chrome(" Not a git repo ");
     }
 
     pane.viewport.set_len(total_rows);
@@ -1094,17 +1075,12 @@ pub(super) fn render_git_pane_body(
         git_lower_content_height(&git_data, flat_fields.len()),
     ));
     let pane_focus_state = pane.focus.pane_focus_state;
-    let border_style = if matches!(pane_focus_state, PaneFocusState::Active) {
-        styles.chrome.active_border
-    } else {
-        styles.chrome.inactive_border
+    let mut chrome = PaneFrameChrome {
+        title: git_panel_title(&git_data),
+        focused: matches!(pane_focus_state, PaneFocusState::Active),
+        ..PaneFrameChrome::default()
     };
-    let git_block = styles.chrome.block(
-        git_panel_title(&git_data),
-        matches!(pane_focus_state, PaneFocusState::Active),
-    );
-    let inner_area = git_block.inner(area);
-    frame.render_widget(git_block, area);
+    let inner_area = tui_pane::frame_inner(area);
 
     let about_layout = render_git_about_section(
         frame,
@@ -1114,12 +1090,13 @@ pub(super) fn render_git_pane_body(
             data: &git_data,
             outer_area: area,
             inner_area,
-            border_style,
             synced_description_height: ctx.synced_description_height,
             pane: &pane.viewport,
             focus: pane_focus_state,
         },
     );
+
+    chrome.rules.extend(about_layout.separator);
 
     {
         let viewport = &mut pane.viewport;
@@ -1137,7 +1114,13 @@ pub(super) fn render_git_pane_body(
         row_offset: description_rows,
         animation_elapsed: ctx.animation_elapsed,
     };
-    let layout = render_git_column_inner(frame, &git_ctx, area, about_layout.content_area);
+    let layout = render_git_column_inner(
+        frame,
+        &git_ctx,
+        area,
+        about_layout.content_area,
+        &mut chrome,
+    );
     pane.viewport.set_scroll_offset(layout.scroll_offset);
     pane.set_row_layout(
         about_layout.description_rect,
@@ -1145,13 +1128,23 @@ pub(super) fn render_git_pane_body(
         description_rows,
         layout.row_spans,
     );
-    render_overflow_affordance(
-        frame,
+    chrome.labels.extend(tui_pane::overflow_affordance_label(
         area,
         pane.viewport.overflow(),
         Style::default().fg(label_color()),
-    );
+    ));
     let _ = ctx;
+    chrome
+}
+
+/// The chrome an empty Git pane reports: the border always takes the
+/// inactive shade, matching the dim block this path used to draw itself.
+fn empty_git_chrome(title: impl Into<String>) -> PaneFrameChrome {
+    PaneFrameChrome {
+        title: title.into(),
+        focused: false,
+        ..PaneFrameChrome::default()
+    }
 }
 
 /// Inputs for [`render_git_about_section`]. Grouped into a struct
@@ -1162,7 +1155,6 @@ struct GitAboutCtx<'a> {
     data:                      &'a GitData,
     outer_area:                Rect,
     inner_area:                Rect,
-    border_style:              Style,
     synced_description_height: SyncedDescriptionHeight,
     pane:                      &'a Viewport,
     focus:                     PaneFocusState,
@@ -1172,11 +1164,15 @@ struct GitAboutCtx<'a> {
 struct GitAboutLayout {
     content_area:     Rect,
     description_rect: Option<Rect>,
+    /// The About separator, reported rather than drawn: the grid pass draws
+    /// it with the pane borders it runs into, so the junctions come out
+    /// right without this section knowing about them.
+    separator:        Option<Rect>,
 }
 
 /// Render the About section (repo description) at the top of the Git panel,
-/// separated from the rest of the pane by a horizontal rule with `├`/`┤`
-/// endcaps. Returns the area below the separator for the scrolling content.
+/// separated from the rest of the pane by a horizontal rule the grid pass
+/// draws. Returns the area below the separator for the scrolling content.
 fn render_git_about_section(frame: &mut Frame, ctx: &GitAboutCtx<'_>) -> GitAboutLayout {
     let inner_area = ctx.inner_area;
 
@@ -1208,6 +1204,7 @@ fn render_git_about_section(frame: &mut Frame, ctx: &GitAboutCtx<'_>) -> GitAbou
         return GitAboutLayout {
             content_area:     inner_area,
             description_rect: None,
+            separator:        None,
         };
     }
 
@@ -1227,22 +1224,16 @@ fn render_git_about_section(frame: &mut Frame, ctx: &GitAboutCtx<'_>) -> GitAbou
                 width:  inner_area.width,
                 height: description_height,
             }),
+            separator:        None,
         };
     }
 
-    tui_pane::render_rules(
-        frame,
-        &[PaneRule::Horizontal {
-            area:        Rect {
-                x:      ctx.outer_area.x,
-                y:      separator_y,
-                width:  ctx.outer_area.width,
-                height: 1,
-            },
-            connector_x: None,
-        }],
-        ctx.border_style,
-    );
+    let separator = Rect {
+        x:      ctx.outer_area.x,
+        y:      separator_y,
+        width:  ctx.outer_area.width,
+        height: 1,
+    };
 
     let content_y = separator_y.saturating_add(1);
     GitAboutLayout {
@@ -1258,6 +1249,7 @@ fn render_git_about_section(frame: &mut Frame, ctx: &GitAboutCtx<'_>) -> GitAbou
             width:  inner_area.width,
             height: description_height,
         }),
+        separator:        Some(separator),
     }
 }
 

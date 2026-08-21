@@ -4,6 +4,7 @@ use ratatui::layout::Rect;
 use tui_pane::CpuMonitor;
 use tui_pane::CpuUsage;
 use tui_pane::Hittable;
+use tui_pane::PaneFrameChrome;
 use tui_pane::RenderFocus;
 use tui_pane::Renderable;
 use tui_pane::Viewport;
@@ -13,7 +14,6 @@ use crate::channel::Receiver;
 use crate::config::CpuConfig;
 use crate::tui::hit_test::HoverTarget;
 use crate::tui::panes::PaneId;
-use crate::tui::panes::RenderStyles;
 use crate::tui::panes::cpu;
 use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::startup_services::StartupEffect;
@@ -130,12 +130,13 @@ impl CpuPane {
 }
 
 impl Renderable<PaneRenderCtx<'_>> for CpuPane {
-    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
-        let styles = RenderStyles {
-            readonly_label: ratatui::style::Style::default().fg(tui_pane::label_color()),
-            chrome:         tui_pane::default_pane_chrome(),
-        };
-        cpu::render_cpu_pane_body(frame, area, self, &styles, ctx);
+    fn render(
+        &mut self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        ctx: &PaneRenderCtx<'_>,
+    ) -> Option<PaneFrameChrome> {
+        Some(cpu::render_cpu_pane_body(frame, area, self, ctx))
     }
 }
 

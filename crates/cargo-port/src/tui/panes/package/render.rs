@@ -7,11 +7,9 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use ratatui::widgets::Block;
-use ratatui::widgets::Borders;
 use ratatui::widgets::Paragraph;
 use tui_pane::PaneFocusState;
-use tui_pane::PaneRule;
+use tui_pane::PaneFrameChrome;
 use tui_pane::PaneSelectionState;
 use tui_pane::Placed;
 use tui_pane::Region;
@@ -24,7 +22,6 @@ use tui_pane::error_color;
 use tui_pane::inactive_border_color;
 use tui_pane::keep_visible_scroll_offset;
 use tui_pane::label_color;
-use tui_pane::render_overflow_affordance;
 use tui_pane::secondary_text_color;
 use tui_pane::success_color;
 use tui_pane::text_default;
@@ -116,7 +113,6 @@ struct StatsColumnRender<'a> {
     pane:         &'a Viewport,
     focus:        PaneFocusState,
     value_width:  u16,
-    border_style: Style,
     /// Style for the `Tests` / `crates.io` sub-section title rules, matching
     /// the `Structure` title (chrome title style for the current focus).
     title_style:  Style,
@@ -608,7 +604,6 @@ struct ProjectPanelRender<'a> {
     pane:                      &'a Viewport,
     focus:                     PaneFocusState,
     styles:                    &'a RenderStyles,
-    border_style:              Style,
     /// Inter-pane description sync floor; clamped per-pane by the
     /// available `description_max_height`. Read by
     /// [`DescriptionBlock::render`] so the rendered content stays in
@@ -625,7 +620,7 @@ pub(super) fn render_package_pane_body(
     pane: &mut PackagePane,
     styles: &RenderStyles,
     ctx: &PaneRenderCtx<'_>,
-) {
+) -> PaneFrameChrome {
     let pane_focus_state = pane.focus.pane_focus_state;
     let PaneRenderCtx {
         animation_elapsed,
@@ -636,24 +631,18 @@ pub(super) fn render_package_pane_body(
     let lint_mode = LintRenderMode::from(config.current().lint.enabled.is_enabled());
 
     let Some(pkg_data) = pane.content().cloned() else {
-        render_no_project_selected(frame, area, pane);
-        return;
+        return render_no_project_selected(frame, area, pane);
     };
 
     let rows = panes::package_rows_from_data(&pkg_data);
     sync_package_viewport(pane, &pkg_data, &rows, *synced_description_height);
-    let border_style = if matches!(pane_focus_state, PaneFocusState::Active) {
-        styles.chrome.active_border
-    } else {
-        styles.chrome.inactive_border
-    };
     let title = format!(" {} - {} ", pkg_data.title, pkg_data.name);
-    let project_block = styles
-        .chrome
-        .with_inactive_border(border_style)
-        .block(title, matches!(pane_focus_state, PaneFocusState::Active));
-    let project_inner = project_block.inner(area);
-    frame.render_widget(project_block, area);
+    let mut chrome = PaneFrameChrome {
+        title,
+        focused: matches!(pane_focus_state, PaneFocusState::Active),
+        ..PaneFrameChrome::default()
+    };
+    let project_inner = tui_pane::frame_inner(area);
 
     {
         let viewport = &mut pane.viewport;
@@ -666,7 +655,6 @@ pub(super) fn render_package_pane_body(
         pane: &pane.viewport,
         focus: pane_focus_state,
         styles,
-        border_style,
         synced_description_height: *synced_description_height,
     };
 
@@ -686,7 +674,7 @@ pub(super) fn render_package_pane_body(
     }
     let placed = region.place(project_inner, pane.viewport.pos(), &prior_offsets);
 
-    render_separator(frame, &context, area, &placed, &boxes, separator);
+    push_separator(&context, area, &placed, &boxes, separator, &mut chrome);
 
     let col_ctx = PackageRenderCtx {
         data: &pkg_data,
@@ -711,7 +699,6 @@ pub(super) fn render_package_pane_body(
             pane: &pane.viewport,
             focus: pane_focus_state,
             value_width,
-            border_style,
             title_style: styles
                 .chrome
                 .title_style(matches!(pane_focus_state, PaneFocusState::Active)),
@@ -721,6 +708,7 @@ pub(super) fn render_package_pane_body(
         &boxes,
         project_inner,
         separator,
+        &mut chrome,
     ));
 
     pane.viewport.set_scroll_offset(layout.scroll_offset);
@@ -729,29 +717,32 @@ pub(super) fn render_package_pane_body(
         row_rects.push((placed[DESCRIPTION_BOX].content, 0));
     }
     pane.set_row_rects(row_rects);
-    render_overflow_affordance(
-        frame,
+    chrome.labels.extend(tui_pane::overflow_affordance_label(
         area,
         pane.viewport.overflow(),
         Style::default().fg(label_color()),
-    );
+    ));
+    chrome
 }
 
-/// Render the bordered "No project selected" placeholder and clear the
-/// pane's rendered state.
-fn render_no_project_selected(frame: &mut Frame, area: Rect, pane: &mut PackagePane) {
-    let title_style = Style::default()
-        .fg(title_color())
-        .add_modifier(Modifier::BOLD);
+/// Render the "No project selected" placeholder, clear the pane's
+/// rendered state, and report the chrome the grid draws around it. The
+/// border always takes the inactive shade, as the placeholder's own
+/// block did.
+fn render_no_project_selected(
+    frame: &mut Frame,
+    area: Rect,
+    pane: &mut PackagePane,
+) -> PaneFrameChrome {
     pane.viewport.clear_surface();
     pane.clear_row_rects();
-    let empty_block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Details ")
-        .title_style(title_style);
     let content = vec![Line::from("  No project selected")];
-    let detail = Paragraph::new(content).block(empty_block);
-    frame.render_widget(detail, area);
+    frame.render_widget(Paragraph::new(content), tui_pane::frame_inner(area));
+    PaneFrameChrome {
+        title: " Details ".to_string(),
+        focused: false,
+        ..PaneFrameChrome::default()
+    }
 }
 
 /// Sync the pane's viewport to this frame's row list: the addressable row
@@ -818,60 +809,40 @@ fn render_project_description(
 /// columns below — titled `Structure` and teed into the stats column's
 /// vertical rule when that column is present — plus the `┴` connector where
 /// the vertical rule meets the pane's bottom border.
-fn render_separator(
-    frame: &mut Frame,
+fn push_separator(
     context: &ProjectPanelRender<'_>,
     area: Rect,
     placed: &[Placed],
     boxes: &PackageBoxes,
     separator: u16,
+    chrome: &mut PaneFrameChrome,
 ) {
-    let stats_connector_x = boxes.first().map(|index| placed[index].content.x);
-    if separator > 0 {
-        let rule_area = Rect {
-            x:      area.x,
-            y:      placed[METADATA_BOX].chrome.y,
-            width:  area.width,
-            height: 1,
-        };
-        let title = stats_connector_x.map(|_| RuleTitle {
+    if separator == 0 {
+        return;
+    }
+    let rule_area = Rect {
+        x:      area.x,
+        y:      placed[METADATA_BOX].chrome.y,
+        width:  area.width,
+        height: 1,
+    };
+    chrome.rules.push(rule_area);
+    // The `┬` where the stats column tees in is a junction the grid pass
+    // works out on its own; only the title has to be placed here.
+    let Some(connector_x) = boxes.first().map(|index| placed[index].content.x) else {
+        return;
+    };
+    chrome.labels.extend(tui_pane::rule_title_label(
+        rule_area,
+        RuleTitle {
             text:  STATS_TITLE,
             style: context
                 .styles
                 .chrome
                 .title_style(matches!(context.focus, PaneFocusState::Active)),
-        });
-        tui_pane::render_horizontal_rule(
-            frame,
-            rule_area,
-            context.border_style,
-            title,
-            stats_connector_x,
-        );
-    }
-    if let Some(connector_x) = stats_connector_x {
-        let first_inner_x = area.x.saturating_add(1);
-        let last_inner_x = area.right().saturating_sub(2);
-        if connector_x >= first_inner_x
-            && connector_x <= last_inner_x
-            && area.width >= 3
-            && area.height > 0
-        {
-            tui_pane::render_rules(
-                frame,
-                &[PaneRule::Symbol {
-                    area:  Rect {
-                        x:      connector_x,
-                        y:      area.bottom().saturating_sub(1),
-                        width:  1,
-                        height: 1,
-                    },
-                    glyph: '┴',
-                }],
-                context.border_style,
-            );
-        }
-    }
+        },
+        Some(connector_x),
+    ));
 }
 
 /// Shared geometry and pane state for rendering one stat section
@@ -899,26 +870,25 @@ fn render_stats_column(
     boxes: &PackageBoxes,
     project_inner: Rect,
     separator: u16,
+    chrome: &mut PaneFrameChrome,
 ) -> Vec<(Rect, usize)> {
     let Some(first) = boxes.first() else {
         return Vec::new();
     };
     let column = placed[first].chrome;
     // Vertical rule along the column's left edge, from below the separator
-    // row to the pane's bottom border.
+    // row down onto the pane's bottom border -- reaching the border is what
+    // turns that cell into the `┴` the grid pass draws.
     let rule_top = column.y.saturating_add(separator);
-    tui_pane::render_rules(
-        frame,
-        &[PaneRule::Vertical {
-            area: Rect {
-                x:      column.x,
-                y:      rule_top,
-                width:  1,
-                height: project_inner.bottom().saturating_sub(rule_top),
-            },
-        }],
-        context.border_style,
-    );
+    chrome.rules.push(Rect {
+        x:      column.x,
+        y:      rule_top,
+        width:  1,
+        height: project_inner
+            .bottom()
+            .saturating_add(1)
+            .saturating_sub(rule_top),
+    });
 
     let stat_section_context = StatSectionCtx {
         rows:        context.rows,
@@ -945,7 +915,7 @@ fn render_stats_column(
         );
     }
     if let Some(index) = boxes.tests {
-        render_section_rule(frame, context, placed[index].chrome, TESTS_TITLE);
+        push_section_rule(context, placed[index].chrome, TESTS_TITLE, chrome);
         let test_rows = count_rows_as_strings(&context.data.test_rows);
         render_stat_section(
             frame,
@@ -959,7 +929,7 @@ fn render_stats_column(
         render_tests_affordance(frame, context, placed[index]);
     }
     if let Some(index) = boxes.crates_io {
-        render_section_rule(frame, context, placed[index].chrome, CRATES_IO_TITLE);
+        push_section_rule(context, placed[index].chrome, CRATES_IO_TITLE, chrome);
         render_stat_section(
             frame,
             &context.data.crates_io_rows,
@@ -984,36 +954,35 @@ const fn section_placement(placed: Placed) -> SectionPlacement {
     }
 }
 
-/// Draw a section's titled rule on the last row of its chrome rect (the
+/// Report a section's titled rule on the last row of its chrome rect (the
 /// rows above it are blank spacers or the shared separator row). Spans one
-/// column past the section so the `├` endcap tees into the column's left
-/// vertical rule and the `┤` endcap tees into the pane's right border —
-/// matching the full-width "Structure" rule above. Rendered after the
-/// vertical rule so the left join wins.
-fn render_section_rule(
-    frame: &mut Frame,
+/// column past the section so it meets the column's left vertical rule and
+/// the pane's right border — matching the full-width "Structure" rule
+/// above — and the grid pass turns both meetings into `├` and `┤`.
+fn push_section_rule(
     context: &StatsColumnRender<'_>,
-    chrome: Rect,
+    section: Rect,
     title: &'static str,
+    chrome: &mut PaneFrameChrome,
 ) {
-    if chrome.height == 0 {
+    if section.height == 0 {
         return;
     }
-    tui_pane::render_horizontal_rule(
-        frame,
-        Rect {
-            x:      chrome.x,
-            y:      chrome.bottom().saturating_sub(1),
-            width:  chrome.width.saturating_add(1),
-            height: 1,
-        },
-        context.border_style,
-        Some(RuleTitle {
+    let rule_area = Rect {
+        x:      section.x,
+        y:      section.bottom().saturating_sub(1),
+        width:  section.width.saturating_add(1),
+        height: 1,
+    };
+    chrome.rules.push(rule_area);
+    chrome.labels.extend(tui_pane::rule_title_label(
+        rule_area,
+        RuleTitle {
             text:  title,
             style: context.title_style,
-        }),
+        },
         None,
-    );
+    ));
 }
 
 /// Draw the `▲ n of m ▼` overflow label on the Tests box when more test
@@ -1024,7 +993,7 @@ fn render_tests_affordance(frame: &mut Frame, context: &StatsColumnRender<'_>, p
         return;
     }
     let cursor = context.tests_cursor.unwrap_or(placed.scroll_offset);
-    render_overflow_affordance(
+    tui_pane::render_overflow_affordance(
         frame,
         placed.content,
         ViewportOverflow::new(

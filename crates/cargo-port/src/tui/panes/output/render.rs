@@ -4,14 +4,10 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
-use tui_pane::PaneRule;
+use tui_pane::PaneFrameChrome;
 use tui_pane::finder_match_bg;
-use tui_pane::label_color;
-use unicode_width::UnicodeWidthStr;
 
 use super::constants::COLUMN_DIVIDER_WIDTH;
-use super::constants::PANE_BORDER_COLUMNS;
-use super::constants::PANE_CHROME_ROWS;
 use super::hit_map::MonitorHitMap;
 use super::monitor_render;
 use super::monitor_render::ColumnActivityExtent;
@@ -31,7 +27,7 @@ pub(super) fn render_output_pane_body(
     area: Rect,
     pane: &mut OutputPane,
     ctx: &PaneRenderCtx<'_>,
-) {
+) -> PaneFrameChrome {
     // Render and yank read the frozen snapshot once the selection is
     // pinned off the tail, so streaming output can't drift the range;
     // while following the tail they read the live buffer. Cloning the
@@ -41,12 +37,7 @@ pub(super) fn render_output_pane_body(
     let visual_selection_source = pane.selection().visual_selection_source().clone();
     let source: &[String] = visual_selection_source.lines(live);
 
-    let inner = Rect::new(
-        area.x.saturating_add(1),
-        area.y.saturating_add(1),
-        area.width.saturating_sub(PANE_BORDER_COLUMNS),
-        area.height.saturating_sub(PANE_CHROME_ROWS),
-    );
+    let inner = tui_pane::frame_inner(area);
     // The cursor settles first: the selected column's scroll offset belongs to
     // whichever column the cursor ended this frame in, and the owned body's
     // extent depends on how many of that column's activity rows are drawn.
@@ -88,17 +79,11 @@ pub(super) fn render_output_pane_body(
     // The title reports follow state and selected-line count, both of which
     // read the viewport length this frame's buffer just set, so it is built
     // after the sync rather than from the previous frame's length.
-    let focused = pane.focus.is_focused();
-    let pane_chrome =
-        tui_pane::default_pane_chrome().with_inactive_border(Style::default().fg(label_color()));
-    let border_style = if focused {
-        pane_chrome.active_border
-    } else {
-        pane_chrome.inactive_border
+    let mut chrome = PaneFrameChrome {
+        title: output_title(pane, ctx),
+        focused: pane.focus.is_focused(),
+        ..PaneFrameChrome::default()
     };
-    let title = output_title(pane, ctx);
-    let title_width = title.width();
-    frame.render_widget(pane_chrome.block(title, focused), area);
 
     let selected_range = pane.selected_range(source);
     match ctx.output_presentation.monitor() {
@@ -129,79 +114,31 @@ pub(super) fn render_output_pane_body(
                 selected_column_scroll,
                 &mut monitor_hit_map,
             );
-            render_monitor_dividers(
-                frame,
-                MonitorDividerGeometry {
-                    area,
-                    inner,
-                    title_width,
-                },
-                &monitor_dividers,
-                border_style,
-            );
+            push_monitor_dividers(area, inner, &monitor_dividers, &mut chrome);
             pane.set_monitor_hit_map(monitor_hit_map);
         },
     }
+    chrome
 }
 
-/// Where the monitor's vertical rules are drawn: the bordered pane rect, the
-/// rect inside it the monitor drew into, and how many cells the title took on
-/// the top border row.
-#[derive(Clone, Copy)]
-struct MonitorDividerGeometry {
-    /// The bordered pane rect, whose first and last rows carry the connectors.
-    area:        Rect,
-    /// The rect inside the border that the monitor's columns were drawn into.
-    inner:       Rect,
-    /// Cells the pane title occupies on the top border row.
-    title_width: usize,
-}
-
-/// Draw the monitor's column rules over the full inner height and cap each one
-/// where it meets the pane border, so the columns close into the pane's box
-/// instead of ending a row short of the top and bottom border rows.
-///
-/// Drawn after the monitor's own content: the indicator row, the unattributed
-/// section, and the termination-result rows all span the full width, so a rule
-/// drawn before them would be overwritten where it crosses their text.
-///
-/// A `┬` is dropped where the title already occupies the top border row —
-/// writing one there would replace a title character.
-fn render_monitor_dividers(
-    frame: &mut Frame,
-    monitor_divider_geometry: MonitorDividerGeometry,
+/// Report the monitor's column rules, each running the pane's full height
+/// so it lands on the top and bottom border rows: the grid pass reads the
+/// `┬` and `┴` off those meetings, and writes the title over the top row
+/// afterwards, so a divider can no longer land on a title character.
+fn push_monitor_dividers(
+    area: Rect,
+    inner: Rect,
     monitor_dividers: &MonitorDividers,
-    border_style: Style,
+    chrome: &mut PaneFrameChrome,
 ) {
-    let MonitorDividerGeometry {
-        area,
-        inner,
-        title_width,
-    } = monitor_divider_geometry;
     if inner.height == 0 {
         return;
     }
-    let title_end = inner
-        .x
-        .saturating_add(u16::try_from(title_width).unwrap_or(u16::MAX));
-    let bottom_border_y = area.bottom().saturating_sub(1);
-    let mut rules = Vec::new();
-    for x in monitor_dividers.rule_columns() {
-        rules.push(PaneRule::Vertical {
-            area: Rect::new(x, inner.y, COLUMN_DIVIDER_WIDTH, inner.height),
-        });
-        if x >= title_end {
-            rules.push(PaneRule::Symbol {
-                area:  Rect::new(x, area.y, COLUMN_DIVIDER_WIDTH, 1),
-                glyph: '┬',
-            });
-        }
-        rules.push(PaneRule::Symbol {
-            area:  Rect::new(x, bottom_border_y, COLUMN_DIVIDER_WIDTH, 1),
-            glyph: '┴',
-        });
-    }
-    tui_pane::render_rules(frame, &rules, border_style);
+    chrome.rules.extend(
+        monitor_dividers
+            .rule_columns()
+            .map(|x| Rect::new(x, area.y, COLUMN_DIVIDER_WIDTH, area.height)),
+    );
 }
 
 /// The monitor-off view: Cargo Port's own captured output filling the pane, as
@@ -331,47 +268,38 @@ fn output_title(pane: &OutputPane, ctx: &PaneRenderCtx<'_>) -> String {
 #[cfg(test)]
 #[allow(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-    use ratatui::widgets::Block;
-    use ratatui::widgets::Borders;
+    use ratatui::buffer::Buffer;
+    use tui_pane::GridLines;
+    use tui_pane::PaneFrame;
 
     use super::*;
 
     const PANE_HEIGHT: u16 = 8;
     const PANE_WIDTH: u16 = 40;
     const RULE_X: u16 = 20;
-    const TITLE: &str = " Output ";
 
-    /// Draw a bordered pane with one monitor rule at [`RULE_X`] and return the
-    /// glyph in every cell of that x column, top border row first.
+    /// Run one monitor rule at [`RULE_X`] through the grid pass the pane
+    /// reports it to, and return the glyph in every cell of that x column,
+    /// top border row first.
     fn rule_column_glyphs() -> Vec<String> {
-        let backend = TestBackend::new(PANE_WIDTH, PANE_HEIGHT);
-        let mut terminal =
-            Terminal::new(backend).unwrap_or_else(|error| panic!("create test terminal: {error}"));
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                let inner = Rect::new(
-                    area.x.saturating_add(1),
-                    area.y.saturating_add(1),
-                    area.width.saturating_sub(PANE_BORDER_COLUMNS),
-                    area.height.saturating_sub(PANE_CHROME_ROWS),
-                );
-                frame.render_widget(Block::default().borders(Borders::ALL).title(TITLE), area);
-                render_monitor_dividers(
-                    frame,
-                    MonitorDividerGeometry {
-                        area,
-                        inner,
-                        title_width: TITLE.width(),
-                    },
-                    &MonitorDividers::for_test(vec![RULE_X]),
-                    Style::default(),
-                );
-            })
-            .unwrap_or_else(|error| panic!("draw test frame: {error}"));
-        let buffer = terminal.backend().buffer();
+        let area = Rect::new(0, 0, PANE_WIDTH, PANE_HEIGHT);
+        let mut chrome = PaneFrameChrome::default();
+        push_monitor_dividers(
+            area,
+            tui_pane::frame_inner(area),
+            &MonitorDividers::for_test(vec![RULE_X]),
+            &mut chrome,
+        );
+
+        let pane_frame = PaneFrame::new(area);
+        let mut grid_lines = GridLines::new(area);
+        grid_lines.add(pane_frame);
+        for rule in chrome.rules {
+            grid_lines.add_rule(pane_frame, rule);
+        }
+        let mut buffer = Buffer::empty(area);
+        grid_lines.render(&mut buffer, tui_pane::default_pane_chrome());
+
         (0..PANE_HEIGHT)
             .map(|y| buffer[(RULE_X, y)].symbol().to_string())
             .collect()

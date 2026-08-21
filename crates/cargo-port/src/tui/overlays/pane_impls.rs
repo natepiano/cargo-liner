@@ -15,6 +15,7 @@ use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use tui_pane::Hittable;
+use tui_pane::PaneFrameChrome;
 use tui_pane::Renderable;
 use tui_pane::SettingsPane;
 
@@ -27,14 +28,27 @@ use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::settings;
 
 impl Renderable<PaneRenderCtx<'_>> for SettingsPane {
-    fn render(&mut self, frame: &mut Frame<'_>, _: Rect, ctx: &PaneRenderCtx<'_>) {
+    fn render(
+        &mut self,
+        frame: &mut Frame<'_>,
+        _: Rect,
+        ctx: &PaneRenderCtx<'_>,
+    ) -> Option<PaneFrameChrome> {
         settings::render_settings_pane_body(frame, self, ctx);
+        // An overlay floats over the grid and draws its own border.
+        None
     }
 }
 
 impl Renderable<PaneRenderCtx<'_>> for FinderPane {
-    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
+    fn render(
+        &mut self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        ctx: &PaneRenderCtx<'_>,
+    ) -> Option<PaneFrameChrome> {
         finder::render_finder_pane_body(frame, area, self, ctx);
+        None
     }
 }
 

@@ -14,7 +14,35 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 
+use crate::GridLines;
+use crate::PaneChrome;
+use crate::PaneFrame;
+use crate::PaneFrameLabel;
 use crate::ResolvedPaneLayout;
+use crate::share_borders;
+
+/// What the shared frame draws around one pane.
+///
+/// A pane hands this back rather than drawing its own [`Block`]: the
+/// border it would draw is the same line its neighbour would draw, and
+/// the title and affordances it would write sit on that line. One pass
+/// owns all of it -- see [`GridLines`].
+///
+/// [`Block`]: ratatui::widgets::Block
+#[derive(Clone, Debug, Default)]
+pub struct PaneFrameChrome {
+    /// Written over the pane's top border line.
+    pub title:   String,
+    /// Whether the pane holds focus, which decides the shade of every
+    /// line it touches and whether its contents sit on the focus tint.
+    pub focused: bool,
+    /// The pane's own interior rules, each reaching from one border line
+    /// to the other so the pass works out where they cross.
+    pub rules:   Vec<Rect>,
+    /// Text to write over the finished lines -- a scroll affordance on
+    /// the bottom border, and anything like it.
+    pub labels:  Vec<PaneFrameLabel>,
+}
 
 /// Per-pane render dispatch.
 ///
@@ -29,7 +57,14 @@ use crate::ResolvedPaneLayout;
 pub trait Renderable<Ctx> {
     /// Draw the pane into `area` of `frame`, reading `ctx` for the
     /// refs the pane needs.
-    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &Ctx);
+    ///
+    /// Answers with the frame it wants drawn around it, or `None` when
+    /// it draws its own chrome -- which is what an overlay or a popup
+    /// does. Handing the chrome back at the end of the render rather
+    /// than declaring it up front is what lets a title report what the
+    /// pane just laid out: a count, a cursor position, a follow state
+    /// off a viewport it only syncs while rendering.
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &Ctx) -> Option<PaneFrameChrome>;
 }
 
 /// Pane-id-keyed mapping from layout entry to render target.
@@ -69,10 +104,29 @@ pub fn render_panes<R: PaneRegistry>(
     registry: &mut R,
     layout: &ResolvedPaneLayout<R::PaneId>,
     ctx: &R::Ctx<'_>,
+    chrome: PaneChrome,
 ) {
+    let bounds = layout.bounds();
+    let mut grid_lines = GridLines::new(bounds);
     for resolved in &layout.panes {
-        if let Some(pane) = registry.pane_mut(resolved.pane) {
-            pane.render(frame, resolved.area, ctx);
+        // Each pane reaches one line onto the neighbours below and to the
+        // right of it, so the boundary between the two of them is a
+        // single line they share rather than two lines side by side.
+        let area = share_borders(resolved.area, bounds);
+        let Some(pane) = registry.pane_mut(resolved.pane) else {
+            continue;
+        };
+        let Some(pane_chrome) = pane.render(frame, area, ctx) else {
+            continue;
+        };
+        let pane_frame = PaneFrame::new(area).with_focus(pane_chrome.focused);
+        grid_lines.add_titled(pane_frame, pane_chrome.title);
+        for rule in pane_chrome.rules {
+            grid_lines.add_rule(pane_frame, rule);
+        }
+        for label in pane_chrome.labels {
+            grid_lines.add_label(pane_frame, label);
         }
     }
+    grid_lines.render(frame.buffer_mut(), chrome);
 }

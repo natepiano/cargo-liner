@@ -12,6 +12,7 @@ use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 use tui_pane::PaneFocusState;
+use tui_pane::PaneFrameChrome;
 use tui_pane::PaneTitleCount;
 use tui_pane::PaneTitleGroup;
 use tui_pane::Placed;
@@ -19,7 +20,6 @@ use tui_pane::Region;
 use tui_pane::Size;
 use tui_pane::ViewportOverflow;
 use tui_pane::label_color;
-use tui_pane::render_overflow_affordance;
 
 use super::constants::MIN_TABLE_ROWS;
 use super::constants::RUNNING_BOX;
@@ -53,7 +53,7 @@ pub(super) fn render_targets_pane_body(
     pane: &mut TargetsPane,
     styles: &RenderStyles,
     ctx: &PaneRenderCtx<'_>,
-) {
+) -> PaneFrameChrome {
     // The Running list is global across all tracked workspaces, so it
     // stays visible even when the selected project has no targets — the
     // empty block renders only when there is nothing to show at all.
@@ -61,18 +61,22 @@ pub(super) fn render_targets_pane_body(
     let has_targets = pane.content().is_some_and(TargetsData::has_targets);
     if has_targets || !running_rows.is_empty() {
         let data = pane.content().cloned().unwrap_or_default();
-        render_targets_with_data(frame, area, pane, &data, &running_rows, styles);
+        render_targets_with_data(frame, area, pane, &data, &running_rows, styles)
     } else {
-        render_empty_targets(frame, area, pane);
+        render_empty_targets(frame, area, pane)
     }
 }
 
-fn render_empty_targets(frame: &mut Frame, area: Rect, pane: &mut TargetsPane) {
+fn render_empty_targets(frame: &mut Frame, area: Rect, pane: &mut TargetsPane) -> PaneFrameChrome {
+    let _ = (frame, area);
     pane.viewport.clear_surface();
     pane.clear_row_rects();
     pane.set_running_cursor_pid(None);
-    let empty_targets = tui_pane::empty_pane_block(" No Targets ");
-    frame.render_widget(empty_targets, area);
+    PaneFrameChrome {
+        title: " No Targets ".to_string(),
+        focused: false,
+        ..PaneFrameChrome::default()
+    }
 }
 
 /// Per-row geometry derived from the entry list and content width.
@@ -159,7 +163,7 @@ fn render_targets_with_data(
     data: &TargetsData,
     running_rows: &[RunningRow],
     styles: &RenderStyles,
-) {
+) -> PaneFrameChrome {
     let pane_focus_state = pane.focus.pane_focus_state;
     let entries = panes::build_target_list_from_data(data);
     // Drop expanded-outline state for PIDs that left the list, so a
@@ -181,12 +185,12 @@ fn render_targets_with_data(
     // highlight in the Running box leaves it uncounted.
     let cursor_entry = (cursor < table_len).then_some(cursor);
     let targets_title = build_targets_title(pane_focus_state, cursor_entry, data);
-    let targets_block = styles.chrome.block(
-        targets_title,
-        matches!(pane_focus_state, PaneFocusState::Active),
-    );
-    let content_inner = targets_block.inner(area);
-    frame.render_widget(targets_block, area);
+    let mut chrome = PaneFrameChrome {
+        title: targets_title,
+        focused: matches!(pane_focus_state, PaneFocusState::Active),
+        ..PaneFrameChrome::default()
+    };
+    let content_inner = tui_pane::frame_inner(area);
 
     let region = targets_region(table_len, running_list.len(), content_inner.height);
     let prior_offsets = [pane.viewport.scroll_offset(), 0];
@@ -200,7 +204,7 @@ fn render_targets_with_data(
     pane.viewport
         .set_viewport_rows(usize::from(table_box.content.height) + running_visible);
 
-    let mut row_rects = render_targets_table(frame, pane, &entries, table_box, area, styles);
+    let mut row_rects = render_targets_table(frame, pane, &entries, table_box, area, &mut chrome);
 
     if !running_list.is_empty() {
         running_subpane::render_running_subpane(
@@ -213,11 +217,6 @@ fn render_targets_with_data(
                 viewport: &pane.viewport,
                 focus: pane_focus_state,
                 table_len,
-                border_style: if matches!(pane_focus_state, PaneFocusState::Active) {
-                    styles.chrome.active_border
-                } else {
-                    styles.chrome.inactive_border
-                },
                 title_style: styles
                     .chrome
                     .title_style(matches!(pane_focus_state, PaneFocusState::Active)),
@@ -225,9 +224,11 @@ fn render_targets_with_data(
             placed[RUNNING_BOX],
             area,
             &mut row_rects,
+            &mut chrome,
         );
     }
     pane.set_row_rects(row_rects);
+    chrome
 }
 
 /// Render the targets table into its placed box: the ratatui `Table`
@@ -241,7 +242,7 @@ fn render_targets_table(
     entries: &[TargetEntry],
     table_box: Placed,
     pane_area: Rect,
-    styles: &RenderStyles,
+    chrome: &mut PaneFrameChrome,
 ) -> Vec<(Rect, usize)> {
     let pane_focus_state = pane.focus.pane_focus_state;
     let cursor = pane.viewport.pos();
@@ -294,14 +295,13 @@ fn render_targets_table(
     };
     let overflow = ViewportOverflow::new(table_len, table_offset, table_visible, table_cursor);
     if table_box.footer.height == 0 {
-        render_overflow_affordance(
-            frame,
+        chrome.labels.extend(tui_pane::overflow_affordance_label(
             pane_area,
             overflow,
             Style::default().fg(label_color()),
-        );
+        ));
     } else {
-        render_table_footer(frame, pane, table_box.footer, pane_area, overflow, styles);
+        push_table_footer(table_box.footer, pane_area, overflow, chrome);
     }
     row_rects
 }
@@ -309,14 +309,13 @@ fn render_targets_table(
 /// The table's lower boundary while the Running box sits below: nothing (a
 /// blank gap row) when every table row is visible, or a rule across the
 /// pane with the table's pager centered on it — the same affordance every
-/// pane renders on its bottom border — once it scrolls.
-fn render_table_footer(
-    frame: &mut Frame,
-    pane: &TargetsPane,
+/// pane renders on its bottom border — once it scrolls. Both go into the
+/// pane's chrome, so the grid pass draws them with the borders they meet.
+fn push_table_footer(
     footer: Rect,
     pane_area: Rect,
     overflow: ViewportOverflow,
-    styles: &RenderStyles,
+    chrome: &mut PaneFrameChrome,
 ) {
     if overflow.label().is_none() {
         return;
@@ -327,24 +326,12 @@ fn render_table_footer(
         width:  pane_area.width,
         height: 1,
     };
-    let active = matches!(pane.focus.pane_focus_state, PaneFocusState::Active);
-    tui_pane::render_horizontal_rule(
-        frame,
-        rule_area,
-        if active {
-            styles.chrome.active_border
-        } else {
-            styles.chrome.inactive_border
-        },
-        None,
-        None,
-    );
-    render_overflow_affordance(
-        frame,
+    chrome.rules.push(rule_area);
+    chrome.labels.extend(tui_pane::overflow_affordance_label(
         rule_area,
         overflow,
         Style::default().fg(label_color()),
-    );
+    ));
 }
 
 fn build_targets_title(

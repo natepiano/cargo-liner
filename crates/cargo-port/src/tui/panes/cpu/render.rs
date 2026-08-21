@@ -5,11 +5,11 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
-#[cfg(target_os = "macos")]
 use tui_pane::CoreCluster;
 use tui_pane::CpuUsage;
 use tui_pane::PaneFocusState;
-use tui_pane::PaneRule;
+#[cfg(target_os = "macos")]
+use tui_pane::PaneFrameChrome;
 use tui_pane::Region;
 use tui_pane::Size;
 use tui_pane::Viewport;
@@ -23,7 +23,6 @@ use tui_pane::warning_color;
 
 use super::CpuPane;
 use crate::config::CpuConfig;
-use crate::tui::panes::RenderStyles;
 use crate::tui::panes::constants::CPU_BAR_WIDTH;
 use crate::tui::panes::constants::CPU_BREAKDOWN_ROWS;
 use crate::tui::panes::constants::CPU_GPU_ROWS;
@@ -348,36 +347,23 @@ fn render_selectable_row(
     row_rects.push((area, logical_row));
 }
 
-fn render_cpu_dividers(
-    frame: &mut Frame,
-    area: Rect,
-    layout: &CpuPanelLayout,
-    border_style: Style,
-) {
-    tui_pane::render_rules(
-        frame,
-        &[
-            PaneRule::Horizontal {
-                area:        Rect {
-                    x:      area.x,
-                    y:      layout.cores_divider.y,
-                    width:  area.width,
-                    height: 1,
-                },
-                connector_x: None,
-            },
-            PaneRule::Horizontal {
-                area:        Rect {
-                    x:      area.x,
-                    y:      layout.gpu_divider.y,
-                    width:  area.width,
-                    height: 1,
-                },
-                connector_x: None,
-            },
-        ],
-        border_style,
-    );
+/// Report the band dividers, full pane width so the grid pass tees each
+/// one into the side borders it runs into.
+fn push_cpu_dividers(area: Rect, layout: &CpuPanelLayout, chrome: &mut PaneFrameChrome) {
+    chrome.rules.extend([
+        Rect {
+            x:      area.x,
+            y:      layout.cores_divider.y,
+            width:  area.width,
+            height: 1,
+        },
+        Rect {
+            x:      area.x,
+            y:      layout.gpu_divider.y,
+            width:  area.width,
+            height: 1,
+        },
+    ]);
 }
 
 fn render_head_rows(
@@ -633,20 +619,20 @@ pub(super) fn render_cpu_pane_body(
     frame: &mut Frame,
     area: Rect,
     pane: &mut CpuPane,
-    styles: &RenderStyles,
     ctx: &PaneRenderCtx<'_>,
-) {
+) -> PaneFrameChrome {
     let pane_focus_state = pane.focus.pane_focus_state;
-    let block = styles
-        .chrome
-        .block(cpu_panel_title().to_string(), pane.focus.is_focused());
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = tui_pane::frame_inner(area);
+    let mut chrome = PaneFrameChrome {
+        title: cpu_panel_title().to_string(),
+        focused: pane.focus.is_focused(),
+        ..PaneFrameChrome::default()
+    };
 
     if inner.height == 0 {
         pane.viewport.clear_surface();
         pane.clear_row_rects();
-        return;
+        return chrome;
     }
 
     let usage = pane
@@ -661,12 +647,7 @@ pub(super) fn render_cpu_pane_body(
         pane.viewport.scroll_offset(),
     );
 
-    let border_style = if matches!(pane_focus_state, PaneFocusState::Active) {
-        styles.chrome.active_border
-    } else {
-        styles.chrome.inactive_border
-    };
-    render_cpu_dividers(frame, area, &layout, border_style);
+    push_cpu_dividers(area, &layout, &mut chrome);
 
     let cpu_cfg = &ctx.config.current().cpu;
     let mut row_rects: Vec<(Rect, usize)> = Vec::new();
@@ -688,6 +669,8 @@ pub(super) fn render_cpu_pane_body(
         layout.band_offset,
     );
     pane.set_row_rects(row_rects);
+
+    chrome
 }
 
 /// Draw the `▲ n of m ▼` overflow label on the cores band when more cores

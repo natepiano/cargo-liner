@@ -1,5 +1,7 @@
 use std::collections::HashSet;
+use std::path::Path;
 use std::path::PathBuf;
+use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
@@ -57,9 +59,11 @@ use super::panes::EmptyDescriptionBehavior;
 use super::panes::OutputBuildSetTerminationConfirmationDisplay;
 use super::panes::OutputPaneVisibility;
 use super::panes::PaneId;
+use super::panes::SyncedDescriptionHeight;
 use super::render_context::PaneRenderCtx;
 use super::sccache;
 use super::settings;
+use super::state::CiStatusLookup;
 use crate::ci::CiStatus;
 use crate::constants::TARGET_DIR;
 use crate::project;
@@ -94,6 +98,69 @@ pub(super) fn conclusion_style(ci_status: Option<CiStatus>) -> Style {
 /// cached against the scan generation and top-pane widths) so the
 /// Lang/CPU/Targets row grows into the space the previous fixed split left
 /// empty above it.
+/// The description floor the Package and Git panes share for this frame:
+/// both wrap their description against their own pane width, and the
+/// taller of the two sets the height both render at, so the rows below
+/// them line up across the two panes.
+fn sync_description_floor(
+    app: &App,
+    tiled: &ResolvedPaneLayout<PaneId>,
+) -> SyncedDescriptionHeight {
+    let pkg_block = panes::DescriptionBlock::for_pane(
+        app.panes
+            .package
+            .content()
+            .and_then(|d| d.description.as_deref()),
+        tiled.area(PaneId::Package),
+        EmptyDescriptionBehavior::ShowPlaceholder,
+    );
+    let git_block = panes::DescriptionBlock::for_pane(
+        app.panes
+            .git
+            .content()
+            .and_then(|d| d.description.as_deref()),
+        tiled.area(PaneId::Git),
+        EmptyDescriptionBehavior::RenderEmpty,
+    );
+    panes::sync_floor(&[&pkg_block, &git_block])
+}
+
+/// What the tiled panes read off the app for one frame, gathered before
+/// the render borrows it mutably.
+#[derive(Clone, Copy)]
+struct TiledRenderInputs<'a> {
+    selected_path:             Option<&'a Path>,
+    animation_elapsed:         Duration,
+    ci_status_lookup:          &'a CiStatusLookup,
+    synced_description_height: SyncedDescriptionHeight,
+}
+
+/// Render the tiled grid: every pane draws its contents inside its own
+/// rect, and the one grid pass afterwards lays down the borders, rules and
+/// titles they reported -- so a line two panes share is drawn once, by the
+/// grid, rather than twice by its neighbours.
+fn render_tiled_panes(
+    frame: &mut Frame,
+    app: &mut App,
+    layout: &ResolvedPaneLayout<PaneId>,
+    inputs: TiledRenderInputs<'_>,
+) {
+    let mut split = app.split_for_render(
+        inputs.selected_path,
+        inputs.animation_elapsed,
+        inputs.ci_status_lookup,
+        OverlayRenderInputs::none(),
+        inputs.synced_description_height,
+    );
+    tui_pane::render_panes(
+        frame,
+        &mut split.registry,
+        layout,
+        &split.pane_render_ctx,
+        tui_pane::default_pane_chrome(),
+    );
+}
+
 fn resolve_tiled_layout(
     app: &mut App,
     top_area: Rect,
@@ -149,8 +216,11 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(frame.area());
 
+    // The fitted columns plus two columns of chrome: its own left border and
+    // one column of right gutter. The right border is the neighbouring pane's
+    // left one -- shared in the grid pass -- so this column never pays for it.
     let left_width =
-        u16::try_from(app.project_list.cached_fit_widths.total_width() + BLOCK_BORDER_WIDTH + 1)
+        u16::try_from(app.project_list.cached_fit_widths.total_width() + BLOCK_BORDER_WIDTH)
             .unwrap_or(u16::MAX);
 
     let bottom_row = match app.output_pane_visibility() {
@@ -193,34 +263,19 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     // shared height — the same block is rebuilt by each pane's render
     // path with the same inputs, so the sync floor matches what each
     // pane actually draws (the structural enforcement).
-    let pkg_block = panes::DescriptionBlock::for_pane(
-        app.panes
-            .package
-            .content()
-            .and_then(|d| d.description.as_deref()),
-        tiled.area(PaneId::Package),
-        EmptyDescriptionBehavior::ShowPlaceholder,
-    );
-    let git_block = panes::DescriptionBlock::for_pane(
-        app.panes
-            .git
-            .content()
-            .and_then(|d| d.description.as_deref()),
-        tiled.area(PaneId::Git),
-        EmptyDescriptionBehavior::RenderEmpty,
-    );
-    let synced_description_height = panes::sync_floor(&[&pkg_block, &git_block]);
+    let synced_description_height = sync_description_floor(app, &tiled);
 
-    {
-        let mut split = app.split_for_render(
-            selected_path.as_deref(),
+    render_tiled_panes(
+        frame,
+        app,
+        &tiled,
+        TiledRenderInputs {
+            selected_path: selected_path.as_deref(),
             animation_elapsed,
-            &ci_status_lookup,
-            OverlayRenderInputs::none(),
+            ci_status_lookup: &ci_status_lookup,
             synced_description_height,
-        );
-        tui_pane::render_panes(frame, &mut split.registry, &tiled, &split.pane_render_ctx);
-    }
+        },
+    );
     app.panes.tiled_layout = tiled;
 
     render_status_bar(frame, app, outer_layout[1]);

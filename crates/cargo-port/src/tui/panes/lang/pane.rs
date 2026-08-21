@@ -2,13 +2,13 @@ use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use tui_pane::Hittable;
+use tui_pane::PaneFrameChrome;
 use tui_pane::RenderFocus;
 use tui_pane::Renderable;
 use tui_pane::Viewport;
 
 use crate::tui::hit_test::HoverTarget;
 use crate::tui::panes::PaneId;
-use crate::tui::panes::RenderStyles;
 use crate::tui::panes::lang;
 use crate::tui::render_context::PaneRenderCtx;
 
@@ -28,12 +28,13 @@ impl LangPane {
 }
 
 impl Renderable<PaneRenderCtx<'_>> for LangPane {
-    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
-        let styles = RenderStyles {
-            readonly_label: ratatui::style::Style::default().fg(tui_pane::label_color()),
-            chrome:         tui_pane::default_pane_chrome(),
-        };
-        lang::render_lang_pane_body(frame, area, self, &styles, ctx);
+    fn render(
+        &mut self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        ctx: &PaneRenderCtx<'_>,
+    ) -> Option<PaneFrameChrome> {
+        Some(lang::render_lang_pane_body(frame, area, self, ctx))
     }
 }
 

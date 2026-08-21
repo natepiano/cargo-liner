@@ -10,17 +10,16 @@ use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 use tui_pane::PaneFocusState;
+use tui_pane::PaneFrameChrome;
 use tui_pane::PaneTitleCount;
 use tui_pane::Viewport;
 use tui_pane::label_color;
-use tui_pane::render_overflow_affordance;
 use tui_pane::text_default;
 use tui_pane::title_color;
 
 use super::pane::LangPane;
 use crate::project::LangEntry;
 use crate::project::LanguageStats;
-use crate::tui::panes::RenderStyles;
 use crate::tui::panes::constants::LANG_NUM_COL;
 use crate::tui::render;
 use crate::tui::render_context::PaneRenderCtx;
@@ -217,9 +216,8 @@ pub fn render_lang_pane_body(
     frame: &mut Frame,
     area: Rect,
     pane: &mut LangPane,
-    styles: &RenderStyles,
     ctx: &PaneRenderCtx<'_>,
-) {
+) -> PaneFrameChrome {
     let pane_focus_state = pane.focus.pane_focus_state;
     let is_focused = pane.focus.is_focused();
     let PaneRenderCtx {
@@ -244,25 +242,28 @@ pub fn render_lang_pane_body(
             cursor,
         },
     );
-    let block = styles.chrome.block(title, is_focused);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = tui_pane::frame_inner(area);
+    let mut chrome = PaneFrameChrome {
+        title,
+        focused: is_focused,
+        ..PaneFrameChrome::default()
+    };
 
     let Some(stats) = lang_stats else {
         pane.viewport.clear_surface();
         frame.render_widget(Paragraph::new("  Scanning..."), inner);
-        return;
+        return chrome;
     };
 
     if stats.entries.is_empty() {
         pane.viewport.clear_surface();
         frame.render_widget(Paragraph::new("  No source files detected"), inner);
-        return;
+        return chrome;
     }
 
     if inner.height < 2 {
         pane.viewport.clear_surface();
-        return;
+        return chrome;
     }
 
     let widths = lang_table_widths();
@@ -311,10 +312,11 @@ pub fn render_lang_pane_body(
         render_lang_table(frame, pane, rows, widths, body_area);
     }
 
-    render_overflow_affordance(
-        frame,
+    chrome.labels.extend(tui_pane::overflow_affordance_label(
         area,
         pane.viewport.overflow(),
         Style::default().fg(label_color()),
-    );
+    ));
+
+    chrome
 }

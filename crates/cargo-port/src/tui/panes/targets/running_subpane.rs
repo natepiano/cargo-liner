@@ -24,6 +24,7 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use tui_pane::PaneFocusState;
+use tui_pane::PaneFrameChrome;
 use tui_pane::PaneTitleCount;
 use tui_pane::Placed;
 use tui_pane::RuleTitle;
@@ -403,7 +404,6 @@ pub(super) struct RunningSubpaneRender<'a> {
     /// Selectable rows before the Running box — its rows' logical indices
     /// start here.
     pub table_len:        usize,
-    pub border_style:     Style,
     pub title_style:      Style,
 }
 
@@ -495,22 +495,23 @@ pub(super) fn render_running_subpane(
     placed: Placed,
     pane_area: Rect,
     row_rects: &mut Vec<(Rect, usize)>,
+    chrome: &mut PaneFrameChrome,
 ) {
-    render_divider(frame, context, placed, pane_area);
+    push_divider(context, placed, pane_area, chrome);
     let columns = RunningColumns::new(context.rows, context.expanded_parents);
     render_header(frame, &columns, placed);
     render_rows(frame, context, &columns, placed, row_rects);
 }
 
-/// The divider rule, full pane width so its `├`/`┤` endcaps tee into the
+/// The divider rule, full pane width so the grid pass tees it into the
 /// side borders, titled with the instance count — or the highlighted
 /// instance's position among all instances while the highlight sits on
 /// one (the `cargo` header shows the plain count).
-fn render_divider(
-    frame: &mut Frame,
+fn push_divider(
     context: &RunningSubpaneRender<'_>,
     placed: Placed,
     pane_area: Rect,
+    chrome: &mut PaneFrameChrome,
 ) {
     if placed.chrome.height == 0 {
         return;
@@ -532,21 +533,21 @@ fn render_divider(
         }
         .body()
     );
-    tui_pane::render_horizontal_rule(
-        frame,
-        Rect {
-            x:      pane_area.x,
-            y:      placed.chrome.y,
-            width:  pane_area.width,
-            height: 1,
-        },
-        context.border_style,
-        Some(RuleTitle {
+    let rule_area = Rect {
+        x:      pane_area.x,
+        y:      placed.chrome.y,
+        width:  pane_area.width,
+        height: 1,
+    };
+    chrome.rules.push(rule_area);
+    chrome.labels.extend(tui_pane::rule_title_label(
+        rule_area,
+        RuleTitle {
             text:  &title,
             style: context.title_style,
-        }),
+        },
         None,
-    );
+    ));
 }
 
 fn render_header(frame: &mut Frame, columns: &RunningColumns, placed: Placed) {

@@ -18,4 +18,5 @@ pub use region::Size;
 pub use viewport::Viewport;
 pub use viewport::ViewportOverflow;
 pub use viewport::keep_visible_scroll_offset;
+pub use viewport::overflow_affordance_label;
 pub use viewport::render_overflow_affordance;

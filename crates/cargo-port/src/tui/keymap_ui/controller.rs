@@ -48,7 +48,7 @@ pub fn is_generated_vim_extra(scope: &str, action_key: &str, bind: &KeySequence)
 /// written TOML — the letters (h/j/k/l/G) and the Ctrl page /
 /// half-page motions (Ctrl-b/f/u/d). None of these are keymappable;
 /// they exist only while vim mode is on (see
-/// [`tui_pane::NavAction::vim_letter_extras`]).
+/// `vim_letter_extras`).
 fn is_navigation_generated_vim_extra(action_key: &str, bind: &KeySequence) -> bool {
     let Some(key) = bind.single_key() else {
         return action_key == "home"

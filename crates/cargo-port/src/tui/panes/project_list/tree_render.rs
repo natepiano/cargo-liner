@@ -6,10 +6,10 @@ use ratatui::widgets::List;
 use ratatui::widgets::ListItem;
 use ratatui::widgets::ListState;
 use ratatui::widgets::Paragraph;
+use tui_pane::PaneFrameChrome;
 use tui_pane::PaneTitleCount;
 use tui_pane::PaneTitleGroup;
 use tui_pane::label_color;
-use tui_pane::render_overflow_affordance;
 
 use super::ProjectListPane;
 use super::disk;
@@ -33,7 +33,7 @@ pub(super) fn render_project_list_pane_body(
     area: Rect,
     pane: &mut ProjectListPane,
     ctx: &PaneRenderCtx<'_>,
-) {
+) -> PaneFrameChrome {
     let projects = ctx.project_list;
     let (mut items, header, summary_lines, row_width) = {
         let widths = &projects.cached_fit_widths;
@@ -72,13 +72,16 @@ pub(super) fn render_project_list_pane_body(
     let total_project_rows = items.len();
 
     let title = project_panel_title_with_counts(pane, ctx, area.width.saturating_sub(2).into());
-    let block = tui_pane::default_pane_chrome().block(title, pane.focus.is_focused());
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = tui_pane::frame_inner(area);
+    let mut chrome = PaneFrameChrome {
+        title,
+        focused: pane.focus.is_focused(),
+        ..PaneFrameChrome::default()
+    };
     if inner.height == 0 {
         pane.viewport.clear_surface();
         pane.body_rect = Rect::ZERO;
-        return;
+        return chrome;
     }
 
     let header_area = Rect::new(inner.x, inner.y, inner.width, 1);
@@ -95,7 +98,7 @@ pub(super) fn render_project_list_pane_body(
     if content_area.height == 0 {
         pane.viewport.clear_surface();
         pane.body_rect = Rect::ZERO;
-        return;
+        return chrome;
     }
 
     let summary_height = u16::try_from(summary_lines.len()).unwrap_or(u16::MAX);
@@ -139,12 +142,13 @@ pub(super) fn render_project_list_pane_body(
         render_project_list_footer(frame, content_area, &summary_lines);
     }
 
-    render_overflow_affordance(
-        frame,
+    chrome.labels.extend(tui_pane::overflow_affordance_label(
         area,
         pane.viewport.overflow(),
         Style::default().fg(label_color()),
-    );
+    ));
+
+    chrome
 }
 
 fn set_project_list_dismiss_actions(

@@ -1,35 +1,8 @@
-use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use ratatui::text::Line;
-use ratatui::text::Span;
-use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
-/// One rule segment to draw inside a pane.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PaneRule {
-    /// Horizontal line with `├`/`┤` endcaps and an optional `┬`
-    /// connector where a vertical rule tees in from above.
-    Horizontal {
-        /// Rect that the rule fills.
-        area:        Rect,
-        /// Optional absolute x column rendered as `┬`.
-        connector_x: Option<u16>,
-    },
-    /// Vertical line of `│` glyphs.
-    Vertical {
-        /// Rect that the rule fills.
-        area: Rect,
-    },
-    /// Single-cell symbol (e.g. a corner or connector).
-    Symbol {
-        /// Rect for the symbol cell.
-        area:  Rect,
-        /// Glyph drawn into the cell.
-        glyph: char,
-    },
-}
+use crate::PaneFrameLabel;
 
 /// Optional title to embed near the left end of a horizontal rule.
 #[derive(Clone, Copy)]
@@ -40,50 +13,40 @@ pub struct RuleTitle<'a> {
     pub style: Style,
 }
 
-/// Render every rule in `rules` using `style` for the line glyphs.
-pub fn render_rules(frame: &mut Frame, rules: &[PaneRule], style: Style) {
-    for rule in rules {
-        match *rule {
-            PaneRule::Horizontal { area, connector_x } => {
-                render_horizontal_rule(frame, area, style, None, connector_x);
-            },
-            PaneRule::Vertical { area } => render_vertical_rule(frame, area, style),
-            PaneRule::Symbol { area, glyph } => render_symbol_rule(frame, area, style, glyph),
-        }
-    }
-}
-
-/// Render a horizontal rule with `├`/`┤` endcaps.
+/// Where a titled rule writes its title.
 ///
-/// - `title`: when present, embeds a section title. Without a connector this renders as `├─ Title
-///   ─...─┤`. With a connector the title sits to the right of the connector as `├─...─┬ Title
-///   ─...─┤`. Falls back to the plain form when the area is too narrow.
-/// - `connector_x`: absolute x column that should render as `┬` instead of `─`, used when a
-///   vertical pane border tees in from above.
-pub fn render_horizontal_rule(
-    frame: &mut Frame,
+/// A pane reports its rules to the grid rather than drawing them, so the
+/// line itself — and every junction it makes with a border — comes out of
+/// the grid pass. Only the title has to be placed, as a label written over
+/// the line once every line is down: `─ Title ` reading `├─ Title ───┤`
+/// across the finished rule, or `├──┬ Title ──┤` when a vertical rule tees
+/// in at `connector_x`. `None` when the title does not fit and the rule
+/// runs unbroken.
+#[must_use]
+pub fn rule_title_label(
     area: Rect,
-    rule_style: Style,
-    title: Option<RuleTitle<'_>>,
+    title: RuleTitle<'_>,
     connector_x: Option<u16>,
-) {
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-
-    let line = match (title, connector_x) {
-        (Some(title), Some(c))
-            if connector_in_area(area, c) && fits_title_after_connector(area, c, title.text) =>
+) -> Option<PaneFrameLabel> {
+    // The label carries its own space on each side, so it starts on the
+    // column before the title: right after the `┬` a vertical rule makes,
+    // or two past the left end, where `├─` runs.
+    let label_x = match connector_x {
+        Some(connector)
+            if connector_in_area(area, connector)
+                && fits_title_after_connector(area, connector, title.text) =>
         {
-            titled_line_with_connector(area, title, rule_style, c)
+            connector.saturating_add(1)
         },
-        (Some(title), _) if fits_title(area.width, title.text) => {
-            titled_line(area.width, title, rule_style)
-        },
-        _ => plain_line(area, rule_style, connector_x),
+        _ if fits_title(area.width, title.text) => area.x.saturating_add(2),
+        _ => return None,
     };
-
-    frame.render_widget(Paragraph::new(line), area);
+    let width = u16::try_from(title.text.width().saturating_add(2)).unwrap_or(u16::MAX);
+    Some(PaneFrameLabel {
+        area:  Rect::new(label_x, area.y, width, 1),
+        text:  format!(" {} ", title.text),
+        style: title.style,
+    })
 }
 
 fn fits_title(width: u16, title: &str) -> bool {
@@ -104,88 +67,4 @@ fn fits_title_after_connector(area: Rect, connector_x: u16, title: &str) -> bool
         .saturating_add(area.width)
         .saturating_sub(connector_x.saturating_add(1));
     usize::from(right_of_connector) >= title.width() + 3
-}
-
-fn titled_line(width: u16, title: RuleTitle<'_>, rule_style: Style) -> Line<'static> {
-    const LEADING: &str = "├─ ";
-    const TRAILING: &str = "┤";
-    let total = usize::from(width);
-    let dashes = total
-        .saturating_sub(LEADING.width())
-        .saturating_sub(title.text.width())
-        .saturating_sub(1) // space between title and dashes
-        .saturating_sub(TRAILING.width());
-    let fill = "─".repeat(dashes);
-    Line::from(vec![
-        Span::styled(LEADING.to_string(), rule_style),
-        Span::styled(title.text.to_string(), title.style),
-        Span::styled(format!(" {fill}{TRAILING}"), rule_style),
-    ])
-}
-
-fn titled_line_with_connector(
-    area: Rect,
-    title: RuleTitle<'_>,
-    rule_style: Style,
-    connector_x: u16,
-) -> Line<'static> {
-    const TRAILING: &str = "┤";
-    let left_dashes = usize::from(connector_x.saturating_sub(area.x).saturating_sub(1));
-    let left = format!("├{}", "─".repeat(left_dashes));
-    let right_width = usize::from(
-        area.x
-            .saturating_add(area.width)
-            .saturating_sub(connector_x.saturating_add(1)),
-    );
-    // After the ┬: " Title " + fill dashes + "┤".
-    let fill_dashes = right_width
-        .saturating_sub(1) // leading space before title
-        .saturating_sub(title.text.width())
-        .saturating_sub(1) // space between title and dashes
-        .saturating_sub(TRAILING.width());
-    let fill = "─".repeat(fill_dashes);
-    Line::from(vec![
-        Span::styled(left, rule_style),
-        Span::styled("┬ ".to_string(), rule_style),
-        Span::styled(title.text.to_string(), title.style),
-        Span::styled(format!(" {fill}{TRAILING}"), rule_style),
-    ])
-}
-
-fn plain_line(area: Rect, style: Style, connector_x: Option<u16>) -> Line<'static> {
-    let glyphs: String = (0..area.width)
-        .map(|offset| {
-            let x = area.x.saturating_add(offset);
-            if offset == 0 {
-                '├'
-            } else if offset == area.width.saturating_sub(1) {
-                '┤'
-            } else if connector_x == Some(x) {
-                '┬'
-            } else {
-                '─'
-            }
-        })
-        .collect();
-    Line::from(Span::styled(glyphs, style))
-}
-
-fn render_vertical_rule(frame: &mut Frame, area: Rect, style: Style) {
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-    let lines = (0..area.height)
-        .map(|_| Line::from(Span::styled("│", style)))
-        .collect::<Vec<_>>();
-    frame.render_widget(Paragraph::new(lines), area);
-}
-
-fn render_symbol_rule(frame: &mut Frame, area: Rect, style: Style, glyph: char) {
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(glyph.to_string(), style))),
-        area,
-    );
 }

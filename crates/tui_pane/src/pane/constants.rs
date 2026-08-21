@@ -10,3 +10,7 @@ pub(super) const FOCUSED_PANE_TINT_LIGHT_BG: Color = Color::Rgb(240, 240, 245);
 pub(super) const FOCUSED_PANE_TINT_LIGHT_BLUE_DELTA: u8 = 10;
 pub(super) const FOCUSED_PANE_TINT_LIGHT_GREEN_DELTA: u8 = 14;
 pub(super) const FOCUSED_PANE_TINT_LIGHT_RED_DELTA: u8 = 14;
+
+// shared pane frame
+/// Cells one border line occupies, on one side of a pane.
+pub(super) const BORDER_LINE_WIDTH: u16 = 1;

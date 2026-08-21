@@ -471,7 +471,7 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
 
     /// TOML scope name registered for `app_pane_id`, or `None` when no
     /// scope is registered. Mirrors the inverse of
-    /// [`Self::insert_scope`].
+    /// `insert_scope`.
     #[must_use]
     pub fn scope_toml_name_for(&self, app_pane_id: Ctx::AppPaneId) -> Option<&'static str> {
         self.scopes
