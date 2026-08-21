@@ -94,7 +94,7 @@ fn draw_panes(frame: &mut Frame, app: &App, area: Rect) {
     draw_process_table(frame, inner, &app.processes);
 }
 
-/// The invocations sharing one working directory, in scan order.
+/// The invocations sharing one working directory.
 struct PathGroup<'a> {
     /// The working directory, as it heads the group.
     path:      &'a str,
@@ -150,13 +150,19 @@ fn draw_process_table(frame: &mut Frame, area: Rect, processes: &[CargoProcess])
     }
 }
 
-/// Collect the processes by working directory, preserving scan order.
+/// Collect the processes by working directory, groups ordered by path.
 ///
-/// [`crate::processes::spawn`] hands back newest first, so the directory
-/// whose build started most recently heads the list and each group stays
-/// newest first inside. A linear search per process is enough: the
-/// grouping key is a path a developer is building in, and there are only
-/// ever a handful of those at once.
+/// Ordering the groups by recency instead would rank each one by its
+/// newest invocation, which moves a directory down the pane when the
+/// build holding its place finishes -- a reshuffle triggered by the most
+/// routine event on this screen. Path order never moves on its own.
+/// Recency is not lost: [`crate::processes::spawn`] hands back newest
+/// first and that carries into each group, so a build just fired off
+/// still heads its own directory.
+///
+/// A linear search per process is enough: the grouping key is a path a
+/// developer is building in, and there are only ever a handful of those
+/// at once.
 fn group_by_path(processes: &[CargoProcess]) -> Vec<PathGroup<'_>> {
     let mut groups: Vec<PathGroup<'_>> = Vec::new();
     for process in processes {
@@ -169,6 +175,7 @@ fn group_by_path(processes: &[CargoProcess]) -> Vec<PathGroup<'_>> {
             processes: vec![process],
         });
     }
+    groups.sort_by(|left, right| left.path.cmp(right.path));
     groups
 }
 
