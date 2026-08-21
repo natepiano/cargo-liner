@@ -132,7 +132,13 @@ fn scan(system: &mut System, home: Option<&Path>) -> Vec<CargoProcess> {
         })
         .collect();
     // Newest first, so a cargo command just fired off lands at the top.
-    dated.sort_by(|left, right| right.0.cmp(&left.0).then(left.1.pid.cmp(&right.1.pid)));
+    //
+    // The start time is whole seconds -- sysinfo reads the kernel's
+    // `pbi_start_tvsec` and drops the microseconds beside it -- so a burst
+    // of invocations fired together all tie. Pid breaks the tie in the
+    // same direction: macOS hands them out in order, so within one second
+    // the higher pid is the later start.
+    dated.sort_by(|left, right| right.0.cmp(&left.0).then(right.1.pid.cmp(&left.1.pid)));
     dated.into_iter().map(|(_, process)| process).collect()
 }
 
