@@ -5,9 +5,10 @@ All notable changes to this crate will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.7.0] - 2026-08-21
 
 ### Added
+- Add the shared border grid: `GridLines`, `PaneFrame`, `PaneFrameLabel`, `PaneFrameChrome`, `share_borders`, `draw_clipped`, `frame_inner`, `rule_title_label`, and `overflow_affordance_label`. `GridLines` collects every pane's four edges into a per-cell side bitset and derives the box-drawing glyph from it, so a boundary two panes share is drawn once and the crossing where four meet resolves without any caller naming a junction character. A pane body now returns `PaneFrameChrome` rather than drawing its own `Block`, and a rule that crossed a pane border moves into `chrome.rules` with its title becoming a label.
 - Add `KeymapEditContext` and the keymap-editor controller, so the framework now owns the whole keymap overlay rather than only its rendering and state machine: selection movement, Enter-to-edit, capture validation against every binding in force, conflict detection across scopes, and the `keymap.toml` write and reload. An embedding app supplies where the file lives, the TOML header, inline-error get/set, how to rebuild its keymap, and its globals type. Previously each app had to write this itself.
 - Make `Keymap::scope_toml_name_for` public: the pane-id to TOML-scope-name mapping the keymap already holds, which apps were re-deriving by hand.
 
@@ -17,6 +18,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - **Breaking:** remove the focused-border colour. `PaneChromeTheme::active_border`, `PaneChrome::active_border`, and `active_border_color()` are gone, and `GridLines` draws every line in the inactive shade. A border is a cell two panes share, so lighting it for the focused one took the boundary away from its neighbour and left the focused box's corners fighting the junctions they really sit on -- a `T` or a crossing could be closed into a corner or left leaking a lit arm, but not both. Focus is now carried by the background tint alone. Themes may keep an `active_border` key; it is ignored.
 - Every pane now paints its own background, unfocused ones included, rather than only the focused one. A cell with no background of its own is the terminal's *default* background, and a transparent terminal window composites that cell differently from a painted one, so leaving unfocused panes bare made focus read as a difference in opacity: under iTerm2 with "Only the default background color uses transparency" ticked, the focused pane went solid while its neighbours showed the desktop. Painting both puts them on the same footing, and the window's own transparency then applies to the grid evenly, with focus carried by how far each pane's tint is pushed. Untick that iTerm2 option to see it; leaving it ticked makes the whole grid opaque instead. `focused_pane_tint_enabled()` still switches the tint off entirely, which restores unpainted panes.
 - **Breaking:** remove `PaneChrome::with_inactive_border`, which had no remaining consumer once cargo-tile stopped forcing its grid to the focused shade.
+- **Breaking:** remove `PaneRule`, `render_rules`, and `render_horizontal_rule`. Every rule that crossed a pane border moved into `PaneFrameChrome::rules`, which the shared border grid draws, and the three lost their last consumer in that move.
 - Move development into the `natepiano/cargo-liner` workspace, where `tui_pane` now lives at `crates/tui_pane` as a peer of the tools built on it rather than as a subdirectory of cargo-port. The published crate is unchanged.
 
 ## [0.6.0] - 2026-08-19
