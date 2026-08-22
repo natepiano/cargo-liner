@@ -146,9 +146,25 @@ else
 fi
 
 fifo=
+# What makes a finished log worth keeping: cargo's unit counter, or the
+# line it prints while it waits for the build-directory lock. These are
+# the two things the grid reads, spelled here as an ERE because the shim
+# cannot see the constants the reader uses.
+worth_keeping='waiting for file lock|\] [0-9]+/[0-9]+:'
 cleanup() {
     rm -f "$pids/$$"
     if [ -n "$fifo" ]; then rm -f "$fifo"; fi
+    # A run that reached no unit and waited on no lock leaves a log with
+    # nothing in it the grid could ever have read. Editors issue those
+    # constantly -- rust-analyzer checks on every save -- and nothing
+    # else prunes the directory, so they go here rather than accumulate
+    # one per save until the system sweeps /tmp. A log that did record
+    # something is left alone: `grep -q` stops at the first match, so
+    # the scan costs a real build almost nothing and only reads an empty
+    # one to the end.
+    if [ -f "$log" ] && ! grep -qE "$worth_keeping" "$log" 2> /dev/null; then
+        rm -f "$log"
+    fi
 }
 trap cleanup EXIT
 trap 'exit 130' INT

@@ -197,6 +197,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::constants::LOCK_WAIT_MARKER;
     use crate::constants::SIBLING_SUBCOMMAND_NAME;
     use crate::constants::SUBCOMMAND_NAME;
 
@@ -234,6 +235,18 @@ mod tests {
         // line a blocked run prints reaches the grid after the wait it
         // announced is over.
         assert!(SHIM_SOURCE.contains("script -q -t 0"));
+    }
+
+    /// A finished run's log is kept only if it holds one of the two
+    /// things the grid reads out of it. The shim spells them itself,
+    /// having no way to see the reader's constants, so the wait marker
+    /// is checked here against the one the reader uses -- a rename on
+    /// either side would otherwise leave the shim quietly deleting logs
+    /// that had something to say.
+    #[test]
+    fn the_shim_keeps_the_logs_the_reader_could_read() {
+        assert!(SHIM_SOURCE.contains(LOCK_WAIT_MARKER));
+        assert!(SHIM_SOURCE.contains(r#"rm -f "$log""#));
     }
 
     /// Whether the shim's exemption arm names this subcommand. The arm

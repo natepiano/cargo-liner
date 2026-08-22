@@ -292,11 +292,14 @@ the child's status. The shim asks which is present — only util-linux answers
 `--version` — and calls it accordingly. Where there is no `script` at all it
 falls back to the no-terminal route described above rather than giving up.
 
-Nothing prunes the logs — every captured run leaves one behind, and whatever
-cleans `/tmp` on the system is what bounds the directory: macOS sweeps files
-after a few days, and many Linux systems clear it at boot. A run counts as live
-only while its marker file under `/tmp/cargo-tile/state/pids/` exists, so
-deleting the logs is safe at any time. `CARGO_TILE_ROOT` moves the whole
+A run that reached no unit and waited on no lock deletes its own log as it
+ends: there is nothing in it the grid could have read, and an editor issues one
+such check on every save. What is left behind is the logs of runs that actually
+reported something, and whatever cleans `/tmp` on the system is what bounds
+those: macOS sweeps files after a few days, and many Linux systems clear it at
+boot. A run counts as live only while its marker file under
+`/tmp/cargo-tile/state/pids/` exists, so deleting the logs is safe at any
+time. `CARGO_TILE_ROOT` moves the whole
 directory, which is how a second grid runs on captures of its own.
 
 ### keys
