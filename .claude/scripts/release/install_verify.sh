@@ -10,10 +10,10 @@ VERSION="${1:?Usage: install_verify.sh <version> <crate>}"
 CRATE="${2:?Usage: install_verify.sh <version> <crate>}"
 
 case "${CRATE}" in
-cargo-port)
-    echo "Installing cargo-port v${VERSION}..."
-    cargo install cargo-port --version "${VERSION}"
-    echo "Install verified: cargo-port v${VERSION}"
+cargo-port | cargo-tile)
+    echo "Installing ${CRATE} v${VERSION}..."
+    cargo install "${CRATE}" --version "${VERSION}"
+    echo "Install verified: ${CRATE} v${VERSION}"
     ;;
 cargo-mend)
     # cargo-mend links rustc_driver. Installing with stable + RUSTC_BOOTSTRAP
