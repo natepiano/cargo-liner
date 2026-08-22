@@ -51,6 +51,8 @@ use crate::constants::SELF_PROCESS_NAME;
 use crate::constants::START_TIME_FORMAT;
 use crate::constants::UNRESOLVED_PATH;
 use crate::constants::UNRESOLVED_TIME;
+use crate::progress::Capture;
+use crate::progress::Progress;
 
 /// One running `cargo` invocation, preformatted for the table.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -67,6 +69,11 @@ pub(crate) struct CargoProcess {
     /// invocation leading a group this is the whole group's tally, so
     /// the summary reports the build rather than the driver process.
     pub(crate) compiler: Option<Compiler>,
+    /// How far the command has got, when a capture of its output is
+    /// there to read it from. Carried by the invocation leading a group
+    /// and by nothing under it: the capture covers the whole command,
+    /// so the count on a child would repeat its parent's.
+    pub(crate) progress: Option<Progress>,
     /// Cargo invocations running under this one. Zero for a plain
     /// command, which is what most rows are.
     pub(crate) managed:  usize,
@@ -227,7 +234,7 @@ fn scan(system: &mut System, home: Option<&Path>) -> Vec<CargoGroup> {
     census.collapse_shims(system);
 
     let counts = census.attribute_compilers();
-    census.groups(system, &counts, home)
+    census.groups(system, &counts, home, &Capture::take())
 }
 
 /// What phase one learned: the parent links, the cargo processes, and the
@@ -393,6 +400,24 @@ impl Census {
     /// A lead ties with another when both started inside the same second
     /// -- the start time is whole seconds, since sysinfo reads the
     /// kernel's `pbi_start_tvsec` and drops the microseconds beside it.
+    /// What the capture behind `pid` reports, if one is behind it.
+    ///
+    /// The walk goes upward because the pid a capture is filed under is
+    /// the shim's, and the shim is an ancestor of the cargo it started
+    /// rather than the cargo itself -- two levels up when the run went
+    /// through a pty, one when it did not. The same bound the compiler
+    /// walk uses stops a reparented cycle here.
+    fn captured_run(&self, capture: &Capture, pid: Pid) -> Option<Progress> {
+        let mut walking = pid;
+        for _ in 0..PARENT_WALK_LIMIT {
+            if let Some(progress) = capture.read(walking.as_u32()) {
+                return Some(progress);
+            }
+            walking = *self.parents.get(&walking)?;
+        }
+        None
+    }
+
     /// Pid breaks the tie in the same direction: macOS hands them out in
     /// order, so within one second the higher pid is the later start.
     fn groups(
@@ -400,6 +425,7 @@ impl Census {
         system: &System,
         counts: &HashMap<Pid, Compiler>,
         home: Option<&Path>,
+        capture: &Capture,
     ) -> Vec<CargoGroup> {
         let children = self.cargo_children();
         let mut dated: Vec<(u64, CargoGroup)> = self
@@ -408,7 +434,10 @@ impl Census {
             .filter(|&&pid| self.owning_cargo(pid).is_none_or(|owner| owner == pid))
             .filter_map(|&pid| {
                 let start = system.process(pid)?.start_time();
-                Some((start, Self::group(system, counts, home, &children, pid)?))
+                Some((
+                    start,
+                    self.group(system, counts, home, &children, capture, pid)?,
+                ))
             })
             .collect();
         dated.sort_by(|left, right| {
@@ -422,10 +451,12 @@ impl Census {
 
     /// Build the group led by `root`.
     fn group(
+        &self,
         system: &System,
         counts: &HashMap<Pid, Compiler>,
         home: Option<&Path>,
         children: &HashMap<Pid, Vec<Pid>>,
+        capture: &Capture,
         root: Pid,
     ) -> Option<CargoGroup> {
         let managed = Self::descendants(children, root);
@@ -441,6 +472,7 @@ impl Census {
         // typed is doing, and for a manager none of that work is running
         // under the manager's own pid.
         lead.compiler = aggregate_compilers(counts, std::iter::once(root).chain(managed.clone()));
+        lead.progress = self.captured_run(capture, root);
 
         let mut dated: Vec<(u64, CargoProcess)> = managed
             .into_iter()
@@ -498,6 +530,7 @@ fn row(
         start: start_label(process.start_time()),
         duration: duration_label(process.run_time()),
         compiler,
+        progress: None,
         managed,
         command: command_text(process.cmd(), home)?,
     })

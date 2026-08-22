@@ -8,6 +8,10 @@ with [`cargo-port`](../cargo-port).
 cargo run -p cargo-tile
 ```
 
+Once installed it answers to both `cargo-tile` and `cargo tile` — cargo runs any
+`cargo-`prefixed binary on the path as a subcommand of its own, and the two
+spellings take the same arguments.
+
 It takes over the terminal (alternate screen, raw mode) and draws one content
 pane above the framework status line. The pane tiles into an animated grid of the
 cargo invocations running on this machine; the sections below describe how it
@@ -179,6 +183,90 @@ each, but the four ends of them are that cell's corners rather than the junction
 they would otherwise read as, so the focused cell reads as one closed box sitting
 inside the grid. Focus follows its cell as the grid closes up around it, and falls
 back to the summary when that cell goes.
+
+### build progress
+
+A compiling row can show how far along it is:
+
+```
+pid    start  dur   done          compiler  sub  command
+41883  14:02  1:07   62% ████▌░    rustc          cargo build --release
+```
+
+and a command's own cell rules the same reading along its heading:
+
+```
+~/rust/nateroids ━━━━━━━━━━━━━━━╌╌╌╌╌ 62%
+```
+
+The number is cargo's own. While it compiles, cargo draws
+`Building [========>    ] 149/403: globset, regex-automata`, and those two
+counts are units of its build plan finished and planned — a unit being one
+compilation of one crate target. Nothing here estimates anything. A unit that is
+already fresh counts as finished the moment cargo checks it, so an incremental
+build opens near its total rather than at zero.
+
+Reading it takes a capture, and that is what the shim is for:
+
+```bash
+cargo-tile install      # put the shim in front of cargo
+cargo-tile status       # report what stands in front of each toolchain
+cargo-tile uninstall    # give cargo its name back
+```
+
+`cargo tile install` and the rest work the same way.
+
+The rows in the grid are found by scanning the process table, so they belong to
+other terminals — and a process's output belongs to the terminal that started
+it. Nothing outside can read it. So `cargo-tile install` moves each toolchain's
+real cargo aside to `cargo-tile-real` and puts a small script in its place,
+which runs the real binary under a pty and mirrors the output to
+`/tmp/cargo-tile/run-<timestamp>-<pid>.log`. The grid reads the last counter out
+of the tail of that log.
+
+Without the shim nothing breaks: the `done` column simply stays out of the
+summary and headings draw no rule. Progress is the only thing it adds.
+
+A run with no terminal — one started by a script, or with its output piped —
+gets a bar too, but by a different route: cargo draws no progress at all
+without a tty unless asked, so the shim asks, and passes a width because cargo
+rejects `always` without one. Only stderr is copied there, so piped stdout
+stays byte for byte what the caller expects.
+
+Worth knowing before installing it:
+
+- **It stands in front of every cargo run on the machine**, not just the ones
+  you are watching. It changes nothing about what cargo does, prints, or exits
+  with — it only copies the output aside.
+- **A run already going cannot be captured.** The shim is only there for
+  processes it starts, so anything mid-flight when you install shows in the grid
+  without a bar until it is run again. Installing during a build is otherwise
+  safe: a running cargo holds its binary open, and moving that file aside does
+  not disturb it.
+- **Query invocations are passed straight through** — `cargo metadata`,
+  `--version`, `--message-format=json`, and the rest. They compile nothing, and
+  rust-analyzer issues them constantly. So is `cargo tile` itself: capturing it
+  would run the grid under `script` and log every redraw of it.
+- **A nested cargo does not open a second capture.** A build script, or cargo
+  driving cargo, is already inside the outer run.
+- **`rustup update` replaces the shim** with a fresh cargo. Run
+  `cargo-tile install` again — it is safe to repeat, and repairing that is the
+  same command.
+- **The real binary is only ever moved, never written over**, and anything
+  holding the name without the shim's marker in it is treated as the real cargo.
+  That is what makes installing twice harmless.
+
+The shim is POSIX `sh`, and runs on macOS and Linux. The one real difference
+between them is `script` itself: the BSD one takes a command and its arguments,
+util-linux's takes a single command line after `-c` and needs `-e` to exit with
+the child's status. The shim asks which is present — only util-linux answers
+`--version` — and calls it accordingly. Where there is no `script` at all it
+falls back to the no-terminal path below rather than giving up.
+
+Logs are never deleted, so the directory keeps every run since the last reboot;
+a run counts as live only while its marker file under
+`/tmp/cargo-tile/state/pids/` exists. `CARGO_TILE_ROOT` moves the whole
+directory, which is how a second grid runs on captures of its own.
 
 ### keys
 

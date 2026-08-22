@@ -9,13 +9,14 @@ license.workspace    = true
 name                 = "cargo-tile"
 readme               = "README.md"
 repository.workspace = true
-version              = "0.2.0-dev"
+version              = "0.2.0-dev.5"
 
 [lints]
 workspace = true
 
 [dependencies]
 chrono    = { workspace = true }
+clap      = { workspace = true }
 crossterm = { workspace = true }
 dirs      = { workspace = true }
 ratatui   = { workspace = true }
@@ -25,3 +26,6 @@ toml      = { workspace = true }
 
 # tui_pane provides the framework used by the binary.
 tui_pane = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

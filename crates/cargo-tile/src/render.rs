@@ -52,6 +52,7 @@ use crate::constants::APP_VERSION;
 use crate::constants::COMMAND_COLUMN;
 use crate::constants::COMPILER_COLUMN;
 use crate::constants::COMPILER_SEPARATOR_WIDTH;
+use crate::constants::DONE_COLUMN;
 use crate::constants::DURATION_COLUMN;
 use crate::constants::GROUP_GAP_HEIGHT;
 use crate::constants::GROUP_HEADER_HEIGHT;
@@ -60,6 +61,16 @@ use crate::constants::NO_PROCESSES_NOTE;
 use crate::constants::PID_COLUMN;
 use crate::constants::POPUP_CHROME_HEIGHT;
 use crate::constants::POPUP_CHROME_WIDTH;
+use crate::constants::PROGRESS_ABSENT;
+use crate::constants::PROGRESS_CELL_BAR_WIDTH;
+use crate::constants::PROGRESS_CELL_EMPTY;
+use crate::constants::PROGRESS_CELL_FILLED;
+use crate::constants::PROGRESS_CELL_PARTIALS;
+use crate::constants::PROGRESS_HEADING_EMPTY;
+use crate::constants::PROGRESS_HEADING_FILLED;
+use crate::constants::PROGRESS_HEADING_MARGINS;
+use crate::constants::PROGRESS_HEADING_MIN_WIDTH;
+use crate::constants::PROGRESS_READING_GAP;
 use crate::constants::SETTINGS_POPUP_WIDTH;
 use crate::constants::START_COLUMN;
 use crate::constants::STATUS_LINE_HEIGHT;
@@ -71,6 +82,7 @@ use crate::constants::TILE_NUMBER_INDENT;
 use crate::globals::AppGlobalAction;
 use crate::processes::CargoProcess;
 use crate::processes::ManifestPath;
+use crate::progress::Progress;
 use crate::roster::Roster;
 use crate::roster::TrackedRow;
 use crate::settings;
@@ -154,7 +166,13 @@ fn draw_contents(buffer: &mut Buffer, roster: &Roster, content: TileContent, inn
 /// while costing the width the subcommand and its flags need.
 fn draw_summary(buffer: &mut Buffer, roster: &Roster, inner: Rect) {
     let rows: Vec<&TrackedRow> = roster.groups().iter().map(|group| &group.lead).collect();
-    draw_process_table(buffer, inner, &rows, ManifestPath::Hidden);
+    draw_process_table(
+        buffer,
+        inner,
+        &rows,
+        ManifestPath::Hidden,
+        ProgressPlacement::Column,
+    );
 }
 
 /// One command's own cell: every invocation the summary put behind that
@@ -164,7 +182,13 @@ fn draw_group(buffer: &mut Buffer, roster: &Roster, id: u32, inner: Rect) {
         return;
     };
     let rows: Vec<&TrackedRow> = group.rows().collect();
-    draw_process_table(buffer, inner, &rows, ManifestPath::Shown);
+    draw_process_table(
+        buffer,
+        inner,
+        &rows,
+        ManifestPath::Shown,
+        ProgressPlacement::Heading,
+    );
 }
 
 /// A cell opened with `+` that no command has claimed: its number, on
@@ -175,6 +199,21 @@ fn draw_number(buffer: &mut Buffer, number: usize, inner: Rect) {
         Span::styled(number.to_string(), Style::default().fg(title_color())),
     ]))
     .render(Rect { height: 1, ..inner }, buffer);
+}
+
+/// Where a cell puts what it knows of a command's build progress.
+///
+/// The two cells ask different questions of it. A command's own cell
+/// stands over one command, so the working-directory header can carry
+/// the whole reading and be read across the room; the summary's header
+/// stands over every command running in that directory at once, so the
+/// reading has to sit on the row it belongs to.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProgressPlacement {
+    /// A `done` cell on each row.
+    Column,
+    /// A rule along the working-directory header.
+    Heading,
 }
 
 /// The invocations sharing one working directory.
@@ -196,6 +235,7 @@ fn draw_process_table(
     area: Rect,
     rows: &[&TrackedRow],
     manifest: ManifestPath,
+    placement: ProgressPlacement,
 ) {
     if rows.is_empty() {
         Paragraph::new(vec![
@@ -212,9 +252,10 @@ fn draw_process_table(
     // One column-label row for the whole cell. Every group's table is
     // laid out with the same constraints and the same indent, so the
     // labels stay over their columns without costing a row per group.
-    let constraints = fitted_constraints(rows);
+    let columns = visible_columns(rows, placement);
+    let constraints = fitted_constraints(rows, &columns);
     Table::new(Vec::<Row>::new(), constraints.iter().copied())
-        .header(column_header())
+        .header(column_header(&columns))
         .column_spacing(TABLE_COLUMN_SPACING)
         .render(
             Rect {
@@ -231,7 +272,15 @@ fn draw_process_table(
         if remaining.height == 0 {
             break;
         }
-        let used = draw_path_group(buffer, remaining, &group, &constraints, manifest);
+        let used = draw_path_group(
+            buffer,
+            remaining,
+            &group,
+            &constraints,
+            &columns,
+            manifest,
+            placement,
+        );
         remaining.y = remaining.y.saturating_add(used);
         remaining.height = remaining.height.saturating_sub(used);
     }
@@ -276,13 +325,18 @@ fn draw_path_group(
     area: Rect,
     group: &PathGroup<'_>,
     constraints: &[Constraint],
+    columns: &[usize],
     manifest: ManifestPath,
+    placement: ProgressPlacement,
 ) -> u16 {
-    Paragraph::new(Line::from(vec![
+    let mut heading = vec![
         Span::raw(SECTION_HEADER_INDENT),
         Span::styled(group.path.to_string(), Style::default().fg(accent_color())),
-    ]))
-    .render(
+    ];
+    if placement == ProgressPlacement::Heading {
+        heading.extend(heading_gauge(group, area.width));
+    }
+    Paragraph::new(Line::from(heading)).render(
         Rect {
             height: GROUP_HEADER_HEIGHT.min(area.height),
             ..area
@@ -295,7 +349,10 @@ fn draw_path_group(
     let rows = u16::try_from(group.rows.len()).unwrap_or(u16::MAX);
     let table_height = area.height.saturating_sub(GROUP_HEADER_HEIGHT).min(rows);
     Table::new(
-        group.rows.iter().map(|row| process_row(row, manifest)),
+        group
+            .rows
+            .iter()
+            .map(|row| process_row(row, manifest, columns)),
         constraints.iter().copied(),
     )
     .column_spacing(TABLE_COLUMN_SPACING)
@@ -318,7 +375,7 @@ fn draw_path_group(
 /// `command` is left out of the fitting and takes whatever the other
 /// columns leave, so a long argument list truncates instead of pushing
 /// the columns that identify the invocation off the edge.
-fn fitted_constraints(rows: &[&TrackedRow]) -> Vec<Constraint> {
+fn fitted_constraints(rows: &[&TrackedRow], columns: &[usize]) -> Vec<Constraint> {
     let mut widths = ColumnWidths::new(
         TABLE_HEADERS
             .iter()
@@ -330,11 +387,18 @@ fn fitted_constraints(rows: &[&TrackedRow]) -> Vec<Constraint> {
         widths.observe_cell_usize(PID_COLUMN, process.pid.to_string().chars().count());
         widths.observe_cell_usize(START_COLUMN, process.start.chars().count());
         widths.observe_cell_usize(DURATION_COLUMN, process.duration.chars().count());
+        widths.observe_cell_usize(DONE_COLUMN, progress_width(process.progress));
         widths.observe_cell_usize(COMPILER_COLUMN, compiler_width(process));
         widths.observe_cell_usize(MANAGED_COLUMN, managed_text(process).chars().count());
     }
 
-    let mut constraints = widths.to_constraints();
+    let mut constraints: Vec<Constraint> = widths
+        .to_constraints()
+        .into_iter()
+        .enumerate()
+        .filter(|(column, _)| columns.contains(column))
+        .map(|(_, constraint)| constraint)
+        .collect();
     let _ = constraints.pop();
     constraints.push(Constraint::Min(cell_width(TABLE_HEADERS[COMMAND_COLUMN])));
     constraints
@@ -342,11 +406,15 @@ fn fitted_constraints(rows: &[&TrackedRow]) -> Vec<Constraint> {
 
 /// The cell's one column-label row, drawn above the first group and
 /// aligned with every group's rows by [`indented`].
-fn column_header() -> Row<'static> {
+fn column_header(columns: &[usize]) -> Row<'static> {
     Row::new(
         TABLE_HEADERS
             .iter()
-            .map(|label| Span::styled((*label).to_string(), Style::default().fg(label_color()))),
+            .enumerate()
+            .filter(|(column, _)| columns.contains(column))
+            .map(|(_, label)| {
+                Span::styled((*label).to_string(), Style::default().fg(label_color()))
+            }),
     )
 }
 
@@ -355,7 +423,7 @@ fn column_header() -> Row<'static> {
 /// A finished invocation goes flat grey for the seconds it lingers:
 /// nothing on the row is live any more, so nothing on it should still
 /// read as live.
-fn process_row(row: &TrackedRow, manifest: ManifestPath) -> Row<'static> {
+fn process_row(row: &TrackedRow, manifest: ManifestPath, columns: &[usize]) -> Row<'static> {
     let process = &row.process;
     let muted = Style::default().fg(label_color());
     let program = if row.is_ended() {
@@ -368,10 +436,11 @@ fn process_row(row: &TrackedRow, manifest: ManifestPath) -> Row<'static> {
     } else {
         Style::default().fg(success_color())
     };
-    Row::new(vec![
+    let cells = [
         Line::from(Span::styled(process.pid.to_string(), muted)),
         Line::from(Span::styled(process.start.clone(), muted)),
         Line::from(Span::styled(process.duration.clone(), muted)),
+        progress_cell(row),
         compiler_cell(row),
         Line::from(Span::styled(managed_text(process), muted)),
         Line::from(vec![
@@ -379,7 +448,142 @@ fn process_row(row: &TrackedRow, manifest: ManifestPath) -> Row<'static> {
             Span::raw(" "),
             Span::styled(process.command.line(manifest), arguments),
         ]),
+    ];
+    Row::new(
+        cells
+            .into_iter()
+            .enumerate()
+            .filter(|(column, _)| columns.contains(column))
+            .map(|(_, cell)| cell),
+    )
+}
+
+/// The columns a cell draws, in table order.
+///
+/// Every column but `done` is always there. That one joins only where
+/// it has something to say -- the summary, and only while some command
+/// on it has a capture behind it -- because a column of dashes costs a
+/// narrow tile the width its command line needs and reports nothing.
+fn visible_columns(rows: &[&TrackedRow], placement: ProgressPlacement) -> Vec<usize> {
+    let carries_progress = placement == ProgressPlacement::Column
+        && rows.iter().any(|row| row.process.progress.is_some());
+    (0..TABLE_HEADERS.len())
+        .filter(|column| *column != DONE_COLUMN || carries_progress)
+        .collect()
+}
+
+/// The `done` cell: the reading, then a bar of it.
+///
+/// A run with no capture behind it gets [`PROGRESS_ABSENT`] rather than
+/// an empty cell, which would read as nought percent.
+fn progress_cell(row: &TrackedRow) -> Line<'static> {
+    let muted = Style::default().fg(label_color());
+    let Some(progress) = row.process.progress else {
+        return Line::from(Span::styled(PROGRESS_ABSENT, muted));
+    };
+    let filled = if row.is_ended() {
+        muted
+    } else {
+        Style::default().fg(success_color())
+    };
+    let (run, trough) = progress_bar(progress);
+    Line::from(vec![
+        Span::styled(percent_reading(progress), filled),
+        Span::raw(" "),
+        Span::styled(run, filled),
+        Span::styled(trough, muted),
     ])
+}
+
+/// Cells the `done` column needs for one row.
+fn progress_width(progress: Option<Progress>) -> usize {
+    progress.map_or_else(
+        || PROGRESS_ABSENT.chars().count(),
+        |progress| {
+            percent_reading(progress).chars().count()
+                + PROGRESS_CELL_BAR_WIDTH
+                + PROGRESS_READING_GAP
+        },
+    )
+}
+
+/// How far along, written to a fixed width so a column of readings
+/// stays in line as the number grows a digit.
+fn percent_reading(progress: Progress) -> String { format!("{:>3}%", progress.percent()) }
+
+/// The `done` column's bar, split into the run that is filled and the
+/// trough behind it.
+///
+/// Measured in eighths of a cell rather than whole cells: a bar this
+/// narrow would otherwise sit still through a sixth of the build before
+/// jumping a whole cell.
+fn progress_bar(progress: Progress) -> (String, String) {
+    let per_cell = PROGRESS_CELL_PARTIALS.len().saturating_add(1);
+    let eighths = progress
+        .done
+        .saturating_mul(PROGRESS_CELL_BAR_WIDTH)
+        .saturating_mul(per_cell)
+        / progress.total;
+    let whole = eighths / per_cell;
+    let part = eighths % per_cell;
+    let mut run = PROGRESS_CELL_FILLED.to_string().repeat(whole);
+    if let Some(partial) = part
+        .checked_sub(1)
+        .and_then(|index| PROGRESS_CELL_PARTIALS.get(index))
+    {
+        run.push(*partial);
+    }
+    let trough = PROGRESS_CELL_BAR_WIDTH
+        .saturating_sub(whole)
+        .saturating_sub(usize::from(part > 0));
+    (run, PROGRESS_CELL_EMPTY.to_string().repeat(trough))
+}
+
+/// The rule a working-directory header carries to the right of the
+/// directory, and the reading closing it.
+///
+/// Nothing at all when the command running there was not captured, or
+/// when the directory is long enough that the rule left would be too
+/// short to read as one.
+fn heading_gauge(group: &PathGroup<'_>, width: u16) -> Vec<Span<'static>> {
+    let Some(progress) = group
+        .rows
+        .iter()
+        .find_map(|row| Some((row, row.process.progress?)))
+    else {
+        return Vec::new();
+    };
+    let (row, progress) = progress;
+    let reading = percent_reading(progress);
+    let taken = cell_width(SECTION_HEADER_INDENT)
+        .saturating_add(cell_width(group.path))
+        .saturating_add(cell_width(&reading))
+        .saturating_add(PROGRESS_HEADING_MARGINS);
+    let rule = width.saturating_sub(taken);
+    if rule < PROGRESS_HEADING_MIN_WIDTH {
+        return Vec::new();
+    }
+    let filled = usize::from(rule)
+        .saturating_mul(progress.done)
+        .checked_div(progress.total)
+        .unwrap_or_default();
+    let style = if row.is_ended() {
+        Style::default().fg(label_color())
+    } else {
+        Style::default().fg(success_color())
+    };
+    vec![
+        Span::raw(" "),
+        Span::styled(PROGRESS_HEADING_FILLED.to_string().repeat(filled), style),
+        Span::styled(
+            PROGRESS_HEADING_EMPTY
+                .to_string()
+                .repeat(usize::from(rule).saturating_sub(filled)),
+            Style::default().fg(label_color()),
+        ),
+        Span::raw(" "),
+        Span::styled(reading, style),
+    ]
 }
 
 /// The `sub` cell: how many cargo invocations this command is managing,
@@ -564,4 +768,114 @@ fn draw_settings(frame: &mut Frame, app: &mut App) {
     viewport.set_content_area(popup.inner);
     viewport.set_viewport_rows(usize::from(popup.inner.height));
     frame.render_widget(Paragraph::new(rendered.lines), popup.inner);
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use super::*;
+    use crate::processes::CargoProcess;
+    use crate::processes::CommandText;
+
+    /// A row for a command that has been running long enough to have
+    /// reported `progress`.
+    fn row(progress: Option<Progress>) -> TrackedRow {
+        TrackedRow::from(CargoProcess {
+            path: "~/rust/cargo-tile".to_string(),
+            pid: 41233,
+            start: "11:04".to_string(),
+            duration: "00:18".to_string(),
+            compiler: None,
+            progress,
+            managed: 0,
+            command: CommandText::of("cargo", &["build"]),
+        })
+    }
+
+    #[test]
+    fn a_bar_is_always_the_column_width_however_far_along_it_is() {
+        for done in 0..=16 {
+            let (run, trough) = progress_bar(Progress { done, total: 16 });
+            assert_eq!(
+                run.chars().count() + trough.chars().count(),
+                PROGRESS_CELL_BAR_WIDTH
+            );
+        }
+    }
+
+    #[test]
+    fn a_build_that_has_done_nothing_is_all_trough() {
+        let (run, trough) = progress_bar(Progress {
+            done:  0,
+            total: 16,
+        });
+        assert_eq!(run, "");
+        assert_eq!(trough.chars().count(), PROGRESS_CELL_BAR_WIDTH);
+    }
+
+    #[test]
+    fn a_finished_build_fills_every_cell() {
+        let (run, trough) = progress_bar(Progress {
+            done:  16,
+            total: 16,
+        });
+        assert_eq!(run.chars().count(), PROGRESS_CELL_BAR_WIDTH);
+        assert_eq!(trough, "");
+    }
+
+    /// One unit of sixteen is an eighth of the way through the first
+    /// cell of six -- too little to fill one, which is what the partial
+    /// glyphs are for.
+    #[test]
+    fn a_build_part_way_through_a_cell_draws_the_eighth_it_reached() {
+        let (run, _) = progress_bar(Progress {
+            done:  1,
+            total: 16,
+        });
+        assert_eq!(run.chars().count(), 1);
+        assert!(PROGRESS_CELL_PARTIALS.contains(&run.chars().next().unwrap()));
+    }
+
+    #[test]
+    fn the_done_column_stays_out_while_no_row_has_a_reading() {
+        let rows = [row(None)];
+        let columns = visible_columns(
+            &rows.iter().collect::<Vec<&TrackedRow>>(),
+            ProgressPlacement::Column,
+        );
+        assert!(!columns.contains(&DONE_COLUMN));
+        assert_eq!(columns.len(), TABLE_HEADERS.len() - 1);
+    }
+
+    #[test]
+    fn one_row_with_a_reading_brings_the_done_column_in_for_the_cell() {
+        let rows = [
+            row(None),
+            row(Some(Progress {
+                done:  149,
+                total: 403,
+            })),
+        ];
+        let columns = visible_columns(
+            &rows.iter().collect::<Vec<&TrackedRow>>(),
+            ProgressPlacement::Column,
+        );
+        assert!(columns.contains(&DONE_COLUMN));
+        assert_eq!(columns.len(), TABLE_HEADERS.len());
+    }
+
+    /// A command's own cell puts the reading on its working-directory
+    /// header, so the column would only repeat it.
+    #[test]
+    fn a_commands_own_cell_leaves_the_done_column_out() {
+        let rows = [row(Some(Progress { done: 1, total: 2 }))];
+        let columns = visible_columns(
+            &rows.iter().collect::<Vec<&TrackedRow>>(),
+            ProgressPlacement::Heading,
+        );
+        assert!(!columns.contains(&DONE_COLUMN));
+    }
 }

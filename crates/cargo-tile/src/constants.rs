@@ -43,9 +43,17 @@ pub(crate) const STEPPER_DECORATION_WIDTH: usize = 4;
 pub(crate) const SETTINGS_POPUP_WIDTH: u16 = 64;
 
 // lifecycle
-/// Fallback executable name when the running binary's path cannot be
-/// resolved for a restart.
+/// The binary's own name: what the command line calls itself in help
+/// and in anything it reports going wrong, and the fallback executable
+/// name when the running binary's path cannot be resolved for a
+/// restart. Distinct from [`APP_NAME`], which is padded for the status
+/// line.
 pub(crate) const BINARY_NAME: &str = "cargo-tile";
+/// The word cargo knows this tool by, which is the binary's name with
+/// cargo's own prefix taken off. Cargo runs `cargo tile ...` by finding
+/// `cargo-tile` on the path and handing it this word ahead of every
+/// other argument, so the command line drops it before parsing.
+pub(crate) const SUBCOMMAND_NAME: &str = "tile";
 
 // iterm2
 /// Environment variable naming the terminal emulator in use.
@@ -212,22 +220,28 @@ pub(crate) const MANIFEST_PATH_FLAG: &str = "--manifest-path";
 /// Column headers, in table order. The working directory is not among
 /// them: it heads the group of invocations that share it rather than
 /// repeating on every row.
-pub(crate) const TABLE_HEADERS: [&str; 6] = ["pid", "start", "dur", "compiler", "sub", "command"];
+pub(crate) const TABLE_HEADERS: [&str; 7] =
+    ["pid", "start", "dur", "done", "compiler", "sub", "command"];
 /// Index of the `pid` column in [`TABLE_HEADERS`].
 pub(crate) const PID_COLUMN: usize = 0;
 /// Index of the `start` column in [`TABLE_HEADERS`].
 pub(crate) const START_COLUMN: usize = 1;
 /// Index of the `dur` column in [`TABLE_HEADERS`].
 pub(crate) const DURATION_COLUMN: usize = 2;
+/// Index of the `done` column in [`TABLE_HEADERS`], which carries a
+/// command's build progress. It is the one column that comes and goes:
+/// a cell with no captured run on it drops the column rather than
+/// ruling off a strip of dashes.
+pub(crate) const DONE_COLUMN: usize = 3;
 /// Index of the `compiler` column in [`TABLE_HEADERS`].
-pub(crate) const COMPILER_COLUMN: usize = 3;
+pub(crate) const COMPILER_COLUMN: usize = 4;
 /// Index of the `sub` column in [`TABLE_HEADERS`], which carries how
 /// many cargo invocations a command is managing. Blank on the rows that
 /// manage nothing, which is most of them.
-pub(crate) const MANAGED_COLUMN: usize = 4;
+pub(crate) const MANAGED_COLUMN: usize = 5;
 /// Index of the `command` column in [`TABLE_HEADERS`]. It is last, and
 /// absorbs whatever width the fitted columns leave.
-pub(crate) const COMMAND_COLUMN: usize = 5;
+pub(crate) const COMMAND_COLUMN: usize = 6;
 /// Rows the working-directory header above each group's table occupies.
 pub(crate) const GROUP_HEADER_HEIGHT: u16 = 1;
 /// Rows the column-label row at the top of the pane occupies. There is
@@ -241,3 +255,88 @@ pub(crate) const COMPILER_SEPARATOR_WIDTH: usize = 1;
 pub(crate) const TABLE_COLUMN_SPACING: u16 = 2;
 /// Shown in place of the table when no cargo is running.
 pub(crate) const NO_PROCESSES_NOTE: &str = "no cargo processes running";
+
+// capture shim
+/// Name of the real cargo once the shim takes its place beside it. The
+/// shim resolves it as a sibling, so a hardcoded-path invocation of a
+/// toolchain's cargo is captured the same as one found through `PATH`.
+pub(crate) const REAL_CARGO_NAME: &str = "cargo-tile-real";
+/// The binary the shim stands in for, in each toolchain's `bin`.
+pub(crate) const CARGO_NAME: &str = "cargo";
+/// Line the installer recognises its own shim by. A `cargo` without it
+/// is the real binary, whatever else it may be, and is moved aside
+/// rather than overwritten.
+pub(crate) const SHIM_MARKER: &str = "cargo-tile-capture-shim";
+/// Permissions the shim is written with: readable and executable by
+/// all, writable by its owner.
+pub(crate) const SHIM_MODE: u32 = 0o755;
+/// Directory under the rustup home holding one directory per toolchain.
+pub(crate) const TOOLCHAINS_DIR: &str = "toolchains";
+/// Directory under a toolchain holding its binaries.
+pub(crate) const TOOLCHAIN_BIN_DIR: &str = "bin";
+/// Where rustup keeps its toolchains, under the home directory.
+pub(crate) const RUSTUP_DIRNAME: &str = ".rustup";
+/// Environment variable moving the rustup home away from
+/// [`RUSTUP_DIRNAME`].
+pub(crate) const RUSTUP_HOME_ENV: &str = "RUSTUP_HOME";
+/// How much of a `cargo` is read to look for [`SHIM_MARKER`]. The real
+/// cargo is a thirty-megabyte binary and the marker is in the shim's
+/// opening comment, so there is no reason to read further.
+pub(crate) const SHIM_MARKER_SEARCH_BYTES: usize = 1024;
+
+// build progress
+/// Directory under [`CAPTURE_ROOT`], one file per run still in flight,
+/// each named for the pid of the shim that captured it.
+pub(crate) const CAPTURE_LIVE_RUNS_DIR: &str = "state/pids";
+/// Where the cargo shim mirrors each run's output. Under `/tmp` rather
+/// than the home directory because a sandboxed caller can write there.
+pub(crate) const CAPTURE_ROOT: &str = "/tmp/cargo-tile";
+/// Environment variable moving [`CAPTURE_ROOT`], which is what puts a
+/// second grid on captures of its own.
+pub(crate) const CAPTURE_ROOT_ENV: &str = "CARGO_TILE_ROOT";
+/// What separates the pid at the end of a run log's name from the
+/// timestamp in front of it.
+pub(crate) const PID_SEPARATOR: char = '-';
+/// Shown in `done` for a run with no capture behind it to read.
+pub(crate) const PROGRESS_ABSENT: &str = "\u{2014}";
+/// Cells the `done` column's bar occupies. Narrow on purpose: the
+/// column sits in a table that a tile can be eight cells wide for, and
+/// the eighths in [`PROGRESS_CELL_PARTIALS`] are what keep a bar this
+/// short moving on every unit rather than every sixth one.
+pub(crate) const PROGRESS_CELL_BAR_WIDTH: usize = 6;
+/// Trough glyph of the `done` column's bar.
+pub(crate) const PROGRESS_CELL_EMPTY: char = '\u{2591}';
+/// Filled glyph of the `done` column's bar.
+pub(crate) const PROGRESS_CELL_FILLED: char = '\u{2588}';
+/// Eighths of a filled cell, narrowest first, for the one cell a bar is
+/// part way through.
+pub(crate) const PROGRESS_CELL_PARTIALS: [char; 7] = [
+    '\u{258f}', '\u{258e}', '\u{258d}', '\u{258c}', '\u{258b}', '\u{258a}', '\u{2589}',
+];
+/// Blank cells between a `done` cell's reading and its bar.
+pub(crate) const PROGRESS_READING_GAP: usize = 1;
+/// Unfilled glyph of the rule running along a working-directory header.
+pub(crate) const PROGRESS_HEADING_EMPTY: char = '\u{254c}';
+/// Filled glyph of the rule running along a working-directory header.
+pub(crate) const PROGRESS_HEADING_FILLED: char = '\u{2501}';
+/// Blank cells the header's rule keeps around itself: one after the
+/// working directory and one before the reading at the end.
+pub(crate) const PROGRESS_HEADING_MARGINS: u16 = 2;
+/// Cells a header's rule needs before it is worth drawing at all. Below
+/// this the header shows the directory alone, the way it always has.
+pub(crate) const PROGRESS_HEADING_MIN_WIDTH: u16 = 4;
+/// Bytes of a run log's end to read for the counter. Sized to hold the
+/// bar's last redraw across a burst of diagnostics printed over it.
+pub(crate) const RUN_LOG_TAIL_BYTES: u64 = 64 * 1024;
+/// What a run log's name starts with, ahead of its timestamp and pid.
+pub(crate) const RUN_LOG_PREFIX: &str = "run-";
+/// What a run log's name ends with.
+pub(crate) const RUN_LOG_SUFFIX: &str = ".log";
+/// What closes the drawn bar in cargo's progress line, immediately
+/// ahead of the counter: `[====>    ] 149/403: serde`.
+pub(crate) const UNIT_COUNTER_LEAD: &str = "] ";
+/// What divides the two numbers in cargo's counter.
+pub(crate) const UNIT_COUNTER_SEPARATOR: &str = "/";
+/// What closes cargo's counter, ahead of the crate names it is
+/// currently building.
+pub(crate) const UNIT_COUNTER_TRAILER: &str = ":";

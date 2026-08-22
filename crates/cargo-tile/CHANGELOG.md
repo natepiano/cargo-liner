@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Show how far along a compiling invocation is. The reading is cargo's own: while it compiles it draws `Building [========>    ] 149/403: globset, regex-automata`, and those are units of its build plan finished and planned, so nothing is estimated. The summary grows a `done` column drawing the percentage beside a six-cell bar at eighth-block resolution, so it still moves on every unit, and a command's own cell rules the same reading along its working-directory heading. The column joins only where some command on the cell has a capture behind it, so a narrow tile spends no width on a column of dashes.
+- Capture cargo's output so that progress can be read at all, through a shim cargo-tile installs itself: `cargo-tile install` moves each toolchain's real cargo aside to `cargo-tile-real` and takes its name, running it under a pty and mirroring the output to `/tmp/cargo-tile/run-<timestamp>-<pid>.log`. `cargo-tile status` reports what stands in front of each toolchain and `cargo-tile uninstall` gives cargo its name back. The rows in the grid are found by scanning the process table and so belong to other terminals, and a process's output belongs to the terminal that started it -- which is why reaching it takes standing in front of cargo rather than asking it for anything.
+- Answer to `cargo tile` as well as `cargo-tile`. Cargo runs any `cargo-`prefixed binary on the path as a subcommand, handing it that subcommand name ahead of every other argument, so the command line drops that word and both spellings take the same arguments. This kept working when argument parsing arrived: before it there was none, and the extra word went unread.
+- Report progress for runs with no terminal as well, by asking cargo for a progress bar it would otherwise draw only for a tty. Cargo refuses `always` unless a width comes with it, so the shim sets both.
+
+### Notes
+- Installing the shim is always explicit, never done on startup: it stands in front of every cargo invocation on the machine. It changes nothing about what cargo does, prints, or exits with. Query invocations (`cargo metadata`, `--version`, `--message-format=json`) pass straight through, as does `cargo tile` itself -- capturing the grid would run a terminal UI under `script` and copy every redraw of it into a log -- and a nested cargo -- a build script, or cargo driving cargo -- does not open a second capture.
+- A run already going cannot be captured. A shim is only ever there for the processes it starts, so anything mid-flight when it is installed shows in the grid without a bar until it is run again. Installing while a build runs is otherwise safe: a running cargo holds its binary open, so moving that file aside does not disturb it.
+- `rustup update` replaces the shim with a fresh cargo. Running `cargo-tile install` again repairs it, and is safe to repeat: the real binary is only ever moved, never written over, and anything holding the name without the shim's marker in it is treated as the real cargo.
+- The shim is POSIX `sh` and runs on macOS and Linux. The two `script` implementations disagree -- the BSD one takes a command and its arguments, util-linux's takes a single command line after `-c` and needs `-e` to exit with the child's status -- so the shim settles which is present before calling it, and falls back to the no-terminal path where there is no `script` at all.
+- Without the shim installed nothing breaks -- the `done` column stays out of the summary and headings draw no rule.
+
 ## [0.1.0] - 2026-08-21
 
 ### Added
