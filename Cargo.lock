@@ -535,7 +535,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-port"
-version = "0.7.0-dev"
+version = "0.7.0"
 dependencies = [
  "ansi-to-tui",
  "anyhow",

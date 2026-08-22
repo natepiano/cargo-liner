@@ -12,7 +12,7 @@ license.workspace    = true
 name                 = "cargo-port"
 readme               = "README.md"
 repository.workspace = true
-version              = "0.7.0-dev"
+version              = "0.7.0"
 
 [dependencies]
 ansi-to-tui          = { workspace = true }

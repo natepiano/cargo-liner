@@ -5,9 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.7.0] - 2026-08-21
 
 ### Changed
+- Draw the pane grid as one shared border rather than each pane drawing its own box. A boundary two panes share is now a single line instead of two adjacent edges, and the crossings where panes meet resolve to the correct box-drawing glyph instead of colliding corners. Section rules in the Git, Package, and Targets panes now run the full width of the pane and meet its borders as proper junctions, with their titles becoming labels on the line.
+- Focus no longer lights the pane border. The focused pane is distinguished by its background tint alone. A border is a cell two panes share, so colouring it for the focused pane took that boundary away from its neighbour and left the focused box's corners fighting the junctions they actually sit on. Theme files may keep an `active_border` key; it is now ignored, and the shipped theme TOMLs no longer set one. The finder, sccache, and settings popups now take their border colour from the title colour.
+- Every pane paints its own background now, unfocused ones included. A cell with no background of its own is the terminal's default background, which a transparent terminal composites differently from a painted cell -- under iTerm2 with "Only the default background color uses transparency" ticked, the focused pane went solid while its neighbours showed the desktop. Painting all of them puts the grid on the same footing.
+- Example theme TOMLs now ship in this crate's own `themes/` directory and mirror the compiled-in built-ins exactly; they previously lived in the framework's directory. The four built-in theme names are unchanged, so an existing theme selection or user theme file keeps working.
 - Move development into the `natepiano/cargo-liner` workspace, where cargo-port now lives at `crates/cargo-port` alongside the `tui_pane` framework it is built on. Installation and usage are unchanged: `cargo install cargo-port`.
 
 ## [0.6.0] - 2026-08-19
