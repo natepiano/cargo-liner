@@ -88,7 +88,16 @@ pub(super) fn stream_cargo_stderr(
             break;
         }
 
-        let current = line.clone();
+        let current = collapse_carriage_returns(&line);
+        // Cargo erases the progress frame it just drew and writes the next
+        // diagnostic onto the same physical line, so one read can carry both.
+        // Once the carriage returns are applied a frame may leave nothing
+        // behind, which is a spent frame rather than the blank line that ends a
+        // diagnostic block.
+        if is_blank_after_sanitize(&current) && !is_blank_after_sanitize(&line) {
+            continue;
+        }
+
         if is_progress_line(&current) {
             flush_diagnostic_block(
                 &mut block,
@@ -198,6 +207,20 @@ fn sanitize_for_match(line: &str) -> String {
 
     sanitized
 }
+
+/// Apply carriage returns the way a terminal does: `\r` returns the cursor to
+/// the start of the line, so only the text written after the last one is
+/// visible. A trailing `\r` belongs to a line ending and is dropped instead.
+fn collapse_carriage_returns(line: &str) -> String {
+    let (content, newline) = line
+        .strip_suffix('\n')
+        .map_or((line, ""), |rest| (rest, "\n"));
+    let content = content.strip_suffix('\r').unwrap_or(content);
+    let visible = content.rsplit('\r').next().unwrap_or(content);
+    format!("{visible}{newline}")
+}
+
+fn is_blank_after_sanitize(line: &str) -> bool { sanitize_for_match(line).trim().is_empty() }
 
 /// Parse cargo's "generated N warnings" summary line.
 /// Returns `(warning_count, fixable_count)` if the line matches.
@@ -317,6 +340,7 @@ mod tests {
     use super::ProgressStatus;
     use super::SuppressionNotice;
     use super::classify_diagnostic_block;
+    use super::collapse_carriage_returns;
     use super::flush_diagnostic_block;
     use super::is_progress_line;
     use super::should_forward_progress_line;
@@ -479,5 +503,40 @@ mod tests {
         );
         assert_eq!(progress.stops, 0);
         assert_eq!(progress.progress_status, ProgressStatus::Active);
+    }
+
+    #[test]
+    fn collapse_carriage_returns_keeps_only_the_visible_tail() {
+        assert_eq!(collapse_carriage_returns("frame\rreal\n"), "real\n");
+        assert_eq!(collapse_carriage_returns("one\rtwo\rthree"), "three");
+        assert_eq!(collapse_carriage_returns("plain\n"), "plain\n");
+        assert_eq!(collapse_carriage_returns("windows\r\n"), "windows\n");
+    }
+
+    #[test]
+    fn warning_summary_glued_to_a_progress_frame_is_counted_not_forwarded() {
+        let frame = "\u{1b}[1m\u{1b}[96m    Building\u{1b}[0m [    ] 0/2: fixture\r\u{1b}[K";
+        let summary = "\u{1b}[1m\u{1b}[33mwarning\u{1b}[0m: `fixture` (bin \"fixture\") generated 2 \
+                       warnings (run `cargo fix --bin \"fixture\"` to apply 1 suggestion)\n";
+        let mut block = vec![collapse_carriage_returns(&format!("{frame}{summary}"))];
+        let mut suppression_notice = SuppressionNotice::Pending;
+        let mut compiler_warning_facts = CompilerWarningFacts::None;
+        let mut compiler_warning_count = 0;
+        let mut compiler_fixable_count = 0;
+        let mut progress = ProgressRecorder::active();
+
+        flush_diagnostic_block(
+            &mut block,
+            &mut suppression_notice,
+            &mut compiler_warning_facts,
+            &mut compiler_warning_count,
+            &mut compiler_fixable_count,
+            BuildOutputMode::SuppressUnusedImportWarnings,
+            &mut progress,
+        );
+
+        assert_eq!(compiler_warning_count, 2);
+        assert_eq!(compiler_fixable_count, 1);
+        assert!(progress.notices.is_empty());
     }
 }

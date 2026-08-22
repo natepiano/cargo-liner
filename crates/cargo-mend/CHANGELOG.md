@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Cargo's progress frames no longer defeat stderr classification. With
+  `CARGO_TERM_PROGRESS_WHEN=always`, cargo returns the cursor and erases the frame it just drew,
+  then writes the next diagnostic onto that same physical line. Mend read the two as one line
+  beginning with `Building`, so a warning summary was forwarded verbatim instead of counted —
+  `--fix-pub-use` leaked the `to apply 1 suggestion` line it suppresses the warning to avoid — and a
+  frame glued to a `Compiling` line was read as a diagnostic rather than progress. Carriage returns
+  are now applied the way a terminal applies them, before anything classifies the line.
+
 ### Changed
 - Move development into the `natepiano/cargo-liner` workspace, where cargo-mend now lives at `crates/cargo-mend` alongside the other cargo tools. Installation and usage are unchanged: `cargo install cargo-mend`.
 
