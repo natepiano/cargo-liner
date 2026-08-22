@@ -34,28 +34,38 @@ if [ ! -x "$real" ]; then
     exit 127
 fi
 
+# Cargo publishes the binary it is running as `CARGO`, and the tools
+# that wrap it honour that over the path: `cargo-clippy` and
+# `cargo-nextest` both invoke `$CARGO` rather than looking `cargo` up
+# again. Left alone it names the real binary the shim exec'd into, so
+# every run those tools start goes around the shim -- and the value
+# outlives the run in any environment that inherits it, which takes the
+# shim out of the picture for good. Naming the shim instead keeps them
+# coming back through here and costs nothing, since the shim ends in the
+# real binary either way. Cargo takes an already-set `CARGO` over its own
+# path, so this survives into everything it starts.
+#
+# `CARGO` is not `CARGO_`-prefixed, so it is not among the variables
+# sccache hashes into its cache key.
+CARGO=$self_dir/${self##*/}
+export CARGO
+
 root=${CARGO_TILE_ROOT:-/tmp/cargo-tile}
 pids="$root/state/pids"
 
 capture=1
 
-# A nested cargo -- a build script, or cargo driving cargo -- is already
-# inside a captured run and must not open a second one. The flag carries
-# the enclosing shim's pid and counts only while that pid is alive, so a
-# shell environment captured inside a run does not carry it forever.
-#
-# The name must NOT begin with CARGO_: sccache hashes every CARGO_*
-# variable into its cache key, so a per-run value under that prefix would
-# make every compilation unique and drive the hit rate to zero.
-case ${CARGOTILE_NESTED:-} in
-    '' | *[!0-9]*) ;;
-    *) if kill -0 "$CARGOTILE_NESTED" 2>/dev/null; then capture=0; fi ;;
-esac
-
 # Query and tooling invocations compile nothing, so they have no progress
-# to report -- and rust-analyzer issues them constantly, which would bury
-# the real runs in the log directory. The subcommand is the first
-# argument past any +toolchain selector.
+# to report. The subcommand is the first argument past any +toolchain
+# selector.
+#
+# A `--message-format=json` run is not among them. Its caller is usually
+# rust-analyzer, and it compiles and takes the build-directory lock like
+# any other, so a build waiting behind one has to be able to say so. It
+# is only ever captured down the no-terminal path -- the pty path needs
+# all three streams on a tty, which a caller parsing the output never has
+# -- and that path mirrors stderr alone, leaving the JSON on stdout byte
+# for byte what the caller expects.
 first=
 for arg in "$@"; do
     case $arg in
@@ -68,22 +78,52 @@ case $first in
     metadata | pkgid | locate-project | read-manifest | config | -V | --version | -vV | --list | '')
         capture=0
         ;;
-    # The grid itself, reached as `cargo tile`. It compiles nothing, and
-    # capturing it would run a whole terminal UI under `script` -- every
-    # redraw copied into a log for as long as the grid stays open, and
-    # the grid listing itself as a running invocation.
-    tile)
+    # This workspace's own terminal UIs, reached as `cargo tile` and
+    # `cargo port`. They compile nothing, and capturing one would run a
+    # whole terminal UI under `script` -- every redraw copied into a log
+    # for as long as it stays open, and it listing itself as a running
+    # invocation.
+    tile | port)
         capture=0
         ;;
 esac
-previous=
-for arg in "$@"; do
-    case $arg in
-        --message-format=json*) capture=0 ;;
-        json*) if [ "$previous" = --message-format ]; then capture=0; fi ;;
-    esac
-    previous=$arg
-done
+# A nested cargo -- a build script, or cargo driving cargo -- is already
+# inside a captured run and must not open a second one. The flag carries
+# the enclosing shim's pid.
+#
+# Liveness alone does not prove nesting. A captured run that outlives the
+# build that started it leaves the flag naming a pid that stays alive for
+# hours, and anything inheriting that environment would go uncaptured for
+# just as long. Nesting is ancestry, so the pid counts only when it really
+# is above this one. The walk runs inside awk over a single `ps` sweep
+# rather than forking once per hop, and stops at the same depth the grid's
+# own parent walk does.
+#
+# This is the last gate on purpose: it costs a process listing, and the
+# cheap argument tests above have already dismissed the query invocations
+# rust-analyzer issues constantly.
+#
+# The name must NOT begin with CARGO_: sccache hashes every CARGO_*
+# variable into its cache key, so a per-run value under that prefix would
+# make every compilation unique and drive the hit rate to zero.
+encloses_this_run() {
+    ps -Ao pid=,ppid= 2>/dev/null | awk -v self="$$" -v enclosing="$1" '
+        { parent[$1] = $2 }
+        END {
+            walk = self
+            for (hop = 0; hop < 32; hop++) {
+                walk = parent[walk]
+                if (walk == "" || walk + 0 <= 1) exit 1
+                if (walk + 0 == enclosing + 0) exit 0
+            }
+            exit 1
+        }
+    '
+}
+case ${CARGOTILE_NESTED:-} in
+    '' | *[!0-9]*) ;;
+    *) if encloses_this_run "$CARGOTILE_NESTED"; then capture=0; fi ;;
+esac
 
 [ "$capture" -eq 1 ] || exec "$real" "$@"
 mkdir -p "$pids" 2>/dev/null || exec "$real" "$@"
@@ -144,10 +184,17 @@ if [ -t 0 ] && [ -t 1 ] && [ -t 2 ] && [ "$pty" != none ]; then
     # caller exactly as it would have without any of this.
     if [ "$pty" = util_linux ]; then
         # -e is what makes it exit with the child's status rather than
-        # its own; the BSD one does that already.
-        script -q -e -c "$(quote_command "$real" "$@")" "$log"
+        # its own; the BSD one does that already. -f flushes the log
+        # after every write, for the reason -t 0 gives below.
+        script -q -e -f -c "$(quote_command "$real" "$@")" "$log"
     else
-        script -q "$log" "$real" "$@"
+        # -t 0 flushes the log after every write. Left at its default
+        # the BSD one holds output for thirty seconds at a time, which
+        # is longer than many runs last and long enough to make the one
+        # line a blocked run prints useless: cargo says it is waiting
+        # immediately, the terminal shows it immediately, and the log
+        # the grid reads stays empty until the wait is long over.
+        script -q -t 0 "$log" "$real" "$@"
     fi
     status=$?
 else

@@ -52,7 +52,7 @@ use crate::constants::START_TIME_FORMAT;
 use crate::constants::UNRESOLVED_PATH;
 use crate::constants::UNRESOLVED_TIME;
 use crate::progress::Capture;
-use crate::progress::Progress;
+use crate::progress::RunState;
 
 /// One running `cargo` invocation, preformatted for the table.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -69,11 +69,11 @@ pub(crate) struct CargoProcess {
     /// invocation leading a group this is the whole group's tally, so
     /// the summary reports the build rather than the driver process.
     pub(crate) compiler: Option<Compiler>,
-    /// How far the command has got, when a capture of its output is
-    /// there to read it from. Carried by the invocation leading a group
-    /// and by nothing under it: the capture covers the whole command,
-    /// so the count on a child would repeat its parent's.
-    pub(crate) progress: Option<Progress>,
+    /// What the command is doing, when a capture of its output is there
+    /// to read it from. Carried by the invocation leading a group and by
+    /// nothing under it: the capture covers the whole command, so what a
+    /// child reported would repeat its parent's.
+    pub(crate) state:    Option<RunState>,
     /// Cargo invocations running under this one. Zero for a plain
     /// command, which is what most rows are.
     pub(crate) managed:  usize,
@@ -407,11 +407,11 @@ impl Census {
     /// rather than the cargo itself -- two levels up when the run went
     /// through a pty, one when it did not. The same bound the compiler
     /// walk uses stops a reparented cycle here.
-    fn captured_run(&self, capture: &Capture, pid: Pid) -> Option<Progress> {
+    fn captured_run(&self, capture: &Capture, pid: Pid) -> Option<RunState> {
         let mut walking = pid;
         for _ in 0..PARENT_WALK_LIMIT {
-            if let Some(progress) = capture.read(walking.as_u32()) {
-                return Some(progress);
+            if let Some(state) = capture.read(walking.as_u32()) {
+                return Some(state);
             }
             walking = *self.parents.get(&walking)?;
         }
@@ -472,7 +472,7 @@ impl Census {
         // typed is doing, and for a manager none of that work is running
         // under the manager's own pid.
         lead.compiler = aggregate_compilers(counts, std::iter::once(root).chain(managed.clone()));
-        lead.progress = self.captured_run(capture, root);
+        lead.state = self.captured_run(capture, root);
 
         let mut dated: Vec<(u64, CargoProcess)> = managed
             .into_iter()
@@ -530,7 +530,7 @@ fn row(
         start: start_label(process.start_time()),
         duration: duration_label(process.run_time()),
         compiler,
-        progress: None,
+        state: None,
         managed,
         command: command_text(process.cmd(), home)?,
     })

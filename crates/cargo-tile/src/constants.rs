@@ -54,6 +54,16 @@ pub(crate) const BINARY_NAME: &str = "cargo-tile";
 /// `cargo-tile` on the path and handing it this word ahead of every
 /// other argument, so the command line drops it before parsing.
 pub(crate) const SUBCOMMAND_NAME: &str = "tile";
+/// The sibling terminal UI in this workspace, reached as `cargo port`.
+/// The capture shim passes it through for the same reason it passes the
+/// grid through: capturing a terminal UI copies every redraw of it into
+/// a log for as long as it stays open.
+///
+/// Nothing here runs that command or reasons about it -- the name exists
+/// so the test holding the shim to its exemption can say which word it
+/// is looking for, which is why it is compiled only for the tests.
+#[cfg(test)]
+pub(crate) const SIBLING_SUBCOMMAND_NAME: &str = "port";
 
 // iterm2
 /// Environment variable naming the terminal emulator in use.
@@ -220,19 +230,22 @@ pub(crate) const MANIFEST_PATH_FLAG: &str = "--manifest-path";
 /// Column headers, in table order. The working directory is not among
 /// them: it heads the group of invocations that share it rather than
 /// repeating on every row.
-pub(crate) const TABLE_HEADERS: [&str; 7] =
-    ["pid", "start", "dur", "done", "command", "compiler", "runs"];
+pub(crate) const TABLE_HEADERS: [&str; 7] = [
+    "pid", "start", "dur", "state", "command", "compiler", "runs",
+];
 /// Index of the `pid` column in [`TABLE_HEADERS`].
 pub(crate) const PID_COLUMN: usize = 0;
 /// Index of the `start` column in [`TABLE_HEADERS`].
 pub(crate) const START_COLUMN: usize = 1;
 /// Index of the `dur` column in [`TABLE_HEADERS`].
 pub(crate) const DURATION_COLUMN: usize = 2;
-/// Index of the `done` column in [`TABLE_HEADERS`], which carries a
-/// command's build progress. It is the one column that comes and goes:
-/// a cell with no captured run on it drops the column rather than
-/// ruling off a strip of dashes.
-pub(crate) const DONE_COLUMN: usize = 3;
+/// Index of the `state` column in [`TABLE_HEADERS`], which says what a
+/// command is doing right now: how far along it is, or that it is
+/// waiting on another cargo's lock. It is the one column that comes and
+/// goes, and joins only where a heading cannot carry what a row has to
+/// say -- a column of dashes costs a narrow tile the width its command
+/// line needs and reports nothing.
+pub(crate) const STATE_COLUMN: usize = 3;
 /// Index of the `command` column in [`TABLE_HEADERS`]. It absorbs
 /// whatever width the fitted columns leave, wherever it stands among
 /// them, so it comes ahead of the two that describe an invocation
@@ -306,24 +319,31 @@ pub(crate) const CAPTURE_ROOT_ENV: &str = "CARGO_TILE_ROOT";
 /// What separates the pid at the end of a run log's name from the
 /// timestamp in front of it.
 pub(crate) const PID_SEPARATOR: char = '-';
-/// Shown in `done` for a run with no capture behind it to read.
+/// Shown in `state` for a run with no capture behind it to read.
 pub(crate) const PROGRESS_ABSENT: &str = "\u{2014}";
-/// Cells the `done` column's bar occupies. Narrow on purpose: the
-/// column sits in a table that a tile can be eight cells wide for, and
-/// the eighths in [`PROGRESS_CELL_PARTIALS`] are what keep a bar this
-/// short moving on every unit rather than every sixth one.
-pub(crate) const PROGRESS_CELL_BAR_WIDTH: usize = 6;
-/// Trough glyph of the `done` column's bar.
+/// Shown in `state` for a run waiting on another cargo to give up the
+/// build directory. A word rather than a bar: there is no reading to
+/// draw, which is the whole of what it says.
+pub(crate) const STATE_BLOCKED: &str = "blocked";
+/// Cells the `state` column's bar occupies, the reading among them
+/// rather than beside them: the number is set to the right of the field
+/// and the bar fills it from the left, so a finished build reads on a
+/// solid ground rather than next to one.
+///
+/// Wide enough for `100%` several times over, because the eighths in
+/// [`PROGRESS_CELL_PARTIALS`] only buy resolution where there is a cell
+/// to spend them in.
+pub(crate) const PROGRESS_CELL_BAR_WIDTH: usize = 11;
+/// Trough glyph of the `state` column's bar.
 pub(crate) const PROGRESS_CELL_EMPTY: char = '\u{2591}';
-/// Filled glyph of the `done` column's bar.
-pub(crate) const PROGRESS_CELL_FILLED: char = '\u{2588}';
 /// Eighths of a filled cell, narrowest first, for the one cell a bar is
 /// part way through.
 pub(crate) const PROGRESS_CELL_PARTIALS: [char; 7] = [
     '\u{258f}', '\u{258e}', '\u{258d}', '\u{258c}', '\u{258b}', '\u{258a}', '\u{2589}',
 ];
-/// Blank cells between a `done` cell's reading and its bar.
-pub(crate) const PROGRESS_READING_GAP: usize = 1;
+/// Cells the reading itself takes at the right of the field, `100%`
+/// being the widest it goes.
+pub(crate) const PROGRESS_READING_WIDTH: usize = 4;
 /// Unfilled glyph of the rule running along a working-directory header.
 pub(crate) const PROGRESS_HEADING_EMPTY: char = '\u{254c}';
 /// Filled glyph of the rule running along a working-directory header.
@@ -354,3 +374,8 @@ pub(crate) const UNIT_COUNTER_SEPARATOR: &str = "/";
 /// What closes cargo's counter, ahead of the crate names it is
 /// currently building.
 pub(crate) const UNIT_COUNTER_TRAILER: &str = ":";
+/// What cargo says while it waits for another cargo to give up the
+/// build directory. Matched on the phrase alone: the `Blocking` status
+/// word ahead of it arrives wrapped in colour codes, and what it names
+/// varies with which lock is held.
+pub(crate) const LOCK_WAIT_MARKER: &str = "waiting for file lock";

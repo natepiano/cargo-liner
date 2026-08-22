@@ -197,6 +197,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::constants::SIBLING_SUBCOMMAND_NAME;
     use crate::constants::SUBCOMMAND_NAME;
 
     /// A rustup home holding one toolchain whose cargo is `contents`.
@@ -226,7 +227,24 @@ mod tests {
         assert!(SHIM_SOURCE.contains("util-linux"));
         // util-linux exits with its own status without `-e`, which would
         // report every failed build as a success.
-        assert!(SHIM_SOURCE.contains("script -q -e -c"));
+        assert!(SHIM_SOURCE.contains("script -q -e -f -c"));
+        // Neither implementation flushes the log per write on its own,
+        // and the BSD one holds output for thirty seconds at a time --
+        // longer than many runs last, and long enough that the single
+        // line a blocked run prints reaches the grid after the wait it
+        // announced is over.
+        assert!(SHIM_SOURCE.contains("script -q -t 0"));
+    }
+
+    /// Whether the shim's exemption arm names this subcommand. The arm
+    /// lists several, so what matters is that this one is among them
+    /// rather than what the whole line reads.
+    fn shim_passes_through(subcommand: &str) -> bool {
+        SHIM_SOURCE.lines().any(|line| {
+            line.strip_prefix("    ")
+                .and_then(|arm| arm.strip_suffix(')'))
+                .is_some_and(|arm| arm.split('|').any(|name| name.trim() == subcommand))
+        })
     }
 
     /// The grid is reachable as `cargo tile`, which puts it in front of
@@ -235,7 +253,12 @@ mod tests {
     /// the grid stayed open.
     #[test]
     fn the_shim_passes_the_grids_own_subcommand_through() {
-        assert!(SHIM_SOURCE.contains(&format!("\n    {SUBCOMMAND_NAME})\n")));
+        assert!(shim_passes_through(SUBCOMMAND_NAME));
+    }
+
+    #[test]
+    fn the_shim_passes_the_sibling_terminal_ui_through() {
+        assert!(shim_passes_through(SIBLING_SUBCOMMAND_NAME));
     }
 
     #[test]

@@ -206,7 +206,7 @@ mod tests {
             start: "10:00".to_string(),
             duration: "00:01".to_string(),
             compiler: None,
-            progress: None,
+            state: None,
             managed: 0,
             command: CommandText::of("cargo", &["build"]),
         }

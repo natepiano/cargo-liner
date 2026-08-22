@@ -18,6 +18,12 @@
 //!
 //! So a run reports progress when it was captured and reports none when
 //! it was not, and the cell is drawn either way.
+//!
+//! A log says one other thing worth reading. Cargo locks the build
+//! directory, so a second command against the same target waits instead
+//! of failing -- it prints `Blocking waiting for file lock on build
+//! directory` and then nothing, which from outside looks exactly like a
+//! build that has not reached its first unit.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -33,6 +39,7 @@ use std::path::PathBuf;
 use crate::constants::CAPTURE_LIVE_RUNS_DIR;
 use crate::constants::CAPTURE_ROOT;
 use crate::constants::CAPTURE_ROOT_ENV;
+use crate::constants::LOCK_WAIT_MARKER;
 use crate::constants::PID_SEPARATOR;
 use crate::constants::RUN_LOG_PREFIX;
 use crate::constants::RUN_LOG_SUFFIX;
@@ -62,6 +69,33 @@ impl Progress {
         // `total` is never zero: `parse_counter` rejects a counter that
         // would divide by it.
         self.done.saturating_mul(100) / self.total
+    }
+}
+
+/// What a captured run was doing when its log was last read.
+///
+/// Cargo takes a lock on the build directory, so a second command in
+/// the same target waits rather than fails. It says so once and then
+/// prints nothing at all, which from outside is indistinguishable from
+/// a build that has not reached its first unit -- the same pid, the
+/// same climbing duration, and no reading either way. Reading the wait
+/// out of the log is what separates them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RunState {
+    /// Compiling, as far along as cargo's own counter says.
+    Compiling(Progress),
+    /// Waiting for another cargo to give up the build directory.
+    Blocked,
+}
+
+impl RunState {
+    /// The reading behind this state, for the two places that can only
+    /// draw one: the heading rule and the bar.
+    pub(crate) const fn reading(self) -> Option<Progress> {
+        match self {
+            Self::Compiling(progress) => Some(progress),
+            Self::Blocked => None,
+        }
     }
 }
 
@@ -111,8 +145,8 @@ impl Capture {
 
     /// What the run captured under `pid` last reported, or `None` when
     /// no run is captured under it.
-    pub(crate) fn read(&self, pid: u32) -> Option<Progress> {
-        parse_counter(&tail(self.logs.get(&pid)?)?)
+    pub(crate) fn read(&self, pid: u32) -> Option<RunState> {
+        parse_state(&tail(self.logs.get(&pid)?)?)
     }
 }
 
@@ -162,16 +196,37 @@ fn tail(path: &Path) -> Option<String> {
     Some(String::from_utf8_lossy(&captured).into_owned())
 }
 
-/// The last counter in `tail`, which is the most recent redraw of the
-/// bar.
+/// What the end of a log says the run is doing now.
+///
+/// A blocked run has usually drawn a bar before it stopped -- cargo
+/// counts its downloads before it reaches for the lock, and the wait
+/// itself is one line printed once -- so the two markers are weighed by
+/// where they sit rather than by which is present. Whichever came last
+/// is what is happening.
+fn parse_state(tail: &str) -> Option<RunState> {
+    let counter = last_counter(tail);
+    let waiting = tail.rfind(LOCK_WAIT_MARKER);
+    match (counter, waiting) {
+        (Some((at, progress)), Some(wait)) if at > wait => Some(RunState::Compiling(progress)),
+        (_, Some(_)) => Some(RunState::Blocked),
+        (Some((_, progress)), None) => Some(RunState::Compiling(progress)),
+        (None, None) => None,
+    }
+}
+
+/// The last counter in `tail` and where it sits, which is the most
+/// recent redraw of the bar.
 ///
 /// Last rather than first because a run draws more than one bar: cargo
 /// counts downloads before it counts compilations, and each nested cargo
 /// a command drives counts its own. The one at the end is the one
 /// happening now.
-fn parse_counter(tail: &str) -> Option<Progress> {
+fn last_counter(tail: &str) -> Option<(usize, Progress)> {
     tail.rmatch_indices(UNIT_COUNTER_LEAD)
-        .find_map(|(index, lead)| counter_at(tail.get(index.saturating_add(lead.len())..)?))
+        .find_map(|(index, lead)| {
+            let after = index.saturating_add(lead.len());
+            Some((index, counter_at(tail.get(after..)?)?))
+        })
 }
 
 /// Read `<done>/<total>:` off the front of `text`.
@@ -205,6 +260,15 @@ mod tests {
 
     use super::*;
 
+    /// The line cargo prints when another cargo holds the build
+    /// directory, as it comes out of a real 1.96 run.
+    const CAPTURED_WAIT: &str = "    Blocking waiting for file lock on build directory\n";
+
+    /// The state a run reports while it is compiling `done` of `total`.
+    fn compiling(done: usize, total: usize) -> RunState {
+        RunState::Compiling(Progress { done, total })
+    }
+
     /// A redraw of cargo's bar as the shim captures it, colour codes and
     /// carriage return included.
     const CAPTURED_REDRAW: &str = "\u{1b}[1m\u{1b}[92m    Building\u{1b}[0m \
@@ -233,10 +297,7 @@ mod tests {
 
         assert_eq!(
             Capture::take_from(root.path()).read(33395),
-            Some(Progress {
-                done:  149,
-                total: 403,
-            })
+            Some(compiling(149, 403))
         );
     }
 
@@ -255,8 +316,20 @@ mod tests {
         let root = capture_root(&[(33395, CAPTURED_REDRAW), (33396, other)], &[33395, 33396]);
         let capture = Capture::take_from(root.path());
 
-        assert_eq!(capture.read(33395).map(Progress::percent), Some(36));
-        assert_eq!(capture.read(33396).map(Progress::percent), Some(25));
+        assert_eq!(
+            capture
+                .read(33395)
+                .and_then(RunState::reading)
+                .map(Progress::percent),
+            Some(36)
+        );
+        assert_eq!(
+            capture
+                .read(33396)
+                .and_then(RunState::reading)
+                .map(Progress::percent),
+            Some(25)
+        );
         assert_eq!(capture.read(70001), None);
     }
 
@@ -273,45 +346,36 @@ mod tests {
 
     #[test]
     fn a_captured_redraw_reports_cargos_own_counts() {
-        assert_eq!(
-            parse_counter(CAPTURED_REDRAW),
-            Some(Progress {
-                done:  149,
-                total: 403,
-            })
-        );
+        assert_eq!(parse_state(CAPTURED_REDRAW), Some(compiling(149, 403)));
     }
 
     #[test]
     fn the_last_redraw_in_the_tail_is_the_one_reported() {
         let tail = format!("{CAPTURED_REDRAW}Building [=>] 7/9: serde\r");
-        assert_eq!(parse_counter(&tail), Some(Progress { done: 7, total: 9 }));
+        assert_eq!(parse_state(&tail), Some(compiling(7, 9)));
     }
 
     #[test]
     fn a_download_counter_reports_the_phase_that_is_running() {
         assert_eq!(
-            parse_counter("Downloading [==>    ] 12/40: serde, regex\r"),
-            Some(Progress {
-                done:  12,
-                total: 40,
-            })
+            parse_state("Downloading [==>    ] 12/40: serde, regex\r"),
+            Some(compiling(12, 40))
         );
     }
 
     #[test]
     fn a_test_runners_tally_is_not_a_counter() {
-        assert_eq!(parse_counter("PASS [   0.012s] 12/345 crate::suite"), None);
+        assert_eq!(parse_state("PASS [   0.012s] 12/345 crate::suite"), None);
     }
 
     #[test]
     fn output_with_no_bar_in_it_reports_nothing() {
-        assert_eq!(parse_counter("   Compiling serde v1.0.0\n"), None);
+        assert_eq!(parse_state("   Compiling serde v1.0.0\n"), None);
     }
 
     #[test]
     fn a_counter_over_zero_units_is_rejected_rather_than_divided_by() {
-        assert_eq!(parse_counter("Building [ ] 0/0: \r"), None);
+        assert_eq!(parse_state("Building [ ] 0/0: \r"), None);
     }
 
     #[test]
@@ -332,6 +396,35 @@ mod tests {
             .percent(),
             100
         );
+    }
+
+    #[test]
+    fn a_run_waiting_on_the_build_directory_reports_that_it_is_blocked() {
+        assert_eq!(parse_state(CAPTURED_WAIT), Some(RunState::Blocked));
+    }
+
+    /// Cargo counts its downloads before it reaches for the lock, so a
+    /// blocked run has usually drawn a bar already. The bar is stale and
+    /// the wait is not.
+    #[test]
+    fn a_wait_after_a_bar_is_what_the_run_is_doing() {
+        let tail = format!("{CAPTURED_REDRAW}\n{CAPTURED_WAIT}");
+
+        assert_eq!(parse_state(&tail), Some(RunState::Blocked));
+    }
+
+    /// The wait line is printed once and stays in the log, so a run that
+    /// got its lock and started building must not still read as blocked.
+    #[test]
+    fn a_bar_after_a_wait_means_the_lock_came_free() {
+        let tail = format!("{CAPTURED_WAIT}{CAPTURED_REDRAW}");
+
+        assert_eq!(parse_state(&tail), Some(compiling(149, 403)));
+    }
+
+    #[test]
+    fn a_blocked_state_has_no_reading_to_draw() {
+        assert_eq!(RunState::Blocked.reading(), None);
     }
 
     #[test]

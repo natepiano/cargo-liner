@@ -6,6 +6,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Constraint;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
+use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
@@ -45,6 +46,7 @@ use tui_pane::status_bar_color;
 use tui_pane::success_color;
 use tui_pane::text_default;
 use tui_pane::title_color;
+use tui_pane::warning_color;
 
 use crate::app::App;
 use crate::constants::APP_NAME;
@@ -52,7 +54,6 @@ use crate::constants::APP_VERSION;
 use crate::constants::COMMAND_COLUMN;
 use crate::constants::COMPILER_COLUMN;
 use crate::constants::COMPILER_SEPARATOR_WIDTH;
-use crate::constants::DONE_COLUMN;
 use crate::constants::DURATION_COLUMN;
 use crate::constants::GROUP_GAP_HEIGHT;
 use crate::constants::GROUP_HEADER_HEIGHT;
@@ -64,16 +65,17 @@ use crate::constants::POPUP_CHROME_WIDTH;
 use crate::constants::PROGRESS_ABSENT;
 use crate::constants::PROGRESS_CELL_BAR_WIDTH;
 use crate::constants::PROGRESS_CELL_EMPTY;
-use crate::constants::PROGRESS_CELL_FILLED;
 use crate::constants::PROGRESS_CELL_PARTIALS;
 use crate::constants::PROGRESS_HEADING_EMPTY;
 use crate::constants::PROGRESS_HEADING_FILLED;
 use crate::constants::PROGRESS_HEADING_MARGINS;
 use crate::constants::PROGRESS_HEADING_MIN_WIDTH;
 use crate::constants::PROGRESS_HEADING_READING_CAPACITY;
-use crate::constants::PROGRESS_READING_GAP;
+use crate::constants::PROGRESS_READING_WIDTH;
 use crate::constants::SETTINGS_POPUP_WIDTH;
 use crate::constants::START_COLUMN;
+use crate::constants::STATE_BLOCKED;
+use crate::constants::STATE_COLUMN;
 use crate::constants::STATUS_LINE_HEIGHT;
 use crate::constants::SUMMARY_CELL_TITLE;
 use crate::constants::SUMMARY_HIDDEN_COLUMNS;
@@ -85,6 +87,7 @@ use crate::globals::AppGlobalAction;
 use crate::processes::CargoProcess;
 use crate::processes::ManifestPath;
 use crate::progress::Progress;
+use crate::progress::RunState;
 use crate::roster::Roster;
 use crate::roster::TrackedRow;
 use crate::settings;
@@ -179,7 +182,7 @@ fn progress_placement(rows: &[&TrackedRow]) -> ProgressPlacement {
         group
             .rows
             .iter()
-            .filter(|row| row.process.progress.is_some())
+            .filter(|row| reading(row).is_some())
             .count()
             <= PROGRESS_HEADING_READING_CAPACITY
     }) {
@@ -244,7 +247,7 @@ impl TableKind {
 /// reading has to sit on the row it belongs to.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProgressPlacement {
-    /// A `done` cell on each row.
+    /// A `state` cell on each row.
     Column,
     /// A rule along the working-directory header.
     Heading,
@@ -417,7 +420,7 @@ fn fitted_constraints(rows: &[&TrackedRow], columns: &[usize]) -> Vec<Constraint
         widths.observe_cell_usize(PID_COLUMN, process.pid.to_string().chars().count());
         widths.observe_cell_usize(START_COLUMN, process.start.chars().count());
         widths.observe_cell_usize(DURATION_COLUMN, process.duration.chars().count());
-        widths.observe_cell_usize(DONE_COLUMN, progress_width(process.progress));
+        widths.observe_cell_usize(STATE_COLUMN, state_width(process.state));
         widths.observe_cell_usize(COMPILER_COLUMN, compiler_width(process));
         widths.observe_cell_usize(MANAGED_COLUMN, managed_text(process).chars().count());
     }
@@ -476,7 +479,7 @@ fn process_row(row: &TrackedRow, manifest: ManifestPath, columns: &[usize]) -> R
         Line::from(Span::styled(process.pid.to_string(), muted)),
         Line::from(Span::styled(process.start.clone(), muted)),
         Line::from(Span::styled(process.duration.clone(), muted)),
-        progress_cell(row),
+        state_cell(row),
         Line::from(vec![
             Span::styled(process.command.program.clone(), program),
             Span::raw(" "),
@@ -496,7 +499,7 @@ fn process_row(row: &TrackedRow, manifest: ManifestPath, columns: &[usize]) -> R
 
 /// The columns a cell draws, in table order.
 ///
-/// Every column but `done` is always there. That one joins only where
+/// Every column but `state` is always there. That one joins only where
 /// it has something to say -- the summary, and only while some command
 /// on it has a capture behind it -- because a column of dashes costs a
 /// narrow tile the width its command line needs and reports nothing.
@@ -505,60 +508,84 @@ fn visible_columns(
     kind: TableKind,
     placement: ProgressPlacement,
 ) -> Vec<usize> {
-    let carries_progress = placement == ProgressPlacement::Column
-        && rows.iter().any(|row| row.process.progress.is_some());
+    let carries_state = rows.iter().any(|row| match row.process.state {
+        // A heading is per directory and blocked is per row, so nothing
+        // but the column can say which row is waiting.
+        Some(RunState::Blocked) => true,
+        Some(RunState::Compiling(_)) => placement == ProgressPlacement::Column,
+        None => false,
+    });
     (0..TABLE_HEADERS.len())
-        .filter(|column| *column != DONE_COLUMN || carries_progress)
+        .filter(|column| *column != STATE_COLUMN || carries_state)
         .filter(|column| kind.shows_invocation_detail() || !SUMMARY_HIDDEN_COLUMNS.contains(column))
         .collect()
 }
 
-/// The `done` cell: the reading, then a bar of it.
+/// The `state` cell: the reading and a bar of it, or the word for a
+/// command that is not building at all.
 ///
 /// A run with no capture behind it gets [`PROGRESS_ABSENT`] rather than
 /// an empty cell, which would read as nought percent.
-fn progress_cell(row: &TrackedRow) -> Line<'static> {
+fn state_cell(row: &TrackedRow) -> Line<'static> {
     let muted = Style::default().fg(label_color());
-    let Some(progress) = row.process.progress else {
+    let Some(state) = row.process.state else {
         return Line::from(Span::styled(PROGRESS_ABSENT, muted));
     };
-    let filled = if row.is_ended() {
-        muted
-    } else {
-        Style::default().fg(success_color())
+    let Some(progress) = state.reading() else {
+        // Waiting is not failing, and it is not work either. The warning
+        // colour says both, where the success green a reading gets would
+        // claim the row is getting somewhere.
+        return Line::from(Span::styled(
+            STATE_BLOCKED,
+            Style::default().fg(warning_color()),
+        ));
     };
-    let (run, trough) = progress_bar(progress);
-    Line::from(vec![
-        Span::styled(percent_reading(progress), filled),
-        Span::raw(" "),
-        Span::styled(run, filled),
-        Span::styled(trough, muted),
-    ])
+    let fill = if row.is_ended() {
+        label_color()
+    } else {
+        success_color()
+    };
+    Line::from(progress_bar(progress, fill))
 }
 
-/// Cells the `done` column needs for one row.
-fn progress_width(progress: Option<Progress>) -> usize {
-    progress.map_or_else(
-        || PROGRESS_ABSENT.chars().count(),
-        |progress| {
-            percent_reading(progress).chars().count()
-                + PROGRESS_CELL_BAR_WIDTH
-                + PROGRESS_READING_GAP
-        },
-    )
+/// Cells the `state` column needs for one row.
+fn state_width(state: Option<RunState>) -> usize {
+    match state.map(RunState::reading) {
+        None => PROGRESS_ABSENT.chars().count(),
+        Some(None) => STATE_BLOCKED.chars().count(),
+        Some(Some(_)) => PROGRESS_CELL_BAR_WIDTH,
+    }
 }
+
+/// The reading behind a row: nothing for a row with no capture behind
+/// it, and nothing for one that is waiting on a lock.
+fn reading(row: &TrackedRow) -> Option<Progress> { row.process.state?.reading() }
 
 /// How far along, written to a fixed width so a column of readings
 /// stays in line as the number grows a digit.
-fn percent_reading(progress: Progress) -> String { format!("{:>3}%", progress.percent()) }
+fn percent_reading(progress: Progress) -> String {
+    format!(
+        "{:>width$}%",
+        progress.percent(),
+        width = PROGRESS_READING_WIDTH.saturating_sub(1)
+    )
+}
 
-/// The `done` column's bar, split into the run that is filled and the
-/// trough behind it.
+/// The `state` column's bar: one field of [`PROGRESS_CELL_BAR_WIDTH`]
+/// cells with the reading set at its right, filled from the left.
 ///
-/// Measured in eighths of a cell rather than whole cells: a bar this
-/// narrow would otherwise sit still through a sixth of the build before
-/// jumping a whole cell.
-fn progress_bar(progress: Progress) -> (String, String) {
+/// The fill is a background rather than a run of glyphs, so it passes
+/// under the reading instead of stopping short of it, and a finished
+/// build ends as a solid ground behind `100%`. `REVERSED` is what puts
+/// the text in the pane's own background colour over it, whatever
+/// colour that is, rather than naming a second colour that every theme
+/// would then have to keep legible against the first.
+///
+/// One cell of the field is still measured in eighths. Whole cells
+/// alone would move the bar once every ninth of the build, and the
+/// reading is right-aligned, so the cell the fill has reached is blank
+/// for most of a run and free to carry the partial glyph.
+fn progress_bar(progress: Progress, fill: Color) -> Vec<Span<'static>> {
     let per_cell = PROGRESS_CELL_PARTIALS.len().saturating_add(1);
     let eighths = progress
         .done
@@ -566,18 +593,37 @@ fn progress_bar(progress: Progress) -> (String, String) {
         .saturating_mul(per_cell)
         / progress.total;
     let whole = eighths / per_cell;
-    let part = eighths % per_cell;
-    let mut run = PROGRESS_CELL_FILLED.to_string().repeat(whole);
-    if let Some(partial) = part
+    let partial = (eighths % per_cell)
         .checked_sub(1)
         .and_then(|index| PROGRESS_CELL_PARTIALS.get(index))
-    {
-        run.push(*partial);
-    }
-    let trough = PROGRESS_CELL_BAR_WIDTH
-        .saturating_sub(whole)
-        .saturating_sub(usize::from(part > 0));
-    (run, PROGRESS_CELL_EMPTY.to_string().repeat(trough))
+        .copied();
+
+    let reading = percent_reading(progress);
+    let lead = PROGRESS_CELL_BAR_WIDTH.saturating_sub(reading.chars().count());
+    let ground = Style::default().fg(fill).add_modifier(Modifier::REVERSED);
+    let muted = Style::default().fg(label_color());
+
+    (0..PROGRESS_CELL_BAR_WIDTH)
+        .map(|cell| {
+            let character = cell
+                .checked_sub(lead)
+                .and_then(|index| reading.chars().nth(index));
+            match (cell < whole, character, partial) {
+                // Under the fill: the glyph rides on it, and a cell the
+                // reading does not reach is the fill and nothing else.
+                (true, character, _) => Span::styled(character.unwrap_or(' ').to_string(), ground),
+                // The cell the fill has reached part way, with nothing
+                // of the reading in it to be drawn over.
+                (false, None, Some(eighth)) if cell == whole => {
+                    Span::styled(eighth.to_string(), Style::default().fg(fill))
+                },
+                (false, None, _) => Span::styled(PROGRESS_CELL_EMPTY.to_string(), muted),
+                (false, Some(character), _) => {
+                    Span::styled(character.to_string(), Style::default().fg(fill))
+                },
+            }
+        })
+        .collect()
 }
 
 /// The rule a working-directory header carries to the right of the
@@ -587,11 +633,7 @@ fn progress_bar(progress: Progress) -> (String, String) {
 /// when the directory is long enough that the rule left would be too
 /// short to read as one.
 fn heading_gauge(group: &PathGroup<'_>, width: u16) -> Vec<Span<'static>> {
-    let Some(progress) = group
-        .rows
-        .iter()
-        .find_map(|row| Some((row, row.process.progress?)))
-    else {
+    let Some(progress) = group.rows.iter().find_map(|row| Some((row, reading(row)?))) else {
         return Vec::new();
     };
     let (row, progress) = progress;
@@ -821,129 +863,148 @@ mod tests {
     use crate::processes::CargoProcess;
     use crate::processes::CommandText;
 
-    /// A row for a command that has been running long enough to have
-    /// reported `progress`.
-    fn row(progress: Option<Progress>) -> TrackedRow { row_at("~/rust/cargo-tile", progress) }
+    /// The state of a command compiling `done` of `total` units.
+    fn compiling(done: usize, total: usize) -> RunState {
+        RunState::Compiling(Progress { done, total })
+    }
+
+    /// A row for a command whose capture last reported `state`.
+    fn row(state: Option<RunState>) -> TrackedRow { row_at("~/rust/cargo-tile", state) }
 
     /// A row for a command running in `path`.
-    fn row_at(path: &str, progress: Option<Progress>) -> TrackedRow {
+    fn row_at(path: &str, state: Option<RunState>) -> TrackedRow {
         TrackedRow::from(CargoProcess {
             path: path.to_string(),
             pid: 41233,
             start: "11:04".to_string(),
             duration: "00:18".to_string(),
             compiler: None,
-            progress,
+            state,
             managed: 0,
             command: CommandText::of("cargo", &["build"]),
         })
     }
 
+    /// The cells of a bar, as text, so a test can read the field the way
+    /// the pane draws it.
+    fn bar_text(done: usize, total: usize) -> String {
+        progress_bar(Progress { done, total }, success_color())
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    /// The cells the fill covers, which are the ones drawn in reverse so
+    /// that the fill colour lands as their background.
+    fn filled_cells(done: usize, total: usize) -> usize {
+        progress_bar(Progress { done, total }, success_color())
+            .iter()
+            .filter(|span| span.style.add_modifier.contains(Modifier::REVERSED))
+            .count()
+    }
+
     #[test]
     fn a_bar_is_always_the_column_width_however_far_along_it_is() {
         for done in 0..=16 {
-            let (run, trough) = progress_bar(Progress { done, total: 16 });
+            assert_eq!(bar_text(done, 16).chars().count(), PROGRESS_CELL_BAR_WIDTH);
+        }
+    }
+
+    /// The reading is set at the right of the field at every point in
+    /// the build, so a column of them stays in line.
+    #[test]
+    fn the_reading_sits_at_the_right_of_the_field_whatever_the_fill() {
+        for done in 0..=16 {
+            let text = bar_text(done, 16);
+            let reading = percent_reading(Progress { done, total: 16 });
+            assert!(text.ends_with(reading.trim_end()), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_build_that_has_done_nothing_has_no_cell_filled() {
+        assert_eq!(filled_cells(0, 16), 0);
+    }
+
+    /// The whole field, the reading included: at a hundred percent the
+    /// fill is a ground behind the number rather than a bar beside it.
+    #[test]
+    fn a_finished_build_fills_every_cell_of_the_field() {
+        assert_eq!(filled_cells(16, 16), PROGRESS_CELL_BAR_WIDTH);
+        assert!(bar_text(16, 16).ends_with("100%"));
+    }
+
+    /// One unit of sixteen is part way through the first cell -- too
+    /// little to fill one, which is what the partial glyphs are for.
+    #[test]
+    fn a_build_part_way_through_a_cell_draws_the_eighth_it_reached() {
+        let text = bar_text(1, 16);
+        let reached = text.chars().next().unwrap();
+
+        assert_eq!(filled_cells(1, 16), 0);
+        assert!(PROGRESS_CELL_PARTIALS.contains(&reached), "{reached:?}");
+    }
+
+    /// A partial glyph is only ever drawn where the reading is not, so
+    /// it can never take a digit's cell.
+    #[test]
+    fn the_fill_never_draws_over_a_digit_of_the_reading() {
+        for done in 0..=16 {
+            let text = bar_text(done, 16);
+            let digits: String = text.chars().filter(char::is_ascii_digit).collect();
             assert_eq!(
-                run.chars().count() + trough.chars().count(),
-                PROGRESS_CELL_BAR_WIDTH
+                digits,
+                percent_reading(Progress { done, total: 16 })
+                    .trim()
+                    .trim_end_matches('%'),
+                "{text:?}"
             );
         }
     }
 
     #[test]
-    fn a_build_that_has_done_nothing_is_all_trough() {
-        let (run, trough) = progress_bar(Progress {
-            done:  0,
-            total: 16,
-        });
-        assert_eq!(run, "");
-        assert_eq!(trough.chars().count(), PROGRESS_CELL_BAR_WIDTH);
-    }
-
-    #[test]
-    fn a_finished_build_fills_every_cell() {
-        let (run, trough) = progress_bar(Progress {
-            done:  16,
-            total: 16,
-        });
-        assert_eq!(run.chars().count(), PROGRESS_CELL_BAR_WIDTH);
-        assert_eq!(trough, "");
-    }
-
-    /// One unit of sixteen is an eighth of the way through the first
-    /// cell of six -- too little to fill one, which is what the partial
-    /// glyphs are for.
-    #[test]
-    fn a_build_part_way_through_a_cell_draws_the_eighth_it_reached() {
-        let (run, _) = progress_bar(Progress {
-            done:  1,
-            total: 16,
-        });
-        assert_eq!(run.chars().count(), 1);
-        assert!(PROGRESS_CELL_PARTIALS.contains(&run.chars().next().unwrap()));
-    }
-
-    #[test]
-    fn the_done_column_stays_out_while_no_row_has_a_reading() {
+    fn the_state_column_stays_out_while_no_row_has_anything_to_say() {
         let rows = [row(None)];
         let columns = visible_columns(
             &rows.iter().collect::<Vec<&TrackedRow>>(),
             TableKind::Command,
             ProgressPlacement::Column,
         );
-        assert!(!columns.contains(&DONE_COLUMN));
+        assert!(!columns.contains(&STATE_COLUMN));
         assert_eq!(columns.len(), TABLE_HEADERS.len() - 1);
     }
 
     #[test]
-    fn one_row_with_a_reading_brings_the_done_column_in_for_the_cell() {
-        let rows = [
-            row(None),
-            row(Some(Progress {
-                done:  149,
-                total: 403,
-            })),
-        ];
+    fn one_row_with_a_reading_brings_the_state_column_in_for_the_cell() {
+        let rows = [row(None), row(Some(compiling(149, 403)))];
         let columns = visible_columns(
             &rows.iter().collect::<Vec<&TrackedRow>>(),
             TableKind::Command,
             ProgressPlacement::Column,
         );
-        assert!(columns.contains(&DONE_COLUMN));
+        assert!(columns.contains(&STATE_COLUMN));
         assert_eq!(columns.len(), TABLE_HEADERS.len());
     }
 
     /// A command's own cell puts the reading on its working-directory
     /// header, so the column would only repeat it.
     #[test]
-    fn a_commands_own_cell_leaves_the_done_column_out() {
-        let rows = [row(Some(Progress { done: 1, total: 2 }))];
+    fn a_commands_own_cell_leaves_the_state_column_out() {
+        let rows = [row(Some(compiling(1, 2)))];
         let columns = visible_columns(
             &rows.iter().collect::<Vec<&TrackedRow>>(),
             TableKind::Command,
             ProgressPlacement::Heading,
         );
-        assert!(!columns.contains(&DONE_COLUMN));
+        assert!(!columns.contains(&STATE_COLUMN));
     }
 
     /// A reading each, in directories of their own: every heading can
     /// carry its own, so the column costs width for nothing.
     #[test]
     fn one_reading_per_directory_goes_on_the_headings() {
-        let first = row_at(
-            "~/rust/bevy_hana",
-            Some(Progress {
-                done:  99,
-                total: 100,
-            }),
-        );
-        let second = row_at(
-            "~/rust/hana_tool_graph",
-            Some(Progress {
-                done:  5,
-                total: 40,
-            }),
-        );
+        let first = row_at("~/rust/bevy_hana", Some(compiling(99, 100)));
+        let second = row_at("~/rust/hana_tool_graph", Some(compiling(5, 40)));
 
         assert_eq!(
             progress_placement(&[&first, &second]),
@@ -955,20 +1016,8 @@ mod tests {
     /// can only say one thing, so the readings go back in the column.
     #[test]
     fn two_readings_in_one_directory_bring_the_column_back() {
-        let first = row_at(
-            "~/rust/bevy_hana",
-            Some(Progress {
-                done:  99,
-                total: 100,
-            }),
-        );
-        let second = row_at(
-            "~/rust/bevy_hana",
-            Some(Progress {
-                done:  5,
-                total: 40,
-            }),
-        );
+        let first = row_at("~/rust/bevy_hana", Some(compiling(99, 100)));
+        let second = row_at("~/rust/bevy_hana", Some(compiling(5, 40)));
 
         assert_eq!(
             progress_placement(&[&first, &second]),
@@ -980,18 +1029,59 @@ mod tests {
     /// behind it is not one, so it does not cost the cell its rules.
     #[test]
     fn a_second_command_without_a_reading_leaves_the_heading_alone() {
-        let compiling = row_at(
-            "~/rust/bevy_hana",
-            Some(Progress {
-                done:  99,
-                total: 100,
-            }),
-        );
+        let building = row_at("~/rust/bevy_hana", Some(compiling(99, 100)));
         let idle = row_at("~/rust/bevy_hana", None);
 
         assert_eq!(
-            progress_placement(&[&compiling, &idle]),
+            progress_placement(&[&building, &idle]),
             ProgressPlacement::Heading
+        );
+    }
+
+    /// A heading is per directory and a wait is per row, so the column
+    /// is the only place that can name which command is waiting -- even
+    /// where every reading on the cell is on a heading already.
+    #[test]
+    fn a_blocked_row_brings_the_state_column_in_against_the_headings() {
+        let rows = [
+            row_at("~/rust/bevy_hana", Some(compiling(99, 100))),
+            row_at("~/rust/bevy_hana", Some(RunState::Blocked)),
+        ];
+
+        let columns = visible_columns(
+            &rows.iter().collect::<Vec<&TrackedRow>>(),
+            TableKind::Command,
+            ProgressPlacement::Heading,
+        );
+
+        assert!(columns.contains(&STATE_COLUMN));
+    }
+
+    /// A waiting command has no reading, so it does not contend for the
+    /// heading the command holding the lock is ruling.
+    #[test]
+    fn a_blocked_row_does_not_take_the_heading_from_a_reading() {
+        let building = row_at("~/rust/bevy_hana", Some(compiling(99, 100)));
+        let waiting = row_at("~/rust/bevy_hana", Some(RunState::Blocked));
+
+        assert_eq!(
+            progress_placement(&[&building, &waiting]),
+            ProgressPlacement::Heading
+        );
+    }
+
+    /// The three things a row can say, each measured as it is drawn, so
+    /// the fitted column is wide enough for whichever turns up.
+    #[test]
+    fn the_state_column_is_fitted_to_whichever_of_the_three_it_holds() {
+        assert_eq!(state_width(None), PROGRESS_ABSENT.chars().count());
+        assert_eq!(
+            state_width(Some(RunState::Blocked)),
+            STATE_BLOCKED.chars().count()
+        );
+        assert_eq!(
+            state_width(Some(compiling(149, 403))),
+            PROGRESS_CELL_BAR_WIDTH
         );
     }
 

@@ -197,13 +197,36 @@ summary and in the command's own cell alike:
 
 A heading stands over every command started from one directory, so it can only
 carry one reading. Where two of them are compiling in the same directory at
-once, the summary falls back to a `done` column, which has room for a reading
-on every row:
+once, the table falls back to a `state` column, which has room for a reading on
+every row:
 
 ```
-pid    start  dur   done         command
-41883  14:02  1:07   36% ██▏░░░  cargo build --release
+pid    start  dur   state        command
+41883  14:02  1:07  ████░░░ 36%  cargo build --release
 ```
+
+The reading sits at the right of that field and the fill runs under it, as a
+background rather than a run of glyphs, so a finished build reads `100%` on a
+solid ground instead of beside one. The cell the fill has reached is drawn in
+eighths: whole cells alone would move the bar once every ninth of the build,
+and the reading is right-aligned, so that cell is free for most of a run.
+
+The same column says when a command is not building at all. Cargo locks the
+build directory, so a second command against the same target waits rather than
+fails -- it prints `Blocking waiting for file lock on build directory` and then
+nothing, which from outside is a row with a pid, a climbing duration, and no
+reading, exactly like a build that has not reached its first unit yet. The
+column separates them:
+
+```
+pid    start  dur   state        command
+41883  14:02  1:07  ████░░░ 36%  cargo build --release
+41902  14:03  0:41  blocked      cargo check --workspace
+```
+
+A wait is per row and a heading is per directory, so a blocked row brings the
+column in even where every reading is already on a heading. It does not take a
+heading from a reading, though: it has none of its own to put there.
 
 The number is cargo's own. While it compiles, cargo draws
 `Building [========>    ] 149/403: globset, regex-automata`, and those two
@@ -230,8 +253,8 @@ which runs the real binary under a pty and mirrors the output to
 `/tmp/cargo-tile/run-<timestamp>-<pid>.log`. The grid reads the last counter out
 of the tail of that log.
 
-Without the shim nothing breaks: the `done` column simply stays out of the
-summary and headings draw no rule. Progress is the only thing it adds.
+Without the shim nothing breaks: the `state` column simply stays out and
+headings draw no rule. What a command is doing is the only thing it adds.
 
 A run with no terminal — one started by a script, or with its output piped —
 gets a bar too, but by a different route: cargo draws no progress at all
