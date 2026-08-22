@@ -58,7 +58,7 @@ tracing-subscriber = "0.3"
 # release branch rewrites this to the last published version via the
 # `[[publish_path_pins]]` entry in .claude/config/release.toml; main keeps the
 # path by construction and is never edited by a release.
-tui_pane      = { path = "crates/tui_pane" }
+tui_pane = "0.7.0"
 unicode-width = "0.2.2"
 walkdir       = "2.5"
 
