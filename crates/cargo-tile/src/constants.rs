@@ -221,7 +221,7 @@ pub(crate) const MANIFEST_PATH_FLAG: &str = "--manifest-path";
 /// them: it heads the group of invocations that share it rather than
 /// repeating on every row.
 pub(crate) const TABLE_HEADERS: [&str; 7] =
-    ["pid", "start", "dur", "done", "compiler", "sub", "command"];
+    ["pid", "start", "dur", "done", "command", "compiler", "runs"];
 /// Index of the `pid` column in [`TABLE_HEADERS`].
 pub(crate) const PID_COLUMN: usize = 0;
 /// Index of the `start` column in [`TABLE_HEADERS`].
@@ -233,15 +233,24 @@ pub(crate) const DURATION_COLUMN: usize = 2;
 /// a cell with no captured run on it drops the column rather than
 /// ruling off a strip of dashes.
 pub(crate) const DONE_COLUMN: usize = 3;
+/// Index of the `command` column in [`TABLE_HEADERS`]. It absorbs
+/// whatever width the fitted columns leave, wherever it stands among
+/// them, so it comes ahead of the two that describe an invocation
+/// rather than after them.
+pub(crate) const COMMAND_COLUMN: usize = 4;
 /// Index of the `compiler` column in [`TABLE_HEADERS`].
-pub(crate) const COMPILER_COLUMN: usize = 4;
-/// Index of the `sub` column in [`TABLE_HEADERS`], which carries how
+pub(crate) const COMPILER_COLUMN: usize = 5;
+/// Index of the `runs` column in [`TABLE_HEADERS`], which carries how
 /// many cargo invocations a command is managing. Blank on the rows that
 /// manage nothing, which is most of them.
-pub(crate) const MANAGED_COLUMN: usize = 5;
-/// Index of the `command` column in [`TABLE_HEADERS`]. It is last, and
-/// absorbs whatever width the fitted columns leave.
-pub(crate) const COMMAND_COLUMN: usize = 6;
+pub(crate) const MANAGED_COLUMN: usize = 6;
+/// Columns the summary leaves out. One row there stands for a whole
+/// command rather than for a single invocation, and both of these
+/// describe an invocation: what is compiling under it at this instant,
+/// and how many invocations it is managing. The command's own cell has
+/// the room to say so, and the summary spends that width on the command
+/// line instead.
+pub(crate) const SUMMARY_HIDDEN_COLUMNS: [usize; 2] = [COMPILER_COLUMN, MANAGED_COLUMN];
 /// Rows the working-directory header above each group's table occupies.
 pub(crate) const GROUP_HEADER_HEIGHT: u16 = 1;
 /// Rows the column-label row at the top of the pane occupies. There is
@@ -325,6 +334,11 @@ pub(crate) const PROGRESS_HEADING_MARGINS: u16 = 2;
 /// Cells a header's rule needs before it is worth drawing at all. Below
 /// this the header shows the directory alone, the way it always has.
 pub(crate) const PROGRESS_HEADING_MIN_WIDTH: u16 = 4;
+/// Readings one working-directory header can carry. A header stands
+/// over every command started from that directory, so a second command
+/// reporting progress there has nowhere to put its reading and the
+/// summary falls back to a column of them.
+pub(crate) const PROGRESS_HEADING_READING_CAPACITY: usize = 1;
 /// Bytes of a run log's end to read for the counter. Sized to hold the
 /// bar's last redraw across a burst of diagnostics printed over it.
 pub(crate) const RUN_LOG_TAIL_BYTES: u64 = 64 * 1024;

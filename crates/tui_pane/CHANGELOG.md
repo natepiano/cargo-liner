@@ -7,6 +7,9 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ## [Unreleased]
 
+### Changed
+- Narrow `SECTION_HEADER_INDENT` to one space from two, and `SECTION_ITEM_INDENT` to one space from four. A section header and the items under it now start in the same column, which gives an overlay or a table three columns back at the left margin and leaves the nesting to read from colour rather than position.
+
 ## [0.7.0] - 2026-08-21
 
 ### Added

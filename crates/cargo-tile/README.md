@@ -9,8 +9,8 @@ cargo run -p cargo-tile
 ```
 
 Once installed it answers to both `cargo-tile` and `cargo tile` — cargo runs any
-`cargo-`prefixed binary on the path as a subcommand of its own, and the two
-spellings take the same arguments.
+binary on the path whose name starts with `cargo-` as a subcommand of its own,
+and the two spellings take the same arguments.
 
 It takes over the terminal (alternate screen, raw mode) and draws one content
 pane above the framework status line. The pane tiles into an animated grid of the
@@ -136,8 +136,10 @@ that is not iTerm2 is left alone.
 
 Cell one is the summary: one row per cargo command running. A command that
 drives other cargo commands -- `cargo mend` running a `cargo nextest` suite that
-runs `cargo check` per crate -- is one row there, with the `sub` column counting
-what it is managing. A shim that merely wraps cargo is not a manager and does not
+runs `cargo check` per crate -- is one row there, and its own cell carries the
+`runs` column counting what it is managing. The summary leaves out `runs` and
+`compiler` both: a row there stands for a whole command, and those two describe
+a single invocation. A shim that merely wraps cargo is not a manager and does not
 get its own row; it collapses onto the cargo actually doing the work. A tool
 installed as an external subcommand counts as the command it is: `cargo nextest
 run` replaces the `cargo` process with `cargo-nextest` rather than spawning it,
@@ -186,17 +188,21 @@ back to the summary when that cell goes.
 
 ### build progress
 
-A compiling row can show how far along it is:
+A compiling command shows how far along it is on the heading over it, in the
+summary and in the command's own cell alike:
 
 ```
-pid    start  dur   done          compiler  sub  command
-41883  14:02  1:07   62% ████▌░    rustc          cargo build --release
+~/rust/nateroids ━━━━━━━╌╌╌╌╌╌╌╌╌╌╌╌╌  36%
 ```
 
-and a command's own cell rules the same reading along its heading:
+A heading stands over every command started from one directory, so it can only
+carry one reading. Where two of them are compiling in the same directory at
+once, the summary falls back to a `done` column, which has room for a reading
+on every row:
 
 ```
-~/rust/nateroids ━━━━━━━━━━━━━━━╌╌╌╌╌ 62%
+pid    start  dur   done         command
+41883  14:02  1:07   36% ██▏░░░  cargo build --release
 ```
 
 The number is cargo's own. While it compiles, cargo draws
@@ -261,11 +267,13 @@ between them is `script` itself: the BSD one takes a command and its arguments,
 util-linux's takes a single command line after `-c` and needs `-e` to exit with
 the child's status. The shim asks which is present — only util-linux answers
 `--version` — and calls it accordingly. Where there is no `script` at all it
-falls back to the no-terminal path below rather than giving up.
+falls back to the no-terminal route described above rather than giving up.
 
-Logs are never deleted, so the directory keeps every run since the last reboot;
-a run counts as live only while its marker file under
-`/tmp/cargo-tile/state/pids/` exists. `CARGO_TILE_ROOT` moves the whole
+Nothing prunes the logs — every captured run leaves one behind, and whatever
+cleans `/tmp` on the system is what bounds the directory: macOS sweeps files
+after a few days, and many Linux systems clear it at boot. A run counts as live
+only while its marker file under `/tmp/cargo-tile/state/pids/` exists, so
+deleting the logs is safe at any time. `CARGO_TILE_ROOT` moves the whole
 directory, which is how a second grid runs on captures of its own.
 
 ### keys

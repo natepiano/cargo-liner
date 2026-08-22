@@ -29,10 +29,12 @@ pub(crate) const TOAST_ELAPSED_MINUTE_MILLIS: u128 = 60_000;
 /// Elapsed time threshold where toast labels switch from milliseconds to seconds.
 pub(crate) const TOAST_ELAPSED_SECONDS_MILLIS: u128 = 10_000;
 
-/// Two-space indent for popup section headers.
-pub const SECTION_HEADER_INDENT: &str = "  ";
-/// Four-space indent for popup section items.
-pub const SECTION_ITEM_INDENT: &str = "    ";
+/// Indent for a popup section header, and for anything else standing at
+/// the same level -- the working-directory headings over cargo-tile's
+/// tables among them.
+pub const SECTION_HEADER_INDENT: &str = " ";
+/// Indent for the items under a popup section header.
+pub const SECTION_ITEM_INDENT: &str = " ";
 
 // tui_pane src activity
 /// Default framework activity-spinner cycle.

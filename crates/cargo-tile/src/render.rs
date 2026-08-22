@@ -70,11 +70,13 @@ use crate::constants::PROGRESS_HEADING_EMPTY;
 use crate::constants::PROGRESS_HEADING_FILLED;
 use crate::constants::PROGRESS_HEADING_MARGINS;
 use crate::constants::PROGRESS_HEADING_MIN_WIDTH;
+use crate::constants::PROGRESS_HEADING_READING_CAPACITY;
 use crate::constants::PROGRESS_READING_GAP;
 use crate::constants::SETTINGS_POPUP_WIDTH;
 use crate::constants::START_COLUMN;
 use crate::constants::STATUS_LINE_HEIGHT;
 use crate::constants::SUMMARY_CELL_TITLE;
+use crate::constants::SUMMARY_HIDDEN_COLUMNS;
 use crate::constants::TABLE_COLUMN_SPACING;
 use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TABLE_HEADERS;
@@ -160,19 +162,31 @@ fn draw_contents(buffer: &mut Buffer, roster: &Roster, content: TileContent, inn
 
 /// The summary cell: one row per command, whatever each one is running
 /// underneath.
-///
-/// The manifest path stays out of it. A row here is already under the
-/// working directory heading its group, so the path says nothing new
-/// while costing the width the subcommand and its flags need.
 fn draw_summary(buffer: &mut Buffer, roster: &Roster, inner: Rect) {
     let rows: Vec<&TrackedRow> = roster.groups().iter().map(|group| &group.lead).collect();
-    draw_process_table(
-        buffer,
-        inner,
-        &rows,
-        ManifestPath::Hidden,
-        ProgressPlacement::Column,
-    );
+    draw_process_table(buffer, inner, &rows, TableKind::Summary);
+}
+
+/// Where a cell puts what it knows of each command's progress.
+///
+/// The heading reads better and costs the table no width, so it carries
+/// the reading wherever it can. It cannot where one directory has two
+/// commands reporting at once -- a heading stands over both, and the
+/// second reading would have nowhere to go -- and the whole cell falls
+/// back to a column rather than quietly dropping one.
+fn progress_placement(rows: &[&TrackedRow]) -> ProgressPlacement {
+    if group_by_path(rows).iter().all(|group| {
+        group
+            .rows
+            .iter()
+            .filter(|row| row.process.progress.is_some())
+            .count()
+            <= PROGRESS_HEADING_READING_CAPACITY
+    }) {
+        ProgressPlacement::Heading
+    } else {
+        ProgressPlacement::Column
+    }
 }
 
 /// One command's own cell: every invocation the summary put behind that
@@ -182,13 +196,7 @@ fn draw_group(buffer: &mut Buffer, roster: &Roster, id: u32, inner: Rect) {
         return;
     };
     let rows: Vec<&TrackedRow> = group.rows().collect();
-    draw_process_table(
-        buffer,
-        inner,
-        &rows,
-        ManifestPath::Shown,
-        ProgressPlacement::Heading,
-    );
+    draw_process_table(buffer, inner, &rows, TableKind::Command);
 }
 
 /// A cell opened with `+` that no command has claimed: its number, on
@@ -199,6 +207,32 @@ fn draw_number(buffer: &mut Buffer, number: usize, inner: Rect) {
         Span::styled(number.to_string(), Style::default().fg(title_color())),
     ]))
     .render(Rect { height: 1, ..inner }, buffer);
+}
+
+/// Which cell is drawing a table, which is what settles how much of a
+/// row it has the room to say.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TableKind {
+    /// The summary: one row per command, over every directory at once.
+    Summary,
+    /// One command's own cell: every invocation running under it.
+    Command,
+}
+
+impl TableKind {
+    /// Whether this cell describes single invocations, which is what
+    /// the columns in [`SUMMARY_HIDDEN_COLUMNS`] have to say.
+    const fn shows_invocation_detail(self) -> bool { matches!(self, Self::Command) }
+
+    /// Whether a row here needs its manifest path. A summary row already
+    /// sits under the working directory heading its group, so the path
+    /// says nothing new while costing the width the command line wants.
+    const fn manifest(self) -> ManifestPath {
+        match self {
+            Self::Summary => ManifestPath::Hidden,
+            Self::Command => ManifestPath::Shown,
+        }
+    }
 }
 
 /// Where a cell puts what it knows of a command's build progress.
@@ -230,13 +264,9 @@ struct PathGroup<'a> {
 /// Column widths are fitted across every row rather than per group, so
 /// the tables line up down the cell instead of stepping in and out as
 /// the eye moves between them.
-fn draw_process_table(
-    buffer: &mut Buffer,
-    area: Rect,
-    rows: &[&TrackedRow],
-    manifest: ManifestPath,
-    placement: ProgressPlacement,
-) {
+fn draw_process_table(buffer: &mut Buffer, area: Rect, rows: &[&TrackedRow], kind: TableKind) {
+    let manifest = kind.manifest();
+    let placement = progress_placement(rows);
     if rows.is_empty() {
         Paragraph::new(vec![
             Line::from(""),
@@ -252,7 +282,7 @@ fn draw_process_table(
     // One column-label row for the whole cell. Every group's table is
     // laid out with the same constraints and the same indent, so the
     // labels stay over their columns without costing a row per group.
-    let columns = visible_columns(rows, placement);
+    let columns = visible_columns(rows, kind, placement);
     let constraints = fitted_constraints(rows, &columns);
     Table::new(Vec::<Row>::new(), constraints.iter().copied())
         .header(column_header(&columns))
@@ -392,16 +422,22 @@ fn fitted_constraints(rows: &[&TrackedRow], columns: &[usize]) -> Vec<Constraint
         widths.observe_cell_usize(MANAGED_COLUMN, managed_text(process).chars().count());
     }
 
-    let mut constraints: Vec<Constraint> = widths
+    // The command absorbs whatever the fitted columns leave, which is
+    // why it alone is a `Min`. It is no longer the last column, so the
+    // slack has to follow the column rather than the position.
+    widths
         .to_constraints()
         .into_iter()
         .enumerate()
         .filter(|(column, _)| columns.contains(column))
-        .map(|(_, constraint)| constraint)
-        .collect();
-    let _ = constraints.pop();
-    constraints.push(Constraint::Min(cell_width(TABLE_HEADERS[COMMAND_COLUMN])));
-    constraints
+        .map(|(column, constraint)| {
+            if column == COMMAND_COLUMN {
+                Constraint::Min(cell_width(TABLE_HEADERS[COMMAND_COLUMN]))
+            } else {
+                constraint
+            }
+        })
+        .collect()
 }
 
 /// The cell's one column-label row, drawn above the first group and
@@ -441,13 +477,13 @@ fn process_row(row: &TrackedRow, manifest: ManifestPath, columns: &[usize]) -> R
         Line::from(Span::styled(process.start.clone(), muted)),
         Line::from(Span::styled(process.duration.clone(), muted)),
         progress_cell(row),
-        compiler_cell(row),
-        Line::from(Span::styled(managed_text(process), muted)),
         Line::from(vec![
             Span::styled(process.command.program.clone(), program),
             Span::raw(" "),
             Span::styled(process.command.line(manifest), arguments),
         ]),
+        compiler_cell(row),
+        Line::from(Span::styled(managed_text(process), muted)),
     ];
     Row::new(
         cells
@@ -464,11 +500,16 @@ fn process_row(row: &TrackedRow, manifest: ManifestPath, columns: &[usize]) -> R
 /// it has something to say -- the summary, and only while some command
 /// on it has a capture behind it -- because a column of dashes costs a
 /// narrow tile the width its command line needs and reports nothing.
-fn visible_columns(rows: &[&TrackedRow], placement: ProgressPlacement) -> Vec<usize> {
+fn visible_columns(
+    rows: &[&TrackedRow],
+    kind: TableKind,
+    placement: ProgressPlacement,
+) -> Vec<usize> {
     let carries_progress = placement == ProgressPlacement::Column
         && rows.iter().any(|row| row.process.progress.is_some());
     (0..TABLE_HEADERS.len())
         .filter(|column| *column != DONE_COLUMN || carries_progress)
+        .filter(|column| kind.shows_invocation_detail() || !SUMMARY_HIDDEN_COLUMNS.contains(column))
         .collect()
 }
 
@@ -586,7 +627,7 @@ fn heading_gauge(group: &PathGroup<'_>, width: u16) -> Vec<Span<'static>> {
     ]
 }
 
-/// The `sub` cell: how many cargo invocations this command is managing,
+/// The `runs` cell: how many cargo invocations this command is managing,
 /// and nothing at all for the rows that manage none.
 fn managed_text(process: &CargoProcess) -> String {
     if process.managed == 0 {
@@ -782,9 +823,12 @@ mod tests {
 
     /// A row for a command that has been running long enough to have
     /// reported `progress`.
-    fn row(progress: Option<Progress>) -> TrackedRow {
+    fn row(progress: Option<Progress>) -> TrackedRow { row_at("~/rust/cargo-tile", progress) }
+
+    /// A row for a command running in `path`.
+    fn row_at(path: &str, progress: Option<Progress>) -> TrackedRow {
         TrackedRow::from(CargoProcess {
-            path: "~/rust/cargo-tile".to_string(),
+            path: path.to_string(),
             pid: 41233,
             start: "11:04".to_string(),
             duration: "00:18".to_string(),
@@ -844,6 +888,7 @@ mod tests {
         let rows = [row(None)];
         let columns = visible_columns(
             &rows.iter().collect::<Vec<&TrackedRow>>(),
+            TableKind::Command,
             ProgressPlacement::Column,
         );
         assert!(!columns.contains(&DONE_COLUMN));
@@ -861,6 +906,7 @@ mod tests {
         ];
         let columns = visible_columns(
             &rows.iter().collect::<Vec<&TrackedRow>>(),
+            TableKind::Command,
             ProgressPlacement::Column,
         );
         assert!(columns.contains(&DONE_COLUMN));
@@ -874,8 +920,111 @@ mod tests {
         let rows = [row(Some(Progress { done: 1, total: 2 }))];
         let columns = visible_columns(
             &rows.iter().collect::<Vec<&TrackedRow>>(),
+            TableKind::Command,
             ProgressPlacement::Heading,
         );
         assert!(!columns.contains(&DONE_COLUMN));
+    }
+
+    /// A reading each, in directories of their own: every heading can
+    /// carry its own, so the column costs width for nothing.
+    #[test]
+    fn one_reading_per_directory_goes_on_the_headings() {
+        let first = row_at(
+            "~/rust/bevy_hana",
+            Some(Progress {
+                done:  99,
+                total: 100,
+            }),
+        );
+        let second = row_at(
+            "~/rust/hana_tool_graph",
+            Some(Progress {
+                done:  5,
+                total: 40,
+            }),
+        );
+
+        assert_eq!(
+            progress_placement(&[&first, &second]),
+            ProgressPlacement::Heading
+        );
+    }
+
+    /// Two commands compiling in one directory: the heading over them
+    /// can only say one thing, so the readings go back in the column.
+    #[test]
+    fn two_readings_in_one_directory_bring_the_column_back() {
+        let first = row_at(
+            "~/rust/bevy_hana",
+            Some(Progress {
+                done:  99,
+                total: 100,
+            }),
+        );
+        let second = row_at(
+            "~/rust/bevy_hana",
+            Some(Progress {
+                done:  5,
+                total: 40,
+            }),
+        );
+
+        assert_eq!(
+            progress_placement(&[&first, &second]),
+            ProgressPlacement::Column
+        );
+    }
+
+    /// Only readings compete for the heading. A command with no capture
+    /// behind it is not one, so it does not cost the cell its rules.
+    #[test]
+    fn a_second_command_without_a_reading_leaves_the_heading_alone() {
+        let compiling = row_at(
+            "~/rust/bevy_hana",
+            Some(Progress {
+                done:  99,
+                total: 100,
+            }),
+        );
+        let idle = row_at("~/rust/bevy_hana", None);
+
+        assert_eq!(
+            progress_placement(&[&compiling, &idle]),
+            ProgressPlacement::Heading
+        );
+    }
+
+    /// A summary row stands for a whole command, so the two columns
+    /// describing a single invocation have nothing to say on it.
+    #[test]
+    fn the_summary_leaves_out_the_columns_that_describe_one_invocation() {
+        let rows = [row(None)];
+
+        let columns = visible_columns(
+            &rows.iter().collect::<Vec<&TrackedRow>>(),
+            TableKind::Summary,
+            ProgressPlacement::Heading,
+        );
+
+        assert!(!columns.contains(&COMPILER_COLUMN));
+        assert!(!columns.contains(&MANAGED_COLUMN));
+        assert!(columns.contains(&COMMAND_COLUMN));
+    }
+
+    /// A command's own cell is where those two belong: its rows are the
+    /// invocations they describe.
+    #[test]
+    fn a_commands_own_cell_keeps_them() {
+        let rows = [row(None)];
+
+        let columns = visible_columns(
+            &rows.iter().collect::<Vec<&TrackedRow>>(),
+            TableKind::Command,
+            ProgressPlacement::Heading,
+        );
+
+        assert!(columns.contains(&COMPILER_COLUMN));
+        assert!(columns.contains(&MANAGED_COLUMN));
     }
 }

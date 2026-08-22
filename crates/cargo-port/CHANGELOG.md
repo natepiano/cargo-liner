@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Section headers and the items under them now start one space in from the pane border rather than two and four, following `tui_pane`'s narrower indents.
+
 ## [0.7.0] - 2026-08-21
 
 ### Changed
