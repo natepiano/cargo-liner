@@ -9,8 +9,9 @@ cargo run -p cargo-tile
 ```
 
 It takes over the terminal (alternate screen, raw mode) and draws one content
-pane above the framework status line. The pane is a placeholder — replacing it
-is where a new app starts.
+pane above the framework status line. The pane tiles into an animated grid of the
+cargo invocations running on this machine; the sections below describe how it
+behaves, and `starting a new TUI from this` covers replacing it.
 
 ## keys
 
