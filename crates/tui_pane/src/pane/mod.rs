@@ -20,6 +20,7 @@ pub use chrome::PaneChrome;
 pub use chrome::default_pane_chrome;
 pub use chrome::empty_pane_block;
 pub use frame::GridLines;
+pub use frame::PaneBorders;
 pub use frame::PaneFrame;
 pub use frame::PaneFrameLabel;
 pub use frame::draw_clipped;

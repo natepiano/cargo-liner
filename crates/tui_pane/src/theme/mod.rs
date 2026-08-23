@@ -28,6 +28,7 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 
 pub use self::accessors::accent_color;
+pub use self::accessors::active_border_color;
 pub use self::accessors::active_focus_color;
 pub use self::accessors::error_color;
 pub use self::accessors::finder_match_bg;
@@ -84,10 +85,22 @@ pub enum Appearance {
 /// Pane borders and titles (focused vs unfocused).
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct PaneChromeTheme {
-    /// Border of every pane.
+    /// Border of the currently focused pane, in an app that draws each
+    /// pane its own box.
     ///
-    /// Focus is carried by the background tint alone, so a pane's
-    /// border shade never changes with it.
+    /// Only [`PaneBorders::Separate`] reads it. Where neighbours share
+    /// a border cell there is no side of it to light, so an app laying
+    /// its panes out that way leaves every line the one shade.
+    ///
+    /// Absent from a theme file, the focused border takes the focused
+    /// title's colour, so a theme written before this key existed still
+    /// marks focus rather than losing it.
+    ///
+    /// [`PaneBorders`]: crate::PaneBorders
+    #[serde(default)]
+    pub active_border:   Option<StyleSpec>,
+    /// Border of unfocused panes, and of every pane in an app whose
+    /// neighbours share their border cells.
     pub inactive_border: StyleSpec,
     /// Title of the currently focused pane.
     pub active_title:    StyleSpec,

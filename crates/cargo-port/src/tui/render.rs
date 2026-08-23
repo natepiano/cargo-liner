@@ -156,6 +156,11 @@ fn render_tiled_panes(
         layout,
         &split.pane_render_ctx,
         tui_pane::default_pane_chrome(),
+        // Cargo Port's panes are four separate things to look at rather
+        // than one grid, so each closes its own box and the focused one
+        // lights its border. cargo-tile shares its border cells and takes
+        // `Shared` instead.
+        tui_pane::PaneBorders::Separate,
     );
 }
 

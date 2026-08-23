@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** Remove the build monitor from the Output pane. The opt-in view of running Cargo builds (`C`), its per-session columns and compile-activity rows, and the build termination it offered (`alt-k` for the selected build, `alt-shift-k` for every build in scope) are all gone, along with the process-termination machinery behind them. Use [cargo-tile](https://crates.io/crates/cargo-tile) instead: it shows the output of running Cargo commands, and does it better than this ever did. The Output pane itself stays — it still shows the captured output of a target Cargo Port launched from the Targets pane, and `Esc` still stops that run.
 
 ### Changed
+- Restore the pane borders 0.7.0 changed: each pane draws its own box again, and the focused one lights its border. Both of those went in 0.7.0 as fallout from work on cargo-tile, whose tiles genuinely are one grid; Cargo Port's four panes are four separate things to look at, and reading them as a single lattice with focus carried only by a background tint was never the intent. The `active_border` theme key is read again, and the shipped theme TOMLs set it once more; a theme file written while the key was ignored still loads, and takes the focused title's colour until it names its own.
 - Section headers and the items under them now start one space in from the pane border rather than two and four, following `tui_pane`'s narrower indents.
 
 ## [0.7.0] - 2026-08-21

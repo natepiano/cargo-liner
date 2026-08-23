@@ -43,6 +43,7 @@ pub const fn fallback_theme(appearance: Appearance) -> Theme {
 const fn fallback_dark() -> Theme {
     Theme {
         pane_chrome: PaneChromeTheme {
+            active_border:   Some(StyleSpec::from_color(Color::White)),
             inactive_border: StyleSpec::from_color(Color::DarkGray),
             active_title:    StyleSpec::bold(Color::White),
             inactive_title:  StyleSpec::from_color(Color::Gray),
@@ -86,6 +87,7 @@ const fn fallback_dark() -> Theme {
 const fn fallback_light() -> Theme {
     Theme {
         pane_chrome: PaneChromeTheme {
+            active_border:   Some(StyleSpec::from_color(Color::Black)),
             inactive_border: StyleSpec::from_color(Color::Rgb(140, 140, 140)),
             active_title:    StyleSpec::bold(Color::Black),
             inactive_title:  StyleSpec::from_color(Color::Rgb(70, 70, 70)),

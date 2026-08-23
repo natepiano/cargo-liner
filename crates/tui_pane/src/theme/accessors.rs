@@ -19,6 +19,20 @@ use super::theme;
 #[must_use]
 pub fn accent_color() -> Color { theme().semantic.accent.color }
 
+/// Border colour for the currently focused pane, for an app that draws
+/// each pane its own box.
+///
+/// Falls back to the focused title's colour for a theme that names no
+/// `active_border`, so focus still reads on the border rather than
+/// going missing.
+#[must_use]
+pub fn active_border_color() -> Color {
+    theme()
+        .pane_chrome
+        .active_border
+        .map_or_else(title_color, |spec| spec.color)
+}
+
 /// Background highlight for the currently focused pane row.
 #[must_use]
 pub fn active_focus_color() -> Color { theme().focus.active.color }

@@ -7,7 +7,13 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ## [Unreleased]
 
+### Added
+- Add `PaneBorders`, which decides whether neighbouring panes share the cells their borders fall on. `PaneBorders::Shared` is what 0.7.0 did unconditionally: one lattice, every line in the inactive shade. `PaneBorders::Separate` gives each pane its own closed box, with its neighbour's line beside rather than under it. The two apps built on this framework want opposite answers, and the answer was never really the framework's to make.
+
 ### Changed
+- **Breaking:** `render_panes` and `GridLines::render` take a `PaneBorders`. `render_panes` also stops calling `share_borders` itself and asks `PaneBorders::pane_area` instead, so the layout choice is made in one place rather than assumed.
+- Restore the focused-border colour, which 0.7.0 removed. `PaneChromeTheme::active_border`, `PaneChrome::active_border`, and `active_border_color()` are back, along with `PaneChrome::border_style(focused)`. The reasoning for dropping it holds only where a border cell has two owners, and that is now `PaneBorders::Shared`'s answer rather than everybody's: under `Separate` a cell belongs to exactly one pane, so lighting it takes nothing from anybody and the focused pane reads as one lit box.
+- `PaneChromeTheme::active_border` is `Option<StyleSpec>` and defaults when absent, so a theme file written while the key was ignored still loads. `None` takes the focused title's colour, which marks focus rather than losing it; an app whose panes share their borders never reads the field at all.
 - Narrow `SECTION_HEADER_INDENT` to one space from two, and `SECTION_ITEM_INDENT` to one space from four. A section header and the items under it now start in the same column, which gives an overlay or a table three columns back at the left margin and leaves the nesting to read from colour rather than position.
 
 ## [0.7.0] - 2026-08-21

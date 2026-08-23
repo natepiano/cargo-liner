@@ -23,6 +23,7 @@ use tui_pane::FrameworkOverlayId;
 use tui_pane::GridLines;
 use tui_pane::Keymap;
 use tui_pane::KeymapPane;
+use tui_pane::PaneBorders;
 use tui_pane::PaneFocusState;
 use tui_pane::PaneFrameLabel;
 use tui_pane::PopupFrame;
@@ -158,10 +159,14 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect) {
             },
         }
     }
-    // Each frame carries its own focus, so `GridLines` gives the lines
-    // the focused cell touches the theme's active shade and leaves
-    // every other line alone.
-    grid_lines.render(frame.buffer_mut(), default_pane_chrome());
+    // Neighbouring tiles meet on one line, so no cell belongs to a
+    // single tile and none of them can carry focus. Focus is the
+    // background tint under a tile's contents instead.
+    grid_lines.render(
+        frame.buffer_mut(),
+        default_pane_chrome(),
+        PaneBorders::Shared,
+    );
 }
 
 /// What a cell holds inside its borders.

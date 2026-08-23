@@ -15,11 +15,11 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 
 use crate::GridLines;
+use crate::PaneBorders;
 use crate::PaneChrome;
 use crate::PaneFrame;
 use crate::PaneFrameLabel;
 use crate::ResolvedPaneLayout;
-use crate::share_borders;
 
 /// What the shared frame draws around one pane.
 ///
@@ -105,14 +105,17 @@ pub fn render_panes<R: PaneRegistry>(
     layout: &ResolvedPaneLayout<R::PaneId>,
     ctx: &R::Ctx<'_>,
     chrome: PaneChrome,
+    borders: PaneBorders,
 ) {
     let bounds = layout.bounds();
     let mut grid_lines = GridLines::new(bounds);
     for resolved in &layout.panes {
-        // Each pane reaches one line onto the neighbours below and to the
-        // right of it, so the boundary between the two of them is a
-        // single line they share rather than two lines side by side.
-        let area = share_borders(resolved.area, bounds);
+        // Under `Shared`, each pane reaches one line onto the neighbours
+        // below and to the right of it, so the boundary between the two
+        // of them is a single line they share rather than two lines side
+        // by side. Under `Separate` the pane keeps the rect the layout
+        // resolved, and its neighbour's line sits beside its own.
+        let area = borders.pane_area(resolved.area, bounds);
         let Some(pane) = registry.pane_mut(resolved.pane) else {
             continue;
         };
@@ -128,5 +131,5 @@ pub fn render_panes<R: PaneRegistry>(
             grid_lines.add_label(pane_frame, label);
         }
     }
-    grid_lines.render(frame.buffer_mut(), chrome);
+    grid_lines.render(frame.buffer_mut(), chrome, borders);
 }

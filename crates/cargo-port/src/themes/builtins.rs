@@ -67,6 +67,7 @@ pub(crate) fn builtins() -> Vec<ThemeVariant> {
 const fn default_dark() -> Theme {
     Theme {
         pane_chrome: PaneChromeTheme {
+            active_border:   Some(StyleSpec::from_color(Color::Yellow)),
             inactive_border: StyleSpec::from_color(Color::DarkGray),
             active_title:    StyleSpec::bold(Color::Yellow),
             inactive_title:  StyleSpec::from_color(Color::White),
@@ -112,6 +113,7 @@ const fn default_dark() -> Theme {
 const fn default_light() -> Theme {
     Theme {
         pane_chrome: PaneChromeTheme {
+            active_border:   Some(StyleSpec::from_color(Color::Rgb(180, 120, 0))),
             inactive_border: StyleSpec::from_color(Color::Rgb(140, 140, 140)),
             active_title:    StyleSpec::bold(Color::Rgb(160, 100, 0)),
             inactive_title:  StyleSpec::from_color(Color::Black),
@@ -161,6 +163,7 @@ const fn default_light() -> Theme {
 const fn high_contrast_dark() -> Theme {
     Theme {
         pane_chrome: PaneChromeTheme {
+            active_border:   Some(StyleSpec::bold(Color::LightYellow)),
             inactive_border: StyleSpec::from_color(Color::White),
             active_title:    StyleSpec::bold(Color::LightYellow),
             inactive_title:  StyleSpec::from_color(Color::White),
@@ -209,6 +212,7 @@ const fn high_contrast_dark() -> Theme {
 const fn high_contrast_light() -> Theme {
     Theme {
         pane_chrome: PaneChromeTheme {
+            active_border:   Some(StyleSpec::bold(Color::Rgb(140, 60, 0))),
             inactive_border: StyleSpec::from_color(Color::Black),
             active_title:    StyleSpec::bold(Color::Rgb(140, 60, 0)),
             inactive_title:  StyleSpec::from_color(Color::Black),

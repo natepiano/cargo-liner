@@ -12,6 +12,7 @@ use super::constants::PANE_TINT_DARK_UNFOCUSED_ALPHA;
 use super::constants::PANE_TINT_LIGHT_FOCUSED_ALPHA;
 use super::constants::PANE_TINT_LIGHT_OVERLAY;
 use super::constants::PANE_TINT_LIGHT_UNFOCUSED_ALPHA;
+use crate::active_border_color;
 use crate::focused_pane_tint_enabled;
 use crate::inactive_border_color;
 use crate::inactive_title_color;
@@ -22,10 +23,17 @@ use crate::title_color;
 /// focused / unfocused render paths of a bordered pane.
 #[derive(Clone, Copy)]
 pub struct PaneChrome {
-    /// Border style every pane draws in.
+    /// Border style for the focused pane, where each pane draws its
+    /// own box.
     ///
-    /// Focus is carried by the background tint alone, so a pane's
-    /// border shade never changes with it.
+    /// Only [`PaneBorders::Separate`] reads it; see
+    /// [`GridLines::render`].
+    ///
+    /// [`PaneBorders`]: crate::PaneBorders
+    /// [`GridLines::render`]: crate::GridLines::render
+    pub active_border:   Style,
+    /// Border style for unfocused panes, and for every pane where
+    /// neighbours share their border cells.
     pub inactive_border: Style,
     /// Title style when the pane is focused.
     pub active_title:    Style,
@@ -41,11 +49,28 @@ impl PaneChrome {
             .borders(Borders::ALL)
             .title(title)
             .title_style(self.title_style(focused))
-            .border_style(self.inactive_border);
+            .border_style(self.border_style(focused));
         if let Some(fill) = pane_fill(focused) {
             block.style(fill)
         } else {
             block
+        }
+    }
+
+    /// The border style this chrome applies given focus.
+    ///
+    /// A pane drawing its own [`Block`] owns every cell of its border,
+    /// so focus can light it. A pane drawn into a shared grid asks
+    /// [`GridLines`] instead, which decides per line rather than per
+    /// pane.
+    ///
+    /// [`GridLines`]: crate::GridLines
+    #[must_use]
+    pub const fn border_style(self, focused: bool) -> Style {
+        if focused {
+            self.active_border
+        } else {
+            self.inactive_border
         }
     }
 
@@ -62,18 +87,21 @@ impl PaneChrome {
 
 /// Default pane chrome.
 ///
-/// Every border draws in the theme's `pane_chrome.inactive_border`
-/// colour, focused or not: focus is the background tint, and a border
-/// is a cell two panes share, so lighting it makes the boundary belong
-/// to neither. Driving that shade from the theme (rather than
-/// `Style::default()`) keeps every pane the same, regardless of how a
-/// given terminal profile renders its "default foreground" colour.
+/// Which of the two border shades a line takes is the layout's call,
+/// not the theme's. Where each pane draws its own box the focused one
+/// lights up; where neighbours share a border cell every line stays on
+/// `pane_chrome.inactive_border`, because lighting a shared cell makes
+/// the boundary belong to neither pane. Driving both shades from the
+/// theme (rather than `Style::default()`) keeps every pane the same,
+/// regardless of how a given terminal profile renders its "default
+/// foreground" colour.
 ///
-/// Titles still take focus: focused gets the bold accent, unfocused
+/// Titles always take focus: focused gets the bold accent, unfocused
 /// the dim shade.
 #[must_use]
 pub fn default_pane_chrome() -> PaneChrome {
     PaneChrome {
+        active_border:   Style::default().fg(active_border_color()),
         inactive_border: Style::default().fg(inactive_border_color()),
         active_title:    Style::default()
             .fg(title_color())

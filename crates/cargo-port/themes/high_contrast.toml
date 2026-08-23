@@ -20,6 +20,7 @@ name       = "High Contrast Dark"
 
 [variants.pane_chrome]
 active_title    = { color = "LightYellow", bold = true }
+active_border   = { color = "LightYellow", bold = true }
 inactive_border = "White"
 inactive_title  = "White"
 
@@ -62,6 +63,7 @@ name       = "High Contrast Light"
 
 [variants.pane_chrome]
 active_title    = { color = { r = 140, g = 60, b = 0 }, bold = true }
+active_border   = { color = { r = 140, g = 60, b = 0 }, bold = true }
 inactive_border = "Black"
 inactive_title  = "Black"
 
