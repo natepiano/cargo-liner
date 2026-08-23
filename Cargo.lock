@@ -420,6 +420,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cargo-berth"
+version = "0.1.0-dev"
+dependencies = [
+ "clap",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "cargo-mend"
 version = "0.21.0-dev"
 dependencies = [

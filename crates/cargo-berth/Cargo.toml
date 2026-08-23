@@ -1,0 +1,23 @@
+[package]
+authors.workspace    = true
+categories           = ["command-line-utilities", "development-tools"]
+description          = "A git-worktree reservation engine"
+edition.workspace    = true
+homepage             = "https://github.com/natepiano/cargo-liner/tree/main/crates/cargo-berth"
+keywords             = ["cargo", "git", "reservation", "worktree"]
+license.workspace    = true
+name                 = "cargo-berth"
+readme               = "README.md"
+repository.workspace = true
+version              = "0.1.0-dev"
+
+[lints]
+workspace = true
+
+[dependencies]
+clap           = { workspace = true }
+serde          = { workspace = true, features = ["derive"] }
+serde_json     = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
