@@ -18,10 +18,23 @@ use clap::error::ErrorKind;
 
 use crate::exit::BerthExit;
 use crate::git;
+use crate::ids::CoordinationRunId;
 use crate::ids::ReservationId;
+use crate::ids::WorkPlanPhase;
+use crate::ledger::ClaimSource;
 use crate::ledger::Ledger;
+use crate::ledger::NonEmptyReservationPurpose;
+use crate::ledger::ProtectedPhaseStartHead;
+use crate::ledger::ReservationPurpose;
+use crate::ledger::WorkPlanReference;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
+use crate::scope::DeclaredReservationScopeSet;
+use crate::scope::ScopeKind;
+use crate::verb::check::CheckRequest;
+use crate::verb::claim::ClaimCoordinationRunSelection;
+use crate::verb::claim::ClaimRequest;
+use crate::verb::claim::PhaseStartSelection;
 
 const ABANDON_ARGUMENT: &str = "abandon";
 const ABOUT: &str = "Reserve git-worktree paths before they overlap";
@@ -35,12 +48,20 @@ const CLAIM_OVERRIDE_ARGUMENT: &str = "override";
 const CLAIM_OVERRIDE_ARGUMENT_ID: &str = "override_reservation";
 const CLAIM_RESOLUTION_GROUP: &str = "claim-resolution";
 const FORCE_ARGUMENT: &str = "force";
+const HEAD_ARGUMENT: &str = "head";
+const HEAD_VALUE_NAME: &str = "OID";
 const INTEGRATED_AS_ARGUMENT: &str = "integrated-as";
 const INTEGRATED_AS_ARGUMENT_ID: &str = "integrated_as";
 const JSON_ARGUMENT: &str = "json";
 const PATH_VALUE_NAME: &str = "PATH";
+const PHASE_ARGUMENT: &str = "phase";
+const PHASE_VALUE_NAME: &str = "PHASE";
+const PLAN_ARGUMENT: &str = "plan";
+const PLAN_VALUE_NAME: &str = "PLAN";
 const RECOVERED_ARGUMENT: &str = "recovered";
 const RESOLVE_DISPOSITION_GROUP: &str = "resolve-disposition";
+const RUN_ARGUMENT: &str = "run";
+const RUN_VALUE_NAME: &str = "COORDINATION_RUN_ID";
 const TRUNK_OID_VALUE_NAME: &str = "TRUNK_OID";
 const WHY_ARGUMENT: &str = "why";
 const WHY_VALUE_NAME: &str = "WHY";
@@ -161,6 +182,26 @@ struct ClaimArguments {
     /// Explain why the overlap answer is requested.
     #[arg(long = WHY_ARGUMENT, value_name = WHY_VALUE_NAME)]
     why:                  Option<String>,
+    /// Name the external work plan that originated this claim.
+    #[arg(
+        long = PLAN_ARGUMENT,
+        value_name = PLAN_VALUE_NAME,
+        requires = PHASE_ARGUMENT
+    )]
+    plan:                 Option<WorkPlanReference>,
+    /// Name the opaque phase label within the external work plan.
+    #[arg(
+        long = PHASE_ARGUMENT,
+        value_name = PHASE_VALUE_NAME,
+        requires = PLAN_ARGUMENT
+    )]
+    phase:                Option<WorkPlanPhase>,
+    /// Use this UUID-v7 coordination run instead of minting one.
+    #[arg(long = RUN_ARGUMENT, value_name = RUN_VALUE_NAME)]
+    run:                  Option<CoordinationRunId>,
+    /// Record the full phase-start commit used for later drift comparison.
+    #[arg(long = HEAD_ARGUMENT, value_name = HEAD_VALUE_NAME)]
+    head:                 Option<ProtectedPhaseStartHead>,
     /// The output representation requested for this command.
     #[command(flatten)]
     json_output:          JsonOutput,
@@ -282,8 +323,14 @@ impl Command {
         match self {
             Self::Init(_) => initialize_ledger(),
             Self::Board(_) => OutputEnvelope::unimplemented(CommandVerb::Board),
-            Self::Check(_) => OutputEnvelope::unimplemented(CommandVerb::Check),
-            Self::Claim(_) => OutputEnvelope::unimplemented(CommandVerb::Claim),
+            Self::Check(path_arguments) => match path_arguments.into_check_request() {
+                Ok(check_request) => crate::verb::check::execute(check_request),
+                Err(error) => OutputEnvelope::invalid_input(CommandVerb::Check, &error),
+            },
+            Self::Claim(claim_arguments) => match claim_arguments.into_claim_request() {
+                Ok(claim_request) => crate::verb::claim::execute(claim_request),
+                Err(error) => OutputEnvelope::invalid_input(CommandVerb::Claim, &error),
+            },
             Self::Release(_) => OutputEnvelope::unimplemented(CommandVerb::Release),
             Self::Sequence(_) => OutputEnvelope::unimplemented(CommandVerb::Sequence),
             Self::Integrate(_) => OutputEnvelope::unimplemented(CommandVerb::Integrate),
@@ -321,6 +368,62 @@ impl Command {
             Self::Resolve(_) => CommandVerb::Resolve,
             Self::Renew(_) => CommandVerb::Renew,
         }
+    }
+}
+
+impl PathArguments {
+    fn into_check_request(self) -> Result<CheckRequest, String> {
+        DeclaredReservationScopeSet::parse(self.paths, ScopeKind::File)
+            .map(|declared_scopes| CheckRequest { declared_scopes })
+            .map_err(|error| error.to_string())
+    }
+}
+
+impl ClaimArguments {
+    fn into_claim_request(self) -> Result<ClaimRequest, String> {
+        let Self {
+            paths,
+            before: _,
+            after: _,
+            defer: _,
+            override_reservation: _,
+            why,
+            plan,
+            phase,
+            run,
+            head,
+            json_output: _,
+        } = self;
+        let declared_scopes = DeclaredReservationScopeSet::parse(paths, ScopeKind::Tree)
+            .map_err(|error| error.to_string())?;
+        let source = match (plan, phase) {
+            (Some(plan), Some(phase)) => ClaimSource::WorkPlan { plan, phase },
+            (None, None) => ClaimSource::Explicit,
+            (Some(_), None) | (None, Some(_)) => {
+                return Err("--plan and --phase must be supplied together".to_owned());
+            },
+        };
+        let purpose = match why {
+            Some(explanation) => explanation
+                .parse::<NonEmptyReservationPurpose>()
+                .map(ReservationPurpose::Explained)
+                .map_err(|error| error.to_string())?,
+            None => ReservationPurpose::NotProvidedByCaller,
+        };
+        let phase_start = head.map_or(
+            PhaseStartSelection::CurrentHead,
+            PhaseStartSelection::Protected,
+        );
+        Ok(ClaimRequest {
+            declared_scopes,
+            source,
+            purpose,
+            coordination_run_selection: run.map_or(
+                ClaimCoordinationRunSelection::ContinueOrStart,
+                ClaimCoordinationRunSelection::Specified,
+            ),
+            phase_start,
+        })
     }
 }
 

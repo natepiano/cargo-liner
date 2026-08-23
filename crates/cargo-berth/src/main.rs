@@ -7,6 +7,9 @@ mod git;
 mod ids;
 mod ledger;
 mod output;
+mod reservation;
+mod scope;
+mod verb;
 
 use std::process::ExitCode;
 

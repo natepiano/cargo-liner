@@ -12,6 +12,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use constants::COORDINATION_RUN_ENVIRONMENT;
 use constants::COORDINATION_RUN_MARKER_FILE_NAME;
@@ -36,30 +37,10 @@ pub(crate) use journal::AuthorizedOverlap;
     )
 )]
 pub(crate) use journal::BypassedAction;
-#[expect(
-    unused_imports,
-    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
-)]
 pub(crate) use journal::CanonicalWorktreeRoot;
-#[expect(
-    unused_imports,
-    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
-)]
 pub(crate) use journal::ClaimHeadCommit;
-#[expect(
-    unused_imports,
-    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
-)]
 pub(crate) use journal::ClaimHeadSnapshot;
-#[expect(
-    unused_imports,
-    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
-)]
 pub(crate) use journal::ClaimSource;
-#[expect(
-    unused_imports,
-    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
-)]
 pub(crate) use journal::ConflictAuthorization;
 #[expect(
     unused_imports,
@@ -67,79 +48,45 @@ pub(crate) use journal::ConflictAuthorization;
 )]
 pub(crate) use journal::FullRefName;
 use journal::Journal;
-#[expect(
-    unused_imports,
-    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
-)]
 pub(crate) use journal::JournalActor;
 use journal::JournalAppendError;
 pub(crate) use journal::JournalEvent;
 pub(crate) use journal::JournalOperation;
 use journal::JournalReplay;
+pub(crate) use journal::NonEmptyReservationPurpose;
 #[expect(
     unused_imports,
     reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
 )]
 pub(crate) use journal::OrderingDirection;
-#[expect(
-    unused_imports,
-    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
-)]
 pub(crate) use journal::ProtectedPhaseStartHead;
 #[expect(
     unused_imports,
     reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
 )]
 pub(crate) use journal::ReleaseDisposition;
-#[expect(
-    unused_imports,
-    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
-)]
 pub(crate) use journal::ReservationPurpose;
-#[expect(
-    unused_imports,
-    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
-)]
 pub(crate) use journal::ReservationScope;
-#[expect(
-    unused_imports,
-    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
-)]
 pub(crate) use journal::ReservationScopeSet;
 #[expect(
     unused_imports,
     reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
 )]
 pub(crate) use journal::ReservationSnapshot;
-#[expect(
-    unused_imports,
-    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
-)]
 pub(crate) use journal::ScopeKind;
-#[expect(
-    unused_imports,
-    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
-)]
 pub(crate) use journal::TrunkCommitAtClaim;
 #[expect(
     unused_imports,
     reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
 )]
 pub(crate) use journal::WidenCause;
-#[expect(
-    unused_imports,
-    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
-)]
 pub(crate) use journal::WorkPlanReference;
-#[expect(
-    unused_imports,
-    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
-)]
 pub(crate) use journal::WorktreeAdministrativeLocator;
 use lock::MutationLock;
 use projection::Projection;
 use projection::ProjectionSynchronization;
 use projection::read_validated;
+use uuid::Uuid;
 
 use crate::config::BerthConfig;
 use crate::config::ConfigError;
@@ -157,6 +104,30 @@ pub(crate) struct Ledger {
     paths: LedgerPaths,
 }
 
+/// Repository and administrative paths discovered without executing git.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct WorktreeContext {
+    repository_root:                   PathBuf,
+    worktree_administrative_directory: PathBuf,
+    common_git_directory:              PathBuf,
+    administrative_locator:            WorktreeAdministrativeLocator,
+    worktree_kind:                     WorktreeKind,
+}
+
+/// The relationship between a `.git` file target and any shared git directory.
+enum GitAdministrativeLayout {
+    /// The target is the complete administrative directory for a main worktree.
+    Main,
+    /// The target belongs to a linked worktree and names its shared directory.
+    Linked { common_git_directory: PathBuf },
+}
+
+/// Validated journal truth for a mutation-free edit check.
+pub(crate) struct EditCheckLedgerSnapshot {
+    events:           Vec<JournalEvent>,
+    worktree_context: WorktreeContext,
+}
+
 /// The initialized resources reported through the typed `init` result payload.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct LedgerInitialization {
@@ -167,13 +138,6 @@ pub(crate) struct LedgerInitialization {
 }
 
 /// The coordination identity an edit check can prove for its current process.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "The edit-hook verb consumes this process context; no verb reaches it yet."
-    )
-)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum EditAuthorization {
     /// The caller proves membership in one coordination run.
@@ -184,13 +148,6 @@ pub(crate) enum EditAuthorization {
 
 impl EditAuthorization {
     /// Resolve the active run from the environment, then the worktree marker.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "The edit-hook verb resolves authorization; no verb reaches it yet."
-        )
-    )]
     pub(crate) fn resolve(worktree_administrative_directory: &Path) -> Self {
         Self::resolve_from_environment(
             std::env::var_os(COORDINATION_RUN_ENVIRONMENT),
@@ -222,14 +179,129 @@ impl EditAuthorization {
     }
 }
 
+impl WorktreeContext {
+    /// Discover the containing worktree using only `.git` filesystem metadata.
+    pub(crate) fn discover(invocation_directory: &Path) -> Result<Self, LedgerError> {
+        let invocation_directory = fs::canonicalize(invocation_directory)?;
+        for repository_root in invocation_directory.ancestors() {
+            let dot_git = repository_root.join(".git");
+            if dot_git.is_dir() {
+                let common_git_directory = fs::canonicalize(&dot_git)?;
+                return Self::build(
+                    repository_root,
+                    common_git_directory.clone(),
+                    common_git_directory,
+                    WorktreeKind::Main,
+                );
+            }
+            if dot_git.is_file() {
+                let worktree_administrative_directory = read_git_directory_file(&dot_git)?;
+                return match read_git_administrative_layout(&worktree_administrative_directory)? {
+                    GitAdministrativeLayout::Main => Self::build(
+                        repository_root,
+                        worktree_administrative_directory.clone(),
+                        worktree_administrative_directory,
+                        WorktreeKind::Main,
+                    ),
+                    GitAdministrativeLayout::Linked {
+                        common_git_directory,
+                    } => Self::build(
+                        repository_root,
+                        worktree_administrative_directory,
+                        common_git_directory,
+                        WorktreeKind::Linked,
+                    ),
+                };
+            }
+        }
+        Err(LedgerError::RepositoryNotFound)
+    }
+
+    fn build(
+        repository_root: &Path,
+        worktree_administrative_directory: PathBuf,
+        common_git_directory: PathBuf,
+        worktree_kind: WorktreeKind,
+    ) -> Result<Self, LedgerError> {
+        let repository_root = fs::canonicalize(repository_root)?;
+        let locator = match worktree_kind {
+            WorktreeKind::Main => ".".to_owned(),
+            WorktreeKind::Linked => worktree_administrative_directory
+                .strip_prefix(&common_git_directory)
+                .map_err(|_| LedgerError::AdministrativeDirectoryOutsideCommonGitDirectory)?
+                .to_str()
+                .ok_or(LedgerError::NonUtf8AdministrativePath)?
+                .to_owned(),
+        };
+        let administrative_locator = WorktreeAdministrativeLocator::from_str(&locator)
+            .map_err(|_| LedgerError::InvalidAdministrativeLocator(locator))?;
+        Ok(Self {
+            repository_root,
+            worktree_administrative_directory,
+            common_git_directory,
+            administrative_locator,
+            worktree_kind,
+        })
+    }
+
+    /// Return the canonical repository worktree root.
+    pub(crate) fn repository_root(&self) -> &Path { &self.repository_root }
+
+    /// Return the administrative directory for this worktree.
+    pub(crate) fn administrative_directory(&self) -> &Path {
+        &self.worktree_administrative_directory
+    }
+
+    /// Return the common git directory shared by every linked worktree.
+    pub(crate) fn common_git_directory(&self) -> &Path { &self.common_git_directory }
+
+    /// Return the common-directory-relative worktree administrative locator.
+    pub(crate) const fn administrative_locator(&self) -> &WorktreeAdministrativeLocator {
+        &self.administrative_locator
+    }
+
+    /// Return whether this is the main or a linked worktree.
+    pub(crate) const fn worktree_kind(&self) -> WorktreeKind { self.worktree_kind }
+
+    /// Atomically publish the successful claimant's coordination-run marker.
+    pub(crate) fn publish_coordination_run_marker(
+        &self,
+        coordination_run_id: CoordinationRunId,
+    ) -> Result<(), LedgerError> {
+        let marker_path = self
+            .worktree_administrative_directory
+            .join(COORDINATION_RUN_MARKER_FILE_NAME);
+        let publication_attempt_id = Uuid::now_v7();
+        let temporary_path = self.worktree_administrative_directory.join(format!(
+            "{COORDINATION_RUN_MARKER_FILE_NAME}.{coordination_run_id}.{publication_attempt_id}.tmp"
+        ));
+        let publication = (|| -> Result<(), std::io::Error> {
+            let mut temporary_file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary_path)?;
+            temporary_file.write_all(format!("{coordination_run_id}\n").as_bytes())?;
+            temporary_file.sync_all()?;
+            fs::rename(&temporary_path, marker_path)?;
+            fs::File::open(&self.worktree_administrative_directory)?.sync_all()?;
+            Ok(())
+        })();
+        if publication.is_err() {
+            std::mem::drop(fs::remove_file(temporary_path));
+        }
+        publication.map_err(LedgerError::Io)
+    }
+}
+
+impl EditCheckLedgerSnapshot {
+    /// Borrow every complete journal fact visible to this read.
+    pub(crate) fn events(&self) -> &[JournalEvent] { &self.events }
+
+    /// Return the filesystem-discovered worktree context.
+    pub(crate) const fn worktree_context(&self) -> &WorktreeContext { &self.worktree_context }
+}
+
 /// The replayed journal facts visible to a transaction's validation step.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "The claim engine consumes the replayed validation state; no verb reaches it yet."
-    )
-)]
 pub(crate) struct ReplayedLedgerState<'replay> {
     events:             &'replay [JournalEvent],
     generation:         ProjectionGeneration,
@@ -238,13 +310,6 @@ pub(crate) struct ReplayedLedgerState<'replay> {
 
 impl ReplayedLedgerState<'_> {
     /// Borrow every replayed fact in append order.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "The claim engine inspects replayed facts; no verb reaches them yet."
-        )
-    )]
     pub(crate) const fn events(&self) -> &[JournalEvent] { self.events }
 
     /// Return the projection generation represented by the replay.
@@ -271,13 +336,6 @@ impl ReplayedLedgerState<'_> {
 }
 
 /// The only two outcomes a transaction validator can authorize.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "The claim engine returns this validation decision; no verb reaches it yet."
-    )
-)]
 pub(crate) enum TransactionValidation<Rejection> {
     /// Append this operation and publish the resulting projection.
     Append(Box<JournalOperation>),
@@ -286,13 +344,6 @@ pub(crate) enum TransactionValidation<Rejection> {
 }
 
 /// The durable result of a validation-controlled ledger transaction.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "The claim engine consumes transaction results; no verb reaches them yet."
-    )
-)]
 pub(crate) enum LedgerTransactionOutcome<Rejection> {
     /// Exactly one approved event was appended and published.
     Appended(Box<JournalEvent>),
@@ -301,13 +352,6 @@ pub(crate) enum LedgerTransactionOutcome<Rejection> {
 }
 
 /// A stored worktree identity paired with its separate worktree role.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Worktree reconciliation reads this identity; only its persistent representation exists so far."
-    )
-)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WorktreeIdentity {
     /// The opaque identity minted for this administrative directory instance.
@@ -333,13 +377,6 @@ impl Ledger {
     }
 
     /// Attach to an initialized ledger without creating any missing state.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Stateful verbs open the existing ledger; no verb reaches it yet."
-        )
-    )]
     pub(crate) fn open(invocation_directory: &Path) -> Result<Self, LedgerError> {
         let repository_root = git::repository_root(invocation_directory)?;
         let ledger = Self::locate(&repository_root)?;
@@ -347,14 +384,23 @@ impl Ledger {
         Ok(ledger)
     }
 
+    /// Read validated journal truth without git, locking, repair, or publication.
+    pub(crate) fn read_for_edit_check(
+        invocation_directory: &Path,
+    ) -> Result<EditCheckLedgerSnapshot, LedgerError> {
+        let worktree_context = WorktreeContext::discover(invocation_directory)?;
+        let ledger = Self::at_common_git_directory(worktree_context.common_git_directory());
+        ledger.require_existing()?;
+        let repo_instance_id = read_repo_instance_id(&ledger.paths.repo_instance_id)?;
+        let replay = Journal::replay_read_only(&ledger.paths.journal)?;
+        read_validated(&ledger.paths.projection, repo_instance_id, &replay)?;
+        Ok(EditCheckLedgerSnapshot {
+            events: replay.events,
+            worktree_context,
+        })
+    }
+
     /// Validate against one locked replay and append only the approved operation.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "The claim engine invokes semantic transactions; no verb reaches them yet."
-        )
-    )]
     pub(crate) fn transact<Rejection>(
         &self,
         worktree_id: WorktreeId,
@@ -401,8 +447,12 @@ impl Ledger {
 
     fn locate(repository_root: &Path) -> Result<Self, LedgerError> {
         let common_git_directory = git::common_directory(repository_root)?;
+        Ok(Self::at_common_git_directory(&common_git_directory))
+    }
+
+    fn at_common_git_directory(common_git_directory: &Path) -> Self {
         let directory = common_git_directory.join(LEDGER_DIRECTORY_NAME);
-        Ok(Self {
+        Self {
             paths: LedgerPaths {
                 journal: directory.join(JOURNAL_FILE_NAME),
                 lock: directory.join(LOCK_FILE_NAME),
@@ -410,7 +460,7 @@ impl Ledger {
                 repo_instance_id: directory.join(REPO_INSTANCE_ID_FILE_NAME),
                 directory,
             },
-        })
+        }
     }
 
     fn require_existing(&self) -> Result<(), LedgerError> {
@@ -465,13 +515,6 @@ impl Ledger {
 }
 
 impl LedgerTransaction {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "No verb engine appends through this transaction method yet."
-        )
-    )]
     fn append(
         &mut self,
         worktree_id: WorktreeId,
@@ -529,13 +572,6 @@ impl LedgerTransaction {
 
 struct LedgerTransaction {
     _lock:                      MutationLock,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "No stateful verb uses the held journal descriptor yet."
-        )
-    )]
     journal:                    Journal,
     journal_initialization:     InitializationState,
     projection_synchronization: ProjectionSynchronization,
@@ -584,13 +620,6 @@ fn read_or_mint_repo_instance_id(path: &Path) -> Result<RepoInstanceId, LedgerEr
 }
 
 /// Mint or read a worktree's non-recyclable identity inside its administrative directory.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Worktree reconciliation invokes this identity boundary; no verb reaches it yet."
-    )
-)]
 pub(crate) fn worktree_identity(
     administrative_directory: &Path,
     kind: WorktreeKind,
@@ -623,13 +652,6 @@ pub(crate) fn worktree_identity(
     Ok(WorktreeIdentity { id, kind })
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Every stateful mutation advances this generation through the transaction wrapper; none exists yet."
-    )
-)]
 fn next_projection_generation(
     current_generation: ProjectionGeneration,
 ) -> Result<ProjectionGeneration, LedgerError> {
@@ -645,6 +667,18 @@ fn next_projection_generation(
 pub(crate) enum LedgerError {
     /// The shared ledger has not been initialized for this repository.
     NotInitialized,
+    /// No containing `.git` directory or file was found by filesystem traversal.
+    RepositoryNotFound,
+    /// A `.git` file did not contain a usable `gitdir:` locator.
+    InvalidGitDirectoryFile,
+    /// A linked-worktree administrative directory had no valid common-directory locator.
+    InvalidCommonDirectoryFile,
+    /// A linked-worktree administrative directory was outside the common git directory.
+    AdministrativeDirectoryOutsideCommonGitDirectory,
+    /// A discovered administrative path was not UTF-8.
+    NonUtf8AdministrativePath,
+    /// The derived administrative locator did not satisfy the journal contract.
+    InvalidAdministrativeLocator(String),
     /// Git could not locate the common administrative directory.
     Git(git::GitError),
     /// Ordinary filesystem access failed.
@@ -662,22 +696,8 @@ pub(crate) enum LedgerError {
     /// The stored repository identity is not a UUID-v7 value.
     InvalidRepoInstanceId(InvalidUuidV7),
     /// The stored worktree identity is not a UUID-v7 value.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Worktree reconciliation reaches this validation error after it starts reading stored identities."
-        )
-    )]
     InvalidWorktreeId(InvalidUuidV7),
     /// The projection counter can no longer advance.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "A stateful mutation constructs this error when the cache counter is exhausted; none reaches it yet."
-        )
-    )]
     ProjectionGenerationExhausted,
 }
 
@@ -687,6 +707,26 @@ impl fmt::Display for LedgerError {
             Self::NotInitialized => formatter.write_str(
                 "the cargo-berth ledger is not initialized; run cargo-berth init and retry",
             ),
+            Self::RepositoryNotFound => {
+                formatter.write_str("no containing git worktree could be found")
+            },
+            Self::InvalidGitDirectoryFile => {
+                formatter.write_str("the worktree .git file has no valid gitdir locator")
+            },
+            Self::InvalidCommonDirectoryFile => formatter
+                .write_str("the linked-worktree administrative directory has no valid commondir"),
+            Self::AdministrativeDirectoryOutsideCommonGitDirectory => formatter.write_str(
+                "the worktree administrative directory is outside the common git directory",
+            ),
+            Self::NonUtf8AdministrativePath => {
+                formatter.write_str("a discovered git administrative path is not UTF-8")
+            },
+            Self::InvalidAdministrativeLocator(locator) => {
+                write!(
+                    formatter,
+                    "invalid worktree administrative locator: {locator}"
+                )
+            },
             Self::Git(error) => write!(formatter, "could not locate ledger: {error}"),
             Self::Io(error) => write!(formatter, "ledger I/O failed: {error}"),
             Self::Config(error) => write!(formatter, "ledger configuration failed: {error}"),
@@ -735,14 +775,48 @@ impl From<lock::MutationLockError> for LedgerError {
     fn from(error: lock::MutationLockError) -> Self { Self::MutationLock(error) }
 }
 
+fn read_git_directory_file(dot_git_path: &Path) -> Result<PathBuf, LedgerError> {
+    let contents = fs::read_to_string(dot_git_path)?;
+    let locator = contents
+        .trim()
+        .strip_prefix("gitdir:")
+        .map(str::trim)
+        .filter(|locator| !locator.is_empty())
+        .ok_or(LedgerError::InvalidGitDirectoryFile)?;
+    let locator = PathBuf::from(locator);
+    let repository_root = dot_git_path
+        .parent()
+        .ok_or(LedgerError::InvalidGitDirectoryFile)?;
+    let administrative_directory = if locator.is_absolute() {
+        locator
+    } else {
+        repository_root.join(locator)
+    };
+    fs::canonicalize(administrative_directory).map_err(LedgerError::Io)
+}
+
+fn read_git_administrative_layout(
+    worktree_administrative_directory: &Path,
+) -> Result<GitAdministrativeLayout, LedgerError> {
+    let contents = match fs::read_to_string(worktree_administrative_directory.join("commondir")) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(GitAdministrativeLayout::Main);
+        },
+        Err(error) => return Err(LedgerError::Io(error)),
+    };
+    let locator = contents.trim();
+    if locator.is_empty() {
+        return Err(LedgerError::InvalidCommonDirectoryFile);
+    }
+    fs::canonicalize(worktree_administrative_directory.join(locator))
+        .map(|common_git_directory| GitAdministrativeLayout::Linked {
+            common_git_directory,
+        })
+        .map_err(LedgerError::Io)
+}
+
 /// A transaction failure classified for a stateful command boundary.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Stateful verbs render these classified failures; no verb reaches them yet."
-    )
-)]
 #[derive(Debug)]
 pub(crate) enum LedgerTransactionError {
     /// Durable state could not be read or published reliably.
@@ -779,13 +853,6 @@ impl fmt::Display for LedgerTransactionError {
 impl std::error::Error for LedgerTransactionError {}
 
 /// A rejected mutation input that the caller can reduce and submit again.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "The claim verb renders correctable transaction input; no verb reaches it yet."
-    )
-)]
 #[derive(Debug)]
 pub(crate) enum CorrectableTransactionInput {
     /// The encoded journal fact exceeded the bounded record format.
@@ -834,6 +901,7 @@ mod tests {
     use super::LedgerTransactionError;
     use super::LedgerTransactionOutcome;
     use super::TransactionValidation;
+    use super::WorktreeContext;
     use super::worktree_identity;
     use crate::ids::CoordinationRunId;
     use crate::ids::RepoInstanceId;
@@ -843,6 +911,35 @@ mod tests {
     use crate::ledger::BypassedAction;
     use crate::ledger::JournalEvent;
     use crate::ledger::JournalOperation;
+
+    #[test]
+    fn git_file_without_common_directory_is_a_main_worktree() {
+        let temporary_directory = tempdir().expect("temporary directory should exist");
+        let repository_root = temporary_directory.path().join("worktree");
+        let administrative_directory = temporary_directory.path().join("external-git");
+        fs::create_dir(&repository_root).expect("worktree directory should exist");
+        fs::create_dir(&administrative_directory).expect("administrative directory should exist");
+        fs::write(
+            repository_root.join(".git"),
+            format!("gitdir: {}\n", administrative_directory.display()),
+        )
+        .expect("git directory file should write");
+
+        let worktree_context =
+            WorktreeContext::discover(&repository_root).expect("worktree should be discovered");
+        let canonical_administrative_directory = fs::canonicalize(&administrative_directory)
+            .expect("administrative directory should canonicalize");
+
+        assert_eq!(worktree_context.worktree_kind(), WorktreeKind::Main);
+        assert_eq!(
+            worktree_context.administrative_directory(),
+            canonical_administrative_directory
+        );
+        assert_eq!(
+            worktree_context.common_git_directory(),
+            canonical_administrative_directory
+        );
+    }
 
     #[test]
     fn recycled_administrative_directory_mints_a_new_worktree_identity() {

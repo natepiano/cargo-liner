@@ -51,13 +51,6 @@ pub(crate) struct JournalEvent {
 
 impl JournalEvent {
     /// Build a new v1 journal fact for one mutation transaction.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "No stateful verb creates journal facts through the transaction wrapper yet."
-        )
-    )]
     pub(super) fn for_operation(
         actor: JournalActor,
         projection_generation: ProjectionGeneration,
@@ -254,6 +247,14 @@ macro_rules! git_commit_role {
         impl AsRef<GitObjectId> for $name {
             fn as_ref(&self) -> &GitObjectId { &self.0 }
         }
+
+        impl FromStr for $name {
+            type Err = crate::ids::InvalidGitObjectId;
+
+            fn from_str(value: &str) -> Result<Self, Self::Err> {
+                value.parse::<GitObjectId>().map(Self)
+            }
+        }
     };
 }
 
@@ -270,8 +271,23 @@ git_commit_role!(
     "The phase-start commit retained for active-work drift comparison."
 );
 
+macro_rules! normalize_nonempty_claim_text {
+    (trim, $value:ident) => {
+        $value.trim()
+    };
+    (preserve, $value:ident) => {
+        $value
+    };
+}
+
 macro_rules! nonempty_claim_text {
-    ($name:ident, $error:ident, $documentation:literal, $error_message:literal) => {
+    (
+        $normalization:ident,
+        $name:ident,
+        $error:ident,
+        $documentation:literal,
+        $error_message:literal
+    ) => {
         #[doc = $documentation]
         #[derive(Clone, Debug, Eq, PartialEq)]
         pub(crate) struct $name(String);
@@ -286,6 +302,7 @@ macro_rules! nonempty_claim_text {
             type Err = $error;
 
             fn from_str(value: &str) -> Result<Self, Self::Err> {
+                let value = normalize_nonempty_claim_text!($normalization, value);
                 if value.is_empty() {
                     Err($error)
                 } else {
@@ -333,17 +350,29 @@ macro_rules! nonempty_claim_text {
 }
 
 nonempty_claim_text!(
-    ReservationPurpose,
-    EmptyReservationPurpose,
+    trim,
+    NonEmptyReservationPurpose,
+    EmptyNonEmptyReservationPurpose,
     "A non-empty explanation of the work protected by a reservation.",
     "a reservation purpose cannot be empty"
 );
 nonempty_claim_text!(
+    preserve,
     WorkPlanReference,
     EmptyWorkPlanReference,
     "An opaque, non-empty reference to the work plan that originated a claim.",
     "a work-plan reference cannot be empty"
 );
+
+/// Whether the caller supplied an explanation for the protected work.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "explanation", rename_all = "snake_case")]
+pub(crate) enum ReservationPurpose {
+    /// The caller supplied a non-empty explanation.
+    Explained(NonEmptyReservationPurpose),
+    /// The caller omitted `--why`.
+    NotProvidedByCaller,
+}
 
 /// The full branch reference and commit, or detached commit, observed at claim time.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -467,13 +496,6 @@ pub(crate) struct ReservationScopeSet(Vec<ReservationScope>);
 
 impl ReservationScopeSet {
     /// Borrow the scopes without weakening the non-empty construction boundary.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "The claim engine iterates the non-empty footprint; no verb reaches it yet."
-        )
-    )]
     pub(crate) fn as_slice(&self) -> &[ReservationScope] { &self.0 }
 }
 
@@ -819,40 +841,7 @@ impl Journal {
     /// Replay every complete record and repair one incomplete final record.
     pub(super) fn replay_repairing_tail(&self) -> Result<JournalReplay, JournalError> {
         let bytes = fs::read(&self.path)?;
-        let complete_end = bytes
-            .iter()
-            .rposition(|byte| *byte == b'\n')
-            .map_or(0, |index| index + 1);
-        let complete_records = &bytes[..complete_end];
-        let mut events = Vec::new();
-        for (line_index, record) in complete_records.split(|byte| *byte == b'\n').enumerate() {
-            if record.is_empty() {
-                if line_index + 1 == complete_records.split(|byte| *byte == b'\n').count() {
-                    continue;
-                }
-                return Err(JournalError::CorruptInteriorRecord {
-                    line:  line_index + 1,
-                    error: "blank journal record".to_owned(),
-                });
-            }
-            let record = std::str::from_utf8(record).map_err(|error| {
-                JournalError::CorruptInteriorRecord {
-                    line:  line_index + 1,
-                    error: error.to_string(),
-                }
-            })?;
-            let event = serde_json::from_str::<JournalEvent>(record).map_err(|error| {
-                JournalError::CorruptInteriorRecord {
-                    line:  line_index + 1,
-                    error: error.to_string(),
-                }
-            })?;
-            let supported_schema_version = SchemaVersion::from(CURRENT_SCHEMA_VERSION);
-            if event.schema_version != supported_schema_version {
-                return Err(JournalError::UnsupportedSchemaVersion(event.schema_version));
-            }
-            events.push(event);
-        }
+        let (replay, complete_end) = replay_complete_records(&bytes)?;
 
         if complete_end != bytes.len() {
             let journal_file = OpenOptions::new().write(true).open(&self.path)?;
@@ -860,34 +849,16 @@ impl Journal {
                 .set_len(u64::try_from(complete_end).map_err(JournalError::JournalTooLarge)?)?;
             journal_file.sync_all()?;
         }
+        Ok(replay)
+    }
 
-        let repaired_bytes = if complete_end == bytes.len() {
-            bytes
-        } else {
-            bytes[..complete_end].to_vec()
-        };
-        let generation = events.last().map_or_else(
-            || ProjectionGeneration::from(0),
-            |event| event.projection_generation,
-        );
-        Ok(JournalReplay {
-            events,
-            end_offset: JournalByteOffset::from(
-                u64::try_from(repaired_bytes.len()).map_err(JournalError::JournalTooLarge)?,
-            ),
-            fingerprint: JournalFingerprint::from_bytes(&repaired_bytes),
-            generation,
-        })
+    /// Replay complete records without opening the journal for mutation.
+    pub(super) fn replay_read_only(path: &Path) -> Result<JournalReplay, JournalError> {
+        let bytes = fs::read(path)?;
+        replay_complete_records(&bytes).map(|(replay, _)| replay)
     }
 
     /// Append exactly one complete JSON record and sync it before cache publication.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "No stateful verb appends through this journal writer yet."
-        )
-    )]
     pub(super) fn append(&self, event: &JournalEvent) -> Result<(), JournalAppendError> {
         let mut record = serde_json::to_vec(event).map_err(JournalAppendError::Serialization)?;
         record.push(b'\n');
@@ -902,6 +873,61 @@ impl Journal {
         journal_file.sync_all()?;
         Ok(())
     }
+}
+
+fn replay_complete_records(bytes: &[u8]) -> Result<(JournalReplay, usize), JournalError> {
+    let complete_end = bytes
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |index| index + 1);
+    let complete_records = &bytes[..complete_end];
+    let records = complete_records.split(|byte| *byte == b'\n');
+    let record_count = records.clone().count();
+    let mut events = Vec::new();
+    for (line_index, record) in records.enumerate() {
+        if record.is_empty() {
+            if line_index + 1 == record_count {
+                continue;
+            }
+            return Err(JournalError::CorruptInteriorRecord {
+                line:  line_index + 1,
+                error: "blank journal record".to_owned(),
+            });
+        }
+        let record =
+            std::str::from_utf8(record).map_err(|error| JournalError::CorruptInteriorRecord {
+                line:  line_index + 1,
+                error: error.to_string(),
+            })?;
+        let event = serde_json::from_str::<JournalEvent>(record).map_err(|error| {
+            JournalError::CorruptInteriorRecord {
+                line:  line_index + 1,
+                error: error.to_string(),
+            }
+        })?;
+        let supported_schema_version = SchemaVersion::from(CURRENT_SCHEMA_VERSION);
+        if event.schema_version != supported_schema_version {
+            return Err(JournalError::UnsupportedSchemaVersion(event.schema_version));
+        }
+        events.push(event);
+    }
+
+    let generation = events.last().map_or_else(
+        || ProjectionGeneration::from(0),
+        |event| event.projection_generation,
+    );
+    let complete_bytes = &bytes[..complete_end];
+    Ok((
+        JournalReplay {
+            events,
+            end_offset: JournalByteOffset::from(
+                u64::try_from(complete_end).map_err(JournalError::JournalTooLarge)?,
+            ),
+            fingerprint: JournalFingerprint::from_bytes(complete_bytes),
+            generation,
+        },
+        complete_end,
+    ))
 }
 
 impl JournalFingerprint {
@@ -1013,6 +1039,7 @@ mod tests {
     use super::JournalActor;
     use super::JournalEvent;
     use super::JournalOperation;
+    use super::NonEmptyReservationPurpose;
     use super::OrderingDirection;
     use super::ProjectionGeneration;
     use super::ProtectedPhaseStartHead;
@@ -1035,6 +1062,16 @@ mod tests {
     use crate::ids::SchemaVersion;
     use crate::ids::WorkPlanPhase;
     use crate::ids::WorktreeId;
+
+    #[test]
+    fn reservation_purpose_rejects_whitespace_and_stores_trimmed_text() {
+        assert!(" \t\n".parse::<NonEmptyReservationPurpose>().is_err());
+        let reservation_purpose = "  protected work  "
+            .parse::<NonEmptyReservationPurpose>()
+            .expect("non-whitespace purpose should parse");
+
+        assert_eq!(reservation_purpose.to_string(), "protected work");
+    }
 
     #[test]
     fn a_truncated_final_record_is_removed_before_replay() {
@@ -1135,7 +1172,10 @@ mod tests {
                     "plan": "docs/berth-plan.md",
                     "phase": "3b",
                 },
-                "purpose": "The ledger records durable coordination facts before a worktree claims paths.",
+                "purpose": {
+                    "kind": "explained",
+                    "explanation": "The ledger records durable coordination facts before a worktree claims paths.",
+                },
                 "trunk_at_claim": "1111111111111111111111111111111111111111",
                 "head_snapshot": {
                     "kind": "branch",
@@ -1296,7 +1336,8 @@ mod tests {
                 },
                 purpose:
                     "The ledger records durable coordination facts before a worktree claims paths."
-                        .parse::<ReservationPurpose>()
+                        .parse::<NonEmptyReservationPurpose>()
+                        .map(ReservationPurpose::Explained)
                         .expect("reservation purpose should parse"),
                 trunk_at_claim:                  "1111111111111111111111111111111111111111"
                     .parse::<GitObjectId>()

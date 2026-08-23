@@ -128,8 +128,8 @@ macro_rules! uuid_identifier_minter {
     };
 }
 
-uuid_identifier_minter!(future ReservationId);
-uuid_identifier_minter!(future CoordinationRunId);
+uuid_identifier_minter!(ReservationId);
+uuid_identifier_minter!(CoordinationRunId);
 uuid_identifier_minter!(future EdgeId);
 uuid_identifier_minter!(EventId);
 uuid_identifier_minter!(RepoInstanceId);
@@ -455,13 +455,6 @@ const fn civil_date_from_unix_days(days_since_epoch: i64) -> (i64, i64, i64) {
 }
 
 /// The immutable role of a worktree in its repository.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Worktree reconciliation consumes this role; only its wire representation exists so far."
-    )
-)]
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum WorktreeKind {

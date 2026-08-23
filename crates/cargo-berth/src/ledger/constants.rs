@@ -9,13 +9,6 @@ pub(super) const LOCK_FILE_NAME: &str = "mutation.lock";
 pub(super) const PROJECTION_FILE_NAME: &str = "reservations.json";
 pub(super) const PROJECTION_TEMPORARY_FILE_NAME: &str = "reservations.json.tmp";
 pub(super) const REPO_INSTANCE_ID_FILE_NAME: &str = "repo-instance-id";
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Worktree reconciliation consumes this identity-file locator; no verb reaches it yet."
-    )
-)]
 pub(super) const WORKTREE_ID_FILE_NAME: &str = "cargo-berth-worktree-id";
 
 // process context
@@ -29,13 +22,6 @@ pub(super) const MUTATION_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(
 pub(super) const DELETE_CONTROL_BYTE: u8 = 0x7f;
 
 // journal limits
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "The journal writer enforces this record limit; no writer path reaches it yet."
-    )
-)]
 pub(super) const MAXIMUM_JOURNAL_RECORD_BYTES: usize = 16 * 1_024;
 
 // ledger layout
