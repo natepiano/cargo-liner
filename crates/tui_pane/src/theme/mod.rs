@@ -96,7 +96,7 @@ pub struct PaneChromeTheme {
     /// title's colour, so a theme written before this key existed still
     /// marks focus rather than losing it.
     ///
-    /// [`PaneBorders`]: crate::PaneBorders
+    /// [`PaneBorders::Separate`]: crate::PaneBorders::Separate
     #[serde(default)]
     pub active_border:   Option<StyleSpec>,
     /// Border of unfocused panes, and of every pane in an app whose

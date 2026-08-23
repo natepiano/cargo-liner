@@ -29,7 +29,7 @@ pub struct PaneChrome {
     /// Only [`PaneBorders::Separate`] reads it; see
     /// [`GridLines::render`].
     ///
-    /// [`PaneBorders`]: crate::PaneBorders
+    /// [`PaneBorders::Separate`]: crate::PaneBorders::Separate
     /// [`GridLines::render`]: crate::GridLines::render
     pub active_border:   Style,
     /// Border style for unfocused panes, and for every pane where
