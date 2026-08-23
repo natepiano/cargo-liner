@@ -62,6 +62,7 @@ tracing-subscriber = "0.3"
 # path by construction and is never edited by a release.
 tui_pane      = { path = "crates/tui_pane" }
 unicode-width = "0.2.2"
+uuid = { version = "1", features = ["v7", "serde"] }
 walkdir       = "2.5"
 
 [workspace.lints.clippy]

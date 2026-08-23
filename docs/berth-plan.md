@@ -34,16 +34,16 @@ Orders cite it by section heading and finding id — everything a delegate needs
     docs/hana_valence/arrangements.md            # 9 todo phases / 9 Work Orders
   ```
 - **Key files:**
-  - `/Users/natemccoy/rust/cargo-liner/Cargo.toml` — workspace manifest. `members = ["crates/*"]` is a glob, so creating `crates/cargo-berth/` registers the member with no root edit. `[workspace.lints.clippy]` and `[workspace.lints.rust]` live here; members inherit via `[lints] workspace = true`.
-  - `/Users/natemccoy/rust/cargo-liner/crates/cargo-tile/Cargo.toml` — the manifest pattern to copy: inherited `authors`/`edition`/`license`/`repository`, explicit `name` + `version = "0.1.0-dev"`, `categories`, `keywords`, `homepage = ".../tree/main/crates/cargo-berth"`, `readme`, `[lints] workspace = true`, every dep `{ workspace = true }`, `tempfile` under `[dev-dependencies]`.
-  - `/Users/natemccoy/rust/cargo-liner/crates/cargo-tile/src/main.rs` — binary pattern: crate-level `//!` doc (required, `missing_docs` is denied), flat `mod` list, `fn main() -> ExitCode { cli::Cli::parse_arguments().run() }`. No `[[bin]]` section — the binary name is the package name via `src/main.rs`.
-  - `/Users/natemccoy/rust/cargo-liner/crates/cargo-tile/src/cli.rs` — clap `Parser`/`Subcommand` pattern including the `cargo berth <verb>` vs `cargo-berth <verb>` dual spelling: `parse_arguments` swallows the extra word cargo injects.
-  - `/Users/natemccoy/rust/cargo-liner/crates/cargo-port/src/project/git/command.rs` — the git-subprocess pattern to follow: `git_command(repo_root) -> Command` with `--no-optional-locks` and `.current_dir()`, and `git_output_logged(repo_root, op, args)` wrapping it with timing/`tracing::trace!`.
-  - `/Users/natemccoy/rust/cargo-liner/crates/cargo-port/src/project/git/constants.rs` — every git binary name, subcommand, flag, and ref prefix is a named `pub(super) const`. Follow this; never inline a git string literal.
-  - `/Users/natemccoy/rust/cargo-liner/crates/cargo-port/src/project/git/worktree_group.rs` — existing worktree-grouping code.
-  - `/Users/natemccoy/rust/cargo-liner/crates/tui_pane/src/lib.rs` — board TUI foundation, flat re-exports at the crate root. Entry types: `AppContext` (the trait an app implements), `Framework`, `PaneRegistry`, `Renderable`, `Pane`/`PaneFrame`/`FocusedPane`/`PaneChrome`, `Keymap`/`KeymapBuilder`/`Bindings`/`Action`/`KeyOutcome`, `PaneGridLayout`/`Region`/`Viewport`, `StatusBar`/`StatusLine`, `Theme`/`ThemeRegistry`, `Toasts`, `SettingsStore`.
-  - `/Users/natemccoy/rust/cargo-liner/README.md` — member row shape: `- [name](crates/name) — description [![crates.io](https://img.shields.io/crates/v/NAME.svg)](https://crates.io/crates/NAME)`.
-  - `/Users/natemccoy/rust/cargo-liner/.claude/config/release.toml` — single-package cadence: `/release <crate> X.Y.Z`, deliberately no `workspace_publish`. A path-only dep needs a `[[publish_path_pins]]` entry.
+  - `Cargo.toml` — workspace manifest. `members = ["crates/*"]` is a glob, so creating `crates/cargo-berth/` registers the member with no root edit. `[workspace.lints.clippy]` and `[workspace.lints.rust]` live here; members inherit via `[lints] workspace = true`.
+  - `crates/cargo-tile/Cargo.toml` — the manifest pattern to copy: inherited `authors`/`edition`/`license`/`repository`, explicit `name` + `version = "0.1.0-dev"`, `categories`, `keywords`, `homepage = ".../tree/main/crates/cargo-berth"`, `readme`, `[lints] workspace = true`, every dep `{ workspace = true }`, `tempfile` under `[dev-dependencies]`.
+  - `crates/cargo-tile/src/main.rs` — binary pattern: crate-level `//!` doc (required, `missing_docs` is denied), flat `mod` list, `fn main() -> ExitCode { cli::Cli::parse_arguments().run() }`. No `[[bin]]` section — the binary name is the package name via `src/main.rs`.
+  - `crates/cargo-tile/src/cli.rs` — clap `Parser`/`Subcommand` pattern including the `cargo berth <verb>` vs `cargo-berth <verb>` dual spelling: `parse_arguments` swallows the extra word cargo injects.
+  - `crates/cargo-port/src/project/git/command.rs` — the git-subprocess pattern to follow: `git_command(repo_root) -> Command` with `--no-optional-locks` and `.current_dir()`, and `git_output_logged(repo_root, op, args)` wrapping it with timing/`tracing::trace!`.
+  - `crates/cargo-port/src/project/git/constants.rs` — every git binary name, subcommand, flag, and ref prefix is a named `pub(super) const`. Follow this; never inline a git string literal.
+  - `crates/cargo-port/src/project/git/worktree_group.rs` — existing worktree-grouping code.
+  - `crates/tui_pane/src/lib.rs` — board TUI foundation, flat re-exports at the crate root. Entry types: `AppContext` (the trait an app implements), `Framework`, `PaneRegistry`, `Renderable`, `Pane`/`PaneFrame`/`FocusedPane`/`PaneChrome`, `Keymap`/`KeymapBuilder`/`Bindings`/`Action`/`KeyOutcome`, `PaneGridLayout`/`Region`/`Viewport`, `StatusBar`/`StatusLine`, `Theme`/`ThemeRegistry`, `Toasts`, `SettingsStore`.
+  - `README.md` — member row shape: `- [name](crates/name) — description [![crates.io](https://img.shields.io/crates/v/NAME.svg)](https://crates.io/crates/NAME)`.
+  - `.claude/config/release.toml` — single-package cadence: `/release <crate> X.Y.Z`, deliberately no `workspace_publish`. A path-only dep needs a `[[publish_path_pins]]` entry.
   - `/Users/natemccoy/rust/hana/.claude/config/release.toml`, `mirror.toml` — repo-scoped tool config precedent: plain TOML under `.claude/config/`, opening comment block explaining the tool and this repo's dialect, per-repo policy only.
   - `/Users/natemccoy/rust/hana/.claude/settings.local.json` — permissions + `outputStyle` only, **no `hooks` key**. Track B creates it.
   - `/Users/natemccoy/rust/hana/docs/hana/tool-graph.md` — 37 `**Files:**` blocks; 21 done, 19 todo, 20 Work Orders.
@@ -57,6 +57,7 @@ Orders cite it by section heading and finding id — everything a delegate needs
     ```
 - **Build:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-berth`
 - **Test:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth`
+- **Integration test:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth <target>` — the package `test` line above runs `--bins` only and silently skips every `crates/cargo-berth/tests/*.rs` target. A phase that adds to or relies on an integration target must run this line naming it (phase 2 established `ledger`), or that target does not run at all.
 - **Lint:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth`
 - **Style:** `phase-end /clippy style-only auto-proceed`
 - **Invariants:**
@@ -64,16 +65,18 @@ Orders cite it by section heading and finding id — everything a delegate needs
     the specification, not background. A Work Order Spec that cites a section or a finding id
     means: open `docs/berth-plan.md` in the cargo-liner checkout and read it before writing code.
     Where a finding corrects an earlier one the later finding wins, and its title says so.
-  - **Track-A phases run in `/Users/natemccoy/rust/cargo-liner`. Track-B phases run in `/Users/natemccoy/rust/hana`.** Every phase states its repo in its Goal. A track-A phase that has to explain a Work Order means the boundary is wrong.
+  - **Track-A phases run in the `cargo-liner` repository. Track-B phases run in the `hana` repository.** Track-A paths in this plan are repo-relative and resolve against whichever checkout the phase is dispatched into — this work runs in a worktree, not necessarily in `/Users/natemccoy/rust/cargo-liner` itself, and that main-branch checkout sits at a different commit with none of this work in it. Never resolve a track-A path against an absolute repository root. Every phase states its repo in its Goal. A track-A phase that has to explain a Work Order means the boundary is wrong.
   - **Track-B phases compile nothing** and have no `verify.sh` line. They verify by exercising the artifact: run the hook shim against a synthetic JSON payload on stdin and assert the decision, `taplo fmt --check` the TOML, JSON-validate the edited settings file, and confirm every backfilled `**Reservations:**` block parses and is lexically valid. Phase 11 — the last track-A phase — installs the verified binary and records its version and absolute path; no track-B phase runs `cargo install`, `cargo build`, or any other compile.
   - **The executable is named `cargo-berth`, and `berth` is not a command.** Cargo's subcommand convention means `cargo berth <verb>` and `cargo-berth <verb>` both work, and phase 1 shipped both spellings. Every script, hook shim, skill, and acceptance gate invokes `cargo-berth <verb>` directly; use `cargo berth <verb>` only where the surrounding text is deliberately showing the Cargo spelling to a reader.
+  - **Every command that cannot read the ledger fails without facts.** It exits `4`, its payload is `no_facts`, its legacy reservation fields are empty, and its message says what is wrong. A read may still proceed on the caller's judgment; a mutation and an integration establish nothing. This is inherited by every verb — no phase restates it, and every phase's gate asserts it once for the verb it adds.
+  - **The mutation lock is the only thing preventing interleaved writes.** The plan once assumed a journal record smaller than `PIPE_BUF` appends atomically. `PIPE_BUF` is 512 bytes on this filesystem, the record limit is 16 KiB, and `PIPE_BUF` governs pipes rather than regular files in any case. Every write goes through the locked transaction wrapper; there is no size below which a bare append is safe.
   - Workspace lints are inherited, never restated. Denied: `clippy::{unwrap_used, expect_used, panic, unreachable, allow_attributes_without_reason, self_named_module_files, undocumented_unsafe_blocks}`, groups `all`/`cargo`/`nursery`/`pedantic` at `priority = -1`, `rust::missing_docs`, `rust::unsafe_code`. Every `#[allow]` carries a `reason = "..."`. Use `module/mod.rs` directory form when a module has submodules.
   - Every dependency is `{ workspace = true }`; versions live only in the root `[workspace.dependencies]`.
   - **The append-only journal is truth.** `journal.ndjson` is written `O_APPEND` in sub-`PIPE_BUF` records; nothing rewrites or truncates it. `reservations.json` is a disposable projection — rebuildable by replay, deletable at any moment. No code treats it as authoritative or as the only copy of a fact.
   - **The edit-hook path does no git subprocess work.** It reads only the generation-validated projection, blocks solely on tier-1 foreign-branch overlap, and is silent otherwise. Reconciliation touches git and runs at SessionStart, before stateful verbs, and before checkpoint/integration — plus one retry when the cache already says block.
   - **`cargo-berth` never reads a Work Order or any hana-specific format.** No markdown parsing, no plan-doc awareness, no phase numbering. Its interface is paths and reservation ids.
   - **It publishes to crates.io**: a README for a stranger ships in v1; the crate keeps its own version and `CHANGELOG.md`; no path-only dep without a `[[publish_path_pins]]` entry.
-  - Ledger loss fails **open for editing, closed for integration**. Stale/orphaned reservations are flagged, never auto-removed. `Cargo.toml`, `Cargo.lock`, and individual `.claude/config` files take **ordinary exact exclusive reservations** for the phase's duration — R34 and final D3 withdrew the announce-not-claim rule, because announcing permits exactly the concurrent edit it names. Verify-only paths stay in `**Files:**` and out of `**Reservations:**` entirely. The trunk gate ships observe-only; `HANA_SYNC_BYPASS=1` is evaluated before any ledger read.
+  - Ledger loss fails **open for editing, closed for integration**. Stale/orphaned reservations are flagged, never auto-removed. `Cargo.toml`, `Cargo.lock`, and individual `.claude/config` files take **ordinary exact exclusive reservations** for the phase's duration — R34 and final D3 withdrew the announce-not-claim rule, because announcing permits exactly the concurrent edit it names. Verify-only paths stay in `**Files:**` and out of `**Reservations:**` entirely. The trunk gate ships observe-only; `CARGO_BERTH_BYPASS=1` is evaluated before any ledger read.
   - `cargo-berth` does not coordinate its own construction, and the gate installs in hana last.
 
 ## Phases
@@ -86,17 +89,17 @@ Orders cite it by section heading and finding id — everything a delegate needs
 
 **Files:**
 
-- `/Users/natemccoy/rust/cargo-liner/crates/cargo-berth/Cargo.toml` — `version = "0.1.0-dev"`, `[lints] workspace = true`, `readme` key, and every dependency inherited with `workspace = true`. The root manifest needed no edit: its `members = ["crates/*"]` glob picks the crate up, and `clap`, `serde`, `serde_json`, and `tempfile` were already declared there.
-- `/Users/natemccoy/rust/cargo-liner/crates/cargo-berth/README.md` — three-line placeholder.
-- `/Users/natemccoy/rust/cargo-liner/crates/cargo-berth/src/main.rs` — dual-spelling argv normalization, dispatch, `fn main() -> ExitCode`.
-- `/Users/natemccoy/rust/cargo-liner/crates/cargo-berth/src/cli.rs` — the frozen seven-verb clap surface.
-- `/Users/natemccoy/rust/cargo-liner/crates/cargo-berth/src/exit.rs` — `BerthExit` and the documented exit table in its `//!` block.
-- `/Users/natemccoy/rust/cargo-liner/crates/cargo-berth/src/ids.rs` — the seven identifier newtypes.
-- `/Users/natemccoy/rust/cargo-liner/crates/cargo-berth/src/output.rs` — `OutputEnvelope`, `CommandVerb`, `OutputStatus`, and the hand-written renderer.
+- `crates/cargo-berth/Cargo.toml` — `version = "0.1.0-dev"`, `[lints] workspace = true`, `readme` key, and every dependency inherited with `workspace = true`. The root manifest needed no edit: its `members = ["crates/*"]` glob picks the crate up, and `clap`, `serde`, `serde_json`, and `tempfile` were already declared there.
+- `crates/cargo-berth/README.md` — three-line placeholder.
+- `crates/cargo-berth/src/main.rs` — dual-spelling argv normalization, dispatch, `fn main() -> ExitCode`.
+- `crates/cargo-berth/src/cli.rs` — the frozen seven-verb clap surface.
+- `crates/cargo-berth/src/exit.rs` — `BerthExit` and the documented exit table in its `//!` block.
+- `crates/cargo-berth/src/ids.rs` — the seven identifier newtypes.
+- `crates/cargo-berth/src/output.rs` — `OutputEnvelope`, `CommandVerb`, `OutputStatus`, and the hand-written renderer.
 
 **Binds later work:** Exit codes 1–4 are declared but unreachable; each is owned by the phase implementing its condition and asserted end to end there. `OutputStatus` has exactly one variant — the first engine phase adds the variants it needs and replaces `status: "unimplemented"` for the verbs it implements. `OutputEnvelope::unimplemented_json` is scaffolding: the first phase returning real reservation data deletes it and returns to `serde_json`, and must then decide what exit code a serialization failure carries, because the frozen table has none. A phase needing the primary-vs-linked worktree distinction introduces it with an encoding its own consumer justifies. `tempfile` is declared and unused; the ledger tests are its first consumer. Phase 11 replaces the README placeholder. `--json` absent is covered by smoke only; the phase adding real output adds that test.
 
-**Gotchas:** The envelope is rendered twice — by hand in `unimplemented_json` so that exit 0 provably means a complete envelope reached stdout, and by serde; `every_verb_renders_the_same_bytes_through_both_encoders` is what keeps `CommandVerb::json_name` agreeing with `rename_all`, and the typed payload is built only from owned closed types so serialization stays infallible. Any new exit code must be added to `BerthExit`'s checked `TryFrom<u8>` or JSON carrying it fails to parse. `mod ids;` carries one `expect(dead_code)` holding six identifiers with no consumer yet; it starts erroring as they gain consumers and must be narrowed or removed then, never widened. The workspace `cargo` lint group requires a `readme` key on every crate and a path outside the package root cannot be packaged, which is why the placeholder is crate-local. The design appendix still writes `berth init` in two places; the executable is `cargo-berth` and `berth` is not a command.
+**Gotchas:** The envelope is rendered twice — by hand in `unimplemented_json` so that exit 0 provably means a complete envelope reached stdout, and by serde; `every_verb_renders_the_same_bytes_through_both_encoders` is what keeps `CommandVerb::json_name` agreeing with `rename_all`, and the typed payload is built only from owned closed types so serialization stays infallible. Any new exit code must be added to `BerthExit`'s checked `TryFrom<u8>` or JSON carrying it fails to parse. `mod ids;` carries one `expect(dead_code)` holding six identifiers with no consumer yet; it starts erroring as they gain consumers and must be narrowed or removed then, never widened. The workspace `cargo` lint group requires a `readme` key on every crate and a path outside the package root cannot be packaged, which is why the placeholder is crate-local. The executable is `cargo-berth` and `berth` is not a command.
 
 **Ruled out:**
 
@@ -108,67 +111,64 @@ Orders cite it by section heading and finding id — everything a delegate needs
 - Renumbering phases 12–17 for R38's skill → backfill → dispatcher → hooks ordering — splitting hook construction from hook registration gives the same guarantee without rewriting every cross-reference.
 - A dry-run multi-candidate engine API — offline declaration comparison runs through the shared validator, while `cargo-berth check` tests one footprint against *live* reservations.
 
-### Phase 2 — Journal, projection, and the mutation lock  · status: todo
+### Phase 2 — Journal, projection, and the mutation lock  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** In `cargo-liner`: durable append-only storage under `$(git rev-parse --git-common-dir)/hana-sync/`, with replay rebuilding the projection, a lock serializing every writer, opaque non-recyclable identity, the repo config `init` writes, and the typed result payload every later verb returns.
+Durable storage lives under `$(git rev-parse --git-common-dir)/cargo-berth/`. An
+append-only NDJSON journal holds a closed operation union at one schema version,
+capped at 16 KiB per record; replay repairs a partial trailing record by
+truncating to the last complete one and treats a corrupt complete record as a
+hard error naming its line. Replay rebuilds `reservations.json`, a projection
+carrying a generation counter and published through a temp file; a reader rereads
+only when the projection's generation exceeds the one it observed. A file-based
+mutation lock guards every write, and a v1 transaction wrapper stamps the stored
+`repo_instance_id` rather than accepting one from a caller.
 
-**Spec:**
+`init` resolves the repository root itself, so an invocation from a nested
+directory writes exactly one `.claude/config/berth.toml` at the root, with
+`trunk`, `maximum_reservations`, `maximum_ordering_edges`, and `gate_mode`. It is
+idempotent, leaves an edited config byte-identical, fills defaults for omitted
+keys, honours a `#` inside a quoted value, and rejects an unknown key.
 
-Ledger location: `$(git rev-parse --git-common-dir)/hana-sync/` — one directory shared by every worktree off the trunk. `journal.ndjson` is truth; `reservations.json` is a generation-stamped disposable cache.
-
-**Opaque identity (R39, R51) — this phase, before any journal record uses an id.** Add `uuid` (features `v7`, `serde`) to the root `[workspace.dependencies]` and inherit it here. Every id phase 1 shipped as an unvalidated string newtype in `src/ids.rs` becomes a validated UUID-v7 wrapper that **rejects arbitrary text on deserialize**; keep the opaque `Display` and the transparent scalar encoding phase 1 froze. Add `RepoInstanceId`. `WorktreeId` is minted when coordination first sees a worktree and stored inside its administrative directory — the administrative path is a **locator, not an identity**, because `git worktree prune` makes it recyclable and a recycled path would hand a new worktree a false all-clear on the old one's paths. R51's `WorktreeId::{Main, Linked}` is **withdrawn**: main-versus-linked is a separate `WorktreeKind`, since an untagged unit variant encodes as JSON `null` on a frozen wire surface and the distinction is a property of a worktree, not its name. Rename phase 1's `Generation` to `ProjectionGeneration` — it counts projection publishes, and the bare name reads as a git or schema generation everywhere it appears.
-
-`JournalOperation` is a tagged serde union (R51, R68). **This phase owns the complete v1 union**; later phases fill in payload bodies but add no variant, because "an unknown operation is an error, not a skip" (R19) makes a journal written by a later build unreadable by an earlier one. Enumerate it from R51, R52, R28, R56, R64, and phases 3–9 rather than from R51 alone, which is stale: R51's `Override` and `RetireOrphan` are **withdrawn** — R53 folded the three permissive answers into the claim transaction as one authorization payload, and R28 made orphan retirement a user-confirmed disposition. The union must cover claim, widen, checkpoint/release with its disposition, resnapshot, renew, the conflict authorization (with its recorded overlap set and generations), the operation that turns an existing `Defer` into an ordering edge, ordering-edge declaration, incursion, forced-integration permit and its consumption, bypass, and user-confirmed abandonment and orphan retirement. **No standalone `edge_satisfied` / `edge_dissolved` / `ack` variants ever** — R60/R68 derive edge state instead. Every record carries `EventId`, `SchemaVersion`, actor, and timestamp. An unknown operation or unsupported schema version is an error, not a skip (R19).
-
-**The typed result payload.** Phase 1 froze the envelope with a `message` string and nothing else structured, but every later consumer needs data it must not scrape from prose: the blocking holder's plan, phase, direction, reason, and consequence; the board's sections; a drift classification and its incursion; a recovery verdict. Add **one additional envelope field carrying a verb-keyed typed payload**, leaving the six frozen fields exactly as they are — additive, so the track-B parsers written against phase 1 keep working. Build the payload only from owned closed types (enums, strings, lists, integers), which is what makes `serde_json` serialization of it infallible in construction, so **the frozen exit table needs no code for "the engine failed to render"**. A failed write to stdout is not an outcome to encode either: the consumer is already gone, so exit with the status already computed. This phase emits the first non-`unimplemented` status, so it is where the payload and the first exact text-mode message test land.
-
-**Repo configuration.** `init` writes the config nothing else owns today: phases 3 and 8 read it, phase 11 documents it field by field, and phase 12 hand-writes the hana copy against whatever this phase defines. Own the module, the types, the path (`.claude/config/berth.toml` in the repo, resolved from the repo root — not the ledger dir, which is inside `.git`), the defaults, and the rule that `init` **never overwrites an existing config**. Fields: `trunk`, R4's `V`/`E` graph limits, and `gate_mode` (`observe` default, `enforce`). There is no announce-not-claim list — R34 and final D3 withdrew it.
-
-Writes: `O_APPEND`, one record per write, kept under `PIPE_BUF`. Nothing rewrites or truncates. Partial-tail recovery (R30): a malformed **final** record is repaired by truncating it; a malformed record anywhere else is a hard error. Do not apply the cycle-1 partial-tail rule that cycle 2 refuted — see R30.
-
-The mutation lock (R43) is a descriptor-held `std::fs::File::lock` on a lockfile in the ledger dir — **not** existence-based, so the kernel releases it if a process dies. **No new dependency**: `std::fs::File::lock` is std. Every mutation runs: acquire → replay → validate → append → sync → publish projection → release.
-
-Projection: replay produces `reservations.json` with a `Generation` that increments on every publish. A reader that sees a generation newer than the one it read retries once. Deleting `reservations.json` must be recoverable by replay alone, and a test proves it byte-for-byte.
-
-Follow `cargo-port/src/project/git/command.rs` for the one git call needed here (`rev-parse --git-common-dir`) and `constants.rs` for naming it.
+`ledger_unreadable` is a terminal outcome: exit `4`, an `OutputPayload::NoFacts`
+payload, and agreement between process exit status, envelope `exit_code`, and
+semantic status in both text and JSON mode. Scalar wire fields are validated
+types — `GitObjectId` (40- or 64-character hex, so SHA-256 repositories work),
+`ReservationScopePath`, `ReservationRevision`, `JournalByteOffset`, `RecordedAt`,
+and an RFC 4122-variant `ReservationId` — each serializing as a plain JSON scalar.
 
 **Files:**
 
-- `crates/cargo-berth/src/ledger/mod.rs` — ledger location resolution, directory creation, `init`.
-- `crates/cargo-berth/src/ledger/journal.rs` — the operation union, append, replay, partial-tail recovery.
-- `crates/cargo-berth/src/ledger/projection.rs` — the cache, generation stamping, publish, read-with-retry.
-- `crates/cargo-berth/src/ledger/lock.rs` — the descriptor-held mutation lock and the transaction wrapper.
-- `crates/cargo-berth/src/config.rs` — the repo config type, path resolution, defaults, non-overwrite `init` write.
-- `crates/cargo-berth/src/git/mod.rs`, `src/git/command.rs`, `src/git/constants.rs` — the git subprocess helper, patterned on `cargo-port`.
-- `crates/cargo-berth/src/ids.rs` — **exists**; UUID-v7 validation, `RepoInstanceId`, `WorktreeKind`, the `Generation` → `ProjectionGeneration` rename.
-- `crates/cargo-berth/src/output.rs` — **exists**; add the typed payload field and the first real `OutputStatus` variants beside `Unimplemented`.
-- `crates/cargo-berth/src/cli.rs` — **exists**; owns every verb's dispatch and currently discards its parsed arguments. Wire `init` through to the ledger here.
-- `crates/cargo-berth/src/main.rs` — **exists**; owns the `mod` list. Adding modules means editing it, and the `expect(dead_code)` covering `mod ids` must be **narrowed as consumers appear, never widened**.
-- `crates/cargo-berth/Cargo.toml`, `/Users/natemccoy/rust/cargo-liner/Cargo.toml` — the `uuid` dependency, workspace entry and inherited use.
-- `crates/cargo-berth/tests/ledger.rs` — integration tests over a `tempfile` scratch repo.
+- `crates/cargo-berth/src/ledger/mod.rs` — ledger open and initialize, the v1 transaction wrapper, `WorktreeIdentity`, `repo_instance_id`.
+- `crates/cargo-berth/src/ledger/journal.rs` — the operation union, the writer, replay, truncation repair.
+- `crates/cargo-berth/src/ledger/projection.rs` — the projection, its generation, the atomic publish, the generation-aware reader.
+- `crates/cargo-berth/src/ledger/lock.rs` — the mutation lock and its RAII guard.
+- `crates/cargo-berth/src/ledger/constants.rs` — file names, journal limits, and the one schema version the writer and reader share.
+- `crates/cargo-berth/src/config.rs` — the `berth.toml` reader, including a quote-aware comment stripper.
+- `crates/cargo-berth/src/git/` — the git subprocess helper and its constants.
+- `crates/cargo-berth/src/ids.rs` — the validated identifier and scalar types.
+- `crates/cargo-berth/tests/ledger.rs` — the integration target.
 
-**Constraints from prior phases:** Phase 1 shipped, and this phase inherits rather than recreates: seven id newtypes in `src/ids.rs` (`ReservationId`, `CoordinationRunId`, `EdgeId`, `EventId`, `WorktreeId` as string newtypes; `Generation`, `SchemaVersion` as numeric ones), the exit enum in `src/exit.rs` encoding as its own number and rejecting anything outside `0..=5`, and the six-field envelope in `src/output.rs`. Exit `4` is ledger-unreadable. `init` exists as a parsed verb returning `unimplemented` — this phase implements it. `tempfile` is already a dev-dependency; the dependency set is otherwise minimal, and `uuid` is the one addition this phase makes. `output.rs` also carries `unimplemented_json`, a hand-written encoder that exists only so the placeholder response cannot fail to render — **delete it once a real payload replaces the placeholder**, along with the test that pins the two encoders together. The **only** dependency set the crate needs is what its manifest already names plus `uuid`; do not add others.
+**Binds later work:** Every mutation runs inside the v1 transaction wrapper,
+which is what stamps repository identity and advances the projection generation —
+never the journal writer directly. `ledger_unreadable` / `no_facts` is inherited
+by every verb. `GitObjectId` guarantees a 40- or 64-character hex oid; there is no
+`CommitOid` type. `output.rs` no longer has a hand-written encoder.
 
-**Acceptance gate:** `verify.sh test cargo-berth` green, including: `init` creates the ledger in a scratch repo and is idempotent; `init` writes a default config and a second `init` leaves an edited one untouched; replay rebuilds a deleted projection identically; a truncated final record is repaired and a corrupt middle record is a hard error; two concurrent writers serialize (both records present, neither lost); a killed process releases the lock; an id built from arbitrary non-UUID text fails to deserialize; a recycled administrative path does not yield the previous worktree's identity; `init` returns a status other than `unimplemented` in both JSON and text mode, with the process exit status, the envelope's `exit_code`, and the semantic status all agreeing — and this phase owns the first assertion that text mode prints its message rather than JSON.
+**Gotchas:** `verify.sh test <package>` runs `--bins` only and silently skips
+every `tests/*.rs` target — an integration target runs only when named. `PIPE_BUF`
+is 512 bytes here and governs pipes rather than regular files, so the mutation
+lock is the sole anti-interleaving mechanism and no record size makes a bare
+append safe. Git repositories can use SHA-256 object ids, so no fixed-width
+assumption about an oid holds. The schema version must have exactly one
+definition: writer and reader disagreeing about it is the failure the constant
+exists to prevent.
 
-**Pending decision: whether v1 gets commands for recovering from the states it can reach**
-
-Actual problem:
-Four phases assume a user can *act* on a broken or stranded reservation, and no phase gives them a command to do it with. Phase 5's alert is specified as "re-shown until the user records recovery, integration, or approved abandonment", R28 makes abandonment and orphan retirement require confirmation, R52 needs a renewal, and R41 needs a way to record that something landed as different evidence than expected — but phase 1 froze seven verbs (`init`, `board`, `check`, `claim`, `release`, `sequence`, `integrate`) and none of them performs a recovery action.
-
-What exists now:
-- `src/cli.rs` — the seven frozen verbs, no recovery among them.
-- Phase 5's Work Order — a durable alert that reports a recoverability verdict and names no way to answer it.
-- No remaining Work Order names a repair, resolve, renew, or resnapshot surface.
-
-What should change:
-- Either add a small recovery verb family to the frozen surface, each with dual-spelling and payload tests, or express recovery as flags on the existing verbs (`release --abandon --why`, `init --repair`). New verbs keep one meaning per verb and read clearly in the README a stranger gets; flags avoid expanding a contract track B already writes against, at the cost of hiding a destructive journal repair behind a setup verb.
-- Whichever shape wins, phase 5 is where it lands: the alerts and liveness verdicts it answers already live there.
-
-Recommendation:
-Add two verbs, and only the two a requirement already forces: `resolve <reservation-id> --recovered | --integrated-as <oid> | --abandon --why <text>` covering R28 and R41, and `renew <reservation-id>` covering R52. Leave ledger repair and lock diagnosis out of v1 — a corrupt journal already has `HANA_SYNC_BYPASS=1` as its escape hatch, and a command that rewrites an append-only journal contradicts this plan's central invariant. Implement both in phase 5.
+**Ruled out:** Giving `AuthorizedOverlap` the requesting reservation's
+generation. A `sync doctor --lock` diagnosis surface in v1 — the lock timeout
+message is the whole surface. A dedicated ledger-repair verb — recovery reuses
+`init` behind an explicit confirmation flag.
 
 ### Phase 3 — Claims, scopes, and overlap  · status: todo
 
@@ -190,6 +190,52 @@ Acquisition is a single locked transaction (R13): acquire lock → replay → co
 
 `check <paths>` runs tier 1 only and returns the JSON envelope without mutating.
 
+**The ledger has no usable transaction surface yet.** Phase 2 shipped
+`Ledger::append_operation`, which takes an already-built operation, and keeps the
+held transaction and the replayed state private — so overlap cannot be computed
+under the same lock that appends. This phase adds that surface before it adds a
+verb: a semantic transaction that exposes the replayed live reservations to a
+validation step and appends only if that step approves, an open path that attaches
+to an existing ledger without initializing missing state, and a projection reader
+validated against the generation and byte offset it replayed from. `ledger/mod.rs`,
+`ledger/journal.rs`, and `ledger/projection.rs` are therefore this phase's files
+too.
+
+**`ScopeKind` must survive the whole path from command line to journal.**
+`ClaimArguments` currently parses undifferentiated paths and `JournalOperation::Claim`
+stores a bare `Vec<ReservationScopePath>`, so the declared file-versus-tree meaning is
+lost before the engine sees it. Both ends carry the kind, and the same spelling
+claimed as a file and as a tree are different claims.
+
+**The claim record must carry everything later phases replay from it.** Phase 4
+needs the trunk commit at claim time and the branch and head snapshot; phase 5
+needs the canonical worktree root and its administrative locator; phase 9 needs
+the phase-start head. `ClaimSource::WorkPlan.phase` is `u32` today and must become
+the opaque text this phase's own Spec promises. These go in before the first claim
+is ever written, because a journal is append-only and a record written without them
+cannot be repaired later.
+
+**`ReservationScopePath` does not yet enforce the rules above.** Phase 2's
+constructor accepts `.` components and `.git`. Tightening it is this phase's work,
+along with a test proving each rejected form.
+
+**Lock contention is now user-visible.** `MutationLock::acquire` blocks forever.
+R43 requires bounded retries, so acquisition gets a timeout whose failure is a
+distinct, fact-free, actionable outcome naming no resource state. The plan's "no
+lock diagnosis in v1" stands: R43's `sync doctor --lock` direction is **not** in
+v1, and the timeout message is the whole surface.
+
+**An oversized record is a user error, not a broken ledger.** `RecordTooLarge`
+must reject the claim as correctable input — too many scopes, or an overlong
+provenance or reason — and must not be reported as an unreadable ledger.
+
+**Journal payload primitives owe the type-design contract.** Bare `String`
+reasons, a generic `GitObjectId` standing in for values with different
+guarantees, and possibly-empty `Vec`s for footprints and scope sets all make the
+caller infer what the type should state. Introduce the role-specific types this
+phase first needs — a reservation purpose, a protected phase-start head, a
+non-empty scope set — rather than deferring them past the first write.
+
 `release` is **not** in this phase. It cannot be: a release records `Outstanding { protected_tip }` against a retention ref, and the protected tip, the retention ref, and the `Outstanding` state are all defined by phase 4. Phase 4 owns `release` end to end — its behavior, its CLI dispatch, its output status, and its tests.
 
 **Files:**
@@ -201,11 +247,48 @@ Acquisition is a single locked transaction (R13): acquire lock → replay → co
 - `crates/cargo-berth/src/cli.rs` — **exists**; add the four provenance flags to `claim` and dispatch both verbs into the engine.
 - `crates/cargo-berth/src/output.rs` — **exists**; the blocked-claim payload variant.
 - `crates/cargo-berth/src/main.rs` — **exists**; owns the `mod` list.
+- `crates/cargo-berth/src/ledger/mod.rs` — **exists**; the semantic transaction that validates before appending, and the open-existing path.
+- `crates/cargo-berth/src/ledger/journal.rs` — **exists**; the claim record's real payload and its role-specific types.
+- `crates/cargo-berth/src/ledger/projection.rs` — **exists**; the generation- and offset-validated reader.
+- `crates/cargo-berth/src/ledger/lock.rs` — **exists**; the acquisition timeout.
+- `crates/cargo-berth/src/ids.rs` — **exists**; tighten `ReservationScopePath`, and make the work-plan phase opaque text.
 - `crates/cargo-berth/tests/overlap.rs` — the overlap matrix.
 
-**Constraints from prior phases:** Phase 2 provides the locked transaction wrapper in `src/ledger/lock.rs`, the complete journal union in `src/ledger/journal.rs`, the repo config in `src/config.rs`, the git helper in `src/git/`, and the typed envelope payload in `src/output.rs`. Every mutation must run inside that wrapper. Phase 1 shipped `src/cli.rs`, which owns all dispatch and currently discards its parsed arguments, and `src/ids.rs`, whose `ReservationId` phase 2 made a validated UUID v7. Exit `1` is overlap-blocked. Name the scope type for the role it plays — a bare `Scope` says nothing about what is scoped.
+**Constraints from prior phases:** Phase 2 provides the locked transaction wrapper in `src/ledger/lock.rs`, the complete journal union in `src/ledger/journal.rs`, the repo config in `src/config.rs`, the git helper in `src/git/`, and the typed envelope payload in `src/output.rs`. Every mutation must run inside that wrapper. Phase 1 shipped `src/cli.rs`, which owns all dispatch and currently discards its parsed arguments, and `src/ids.rs`, whose `ReservationId` phase 2 made a validated UUID v7. Exit `1` is overlap-blocked. Name the scope type for the role it plays — a bare `Scope` says nothing about what is scoped. The fact-free failure contract is inherited, not restated: any command that cannot read the ledger exits `4` with `payload.kind = no_facts`, empty reservation fields, and a diagnostic message — a mutation that hits it establishes nothing. Reuse phase 2's repository-root resolution so a verb run from a nested directory finds the same ledger. `GitObjectId` guarantees a 40- or 64-character hex oid; do not re-validate width at call sites.
 
-**Acceptance gate:** `verify.sh test cargo-berth` green, including: `crates/hana_kana` does not overlap `crates/hana_kana_extra`; a file claim inside a foreign tree claim blocks; two claims differing only in case both block when `core.ignoreCase` is set; a claim reduces to its antichain; a rejected claim appends **nothing** to the journal; **a claim on a path that does not exist yet succeeds**, and one escaping the repository via `..` or an absolute path is rejected; a claim naming `Cargo.toml` blocks a foreign claim on it like any other path. Exit `1` is asserted end to end: the process exit status, the envelope's `exit_code`, the semantic status, and the payload naming the holding branch, plan, and phase all agree, and the message tells the user what to do next. `claim` and `check` no longer return `unimplemented` in either output mode.
+**Acceptance gate:** `verify.sh test cargo-berth` green, including: `crates/hana_kana` does not overlap `crates/hana_kana_extra`; a file claim inside a foreign tree claim blocks; two claims differing only in case both block when `core.ignoreCase` is set; a claim reduces to its antichain; a rejected claim appends **nothing** to the journal; **a claim on a path that does not exist yet succeeds**, and one escaping the repository via `..` or an absolute path is rejected; a claim naming `Cargo.toml` blocks a foreign claim on it like any other path. Exit `1` is asserted end to end: the process exit status, the envelope's `exit_code`, the semantic status, and the payload naming the holding branch, plan, and phase all agree, and the message tells the user what to do next. `claim` and `check` no longer return `unimplemented` in either output mode. Also `verify.sh test cargo-berth overlap` and `verify.sh test cargo-berth ledger` green, including: the same spelling claimed as a file and as a tree behaves differently where the distinction matters; a scope path containing `.` or `.git` is rejected; a claim record round-trips every field phases 4, 5, and 9 replay from it; a second writer holding the lock makes acquisition time out with an actionable message and no resource facts; an oversized claim is rejected as correctable input rather than as an unreadable ledger; and a claim appended before its projection is published is still visible to the next reader.
+
+**Pending decision: what identifies the coordination run that is allowed to edit**
+
+Actual problem:
+A reservation must block foreign writers while permitting its own. This phase's Spec says `check` needs nothing new because self-recognition comes from the worktree's own minted `WorktreeId`. That is not enough to tell two agent sessions working in the same worktree apart, so either they both count as the holder — and the reservation protects nothing against the second one — or neither does, and the holder is blocked by its own claim. The pre-edit hook in phase 13 is what will actually ask this question, and it runs in a delegated session that did not make the claim.
+
+What exists now:
+- `src/ledger/journal.rs` — `JournalActor` always carries a `CoordinationRunId`, so the journal can already record who acted.
+- `src/cli.rs` — this phase adds `--run <coordination-run-id>` to `claim` as an optional flag; `check` takes no caller context at all.
+- Phase 13's spec — the shim decides `Edit`, `Write`, and `NotebookEdit` from a JSON payload on stdin, in whatever process the delegated agent runs in.
+- Phases 14, 15, and 17 all assume the answer without naming it.
+
+What should change:
+- Either **the caller asserts its run**: `check` and the hook shim take `--run`, and every launcher that delegates work is responsible for propagating the id into the delegated environment. Simple and explicit; wrong or missing propagation silently downgrades to worktree-level recognition.
+- Or **the run is discovered from the environment**: the coordination run writes a marker the shim reads (an environment variable set at delegation, or a file under the worktree's administrative directory), so nothing has to thread a flag through five phases. Harder to spoof accidentally; needs one owner for the marker's lifetime and cleanup.
+
+Either way the choice is one semantic type — an edit-authorization context naming the active run and the reservation it may write under — and it has to be settled here, because phases 3, 13, 14, 15, and 17 all encode it.
+
+**Pending decision: whether this phase still fits in one phase**
+
+Actual problem:
+Phase 3 was scoped as "claims, scopes, and overlap". Reviewing it against what phase 2 actually shipped added the ledger transaction surface, the open-existing path, a validated projection reader, `ScopeKind` propagation end to end, the real claim-record payload, `ReservationScopePath` tightening, a lock-acquisition timeout, oversized-record classification, and the first role-specific payload types — all before either verb is written.
+
+What exists now:
+- This Work Order's **Files** list names eleven files, six of them phase 2's.
+- The acceptance gate now spans three test targets.
+
+What should change:
+- Either **keep it whole**, because every item is a prerequisite of the first `claim` and splitting means the seam falls between "the ledger can transact" and "a verb transacts", which is a seam one session would cross anyway.
+- Or **split it**: a phase 3 that finishes the ledger's transaction surface, payload types, and path validation with no verb, and a phase 3b that adds `claim`, `check`, and the overlap engine on top. Two smaller dispatches, two gates, at the cost of one extra checkpoint.
+
+Recommendation: split. The first half is provably done by tests that never invoke a verb, and a phase that fails its gate after eleven files is far more expensive to diagnose than two that fail after five.
 
 ### Phase 4 — Reservation lifecycle and git evidence  · status: todo
 
@@ -219,12 +302,12 @@ Acquisition is a single locked transaction (R13): acquire lock → replay → co
 
 **Four orthogonal dimensions, four types — not one stage enum.** A single `ReservationStage::{Active, Outstanding, Integrated, Orphaned, Abandoned}` fuses four facts that change independently and are owned by different phases, so it forces impossible states to be representable and makes every match arm answer a question it was not asked. Split it:
 
-- `ReservationLifecycle::{Active, Outstanding { protected_tip: CommitOid }, Released { disposition }}` — how far the work has progressed. `Active` carries **no** protected tip, which is what makes it block unconditionally; the variant, not an `Option<CommitOid>`, is what says so.
+- `ReservationLifecycle::{Active, Outstanding { protected_tip }, Released { disposition }}` — how far the work has progressed. `Active` carries **no** protected tip, which is what makes it block unconditionally; the variant, not an `Option`, is what says so. There is no `CommitOid` type — phase 2 shipped `GitObjectId`, which already guarantees a 40- or 64-character hex oid. The protected tip is its own role-specific type wrapping one, not a bare `GitObjectId`.
 - `IntegrationEvidenceStatus::{NotIntegrated, Integrated { trunk_oid }, TrunkRewritten, ObjectUnknown }` — what the current trunk says, **derived on every stateful check and never stored as terminal** (R41).
 - `WorktreeLiveness::{Live, Unavailable, OrphanCandidate, Orphaned, Unknown}` — whether the holder still exists. **Phase 5 owns this**; it is not a lifecycle variant, and `Orphaned` never belonged in a progress enum.
 - `ReleaseDisposition::{Integrated, RewrittenIntegration, Abandoned}` (R51) — what the user decided. `Abandoned` and orphan retirement **require user confirmation** (R28); nothing reaches them automatically.
 
-At checkpoint, `release` records `Outstanding { protected_tip }` where `protected_tip` is the branch tip at that moment, and writes a retention ref `refs/hana-sync/reservations/<id>` so the commit survives branch deletion and gc (R57). Resnapshot updates it; it is held until every dependent successor is terminal.
+At checkpoint, `release` records `Outstanding { protected_tip }` where `protected_tip` is the branch tip at that moment, and writes a retention ref `refs/cargo-berth/reservations/<id>` so the commit survives branch deletion and gc (R57). Resnapshot updates it; it is held until every dependent successor is terminal.
 
 `protected_tip` is **the** subject of every reachability question. Never the claim-time `HeadSnapshot` (it predates the work, so the gate would pass before anything landed) and never the live branch tip (it moves with unrelated phases). An `Active` reservation has no protected tip and therefore blocks unconditionally.
 
@@ -251,7 +334,7 @@ git merge-base --is-ancestor "$protected_tip" "$trunk_oid"    # integration
 - `crates/cargo-berth/src/main.rs` — **exists**; owns the `mod` list.
 - `crates/cargo-berth/tests/lifecycle.rs` — scratch-repo lifecycle and rewrite tests.
 
-**Constraints from prior phases:** Phase 3 implements `claim` and `check` and deliberately leaves `release` to this phase — its CLI dispatch is still the phase-1 `unimplemented` path. Phase 2's transaction wrapper, complete journal union, typed envelope payload, and `src/git/constants.rs` naming convention bind. All reservation records carry the UUID-v7 `ReservationId` phase 2 validated.
+**Constraints from prior phases:** Phase 3 implements `claim` and `check` and deliberately leaves `release` to this phase — its CLI dispatch is still the phase-1 `unimplemented` path. Phase 2's transaction wrapper, complete journal union, typed envelope payload, and `src/git/constants.rs` naming convention bind. All reservation records carry the UUID-v7 `ReservationId` phase 2 validated. Phase 2 already ships `ReservationSnapshot` and `ReleaseDisposition` — refine those single definitions in place, never create a second. `JournalOperation::Release` currently pairs a disposition with an unrelated `String`, so a rewritten integration loses the verified trunk oid while an ordinary one is forced to carry a meaningless reason. Restructure it into variants that each carry exactly their own evidence: the verified trunk oid for a rewritten integration, a required reason for an abandonment, and nothing for an ordinary one.
 
 **Acceptance gate:** `verify.sh test cargo-berth` green, including: a checkpoint writes a retention ref and the commit survives deleting its branch and running `git gc --prune=now`; an `Active` reservation blocks and the type makes its missing protected tip unrepresentable rather than absent; `Integrated` reverts to blocking after `git reset --hard` removes the tip from trunk; a rebase + resnapshot updates the tip and the ref; `release` no longer returns `unimplemented` in either output mode, and its process exit status, envelope `exit_code`, and semantic status agree.
 
@@ -267,6 +350,8 @@ Typed liveness from `git worktree list --porcelain` plus the opaque `WorktreeId`
 
 One shared `reconcile()` routine, called at SessionStart, before every stateful verb, and before checkpoint and integration — **not** on board read alone (R62). The edit-hook path never calls it except one retry when the projection already says block.
 
+**The recovery verbs.** Phase 2 declared `resolve` and `renew` and left them `unimplemented`; their engines land here, beside the alerts and liveness verdicts they answer. `resolve --recovered` rebinds the reservation to the worktree the command runs in, appending phase 2's rebinding operation — this is the path for work recovered into a *new* worktree, which reconciliation cannot detect on its own because the recorded `WorktreeId` no longer matches. `resolve --integrated-as <trunk-oid>` appends `release` with `ReleaseDisposition::RewrittenIntegration`, and validates first: the oid must resolve in this repository and be reachable from trunk, so a typo or a commit from an unrelated branch is a usage error rather than a false all-clear. `resolve --abandon --why <text>` appends `release` with `Abandoned`, stores the reason, and is the only route to that disposition (R28). `renew` appends the activity record R29 derives freshness from. All four run inside phase 2's mutation lock, and each stops the alert only as a consequence of the state it recorded — never by marking the alert itself.
+
 `OrphanedOutstanding` alert: durable, re-shown until the user records recovery, integration, or approved abandonment. Reports reservation id, protected tip, branch-ref status, object availability, retention ref, and one of `RecoverableFromBranch` / `RecoverableFromProtectedTip` / `CommitUnavailable`. "Commits are lost" must be earned, not assumed.
 
 **Files:**
@@ -275,12 +360,14 @@ One shared `reconcile()` routine, called at SessionStart, before every stateful 
 - `crates/cargo-berth/src/worktree/identity.rs` — same-owner validation against the minted identity.
 - `crates/cargo-berth/src/reconcile.rs` — the shared routine and its call sites.
 - `crates/cargo-berth/src/alert.rs` — durable alerts.
+- `crates/cargo-berth/src/recovery.rs` — the `resolve` and `renew` engines and their disposition validation.
+- `crates/cargo-berth/src/cli.rs` — **exists**; wire `resolve` and `renew` to their engines. The verbs, their flags, and their help text are phase 2's and do not change here.
 - `crates/cargo-berth/src/main.rs` — **exists**; owns the `mod` list.
 - `crates/cargo-berth/tests/liveness.rs`
 
-**Constraints from prior phases:** Phase 4 supplies `protected_tip`, retention refs, and reachability; recoverability verdicts are computed from them. `WorktreeLiveness` is **this phase's type**, deliberately kept out of phase 4's lifecycle enum — whether a holder still exists is orthogonal to how far its work progressed. Phase 2 mints the opaque `WorktreeId` into the administrative directory and owns `RepoInstanceId`; this phase validates repo instance, current administrative directory, its backlink, and the recorded root before granting same-owner status (R39). Phase 2's lock wraps every append reconcile makes. **If phase 2's pending decision on the recovery surface is approved, the resulting verbs are implemented here** — this is where the alerts and verdicts they answer already live.
+**Constraints from prior phases:** Phase 4 supplies `protected_tip`, retention refs, and reachability; recoverability verdicts are computed from them. `WorktreeLiveness` is **this phase's type**, deliberately kept out of phase 4's lifecycle enum — whether a holder still exists is orthogonal to how far its work progressed. Phase 2 mints the opaque `WorktreeId` into the administrative directory and owns `RepoInstanceId`; this phase validates repo instance, current administrative directory, its backlink, and the recorded root before granting same-owner status (R39). Phase 2's lock wraps every append reconcile makes. Phase 2's recovery-surface decision resolved to two verbs. Phase 2 declares and parses `resolve` and `renew`, adds their `CommandVerb` variants and `--help` long forms, and adds the worktree-rebinding journal operation `--recovered` needs; **this phase writes their engines** and adds no wire surface. `ReleaseDisposition::{RewrittenIntegration, Abandoned}` and the rebinding operation all exist by the time this phase starts — do not add a journal variant. Phase 2 ships `WorktreeIdentity` with only an id and a kind, and the journal's only relocation operation is `RebindWorktree`, which changes identity. R39 requires a moved worktree to keep its identity while its recorded root is updated under the lock, so this phase owns a same-identity relocation transition distinct from a rebind. Collapse phase 1's `ResolveArguments` — a bool plus two `Option<String>`s — into one domain request built at the clap boundary, so an impossible combination cannot reach the engine.
 
-**Acceptance gate:** `verify.sh test cargo-berth` green, including: an `rm -rf`'d-but-unpruned worktree classifies `OrphanCandidate` and keeps blocking; a pruned one classifies `Orphaned` and still keeps its scopes; a locked worktree is `Unavailable`; no path reaches `Abandoned` without explicit confirmation; an `OrphanedOutstanding` alert survives a process restart and reports the right recoverability verdict for a surviving branch, a deleted branch with a retention ref, and neither.
+**Acceptance gate:** `verify.sh test cargo-berth` green, including: an `rm -rf`'d-but-unpruned worktree classifies `OrphanCandidate` and keeps blocking; a pruned one classifies `Orphaned` and still keeps its scopes; a locked worktree is `Unavailable`; no path reaches `Abandoned` without explicit confirmation; an `OrphanedOutstanding` alert survives a process restart and reports the right recoverability verdict for a surviving branch, a deleted branch with a retention ref, and neither; `resolve --recovered` run from a replacement worktree rebinds the reservation and stops the alert; `resolve --integrated-as` rejects an oid unreachable from trunk and accepts one reachable from it; `resolve --abandon --why` is the only route to `Abandoned` and its reason survives replay; `renew` refreshes freshness without touching scopes or edges; and replaying each recovery verb from a deleted projection reproduces the same state. Also: a ledger copied into a different repository is rejected on its `RepoInstanceId` rather than silently adopted; a worktree whose administrative directory was swapped for another repository's is refused; and a worktree moved on disk keeps its identity while its recorded root is updated.
 
 ### Phase 6 — Overlap answers  · status: todo
 
@@ -309,7 +396,7 @@ Each answer stores both `ReservationId`s, the **normalized overlap antichain at 
 - `crates/cargo-berth/src/output.rs` — **exists**; the escalation payload variant.
 - `crates/cargo-berth/tests/answers.rs`
 
-**Constraints from prior phases:** Phase 3's acquisition transaction is where the payload lands — extend it, do not add a second path. Phase 3's antichain reduction computes the recorded overlap set. Exit `3` from phase 1 is needs-authorization. **Collapse clap's option bag at the boundary.** Phase 1 shipped `claim`'s resolution as four mutually exclusive `Option<ReservationId>` fields guarded by a clap `ArgGroup`, plus a separate optional reason — a shape that lets the parser hand the engine four `None`s, or an `Override` with no reason, and forces every consumer to re-derive which answer was actually given. Convert it once, where clap's types end, into one semantic authorization request that makes the direction and its required reason inseparable; the engine sees only that type. Do the same for `Reason` and `Timestamp` if they appear here — name them for the role they play (why an overlap was authorized; when a journal event occurred), not for what they are made of.
+**Constraints from prior phases:** Phase 3's acquisition transaction is where the payload lands — extend it, do not add a second path. Phase 3's antichain reduction computes the recorded overlap set. Exit `3` from phase 1 is needs-authorization. **Collapse clap's option bag at the boundary.** Phase 1 shipped `claim`'s resolution as four mutually exclusive `Option<ReservationId>` fields guarded by a clap `ArgGroup`, plus a separate optional reason — a shape that lets the parser hand the engine four `None`s, or an `Override` with no reason, and forces every consumer to re-derive which answer was actually given. Convert it once, where clap's types end, into one semantic authorization request that makes the direction and its required reason inseparable; the engine sees only that type. Do the same for `Reason` and `Timestamp` if they appear here — name them for the role they play (why an overlap was authorized; when a journal event occurred), not for what they are made of. Phase 2 already ships `ConflictAuthorization`, `AuthorizedOverlap`, and `OrderingDirection`, and every verb-keyed `OutputPayload` variant exists as `PendingPayload`. Move, expose, or refine those definitions; do not introduce a second one alongside.
 
 **Acceptance gate:** `verify.sh test cargo-berth` green, including: answering a first collision succeeds in one transaction and a crash between validate and append leaves no reservation and no answer; a widen into a path the answer never covered re-blocks; an answer between A and B does not authorize A against C; `Defer` permits both edits and blocks both integrations; every permissive answer returns exit `3` with the full escalation payload — process exit status, envelope `exit_code`, semantic status, and the user-facing recovery message all agreeing.
 
@@ -365,7 +452,7 @@ Cost, per R67: adjacency rebuilt during replay in `O(J+V+E)`; DFS cycle check `O
 - `crates/cargo-berth/src/main.rs` — **exists**; owns the `mod` list.
 - `crates/cargo-berth/tests/edges.rs`
 
-**Constraints from prior phases:** Phase 6 creates edges as a `ConflictAuthorization::Sequence` payload — this phase reads them, it does not add a second creation path. Phase 4's `protected_tip` and revalidation rule decide every status. Phase 5's `WorktreeLiveness` feeds cancellation. Phase 1 froze `EdgeId`; this phase is its first consumer, so **narrow** `main.rs`'s dead-code expectation accordingly rather than leaving it covering the whole module.
+**Constraints from prior phases:** Phase 6 creates edges as a `ConflictAuthorization::Sequence` payload — this phase reads them, it does not add a second creation path. Phase 4's `protected_tip` and revalidation rule decide every status. Phase 5's `WorktreeLiveness` feeds cancellation. Phase 1 froze `EdgeId`; this phase is its first consumer, so **narrow** `main.rs`'s dead-code expectation accordingly rather than leaving it covering the whole module. Phase 2's journal already carries a `DeclareOrderingEdge` operation. Either this phase adopts it as the single creation path, or it removes it — the constraint that there is no second way to create an edge has to be true of the shipped union, not just of this phase's new code.
 
 **Acceptance gate:** `verify.sh test cargo-berth` green, including: concurrent `A → B` and `B → A` declarations produce exactly one edge; a trunk rewrite that removes the predecessor returns a met edge to pending and re-holds the successor; duplicate edges are rejected; a bench or counted-call test proves the board's git calls scale with distinct predecessors, not with edges; converting a `Defer` to an ordering edge is replayable and distinguishable from an edge declared outright; `sequence` no longer returns `unimplemented` and its exit status, envelope `exit_code`, and semantic status agree.
 
@@ -379,7 +466,7 @@ Cost, per R67: adjacency rebuilt during replay in `O(J+V+E)`; DFS cycle check `O
 
 **Spec:** Implements D8 and R64 — read those and `#### The trunk gate` in `docs/berth-plan.md` (this plan).
 
-`berth init` installs a `reference-transaction` hook into the **common** git directory, so one hook covers every worktree. It fires on every ref update from any source — terminal, agent, slash command, rebase — and `--no-verify` does not skip it (that flag covers only the commit hooks).
+`cargo-berth init` installs a `reference-transaction` hook into the **common** git directory, so one hook covers every worktree. It fires on every ref update from any source — terminal, agent, slash command, rebase — and `--no-verify` does not skip it (that flag covers only the commit hooks).
 
 The rule is narrow: deny **only** when a live reservation would newly enter `refs/heads/main` while something still holds it back. Nothing pending means silence. A denial names the blocking reservation, its plan and phase, the covered paths, and the exact command to proceed.
 
@@ -389,7 +476,7 @@ The rule is narrow: deny **only** when a live reservation would newly enter `ref
 
 Release valve, in order of evaluation:
 
-1. `HANA_SYNC_BYPASS=1` is read **before the ledger, the projection, or anything else**. A corrupt journal, a stuck lock, a hook timeout, or a bug in the gate can never block anyone. Journalled when the journal is writable; reported at next SessionStart when it was not.
+1. `CARGO_BERTH_BYPASS=1` is read **before the ledger, the projection, or anything else**. A corrupt journal, a stuck lock, a hook timeout, or a bug in the gate can never block anyone. Journalled when the journal is writable; reported at next SessionStart when it was not.
 2. `integrate --force --why <text>` mints a one-use permit consumed by the next `main` update, journalled with actor, time, reason, and the edges skipped.
 
 A hook timeout denies and names the bypass in its message — safe precisely because the bypass always works.
@@ -398,15 +485,18 @@ R64: editing stays fail-open on ledger loss; **integration fails closed** on an 
 
 **Files:**
 
+- `crates/cargo-berth/src/cli.rs` — **exists**; the `init` reinitialization flag and gate dispatch.
+- `crates/cargo-berth/src/ledger/mod.rs` — **exists**; the reinitialization path and the permit record.
+- `crates/cargo-berth/src/output.rs` — **exists**; the gate and bypass payload variants.
 - `crates/cargo-berth/src/gate/mod.rs` — the hook's decision logic, observe-only, timeout.
 - `crates/cargo-berth/src/gate/install.rs` — writing the hook into the common dir, idempotently, without clobbering an existing one.
 - `crates/cargo-berth/src/gate/permit.rs` — one-use permits and the bypass env var.
 - `crates/cargo-berth/src/verb/integrate.rs`
 - `crates/cargo-berth/tests/gate.rs`
 
-**Constraints from prior phases:** Phase 7's derived edge status and phase 6's unresolved deferrals are together the input to the deny decision. Phase 2's ledger location resolves the common dir, and its `gate_mode` config field selects observe versus enforce. Exit `2` is edge-blocked and exit `4` is ledger-unreadable — `integrate` must return `4` and refuse where an edit path would proceed. Phase 1 shipped `integrate` with `--force` and `--why` as a `bool` plus an `Option<String>` bound by clap `requires`; convert them at the boundary into one integration request whose forced variant carries its reason inseparably, so no consumer can hold a force with no reason or a reason with no force.
+**Constraints from prior phases:** Phase 7's derived edge status and phase 6's unresolved deferrals are together the input to the deny decision. Phase 2's ledger location resolves the common dir, and its `gate_mode` config field selects observe versus enforce. Exit `2` is edge-blocked and exit `4` is ledger-unreadable — `integrate` must return `4` and refuse where an edit path would proceed. Phase 1 shipped `integrate` with `--force` and `--why` as a `bool` plus an `Option<String>` bound by clap `requires`; convert them at the boundary into one integration request whose forced variant carries its reason inseparably, so no consumer can hold a force with no reason or a reason with no force. Phase 2's forced-integration permit is identified by a bare `EventId` and records nothing about what was skipped, while this phase and the board both need the exact bypassed edges. Give the permit its own semantic identifier and a non-empty set of skipped edge ids, and prove one-use consumption survives replay. This phase also owns the only route back from a corrupt ledger: a confirmed reinitialization through the existing `init` verb behind an explicit flag — not a new repair verb — plus a durable marker written when the journal was unwritable, so the bypass is still reportable at the next session start after a restart.
 
-**Acceptance gate:** `verify.sh test cargo-berth` green in a scratch repo with two worktrees, including: observe-only permits and logs; enforcing denies an out-of-order merge and permits an in-order one; a `Defer` with no edge holds **both** integrations; `HANA_SYNC_BYPASS=1` succeeds with a deliberately corrupted `journal.ndjson`; a `--force` permit is consumed exactly once; `integrate` fails closed on a missing ledger while `check` still succeeds; installing twice does not duplicate the hook and an existing unrelated hook is preserved. Exits `2` and `4` are asserted end to end — process status, envelope `exit_code`, semantic status, and the user-facing recovery message all agreeing — and `integrate` no longer returns `unimplemented`.
+**Acceptance gate:** `verify.sh test cargo-berth` green in a scratch repo with two worktrees, including: observe-only permits and logs; enforcing denies an out-of-order merge and permits an in-order one; a `Defer` with no edge holds **both** integrations; `CARGO_BERTH_BYPASS=1` succeeds with a deliberately corrupted `journal.ndjson`; a `--force` permit is consumed exactly once; `integrate` fails closed on a missing ledger while `check` still succeeds; installing twice does not duplicate the hook and an existing unrelated hook is preserved. Exits `2` and `4` are asserted end to end — process status, envelope `exit_code`, semantic status, and the user-facing recovery message all agreeing — and `integrate` no longer returns `unimplemented`. Also: a forced permit names every edge it skipped and their predecessors, and replay reproduces both; confirmed reinitialization restores service on a corrupt ledger and says what it discarded; and a bypass taken while the journal was unwritable is still reported after a process restart.
 
 ### Phase 9 — Drift detection  · status: todo
 
@@ -449,7 +539,7 @@ A widen re-evaluates every existing answer against the new scopes (phase 6) — 
 - `crates/cargo-berth/src/main.rs` — **exists**; owns the `mod` list.
 - `crates/cargo-berth/tests/drift.rs`
 
-**Constraints from prior phases:** Phase 6's scope binding must be re-run on every widen. Phase 3's antichain reduction normalizes the widened set, and its `--head` flag supplied the phase-start snapshot this fingerprint diffs against. Phase 2's typed payload carries the classification back to the hook — the shim reads structured fields, never prose.
+**Constraints from prior phases:** Phase 6's scope binding must be re-run on every widen. Phase 3's antichain reduction normalizes the widened set, and its `--head` flag supplied the phase-start snapshot this fingerprint diffs against. Phase 2's typed payload carries the classification back to the hook — the shim reads structured fields, never prose. `output.rs` no longer has a hand-written encoder — phase 2 deleted `unimplemented_json` and the test pinning the two encoders together when a real payload replaced the placeholder. Extend the frozen-surface tests through serde alone.
 
 **Acceptance gate:** `verify.sh test cargo-berth` green, including one scratch-repo case per table row, an untracked new file counting as changed, a timed assertion that the fingerprint path makes no `cargo metadata` or `rev-list` call, and the phase-1 surface tests extended to `drift` under both spellings. `drift` returns a real status, never `unimplemented`, with process status, envelope `exit_code`, and semantic status agreeing.
 
@@ -477,7 +567,7 @@ Board read calls `reconcile()` first (phase 5).
 - `crates/cargo-berth/src/cli.rs` — **exists**; dispatch `board` into the engine.
 - `crates/cargo-berth/src/output.rs` — **exists**; the board payload variant.
 - `crates/cargo-berth/src/main.rs` — **exists**; owns the `mod` list.
-- `crates/cargo-berth/Cargo.toml`, `/Users/natemccoy/rust/cargo-liner/Cargo.toml` — `ratatui`, `crossterm`, and the `tui_pane` path dependency, none of which the crate names yet.
+- `crates/cargo-berth/Cargo.toml`, `Cargo.toml` — `ratatui`, `crossterm`, and the `tui_pane` path dependency, none of which the crate names yet.
 - `crates/cargo-berth/tests/board.rs` — model tests, headless.
 
 **Constraints from prior phases:** Phase 7 supplies derived edge status and the readiness grouping — the board must not recompute it. Phase 5's `reconcile()` runs first. Phase 8 supplies bypassed-edge state and unresolved deferrals. Phase 2's typed payload is the `--json` shape, and its structured board data is what `--json` emits — never a rendering scraped back into fields.
@@ -500,22 +590,23 @@ Written for someone who has never heard of hana, `/plan:delegate`, or Claude Cod
 - A real collision transcript — actual output — showing which branch holds what and the four answers.
 - **The honest limitation, stated plainly and not buried.** The trunk gate is a git hook, so merge ordering is enforced for anybody with no discipline required. Editing is different: blocking the write itself is a Claude Code `PreToolUse` hook and is *not* part of this tool; a general user gets a commit-time drift check instead — automatic, but later than blocking the keystroke. A coordination tool that oversells its enforcement is the failure this design exists to avoid.
 - The config file, field by field.
+- **`--help` is documentation too**, and the surface an agent actually reads. Audit every verb's help text against the README: each must name its flags and what they do, and any help that only restates the verb's own name gets rewritten here.
 - What it deliberately does not do: choose the merge order, track phases, span repositories.
 
-Add the `cargo-berth` row to `/Users/natemccoy/rust/cargo-liner/README.md` under `## workspace members`, matching the existing row shape. Create `crates/cargo-berth/CHANGELOG.md` in the shape its siblings use. Confirm no path-only dependency was introduced without a `[[publish_path_pins]]` entry in `.claude/config/release.toml`. **Do not run `cargo publish`** — publishing waits until track B proves the loop.
+Add the `cargo-berth` row to `README.md` under `## workspace members`, matching the existing row shape. Create `crates/cargo-berth/CHANGELOG.md` in the shape its siblings use. Confirm no path-only dependency was introduced without a `[[publish_path_pins]]` entry in `.claude/config/release.toml`. **Do not run `cargo publish`** — publishing waits until track B proves the loop.
 
-**Stage the artifact for track B.** Track-B phases compile nothing, so the binary must exist before phase 12 runs and no track-B phase may build it. Install it here — `cargo install --path /Users/natemccoy/rust/cargo-liner/crates/cargo-berth` — and record the resulting version and the absolute path to the installed executable in this Work Order's as-built notes. Phases 12–17 invoke that executable by name (`cargo-berth`) and never compile.
+**Stage the artifact for track B.** Track-B phases compile nothing, so the binary must exist before phase 12 runs and no track-B phase may build it. Install it here — `cargo install --path crates/cargo-berth` from the track-A checkout this phase runs in — and record the resulting version and the absolute path to the installed executable in this Work Order's as-built notes. Phases 12–17 invoke that executable by name (`cargo-berth`) and never compile.
 
 **Files:**
 
 - `crates/cargo-berth/README.md` — **exists** as a phase-1 placeholder; replace its contents.
 - `crates/cargo-berth/CHANGELOG.md` — new.
-- `/Users/natemccoy/rust/cargo-liner/README.md` — one member row.
-- `/Users/natemccoy/rust/cargo-liner/.claude/config/release.toml` — read only; add a pin entry only if a path dep exists. Phase 10 adds a `tui_pane` path dependency, so a `[[publish_path_pins]]` entry is expected here.
+- `README.md` — one member row.
+- `.claude/config/release.toml` — read only; add a pin entry only if a path dep exists. Phase 10 adds a `tui_pane` path dependency, so a `[[publish_path_pins]]` entry is expected here.
 
-**Constraints from prior phases:** Every command and its real output comes from phases 1–10 as built; regenerate the transcript from the actual binary rather than transcribing this plan. The config fields are whatever phase 2's `src/config.rs` defines and `init` writes. The README documents `cargo-berth`'s real verb set, which by this point includes `drift` (phase 9) and anything phase 2's recovery-surface decision added — read the shipped `src/cli.rs`, not this plan's phase-1 table. There is no announce-not-claim behavior to document; root manifests take ordinary exclusive reservations (R34, final D3).
+**Constraints from prior phases:** Every command and its real output comes from phases 1–10 as built; regenerate the transcript from the actual binary rather than transcribing this plan. The config fields are whatever phase 2's `src/config.rs` defines and `init` writes. The README documents `cargo-berth`'s real verb set, which by this point includes `drift` (phase 9) and the `resolve` and `renew` verbs phase 2's recovery-surface decision added — read the shipped `src/cli.rs`, not this plan's phase-1 table. There is no announce-not-claim behavior to document; root manifests take ordinary exclusive reservations (R34, final D3). Document the recovery path phase 8 builds: what a corrupt ledger looks like to a user, the confirmed reinitialization that restores service, and what is lost by running it.
 
-**Acceptance gate:** `verify.sh check cargo-berth` and `lint cargo-berth` green (`missing_docs` is denied, so the crate-level docs must be complete). `cargo publish --dry-run -p cargo-berth` succeeds. Every command in the README runs as written against a scratch repo, and the collision transcript matches real output byte-for-byte. The installed `cargo-berth` executable runs from a directory outside the workspace and reports the expected version.
+**Acceptance gate:** `verify.sh check cargo-berth` and `lint cargo-berth` green (`missing_docs` is denied, so the crate-level docs must be complete). `cargo publish --dry-run -p cargo-berth` succeeds. Every command in the README runs as written against a scratch repo, and the collision transcript matches real output byte-for-byte. Every verb's `--help` runs and names each of its flags. The installed `cargo-berth` executable runs from a directory outside the workspace and reports the expected version.
 
 ### Phase 12 — Config and init in hana  · status: todo
 
@@ -527,13 +618,13 @@ Add the `cargo-berth` row to `/Users/natemccoy/rust/cargo-liner/README.md` under
 
 `.claude/config/berth.toml`, following the shape of `.claude/config/release.toml` and `mirror.toml` — a header comment explaining the tool and this repo's dialect, then per-repo policy only: `trunk = "main"`; R4's `V`/`E` limits; `gate_mode = "observe"`. **There is no announce-not-claim list** — R34 and final D3 withdrew it, and root manifests take ordinary exclusive reservations.
 
-Run `cargo-berth init`, then confirm the ledger exists at `.git/hana-sync/` with `journal.ndjson` and `reservations.json`, and that the `reference-transaction` hook is in the **common** git dir. `init` does not overwrite the config written above.
+Run `cargo-berth init`, then confirm the ledger exists at `.git/cargo-berth/` with `journal.ndjson` and `reservations.json`, and that the `reference-transaction` hook is in the **common** git dir. `init` does not overwrite the config written above.
 
 **Files:**
 
 - `/Users/natemccoy/rust/hana/.claude/config/berth.toml` — new.
 
-**Constraints from prior phases:** Phase 2 defines the ledger layout, the config type, and what `init` writes; phase 8 installs the hook and reads `gate_mode`. The field names here must match what phase 2's config reader expects — read `crates/cargo-berth/src/config.rs` rather than inventing them. Phase 11 installed the executable and recorded its path.
+**Constraints from prior phases:** Phase 2 defines the ledger layout, the config type, and what `init` writes; phase 8 installs the hook and reads `gate_mode`. The field names here must match what phase 2's config reader expects — read `crates/cargo-berth/src/config.rs` rather than inventing them. Phase 11 installed the executable and recorded its path. `cargo-berth`'s configuration reader lives in `crates/cargo-berth/src/config.rs` in the **engine** checkout, not under this repository — name the engine checkout when citing it rather than writing a relative path that does not resolve from here. The keys `init` actually writes are `trunk`, `maximum_reservations`, `maximum_ordering_edges`, and `gate_mode`; the file is `.claude/config/berth.toml` at the repository root, and an unknown key is a hard parse error.
 
 **Acceptance gate:** No `verify.sh`, and no compile. `taplo fmt --check .claude/config/berth.toml` passes; `cargo-berth board --json` runs and reports an empty ledger with "no integration order declared"; the hook file exists in the common dir; a `git merge` into `main` succeeds and the observe-only log records the evaluation.
 
@@ -668,7 +759,7 @@ Then create two real worktrees off `main` and prove, in order:
 2. A `sequence` **holds** — answer the collision `--after`, both worktrees edit freely, and B's merge to `main` is refused while A is unmerged.
 3. Landing in order **releases** — A merges, B's hold clears only after B has A's `protected_tip` as an ancestor of its `HEAD` (R69), and a rebase + resnapshot satisfies it.
 4. `--force` **lands and is visible** — a forced merge succeeds and the board shows the edge bypassed with its reason and flags the predecessor.
-5. `HANA_SYNC_BYPASS=1` **works when broken** — with `journal.ndjson` deliberately corrupted, editing still works and a bypassed merge succeeds.
+5. `CARGO_BERTH_BYPASS=1` **works when broken** — with `journal.ndjson` deliberately corrupted, editing still works and a bypassed merge succeeds.
 6. A `Bash` write into a foreign claim surfaces as an **incursion**.
 
 **Scenarios 2 and 4 cannot run while the trunk gate is observe-only, so run them under a temporary flip.** In observe mode the gate reports its decision and then permits the merge, so "B's merge to `main` is refused" is not something the repo can be made to do. Order the run accordingly:
@@ -685,11 +776,11 @@ Then clean up: remove the test worktrees, and record in this plan's status line 
 
 - `/Users/natemccoy/rust/hana/.claude/settings.local.json` — add the `hooks` key; `permissions` and `outputStyle` unchanged.
 - `/Users/natemccoy/rust/hana/.claude/config/berth.toml` — `gate_mode = "enforce"`.
-- `/Users/natemccoy/rust/cargo-liner/docs/berth-plan.md` — status line: built.
+- `docs/berth-plan.md` — status line: built.
 
-**Constraints from prior phases:** Every prior phase is exercised here. Phase 8's observe-only default is what makes this safe to run against the real repo — do not flip it early, and do not leave it flipped after a failed scenario. Phase 12 established the ledger and the config; phase 13 built the two hook shims but left them unregistered, which is why this phase's first step is registering them. This phase changes only the settings key and the mode. Compile nothing: the binary was installed in phase 11 and its version and path are recorded there.
+**Constraints from prior phases:** Every prior phase is exercised here. Phase 8's observe-only default is what makes this safe to run against the real repo — do not flip it early, and do not leave it flipped after a failed scenario. Phase 12 established the ledger and the config; phase 13 built the two hook shims but left them unregistered, which is why this phase's first step is registering them. This phase changes only the settings key and the mode. Compile nothing: the binary was installed in phase 11 and its version and path are recorded there. Phase 13 specifies and tests the pre-edit shim for `Edit`, `Write`, **and `NotebookEdit`**; register all three here and cover `NotebookEdit` in the end-to-end scenario.
 
-**Acceptance gate:** No `verify.sh`. The `hooks` key is present and the rest of `settings.local.json` is byte-identical to its prior contents; all six scenarios pass against two real worktrees with transcripts recorded, each transcript naming the `gate_mode` in force when it ran; the journal used by scenario 5 is either disposable or verified clean afterwards; `gate_mode = "enforce"`; an out-of-order merge to `main` is then refused in a real terminal, and `HANA_SYNC_BYPASS=1` still lands it.
+**Acceptance gate:** No `verify.sh`. The `hooks` key is present and the rest of `settings.local.json` is byte-identical to its prior contents; all six scenarios pass against two real worktrees with transcripts recorded, each transcript naming the `gate_mode` in force when it ran; the journal used by scenario 5 is either disposable or verified clean afterwards; `gate_mode = "enforce"`; an out-of-order merge to `main` is then refused in a real terminal, and `CARGO_BERTH_BYPASS=1` still lands it.
 
 ---
 
@@ -733,12 +824,12 @@ computed on demand and never stored.
 
 #### Where it lives
 
-`$(git rev-parse --git-common-dir)/hana-sync/`.
+`$(git rev-parse --git-common-dir)/cargo-berth/`.
 
 Every linked worktree resolves `--git-common-dir` to the *same* main `.git`, so one
 file is visible identically from all of them. It sits on no branch, so it never
 merges and never diverges. It does not appear in `git status`. Verified on a scratch
-repo: a file written under the main checkout's `.git/hana-sync/` reads back unchanged
+repo: a file written under the main checkout's `.git/cargo-berth/` reads back unchanged
 from a linked worktree, and `git status` there is clean.
 
 Cost of this choice: `.git` is not backed up and does not travel to another clone.
@@ -883,7 +974,7 @@ exists only to change an answer already given. Recording an edge does four thing
   that it is an ancestor of the successor's `HEAD`. A predecessor still `Active` has no
   protected tip and holds unconditionally. The successor's live branch tip is never the
   subject, and the claim-time `HeadSnapshot` never is either (R57, R69). A retention ref
-  `refs/hana-sync/reservations/<id>` keeps that commit reachable after the branch or the
+  `refs/cargo-berth/reservations/<id>` keeps that commit reachable after the branch or the
   worktree is gone.
 - **Cycles are rejected at declaration, under R43's descriptor-held mutation lock** —
   replay, validate both endpoints, run the cycle check, append, sync, publish. Without
@@ -1011,7 +1102,7 @@ permit that the next `main` update consumes, journalled with actor, time, reason
 edges it skipped. This is the deliberate "we accept the harder merge" decision, and it
 costs one command.
 
-**`HANA_SYNC_BYPASS=1 git merge …`** — the last resort, evaluated by the hook **before it
+**`CARGO_BERTH_BYPASS=1 git merge …`** — the last resort, evaluated by the hook **before it
 reads the ledger, the projection, or anything else**. A corrupt journal, an unreadable
 lock, a hook that times out, or a bug in the gate itself can never leave anyone stuck. It
 is journalled when the journal is writable and reported at next SessionStart when it was
@@ -1131,7 +1222,7 @@ side needs — the engine spec and R1–R69 for one, the wiring for the other.
 | Track | Repo | Built by | Produces |
 | --- | --- | --- | --- |
 | **A — engine** | `~/rust/cargo-liner` | Its own agent, in that repo | `crates/cargo-berth`: ledger, journal, claims, edges, cycle detection, ref gate, board TUI, README, tests |
-| **B — wiring** | `~/rust/hana` | An agent here | `berth init`, hook shims and their `settings.json` entries, the `/sync` skill, `/plan:delegate` claim/release, `.claude/config/berth.toml`, 28 Work Order backfills |
+| **B — wiring** | `~/rust/hana` | An agent here | `cargo-berth init`, hook shims and their `settings.json` entries, the `/sync` skill, `/plan:delegate` claim/release, `.claude/config/berth.toml`, 28 Work Order backfills |
 
 Track A needs no hana knowledge at all — that is the test of whether the split in
 `### The split` is real. If a phase in track A has to explain a Work Order, the boundary
@@ -1147,6 +1238,11 @@ still being built, and finds out at integration whether both sides read it the s
 
 That contract is the deliverable of phase 1, written into this document. Changing it
 afterward is a decision, not a refinement.
+
+One such decision was taken: phase 2 adds `resolve` and `renew` to the seven verbs phase 1
+froze, because four later phases assume a user can act on a stranded reservation and none of
+the original seven does. The surface is still frozen before track B writes against it — track B
+starts at phase 12 — so the guarantee this section describes is intact.
 
 #### How hana gets the binary
 
@@ -1196,7 +1292,7 @@ branch is mid-rewrite of it is exactly the mistake this prevents.
 
 ### Decisions
 
-1. **Ledger in `.git/hana-sync/`**, not a separate repo. One shared location for all
+1. **Ledger in `.git/cargo-berth/`**, not a separate repo. One shared location for all
    worktrees at zero protocol cost; accepts loss of backup.
 2. **Append-only journal is truth, `reservations.json` is a rebuildable cache.**
    Designs out the whole-file-clobber failure the old board needed two rules to guard.
@@ -1234,7 +1330,7 @@ ledger can achieve the intent. Everything below is in-intent strengthening.
 Atomic append placement does not serialize the transaction `read claims → check conflict →
 append → publish cache`. Two sessions can read the same projection, both pass the check,
 and both append conflicting claims. `O_APPEND` governs each write's file position, not the
-surrounding transaction. Take one advisory lock in `hana-sync/` for `claim`, `release`,
+surrounding transaction. Take one advisory lock in `cargo-berth/` for `claim`, `release`,
 `override`, and cache rebuild; while held, replay, check overlap, append and `fsync` the
 journal, then publish the cache by temp-file `fsync` + atomic rename. Store the journal
 sequence or byte offset in the cache so the hook can detect a snapshot that is behind.
@@ -2062,7 +2158,7 @@ tip moves with unrelated phases, and either can vanish with the worktree. A stor
 also does not keep a commit reachable once its branch and admin directory are gone — gc
 can take it before lazy reconciliation runs. **Fix:** the subject is the predecessor's
 journaled `Outstanding.protected_tip`, never anything else; an `Active` predecessor has
-none and holds unconditionally; a retention ref `refs/hana-sync/reservations/<id>` is
+none and holds unconditionally; a retention ref `refs/cargo-berth/reservations/<id>` is
 written at checkpoint, updated on resnapshot, and held until every dependent successor is
 terminal. A missing object yields `EdgeUnknown` and keeps the successor held.
 
@@ -2224,7 +2320,7 @@ here.
 blocked if we're making some kind of decision to override a policy because we're accepting
 the fact that we may have a more complex merge coming."* Two levels —
 `sync integrate --force --why` for the deliberate accepted-conflict decision, and
-`HANA_SYNC_BYPASS=1` evaluated before any ledger read so that no failure of this system
+`CARGO_BERTH_BYPASS=1` evaluated before any ledger read so that no failure of this system
 can trap anyone, R64's fail-closed integration included. A bypass is journalled and stays
 visible on the board; it does not mark the edge satisfied.
 

@@ -7,6 +7,7 @@
 use std::env;
 use std::ffi::OsStr;
 use std::ffi::OsString;
+use std::io::Write;
 use std::process::ExitCode;
 
 use clap::ArgGroup;
@@ -16,10 +17,13 @@ use clap::Subcommand;
 use clap::error::ErrorKind;
 
 use crate::exit::BerthExit;
+use crate::git;
 use crate::ids::ReservationId;
+use crate::ledger::Ledger;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
 
+const ABANDON_ARGUMENT: &str = "abandon";
 const ABOUT: &str = "Reserve git-worktree paths before they overlap";
 const BINARY_NAME: &str = "cargo-berth";
 const BLOCKER_VALUE_NAME: &str = "BLOCKER";
@@ -31,10 +35,21 @@ const CLAIM_OVERRIDE_ARGUMENT: &str = "override";
 const CLAIM_OVERRIDE_ARGUMENT_ID: &str = "override_reservation";
 const CLAIM_RESOLUTION_GROUP: &str = "claim-resolution";
 const FORCE_ARGUMENT: &str = "force";
+const INTEGRATED_AS_ARGUMENT: &str = "integrated-as";
+const INTEGRATED_AS_ARGUMENT_ID: &str = "integrated_as";
 const JSON_ARGUMENT: &str = "json";
 const PATH_VALUE_NAME: &str = "PATH";
+const RECOVERED_ARGUMENT: &str = "recovered";
+const RESOLVE_DISPOSITION_GROUP: &str = "resolve-disposition";
+const TRUNK_OID_VALUE_NAME: &str = "TRUNK_OID";
 const WHY_ARGUMENT: &str = "why";
 const WHY_VALUE_NAME: &str = "WHY";
+
+const ABANDON_LONG_ABOUT: &str = "Use this only when the reservation's work is intentionally discarded. It records an irreversible abandonment and releases its coordination hold; choosing it for recoverable work loses the trail that identifies where the work went. --why is required so later readers can distinguish a deliberate decision from a lost worktree.";
+const INTEGRATED_AS_LONG_ABOUT: &str = "Use this when the reservation's work reached trunk through a squash, cherry-pick, or other rewritten integration that the tool cannot prove from its stored commit. This asserts the supplied trunk commit is evidence; choosing it without that evidence can incorrectly release an unresolved reservation.";
+const RECOVERED_LONG_ABOUT: &str = "Use this when the reservation's work is still present but now belongs to this replacement worktree. It records a new worktree identity; choosing it when the work was actually integrated or discarded leaves an inaccurate live reservation blocking other work.";
+const RENEW_LONG_ABOUT: &str = "Record that this still-live reservation remains active after inspection. Renewal changes neither its scopes nor any ordering edge; using it to hide abandoned work delays the user-confirmed recovery or abandonment decision that must eventually resolve it.";
+const RESOLVE_LONG_ABOUT: &str = "Resolve a reservation that is stuck because its original worktree disappeared or its integration evidence changed. Choose exactly one disposition: --recovered when the work survives in this replacement worktree; --integrated-as <TRUNK_OID> when the work reached trunk in a form the tool could not prove; or --abandon --why <WHY> only when the work is deliberately discarded. Choosing --abandon discards work. Choosing --integrated-as asserts evidence the tool could not prove for itself, so a wrong commit can release an unresolved reservation.";
 
 /// `cargo-berth`, as the command line sees it.
 #[derive(Debug, Parser)]
@@ -70,6 +85,12 @@ enum Command {
     Sequence(SequenceArguments),
     /// Integrate a reservation into trunk.
     Integrate(IntegrateArguments),
+    /// Resolve a stuck reservation.
+    #[command(about = "Resolve a stuck reservation", long_about = RESOLVE_LONG_ABOUT)]
+    Resolve(ResolveArguments),
+    /// Renew a reservation's activity record.
+    #[command(about = "Renew a reservation", long_about = RENEW_LONG_ABOUT)]
+    Renew(ReservationArguments),
 }
 
 /// The `--json` flag shared by every verb.
@@ -81,6 +102,7 @@ struct JsonOutput {
 }
 
 /// The output representation requested at the command line boundary.
+#[derive(Clone, Copy)]
 enum CliOutputFormat {
     /// Print the frozen JSON envelope.
     Json,
@@ -185,6 +207,42 @@ struct IntegrateArguments {
     json_output:    JsonOutput,
 }
 
+/// A user-confirmed recovery decision for a stuck reservation.
+#[derive(Debug, Args)]
+#[command(group(
+    ArgGroup::new(RESOLVE_DISPOSITION_GROUP)
+        .args([RECOVERED_ARGUMENT, INTEGRATED_AS_ARGUMENT_ID, ABANDON_ARGUMENT])
+        .required(true)
+        .multiple(false)
+))]
+struct ResolveArguments {
+    /// The stuck reservation to resolve.
+    reservation_id: ReservationId,
+    /// Record this worktree as the recovered holder of surviving work.
+    #[arg(long = RECOVERED_ARGUMENT, long_help = RECOVERED_LONG_ABOUT)]
+    recovered:      bool,
+    /// Assert a trunk commit proves rewritten integration.
+    #[arg(
+        long = INTEGRATED_AS_ARGUMENT,
+        value_name = TRUNK_OID_VALUE_NAME,
+        long_help = INTEGRATED_AS_LONG_ABOUT
+    )]
+    integrated_as:  Option<String>,
+    /// Permanently discard this reservation's work and coordination hold.
+    #[arg(
+        long = ABANDON_ARGUMENT,
+        requires = WHY_ARGUMENT,
+        long_help = ABANDON_LONG_ABOUT
+    )]
+    abandon:        bool,
+    /// Explain the deliberate abandonment decision.
+    #[arg(long = WHY_ARGUMENT, value_name = WHY_VALUE_NAME, requires = ABANDON_ARGUMENT)]
+    why:            Option<String>,
+    /// The output representation requested for this command.
+    #[command(flatten)]
+    json_output:    JsonOutput,
+}
+
 impl Cli {
     /// Read the command line, whether cargo invoked this binary or a shell did.
     pub(crate) fn parse_arguments() -> CliInvocation {
@@ -192,20 +250,13 @@ impl Cli {
             .map_or_else(CliInvocation::Usage, CliInvocation::Command)
     }
 
-    /// Return the parsed verb's frozen response.
+    /// Execute the parsed command and return its published process exit status.
     fn run(self) -> ExitCode {
-        let command_verb = self.command.verb();
-        let cli_output_format = self.command.output_format();
-        let output_envelope = OutputEnvelope::unimplemented(command_verb);
-
-        match cli_output_format {
-            CliOutputFormat::Json => {
-                println!("{}", OutputEnvelope::unimplemented_json(command_verb));
-            },
-            CliOutputFormat::Text => println!("{}", output_envelope.message),
-        }
-
-        BerthExit::Clear.into()
+        let output_format = self.command.output_format();
+        let output_envelope = self.command.execute();
+        let berth_exit = output_envelope.exit_code;
+        emit_response(output_format, &output_envelope);
+        berth_exit.into()
     }
 }
 
@@ -225,25 +276,19 @@ impl CliInvocation {
     }
 }
 
-/// Decide the exit status required by a clap parser error.
-fn exit_for_parser_error(error: &clap::Error) -> BerthExit {
-    match error.kind() {
-        ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => BerthExit::Clear,
-        _ => BerthExit::UsageError,
-    }
-}
-
 impl Command {
-    /// Return this command's envelope verb.
-    const fn verb(&self) -> CommandVerb {
+    /// Execute this command's available engine or return its typed placeholder.
+    fn execute(self) -> OutputEnvelope {
         match self {
-            Self::Init(_) => CommandVerb::Init,
-            Self::Board(_) => CommandVerb::Board,
-            Self::Check(_) => CommandVerb::Check,
-            Self::Claim(_) => CommandVerb::Claim,
-            Self::Release(_) => CommandVerb::Release,
-            Self::Sequence(_) => CommandVerb::Sequence,
-            Self::Integrate(_) => CommandVerb::Integrate,
+            Self::Init(_) => initialize_ledger(),
+            Self::Board(_) => OutputEnvelope::unimplemented(CommandVerb::Board),
+            Self::Check(_) => OutputEnvelope::unimplemented(CommandVerb::Check),
+            Self::Claim(_) => OutputEnvelope::unimplemented(CommandVerb::Claim),
+            Self::Release(_) => OutputEnvelope::unimplemented(CommandVerb::Release),
+            Self::Sequence(_) => OutputEnvelope::unimplemented(CommandVerb::Sequence),
+            Self::Integrate(_) => OutputEnvelope::unimplemented(CommandVerb::Integrate),
+            Self::Resolve(_) => OutputEnvelope::unimplemented(CommandVerb::Resolve),
+            Self::Renew(_) => OutputEnvelope::unimplemented(CommandVerb::Renew),
         }
     }
 
@@ -253,12 +298,70 @@ impl Command {
             Self::Init(json_output) | Self::Board(json_output) => json_output.output_format(),
             Self::Check(path_arguments) => path_arguments.json_output.output_format(),
             Self::Claim(claim_arguments) => claim_arguments.json_output.output_format(),
-            Self::Release(reservation_arguments) => {
+            Self::Release(reservation_arguments) | Self::Renew(reservation_arguments) => {
                 reservation_arguments.json_output.output_format()
             },
             Self::Sequence(sequence_arguments) => sequence_arguments.json_output.output_format(),
             Self::Integrate(integrate_arguments) => integrate_arguments.json_output.output_format(),
+            Self::Resolve(resolve_arguments) => resolve_arguments.json_output.output_format(),
         }
+    }
+
+    /// Return this command's envelope verb without executing its engine.
+    #[cfg(test)]
+    const fn verb(&self) -> CommandVerb {
+        match self {
+            Self::Init(_) => CommandVerb::Init,
+            Self::Board(_) => CommandVerb::Board,
+            Self::Check(_) => CommandVerb::Check,
+            Self::Claim(_) => CommandVerb::Claim,
+            Self::Release(_) => CommandVerb::Release,
+            Self::Sequence(_) => CommandVerb::Sequence,
+            Self::Integrate(_) => CommandVerb::Integrate,
+            Self::Resolve(_) => CommandVerb::Resolve,
+            Self::Renew(_) => CommandVerb::Renew,
+        }
+    }
+}
+
+fn initialize_ledger() -> OutputEnvelope {
+    match env::current_dir() {
+        Ok(invocation_directory) => match git::repository_root(&invocation_directory) {
+            Ok(repository_root) => match Ledger::initialize(&repository_root) {
+                Ok(initialization) => OutputEnvelope::initialized(initialization),
+                Err(error) => {
+                    OutputEnvelope::ledger_unreadable(CommandVerb::Init, &error.to_string())
+                },
+            },
+            Err(error) => OutputEnvelope::ledger_unreadable(CommandVerb::Init, &error.to_string()),
+        },
+        Err(error) => OutputEnvelope::ledger_unreadable(CommandVerb::Init, &error.to_string()),
+    }
+}
+
+fn emit_response(output_format: CliOutputFormat, output_envelope: &OutputEnvelope) {
+    let rendered = match output_format {
+        CliOutputFormat::Json => match serde_json::to_string(output_envelope) {
+            Ok(rendered) => rendered,
+            Err(_) => return,
+        },
+        CliOutputFormat::Text => output_envelope.message.clone(),
+    };
+    write_line(rendered);
+}
+
+fn write_line(mut rendered: String) {
+    rendered.push('\n');
+    let standard_output = std::io::stdout();
+    let mut standard_output = standard_output.lock();
+    std::mem::drop(standard_output.write_all(rendered.as_bytes()));
+}
+
+/// Decide the exit status required by a clap parser error.
+fn exit_for_parser_error(error: &clap::Error) -> BerthExit {
+    match error.kind() {
+        ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => BerthExit::Clear,
+        _ => BerthExit::UsageError,
     }
 }
 
@@ -280,12 +383,14 @@ mod tests {
     use clap::Parser;
 
     use super::BINARY_NAME;
-    use super::BerthExit;
     use super::CARGO_SUBCOMMAND_NAME;
     use super::Cli;
     use super::CommandVerb;
     use super::exit_for_parser_error;
     use super::without_subcommand_name;
+    use crate::exit::BerthExit;
+
+    const RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 
     #[test]
     fn every_verb_parses_under_both_spellings() {
@@ -310,12 +415,12 @@ mod tests {
             CommandVerb::Claim,
         );
         assert_verb_parses(
-            &[BINARY_NAME, "release", "reservation", "--json"],
+            &[BINARY_NAME, "release", RESERVATION_ID, "--json"],
             &[
                 BINARY_NAME,
                 CARGO_SUBCOMMAND_NAME,
                 "release",
-                "reservation",
+                RESERVATION_ID,
                 "--json",
             ],
             CommandVerb::Release,
@@ -324,8 +429,8 @@ mod tests {
             &[
                 BINARY_NAME,
                 "sequence",
-                "first",
-                "then",
+                RESERVATION_ID,
+                RESERVATION_ID,
                 "--why",
                 "order",
                 "--json",
@@ -334,8 +439,8 @@ mod tests {
                 BINARY_NAME,
                 CARGO_SUBCOMMAND_NAME,
                 "sequence",
-                "first",
-                "then",
+                RESERVATION_ID,
+                RESERVATION_ID,
                 "--why",
                 "order",
                 "--json",
@@ -346,7 +451,7 @@ mod tests {
             &[
                 BINARY_NAME,
                 "integrate",
-                "reservation",
+                RESERVATION_ID,
                 "--force",
                 "--why",
                 "authorized",
@@ -356,7 +461,7 @@ mod tests {
                 BINARY_NAME,
                 CARGO_SUBCOMMAND_NAME,
                 "integrate",
-                "reservation",
+                RESERVATION_ID,
                 "--force",
                 "--why",
                 "authorized",
@@ -366,24 +471,71 @@ mod tests {
         );
     }
 
-    fn assert_verb_parses(
-        direct_arguments: &[&str],
-        cargo_arguments: &[&str],
-        command_verb: CommandVerb,
-    ) {
-        assert!(
-            parsed_verb(direct_arguments).is_ok_and(|parsed_verb| { parsed_verb == command_verb })
+    #[test]
+    fn recovery_verbs_parse_under_both_spellings() {
+        assert_verb_parses(
+            &[
+                BINARY_NAME,
+                "resolve",
+                RESERVATION_ID,
+                "--recovered",
+                "--json",
+            ],
+            &[
+                BINARY_NAME,
+                CARGO_SUBCOMMAND_NAME,
+                "resolve",
+                RESERVATION_ID,
+                "--recovered",
+                "--json",
+            ],
+            CommandVerb::Resolve,
         );
-        assert!(
-            parsed_verb(cargo_arguments).is_ok_and(|parsed_verb| { parsed_verb == command_verb })
+        assert_verb_parses(
+            &[BINARY_NAME, "renew", RESERVATION_ID, "--json"],
+            &[
+                BINARY_NAME,
+                CARGO_SUBCOMMAND_NAME,
+                "renew",
+                RESERVATION_ID,
+                "--json",
+            ],
+            CommandVerb::Renew,
         );
     }
 
-    fn parsed_verb(arguments: &[&str]) -> Result<CommandVerb, clap::Error> {
-        Cli::try_parse_from(without_subcommand_name(
-            arguments.iter().map(OsString::from).collect(),
-        ))
-        .map(|cli| cli.command.verb())
+    #[test]
+    fn resolve_requires_exactly_one_complete_disposition() {
+        assert!(parsed_verb(&[BINARY_NAME, "resolve", RESERVATION_ID]).is_err());
+        assert!(
+            parsed_verb(&[
+                BINARY_NAME,
+                "resolve",
+                RESERVATION_ID,
+                "--recovered",
+                "--integrated-as",
+                "abc123",
+            ])
+            .is_err()
+        );
+        assert!(parsed_verb(&[BINARY_NAME, "resolve", RESERVATION_ID, "--abandon"]).is_err());
+    }
+
+    #[test]
+    fn recovery_help_explains_every_disposition_and_cost() {
+        let resolve_help = help_for("resolve");
+        let renew_help = help_for("renew");
+
+        for required_text in [
+            "--recovered",
+            "--integrated-as",
+            "--abandon",
+            "discards work",
+            "asserts evidence",
+        ] {
+            assert!(resolve_help.contains(required_text));
+        }
+        assert!(renew_help.contains("changes neither its scopes nor any ordering edge"));
     }
 
     #[test]
@@ -402,5 +554,26 @@ mod tests {
         assert_eq!(invalid_command_exit, BerthExit::UsageError);
         assert_eq!(help_exit, BerthExit::Clear);
         assert_eq!(version_exit, BerthExit::Clear);
+    }
+
+    fn assert_verb_parses(
+        direct_arguments: &[&str],
+        cargo_arguments: &[&str],
+        command_verb: CommandVerb,
+    ) {
+        assert!(parsed_verb(direct_arguments).is_ok_and(|parsed_verb| parsed_verb == command_verb));
+        assert!(parsed_verb(cargo_arguments).is_ok_and(|parsed_verb| parsed_verb == command_verb));
+    }
+
+    fn parsed_verb(arguments: &[&str]) -> Result<CommandVerb, clap::Error> {
+        Cli::try_parse_from(without_subcommand_name(
+            arguments.iter().map(OsString::from).collect(),
+        ))
+        .map(|cli| cli.command.verb())
+    }
+
+    fn help_for(verb: &str) -> String {
+        Cli::try_parse_from([BINARY_NAME, verb, "--help"])
+            .map_or_else(|error| error.render().to_string(), |_| String::new())
     }
 }
