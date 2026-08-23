@@ -1494,7 +1494,7 @@ struct FullSystemSnapshotCycle {
 
 /// Host-only process observation with one private long-lived metrics `System`.
 #[derive(Default)]
-pub(crate) struct ProcessObserver {
+struct ProcessObserver {
     running_metrics_system: RunningMetricsSystem,
     incarnation_cache:      ProcessIncarnationCache,
 }

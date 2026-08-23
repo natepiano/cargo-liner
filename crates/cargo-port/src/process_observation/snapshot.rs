@@ -129,7 +129,7 @@ pub(crate) enum ParentEdgeRejection {
 
 /// The current incarnation's relationship to cached executable evidence.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum ProcessIncarnationState {
+enum ProcessIncarnationState {
     NewlyObserved,
     Unchanged,
     ExecutableOrArgumentsChanged { previous: ProcessIncarnation },
@@ -137,7 +137,7 @@ pub(crate) enum ProcessIncarnationState {
 
 /// Whether executable and argument evidence identifies an exec incarnation.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum ProcessIncarnationEvidence {
+enum ProcessIncarnationEvidence {
     Strong {
         incarnation:       ProcessIncarnation,
         incarnation_state: ProcessIncarnationState,
@@ -147,7 +147,7 @@ pub(crate) enum ProcessIncarnationEvidence {
 
 /// Executable and argument states that cannot identify an exec incarnation.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct InsufficientProcessIncarnationEvidence {
+struct InsufficientProcessIncarnationEvidence {
     executable: ProcessFieldObservation<PathBuf>,
     argv:       ProcessFieldObservation<Vec<OsString>>,
 }
@@ -171,15 +171,15 @@ pub(crate) struct ProcessSnapshotRecord {
 }
 
 impl ProcessSnapshotRecord {
-    pub(crate) const fn identity(&self) -> &ProcessIdentity { &self.identity }
+    const fn identity(&self) -> &ProcessIdentity { &self.identity }
 
-    pub(crate) const fn incarnation_evidence(&self) -> &ProcessIncarnationEvidence {
+    const fn incarnation_evidence(&self) -> &ProcessIncarnationEvidence {
         &self.incarnation_evidence
     }
 
     pub(crate) const fn executable(&self) -> &ProcessFieldObservation<PathBuf> { &self.executable }
 
-    pub(crate) const fn argv(&self) -> &ProcessFieldObservation<Vec<OsString>> { &self.argv }
+    const fn argv(&self) -> &ProcessFieldObservation<Vec<OsString>> { &self.argv }
 
     pub(crate) const fn cwd(&self) -> &ProcessFieldObservation<PathBuf> { &self.cwd }
 
@@ -320,7 +320,7 @@ pub(crate) enum RunningProcessMetricsObservation {
 /// Which Cargo-related executable one candidate incarnation runs, before any
 /// build semantics are applied to it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum BuildCandidateRole {
+enum BuildCandidateRole {
     /// A `cargo` or `cargo.exe` executable.
     Cargo,
     /// A `rustc` or `rustc.exe` executable.
@@ -360,7 +360,7 @@ enum BuildCandidateEvidence {
 /// Consumers read roles from it; only [`ProcessIncarnationCache`] mutates the
 /// cache that produces it.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct BuildCandidateIncarnations {
+struct BuildCandidateIncarnations {
     candidates: BTreeMap<ProcessIncarnation, BuildCandidateRole>,
 }
 
@@ -1302,7 +1302,7 @@ impl ProcessIncarnationCache {
 /// One table, keyed one way, for every caller: a second table keyed differently
 /// would let `ld64.lld` be admitted here and treated as a compiler elsewhere.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum LinkerRecognition {
+enum LinkerRecognition {
     /// The executable name is one Cargo's link step runs.
     Linker,
     /// The executable name is not a known linker.
@@ -1327,7 +1327,7 @@ impl LinkerRecognition {
     /// name, so a [`std::path::Path::file_stem`] split at the last dot would
     /// reduce them to `ld`, `ld64`, and `ld` and miss every name that is not
     /// coincidentally another entry in the same table.
-    pub(crate) fn of_executable(executable: &Path) -> Self {
+    fn of_executable(executable: &Path) -> Self {
         executable
             .file_name()
             .and_then(std::ffi::OsStr::to_str)

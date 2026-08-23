@@ -128,7 +128,7 @@ impl PlatformCreationToken {
 
 /// Identity evidence produced at the host boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum ObservedProcessIdentity {
+pub(super) enum ObservedProcessIdentity {
     Strong(ProcessIdentity),
     Insufficient(InsufficientProcessIdentity),
 }
@@ -220,7 +220,7 @@ pub(crate) fn revalidate_strong_process_identity(
 
 /// Classify raw identity lookup evidence against a previously observed
 /// process lifetime.
-pub(crate) fn classify_strong_process_identity_revalidation(
+fn classify_strong_process_identity_revalidation(
     expected_identity: &ProcessIdentity,
     current_identity_observation: ObservedProcessIdentity,
 ) -> StrongProcessIdentityRevalidation {
@@ -678,7 +678,7 @@ fn query_macos_monotonic_process_start(pid: u32) -> MacosMonotonicProcessStartOb
 
 /// One process lifetime plus the executable and argument identity active in it.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(crate) struct ProcessIncarnation {
+pub(super) struct ProcessIncarnation {
     identity:                    ProcessIdentity,
     executable_argv_fingerprint: ProcessFingerprint,
 }
@@ -694,7 +694,7 @@ impl ProcessIncarnation {
         }
     }
 
-    pub(crate) const fn identity(&self) -> &ProcessIdentity { &self.identity }
+    pub(super) const fn identity(&self) -> &ProcessIdentity { &self.identity }
 
     #[cfg(test)]
     pub(super) const fn executable_argv_fingerprint(&self) -> &ProcessFingerprint {

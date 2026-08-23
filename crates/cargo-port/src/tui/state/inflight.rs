@@ -82,9 +82,7 @@ impl OwnedRun {
 
     const fn lifecycle(&self) -> &OwnedRunLifecycle { &self.lifecycle }
 
-    pub(in crate::tui) const fn identity(&self) -> OwnedRunIdentityRef<'_> {
-        self.lifecycle.identity()
-    }
+    const fn identity(&self) -> OwnedRunIdentityRef<'_> { self.lifecycle.identity() }
 
     pub(in crate::tui) fn output(&self) -> &[String] {
         debug_assert!(
@@ -1048,7 +1046,7 @@ impl OwnedRunOutputTitle {
 
 /// Borrowed identity availability for the current owned-run lifecycle.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::tui) enum OwnedRunIdentityRef<'a> {
+enum OwnedRunIdentityRef<'a> {
     Absent,
     Current(&'a OwnedRunId),
 }

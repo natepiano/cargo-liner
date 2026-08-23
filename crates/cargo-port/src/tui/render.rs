@@ -23,6 +23,7 @@ use tui_pane::BYTES_PER_KIB;
 use tui_pane::BYTES_PER_MIB;
 use tui_pane::BarPalette;
 use tui_pane::FrameworkOverlayId;
+use tui_pane::PaneBorders;
 use tui_pane::PaneFocusState;
 use tui_pane::RenderFocus;
 use tui_pane::Renderable;
@@ -160,7 +161,7 @@ fn render_tiled_panes(
         // than one grid, so each closes its own box and the focused one
         // lights its border. cargo-tile shares its border cells and takes
         // `Shared` instead.
-        tui_pane::PaneBorders::Separate,
+        PaneBorders::Separate,
     );
 }
 

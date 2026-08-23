@@ -18,7 +18,7 @@ use crate::project::WorkspaceIndexRebuild;
 /// readiness value more than once. A consumer that needs the index across a
 /// thread boundary clones the handle explicitly at that call site.
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum WorkspaceIndexReadiness<'a> {
+pub(super) enum WorkspaceIndexReadiness<'a> {
     Current {
         cargo_workspace_index: &'a Arc<CargoWorkspaceIndex>,
     },
