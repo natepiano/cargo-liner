@@ -12,7 +12,8 @@
 //! the [`Slot`] they hold rather than by their number, so a command
 //! finishing in the middle animates every cell after it one place
 //! forward instead of shuffling contents between cells that never
-//! moved.
+//! moved -- what stood above the closing cell and what stood below it
+//! meet over the space it held.
 //!
 //! Splitting a rect is the framework's job, not this module's:
 //! [`constraints_for_sizes`] turns per-column and per-row shares into
@@ -58,10 +59,6 @@ pub(crate) enum TileContent {
     /// A cell opened with `+` that no command has claimed, carrying the
     /// number it currently sits at.
     Empty(usize),
-    /// The hole a finished command left, on its way out of the grid. It
-    /// draws nothing: what the eye follows is the cells trading places
-    /// with it, one step at a time, until it reaches the end.
-    Gap,
 }
 
 /// One cell as a single frame should draw it.
@@ -95,11 +92,6 @@ enum Slot {
     /// so an empty cell can be told from its neighbour while the grid
     /// closes up around them.
     Empty(u64),
-    /// The hole a finished command left. It walks to the end of the
-    /// grid a neighbour at a time and is taken off there, which is how
-    /// closing one cell in the middle reads as a single cell moving
-    /// rather than as every cell after it sliding at once.
-    Gap(u64),
 }
 
 /// The cell holding focus.
@@ -218,9 +210,10 @@ impl TileGrid {
     /// Take the grid to its next step once the one in flight has run
     /// its course, reporting whether it still wants repainting.
     ///
-    /// One step at a time, always: a change that takes several of them
-    /// propagates through the grid like a snake instead of every cell
-    /// sliding past every other one at once.
+    /// One step at a time, always. A scan that closes two cells and
+    /// opens a third is three steps, and they play in order rather than
+    /// at once -- three separate travels are followable where three
+    /// overlaid on each other are not.
     pub(crate) fn tick(&mut self) -> bool {
         if self.transition.is_none() {
             return false;
@@ -238,19 +231,19 @@ impl TileGrid {
     /// claimed, so a developer who made room in advance sees the build
     /// land in it. With no empty cell waiting it opens one of its own at
     /// the end. A command leaving closes its cell wherever that sat, and
-    /// the cells after it move up into the hole one at a time.
+    /// the grid comes together over it.
     ///
     /// The comparison is against where the grid is *headed* rather than
-    /// where it stands, so a scan arriving mid-ripple adds to the queue
+    /// where it stands, so a scan arriving mid-travel adds to the queue
     /// instead of starting the same change over.
     pub(crate) fn sync(&mut self, ids: &[u32], initial_rows: usize) {
         let mut arrangement = self.target();
         let mut steps: Vec<Vec<Slot>> = Vec::new();
         while let Some(index) = arrangement.iter().position(|slot| match *slot {
             Slot::Group(id) => !ids.contains(&id),
-            Slot::Empty(_) | Slot::Gap(_) => false,
+            Slot::Empty(_) => false,
         }) {
-            self.close(&mut arrangement, index, &mut steps);
+            Self::close(&mut arrangement, index, &mut steps);
         }
         for &id in ids {
             if arrangement.contains(&Slot::Group(id)) {
@@ -276,22 +269,20 @@ impl TileGrid {
         self.queue(steps);
     }
 
-    /// Push the steps that close the cell at `index`.
+    /// Push the step that closes the cell at `index`.
     ///
-    /// The cell empties where it stands, and the hole it leaves trades
-    /// places with the cell after it, then the one after that, until it
-    /// reaches the end of the grid and is taken off. That is what makes
-    /// a command finishing in the middle read as one cell moving at a
-    /// time rather than as the whole tail sliding forward at once.
-    fn close(&mut self, arrangement: &mut Vec<Slot>, index: usize, steps: &mut Vec<Vec<Slot>>) {
-        arrangement[index] = Slot::Gap(self.next_slot);
-        self.next_slot = self.next_slot.saturating_add(1);
-        steps.push(arrangement.clone());
-        for position in index..arrangement.len().saturating_sub(1) {
-            arrangement.swap(position, position + 1);
-            steps.push(arrangement.clone());
-        }
-        let _ = arrangement.pop();
+    /// The cell goes and the grid comes together over the space it
+    /// held: what stood above it and what stood below meet, every cell
+    /// after it moving up one place at once. Keying the cells by slot
+    /// is what makes that a single travel each rather than contents
+    /// shuffling between cells that never moved.
+    ///
+    /// The hole is not walked to the end of the grid a neighbour at a
+    /// time, which is what this used to do. Every swap along the way
+    /// drew the hole travelling down through the cell travelling up --
+    /// two boxes crossing, where the eye was looking for one closing.
+    fn close(arrangement: &mut Vec<Slot>, index: usize, steps: &mut Vec<Vec<Slot>>) {
+        let _ = arrangement.remove(index);
         steps.push(arrangement.clone());
     }
 
@@ -321,15 +312,15 @@ impl TileGrid {
     /// summary, where focus starts and where it returns.
     ///
     /// The cell leaves the way a finished command's does, through
-    /// [`Self::close`], so taking one out of the middle ripples rather
-    /// than snapping the tail forward.
+    /// [`Self::close`], so taking one out of the middle closes the grid
+    /// over it rather than leaving a hole behind to travel.
     pub(crate) fn remove(&mut self) {
         let mut arrangement = self.target();
         let Some(index) = self.removable(&arrangement) else {
             return;
         };
         let mut steps = Vec::new();
-        self.close(&mut arrangement, index, &mut steps);
+        Self::close(&mut arrangement, index, &mut steps);
         self.queue(steps);
     }
 
@@ -356,13 +347,14 @@ impl TileGrid {
 
     /// Queue `steps`, starting the first one when nothing is in flight.
     ///
-    /// One change is spread over [`TILE_ANIMATION_MILLIS`] however many
-    /// steps it takes, down to [`MIN_STEP_MILLIS`] a step, so a single
-    /// cell moving keeps the full unhurried travel and a long ripple
-    /// runs at one steady pace instead of dragging. Past
-    /// [`MAX_PENDING_STEPS`] the grid gives the ripple up and settles
-    /// the rest in one move: a whole suite finishing at once would take
-    /// longer to walk through than anyone would watch.
+    /// One scan's worth of change is spread over
+    /// [`TILE_ANIMATION_MILLIS`] however many steps it takes, down to
+    /// [`MIN_STEP_MILLIS`] a step, so a single cell closing keeps the
+    /// full unhurried travel and a burst of them runs at one steady
+    /// pace instead of dragging. Past [`MAX_PENDING_STEPS`] the grid
+    /// gives the sequence up and settles the rest in one move: a whole
+    /// suite finishing at once would take longer to play through than
+    /// anyone would watch.
     fn queue(&mut self, steps: Vec<Vec<Slot>>) {
         if steps.is_empty() {
             return;
@@ -487,7 +479,6 @@ impl TileGrid {
         index
             .checked_sub(TABLE_CELL + 1)
             .and_then(|position| self.slots.get(position))
-            .filter(|slot| !matches!(slot, Slot::Gap(_)))
             .map_or(self.focus, |&slot| Focus::Cell(slot))
     }
 
@@ -625,7 +616,6 @@ const fn content_of(slot: Slot, index: usize) -> TileContent {
     match slot {
         Slot::Group(id) => TileContent::Group(id),
         Slot::Empty(_) => TileContent::Empty(index),
-        Slot::Gap(_) => TileContent::Gap,
     }
 }
 
@@ -835,6 +825,14 @@ fn moving_cell(
 /// over the top and returns from the bottom, and moving right it does
 /// the reverse. Each piece is clipped to its own column, so neither is
 /// ever seen outside one.
+///
+/// Both columns are read through [`column_band`] rather than off the
+/// grid at either end of the step, because a step that changes the cell
+/// count re-divides the columns: the one being left and the one being
+/// arrived in are moving themselves while the cell crosses between
+/// them. Read off a settled grid instead, the two pieces stood in
+/// geometry the rest of the frame had already left -- their borders
+/// drawn across the cells that had widened past them.
 fn wrapping_cell(
     before: &Grid,
     after: &Grid,
@@ -844,24 +842,72 @@ fn wrapping_cell(
     drawn: Drawn,
     out: &mut Vec<Placement>,
 ) {
-    let leaving = before.column_rect(from_column);
-    let arriving = after.column_rect(to_column);
+    let leaving = column_band(before, after, from_column, progress);
+    let arriving = column_band(before, after, to_column, progress);
+    let exiting = banded(from, leaving);
+    let entering = banded(to, arriving);
     let remaining = PROGRESS_SCALE.saturating_sub(progress);
 
     let (exit, entry) = if to_column < from_column {
         (
-            -travel(i32::from(from.bottom()) - i32::from(leaving.y), progress),
-            travel(i32::from(arriving.bottom()) - i32::from(to.y), remaining),
+            -travel(i32::from(exiting.bottom()) - i32::from(leaving.y), progress),
+            travel(
+                i32::from(arriving.bottom()) - i32::from(entering.y),
+                remaining,
+            ),
         )
     } else {
         (
-            travel(i32::from(leaving.bottom()) - i32::from(from.y), progress),
-            -travel(i32::from(to.bottom()) - i32::from(arriving.y), remaining),
+            travel(i32::from(leaving.bottom()) - i32::from(exiting.y), progress),
+            -travel(
+                i32::from(entering.bottom()) - i32::from(arriving.y),
+                remaining,
+            ),
         )
     };
 
-    out.push(drawn.at(PaneFrame::shifted(from, exit, leaving)));
-    out.push(drawn.at(PaneFrame::shifted(to, entry, arriving)));
+    // A column that is closing is being pushed off the right edge, and
+    // the cell riding it goes with it: no line in that column travels
+    // up or down while it disappears. Given the slide as well, the cell
+    // was drawn sliding up through the column that was sliding away --
+    // two motions over the same ground, in the one place the eye was
+    // watching a column simply go. The piece arriving at the foot of
+    // the next column still rises into the space the cells above it
+    // vacate, which is the snake the rest of the grid is making.
+    let exit = if from_column < after.widths.len() {
+        exit
+    } else {
+        0
+    };
+
+    out.push(drawn.at(PaneFrame::shifted(exiting, exit, leaving)));
+    out.push(drawn.at(PaneFrame::shifted(entering, entry, arriving)));
+}
+
+/// The horizontal band a column stands in partway through a step.
+///
+/// A column the step opens grows out of the right edge and one it
+/// closes is squeezed back off it -- the same edge [`closing_rect`]
+/// uses, so a cell riding a column that is going is swept away by the
+/// columns widening behind it rather than left standing where the
+/// column was.
+fn column_band(before: &Grid, after: &Grid, column: usize, progress: u32) -> Rect {
+    let edge = Rect {
+        x: after.area.right(),
+        width: 0,
+        ..after.area
+    };
+    let opened = |grid: &Grid| grid.columns.get(column).copied().unwrap_or(edge);
+    lerp_rect(opened(before), opened(after), progress)
+}
+
+/// `rect` moved into `band`'s columns, the rows it covers untouched.
+const fn banded(rect: Rect, band: Rect) -> Rect {
+    Rect {
+        x: band.x,
+        width: band.width,
+        ..rect
+    }
 }
 
 /// The collapsed rect a cell absent from `before` grows out of on its
@@ -1223,6 +1269,85 @@ mod tests {
         );
     }
 
+    /// One cell as the wrapping tests draw it; nothing about the motion
+    /// depends on what it holds.
+    fn drawn() -> Drawn {
+        Drawn {
+            content: TileContent::Summary,
+            focused: false,
+        }
+    }
+
+    /// The pile of lines a closing column used to leave behind. A cell
+    /// crossing columns was drawn in the columns as they stood before
+    /// the step, so while the grid re-divided itself around it the two
+    /// pieces sat across the cells that had already widened past them --
+    /// their borders standing inside another cell rather than on a
+    /// boundary. A wrapping piece shares its edges with whatever stays
+    /// put in the column it is in.
+    #[test]
+    fn a_wrapping_cell_shares_its_column_edges_with_the_cells_that_stay() {
+        let area = test_area();
+        let before = Grid::new(area, 9, 4);
+        let after = Grid::new(area, 8, 4);
+        assert_eq!(before.widths, vec![4, 4, 1]);
+        assert_eq!(after.widths, vec![4, 4], "the last column goes too");
+        let half = PROGRESS_SCALE / 2;
+
+        // Cell five leaves the head of column two for the foot of
+        // column one, while cell six stays in column two throughout.
+        let mut wrapping = Vec::new();
+        moving_cell(
+            &before,
+            &after,
+            (Some(5), Some(4)),
+            half,
+            drawn(),
+            &mut wrapping,
+        );
+        let mut staying = Vec::new();
+        moving_cell(
+            &before,
+            &after,
+            (Some(6), Some(5)),
+            half,
+            drawn(),
+            &mut staying,
+        );
+
+        let column = |placement: &Placement| {
+            let rect = placement.frame.rect();
+            (rect.x, rect.width)
+        };
+        assert_eq!(
+            column(&wrapping[0]),
+            column(&staying[0]),
+            "the piece on its way out stands in the column as it is now"
+        );
+    }
+
+    /// A cell whose column goes with it is squeezed off the right edge
+    /// by the columns widening behind it, rather than left standing
+    /// where its column used to be.
+    #[test]
+    fn a_wrapping_cell_leaving_with_its_column_is_squeezed_off_the_edge() {
+        let area = test_area();
+        let before = Grid::new(area, 9, 4);
+        let after = Grid::new(area, 8, 4);
+        let half = PROGRESS_SCALE / 2;
+
+        let mut out = Vec::new();
+        moving_cell(&before, &after, (Some(9), Some(8)), half, drawn(), &mut out);
+
+        let leaving = out[0].frame.rect();
+        assert!(
+            leaving.width < before.column_rect(2).width,
+            "the column it is riding is being taken away"
+        );
+        assert_eq!(leaving.right(), area.right(), "against the right edge");
+        assert_eq!(out[0].frame.clip(), leaving, "and it is cut off there");
+    }
+
     /// Closing the one cell a column holds takes the column with it, so
     /// the cell is squeezed off the right edge by the columns widening
     /// behind it -- one line sweeping sideways, not a second one
@@ -1308,8 +1433,8 @@ mod tests {
         assert_eq!(shown(&grid)[1], TileContent::Empty(3));
     }
 
-    /// The cells after a departed one each move one place forward, which
-    /// is what the ripple animates them doing, one at a time.
+    /// The cells after a departed one each move one place forward,
+    /// which is the travel the closing animates.
     #[test]
     fn a_command_leaving_the_middle_moves_the_rest_forward() {
         let mut grid = seeded_grid();
@@ -1324,11 +1449,30 @@ mod tests {
         );
     }
 
-    /// A command leaving the middle is one step per cell between it and
-    /// the end, and one more to close the grid up -- never one step
-    /// moving all of them.
+    /// The complaint this closing answers: a hole walking to the end of
+    /// the grid meant every step drew it travelling one way through the
+    /// cell travelling the other, two boxes crossing in the space one
+    /// was closing over. Mid-transition there is now one box per
+    /// surviving cell and nothing else in flight.
     #[test]
-    fn a_command_leaving_hands_its_cell_back_one_step_at_a_time() {
+    fn nothing_extra_is_in_flight_while_the_grid_closes() {
+        let mut grid = seeded_grid();
+        grid.sync(&[7, 8, 9], 4);
+        grid.settle();
+
+        grid.sync(&[7, 9], 4);
+        let placements = grid.placements(test_area(), 4);
+        assert_eq!(
+            placements.len(),
+            3,
+            "the summary and the two commands left, and no hole among them"
+        );
+    }
+
+    /// A command leaving the middle takes its cell with it in one
+    /// step: nothing is left behind to walk to the end of the grid.
+    #[test]
+    fn a_command_leaving_the_middle_closes_the_grid_in_one_step() {
         let mut grid = seeded_grid();
         grid.sync(&[7, 8, 9], 4);
         grid.settle();
@@ -1336,29 +1480,96 @@ mod tests {
         grid.sync(&[7, 9], 4);
         assert_eq!(
             shown(&grid),
-            vec![
-                TileContent::Group(7),
-                TileContent::Gap,
-                TileContent::Group(9)
-            ],
-            "the cell empties where it stood"
-        );
-        grid.advance();
-        assert_eq!(
-            shown(&grid),
-            vec![
-                TileContent::Group(7),
-                TileContent::Group(9),
-                TileContent::Gap
-            ],
-            "the cell after it moves up into the hole"
-        );
-        grid.advance();
-        assert_eq!(
-            shown(&grid),
             vec![TileContent::Group(7), TileContent::Group(9)],
-            "and the grid closes up behind it"
+            "the cell above it and the cell below it come together"
         );
+        grid.advance();
+        assert!(
+            grid.transition.is_none(),
+            "and there is no second step for a hole to travel through"
+        );
+    }
+
+    /// Two commands ending in the same scan do not go together. The
+    /// grid closes the first cell, plays that travel out, and only then
+    /// closes the next -- taking them in the order they stand in, which
+    /// is the order they arrived in. Two cells closing over each other
+    /// at once is a pile of lines rather than a grid coming together.
+    #[test]
+    fn commands_ending_together_close_one_cell_at_a_time() {
+        let mut grid = seeded_grid();
+        grid.sync(&[7, 8, 9], 4);
+        grid.settle();
+
+        grid.sync(&[9], 4);
+        assert_eq!(
+            shown(&grid),
+            vec![TileContent::Group(8), TileContent::Group(9)],
+            "the oldest of them goes first, on its own"
+        );
+        assert!(grid.transition.is_some(), "and its travel is in flight");
+
+        grid.advance();
+        assert_eq!(
+            shown(&grid),
+            vec![TileContent::Group(9)],
+            "the next one follows once that travel is done"
+        );
+    }
+
+    /// A cell riding a column that is closing travels nowhere up or
+    /// down: the column is being pushed off the right edge and the cell
+    /// goes with it. Given the slide as well it was drawn sliding up
+    /// through a column that was sliding away, in the one place the eye
+    /// was watching a column simply go.
+    #[test]
+    fn a_cell_riding_a_closing_column_makes_no_vertical_travel() {
+        let area = test_area();
+        let before = Grid::new(area, 9, 4);
+        let after = Grid::new(area, 8, 4);
+        assert_eq!(before.widths, vec![4, 4, 1], "cell nine is a column of one");
+        assert_eq!(after.widths, vec![4, 4], "and that column is closing");
+
+        let mut out = Vec::new();
+        moving_cell(
+            &before,
+            &after,
+            (Some(9), Some(8)),
+            PROGRESS_SCALE / 2,
+            drawn(),
+            &mut out,
+        );
+
+        assert_eq!(
+            out[0].frame.shift(),
+            0,
+            "the piece in the closing column stands still"
+        );
+        assert!(
+            out[1].frame.shift() > 0,
+            "while the piece arriving at the foot of the next column still rises"
+        );
+    }
+
+    /// The same cell in a column the grid keeps does slide off its
+    /// edge, which is the snake every other close is drawn as.
+    #[test]
+    fn a_cell_leaving_a_column_that_stays_slides_off_its_edge() {
+        let area = test_area();
+        let before = Grid::new(area, 16, 4);
+        let after = Grid::new(area, 17, 4);
+
+        let mut out = Vec::new();
+        moving_cell(
+            &before,
+            &after,
+            (Some(5), Some(5)),
+            PROGRESS_SCALE / 2,
+            drawn(),
+            &mut out,
+        );
+
+        assert!(out[0].frame.shift() < 0, "the piece leaving travels upward");
     }
 
     #[test]
@@ -1366,10 +1577,9 @@ mod tests {
         let mut grid = seeded_grid();
         grid.sync(&[7, 8, 9], 4);
         grid.settle();
-        // The first step only empties cell three; the surviving command
-        // travels on the second, which is the one under test.
+        // The command above the one that left stays where it is; this
+        // is the one below it, travelling up into the closed grid.
         grid.sync(&[7, 9], 4);
-        grid.advance();
 
         let moved = grid
             .placements(test_area(), 4)
@@ -1429,7 +1639,7 @@ mod tests {
     /// Focus is held by identity, so the cell it is on keeps it while
     /// the grid closes up around it.
     #[test]
-    fn focus_rides_a_cell_through_a_ripple() {
+    fn focus_rides_a_cell_through_a_closing() {
         let mut grid = seeded_grid();
         grid.sync(&[7, 8, 9], 4);
         grid.settle();

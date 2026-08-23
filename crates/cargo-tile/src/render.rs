@@ -141,7 +141,7 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect) {
         });
         match placement.content {
             TileContent::Summary => grid_lines.add_titled(placement.frame, SUMMARY_CELL_TITLE),
-            TileContent::Group(_) | TileContent::Empty(_) | TileContent::Gap => {
+            TileContent::Group(_) | TileContent::Empty(_) => {
                 grid_lines.add(placement.frame);
             },
         }
@@ -158,10 +158,6 @@ fn draw_contents(buffer: &mut Buffer, roster: &Roster, content: TileContent, inn
         TileContent::Summary => draw_summary(buffer, roster, inner),
         TileContent::Group(id) => draw_group(buffer, roster, id, inner),
         TileContent::Empty(number) => draw_number(buffer, number, inner),
-        // The hole a finished command left, on its way out of the grid.
-        // Nothing goes in it: what the eye follows is the cells trading
-        // places with it until it reaches the end.
-        TileContent::Gap => (),
     }
 }
 

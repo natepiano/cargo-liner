@@ -136,7 +136,7 @@ impl TrackedGroup {
     /// A row under it that has stopped but not yet faded still counts,
     /// so the cell goes out through the same fade as any other rather
     /// than vanishing the instant its work ends.
-    pub(crate) fn deserves_a_cell(&self, hidden_when_idle: &[String]) -> bool {
+    fn deserves_a_cell(&self, hidden_when_idle: &[String]) -> bool {
         !self.rest.is_empty()
             || !self
                 .lead

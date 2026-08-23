@@ -134,7 +134,7 @@ impl CommandText {
     /// the front of the arguments, so a command that became
     /// `cargo-port` answers this the same as one still spelled
     /// `cargo port`.
-    pub(crate) fn subcommand(&self) -> Option<&str> {
+    fn subcommand(&self) -> Option<&str> {
         self.arguments
             .iter()
             .map(String::as_str)

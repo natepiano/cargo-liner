@@ -196,12 +196,27 @@ invocation, carrying that invocation under it, and closes through the usual fade
 once the invocation ends. The list is only for commands that outlast their work:
 anything that finishes on its own already leaves the grid by finishing.
 
-The grid moves one cell at a time. A command finishing in the middle empties its
-cell where it stood, and the hole trades places with the cell after it, then the
-one after that, until it reaches the end and the grid closes up -- a change
-propagates through the cells rather than sliding all of them past each other at
-once. A whole suite ending at once is more steps than anyone would watch, so past
-a point the grid gives that up and settles the rest in one move.
+A command finishing in the middle takes its cell with it and the grid closes over
+the space: the cell above it and the cell below come together, and everything
+after moves up one place in the same travel. One change at a time, though — a
+scan that closes two cells and opens a third plays those three in order rather
+than overlaid, since three separate travels are followable where three at once
+are not. A whole suite ending together is more of them than anyone would watch,
+so past a point the grid gives the sequence up and settles the rest in one move.
+
+A cell crossing between columns is drawn as two pieces, one sliding off the edge
+of the column it is leaving and one sliding in at the next one's, each clipped to
+its own column so neither is ever seen outside one. The columns themselves move
+whenever the cell count changes, and the pieces are clipped to where they stand
+partway through that — read off the layout as it was, their borders fall through
+the middle of the cells that have already widened past them.
+
+That slide is for a column that stays. A column that is closing is being pushed
+off the right edge as the ones behind it widen, so a cell riding it goes with it
+and travels nowhere up or down — one box in that column, and no line in it moving
+while it disappears. The piece arriving at the foot of the next column still
+rises into the space the cells above it vacate, which is the snake the rest of
+the grid is making.
 
 The summary holds focus to begin with, and the arrow keys move it: left and right
 between columns, up and down within one. Clicking a cell is the other way onto
