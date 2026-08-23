@@ -4,7 +4,9 @@
 
 > **As-built disposition: create**
 
-Design record: `/Users/natemccoy/rust/hana/docs/worktree-sync.md` — 69 review findings (R1–R69) and eight resolved decisions (D1–D8). Work Orders below cite it by section; it is a named file every delegate may read.
+The design this builds is **in this file**, under `## Design` below, together with the
+69 review findings (R1–R69) and eight resolved decisions (D1–D8) that shaped it. Work
+Orders cite it by section heading and finding id — everything a delegate needs is here.
 
 ## Delegation Context
 
@@ -27,7 +29,6 @@ Design record: `/Users/natemccoy/rust/hana/docs/worktree-sync.md` — 69 review 
   /Users/natemccoy/rust/hana/                   # Track B
     .claude/config/berth.toml                   # NEW, beside release.toml + mirror.toml
     .claude/settings.local.json                 # has NO "hooks" key — track B creates it
-    docs/worktree-sync.md                        # the design, single source for both tracks
     docs/hana/tool-graph.md                      # 19 todo phases / 20 Work Orders
     docs/hana_valence/arrangements.md            # 9 todo phases / 9 Work Orders
   ```
@@ -81,7 +82,7 @@ Design record: `/Users/natemccoy/rust/hana/docs/worktree-sync.md` — 69 review 
 
 Create the crate following `crates/cargo-tile` exactly: crate-level `//!` doc, `[lints] workspace = true`, all deps `{ workspace = true }`, `version = "0.1.0-dev"`, `homepage = ".../tree/main/crates/cargo-berth"`. No `[[bin]]` section. `parse_arguments` handles both `cargo berth <verb>` and `cargo-berth <verb>` (cargo injects an extra word) — copy `cargo-tile/src/cli.rs`.
 
-Verbs, from `worktree-sync.md` → `### The skill`:
+Verbs, from `#### The skill` below:
 
 | Verb | Arguments |
 | --- | --- |
@@ -97,7 +98,7 @@ Exit codes are the contract the hooks depend on: `0` clear, `1` blocked by overl
 
 Every verb takes `--json`. Define the output envelope once as a serde type: `{ "verb", "status", "exit_code", "reservations": [...], "blocked_by": [...], "message" }`. This envelope is frozen at this phase — track B parses it while the engine is still being built.
 
-Define the id newtypes now, serde-derived, opaque `Display`: `ReservationId`, `WorktreeId`, `CoordinationRunId`, `EdgeId`, `EventId`, `Generation`, `SchemaVersion`. See `worktree-sync.md` R51 for the type skeleton.
+Define the id newtypes now, serde-derived, opaque `Display`: `ReservationId`, `WorktreeId`, `CoordinationRunId`, `EdgeId`, `EventId`, `Generation`, `SchemaVersion`. See R51 for the type skeleton.
 
 Every verb returns `status: "unimplemented"` with exit `0` except usage errors. No ledger, no git.
 
@@ -196,7 +197,7 @@ At checkpoint, `release` records `Outstanding { protected_tip }` where `protecte
 
 `protected_tip` is **the** subject of every reachability question. Never the claim-time `HeadSnapshot` (it predates the work, so the gate would pass before anything landed) and never the live branch tip (it moves with unrelated phases). An `Active` reservation has no protected tip and therefore blocks unconditionally.
 
-Git computations, verbatim from `worktree-sync.md` R46/R47:
+Git computations, verbatim from R46/R47:
 
 ```bash
 trunk_oid=$(git rev-parse refs/heads/main)
@@ -225,7 +226,7 @@ git merge-base --is-ancestor "$protected_tip" "$trunk_oid"    # integration
 
 **Goal:** In `cargo-liner`: a vanished worktree is classified honestly and never silently frees anything, and the repair runs on the paths that consume the state.
 
-**Spec:** Implements R59, R62, R63 — read those in `worktree-sync.md` → `### Self-healing`.
+**Spec:** Implements R59, R62, R63 — read those, and `#### Self-healing` below.
 
 Typed liveness from `git worktree list --porcelain` plus the opaque `WorktreeId` in the admin dir (R39): `Live | Unavailable | OrphanCandidate | Orphaned | Unknown`. **Everything except `Live` retains the reservation's scopes and edges.** A manually `rm -rf`'d worktree stays registered until `git worktree prune`, a locked worktree is deliberately absent, and a pruned path is recyclable — none of these are abandonment, and abandonment requires user confirmation (R28).
 
@@ -251,7 +252,7 @@ One shared `reconcile()` routine, called at SessionStart, before every stateful 
 
 **Goal:** In `cargo-liner`: a blocked claim can be answered, in the same locked transaction that discovered the block, and the answer authorizes exactly what it was shown.
 
-**Spec:** Implements R53, R54, R55, R56 — `worktree-sync.md` → `## Answering an overlap`.
+**Spec:** Implements R53, R54, R55, R56 — see `### Answering an overlap` below.
 
 `ConflictAuthorization::{Sequence { direction }, Defer, Override }` rides the `claim`/`widen` transaction as a payload. **There is no standalone `override` verb and no post-hoc answer** (R53, restoring R32): the candidate `ReservationId` does not exist until acquisition succeeds, so an answer appended separately either dangles or opens a crash window holding an unauthorized overlap. `rescope` is not a variant at all — it is an ordinary re-claim with narrower scopes.
 
@@ -280,7 +281,7 @@ Each answer stores both `ReservationId`s, the **normalized overlap antichain at 
 
 **Goal:** In `cargo-liner`: ordering edges form a DAG whose status is derived, never stored, and which cannot be made cyclic by concurrent writers.
 
-**Spec:** Implements R58, R60, R61, R67 — `worktree-sync.md` → `### Sequencing`.
+**Spec:** Implements R58, R60, R61, R67 — see `#### Sequencing` below.
 
 Edge record: `before: ReservationId`, `after: ReservationId`, the validated non-empty overlap scope set, reason, and its journal `EventId`. **No `edge_satisfied` or `edge_dissolved` journal variant** (R60, R68) — status is a pure function of the predecessor's lifecycle and *current* trunk:
 
@@ -315,7 +316,7 @@ Cost, per R67: adjacency rebuilt during replay in `O(J+V+E)`; DFS cycle check `O
 
 **Goal:** In `cargo-liner`: a `reference-transaction` hook makes the ordering hold real, ships observe-only, and can never trap anyone.
 
-**Spec:** Implements D8 and R64 — `worktree-sync.md` → `### The trunk gate`.
+**Spec:** Implements D8 and R64 — see `#### The trunk gate` below.
 
 `berth init` installs a `reference-transaction` hook into the **common** git directory, so one hook covers every worktree. It fires on every ref update from any source — terminal, agent, slash command, rebase — and `--no-verify` does not skip it (that flag covers only the commit hooks).
 
@@ -350,7 +351,7 @@ R64: editing stays fail-open on ledger loss; **integration fails closed** on an 
 
 **Goal:** In `cargo-liner`: `berth drift` reports what changed against what was claimed, classifying each result the way D1 requires.
 
-**Spec:** Implements tier 3 and the D1 resolution — `worktree-sync.md` → `## D1 — RESOLVED`.
+**Spec:** Implements tier 3 and the D1 resolution — see `### D1 — RESOLVED` below.
 
 Fingerprint, verbatim from R46:
 
@@ -390,7 +391,7 @@ A widen re-evaluates every existing answer against the new scopes (phase 6) — 
 
 **Goal:** In `cargo-liner`: `berth board` shows integration constraints truthfully, and `--json` gives the same content to a machine.
 
-**Spec:** Implements R66 — `worktree-sync.md` → `### Self-healing`, final bullet.
+**Spec:** Implements R66 — see `#### Self-healing` below, final bullet.
 
 **A DAG is a partial order; never render a numbered queue.** Sections: **Ready now** (no unsatisfied predecessors), **Waiting** (each predecessor named, with the covered paths), **Unresolved overlaps**, **Unconstrained live reservations**, and alerts (orphaned-outstanding, bypassed edges with reason and date, stale flags). Ties within a readiness level are labelled unordered. With no edges recorded it says **"no integration order declared"** — never an empty queue, which reads as an all-clear.
 
@@ -417,7 +418,7 @@ Board read calls `reconcile()` first (phase 5).
 
 **Goal:** In `cargo-liner`: `cargo-berth` is documented for a stranger and ready to publish, without publishing.
 
-**Spec:** Implements `worktree-sync.md` → `### The README is a deliverable`.
+**Spec:** Implements `#### The README is a deliverable` below.
 
 `crates/cargo-berth/README.md`, written for someone who has never heard of hana, `/plan:delegate`, or Claude Code:
 
@@ -466,7 +467,7 @@ Run `berth init`, then confirm the ledger exists at `.git/hana-sync/` with `jour
 
 **Goal:** In `hana`: an agent's `Edit`/`Write` into a foreign claim is blocked before it lands, and a `Bash` write that slips past is detected right after.
 
-**Spec:** Implements D1 — `worktree-sync.md` → `## D1 — RESOLVED`.
+**Spec:** Implements D1 — see `### D1 — RESOLVED` below.
 
 Two shim scripts that shell out to the installed binary and translate its exit codes into Claude Code hook protocol. **`.claude/settings.local.json` has no `hooks` key today — create it**, preserving the existing `permissions` and `outputStyle` entries exactly.
 
@@ -494,7 +495,7 @@ Bash is not constrained, only observed — that is the user's D1 decision, not a
 
 **Spec:** A skill wrapping the binary. Verbs `board`, `check`, `claim`, `release`, `sequence`, `integrate` map to the phase-1 surface.
 
-**The Work-Order-to-paths resolution lives here, not in the tool** — this is the boundary that keeps `cargo-berth` publishable. The skill reads a `**Reservations:**` block out of a plan doc and passes plain paths to `berth claim`. Grammar (`worktree-sync.md:942`): `- file: \`Cargo.toml\`` and `- tree: \`crates/hana/src/transport\``. Paths are **repo-relative**, matching the `**Files:**` blocks already on disk.
+**The Work-Order-to-paths resolution lives here, not in the tool** — this is the boundary that keeps `cargo-berth` publishable. The skill reads a `**Reservations:**` block out of a plan doc and passes plain paths to `berth claim`. Grammar (R35): `- file: \`Cargo.toml\`` and `- tree: \`crates/hana/src/transport\``. Paths are **repo-relative**, matching the `**Files:**` blocks already on disk.
 
 On exit `3` the skill escalates to the user with the binary's payload — both plans and phases, the shared paths, the direction, the reason, the consequence — and only then re-invokes `claim` with the chosen flag. **An agent never answers its own block** (R54).
 
@@ -540,7 +541,7 @@ On a blocked claim, `/plan:delegate` stops before dispatching and surfaces the c
 
 Three have no `**Files:**` block and must be authored by reading the phase: **Tool Graph 60, 69, 70**.
 
-Grammar, `worktree-sync.md:942`:
+Grammar, R35:
 
 ```markdown
 **Reservations:**
@@ -579,13 +580,1554 @@ Once backfilled, run `berth check` over all 28 and **report every collision foun
 
 Only after all six pass, flip `gate_mode` from `"observe"` to `"enforce"` in `.claude/config/berth.toml`.
 
-Then clean up: remove the test worktrees, and record in `docs/worktree-sync.md` that the design is built.
+Then clean up: remove the test worktrees, and record in this plan's status line that the design is built.
 
 **Files:**
 
 - `/Users/natemccoy/rust/hana/.claude/config/berth.toml` — `gate_mode = "enforce"`.
-- `/Users/natemccoy/rust/hana/docs/worktree-sync.md` — status line: built.
+- `/Users/natemccoy/rust/cargo-liner/docs/berth-plan.md` — status line: built.
 
 **Constraints from prior phases:** Every prior phase is exercised here. Phase 8's observe-only default is what makes this safe to run against the real repo — do not flip it early. Phase 12 established the ledger and the hook; this phase changes only the mode.
 
 **Acceptance gate:** No `verify.sh`. All six scenarios pass against two real worktrees with transcripts recorded; `gate_mode = "enforce"`; an out-of-order merge to `main` is then refused in a real terminal, and `HANA_SYNC_BYPASS=1` still lands it.
+
+---
+
+## Design
+
+Everything below is the design the phases implement, merged in from what was
+`hana/docs/worktree-sync.md`. Work Order Specs cite it by section heading and by
+finding id; it is part of this plan, not a separate document.
+
+Read it as three layers. **Design** — this section — is the committed shape.
+**Review findings** R1–R69 are three cycles of expert review that corrected it: a
+later finding supersedes an earlier one where they conflict, and each supersession
+is named in the finding's own title. **Decisions** D1–D8 are the eight the user
+ruled on directly.
+
+### Goal
+
+Any number of worktrees, all off one trunk, each running its own phased plan. Before
+an agent touches a tree, it can answer one question cheaply: **is it safe to work
+here?** When the answer is no, the conflict surfaces to the user while it is still a
+sentence, not after it has become a merge.
+
+### Why the old board is gone
+
+`SYNC.md` carried three things bundled. Two died with the merge.
+
+| What it carried | After the merge |
+| --- | --- |
+| Cross-repo dependency plumbing — rev pins, `[patch]`, path repointing | Gone. One workspace, all path dependencies. |
+| Merge-order gating across four branches in two repos, where neither session could observe the other | Gone. Worktrees of one repo share an object store and see each other's commits. |
+| One legible picture for one person tracking parallel work | **Survives.** The only durable need. |
+
+The board's real cost was that most of it was a hand-maintained cache of facts git
+already knew — ahead/behind, what merged where, which commit carries what. Eight
+protocol rules existed to keep that cache honest, and they held only as long as every
+agent remembered rule 1. What git could *not* supply was intent, ownership, ordering
+rationale, and permission. Those four are what this design keeps; everything else is
+computed on demand and never stored.
+
+### The ledger
+
+#### Where it lives
+
+`$(git rev-parse --git-common-dir)/hana-sync/`.
+
+Every linked worktree resolves `--git-common-dir` to the *same* main `.git`, so one
+file is visible identically from all of them. It sits on no branch, so it never
+merges and never diverges. It does not appear in `git status`. Verified on a scratch
+repo: a file written under the main checkout's `.git/hana-sync/` reads back unchanged
+from a linked worktree, and `git status` there is clean.
+
+Cost of this choice: `.git` is not backed up and does not travel to another clone.
+The branches themselves are unaffected — losing the ledger loses coordination state,
+not work.
+
+#### Truth is the journal; the cache is disposable
+
+Two files:
+
+- **`journal.ndjson`** — append-only, one JSON object per line. This is the record.
+- **`reservations.json`** — the live claim set, a projection of the journal. Rebuildable
+  by replay, safe to delete at any time.
+
+This is deliberate. The old board needed rules 5 and 6 — commit after every edit,
+never `checkout`/`reset`/`restore` — because a whole-file write that dropped rows left
+behind something that looked exactly like a correct board. Appends under `PIPE_BUF`
+with `O_APPEND` cannot interleave destructively, so two sessions claiming at the same
+moment cannot clobber each other. The failure mode is designed out rather than ruled
+against.
+
+#### The unit: lowest necessary tree root
+
+A claim is a **repo-relative path** — the shallowest directory that covers what the
+phase will touch. `crates/hana_valence` when a phase owns the crate;
+`crates/hana/src/transport` when it owns one module.
+
+The conflict rule is one line:
+
+> Two claims conflict iff one path is a prefix of the other **and** the branches differ.
+
+No crate-graph knowledge, no configuration, works at any depth. Same-branch claims
+never conflict — a delegate fan-out running several agents on one branch is one actor.
+
+A claim record:
+
+```json
+{"op":"claim","path":"crates/hana_valence","branch":"feature/valence",
+ "worktree":"/Users/natemccoy/rust/hana_valence","plan":"docs/hana_valence/arrangements.md",
+ "phase":24,"why":"arrangement providers","at":"2026-08-23T11:02:00Z"}
+```
+
+#### Claims are derived, not hand-written
+
+Every Work Order produced by `/plan:to_phased_plan` already carries a `**Files:**`
+section listing the exact paths that phase touches. That is the footprint, already
+written, already reviewed. The `/sync` skill reads it (the tool never
+parses markdown) and rolls the file list up to its shallowest covering directories.
+**Measured 2026-08-23: `**Files:**` blocks on disk record repo-relative paths**, not
+absolute ones — no prefix stripping is needed, and a claim path is already in the form
+the ledger stores.
+
+Nothing new for the user to maintain, and a claim cannot drift from the plan it came
+from without the plan changing first.
+
+### The check
+
+Three tiers. The third is what keeps the system honest.
+
+| Tier | Question | Source | Result |
+| --- | --- | --- | --- |
+| **Overlap** | Is another branch inside my tree? | ledger | **Block** — surface to the user |
+| **Dependency** | Does my crate depend on, or is it depended on by, a crate another branch holds? | `cargo metadata` | **Warn** |
+| **Drift** | Did I touch files I never claimed? | `git diff --name-only $(git merge-base main HEAD)..HEAD` | **Widen the claim** |
+
+**Tier 2 is the one that catches real merge pain.** Textual overlap is the rare
+failure in a monorepo of disjoint crates. The common one is branch A reshaping
+`hana_kana`'s API while branch B builds on it: zero conflicting lines, broken on
+merge. The dependency graph is free from `cargo metadata` and turns that into a
+warning at claim time.
+
+**Tier 3 is the rot detector.** Declared intent is checked continuously against
+observed diff. A file touched but never claimed means the claim is too narrow and the
+work is invisible to the other worktrees — the exact condition that made the old board
+decay, now detected instead of legislated against. It costs one `git diff` to compute
+and is never stored.
+
+`sync board` additionally reports ahead/behind against `main` per live branch,
+computed live. That answers "what moved under me while I was away" without anyone
+recording it.
+
+#### The root manifest exception
+
+`Cargo.toml`, `Cargo.lock`, and `.claude/config/*` are shared by construction — every
+branch touches them, so exclusive claims on them would block everything. They are
+**announced, not claimed**: the check reports "3 branches will touch root
+`Cargo.toml`" as information and does not block. `Cargo.lock` remains
+regenerate-never-merge.
+
+#### Release, staleness, override
+
+- **Release** at phase checkpoint, the same boundary that already exists in
+  `/plan:delegate`.
+- **Stale claims are flagged, never auto-removed.** A claim is stale when its worktree
+  path no longer exists (definite) or its branch has no commit in seven days
+  (probable). Silent removal would produce a false all-clear, which is worse than a
+  stale row someone has to read.
+- **Override** is required or the hook becomes a wall. `sync override <path> --why`
+  proceeds and writes the reason to the journal.
+- **A missing ledger fails open.** Everything is safe when `reservations.json` does
+  not exist. A coordination tool that bricks editing when its own state file is gone
+  is worse than no tool.
+
+### Answering an overlap
+
+A tier-1 block is a question, not a verdict. It has four answers. Three of them permit
+an overlap that would otherwise be refused, so all three are **recorded inside the same
+locked `claim`/`widen` transaction that discovered the overlap** (R53) and all three
+**require user approval** through R42's `permissionDecision: "ask"` (R54). Only
+`rescope` needs no authorization, because it leaves nothing overlapping.
+
+| Answer | Means | Editing | Integration |
+| --- | --- | --- | --- |
+| `rescope` | Narrow or split the claims so the overlap stops existing | Both proceed | Unconstrained |
+| `sequence` | A lands before B | Both proceed | B held until A is in trunk |
+| `defer` | Overlap accepted; order not decided yet | Both proceed | **Both held** until an order is declared |
+| `override` | Overlap accepted; no order will be enforced | Both proceed | Unconstrained; reason journalled |
+
+`sequence` is the expected answer for two plans that genuinely need the same file.
+`defer` is for when the right order depends on something not yet known: it buys the
+same "stop asking me" as `override` without giving up the guarantee, because neither
+reservation can reach trunk until someone says which goes first. That makes deferring
+cheap without making it the quiet path to an unordered merge (R56).
+
+**An answer authorizes exactly what it was shown.** It is bound to the two reservation
+ids *and* the normalized overlap antichain at the moment it was given, plus both
+reservation generations. The hook suppresses only paths covered by that recorded set.
+A later widen recomputes the intersection and re-blocks anything the answer never
+covered; an answer is never transitive to a third reservation, and a new reservation id
+never inherits one (R55).
+
+#### Sequencing
+
+`claim --after <blocker> --why` and `claim --before <blocker> --why` record
+`ConflictAuthorization::Sequence` as part of the acquisition itself. `sync sequence`
+exists only to change an answer already given. Recording an edge does four things:
+
+- **Both worktrees proceed immediately** on the paths the answer covered.
+- **The successor is held at integration until it has actually incorporated the
+  predecessor** — not merely until the predecessor lands. The gate is the predecessor's
+  journaled `Outstanding.protected_tip`: first that it is an ancestor of trunk, then
+  that it is an ancestor of the successor's `HEAD`. A predecessor still `Active` has no
+  protected tip and holds unconditionally. The successor's live branch tip is never the
+  subject, and the claim-time `HeadSnapshot` never is either (R57, R69). A retention ref
+  `refs/hana-sync/reservations/<id>` keeps that commit reachable after the branch or the
+  worktree is gone.
+- **Cycles are rejected at declaration, under R43's descriptor-held mutation lock** —
+  replay, validate both endpoints, run the cycle check, append, sync, publish. Without
+  the lock, two worktrees can each replay an acyclic graph and append `A → B` and
+  `B → A` (R58).
+- **Edge status is derived, never stored as a terminal fact.** An edge is pending, met,
+  or cancelled purely as a function of the predecessor's lifecycle and *current* trunk,
+  revalidated on every check per R41. A trunk rewrite that removes the predecessor
+  re-holds the successor (R60).
+
+**Cost.** Not free, but bounded (R67). Adjacency rebuilds during replay in `O(J+V+E)`;
+the cycle check is a DFS in `O(V+E)`; readiness groups by predecessor, so a board read
+costs one `git worktree list --porcelain` plus at most `P` ancestor checks
+(≈`0.01·P` s), and an integration check costs only the successor's `d` prerequisites.
+Duplicate edges are rejected and R4's limits extend to `V` and `E`. None of this runs
+on the hook path, which reads only the generation-validated projection (R31).
+
+**Ordering is conflict-time state.** A Work Order declares its reservations, never its
+expected order — the relationship exists only while two reservations are live, so
+putting it in the plan would duplicate something that is not knowable when the plan is
+written.
+
+#### Self-healing
+
+Edges resolve themselves as reservations reach their endings. What they never do is
+resolve themselves by *assuming* an ending.
+
+- **A missing worktree is not an abandoned reservation** (R59). Removing a worktree
+  does not delete its branch or its commits, and absence can equally mean a prune not
+  yet run, a lock, a moved directory, or broken admin linkage. Liveness is typed —
+  `Live | Unavailable | OrphanCandidate | Orphaned | Unknown` — from
+  `git worktree list --porcelain` plus R39's opaque identity check. Everything except
+  `Live` **retains** the reservation's scopes and edges. A successor is freed
+  automatically only on proven integration evidence; otherwise the edge waits for a
+  user-approved retirement. This is the same rule the design already applies to stale
+  claims: flagged, never auto-removed.
+- **Reconciliation runs on the paths that consume the state**, not only on board read
+  (R62): at SessionStart, before every stateful `/sync` verb, and before every
+  checkpoint and integration. The edit hook keeps its fast path — it reconciles only
+  when the cache says it should block, then retries the decision once.
+- **Incident edges are evaluated independently** (R61). With `A → B → C`, losing `B`
+  terminates `A → B`, resolves `B → C` from `B`'s stored evidence, and **never
+  synthesizes `A → C`**. `C` waits on `A` only if that edge was declared.
+- **Orphaned work gets a durable alert, not a message** (R63). A reservation left
+  `Outstanding` when its worktree disappears raises an `OrphanedOutstanding` alert that
+  persists — shown at SessionStart, from every `/sync` verb, and whenever a hook
+  evaluates it or one of its successors — until the user records recovery, integration,
+  or approved abandonment. It reports the reservation id, protected tip, branch-ref
+  status, object availability, and one of `RecoverableFromBranch`,
+  `RecoverableFromProtectedTip`, or `CommitUnavailable`. "Commits are lost" is a
+  conclusion it has to earn.
+- **The reservation's terminal record is the sole authority for its edges** (R65).
+  Reconciliation appends one record under the lock and derives every incident-edge
+  outcome from it at replay; per-edge records are audit observations, regenerated
+  idempotently. A crash mid-reconciliation therefore cannot leave a valid prefix that
+  frees a successor before the decision that freed it is durable.
+- **Ledger loss fails open for editing and closed for integration** (R64). R3 is right
+  that a missing ledger must not brick editing — but a lost journal also erases a
+  user-approved merge order, and proceeding past that is not the same risk. An absent,
+  corrupt, or unknown-epoch journal blocks integration until the user confirms pending
+  orders were reviewed or reconstructed.
+- **The board renders constraints, not a queue** (R66). A DAG is a partial order; a
+  numbered list would invent ordering between unrelated reservations. It shows the ready
+  set, each held reservation with its named predecessors and covered paths, unresolved
+  overlaps, and unconstrained live reservations — and with no edges recorded it says
+  "no integration order declared" rather than showing an empty queue that reads as an
+  all-clear.
+
+
+### Enforcement
+
+Hook for what must never be forgotten; skill for what needs judgment.
+
+#### The hook
+
+`PreToolUse` on `Edit` / `Write` / `NotebookEdit`. It reads the ledger, matches the
+target path, and **blocks only on tier-1 foreign-branch overlap**. When clean it says
+nothing — zero noise on the overwhelming majority of edits. The block message names
+the holding branch, plan, phase, and reason, which is enough to act on without
+opening anything.
+
+Tiers 2 and 3 never block. They are advisory and belong in the skill, because a
+dependency warning is the start of a conversation about merge strategy, not a
+stop sign.
+
+**Known gap: Bash-mediated writes.** Auto mode directs file edits through `sed`,
+heredocs, and short scripts, which a `PreToolUse` hook on `Edit`/`Write` does not
+see. Parsing arbitrary shell for write targets is not reliable enough to depend on.
+This is covered instead by tier 3 — anything that slips through appears as drift at
+the next check, and the claim gets widened. Stated plainly rather than papered over:
+hook coverage is partial, and tier 3 is what makes that acceptable.
+
+An optional best-effort `Bash` hook could match obvious write forms (`>`, `>>`,
+`sed -i`, `tee`) before extracting paths. Deferred — it buys partial coverage of a
+gap tier 3 already closes.
+
+#### The trunk gate
+
+The edit hook governs `Edit`/`Write`; nothing in it governs a merge. D1 leaves `Bash`
+unconstrained, so `git merge`, `git rebase`, and `git update-ref` can move
+`refs/heads/main` without any check running. An ordering edge is therefore only as real
+as whatever enforces it at the ref (D8, resolved 2026-08-23).
+
+A **`reference-transaction` hook** in the common git directory is that enforcement. It
+fires on every update to `refs/heads/main` from any source — a terminal, an agent
+through `Bash`, a slash command, a rebase — because it sits below the tool layer.
+`--no-verify` does not skip it; that flag only covers the commit hooks. One hook in the
+common directory covers every worktree.
+
+Its rule is narrow. It denies only when a live reservation with an **unsatisfied
+predecessor** would newly enter trunk. No edges, or nothing pending, means silence — the
+overwhelming majority of merges never observe it. A denial names the blocking
+reservation, its plan and phase, the covered paths, and the exact command to proceed.
+
+This gate binds the user exactly as it binds an agent. That is the point, and it is why
+the release valve is designed rather than discovered.
+
+##### The release valve
+
+Being unbypassable and failing closed (R64) is a trap: a corrupt ledger would block every
+merge with no way out. Two escapes, at different levels, prevent that.
+
+**`sync integrate --force --why "<reason>"`** — the ordinary escape. Mints a one-use
+permit that the next `main` update consumes, journalled with actor, time, reason, and the
+edges it skipped. This is the deliberate "we accept the harder merge" decision, and it
+costs one command.
+
+**`HANA_SYNC_BYPASS=1 git merge …`** — the last resort, evaluated by the hook **before it
+reads the ledger, the projection, or anything else**. A corrupt journal, an unreadable
+lock, a hook that times out, or a bug in the gate itself can never leave anyone stuck. It
+is journalled when the journal is writable and reported at next SessionStart when it was
+not. Deliberately awkward to type, so it is not reached for by habit.
+
+A hook timeout denies and names the bypass in the denial. Denying is safe precisely
+because the bypass always works.
+
+##### A bypass is recorded, not forgiven
+
+The skipped edge stays on the board, marked bypassed with its reason and date, and the
+predecessor is flagged: *ordered after work that already landed; expect conflicts*. The
+consequence of the choice stays visible instead of being tidied away. This is the same
+principle as R59 — the system reports what happened; it does not conclude on the user's
+behalf that it was fine.
+
+**Bypassing is not the same as changing the decision.** `--force` says "this once" and
+leaves the edge standing. Converting the answer to `override` removes the edge and means
+"not anymore." Keeping them distinct is what lets the board still mean something months
+later.
+
+#### The skill
+
+`/sync` with these verbs:
+
+| Verb | Does |
+| --- | --- |
+| `board` | The picture: live claims, holders, ahead/behind vs `main`, stale flags |
+| `check` | All three tiers for a proposed footprint |
+| `claim` | Explicit validated paths (the skill resolves a Work Order to paths, not the tool); `--before`/`--after`/`--defer`/`--override <blocker> --why` answers an overlap in the same transaction |
+| `release` | At checkpoint |
+| `sequence` | `<first> <then> --why` — change an ordering answer already given |
+| `integrate` | The authoritative path to trunk: reconcile, check every incoming edge, then update `main`; `--force --why` mints a one-use permit past a held edge |
+
+No mandatory emit ritual. The old board required a four-part emit at every phase
+boundary and at every checkpoint; that was compensation for state nobody could
+observe. Here the state is one command away from any worktree, so it is pulled when
+wanted rather than pushed on a schedule.
+
+### Where the code lives
+
+The engine is **`cargo-berth`**, a new member of the `cargo-liner` workspace
+(`~/rust/cargo-liner`, `github.com/natepiano/cargo-liner`) alongside `cargo-mend`,
+`cargo-port`, and `cargo-tile`. A berth is the place assigned to one ship for exclusive
+occupancy, allocated in advance — which is what a claim is.
+
+It does not live in the hana workspace. Three constraints rule that out:
+
+- **It must run when hana does not compile.** Mid-refactor is exactly when two worktrees
+  collide. A coordination tool that needs a successful build of the thing it coordinates
+  is circular.
+- **The edit hook must be instant** (R31), so it calls an installed binary, never
+  `cargo run` — living in the workspace buys nothing.
+- **The `reference-transaction` hook runs inside git**, with a minimal environment and no
+  cargo. It invokes `cargo-berth` as a plain binary on `PATH`; the `cargo-` prefix is
+  irrelevant there.
+
+`repo-split-and-publishing-mirror.md` also publishes and mirrors the hana workspace, and dev
+coordination tooling does not belong in that surface.
+
+`cargo-liner` supplies what this needs anyway: `cargo_metadata` is already a workspace
+dependency (tier 2), `tui_pane` is the framework the board should be built on, and the
+strict lint set and per-crate release cadence come with membership.
+
+#### The split
+
+Almost none of the hana-specific part is Rust.
+
+| Where | What |
+| --- | --- |
+| `cargo-berth` | The whole engine, hana-blind: ledger, journal, claims, edges, cycle detection, the ref gate, the board. Its interface is paths and reservation ids. |
+| `.claude/config/berth.toml` (in hana) | The repo's dialect: trunk branch, the announce-not-claim list, R4's limits. Sits beside `mirror.toml` and `release.toml`. |
+| `~/.claude/` | The Claude Code integration: the `/sync` skill, thin `PreToolUse`/`PostToolUse` shims that shell out to `cargo-berth`, and `/plan:delegate` claiming at dispatch and releasing at checkpoint. |
+| Plan docs | The 28 Work Orders' `**Reservations:**` blocks. Content, not code. |
+
+**This moves `--from-work-order` out of the tool.** Parsing `**Reservations:**` from a
+plan document is Claude-workflow territory: the skill extracts the paths and calls
+`cargo-berth claim <paths>`. The tool still validates them — exist, normalize, reduce to
+an antichain, check overlap under the lock — it just never reads markdown. That keeps
+`cargo-berth` general enough to publish, and lets the plan-doc format change without
+touching a released crate.
+
+#### The README is a deliverable
+
+`cargo-berth` publishes to crates.io alongside its siblings, so it ships with a README
+written for someone who has never heard of hana, `/plan:delegate`, or Claude Code. It is
+part of v1, not a follow-up.
+
+What it has to cover:
+
+- **The six commands, in order of a first use** — `cargo install cargo-berth`;
+  `cargo berth init` (creates the ledger in `.git`, installs the trunk hook, writes a
+  default config); `cargo berth claim <paths>`; `cargo berth board`;
+  `cargo berth integrate`; `cargo berth release`.
+- **What a collision looks like**, with real output: which branch holds what, and the four
+  answers offered.
+- **The honest limitation, stated plainly rather than buried.** The trunk gate is a git
+  hook, so merge ordering is genuinely enforced for anybody with no discipline required.
+  Editing is different: what makes it non-decaying here is a Claude Code `PreToolUse`
+  hook that blocks the write itself, and that is our integration, not part of the tool.
+  A general user gets a commit-time drift check — the same git hook family comparing
+  changed files against the claim — which is automatic but later than blocking the
+  keystroke. Say so. A coordination tool that oversells its enforcement is the failure
+  mode this whole design exists to avoid.
+- **The config file**, field by field.
+- **What it deliberately does not do** — it does not choose the merge order, does not
+  track phases, does not span repositories.
+
+The `cargo-liner` root README also gains a `cargo-berth` row in its member list.
+
+### Delivery shape
+
+The work spans two repositories and is built by two agents who never read each other's
+code. This document is the single source for both, so it has to carry everything each
+side needs — the engine spec and R1–R69 for one, the wiring for the other.
+
+| Track | Repo | Built by | Produces |
+| --- | --- | --- | --- |
+| **A — engine** | `~/rust/cargo-liner` | Its own agent, in that repo | `crates/cargo-berth`: ledger, journal, claims, edges, cycle detection, ref gate, board TUI, README, tests |
+| **B — wiring** | `~/rust/hana` | An agent here | `berth init`, hook shims and their `settings.json` entries, the `/sync` skill, `/plan:delegate` claim/release, `.claude/config/berth.toml`, 28 Work Order backfills |
+
+Track A needs no hana knowledge at all — that is the test of whether the split in
+`### The split` is real. If a phase in track A has to explain a Work Order, the boundary
+is wrong.
+
+#### Freeze the interface first
+
+The two tracks are only serial if track B has to wait for a working binary. It does not,
+provided **phase 1 of track A freezes the command surface before anything is
+implemented**: every verb, its arguments, its exit codes, and its machine-readable
+output. Track B writes hooks and the skill against that contract while the engine is
+still being built, and finds out at integration whether both sides read it the same way.
+
+That contract is the deliverable of phase 1, written into this document. Changing it
+afterward is a decision, not a refinement.
+
+#### How hana gets the binary
+
+`cargo install --path ~/rust/cargo-liner/crates/cargo-berth` during development. Nothing
+publishes to crates.io until the whole loop works here — a published version is a promise
+about an interface, and the interface is what we are still learning.
+
+#### The trunk gate ships observe-only
+
+An unproven `reference-transaction` hook can refuse every merge to `main`, including the
+user's own from their own terminal. It installs in **observe-only** mode: it evaluates
+every update, logs what it *would* have denied and why, and permits everything. It flips
+to enforcing only after it has been right on real merges — including at least one real
+sequenced pair.
+
+That is not a soft launch for its own sake. Enforcement is the one part of this design
+that can block work it was never meant to block, and the release valve is only reachable
+if the person hitting the wall knows it exists. Watching it be right first is cheaper
+than being trapped once.
+
+#### Bootstrap ordering
+
+We will be building the worktree coordinator inside a worktree, and installing its gate
+into the repository it coordinates. Two consequences the phase order has to respect:
+
+- **`cargo-berth` cannot coordinate its own construction.** Track A and track B are
+  coordinated the way everything is today — one worktree, commits as work lands.
+- **The gate installs in hana last**, after track B's end-to-end test passes. The
+  end-to-end test is the real gate on the gate: two actual worktrees, a real collision
+  that blocks, a real `sequence` that holds the successor, a real `--force` that lands
+  anyway and shows up on the board as bypassed.
+
+### A third query it answers for free
+
+"Is crate X cold enough to publish?" falls straight out of the live claim set. Useful
+for `repo-split-and-publishing-mirror.md` Phase 3 — publishing `hana_rigging` while a
+branch is mid-rewrite of it is exactly the mistake this prevents.
+
+### What this does not do
+
+- It does not choose the merge order. It reports that two branches collide and then
+  records whatever order you decide; deciding it stays a conversation with the user.
+- It does not track plan phases or gates. Plans own their own phase numbering, as
+  before.
+- It does not span repositories. Cross-repo work goes through published versions, per
+  `~/.claude/commands/worktree_fit.md`.
+
+### Decisions
+
+1. **Ledger in `.git/hana-sync/`**, not a separate repo. One shared location for all
+   worktrees at zero protocol cost; accepts loss of backup.
+2. **Append-only journal is truth, `reservations.json` is a rebuildable cache.**
+   Designs out the whole-file-clobber failure the old board needed two rules to guard.
+3. **Path-prefix overlap is the conflict rule.** One line, any granularity, no config.
+4. **Hook plus skill** (2026-08-23). The hook covers hard overlap and cannot be
+   forgotten; the skill covers the board and the advisory tiers. Skill-only was
+   rejected as the same discipline dependency that made `SYNC.md` decay; hook-only
+   leaves the dependency warnings nowhere to land.
+5. **An overlap has four answers, and one of them is an order** (2026-08-23, revised
+   by cycle 3). Block-or-override was too blunt: two plans that legitimately need the
+   same file had no way to say "TG78 lands first" and get on with it. `sequence` records
+   the direction, unblocks both worktrees, and is enforced only where it matters — at
+   integration. `defer` buys the same quiet without giving up the guarantee, by holding
+   both. All three permissive answers ride the locked acquisition transaction and
+   require user approval; an agent cannot answer its own block. Edge status is derived
+   from reservation lifecycle rather than journalled as fact, so a trunk rewrite or a
+   vanished worktree cannot leave a stale authorization standing.
+6. **The engine is `cargo-berth`, outside the hana workspace** (2026-08-23). It has to run
+   when hana does not build, the hooks call an installed binary either way, and the git
+   hook has no cargo in its environment — so workspace membership offers nothing and
+   costs publishing surface. `cargo-liner` already carries `cargo_metadata`, `tui_pane`,
+   and a release cadence. The hana-specific part is config plus Claude Code integration,
+   not Rust.
+
+---
+
+## Review findings — cycle 1
+
+Team review, `strengthen` posture, 4 lenses. No premise-challenge: the common-directory
+ledger can achieve the intent. Everything below is in-intent strengthening.
+
+### Auto-recorded (accepted; single correct outcome)
+
+**R1 — Reservation acquisition must be serialized by a lock. (critical)**
+Atomic append placement does not serialize the transaction `read claims → check conflict →
+append → publish cache`. Two sessions can read the same projection, both pass the check,
+and both append conflicting claims. `O_APPEND` governs each write's file position, not the
+surrounding transaction. Take one advisory lock in `hana-sync/` for `claim`, `release`,
+`override`, and cache rebuild; while held, replay, check overlap, append and `fsync` the
+journal, then publish the cache by temp-file `fsync` + atomic rename. Store the journal
+sequence or byte offset in the cache so the hook can detect a snapshot that is behind.
+The lock is taken only at claim-lifecycle boundaries, never on every edit.
+
+**R2 — The `PIPE_BUF` rationale is wrong and must be removed. (important)**
+`getconf PIPE_BUF /tmp` is 512 on this machine, and POSIX applies that non-interleaving
+threshold to pipes and FIFOs, not regular files. The sample record is already 230 bytes and
+`worktree`, `plan`, and `why` are unbounded. Replace the claim in `## Truth is the journal`
+with: one append routine under the mutation lock that handles short writes, a documented
+maximum encoded record size, and rejection of oversized fields. Replay may discard exactly
+one unterminated final record under the lock; a malformed interior record reports corruption
+and stops mutation.
+
+**R3 — A missing cache must not read as "safe". (critical)**
+`reservations.json` is described as "safe to delete at any time" and its absence as
+"everything is safe". Deleting only the cache leaves a journal full of live claims while the
+hook allows every edit. Define four states instead: journal present + cache absent/behind →
+rebuild before deciding; cache present without journal, invalid schema, or mismatched repo
+identity → report corruption and deny until repaired; both absent → editing stays fail-open
+but reports **"coordination inactive"**, never "safe", surfaced at session start and from
+every `/sync` verb; require `sync init` in each new common directory. A fresh clone is a
+separate coordination domain and cannot see an older clone's claims — say so.
+
+**R4 — Hook exit-code matrix must be specified. (important)**
+Claude Code command hooks treat exit 2 as blocking; exit 1, a missing executable, invalid
+output, or a timeout all *allow* the call. So a parser exception silently disables the guard,
+while converting every anomaly to exit 2 denies all edits. Specify and test: valid
+non-overlap allows; overlap denies with structured output; uninitialized coordination allows
+with a visible warning; stale cache rebuilds; corrupt journal/cache, unsupported schema, and
+internal errors exit 2 naming one repair command. Bound record fields, cache size, live-claim
+count, and parse time, and use an internal deadline shorter than the hook timeout so a denial
+can be issued before Claude Code kills the script.
+
+**R5 — Conflict comparison is path-component ancestry, not string prefix. (important)**
+As written, "one path is a prefix of the other" falsely collides `crates/hana` with
+`crates/hana_animation`. Compare normalized path components, respecting the filesystem's case
+behavior.
+
+**R6 — Branch is not a stable ownership or liveness identity. (important)**
+Branches are renamed, deleted after merge, and reused; worktrees move or become locked. Seven
+days without a commit can describe active uncommitted work, and a recent unrelated commit can
+make an abandoned claim look current. Give each claim a stable id plus an explicit
+coordination-run/worktree identity, and keep branch for display only. Renew claims at phase
+checks rather than inferring liveness from branch commit time. Report branch-missing,
+merged-to-trunk, worktree-moved, worktree-locked, and renewal-expired as distinct states, and
+add `sync release --stale <claim-id> --why …` under user confirmation, keeping the
+no-auto-removal rule.
+
+**R7 — Same-branch fan-out needs a condition. (important)**
+"Same-branch claims never conflict" suppresses overlap checking among all `/plan:delegate`
+fan-out writers even when the dispatcher has not assigned disjoint files. Permit the shared
+claim only when the orchestrator owns file assignment or serializes writers.
+
+**R8 — Tier 3's diff command is the wrong range. (critical, mechanism half)**
+`git diff --name-only $(git merge-base main HEAD)..HEAD` sees only committed work, which
+excludes exactly the staged/unstaged/untracked state an agent is in mid-phase; and after a
+checkpoint it includes every earlier phase since the branch diverged, so released paths get
+re-flagged. Record the phase's starting `HEAD` at claim time and compare
+`<phase-start> → working tree` plus untracked files.
+
+### Proposed user decisions
+
+**D1 — How do Bash-mediated writes get covered? (critical)**
+Tier 3 runs *after* the write, so widening a claim cannot stop a second worktree that is
+already editing. Given that this environment actively directs agents to edit through
+`sed`/heredocs, the realistic worst case is two branches modifying a reserved file with no
+hook ever firing, discovered at integration. The reviewer's proposal is a declaring wrapper —
+`sync exec --paths … -- <command>` — with undeclared commands allowed only when provably
+read-only, holding that matching a few redirection spellings is insufficient. That is a real
+behavior change to how every Bash edit is issued. Alternatives: accept the gap and lean on
+`/plan:delegate` integration (D2); or restrict the auto-mode Bash-edit preference in hana.
+
+**D2 — Should `/plan:delegate` own the reservation lifecycle? (critical)**
+The doc puts claim/release at phase boundaries but `/plan:delegate`'s checkpoint contract
+contains no claim, drift check, or release, and `/sync` is otherwise pulled only "when
+wanted". Proposal: claim before implementation dispatch, record the phase's starting `HEAD`,
+check drift immediately before checkpoint, stop on newly discovered foreign overlap, release
+only after checkpoint succeeds. This edits a shared workflow skill, not just this design.
+
+**D3 — Root manifests: announce, or reserve for short windows? (important)**
+Tool Graph phase 64 and Valence phases 24 and 32 all name root `Cargo.toml`/`Cargo.lock`, so
+the announce-don't-block exception disables tier 1 precisely for the files most likely to
+collide. "Regenerate-never-merge" is an integration procedure, not edit-time exclusion, and it
+does not protect `Cargo.toml` or config files at all. Proposal: reserve root files
+individually for short mutation windows — acquired immediately before a manifest edit or a
+lockfile-generating cargo command, released after checkpoint — and apply ordinary
+component-level claims inside `.claude/config/` rather than exempting the directory.
+
+**D4 — Work Orders need a machine-readable `Reservation roots` field. (important)**
+The claim-derivation story does not survive contact with the real docs: Tool Graph phases 60,
+69, and 70 have **no** `**Files:**` section at all, and the sections that exist are
+repo-relative, contain brace expressions, and carry prose like "`crates/hana_animation` tests"
+and "All test/example/README/CHANGELOG files named in Delegation Context". `/plan:delegate`
+also treats Files as predicted scope, not permission to edit. Proposal: add a separate
+`Reservation roots` field of normalized literal files/directories and backfill it across both
+plans before enabling derivation, with `sync claim` rejecting missing, empty, ambiguous,
+outside-repo, `..`, or malformed entries and echoing derived roots before committing.
+
+### Auto-recorded, cycle 1 continued (correctness lens; R1–R4 independently confirmed)
+
+**R9 — Rollup must be a minimal component antichain, not one ancestor per phase. (critical)**
+"Roll them up to their shallowest covering directories" reduces a multi-crate phase such as
+Valence Phase 25 to `crates`, which eliminates all useful concurrency; a phase that also names
+root files collapses to the repository root. Reduce *independently declared* paths to a minimal
+antichain instead of taking a single least common ancestor across the phase.
+
+**R10 — Claims need an explicit `Exact` vs `Tree` scope. (important)**
+The design does not encode whether a claimed path denotes one file or a whole subtree. Without
+it, `foo.rs` and `foo.rs.bak` confuse, and directory-vs-file comparison is undefined. Add
+validated repo-relative paths with an explicit scope; reject empty paths, `.git`, post-ingestion
+absolute paths, and any `..` escape. Conflict when exact paths are equal or a `Tree` path is a
+component ancestor of the other claim. Specification tests: `crates/hana` vs `crates/hana_kana`,
+file vs file-sibling, directory vs file, exact equality, nonexistent-future path.
+
+**R11 — Owner identity comes from the worktree, not the branch. (important; sharpens R6)**
+Derive a stable `owner_id` from the worktree's administrative directory and give each
+reservation set a `claim_id`; branch, path, and `HEAD` are display metadata. Same-*worktree*
+fan-out is one actor; **distinct worktrees conflict even when their branch labels match**, which
+is the correct form of the rule the doc states as "same-branch claims never conflict". Detached
+`HEAD` has no branch name at all.
+
+**R12 — Release, override, and widen need defined event schemas. (important)**
+Only a `claim` record is specified. Replay cannot currently determine whether a release targets
+one of several same-owner claims, what a duplicate claim does, what releasing an unknown id
+means, or how long an override lasts. Define versioned `create`/`widen`/`release`/`override`/
+`retire-orphan` events; releases name a `claim_id` and unknown ids error; overrides identify the
+blocked claim ids, covered paths, reason, and lifetime. Add a user-approved orphan-retirement
+verb — the doc flags a deleted worktree as stale but gives no verb that resolves it.
+
+**R13 — Drift widening must re-run tier 1 under the lock. (important)**
+Unconditional "widen the claim" can silently create a foreign overlap. A widen that would
+overlap another owner reports a collision instead of widening.
+
+**R14 — Split active-phase drift from outstanding branch divergence. (critical; extends R8)**
+Two computations, not one: (a) active-phase drift from the claim's starting `HEAD` plus staged,
+unstaged, deleted, renamed, and untracked paths; (b) outstanding divergence from the current
+merge base to the branch tip. When `main` advances, intersect trunk-side changes since the stored
+trunk point against active and outstanding claims and their dependency packages, and recompute
+after a rebase. Ahead/behind counts alone never identify *which paths* moved under a claim.
+
+### Proposed user decisions, cycle 1 continued
+
+**D5 — Must a claim be mandatory before editing? (critical)**
+The hook "blocks only on tier-1 foreign-branch overlap", so an agent holding **no claim at all**
+may freely edit any unclaimed path, and a later claimant sees no ledger conflict — the ledger
+records only what was volunteered. Making claims mandatory (Edit/Write targets must be covered by
+the current worktree's claim, with explicit-path claims for ad hoc work) closes that hole but
+makes every unplanned one-line edit require a claim first. This is the central
+protection-vs-friction tradeoff in the design and it is not currently decided either way.
+
+**D6 — When does a claim actually release? (critical)**
+The doc releases at phase checkpoint, but `/plan:delegate` checkpoints create a **local** commit
+and explicitly do not integrate to `main`. Releasing there drops protection while the work is
+still unmerged, so another branch can edit the same path and meet the conflict later at
+integration — the exact outcome this design exists to prevent. Alternative: keep paths reserved
+in an `outstanding` state until their commits are ancestors of the trunk, or the user explicitly
+abandons them. That is stronger but means claims persist well past the phase that made them, and
+a long-lived branch could hold a crate reserved for weeks.
+
+### Auto-recorded, cycle 1 continued (decay/ergonomics lens; R1, R9–R14 independently confirmed)
+
+**R15 — Cache publication needs atomic rename plus a generation stamp. (important; completes R2)**
+Publish `reservations.json` by write-to-temp-then-rename, stamped with the journal generation or byte
+offset it was built from. The edit hook's clean path then reads a generation-validated cache without
+taking the writer lock, so the common case stays fast while correctness still comes from the journal.
+Concurrent rebuilds otherwise let an older projection overwrite a newer one.
+
+**R16 — `override` is a fifth verb the command table omits. (mechanical)**
+The doc specifies `board | check | claim | release` but the escape hatch it describes has no verb.
+Express abandonment as `release --abandon` rather than adding a top-level verb, and specify the
+block message's contents: attempted path, overlapping reservation root, claim id, holder worktree
+and branch, plan, phase, stated reason, and the exact commands to inspect or override.
+
+**R17 — Tier-2 warnings must be specific, deduplicated, and acknowledgeable. (important)**
+Measured: `hana` has **direct path dependencies on 18 workspace crates**, so a Tool Graph claim under
+`crates/hana` warns against nearly all Valence library work. A warning that fires on almost every check
+is a warning agents learn to skip. Print the exact edge or shortest dependency chain, the holder, plan,
+and phase; deduplicate by claim pair and journal generation; distinguish unresolved from acknowledged.
+
+**R18 — Shared root paths need a real record type, not prose. (important; supersedes the bare "announced, not claimed" rule)**
+"Announced" currently has no journal operation, no record, no acknowledgement, and no lifecycle, so the
+promised "3 branches will touch `Cargo.toml`" report cannot be produced without reparsing mutable plans.
+Store root paths as **nonexclusive `shared` reservations** carrying branch, plan, phase, and intended
+change. Hooks still allow the edit; the board and checkpoint output retain the relation until resolved.
+
+### Proposed user decisions, cycle 1 continued
+
+**D7 — Does `/plan:delegate` refuse to dispatch a phase with no machine-readable reservation field? (important; sharpens D4)**
+Measured against the live plans: Tool Graph phases 60, 69, and 70 have **no `Files` section at all**;
+`arrangements.md` Phase 24 uses brace patterns and directory phrases; several phases state outright
+that their file set is refreshed during implementation. So there is no deterministic footprint to parse
+today. A validated `**Reservations:**` field generated by `/plan:to_phased_plan` and enforced at dispatch
+makes claims reliable, at the cost of a new required field in every Work Order and a backfill pass over
+both active plans. The softer alternative — derive what can be derived and let the drift tier catch the
+rest — keeps plans as they are but leaves the first check of every phase incomplete.
+
+### Auto-recorded, cycle 1 continued (data-model lens; R1–R3, R9–R14 independently confirmed)
+
+**R19 — Journal event schema, concretely. (important; completes R12)**
+A versioned tagged union; unknown op or unknown schema version is an error, never a skip. Common
+fields on every event: `schema_version`, `event_id`, `at`, `worktree_id`.
+
+| op | required | notes |
+|---|---|---|
+| `claim` | `reservation_id`, `head_snapshot`, nonempty `scopes`, `source`, `why` | `source` = `WorkOrder { plan, phase }` or `Explicit` |
+| `widen` | `reservation_id`, nonempty `added_scopes`, `cause` | `cause` = `Drift { observed_paths }` or `Explicit { why }` |
+| `release` | `reservation_id` | optional `why`; `--abandon` variant per R16 |
+| `override` | `override_id`, claimant `reservation_id`, nonempty `conflicting_reservation_ids`, nonempty `scopes`, `why` | active only while the claimant **and at least one named blocker** are still active — it can never authorize a later, unrelated claim |
+
+Typed throughout: `EventId`, `ReservationId`, `OverrideId`, `WorktreeId`, `RepoPath`, `Timestamp`,
+`PhaseNumber`, `ClaimSource`, `HeadSnapshot`. Only human explanations stay free strings, byte-capped.
+This closes concrete hazards: misspelled ops, `"24"` vs `24`, invalid timestamps, short-name
+collisions, non-normalized paths. **A phase's several scopes are one reservation**, so conflict
+checking and acquisition are atomic across the whole footprint rather than per path.
+
+**R20 — `worktree_id` derivation and `HeadSnapshot`. (important; completes R11)**
+`worktree_id` = the worktree's administrative directory from `git rev-parse --git-dir` taken relative
+to the common directory, with a dedicated value for the main worktree. Worktree path and
+`HeadSnapshot::{Branch { full_ref, oid }, Detached { oid }}` are audit and display data only. Resolve
+live branch names and HEAD oids for the board from `git worktree list --porcelain`.
+
+**R21 — The seven-day staleness rule as written is wrong. (mechanical)**
+Keying staleness off the branch's base commit marks a brand-new claim stale the moment its branch
+starts at an older commit. Derive it as a typed state from the **latest** of: claim time, the most
+recent later event on that reservation, and the HEAD commit time.
+
+**R22 — Scope carries an access mode, not just a kind. (important; extends R10)**
+`ScopeKind::{File, Tree}` plus `AccessMode::{Exclusive, Announce, ReadOnly}`. Root manifests are
+`Announce` (R18); a phase's "verify absent, expect no edit" entries are `ReadOnly`. Brace expressions
+are expanded before the block is written. **Compaction may only drop a scope already contained by
+another explicit tree scope in the same reservation — it must never invent a common ancestor** (R9).
+
+**R23 — Tier-2 traversal semantics, measured against the hana workspace. (critical)**
+Direction, closure depth, dependency kind, and which worktree's manifests to read are all unspecified,
+and the live graph shows why that matters: **`hana_valence` dev-depends on `fairy_dust` while
+`fairy_dust` depends on `hana_valence`** — recursing through dev-dependencies creates cycles and can
+connect most of the 24-member workspace, making nearly every reservation warn about every other. Rules:
+- Map a scope to a package by longest package-root ancestor. A scope above all package roots maps to
+  every contained member; a repository-only path maps to none. Report an unmapped scope, never skip it.
+- Build the graph from **both** the claimant's and the holder's worktrees and union them, so an
+  uncommitted manifest edit on either side participates.
+- Follow normal and build dependencies transitively. Include each root package's dev-dependencies one
+  level, then follow only normal/build edges onward — never dev-dependencies of dev-dependencies.
+- Warn in either direction, printing the shortest package path; `claimant → … → holder` means the
+  claimant compiles against the holder.
+- Deduplicate by reservation pair and dependency path (R17).
+- `cargo metadata --format-version 1 --locked --no-deps` suffices for declared workspace path edges:
+  **0.02–0.03 s** measured on hana, versus 0.32–0.46 s for fully resolved metadata. Run it once per
+  distinct involved worktree per check; no persisted graph cache initially. If a manifest is
+  temporarily inconsistent, return `DependencyUnknown` — never a clean tier-2 result.
+
+**R24 — The drift computation, concretely. (critical; completes R8/R14)**
+Measured on the hana checkout, the documented command returns **no paths** while git reports three
+modified tracked files and two untracked ones — including `docs/worktree-sync.md` itself. Snapshot the
+local trunk merge base, then union these NUL-delimited sets:
+```
+git diff --name-status -z --no-renames "$base"..HEAD     # committed
+git diff --cached --name-status -z --no-renames HEAD     # staged
+git diff --name-status -z --no-renames                   # unstaged
+git ls-files -z --others --exclude-standard              # untracked
+```
+Parse status records so both sides of a delete/add move stay covered. Bind the check to an explicit
+`reservation_id`; implicit selection is valid only when the worktree holds exactly one active
+reservation. Widening goes through the same locked overlap transaction as acquisition (R13); a
+colliding widen is a typed drift collision requiring an override that names the blocker ids.
+
+**R25 — The board's derived values need a contract. (important)**
+Unspecified today: local `main` vs `origin/main`, stored vs current HEAD, how detached or unrelated
+heads render, and whether one worktree's several claims repeat the git work. Define trunk as one
+snapshotted local `refs/heads/main` oid. Group claims by `worktree_id`, resolve each distinct current
+HEAD once, and compute `git rev-list --left-right --count "$trunk_oid...$head_oid"` (first count
+behind, second ahead). Return `AheadBehind::{Counts { ahead, behind }, Unrelated, Unavailable}` rather
+than inventing zeroes. Report dirty tracked and untracked counts **separately** from ahead/behind, and
+flag when current HEAD differs from the claim's snapshot. Measured: `rev-list` ~0.01 s, status
+collection ~0.02 s — no board cache is warranted.
+
+## Review findings — cycle 2
+
+### Auto-recorded (cycle 2)
+
+**R26 — R9/R10/R22 verified on real data: concurrency IS preserved. (confirmation, with evidence)**
+Cycle 2 normalized the actual Work Orders by hand and produced the reservation sets. After
+normalization **Valence 24/25 have no tier-1 overlap with Tool Graph 61–64** — the two plans can run
+concurrently, which is the whole point R9 was protecting. Valence 24 reduces to `Cargo.toml`/`Cargo.lock`
+announced plus `crates/hana_animation` as a tree plus five `crates/hana_tools` files and two
+`crates/hana` files; Tool Graph 62 reduces to six exclusive files across two crates. Recorded because
+it converts R9 from an assertion into a measured result.
+
+**R27 — Access modes need a conflict matrix; compaction must be per-mode. (important; completes R22)**
+R22 named `Exclusive`/`Announce`/`ReadOnly` without saying which pairs conflict. Foreign-owner matrix:
+
+| holder ↓ / claimant → | Announce | ReadOnly | Exclusive |
+|---|---|---|---|
+| **Announce** | allow | allow | allow |
+| **ReadOnly** | allow | allow | **block** |
+| **Exclusive** | allow | **block** | **block** |
+
+**Build a separate antichain per access mode and never compact across modes.** Tool Graph Phase 61 is
+the live case: it declares read-only trees but permits one narrowly proven edit inside one of them.
+A single-antichain reduction would let the containing `ReadOnly` tree swallow the nested `Exclusive`
+file and silently erase the write authorization. Per-mode antichains keep both, and the exclusive
+addition still goes through R13's locked overlap check.
+
+**R28 — The lifecycle needs three more events. (critical; completes R19)**
+R19's four ops cannot replay the `outstanding` state R14/D6 require: no event records a checkpoint,
+so an integrated reservation can never be verified from journal data, and R19 dropped R12's
+orphan-retirement operation, so a deleted-worktree reservation stays active forever. Add:
+- `checkpoint { reservation_id, result_head, trunk_snapshot }` — transitions `Active → Outstanding`.
+- `renew { reservation_id }` — explicit activity for a long phase.
+- `release { reservation_id, disposition: Integrated | Abandoned | RetiredOrphan, why }` — terminal
+  and auditable; `Integrated` is verified by checking the recorded `result_head` is an ancestor of
+  trunk; the other two require confirmation.
+
+Treat **both `Active` and `Outstanding` as live** for overlap checking and for override lifetime.
+
+**R29 — R21's staleness rule contradicts R6. (mechanical; corrects R21)**
+R21 said to derive freshness from the latest of claim time, later reservation events, and **HEAD commit
+time**. But one worktree may hold several reservations (R6), so any unrelated commit refreshes the
+worktree's HEAD and makes *every* abandoned reservation on that worktree look current. **Derive expiry
+only from reservation-scoped events** — claim, widen, renew, checkpoint. Drop the HEAD-commit term.
+
+**R30 — Partial-tail recovery must truncate, and cache-ahead is corruption. (critical; completes R2/R3/R15)**
+Two gaps in the recorded recovery rules. First, R2 permits *ignoring* an unterminated final record but
+never says to remove it — so the next append concatenates onto the partial bytes and converts a
+recoverable tail into interior corruption. Second, a byte offset cannot detect an interior edit that
+preserves journal length, and cache-ahead was undefined. Full matrix:
+
+| journal ↓ / cache → | current | absent | behind | ahead |
+|---|---|---|---|---|
+| **present, valid** | use | rebuild | rebuild | **deny** |
+| **absent** | deny | coordination inactive | deny | deny |
+| **unterminated final record** | truncate tail, rebuild | truncate tail, rebuild | truncate tail, rebuild | deny |
+| **corrupt interior** | deny | deny | deny | deny |
+
+Under the mutation lock: replay to the last complete newline; for exactly one unterminated final
+record `ftruncate` to that newline and `fsync` **before any append**; treat cache-ahead as `CacheAhead`
+corruption requiring `sync repair` rather than trusting either file; stamp the cache with repo
+identity, schema version, journal end offset, and a filesystem fingerprint, recomputing a digest on
+any fingerprint change; publish through R15's atomic rename.
+
+**R31 — The hook runs tier 1 only. (important; bounds R23/R25 cost)**
+Measured: `cargo metadata --locked --no-deps` 0.02–0.03 s per worktree (R23), `rev-list` ~0.01 s and
+status collection ~0.02 s (R25). Those belong to `/sync check` and `board`. **The PreToolUse hook must
+not call the full three-tier check** — its work is a bounded cache parse plus a journal fingerprint
+check, with the lock off the edit path per R1/R15. No performance finding as long as that holds.
+
+### Decision reconciliation (cycle 2)
+
+**D3 — narrowed.** Tool Graph Phase 64's own later correction removes root `Cargo.toml`, root
+`Cargo.lock`, and `crates/hana/Cargo.toml` from its file set, so the Phase 64 half of D3's premise is
+refuted. D3 still stands on Valence Phases 24 and 32.
+
+**D5 / D7 — evidence, not yet settled.** Cycle 2 parsed all seven upcoming Work Orders against R10/R22:
+**six of seven reject.** Valence 24 (brace expressions plus the prose entry "`crates/hana_animation`
+tests"), Valence 25 (unexpanded braces), Tool Graph 60 (no `Files` field at all), 61 (authoritative
+"Effective Files" conflicts with a later historical `Files` block, plus an alternative location and
+unspecified tests), 63 (bare filenames, not repo-relative paths), 64 (braces plus four entries struck
+by a later correction). Only Tool Graph 62 parses clean. Phase 60 has no safe fallback: `crates/hana`
+as a tree collides with Valence 24's two `crates/hana` files, and an empty fallback protects nothing.
+
+### Auto-recorded (cycle 2, ergonomics/decay lens)
+
+**R32 — Override authorization must ride inside the `claim`/`widen` record. (critical; revises R19)**
+R19 requires an override to name the claimant's existing `reservation_id`, but during *initial*
+acquisition no such reservation exists yet — R1 rejects the conflicting claim before anything is
+appended. Appending a claim and then an override as two events is also crash-unsafe: dying between
+them publishes an unauthorized overlap. Embed it instead:
+```
+claim { reservation_id, scopes, override: { blocker_ids, covered_scopes, why } | none }
+```
+Surface as `sync claim … --override <ids> --why …`, with the matching `widen` form. **This removes the
+standalone `override` event from v1** and supersedes that row of R19's table.
+
+**R33 — A Work Order claim must cover the plan document itself. (important; new interaction bug)**
+`/plan:delegate` edits the plan doc during decision resolution, phase review, shrink, and checkpoint,
+and may create or edit its `-next.md` sibling. Those are not implementation files, so no `Files`
+section names them — meaning under a mandatory-coverage rule the hook would **block `/plan:delegate`
+during its own normal checkpoint processing**, and Bash-mediated edits would surface later as
+unexplained drift. A Work Order claim therefore auto-includes exact exclusive scopes for its plan
+document and derived next-items path, in the same reservation, outstanding with the phase commit.
+Session files outside the repository need no reservation.
+
+**R34 — `Announce` and `ReadOnly` do not enter v1. (important; supersedes R18, cancels the access-mode half of R22 and all of R27)**
+Measured: only **3 of the 28 remaining phases** name root manifests (Tool Graph 64, Valence 24 and 32).
+`Announce` *by construction permits concurrent edits to exactly those files*, so it adds journal
+records, board states, acknowledgements, and lifecycle rules while leaving the collision it names
+fully possible — it does not achieve the intent. `ReadOnly` reserves no write permission and
+duplicates what `Files` already carries. Use **ordinary exact exclusive reservations** for
+`Cargo.toml`, `Cargo.lock`, and individual `.claude/config` files for the phase's duration, and keep
+verify-only paths in `Files` and out of `Reservations` entirely. R22's `File`/`Tree` distinction and
+R9's antichain rule survive unchanged.
+
+*Adjudicating the two cycle-2 lenses:* the correctness lens (R27) built a mode-conflict matrix and
+per-mode antichains to handle a `ReadOnly` tree containing a permitted nested edit (Tool Graph 61).
+That machinery is only needed because the modes exist. Removing the modes removes the problem rather
+than managing it — same correctness, less structure — so R34 wins and **R27 is withdrawn**. If access
+modes are ever revived, R27's matrix is the correct specification for them.
+
+**R35 — One shared Work Order parser and validator, not a Reservations-only check. (important; completes D4/D7)**
+`/plan:delegate` today accepts the mere presence of `#### Work Order` and copies expected fields
+without validating them — Tool Graph 60 lacks the standard Goal/Spec/Files structure and 69/70 lack
+`Files`, and none of that is currently caught. A Reservations-only test would leave that failure mode
+intact. Define one parser/validator shared by `/plan:to_phased_plan`, `/plan:phase_review`,
+pending-decision resolution, and `/plan:delegate`, rejecting missing fields, invalid paths, duplicate
+or contained scopes, and malformed Work Orders. Grammar:
+```markdown
+**Reservations:**
+- file: `Cargo.toml`
+- tree: `crates/hana/src/transport`
+```
+Because phase review can later edit remaining Work Orders, one-time generation is insufficient: any
+Work Order edit that changes `Files` or adds an implementation path must re-validate `Reservations`
+before the writer returns.
+
+**R36 — R7's premise does not hold today. (mechanical; withdraws R7)**
+R7 asked for an orchestrator-owns-assignment rule for same-branch fan-out. `/plan:delegate` runs **one
+implementation writer at a time**; its concurrent reviewer is read-only. There is no concurrent-writer
+case to arbitrate. Revisit only if concurrent writers are introduced.
+
+**R37 — Minimal v1 is 16 of the 25 cycle-1 items. (important)**
+Rank A, must exist or the design is unsound: **R1–R5, R8–R13, R15–R16, R19–R20, R24**. Several are one
+specification in two entries — R1/R15, R8/R24, R11/R20, R12/R19.
+Rank B, deferrable without making v1 wrong: **R6** (stale reservations already fail safe by blocking),
+**R14** (trunk-side intersection does not affect acquisition correctness), **R17** and **R23** (ship
+with tier 2, the largest independent source of complexity), **R21** (only needed once time-based
+staleness reporting exists), **R25** (board metrics do not determine edit permission).
+Rank C, dropped: **R7** (R36), **R18** and the access-mode half of **R22** (R34).
+
+**R38 — Day-one adoption order. (important)**
+1. Finalize the v1 schema — embedded override authorization (R32), checkpoint state (R28), exclusive
+   `File`/`Tree` scopes only (R34), mandatory coverage.
+2. Add `Reservations` to the shared Work Order format; update all four writers/readers (R35).
+3. Backfill and validate the 28 remaining Work Orders.
+4. Build and test journal, mutation lock, replay, generation-stamped cache, worktree identity,
+   conflict checks, drift, and repair **in a scratch repository** first.
+5. Wire `/plan:delegate` lifecycle across every success, stop, error, and `single` exit.
+6. Create the two execution worktrees — `git worktree list` currently shows only
+   `/Users/natemccoy/rust/hana`, so no stable worktree identities exist for those plan runs yet.
+7. `sync init` once in the shared common directory.
+8. Install SessionStart reporting and the PreToolUse hook, then enable mandatory coverage and D7
+   refusal **together**.
+9. First real claim through `/plan:delegate`. Do not enable the hook before the plans and dispatcher
+   are ready.
+
+With this cut the ordinary phased path adds no ritual: dispatch claims automatically, successful edits
+produce no hook output, checkpoint preserves the reservation, integration clears it. Manual
+interaction is limited to a real collision, an ad hoc edit, or abandonment.
+
+### Decision reconciliation (cycle 2, continued)
+
+**D3 — RESOLVED, dropped from the surfaced set.** `Announce` permits concurrent edits to the very
+files it names, so it cannot achieve the intent; the alternative (exclusive for the phase) is the only
+option that does. Not a tradeoff. Recorded as R34; risk: three phases briefly hold root manifests
+exclusively, which serializes them against each other.
+
+**D1 — sharpened, still open.** The cycle-1 proposal (a `sync exec --paths` declaring wrapper) is
+refuted on its own terms: **a wrapper does not constrain what a subprocess writes** — it declares
+intent, it does not enforce it. So D1's real choice is narrower than stated: either require repository
+source edits through hooked Edit/Write tools and treat unmediated Bash writes as unsupported (with
+explicit adapters for trusted mutating commands like formatters), or implement genuine filesystem
+write confinement. Command-text parsing is not a third option.
+
+**D7 — backfill cost, measured.** **28 remaining Work Orders**: Tool Graph 19, Valence 9. **25 have a
+`Files` block to seed from**; three do not — Tool Graph **60, 69, 70**. All 28 need the field, not just
+the three, because none carries `Reservations` today.
+
+### Auto-recorded (cycle 2, risk lens)
+
+**R39 — The worktree administrative path is recyclable; R20's identity is refuted. (critical; corrects R20)**
+Git names the administrative directory from the worktree basename and **removes it on
+`git worktree prune`**, so a new worktree with the same basename can be handed the same
+`worktrees/<name>`. The failure: worktree A holds a live reservation as `worktrees/feature`; A
+disappears and is pruned (its reservation correctly survives in the journal); new worktree B takes
+`worktrees/feature`, derives A's `worktree_id`, and R11's same-owner exemption hands B a **false
+all-clear on A's paths**. Branch metadata cannot catch this because R20 deliberately made branch and
+path display-only.
+
+Use an **opaque `WorktreeId`** minted when coordination first sees the worktree and stored inside its
+administrative directory, plus a `RepoInstanceId` and the canonical worktree root; the relative
+administrative path becomes a locator, not an identity. Before granting same-owner status, validate
+repo instance, current administrative directory, its backlink, and the recorded root:
+
+| git state | required result |
+|---|---|
+| `git worktree move`, or a manual move then `repair` | locked `relocate` event; opaque id preserved |
+| common directory moved and repaired | repo/worktree ids preserved; new location resolved |
+| administrative directory pruned | old claim orphaned; a recreated directory gets a **new** id |
+| recorded path now holds a different repository | old claim orphaned; never inspect it as the claimant |
+| administrative directories swapped | identity mismatch / unapproved relocation → deny |
+| git linkage unrepaired | R4 internal-error denial |
+
+**R40 — Two coordination runs in one worktree must conflict. (critical; replaces R7's rationale, R36 stands)**
+R11 declares the whole worktree one actor and R19 records only `worktree_id`, so **two independent
+Claude Code sessions open in the same worktree treat each other as the owner** and can overwrite the
+same working-tree state without ever reaching a git merge. R1's mutation lock cannot prevent it:
+acquisition is serialized, but both writers are exempted as the same owner. Add a `CoordinationRunId`;
+the harness supplies `session_id` to every hook invocation, so it can carry the mapping (teammate
+behavior needs testing, with an explicit writer token where session ids are shared). Default to **one
+active coordination run per worktree**; a different run in the same worktree conflicts normally.
+`/plan:delegate` may grant additional writers only for disjoint scopes or explicit serialization.
+
+*This does not revive R7 as written* — R36 correctly withdrew its fan-out premise, since delegate runs
+one implementation writer at a time. The hazard here is two separate sessions, which is unrelated to
+fan-out and entirely ordinary (two terminals in one worktree).
+
+**R41 — Release must not be terminal; a trunk rewrite resumes blocking. (critical; extends R28)**
+D6's outstanding option releases once the reservation's commit is an ancestor of `main`, but R19's
+release event is permanent — so if `main` is later reset or force-moved and the commit is no longer an
+ancestor, the reservation stays released while its work is outstanding again. R14 covers only "when
+`main` advances"; a rewind or replacement needs a **tree comparison** between the stored and current
+trunk oids, since an ahead/behind count identifies no paths. Lifecycle:
+```
+Active → Outstanding → Integrated
+                    ↘ Abandoned
+```
+`Integrated` **retains its scopes and its integration evidence**, and every check revalidates that
+evidence against the current trunk; lost ancestry derives `TrunkRewritten` and resumes blocking until
+reconciled. Compare stored and current trunk trees with NUL-delimited `git diff --name-status`
+regardless of ancestry direction. Missing objects or unrelated histories return `TrunkUnknown`, never
+clear. Squash and cherry-pick integration stay blocked until a user records `integrated-as <trunk-oid>`.
+
+**R42 — The override must escalate to the user, not be executable by the blocked agent. (critical; corrects R16)**
+R16 requires the block message to print the exact override command, and nothing requires user
+authorization — so an autonomous agent receives the collision, runs the command, and continues. The
+collision is journaled but **never surfaced**, which is precisely contrary to the stated intent; the
+hook degrades into an audit log. Put `sync override` and `release --abandon` behind a separate
+`PreToolUse` rule returning `permissionDecision: "ask"`. The original edit stays denied; after approval
+the override command appends the R32 authorization naming exact blocker ids, scopes, reason, and
+lifetime. At 2 a.m. with no user response the session **waits, or works only on nonconflicting reserved
+paths** — that is the correct outcome for a system whose whole purpose is user-visible collision
+resolution.
+
+**R43 — Descriptor-held lock, not a lockfile. (important; completes R1/R30)**
+"Advisory lock" does not rule out an existence-based lockfile, which **survives process death** — and
+deleting it while the original process is alive creates two writers. Hold `File::lock` on an open
+descriptor instead: the kernel releases it when the file closes, including on termination. PID,
+process start, and command are diagnostic metadata only. Use bounded `try_lock` retries; a timeout
+denies and reports `sync doctor --lock`, and the tool must **never advise deleting the lock file**. A
+hook waiting behind a live wedged holder can otherwise exceed its timeout and fail open, so R4's
+internal deadline must deny first. Under the acquired lock: truncate an incomplete tail to the last
+newline, `sync_all`, then append (R30); ignore incomplete cache temporaries and rebuild from the
+repaired journal; fsync the directory after initial journal creation and after the cache rename. Add
+termination tests after partial append, journal sync, cache-temporary sync, rename, and directory sync.
+A dead holder releases automatically; a live wedged one requires user action and stays fail-closed.
+
+**R44 — R29 confirmed by a third independent lens. (confirmation)**
+The risk lens reached R29 separately: R21's HEAD-commit renewal contradicts R6, and a rebase, a ref
+update from another worktree, a force-move, or a future-dated commit can keep an abandoned reservation
+marked current with no action by its claimant. It still blocks, so this is not a false all-clear — it
+is the **old board's decay reappearing as inaccurate freshness**, suppressing the stale condition the
+user needs to resolve. Renewal time comes only from reservation journal activity: claim, widen,
+explicit renew, checkpoint transition, or approved override. Report HEAD changes independently through
+R25, keeping structural state, renewal state, and HEAD relation as three separate typed values.
+
+**R45 — C2-F3's write-authorization matrix is moot under R34, and is its specification if modes return.**
+If D5 were implemented as "the target is covered by one of my scopes," a `ReadOnly` scope would
+authorize editing the very file it says not to edit, and `Announce` would cover a writable path with
+no exclusivity. Since R34 removes both modes from v1, this cannot arise. Recorded for the same reason
+R27 was: `Exclusive` satisfies write coverage; `Announce` only for a configured shared-path allowlist
+and never returns `Clear`, only `Shared`; `ReadOnly` never satisfies a write and must request a locked
+promotion through R13's overlap transaction.
+
+### Auto-recorded (cycle 2, implementation-design lens)
+
+**R46 — R24 used the wrong baseline; partially refuted. (critical; corrects R24)**
+R8 and R14 define active-phase changes relative to **the claim's starting HEAD**, but R24 wrote `$base`
+as the local trunk merge base — so R24's first command actually computes *outstanding branch
+divergence* while its other three compute active-phase staged/unstaged/untracked state. Mixing them
+makes earlier checkpointed phases reappear as drift and re-proposes already-released paths for
+widening, and makes `Outstanding` indistinguishable from current work. Replace `$base` with
+`$phase_start_head` and keep those four results as `ActivePhaseChanges`; compute `OutstandingChanges`
+separately from the current trunk merge base. **The three path sets may name the same path and must
+stay separately typed — never unioned before policy evaluation.**
+
+Definitive commands:
+```bash
+# ActivePhaseChanges — committed-since-claim, staged, unstaged, untracked
+git diff --name-status -z --no-renames "$phase_start_head"..HEAD
+git diff --cached --name-status -z --no-renames HEAD
+git diff --name-status -z --no-renames
+git ls-files -z --others --exclude-standard
+
+# OutstandingChanges
+trunk_oid=$(git rev-parse refs/heads/main)
+base_oid=$(git merge-base "$trunk_oid" HEAD)
+git diff --name-status -z --no-renames "$base_oid"..HEAD
+
+# Trunk movement since acquisition (exit 1 ⇒ history rewritten, refresh the stored point via `resnapshot`)
+git merge-base --is-ancestor "$trunk_at_claim" "$trunk_oid"
+git diff --name-status -z --no-renames "$trunk_at_claim".."$trunk_oid"
+```
+
+**R47 — Integration is one reachability query. (important; answers the D6 cost question)**
+```bash
+git merge-base --is-ancestor "$protected_tip" "$trunk_oid"
+```
+Exit 0 integrated, exit 1 outstanding, anything else unavailable — never clear. **Testing the single
+protected tip suffices** because every earlier phase commit is its ancestor: one graph walk, not one
+command per branch commit. Measured on hana at **0.01 s across 3,067 reachable commits**. So D6's
+outstanding option costs essentially nothing per check.
+
+**R48 — `RepoPath` needs a comparison contract, and hana is case-insensitive. (important; completes R5/R10)**
+Verified: the hana repository has **`core.ignoreCase=true`**, while Rust's ordinary component comparison is
+case-sensitive — so two claims differing only in component case would receive a false all-clear, and
+divergent normalization choices would produce false blocks. Files that do not exist yet also rule out
+filesystem canonicalization. Define one `RepoPath::parse` boundary: UTF-8, repo-relative, `/`
+separators, no empty / `.` / `..` components, no `.git`, no absolute input. Derive `PathCase` from
+repository configuration and compare components under that policy **without canonicalizing through the
+filesystem**. Serialize only the normalized spelling.
+
+**R49 — R23's traversal needs explicit visit state and a package-universe rule. (important; completes R23)**
+Marking dev-dependencies "root only" does not by itself terminate the live
+`hana_valence --dev--> fairy_dust --normal--> hana_valence` cycle. Specify **breadth-first traversal
+with each package marked visited before expansion**; only the initial queue item carries
+`DevelopmentTraversal::Follow`, every child carries `Skip`, including a back-edge to the root. Define
+the package universe as workspace members **plus repository-local dependency paths exposed by
+metadata** — `vendor/clay-layout` is one such direct dev dependency of `hana_diegetic`, excluded from
+the workspace — treating non-member local packages as leaf nodes unless their manifests are loaded.
+
+Verified on the live graph (24 members). From `hana_valence`: initial expansion `normal: hana_kana`,
+`development: fairy_dust, hana_diegetic, hana_lagrange, hana_rubric`; final visited set is
+`fairy_dust, hana_clerestory, hana_diegetic, hana_kana, hana_lagrange, hana_rigging, hana_rubric,
+hana_valence` — 8 of 24, not the whole workspace. It terminates **only** because the root was marked
+visited before expansion. Starting from `fairy_dust`, `hana_valence` is not the root, so its dev
+dependencies are skipped.
+
+**R50 — Tier-1 suppression is keyed to the reservation, not the worktree. (important; refines R40)**
+Suppress a tier-1 conflict only for **the same reservation**, or for the same `CoordinationRunId` when
+the dispatcher recorded file assignment or serialization. Different runs conflict even inside one
+worktree (R40). Propagate the active `ReservationId` into hook context alongside the run id. Blocking
+naively on same-worktree overlap would make one orchestrated reservation block its own delegates;
+ignoring it misses independent-session collisions. Keying on the reservation resolves both.
+
+**R51 — Type skeleton. (important)**
+Identifier and encoding choices the doc left open, now fixed: UUID v7 ids, RFC 3339 UTC timestamps,
+UTF-8 repository paths, full hex git object ids. Newtypes: `SchemaVersion`, `EventId`,
+`ReservationId`, `OverrideId`, `CoordinationRunId`, `CommitOid`, `FullRefName`, `RepoPath`,
+`GitAdminPath`, `WorktreePath`, `Timestamp`, `Reason`, `PhaseNumber(NonZeroU32)`. Enums:
+`WorktreeId::{Main, Linked}`, `HeadSnapshot::{Branch, Detached}`, `ScopeKind::{File, Tree}`,
+`ReservationStage::{Active, Outstanding { protected_tip }}`, `PathCase::{Sensitive, Insensitive}`,
+`ClaimSource::{WorkOrder, Explicit}`, `WidenCause::{Drift, Explicit}`,
+`ReleaseDisposition::{Integrated, RewrittenIntegration, Abandoned}`,
+`AheadBehind::{Counts, Unrelated, Unavailable}`, `DependencyKind`, `DevelopmentTraversal`.
+`JournalEvent` carries the common fields with `#[serde(flatten)]` over a
+`#[serde(tag = "op")] JournalOperation` union: `Claim`, `Widen`, `Checkpoint`, `Resnapshot`,
+`Release`, `Override`, `RetireOrphan`. Two functions: `evaluate_conflicts(candidate,
+live_reservations, path_case) -> Vec<ReservationConflict>` and `claim_reservation(repository,
+coordination_run_id, claim_request) -> Result<ClaimReceipt, ClaimError>`, the latter taking the
+mutation lock internally. `Vec<ReservationConflict>` allocates only during claim/widen transactions,
+never on the edit hook's validated-cache path.
+
+**R52 — `Resnapshot` is a fourth new event. (important; extends R28)**
+Beyond `checkpoint`, `renew`, and typed `release`, replay also needs an event that **replaces stored
+comparison points after a rebase or trunk rewrite** — otherwise the stored `trunk_at_claim` and phase
+start can never be refreshed and R41's `TrunkRewritten` state has no way back.
+`Resnapshot { reservation_id, snapshot_update: Active { claim_snapshot } | Outstanding {
+protected_tip, trunk_oid } }`.
+
+## Decision reconciliation — final
+
+Applying `<DecisionEconomy/>`: an option proven unable to achieve the stated intent is not a plausible
+alternative, so it is recorded rather than surfaced. Cost of the work never promotes an item.
+
+**D2 — RECORDED. `/plan:delegate` owns the reservation lifecycle.** Nothing else runs at the right
+moments, so no alternative achieves the intent. It claims before the first implementation dispatch,
+runs drift detection before checkpoint, emits `checkpoint` (never `release`), releases a cancelled
+no-diff phase, and retains and reports reservations after errors, dirty `single` runs, and user stops.
+*Risk:* delegate grows lifecycle responsibility, and ad hoc work outside it needs explicit claims.
+
+**D3 — RECORDED, dropped.** `Announce` permits concurrent edits to exactly the files it names, so it
+cannot achieve the intent; root manifests take ordinary exclusive reservations for the phase (R34).
+*Risk:* the three phases naming root manifests serialize against each other.
+
+**D4 — RECORDED, merged into D7.** The typed `Reservations` field is added, generated and validated by
+one shared parser across `/plan:to_phased_plan`, `/plan:phase_review`, pending-decision resolution, and
+`/plan:delegate` (R35). Nothing argued against the field itself.
+
+**D5 — RECORDED. Claims are mandatory for every covered write channel.** Voluntary claiming has a race
+that no amount of checking closes: A's hook reads generation G and sees no foreign reservation, B
+acquires an overlapping reservation and publishes G+1, and A's already-approved edit then executes.
+Mandatory acquisition prevents it because A already owns the conflicting reservation before its hook
+ever runs. Under the document's own meaning of "safe", voluntary claiming is unsound rather than
+merely weaker — so this is not the protection-versus-friction tradeoff cycle 1 recorded.
+*Risk:* every unplanned edit needs a claim first; ad hoc explicit-path claims are the release valve,
+and the residual gap is D1's.
+
+**D6 — RECORDED. Checkpoint is `Active → Outstanding`, not release.** Releasing at a local checkpoint
+lets another worktree edit the same path before integration — the exact collision the design exists to
+prevent. This is not hypothetical between the two live plans: **Tool Graph Phase 78 and Valence Phase
+27 both name `crates/hana/src/main.rs`** (verified: `tool-graph.md` Phase 78 Files lists
+`crates/hana/src/main.rs`; `arrangements.md` Phase 27 Files lists `crates/hana/src/{main,transport}.rs`),
+and both also name `crates/hana/src/input/`. R47 measured the integration check at 0.01 s, so the
+outstanding option costs nothing per check. Scopes stay exclusive through `Outstanding` until the
+protected tip is an ancestor of trunk, or a typed disposition records rewritten integration or
+abandonment. *Risk:* a long-lived branch holds paths reserved until it integrates — visible before
+either branch edits, which is the point.
+
+**D7 — RECORDED. Dispatch refuses a phase without a valid `Reservations` block.** Follows from D5: a
+missing field is already an immediate denial for covered tools, so refusing at dispatch converts a
+confusing mid-phase block into a clear error at the right moment. *Risk:* **28 remaining Work Orders
+need the field before their plans can run** — Tool Graph 19, Valence 9; 25 seed from an existing
+`Files` block, three have none (Tool Graph 60, 69, 70). Enable D5 and D7 together, after the backfill.
+
+**D1 — RESOLVED by the user 2026-08-23.** Hook constrains what it can inspect; a post-write
+check observes what actually changed and notifies. See the D1 section below.
+
+### D1 — RESOLVED by the user (2026-08-23): constrain what the hook can see, detect the rest, notify
+
+**The call:** do not over-constrain agents. `PreToolUse` enforces coverage on the write channels it can
+actually inspect (Edit/Write). Bash keeps writing freely. A `PostToolUse` check then observes what
+actually changed and notifies.
+
+This rejects both extremes cycle 2 offered. It is not "hooked tools only" — Bash stays a first-class
+write channel and the auto-mode preference for `sed`/heredocs stands. It is not "accept the gap"
+either: cycle 2 framed the Bash residue as drift discovered later at `/sync check`, which means two
+branches can both have edited a shared path before anyone is told. Detection moves to **immediately
+after the write**, so the window shrinks from a phase to a single tool call.
+
+#### Tier 3 restated
+
+Tier 3 was "drift, self-corrects, computed at check time." It becomes **post-write reconciliation, run
+after every Bash call**, with the periodic check retained as a backstop.
+
+Keep a per-worktree working-tree fingerprint in the ledger cache. After each Bash invocation, recompute
+it and diff against the stored one — that delta is exactly what this command changed. Classify:
+
+| changed paths | action |
+|---|---|
+| covered by this worktree's active reservation | silent; update the stored fingerprint |
+| covered by no live reservation | auto-widen through R13's locked overlap transaction; report the widen in hook output so the agent knows its footprint grew |
+| covered by a **foreign** live reservation | **incursion** — see below |
+| would collide on widen (R13) | report the collision; do not widen |
+
+**Incursion is the case that matters.** The write already landed; blocking is no longer available, so
+the response is entirely notification and record:
+- Append an `incursion { reservation_id, foreign_reservation_ids, paths, at }` journal event, so the
+  fact is durable and the other worktree learns about it at its next check rather than at merge.
+- Surface it to the user immediately — this is a real collision, which is the one thing the design
+  exists to make visible while it is still a sentence.
+- Tell the agent in the hook output, so it can stop widening the damage on its own.
+
+Incursions belong on `sync board` as their own state. A branch carrying an unresolved incursion is the
+strongest signal the board can show.
+
+#### Cost
+
+This runs after every Bash call, so it must stay cheap. `git status --porcelain` plus
+`git ls-files --others --exclude-standard` measured ~0.02 s here (R25), against a cache read — no lock,
+no `cargo metadata`, no `rev-list`. Tiers 1 and 2 do not run here. If the fingerprint is unchanged the
+hook exits immediately, which is the common case for a Bash call that read rather than wrote.
+
+#### What this does not change
+
+- **D5 stands.** Mandatory coverage still applies to Edit/Write; "do not over-constrain" is about not
+  policing Bash, not about relaxing the channel the hook can enforce.
+- **R42 stands.** An override still escalates to the user.
+- **R46's fuller four-command computation** stays where it was — at `/sync check` and before
+  checkpoint. The post-write check is a cheaper fingerprint diff, not a replacement for it.
+
+*Risk carried:* a Bash write to a foreign-reserved path is detected but not prevented, so recovery is
+the user's judgment call rather than the hook's refusal. That is the accepted cost of not constraining
+Bash, and the incursion record is what keeps it from being silent.
+
+---
+
+## Review findings — cycle 3
+
+Four lenses on the sequencing and self-healing material added in `c37c2924`, which no
+prior cycle had seen: sequencing correctness, failure modes, data model and cost,
+ergonomics and decay. **Seventeen findings, R53–R69. Zero premise-challenges.** Five
+criticals were found independently by three or four of the four agents, which is the
+strongest convergence any cycle has produced.
+
+All seventeen are auto-recorded — each had one correct outcome, and the design body
+above has been rewritten to carry them. One item does **not** have one correct outcome
+and is surfaced as **D8** below.
+
+### Auto-recorded (cycle 3)
+
+**R53 — An overlap answer cannot follow a rejected acquisition. (critical; 3 of 4 agents)**
+`sync sequence <first> <then>` names two reservation ids, but under R1 and D5 the second
+claim is *rejected* before its id exists, so at the moment of the first collision there
+is nothing to name. Appending the claim first opens a crash window containing an
+unauthorized overlap; appending the edge first dangles. This is the identical defect
+R32 already fixed for `override`, reintroduced. **Fix:** generalize R32 — `claim`/`widen`
+carry a `ConflictAuthorization::{Sequence, Defer, Override}` payload; the candidate id is
+minted, blockers re-evaluated, cycles validated, and claim plus authorization appended
+in one locked transaction. `rescope` is not a journal variant at all; it is a locked
+rescope whose ordinary claim events already record it. The standalone `sync override`
+verb is removed, restoring R32.
+
+**R54 — Every permissive answer needs user approval, not just `override`. (critical; 3 of 4)**
+R42 puts only `override` behind `permissionDecision: "ask"`. `sequence` and the former
+`ack` equally suppress a tier-1 block, so as written a blocked agent could pick an order
+— or pick none — and unblock itself. The hook would degrade to a journal writer.
+**Fix:** all three permissive answers are approval-gated. The prompt names both plans and
+phases, the shared paths, the proposed direction, the reason, and the consequence.
+`rescope` needs no approval because it leaves nothing overlapping.
+
+**R55 — An answer is bound to scopes and generations, not to a pair of ids. (critical; 3 of 4)**
+The text said an answer is recorded "against that specific pair of claims" and also that
+"the hook stops blocking those paths" — two different rules. Pair-wide suppression
+silently authorizes any *later* overlap the same two reservations create by widening,
+turning an R13 widening collision into a false all-clear. **Fix:** every answer stores
+both reservation ids, the normalized overlap antichain at the time it was given, and both
+reservation generations. Suppression covers only that recorded set; a widen recomputes
+and re-blocks anything uncovered; authorization is never transitive to a third
+reservation and a new reservation id never inherits one.
+
+**R56 — `ack` was a permanent mute; it becomes `defer`, which holds at integration. (important)**
+As written, `ack` had the editing consequences of `override` with no decision, no
+enforcement, and no later trigger — the cheapest answer, therefore the one that would be
+chosen every time, quietly reproducing the old board's passive-state failure. One agent
+proposed deleting it and keeping the paths blocked; that is rejected, because being able
+to say "later" without stopping work is the requirement the answer exists to serve.
+**Fix:** it unblocks editing and **holds both reservations at integration** until an
+order is declared. Same quiet, guarantee intact. Renamed `defer`; `resolve` renamed
+`rescope`, which names the act rather than the outcome.
+
+**R57 — `<first-tip>` was undefined, and the commit it names must be retained. (critical; 4 of 4)**
+Three readings were available and all three are wrong in different ways: the claim-time
+`HeadSnapshot` predates the work (the gate passes before anything lands), the live branch
+tip moves with unrelated phases, and either can vanish with the worktree. A stored oid
+also does not keep a commit reachable once its branch and admin directory are gone — gc
+can take it before lazy reconciliation runs. **Fix:** the subject is the predecessor's
+journaled `Outstanding.protected_tip`, never anything else; an `Active` predecessor has
+none and holds unconditionally; a retention ref `refs/hana-sync/reservations/<id>` is
+written at checkpoint, updated on resnapshot, and held until every dependent successor is
+terminal. A missing object yields `EdgeUnknown` and keeps the successor held.
+
+**R58 — Edge declaration must join the mutation lock. (critical; 2 of 4)**
+"Cycles are rejected at declaration" is a read-check-append transaction, but R1's lock
+contract names only claim, release, override, and cache rebuild. Two worktrees can each
+replay an acyclic graph and append `A → B` and `B → A`; both report success and every
+reservation on the cycle is permanently unmergeable. **Fix:** every answer, edge
+transition, and reconciliation append runs under R43's descriptor-held lock. Cycle
+detection includes edges whose predecessor is currently integrated, because R41 lets
+those become pending again.
+
+**R59 — A missing worktree is `Orphaned`, never `Abandoned`. (critical; 4 of 4)**
+"A reservation whose worktree is gone gets an appended `abandoned` record" contradicts
+R28 (abandonment requires confirmation), R39 (the old reservation stays orphaned), and
+this document's own rule that stale claims are flagged and never auto-removed. Worktree
+removal does not delete the branch or the commits; absence can equally be a prune not yet
+run, a lock, a move, or unrepaired linkage. It would also make a board *read* a mutating
+command that terminates ownership. **Fix:** typed liveness
+`Live | Unavailable | OrphanCandidate | Orphaned | Unknown`, derived from
+`git worktree list --porcelain` plus R39's opaque identity check. Everything but `Live`
+retains scopes and edges. A successor is freed automatically only on proven integration
+evidence; otherwise the edge waits for user-approved retirement.
+
+**R60 — Edge status is derived, never a terminal record. (critical; 4 of 4)**
+Journalling `edge_satisfied` as an appended fact makes it permanent, but R41 already
+establishes that integration evidence must be revalidated after every trunk rewrite. A
+reset that removes the predecessor from `main` would leave the successor authorized by a
+record describing a world that no longer exists. **Fix:** an edge is pending, met, or
+cancelled as a pure function of the predecessor's lifecycle and *current* trunk. If a
+satisfaction observation is journalled at all it carries its protected tip and trunk oid
+and is invalidated whenever trunk changes. Only user-approved abandonment cancels an edge
+permanently.
+
+**R61 — Losing the middle node has a defined result. (important)**
+`A → B → C` with `A` lost was specified; `B` lost was not, leaving three plausible
+implementations (`C` waits forever, `C` is freed, or an `A → C` edge is synthesized).
+**Fix:** incident edges are evaluated independently — terminate `A → B`, resolve `B → C`
+from `B`'s stored evidence, and never synthesize `A → C`. `C` waits on `A` only if that
+edge was declared.
+
+**R62 — Reconciliation cannot depend on someone running `sync board`. (important; 2 of 4)**
+Liveness was verified only on board read, in a design that is explicit about having no
+mandatory ritual. A dead predecessor could hold its successor indefinitely because nobody
+looked. **Fix:** one shared reconciliation routine runs at SessionStart, before every
+stateful `/sync` verb, and before every checkpoint and integration. The edit hook keeps
+R31's fast path — it reconciles only when the cache says it should block, then retries
+the decision once.
+
+**R63 — Orphaned work needs a durable alert, not a message. (important)**
+"Surfaces to the user" has no audience, lifetime, or accuracy: detection happens on a
+board read, when there may be no session; and worktree removal usually does *not* lose
+commits, since the branch ref commonly survives. **Fix:** a persistent
+`OrphanedOutstanding` alert, shown at SessionStart, from every `/sync` verb, and whenever
+a hook evaluates the orphan or a successor, until the user records recovery, integration,
+or approved abandonment. It reports reservation id, protected tip, branch-ref status,
+object availability, retention ref, and one of `RecoverableFromBranch`,
+`RecoverableFromProtectedTip`, `CommitUnavailable`.
+
+**R64 — Ledger loss fails open for editing and closed for integration. (critical)**
+R3 correctly refuses to brick editing when the ledger is gone. Sequencing changes the
+stakes on one path: a lost journal erases a *user-approved merge order*, and proceeding
+past a decision the user made is not the same risk as proceeding past an inferred claim.
+**Fix:** keep R3 for editing; integration fails closed on an absent, corrupt, or
+unknown-epoch journal, and reinitializing requires the user to confirm pending orders were
+reviewed or reconstructed. The ledger location does not change.
+
+**R65 — The reservation's terminal record is the sole authority for its edges. (important)**
+Reconciliation logically emits an abandonment plus one record per outgoing edge, and a
+process can die after any complete append. R30 repairs a malformed final record but not a
+valid prefix holding half a multi-record transition — which could free a successor before
+the decision freeing it is durable. **Fix:** append the reservation's terminal record
+first, under the lock, and derive every incident-edge outcome from it at replay. Per-edge
+records are audit observations, regenerated idempotently, never required for a correct
+projection.
+
+**R66 — The board renders constraints, not a queue. (important; 3 of 4)**
+A DAG is a partial order. For `A → B` with independent `C`, both `A,B,C` and `C,A,B`
+satisfy it, so a numbered list invents a constraint the user never recorded — and with no
+edges at all an empty queue reads as an all-clear, which this document elsewhere calls
+worse than a stale row. **Fix:** show the ready set, each held reservation with its named
+predecessors and covered paths, unresolved overlaps, and unconstrained live reservations.
+Ties within a readiness level are labelled unordered. An empty graph says "no integration
+order declared."
+
+**R67 — Sequencing's cost is real and bounded; name it. (important)**
+"So it costs nothing new" is wrong — a successor can have several predecessors, and one
+worktree can retain several phase reservations, so `V` is not bounded by worktree count
+and `E ≤ V(V−1)/2`. A naive per-edge board implementation costs ≈`0.01·E` s and grows
+quadratically. **Fix:** rebuild adjacency during replay in `O(J+V+E)`; detect cycles with
+a plain DFS in `O(V+E)` — no graph library; group readiness by predecessor for one
+`worktree list` plus at most `P` ancestor checks (≈`0.01·P` s); check only a successor's
+`d` prerequisites at integration; reject duplicate edges; extend R4's limits to `V` and
+`E`. No graph traversal or git subprocess on the hook path.
+
+**R68 — The new operations fold into R51's union rather than extending it. (important; 2 of 4)**
+R51's `JournalOperation` contains none of `sequence`, `ack`, `edge_satisfied`,
+`edge_dissolved`, and R19 makes an unknown operation an error — so an implementation
+following R51 would reject the new records and, under R4, deny editing until repaired.
+**Fix:** no new terminal variants. The authorization enum from R53 rides `Claim`/`Widen`;
+abandonment reuses R28's typed `ReleaseDisposition`; edge outcomes are derived per R60.
+Schema stays version 1 because nothing is built yet. Post-v1 encoding changes increment
+`SchemaVersion`, readers reject unsupported versions, and compatible readers deploy before
+a writer appends the new version.
+
+**R69 — The successor must actually incorporate the predecessor. (important)**
+"You will rebase onto `<first>` … it stops treating its version of the shared file as
+final" was aspirational: the only enforcement checked whether the predecessor reached
+trunk, never whether the successor contains it, and a message delivered mid-phase gives an
+agent nothing to act on. By this document's own standard it must not legislate behavior it
+cannot detect. **Fix:** after the predecessor integrates, the successor stays held until
+the predecessor's protected tip is an ancestor of the successor's `HEAD`; otherwise it
+rebases onto current `main`, emits R52's `Resnapshot`, and reruns `sync check`. The claim
+about changing mid-phase behavior is deleted.
+
+**Confirmed, no change:** ordering stays conflict-time state. A Work Order declares its
+reservations and never its expected order — the relationship exists only while two
+reservations are live, so it is not knowable when the plan is written. The 28-Work-Order
+adoption cost is unchanged by sequencing.
+
+### D8 — RESOLVED by the user (2026-08-23): gate the ref, design the valve
+
+**Class:** `design-improvement`. **Severity:** critical. **Found by:** sequencing
+correctness and failure-modes lenses, independently. **Status:** `resolved` — enforce.
+
+**Problem.** "The later worktree cannot land first" is currently unenforceable. The
+`PreToolUse` hook governs `Edit`/`Write` only, `/sync` had no integration verb, and D1
+deliberately leaves `Bash` unconstrained — so `git merge`, `git rebase`, or
+`git update-ref` updates `refs/heads/main` without the reachability gate ever running.
+The check as written observes state; it does not enforce it. Adding `sync integrate` as
+the blessed path (done above) makes the guarantee *available*, not *binding*.
+
+**Why this is not auto-recorded.** The obvious hardening — a `reference-transaction`
+hook in the common git directory that rejects any direct `main` update lacking a one-use
+permit from `sync integrate` — is exactly the class of hard constraint D1 declined for
+editing. Both readings are coherent, and they differ in what they cost when wrong:
+
+- **Enforce.** A ref-transaction hook makes the ordering guarantee real. Cost: every
+  `main` update in every worktree goes through a gate, including ones with nothing to do
+  with coordination, and a broken or slow hook blocks all integration.
+- **Detect and notify**, consistent with D1. `sync integrate` is the supported path; an
+  out-of-band `main` update is caught by the next reconciliation and reported as an
+  incursion. Cost: the ordering guarantee is advisory, and the notification arrives after
+  the merge it was meant to prevent.
+
+Editing and integrating are not obviously the same case — an unwanted edit is a one-line
+revert, an out-of-order merge to trunk is the thing this system exists to prevent — which
+is why D1's answer does not automatically carry.
+
+#### Resolution
+
+**Enforce.** The `reference-transaction` hook ships, specified under `### The trunk gate`
+above. The user's reasoning, recorded: `Bash` was left unconstrained so agents could do
+ordinary work without friction, and updating trunk is not ordinary work — it is rare,
+deliberate, and the one act that is genuinely painful to undo. D1's answer does not carry
+here.
+
+**With a designed release valve**, in the user's words: *"i don't want to be permanently
+blocked if we're making some kind of decision to override a policy because we're accepting
+the fact that we may have a more complex merge coming."* Two levels —
+`sync integrate --force --why` for the deliberate accepted-conflict decision, and
+`HANA_SYNC_BYPASS=1` evaluated before any ledger read so that no failure of this system
+can trap anyone, R64's fail-closed integration included. A bypass is journalled and stays
+visible on the board; it does not mark the edge satisfied.
+
+**What this adds to v1:** the ref hook, the permit, the two escapes, and the bypassed-edge
+board state. R60's derived edge status is unaffected — a permit authorizes one ref update,
+it does not change what the edge means.
