@@ -20,6 +20,7 @@ use crate::constants::KEYMAP_TOML_HEADER;
 use crate::globals::AppGlobalAction;
 use crate::keymap;
 use crate::roster::Roster;
+use crate::sccache::SccacheStats;
 use crate::tiles::TileGrid;
 
 /// App-pane sections the keymap overlay walks, in display order. Every
@@ -58,6 +59,9 @@ pub(crate) struct App {
     /// The tile grid: how many cells the pane holds and the motion
     /// between one arrangement and the next.
     pub(crate) tiles:         TileGrid,
+    /// What sccache last reported, for the summary cell's top border,
+    /// and where the poll that refreshes it stands.
+    pub(crate) sccache:       SccacheStats,
     /// Message shown on the keymap overlay's selected row after a
     /// rejected capture.
     inline_error:             Option<String>,
@@ -80,6 +84,7 @@ impl App {
             startup_note,
             roster: Roster::new(),
             tiles: TileGrid::new(),
+            sccache: SccacheStats::new(),
             inline_error: None,
             started: Instant::now(),
         })

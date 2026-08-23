@@ -170,8 +170,17 @@ pub(crate) const PROGRESS_SCALE: u32 = 1000;
 /// manager's own cell reads much like the summary -- one row per cargo
 /// invocation it runs -- and this is what separates them at a glance.
 /// It is the only titled cell: a command's cell already says which
-/// command it is on every row it draws.
-pub(crate) const SUMMARY_CELL_TITLE: &str = "summary";
+/// command it is on every row it draws. The leading space holds the
+/// word off the corner glyph the title is set against.
+pub(crate) const SUMMARY_CELL_TITLE: &str = " summary";
+/// Cells of the summary cell's top border the sccache label never
+/// gets: the two corner glyphs, and one line cell kept between the
+/// label and the right corner so the two do not run together.
+pub(crate) const SUMMARY_LABEL_BORDER_RESERVE: u16 = 3;
+/// Cells between the sccache label's last character and the summary
+/// cell's top-right corner -- the corner glyph itself, and the line
+/// cell kept clear in front of it.
+pub(crate) const SUMMARY_LABEL_RIGHT_INSET: u16 = 2;
 /// The cell holding the running-cargo table. Cells are numbered from
 /// one and fill column by column, so the table is always the first.
 pub(crate) const TABLE_CELL: usize = 1;
@@ -221,7 +230,7 @@ pub(crate) const SELF_PROCESS_NAME: &str = BINARY_NAME;
 /// Compiler driver names counted under each cargo invocation, in
 /// reporting priority order: with a wrapper in use every `rustc` is a
 /// child of one, so `sccache` wins to avoid counting a compile twice.
-pub(crate) const COMPILER_PROCESS_NAMES: [&str; 2] = ["sccache", "rustc"];
+pub(crate) const COMPILER_PROCESS_NAMES: [&str; 2] = [SCCACHE_BINARY, "rustc"];
 /// How far up a parent chain to look for the cargo process that owns a
 /// compiler, bounding the walk against a reparented cycle.
 pub(crate) const PARENT_WALK_LIMIT: usize = 32;
@@ -394,3 +403,40 @@ pub(crate) const UNIT_COUNTER_TRAILER: &str = ":";
 /// word ahead of it arrives wrapped in colour codes, and what it names
 /// varies with which lock is held.
 pub(crate) const LOCK_WAIT_MARKER: &str = "waiting for file lock";
+
+// sccache
+/// The sccache executable: what the stats read runs, and the process
+/// name a scan recognises a running server by. `sccache --show-stats`
+/// starts a server when none is up, so the scan's answer is what keeps
+/// the read from creating the thing it reports on.
+pub(crate) const SCCACHE_BINARY: &str = "sccache";
+/// Word naming the cache span on the summary cell's border. The words
+/// there are the border's own, not sccache's: they are set beside the
+/// figures in a colour of their own and have to fit a top line.
+pub(crate) const SCCACHE_CACHE_WORD: &str = "cache";
+/// `sccache --show-stats` label for compiles served from the cache.
+pub(crate) const SCCACHE_HITS_LABEL: &str = "Cache hits";
+/// Word naming the hits figure on the summary cell's border.
+pub(crate) const SCCACHE_HITS_WORD: &str = "hits";
+/// `sccache --show-stats` label for the overall hit rate. The
+/// per-language rates are printed under labels of their own, which is
+/// why a field is matched on the whole label rather than a prefix.
+pub(crate) const SCCACHE_HIT_RATE_LABEL: &str = "Cache hits rate";
+/// Word naming the hit rate on the summary cell's border.
+pub(crate) const SCCACHE_HIT_RATE_WORD: &str = "hit rate";
+/// `sccache --show-stats` label for the cache's ceiling, past which it
+/// evicts.
+pub(crate) const SCCACHE_MAX_SIZE_LABEL: &str = "Max cache size";
+/// `sccache --show-stats` label for compiles that had to run.
+pub(crate) const SCCACHE_MISSES_LABEL: &str = "Cache misses";
+/// Word naming the misses figure on the summary cell's border.
+pub(crate) const SCCACHE_MISSES_WORD: &str = "misses";
+/// Gap between two `sccache --show-stats` reads. The figures are
+/// cumulative over a server's whole life, so they move slowly enough
+/// that reading them at the process poll's cadence would spend a
+/// process a quarter second to redraw the same line.
+pub(crate) const SCCACHE_POLL_SECONDS: u64 = 10;
+/// `sccache --show-stats` label for the disk the cache occupies.
+pub(crate) const SCCACHE_SIZE_LABEL: &str = "Cache size";
+/// The argument that makes sccache report its statistics.
+pub(crate) const SCCACHE_STATS_ARG: &str = "--show-stats";

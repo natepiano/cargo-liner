@@ -54,8 +54,10 @@ use crate::interaction;
 use crate::iterm2;
 use crate::iterm2::ProfileSwitch;
 use crate::processes;
-use crate::processes::CargoGroup;
+use crate::processes::Scan;
 use crate::render;
+use crate::sccache;
+use crate::sccache::SccacheSummary;
 use crate::settings;
 use crate::settings::Step;
 use crate::theme;
@@ -149,6 +151,9 @@ fn restore_terminal(
 fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::Result<()> {
     let input = spawn_input_thread();
     let scans = processes::spawn();
+    // Each due read runs on a worker of its own and replies here, so a
+    // server that has wedged parks that one thread rather than the loop.
+    let (sccache_reads, sccache_replies) = mpsc::channel();
     let mut dirty = true;
     let mut repainted = Instant::now();
     while !app.framework.quit_requested() && !app.framework.restart_requested() {
@@ -184,6 +189,14 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
         if drain_scans(app, &scans) {
             dirty = true;
         }
+        // The scan above is what says whether a server is up, so the
+        // read is claimed after it rather than before: on the first pass
+        // that ordering is the difference between the border filling in
+        // straight away and waiting out an interval for the next tick.
+        if drain_sccache(app, &sccache_replies) {
+            dirty = true;
+        }
+        sccache::refresh_if_due(&mut app.sccache, &sccache_reads, Instant::now());
         // A finished row holds its grey for the configured spell and
         // then goes, taking its cell with it. Nothing external announces
         // that moment, so the poll is what notices it has arrived.
@@ -213,12 +226,28 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
 ///
 /// Only the newest matters: an older scan queued behind it describes a
 /// world that has already moved on.
-fn drain_scans(app: &mut App, scans: &Receiver<Vec<CargoGroup>>) -> bool {
-    let mut latest: Option<Vec<CargoGroup>> = None;
+fn drain_scans(app: &mut App, scans: &Receiver<Scan>) -> bool {
+    let mut latest: Option<Scan> = None;
     while let Ok(scan) = scans.try_recv() {
         latest = Some(scan);
     }
-    latest.is_some_and(|scan| app.roster.observe(scan, Instant::now()))
+    let Some(scan) = latest else {
+        return false;
+    };
+    app.sccache.observe_server(scan.sccache);
+    app.roster.observe(scan.groups, Instant::now())
+}
+
+/// Take whatever the sccache workers have replied, reporting whether the
+/// summary's border changed.
+///
+/// Only the newest matters, for the same reason a scan's does.
+fn drain_sccache(app: &mut App, replies: &Receiver<SccacheSummary>) -> bool {
+    let mut latest: Option<SccacheSummary> = None;
+    while let Ok(summary) = replies.try_recv() {
+        latest = Some(summary);
+    }
+    latest.is_some_and(|summary| sccache::apply(&mut app.sccache, summary))
 }
 
 /// Read events on their own thread and forward them to the render loop.

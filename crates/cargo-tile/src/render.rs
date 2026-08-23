@@ -24,6 +24,7 @@ use tui_pane::GridLines;
 use tui_pane::Keymap;
 use tui_pane::KeymapPane;
 use tui_pane::PaneFocusState;
+use tui_pane::PaneFrameLabel;
 use tui_pane::PopupFrame;
 use tui_pane::RenderFocus;
 use tui_pane::SECTION_HEADER_INDENT;
@@ -80,6 +81,8 @@ use crate::constants::STATE_COLUMN;
 use crate::constants::STATUS_LINE_HEIGHT;
 use crate::constants::SUMMARY_CELL_TITLE;
 use crate::constants::SUMMARY_HIDDEN_COLUMNS;
+use crate::constants::SUMMARY_LABEL_BORDER_RESERVE;
+use crate::constants::SUMMARY_LABEL_RIGHT_INSET;
 use crate::constants::TABLE_COLUMN_SPACING;
 use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TABLE_HEADERS;
@@ -91,6 +94,8 @@ use crate::progress::Progress;
 use crate::progress::RunState;
 use crate::roster::Roster;
 use crate::roster::TrackedRow;
+use crate::sccache::LabelRunKind;
+use crate::sccache::SccacheStats;
 use crate::settings;
 use crate::tiles::TileContent;
 use crate::wrap;
@@ -142,7 +147,12 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect) {
             draw_contents(buffer, &app.roster, placement.content, inner);
         });
         match placement.content {
-            TileContent::Summary => grid_lines.add_titled(placement.frame, SUMMARY_CELL_TITLE),
+            TileContent::Summary => {
+                grid_lines.add_titled(placement.frame, SUMMARY_CELL_TITLE);
+                for label in sccache_label(&app.sccache, placement.frame.rect()) {
+                    grid_lines.add_label(placement.frame, label);
+                }
+            },
             TileContent::Group(_) | TileContent::Empty(_) => {
                 grid_lines.add(placement.frame);
             },
@@ -168,6 +178,65 @@ fn draw_contents(buffer: &mut Buffer, roster: &Roster, content: TileContent, inn
 fn draw_summary(buffer: &mut Buffer, roster: &Roster, inner: Rect) {
     let rows: Vec<&TrackedRow> = roster.groups().iter().map(|group| &group.lead).collect();
     draw_process_table(buffer, inner, &rows, TableKind::Summary);
+}
+
+/// What sccache reports, written along the summary cell's top border.
+///
+/// The border rather than a row inside the cell: the summary is the one
+/// cell competing for rows against the builds themselves, and the top
+/// line is already drawn. It carries [`SUMMARY_CELL_TITLE`] at its left
+/// and has the rest of its length spare.
+///
+/// `None` when no server is running, when nothing has been read yet, or
+/// when the cell is too narrow for even the hit rate --
+/// [`SccacheStats::label`] is what settles which of those it is.
+fn sccache_label(sccache: &SccacheStats, rect: Rect) -> Vec<PaneFrameLabel> {
+    let room = rect
+        .width
+        .saturating_sub(cell_width(SUMMARY_CELL_TITLE))
+        .saturating_sub(SUMMARY_LABEL_BORDER_RESERVE);
+    let Some(runs) = sccache.label(room) else {
+        return Vec::new();
+    };
+    // Set from the right, so the reading stays where the eye last found
+    // it as the grid opens and closes cells around it.
+    let width = runs.iter().fold(0, |total: u16, run| {
+        total.saturating_add(cell_width(&run.text))
+    });
+    let mut x = rect
+        .right()
+        .saturating_sub(SUMMARY_LABEL_RIGHT_INSET)
+        .saturating_sub(width);
+    // A label carries one style, so each run is set as a label of its
+    // own beside the last. They land where they are put: the rung was
+    // chosen to fit the room left over, so no run ever asks for a cell
+    // another has taken.
+    runs.into_iter()
+        .map(|run| {
+            let width = cell_width(&run.text);
+            let area = Rect {
+                x,
+                y: rect.top(),
+                width,
+                height: 1,
+            };
+            x = x.saturating_add(width);
+            PaneFrameLabel {
+                area,
+                text: run.text,
+                style: Style::default().fg(run_color(run.kind)),
+            }
+        })
+        .collect()
+}
+
+/// The colour a run of the sccache label is set in: the figures stand
+/// out from the words naming them.
+fn run_color(kind: LabelRunKind) -> Color {
+    match kind {
+        LabelRunKind::Name => label_color(),
+        LabelRunKind::Value => warning_color(),
+    }
 }
 
 /// Where a cell puts what it knows of each command's progress.

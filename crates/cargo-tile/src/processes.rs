@@ -46,6 +46,7 @@ use crate::constants::HOME_ALIAS;
 use crate::constants::MANIFEST_PATH_FLAG;
 use crate::constants::PARENT_WALK_LIMIT;
 use crate::constants::PROCESS_POLL_MILLIS;
+use crate::constants::SCCACHE_BINARY;
 use crate::constants::SECONDS_PER_HOUR;
 use crate::constants::SECONDS_PER_MINUTE;
 use crate::constants::SELF_PROCESS_NAME;
@@ -54,6 +55,7 @@ use crate::constants::UNRESOLVED_PATH;
 use crate::constants::UNRESOLVED_TIME;
 use crate::progress::Capture;
 use crate::progress::RunState;
+use crate::sccache::SccacheServer;
 
 /// One running `cargo` invocation, preformatted for the table.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -208,10 +210,25 @@ impl CargoGroup {
     pub(crate) const fn id(&self) -> u32 { self.lead.pid }
 }
 
+/// One scan's account of the machine: the cargo commands running, and
+/// whether an sccache server is up behind them.
+///
+/// The two travel together because they are read together. Phase one
+/// already names every process to find the compilers under each cargo,
+/// and a running server is one more name in that same pass -- which is
+/// what makes the answer free, and what keeps the summary's stats read
+/// from having to start a server to discover whether one is running.
+pub(crate) struct Scan {
+    /// The commands running, newest first.
+    pub(crate) groups:  Vec<CargoGroup>,
+    /// Whether a process named [`SCCACHE_BINARY`] was among them.
+    pub(crate) sccache: SccacheServer,
+}
+
 /// Start the scanner thread and hand back the channel it publishes on.
 ///
 /// The thread ends when the receiver is dropped.
-pub(crate) fn spawn() -> Receiver<Vec<CargoGroup>> {
+pub(crate) fn spawn() -> Receiver<Scan> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         let mut system = System::new();
@@ -227,7 +244,7 @@ pub(crate) fn spawn() -> Receiver<Vec<CargoGroup>> {
 }
 
 /// One two-phase scan, newest group first.
-fn scan(system: &mut System, home: Option<&Path>) -> Vec<CargoGroup> {
+fn scan(system: &mut System, home: Option<&Path>) -> Scan {
     // Phase one: pid, name, parent and start time for everything. None of
     // the fields this asks for require a per-process read of the argument
     // area, which is what makes it cheap enough to poll continuously.
@@ -262,7 +279,10 @@ fn scan(system: &mut System, home: Option<&Path>) -> Vec<CargoGroup> {
     census.collapse_shims(system);
 
     let counts = census.attribute_compilers();
-    census.groups(system, &counts, home, &Capture::take())
+    Scan {
+        sccache: census.sccache(),
+        groups:  census.groups(system, &counts, home, &Capture::take()),
+    }
 }
 
 /// What phase one learned: the parent links, the cargo processes, and the
@@ -299,6 +319,24 @@ impl Census {
             }
         }
         census
+    }
+
+    /// Whether phase one saw an sccache server.
+    ///
+    /// The server is a process named [`SCCACHE_BINARY`] like any other,
+    /// so it lands in `compilers` whether or not a build is running --
+    /// which is what lets this answer while the machine is idle, when a
+    /// hit rate is exactly what a developer is looking at.
+    fn sccache(&self) -> SccacheServer {
+        if self
+            .compilers
+            .iter()
+            .any(|&(_, driver)| driver == SCCACHE_BINARY)
+        {
+            SccacheServer::Running
+        } else {
+            SccacheServer::Stopped
+        }
     }
 
     /// Count each cargo invocation's compiler descendants, reporting the

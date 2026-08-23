@@ -14,6 +14,7 @@ mod processes;
 mod progress;
 mod render;
 mod roster;
+mod sccache;
 mod settings;
 mod terminal;
 mod theme;
