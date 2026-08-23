@@ -9,7 +9,6 @@ use tui_pane::TrackedItemActivity;
 use tui_pane::TrackedItemKey;
 
 use super::constants::MAX_MSGS_PER_FRAME;
-use crate::process_termination::TerminationResultPoll;
 use crate::scan::BackgroundMsg;
 use crate::tui::app::App;
 use crate::tui::app::poll_background_stats::PollBackgroundStats;
@@ -28,7 +27,6 @@ impl App {
         let mut msg_count = 0;
         let started = Instant::now();
         let mut stats = PollBackgroundStats::default();
-        let project_list_revision_before = self.project_list.revision();
 
         while msg_count < MAX_MSGS_PER_FRAME {
             let Ok(msg) = self.background.background_receiver().try_recv() else {
@@ -41,8 +39,6 @@ impl App {
         stats.bg_msgs = msg_count;
         log_saturated_background_batch(&stats);
         stats.ci_msgs = self.poll_ci_fetches();
-        self.background.poll_process_termination_worker_readiness();
-        self.poll_build_termination_results();
         stats.example_msgs = self.poll_example_msgs();
         self.poll_clean_msgs();
         let now = Instant::now();
@@ -59,19 +55,6 @@ impl App {
             self.maybe_priority_fetch();
         }
         stats.rebuild_status = rebuild_status;
-
-        // Background handlers can advance `ProjectList::revision` without
-        // routing through `sync_selected_project` (discovery, refresh, disk,
-        // and submodule mutations), so re-resolve the enabled monitor scope
-        // whenever this batch changed visible ownership.
-        if self.project_list.revision() != project_list_revision_before {
-            // The scope is resolved from the cached rows and termination
-            // authority reads it, so the cache is brought current first. Every
-            // handler that changes the rows already rebuilds them, which makes
-            // this a guard rather than the rebuild those paths depend on.
-            self.ensure_visible_rows_cached();
-            self.refresh_compile_monitor_scope_if_on();
-        }
 
         let elapsed = started.elapsed();
         if elapsed.as_millis() >= SLOW_BG_BATCH_MS {
@@ -175,12 +158,6 @@ impl App {
                     let _ = self
                         .inflight
                         .reconcile_owned_run_termination(owned_run_termination_outcome);
-                    let build_termination_completion_transition = self
-                        .build_monitor
-                        .reconcile_owned_termination(owned_run_termination_outcome);
-                    self.consume_build_termination_completion_transition(
-                        build_termination_completion_transition,
-                    );
                 },
                 OwnedRunEvent::Finished { owned_run_id } => {
                     if self.inflight.finish_owned_run(owned_run_id)
@@ -190,12 +167,6 @@ impl App {
                         // visible — unless a selection is holding the view.
                         self.panes.output.on_process_exit();
                     }
-                    let build_termination_completion_transition = self
-                        .build_monitor
-                        .reconcile_owned_termination_finished(owned_run_id);
-                    self.consume_build_termination_completion_transition(
-                        build_termination_completion_transition,
-                    );
                 },
             }
             count += 1;
@@ -203,27 +174,6 @@ impl App {
         count
     }
 
-    /// Reconcile every completed external outcome without waiting for the
-    /// worker. Transaction deadlines are checked from the foreground tick so a
-    /// disconnected or slow backend cannot hold lifecycle state indefinitely.
-    fn poll_build_termination_results(&mut self) {
-        while let TerminationResultPoll::Completed(termination_outcome_summary) =
-            self.background.poll_process_termination_outcome()
-        {
-            let build_termination_completion_transition = self
-                .build_monitor
-                .reconcile_external_termination(&termination_outcome_summary);
-            self.consume_build_termination_completion_transition(
-                build_termination_completion_transition,
-            );
-        }
-        let build_termination_completion_transition = self
-            .build_monitor
-            .expire_termination_transaction(Instant::now());
-        self.consume_build_termination_completion_transition(
-            build_termination_completion_transition,
-        );
-    }
     pub(super) fn poll_clean_msgs(&mut self) {
         while let Ok(msg) = self.background.clean_rx().try_recv() {
             match msg {
@@ -314,191 +264,4 @@ pub(super) fn log_saturated_background_batch(stats: &PollBackgroundStats) {
         language_progress_msgs = stats.language_progress_msgs,
         "poll_background_saturated"
     );
-}
-
-#[cfg(test)]
-mod tests {
-    use std::path::Path;
-
-    use crate::project::AbsolutePath;
-    use crate::project::Package;
-    use crate::project::RootItem;
-    use crate::project::RustProject;
-    use crate::scan::BackgroundMsg;
-    use crate::tui::app::App;
-    use crate::tui::state::OwnedProcessGroupSignalOutcome;
-    use crate::tui::state::OwnedRunCompletionMarker;
-    use crate::tui::state::OwnedRunId;
-    use crate::tui::state::OwnedRunTermination;
-    use crate::tui::state::OwnedRunTerminationOutcome;
-    use crate::tui::state::OwnedRunTerminationSubmission;
-    use crate::tui::terminal::OwnedRunEvent;
-    use crate::tui::test_support;
-
-    fn make_package(path: &Path) -> RootItem {
-        RootItem::Rust(RustProject::Package(Package {
-            path: AbsolutePath::from(path),
-            name: path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned()),
-            ..Package::default()
-        }))
-    }
-
-    fn prepare_pending_owned_run(app: &mut App) -> Result<OwnedRunId, Box<dyn std::error::Error>> {
-        app.inflight
-            .set_example_running(Some("ordered event fixture".to_string()));
-        let OwnedRunTermination::Available {
-            owned_run_id,
-            owned_run_termination_token,
-        } = app.inflight.owned_run_termination()
-        else {
-            return Err("the fixture should expose owned-run termination authority".into());
-        };
-        let submission = app
-            .inflight
-            .submit_owned_run_termination(owned_run_termination_token);
-        if submission != OwnedRunTerminationSubmission::Submitted(owned_run_id) {
-            return Err(format!(
-                "the fixture termination request was not accepted: {submission:?}"
-            )
-            .into());
-        }
-        Ok(owned_run_id)
-    }
-
-    fn queue_termination_outcome_and_completion(
-        app: &App,
-        owned_run_id: OwnedRunId,
-        owned_run_termination_outcome: OwnedRunTerminationOutcome,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let owned_run_event_sender = app.background.example_sender();
-        owned_run_event_sender
-            .send(OwnedRunEvent::TerminationOutcome(
-                owned_run_termination_outcome,
-            ))
-            .map_err(|_| "the owned-run event channel should accept the outcome")?;
-        owned_run_event_sender
-            .send(OwnedRunEvent::Finished { owned_run_id })
-            .map_err(|_| "the owned-run event channel should accept completion")?;
-        Ok(())
-    }
-
-    #[test]
-    fn queued_successful_signal_outcome_precedes_completion_and_labels_the_run_killed()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let mut app = test_support::make_app(&[]);
-        let owned_run_id = prepare_pending_owned_run(&mut app)?;
-        queue_termination_outcome_and_completion(
-            &app,
-            owned_run_id,
-            OwnedRunTerminationOutcome::Honored {
-                owned_run_id,
-                signal: OwnedProcessGroupSignalOutcome::Sent,
-            },
-        )?;
-
-        assert_eq!(app.poll_example_msgs(), 2);
-        assert_eq!(
-            app.inflight.owned_run().completion_marker(),
-            OwnedRunCompletionMarker::Killed
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn failed_signal_followed_by_natural_completion_labels_the_run_done()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let mut app = test_support::make_app(&[]);
-        let owned_run_id = prepare_pending_owned_run(&mut app)?;
-        queue_termination_outcome_and_completion(
-            &app,
-            owned_run_id,
-            OwnedRunTerminationOutcome::Honored {
-                owned_run_id,
-                signal: OwnedProcessGroupSignalOutcome::SignalFailed,
-            },
-        )?;
-
-        assert_eq!(app.poll_example_msgs(), 2);
-        assert_eq!(
-            app.inflight.owned_run().completion_marker(),
-            OwnedRunCompletionMarker::Done
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn refused_signal_followed_by_natural_completion_labels_the_run_done()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let mut app = test_support::make_app(&[]);
-        let owned_run_id = prepare_pending_owned_run(&mut app)?;
-        queue_termination_outcome_and_completion(
-            &app,
-            owned_run_id,
-            OwnedRunTerminationOutcome::Refused { owned_run_id },
-        )?;
-
-        assert_eq!(app.poll_example_msgs(), 2);
-        assert_eq!(
-            app.inflight.owned_run().completion_marker(),
-            OwnedRunCompletionMarker::Done
-        );
-        Ok(())
-    }
-
-    /// `disk_handlers` flips a project to deleted and advances the project-list
-    /// revision without routing through `sync_selected_project`, so the batch
-    /// that ends in such a flip has to re-resolve the monitor scope itself. The
-    /// revision is stamped into the scope key, so a batch that skipped the
-    /// re-resolve would leave the enabled monitor — and the termination
-    /// authority that reads its scope — holding a scope the very next resolve
-    /// declares non-current, tearing classification down every frame.
-    #[test]
-    fn a_background_revision_bump_leaves_the_monitor_holding_a_current_scope()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let temp_dir = tempfile::tempdir()?;
-        // Never created on disk: `apply_disk_usage` only flips a project to
-        // deleted when a zero-byte report meets a path that no longer exists.
-        let removed_root = temp_dir.path().join("removed");
-        let retained_root = temp_dir.path().join("retained");
-        std::fs::create_dir_all(&retained_root)?;
-        let mut app =
-            test_support::make_app(&[make_package(&removed_root), make_package(&retained_root)]);
-        app.ensure_visible_rows_cached();
-        app.project_list
-            .set_cursor(app.project_list.visible_rows().len().saturating_sub(1));
-        app.toggle_compile_visibility(std::time::Instant::now());
-        let scope_before_flip = app.resolve_compile_monitor_scope();
-
-        app.background
-            .background_sender()
-            .send(BackgroundMsg::DiskUsage {
-                path:  AbsolutePath::from(removed_root.as_path()),
-                bytes: 0,
-            })?;
-        app.poll_background();
-
-        assert!(
-            app.project_list.is_deleted(&removed_root),
-            "the zero-byte report against a missing path flipped the project to deleted"
-        );
-        let scope_after_flip = app.resolve_compile_monitor_scope();
-        assert_ne!(
-            scope_before_flip.monitor_scope_resolution(),
-            scope_after_flip.monitor_scope_resolution(),
-            "the flip stamped a new project-list revision into the resolved scope"
-        );
-        assert_eq!(
-            scope_before_flip.monitor_selected_row(),
-            scope_after_flip.monitor_selected_row(),
-            "a deleted project keeps its row, so the cursor still names the same one"
-        );
-        assert!(
-            !app.compile_visibility_state
-                .requires_scope_replacement(&scope_after_flip),
-            "the batch already moved the monitor onto the scope the flip resolves to"
-        );
-        Ok(())
-    }
 }

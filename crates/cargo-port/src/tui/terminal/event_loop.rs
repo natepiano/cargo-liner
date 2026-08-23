@@ -22,12 +22,11 @@ use crate::channel::Receiver;
 use crate::channel::Select;
 use crate::channel::TryRecvError;
 use crate::process_observation::ProcessRefreshDeadline;
+use crate::process_observation::ProcessRefreshResultReceiver;
 use crate::project::AbsolutePath;
 use crate::tui::app::App;
 use crate::tui::app::PollBackgroundStats;
-use crate::tui::background::ProcessTerminationResultReceiver;
 use crate::tui::input;
-use crate::tui::process_refresh::AppProcessRefreshResultReceiver;
 use crate::tui::process_refresh::ObserverRefreshTiming;
 use crate::tui::render;
 use crate::tui::state::OwnedRunLaunchStart;
@@ -174,15 +173,10 @@ fn wait_for_event(app: &App, input_rx: &Receiver<Event>) {
     if app.panes.cpu.is_sampling() {
         select.recv(app.panes.cpu.sample_rx());
     }
-    if let AppProcessRefreshResultReceiver::DedicatedWorker(process_refresh_result_receiver) =
+    if let ProcessRefreshResultReceiver::DedicatedWorker(process_refresh_result_receiver) =
         app.process_refresh_result_receiver()
     {
         select.recv(process_refresh_result_receiver);
-    }
-    if let ProcessTerminationResultReceiver::Worker(process_termination_result_receiver) =
-        app.background.process_termination_result_receiver()
-    {
-        select.recv(process_termination_result_receiver);
     }
     // The fired index is ignored: the loop body drains every source.
     let _ = select.ready_timeout(timeout);

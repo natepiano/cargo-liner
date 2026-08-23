@@ -114,7 +114,6 @@ tui_pane::action_enum! {
         SccacheStats => ("sccache_stats", "sccache",  "Show sccache stats");
         PauseSelectedLint => ("pause_selected_lint", "pause selected", "Pause or resume selected lints");
         PauseAllLints     => ("pause_all_lints",     "pause all",      "Pause or resume all lints");
-        ToggleCompileVisibility => ("toggle_compile_visibility", "builds", "Show or hide the build monitor");
     }
 }
 

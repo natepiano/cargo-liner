@@ -5,8 +5,6 @@ use std::path::Path;
 
 use processkit::process_info;
 use sha2::Digest as _;
-use sysinfo::ProcessesToUpdate;
-use sysinfo::UpdateKind;
 
 use super::snapshot::ProcessFieldObservation;
 use super::snapshot::ProcessFieldUnavailable;
@@ -108,16 +106,6 @@ impl ProcessIdentity {
         Self {
             pid,
             creation_token: PlatformCreationToken::for_test(creation_token),
-        }
-    }
-
-    /// Model this observed lifetime after a process-table fixture assigns its
-    /// creation token to a reused PID.
-    #[cfg(test)]
-    pub(crate) fn with_pid_for_test(&self, pid: u32) -> Self {
-        Self {
-            pid,
-            creation_token: self.creation_token.clone(),
         }
     }
 }
@@ -696,17 +684,6 @@ pub(crate) struct ProcessIncarnation {
 }
 
 impl ProcessIncarnation {
-    /// Build one incarnation from a name that stands in for observed
-    /// executable and argument fields, so classification tests can key
-    /// sessions and activities without a host refresh.
-    #[cfg(test)]
-    pub(crate) fn for_test(process_identity: ProcessIdentity, fingerprint_source: &str) -> Self {
-        Self::new(
-            process_identity,
-            ProcessFingerprint::from_observed_fields(std::path::Path::new(fingerprint_source), &[]),
-        )
-    }
-
     pub(super) const fn new(
         identity: ProcessIdentity,
         executable_argv_fingerprint: ProcessFingerprint,
@@ -722,51 +699,6 @@ impl ProcessIncarnation {
     #[cfg(test)]
     pub(super) const fn executable_argv_fingerprint(&self) -> &ProcessFingerprint {
         &self.executable_argv_fingerprint
-    }
-}
-
-/// Whether a PID still runs the executable image and arguments that were
-/// observed when authority over it was established.
-///
-/// A [`ProcessIdentity`] cannot answer this: `exec` keeps the PID and the
-/// creation token, so a process that replaced its image is still the same
-/// lifetime. Only the [`ProcessIncarnation`] fingerprint separates them.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ProcessImageContinuity {
-    SameImage,
-    ReplacedImage,
-    ProcessGone,
-    Unobservable,
-}
-
-/// Re-observe a PID's executable image and arguments and compare them with the
-/// incarnation that authority over it was bound to.
-///
-/// This is observation only: it produces evidence and never signals.
-pub(crate) fn observe_process_image_continuity(
-    authorized_incarnation: &ProcessIncarnation,
-) -> ProcessImageContinuity {
-    let pid = sysinfo::Pid::from_u32(authorized_incarnation.identity.pid());
-    let mut system = sysinfo::System::new();
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&[pid]),
-        true,
-        sysinfo::ProcessRefreshKind::nothing()
-            .with_exe(UpdateKind::Always)
-            .with_cmd(UpdateKind::Always),
-    );
-    let Some(process) = system.process(pid) else {
-        return ProcessImageContinuity::ProcessGone;
-    };
-    let Some(executable) = process.exe() else {
-        return ProcessImageContinuity::Unobservable;
-    };
-    if ProcessFingerprint::from_observed_fields(executable, process.cmd())
-        == authorized_incarnation.executable_argv_fingerprint
-    {
-        ProcessImageContinuity::SameImage
-    } else {
-        ProcessImageContinuity::ReplacedImage
     }
 }
 

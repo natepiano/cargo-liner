@@ -57,8 +57,6 @@ tui_pane::action_enum! {
     pub enum OutputAction {
         SelectAll         => ("select_all",          "select all", "Select all lines");
         Cancel            => ("cancel",              "close",      "Close output pane");
-        KillSelectedBuild => ("kill_selected_build", "kill",       "Stop the selected build");
-        TerminateOutputBuildSet => ("kill_scoped_builds", "kill all", "Stop every build shown in Output");
     }
 }
 

@@ -106,7 +106,6 @@ pub(super) fn spawn_owned_run_process(app: &mut App, owned_run_id: OwnedRunId) {
         return;
     };
 
-    let root_identity = verified_process_identity.clone().into_process_identity();
     let stderr = child.stderr.take();
     let stdout = child.stdout.take();
     let started_sender = app.background.example_sender();
@@ -135,7 +134,7 @@ pub(super) fn spawn_owned_run_process(app: &mut App, owned_run_id: OwnedRunId) {
     let output_was_empty = app.inflight.owned_run().output_is_empty();
     match app
         .inflight
-        .activate_owned_run(owned_run_id, owned_run_process_actor, root_identity)
+        .activate_owned_run(owned_run_id, owned_run_process_actor)
     {
         OwnedRunActivation::Activated => {},
         OwnedRunActivation::NoMatchingStartingRun(owned_run_process_actor) => {

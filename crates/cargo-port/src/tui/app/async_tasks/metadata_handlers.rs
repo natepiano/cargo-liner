@@ -147,7 +147,6 @@ impl App {
             }
             self.sync_selected_project();
         }
-        self.refresh_compile_monitor_scope_if_on();
         if needs_out_of_tree_walk {
             scan::spawn_out_of_tree_target_walk(
                 &self.net.http_client.handle,

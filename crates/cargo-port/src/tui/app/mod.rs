@@ -135,18 +135,12 @@ pub(super) use super::app_render_state::OverlayRenderInputs;
 pub(super) use super::app_render_state::RenderBorrows;
 pub(super) use super::app_render_state::RenderRegistry;
 use super::background::Background;
-use super::background::ProcessTerminatorAvailability;
 #[cfg(test)]
-use super::background::ProcessTerminatorReadinessForTest;
 #[cfg(test)]
 use super::columns::LintCell;
 pub(super) use super::columns::ProjectListWidths;
 #[cfg(test)]
 use super::columns::StyledSegment;
-use super::compile_visibility;
-use super::compile_visibility::CompileMonitorGeneration;
-use super::compile_visibility::CompileVisibilityState;
-use super::compile_visibility::MonitorScopeUpdate;
 use super::integration;
 use super::integration::AppPaneId;
 use super::interaction;
@@ -154,26 +148,16 @@ use super::keymap;
 use super::overlays::Overlays;
 use super::panes;
 use super::panes::BottomRow;
-use super::panes::OutputBuildSetTerminationConfirmationDisplay;
-use super::panes::OutputBuildSetTerminationConfirmationDisplayResolution;
 use super::panes::OutputCopyAvailability;
-use super::panes::OutputMonitorVisibility;
 use super::panes::OutputPane;
 use super::panes::OutputPaneVisibility;
 use super::panes::OutputPresentation;
-use super::panes::OwnedColumnSelection;
 use super::panes::PaneBehavior;
 use super::panes::PaneId;
 use super::panes::Panes;
-use super::panes::SelectedBuildTerminationConfirmationDisplay;
-use super::panes::SelectedBuildTerminationSelection;
 use super::panes::SyncedDescriptionHeight;
-use super::panes::VisualSelectionPermission;
-use super::process_refresh::AppProcessRefreshExecutor;
-use super::process_refresh::CompileClassificationInFlight;
 pub(super) use super::project_list::ExpandKey;
 use super::project_list::ProjectList;
-use super::project_list::ProjectListRowDisplayPathResolution;
 pub(super) use super::project_list::VisibleRow;
 use super::render_context::PaneRenderCtx;
 use super::running_targets::RunningTargetTerminationCapability;
@@ -200,23 +184,6 @@ use super::state::Scan;
 use super::state::SyncTracker;
 #[cfg(test)]
 use super::test_support::FixtureDirs;
-use crate::build_monitor::AdditionalBuildExclusion;
-use crate::build_monitor::BUILD_TERMINATION_TIMEOUT;
-use crate::build_monitor::BuildMonitor;
-use crate::build_monitor::BuildScopeActionability;
-use crate::build_monitor::BuildTerminationAggregateCompletion;
-use crate::build_monitor::BuildTerminationAuthorizationConstruction;
-use crate::build_monitor::BuildTerminationCompletionTransition;
-use crate::build_monitor::BuildTerminationDeadline;
-use crate::build_monitor::BuildTerminationSessionCompletion;
-use crate::build_monitor::BuildTerminationSubmission;
-use crate::build_monitor::BuildTerminationSubmissionRefusal;
-use crate::build_monitor::BuildTerminationTerminalRecord;
-use crate::build_monitor::BuildTerminationTransactionTargetSet;
-use crate::build_monitor::OutputBuildSetTerminationAuthorization;
-use crate::build_monitor::OutputBuildSetTerminationAvailability;
-use crate::build_monitor::SelectedBuildTerminationAuthorization;
-use crate::build_monitor::SelectedBuildTerminationAvailability;
 use crate::channel::Receiver;
 use crate::channel::Sender;
 use crate::ci::OwnerRepo;
@@ -227,6 +194,7 @@ use crate::lint;
 use crate::lint::LintRuns;
 #[cfg(test)]
 use crate::lint::LintStatus;
+use crate::process_observation::ProcessRefreshExecutor;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::CargoWorkspaceIndex;
@@ -237,42 +205,6 @@ use crate::project::WorkspaceMetadataStore;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::MetadataDispatchContext;
-
-/// One ready confirmation whose opaque authority must either submit or return
-/// to the same modal when the termination worker is not available yet.
-enum ConfirmedBuildTerminationRequest {
-    SelectedBuild {
-        selected_build_termination_confirmation_display:
-            SelectedBuildTerminationConfirmationDisplay,
-        selected_build_termination_authorization:        Box<SelectedBuildTerminationAuthorization>,
-    },
-    OutputBuildSet {
-        output_build_set_termination_confirmation_display:
-            OutputBuildSetTerminationConfirmationDisplay,
-        output_build_set_termination_authorization: Box<OutputBuildSetTerminationAuthorization>,
-    },
-}
-
-impl ConfirmedBuildTerminationRequest {
-    fn into_confirm_action(self) -> ConfirmAction {
-        match self {
-            Self::SelectedBuild {
-                selected_build_termination_confirmation_display,
-                selected_build_termination_authorization,
-            } => ConfirmAction::TerminateSelectedBuild {
-                selected_build_termination_confirmation_display,
-                selected_build_termination_authorization,
-            },
-            Self::OutputBuildSet {
-                output_build_set_termination_confirmation_display,
-                output_build_set_termination_authorization,
-            } => ConfirmAction::TerminateOutputBuildSet {
-                output_build_set_termination_confirmation_display,
-                output_build_set_termination_authorization,
-            },
-        }
-    }
-}
 
 pub(super) struct App {
     /// Net subsystem. Owns the shared `HttpClient`, the GitHub
@@ -332,18 +264,10 @@ pub(super) struct App {
     /// It rebuilds only after accepted Cargo metadata or the `ProjectList`
     /// revision changes; event-loop wakes retain the current view.
     pub(super) cargo_workspace_index:                       Arc<CargoWorkspaceIndex>,
-    /// What the compile monitor has classified and still has to show. It is
-    /// held whether or not visibility is enabled; `MonitorSnapshot::Off` is the
-    /// state it holds while off.
-    pub(super) build_monitor:                               BuildMonitor,
-    /// Selected-scope state for the optional compile monitor. `Off` owns no
-    /// monitor snapshot, deadline, tombstone, or process-refresh demand.
-    pub(super) compile_visibility_state:                    CompileVisibilityState,
-    /// App-owned monotonic source for active compile-monitor generations.
-    pub(super) compile_monitor_generation:                  CompileMonitorGeneration,
     /// Sole scheduler and owner of the shared host process observer.
-    pub(super) process_refresh_executor:                    AppProcessRefreshExecutor,
-    pub(super) compile_classification_in_flight:            CompileClassificationInFlight,
+    pub(super) process_refresh_executor:                    ProcessRefreshExecutor,
+    /// Sole scheduler and owner of the shared host process observer.
+
     /// Number of Running Targets attribution collections performed by this
     /// app. Tests use it to verify the cadence gate precedes filesystem work.
     #[cfg(test)]
@@ -740,18 +664,12 @@ impl App {
             inflight,
             scan,
             framework,
-            compile_visibility_state,
-            build_monitor,
             ..
         } = self;
         let running_targets = panes.running_targets.snapshot();
         let output_presentation = OutputPresentation::derive(
-            compile_visibility_state,
-            build_monitor.monitor_snapshot(),
-            build_monitor.termination_lifecycle_registry(),
             inflight.owned_run().output_state(),
             inflight.owned_run().running_label(),
-            inflight.owned_run().completion_marker(),
         );
         let registry = RenderRegistry {
             package: &mut panes.package,
@@ -790,12 +708,8 @@ impl App {
     /// the popup sizes itself off the whole frame area.
     pub(super) fn split_finder_for_render(&mut self) -> FinderSplit<'_> {
         let output_presentation = OutputPresentation::derive(
-            &self.compile_visibility_state,
-            self.build_monitor.monitor_snapshot(),
-            self.build_monitor.termination_lifecycle_registry(),
             self.inflight.owned_run().output_state(),
             self.inflight.owned_run().running_label(),
-            self.inflight.owned_run().completion_marker(),
         );
         FinderSplit {
             finder_pane: &mut self.overlays.finder_pane,
@@ -901,426 +815,6 @@ impl App {
             },
             ConfirmationReadiness::Ready,
         );
-    }
-
-    /// Freeze selected-build authority after the Output cursor resolves one
-    /// current session column. The display target identifies the column; only
-    /// `BuildMonitor` may turn it into an opaque authorization.
-    pub(super) fn request_selected_build_termination_confirmation(&mut self) {
-        let selected_build_termination_selection = self
-            .panes
-            .output
-            .selected_build_termination_selection(&self.output_presentation());
-        let SelectedBuildTerminationSelection::SelectedBuild(
-            selected_build_termination_display_target,
-        ) = selected_build_termination_selection
-        else {
-            self.show_timed_warning_toast(
-                "Build termination unavailable",
-                "No build column is selected",
-            );
-            return;
-        };
-        let (build_session_id, selected_build_termination_confirmation_display) =
-            selected_build_termination_display_target.into_parts();
-        match self
-            .build_monitor
-            .selected_termination_availability(&build_session_id)
-        {
-            SelectedBuildTerminationAvailability::Available => {},
-            selected_build_termination_availability => {
-                self.show_selected_build_termination_unavailable(
-                    selected_build_termination_availability,
-                );
-                return;
-            },
-        }
-        match self
-            .build_monitor
-            .selected_termination_authorization(&build_session_id)
-        {
-            BuildTerminationAuthorizationConstruction::Authorized(
-                selected_build_termination_authorization,
-            ) => self.open_confirmation(
-                ConfirmAction::TerminateSelectedBuild {
-                    selected_build_termination_confirmation_display,
-                    selected_build_termination_authorization: Box::new(
-                        selected_build_termination_authorization,
-                    ),
-                },
-                ConfirmationReadiness::Ready,
-            ),
-            BuildTerminationAuthorizationConstruction::SnapshotNotActionable => {
-                self.show_selected_build_termination_unavailable(
-                    SelectedBuildTerminationAvailability::SnapshotNotActionable,
-                );
-            },
-            BuildTerminationAuthorizationConstruction::SessionNotActionable
-            | BuildTerminationAuthorizationConstruction::BuildSetNotFullyActionable => {
-                self.show_selected_build_termination_unavailable(
-                    SelectedBuildTerminationAvailability::SessionNotActionable,
-                );
-            },
-            BuildTerminationAuthorizationConstruction::Busy => {
-                self.show_selected_build_termination_unavailable(
-                    SelectedBuildTerminationAvailability::Busy,
-                );
-            },
-        }
-    }
-
-    /// Freeze one exact all-or-refuse Output build set after checking the
-    /// active monitor scope that authorizes destructive classification.
-    pub(super) fn request_output_build_set_termination_confirmation(&mut self) {
-        if self.build_scope_actionability() == BuildScopeActionability::NotActionable {
-            self.show_output_build_set_termination_unavailable(
-                OutputBuildSetTerminationAvailability::SnapshotNotActionable,
-            );
-            return;
-        }
-        match self.output_build_set_termination_availability() {
-            OutputBuildSetTerminationAvailability::Available => {},
-            output_build_set_termination_availability => {
-                self.show_output_build_set_termination_unavailable(
-                    output_build_set_termination_availability,
-                );
-                return;
-            },
-        }
-        let project_list_row_display_path_resolution = self.project_list.selected_row().map_or(
-            ProjectListRowDisplayPathResolution::RowUnavailable,
-            |visible_row| self.project_list.display_path_for_row(visible_row),
-        );
-        let output_build_set_termination_confirmation_display_resolution = self
-            .output_presentation()
-            .output_build_set_termination_confirmation_display_resolution(
-                project_list_row_display_path_resolution,
-                Instant::now(),
-            );
-        let OutputBuildSetTerminationConfirmationDisplayResolution::Ready(
-            output_build_set_termination_confirmation_display,
-        ) = output_build_set_termination_confirmation_display_resolution
-        else {
-            self.show_timed_warning_toast(
-                "Build termination unavailable",
-                "The selected project row is no longer available",
-            );
-            return;
-        };
-        match self
-            .build_monitor
-            .output_build_set_termination_authorization()
-        {
-            BuildTerminationAuthorizationConstruction::Authorized(
-                output_build_set_termination_authorization,
-            ) => self.open_confirmation(
-                ConfirmAction::TerminateOutputBuildSet {
-                    output_build_set_termination_confirmation_display,
-                    output_build_set_termination_authorization: Box::new(
-                        output_build_set_termination_authorization,
-                    ),
-                },
-                ConfirmationReadiness::Ready,
-            ),
-            BuildTerminationAuthorizationConstruction::SnapshotNotActionable => {
-                self.show_output_build_set_termination_unavailable(
-                    OutputBuildSetTerminationAvailability::SnapshotNotActionable,
-                );
-            },
-            BuildTerminationAuthorizationConstruction::SessionNotActionable
-            | BuildTerminationAuthorizationConstruction::BuildSetNotFullyActionable => {
-                self.show_output_build_set_termination_unavailable(
-                    OutputBuildSetTerminationAvailability::BuildSetNotFullyActionable,
-                );
-            },
-            BuildTerminationAuthorizationConstruction::Busy => {
-                self.show_output_build_set_termination_unavailable(
-                    OutputBuildSetTerminationAvailability::Busy,
-                );
-            },
-        }
-    }
-
-    /// Set deterministic process-terminator readiness for an input fixture.
-    #[cfg(test)]
-    pub(super) const fn set_process_terminator_readiness_for_test(
-        &mut self,
-        process_terminator_readiness_for_test: ProcessTerminatorReadinessForTest,
-    ) {
-        self.background
-            .set_process_terminator_readiness_for_test(process_terminator_readiness_for_test);
-    }
-
-    /// Submit selected-build authority through the shared confirmed-request
-    /// operation.
-    pub(super) fn submit_selected_build_termination(
-        &mut self,
-        selected_build_termination_confirmation_display: SelectedBuildTerminationConfirmationDisplay,
-        selected_build_termination_authorization: SelectedBuildTerminationAuthorization,
-    ) {
-        self.submit_confirmed_build_termination(ConfirmedBuildTerminationRequest::SelectedBuild {
-            selected_build_termination_confirmation_display,
-            selected_build_termination_authorization: Box::new(
-                selected_build_termination_authorization,
-            ),
-        });
-    }
-
-    /// Submit output-build-set authority through the same confirmed-request
-    /// operation selected termination uses.
-    pub(super) fn submit_output_build_set_termination(
-        &mut self,
-        output_build_set_termination_confirmation_display: OutputBuildSetTerminationConfirmationDisplay,
-        output_build_set_termination_authorization: OutputBuildSetTerminationAuthorization,
-    ) {
-        self.submit_confirmed_build_termination(ConfirmedBuildTerminationRequest::OutputBuildSet {
-            output_build_set_termination_confirmation_display,
-            output_build_set_termination_authorization: Box::new(
-                output_build_set_termination_authorization,
-            ),
-        });
-    }
-
-    /// Submit one ready confirmation, preserving it if the worker is still
-    /// starting and driving selected and Output-build-set completion through
-    /// one lifecycle owner.
-    fn submit_confirmed_build_termination(
-        &mut self,
-        confirmed_build_termination_request: ConfirmedBuildTerminationRequest,
-    ) {
-        match self.background.available_process_terminator() {
-            ProcessTerminatorAvailability::Available(process_terminator) => {
-                let build_termination_submission = match confirmed_build_termination_request {
-                    ConfirmedBuildTerminationRequest::SelectedBuild {
-                        selected_build_termination_authorization,
-                        ..
-                    } => self.build_monitor.submit_selected_termination(
-                        *selected_build_termination_authorization,
-                        process_terminator,
-                        BuildTerminationDeadline::from_submission_time(Instant::now()),
-                    ),
-                    ConfirmedBuildTerminationRequest::OutputBuildSet {
-                        output_build_set_termination_authorization,
-                        ..
-                    } => self.build_monitor.submit_output_build_set_termination(
-                        *output_build_set_termination_authorization,
-                        process_terminator,
-                        BuildTerminationDeadline::from_submission_time(Instant::now()),
-                    ),
-                };
-                match build_termination_submission {
-                    BuildTerminationSubmission::Submitted(build_termination_transaction_id) => {
-                        let Self {
-                            build_monitor,
-                            inflight,
-                            ..
-                        } = self;
-                        let build_termination_completion_transition = build_monitor
-                            .submit_owned_termination_targets(
-                                build_termination_transaction_id,
-                                |token| inflight.submit_owned_run_termination(token),
-                            );
-                        self.consume_build_termination_completion_transition(
-                            build_termination_completion_transition,
-                        );
-                    },
-                    BuildTerminationSubmission::Busy => self.show_timed_warning_toast(
-                        "Build termination unavailable",
-                        "Another build termination is still in progress",
-                    ),
-                    BuildTerminationSubmission::Refused(build_termination_submission_refusal) => {
-                        self.show_build_termination_submission_refusal(
-                            build_termination_submission_refusal,
-                        );
-                    },
-                    BuildTerminationSubmission::IdentityExhausted => self.show_timed_warning_toast(
-                        "Build termination unavailable",
-                        "Termination identity allocation is exhausted",
-                    ),
-                }
-            },
-            ProcessTerminatorAvailability::Starting => {
-                self.restore_confirmed_build_termination(
-                    confirmed_build_termination_request,
-                    "The termination worker is starting",
-                );
-            },
-            ProcessTerminatorAvailability::Unavailable => {
-                self.restore_confirmed_build_termination(
-                    confirmed_build_termination_request,
-                    "The termination worker is unavailable",
-                );
-            },
-        }
-    }
-
-    fn restore_confirmed_build_termination(
-        &mut self,
-        confirmed_build_termination_request: ConfirmedBuildTerminationRequest,
-        worker_message: &str,
-    ) {
-        self.open_confirmation(
-            confirmed_build_termination_request.into_confirm_action(),
-            ConfirmationReadiness::Ready,
-        );
-        self.show_timed_warning_toast("Build termination delayed", worker_message);
-    }
-
-    pub(super) fn consume_build_termination_completion_transition(
-        &mut self,
-        build_termination_completion_transition: BuildTerminationCompletionTransition,
-    ) {
-        let BuildTerminationCompletionTransition::Completed(
-            build_termination_transaction_completion,
-        ) = build_termination_completion_transition
-        else {
-            return;
-        };
-        match build_termination_transaction_completion.target_set() {
-            BuildTerminationTransactionTargetSet::SelectedBuild => {
-                self.show_selected_build_termination_completion(
-                    build_termination_transaction_completion.terminal_records(),
-                );
-            },
-            BuildTerminationTransactionTargetSet::OutputBuildSet => {
-                self.show_output_build_set_termination_completion(
-                    build_termination_transaction_completion.terminal_records(),
-                    build_termination_transaction_completion.additional_build_exclusion(),
-                );
-            },
-        }
-    }
-
-    fn show_selected_build_termination_completion(
-        &mut self,
-        terminal_records: &[BuildTerminationTerminalRecord],
-    ) {
-        let Some(build_termination_terminal_record) = terminal_records.first() else {
-            return;
-        };
-        match build_termination_terminal_record.session_completion() {
-            BuildTerminationSessionCompletion::AlreadyGone => self.show_timed_toast(
-                "Build already exited",
-                "The selected Cargo root was already gone",
-            ),
-            BuildTerminationSessionCompletion::GoneAfterSignaling => self.show_timed_toast(
-                "Build termination complete",
-                "The selected Cargo root exited after SIGTERM",
-            ),
-            BuildTerminationSessionCompletion::RetryUnavailable => {
-                self.show_timed_warning_toast(
-                    "Build termination incomplete",
-                    "Some selected build processes still need a fresh observation before retry",
-                );
-            },
-            BuildTerminationSessionCompletion::DeadlineExpired => self.show_timed_warning_toast(
-                "Build termination timed out",
-                format!(
-                    "The selected build did not complete within {} seconds",
-                    BUILD_TERMINATION_TIMEOUT.as_secs(),
-                ),
-            ),
-        }
-    }
-
-    fn show_output_build_set_termination_completion(
-        &mut self,
-        terminal_records: &[BuildTerminationTerminalRecord],
-        additional_build_exclusion: AdditionalBuildExclusion,
-    ) {
-        let Some(build_termination_terminal_record) = terminal_records.first() else {
-            return;
-        };
-        let additional_build_exclusion_note = match additional_build_exclusion {
-            AdditionalBuildExclusion::NoAdditionalBuilds => String::new(),
-            AdditionalBuildExclusion::Excluded { count } => {
-                format!(" {count} newer build(s) were not included.")
-            },
-        };
-        match build_termination_terminal_record.aggregate_completion() {
-            BuildTerminationAggregateCompletion::AllTargetsGone => self.show_timed_toast(
-                "Output build-set termination complete",
-                format!(
-                    "Every confirmed Output build root is gone.{additional_build_exclusion_note}"
-                ),
-            ),
-            BuildTerminationAggregateCompletion::RetryUnavailable => {
-                self.show_timed_warning_toast(
-                    "Output build-set termination incomplete",
-                    format!(
-                        "Some confirmed Output build roots need a fresh observation before retry.{additional_build_exclusion_note}"
-                    ),
-                );
-            },
-            BuildTerminationAggregateCompletion::DeadlineExpired => self.show_timed_warning_toast(
-                "Output build-set termination timed out",
-                format!(
-                    "The confirmed Output build set did not complete within {} seconds.{additional_build_exclusion_note}",
-                    BUILD_TERMINATION_TIMEOUT.as_secs(),
-                ),
-            ),
-        }
-    }
-
-    fn show_selected_build_termination_unavailable(
-        &mut self,
-        selected_build_termination_availability: SelectedBuildTerminationAvailability,
-    ) {
-        let body = match selected_build_termination_availability {
-            SelectedBuildTerminationAvailability::Available => {
-                "The selected build can be terminated"
-            },
-            SelectedBuildTerminationAvailability::SnapshotNotActionable => {
-                "The current monitor snapshot is not actionable"
-            },
-            SelectedBuildTerminationAvailability::SessionNotActionable => {
-                "The selected build has no current termination authority"
-            },
-            SelectedBuildTerminationAvailability::Busy => {
-                "Another build termination is still in progress"
-            },
-        };
-        self.show_timed_warning_toast("Build termination unavailable", body);
-    }
-
-    fn show_output_build_set_termination_unavailable(
-        &mut self,
-        output_build_set_termination_availability: OutputBuildSetTerminationAvailability,
-    ) {
-        let body = match output_build_set_termination_availability {
-            OutputBuildSetTerminationAvailability::Available => {
-                "The Output build set can be terminated"
-            },
-            OutputBuildSetTerminationAvailability::SnapshotNotActionable => {
-                "The current monitor snapshot is not actionable"
-            },
-            OutputBuildSetTerminationAvailability::BuildSetNotFullyActionable => {
-                "Every shown build root must have current termination authority"
-            },
-            OutputBuildSetTerminationAvailability::Busy => {
-                "Another build termination is still in progress"
-            },
-        };
-        self.show_timed_warning_toast("Build termination unavailable", body);
-    }
-
-    fn show_build_termination_submission_refusal(
-        &mut self,
-        build_termination_submission_refusal: BuildTerminationSubmissionRefusal,
-    ) {
-        let body = match build_termination_submission_refusal {
-            BuildTerminationSubmissionRefusal::SnapshotNotActionable => {
-                "The monitor snapshot is no longer actionable"
-            },
-            BuildTerminationSubmissionRefusal::SelectedScopeChanged
-            | BuildTerminationSubmissionRefusal::CoveredScopeRootsChanged => {
-                "The selected build scope changed before termination"
-            },
-            BuildTerminationSubmissionRefusal::SelectedSessionChanged => {
-                "The selected build changed before termination"
-            },
-        };
-        self.show_timed_warning_toast("Build termination refused", body);
     }
 
     /// Toggle lints for the selected project's lint-owning root (bound to
@@ -1542,8 +1036,6 @@ impl App {
                 primary == workspace_root
             },
             ConfirmAction::KillTarget { .. }
-            | ConfirmAction::TerminateSelectedBuild { .. }
-            | ConfirmAction::TerminateOutputBuildSet { .. }
             | ConfirmAction::PauseLintProject(_)
             | ConfirmAction::PauseAllLints => false,
         };
@@ -1717,8 +1209,6 @@ impl App {
     ///
     /// Derived from the same [`OutputPresentation`] the renderer draws, so
     /// visibility, tabbability, focus, and what is on screen cannot disagree.
-    /// An enabled build monitor keeps the pane visible even with no captured
-    /// output of its own.
     pub(super) fn output_pane_visibility(&self) -> OutputPaneVisibility {
         self.output_presentation().pane_visibility()
     }
@@ -1728,99 +1218,26 @@ impl App {
         self.output_presentation().copy_availability()
     }
 
-    /// Whether Cargo Port's own column is the one the Output cursor is in.
-    ///
-    /// With the monitor off the pane draws nothing but the owned body, so its
-    /// column is selected by construction and the cursor is not consulted: the
-    /// cursor is reconciled during render, and an Esc arriving before the first
-    /// frame of a newly launched run would otherwise read as an external column
-    /// when no external column exists.
-    pub(super) fn owned_column_selection(&self) -> OwnedColumnSelection {
-        let output_presentation = self.output_presentation();
-        match output_presentation.monitor_visibility() {
-            OutputMonitorVisibility::Off => OwnedColumnSelection::Selected,
-            OutputMonitorVisibility::On => self
-                .panes
-                .output
-                .owned_column_selection(&output_presentation),
-        }
-    }
-
-    /// Read selected-build termination availability through the reconciled
-    /// Output presentation without consuming the monitor's opaque authority.
-    pub(super) fn selected_build_termination_availability(
-        &self,
-    ) -> SelectedBuildTerminationAvailability {
-        let selected_build_termination_selection = self
-            .panes
-            .output
-            .selected_build_termination_selection(&self.output_presentation());
-        match selected_build_termination_selection {
-            SelectedBuildTerminationSelection::NoBuildSelected => {
-                SelectedBuildTerminationAvailability::SessionNotActionable
-            },
-            SelectedBuildTerminationSelection::SelectedBuild(
-                selected_build_termination_display_target,
-            ) => self.build_monitor.selected_termination_availability(
-                selected_build_termination_display_target.build_session_id(),
-            ),
-        }
-    }
-
-    /// Read exact Output-build-set availability without consuming the opaque
-    /// authority confirmation will later retain.
-    pub(super) fn output_build_set_termination_availability(
-        &self,
-    ) -> OutputBuildSetTerminationAvailability {
-        if self.build_scope_actionability() == BuildScopeActionability::NotActionable {
-            return OutputBuildSetTerminationAvailability::SnapshotNotActionable;
-        }
-        self.build_monitor
-            .output_build_set_termination_availability()
-    }
-
     /// The clipboard payload for whatever the Output cursor is on.
     pub(super) fn copy_output_selection(&self) -> CopySelectionResult {
         self.panes
             .output
-            .copy_payload_for_cursor(&self.output_presentation())
-    }
-
-    /// Whether the row under the Output cursor may start a visual selection.
-    ///
-    /// Short-circuits on a monitor that is off for the same reason
-    /// [`Self::owned_column_selection`] does: the cursor is reconciled during
-    /// render, so a gesture arriving before the first frame after a run opens
-    /// Output would otherwise read as a monitor row when no monitor is drawn.
-    pub(super) fn output_visual_selection_permission(&self) -> VisualSelectionPermission {
-        match self.output_presentation().monitor_visibility() {
-            OutputMonitorVisibility::Off => VisualSelectionPermission::CapturedOutput,
-            OutputMonitorVisibility::On => self.panes.output.visual_selection_permission(),
-        }
+            .copy_payload(self.output_presentation().captured_lines())
     }
 
     /// Split-borrow accessor for the Output navigation path.
     ///
-    /// [`Self::output_presentation`] borrows `&self` across
-    /// `compile_visibility_state`, `build_monitor`, and `inflight`, so a
+    /// [`Self::output_presentation`] borrows `&self.inflight`, so a
     /// motion cannot take `&mut self.panes.output` while holding it. Same
     /// division of the struct [`Self::split_for_render`] makes, for the same
     /// reason.
     pub(super) fn split_output_for_navigation(&mut self) -> OutputNavigationBorrows<'_> {
         let Self {
-            panes,
-            inflight,
-            compile_visibility_state,
-            build_monitor,
-            ..
+            panes, inflight, ..
         } = self;
         let output_presentation = OutputPresentation::derive(
-            compile_visibility_state,
-            build_monitor.monitor_snapshot(),
-            build_monitor.termination_lifecycle_registry(),
             inflight.owned_run().output_state(),
             inflight.owned_run().running_label(),
-            inflight.owned_run().completion_marker(),
         );
         OutputNavigationBorrows {
             output: &mut panes.output,
@@ -1831,12 +1248,8 @@ impl App {
     /// What the Output pane shows, from the two inputs the renderer takes.
     fn output_presentation(&self) -> OutputPresentation<'_> {
         OutputPresentation::derive(
-            &self.compile_visibility_state,
-            self.build_monitor.monitor_snapshot(),
-            self.build_monitor.termination_lifecycle_registry(),
             self.inflight.owned_run().output_state(),
             self.inflight.owned_run().running_label(),
-            self.inflight.owned_run().completion_marker(),
         )
     }
 
@@ -1958,7 +1371,6 @@ impl App {
 
     pub fn sync_selected_project(&mut self) {
         self.ensure_visible_rows_cached();
-        self.refresh_compile_monitor_scope_if_on();
         let current = self
             .project_list
             .selected_project_path()
@@ -2008,76 +1420,6 @@ impl App {
             self.maybe_priority_fetch();
         }
     }
-
-    /// Toggle compile-monitor visibility for the current selected project-list
-    /// row. Enabling resolves only the accepted workspace index; it never
-    /// launches Cargo or requests process observation.
-    pub(super) fn toggle_compile_visibility(&mut self, now: Instant) {
-        if let CompileVisibilityState::On(active_monitor_state) = &self.compile_visibility_state {
-            let compile_monitor_generation = active_monitor_state.compile_monitor_generation();
-            self.cancel_compile_classification(compile_monitor_generation);
-            self.advance_compile_monitor_generation();
-            self.compile_visibility_state.disable();
-            self.build_monitor.switch_off();
-            self.push_compile_monitor_schedule();
-            return;
-        }
-        self.ensure_visible_rows_cached();
-        let monitor_scope_update = self.resolve_compile_monitor_scope();
-        let compile_monitor_generation = self.advance_compile_monitor_generation();
-        self.compile_visibility_state
-            .enable(monitor_scope_update, compile_monitor_generation, now);
-        self.build_monitor.switch_on();
-        self.push_compile_monitor_schedule();
-    }
-
-    fn refresh_compile_monitor_scope_if_on(&mut self) {
-        if !self.compile_visibility_state.is_on() {
-            return;
-        }
-        let monitor_scope_update = self.resolve_compile_monitor_scope();
-        if self
-            .compile_visibility_state
-            .requires_scope_replacement(&monitor_scope_update)
-        {
-            if let CompileVisibilityState::On(active_monitor_state) = &self.compile_visibility_state
-            {
-                let superseded_generation = active_monitor_state.compile_monitor_generation();
-                self.cancel_compile_classification(superseded_generation);
-            }
-            let compile_monitor_generation = self.advance_compile_monitor_generation();
-            self.compile_visibility_state.replace_scope(
-                monitor_scope_update,
-                compile_monitor_generation,
-                Instant::now(),
-            );
-            let build_scope_actionability = self.build_scope_actionability();
-            self.build_monitor.replace_scope(&build_scope_actionability);
-            self.push_compile_monitor_schedule();
-        }
-    }
-
-    /// Whether the enabled monitor's current scope authorizes monitoring, and
-    /// the roots it authorizes it over.
-    fn build_scope_actionability(&self) -> BuildScopeActionability {
-        match &self.compile_visibility_state {
-            CompileVisibilityState::Off => BuildScopeActionability::NotActionable,
-            CompileVisibilityState::On(active_monitor_state) => {
-                active_monitor_state.build_scope_actionability()
-            },
-        }
-    }
-
-    fn resolve_compile_monitor_scope(&mut self) -> MonitorScopeUpdate {
-        let monitor_scope_input = compile_visibility::monitor_scope_input(&self.project_list);
-        let workspace_index_readiness = self.workspace_index_readiness();
-        compile_visibility::resolve_monitor_scope(monitor_scope_input, workspace_index_readiness)
-    }
-
-    const fn advance_compile_monitor_generation(&mut self) -> CompileMonitorGeneration {
-        self.compile_monitor_generation.advance();
-        self.compile_monitor_generation
-    }
 }
 
 /// The Output pane beside the presentation a keyboard motion reads, as
@@ -2106,7 +1448,6 @@ mod tests {
     use std::path::Path;
     use std::path::PathBuf;
     use std::process::Command;
-    use std::time::Instant;
 
     use chrono::DateTime;
     use chrono::FixedOffset;
@@ -3375,7 +2716,6 @@ mod tests {
         use std::ops::DerefMut;
         use std::path::Path;
         use std::rc::Rc;
-        use std::time::Instant;
 
         use crossterm::event::Event;
         use crossterm::event::KeyCode;
@@ -3417,7 +2757,6 @@ mod tests {
         use crate::project::Submodule;
         use crate::test_support;
         use crate::tui::app::CargoPortToastAction;
-        use crate::tui::compile_visibility::CompileVisibilityState;
         use crate::tui::input;
         use crate::tui::integration::AppGlobalAction;
         use crate::tui::integration::AppPaneId;
@@ -3554,26 +2893,6 @@ mod tests {
         fn app_returned_from_keymap_helper() -> KeymapFixture<impl Sized + use<>> {
             let project = super::make_project(Some("demo"), "~/demo");
             make_app_with_keymap_toml(&[project], "[output]\ncancel = \"Esc\"\n")
-        }
-
-        #[test]
-        fn compile_visibility_starts_off_and_drops_enabled_scope_on_toggle() {
-            let mut app = make_app(&[]);
-
-            assert!(matches!(
-                &app.compile_visibility_state,
-                CompileVisibilityState::Off
-            ));
-            app.toggle_compile_visibility(Instant::now());
-            assert!(matches!(
-                &app.compile_visibility_state,
-                CompileVisibilityState::On(_)
-            ));
-            app.toggle_compile_visibility(Instant::now());
-            assert!(matches!(
-                &app.compile_visibility_state,
-                CompileVisibilityState::Off
-            ));
         }
 
         #[test]
@@ -5339,7 +4658,6 @@ mod tests {
         use tui_pane::AppContext;
         use tui_pane::ClipboardBackend;
         use tui_pane::ClipboardError;
-        use tui_pane::CopySelectionResult;
         use tui_pane::FocusedPane;
         use tui_pane::FrameworkFocusId;
         use tui_pane::GlobalAction as FrameworkGlobalAction;
@@ -5350,9 +4668,6 @@ mod tests {
         use tui_pane::ToastStyle;
         use tui_pane::Viewport;
 
-        use crate::build_monitor;
-        use crate::build_monitor::ClassifiedRoot;
-        use crate::build_monitor::FixtureRootOwnership;
         use crate::ci::CiJob;
         use crate::ci::CiRun;
         use crate::ci::CiStatus;
@@ -5424,7 +4739,6 @@ mod tests {
         use crate::tui::running_targets::RunningTargets;
         use crate::tui::settings;
         use crate::tui::settings::SettingOption;
-        use crate::tui::state::OwnedRunOutputStateRef;
         use crate::tui::test_support as tui_test_support;
         fn open_settings_overlay(app: &mut App) {
             let keymap = Rc::clone(&app.framework_keymap);
@@ -8016,184 +7330,6 @@ mod tests {
                     .iter()
                     .any(|line| line == "── killed ──"),
                 "submission alone must not claim the actor sent a signal",
-            );
-        }
-
-        // ── Output pane with the build monitor drawing columns ────────────
-
-        /// The root Cargo Port launched, and the compilers running under it.
-        const MONITOR_OWNED_ROOT_PID: u32 = 8100;
-        const MONITOR_OWNED_COMPILER_PIDS: &[u32] = &[8101, 8102];
-        /// A Cargo run by someone else on the same host.
-        const MONITOR_EXTERNAL_ROOT_PID: u32 = 8200;
-        const MONITOR_EXTERNAL_COMPILER_PIDS: &[u32] = &[8201, 8202];
-        /// The captured lines the owned column carries under its activity rows.
-        const MONITOR_CAPTURED_LINES: &[&str] =
-            &["captured line 0", "captured line 1", "captured line 2"];
-
-        /// Switch the monitor on over a staged classification cycle that
-        /// attributes one root to the run whose output the pane is already
-        /// holding, so the pane draws Cargo Port's own column beside an
-        /// external one.
-        ///
-        /// The presentation comes from the real classifier, so the owned column
-        /// is owned because the cycle attributed its root to the owned run — the
-        /// same evidence production reads.
-        fn show_monitor_columns(app: &mut App) {
-            let OwnedRunOutputStateRef::Retained { producer, .. } =
-                app.inflight.owned_run().output_state()
-            else {
-                panic!("the output pane is open on a run whose output is retained");
-            };
-            let monitor_snapshot = match build_monitor::classified_monitor_snapshot_with_ownership(
-                &[
-                    ClassifiedRoot {
-                        root_pid:      MONITOR_OWNED_ROOT_PID,
-                        compiler_pids: MONITOR_OWNED_COMPILER_PIDS,
-                    },
-                    ClassifiedRoot {
-                        root_pid:      MONITOR_EXTERNAL_ROOT_PID,
-                        compiler_pids: MONITOR_EXTERNAL_COMPILER_PIDS,
-                    },
-                ],
-                &FixtureRootOwnership::OwnedRoot {
-                    root_pid:     MONITOR_OWNED_ROOT_PID,
-                    owned_run_id: producer,
-                },
-            ) {
-                Ok(monitor_snapshot) => monitor_snapshot,
-                Err(error) => panic!("the classification fixture builds a snapshot: {error}"),
-            };
-            // Enabled through the toggle rather than by assignment, so the
-            // scope the state carries is the one the app re-resolves on every
-            // later event: a scope it did not resolve itself is replaced by the
-            // first keystroke, taking the staged cycle with it.
-            app.toggle_compile_visibility(Instant::now());
-            app.build_monitor.show_for_test(monitor_snapshot);
-        }
-
-        /// The text a copy gesture would read off the row the Output cursor is
-        /// on, or `None` when that row has no transcript behind it.
-        fn cursor_row_text(app: &App) -> Option<String> {
-            match app.copy_output_selection() {
-                CopySelectionResult::Payload(copy_payload) => Some(copy_payload.text),
-                CopySelectionResult::Nothing => None,
-            }
-        }
-
-        /// An enabled monitor says so on its own row, and marks the rows stale
-        /// once a cycle fails without replacing them.
-        #[test]
-        fn the_monitor_indicator_row_is_drawn_and_carries_the_stale_marker() {
-            let project = make_package("demo", Path::new("/tmp/demo"));
-            let mut app = make_app(&[project]);
-            open_output(&mut app, MONITOR_CAPTURED_LINES);
-            show_monitor_columns(&mut app);
-
-            let live = buffer_text_sized(&mut app, 120, 40);
-            assert!(
-                live.contains(" Build monitor on"),
-                "an enabled monitor draws its indicator row:\n{live}",
-            );
-            assert!(
-                !live.contains("stale"),
-                "rows classified this cycle carry no staleness marker:\n{live}",
-            );
-
-            // A cycle that produced no classification at all ages what is shown.
-            app.build_monitor.record_classification_failure();
-            let stale = buffer_text_sized(&mut app, 120, 40);
-            assert!(
-                stale.contains(" Build monitor on — stale"),
-                "aged rows keep the indicator and gain the staleness marker:\n{stale}",
-            );
-        }
-
-        /// With vim keys on, `h` / `j` / `k` / `l` reach the Output pane as the
-        /// arrow keys do: `h` and `l` select the adjacent column and hold at the
-        /// ends, `j` and `k` walk the selected column's body.
-        ///
-        /// Pressed as real keys, so what is proven is that the vim overlay folds
-        /// them onto the navigation actions rather than that the pane handles
-        /// those actions.
-        #[test]
-        fn output_vim_keys_walk_the_monitor_columns_like_the_arrow_keys() {
-            let project = make_package("demo", Path::new("/tmp/demo"));
-            let mut app = make_app_vim(&[project]);
-            open_output(&mut app, MONITOR_CAPTURED_LINES);
-            show_monitor_columns(&mut app);
-            // One frame reconciles the cursor against the columns the monitor
-            // now draws, the way the pane is entered in the running app.
-            let _ = buffer_text_sized(&mut app, 120, 40);
-
-            // `k` walks up the owned column's body — captured output, then its
-            // activity rows — and stops on the header, which copies nothing.
-            for _ in 0..=MONITOR_CAPTURED_LINES.len() + MONITOR_OWNED_COMPILER_PIDS.len() {
-                press_key(&mut app, KeyCode::Char('k'));
-            }
-            assert_eq!(
-                cursor_row_text(&app),
-                None,
-                "k walks to the top of the column body, where the header has no \
-                 transcript behind it",
-            );
-
-            press_key(&mut app, KeyCode::Char('j'));
-            let first_activity = cursor_row_text(&app)
-                .unwrap_or_else(|| panic!("j from the header lands on the first activity row"));
-            assert!(
-                first_activity.starts_with("rustc "),
-                "an activity row names the compiler it runs: {first_activity}",
-            );
-
-            press_key(&mut app, KeyCode::Char('j'));
-            let second_activity =
-                cursor_row_text(&app).unwrap_or_else(|| panic!("j steps to the next activity row"));
-            assert_ne!(
-                second_activity, first_activity,
-                "each j lands on its own activity row",
-            );
-
-            press_key(&mut app, KeyCode::Char('k'));
-            assert_eq!(
-                cursor_row_text(&app).as_ref(),
-                Some(&first_activity),
-                "k comes back up the same rows j walked down",
-            );
-
-            // `h` holds at the first column, so two presses park the cursor
-            // there whichever column the body walk left it in.
-            press_key(&mut app, KeyCode::Char('h'));
-            press_key(&mut app, KeyCode::Char('h'));
-            let first_column = app.owned_column_selection();
-
-            press_key(&mut app, KeyCode::Char('l'));
-            let second_column = app.owned_column_selection();
-            assert_ne!(
-                second_column, first_column,
-                "l selects the adjacent column, and exactly one of the two is \
-                 the run Cargo Port launched",
-            );
-
-            press_key(&mut app, KeyCode::Char('l'));
-            assert_eq!(
-                app.owned_column_selection(),
-                second_column,
-                "there is no column past the last one",
-            );
-
-            press_key(&mut app, KeyCode::Char('h'));
-            assert_eq!(
-                app.owned_column_selection(),
-                first_column,
-                "h selects the column on the left",
-            );
-
-            press_key(&mut app, KeyCode::Char('h'));
-            assert_eq!(
-                app.owned_column_selection(),
-                first_column,
-                "there is no column before the first one",
             );
         }
 
@@ -10852,7 +9988,6 @@ mod tests {
         use crate::lint::LintRunPhase;
         use crate::lint::LintRunStatus;
         use crate::project::AbsolutePath;
-        use crate::project::AcceptedCargoMetadataRevision;
         use crate::project::FileStamp;
         use crate::project::HeadState;
         use crate::project::ManifestFingerprint;
@@ -10876,9 +10011,6 @@ mod tests {
         use crate::tui::app::ConfirmationReadiness;
         use crate::tui::app::phase_state::Denominator;
         use crate::tui::app::target_index::CleanSelection;
-        use crate::tui::compile_visibility::CompileMonitorGeneration;
-        use crate::tui::compile_visibility::CompileVisibilityState;
-        use crate::tui::compile_visibility::MonitorScopeResolution;
         use crate::tui::constants::STARTUP_ROW_MIN_VISIBLE;
         use crate::tui::keymap::CiRunsAction;
         use crate::tui::keymap::LintsAction;
@@ -13706,119 +12838,6 @@ mod tests {
             assert!(
                 app.startup.metadata.complete_at.is_some(),
                 "with only one expected root, the phase completes on arrival"
-            );
-        }
-
-        /// Accepted-metadata revision and monitor generation currently carried
-        /// by an enabled compile monitor with an actionable scope.
-        fn enabled_monitor_scope_facts(
-            app: &App,
-        ) -> (AcceptedCargoMetadataRevision, CompileMonitorGeneration) {
-            let CompileVisibilityState::On(active_monitor_state) = &app.compile_visibility_state
-            else {
-                panic!("compile monitor must be enabled");
-            };
-            let MonitorScopeResolution::Ready(monitor_scope_key) =
-                active_monitor_state.monitor_scope_resolution()
-            else {
-                panic!("enabled monitor must have an actionable scope");
-            };
-            (
-                monitor_scope_key.accepted_cargo_metadata_revision(),
-                active_monitor_state.compile_monitor_generation(),
-            )
-        }
-
-        #[test]
-        fn accepted_metadata_refreshes_enabled_monitor_scope_without_tree_change() {
-            let temp_dir = tempfile::tempdir().expect("create test workspace");
-            let workspace_root = AbsolutePath::from(temp_dir.path().join("workspace"));
-            std::fs::create_dir_all(workspace_root.as_path()).expect("create workspace directory");
-            std::fs::write(
-                workspace_root.as_path().join("Cargo.toml"),
-                "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
-            )
-            .expect("write workspace manifest");
-            let project = RootItem::Rust(RustProject::Package(Package {
-                path: workspace_root.clone(),
-                name: Some("demo".to_string()),
-                ..Package::default()
-            }));
-            let mut app = make_app(&[project]);
-            app.project_list.set_cursor(0);
-
-            let fingerprint = ManifestFingerprint::capture(workspace_root.as_path())
-                .expect("capture workspace fingerprint");
-            let mut initial_metadata = fake_metadata(&workspace_root);
-            initial_metadata.fingerprint = fingerprint.clone();
-            let initial_generation = app
-                .scan
-                .metadata_store_handle()
-                .lock()
-                .expect("lock metadata store")
-                .next_generation(&workspace_root);
-            app.handle_bg_msg(BackgroundMsg::CargoMetadata {
-                workspace_root: workspace_root.clone(),
-                generation:     initial_generation,
-                fingerprint:    fingerprint.clone(),
-                result:         Ok(initial_metadata),
-            });
-
-            app.toggle_compile_visibility(Instant::now());
-            let (accepted_metadata_revision_before, compile_monitor_generation_before) =
-                enabled_monitor_scope_facts(&app);
-            let selected_project_before = app
-                .project_list
-                .selected_project_path()
-                .map(Path::to_path_buf);
-            let visible_rows_before = app.project_list.visible_rows().to_vec();
-
-            let mut refreshed_metadata = fake_metadata(&workspace_root);
-            refreshed_metadata.fingerprint = fingerprint.clone();
-            refreshed_metadata.target_directory =
-                AbsolutePath::from(workspace_root.as_path().join("refreshed-target"));
-            let refreshed_generation = app
-                .scan
-                .metadata_store_handle()
-                .lock()
-                .expect("lock metadata store")
-                .next_generation(&workspace_root);
-            app.handle_bg_msg(BackgroundMsg::CargoMetadata {
-                workspace_root,
-                generation: refreshed_generation,
-                fingerprint,
-                result: Ok(refreshed_metadata),
-            });
-
-            assert_eq!(
-                app.project_list.selected_project_path(),
-                selected_project_before.as_deref(),
-                "accepted metadata leaves the selected project unchanged"
-            );
-            assert_eq!(
-                app.project_list.visible_rows(),
-                visible_rows_before,
-                "accepted metadata leaves visible project-list content unchanged"
-            );
-            let accepted_metadata_revision = app
-                .scan
-                .metadata_store_handle()
-                .lock()
-                .expect("lock metadata store")
-                .accepted_cargo_metadata_revision();
-            let (accepted_metadata_revision_after, compile_monitor_generation_after) =
-                enabled_monitor_scope_facts(&app);
-            assert_ne!(
-                accepted_metadata_revision_after, accepted_metadata_revision_before,
-                "accepted metadata immediately replaces the monitor scope"
-            );
-            assert_eq!(
-                accepted_metadata_revision_after, accepted_metadata_revision,
-                "monitor scope carries the metadata revision accepted by this arrival"
-            );
-            assert_ne!(
-                compile_monitor_generation_after, compile_monitor_generation_before,
-                "accepted metadata immediately advances the monitor generation"
             );
         }
 
@@ -16811,12 +15830,8 @@ mod tests {
             synced_description_height: crate::tui::panes::SyncedDescriptionHeight::default(),
             running_targets:           app.panes.running_targets.snapshot(),
             output_presentation:       crate::tui::panes::OutputPresentation::derive(
-                &app.compile_visibility_state,
-                app.build_monitor.monitor_snapshot(),
-                app.build_monitor.termination_lifecycle_registry(),
                 app.inflight.owned_run().output_state(),
                 app.inflight.owned_run().running_label(),
-                app.inflight.owned_run().completion_marker(),
             ),
         }
     }

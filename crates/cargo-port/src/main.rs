@@ -2,7 +2,6 @@
 
 use std::process::ExitCode;
 
-mod build_monitor;
 mod cache_paths;
 mod channel;
 mod ci;
@@ -12,7 +11,6 @@ mod enrichment;
 mod http;
 mod lint;
 mod process_observation;
-mod process_termination;
 mod project;
 mod scan;
 mod sccache;

@@ -1,21 +1,8 @@
 use super::panes::CiFetchKind;
 use super::state::OwnedRunId;
 use super::state::OwnedRunTerminationOutcome;
-use crate::build_monitor::BuildMonitoringRefreshCycleExecution;
-use crate::process_observation::ProcessRefreshExecution;
-use crate::process_termination::TerminationExecutionPlan;
-use crate::process_termination::TerminationOutcomeSummary;
 use crate::project::AbsolutePath;
 use crate::scan::CiFetchResult;
-
-/// Correlated immutable result sent by the process observer worker.
-pub(super) type ProcessRefreshMsg = ProcessRefreshExecution<BuildMonitoringRefreshCycleExecution>;
-
-/// A frozen external termination request transported to the dedicated worker.
-pub(super) type ProcessTerminationPlanMsg = TerminationExecutionPlan;
-
-/// A correlated external termination result returned by the dedicated worker.
-pub(super) type ProcessTerminationOutcomeMsg = TerminationOutcomeSummary;
 
 /// Ordered events for one Cargo Port-owned run.
 ///

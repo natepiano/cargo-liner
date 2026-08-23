@@ -58,11 +58,6 @@ pub(super) fn handle_click(app: &mut App, pos: Position, mode: ClickMode) -> boo
             }
             true
         },
-        HoverTarget::OutputMonitorRow(output_monitor_hit) => {
-            app.set_focus_to_pane(PaneId::Output);
-            app.panes.output.focus_hit(&output_monitor_hit);
-            true
-        },
         HoverTarget::GlobalShortcutRow { row } => {
             app.framework
                 .global_shortcuts_pane
@@ -91,8 +86,7 @@ pub(super) fn handle_click(app: &mut App, pos: Position, mode: ClickMode) -> boo
 pub(super) fn hovered_pane_row_at(app: &App, pos: Position) -> Option<HoveredPaneRow> {
     match hit_test_at(app, pos)? {
         HoverTarget::PaneRow { pane, row } => Some(HoveredPaneRow { pane, row }),
-        HoverTarget::OutputMonitorRow(_)
-        | HoverTarget::GlobalShortcutRow { .. }
+        HoverTarget::GlobalShortcutRow { .. }
         | HoverTarget::Dismiss(_)
         | HoverTarget::ToastCard(_) => None,
     }

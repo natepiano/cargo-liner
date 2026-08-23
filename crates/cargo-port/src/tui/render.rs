@@ -34,7 +34,6 @@ use tui_pane::StatusLineNote;
 use tui_pane::ToastsRenderCtx;
 use tui_pane::accent_color;
 use tui_pane::error_color;
-use tui_pane::format_progressive;
 use tui_pane::label_color;
 use tui_pane::render_status_line as render_framework_status_line;
 use tui_pane::secondary_text_color;
@@ -56,7 +55,6 @@ use super::interaction;
 use super::overlays::PopupFrame;
 use super::panes;
 use super::panes::EmptyDescriptionBehavior;
-use super::panes::OutputBuildSetTerminationConfirmationDisplay;
 use super::panes::OutputPaneVisibility;
 use super::panes::PaneId;
 use super::panes::SyncedDescriptionHeight;
@@ -224,12 +222,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
             .unwrap_or(u16::MAX);
 
     let bottom_row = match app.output_pane_visibility() {
-        OutputPaneVisibility::Hidden => {
-            // The hit map answers clicks from the rows the last frame drew, so
-            // a frame that does not draw the pane at all must leave none behind.
-            app.panes.output.clear_monitor_hit_map();
-            panes::BottomRow::Diagnostics
-        },
+        OutputPaneVisibility::Hidden => panes::BottomRow::Diagnostics,
         OutputPaneVisibility::Visible => panes::BottomRow::Output,
     };
     let tiled = resolve_tiled_layout(app, outer_layout[0], left_width, bottom_row);
@@ -394,36 +387,6 @@ fn confirm_action_body(app: &App, action: &ConfirmAction) -> Vec<String> {
                 ),
             ]
         },
-        ConfirmAction::TerminateSelectedBuild {
-            selected_build_termination_confirmation_display,
-            ..
-        } => vec![
-            selected_build_termination_confirmation_display
-                .operative_cargo_command()
-                .to_string(),
-            selected_build_termination_confirmation_display
-                .checkout()
-                .to_string(),
-            format!(
-                "pid {} · {}",
-                selected_build_termination_confirmation_display.root_pid(),
-                format_progressive(
-                    selected_build_termination_confirmation_display
-                        .start_age()
-                        .as_secs(),
-                ),
-            ),
-            format!(
-                "{} compiler children currently observed",
-                selected_build_termination_confirmation_display.compiler_child_count(),
-            ),
-        ],
-        ConfirmAction::TerminateOutputBuildSet {
-            output_build_set_termination_confirmation_display,
-            ..
-        } => output_build_set_termination_confirmation_body(
-            output_build_set_termination_confirmation_display,
-        ),
         ConfirmAction::PauseLintProject(project_root) => vec![
             project::home_relative_path(project_root.as_path()),
             "Kills running lint jobs for this project.".to_string(),
@@ -434,24 +397,6 @@ fn confirm_action_body(app: &App, action: &ConfirmAction) -> Vec<String> {
             "Holds new runs until you resume.".to_string(),
         ],
     }
-}
-
-fn output_build_set_termination_confirmation_body(
-    output_build_set_termination_confirmation_display: &OutputBuildSetTerminationConfirmationDisplay,
-) -> Vec<String> {
-    let mut body = vec![format!(
-        "Context row: {}",
-        output_build_set_termination_confirmation_display.selected_row_display_path(),
-    )];
-    for target_summary in output_build_set_termination_confirmation_display.target_summaries() {
-        body.push(format!(
-            "{} · pid {} · {}",
-            target_summary.operative_cargo_command(),
-            target_summary.root_pid(),
-            target_summary.checkout(),
-        ));
-    }
-    body
 }
 
 /// Append the "Also affects:" block (sibling project paths + optional
@@ -494,8 +439,6 @@ fn render_confirm_popup(
         ConfirmAction::Clean(_) => "Run cargo clean?",
         ConfirmAction::CleanGroup { .. } => "Run cargo clean on all checkouts?",
         ConfirmAction::KillTarget { .. } => "Send SIGTERM?",
-        ConfirmAction::TerminateSelectedBuild { .. } => "Terminate selected Cargo build?",
-        ConfirmAction::TerminateOutputBuildSet { .. } => "Terminate every shown Cargo build?",
         ConfirmAction::PauseLintProject(_) => "Pause lints for selected project?",
         ConfirmAction::PauseAllLints => "Pause all lints?",
     };

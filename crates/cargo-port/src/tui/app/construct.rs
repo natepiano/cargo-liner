@@ -33,7 +33,6 @@ use super::App;
 use super::ConfirmationModalState;
 use super::async_tasks::Startup;
 use super::scan_state::ScanState;
-use crate::build_monitor::BuildMonitor;
 use crate::channel;
 use crate::channel::Receiver;
 use crate::channel::Sender;
@@ -41,8 +40,8 @@ use crate::config;
 use crate::config::CargoPortConfig;
 use crate::config::CargoPortConfigurationPathResolution;
 use crate::lint::RuntimeHandle;
-use crate::process_observation::CompileMonitorRefreshSchedule;
 use crate::process_observation::ProcessRefreshExecutionBackendSelection;
+use crate::process_observation::ProcessRefreshExecutor;
 use crate::process_observation::RunningTargetsRefreshSchedule;
 use crate::project::CargoWorkspaceIndex;
 use crate::project::RootItem;
@@ -51,15 +50,11 @@ use crate::scan::BackgroundMsg;
 use crate::scan::ExcludeDirs;
 use crate::tui::background::Background;
 use crate::tui::background::BackgroundChannels;
-use crate::tui::compile_visibility::CompileMonitorGeneration;
-use crate::tui::compile_visibility::CompileVisibilityState;
 use crate::tui::integration;
 use crate::tui::integration::AppPaneId;
 use crate::tui::keymap;
 use crate::tui::overlays::Overlays;
 use crate::tui::panes::Panes;
-use crate::tui::process_refresh::AppProcessRefreshExecutor;
-use crate::tui::process_refresh::CompileClassificationInFlight;
 use crate::tui::project_list::ProjectList;
 use crate::tui::running_targets::RUNNING_TARGETS_REFRESH_INTERVAL;
 use crate::tui::sccache::SccacheStatusLine;
@@ -298,11 +293,7 @@ impl AppBuilder<Started> {
             panes,
             project_list: projects,
             cargo_workspace_index,
-            build_monitor: BuildMonitor::default(),
-            compile_visibility_state: CompileVisibilityState::Off,
-            compile_monitor_generation: CompileMonitorGeneration::default(),
             process_refresh_executor,
-            compile_classification_in_flight: CompileClassificationInFlight::default(),
             #[cfg(test)]
             running_target_attribution_collection_count: 0,
             background,
@@ -337,7 +328,7 @@ impl AppBuilder<Started> {
     }
 }
 
-fn process_refresh_executor(startup_services: &StartupServices) -> AppProcessRefreshExecutor {
+fn process_refresh_executor(startup_services: &StartupServices) -> ProcessRefreshExecutor {
     let running_targets_polling_effect = startup_services.running_targets_polling_effect();
     let (backend_selection, running_targets_refresh_schedule) = match running_targets_polling_effect
     {
@@ -353,7 +344,6 @@ fn process_refresh_executor(startup_services: &StartupServices) -> AppProcessRef
     Background::start_process_refresh_executor(
         backend_selection,
         running_targets_refresh_schedule,
-        CompileMonitorRefreshSchedule::NotScheduled,
         Instant::now(),
     )
 }

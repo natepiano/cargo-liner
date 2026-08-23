@@ -7,16 +7,7 @@ use ratatui::widgets::Paragraph;
 use tui_pane::PaneFrameChrome;
 use tui_pane::finder_match_bg;
 
-use super::constants::COLUMN_DIVIDER_WIDTH;
-use super::hit_map::MonitorHitMap;
-use super::monitor_render;
-use super::monitor_render::ColumnActivityExtent;
-use super::monitor_render::MonitorDividers;
-use super::monitor_render::OwnedBody;
-use super::monitor_render::SelectedColumnScroll;
 use super::pane::OutputPane;
-use super::presentation::MonitorVisibility;
-use super::presentation::OwnedOutputVisibility;
 use crate::tui::panes::pane_data;
 use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::state::OwnedRunOutputTitleRef;
@@ -38,111 +29,22 @@ pub(super) fn render_output_pane_body(
     let source: &[String] = visual_selection_source.lines(live);
 
     let inner = tui_pane::frame_inner(area);
-    // The cursor settles first: the selected column's scroll offset belongs to
-    // whichever column the cursor ended this frame in, and the owned body's
-    // extent depends on how many of that column's activity rows are drawn.
-    pane.reconcile_cursor(&ctx.output_presentation);
-    let activity_extent = match ctx.output_presentation.monitor() {
-        MonitorVisibility::Off => ColumnActivityExtent::none(),
-        MonitorVisibility::On(monitor_presentation) => {
-            monitor_render::selected_column_activity_extent(
-                inner,
-                monitor_presentation,
-                pane.cursor(),
-            )
-        },
-    };
-    pane.sync_column_scroll(activity_extent.visible_rows, activity_extent.row_count);
-    let selected_column_scroll =
-        SelectedColumnScroll::new(pane.cursor().column_index(), pane.column_scroll_offset());
-
-    // The viewport scrolls the captured output wherever it is drawn, so its
-    // extent is the height that body gets: the whole inner pane with the
-    // monitor off, and the rows left under the owned column's header, drawn
-    // activity rows, and separator with it on.
-    let visible_rows = match (
-        ctx.output_presentation.monitor(),
-        ctx.output_presentation.owned_output(),
-    ) {
-        (MonitorVisibility::On(monitor_presentation), OwnedOutputVisibility::OnScreen(owned)) => {
-            monitor_render::owned_captured_output_height(
-                inner,
-                monitor_presentation,
-                owned.producer(),
-                selected_column_scroll,
-            )
-        },
-        _ => usize::from(inner.height),
-    };
-    pane.sync_viewport(source.len(), visible_rows, inner);
+    pane.sync_viewport(source.len(), usize::from(inner.height), inner);
 
     // The title reports follow state and selected-line count, both of which
     // read the viewport length this frame's buffer just set, so it is built
     // after the sync rather than from the previous frame's length.
-    let mut chrome = PaneFrameChrome {
+    let chrome = PaneFrameChrome {
         title: output_title(pane, ctx),
         focused: pane.focus.is_focused(),
         ..PaneFrameChrome::default()
     };
 
-    let selected_range = pane.selected_range(source);
-    match ctx.output_presentation.monitor() {
-        MonitorVisibility::Off => {
-            render_captured_output(frame, inner, pane, source);
-            pane.set_monitor_hit_map(MonitorHitMap::new());
-        },
-        MonitorVisibility::On(monitor_presentation) => {
-            // The monitor's owned body scrolls on the same viewport offset the
-            // monitor-off view uses, so switching the monitor on does not turn
-            // captured output into a head-only view.
-            let owned_body = match ctx.output_presentation.owned_output() {
-                OwnedOutputVisibility::Absent => None,
-                OwnedOutputVisibility::OnScreen(owned) => Some(OwnedBody::new(
-                    owned,
-                    source,
-                    selected_range,
-                    pane.viewport.scroll_offset(),
-                )),
-            };
-            let mut monitor_hit_map = MonitorHitMap::new();
-            let monitor_dividers = monitor_render::render_monitor_half(
-                frame,
-                inner,
-                monitor_presentation,
-                owned_body,
-                pane.cursor(),
-                selected_column_scroll,
-                &mut monitor_hit_map,
-            );
-            push_monitor_dividers(area, inner, &monitor_dividers, &mut chrome);
-            pane.set_monitor_hit_map(monitor_hit_map);
-        },
-    }
+    render_captured_output(frame, inner, pane, source);
     chrome
 }
 
-/// Report the monitor's column rules, each running the pane's full height
-/// so it lands on the top and bottom border rows: the grid pass reads the
-/// `┬` and `┴` off those meetings, and writes the title over the top row
-/// afterwards, so a divider can no longer land on a title character.
-fn push_monitor_dividers(
-    area: Rect,
-    inner: Rect,
-    monitor_dividers: &MonitorDividers,
-    chrome: &mut PaneFrameChrome,
-) {
-    if inner.height == 0 {
-        return;
-    }
-    chrome.rules.extend(
-        monitor_dividers
-            .rule_columns()
-            .map(|x| Rect::new(x, area.y, COLUMN_DIVIDER_WIDTH, area.height)),
-    );
-}
-
-/// The monitor-off view: Cargo Port's own captured output filling the pane, as
-/// it was drawn before build monitoring existed.
+/// Cargo Port's own captured output, filling the pane.
 fn render_captured_output(frame: &mut Frame, inner: Rect, pane: &OutputPane, source: &[String]) {
     let scroll_offset = u16::try_from(pane.viewport.scroll_offset()).unwrap_or(u16::MAX);
     let selected_range = pane.selected_range(source);
@@ -233,21 +135,19 @@ fn output_title(pane: &OutputPane, ctx: &PaneRenderCtx<'_>) -> String {
             " Output — scrolled (End to follow) ".to_string()
         };
     }
-    let owned_output_visibility = ctx.output_presentation.owned_output();
-    let owned_run_running_label = match owned_output_visibility {
-        OwnedOutputVisibility::Absent => OwnedRunRunningLabelRef::NotRunning,
-        OwnedOutputVisibility::OnScreen(owned) => owned.running_label(),
-    };
+    let owned_output = ctx.output_presentation.owned_output();
+    let owned_run_running_label = owned_output
+        .map_or(OwnedRunRunningLabelRef::NotRunning, |owned| {
+            owned.running_label()
+        });
     match owned_run_running_label {
         OwnedRunRunningLabelRef::Running(name) => {
             return format!(" Running: {name} (Esc to stop) ");
         },
         OwnedRunRunningLabelRef::NotRunning => {},
     }
-    let owned_run_output_title = match owned_output_visibility {
-        OwnedOutputVisibility::Absent => OwnedRunOutputTitleRef::Unavailable,
-        OwnedOutputVisibility::OnScreen(owned) => owned.title(),
-    };
+    let owned_run_output_title =
+        owned_output.map_or(OwnedRunOutputTitleRef::Unavailable, |owned| owned.title());
     match owned_run_output_title {
         OwnedRunOutputTitleRef::Named(name) => {
             return if focused {
@@ -262,63 +162,5 @@ fn output_title(pane: &OutputPane, ctx: &PaneRenderCtx<'_>) -> String {
         " Output (y copy · Esc close) ".to_string()
     } else {
         " Output (Esc to close) ".to_string()
-    }
-}
-
-#[cfg(test)]
-#[allow(clippy::panic, reason = "tests should panic on unexpected values")]
-mod tests {
-    use ratatui::buffer::Buffer;
-    use tui_pane::GridLines;
-    use tui_pane::PaneFrame;
-
-    use super::*;
-
-    const PANE_HEIGHT: u16 = 8;
-    const PANE_WIDTH: u16 = 40;
-    const RULE_X: u16 = 20;
-
-    /// Run one monitor rule at [`RULE_X`] through the grid pass the pane
-    /// reports it to, and return the glyph in every cell of that x column,
-    /// top border row first.
-    fn rule_column_glyphs() -> Vec<String> {
-        let area = Rect::new(0, 0, PANE_WIDTH, PANE_HEIGHT);
-        let mut chrome = PaneFrameChrome::default();
-        push_monitor_dividers(
-            area,
-            tui_pane::frame_inner(area),
-            &MonitorDividers::for_test(vec![RULE_X]),
-            &mut chrome,
-        );
-
-        let pane_frame = PaneFrame::new(area);
-        let mut grid_lines = GridLines::new(area);
-        grid_lines.add(pane_frame);
-        for rule in chrome.rules {
-            grid_lines.add_rule(pane_frame, rule);
-        }
-        let mut buffer = Buffer::empty(area);
-        grid_lines.render(&mut buffer, tui_pane::default_pane_chrome());
-
-        (0..PANE_HEIGHT)
-            .map(|y| buffer[(RULE_X, y)].symbol().to_string())
-            .collect()
-    }
-
-    #[test]
-    fn a_monitor_rule_runs_between_connectors_on_both_border_rows() {
-        let glyphs = rule_column_glyphs();
-        let (first, rest) = glyphs
-            .split_first()
-            .unwrap_or_else(|| panic!("the pane is {PANE_HEIGHT} rows tall"));
-        let (last, body) = rest
-            .split_last()
-            .unwrap_or_else(|| panic!("the pane has a bottom border row"));
-        assert_eq!(first, "┬", "the top border row tees into the rule");
-        assert_eq!(last, "┴", "the bottom border row tees into the rule");
-        assert!(
-            body.iter().all(|glyph| glyph == "│"),
-            "the rule fills every inner row: {glyphs:?}"
-        );
     }
 }

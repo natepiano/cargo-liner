@@ -5,103 +5,32 @@ use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use tui_pane::CopySelectionResult;
 use tui_pane::Hittable;
-use tui_pane::NavAction;
 use tui_pane::PaneFrameChrome;
 use tui_pane::RenderFocus;
 use tui_pane::Renderable;
 use tui_pane::Viewport;
 
-use super::hit_map::MonitorHitMap;
-use super::hit_map::OutputMonitorHit;
-use super::monitor_render;
-use super::presentation::MonitorColumn;
-use super::presentation::MonitorPresentation;
-use super::presentation::MonitorVisibility;
-use super::presentation::OutputPresentation;
-use super::presentation::SelectedBuildTerminationDisplayTarget;
-use super::selection::ColumnBodyRow;
-use super::selection::ColumnSelection;
-use super::selection::OutputCursor;
-use super::selection::OutputCursorColumn;
-use super::selection::OutputCursorTarget;
 use super::selection::OutputSelection;
 use super::selection::OutputSelectionRange;
-use super::selection::OwnedColumnSelection;
-use super::selection::OwnedPinPresence;
-use super::selection::SelectedBuildTerminationCursorSelection;
 use super::selection::SelectionMode;
-use super::selection::VisualSelectionPermission;
 use super::selection::VisualSelectionSource;
 use crate::tui::hit_test::HoverTarget;
 use crate::tui::panes;
 use crate::tui::panes::PaneId;
 use crate::tui::render_context::PaneRenderCtx;
 
-/// The vertical scroll of the column the Output cursor is in.
-///
-/// One offset, not a map keyed by session: the monitor snapshot is replaced
-/// wholesale on every poll, so a per-session offset would outlive the column it
-/// describes and be restored onto a different run. Pairing the offset with the
-/// column identity it was measured against makes the reset unconditional —
-/// moving the cursor to another column cannot leave a stale offset behind,
-/// because the offset is only ever read after
-/// [`OutputPane::sync_column_scroll`] has confirmed the identity still matches.
-struct ColumnScroll {
-    column:       OutputCursorColumn,
-    offset:       usize,
-    /// How many of the column's rows the last frame could draw. The page and
-    /// half-page motions step by this, so paging moves by what the user can
-    /// see rather than by a fixed guess.
-    visible_rows: usize,
-}
-
-impl ColumnScroll {
-    const fn new() -> Self {
-        Self {
-            column:       OutputCursorColumn::Absent,
-            offset:       0,
-            visible_rows: 0,
-        }
-    }
-}
-
-/// Which way Tab walks the monitor's ordered session list.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum OutputTabStep {
-    /// Tab: the next column in first-seen order.
-    NextColumn,
-    /// Shift-Tab: the previous column.
-    PreviousColumn,
-}
-
 pub struct OutputPane {
-    pub viewport:    Viewport,
-    pub focus:       RenderFocus,
-    selection:       OutputSelection,
-    cursor:          OutputCursor,
-    column_scroll:   ColumnScroll,
-    monitor_hit_map: MonitorHitMap,
-}
-
-/// The selected build column, if the reconciled cursor still names one in the
-/// presentation available to the action.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SelectedBuildTerminationSelection {
-    /// The cursor is absent, unattributed, or does not resolve one current column.
-    NoBuildSelected,
-    /// The cursor's retained session identity resolved in the current columns.
-    SelectedBuild(SelectedBuildTerminationDisplayTarget),
+    pub viewport: Viewport,
+    pub focus:    RenderFocus,
+    selection:    OutputSelection,
 }
 
 impl OutputPane {
     pub const fn new() -> Self {
         Self {
-            viewport:        Viewport::new(),
-            focus:           RenderFocus::inactive(),
-            selection:       OutputSelection::new(),
-            cursor:          OutputCursor::empty(),
-            column_scroll:   ColumnScroll::new(),
-            monitor_hit_map: MonitorHitMap::new(),
+            viewport:  Viewport::new(),
+            focus:     RenderFocus::inactive(),
+            selection: OutputSelection::new(),
         }
     }
 
@@ -147,296 +76,12 @@ impl OutputPane {
         self.selection.visual_selection_source = VisualSelectionSource::LiveOutput;
     }
 
-    /// Where the cursor is and what it falls back to.
-    pub(super) const fn cursor(&self) -> &OutputCursor { &self.cursor }
-
-    /// Whether the row the cursor names can take part in a visual selection.
-    /// Only Cargo Port's own captured output can: the monitor's rows describe
-    /// host processes and hold no text the pane owns.
-    pub const fn visual_selection_permission(&self) -> VisualSelectionPermission {
-        self.cursor.target().visual_selection_permission()
-    }
-
-    /// Take the rows this frame drew, so a click can only ever name something
-    /// that was on screen.
-    pub(super) fn set_monitor_hit_map(&mut self, monitor_hit_map: MonitorHitMap) {
-        self.monitor_hit_map = monitor_hit_map;
-    }
-
-    /// Forget the recorded rows, for a frame that did not draw the pane at all.
-    /// Without this the last drawn frame's rows keep answering clicks while the
-    /// pane is hidden.
-    pub fn clear_monitor_hit_map(&mut self) { self.monitor_hit_map.clear(); }
-
     /// The captured-output row under `pos`, or [`CapturedOutputRow::Outside`]
-    /// when the position is over monitor chrome rather than Cargo Port's own
-    /// output. With the monitor on only the owned column's recorded rows
-    /// answer; with it off there are no recorded rows and the viewport
-    /// resolves the row across the whole pane.
+    /// when the position is off the pane's body.
     pub fn captured_output_row_at(&self, pos: Position) -> CapturedOutputRow {
-        if !self.monitor_hit_map.is_empty() {
-            return match self.monitor_hit_map.hit_at(pos) {
-                Some(&OutputMonitorHit::CapturedOutput { row, .. }) => CapturedOutputRow::Row(row),
-                Some(_) | None => CapturedOutputRow::Outside,
-            };
-        }
         self.viewport
             .pos_to_local_row(pos)
             .map_or(CapturedOutputRow::Outside, CapturedOutputRow::Row)
-    }
-
-    /// Move the cursor onto the row a click landed on.
-    pub fn focus_hit(&mut self, output_monitor_hit: &OutputMonitorHit) {
-        match output_monitor_hit {
-            OutputMonitorHit::Header {
-                build_session_id,
-                column_index,
-            } => self
-                .cursor
-                .focus_header(build_session_id.clone(), *column_index),
-            OutputMonitorHit::Activity {
-                compile_activity_id,
-                build_session_id,
-                column_index,
-                row_index,
-            } => self.cursor.focus_activity(
-                compile_activity_id.clone(),
-                build_session_id.clone(),
-                *column_index,
-                *row_index,
-            ),
-            OutputMonitorHit::Unattributed {
-                compile_activity_id,
-                row_index,
-            } => self
-                .cursor
-                .focus_unattributed(compile_activity_id.clone(), *row_index),
-            OutputMonitorHit::CapturedOutput { producer, row } => {
-                self.cursor.focus_captured_output(*producer);
-                self.viewport.set_pos(*row);
-            },
-            OutputMonitorHit::EmptyMonitor => {},
-        }
-    }
-
-    /// How far the selected column's rows are scrolled.
-    ///
-    /// Only meaningful for the column the cursor is in; every other column
-    /// draws from its first row.
-    pub(super) const fn column_scroll_offset(&self) -> usize { self.column_scroll.offset }
-
-    /// Reconcile the selected column's scroll offset against the cursor, the
-    /// way [`Self::sync_viewport`] does for the owned captured output.
-    ///
-    /// `visible_rows` is how many of the column's rows the pane can draw and
-    /// `row_count` how many it has. Called once per frame, after the cursor has
-    /// been reconciled, so the offset is always measured against the column the
-    /// cursor actually ended up in.
-    pub(super) fn sync_column_scroll(&mut self, visible_rows: usize, row_count: usize) {
-        if self.column_scroll.column != *self.cursor.column() {
-            self.column_scroll = ColumnScroll {
-                column: self.cursor.column().clone(),
-                offset: 0,
-                visible_rows,
-            };
-        }
-        self.column_scroll.visible_rows = visible_rows;
-        self.column_scroll.offset = scroll_to_show_cursor(
-            self.cursor.row_index(),
-            self.column_scroll.offset,
-            visible_rows,
-            row_count,
-        );
-    }
-
-    /// Move the cursor to whatever survived this frame's model.
-    pub fn reconcile_cursor(&mut self, output_presentation: &OutputPresentation<'_>) {
-        self.cursor.reconcile(output_presentation);
-    }
-
-    /// Whether Cargo Port's own column is the one the cursor is in.
-    pub fn owned_column_selection(
-        &self,
-        output_presentation: &OutputPresentation<'_>,
-    ) -> OwnedColumnSelection {
-        let owned_pin_presence = OwnedPinPresence::from(output_presentation.owned_output());
-        let MonitorVisibility::On(MonitorPresentation::Columns(monitor_columns)) =
-            output_presentation.monitor()
-        else {
-            // No columns are drawn, so there is no external column for the
-            // cursor to be in: the owned body is the whole pane.
-            return match owned_pin_presence {
-                OwnedPinPresence::Absent => OwnedColumnSelection::NotSelected,
-                OwnedPinPresence::Pinned(_) => OwnedColumnSelection::Selected,
-            };
-        };
-        let columns: Vec<MonitorColumn<'_>> = monitor_columns.columns().collect();
-        self.cursor
-            .owned_column_selection(&columns, owned_pin_presence)
-    }
-
-    /// Resolve selected-build termination by retained session identity rather
-    /// than by the cursor's motion fallback. An unattributed or stale cursor
-    /// therefore cannot select another column that happens to occupy its index.
-    pub fn selected_build_termination_selection(
-        &self,
-        output_presentation: &OutputPresentation<'_>,
-    ) -> SelectedBuildTerminationSelection {
-        let MonitorVisibility::On(MonitorPresentation::Columns(monitor_columns)) =
-            output_presentation.monitor()
-        else {
-            return SelectedBuildTerminationSelection::NoBuildSelected;
-        };
-        let columns: Vec<MonitorColumn<'_>> = monitor_columns.columns().collect();
-        let owned_pin_presence = OwnedPinPresence::from(output_presentation.owned_output());
-        let SelectedBuildTerminationCursorSelection::SelectedBuild(build_session_id) = self
-            .cursor
-            .selected_build_termination_selection(&columns, owned_pin_presence)
-        else {
-            return SelectedBuildTerminationSelection::NoBuildSelected;
-        };
-        let Some(monitor_column) = columns
-            .iter()
-            .find(|monitor_column| monitor_column.build_session_id() == &build_session_id)
-        else {
-            return SelectedBuildTerminationSelection::NoBuildSelected;
-        };
-        SelectedBuildTerminationSelection::SelectedBuild(
-            monitor_column.selected_build_termination_display_target(std::time::Instant::now()),
-        )
-    }
-
-    /// Apply a keyboard motion.
-    ///
-    /// With the monitor off the pane is Cargo Port's own captured output and
-    /// nothing else, so `viewport_motion` drives it exactly as it did before
-    /// the monitor existed. With the monitor on the motion walks the selected
-    /// column's body instead, and Left/Right select adjacent columns.
-    pub fn navigate_action(
-        &mut self,
-        output_presentation: &OutputPresentation<'_>,
-        nav_action: NavAction,
-        viewport_motion: impl FnOnce(&mut Viewport),
-    ) {
-        let live = output_presentation.captured_lines();
-        let MonitorVisibility::On(MonitorPresentation::Columns(monitor_columns)) =
-            output_presentation.monitor()
-        else {
-            self.navigate(live, viewport_motion);
-            return;
-        };
-        let columns: Vec<MonitorColumn<'_>> = monitor_columns.columns().collect();
-        let owned_pin_presence = OwnedPinPresence::from(output_presentation.owned_output());
-        match nav_action {
-            NavAction::Left => {
-                let _ = self
-                    .cursor
-                    .select_column(&columns, self.cursor.column_index().saturating_sub(1));
-            },
-            NavAction::Right => {
-                let _ = self
-                    .cursor
-                    .select_column(&columns, self.cursor.column_index().saturating_add(1));
-            },
-            vertical => self.move_within_column(live, &columns, owned_pin_presence, vertical),
-        }
-    }
-
-    /// Walk the selected column's body by one vertical motion.
-    fn move_within_column(
-        &mut self,
-        live: &[String],
-        columns: &[MonitorColumn<'_>],
-        owned_pin_presence: OwnedPinPresence,
-        nav_action: NavAction,
-    ) {
-        let selected_column = self
-            .cursor
-            .selected_column(columns, owned_pin_presence, live.len());
-        let Some(last) = selected_column.len().checked_sub(1) else {
-            return;
-        };
-        let position = self
-            .cursor
-            .body_position(&selected_column, self.viewport.pos());
-        let page = self.column_scroll.visible_rows.max(1);
-        let target = match nav_action {
-            NavAction::Up => position.saturating_sub(1),
-            NavAction::Down => position.saturating_add(1).min(last),
-            NavAction::Home => 0,
-            NavAction::End => last,
-            NavAction::PageUp => position.saturating_sub(page),
-            NavAction::PageDown => position.saturating_add(page).min(last),
-            NavAction::HalfPageUp => position.saturating_sub((page / 2).max(1)),
-            NavAction::HalfPageDown => position.saturating_add((page / 2).max(1)).min(last),
-            // Horizontal motions select a column; they never move the cursor
-            // down the body.
-            NavAction::Left | NavAction::Right => position,
-        };
-        let column_body_row = OutputCursor::body_row_at(&selected_column, target);
-        self.cursor
-            .place_body_row(&selected_column, column_body_row, owned_pin_presence);
-        if let ColumnBodyRow::CapturedOutput(row) = column_body_row {
-            self.navigate(live, |viewport| viewport.set_pos(row));
-        }
-    }
-
-    /// Step to the adjacent session column for Tab / Shift-Tab.
-    ///
-    /// Reports [`ColumnSelection::NoSuchColumn`] at either end of the ordered
-    /// session list, and with fewer than two sessions, so the key falls through
-    /// to the framework's pane snaking.
-    pub fn tab_to_adjacent_column(
-        &mut self,
-        output_presentation: &OutputPresentation<'_>,
-        output_tab_step: OutputTabStep,
-    ) -> ColumnSelection {
-        let MonitorVisibility::On(MonitorPresentation::Columns(monitor_columns)) =
-            output_presentation.monitor()
-        else {
-            return ColumnSelection::NoSuchColumn;
-        };
-        let columns: Vec<MonitorColumn<'_>> = monitor_columns.columns().collect();
-        if columns.len() < 2 {
-            return ColumnSelection::NoSuchColumn;
-        }
-        let column_index = self.cursor.column_index();
-        let target = match output_tab_step {
-            OutputTabStep::NextColumn => column_index.saturating_add(1),
-            OutputTabStep::PreviousColumn => match column_index.checked_sub(1) {
-                Some(previous) => previous,
-                None => return ColumnSelection::NoSuchColumn,
-            },
-        };
-        self.cursor.select_column(&columns, target)
-    }
-
-    /// The clipboard payload for whatever the cursor is on.
-    ///
-    /// An activity row copies that row's text. Captured output copies the
-    /// selected range. A column header and the scope-level unattributed
-    /// caption have no transcript behind them, so they copy nothing rather
-    /// than reaching down to captured output the cursor is not in.
-    pub fn copy_payload_for_cursor(
-        &self,
-        output_presentation: &OutputPresentation<'_>,
-    ) -> CopySelectionResult {
-        let live = output_presentation.captured_lines();
-        let MonitorVisibility::On(monitor_presentation) = output_presentation.monitor() else {
-            return self.copy_payload(live);
-        };
-        match self.cursor.target() {
-            OutputCursorTarget::CapturedOutput(_) => self.copy_payload(live),
-            OutputCursorTarget::Empty | OutputCursorTarget::Header(_) => {
-                CopySelectionResult::Nothing
-            },
-            OutputCursorTarget::Activity(compile_activity_id) => {
-                monitor_render::activity_row_text(monitor_presentation, compile_activity_id)
-            },
-            OutputCursorTarget::Unattributed(compile_activity_id) => {
-                monitor_render::unattributed_row_text(monitor_presentation, compile_activity_id)
-            },
-        }
     }
 
     /// Enter visual mode from the cursor: anchor the fixed end at the
@@ -657,10 +302,7 @@ const fn scroll_to_show_cursor(
     }
 }
 
-/// What a screen position names in Cargo Port's own captured output. Anything
-/// the monitor drew — headers, activity rows, the unattributed section — is
-/// [`Outside`](Self::Outside), so a drag over monitor chrome cannot select
-/// captured-output rows it never covered.
+/// What a screen position names in Cargo Port's own captured output.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CapturedOutputRow {
     /// The position is not over a captured-output row.
@@ -682,112 +324,10 @@ impl Renderable<PaneRenderCtx<'_>> for OutputPane {
 
 impl Hittable<HoverTarget> for OutputPane {
     fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
-        // With the monitor on, every drawn row names the model row behind it;
-        // with it off there are no recorded rows and the pane falls back to the
-        // captured-output row the viewport resolves.
-        if let Some(output_monitor_hit) = self.monitor_hit_map.hit_at(pos) {
-            return Some(HoverTarget::OutputMonitorRow(output_monitor_hit.clone()));
-        }
-        if !self.monitor_hit_map.is_empty() {
-            return None;
-        }
         let row = self.viewport.pos_to_local_row(pos)?;
         Some(HoverTarget::PaneRow {
             pane: PaneId::Output,
             row,
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::OutputPane;
-    use crate::build_monitor::BuildSessionId;
-    use crate::build_monitor::CompileActivityId;
-    use crate::process_observation::identity::ProcessIdentity;
-    use crate::process_observation::identity::ProcessIncarnation;
-
-    const COLUMN_CAPACITY: usize = 4;
-    const COLUMN_ROWS: usize = 12;
-
-    fn build_session_id(pid: u32) -> BuildSessionId {
-        BuildSessionId::for_test(ProcessIncarnation::for_test(
-            ProcessIdentity::for_test(pid, 1),
-            "cargo build",
-        ))
-    }
-
-    fn compile_activity_id(pid: u32) -> CompileActivityId {
-        CompileActivityId::for_test(ProcessIncarnation::for_test(
-            ProcessIdentity::for_test(pid, 1),
-            "rustc",
-        ))
-    }
-
-    /// Place the cursor on `row_index` of the column belonging to `pid`.
-    fn focus_row(pane: &mut OutputPane, pid: u32, column_index: usize, row_index: usize) {
-        pane.cursor.focus_activity(
-            compile_activity_id(pid.wrapping_add(u32::try_from(row_index).unwrap_or(0))),
-            build_session_id(pid),
-            column_index,
-            row_index,
-        );
-    }
-
-    /// A column with more activity rows than the pane can draw stays fully
-    /// reachable: the offset follows the cursor down and back up.
-    #[test]
-    fn column_scroll_offset_follows_the_cursor_through_a_long_column() {
-        let mut pane = OutputPane::new();
-
-        for row_index in 0..COLUMN_ROWS {
-            focus_row(&mut pane, 4000, 0, row_index);
-            pane.sync_column_scroll(COLUMN_CAPACITY, COLUMN_ROWS);
-            let offset = pane.column_scroll_offset();
-            assert!(
-                offset <= row_index && row_index < offset + COLUMN_CAPACITY,
-                "row {row_index} should be drawn at offset {offset}"
-            );
-        }
-        assert_eq!(
-            pane.column_scroll_offset(),
-            COLUMN_ROWS - COLUMN_CAPACITY,
-            "the last row scrolls the column to its end, not past it"
-        );
-
-        focus_row(&mut pane, 4000, 0, 0);
-        pane.sync_column_scroll(COLUMN_CAPACITY, COLUMN_ROWS);
-        assert_eq!(
-            pane.column_scroll_offset(),
-            0,
-            "returning to the first row scrolls the column back to its top"
-        );
-    }
-
-    /// The offset belongs to one column. Selecting a different one starts that
-    /// column at its first row rather than inheriting the previous scroll.
-    #[test]
-    fn column_scroll_offset_resets_when_the_selected_column_changes() {
-        let mut pane = OutputPane::new();
-
-        focus_row(&mut pane, 4000, 0, COLUMN_ROWS - 1);
-        pane.sync_column_scroll(COLUMN_CAPACITY, COLUMN_ROWS);
-        assert!(pane.column_scroll_offset() > 0);
-
-        focus_row(&mut pane, 5000, 1, 0);
-        pane.sync_column_scroll(COLUMN_CAPACITY, COLUMN_ROWS);
-        assert_eq!(pane.column_scroll_offset(), 0);
-    }
-
-    /// A column whose rows all fit never scrolls.
-    #[test]
-    fn column_scroll_offset_stays_zero_when_every_row_fits() {
-        let mut pane = OutputPane::new();
-
-        for row_index in 0..COLUMN_CAPACITY {
-            focus_row(&mut pane, 4000, 0, row_index);
-            pane.sync_column_scroll(COLUMN_CAPACITY, COLUMN_CAPACITY);
-            assert_eq!(pane.column_scroll_offset(), 0);
-        }
     }
 }

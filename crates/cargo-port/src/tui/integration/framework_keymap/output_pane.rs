@@ -1,5 +1,3 @@
-use crossterm::event::KeyCode;
-
 use super::Action;
 use super::App;
 use super::AppPaneId;
@@ -10,23 +8,10 @@ use super::KeyBind;
 use super::OUTPUT_TAB_ORDER;
 use super::OutputAction;
 use super::Pane;
-use super::ShortcutState;
 use super::Shortcuts;
 use super::TabStop;
 use super::input;
 use super::output_is_tabbable;
-use crate::build_monitor::OutputBuildSetTerminationAvailability;
-use crate::build_monitor::SelectedBuildTerminationAvailability;
-
-/// `key` held with Alt — the portable representation the keymap stores for the
-/// termination shortcuts, spelled `alt-<key>` in TOML.
-///
-/// Pass an uppercase `key` for the Shift-held form: that is the normalized
-/// dispatch spelling a live Alt-Shift keypress arrives as, and the one
-/// `alt-shift-k` in a user's TOML parses to.
-fn alt_key(key: char) -> KeyBind {
-    KeyBind::from_parts(KeyCode::Char(key), crossterm::event::KeyModifiers::ALT)
-}
 
 /// `Pane<App>` + `Shortcuts<App>` host for the Output pane.
 ///
@@ -47,42 +32,10 @@ impl Shortcuts<App> for OutputPane {
     const SCOPE_NAME: &'static str = "output";
     const SECTION_NAME: &'static str = "Output";
 
-    /// The two kill actions are stored portably as `alt-k` and `alt-shift-k`
-    /// (the latter round-trips through the canonical spelling `alt-K`, which is
-    /// how a terminal reports the physical keypress). macOS terminals label that
-    /// physical key `Option` and must be configured to report it as Meta/Alt for
-    /// the binding to arrive at all; a user whose terminal cannot do that
-    /// rebinds through the keymap overlay like any other action.
     fn defaults() -> Bindings<Self::Actions> {
         tui_pane::bindings! {
             KeyBind::ctrl('a')             => OutputAction::SelectAll,
             crossterm::event::KeyCode::Esc => OutputAction::Cancel,
-            alt_key('k')                   => OutputAction::KillSelectedBuild,
-            alt_key('K')                   => OutputAction::TerminateOutputBuildSet,
-        }
-    }
-
-    /// Termination availability reads the same opaque authority map that the
-    /// confirmation later consumes.
-    fn state(&self, action: OutputAction, app: &App) -> ShortcutState {
-        match action {
-            OutputAction::KillSelectedBuild => {
-                match app.selected_build_termination_availability() {
-                    SelectedBuildTerminationAvailability::Available => ShortcutState::Enabled,
-                    SelectedBuildTerminationAvailability::SnapshotNotActionable
-                    | SelectedBuildTerminationAvailability::SessionNotActionable
-                    | SelectedBuildTerminationAvailability::Busy => ShortcutState::Disabled,
-                }
-            },
-            OutputAction::TerminateOutputBuildSet => {
-                match app.output_build_set_termination_availability() {
-                    OutputBuildSetTerminationAvailability::Available => ShortcutState::Enabled,
-                    OutputBuildSetTerminationAvailability::SnapshotNotActionable
-                    | OutputBuildSetTerminationAvailability::BuildSetNotFullyActionable
-                    | OutputBuildSetTerminationAvailability::Busy => ShortcutState::Disabled,
-                }
-            },
-            OutputAction::SelectAll | OutputAction::Cancel => ShortcutState::Enabled,
         }
     }
 
@@ -103,9 +56,7 @@ impl Shortcuts<App> for OutputPane {
                     "close"
                 }
             },
-            OutputAction::SelectAll
-            | OutputAction::KillSelectedBuild
-            | OutputAction::TerminateOutputBuildSet => action.bar_label(),
+            OutputAction::SelectAll => action.bar_label(),
         }
     }
 
@@ -113,58 +64,6 @@ impl Shortcuts<App> for OutputPane {
 }
 
 impl CopySelection<App> for OutputPane {
-    /// What the cursor is on decides what `y` copies: an activity row copies
-    /// that row, and captured output copies the selected range.
+    /// `y` copies the selected range of captured output.
     fn copy_selection(ctx: &App) -> CopySelectionResult { ctx.copy_output_selection() }
-}
-
-#[cfg(test)]
-mod tests {
-    use crossterm::event::KeyCode;
-    use tui_pane::KeyBind;
-    use tui_pane::Shortcuts;
-
-    use super::OutputAction;
-    use super::OutputPane;
-    use super::alt_key;
-
-    /// The kill defaults are stored portably. `alt-shift-k` is the spelling the
-    /// plan documents for users; it parses to the same bind as the canonical
-    /// `alt-K` that a terminal reports and that the generated keymap writes.
-    #[test]
-    fn kill_defaults_parse_from_their_portable_toml_spellings() {
-        let defaults = OutputPane::defaults().into_scope_map();
-
-        for (spelling, expected) in [
-            ("alt-k", OutputAction::KillSelectedBuild),
-            ("alt-shift-k", OutputAction::TerminateOutputBuildSet),
-            ("alt-K", OutputAction::TerminateOutputBuildSet),
-        ] {
-            let resolved = KeyBind::parse(spelling)
-                .ok()
-                .and_then(|bind| defaults.action_for(&bind));
-            assert_eq!(
-                resolved,
-                Some(expected),
-                "{spelling} should parse and resolve to {expected:?}"
-            );
-        }
-    }
-
-    /// A macOS terminal that reports Option as Meta sends Alt-Shift-K as the
-    /// normalized uppercase char, which must reach the same binding.
-    #[test]
-    fn alt_shift_keypress_normalizes_onto_the_scoped_kill_binding() {
-        let defaults = OutputPane::defaults().into_scope_map();
-        let pressed = KeyBind::from_parts(
-            KeyCode::Char('k'),
-            crossterm::event::KeyModifiers::ALT | crossterm::event::KeyModifiers::SHIFT,
-        );
-
-        assert_eq!(pressed, alt_key('K'));
-        assert_eq!(
-            defaults.action_for(&pressed),
-            Some(OutputAction::TerminateOutputBuildSet),
-        );
-    }
 }

@@ -11,7 +11,6 @@
 
 use std::collections::VecDeque;
 use std::num::NonZeroU64;
-use std::path::PathBuf;
 
 use tui_pane::RunningTracker;
 
@@ -20,9 +19,7 @@ use super::owned_run_process_actor::OwnedRunProcessActor;
 use super::owned_run_process_actor::OwnedRunTerminationOutcome;
 use super::owned_run_process_actor::OwnedRunTerminationSubmission;
 use super::owned_run_process_actor::OwnedRunTerminationToken;
-use crate::build_monitor::LiveOwnedRoot;
-use crate::build_monitor::OwnedRootEvidence;
-use crate::build_monitor::OwnedRootLifecycle;
+#[cfg(test)]
 use crate::process_observation::identity::ProcessIdentity;
 use crate::project::AbsolutePath;
 use crate::tui::app::PendingClean;
@@ -124,14 +121,6 @@ impl OwnedRun {
 
     pub(in crate::tui) fn output_is_empty(&self) -> bool { self.output().is_empty() }
 
-    /// How the run behind the retained output ended.
-    ///
-    /// The Output pane keeps that output pinned after the run is gone, so the
-    /// marker has to survive the lifecycle it describes.
-    pub(in crate::tui) const fn completion_marker(&self) -> OwnedRunCompletionMarker {
-        self.lifecycle.completion_marker()
-    }
-
     pub(in crate::tui) fn running_label(&self) -> OwnedRunRunningLabelRef<'_> {
         self.lifecycle.running_label()
     }
@@ -209,51 +198,10 @@ impl OwnedRun {
         }
     }
 
-    /// Immutable evidence about the one Cargo Port-owned Cargo root, for build
-    /// classification. A stopping run still has live compiler descendants, so
-    /// it is reported as an owned root with a stopping lifecycle rather than as
-    /// no root at all.
-    pub(in crate::tui) fn owned_root_evidence(&self) -> OwnedRootEvidence {
-        match &self.lifecycle {
-            OwnedRunLifecycle::Running(running_owned_run) => {
-                OwnedRootEvidence::Root(LiveOwnedRoot::new(
-                    running_owned_run.owned_run_id,
-                    running_owned_run.root_identity.clone(),
-                    running_owned_run.launch_directory.clone(),
-                    OwnedRootLifecycle::Live,
-                ))
-            },
-            OwnedRunLifecycle::TerminationRequestPending(termination_request_pending_owned_run) => {
-                let running_owned_run = &termination_request_pending_owned_run.running_owned_run;
-                OwnedRootEvidence::Root(LiveOwnedRoot::new(
-                    running_owned_run.owned_run_id,
-                    running_owned_run.root_identity.clone(),
-                    running_owned_run.launch_directory.clone(),
-                    OwnedRootLifecycle::Live,
-                ))
-            },
-            OwnedRunLifecycle::Stopping(stopping_owned_run) => {
-                OwnedRootEvidence::Root(LiveOwnedRoot::new(
-                    stopping_owned_run.owned_run_id,
-                    stopping_owned_run.root_identity.clone(),
-                    stopping_owned_run.launch_directory.clone(),
-                    OwnedRootLifecycle::Stopping,
-                ))
-            },
-            OwnedRunLifecycle::Absent(_)
-            | OwnedRunLifecycle::Queued(_)
-            | OwnedRunLifecycle::Starting(_)
-            | OwnedRunLifecycle::RetainedSuccess(_)
-            | OwnedRunLifecycle::GoneAfterSignal(_)
-            | OwnedRunLifecycle::Failed(_) => OwnedRootEvidence::NoLiveRoot,
-        }
-    }
-
     fn activate(
         &mut self,
         owned_run_id: OwnedRunId,
         owned_run_process_actor: OwnedRunProcessActor,
-        root_identity: ProcessIdentity,
     ) -> OwnedRunActivation {
         let lifecycle = std::mem::replace(&mut self.lifecycle, OwnedRunLifecycle::absent());
         match lifecycle {
@@ -261,21 +209,17 @@ impl OwnedRun {
                 if starting_owned_run.owned_run_id == owned_run_id =>
             {
                 let mode = starting_owned_run.pending_example_run.build_mode.label();
-                let launch_directory =
-                    PathBuf::from(starting_owned_run.pending_example_run.abs_path);
                 let display_path = starting_owned_run.pending_example_run.display_path;
                 let target_name = starting_owned_run.pending_example_run.target_name;
                 self.lifecycle = OwnedRunLifecycle::Running(RunningOwnedRun {
                     owned_run_id,
                     running_label: format!("{display_path}{mode}"),
-                    launch_directory,
                     retained_output: OwnedRunRetainedOutput::named(
                         owned_run_id,
                         display_path,
                         vec![format!("Building {target_name}{mode}...")],
                     ),
                     owned_run_process_actor,
-                    root_identity,
                 });
                 OwnedRunActivation::Activated
             },
@@ -681,16 +625,14 @@ impl OwnedRun {
         let process_identity = ProcessIdentity::for_test(1, owned_run_id.0.get());
         let mut owned_run_process_actor = OwnedRunProcessActor::for_test(
             owned_run_id,
-            process_identity.clone(),
+            process_identity,
             OwnedProcessGroupSignalOutcome::Sent,
         );
         owned_run_process_actor.start_worker();
         self.lifecycle = OwnedRunLifecycle::Running(RunningOwnedRun {
             owned_run_id,
             running_label: running_label.clone(),
-            launch_directory: PathBuf::new(),
             retained_output: retained_output.with_missing_title_replaced_by(running_label),
-            root_identity: process_identity,
             owned_run_process_actor,
         });
     }
@@ -870,21 +812,6 @@ impl OwnedRunLifecycle {
         }
     }
 
-    /// Which end state the retained output was captured from, if any.
-    const fn completion_marker(&self) -> OwnedRunCompletionMarker {
-        match self {
-            Self::Absent(_)
-            | Self::Queued(_)
-            | Self::Starting(_)
-            | Self::Running(_)
-            | Self::TerminationRequestPending(_)
-            | Self::Stopping(_) => OwnedRunCompletionMarker::NotCompleted,
-            Self::RetainedSuccess(_) => OwnedRunCompletionMarker::Done,
-            Self::GoneAfterSignal(_) => OwnedRunCompletionMarker::Killed,
-            Self::Failed(_) => OwnedRunCompletionMarker::Failed,
-        }
-    }
-
     fn output_title(&self) -> OwnedRunOutputTitleRef<'_> {
         match self {
             Self::Absent(_) => OwnedRunOutputTitleRef::Unavailable,
@@ -995,13 +922,11 @@ impl From<QueuedOwnedRun> for StartingOwnedRun {
     }
 }
 
-/// A running owned run has immutable root evidence and one actor endpoint.
+/// A running owned run holds its retained output and one actor endpoint.
 struct RunningOwnedRun {
     owned_run_id:            OwnedRunId,
     running_label:           String,
-    launch_directory:        PathBuf,
     retained_output:         OwnedRunRetainedOutput,
-    root_identity:           ProcessIdentity,
     owned_run_process_actor: OwnedRunProcessActor,
 }
 
@@ -1011,23 +936,19 @@ struct TerminationRequestPendingOwnedRun {
     running_owned_run: RunningOwnedRun,
 }
 
-/// A stop-requested run retains live-root evidence until completion. Dropping
-/// the command endpoint makes the detached actor worker wait for and reap its
+/// A stop-requested run retains its output until completion. Dropping the
+/// command endpoint makes the detached actor worker wait for and reap its
 /// child while retaining the worker-owned termination capability.
 struct StoppingOwnedRun {
-    owned_run_id:     OwnedRunId,
-    launch_directory: PathBuf,
-    retained_output:  OwnedRunRetainedOutput,
-    root_identity:    ProcessIdentity,
+    owned_run_id:    OwnedRunId,
+    retained_output: OwnedRunRetainedOutput,
 }
 
 impl From<RunningOwnedRun> for StoppingOwnedRun {
     fn from(running_owned_run: RunningOwnedRun) -> Self {
         Self {
-            owned_run_id:     running_owned_run.owned_run_id,
-            launch_directory: running_owned_run.launch_directory,
-            retained_output:  running_owned_run.retained_output,
-            root_identity:    running_owned_run.root_identity,
+            owned_run_id:    running_owned_run.owned_run_id,
+            retained_output: running_owned_run.retained_output,
         }
     }
 }
@@ -1162,23 +1083,6 @@ pub(crate) enum OwnedRunOutputTitleRef<'a> {
     Unavailable,
 }
 
-/// How the run that produced the retained output ended.
-///
-/// The Output pane pins completed output with this marker even after the
-/// monitored scope moves away from the run, so the marker is a property of the
-/// retained output rather than of the current lifecycle slot.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum OwnedRunCompletionMarker {
-    /// Nothing has completed: the slot is empty or a run is still live.
-    NotCompleted,
-    /// The run finished on its own.
-    Done,
-    /// The run ended after Cargo Port signalled its process group.
-    Killed,
-    /// The launch never produced a running process.
-    Failed,
-}
-
 /// Borrowed live label availability for the current owned-run lifecycle.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OwnedRunRunningLabelRef<'a> {
@@ -1282,21 +1186,6 @@ pub(crate) struct Inflight {
     owned_run:        OwnedRun,
 }
 
-/// Whether the owned-run fixture reached the state it drives toward.
-#[cfg(test)]
-pub(crate) enum OwnedRunFixture {
-    /// A fresh slot refused the launch, so there is no run to retain output
-    /// from.
-    Unbuilt,
-    /// One running owned run with output that remains available while it runs.
-    Live { inflight: Box<Inflight> },
-    /// One finished run's output, retained under the run that wrote it.
-    Built {
-        inflight: Box<Inflight>,
-        producer: OwnedRunId,
-    },
-}
-
 /// One queued run's launch request, for tests that drive the owned-run
 /// lifecycle rather than assemble its result.
 #[cfg(test)]
@@ -1363,81 +1252,6 @@ impl Inflight {
 
     pub(crate) const fn owned_run(&self) -> &OwnedRun { &self.owned_run }
 
-    /// An `Inflight` driven through one whole owned run — queued, started,
-    /// activated, one line of output, finished — with the next run already
-    /// queued behind it.
-    ///
-    /// This is the state a retained body is drawn in, and only the lifecycle
-    /// can produce it: the retaining run and the current lifecycle identity
-    /// differ here, and a hand-assembled state can put them in combinations
-    /// the lifecycle never reaches.
-    #[cfg(test)]
-    pub(crate) fn with_retained_output_and_next_run_queued(line: &str) -> OwnedRunFixture {
-        let mut inflight = Self::new();
-        let producer = match inflight.queue_owned_run(pending_run_for_test()) {
-            OwnedRunLaunchAdmission::Queued(owned_run_id) => owned_run_id,
-            OwnedRunLaunchAdmission::AlreadyActive
-            | OwnedRunLaunchAdmission::IdentitiesExhausted => return OwnedRunFixture::Unbuilt,
-        };
-        assert_eq!(
-            inflight.begin_owned_run_launch(),
-            OwnedRunLaunchStart::Starting(producer)
-        );
-        assert!(matches!(
-            inflight.activate_owned_run(
-                producer,
-                OwnedRunProcessActor::for_test(
-                    producer,
-                    ProcessIdentity::for_test(4242, 7),
-                    OwnedProcessGroupSignalOutcome::Sent,
-                ),
-                ProcessIdentity::for_test(4242, 7),
-            ),
-            OwnedRunActivation::Activated
-        ));
-        let _ = inflight.record_owned_run_output(producer, line.to_string());
-        let _ = inflight.finish_owned_run(producer);
-        let _ = inflight.queue_owned_run(pending_run_for_test());
-        OwnedRunFixture::Built {
-            inflight: Box::new(inflight),
-            producer,
-        }
-    }
-
-    /// An active owned run with one output line, driven through its lifecycle.
-    #[cfg(test)]
-    pub(crate) fn with_live_owned_run_output(line: &str) -> OwnedRunFixture {
-        let mut inflight = Self::new();
-        let owned_run_id = match inflight.queue_owned_run(pending_run_for_test()) {
-            OwnedRunLaunchAdmission::Queued(owned_run_id) => owned_run_id,
-            OwnedRunLaunchAdmission::AlreadyActive
-            | OwnedRunLaunchAdmission::IdentitiesExhausted => return OwnedRunFixture::Unbuilt,
-        };
-        assert_eq!(
-            inflight.begin_owned_run_launch(),
-            OwnedRunLaunchStart::Starting(owned_run_id)
-        );
-        assert!(matches!(
-            inflight.activate_owned_run(
-                owned_run_id,
-                OwnedRunProcessActor::for_test(
-                    owned_run_id,
-                    ProcessIdentity::for_test(4242, 7),
-                    OwnedProcessGroupSignalOutcome::Sent,
-                ),
-                ProcessIdentity::for_test(4242, 7),
-            ),
-            OwnedRunActivation::Activated
-        ));
-        assert_eq!(
-            inflight.record_owned_run_output(owned_run_id, line.to_string()),
-            OwnedRunMessageUpdate::Applied
-        );
-        OwnedRunFixture::Live {
-            inflight: Box::new(inflight),
-        }
-    }
-
     pub(crate) fn queue_owned_run(
         &mut self,
         pending_example_run: PendingExampleRun,
@@ -1460,10 +1274,9 @@ impl Inflight {
         &mut self,
         owned_run_id: OwnedRunId,
         owned_run_process_actor: OwnedRunProcessActor,
-        root_identity: ProcessIdentity,
     ) -> OwnedRunActivation {
         self.owned_run
-            .activate(owned_run_id, owned_run_process_actor, root_identity)
+            .activate(owned_run_id, owned_run_process_actor)
     }
 
     pub(crate) fn start_owned_run_process_actor(&mut self, owned_run_id: OwnedRunId) {
@@ -1607,7 +1420,6 @@ impl Inflight {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
-    use std::path::Path;
     use std::path::PathBuf;
     use std::time::Instant;
 
@@ -1671,12 +1483,7 @@ mod tests {
         assert!(matches!(
             inflight.activate_owned_run(
                 owned_run_id,
-                OwnedRunProcessActor::for_test(
-                    owned_run_id,
-                    process_identity.clone(),
-                    signal_outcome,
-                ),
-                process_identity,
+                OwnedRunProcessActor::for_test(owned_run_id, process_identity, signal_outcome,),
             ),
             OwnedRunActivation::Activated
         ));
@@ -1727,16 +1534,6 @@ mod tests {
                 .output()
                 .iter()
                 .any(|line| line == "preserved output")
-        );
-        let OwnedRootEvidence::Root(live_owned_root) = inflight.owned_run().owned_root_evidence()
-        else {
-            panic!("a failed termination request should preserve its live root");
-        };
-        assert_eq!(live_owned_root.owned_run_id(), owned_run_id);
-        assert_eq!(live_owned_root.launch_directory(), Path::new("/tmp/demo"));
-        assert_eq!(
-            live_owned_root.owned_root_lifecycle(),
-            OwnedRootLifecycle::Live
         );
         let OwnedRunTermination::Available {
             owned_run_id: retryable_owned_run_id,
@@ -1890,29 +1687,6 @@ mod tests {
     }
 
     #[test]
-    fn child_completion_while_termination_is_pending_finishes_the_matching_run_normally() {
-        let mut inflight = fresh();
-        let owned_run_id = submit_termination_request(&mut inflight);
-
-        assert_eq!(
-            inflight.finish_owned_run(owned_run_id),
-            OwnedRunMessageUpdate::Applied
-        );
-        assert!(matches!(
-            inflight.owned_run().lifecycle(),
-            OwnedRunLifecycle::RetainedSuccess(_)
-        ));
-        assert_eq!(
-            inflight.owned_run().completion_marker(),
-            OwnedRunCompletionMarker::Done
-        );
-        assert_eq!(
-            inflight.owned_run().output().last().map(String::as_str),
-            Some(DONE_MARKER)
-        );
-    }
-
-    #[test]
     fn queued_and_starting_lifecycles_do_not_fabricate_process_authority() {
         let mut inflight = fresh();
         let owned_run_id = queue_owned_run(&mut inflight);
@@ -1970,10 +1744,9 @@ mod tests {
                 first_run_id,
                 OwnedRunProcessActor::for_test(
                     first_run_id,
-                    process_identity.clone(),
+                    process_identity,
                     OwnedProcessGroupSignalOutcome::Sent,
                 ),
-                process_identity,
             ),
             OwnedRunActivation::Activated
         ));
@@ -2028,10 +1801,9 @@ mod tests {
             owned_run_id,
             OwnedRunProcessActor::for_test(
                 owned_run_id,
-                process_identity.clone(),
+                process_identity,
                 OwnedProcessGroupSignalOutcome::Sent,
             ),
-            process_identity,
         );
         assert!(matches!(
             inflight.owned_run_termination(),
@@ -2046,58 +1818,6 @@ mod tests {
     }
 
     #[test]
-    fn owned_root_evidence_reports_live_then_stopping_then_no_live_root()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let mut inflight = fresh();
-        assert_eq!(
-            inflight.owned_run().owned_root_evidence(),
-            OwnedRootEvidence::NoLiveRoot,
-            "an absent run owns no Cargo root"
-        );
-
-        let owned_run_id = queue_owned_run(&mut inflight);
-        let _ = inflight.begin_owned_run_launch();
-        let process_identity = ProcessIdentity::for_test(42, 7);
-        let _ = inflight.activate_owned_run(
-            owned_run_id,
-            OwnedRunProcessActor::for_test(
-                owned_run_id,
-                process_identity.clone(),
-                OwnedProcessGroupSignalOutcome::Sent,
-            ),
-            process_identity.clone(),
-        );
-
-        let OwnedRootEvidence::Root(live_owned_root) = inflight.owned_run().owned_root_evidence()
-        else {
-            return Err("an activated run owns a live Cargo root".into());
-        };
-        assert_eq!(live_owned_root.owned_run_id(), owned_run_id);
-        assert_eq!(live_owned_root.root_identity(), &process_identity);
-        assert_eq!(live_owned_root.launch_directory(), Path::new("/tmp/demo"));
-        assert_eq!(
-            live_owned_root.owned_root_lifecycle(),
-            OwnedRootLifecycle::Live
-        );
-
-        let _ = inflight.mark_owned_run_stopping(owned_run_id);
-        let OwnedRootEvidence::Root(stopping_owned_root) =
-            inflight.owned_run().owned_root_evidence()
-        else {
-            return Err("a stopping run still owns live compiler descendants".into());
-        };
-        assert_eq!(
-            stopping_owned_root.owned_root_lifecycle(),
-            OwnedRootLifecycle::Stopping
-        );
-        assert_eq!(
-            stopping_owned_root.launch_directory(),
-            Path::new("/tmp/demo")
-        );
-        Ok(())
-    }
-
-    #[test]
     fn closing_stopping_output_preserves_the_active_run_slot() {
         let mut inflight = fresh();
         let owned_run_id = queue_owned_run(&mut inflight);
@@ -2107,10 +1827,9 @@ mod tests {
             owned_run_id,
             OwnedRunProcessActor::for_test(
                 owned_run_id,
-                process_identity.clone(),
+                process_identity,
                 OwnedProcessGroupSignalOutcome::Sent,
             ),
-            process_identity,
         );
         let _ = inflight.mark_owned_run_stopping(owned_run_id);
 
@@ -2137,10 +1856,9 @@ mod tests {
             owned_run_id,
             OwnedRunProcessActor::for_test(
                 owned_run_id,
-                process_identity.clone(),
+                process_identity,
                 OwnedProcessGroupSignalOutcome::Sent,
             ),
-            process_identity,
         );
         let _ = inflight.mark_owned_run_stopping(owned_run_id);
 

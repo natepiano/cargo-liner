@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **Breaking:** Remove the build monitor from the Output pane. The opt-in view of running Cargo builds (`C`), its per-session columns and compile-activity rows, and the build termination it offered (`alt-k` for the selected build, `alt-shift-k` for every build in scope) are all gone, along with the process-termination machinery behind them. Use [cargo-tile](https://crates.io/crates/cargo-tile) instead: it shows the output of running Cargo commands, and does it better than this ever did. The Output pane itself stays — it still shows the captured output of a target Cargo Port launched from the Targets pane, and `Esc` still stops that run.
+
 ### Changed
 - Section headers and the items under them now start one space in from the pane border rather than two and four, following `tui_pane`'s narrower indents.
 

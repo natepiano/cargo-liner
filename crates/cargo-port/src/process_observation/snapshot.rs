@@ -171,27 +171,6 @@ pub(crate) struct ProcessSnapshotRecord {
 }
 
 impl ProcessSnapshotRecord {
-    /// Assemble one strongly identified record from fields a test states
-    /// directly, so classification can be exercised without a host refresh.
-    #[cfg(test)]
-    pub(super) const fn for_test(
-        identity: ProcessIdentity,
-        incarnation_evidence: ProcessIncarnationEvidence,
-        executable: ProcessFieldObservation<PathBuf>,
-        argv: ProcessFieldObservation<Vec<OsString>>,
-        cwd: ProcessFieldObservation<PathBuf>,
-        parentage_validation_outcome: ProcessFieldObservation<ParentageValidationOutcome>,
-    ) -> Self {
-        Self {
-            identity,
-            incarnation_evidence,
-            executable,
-            argv,
-            cwd,
-            parentage_validation_outcome,
-        }
-    }
-
     pub(crate) const fn identity(&self) -> &ProcessIdentity { &self.identity }
 
     pub(crate) const fn incarnation_evidence(&self) -> &ProcessIncarnationEvidence {
@@ -221,64 +200,6 @@ pub(super) struct InsufficientIdentityProcessRecord {
     parent:     ProcessFieldObservation<ReportedParent>,
 }
 
-/// The exact process set an observer refreshes.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum ProcessRefreshInput {
-    FullSystemSnapshot,
-    TargetedIdentities(BTreeSet<ProcessIdentity>),
-}
-
-/// The scope that produced an immutable snapshot.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum ProcessSnapshotScope {
-    FullSystem,
-    TargetedIdentities(BTreeSet<ProcessIdentity>),
-}
-
-/// The process consumers whose due work is served by one observer cycle.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ProcessRefreshConsumerDemand {
-    RunningTargets,
-    CompileMonitor,
-    TerminationTransaction,
-    RunningTargetsAndCompileMonitor,
-    RunningTargetsAndTerminationTransaction,
-    CompileMonitorAndTerminationTransaction,
-    AllConsumers,
-}
-
-impl ProcessRefreshConsumerDemand {
-    pub(crate) const fn includes_running_targets(self) -> bool {
-        matches!(
-            self,
-            Self::RunningTargets
-                | Self::RunningTargetsAndCompileMonitor
-                | Self::RunningTargetsAndTerminationTransaction
-                | Self::AllConsumers
-        )
-    }
-
-    pub(crate) const fn includes_compile_monitor(self) -> bool {
-        matches!(
-            self,
-            Self::CompileMonitor
-                | Self::RunningTargetsAndCompileMonitor
-                | Self::CompileMonitorAndTerminationTransaction
-                | Self::AllConsumers
-        )
-    }
-
-    pub(crate) const fn includes_termination_transaction(self) -> bool {
-        matches!(
-            self,
-            Self::TerminationTransaction
-                | Self::RunningTargetsAndTerminationTransaction
-                | Self::CompileMonitorAndTerminationTransaction
-                | Self::AllConsumers
-        )
-    }
-}
-
 /// Why a requested observer execution could not produce a snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ProcessRefreshExecutionFailure {
@@ -293,34 +214,30 @@ pub(crate) enum ProcessRefreshExecutionFailure {
 /// including the failures — would otherwise be moved through the result
 /// channel at the snapshot's size.
 #[derive(Debug, PartialEq)]
-pub(crate) enum ProcessRefreshExecutionOutcome<CycleOutcome> {
-    Completed(Box<CompletedProcessRefreshExecution<CycleOutcome>>),
+pub(crate) enum ProcessRefreshExecutionOutcome {
+    Completed(Box<CompletedProcessRefreshExecution>),
     Failed(ProcessRefreshExecutionFailure),
 }
 
-/// Snapshot, elapsed observer time, and the consumer outcome from one
-/// successfully completed refresh.
+/// Snapshot and elapsed observer time from one successfully completed refresh.
 ///
 /// `elapsed` stays observer-only: it is the boundary the event loop
-/// instruments and the benchmarks report a classification cost against, so
-/// consumer work done after the observation must not be folded into it.
+/// instruments and the benchmarks report against, so work done after the
+/// observation must not be folded into it.
 #[derive(Debug, PartialEq)]
-pub(crate) struct CompletedProcessRefreshExecution<CycleOutcome> {
+pub(crate) struct CompletedProcessRefreshExecution {
     process_observation_snapshot: ProcessObservationSnapshot,
     elapsed:                      Duration,
-    cycle_outcome:                CycleOutcome,
 }
 
-impl<CycleOutcome> CompletedProcessRefreshExecution<CycleOutcome> {
+impl CompletedProcessRefreshExecution {
     pub(super) const fn new(
         process_observation_snapshot: ProcessObservationSnapshot,
         elapsed: Duration,
-        cycle_outcome: CycleOutcome,
     ) -> Self {
         Self {
             process_observation_snapshot,
             elapsed,
-            cycle_outcome,
         }
     }
 
@@ -331,10 +248,9 @@ impl<CycleOutcome> CompletedProcessRefreshExecution<CycleOutcome> {
         &self.process_observation_snapshot
     }
 
-    /// Split the observation from the consumer outcome so each reaches the
-    /// consumer that asked for it.
-    pub(crate) fn into_parts(self) -> (ProcessObservationSnapshot, CycleOutcome) {
-        (self.process_observation_snapshot, self.cycle_outcome)
+    /// The observation this cycle produced.
+    pub(crate) fn into_snapshot(self) -> ProcessObservationSnapshot {
+        self.process_observation_snapshot
     }
 }
 
@@ -345,11 +261,6 @@ pub(crate) struct ProcessCpuPercent(u32);
 
 impl ProcessCpuPercent {
     pub(super) const fn from_sysinfo(cpu_percent: f32) -> Self { Self(cpu_percent.to_bits()) }
-
-    /// Name one sample directly, for tests that need a percentage without a
-    /// host refresh behind it.
-    #[cfg(test)]
-    pub(crate) const fn for_test(cpu_percent: f32) -> Self { Self(cpu_percent.to_bits()) }
 
     pub(crate) const fn get(self) -> f32 { f32::from_bits(self.0) }
 }
@@ -453,83 +364,33 @@ pub(crate) struct BuildCandidateIncarnations {
     candidates: BTreeMap<ProcessIncarnation, BuildCandidateRole>,
 }
 
-impl BuildCandidateIncarnations {
-    /// Name the candidate roles directly, so a classification test does not
-    /// have to drive the observer-owned candidate cache to state them.
-    #[cfg(test)]
-    pub(super) const fn for_test(
-        candidates: BTreeMap<ProcessIncarnation, BuildCandidateRole>,
-    ) -> Self {
-        Self { candidates }
-    }
-
-    /// Every candidate incarnation in ascending incarnation order.
-    pub(crate) fn iter(
-        &self,
-    ) -> impl Iterator<Item = (&ProcessIncarnation, BuildCandidateRole)> + '_ {
-        self.candidates
-            .iter()
-            .map(|(incarnation, build_candidate_role)| (incarnation, *build_candidate_role))
-    }
-}
+impl BuildCandidateIncarnations {}
 
 /// An immutable process observation result.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ProcessObservationSnapshot {
     observed_at:                     Instant,
-    scope:                           ProcessSnapshotScope,
     strongly_identified_processes:   BTreeMap<ProcessIdentity, ProcessSnapshotRecord>,
     insufficient_identity_processes: Vec<InsufficientIdentityProcessRecord>,
     identity_binding_invalidations:  Vec<ProcessIdentityBindingInvalidation>,
-    targeted_process_observations:   TargetedProcessObservations,
     running_process_metrics:         RunningProcessMetricsObservation,
     build_candidate_incarnations:    BuildCandidateIncarnations,
 }
 
 impl ProcessObservationSnapshot {
-    /// Assemble one full-system snapshot from records and candidate roles a
-    /// test states directly.
-    #[cfg(test)]
-    pub(super) const fn from_parts_for_test(
-        observed_at: Instant,
-        strongly_identified_processes: BTreeMap<ProcessIdentity, ProcessSnapshotRecord>,
-        build_candidate_incarnations: BuildCandidateIncarnations,
-    ) -> Self {
-        Self {
-            observed_at,
-            scope: ProcessSnapshotScope::FullSystem,
-            strongly_identified_processes,
-            insufficient_identity_processes: Vec::new(),
-            identity_binding_invalidations: Vec::new(),
-            targeted_process_observations: TargetedProcessObservations::NotRequested,
-            running_process_metrics: RunningProcessMetricsObservation::Observed(BTreeMap::new()),
-            build_candidate_incarnations,
-        }
-    }
-
     #[cfg(test)]
     pub(super) fn empty_for_test() -> Self {
         Self {
             observed_at:                     Instant::now(),
-            scope:                           ProcessSnapshotScope::FullSystem,
             strongly_identified_processes:   BTreeMap::new(),
             insufficient_identity_processes: Vec::new(),
             identity_binding_invalidations:  Vec::new(),
-            targeted_process_observations:   TargetedProcessObservations::NotRequested,
             running_process_metrics:         RunningProcessMetricsObservation::Observed(
                 BTreeMap::new(),
             ),
             build_candidate_incarnations:    BuildCandidateIncarnations::default(),
         }
     }
-
-    /// Cargo, compiler, and wrapper candidates observed in this refresh.
-    pub(crate) const fn build_candidate_incarnations(&self) -> &BuildCandidateIncarnations {
-        &self.build_candidate_incarnations
-    }
-
-    #[cfg(test)]
-    pub(super) const fn scope(&self) -> &ProcessSnapshotScope { &self.scope }
 
     pub(crate) const fn strongly_identified_processes(
         &self,
@@ -545,11 +406,6 @@ impl ProcessObservationSnapshot {
     #[cfg(test)]
     pub(super) fn identity_binding_invalidations(&self) -> &[ProcessIdentityBindingInvalidation] {
         &self.identity_binding_invalidations
-    }
-
-    #[cfg(test)]
-    pub(super) const fn targeted_process_observations(&self) -> &TargetedProcessObservations {
-        &self.targeted_process_observations
     }
 
     pub(crate) const fn running_process_metrics(&self) -> &RunningProcessMetricsObservation {
@@ -777,24 +633,6 @@ pub(super) enum ProcessIdentityBindingInvalidation {
     },
     #[cfg(test)]
     ProcessFieldSourceLifetimeUnproven { current: ProcessIdentity },
-}
-
-/// Exact results for a requested strong-identity refresh.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum TargetedProcessObservations {
-    NotRequested,
-    Outcomes(BTreeMap<ProcessIdentity, TargetedProcessObservation>),
-}
-
-/// The semantic outcome for one requested strong process identity.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum TargetedProcessObservation {
-    Observed,
-    Gone,
-    Replaced { replacement: ProcessIdentity },
-    FieldsUnavailable(ProcessFieldUnavailable),
-    IdentityUnavailable(InsufficientProcessIdentity),
-    IdentityBindingInvalidated(ProcessIdentityBindingInvalidation),
 }
 
 /// Process fields proven to belong to one strong process lifetime.
@@ -1127,178 +965,17 @@ impl ProcessSamplingOutcome {
 /// One refresh's sampled processes and exact-target results.
 pub(super) struct ProcessRefreshObservations {
     pub(super) process_sampling_outcomes:     Vec<ProcessSamplingOutcome>,
-    pub(super) targeted_process_observations: TargetedProcessObservations,
     pub(super) full_process_refresh_evidence: FullProcessRefreshEvidence,
 }
 
 /// Evidence returned by a requested full process refresh.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum FullProcessRefreshEvidence {
-    NotRequested,
     NoProcessesUpdated,
     UpdatedProcesses {
         latest_identity_observations: BTreeMap<u32, ObservedProcessIdentity>,
     },
 }
-
-/// Whether a requested PID still has a cached `sysinfo` record.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum TargetedProcessPresence {
-    FieldsUnavailable {
-        process_sampling_outcome:  ProcessSamplingOutcome,
-        process_field_unavailable: ProcessFieldUnavailable,
-    },
-    Sampled(ProcessSamplingOutcome),
-}
-
-impl TargetedProcessPresence {
-    pub(super) fn reconcile_later_identity_observation(
-        self,
-        later_identity: &ObservedProcessIdentity,
-    ) -> Self {
-        match self {
-            Self::FieldsUnavailable {
-                process_sampling_outcome,
-                process_field_unavailable,
-            } => Self::FieldsUnavailable {
-                process_sampling_outcome: process_sampling_outcome
-                    .reconcile_later_identity_observation(later_identity),
-                process_field_unavailable,
-            },
-            Self::Sampled(process_sampling_outcome) => Self::Sampled(
-                process_sampling_outcome.reconcile_later_identity_observation(later_identity),
-            ),
-        }
-    }
-}
-
-/// Whether a sampled PID can enter an exact targeted snapshot.
-pub(super) enum TargetedSampleAdmission {
-    Admitted(ProcessSamplingOutcome),
-    Excluded,
-}
-
-/// Exact target outcome paired with its strong-snapshot admission decision.
-pub(super) struct TargetedProcessSamplingResult {
-    pub(super) observation: TargetedProcessObservation,
-    pub(super) admission:   TargetedSampleAdmission,
-}
-
-impl TargetedProcessSamplingResult {
-    pub(super) fn classify(
-        requested_identity: &ProcessIdentity,
-        targeted_process_presence: TargetedProcessPresence,
-    ) -> Self {
-        match targeted_process_presence {
-            TargetedProcessPresence::FieldsUnavailable {
-                process_sampling_outcome,
-                process_field_unavailable,
-            } => {
-                let observation = match process_sampling_outcome {
-                    ProcessSamplingOutcome::IdentityBound(process_observation)
-                        if process_observation.identity == *requested_identity =>
-                    {
-                        TargetedProcessObservation::FieldsUnavailable(process_field_unavailable)
-                    },
-                    ProcessSamplingOutcome::IdentityBound(process_observation) => {
-                        TargetedProcessObservation::Replaced {
-                            replacement: process_observation.identity,
-                        }
-                    },
-                    ProcessSamplingOutcome::InsufficientIdentity(process_observation) => {
-                        Self::from_insufficient_identity(process_observation.identity)
-                    },
-                    ProcessSamplingOutcome::IdentityBindingInvalidated(invalidation) => {
-                        Self::from_identity_binding_invalidation(requested_identity, invalidation)
-                    },
-                };
-                Self {
-                    observation,
-                    admission: TargetedSampleAdmission::Excluded,
-                }
-            },
-            TargetedProcessPresence::Sampled(ProcessSamplingOutcome::IdentityBound(
-                process_observation,
-            )) if process_observation.identity == *requested_identity => Self {
-                observation: TargetedProcessObservation::Observed,
-                admission:   TargetedSampleAdmission::Admitted(
-                    ProcessSamplingOutcome::IdentityBound(process_observation),
-                ),
-            },
-            TargetedProcessPresence::Sampled(ProcessSamplingOutcome::IdentityBound(
-                process_observation,
-            )) => Self {
-                observation: TargetedProcessObservation::Replaced {
-                    replacement: process_observation.identity,
-                },
-                admission:   TargetedSampleAdmission::Excluded,
-            },
-            TargetedProcessPresence::Sampled(ProcessSamplingOutcome::InsufficientIdentity(
-                process_observation,
-            )) => Self {
-                observation: Self::from_insufficient_identity(process_observation.identity),
-                admission:   TargetedSampleAdmission::Excluded,
-            },
-            TargetedProcessPresence::Sampled(
-                ProcessSamplingOutcome::IdentityBindingInvalidated(invalidation),
-            ) => Self {
-                observation: Self::from_identity_binding_invalidation(
-                    requested_identity,
-                    invalidation,
-                ),
-                admission:   TargetedSampleAdmission::Excluded,
-            },
-        }
-    }
-
-    const fn from_insufficient_identity(
-        insufficient_identity: InsufficientProcessIdentity,
-    ) -> TargetedProcessObservation {
-        match insufficient_identity {
-            InsufficientProcessIdentity::ProcessExitedBeforeIdentityLookup { .. } => {
-                TargetedProcessObservation::Gone
-            },
-            insufficient_identity => {
-                TargetedProcessObservation::IdentityUnavailable(insufficient_identity)
-            },
-        }
-    }
-
-    fn from_identity_binding_invalidation(
-        requested_identity: &ProcessIdentity,
-        invalidation: ProcessIdentityBindingInvalidation,
-    ) -> TargetedProcessObservation {
-        let later_identity = match &invalidation {
-            ProcessIdentityBindingInvalidation::PlatformIdentityChanged { after, .. } => after,
-            ProcessIdentityBindingInvalidation::LaterIdentityObservationChangedCurrentEvidence {
-                later,
-                ..
-            } => later,
-            #[cfg(test)]
-            ProcessIdentityBindingInvalidation::ProcessFieldSourceIdentityMismatch { .. }
-            | ProcessIdentityBindingInvalidation::ProcessFieldSourceLifetimeUnproven { .. } => {
-                return TargetedProcessObservation::IdentityBindingInvalidated(invalidation);
-            },
-        };
-        match later_identity {
-            ObservedProcessIdentity::Strong(replacement) if replacement != requested_identity => {
-                TargetedProcessObservation::Replaced {
-                    replacement: replacement.clone(),
-                }
-            },
-            ObservedProcessIdentity::Insufficient(
-                InsufficientProcessIdentity::ProcessExitedBeforeIdentityLookup { .. },
-            ) => TargetedProcessObservation::Gone,
-            ObservedProcessIdentity::Insufficient(insufficient_identity) => {
-                TargetedProcessObservation::IdentityUnavailable(insufficient_identity.clone())
-            },
-            ObservedProcessIdentity::Strong(_) => {
-                TargetedProcessObservation::IdentityBindingInvalidated(invalidation)
-            },
-        }
-    }
-}
-
 /// Cached process incarnations and Cargo candidate parsing.
 #[derive(Debug, Default)]
 pub(super) struct ProcessIncarnationCache {
@@ -1307,27 +984,13 @@ pub(super) struct ProcessIncarnationCache {
 }
 
 impl ProcessIncarnationCache {
-    /// Seed the observer-owned prior-incarnation cache from fixed test
-    /// evidence so capability transport can be exercised without a host PID.
-    #[cfg(test)]
-    pub(super) fn remember_incarnation_for_test(
-        &mut self,
-        process_identity: ProcessIdentity,
-        process_incarnation: ProcessIncarnation,
-    ) {
-        self.previous_incarnations
-            .insert(process_identity, process_incarnation);
-    }
-
     pub(super) fn snapshot_from(
         &mut self,
         observed_at: Instant,
-        scope: ProcessSnapshotScope,
         process_refresh_observations: ProcessRefreshObservations,
     ) -> ProcessObservationSnapshot {
         let ProcessRefreshObservations {
             process_sampling_outcomes,
-            targeted_process_observations,
             full_process_refresh_evidence,
         } = process_refresh_observations;
         let mut identity_bound_processes = BTreeMap::new();
@@ -1403,11 +1066,9 @@ impl ProcessIncarnationCache {
 
         ProcessObservationSnapshot {
             observed_at,
-            scope,
             strongly_identified_processes,
             insufficient_identity_processes,
             identity_binding_invalidations,
-            targeted_process_observations,
             running_process_metrics: RunningProcessMetricsObservation::NotRequested,
             build_candidate_incarnations,
         }
@@ -1638,10 +1299,8 @@ impl ProcessIncarnationCache {
 /// Whether an executable is one of the names Cargo invokes as the final link
 /// step.
 ///
-/// One table, keyed one way, for every caller: build classification renders the
-/// same executables as [`crate::build_monitor::CompilerKind::Linker`], and a
-/// second table keyed differently let `ld64.lld` be admitted here and rendered
-/// there as a compiler.
+/// One table, keyed one way, for every caller: a second table keyed differently
+/// would let `ld64.lld` be admitted here and treated as a compiler elsewhere.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum LinkerRecognition {
     /// The executable name is one Cargo's link step runs.
@@ -1912,7 +1571,6 @@ fn validate_parentage(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::collections::BTreeSet;
     use std::ffi::OsString;
     use std::path::PathBuf;
     use std::time::Instant;
@@ -1937,13 +1595,7 @@ mod tests {
     use super::ProcessIncarnationState;
     use super::ProcessRefreshObservations;
     use super::ProcessSamplingOutcome;
-    use super::ProcessSnapshotScope;
     use super::ReportedParent;
-    use super::TargetedProcessObservation;
-    use super::TargetedProcessObservations;
-    use super::TargetedProcessPresence;
-    use super::TargetedProcessSamplingResult;
-    use super::TargetedSampleAdmission;
     use super::ValidatedAncestry;
     use crate::process_observation::identity::InsufficientProcessIdentity;
     use crate::process_observation::identity::ObservedProcessIdentity;
@@ -2004,22 +1656,6 @@ mod tests {
         )
     }
 
-    fn snapshot_with_refresh_evidence(
-        cache: &mut ProcessIncarnationCache,
-        process_sampling_outcomes: Vec<ProcessSamplingOutcome>,
-        full_process_refresh_evidence: FullProcessRefreshEvidence,
-    ) -> super::ProcessObservationSnapshot {
-        cache.snapshot_from(
-            Instant::now(),
-            ProcessSnapshotScope::FullSystem,
-            ProcessRefreshObservations {
-                process_sampling_outcomes,
-                targeted_process_observations: TargetedProcessObservations::NotRequested,
-                full_process_refresh_evidence,
-            },
-        )
-    }
-
     fn updated_process_evidence(
         latest_identity_observations: BTreeMap<u32, ObservedProcessIdentity>,
     ) -> FullProcessRefreshEvidence {
@@ -2033,59 +1669,6 @@ mod tests {
         parent: ProcessFieldObservation<ReportedParent>,
     ) -> ProcessSamplingOutcome {
         ProcessSamplingOutcome::IdentityBound(observed_process(process_identity, parent))
-    }
-
-    fn platform_observation(process_identity: &ProcessIdentity) -> PlatformProcessObservation {
-        PlatformProcessObservation::for_test(
-            ObservedProcessIdentity::Strong(process_identity.clone()),
-            ProcessCreationOrderEvidence::for_test_identity(process_identity),
-            ProcessFieldObservation::Observed(ReportedParent::Root),
-        )
-    }
-
-    fn unavailable_target_presence(
-        identity_before_fields: PlatformProcessObservation,
-        identity_after_fields: PlatformProcessObservation,
-        process_field_unavailable: ProcessFieldUnavailable,
-    ) -> TargetedProcessPresence {
-        TargetedProcessPresence::FieldsUnavailable {
-            process_sampling_outcome: ProcessSamplingOutcome::bind_fields_to_identity(
-                identity_before_fields,
-                ProcessFieldSourceObservation::repeated_unavailable_fresh_system_samples(
-                    process_field_unavailable.clone(),
-                ),
-                identity_after_fields,
-            ),
-            process_field_unavailable,
-        }
-    }
-
-    fn targeted_snapshot(
-        cache: &mut ProcessIncarnationCache,
-        requested_identity: ProcessIdentity,
-        targeted_process_sampling_result: TargetedProcessSamplingResult,
-    ) -> super::ProcessObservationSnapshot {
-        let TargetedProcessSamplingResult {
-            observation,
-            admission,
-        } = targeted_process_sampling_result;
-        let process_sampling_outcomes = match admission {
-            TargetedSampleAdmission::Admitted(process_sampling_outcome) => {
-                vec![process_sampling_outcome]
-            },
-            TargetedSampleAdmission::Excluded => Vec::new(),
-        };
-        cache.snapshot_from(
-            Instant::now(),
-            ProcessSnapshotScope::TargetedIdentities(BTreeSet::from([requested_identity.clone()])),
-            ProcessRefreshObservations {
-                process_sampling_outcomes,
-                targeted_process_observations: TargetedProcessObservations::Outcomes(
-                    BTreeMap::from([(requested_identity, observation)]),
-                ),
-                full_process_refresh_evidence: FullProcessRefreshEvidence::NotRequested,
-            },
-        )
     }
 
     fn assert_exec_transition_invalidates_phase_two_evidence(
@@ -2115,6 +1698,20 @@ mod tests {
                 ProcessFieldInvalidation::ExecutableOrArgumentsChanged
             )
         ));
+    }
+
+    fn snapshot_with_refresh_evidence(
+        cache: &mut ProcessIncarnationCache,
+        process_sampling_outcomes: Vec<ProcessSamplingOutcome>,
+        full_process_refresh_evidence: FullProcessRefreshEvidence,
+    ) -> super::ProcessObservationSnapshot {
+        cache.snapshot_from(
+            Instant::now(),
+            ProcessRefreshObservations {
+                process_sampling_outcomes,
+                full_process_refresh_evidence,
+            },
+        )
     }
 
     #[test]
@@ -3259,178 +2856,6 @@ mod tests {
                 current,
                 source,
             }] if current == &current_identity && source == &source_identity
-        ));
-    }
-
-    #[test]
-    fn exact_target_disappearance_is_reported_and_not_admitted() {
-        let requested_identity = identity(19, 190);
-        let missing_process_observation = PlatformProcessObservation::for_test(
-            ObservedProcessIdentity::Insufficient(
-                InsufficientProcessIdentity::ProcessExitedBeforeIdentityLookup {
-                    pid: requested_identity.pid(),
-                },
-            ),
-            ProcessCreationOrderEvidence::unavailable_for_test(),
-            ProcessFieldObservation::Unavailable(ProcessFieldUnavailable::ProcessExited),
-        );
-        let targeted_process_sampling_result = TargetedProcessSamplingResult::classify(
-            &requested_identity,
-            unavailable_target_presence(
-                missing_process_observation.clone(),
-                missing_process_observation,
-                ProcessFieldUnavailable::ProcessExited,
-            ),
-        );
-        let mut cache = ProcessIncarnationCache::default();
-        let snapshot = targeted_snapshot(
-            &mut cache,
-            requested_identity.clone(),
-            targeted_process_sampling_result,
-        );
-
-        assert!(snapshot.strongly_identified_processes().is_empty());
-        assert!(matches!(
-            snapshot.targeted_process_observations(),
-            TargetedProcessObservations::Outcomes(outcomes)
-                if matches!(outcomes.get(&requested_identity), Some(TargetedProcessObservation::Gone))
-        ));
-    }
-
-    #[test]
-    fn unavailable_fields_report_replacement_for_the_before_identity() {
-        let before_identity = identity(50, 500);
-        let after_identity = identity(50, 501);
-
-        let result = TargetedProcessSamplingResult::classify(
-            &before_identity,
-            unavailable_target_presence(
-                platform_observation(&before_identity),
-                platform_observation(&after_identity),
-                ProcessFieldUnavailable::PlatformLookupFailed,
-            ),
-        );
-
-        assert_eq!(
-            result.observation,
-            TargetedProcessObservation::Replaced {
-                replacement: after_identity,
-            }
-        );
-        assert!(matches!(
-            result.admission,
-            TargetedSampleAdmission::Excluded
-        ));
-    }
-
-    #[test]
-    fn unavailable_fields_invalidate_binding_for_the_after_identity() {
-        let before_identity = identity(51, 510);
-        let after_identity = identity(51, 511);
-
-        let result = TargetedProcessSamplingResult::classify(
-            &after_identity,
-            unavailable_target_presence(
-                platform_observation(&before_identity),
-                platform_observation(&after_identity),
-                ProcessFieldUnavailable::PlatformLookupFailed,
-            ),
-        );
-
-        assert!(matches!(
-            result.observation,
-            TargetedProcessObservation::IdentityBindingInvalidated(
-                ProcessIdentityBindingInvalidation::PlatformIdentityChanged {
-                    before: ObservedProcessIdentity::Strong(before),
-                    after: ObservedProcessIdentity::Strong(after),
-                }
-            ) if before == before_identity && after == after_identity
-        ));
-        assert!(matches!(
-            result.admission,
-            TargetedSampleAdmission::Excluded
-        ));
-    }
-
-    #[test]
-    fn unavailable_fields_report_after_identity_for_an_unrelated_request() {
-        let before_identity = identity(52, 520);
-        let after_identity = identity(52, 521);
-        let unrelated_identity = identity(52, 522);
-
-        let result = TargetedProcessSamplingResult::classify(
-            &unrelated_identity,
-            unavailable_target_presence(
-                platform_observation(&before_identity),
-                platform_observation(&after_identity),
-                ProcessFieldUnavailable::PlatformLookupFailed,
-            ),
-        );
-
-        assert_eq!(
-            result.observation,
-            TargetedProcessObservation::Replaced {
-                replacement: after_identity,
-            }
-        );
-        assert!(matches!(
-            result.admission,
-            TargetedSampleAdmission::Excluded
-        ));
-    }
-
-    #[test]
-    fn stable_identity_with_unavailable_fields_reports_field_failure() {
-        let requested_identity = identity(53, 530);
-
-        let result = TargetedProcessSamplingResult::classify(
-            &requested_identity,
-            unavailable_target_presence(
-                platform_observation(&requested_identity),
-                platform_observation(&requested_identity),
-                ProcessFieldUnavailable::PlatformLookupFailed,
-            ),
-        );
-
-        assert_eq!(
-            result.observation,
-            TargetedProcessObservation::FieldsUnavailable(
-                ProcessFieldUnavailable::PlatformLookupFailed
-            )
-        );
-        assert!(matches!(
-            result.admission,
-            TargetedSampleAdmission::Excluded
-        ));
-    }
-
-    #[test]
-    fn exact_target_replacement_is_reported_and_not_admitted() {
-        let requested_identity = identity(20, 200);
-        let replacement_identity = identity(20, 201);
-        let targeted_process_sampling_result = TargetedProcessSamplingResult::classify(
-            &requested_identity,
-            TargetedProcessPresence::Sampled(strong_process(
-                replacement_identity.clone(),
-                ProcessFieldObservation::Observed(ReportedParent::Root),
-            )),
-        );
-        let mut cache = ProcessIncarnationCache::default();
-        let snapshot = targeted_snapshot(
-            &mut cache,
-            requested_identity.clone(),
-            targeted_process_sampling_result,
-        );
-
-        assert!(snapshot.strongly_identified_processes().is_empty());
-        assert!(matches!(
-            snapshot.targeted_process_observations(),
-            TargetedProcessObservations::Outcomes(outcomes)
-                if matches!(
-                    outcomes.get(&requested_identity),
-                    Some(TargetedProcessObservation::Replaced { replacement })
-                        if replacement == &replacement_identity
-                )
         ));
     }
 
