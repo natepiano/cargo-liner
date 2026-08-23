@@ -1758,7 +1758,6 @@ mod tests {
     use super::identity::ProcessCreationOrderEvidence;
     use super::identity::ProcessIdentity;
     use super::snapshot::FullProcessRefreshEvidence;
-    #[cfg(target_os = "macos")]
     use super::snapshot::ProcessFieldLifetimeBinding;
     use super::snapshot::ProcessFieldObservation;
     use super::snapshot::ProcessFieldSample;
