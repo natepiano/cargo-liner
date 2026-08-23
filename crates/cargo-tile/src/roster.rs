@@ -293,6 +293,7 @@ mod tests {
             pid,
             start: "10:00".to_string(),
             duration: "00:01".to_string(),
+            cpu: "0%".to_string(),
             compiler: None,
             state: None,
             managed: 0,

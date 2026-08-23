@@ -59,6 +59,7 @@ use crate::constants::APP_VERSION;
 use crate::constants::COMMAND_COLUMN;
 use crate::constants::COMPILER_COLUMN;
 use crate::constants::COMPILER_SEPARATOR_WIDTH;
+use crate::constants::CPU_COLUMN;
 use crate::constants::DURATION_COLUMN;
 use crate::constants::GROUP_GAP_HEIGHT;
 use crate::constants::GROUP_HEADER_HEIGHT;
@@ -558,6 +559,7 @@ fn fitted_constraints(rows: &[&TrackedRow], columns: &[usize]) -> Vec<Constraint
         widths.observe_cell_usize(PID_COLUMN, process.pid.to_string().chars().count());
         widths.observe_cell_usize(START_COLUMN, process.start.chars().count());
         widths.observe_cell_usize(DURATION_COLUMN, process.duration.chars().count());
+        widths.observe_cell_usize(CPU_COLUMN, process.cpu.chars().count());
         widths.observe_cell_usize(STATE_COLUMN, state_width(process.state));
         widths.observe_cell_usize(COMPILER_COLUMN, compiler_width(process));
         widths.observe_cell_usize(MANAGED_COLUMN, managed_text(process).chars().count());
@@ -639,6 +641,7 @@ fn process_row(row: &TrackedRow, layout: &TableLayout) -> DrawnRow {
         Text::from(Span::styled(process.pid.to_string(), muted)),
         Text::from(Span::styled(process.start.clone(), muted)),
         Text::from(Span::styled(process.duration.clone(), muted)),
+        Text::from(Span::styled(process.cpu.clone(), muted)),
         Text::from(state_cell(row, layout)),
         command,
         Text::from(compiler_cell(row, layout)),
@@ -1085,6 +1088,7 @@ mod tests {
             pid: 41233,
             start: "11:04".to_string(),
             duration: "00:18".to_string(),
+            cpu: "12%".to_string(),
             compiler: None,
             state,
             managed: 0,

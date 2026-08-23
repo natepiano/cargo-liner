@@ -238,6 +238,27 @@ pub(crate) const PARENT_WALK_LIMIT: usize = 32;
 /// fields for cargo processes only, so a quarter second stays cheap while
 /// keeping a freshly started build visible almost immediately.
 pub(crate) const PROCESS_POLL_MILLIS: u64 = 250;
+/// How long a `cpu` reading is carried before the table takes a fresh
+/// one, in milliseconds.
+///
+/// Separate from [`CPU_SMOOTHING_SECONDS`], which is how fast the
+/// reading moves, and from [`PROCESS_POLL_MILLIS`], which is how often
+/// it is sampled: every sample still moves the reading, and what this
+/// settles is how often the column is allowed to say something new. A
+/// number redrawn four times a second is unreadable however smooth the
+/// figures behind it are -- the eye is given nothing to rest on.
+pub(crate) const CPU_REPORT_MILLIS: u64 = 1000;
+/// How long a `cpu` reading takes to travel most of the way to a share
+/// that has changed, in seconds.
+///
+/// A quarter-second sample of a long-running command that works in
+/// bursts -- a watcher waking to check something, then going back to
+/// sleep -- is nearly all sampling artefact: the same steady command
+/// reads nought, then twelve, then two, and a column of that reports
+/// jitter rather than load. The reading is settled toward each sample
+/// instead of taking it, over a window long enough to average a burst
+/// out and short enough that a build ramping up is not left behind.
+pub(crate) const CPU_SMOOTHING_SECONDS: f32 = 2.0;
 /// `chrono` format for the `start` column.
 pub(crate) const START_TIME_FORMAT: &str = "%H:%M";
 /// Seconds in a minute, for splitting a run time into its parts.
@@ -254,8 +275,8 @@ pub(crate) const MANIFEST_PATH_FLAG: &str = "--manifest-path";
 /// Column headers, in table order. The working directory is not among
 /// them: it heads the group of invocations that share it rather than
 /// repeating on every row.
-pub(crate) const TABLE_HEADERS: [&str; 7] = [
-    "pid", "start", "dur", "state", "command", "compiler", "runs",
+pub(crate) const TABLE_HEADERS: [&str; 8] = [
+    "pid", "start", "dur", "cpu", "state", "command", "compiler", "runs",
 ];
 /// Index of the `pid` column in [`TABLE_HEADERS`].
 pub(crate) const PID_COLUMN: usize = 0;
@@ -263,24 +284,29 @@ pub(crate) const PID_COLUMN: usize = 0;
 pub(crate) const START_COLUMN: usize = 1;
 /// Index of the `dur` column in [`TABLE_HEADERS`].
 pub(crate) const DURATION_COLUMN: usize = 2;
+/// Index of the `cpu` column in [`TABLE_HEADERS`], which carries the
+/// share of a core the invocation and everything under it are using. It
+/// stands beside `dur` because the two answer the same question from
+/// either end -- how long this has been going, and how hard.
+pub(crate) const CPU_COLUMN: usize = 3;
 /// Index of the `state` column in [`TABLE_HEADERS`], which says what a
 /// command is doing right now: how far along it is, or that it is
 /// waiting on another cargo's lock. It is the one column that comes and
 /// goes, and joins only where a heading cannot carry what a row has to
 /// say -- a column of dashes costs a narrow tile the width its command
 /// line needs and reports nothing.
-pub(crate) const STATE_COLUMN: usize = 3;
+pub(crate) const STATE_COLUMN: usize = 4;
 /// Index of the `command` column in [`TABLE_HEADERS`]. It absorbs
 /// whatever width the fitted columns leave, wherever it stands among
 /// them, so it comes ahead of the two that describe an invocation
 /// rather than after them.
-pub(crate) const COMMAND_COLUMN: usize = 4;
+pub(crate) const COMMAND_COLUMN: usize = 5;
 /// Index of the `compiler` column in [`TABLE_HEADERS`].
-pub(crate) const COMPILER_COLUMN: usize = 5;
+pub(crate) const COMPILER_COLUMN: usize = 6;
 /// Index of the `runs` column in [`TABLE_HEADERS`], which carries how
 /// many cargo invocations a command is managing. Blank on the rows that
 /// manage nothing, which is most of them.
-pub(crate) const MANAGED_COLUMN: usize = 6;
+pub(crate) const MANAGED_COLUMN: usize = 7;
 /// Columns the summary leaves out. One row there stands for a whole
 /// command rather than for a single invocation, and both of these
 /// describe an invocation: what is compiling under it at this instant,
