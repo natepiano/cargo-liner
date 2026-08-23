@@ -121,6 +121,29 @@ impl TrackedGroup {
     /// Whether the group itself has finished fading and its tile should
     /// close.
     fn is_expired(&self, now: Instant, fade: Duration) -> bool { self.lead.is_expired(now, fade) }
+
+    /// Whether the grid gives this command a cell of its own.
+    ///
+    /// Every command does, except one whose subcommand
+    /// `commands.hidden_when_idle` names while nothing is running under
+    /// it. Those are the commands that stay open rather than finishing,
+    /// and while one is only sitting there its cell would hold a single
+    /// row with no reading, no compiler and no duration worth reading --
+    /// a cell no build is getting, saying nothing the summary's one line
+    /// for it does not already say. That summary line stays either way:
+    /// this decides the cell alone.
+    ///
+    /// A row under it that has stopped but not yet faded still counts,
+    /// so the cell goes out through the same fade as any other rather
+    /// than vanishing the instant its work ends.
+    pub(crate) fn deserves_a_cell(&self, hidden_when_idle: &[String]) -> bool {
+        !self.rest.is_empty()
+            || !self
+                .lead
+                .process
+                .command
+                .is_hidden_when_idle(hidden_when_idle)
+    }
 }
 
 /// Every group the display knows about, running or fading.
@@ -147,9 +170,19 @@ impl Roster {
     /// The groups to display, newest first.
     pub(crate) fn groups(&self) -> &[TrackedGroup] { &self.groups }
 
-    /// The identity of every group the display is holding, in order --
-    /// what [`crate::tiles::TileGrid::sync`] assigns cells from.
-    pub(crate) fn ids(&self) -> Vec<u32> { self.groups.iter().map(|group| group.id).collect() }
+    /// The identity of every group that gets a cell, in order -- what
+    /// [`crate::tiles::TileGrid::sync`] assigns cells from.
+    ///
+    /// Narrower than [`groups`](Self::groups), which the summary reads:
+    /// a command held back by `commands.hidden_when_idle` keeps its
+    /// summary line and is left out here.
+    pub(crate) fn tiled_ids(&self, hidden_when_idle: &[String]) -> Vec<u32> {
+        self.groups
+            .iter()
+            .filter(|group| group.deserves_a_cell(hidden_when_idle))
+            .map(|group| group.id)
+            .collect()
+    }
 
     /// Fold one scan in, stamping whatever it no longer carries.
     ///
@@ -196,6 +229,8 @@ impl Roster {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::DEFAULT_HIDDEN_WHEN_IDLE;
+    use crate::constants::SIBLING_SUBCOMMAND_NAME;
     use crate::processes::CommandText;
 
     /// A process row carrying nothing but the pid the tests key on.
@@ -218,6 +253,22 @@ mod tests {
             lead: process(lead),
             rest: rest.iter().copied().map(process).collect(),
         }
+    }
+
+    /// The same, led by a command `commands.hidden_when_idle` names.
+    fn hidden_group(lead: u32, rest: &[u32]) -> CargoGroup {
+        let mut group = group(lead, rest);
+        group.lead.command = CommandText::of("cargo", &[SIBLING_SUBCOMMAND_NAME]);
+        group
+    }
+
+    /// The list as it reaches the roster once the config has turned it
+    /// into owned strings.
+    fn hidden_when_idle() -> Vec<String> {
+        DEFAULT_HIDDEN_WHEN_IDLE
+            .iter()
+            .map(|subcommand| (*subcommand).to_string())
+            .collect()
     }
 
     /// The instant every test starts from.
@@ -342,5 +393,46 @@ mod tests {
         roster.observe(Vec::new(), now + Duration::from_secs(2));
 
         assert!(roster.expire(now + Duration::from_secs(3), Duration::from_secs(3)));
+    }
+
+    #[test]
+    fn a_command_hidden_while_idle_gets_no_cell_with_nothing_under_it() {
+        let mut roster = Roster::new();
+        roster.observe(vec![hidden_group(10, &[])], start());
+
+        assert!(roster.tiled_ids(&hidden_when_idle()).is_empty());
+        // The summary is not what the list holds back: the command is
+        // running, and one line saying so is the whole of what it has.
+        assert_eq!(roster.groups().len(), 1);
+    }
+
+    #[test]
+    fn a_command_hidden_while_idle_gets_a_cell_once_it_drives_something() {
+        let mut roster = Roster::new();
+        roster.observe(vec![hidden_group(10, &[11])], start());
+
+        assert_eq!(roster.tiled_ids(&hidden_when_idle()), vec![10]);
+    }
+
+    #[test]
+    fn its_cell_stays_while_the_invocation_under_it_fades() {
+        let mut roster = Roster::new();
+        let now = start();
+        roster.observe(vec![hidden_group(10, &[11])], now);
+        roster.observe(vec![hidden_group(10, &[])], now);
+
+        // The invocation is stamped rather than gone, so the cell goes
+        // out through the fade instead of vanishing under the reader.
+        assert_eq!(roster.tiled_ids(&hidden_when_idle()), vec![10]);
+        roster.expire(now + Duration::from_secs(1), Duration::ZERO);
+        assert!(roster.tiled_ids(&hidden_when_idle()).is_empty());
+    }
+
+    #[test]
+    fn a_command_off_the_list_gets_a_cell_with_nothing_under_it() {
+        let mut roster = Roster::new();
+        roster.observe(vec![group(10, &[])], start());
+
+        assert_eq!(roster.tiled_ids(&hidden_when_idle()), vec![10]);
     }
 }

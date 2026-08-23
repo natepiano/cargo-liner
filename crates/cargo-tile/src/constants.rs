@@ -16,6 +16,13 @@ pub(crate) const DEFAULT_DARK_THEME: &str = "Default Dark";
 pub(crate) const DEFAULT_HC_DARK_THEME: &str = "High Contrast Dark";
 /// Id of the built-in high-contrast light variant.
 pub(crate) const DEFAULT_HC_LIGHT_THEME: &str = "High Contrast Light";
+/// The `commands.hidden_when_idle` default: subcommands the grid gives a
+/// cell of their own only while they are driving other cargo
+/// invocations. The sibling terminal UI is the case it exists for -- it
+/// is open all day and compiles nothing on its own, so an idle cell for
+/// it is a cell no build is getting. The summary still carries it: one
+/// line saying it is running is the whole of what it has to say.
+pub(crate) const DEFAULT_HIDDEN_WHEN_IDLE: [&str; 1] = [SIBLING_SUBCOMMAND_NAME];
 /// Id of the built-in light variant, and the `appearance.light_theme`
 /// default.
 pub(crate) const DEFAULT_LIGHT_THEME: &str = "Default Light";
@@ -28,6 +35,13 @@ pub(crate) const THEMES_DIRNAME: &str = "themes";
 // settings overlay
 /// Values `appearance.mode` cycles through, in stepper order.
 pub(crate) const APPEARANCE_MODES: [&str; 3] = ["auto", "light", "dark"];
+/// What separates a list setting's entries where the overlay reports
+/// one. Config lists are edited in the file rather than stepped, so
+/// this is for reading only.
+pub(crate) const LIST_SEPARATOR: &str = ", ";
+/// Shown in place of a list setting the user has emptied, an empty row
+/// being indistinguishable from a broken one.
+pub(crate) const EMPTY_LIST: &str = "none";
 /// Rows of popup border above and below the settings body.
 pub(crate) const POPUP_CHROME_HEIGHT: u16 = 2;
 /// Columns of popup border left and right of the settings body.
@@ -57,12 +71,9 @@ pub(crate) const SUBCOMMAND_NAME: &str = "tile";
 /// The sibling terminal UI in this workspace, reached as `cargo port`.
 /// The capture shim passes it through for the same reason it passes the
 /// grid through: capturing a terminal UI copies every redraw of it into
-/// a log for as long as it stays open.
-///
-/// Nothing here runs that command or reasons about it -- the name exists
-/// so the test holding the shim to its exemption can say which word it
-/// is looking for, which is why it is compiled only for the tests.
-#[cfg(test)]
+/// a log for as long as it stays open. It is also what
+/// [`DEFAULT_HIDDEN_WHEN_IDLE`] names, being the command that runs all
+/// day without compiling anything.
 pub(crate) const SIBLING_SUBCOMMAND_NAME: &str = "port";
 
 // iterm2
@@ -192,6 +203,10 @@ pub(crate) const CARGO_PROCESS_NAMES: [&str; 2] = ["cargo", "cargo-tile-real"];
 /// What a cargo binary is called in the `command` column, whatever the
 /// name it happens to be installed under.
 pub(crate) const CARGO_DISPLAY_NAME: &str = "cargo";
+/// What marks the toolchain selector cargo takes ahead of a subcommand,
+/// as in `cargo +nightly build`. Reading a subcommand out of an argument
+/// list means stepping over one of these first.
+pub(crate) const CARGO_TOOLCHAIN_SELECTOR: char = '+';
 /// Prefix the binary behind an external subcommand carries.
 ///
 /// `cargo nextest run` does not stay a `cargo` process: cargo replaces

@@ -13,6 +13,7 @@ use crate::constants::CONFIG_DIRNAME;
 use crate::constants::CONFIG_FILENAME;
 use crate::constants::DEFAULT_DARK_THEME;
 use crate::constants::DEFAULT_FADE_SECONDS;
+use crate::constants::DEFAULT_HIDDEN_WHEN_IDLE;
 use crate::constants::DEFAULT_INITIAL_ROWS;
 use crate::constants::DEFAULT_ITERM2_PROFILE;
 use crate::constants::DEFAULT_LIGHT_THEME;
@@ -47,6 +48,31 @@ impl Default for AppearanceConfig {
             light_theme:    DEFAULT_LIGHT_THEME.to_string(),
             dark_theme:     DEFAULT_DARK_THEME.to_string(),
             iterm2_profile: DEFAULT_ITERM2_PROFILE.to_string(),
+        }
+    }
+}
+
+/// Which commands the grid holds back until they have work under them.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub(crate) struct CommandsConfig {
+    /// Cargo subcommands that earn a cell of their own only while they
+    /// are driving other cargo invocations. A terminal UI reached as a
+    /// subcommand -- `cargo port` -- is open all day and compiles
+    /// nothing on its own, so a cell for it while it sits there holds
+    /// one row that says no more than the summary's line for it already
+    /// does. It gets its cell the moment it starts an invocation, with
+    /// that invocation under it. The summary line is never held back.
+    pub(crate) hidden_when_idle: Vec<String>,
+}
+
+impl Default for CommandsConfig {
+    fn default() -> Self {
+        Self {
+            hidden_when_idle: DEFAULT_HIDDEN_WHEN_IDLE
+                .iter()
+                .map(|subcommand| (*subcommand).to_string())
+                .collect(),
         }
     }
 }
@@ -96,6 +122,8 @@ impl TilesConfig {
 pub(crate) struct Config {
     /// `[appearance]` — theme selection.
     pub(crate) appearance: AppearanceConfig,
+    /// `[commands]` — which commands the grid holds back while idle.
+    pub(crate) commands:   CommandsConfig,
     /// `[tiles]` — how the tile grid grows.
     pub(crate) tiles:      TilesConfig,
 }
@@ -132,11 +160,29 @@ pub(crate) fn load() -> LoadedConfig {
             config: Config::default(),
             error:  Some(error.to_string()),
         },
-        |config| LoadedConfig {
-            config,
-            error: None,
+        |config| {
+            let error = restate(&config, &text);
+            LoadedConfig { config, error }
         },
     )
+}
+
+/// Write a parsed config back over the file it came from when the file
+/// does not already say the same thing.
+///
+/// A file written before a setting existed does not mention it, which
+/// leaves that setting editable only by someone who already knows its
+/// name. Writing the parsed config back spells out every section at its
+/// default, so the file lists the whole of what can be set. It is a
+/// no-op once the file holds everything, and it is only reached on a
+/// file that parsed -- one with a typo in it is left alone for its
+/// author to fix rather than overwritten.
+fn restate(config: &Config, text: &str) -> Option<String> {
+    match toml::to_string_pretty(config) {
+        Ok(restated) if restated == text => None,
+        Ok(_) => save(config),
+        Err(error) => Some(error.to_string()),
+    }
 }
 
 /// Write `config.toml`, creating the config directory when it is
@@ -180,3 +226,43 @@ pub(crate) fn themes_dir() -> Option<PathBuf> { config_root().map(|dir| dir.join
 /// `<os config dir>/cargo-tile`. `None` on platforms where the OS
 /// config directory cannot be resolved.
 fn config_root() -> Option<PathBuf> { dirs::config_dir().map(|dir| dir.join(CONFIG_DIRNAME)) }
+
+#[cfg(test)]
+#[expect(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use super::*;
+
+    /// What [`restate`] compares against, for a config that has been
+    /// through the file and back.
+    fn round_trip(text: &str) -> String {
+        let config: Config = toml::from_str(text).expect("a config the test wrote should parse");
+        toml::to_string_pretty(&config).expect("a config should serialize")
+    }
+
+    /// [`load`] writes the file back whenever it does not already hold
+    /// every setting, so a file that does hold them must serialize to
+    /// itself -- otherwise every startup rewrites the config, for good.
+    #[test]
+    fn a_complete_config_is_left_alone() {
+        let complete =
+            toml::to_string_pretty(&Config::default()).expect("a config should serialize");
+        assert_eq!(round_trip(&complete), complete);
+    }
+
+    /// The case the write exists for: a file written before a section
+    /// existed comes back carrying it.
+    #[test]
+    fn a_config_missing_a_section_gains_it() {
+        let old = "[appearance]\nmode = \"dark\"\n";
+        let restated = round_trip(old);
+        assert_ne!(restated, old);
+        assert!(restated.contains("[commands]"));
+        assert!(restated.contains("[tiles]"));
+        // What the file did say survives the rewrite; only what it left
+        // out is filled in.
+        assert!(restated.contains("mode = \"dark\""));
+    }
+}

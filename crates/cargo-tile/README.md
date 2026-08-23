@@ -39,8 +39,15 @@ bottom-right corner, and ctrl-k opens the full keymap viewer.
 
 In the settings overlay the three `[appearance]` rows are steppers, drawn as
 `< value >`: stepping one writes `config.toml` and swaps the active theme
-immediately. The remaining rows report where each file lives and what happened
-at startup; they are inert.
+immediately. The remaining rows report what the config holds, where each file
+lives and what happened at startup; they are inert. A setting whose values are
+not a fixed set -- a list of subcommands, say -- is reported rather than
+stepped, and edited in `config.toml`, whose path the overlay gives.
+
+Every setting appears in that file whether or not it was ever set: a config
+written before a setting existed is rewritten at startup with the section it was
+missing, at its default. A file that fails to parse is left as it is, for
+whoever wrote the typo to fix.
 
 ## starting a new TUI from this
 
@@ -169,6 +176,25 @@ fade_seconds = 3
 `fade_seconds` is how long a finished invocation stays on screen, greyed, before
 it goes -- and before the cell it was holding closes and the cells after it move
 up. Zero drops it on the scan that notices.
+
+Some commands never finish. A terminal UI reached as a cargo subcommand is open
+all day, and while it is only sitting there it has no reading, no compiler and
+no duration worth reading — so its own cell holds one row saying no more than
+the summary's line for it already does, and that is a cell no build is getting.
+Name those subcommands and the grid withholds the cell until they have work
+under them:
+
+```toml
+[commands]
+hidden_when_idle = ["port"]
+```
+
+The summary is not affected — a line there saying the command is running is the
+whole of what it has to say, and it keeps it. The settings overlay reports the
+list under **Commands**. The cell opens the moment the command drives a cargo
+invocation, carrying that invocation under it, and closes through the usual fade
+once the invocation ends. The list is only for commands that outlast their work:
+anything that finishes on its own already leaves the grid by finishing.
 
 The grid moves one cell at a time. A command finishing in the middle empties its
 cell where it stood, and the hole trades places with the cell after it, then the

@@ -17,7 +17,9 @@ use crate::app::App;
 use crate::config;
 use crate::constants::APPEARANCE_MODES;
 use crate::constants::CURSOR_WIDTH;
+use crate::constants::EMPTY_LIST;
 use crate::constants::LABEL_VALUE_GAP;
+use crate::constants::LIST_SEPARATOR;
 use crate::constants::MAX_FADE_SECONDS;
 use crate::constants::MAX_INITIAL_ROWS;
 use crate::constants::MIN_FADE_SECONDS;
@@ -139,6 +141,14 @@ pub(crate) fn rows(app: &App) -> SettingsRows {
         SettingId::FadeSeconds,
         "fade seconds",
         &app.loaded_config.config.tiles.fade().as_secs().to_string(),
+    );
+
+    out.rows.push(SettingsRow::section("Commands"));
+    push_value(
+        &mut out,
+        &mut widths,
+        "hidden when idle",
+        list(&app.loaded_config.config.commands.hidden_when_idle),
     );
 
     out.rows.push(SettingsRow::section("Files"));
@@ -303,6 +313,18 @@ fn push_value(out: &mut SettingsRows, widths: &mut RowWidths, label: &str, value
     out.rows
         .push(SettingsRow::value(out.ids.len(), label, value));
     out.ids.push(SettingId::ReadOnly);
+}
+
+/// Render a list setting for reading.
+///
+/// The overlay steps through fixed sets of values and a config list is
+/// not one, so this row reports what the file says and the file is
+/// where it is changed -- which the `config` row under Files points at.
+fn list(entries: &[String]) -> String {
+    if entries.is_empty() {
+        return EMPTY_LIST.to_string();
+    }
+    entries.join(LIST_SEPARATOR)
 }
 
 /// Render a resolved path, or the placeholder for a platform where the

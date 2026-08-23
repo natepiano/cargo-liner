@@ -129,7 +129,9 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
 fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect) {
     let initial_rows = app.loaded_config.config.tiles.initial_rows();
     app.tiles.set_layout(area, initial_rows);
-    let ids = app.roster.ids();
+    let ids = app
+        .roster
+        .tiled_ids(&app.loaded_config.config.commands.hidden_when_idle);
     app.tiles.sync(&ids, initial_rows);
     let placements = app.tiles.placements(area, initial_rows);
     let mut grid_lines = GridLines::new(area);

@@ -40,6 +40,7 @@ use sysinfo::UpdateKind;
 use crate::constants::CARGO_DISPLAY_NAME;
 use crate::constants::CARGO_PROCESS_NAMES;
 use crate::constants::CARGO_SUBCOMMAND_PREFIX;
+use crate::constants::CARGO_TOOLCHAIN_SELECTOR;
 use crate::constants::COMPILER_PROCESS_NAMES;
 use crate::constants::HOME_ALIAS;
 use crate::constants::MANIFEST_PATH_FLAG;
@@ -123,6 +124,33 @@ impl CommandText {
             program:   program.to_string(),
             arguments: arguments.iter().map(|word| (*word).to_string()).collect(),
         }
+    }
+
+    /// The cargo subcommand this invocation names: `port` in
+    /// `cargo port`, and in `cargo +nightly port` too, the toolchain
+    /// selector being no part of it.
+    ///
+    /// [`command_text`] puts an external subcommand's own name back at
+    /// the front of the arguments, so a command that became
+    /// `cargo-port` answers this the same as one still spelled
+    /// `cargo port`.
+    pub(crate) fn subcommand(&self) -> Option<&str> {
+        self.arguments
+            .iter()
+            .map(String::as_str)
+            .find(|argument| !argument.starts_with(CARGO_TOOLCHAIN_SELECTOR))
+    }
+
+    /// Whether `commands.hidden_when_idle` names this command's
+    /// subcommand.
+    ///
+    /// Half the answer to whether the grid gives the command a cell --
+    /// the other half is whether anything is running under it, which
+    /// [`crate::roster::TrackedGroup::deserves_a_cell`] puts together
+    /// with this.
+    pub(crate) fn is_hidden_when_idle(&self, hidden_when_idle: &[String]) -> bool {
+        self.subcommand()
+            .is_some_and(|subcommand| hidden_when_idle.iter().any(|hidden| hidden == subcommand))
     }
 
     /// The arguments as one line, the manifest path in or out.
@@ -704,6 +732,41 @@ fn base_name(argument: &OsString) -> String {
 )]
 mod tests {
     use super::*;
+    use crate::constants::DEFAULT_HIDDEN_WHEN_IDLE;
+    use crate::constants::SIBLING_SUBCOMMAND_NAME;
+
+    /// The list as it reaches [`CommandText::is_hidden_when_idle`] once
+    /// the config has turned it into owned strings.
+    fn hidden_when_idle() -> Vec<String> {
+        DEFAULT_HIDDEN_WHEN_IDLE
+            .iter()
+            .map(|subcommand| (*subcommand).to_string())
+            .collect()
+    }
+
+    #[test]
+    fn the_subcommand_is_the_first_argument_past_a_toolchain_selector() {
+        assert_eq!(
+            CommandText::of(CARGO_DISPLAY_NAME, &["+nightly", "build"]).subcommand(),
+            Some("build")
+        );
+        assert_eq!(
+            CommandText::of(CARGO_DISPLAY_NAME, &["build"]).subcommand(),
+            Some("build")
+        );
+    }
+
+    #[test]
+    fn a_subcommand_on_the_list_is_recognised_past_a_toolchain_selector() {
+        let selected = CommandText::of(CARGO_DISPLAY_NAME, &["+nightly", SIBLING_SUBCOMMAND_NAME]);
+        assert!(selected.is_hidden_when_idle(&hidden_when_idle()));
+    }
+
+    #[test]
+    fn a_subcommand_off_the_list_is_not_hidden() {
+        let building = CommandText::of(CARGO_DISPLAY_NAME, &["build"]);
+        assert!(!building.is_hidden_when_idle(&hidden_when_idle()));
+    }
 
     #[test]
     fn duration_stays_minutes_and_seconds_under_an_hour() {
