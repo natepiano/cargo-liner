@@ -224,10 +224,24 @@ impl FromStr for ReservationScopePath {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         let path = Path::new(value);
+        let has_windows_drive_prefix = value
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphabetic)
+            && value.as_bytes().get(1) == Some(&b':');
         if !value.is_empty()
-            && path
+            && !path.is_absolute()
+            && !path
                 .components()
-                .all(|component| matches!(component, Component::CurDir | Component::Normal(_)))
+                .any(|component| matches!(component, Component::Prefix(_)))
+            && !has_windows_drive_prefix
+            && !value.contains('\\')
+            && value.split('/').all(|component| {
+                !component.is_empty()
+                    && component != "."
+                    && component != ".."
+                    && !component.eq_ignore_ascii_case(".git")
+            })
         {
             Ok(Self(value.to_owned()))
         } else {
@@ -249,6 +263,52 @@ impl Serialize for ReservationScopePath {
 }
 
 impl<'de> Deserialize<'de> for ReservationScopePath {
+    fn deserialize<DeserializerType>(
+        deserializer: DeserializerType,
+    ) -> Result<Self, DeserializerType::Error>
+    where
+        DeserializerType: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        value.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+/// An opaque, non-empty phase label supplied by a work-plan integration.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct WorkPlanPhase(String);
+
+impl fmt::Display for WorkPlanPhase {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl FromStr for WorkPlanPhase {
+    type Err = InvalidWorkPlanPhase;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value.is_empty() {
+            Err(InvalidWorkPlanPhase)
+        } else {
+            Ok(Self(value.to_owned()))
+        }
+    }
+}
+
+impl Serialize for WorkPlanPhase {
+    fn serialize<SerializerType>(
+        &self,
+        serializer: SerializerType,
+    ) -> Result<SerializerType::Ok, SerializerType::Error>
+    where
+        SerializerType: Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for WorkPlanPhase {
     fn deserialize<DeserializerType>(
         deserializer: DeserializerType,
     ) -> Result<Self, DeserializerType::Error>
@@ -473,6 +533,18 @@ impl fmt::Display for InvalidReservationScopePath {
 
 impl std::error::Error for InvalidReservationScopePath {}
 
+/// An error returned when a work-plan phase label is empty.
+#[derive(Debug)]
+pub(crate) struct InvalidWorkPlanPhase;
+
+impl fmt::Display for InvalidWorkPlanPhase {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("work-plan phase labels cannot be empty")
+    }
+}
+
+impl std::error::Error for InvalidWorkPlanPhase {}
+
 /// An error returned when text is not the journal's RFC 3339 timestamp representation.
 #[derive(Debug)]
 pub(crate) struct InvalidRecordedAt(String);
@@ -507,6 +579,7 @@ mod tests {
     use super::ReservationRevision;
     use super::ReservationScopePath;
     use super::SchemaVersion;
+    use super::WorkPlanPhase;
     use super::WorktreeId;
 
     #[test]
@@ -530,6 +603,9 @@ mod tests {
             .expect("reservation scope path should parse");
         let schema_version = SchemaVersion::from(1);
         let worktree_id = WorktreeId::new();
+        let work_plan_phase = "3b"
+            .parse::<WorkPlanPhase>()
+            .expect("opaque work-plan phase should parse");
 
         assert_identifier_round_trip(&reservation_id, &SerializedForm::Quoted);
         assert_identifier_round_trip(&coordination_run_id, &SerializedForm::Quoted);
@@ -544,6 +620,33 @@ mod tests {
         assert_identifier_round_trip(&reservation_scope_path, &SerializedForm::Quoted);
         assert_identifier_round_trip(&schema_version, &SerializedForm::Bare);
         assert_identifier_round_trip(&worktree_id, &SerializedForm::Quoted);
+        assert_identifier_round_trip(&work_plan_phase, &SerializedForm::Quoted);
+    }
+
+    #[test]
+    fn reservation_scope_paths_enforce_lexical_repository_boundaries() {
+        for invalid_path in [
+            "",
+            ".",
+            "crates/./cargo-berth",
+            ".git/config",
+            "crates/.GIT/config",
+            "crates/../Cargo.toml",
+            "/absolute/path",
+            "crates//cargo-berth",
+            "crates/cargo-berth/",
+            "crates\\cargo-berth",
+            "C:",
+            "C:crates/cargo-berth",
+        ] {
+            assert!(invalid_path.parse::<ReservationScopePath>().is_err());
+        }
+
+        assert!(
+            "files/that/do/not/exist/yet.rs"
+                .parse::<ReservationScopePath>()
+                .is_ok()
+        );
     }
 
     #[test]

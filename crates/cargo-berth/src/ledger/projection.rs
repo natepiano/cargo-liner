@@ -89,8 +89,7 @@ impl Projection {
         if self.has_newer_generation_than(replay) || self.claims_more_journal_bytes_than(replay) {
             return Err(ProjectionError::CacheAhead);
         }
-        if self.matches_replay_generation(replay)
-            && self.has_different_journal_fingerprint_than(replay)
+        if self.matches_replay_point(replay) && self.has_different_journal_fingerprint_than(replay)
         {
             return Err(ProjectionError::JournalFingerprintMismatch);
         }
@@ -105,37 +104,50 @@ impl Projection {
         self.journal_end_offset > replay.end_offset
     }
 
-    fn matches_replay_generation(&self, replay: &JournalReplay) -> bool {
-        self.generation == replay.generation
+    fn matches_replay_point(&self, replay: &JournalReplay) -> bool {
+        let generation_matches = self.generation == replay.generation;
+        let byte_offset_matches = self.journal_end_offset == replay.end_offset;
+        generation_matches && byte_offset_matches
     }
 
     fn has_different_journal_fingerprint_than(&self, replay: &JournalReplay) -> bool {
         self.journal_fingerprint != replay.fingerprint
     }
-
-    /// Return the generation used by the reader retry protocol.
-    pub(super) const fn generation(&self) -> ProjectionGeneration { self.generation }
 }
 
 /// The cache's observed state at one point in time.
-pub(super) enum ProjectionRead {
+enum ProjectionRead {
     /// A complete projection was present.
     Present(Projection),
     /// No projection has been published yet.
     Missing,
 }
 
-/// Read the projection and retry once if a newer generation wins the race.
-pub(super) fn read_with_retry(
+/// The publication work required to make a valid projection current.
+#[derive(Clone, Copy)]
+pub(super) enum ProjectionSynchronization {
+    /// The published projection already represents the complete journal replay.
+    Current,
+    /// The projection is absent or behind and must be rebuilt from the replay.
+    RebuildRequired,
+}
+
+/// Read the projection once and validate it against the locked journal replay.
+pub(super) fn read_validated(
     projection_path: &Path,
-    observed_generation: ProjectionGeneration,
-) -> Result<ProjectionRead, ProjectionError> {
-    let first_read = read_once(projection_path)?;
-    match &first_read {
-        ProjectionRead::Present(projection) if projection.generation() > observed_generation => {
-            read_once(projection_path)
+    repo_instance_id: RepoInstanceId,
+    replay: &JournalReplay,
+) -> Result<ProjectionSynchronization, ProjectionError> {
+    match read_once(projection_path)? {
+        ProjectionRead::Present(projection) => {
+            projection.validate_against(repo_instance_id, replay)?;
+            if projection.matches_replay_point(replay) {
+                Ok(ProjectionSynchronization::Current)
+            } else {
+                Ok(ProjectionSynchronization::RebuildRequired)
+            }
         },
-        ProjectionRead::Present(_) | ProjectionRead::Missing => Ok(first_read),
+        ProjectionRead::Missing => Ok(ProjectionSynchronization::RebuildRequired),
     }
 }
 

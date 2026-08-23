@@ -5,6 +5,7 @@ mod journal;
 mod lock;
 mod projection;
 
+use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::fs::OpenOptions;
@@ -12,20 +13,133 @@ use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 
+use constants::COORDINATION_RUN_ENVIRONMENT;
+use constants::COORDINATION_RUN_MARKER_FILE_NAME;
 use constants::JOURNAL_FILE_NAME;
 use constants::LEDGER_DIRECTORY_NAME;
 use constants::LOCK_FILE_NAME;
+use constants::MAXIMUM_JOURNAL_RECORD_BYTES;
+use constants::MUTATING_VERB_CONTENTION_TOLERANCE;
 use constants::PROJECTION_FILE_NAME;
 use constants::REPO_INSTANCE_ID_FILE_NAME;
 use constants::WORKTREE_ID_FILE_NAME;
+#[expect(
+    unused_imports,
+    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
+)]
+pub(crate) use journal::AuthorizedOverlap;
+#[cfg_attr(
+    not(test),
+    expect(
+        unused_imports,
+        reason = "The edit-hook verb constructs the bypass payload; no verb reaches it yet."
+    )
+)]
+pub(crate) use journal::BypassedAction;
+#[expect(
+    unused_imports,
+    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
+)]
+pub(crate) use journal::CanonicalWorktreeRoot;
+#[expect(
+    unused_imports,
+    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
+)]
+pub(crate) use journal::ClaimHeadCommit;
+#[expect(
+    unused_imports,
+    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
+)]
+pub(crate) use journal::ClaimHeadSnapshot;
+#[expect(
+    unused_imports,
+    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
+)]
+pub(crate) use journal::ClaimSource;
+#[expect(
+    unused_imports,
+    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
+)]
+pub(crate) use journal::ConflictAuthorization;
+#[expect(
+    unused_imports,
+    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
+)]
+pub(crate) use journal::FullRefName;
 use journal::Journal;
-use journal::JournalEvent;
-use journal::JournalOperation;
+#[expect(
+    unused_imports,
+    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
+)]
+pub(crate) use journal::JournalActor;
+use journal::JournalAppendError;
+pub(crate) use journal::JournalEvent;
+pub(crate) use journal::JournalOperation;
 use journal::JournalReplay;
+#[expect(
+    unused_imports,
+    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
+)]
+pub(crate) use journal::OrderingDirection;
+#[expect(
+    unused_imports,
+    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
+)]
+pub(crate) use journal::ProtectedPhaseStartHead;
+#[expect(
+    unused_imports,
+    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
+)]
+pub(crate) use journal::ReleaseDisposition;
+#[expect(
+    unused_imports,
+    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
+)]
+pub(crate) use journal::ReservationPurpose;
+#[expect(
+    unused_imports,
+    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
+)]
+pub(crate) use journal::ReservationScope;
+#[expect(
+    unused_imports,
+    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
+)]
+pub(crate) use journal::ReservationScopeSet;
+#[expect(
+    unused_imports,
+    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
+)]
+pub(crate) use journal::ReservationSnapshot;
+#[expect(
+    unused_imports,
+    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
+)]
+pub(crate) use journal::ScopeKind;
+#[expect(
+    unused_imports,
+    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
+)]
+pub(crate) use journal::TrunkCommitAtClaim;
+#[expect(
+    unused_imports,
+    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
+)]
+pub(crate) use journal::WidenCause;
+#[expect(
+    unused_imports,
+    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
+)]
+pub(crate) use journal::WorkPlanReference;
+#[expect(
+    unused_imports,
+    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
+)]
+pub(crate) use journal::WorktreeAdministrativeLocator;
 use lock::MutationLock;
 use projection::Projection;
-use projection::ProjectionRead;
-use projection::read_with_retry;
+use projection::ProjectionSynchronization;
+use projection::read_validated;
 
 use crate::config::BerthConfig;
 use crate::config::ConfigError;
@@ -52,6 +166,140 @@ pub(crate) struct LedgerInitialization {
     pub(crate) configuration: InitializationState,
 }
 
+/// The coordination identity an edit check can prove for its current process.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The edit-hook verb consumes this process context; no verb reaches it yet."
+    )
+)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EditAuthorization {
+    /// The caller proves membership in one coordination run.
+    Identified(CoordinationRunId),
+    /// The caller has no run identity and must not receive a same-worktree exemption.
+    Unidentified,
+}
+
+impl EditAuthorization {
+    /// Resolve the active run from the environment, then the worktree marker.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "The edit-hook verb resolves authorization; no verb reaches it yet."
+        )
+    )]
+    pub(crate) fn resolve(worktree_administrative_directory: &Path) -> Self {
+        Self::resolve_from_environment(
+            std::env::var_os(COORDINATION_RUN_ENVIRONMENT),
+            worktree_administrative_directory,
+        )
+    }
+
+    fn resolve_from_environment(
+        environment_run: Option<OsString>,
+        worktree_administrative_directory: &Path,
+    ) -> Self {
+        environment_run.map_or_else(
+            || {
+                let marker_path =
+                    worktree_administrative_directory.join(COORDINATION_RUN_MARKER_FILE_NAME);
+                fs::read_to_string(marker_path)
+                    .ok()
+                    .and_then(|value| value.trim().parse().ok())
+                    .map_or(Self::Unidentified, Self::Identified)
+            },
+            |value| {
+                value
+                    .into_string()
+                    .ok()
+                    .and_then(|value| value.parse().ok())
+                    .map_or(Self::Unidentified, Self::Identified)
+            },
+        )
+    }
+}
+
+/// The replayed journal facts visible to a transaction's validation step.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The claim engine consumes the replayed validation state; no verb reaches it yet."
+    )
+)]
+pub(crate) struct ReplayedLedgerState<'replay> {
+    events:             &'replay [JournalEvent],
+    generation:         ProjectionGeneration,
+    journal_end_offset: crate::ids::JournalByteOffset,
+}
+
+impl ReplayedLedgerState<'_> {
+    /// Borrow every replayed fact in append order.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "The claim engine inspects replayed facts; no verb reaches them yet."
+        )
+    )]
+    pub(crate) const fn events(&self) -> &[JournalEvent] { self.events }
+
+    /// Return the projection generation represented by the replay.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "The claim engine inspects the replay point; no verb reaches it yet."
+        )
+    )]
+    pub(crate) const fn generation(&self) -> ProjectionGeneration { self.generation }
+
+    /// Return the journal byte offset represented by the replay.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "The claim engine inspects the replay point; no verb reaches it yet."
+        )
+    )]
+    pub(crate) const fn journal_end_offset(&self) -> crate::ids::JournalByteOffset {
+        self.journal_end_offset
+    }
+}
+
+/// The only two outcomes a transaction validator can authorize.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The claim engine returns this validation decision; no verb reaches it yet."
+    )
+)]
+pub(crate) enum TransactionValidation<Rejection> {
+    /// Append this operation and publish the resulting projection.
+    Append(Box<JournalOperation>),
+    /// Return the semantic rejection without changing durable state.
+    Reject(Rejection),
+}
+
+/// The durable result of a validation-controlled ledger transaction.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The claim engine consumes transaction results; no verb reaches them yet."
+    )
+)]
+pub(crate) enum LedgerTransactionOutcome<Rejection> {
+    /// Exactly one approved event was appended and published.
+    Appended(Box<JournalEvent>),
+    /// Validation rejected the proposal before any append.
+    Rejected(Rejection),
+}
+
 /// A stored worktree identity paired with its separate worktree role.
 #[cfg_attr(
     not(test),
@@ -71,8 +319,9 @@ pub(crate) struct WorktreeIdentity {
 impl Ledger {
     /// Resolve the shared ledger and create its journal, projection, and default config.
     pub(crate) fn initialize(repository_root: &Path) -> Result<LedgerInitialization, LedgerError> {
-        let ledger = Self::resolve(repository_root)?;
-        let transaction = ledger.begin_mutation()?;
+        let ledger = Self::locate(repository_root)?;
+        fs::create_dir_all(&ledger.paths.directory)?;
+        let transaction = ledger.begin_initialization()?;
         let configuration = BerthConfig::initialize(repository_root)?;
         // Existing policy must parse before this transaction publishes the ledger.
         BerthConfig::read(repository_root)?;
@@ -83,24 +332,58 @@ impl Ledger {
         })
     }
 
-    /// Append one operation through the required replay-validate-publish transaction.
+    /// Attach to an initialized ledger without creating any missing state.
     #[cfg_attr(
         not(test),
         expect(
             dead_code,
-            reason = "No stateful verb invokes this v1 transaction wrapper yet."
+            reason = "Stateful verbs open the existing ledger; no verb reaches it yet."
         )
     )]
-    pub(crate) fn append_operation(
+    pub(crate) fn open(invocation_directory: &Path) -> Result<Self, LedgerError> {
+        let repository_root = git::repository_root(invocation_directory)?;
+        let ledger = Self::locate(&repository_root)?;
+        ledger.require_existing()?;
+        Ok(ledger)
+    }
+
+    /// Validate against one locked replay and append only the approved operation.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "The claim engine invokes semantic transactions; no verb reaches them yet."
+        )
+    )]
+    pub(crate) fn transact<Rejection>(
         &self,
         worktree_id: WorktreeId,
         coordination_run_id: CoordinationRunId,
-        operation: JournalOperation,
-    ) -> Result<JournalEvent, LedgerError> {
-        let mut transaction = self.begin_mutation()?;
-        let event = transaction.append(worktree_id, coordination_run_id, operation)?;
-        transaction.publish(&self.paths)?;
-        Ok(event)
+        validate: impl FnOnce(ReplayedLedgerState<'_>) -> TransactionValidation<Rejection>,
+    ) -> Result<LedgerTransactionOutcome<Rejection>, LedgerTransactionError> {
+        let mut transaction = self
+            .begin_mutation()
+            .map_err(LedgerTransactionError::from_ledger_error)?;
+        let replayed_state = ReplayedLedgerState {
+            events:             &transaction.replay.events,
+            generation:         transaction.replay.generation,
+            journal_end_offset: transaction.replay.end_offset,
+        };
+        match validate(replayed_state) {
+            TransactionValidation::Append(operation) => {
+                let event = transaction.append(worktree_id, coordination_run_id, *operation)?;
+                transaction
+                    .publish(&self.paths)
+                    .map_err(LedgerTransactionError::LedgerUnreadable)?;
+                Ok(LedgerTransactionOutcome::Appended(Box::new(event)))
+            },
+            TransactionValidation::Reject(rejection) => {
+                transaction
+                    .publish_if_rebuild_required(&self.paths)
+                    .map_err(LedgerTransactionError::LedgerUnreadable)?;
+                Ok(LedgerTransactionOutcome::Rejected(rejection))
+            },
+        }
     }
 
     /// Rebuild the disposable projection from journal truth.
@@ -116,10 +399,9 @@ impl Ledger {
         transaction.publish(&self.paths)
     }
 
-    fn resolve(repository_root: &Path) -> Result<Self, LedgerError> {
+    fn locate(repository_root: &Path) -> Result<Self, LedgerError> {
         let common_git_directory = git::common_directory(repository_root)?;
         let directory = common_git_directory.join(LEDGER_DIRECTORY_NAME);
-        fs::create_dir_all(&directory)?;
         Ok(Self {
             paths: LedgerPaths {
                 journal: directory.join(JOURNAL_FILE_NAME),
@@ -131,21 +413,51 @@ impl Ledger {
         })
     }
 
+    fn require_existing(&self) -> Result<(), LedgerError> {
+        if !self.paths.directory.is_dir()
+            || !self.paths.journal.is_file()
+            || !self.paths.repo_instance_id.is_file()
+        {
+            return Err(LedgerError::NotInitialized);
+        }
+        Ok(())
+    }
+
     fn begin_mutation(&self) -> Result<LedgerTransaction, LedgerError> {
-        let lock = MutationLock::acquire(&self.paths.lock)?;
+        self.require_existing()?;
+        let lock = MutationLock::acquire(&self.paths.lock, MUTATING_VERB_CONTENTION_TOLERANCE)?;
+        let repo_instance_id = read_repo_instance_id(&self.paths.repo_instance_id)?;
+        let journal = Journal::open_existing(&self.paths.journal)?;
+        self.begin_locked_transaction(
+            lock,
+            journal,
+            InitializationState::Existing,
+            repo_instance_id,
+        )
+    }
+
+    fn begin_initialization(&self) -> Result<LedgerTransaction, LedgerError> {
+        let lock = MutationLock::acquire(&self.paths.lock, MUTATING_VERB_CONTENTION_TOLERANCE)?;
         let repo_instance_id = read_or_mint_repo_instance_id(&self.paths.repo_instance_id)?;
         let (journal, journal_initialization) = Journal::open_or_create(&self.paths.journal)?;
+        self.begin_locked_transaction(lock, journal, journal_initialization, repo_instance_id)
+    }
+
+    fn begin_locked_transaction(
+        &self,
+        lock: MutationLock,
+        journal: Journal,
+        journal_initialization: InitializationState,
+        repo_instance_id: RepoInstanceId,
+    ) -> Result<LedgerTransaction, LedgerError> {
         let replay = journal.replay_repairing_tail()?;
-        match read_with_retry(&self.paths.projection, replay.generation)? {
-            ProjectionRead::Present(projection) => {
-                projection.validate_against(repo_instance_id, &replay)?;
-            },
-            ProjectionRead::Missing => {},
-        }
+        let projection_synchronization =
+            read_validated(&self.paths.projection, repo_instance_id, &replay)?;
         Ok(LedgerTransaction {
             _lock: lock,
             journal,
             journal_initialization,
+            projection_synchronization,
             replay,
             repo_instance_id,
         })
@@ -165,8 +477,9 @@ impl LedgerTransaction {
         worktree_id: WorktreeId,
         coordination_run_id: CoordinationRunId,
         operation: JournalOperation,
-    ) -> Result<JournalEvent, LedgerError> {
-        let next_generation = next_projection_generation(self.replay.generation)?;
+    ) -> Result<JournalEvent, LedgerTransactionError> {
+        let next_generation = next_projection_generation(self.replay.generation)
+            .map_err(LedgerTransactionError::LedgerUnreadable)?;
         let event = JournalEvent::for_operation(
             journal::JournalActor {
                 repository: self.repo_instance_id,
@@ -176,8 +489,27 @@ impl LedgerTransaction {
             next_generation,
             operation,
         );
-        self.journal.append(&event)?;
-        self.replay = self.journal.replay_repairing_tail()?;
+        self.journal.append(&event).map_err(|error| match error {
+            JournalAppendError::RecordTooLarge { bytes } => {
+                LedgerTransactionError::CorrectableInput(
+                    CorrectableTransactionInput::RecordTooLarge {
+                        bytes,
+                        maximum_bytes: MAXIMUM_JOURNAL_RECORD_BYTES,
+                    },
+                )
+            },
+            JournalAppendError::Io(error) => {
+                LedgerTransactionError::LedgerUnreadable(LedgerError::Io(error))
+            },
+            JournalAppendError::Serialization(error) => {
+                LedgerTransactionError::LedgerUnreadable(LedgerError::JournalEncoding(error))
+            },
+        })?;
+        self.replay = self
+            .journal
+            .replay_repairing_tail()
+            .map_err(LedgerError::from)
+            .map_err(LedgerTransactionError::LedgerUnreadable)?;
         Ok(event)
     }
 
@@ -186,10 +518,17 @@ impl LedgerTransaction {
             .publish(&paths.directory, &paths.projection)?;
         Ok(())
     }
+
+    fn publish_if_rebuild_required(&self, paths: &LedgerPaths) -> Result<(), LedgerError> {
+        match self.projection_synchronization {
+            ProjectionSynchronization::Current => Ok(()),
+            ProjectionSynchronization::RebuildRequired => self.publish(paths),
+        }
+    }
 }
 
 struct LedgerTransaction {
-    _lock:                  MutationLock,
+    _lock:                      MutationLock,
     #[cfg_attr(
         not(test),
         expect(
@@ -197,10 +536,11 @@ struct LedgerTransaction {
             reason = "No stateful verb uses the held journal descriptor yet."
         )
     )]
-    journal:                Journal,
-    journal_initialization: InitializationState,
-    replay:                 JournalReplay,
-    repo_instance_id:       RepoInstanceId,
+    journal:                    Journal,
+    journal_initialization:     InitializationState,
+    projection_synchronization: ProjectionSynchronization,
+    replay:                     JournalReplay,
+    repo_instance_id:           RepoInstanceId,
 }
 
 struct LedgerPaths {
@@ -209,6 +549,13 @@ struct LedgerPaths {
     projection:       PathBuf,
     lock:             PathBuf,
     repo_instance_id: PathBuf,
+}
+
+fn read_repo_instance_id(path: &Path) -> Result<RepoInstanceId, LedgerError> {
+    fs::read_to_string(path)?
+        .trim()
+        .parse()
+        .map_err(LedgerError::InvalidRepoInstanceId)
 }
 
 /// Read or mint the clone-wide identity stored beside the journal.
@@ -296,6 +643,8 @@ fn next_projection_generation(
 /// A failure that leaves ledger state unreadable or unpublished.
 #[derive(Debug)]
 pub(crate) enum LedgerError {
+    /// The shared ledger has not been initialized for this repository.
+    NotInitialized,
     /// Git could not locate the common administrative directory.
     Git(git::GitError),
     /// Ordinary filesystem access failed.
@@ -304,6 +653,8 @@ pub(crate) enum LedgerError {
     Config(ConfigError),
     /// The append-only journal could not be replayed safely.
     Journal(journal::JournalError),
+    /// A validated fact could not be encoded for the journal.
+    JournalEncoding(serde_json::Error),
     /// The projection cache could not be validated or published.
     Projection(projection::ProjectionError),
     /// The mutation lock could not be acquired.
@@ -333,10 +684,16 @@ pub(crate) enum LedgerError {
 impl fmt::Display for LedgerError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::NotInitialized => formatter.write_str(
+                "the cargo-berth ledger is not initialized; run cargo-berth init and retry",
+            ),
             Self::Git(error) => write!(formatter, "could not locate ledger: {error}"),
             Self::Io(error) => write!(formatter, "ledger I/O failed: {error}"),
             Self::Config(error) => write!(formatter, "ledger configuration failed: {error}"),
             Self::Journal(error) => write!(formatter, "journal replay failed: {error}"),
+            Self::JournalEncoding(error) => {
+                write!(formatter, "journal encoding failed: {error}")
+            },
             Self::Projection(error) => write!(formatter, "projection validation failed: {error}"),
             Self::MutationLock(error) => write!(formatter, "ledger mutation lock failed: {error}"),
             Self::InvalidRepoInstanceId(error) => {
@@ -378,6 +735,84 @@ impl From<lock::MutationLockError> for LedgerError {
     fn from(error: lock::MutationLockError) -> Self { Self::MutationLock(error) }
 }
 
+/// A transaction failure classified for a stateful command boundary.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Stateful verbs render these classified failures; no verb reaches them yet."
+    )
+)]
+#[derive(Debug)]
+pub(crate) enum LedgerTransactionError {
+    /// Durable state could not be read or published reliably.
+    LedgerUnreadable(LedgerError),
+    /// Another live mutation retained the descriptor through the bounded retry window.
+    LockContention,
+    /// The proposal is validly classified as caller-correctable input.
+    CorrectableInput(CorrectableTransactionInput),
+}
+
+impl LedgerTransactionError {
+    fn from_ledger_error(error: LedgerError) -> Self {
+        match error {
+            LedgerError::MutationLock(lock::MutationLockError::AcquisitionTimedOut) => {
+                Self::LockContention
+            },
+            ledger_error => Self::LedgerUnreadable(ledger_error),
+        }
+    }
+}
+
+impl fmt::Display for LedgerTransactionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LedgerUnreadable(error) => error.fmt(formatter),
+            Self::LockContention => formatter.write_str(
+                "another cargo-berth operation is still running; wait for it to finish, then retry",
+            ),
+            Self::CorrectableInput(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for LedgerTransactionError {}
+
+/// A rejected mutation input that the caller can reduce and submit again.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The claim verb renders correctable transaction input; no verb reaches it yet."
+    )
+)]
+#[derive(Debug)]
+pub(crate) enum CorrectableTransactionInput {
+    /// The encoded journal fact exceeded the bounded record format.
+    RecordTooLarge {
+        /// The proposed record size including its newline.
+        bytes:         usize,
+        /// The maximum accepted record size.
+        maximum_bytes: usize,
+    },
+}
+
+impl fmt::Display for CorrectableTransactionInput {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RecordTooLarge {
+                bytes,
+                maximum_bytes,
+            } => write!(
+                formatter,
+                "the proposed reservation record is {bytes} bytes, above the {maximum_bytes}-byte limit; reduce its scopes or shorten its provenance and purpose, then retry"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CorrectableTransactionInput {}
+
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
@@ -391,15 +826,23 @@ mod tests {
 
     use tempfile::tempdir;
 
+    use super::COORDINATION_RUN_MARKER_FILE_NAME;
+    use super::CorrectableTransactionInput;
+    use super::EditAuthorization;
     use super::Ledger;
-    use super::journal::JournalEvent;
-    use super::journal::JournalOperation;
+    use super::LedgerError;
+    use super::LedgerTransactionError;
+    use super::LedgerTransactionOutcome;
+    use super::TransactionValidation;
     use super::worktree_identity;
     use crate::ids::CoordinationRunId;
     use crate::ids::RepoInstanceId;
     use crate::ids::ReservationId;
     use crate::ids::WorktreeId;
     use crate::ids::WorktreeKind;
+    use crate::ledger::BypassedAction;
+    use crate::ledger::JournalEvent;
+    use crate::ledger::JournalOperation;
 
     #[test]
     fn recycled_administrative_directory_mints_a_new_worktree_identity() {
@@ -425,7 +868,7 @@ mod tests {
     fn concurrent_mutations_append_without_losing_either_record() {
         let repository = scratch_repository();
         Ledger::initialize(repository.path()).expect("ledger should initialize");
-        let ledger = Arc::new(Ledger::resolve(repository.path()).expect("ledger should resolve"));
+        let ledger = Arc::new(Ledger::open(repository.path()).expect("ledger should open"));
         let first_writer = append_renewal(Arc::clone(&ledger));
         let second_writer = append_renewal(Arc::clone(&ledger));
 
@@ -456,6 +899,240 @@ mod tests {
         );
     }
 
+    #[test]
+    fn validation_controls_whether_exactly_one_record_is_appended() {
+        let repository = scratch_repository();
+        Ledger::initialize(repository.path()).expect("ledger should initialize");
+        let ledger = Ledger::open(repository.path()).expect("ledger should open");
+        let journal_before = fs::read(&ledger.paths.journal).expect("journal should read");
+        let projection_before = fs::read(&ledger.paths.projection).expect("projection should read");
+
+        let rejected = ledger
+            .transact(WorktreeId::new(), CoordinationRunId::new(), |state| {
+                assert!(state.events().is_empty());
+                assert_eq!(u64::from(state.generation()), 0);
+                assert_eq!(u64::from(state.journal_end_offset()), 0);
+                TransactionValidation::Reject("overlap")
+            })
+            .expect("semantic rejection should not be a ledger failure");
+
+        assert!(matches!(
+            rejected,
+            LedgerTransactionOutcome::Rejected("overlap")
+        ));
+        assert_eq!(
+            fs::read(&ledger.paths.journal).expect("journal should reread"),
+            journal_before
+        );
+        assert_eq!(
+            fs::read(&ledger.paths.projection).expect("projection should reread"),
+            projection_before
+        );
+
+        let appended = ledger
+            .transact(WorktreeId::new(), CoordinationRunId::new(), |_| {
+                TransactionValidation::<()>::Append(Box::new(renewal_operation()))
+            })
+            .expect("approved transaction should append");
+
+        assert!(matches!(&appended, LedgerTransactionOutcome::Appended(_)));
+        let LedgerTransactionOutcome::Appended(event) = appended else {
+            return;
+        };
+        assert_eq!(u64::from(event.projection_generation), 1);
+        assert_eq!(
+            fs::read_to_string(&ledger.paths.journal)
+                .expect("journal should read")
+                .lines()
+                .count(),
+            1
+        );
+        let projection: serde_json::Value = serde_json::from_slice(
+            &fs::read(&ledger.paths.projection).expect("projection should read"),
+        )
+        .expect("projection should decode");
+        assert_eq!(projection["generation"], 1);
+    }
+
+    #[test]
+    fn crate_visible_transaction_types_support_a_validator() {
+        let repository = scratch_repository();
+        Ledger::initialize(repository.path()).expect("ledger should initialize");
+        let ledger = Ledger::open(repository.path()).expect("ledger should open");
+
+        let outcome = sibling_style_validator::append_bypass(&ledger)
+            .expect("crate-visible validator should append");
+
+        assert!(matches!(
+            outcome,
+            LedgerTransactionOutcome::Appended(event)
+                if matches!(
+                    event.operation,
+                    JournalOperation::Bypass {
+                        action: BypassedAction::Editing,
+                        ..
+                    }
+                )
+        ));
+    }
+
+    #[test]
+    fn opening_requires_an_initialized_ledger_and_accepts_nested_callers() {
+        let repository = scratch_repository();
+        let ledger_directory = repository.path().join(".git").join("cargo-berth");
+
+        assert!(matches!(
+            Ledger::open(repository.path()),
+            Err(LedgerError::NotInitialized)
+        ));
+        assert!(!ledger_directory.exists());
+
+        Ledger::initialize(repository.path()).expect("ledger should initialize");
+        let nested_directory = repository.path().join("crates").join("nested");
+        fs::create_dir_all(&nested_directory).expect("nested directory should exist");
+        assert!(Ledger::open(&nested_directory).is_ok());
+    }
+
+    #[test]
+    fn edit_authorization_prefers_environment_then_marker_then_unidentified() {
+        let administrative_directory = tempdir().expect("administrative directory should exist");
+        let environment_run = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b"
+            .parse::<CoordinationRunId>()
+            .expect("environment run should parse");
+        let marker_run = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c"
+            .parse::<CoordinationRunId>()
+            .expect("marker run should parse");
+        fs::write(
+            administrative_directory
+                .path()
+                .join(COORDINATION_RUN_MARKER_FILE_NAME),
+            format!("{marker_run}\n"),
+        )
+        .expect("coordination marker should write");
+
+        assert_eq!(
+            EditAuthorization::resolve_from_environment(
+                Some(environment_run.to_string().into()),
+                administrative_directory.path(),
+            ),
+            EditAuthorization::Identified(environment_run)
+        );
+        assert_eq!(
+            EditAuthorization::resolve_from_environment(None, administrative_directory.path(),),
+            EditAuthorization::Identified(marker_run)
+        );
+
+        fs::remove_file(
+            administrative_directory
+                .path()
+                .join(COORDINATION_RUN_MARKER_FILE_NAME),
+        )
+        .expect("coordination marker should remove");
+        assert_eq!(
+            EditAuthorization::resolve_from_environment(None, administrative_directory.path(),),
+            EditAuthorization::Unidentified
+        );
+        assert!(matches!(
+            EditAuthorization::resolve(administrative_directory.path()),
+            EditAuthorization::Identified(_) | EditAuthorization::Unidentified
+        ));
+    }
+
+    #[test]
+    fn oversized_records_are_correctable_input_not_unreadable_state() {
+        let repository = scratch_repository();
+        Ledger::initialize(repository.path()).expect("ledger should initialize");
+        let ledger = Ledger::open(repository.path()).expect("ledger should open");
+
+        let result = ledger.transact(WorktreeId::new(), CoordinationRunId::new(), |_| {
+            TransactionValidation::<()>::Append(Box::new(JournalOperation::Bypass {
+                action: BypassedAction::Editing,
+                reason: "x".repeat(super::MAXIMUM_JOURNAL_RECORD_BYTES),
+            }))
+        });
+
+        assert!(matches!(
+            result,
+            Err(LedgerTransactionError::CorrectableInput(
+                CorrectableTransactionInput::RecordTooLarge { .. }
+            ))
+        ));
+        assert!(
+            fs::read_to_string(&ledger.paths.journal)
+                .expect("journal should read")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn rejected_transaction_rebuilds_a_stale_projection() {
+        let repository = scratch_repository();
+        Ledger::initialize(repository.path()).expect("ledger should initialize");
+        let ledger = Ledger::open(repository.path()).expect("ledger should open");
+        let mut unpublished_transaction = ledger
+            .begin_mutation()
+            .expect("unpublished transaction should begin");
+        unpublished_transaction
+            .append(
+                WorktreeId::new(),
+                CoordinationRunId::new(),
+                renewal_operation(),
+            )
+            .expect("record should append before publication");
+        std::mem::drop(unpublished_transaction);
+
+        let mut record_was_visible = false;
+        let outcome = ledger
+            .transact(WorktreeId::new(), CoordinationRunId::new(), |state| {
+                record_was_visible = state.events().len() == 1;
+                TransactionValidation::Reject(())
+            })
+            .expect("next reader should replay journal truth");
+
+        assert!(record_was_visible);
+        assert!(matches!(outcome, LedgerTransactionOutcome::Rejected(())));
+        let journal = fs::read(&ledger.paths.journal).expect("journal should read");
+        let projection: serde_json::Value = serde_json::from_slice(
+            &fs::read(&ledger.paths.projection).expect("projection should read"),
+        )
+        .expect("projection should decode");
+        assert_eq!(projection["generation"], 1);
+        assert_eq!(projection["journal_end_offset"], journal.len());
+        assert_eq!(
+            projection["events"]
+                .as_array()
+                .expect("projection events should be an array")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn projection_reads_validate_both_generation_and_journal_byte_offset() {
+        for field in ["generation", "journal_end_offset"] {
+            let repository = scratch_repository();
+            Ledger::initialize(repository.path()).expect("ledger should initialize");
+            let ledger = Ledger::open(repository.path()).expect("ledger should open");
+            let mut projection: serde_json::Value = serde_json::from_slice(
+                &fs::read(&ledger.paths.projection).expect("projection should read"),
+            )
+            .expect("projection should decode");
+            projection[field] = serde_json::json!(1);
+            fs::write(
+                &ledger.paths.projection,
+                serde_json::to_vec_pretty(&projection).expect("projection should encode"),
+            )
+            .expect("projection should write");
+
+            assert!(matches!(
+                ledger.begin_mutation(),
+                Err(LedgerError::Projection(
+                    super::projection::ProjectionError::CacheAhead
+                ))
+            ));
+        }
+    }
+
     fn scratch_repository() -> tempfile::TempDir {
         let repository = tempdir().expect("temporary repository should exist");
         let git_init = Command::new("git")
@@ -467,17 +1144,46 @@ mod tests {
         repository
     }
 
-    fn append_renewal(ledger: Arc<Ledger>) -> thread::JoinHandle<Result<(), super::LedgerError>> {
+    fn append_renewal(
+        ledger: Arc<Ledger>,
+    ) -> thread::JoinHandle<Result<(), LedgerTransactionError>> {
         thread::spawn(move || {
             ledger
-                .append_operation(
-                    WorktreeId::new(),
-                    CoordinationRunId::new(),
-                    JournalOperation::Renew {
-                        reservation_id: ReservationId::new(),
-                    },
-                )
+                .transact(WorktreeId::new(), CoordinationRunId::new(), |_| {
+                    TransactionValidation::<()>::Append(Box::new(renewal_operation()))
+                })
                 .map(|_| ())
         })
+    }
+
+    fn renewal_operation() -> JournalOperation {
+        JournalOperation::Renew {
+            reservation_id: ReservationId::new(),
+        }
+    }
+
+    mod sibling_style_validator {
+        use crate::ids::CoordinationRunId;
+        use crate::ids::WorktreeId;
+        use crate::ledger::BypassedAction;
+        use crate::ledger::JournalOperation;
+        use crate::ledger::Ledger;
+        use crate::ledger::LedgerTransactionError;
+        use crate::ledger::LedgerTransactionOutcome;
+        use crate::ledger::TransactionValidation;
+
+        pub(super) fn append_bypass(
+            ledger: &Ledger,
+        ) -> Result<LedgerTransactionOutcome<()>, LedgerTransactionError> {
+            ledger.transact(WorktreeId::new(), CoordinationRunId::new(), |state| {
+                assert!(state.events().is_empty());
+                assert_eq!(u64::from(state.generation()), 0);
+                assert_eq!(u64::from(state.journal_end_offset()), 0);
+                TransactionValidation::Append(Box::new(JournalOperation::Bypass {
+                    action: BypassedAction::Editing,
+                    reason: "test a crate-visible transaction".to_owned(),
+                }))
+            })
+        }
     }
 }

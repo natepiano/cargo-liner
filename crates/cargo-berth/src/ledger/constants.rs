@@ -1,6 +1,9 @@
 //! Constants for the shared reservation ledger.
 
+use std::time::Duration;
+
 // file names
+pub(super) const COORDINATION_RUN_MARKER_FILE_NAME: &str = "cargo-berth-run-id";
 pub(super) const JOURNAL_FILE_NAME: &str = "journal.ndjson";
 pub(super) const LOCK_FILE_NAME: &str = "mutation.lock";
 pub(super) const PROJECTION_FILE_NAME: &str = "reservations.json";
@@ -14,6 +17,16 @@ pub(super) const REPO_INSTANCE_ID_FILE_NAME: &str = "repo-instance-id";
     )
 )]
 pub(super) const WORKTREE_ID_FILE_NAME: &str = "cargo-berth-worktree-id";
+
+// process context
+pub(super) const COORDINATION_RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
+
+// lock acquisition
+pub(super) const MUTATING_VERB_CONTENTION_TOLERANCE: Duration = Duration::from_secs(5);
+pub(super) const MUTATION_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(10);
+
+// git reference validation
+pub(super) const DELETE_CONTROL_BYTE: u8 = 0x7f;
 
 // journal limits
 #[cfg_attr(

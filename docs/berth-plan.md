@@ -170,7 +170,78 @@ generation. A `sync doctor --lock` diagnosis surface in v1 — the lock timeout
 message is the whole surface. A dedicated ledger-repair verb — recovery reuses
 `init` behind an explicit confirmation flag.
 
-### Phase 3 — Claims, scopes, and overlap  · status: todo
+### Phase 3 — The ledger's transaction surface  · status: done
+
+#### As-built
+
+- `Ledger::transact(worktree_id, coordination_run_id, validate)` — with
+  `validate: FnOnce(ReplayedLedgerState<'_>) -> TransactionValidation<Rejection>` —
+  acquires the mutation lock, replays the journal, hands the caller a
+  `ReplayedLedgerState` exposing `events()`, `generation()`, and
+  `journal_end_offset()`, and appends only on `TransactionValidation::Append`,
+  returning `LedgerTransactionOutcome::{Appended(Box<JournalEvent>), Rejected(Rejection)}`.
+  A rejected validation appends nothing by construction.
+- `Ledger::open` attaches to an existing ledger without creating one;
+  `Ledger::initialize` remains the only path that creates one.
+- Projection reads return `ProjectionSynchronization::{Current, RebuildRequired}`
+  from `projection::read_validated`, and `transact` publishes the projection even
+  on the reject path when it is stale. A projection claiming a newer generation
+  or more journal bytes than the journal holds is denied as
+  `ProjectionError::CacheAhead` rather than retried or overwritten.
+- `MutationLock::acquire(&Path, Duration)` takes the deadline as a per-call
+  argument rather than a global constant; mutating verbs pass
+  `MUTATING_VERB_CONTENTION_TOLERANCE` (5s). Timeout is a distinct, fact-free
+  `LedgerTransactionError::LockContention` worded "another cargo-berth operation
+  is still running; wait for it to finish, then retry" — naming no path, pid, or
+  lock state.
+- `JournalAppendError::RecordTooLarge` / `CorrectableTransactionInput::RecordTooLarge`
+  separates an oversized record (too many scopes, overlong provenance or reason)
+  from an unreadable ledger.
+- The claim record's payload ships with per-path `ScopeKind`, an opaque
+  `WorkPlanPhase(String)` in place of a `u32` phase, and 23 role-specific journal
+  newtypes re-exported `pub(crate)` from `ledger/mod.rs`.
+- `ReservationScopePath` (in `ids.rs`) rejects empty / `.` / `..` / `.git`
+  components, absolute input, Windows drive prefixes, and backslashes — purely
+  lexically, so a path that does not exist on disk is still accepted.
+- `EditAuthorization::{Identified(CoordinationRunId), Unidentified}` resolves from
+  `CARGO_BERTH_RUN`, else the `cargo-berth-run-id` marker file in the worktree's
+  administrative directory, and fails closed to worktree-level-only recognition
+  when neither is present.
+
+**Files:**
+- `crates/cargo-berth/src/ledger/mod.rs` — `Ledger::{initialize, open, transact}`, `LedgerTransactionOutcome`, `LedgerTransactionError`, `EditAuthorization`, the crate-visible newtype re-exports.
+- `crates/cargo-berth/src/ledger/journal.rs` — the claim record payload and its role-specific types, `RecordTooLarge`.
+- `crates/cargo-berth/src/ledger/projection.rs` — `read_validated` and `ProjectionSynchronization`.
+- `crates/cargo-berth/src/ledger/lock.rs` — `MutationLock::acquire(&Path, Duration)`.
+- `crates/cargo-berth/src/ledger/constants.rs` — `COORDINATION_RUN_MARKER_FILE_NAME` ("cargo-berth-run-id"), `COORDINATION_RUN_ENVIRONMENT` ("CARGO_BERTH_RUN"), `MUTATING_VERB_CONTENTION_TOLERANCE` (5s).
+- `crates/cargo-berth/src/ids.rs` — tightened `ReservationScopePath`, `WorkPlanPhase`.
+
+**Binds later work:** `ReservationScopePath::from_str` already rejects every
+invalid form, so later phases validate no paths themselves. `WorkPlanPhase`
+carries opaque text, not `u32`. The `cargo-berth-run-id` marker's lifecycle —
+claim writes it, release removes it, reconciliation treats an orphan as stale —
+belongs to later phases; nothing writes, removes, or sweeps it yet. `pub(crate)`
+items are unreachable from a `tests/` integration target because `cargo-berth` is
+a binary crate, so coverage of them lives in unit tests and any test driving them
+from outside the crate must run the built binary.
+
+**Gotchas:** `Path` equality is component-wise, so
+`PathBuf::from_iter(p.components()) == p` is a tautology that proves no
+normalization — `CanonicalWorktreeRoot::from_str` and
+`WorktreeAdministrativeLocator::from_str` compare rendered strings instead. Under
+`-D warnings`, an item with no in-crate caller needs
+`#[cfg_attr(not(test), expect(dead_code, reason = "..."))]`, and removing its only
+test-build caller breaks the test-profile lint even with the attribute in place.
+The ledger directory is `.git/cargo-berth/`, not `.git/berth/`.
+
+**Ruled out:** directing lock-contention errors at `cargo-berth sync doctor --lock`
+— that subcommand is absent from the frozen surface and out of v1, so the message
+says only to wait and retry. Retrying or implicitly repairing a cache-ahead
+projection — denial is the rule, and recovery is an explicit, separately-owned
+user-invoked command. A second global lock-timeout constant for the edit-hook
+path — the deadline is a per-call parameter and that path has no caller yet.
+
+### Phase 3b — Claims, scopes, and overlap  · status: todo
 
 #### Work Order
 
@@ -184,111 +255,31 @@ Overlap is **path-component ancestry, not string prefix**: `crates/hana_kana` mu
 
 Claims are validated **lexically, never through the filesystem** (R48): UTF-8, repo-relative, `/` separators, no empty / `.` / `..` component, no `.git`, no absolute input, and lexically contained by the repository. **A path that does not exist yet is valid** — Work Orders routinely reserve the files and directories they are about to create, and requiring existence would reject the most common claim there is. `ScopeKind` carries the declared `file`-versus-`tree` meaning; it is not inferred from what is on disk. The set then reduces to a minimal antichain (drop any scope contained by another in the same claim).
 
-**Provenance travels on the command line.** Phase 1 froze `claim <paths>... [--before|--after|--defer|--override <blocker>] [--why <text>]`, which gives the engine no way to receive the things this phase's own rejection message has to name — the holder's plan and phase — nor the phase-start snapshot drift needs later. Add, as **additive optional flags** so every track-B parser written against phase 1 keeps working: `--plan <text>`, `--phase <text>`, `--run <coordination-run-id>`, and `--head <oid>` recording the commit the phase started from. These are opaque strings the engine stores and reports; `cargo-berth` still parses no Work Order and knows no phase numbering. **`check` needs nothing new** — self-recognition comes from the worktree's own minted `WorktreeId` (phase 2), not from an id the caller asserts, which is the whole point of R39's opaque identity.
+**Provenance travels on the command line.** Phase 1 froze `claim <paths>... [--before|--after|--defer|--override <blocker>] [--why <text>]`, which gives the engine no way to receive the things this phase's own rejection message has to name — the holder's plan and phase — nor the phase-start snapshot drift needs later. Add, as **additive optional flags** so every track-B parser written against phase 1 keeps working: `--plan <text>`, `--phase <text>`, `--run <coordination-run-id>`, and `--head <oid>` recording the commit the phase started from. They are opaque to the *domain* — `cargo-berth` still parses no Work Order and knows no phase numbering — but they do not stay raw strings past the parser. At the clap boundary, paired `--plan`/`--phase` become `ClaimSource::WorkPlan { WorkPlanReference, WorkPlanPhase }` and an unpaired one is a usage error; `--run` becomes a UUID-v7 `CoordinationRunId`; `--head` becomes `ProtectedPhaseStartHead`. No engine request retains an `Option<T>` or a raw provenance string. Phase 1's `--why` is optional while phase 3's `ReservationPurpose` is non-empty, so refine it before the first claim into `ReservationPurpose::{Explained(NonEmptyReservationPurpose), NotProvidedByCaller}` — never a placeholder string. `check` takes no new flag: it resolves the acting run from the environment through phase 3's `EditAuthorization`, not from an id the caller asserts.
 
 Acquisition is a single locked transaction (R13): acquire lock → replay → compute overlap against all live foreign reservations → on conflict **reject before appending** (exit `1`, naming holder, branch, plan, phase, reason in the typed payload, not in prose) → otherwise mint `ReservationId`, append, publish.
 
-`check <paths>` runs tier 1 only and returns the JSON envelope without mutating.
+**`check` cannot go through `transact`.** `Ledger::transact` always acquires `mutation.lock` and may publish a rebuilt projection even on the reject path, and `Ledger::open` runs git discovery — but phase 13's pre-edit hook calls `check` on every edit and "must make no git call". So add a crate-visible `Ledger::read_for_edit_check` that locates the ledger by walking the filesystem rather than shelling out to git, never acquires the lock and never truncates, appends, or publishes, and returns a validated replay snapshot. An absent or behind projection is answered from read-only journal truth; an ahead or corrupt one returns no facts rather than repairing anything. `check <paths>` then runs tier 1 only and returns the JSON envelope without mutating. It resolves the acting run through phase 3's `EditAuthorization`, never from an id the caller asserts.
 
-**The ledger has no usable transaction surface yet.** Phase 2 shipped
-`Ledger::append_operation`, which takes an already-built operation, and keeps the
-held transaction and the replayed state private — so overlap cannot be computed
-under the same lock that appends. This phase adds that surface before it adds a
-verb: a semantic transaction that exposes the replayed live reservations to a
-validation step and appends only if that step approves, an open path that attaches
-to an existing ledger without initializing missing state, and a projection reader
-validated against the generation and byte offset it replayed from. `ledger/mod.rs`,
-`ledger/journal.rs`, and `ledger/projection.rs` are therefore this phase's files
-too.
-
-**`ScopeKind` must survive the whole path from command line to journal.**
-`ClaimArguments` currently parses undifferentiated paths and `JournalOperation::Claim`
-stores a bare `Vec<ReservationScopePath>`, so the declared file-versus-tree meaning is
-lost before the engine sees it. Both ends carry the kind, and the same spelling
-claimed as a file and as a tree are different claims.
-
-**The claim record must carry everything later phases replay from it.** Phase 4
-needs the trunk commit at claim time and the branch and head snapshot; phase 5
-needs the canonical worktree root and its administrative locator; phase 9 needs
-the phase-start head. `ClaimSource::WorkPlan.phase` is `u32` today and must become
-the opaque text this phase's own Spec promises. These go in before the first claim
-is ever written, because a journal is append-only and a record written without them
-cannot be repaired later.
-
-**`ReservationScopePath` does not yet enforce the rules above.** Phase 2's
-constructor accepts `.` components and `.git`. Tightening it is this phase's work,
-along with a test proving each rejected form.
-
-**Lock contention is now user-visible.** `MutationLock::acquire` blocks forever.
-R43 requires bounded retries, so acquisition gets a timeout whose failure is a
-distinct, fact-free, actionable outcome naming no resource state. The plan's "no
-lock diagnosis in v1" stands: R43's `sync doctor --lock` direction is **not** in
-v1, and the timeout message is the whole surface.
-
-**An oversized record is a user error, not a broken ledger.** `RecordTooLarge`
-must reject the claim as correctable input — too many scopes, or an overlong
-provenance or reason — and must not be reported as an unreadable ledger.
-
-**Journal payload primitives owe the type-design contract.** Bare `String`
-reasons, a generic `GitObjectId` standing in for values with different
-guarantees, and possibly-empty `Vec`s for footprints and scope sets all make the
-caller infer what the type should state. Introduce the role-specific types this
-phase first needs — a reservation purpose, a protected phase-start head, a
-non-empty scope set — rather than deferring them past the first write.
+**`claim` owns the coordination-run marker.** Phase 3 made `EditAuthorization` fall back to the `cargo-berth-run-id` file in the worktree administrative directory when `CARGO_BERTH_RUN` is unset, but nothing writes it yet. A successful `claim` atomically publishes that marker in the recorded administrative directory before reporting success; a rejected or failed claim removes only the value this attempt wrote, never a newer one another run published.
 
 `release` is **not** in this phase. It cannot be: a release records `Outstanding { protected_tip }` against a retention ref, and the protected tip, the retention ref, and the `Outstanding` state are all defined by phase 4. Phase 4 owns `release` end to end — its behavior, its CLI dispatch, its output status, and its tests.
 
 **Files:**
 
-- `crates/cargo-berth/src/scope/mod.rs` — `ScopeKind`, `ReservationScope`, lexical normalization, `core.ignoreCase` handling.
+- `crates/cargo-berth/src/scope/mod.rs` — case-aware component overlap and `core.ignoreCase` handling. Phase 3 already shipped `ScopeKind`, `ReservationScope`, and `ReservationScopeSet` in `ledger/journal.rs`; move or re-export that one definition, never write a second.
 - `crates/cargo-berth/src/scope/antichain.rs` — containment, minimal-antichain reduction.
-- `crates/cargo-berth/src/reservation/mod.rs` — the reservation record and its journal operations.
+- `crates/cargo-berth/src/reservation/mod.rs` — derive live reservation state by replaying `JournalOperation` from `ReplayedLedgerState::events()`. Phase 3 shipped the claim record; do not create a second one.
+- `crates/cargo-berth/src/ledger/{mod,journal}.rs` — **exist**; the read-only check surface and the scope types being relocated.
 - `crates/cargo-berth/src/verb/{claim,check}.rs` — the two verbs.
-- `crates/cargo-berth/src/cli.rs` — **exists**; add the four provenance flags to `claim` and dispatch both verbs into the engine.
+- `crates/cargo-berth/src/cli.rs` — **exists**; add the provenance flags to `claim` and dispatch both verbs into the engine.
 - `crates/cargo-berth/src/output.rs` — **exists**; the blocked-claim payload variant.
 - `crates/cargo-berth/src/main.rs` — **exists**; owns the `mod` list.
-- `crates/cargo-berth/src/ledger/mod.rs` — **exists**; the semantic transaction that validates before appending, and the open-existing path.
-- `crates/cargo-berth/src/ledger/journal.rs` — **exists**; the claim record's real payload and its role-specific types.
-- `crates/cargo-berth/src/ledger/projection.rs` — **exists**; the generation- and offset-validated reader.
-- `crates/cargo-berth/src/ledger/lock.rs` — **exists**; the acquisition timeout.
-- `crates/cargo-berth/src/ids.rs` — **exists**; tighten `ReservationScopePath`, and make the work-plan phase opaque text.
-- `crates/cargo-berth/tests/overlap.rs` — the overlap matrix.
+- `crates/cargo-berth/tests/overlap.rs` — the overlap matrix, driving the **built binary**. `cargo-berth` is a binary crate, so an integration test cannot reach `pub(crate)` items; crate-private transaction coverage stays in unit tests.
 
-**Constraints from prior phases:** Phase 2 provides the locked transaction wrapper in `src/ledger/lock.rs`, the complete journal union in `src/ledger/journal.rs`, the repo config in `src/config.rs`, the git helper in `src/git/`, and the typed envelope payload in `src/output.rs`. Every mutation must run inside that wrapper. Phase 1 shipped `src/cli.rs`, which owns all dispatch and currently discards its parsed arguments, and `src/ids.rs`, whose `ReservationId` phase 2 made a validated UUID v7. Exit `1` is overlap-blocked. Name the scope type for the role it plays — a bare `Scope` says nothing about what is scoped. The fact-free failure contract is inherited, not restated: any command that cannot read the ledger exits `4` with `payload.kind = no_facts`, empty reservation fields, and a diagnostic message — a mutation that hits it establishes nothing. Reuse phase 2's repository-root resolution so a verb run from a nested directory finds the same ledger. `GitObjectId` guarantees a 40- or 64-character hex oid; do not re-validate width at call sites.
+**Constraints from prior phases:** Phase 3 provides `Ledger::transact(worktree_id, coordination_run_id, validate)` where `validate: FnOnce(ReplayedLedgerState<'_>) -> TransactionValidation<Rejection>` returns `TransactionValidation::{Append, Reject}` and the call yields `LedgerTransactionOutcome::{Appended, Rejected}`. It takes the mutation lock itself, applying `MUTATING_VERB_CONTENTION_TOLERANCE` internally — do not acquire or time the lock at the call site. `ReplayedLedgerState` exposes `events()`, `generation()`, and `journal_end_offset()`; it supplies raw `JournalEvent`s, **not** pre-computed live reservations, so this phase replays them into reservation state itself. Overlap runs inside `validate`, and a rejected claim therefore appends nothing by construction. Phase 3 also provides the claim record's real payload with per-path `ScopeKind`, tightened `ReservationScopePath` (so this phase validates no paths itself), the lock timeout, and `EditAuthorization`, which is how `check` recognizes its own run. Phase 1 shipped `src/cli.rs`, which owns all dispatch and currently discards its parsed arguments. Exit `1` is overlap-blocked. Name the scope type for the role it plays — a bare `Scope` says nothing about what is scoped.
 
-**Acceptance gate:** `verify.sh test cargo-berth` green, including: `crates/hana_kana` does not overlap `crates/hana_kana_extra`; a file claim inside a foreign tree claim blocks; two claims differing only in case both block when `core.ignoreCase` is set; a claim reduces to its antichain; a rejected claim appends **nothing** to the journal; **a claim on a path that does not exist yet succeeds**, and one escaping the repository via `..` or an absolute path is rejected; a claim naming `Cargo.toml` blocks a foreign claim on it like any other path. Exit `1` is asserted end to end: the process exit status, the envelope's `exit_code`, the semantic status, and the payload naming the holding branch, plan, and phase all agree, and the message tells the user what to do next. `claim` and `check` no longer return `unimplemented` in either output mode. Also `verify.sh test cargo-berth overlap` and `verify.sh test cargo-berth ledger` green, including: the same spelling claimed as a file and as a tree behaves differently where the distinction matters; a scope path containing `.` or `.git` is rejected; a claim record round-trips every field phases 4, 5, and 9 replay from it; a second writer holding the lock makes acquisition time out with an actionable message and no resource facts; an oversized claim is rejected as correctable input rather than as an unreadable ledger; and a claim appended before its projection is published is still visible to the next reader.
-
-**Pending decision: what identifies the coordination run that is allowed to edit**
-
-Actual problem:
-A reservation must block foreign writers while permitting its own. This phase's Spec says `check` needs nothing new because self-recognition comes from the worktree's own minted `WorktreeId`. That is not enough to tell two agent sessions working in the same worktree apart, so either they both count as the holder — and the reservation protects nothing against the second one — or neither does, and the holder is blocked by its own claim. The pre-edit hook in phase 13 is what will actually ask this question, and it runs in a delegated session that did not make the claim.
-
-What exists now:
-- `src/ledger/journal.rs` — `JournalActor` always carries a `CoordinationRunId`, so the journal can already record who acted.
-- `src/cli.rs` — this phase adds `--run <coordination-run-id>` to `claim` as an optional flag; `check` takes no caller context at all.
-- Phase 13's spec — the shim decides `Edit`, `Write`, and `NotebookEdit` from a JSON payload on stdin, in whatever process the delegated agent runs in.
-- Phases 14, 15, and 17 all assume the answer without naming it.
-
-What should change:
-- Either **the caller asserts its run**: `check` and the hook shim take `--run`, and every launcher that delegates work is responsible for propagating the id into the delegated environment. Simple and explicit; wrong or missing propagation silently downgrades to worktree-level recognition.
-- Or **the run is discovered from the environment**: the coordination run writes a marker the shim reads (an environment variable set at delegation, or a file under the worktree's administrative directory), so nothing has to thread a flag through five phases. Harder to spoof accidentally; needs one owner for the marker's lifetime and cleanup.
-
-Either way the choice is one semantic type — an edit-authorization context naming the active run and the reservation it may write under — and it has to be settled here, because phases 3, 13, 14, 15, and 17 all encode it.
-
-**Pending decision: whether this phase still fits in one phase**
-
-Actual problem:
-Phase 3 was scoped as "claims, scopes, and overlap". Reviewing it against what phase 2 actually shipped added the ledger transaction surface, the open-existing path, a validated projection reader, `ScopeKind` propagation end to end, the real claim-record payload, `ReservationScopePath` tightening, a lock-acquisition timeout, oversized-record classification, and the first role-specific payload types — all before either verb is written.
-
-What exists now:
-- This Work Order's **Files** list names eleven files, six of them phase 2's.
-- The acceptance gate now spans three test targets.
-
-What should change:
-- Either **keep it whole**, because every item is a prerequisite of the first `claim` and splitting means the seam falls between "the ledger can transact" and "a verb transacts", which is a seam one session would cross anyway.
-- Or **split it**: a phase 3 that finishes the ledger's transaction surface, payload types, and path validation with no verb, and a phase 3b that adds `claim`, `check`, and the overlap engine on top. Two smaller dispatches, two gates, at the cost of one extra checkpoint.
-
-Recommendation: split. The first half is provably done by tests that never invoke a verb, and a phase that fails its gate after eleven files is far more expensive to diagnose than two that fail after five.
+**Acceptance gate:** `verify.sh test cargo-berth` green, including: `crates/hana_kana` does not overlap `crates/hana_kana_extra`; a file claim inside a foreign tree claim blocks; two claims differing only in case both block when `core.ignoreCase` is set; a claim reduces to its antichain; a rejected claim appends **nothing** to the journal; **a claim on a path that does not exist yet succeeds**, and one escaping the repository via `..` or an absolute path is rejected; a claim naming `Cargo.toml` blocks a foreign claim on it like any other path. Exit `1` is asserted end to end: the process exit status, the envelope's `exit_code`, the semantic status, and the payload naming the holding branch, plan, and phase all agree, and the message tells the user what to do next. `claim` and `check` no longer return `unimplemented` in either output mode. Also `verify.sh test cargo-berth overlap` green, including: the same spelling claimed as a file and as a tree behaves differently where the distinction matters; and a second session in the same worktree is blocked by a claim it did not make, while the claiming run is not. Also: `check` succeeds with `git` unavailable on `PATH` and leaves `journal.ndjson`, `reservations.json`, and `mutation.lock` byte-identical; a successful `claim` publishes `cargo-berth-run-id` and a rejected one leaves a newer marker written by another run untouched; an unpaired `--plan` or `--phase` is a usage error; a claim with no `--why` records `NotProvidedByCaller` rather than placeholder text; and each rejection tells the user what to do — correct the path, reduce the scopes or provenance for `RecordTooLarge`, wait and retry for lock contention — with the journal unchanged in every case.
 
 ### Phase 4 — Reservation lifecycle and git evidence  · status: todo
 
@@ -305,7 +296,7 @@ Recommendation: split. The first half is provably done by tests that never invok
 - `ReservationLifecycle::{Active, Outstanding { protected_tip }, Released { disposition }}` — how far the work has progressed. `Active` carries **no** protected tip, which is what makes it block unconditionally; the variant, not an `Option`, is what says so. There is no `CommitOid` type — phase 2 shipped `GitObjectId`, which already guarantees a 40- or 64-character hex oid. The protected tip is its own role-specific type wrapping one, not a bare `GitObjectId`.
 - `IntegrationEvidenceStatus::{NotIntegrated, Integrated { trunk_oid }, TrunkRewritten, ObjectUnknown }` — what the current trunk says, **derived on every stateful check and never stored as terminal** (R41).
 - `WorktreeLiveness::{Live, Unavailable, OrphanCandidate, Orphaned, Unknown}` — whether the holder still exists. **Phase 5 owns this**; it is not a lifecycle variant, and `Orphaned` never belonged in a progress enum.
-- `ReleaseDisposition::{Integrated, RewrittenIntegration, Abandoned}` (R51) — what the user decided. `Abandoned` and orphan retirement **require user confirmation** (R28); nothing reaches them automatically.
+- `ReleaseDisposition::{Integrated, RewrittenIntegration, Abandoned, RetiredOrphan}` (R51) — what the user decided. Phase 3 shipped all four variants as unit variants; refine them in place so each carries exactly its own evidence and nothing else: `RewrittenIntegration(RewrittenIntegrationTrunkCommit)`, `Abandoned(AbandonmentReason)`, `RetiredOrphan(OrphanRetirementReason)`, and `Integrated` carrying nothing. `Abandoned` and `RetiredOrphan` **require user confirmation** (R28); nothing reaches them automatically. `RetiredOrphan` is reachable only through phase 5's `resolve --retire-orphan --why`, and must stay distinguishable from a deliberate `Abandoned` after replay.
 
 At checkpoint, `release` records `Outstanding { protected_tip }` where `protected_tip` is the branch tip at that moment, and writes a retention ref `refs/cargo-berth/reservations/<id>` so the commit survives branch deletion and gc (R57). Resnapshot updates it; it is held until every dependent successor is terminal.
 
@@ -334,7 +325,7 @@ git merge-base --is-ancestor "$protected_tip" "$trunk_oid"    # integration
 - `crates/cargo-berth/src/main.rs` — **exists**; owns the `mod` list.
 - `crates/cargo-berth/tests/lifecycle.rs` — scratch-repo lifecycle and rewrite tests.
 
-**Constraints from prior phases:** Phase 3 implements `claim` and `check` and deliberately leaves `release` to this phase — its CLI dispatch is still the phase-1 `unimplemented` path. Phase 2's transaction wrapper, complete journal union, typed envelope payload, and `src/git/constants.rs` naming convention bind. All reservation records carry the UUID-v7 `ReservationId` phase 2 validated. Phase 2 already ships `ReservationSnapshot` and `ReleaseDisposition` — refine those single definitions in place, never create a second. `JournalOperation::Release` currently pairs a disposition with an unrelated `String`, so a rewritten integration loses the verified trunk oid while an ordinary one is forced to carry a meaningless reason. Restructure it into variants that each carry exactly their own evidence: the verified trunk oid for a rewritten integration, a required reason for an abandonment, and nothing for an ordinary one.
+**Constraints from prior phases:** Phase 3b implements `claim` and `check` and deliberately leaves `release` to this phase — its CLI dispatch is still the phase-1 `unimplemented` path. Phase 2's transaction wrapper, complete journal union, typed envelope payload, and `src/git/constants.rs` naming convention bind. All reservation records carry the UUID-v7 `ReservationId` phase 2 validated. Phase 2 already ships `ReservationSnapshot` and `ReleaseDisposition` — refine those single definitions in place, never create a second. `JournalOperation::Release` currently pairs a disposition with an unrelated `String`, so a rewritten integration loses the verified trunk oid while an ordinary one is forced to carry a meaningless reason. Restructure it into variants that each carry exactly their own evidence: the verified trunk oid for a rewritten integration, a required reason for an abandonment, and nothing for an ordinary one.
 
 **Acceptance gate:** `verify.sh test cargo-berth` green, including: a checkpoint writes a retention ref and the commit survives deleting its branch and running `git gc --prune=now`; an `Active` reservation blocks and the type makes its missing protected tip unrepresentable rather than absent; `Integrated` reverts to blocking after `git reset --hard` removes the tip from trunk; a rebase + resnapshot updates the tip and the ref; `release` no longer returns `unimplemented` in either output mode, and its process exit status, envelope `exit_code`, and semantic status agree.
 
@@ -350,7 +341,11 @@ Typed liveness from `git worktree list --porcelain` plus the opaque `WorktreeId`
 
 One shared `reconcile()` routine, called at SessionStart, before every stateful verb, and before checkpoint and integration — **not** on board read alone (R62). The edit-hook path never calls it except one retry when the projection already says block.
 
-**The recovery verbs.** Phase 2 declared `resolve` and `renew` and left them `unimplemented`; their engines land here, beside the alerts and liveness verdicts they answer. `resolve --recovered` rebinds the reservation to the worktree the command runs in, appending phase 2's rebinding operation — this is the path for work recovered into a *new* worktree, which reconciliation cannot detect on its own because the recorded `WorktreeId` no longer matches. `resolve --integrated-as <trunk-oid>` appends `release` with `ReleaseDisposition::RewrittenIntegration`, and validates first: the oid must resolve in this repository and be reachable from trunk, so a typo or a commit from an unrelated branch is a usage error rather than a false all-clear. `resolve --abandon --why <text>` appends `release` with `Abandoned`, stores the reason, and is the only route to that disposition (R28). `renew` appends the activity record R29 derives freshness from. All four run inside phase 2's mutation lock, and each stops the alert only as a consequence of the state it recorded — never by marking the alert itself.
+**Reconcile sweeps the coordination-run markers.** Phase 3b's `claim` publishes `cargo-berth-run-id` and phase 4's `release` removes it, so a crash between them leaves a marker naming a run with no live reservation — and phase 3's `EditAuthorization` would then hand a foreign session the holder's own identity. `reconcile` removes a malformed marker, and one whose administrative locator has no matching active reservation, while preserving a live match untouched.
+
+**`CacheAhead` gets an explicit recovery command.** Phase 3 denies a projection claiming a newer generation or more journal bytes than the journal holds, which is right — silently overwriting it would destroy the evidence that something is wrong — but every ledger-opening verb can then fail with no action the user can take. Add the additive optional flag `cargo-berth init --repair-projection`: it takes the lock, removes and rebuilds only `reservations.json` from journal truth, and leaves `journal.ndjson` byte-identical. The `CacheAhead` message names it. Nothing repairs the cache implicitly.
+
+**The recovery verbs.** Phase 2 declared `resolve` and `renew` and left them `unimplemented`; their engines land here, beside the alerts and liveness verdicts they answer. `resolve --recovered` rebinds the reservation to the worktree the command runs in, appending phase 2's rebinding operation — this is the path for work recovered into a *new* worktree, which reconciliation cannot detect on its own because the recorded `WorktreeId` no longer matches. `resolve --integrated-as <trunk-oid>` appends `release` with `ReleaseDisposition::RewrittenIntegration`, and validates first: the oid must resolve in this repository and be reachable from trunk, so a typo or a commit from an unrelated branch is a usage error rather than a false all-clear. `resolve --abandon --why <text>` appends `release` with `Abandoned`, stores the reason, and is the only route to that disposition (R28). `resolve --retire-orphan --why <text>` is the one route to `RetiredOrphan`, is never reached automatically, and stays distinguishable from a deliberate abandonment after replay. `release` also compare-removes the `cargo-berth-run-id` marker phase 3b's `claim` published — only when it still names that reservation's run and no other active reservation for that run remains. `renew` appends the activity record R29 derives freshness from. All four run inside phase 2's mutation lock, and each stops the alert only as a consequence of the state it recorded — never by marking the alert itself.
 
 `OrphanedOutstanding` alert: durable, re-shown until the user records recovery, integration, or approved abandonment. Reports reservation id, protected tip, branch-ref status, object availability, retention ref, and one of `RecoverableFromBranch` / `RecoverableFromProtectedTip` / `CommitUnavailable`. "Commits are lost" must be earned, not assumed.
 
@@ -358,7 +353,8 @@ One shared `reconcile()` routine, called at SessionStart, before every stateful 
 
 - `crates/cargo-berth/src/worktree/liveness.rs` — the porcelain parse and `WorktreeLiveness`.
 - `crates/cargo-berth/src/worktree/identity.rs` — same-owner validation against the minted identity.
-- `crates/cargo-berth/src/reconcile.rs` — the shared routine and its call sites.
+- `crates/cargo-berth/src/reconcile.rs` — the shared routine, the marker sweep, and its call sites.
+- `crates/cargo-berth/src/ledger/{mod,projection.rs}` — **exist**; the `--repair-projection` rebuild path and the `CacheAhead` message that names it.
 - `crates/cargo-berth/src/alert.rs` — durable alerts.
 - `crates/cargo-berth/src/recovery.rs` — the `resolve` and `renew` engines and their disposition validation.
 - `crates/cargo-berth/src/cli.rs` — **exists**; wire `resolve` and `renew` to their engines. The verbs, their flags, and their help text are phase 2's and do not change here.
@@ -367,7 +363,7 @@ One shared `reconcile()` routine, called at SessionStart, before every stateful 
 
 **Constraints from prior phases:** Phase 4 supplies `protected_tip`, retention refs, and reachability; recoverability verdicts are computed from them. `WorktreeLiveness` is **this phase's type**, deliberately kept out of phase 4's lifecycle enum — whether a holder still exists is orthogonal to how far its work progressed. Phase 2 mints the opaque `WorktreeId` into the administrative directory and owns `RepoInstanceId`; this phase validates repo instance, current administrative directory, its backlink, and the recorded root before granting same-owner status (R39). Phase 2's lock wraps every append reconcile makes. Phase 2's recovery-surface decision resolved to two verbs. Phase 2 declares and parses `resolve` and `renew`, adds their `CommandVerb` variants and `--help` long forms, and adds the worktree-rebinding journal operation `--recovered` needs; **this phase writes their engines** and adds no wire surface. `ReleaseDisposition::{RewrittenIntegration, Abandoned}` and the rebinding operation all exist by the time this phase starts — do not add a journal variant. Phase 2 ships `WorktreeIdentity` with only an id and a kind, and the journal's only relocation operation is `RebindWorktree`, which changes identity. R39 requires a moved worktree to keep its identity while its recorded root is updated under the lock, so this phase owns a same-identity relocation transition distinct from a rebind. Collapse phase 1's `ResolveArguments` — a bool plus two `Option<String>`s — into one domain request built at the clap boundary, so an impossible combination cannot reach the engine.
 
-**Acceptance gate:** `verify.sh test cargo-berth` green, including: an `rm -rf`'d-but-unpruned worktree classifies `OrphanCandidate` and keeps blocking; a pruned one classifies `Orphaned` and still keeps its scopes; a locked worktree is `Unavailable`; no path reaches `Abandoned` without explicit confirmation; an `OrphanedOutstanding` alert survives a process restart and reports the right recoverability verdict for a surviving branch, a deleted branch with a retention ref, and neither; `resolve --recovered` run from a replacement worktree rebinds the reservation and stops the alert; `resolve --integrated-as` rejects an oid unreachable from trunk and accepts one reachable from it; `resolve --abandon --why` is the only route to `Abandoned` and its reason survives replay; `renew` refreshes freshness without touching scopes or edges; and replaying each recovery verb from a deleted projection reproduces the same state. Also: a ledger copied into a different repository is rejected on its `RepoInstanceId` rather than silently adopted; a worktree whose administrative directory was swapped for another repository's is refused; and a worktree moved on disk keeps its identity while its recorded root is updated.
+**Acceptance gate:** `verify.sh test cargo-berth` green, including: an `rm -rf`'d-but-unpruned worktree classifies `OrphanCandidate` and keeps blocking; a pruned one classifies `Orphaned` and still keeps its scopes; a locked worktree is `Unavailable`; no path reaches `Abandoned` without explicit confirmation; an `OrphanedOutstanding` alert survives a process restart and reports the right recoverability verdict for a surviving branch, a deleted branch with a retention ref, and neither; `resolve --recovered` run from a replacement worktree rebinds the reservation and stops the alert; `resolve --integrated-as` rejects an oid unreachable from trunk and accepts one reachable from it; `resolve --abandon --why` is the only route to `Abandoned` and its reason survives replay; `renew` refreshes freshness without touching scopes or edges; and replaying each recovery verb from a deleted projection reproduces the same state. Also: a ledger copied into a different repository is rejected on its `RepoInstanceId` rather than silently adopted; a worktree whose administrative directory was swapped for another repository's is refused; and a worktree moved on disk keeps its identity while its recorded root is updated. Also: a marker left by a crashed run with no active reservation is swept while a live one is preserved; a generation-ahead projection and an offset-ahead projection each report `--repair-projection`, recover through it, and leave `journal.ndjson` byte-identical; and before recovery phase 13's pre-edit hook still fails open on exit `4`.
 
 ### Phase 6 — Overlap answers  · status: todo
 
@@ -383,20 +379,21 @@ Surface: `claim <paths> --before|--after|--defer|--override <blocker> --why <tex
 
 All three permissive answers **require user authorization** (R54) — the CLI returns exit `3` with the material the caller needs to escalate: both plans and phases, the shared paths, the direction, the reason, the consequence. `rescope` needs none.
 
-Each answer stores both `ReservationId`s, the **normalized overlap antichain at the moment it was given**, and both `Generation`s (R55). Suppression covers only that recorded set. A widen recomputes the intersection and re-blocks anything uncovered. An answer is never transitive to a third reservation, and a new `ReservationId` never inherits one.
+The enclosing `Claim` or `Widen` already supplies the requester's identity, so the answer does not repeat it. Phase 3 shipped `AuthorizedOverlap { reservation_id, reservation_revision, scopes }`: each answer stores the **holder's** `ReservationId`, the holder's `ReservationRevision` at the moment the answer was given, and the **normalized overlap antichain at that moment** (R55) — no requester generation is stored, matching phase 2's ruled-out decision. Refine the two possibly-empty vectors before first use: `ConflictAuthorization` carries a non-empty `AuthorizedOverlapSet`, and each `AuthorizedOverlap` a non-empty `AuthorizedOverlapScopeSet`. Suppression covers only that recorded set. A widen recomputes the intersection and re-blocks anything uncovered. An answer is never transitive to a third reservation, and a new `ReservationId` never inherits one.
 
 `Defer` unblocks editing and **holds both reservations at integration** until an order exists (R56). It is not `Override` with a nicer name.
 
 **Files:**
 
 - `crates/cargo-berth/src/answer/mod.rs` — `ConflictAuthorization`, the escalation payload.
-- `crates/cargo-berth/src/answer/scope_binding.rs` — antichain + generation binding, re-evaluation on widen.
+- `crates/cargo-berth/src/answer/scope_binding.rs` — antichain + holder-revision binding, re-evaluation on widen.
+- `crates/cargo-berth/src/ledger/journal.rs` — **exists**; refine `AuthorizedOverlap` and `ConflictAuthorization` into their non-empty set types in place.
 - `crates/cargo-berth/src/verb/claim.rs` — extend with the four flags.
 - `crates/cargo-berth/src/cli.rs` — **exists**; the flags parse here today into four separate `Option<ReservationId>` fields plus an optional reason.
 - `crates/cargo-berth/src/output.rs` — **exists**; the escalation payload variant.
 - `crates/cargo-berth/tests/answers.rs`
 
-**Constraints from prior phases:** Phase 3's acquisition transaction is where the payload lands — extend it, do not add a second path. Phase 3's antichain reduction computes the recorded overlap set. Exit `3` from phase 1 is needs-authorization. **Collapse clap's option bag at the boundary.** Phase 1 shipped `claim`'s resolution as four mutually exclusive `Option<ReservationId>` fields guarded by a clap `ArgGroup`, plus a separate optional reason — a shape that lets the parser hand the engine four `None`s, or an `Override` with no reason, and forces every consumer to re-derive which answer was actually given. Convert it once, where clap's types end, into one semantic authorization request that makes the direction and its required reason inseparable; the engine sees only that type. Do the same for `Reason` and `Timestamp` if they appear here — name them for the role they play (why an overlap was authorized; when a journal event occurred), not for what they are made of. Phase 2 already ships `ConflictAuthorization`, `AuthorizedOverlap`, and `OrderingDirection`, and every verb-keyed `OutputPayload` variant exists as `PendingPayload`. Move, expose, or refine those definitions; do not introduce a second one alongside.
+**Constraints from prior phases:** Phase 3's validating transaction is where the payload lands — extend it, do not add a second path. Phase 3b's antichain reduction computes the recorded overlap set. Exit `3` from phase 1 is needs-authorization. **Collapse clap's option bag at the boundary.** Phase 1 shipped `claim`'s resolution as four mutually exclusive `Option<ReservationId>` fields guarded by a clap `ArgGroup`, plus a separate optional reason — a shape that lets the parser hand the engine four `None`s, or an `Override` with no reason, and forces every consumer to re-derive which answer was actually given. Convert it once, where clap's types end, into one semantic authorization request that makes the direction and its required reason inseparable; the engine sees only that type. Do the same for `Reason` and `Timestamp` if they appear here — name them for the role they play (why an overlap was authorized; when a journal event occurred), not for what they are made of. Phase 2 already ships `ConflictAuthorization`, `AuthorizedOverlap`, and `OrderingDirection`, and every verb-keyed `OutputPayload` variant exists as `PendingPayload`. Move, expose, or refine those definitions; do not introduce a second one alongside.
 
 **Acceptance gate:** `verify.sh test cargo-berth` green, including: answering a first collision succeeds in one transaction and a crash between validate and append leaves no reservation and no answer; a widen into a path the answer never covered re-blocks; an answer between A and B does not authorize A against C; `Defer` permits both edits and blocks both integrations; every permissive answer returns exit `3` with the full escalation payload — process exit status, envelope `exit_code`, semantic status, and the user-facing recovery message all agreeing.
 
@@ -411,7 +408,7 @@ What exists now:
 - Phase 14's spec — "on exit `3` the skill escalates to the user ... and only then re-invokes `claim` with the chosen flag", which is the same command again.
 
 What should change:
-- Either a **proposal/apply protocol**: the first invocation returns exit `3` with a proposal token bound to the exact overlap antichain and generations it was shown, and only an invocation carrying that token applies the answer. The token is evidence the user saw the specific conflict, and it dies when the overlap changes.
+- Either a **proposal/apply protocol**: the first invocation returns exit `3` with a proposal token bound to the exact holder revisions, overlap antichain, and candidate request and replay point it was shown, and only an invocation carrying that token applies the answer. The token is evidence the user saw the specific conflict, and it dies when the overlap changes.
 - Or a **one-use approval capability**: the escalation path mints a credential out of band that the next `claim` consumes, with the engine trusting the credential rather than the argument shape.
 - Either way, a test must prove that a bare `cargo-berth claim --override` from a shell cannot land an authorized overlap.
 
@@ -539,7 +536,7 @@ A widen re-evaluates every existing answer against the new scopes (phase 6) — 
 - `crates/cargo-berth/src/main.rs` — **exists**; owns the `mod` list.
 - `crates/cargo-berth/tests/drift.rs`
 
-**Constraints from prior phases:** Phase 6's scope binding must be re-run on every widen. Phase 3's antichain reduction normalizes the widened set, and its `--head` flag supplied the phase-start snapshot this fingerprint diffs against. Phase 2's typed payload carries the classification back to the hook — the shim reads structured fields, never prose. `output.rs` no longer has a hand-written encoder — phase 2 deleted `unimplemented_json` and the test pinning the two encoders together when a real payload replaced the placeholder. Extend the frozen-surface tests through serde alone.
+**Constraints from prior phases:** Phase 6's scope binding must be re-run on every widen. Phase 3b's antichain reduction normalizes the widened set and its `--head` flag supplies the phase-start snapshot this fingerprint diffs against; phase 3 stores that snapshot as `ProtectedPhaseStartHead`. **`JournalOperation::Widen` must be reshaped before its first use.** Phase 3 shipped it with `added_scopes: Vec<ReservationScopePath>`, which loses the `ScopeKind` the claim record carries and permits an empty domain-owned set, and `WidenCause::Drift` duplicates the same paths a second time. The journal is append-only, so the first drift widen would freeze both defects in. Replace `added_scopes` with a non-empty `ReservationScopeAdditionSet` of complete `ReservationScope`s — drift-created entries are `ScopeKind::File` — and reduce `WidenCause` to the cause-specific evidence alone, with no second path vector. Add `crates/cargo-berth/src/ledger/journal.rs` to this phase's **Files**; it exists. Phase 2's typed payload carries the classification back to the hook — the shim reads structured fields, never prose. `output.rs` no longer has a hand-written encoder — phase 2 deleted `unimplemented_json` and the test pinning the two encoders together when a real payload replaced the placeholder. Extend the frozen-surface tests through serde alone.
 
 **Acceptance gate:** `verify.sh test cargo-berth` green, including one scratch-repo case per table row, an untracked new file counting as changed, a timed assertion that the fingerprint path makes no `cargo metadata` or `rev-list` call, and the phase-1 surface tests extended to `drift` under both spellings. `drift` returns a real status, never `unimplemented`, with process status, envelope `exit_code`, and semantic status agreeing.
 
@@ -553,7 +550,7 @@ A widen re-evaluates every existing answer against the new scopes (phase 6) — 
 
 **A DAG is a partial order; never render a numbered queue.** Sections: **Ready now** (no unsatisfied predecessors), **Waiting** (each predecessor named, with the covered paths), **Unresolved overlaps**, **Unconstrained live reservations**, and alerts (orphaned-outstanding, bypassed edges with reason and date, stale flags). Ties within a readiness level are labelled unordered. With no edges recorded it says **"no integration order declared"** — never an empty queue, which reads as an all-clear.
 
-Also per-reservation: holder worktree, branch, plan, phase, scopes, stage, and ahead/behind vs `main` computed live and never stored.
+Also per-reservation: holder worktree, branch, plan, phase, scopes, `ReservationLifecycle`, current `IntegrationEvidenceStatus`, `WorktreeLiveness`, any `ReleaseDisposition`, and ahead/behind vs `main` computed live and never stored — four orthogonal facts, never collapsed back into one `stage`.
 
 TUI built on `tui_pane`: implement its `AppContext` trait, register panes through `PaneRegistry`, use `Keymap`/`KeymapBuilder` for bindings and `StatusBar` for the footer. Follow `cargo-tile` for how a `cargo-*` binary embeds the framework. `--json` emits the phase-1 envelope and must not require a terminal.
 
@@ -604,7 +601,7 @@ Add the `cargo-berth` row to `README.md` under `## workspace members`, matching 
 - `README.md` — one member row.
 - `.claude/config/release.toml` — read only; add a pin entry only if a path dep exists. Phase 10 adds a `tui_pane` path dependency, so a `[[publish_path_pins]]` entry is expected here.
 
-**Constraints from prior phases:** Every command and its real output comes from phases 1–10 as built; regenerate the transcript from the actual binary rather than transcribing this plan. The config fields are whatever phase 2's `src/config.rs` defines and `init` writes. The README documents `cargo-berth`'s real verb set, which by this point includes `drift` (phase 9) and the `resolve` and `renew` verbs phase 2's recovery-surface decision added — read the shipped `src/cli.rs`, not this plan's phase-1 table. There is no announce-not-claim behavior to document; root manifests take ordinary exclusive reservations (R34, final D3). Document the recovery path phase 8 builds: what a corrupt ledger looks like to a user, the confirmed reinitialization that restores service, and what is lost by running it.
+**Constraints from prior phases:** Every command and its real output comes from phases 1–10 as built; regenerate the transcript from the actual binary rather than transcribing this plan. The config fields are whatever phase 2's `src/config.rs` defines and `init` writes. The README documents `cargo-berth`'s real verb set, which by this point includes `drift` (phase 9) and the `resolve` and `renew` verbs phase 2's recovery-surface decision added — read the shipped `src/cli.rs`, not this plan's phase-1 table. There is no announce-not-claim behavior to document; root manifests take ordinary exclusive reservations (R34, final D3). Document the recovery paths: phase 8's — what a corrupt ledger looks like to a user, the confirmed reinitialization that restores service, and what is lost by running it — and phase 5's `cargo-berth init --repair-projection`, which rebuilds only the cache from journal truth when the cache is ahead of the journal, and loses nothing.
 
 **Acceptance gate:** `verify.sh check cargo-berth` and `lint cargo-berth` green (`missing_docs` is denied, so the crate-level docs must be complete). `cargo publish --dry-run -p cargo-berth` succeeds. Every command in the README runs as written against a scratch repo, and the collision transcript matches real output byte-for-byte. Every verb's `--help` runs and names each of its flags. The installed `cargo-berth` executable runs from a directory outside the workspace and reports the expected version.
 
@@ -653,7 +650,7 @@ Bash is not constrained, only observed — that is the user's D1 decision, not a
 
 `.claude/settings.local.json` is deliberately **not** in this list; phase 17 edits it.
 
-**Constraints from prior phases:** Phase 1 froze the exit codes and the six envelope fields; phase 2 added the typed payload — parse those fields, never scrape prose. Phase 9 defines the drift classifications the post-hook reacts to and adds `drift` to the verb set. Phase 5's reconcile is *not* called by the pre-hook except the single retry when the projection already says block. Phase 11 installed the executable; invoke `cargo-berth`, and compile nothing.
+**Constraints from prior phases:** Phase 1 froze the exit codes and the six envelope fields; phase 2 added the typed payload — parse those fields, never scrape prose. Phase 9 defines the drift classifications the post-hook reacts to and adds `drift` to the verb set. Phase 5's reconcile is *not* called by the pre-hook except the single retry when the projection already says block. Phase 11 installed the executable; invoke `cargo-berth`, and compile nothing. Phase 3 owns `EditAuthorization` and its resolution — `CARGO_BERTH_RUN` first, then the worktree marker file, failing closed to `Unidentified`. Read it; never re-derive it, and never pass a run id to `check`. Phase 3b's `claim --run` is the one provenance boundary where a run id is an argument; orchestration exports that same value as `CARGO_BERTH_RUN`.
 
 **Acceptance gate:** No `verify.sh`, and no compile. Each shim runs against synthetic stdin payloads covering every exit code and the decision is asserted, including a malformed envelope, an unknown status, and a payload whose `exit_code` field disagrees with the process exit status — all three are refused rather than trusted, **except** that exit `4` still permits editing, because failing open on ledger loss is the deliberate design and must survive the stricter parsing. A real claim in a scratch worktree makes a real `Edit` block when the shim is invoked directly; corrupting `journal.ndjson` still permits editing. `.claude/settings.local.json` is byte-identical to how this phase found it.
 
@@ -683,7 +680,7 @@ No mandatory emit ritual: state is pulled when wanted, never pushed on a schedul
 - `~/.claude/scripts/` — the shared `**Reservations:**` parser, validator, and offline pairwise comparison, new. **Edit anything under `~/.claude/commands` with the Write/Edit tool, never a shell write** — it is a protected path and shell writes fail with `Operation not permitted`.
 - `~/.claude/commands/plan/to_phased_plan.md`, `~/.claude/commands/plan/phase_review.md`, `~/.claude/commands/plan/delegate.md` — each calls the shared validator instead of growing its own parser (R35). `delegate.md` is also phase 15's file; keep the two phases' edits disjoint.
 
-**Constraints from prior phases:** Phase 6 defines the four answers and that they arrive as `claim` flags, not as separate verbs — there is no standalone `override` verb. Phase 1's six envelope fields plus phase 2's typed payload are the parse target. Phase 11 installed the executable; invoke `cargo-berth`, and compile nothing. If phase 6's authorization decision introduced a proposal/apply round trip, this skill is the thing that performs it — read the shipped `src/cli.rs`.
+**Constraints from prior phases:** Phase 6 defines the four answers and that they arrive as `claim` flags, not as separate verbs — there is no standalone `override` verb. Phase 1's six envelope fields plus phase 2's typed payload are the parse target. Phase 11 installed the executable; invoke `cargo-berth`, and compile nothing. If phase 6's authorization decision introduced a proposal/apply round trip, this skill is the thing that performs it — read the shipped `src/cli.rs`. Phase 3 owns `EditAuthorization` and its resolution — `CARGO_BERTH_RUN` first, then the worktree marker file, failing closed to `Unidentified`. Read it; never re-derive it, and never pass a run id to `check`. Phase 3b's `claim --run` is the one provenance boundary where a run id is an argument; orchestration exports that same value as `CARGO_BERTH_RUN`.
 
 **Acceptance gate:** No `verify.sh`, and no compile. `/sync board` renders; `/sync claim --from-work-order docs/hana/tool-graph.md <phase>` resolves a real Work Order to the right paths and claims them; a forced collision reaches the user rather than being self-answered; every path the skill emits is lexically valid and repo-relative, **whether or not it exists yet**; the validator rejects an absolute path, a `..` escape, and a `.git` component; two hand-written blocks that overlap are reported as colliding with no ledger present; all four commands resolve the same validator.
 
@@ -703,7 +700,7 @@ On a blocked claim, `/plan:delegate` stops before dispatching and surfaces the c
 
 - `~/.claude/commands/plan/delegate.md` — claim/release at the two boundaries. **Edit with the Write/Edit tool, never a shell write** — `~/.claude/commands` is a protected path and shell writes fail with `Operation not permitted`.
 
-**Constraints from prior phases:** Phase 14's shared validator does the Work-Order resolution — `/plan:delegate` calls it rather than parsing markdown itself, and phase 14 already added that call, so keep this phase's edits to the claim/release lifecycle and do not add a second parser. Phase 4's release semantics mean checkpoint does not free the paths. Phase 3's provenance flags are what carry the plan, phase, coordination run, and starting `HEAD` into the claim. Compile nothing.
+**Constraints from prior phases:** Phase 14's shared validator does the Work-Order resolution — `/plan:delegate` calls it rather than parsing markdown itself, and phase 14 already added that call, so keep this phase's edits to the claim/release lifecycle and do not add a second parser. Phase 4's release semantics mean checkpoint does not free the paths. Phase 3's provenance flags are what carry the plan, phase, coordination run, and starting `HEAD` into the claim. Compile nothing. Phase 3 owns `EditAuthorization` and its resolution — `CARGO_BERTH_RUN` first, then the worktree marker file, failing closed to `Unidentified`. Read it; never re-derive it, and never pass a run id to `check`. Phase 3b's `claim --run` is the one provenance boundary where a run id is an argument; orchestration exports that same value as `CARGO_BERTH_RUN`.
 
 **Acceptance gate:** No `verify.sh`. A dry run over a real todo phase claims the right paths and releases at checkpoint leaving the reservation `Outstanding`; a phase with no `**Reservations:**` block stops with the actionable message; a forced collision stops before dispatch.
 
@@ -778,7 +775,7 @@ Then clean up: remove the test worktrees, and record in this plan's status line 
 - `/Users/natemccoy/rust/hana/.claude/config/berth.toml` — `gate_mode = "enforce"`.
 - `docs/berth-plan.md` — status line: built.
 
-**Constraints from prior phases:** Every prior phase is exercised here. Phase 8's observe-only default is what makes this safe to run against the real repo — do not flip it early, and do not leave it flipped after a failed scenario. Phase 12 established the ledger and the config; phase 13 built the two hook shims but left them unregistered, which is why this phase's first step is registering them. This phase changes only the settings key and the mode. Compile nothing: the binary was installed in phase 11 and its version and path are recorded there. Phase 13 specifies and tests the pre-edit shim for `Edit`, `Write`, **and `NotebookEdit`**; register all three here and cover `NotebookEdit` in the end-to-end scenario.
+**Constraints from prior phases:** Every prior phase is exercised here. Phase 8's observe-only default is what makes this safe to run against the real repo — do not flip it early, and do not leave it flipped after a failed scenario. Phase 12 established the ledger and the config; phase 13 built the two hook shims but left them unregistered, which is why this phase's first step is registering them. This phase changes only the settings key and the mode. Compile nothing: the binary was installed in phase 11 and its version and path are recorded there. Phase 13 specifies and tests the pre-edit shim for `Edit`, `Write`, **and `NotebookEdit`**; register all three here and cover `NotebookEdit` in the end-to-end scenario. Phase 3 owns `EditAuthorization` and its resolution — `CARGO_BERTH_RUN` first, then the worktree marker file, failing closed to `Unidentified`. Read it; never re-derive it, and never pass a run id to `check`. Phase 3b's `claim --run` is the one provenance boundary where a run id is an argument; orchestration exports that same value as `CARGO_BERTH_RUN`.
 
 **Acceptance gate:** No `verify.sh`. The `hooks` key is present and the rest of `settings.local.json` is byte-identical to its prior contents; all six scenarios pass against two real worktrees with transcripts recorded, each transcript naming the `gate_mode` in force when it ran; the journal used by scenario 5 is either disposable or verified clean afterwards; `gate_mode = "enforce"`; an out-of-order merge to `main` is then refused in a real terminal, and `CARGO_BERTH_BYPASS=1` still lands it.
 

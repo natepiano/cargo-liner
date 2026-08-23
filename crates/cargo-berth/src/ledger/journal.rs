@@ -4,12 +4,16 @@ use std::fmt;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::path::Component;
 use std::path::Path;
+use std::path::PathBuf;
+use std::str::FromStr;
 
 use serde::Deserialize;
 use serde::Serialize;
 
 use super::constants::CURRENT_SCHEMA_VERSION;
+use super::constants::DELETE_CONTROL_BYTE;
 use super::constants::MAXIMUM_JOURNAL_RECORD_BYTES;
 use crate::config::InitializationState;
 use crate::ids::CoordinationRunId;
@@ -24,6 +28,7 @@ use crate::ids::ReservationId;
 use crate::ids::ReservationRevision;
 use crate::ids::ReservationScopePath;
 use crate::ids::SchemaVersion;
+use crate::ids::WorkPlanPhase;
 use crate::ids::WorktreeId;
 
 /// One append-only fact in the shared coordination journal.
@@ -34,14 +39,14 @@ pub(crate) struct JournalEvent {
     /// The non-recyclable identity of this append.
     pub(super) event_id:              EventId,
     /// The coordination actor that recorded this fact.
-    pub(super) actor:                 JournalActor,
+    pub(crate) actor:                 JournalActor,
     /// The time this fact was recorded.
     pub(super) at:                    RecordedAt,
     /// The cache generation this append publishes.
     pub(super) projection_generation: ProjectionGeneration,
     /// The state transition this fact records.
     #[serde(flatten)]
-    pub(super) operation:             JournalOperation,
+    pub(crate) operation:             JournalOperation,
 }
 
 impl JournalEvent {
@@ -90,15 +95,25 @@ pub(crate) enum JournalOperation {
     /// Acquire a new reservation and any conflict answer that authorized it.
     Claim {
         /// The newly minted reservation identity.
-        reservation_id: ReservationId,
+        reservation_id:                  ReservationId,
         /// The paths claimed atomically by this reservation.
-        scopes:         Vec<ReservationScopePath>,
+        scopes:                          ReservationScopeSet,
         /// How the claimant described the work that needs these paths.
-        source:         ClaimSource,
-        /// The reason the claimant gave for this reservation.
-        reason:         String,
+        source:                          ClaimSource,
+        /// The claimant's non-empty explanation of the work being protected.
+        purpose:                         ReservationPurpose,
+        /// The trunk commit against which later movement is measured.
+        trunk_at_claim:                  TrunkCommitAtClaim,
+        /// The branch or detached head observed when the reservation was acquired.
+        head_snapshot:                   ClaimHeadSnapshot,
+        /// The phase-start commit protected for later drift comparison.
+        phase_start_head:                ProtectedPhaseStartHead,
+        /// The canonical root used to validate the worktree during reconciliation.
+        worktree_root:                   CanonicalWorktreeRoot,
+        /// The locator used to find the worktree's administrative directory again.
+        worktree_administrative_locator: WorktreeAdministrativeLocator,
         /// The overlap result that authorized this acquisition.
-        authorization:  ConflictAuthorization,
+        authorization:                   ConflictAuthorization,
     },
     /// Enlarge an existing reservation and any conflict answer that authorized it.
     Widen {
@@ -217,13 +232,424 @@ pub(crate) enum ClaimSource {
     /// A reservation supplied by an external work-plan integration.
     WorkPlan {
         /// The plan's identifying path.
-        plan:  String,
-        /// The plan-local phase number.
-        phase: u32,
+        plan:  WorkPlanReference,
+        /// The plan-local opaque phase label.
+        phase: WorkPlanPhase,
     },
     /// A direct caller-specified reservation.
     Explicit,
 }
+
+macro_rules! git_commit_role {
+    ($name:ident, $documentation:literal) => {
+        #[doc = $documentation]
+        #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+        #[serde(transparent)]
+        pub(crate) struct $name(GitObjectId);
+
+        impl From<GitObjectId> for $name {
+            fn from(object_id: GitObjectId) -> Self { Self(object_id) }
+        }
+
+        impl AsRef<GitObjectId> for $name {
+            fn as_ref(&self) -> &GitObjectId { &self.0 }
+        }
+    };
+}
+
+git_commit_role!(
+    TrunkCommitAtClaim,
+    "The trunk commit observed when a reservation was acquired."
+);
+git_commit_role!(
+    ClaimHeadCommit,
+    "The worktree HEAD commit observed when a reservation was acquired."
+);
+git_commit_role!(
+    ProtectedPhaseStartHead,
+    "The phase-start commit retained for active-work drift comparison."
+);
+
+macro_rules! nonempty_claim_text {
+    ($name:ident, $error:ident, $documentation:literal, $error_message:literal) => {
+        #[doc = $documentation]
+        #[derive(Clone, Debug, Eq, PartialEq)]
+        pub(crate) struct $name(String);
+
+        impl fmt::Display for $name {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str(&self.0)
+            }
+        }
+
+        impl FromStr for $name {
+            type Err = $error;
+
+            fn from_str(value: &str) -> Result<Self, Self::Err> {
+                if value.is_empty() {
+                    Err($error)
+                } else {
+                    Ok(Self(value.to_owned()))
+                }
+            }
+        }
+
+        impl Serialize for $name {
+            fn serialize<SerializerType>(
+                &self,
+                serializer: SerializerType,
+            ) -> Result<SerializerType::Ok, SerializerType::Error>
+            where
+                SerializerType: serde::Serializer,
+            {
+                serializer.serialize_str(&self.0)
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<DeserializerType>(
+                deserializer: DeserializerType,
+            ) -> Result<Self, DeserializerType::Error>
+            where
+                DeserializerType: serde::Deserializer<'de>,
+            {
+                let value = String::deserialize(deserializer)?;
+                value.parse().map_err(serde::de::Error::custom)
+            }
+        }
+
+        #[doc = concat!("An error returned when constructing `", stringify!($name), "` from empty text.")]
+        #[derive(Debug)]
+        pub(crate) struct $error;
+
+        impl fmt::Display for $error {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str($error_message)
+            }
+        }
+
+        impl std::error::Error for $error {}
+    };
+}
+
+nonempty_claim_text!(
+    ReservationPurpose,
+    EmptyReservationPurpose,
+    "A non-empty explanation of the work protected by a reservation.",
+    "a reservation purpose cannot be empty"
+);
+nonempty_claim_text!(
+    WorkPlanReference,
+    EmptyWorkPlanReference,
+    "An opaque, non-empty reference to the work plan that originated a claim.",
+    "a work-plan reference cannot be empty"
+);
+
+/// The full branch reference and commit, or detached commit, observed at claim time.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum ClaimHeadSnapshot {
+    /// The worktree was attached to a branch.
+    Branch {
+        /// The full `refs/...` name, retained without short-name ambiguity.
+        full_ref: FullRefName,
+        /// The commit to which the branch resolved.
+        head:     ClaimHeadCommit,
+    },
+    /// The worktree had a detached HEAD.
+    Detached {
+        /// The detached commit.
+        head: ClaimHeadCommit,
+    },
+}
+
+/// A non-empty full git reference name.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct FullRefName(String);
+
+impl fmt::Display for FullRefName {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl FromStr for FullRefName {
+    type Err = InvalidFullRefName;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let suffix = value.strip_prefix("refs/").unwrap_or_default();
+        let has_disallowed_character = value.bytes().any(|byte| {
+            byte <= b' '
+                || byte == DELETE_CONTROL_BYTE
+                || matches!(byte, b'~' | b'^' | b':' | b'?' | b'*' | b'[' | b'\\')
+        });
+        let has_invalid_component = suffix.split('/').any(|component| {
+            let has_lock_extension = Path::new(component)
+                .extension()
+                .is_some_and(|extension| extension == "lock");
+            component.is_empty() || component.starts_with('.') || has_lock_extension
+        });
+        if suffix.is_empty()
+            || has_invalid_component
+            || value.contains("..")
+            || value.contains("@{")
+            || value.ends_with('.')
+            || has_disallowed_character
+        {
+            Err(InvalidFullRefName)
+        } else {
+            Ok(Self(value.to_owned()))
+        }
+    }
+}
+
+impl Serialize for FullRefName {
+    fn serialize<SerializerType>(
+        &self,
+        serializer: SerializerType,
+    ) -> Result<SerializerType::Ok, SerializerType::Error>
+    where
+        SerializerType: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for FullRefName {
+    fn deserialize<DeserializerType>(
+        deserializer: DeserializerType,
+    ) -> Result<Self, DeserializerType::Error>
+    where
+        DeserializerType: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        value.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+/// An error returned when a full git reference name is empty or not rooted at `refs/`.
+#[derive(Debug)]
+pub(crate) struct InvalidFullRefName;
+
+impl fmt::Display for InvalidFullRefName {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(
+            "a full git reference name must begin with refs/ and satisfy git reference rules",
+        )
+    }
+}
+
+impl std::error::Error for InvalidFullRefName {}
+
+/// The declared file-versus-tree meaning of one reserved repository path.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ScopeKind {
+    /// Reserve exactly one path.
+    File,
+    /// Reserve a path and all component descendants.
+    Tree,
+}
+
+/// One repository path paired with its declared reservation semantics.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct ReservationScope {
+    /// The normalized repository-relative path.
+    pub(crate) path: ReservationScopePath,
+    /// Whether the path denotes one file or a whole tree.
+    pub(crate) kind: ScopeKind,
+}
+
+/// The non-empty atomic footprint protected by one reservation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub(crate) struct ReservationScopeSet(Vec<ReservationScope>);
+
+impl ReservationScopeSet {
+    /// Borrow the scopes without weakening the non-empty construction boundary.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "The claim engine iterates the non-empty footprint; no verb reaches it yet."
+        )
+    )]
+    pub(crate) fn as_slice(&self) -> &[ReservationScope] { &self.0 }
+}
+
+impl TryFrom<Vec<ReservationScope>> for ReservationScopeSet {
+    type Error = EmptyReservationScopeSet;
+
+    fn try_from(scopes: Vec<ReservationScope>) -> Result<Self, Self::Error> {
+        if scopes.is_empty() {
+            Err(EmptyReservationScopeSet)
+        } else {
+            Ok(Self(scopes))
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ReservationScopeSet {
+    fn deserialize<DeserializerType>(
+        deserializer: DeserializerType,
+    ) -> Result<Self, DeserializerType::Error>
+    where
+        DeserializerType: serde::Deserializer<'de>,
+    {
+        let scopes = Vec::<ReservationScope>::deserialize(deserializer)?;
+        Self::try_from(scopes).map_err(serde::de::Error::custom)
+    }
+}
+
+/// An error returned when a reservation footprint contains no scopes.
+#[derive(Debug)]
+pub(crate) struct EmptyReservationScopeSet;
+
+impl fmt::Display for EmptyReservationScopeSet {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a reservation scope set cannot be empty")
+    }
+}
+
+impl std::error::Error for EmptyReservationScopeSet {}
+
+/// A canonical, absolute, UTF-8 worktree root stored for identity validation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CanonicalWorktreeRoot(String);
+
+impl fmt::Display for CanonicalWorktreeRoot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl FromStr for CanonicalWorktreeRoot {
+    type Err = InvalidCanonicalWorktreeRoot;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let path = Path::new(value);
+        let normalized: PathBuf = path.components().collect();
+        let has_only_absolute_components = path.components().all(|component| {
+            matches!(
+                component,
+                Component::Prefix(_) | Component::RootDir | Component::Normal(_)
+            )
+        });
+        let has_normalized_spelling = normalized.to_str() == Some(value);
+        if path.is_absolute() && has_normalized_spelling && has_only_absolute_components {
+            Ok(Self(value.to_owned()))
+        } else {
+            Err(InvalidCanonicalWorktreeRoot)
+        }
+    }
+}
+
+impl Serialize for CanonicalWorktreeRoot {
+    fn serialize<SerializerType>(
+        &self,
+        serializer: SerializerType,
+    ) -> Result<SerializerType::Ok, SerializerType::Error>
+    where
+        SerializerType: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for CanonicalWorktreeRoot {
+    fn deserialize<DeserializerType>(
+        deserializer: DeserializerType,
+    ) -> Result<Self, DeserializerType::Error>
+    where
+        DeserializerType: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        value.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+/// An error returned when a worktree root is not a canonical absolute path.
+#[derive(Debug)]
+pub(crate) struct InvalidCanonicalWorktreeRoot;
+
+impl fmt::Display for InvalidCanonicalWorktreeRoot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a canonical worktree root must be an absolute normalized UTF-8 path")
+    }
+}
+
+impl std::error::Error for InvalidCanonicalWorktreeRoot {}
+
+/// The common-directory-relative locator of a worktree administrative directory.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct WorktreeAdministrativeLocator(String);
+
+impl fmt::Display for WorktreeAdministrativeLocator {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl FromStr for WorktreeAdministrativeLocator {
+    type Err = InvalidWorktreeAdministrativeLocator;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let is_common_directory = value == ".";
+        let path = Path::new(value);
+        let normalized: PathBuf = path.components().collect();
+        let has_only_relative_components = path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)));
+        let has_path_text = !value.is_empty();
+        let is_relative_path = path.is_relative();
+        let has_normalized_spelling = normalized.to_str() == Some(value);
+        let is_linked_worktree = has_path_text
+            && is_relative_path
+            && has_normalized_spelling
+            && has_only_relative_components;
+        if is_common_directory || is_linked_worktree {
+            Ok(Self(value.to_owned()))
+        } else {
+            Err(InvalidWorktreeAdministrativeLocator)
+        }
+    }
+}
+
+impl Serialize for WorktreeAdministrativeLocator {
+    fn serialize<SerializerType>(
+        &self,
+        serializer: SerializerType,
+    ) -> Result<SerializerType::Ok, SerializerType::Error>
+    where
+        SerializerType: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for WorktreeAdministrativeLocator {
+    fn deserialize<DeserializerType>(
+        deserializer: DeserializerType,
+    ) -> Result<Self, DeserializerType::Error>
+    where
+        DeserializerType: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        value.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+/// An error returned when an administrative locator is not common-directory relative.
+#[derive(Debug)]
+pub(crate) struct InvalidWorktreeAdministrativeLocator;
+
+impl fmt::Display for InvalidWorktreeAdministrativeLocator {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a worktree administrative locator must be normalized and relative")
+    }
+}
+
+impl std::error::Error for InvalidWorktreeAdministrativeLocator {}
 
 /// Why an existing reservation received more scopes.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -382,6 +808,14 @@ impl Journal {
         ))
     }
 
+    /// Open an initialized journal without creating any missing ledger state.
+    pub(super) fn open_existing(path: &Path) -> Result<Self, JournalError> {
+        OpenOptions::new().read(true).write(true).open(path)?;
+        Ok(Self {
+            path: path.to_owned(),
+        })
+    }
+
     /// Replay every complete record and repair one incomplete final record.
     pub(super) fn replay_repairing_tail(&self) -> Result<JournalReplay, JournalError> {
         let bytes = fs::read(&self.path)?;
@@ -454,11 +888,11 @@ impl Journal {
             reason = "No stateful verb appends through this journal writer yet."
         )
     )]
-    pub(super) fn append(&self, event: &JournalEvent) -> Result<(), JournalError> {
-        let mut record = serde_json::to_vec(event).map_err(JournalError::Serialization)?;
+    pub(super) fn append(&self, event: &JournalEvent) -> Result<(), JournalAppendError> {
+        let mut record = serde_json::to_vec(event).map_err(JournalAppendError::Serialization)?;
         record.push(b'\n');
         if record.len() > MAXIMUM_JOURNAL_RECORD_BYTES {
-            return Err(JournalError::RecordTooLarge {
+            return Err(JournalAppendError::RecordTooLarge {
                 bytes: record.len(),
             });
         }
@@ -497,27 +931,6 @@ pub(crate) enum JournalError {
     UnsupportedSchemaVersion(SchemaVersion),
     /// The journal length cannot fit in the stored offset type.
     JournalTooLarge(std::num::TryFromIntError),
-    /// A serialized record would exceed the configured journal record limit.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "The writer constructs this error when a mutation exceeds the append limit; none reaches it yet."
-        )
-    )]
-    RecordTooLarge {
-        /// The serialized record length, including its newline.
-        bytes: usize,
-    },
-    /// Serializing a journal event failed.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "The writer constructs this error when a journal event cannot serialize; no writer path reaches it yet."
-        )
-    )]
-    Serialization(serde_json::Error),
 }
 
 impl fmt::Display for JournalError {
@@ -531,15 +944,6 @@ impl fmt::Display for JournalError {
                 write!(formatter, "journal schema version {version} is unsupported")
             },
             Self::JournalTooLarge(error) => write!(formatter, "journal is too large: {error}"),
-            Self::RecordTooLarge { bytes } => {
-                write!(
-                    formatter,
-                    "journal record exceeds the configured limit: {bytes} bytes"
-                )
-            },
-            Self::Serialization(error) => {
-                write!(formatter, "could not serialize journal record: {error}")
-            },
         }
     }
 }
@@ -547,6 +951,43 @@ impl fmt::Display for JournalError {
 impl std::error::Error for JournalError {}
 
 impl From<std::io::Error> for JournalError {
+    fn from(error: std::io::Error) -> Self { Self::Io(error) }
+}
+
+/// A failure while encoding or appending one proposed journal fact.
+#[derive(Debug)]
+pub(super) enum JournalAppendError {
+    /// Filesystem access failed after transaction validation approved the append.
+    Io(std::io::Error),
+    /// The proposed fact could not be encoded.
+    Serialization(serde_json::Error),
+    /// The proposed fact exceeds the bounded record format.
+    RecordTooLarge {
+        /// The serialized record length, including its newline.
+        bytes: usize,
+    },
+}
+
+impl fmt::Display for JournalAppendError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(error) => write!(formatter, "journal append failed: {error}"),
+            Self::Serialization(error) => {
+                write!(formatter, "could not serialize journal record: {error}")
+            },
+            Self::RecordTooLarge { bytes } => {
+                write!(
+                    formatter,
+                    "proposed journal record is too large: {bytes} bytes"
+                )
+            },
+        }
+    }
+}
+
+impl std::error::Error for JournalAppendError {}
+
+impl From<std::io::Error> for JournalAppendError {
     fn from(error: std::io::Error) -> Self { Self::Io(error) }
 }
 
@@ -562,23 +1003,37 @@ mod tests {
     use tempfile::tempdir;
 
     use super::AuthorizedOverlap;
+    use super::CanonicalWorktreeRoot;
+    use super::ClaimHeadCommit;
+    use super::ClaimHeadSnapshot;
     use super::ClaimSource;
     use super::ConflictAuthorization;
+    use super::FullRefName;
     use super::Journal;
     use super::JournalActor;
     use super::JournalEvent;
     use super::JournalOperation;
     use super::OrderingDirection;
     use super::ProjectionGeneration;
+    use super::ProtectedPhaseStartHead;
+    use super::ReservationPurpose;
+    use super::ReservationScope;
+    use super::ReservationScopeSet;
+    use super::ScopeKind;
+    use super::TrunkCommitAtClaim;
+    use super::WorkPlanReference;
+    use super::WorktreeAdministrativeLocator;
     use crate::ids::CoordinationRunId;
     use crate::ids::EdgeId;
     use crate::ids::EventId;
+    use crate::ids::GitObjectId;
     use crate::ids::RecordedAt;
     use crate::ids::RepoInstanceId;
     use crate::ids::ReservationId;
     use crate::ids::ReservationRevision;
     use crate::ids::ReservationScopePath;
     use crate::ids::SchemaVersion;
+    use crate::ids::WorkPlanPhase;
     use crate::ids::WorktreeId;
 
     #[test]
@@ -629,6 +1084,14 @@ mod tests {
         let journal_path = temporary_directory.path().join("journal.ndjson");
         let (journal, _) = Journal::open_or_create(&journal_path).expect("journal should open");
         let journal_event = fully_populated_claim_event();
+        assert!(matches!(
+            &journal_event.operation,
+            JournalOperation::Claim { .. }
+        ));
+        let JournalOperation::Claim { scopes, .. } = &journal_event.operation else {
+            return;
+        };
+        assert_eq!(scopes.as_slice().len(), 3);
 
         journal
             .append(&journal_event)
@@ -663,16 +1126,25 @@ mod tests {
                 "op": "claim",
                 "reservation_id": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1f",
                 "scopes": [
-                    "crates/cargo-berth/src",
-                    "crates/cargo-berth/tests",
-                    "docs/berth-plan.md",
+                    {"path": "crates/cargo-berth/src", "kind": "tree"},
+                    {"path": "crates/cargo-berth/tests", "kind": "tree"},
+                    {"path": "docs/berth-plan.md", "kind": "file"},
                 ],
                 "source": {
                     "kind": "work_plan",
                     "plan": "docs/berth-plan.md",
-                    "phase": 2,
+                    "phase": "3b",
                 },
-                "reason": "The ledger records durable coordination facts before a worktree claims paths.",
+                "purpose": "The ledger records durable coordination facts before a worktree claims paths.",
+                "trunk_at_claim": "1111111111111111111111111111111111111111",
+                "head_snapshot": {
+                    "kind": "branch",
+                    "full_ref": "refs/heads/feature/ledger-transactions",
+                    "head": "2222222222222222222222222222222222222222",
+                },
+                "phase_start_head": "3333333333333333333333333333333333333333",
+                "worktree_root": "/Users/example/rust/cargo-berth-init",
+                "worktree_administrative_locator": "worktrees/cargo-berth-init",
                 "authorization": {
                     "kind": "sequence",
                     "overlaps": [{
@@ -686,6 +1158,93 @@ mod tests {
                 },
             })
         );
+    }
+
+    #[test]
+    fn reservation_scope_sets_cannot_be_empty() {
+        assert!(ReservationScopeSet::try_from(Vec::new()).is_err());
+        assert!(serde_json::from_str::<ReservationScopeSet>("[]").is_err());
+    }
+
+    #[test]
+    fn full_ref_names_enforce_git_reference_rules() {
+        for invalid_ref in [
+            "heads/main",
+            "refs/",
+            "refs//heads/main",
+            "refs/heads/.hidden",
+            "refs/heads/bad.lock",
+            "refs/heads/bad..name",
+            "refs/heads/bad name",
+            "refs/heads/bad\u{0001}name",
+            "refs/heads/bad\u{007f}name",
+            "refs/heads/bad~name",
+            "refs/heads/bad^name",
+            "refs/heads/bad:name",
+            "refs/heads/bad?name",
+            "refs/heads/bad*name",
+            "refs/heads/bad[name",
+            "refs/heads/bad@{name",
+            "refs/heads/bad\\name",
+            "refs/heads/bad.",
+        ] {
+            assert!(invalid_ref.parse::<FullRefName>().is_err(), "{invalid_ref}");
+        }
+
+        for valid_ref in ["refs/heads/main", "refs/tags/v1.0.0"] {
+            assert!(valid_ref.parse::<FullRefName>().is_ok(), "{valid_ref}");
+        }
+    }
+
+    #[test]
+    fn canonical_worktree_roots_require_normalized_absolute_spelling() {
+        for invalid_root in [
+            "/repo//tree",
+            "/repo/tree/",
+            "/repo/./tree",
+            "/repo/../tree",
+            "repo/tree",
+        ] {
+            assert!(
+                invalid_root.parse::<CanonicalWorktreeRoot>().is_err(),
+                "{invalid_root}"
+            );
+        }
+
+        for valid_root in ["/", "/repo/tree"] {
+            assert!(
+                valid_root.parse::<CanonicalWorktreeRoot>().is_ok(),
+                "{valid_root}"
+            );
+        }
+    }
+
+    #[test]
+    fn worktree_administrative_locators_require_normalized_relative_spelling() {
+        for invalid_locator in [
+            "",
+            "worktrees//tree",
+            "worktrees/tree/",
+            "worktrees/./tree",
+            "worktrees/../tree",
+            "/repo/tree",
+        ] {
+            assert!(
+                invalid_locator
+                    .parse::<WorktreeAdministrativeLocator>()
+                    .is_err(),
+                "{invalid_locator}"
+            );
+        }
+
+        for valid_locator in [".", "worktrees/tree"] {
+            assert!(
+                valid_locator
+                    .parse::<WorktreeAdministrativeLocator>()
+                    .is_ok(),
+                "{valid_locator}"
+            );
+        }
     }
 
     fn test_actor() -> JournalActor {
@@ -718,25 +1277,51 @@ mod tests {
                 .expect("recorded timestamp should parse"),
             projection_generation: ProjectionGeneration::from(9),
             operation:             JournalOperation::Claim {
-                reservation_id: "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1f"
+                reservation_id:                  "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1f"
                     .parse::<ReservationId>()
                     .expect("reservation identifier should parse"),
-                scopes:         [
-                    "crates/cargo-berth/src",
-                    "crates/cargo-berth/tests",
-                    "docs/berth-plan.md",
-                ]
-                .into_iter()
-                .map(parse_scope_path)
-                .collect(),
-                source:         ClaimSource::WorkPlan {
-                    plan:  "docs/berth-plan.md".to_owned(),
-                    phase: 2,
+                scopes:                          ReservationScopeSet::try_from(vec![
+                    reservation_scope("crates/cargo-berth/src", ScopeKind::Tree),
+                    reservation_scope("crates/cargo-berth/tests", ScopeKind::Tree),
+                    reservation_scope("docs/berth-plan.md", ScopeKind::File),
+                ])
+                .expect("claim footprint should be non-empty"),
+                source:                          ClaimSource::WorkPlan {
+                    plan:  "docs/berth-plan.md"
+                        .parse::<WorkPlanReference>()
+                        .expect("work-plan reference should parse"),
+                    phase: "3b"
+                        .parse::<WorkPlanPhase>()
+                        .expect("opaque work-plan phase should parse"),
                 },
-                reason:
+                purpose:
                     "The ledger records durable coordination facts before a worktree claims paths."
-                        .to_owned(),
-                authorization:  ConflictAuthorization::Sequence {
+                        .parse::<ReservationPurpose>()
+                        .expect("reservation purpose should parse"),
+                trunk_at_claim:                  "1111111111111111111111111111111111111111"
+                    .parse::<GitObjectId>()
+                    .map(TrunkCommitAtClaim::from)
+                    .expect("trunk commit should parse"),
+                head_snapshot:                   ClaimHeadSnapshot::Branch {
+                    full_ref: "refs/heads/feature/ledger-transactions"
+                        .parse::<FullRefName>()
+                        .expect("full branch reference should parse"),
+                    head:     "2222222222222222222222222222222222222222"
+                        .parse::<GitObjectId>()
+                        .map(ClaimHeadCommit::from)
+                        .expect("claim head should parse"),
+                },
+                phase_start_head:                "3333333333333333333333333333333333333333"
+                    .parse::<GitObjectId>()
+                    .map(ProtectedPhaseStartHead::from)
+                    .expect("phase-start head should parse"),
+                worktree_root:                   "/Users/example/rust/cargo-berth-init"
+                    .parse::<CanonicalWorktreeRoot>()
+                    .expect("canonical worktree root should parse"),
+                worktree_administrative_locator: "worktrees/cargo-berth-init"
+                    .parse::<WorktreeAdministrativeLocator>()
+                    .expect("worktree administrative locator should parse"),
+                authorization:                   ConflictAuthorization::Sequence {
                     overlaps:  vec![AuthorizedOverlap {
                         reservation_id:       "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a20"
                             .parse::<ReservationId>()
@@ -762,5 +1347,12 @@ mod tests {
     fn parse_scope_path(path: &str) -> ReservationScopePath {
         path.parse()
             .expect("repository-relative reservation scope path should parse")
+    }
+
+    fn reservation_scope(path: &str, kind: ScopeKind) -> ReservationScope {
+        ReservationScope {
+            path: parse_scope_path(path),
+            kind,
+        }
     }
 }
