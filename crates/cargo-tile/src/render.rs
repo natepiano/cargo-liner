@@ -11,6 +11,7 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
+use ratatui::text::Text;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
@@ -92,6 +93,7 @@ use crate::roster::Roster;
 use crate::roster::TrackedRow;
 use crate::settings;
 use crate::tiles::TileContent;
+use crate::wrap;
 
 /// Draw one frame: panes fill the terminal above the status line, and an
 /// open overlay floats above both.
@@ -259,15 +261,44 @@ struct PathGroup<'a> {
     rows: Vec<&'a TrackedRow>,
 }
 
+/// How one cell's tables are laid out, settled once for the whole cell.
+///
+/// Every group in the cell is drawn against this, which is what keeps
+/// the tables lined up down the cell instead of each one fitting itself
+/// and the columns stepping in and out as the eye moves between them.
+struct TableLayout {
+    /// Column widths, in table order.
+    constraints:   Vec<Constraint>,
+    /// The columns this cell draws, in table order.
+    columns:       Vec<usize>,
+    /// Cells the `command` column absorbed, which is what a command
+    /// line too long for it is wrapped to.
+    command_width: u16,
+    /// Whether a row spells out `--manifest-path`.
+    manifest:      ManifestPath,
+    /// Where a compiling command's reading goes.
+    placement:     ProgressPlacement,
+}
+
+impl TableLayout {
+    /// The layout for a cell of `kind` drawing `rows` into `area`.
+    fn of(rows: &[&TrackedRow], kind: TableKind, area: Rect) -> Self {
+        let placement = progress_placement(rows);
+        let columns = visible_columns(rows, kind, placement);
+        let constraints = fitted_constraints(rows, &columns);
+        Self {
+            command_width: command_column_width(indented(area).width, &constraints, &columns),
+            constraints,
+            columns,
+            manifest: kind.manifest(),
+            placement,
+        }
+    }
+}
+
 /// Render a cargo table: one working-directory header per distinct path,
 /// with that directory's invocations tabulated beneath it.
-///
-/// Column widths are fitted across every row rather than per group, so
-/// the tables line up down the cell instead of stepping in and out as
-/// the eye moves between them.
 fn draw_process_table(buffer: &mut Buffer, area: Rect, rows: &[&TrackedRow], kind: TableKind) {
-    let manifest = kind.manifest();
-    let placement = progress_placement(rows);
     if rows.is_empty() {
         Paragraph::new(vec![
             Line::from(""),
@@ -283,10 +314,9 @@ fn draw_process_table(buffer: &mut Buffer, area: Rect, rows: &[&TrackedRow], kin
     // One column-label row for the whole cell. Every group's table is
     // laid out with the same constraints and the same indent, so the
     // labels stay over their columns without costing a row per group.
-    let columns = visible_columns(rows, kind, placement);
-    let constraints = fitted_constraints(rows, &columns);
-    Table::new(Vec::<Row>::new(), constraints.iter().copied())
-        .header(column_header(&columns))
+    let layout = TableLayout::of(rows, kind, area);
+    Table::new(Vec::<Row>::new(), layout.constraints.iter().copied())
+        .header(column_header(&layout.columns))
         .column_spacing(TABLE_COLUMN_SPACING)
         .render(
             Rect {
@@ -303,15 +333,7 @@ fn draw_process_table(buffer: &mut Buffer, area: Rect, rows: &[&TrackedRow], kin
         if remaining.height == 0 {
             break;
         }
-        let used = draw_path_group(
-            buffer,
-            remaining,
-            &group,
-            &constraints,
-            &columns,
-            manifest,
-            placement,
-        );
+        let used = draw_path_group(buffer, remaining, &group, &layout);
         remaining.y = remaining.y.saturating_add(used);
         remaining.height = remaining.height.saturating_sub(used);
     }
@@ -355,16 +377,13 @@ fn draw_path_group(
     buffer: &mut Buffer,
     area: Rect,
     group: &PathGroup<'_>,
-    constraints: &[Constraint],
-    columns: &[usize],
-    manifest: ManifestPath,
-    placement: ProgressPlacement,
+    layout: &TableLayout,
 ) -> u16 {
     let mut heading = vec![
         Span::raw(SECTION_HEADER_INDENT),
         Span::styled(group.path.to_string(), Style::default().fg(accent_color())),
     ];
-    if placement == ProgressPlacement::Heading {
+    if layout.placement == ProgressPlacement::Heading {
         heading.extend(heading_gauge(group, area.width));
     }
     Paragraph::new(Line::from(heading)).render(
@@ -377,14 +396,21 @@ fn draw_path_group(
 
     // No header on this table: the column labels are drawn once for the
     // whole cell by `draw_process_table`, over these same constraints.
-    let rows = u16::try_from(group.rows.len()).unwrap_or(u16::MAX);
-    let table_height = area.height.saturating_sub(GROUP_HEADER_HEIGHT).min(rows);
+    // A row is as tall as its wrapped command line, so the table's own
+    // height is the sum of them rather than one line per row.
+    let rows: Vec<DrawnRow> = group
+        .rows
+        .iter()
+        .map(|row| process_row(row, layout))
+        .collect();
+    let lines = rows
+        .iter()
+        .map(|drawn| drawn.lines)
+        .fold(0, u16::saturating_add);
+    let table_height = area.height.saturating_sub(GROUP_HEADER_HEIGHT).min(lines);
     Table::new(
-        group
-            .rows
-            .iter()
-            .map(|row| process_row(row, manifest, columns)),
-        constraints.iter().copied(),
+        rows.into_iter().map(|drawn| drawn.row),
+        layout.constraints.iter().copied(),
     )
     .column_spacing(TABLE_COLUMN_SPACING)
     .render(
@@ -404,8 +430,8 @@ fn draw_path_group(
 /// Column widths fitted to the widest cell across every row.
 ///
 /// `command` is left out of the fitting and takes whatever the other
-/// columns leave, so a long argument list truncates instead of pushing
-/// the columns that identify the invocation off the edge.
+/// columns leave, so a long argument list wraps down the column instead
+/// of pushing the columns that identify the invocation off the edge.
 fn fitted_constraints(rows: &[&TrackedRow], columns: &[usize]) -> Vec<Constraint> {
     let mut widths = ColumnWidths::new(
         TABLE_HEADERS
@@ -455,12 +481,26 @@ fn column_header(columns: &[usize]) -> Row<'static> {
     )
 }
 
+/// One table row and how many lines it stands on.
+struct DrawnRow {
+    /// The row as the table takes it.
+    row:   Row<'static>,
+    /// Lines the row occupies. The command is the one cell that ever
+    /// asks for more than one, and it asks for as many as its line
+    /// wrapped to.
+    lines: u16,
+}
+
 /// One table row, styled so the invocation reads before its metadata.
 ///
 /// A finished invocation goes flat grey for the seconds it lingers:
 /// nothing on the row is live any more, so nothing on it should still
 /// read as live.
-fn process_row(row: &TrackedRow, manifest: ManifestPath, columns: &[usize]) -> Row<'static> {
+///
+/// The command line is wrapped to the column's width rather than
+/// truncated at it: an argument list that outruns the column carries on
+/// down the rows of that column, and the row grows to hold it.
+fn process_row(row: &TrackedRow, layout: &TableLayout) -> DrawnRow {
     let process = &row.process;
     let muted = Style::default().fg(label_color());
     let program = if row.is_ended() {
@@ -473,26 +513,58 @@ fn process_row(row: &TrackedRow, manifest: ManifestPath, columns: &[usize]) -> R
     } else {
         Style::default().fg(success_color())
     };
-    let cells = [
-        Line::from(Span::styled(process.pid.to_string(), muted)),
-        Line::from(Span::styled(process.start.clone(), muted)),
-        Line::from(Span::styled(process.duration.clone(), muted)),
-        state_cell(row),
-        Line::from(vec![
+    let command = wrap::wrapped(
+        vec![
             Span::styled(process.command.program.clone(), program),
-            Span::raw(" "),
-            Span::styled(process.command.line(manifest), arguments),
-        ]),
-        compiler_cell(row),
-        Line::from(Span::styled(managed_text(process), muted)),
+            Span::styled(process.command.line(layout.manifest), arguments),
+        ],
+        layout.command_width,
+    );
+    let lines = u16::try_from(command.height()).unwrap_or(u16::MAX);
+    let cells = [
+        Text::from(Span::styled(process.pid.to_string(), muted)),
+        Text::from(Span::styled(process.start.clone(), muted)),
+        Text::from(Span::styled(process.duration.clone(), muted)),
+        Text::from(state_cell(row)),
+        command,
+        Text::from(compiler_cell(row)),
+        Text::from(Span::styled(managed_text(process), muted)),
     ];
-    Row::new(
-        cells
-            .into_iter()
-            .enumerate()
-            .filter(|(column, _)| columns.contains(column))
-            .map(|(_, cell)| cell),
-    )
+    DrawnRow {
+        row: Row::new(
+            cells
+                .into_iter()
+                .enumerate()
+                .filter(|(column, _)| layout.columns.contains(column))
+                .map(|(_, cell)| cell),
+        )
+        .height(lines),
+        lines,
+    }
+}
+
+/// Cells the `command` column is left with once the fitted columns have
+/// taken theirs.
+///
+/// [`Table`] solves its columns with [`Layout`], so this solves the same
+/// one -- the same constraints at the same spacing -- and the command
+/// line is wrapped to the width it is actually drawn in. Reading the
+/// column's own [`Constraint`] instead would give the floor it is never
+/// held to, since it is the column that absorbs the slack.
+fn command_column_width(width: u16, constraints: &[Constraint], columns: &[usize]) -> u16 {
+    let Some(column) = columns.iter().position(|column| *column == COMMAND_COLUMN) else {
+        return 0;
+    };
+    Layout::horizontal(constraints.iter().copied())
+        .spacing(TABLE_COLUMN_SPACING)
+        .split(Rect {
+            x: 0,
+            y: 0,
+            width,
+            height: 1,
+        })
+        .get(column)
+        .map_or(0, |rect| rect.width)
 }
 
 /// The columns a cell draws, in table order.
@@ -869,6 +941,26 @@ mod tests {
     /// A row for a command whose capture last reported `state`.
     fn row(state: Option<RunState>) -> TrackedRow { row_at("~/rust/cargo-tile", state) }
 
+    /// A row whose command line is long enough to outrun the column it
+    /// is drawn in.
+    fn long_row() -> TrackedRow {
+        let mut row = row(None);
+        row.process.command = CommandText::of(
+            "cargo",
+            &["build", "--features", "one,two,three", "--all-targets"],
+        );
+        row
+    }
+
+    /// One row of `buffer` as text, with the blanks to the right of it
+    /// trimmed off.
+    fn buffer_line(buffer: &Buffer, y: u16) -> String {
+        let line: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect();
+        line.trim_end().to_string()
+    }
+
     /// A row for a command running in `path`.
     fn row_at(path: &str, state: Option<RunState>) -> TrackedRow {
         TrackedRow::from(CargoProcess {
@@ -1114,5 +1206,87 @@ mod tests {
 
         assert!(columns.contains(&COMPILER_COLUMN));
         assert!(columns.contains(&MANAGED_COLUMN));
+    }
+
+    /// The `command` column is the one that absorbs the slack, so what
+    /// it is worth has to come off the solved layout rather than off the
+    /// `Min` it is declared with.
+    #[test]
+    fn the_command_column_is_measured_at_the_width_it_absorbs() {
+        let rows = [long_row()];
+        let rows: Vec<&TrackedRow> = rows.iter().collect();
+        let columns = visible_columns(&rows, TableKind::Command, ProgressPlacement::Heading);
+        let constraints = fitted_constraints(&rows, &columns);
+
+        let narrow = command_column_width(50, &constraints, &columns);
+        let wide = command_column_width(80, &constraints, &columns);
+
+        assert!(narrow > cell_width(TABLE_HEADERS[COMMAND_COLUMN]));
+        assert_eq!(wide.saturating_sub(narrow), 30);
+    }
+
+    /// A command that outruns its column carries on down the rows of
+    /// that column: every line after the first starts where the column
+    /// starts, and nothing of it is dropped.
+    #[test]
+    fn a_long_command_wraps_within_its_own_column() {
+        let area = Rect::new(0, 0, 56, 8);
+        let mut buffer = Buffer::empty(area);
+        let rows = [long_row()];
+
+        draw_process_table(
+            &mut buffer,
+            area,
+            &rows.iter().collect::<Vec<&TrackedRow>>(),
+            TableKind::Command,
+        );
+
+        // The column labels are drawn once at the top of the cell, so
+        // the header row is where the column's own left edge is.
+        let header = buffer_line(&buffer, 0);
+        let left = header.find(TABLE_HEADERS[COMMAND_COLUMN]).unwrap();
+        // Row zero is the labels and row one the working directory, so
+        // the invocation starts on row two and runs to the first blank.
+        let lines: Vec<String> = (2..buffer.area.height)
+            .map(|y| buffer_line(&buffer, y))
+            .take_while(|line| !line.is_empty())
+            .collect();
+
+        assert!(lines.len() > 1, "{lines:#?}");
+        for line in lines.iter().skip(1) {
+            assert!(line.len() > left, "{line:?}");
+            assert!(line[..left].trim().is_empty(), "{line:?}");
+        }
+        assert_eq!(
+            lines
+                .iter()
+                .map(|line| line[left..].trim())
+                .collect::<Vec<&str>>()
+                .join(" "),
+            "cargo build --features one,two,three --all-targets"
+        );
+    }
+
+    /// The rows below a wrapped one are pushed down by it rather than
+    /// drawn over it, so the group is as tall as its rows came out.
+    #[test]
+    fn a_wrapped_row_makes_the_group_taller() {
+        let area = Rect::new(0, 0, 56, 12);
+        let mut buffer = Buffer::empty(area);
+        let rows = [long_row(), long_row()];
+
+        draw_process_table(
+            &mut buffer,
+            area,
+            &rows.iter().collect::<Vec<&TrackedRow>>(),
+            TableKind::Command,
+        );
+
+        let header = buffer_line(&buffer, 0);
+        let left = header.find(TABLE_HEADERS[COMMAND_COLUMN]).unwrap();
+        for y in 2..6 {
+            let line = buffer_line(&buffer, y);
+            assert!(line.len() > left, "row {y} is empty: {line:?}");
+        }
     }
 }

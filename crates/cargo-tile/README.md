@@ -158,6 +158,14 @@ an absolute path -- long enough to push the subcommand off the edge of a narrow
 cell to say again what the header just said. A command's own cell shows the whole
 line.
 
+The `command` column takes whatever width the other columns leave, and a command
+line longer than that wraps down the column rather than running off the end of
+it. The break falls at a space, the continuation starts where the column starts
+rather than at the edge of the cell, and the row grows as tall as the lines it
+came out as. A single argument too long for the column at all -- a path, a long
+`--features` list with no spaces in it -- is the one thing broken anywhere but a
+space, and only where no space would do.
+
 Every summary row also gets its own cell, carrying the invocations that row
 stands for: one for a plain command, many for a manager. `+` opens an empty cell
 at the end and `-` closes one: the focused cell when `+` opened it, otherwise the
