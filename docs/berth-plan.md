@@ -59,6 +59,10 @@ Orders cite it by section heading and finding id — everything a delegate needs
 - **Lint:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth`
 - **Style:** `phase-end /clippy style-only auto-proceed`
 - **Invariants:**
+  - **The design is in this file.** `## Design` and the R1–R69 findings register below are
+    the specification, not background. A Work Order Spec that cites a section or a finding id
+    means: open `docs/berth-plan.md` in the cargo-liner checkout and read it before writing code.
+    Where a finding corrects an earlier one the later finding wins, and its title says so.
   - **Track-A phases run in `/Users/natemccoy/rust/cargo-liner`. Track-B phases run in `/Users/natemccoy/rust/hana`.** Every phase states its repo in its Goal. A track-A phase that has to explain a Work Order means the boundary is wrong.
   - **Track-B phases compile nothing** and have no `verify.sh` line. They verify by exercising the artifact: run the hook shim against a synthetic JSON payload on stdin and assert the decision, `taplo fmt --check` the TOML, JSON-validate the edited settings file, and confirm every backfilled `**Reservations:**` block parses and its paths exist.
   - Workspace lints are inherited, never restated. Denied: `clippy::{unwrap_used, expect_used, panic, unreachable, allow_attributes_without_reason, self_named_module_files, undocumented_unsafe_blocks}`, groups `all`/`cargo`/`nursery`/`pedantic` at `priority = -1`, `rust::missing_docs`, `rust::unsafe_code`. Every `#[allow]` carries a `reason = "..."`. Use `module/mod.rs` directory form when a module has submodules.
@@ -82,7 +86,7 @@ Orders cite it by section heading and finding id — everything a delegate needs
 
 Create the crate following `crates/cargo-tile` exactly: crate-level `//!` doc, `[lints] workspace = true`, all deps `{ workspace = true }`, `version = "0.1.0-dev"`, `homepage = ".../tree/main/crates/cargo-berth"`. No `[[bin]]` section. `parse_arguments` handles both `cargo berth <verb>` and `cargo-berth <verb>` (cargo injects an extra word) — copy `cargo-tile/src/cli.rs`.
 
-Verbs, from `#### The skill` below:
+Verbs, from `docs/berth-plan.md` (this plan) → `#### The skill`:
 
 | Verb | Arguments |
 | --- | --- |
@@ -98,7 +102,7 @@ Exit codes are the contract the hooks depend on: `0` clear, `1` blocked by overl
 
 Every verb takes `--json`. Define the output envelope once as a serde type: `{ "verb", "status", "exit_code", "reservations": [...], "blocked_by": [...], "message" }`. This envelope is frozen at this phase — track B parses it while the engine is still being built.
 
-Define the id newtypes now, serde-derived, opaque `Display`: `ReservationId`, `WorktreeId`, `CoordinationRunId`, `EdgeId`, `EventId`, `Generation`, `SchemaVersion`. See R51 for the type skeleton.
+Define the id newtypes now, serde-derived, opaque `Display`: `ReservationId`, `WorktreeId`, `CoordinationRunId`, `EdgeId`, `EventId`, `Generation`, `SchemaVersion`. See R51 in `docs/berth-plan.md` (this plan) for the type skeleton.
 
 Every verb returns `status: "unimplemented"` with exit `0` except usage errors. No ledger, no git.
 
@@ -197,7 +201,7 @@ At checkpoint, `release` records `Outstanding { protected_tip }` where `protecte
 
 `protected_tip` is **the** subject of every reachability question. Never the claim-time `HeadSnapshot` (it predates the work, so the gate would pass before anything landed) and never the live branch tip (it moves with unrelated phases). An `Active` reservation has no protected tip and therefore blocks unconditionally.
 
-Git computations, verbatim from R46/R47:
+Git computations, verbatim from R46/R47 in `docs/berth-plan.md` (this plan):
 
 ```bash
 trunk_oid=$(git rev-parse refs/heads/main)
@@ -226,7 +230,7 @@ git merge-base --is-ancestor "$protected_tip" "$trunk_oid"    # integration
 
 **Goal:** In `cargo-liner`: a vanished worktree is classified honestly and never silently frees anything, and the repair runs on the paths that consume the state.
 
-**Spec:** Implements R59, R62, R63 — read those, and `#### Self-healing` below.
+**Spec:** Implements R59, R62, R63 — read those findings and `#### Self-healing` in `docs/berth-plan.md` (this plan).
 
 Typed liveness from `git worktree list --porcelain` plus the opaque `WorktreeId` in the admin dir (R39): `Live | Unavailable | OrphanCandidate | Orphaned | Unknown`. **Everything except `Live` retains the reservation's scopes and edges.** A manually `rm -rf`'d worktree stays registered until `git worktree prune`, a locked worktree is deliberately absent, and a pruned path is recyclable — none of these are abandonment, and abandonment requires user confirmation (R28).
 
@@ -252,7 +256,7 @@ One shared `reconcile()` routine, called at SessionStart, before every stateful 
 
 **Goal:** In `cargo-liner`: a blocked claim can be answered, in the same locked transaction that discovered the block, and the answer authorizes exactly what it was shown.
 
-**Spec:** Implements R53, R54, R55, R56 — see `### Answering an overlap` below.
+**Spec:** Implements R53, R54, R55, R56 — read those findings and `### Answering an overlap` in `docs/berth-plan.md` (this plan).
 
 `ConflictAuthorization::{Sequence { direction }, Defer, Override }` rides the `claim`/`widen` transaction as a payload. **There is no standalone `override` verb and no post-hoc answer** (R53, restoring R32): the candidate `ReservationId` does not exist until acquisition succeeds, so an answer appended separately either dangles or opens a crash window holding an unauthorized overlap. `rescope` is not a variant at all — it is an ordinary re-claim with narrower scopes.
 
@@ -281,7 +285,7 @@ Each answer stores both `ReservationId`s, the **normalized overlap antichain at 
 
 **Goal:** In `cargo-liner`: ordering edges form a DAG whose status is derived, never stored, and which cannot be made cyclic by concurrent writers.
 
-**Spec:** Implements R58, R60, R61, R67 — see `#### Sequencing` below.
+**Spec:** Implements R58, R60, R61, R67 — read those findings and `#### Sequencing` in `docs/berth-plan.md` (this plan).
 
 Edge record: `before: ReservationId`, `after: ReservationId`, the validated non-empty overlap scope set, reason, and its journal `EventId`. **No `edge_satisfied` or `edge_dissolved` journal variant** (R60, R68) — status is a pure function of the predecessor's lifecycle and *current* trunk:
 
@@ -316,7 +320,7 @@ Cost, per R67: adjacency rebuilt during replay in `O(J+V+E)`; DFS cycle check `O
 
 **Goal:** In `cargo-liner`: a `reference-transaction` hook makes the ordering hold real, ships observe-only, and can never trap anyone.
 
-**Spec:** Implements D8 and R64 — see `#### The trunk gate` below.
+**Spec:** Implements D8 and R64 — read those and `#### The trunk gate` in `docs/berth-plan.md` (this plan).
 
 `berth init` installs a `reference-transaction` hook into the **common** git directory, so one hook covers every worktree. It fires on every ref update from any source — terminal, agent, slash command, rebase — and `--no-verify` does not skip it (that flag covers only the commit hooks).
 
@@ -351,7 +355,7 @@ R64: editing stays fail-open on ledger loss; **integration fails closed** on an 
 
 **Goal:** In `cargo-liner`: `berth drift` reports what changed against what was claimed, classifying each result the way D1 requires.
 
-**Spec:** Implements tier 3 and the D1 resolution — see `### D1 — RESOLVED` below.
+**Spec:** Implements tier 3 and the D1 resolution — read `### D1 — RESOLVED` in `docs/berth-plan.md` (this plan).
 
 Fingerprint, verbatim from R46:
 
@@ -391,7 +395,7 @@ A widen re-evaluates every existing answer against the new scopes (phase 6) — 
 
 **Goal:** In `cargo-liner`: `berth board` shows integration constraints truthfully, and `--json` gives the same content to a machine.
 
-**Spec:** Implements R66 — see `#### Self-healing` below, final bullet.
+**Spec:** Implements R66 — read it and `#### Self-healing` (final bullet) in `docs/berth-plan.md` (this plan).
 
 **A DAG is a partial order; never render a numbered queue.** Sections: **Ready now** (no unsatisfied predecessors), **Waiting** (each predecessor named, with the covered paths), **Unresolved overlaps**, **Unconstrained live reservations**, and alerts (orphaned-outstanding, bypassed edges with reason and date, stale flags). Ties within a readiness level are labelled unordered. With no edges recorded it says **"no integration order declared"** — never an empty queue, which reads as an all-clear.
 
@@ -418,7 +422,7 @@ Board read calls `reconcile()` first (phase 5).
 
 **Goal:** In `cargo-liner`: `cargo-berth` is documented for a stranger and ready to publish, without publishing.
 
-**Spec:** Implements `#### The README is a deliverable` below.
+**Spec:** Implements `#### The README is a deliverable` in `docs/berth-plan.md` (this plan).
 
 `crates/cargo-berth/README.md`, written for someone who has never heard of hana, `/plan:delegate`, or Claude Code:
 
@@ -467,7 +471,7 @@ Run `berth init`, then confirm the ledger exists at `.git/hana-sync/` with `jour
 
 **Goal:** In `hana`: an agent's `Edit`/`Write` into a foreign claim is blocked before it lands, and a `Bash` write that slips past is detected right after.
 
-**Spec:** Implements D1 — see `### D1 — RESOLVED` below.
+**Spec:** Implements D1 — read `### D1 — RESOLVED` in `docs/berth-plan.md` (this plan).
 
 Two shim scripts that shell out to the installed binary and translate its exit codes into Claude Code hook protocol. **`.claude/settings.local.json` has no `hooks` key today — create it**, preserving the existing `permissions` and `outputStyle` entries exactly.
 
@@ -495,7 +499,7 @@ Bash is not constrained, only observed — that is the user's D1 decision, not a
 
 **Spec:** A skill wrapping the binary. Verbs `board`, `check`, `claim`, `release`, `sequence`, `integrate` map to the phase-1 surface.
 
-**The Work-Order-to-paths resolution lives here, not in the tool** — this is the boundary that keeps `cargo-berth` publishable. The skill reads a `**Reservations:**` block out of a plan doc and passes plain paths to `berth claim`. Grammar (R35): `- file: \`Cargo.toml\`` and `- tree: \`crates/hana/src/transport\``. Paths are **repo-relative**, matching the `**Files:**` blocks already on disk.
+**The Work-Order-to-paths resolution lives here, not in the tool** — this is the boundary that keeps `cargo-berth` publishable. The skill reads a `**Reservations:**` block out of a plan doc and passes plain paths to `berth claim`. Grammar (R35 in `docs/berth-plan.md` (this plan)): `- file: \`Cargo.toml\`` and `- tree: \`crates/hana/src/transport\``. Paths are **repo-relative**, matching the `**Files:**` blocks already on disk.
 
 On exit `3` the skill escalates to the user with the binary's payload — both plans and phases, the shared paths, the direction, the reason, the consequence — and only then re-invokes `claim` with the chosen flag. **An agent never answers its own block** (R54).
 
@@ -541,7 +545,7 @@ On a blocked claim, `/plan:delegate` stops before dispatching and surfaces the c
 
 Three have no `**Files:**` block and must be authored by reading the phase: **Tool Graph 60, 69, 70**.
 
-Grammar, R35:
+Grammar, R35 in `docs/berth-plan.md` (this plan):
 
 ```markdown
 **Reservations:**
