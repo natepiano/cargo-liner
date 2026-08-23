@@ -36,12 +36,14 @@ use tui_pane::StatusLine;
 use tui_pane::StatusLineGlobal;
 use tui_pane::StatusLineNote;
 use tui_pane::accent_color;
+use tui_pane::blend_color;
 use tui_pane::default_pane_chrome;
 use tui_pane::draw_clipped;
 use tui_pane::error_color;
 use tui_pane::hover_focus_color;
 use tui_pane::inline_error_color;
 use tui_pane::label_color;
+use tui_pane::pane_background;
 use tui_pane::render_status_line;
 use tui_pane::secondary_text_color;
 use tui_pane::selection_style;
@@ -144,8 +146,11 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect) {
     let placements = app.tiles.placements(area, initial_rows);
     let mut grid_lines = GridLines::new(area);
     for placement in &placements {
+        // The ground a fading row is carried toward is the one its own
+        // cell is painted on, which focus moves.
+        let ground = pane_background(placement.frame.is_focused());
         draw_clipped(frame.buffer_mut(), placement.frame, |buffer, inner| {
-            draw_contents(buffer, &app.roster, placement.content, inner);
+            draw_contents(buffer, &app.roster, placement.content, inner, ground);
         });
         match placement.content {
             TileContent::Summary => {
@@ -169,20 +174,27 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect) {
     );
 }
 
-/// What a cell holds inside its borders.
-fn draw_contents(buffer: &mut Buffer, roster: &Roster, content: TileContent, inner: Rect) {
+/// What a cell holds inside its borders. `ground` is the colour the
+/// cell is painted on, which a finished row's text fades toward.
+fn draw_contents(
+    buffer: &mut Buffer,
+    roster: &Roster,
+    content: TileContent,
+    inner: Rect,
+    ground: Color,
+) {
     match content {
-        TileContent::Summary => draw_summary(buffer, roster, inner),
-        TileContent::Group(id) => draw_group(buffer, roster, id, inner),
+        TileContent::Summary => draw_summary(buffer, roster, inner, ground),
+        TileContent::Group(id) => draw_group(buffer, roster, id, inner, ground),
         TileContent::Empty(number) => draw_number(buffer, number, inner),
     }
 }
 
 /// The summary cell: one row per command, whatever each one is running
 /// underneath.
-fn draw_summary(buffer: &mut Buffer, roster: &Roster, inner: Rect) {
+fn draw_summary(buffer: &mut Buffer, roster: &Roster, inner: Rect, ground: Color) {
     let rows: Vec<&TrackedRow> = roster.groups().iter().map(|group| &group.lead).collect();
-    draw_process_table(buffer, inner, &rows, TableKind::Summary);
+    draw_process_table(buffer, inner, &rows, TableKind::Summary, ground);
 }
 
 /// What sccache reports, written along the summary cell's top border.
@@ -268,12 +280,12 @@ fn progress_placement(rows: &[&TrackedRow]) -> ProgressPlacement {
 
 /// One command's own cell: every invocation the summary put behind that
 /// command's single row, the command itself included.
-fn draw_group(buffer: &mut Buffer, roster: &Roster, id: u32, inner: Rect) {
+fn draw_group(buffer: &mut Buffer, roster: &Roster, id: u32, inner: Rect, ground: Color) {
     let Some(group) = roster.groups().iter().find(|group| group.id == id) else {
         return;
     };
     let rows: Vec<&TrackedRow> = group.rows().collect();
-    draw_process_table(buffer, inner, &rows, TableKind::Command);
+    draw_process_table(buffer, inner, &rows, TableKind::Command, ground);
 }
 
 /// A cell opened with `+` that no command has claimed: its number, on
@@ -352,11 +364,15 @@ struct TableLayout {
     manifest:      ManifestPath,
     /// Where a compiling command's reading goes.
     placement:     ProgressPlacement,
+    /// The colour the cell is painted on, which a finished row's text
+    /// is carried toward as it fades.
+    ground:        Color,
 }
 
 impl TableLayout {
-    /// The layout for a cell of `kind` drawing `rows` into `area`.
-    fn of(rows: &[&TrackedRow], kind: TableKind, area: Rect) -> Self {
+    /// The layout for a cell of `kind` drawing `rows` into `area`, over
+    /// a cell painted `ground`.
+    fn of(rows: &[&TrackedRow], kind: TableKind, area: Rect, ground: Color) -> Self {
         let placement = progress_placement(rows);
         let columns = visible_columns(rows, kind, placement);
         let constraints = fitted_constraints(rows, &columns);
@@ -366,13 +382,33 @@ impl TableLayout {
             columns,
             manifest: kind.manifest(),
             placement,
+            ground,
         }
     }
+
+    /// `color` as something `faded` of the way out draws it: carried
+    /// that far toward the ground the cell stands on, so a row on its
+    /// way off the display sinks into the cell rather than switching
+    /// off at the end of its spell.
+    fn ink(&self, color: Color, faded: u8) -> Color { blend_color(color, self.ground, faded) }
+}
+
+/// How far the least-faded of `rows` has travelled, which is what
+/// anything standing over them fades with: a heading or a column label
+/// holds its colour while a single row under it is still running.
+fn heading_fade(rows: &[&TrackedRow]) -> u8 {
+    rows.iter().map(|row| row.faded()).min().unwrap_or_default()
 }
 
 /// Render a cargo table: one working-directory header per distinct path,
 /// with that directory's invocations tabulated beneath it.
-fn draw_process_table(buffer: &mut Buffer, area: Rect, rows: &[&TrackedRow], kind: TableKind) {
+fn draw_process_table(
+    buffer: &mut Buffer,
+    area: Rect,
+    rows: &[&TrackedRow],
+    kind: TableKind,
+    ground: Color,
+) {
     if rows.is_empty() {
         Paragraph::new(vec![
             Line::from(""),
@@ -388,9 +424,9 @@ fn draw_process_table(buffer: &mut Buffer, area: Rect, rows: &[&TrackedRow], kin
     // One column-label row for the whole cell. Every group's table is
     // laid out with the same constraints and the same indent, so the
     // labels stay over their columns without costing a row per group.
-    let layout = TableLayout::of(rows, kind, area);
+    let layout = TableLayout::of(rows, kind, area, ground);
     Table::new(Vec::<Row>::new(), layout.constraints.iter().copied())
-        .header(column_header(&layout.columns))
+        .header(column_header(&layout, heading_fade(rows)))
         .column_spacing(TABLE_COLUMN_SPACING)
         .render(
             Rect {
@@ -453,12 +489,16 @@ fn draw_path_group(
     group: &PathGroup<'_>,
     layout: &TableLayout,
 ) -> u16 {
+    let faded = heading_fade(&group.rows);
     let mut heading = vec![
         Span::raw(SECTION_HEADER_INDENT),
-        Span::styled(group.path.to_string(), Style::default().fg(accent_color())),
+        Span::styled(
+            group.path.to_string(),
+            Style::default().fg(layout.ink(accent_color(), faded)),
+        ),
     ];
     if layout.placement == ProgressPlacement::Heading {
-        heading.extend(heading_gauge(group, area.width));
+        heading.extend(heading_gauge(group, area.width, layout));
     }
     Paragraph::new(Line::from(heading)).render(
         Rect {
@@ -543,15 +583,14 @@ fn fitted_constraints(rows: &[&TrackedRow], columns: &[usize]) -> Vec<Constraint
 
 /// The cell's one column-label row, drawn above the first group and
 /// aligned with every group's rows by [`indented`].
-fn column_header(columns: &[usize]) -> Row<'static> {
+fn column_header(layout: &TableLayout, faded: u8) -> Row<'static> {
+    let style = Style::default().fg(layout.ink(label_color(), faded));
     Row::new(
         TABLE_HEADERS
             .iter()
             .enumerate()
-            .filter(|(column, _)| columns.contains(column))
-            .map(|(_, label)| {
-                Span::styled((*label).to_string(), Style::default().fg(label_color()))
-            }),
+            .filter(|(column, _)| layout.columns.contains(column))
+            .map(|(_, label)| Span::styled((*label).to_string(), style)),
     )
 }
 
@@ -576,7 +615,8 @@ struct DrawnRow {
 /// down the rows of that column, and the row grows to hold it.
 fn process_row(row: &TrackedRow, layout: &TableLayout) -> DrawnRow {
     let process = &row.process;
-    let muted = Style::default().fg(label_color());
+    let faded = row.faded();
+    let muted = Style::default().fg(layout.ink(label_color(), faded));
     let program = if row.is_ended() {
         muted
     } else {
@@ -599,9 +639,9 @@ fn process_row(row: &TrackedRow, layout: &TableLayout) -> DrawnRow {
         Text::from(Span::styled(process.pid.to_string(), muted)),
         Text::from(Span::styled(process.start.clone(), muted)),
         Text::from(Span::styled(process.duration.clone(), muted)),
-        Text::from(state_cell(row)),
+        Text::from(state_cell(row, layout)),
         command,
-        Text::from(compiler_cell(row)),
+        Text::from(compiler_cell(row, layout)),
         Text::from(Span::styled(managed_text(process), muted)),
     ];
     DrawnRow {
@@ -670,8 +710,9 @@ fn visible_columns(
 ///
 /// A run with no capture behind it gets [`PROGRESS_ABSENT`] rather than
 /// an empty cell, which would read as nought percent.
-fn state_cell(row: &TrackedRow) -> Line<'static> {
-    let muted = Style::default().fg(label_color());
+fn state_cell(row: &TrackedRow, layout: &TableLayout) -> Line<'static> {
+    let faded = row.faded();
+    let muted = Style::default().fg(layout.ink(label_color(), faded));
     let Some(state) = row.process.state else {
         return Line::from(Span::styled(PROGRESS_ABSENT, muted));
     };
@@ -681,7 +722,7 @@ fn state_cell(row: &TrackedRow) -> Line<'static> {
         // claim the row is getting somewhere.
         return Line::from(Span::styled(
             STATE_BLOCKED,
-            Style::default().fg(warning_color()),
+            Style::default().fg(layout.ink(warning_color(), faded)),
         ));
     };
     let fill = if row.is_ended() {
@@ -689,7 +730,7 @@ fn state_cell(row: &TrackedRow) -> Line<'static> {
     } else {
         success_color()
     };
-    Line::from(progress_bar(progress, fill))
+    Line::from(progress_bar(progress, layout.ink(fill, faded), muted))
 }
 
 /// Cells the `state` column needs for one row.
@@ -729,7 +770,7 @@ fn percent_reading(progress: Progress) -> String {
 /// alone would move the bar once every ninth of the build, and the
 /// reading is right-aligned, so the cell the fill has reached is blank
 /// for most of a run and free to carry the partial glyph.
-fn progress_bar(progress: Progress, fill: Color) -> Vec<Span<'static>> {
+fn progress_bar(progress: Progress, fill: Color, muted: Style) -> Vec<Span<'static>> {
     let per_cell = PROGRESS_CELL_PARTIALS.len().saturating_add(1);
     let eighths = progress
         .done
@@ -745,7 +786,6 @@ fn progress_bar(progress: Progress, fill: Color) -> Vec<Span<'static>> {
     let reading = percent_reading(progress);
     let lead = PROGRESS_CELL_BAR_WIDTH.saturating_sub(reading.chars().count());
     let ground = Style::default().fg(fill).add_modifier(Modifier::REVERSED);
-    let muted = Style::default().fg(label_color());
 
     (0..PROGRESS_CELL_BAR_WIDTH)
         .map(|cell| {
@@ -776,7 +816,7 @@ fn progress_bar(progress: Progress, fill: Color) -> Vec<Span<'static>> {
 /// Nothing at all when the command running there was not captured, or
 /// when the directory is long enough that the rule left would be too
 /// short to read as one.
-fn heading_gauge(group: &PathGroup<'_>, width: u16) -> Vec<Span<'static>> {
+fn heading_gauge(group: &PathGroup<'_>, width: u16, layout: &TableLayout) -> Vec<Span<'static>> {
     let Some(progress) = group.rows.iter().find_map(|row| Some((row, reading(row)?))) else {
         return Vec::new();
     };
@@ -794,11 +834,14 @@ fn heading_gauge(group: &PathGroup<'_>, width: u16) -> Vec<Span<'static>> {
         .saturating_mul(progress.done)
         .checked_div(progress.total)
         .unwrap_or_default();
-    let style = if row.is_ended() {
-        Style::default().fg(label_color())
+    let faded = row.faded();
+    let filled_color = if row.is_ended() {
+        label_color()
     } else {
-        Style::default().fg(success_color())
+        success_color()
     };
+    let style = Style::default().fg(layout.ink(filled_color, faded));
+    let empty = Style::default().fg(layout.ink(label_color(), faded));
     vec![
         Span::raw(" "),
         Span::styled(PROGRESS_HEADING_FILLED.to_string().repeat(filled), style),
@@ -806,7 +849,7 @@ fn heading_gauge(group: &PathGroup<'_>, width: u16) -> Vec<Span<'static>> {
             PROGRESS_HEADING_EMPTY
                 .to_string()
                 .repeat(usize::from(rule).saturating_sub(filled)),
-            Style::default().fg(label_color()),
+            empty,
         ),
         Span::raw(" "),
         Span::styled(reading, style),
@@ -824,22 +867,22 @@ fn managed_text(process: &CargoProcess) -> String {
 
 /// The `compiler` cell: driver name in the active color, its count muted
 /// beside it, and nothing at all when no compile is in flight.
-fn compiler_cell(row: &TrackedRow) -> Line<'static> {
-    let name = if row.is_ended() {
-        Style::default().fg(label_color())
+fn compiler_cell(row: &TrackedRow, layout: &TableLayout) -> Line<'static> {
+    let faded = row.faded();
+    let driver = if row.is_ended() {
+        label_color()
     } else {
-        Style::default().fg(success_color())
+        success_color()
     };
+    let name = Style::default().fg(layout.ink(driver, faded));
+    let count = Style::default().fg(layout.ink(label_color(), faded));
     row.process
         .compiler
         .as_ref()
         .map_or_else(Line::default, |compiler| {
             Line::from(vec![
                 Span::styled(compiler.name, name),
-                Span::styled(
-                    format!("\u{d7}{}", compiler.count),
-                    Style::default().fg(label_color()),
-                ),
+                Span::styled(format!("\u{d7}{}", compiler.count), count),
             ])
         })
 }
@@ -1049,10 +1092,14 @@ mod tests {
         })
     }
 
+    /// The style the cells a bar has not reached are drawn in, which
+    /// the pane settles per row and hands to [`progress_bar`].
+    fn muted() -> Style { Style::default().fg(label_color()) }
+
     /// The cells of a bar, as text, so a test can read the field the way
     /// the pane draws it.
     fn bar_text(done: usize, total: usize) -> String {
-        progress_bar(Progress { done, total }, success_color())
+        progress_bar(Progress { done, total }, success_color(), muted())
             .iter()
             .map(|span| span.content.as_ref())
             .collect()
@@ -1061,7 +1108,7 @@ mod tests {
     /// The cells the fill covers, which are the ones drawn in reverse so
     /// that the fill colour lands as their background.
     fn filled_cells(done: usize, total: usize) -> usize {
-        progress_bar(Progress { done, total }, success_color())
+        progress_bar(Progress { done, total }, success_color(), muted())
             .iter()
             .filter(|span| span.style.add_modifier.contains(Modifier::REVERSED))
             .count()
@@ -1313,6 +1360,7 @@ mod tests {
             area,
             &rows.iter().collect::<Vec<&TrackedRow>>(),
             TableKind::Command,
+            Color::Reset,
         );
 
         // The column labels are drawn once at the top of the cell, so
@@ -1354,6 +1402,7 @@ mod tests {
             area,
             &rows.iter().collect::<Vec<&TrackedRow>>(),
             TableKind::Command,
+            Color::Reset,
         );
 
         let header = buffer_line(&buffer, 0);

@@ -12,6 +12,7 @@
 //! when the registry has nothing that applies.
 
 mod accessors;
+mod blend;
 mod constants;
 mod fallback;
 mod loader;
@@ -47,6 +48,7 @@ pub use self::accessors::success_color;
 pub use self::accessors::text_default;
 pub use self::accessors::title_color;
 pub use self::accessors::warning_color;
+pub use self::blend::blend_color;
 pub use self::fallback::fallback_theme;
 pub use self::poller::spawn_appearance_poller;
 pub use self::registry::RegisterOutcome;

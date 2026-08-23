@@ -128,6 +128,22 @@ pub(super) fn pane_fill(focused: bool) -> Option<Style> {
     focused_pane_tint_enabled().then(|| Style::default().bg(pane_tint(focused)))
 }
 
+/// The colour a pane's contents are drawn over.
+///
+/// `pane_fill` in the one form a caller outside this crate can work
+/// against: text carried toward the ground it stands on -- a row fading
+/// out of a closing tile -- has to name that ground, and a pane whose
+/// tint is switched off still stands on the appearance the theme was
+/// written for.
+#[must_use]
+pub fn pane_background(focused: bool) -> Color {
+    if focused_pane_tint_enabled() {
+        pane_tint(focused)
+    } else {
+        theme().text.bg_focus.color
+    }
+}
+
 /// Background tint behind a pane's contents.
 ///
 /// Derived from `text.bg_focus` so it tracks the active appearance: a

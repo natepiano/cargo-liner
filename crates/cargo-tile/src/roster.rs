@@ -16,12 +16,18 @@ use std::time::Instant;
 use crate::processes::CargoGroup;
 use crate::processes::CargoProcess;
 
-/// One table row and, once it has stopped, when that happened.
+/// One table row, once it has stopped when that happened, and how far
+/// its text has since been carried toward the ground it is drawn on.
 pub(crate) struct TrackedRow {
     /// The invocation as the last scan that carried it described it.
     pub(crate) process: CargoProcess,
     /// When the process left the scan, or `None` while it runs.
     ended:              Option<Instant>,
+    /// How far through the fade the row stands, on the alpha scale
+    /// [`blend_color`](tui_pane::blend_color) reads: zero while it
+    /// runs, [`u8::MAX`] once it has reached the ground and is about to
+    /// be let go of.
+    faded:              u8,
 }
 
 impl From<CargoProcess> for TrackedRow {
@@ -30,6 +36,7 @@ impl From<CargoProcess> for TrackedRow {
         Self {
             process,
             ended: None,
+            faded: 0,
         }
     }
 }
@@ -38,15 +45,51 @@ impl TrackedRow {
     /// Whether the process behind this row has stopped.
     pub(crate) const fn is_ended(&self) -> bool { self.ended.is_some() }
 
+    /// How far the row's text has been carried toward the ground.
+    pub(crate) const fn faded(&self) -> u8 { self.faded }
+
     /// Take the scan's account of a process that is still running.
     fn refresh(&mut self, process: CargoProcess) {
         self.process = process;
         self.ended = None;
+        self.faded = 0;
     }
 
     /// Stamp the row as finished, leaving an earlier stamp alone so the
     /// fade runs from when it actually stopped.
     fn finish(&mut self, now: Instant) { self.ended = self.ended.or(Some(now)); }
+
+    /// Move the fade on, reporting whether it went anywhere.
+    ///
+    /// A row that has not stopped has nothing to move: the whole travel
+    /// is measured from the stamp [`finish`](Self::finish) left.
+    fn advance(&mut self, now: Instant, fade: Duration) -> bool {
+        let faded = self.faded_at(now, fade);
+        let moved = faded != self.faded;
+        self.faded = faded;
+        moved
+    }
+
+    /// Where the fade stands at `now`.
+    ///
+    /// The whole travel once `fade` has run out, which is also what a
+    /// `fade` of nothing gives on the poll that stamps the row -- there
+    /// is no travel to make, and the row goes on that same poll.
+    fn faded_at(&self, now: Instant, fade: Duration) -> u8 {
+        let Some(ended) = self.ended else {
+            return 0;
+        };
+        let elapsed = now.duration_since(ended);
+        if elapsed >= fade {
+            return u8::MAX;
+        }
+        // Both fit a u32: `fade` is clamped to `MAX_FADE_SECONDS`, and
+        // `elapsed` is shorter still to have reached here.
+        let elapsed = u32::try_from(elapsed.as_millis()).unwrap_or(u32::MAX);
+        let whole = u32::try_from(fade.as_millis()).unwrap_or(u32::MAX);
+        let travelled = elapsed.saturating_mul(u32::from(u8::MAX)) / whole.max(1);
+        u8::try_from(travelled).unwrap_or(u8::MAX)
+    }
 
     /// Whether the row has been finished for longer than `fade`.
     fn is_expired(&self, now: Instant, fade: Duration) -> bool {
@@ -110,12 +153,18 @@ impl TrackedGroup {
         }
     }
 
-    /// Drop the rows that have finished fading, reporting whether any
-    /// went.
-    fn expire(&mut self, now: Instant, fade: Duration) -> bool {
+    /// Drop the rows that have finished fading and move the rest of the
+    /// group's fade on, reporting whether anything the display draws
+    /// changed.
+    fn advance(&mut self, now: Instant, fade: Duration) -> bool {
         let before = self.rest.len();
         self.rest.retain(|row| !row.is_expired(now, fade));
-        self.rest.len() != before
+        let mut changed = self.rest.len() != before;
+        changed |= self.lead.advance(now, fade);
+        for row in &mut self.rest {
+            changed |= row.advance(now, fade);
+        }
+        changed
     }
 
     /// Whether the group itself has finished fading and its tile should
@@ -213,14 +262,18 @@ impl Roster {
         true
     }
 
-    /// Drop everything that has finished fading, reporting whether the
-    /// display needs repainting as a result.
-    pub(crate) fn expire(&mut self, now: Instant, fade: Duration) -> bool {
+    /// Move every fade on and drop whatever has finished one, reporting
+    /// whether the display needs repainting as a result.
+    ///
+    /// A fade is a colour walking toward the ground rather than a
+    /// single change of shade, so this reports a repaint on every step
+    /// of it, not only on the row that has just been let go of.
+    pub(crate) fn advance(&mut self, now: Instant, fade: Duration) -> bool {
         let before = self.groups.len();
         self.groups.retain(|group| !group.is_expired(now, fade));
         let mut changed = self.groups.len() != before;
         for group in &mut self.groups {
-            changed |= group.expire(now, fade);
+            changed |= group.advance(now, fade);
         }
         changed
     }
@@ -292,8 +345,8 @@ mod tests {
         roster.observe(vec![group(10, &[])], now);
         roster.observe(Vec::new(), now);
 
-        assert!(!roster.expire(now, Duration::from_secs(3)));
-        assert!(roster.expire(now + Duration::from_secs(3), Duration::from_secs(3)));
+        assert!(!roster.advance(now, Duration::from_secs(3)));
+        assert!(roster.advance(now + Duration::from_secs(3), Duration::from_secs(3)));
         assert!(roster.groups().is_empty());
     }
 
@@ -334,7 +387,7 @@ mod tests {
         let now = start();
         roster.observe(vec![group(10, &[11, 12])], now);
         roster.observe(vec![group(10, &[12])], now);
-        roster.expire(now + Duration::from_secs(3), Duration::from_secs(3));
+        roster.advance(now + Duration::from_secs(3), Duration::from_secs(3));
 
         let remaining: Vec<u32> = roster.groups()[0]
             .rest
@@ -392,7 +445,69 @@ mod tests {
         roster.observe(Vec::new(), now);
         roster.observe(Vec::new(), now + Duration::from_secs(2));
 
-        assert!(roster.expire(now + Duration::from_secs(3), Duration::from_secs(3)));
+        assert!(roster.advance(now + Duration::from_secs(3), Duration::from_secs(3)));
+    }
+
+    /// The fade is a colour walking toward the ground, so the roster
+    /// has to report a repaint on every step of it rather than only on
+    /// the row it finally lets go of.
+    #[test]
+    fn every_step_of_the_fade_asks_for_a_repaint() {
+        let mut roster = Roster::new();
+        let now = start();
+        let fade = Duration::from_secs(3);
+        roster.observe(vec![group(10, &[])], now);
+        roster.observe(Vec::new(), now);
+
+        assert!(roster.advance(now + Duration::from_millis(500), fade));
+        assert!(roster.advance(now + Duration::from_millis(1000), fade));
+    }
+
+    /// The step the fade stands on is what the render layer carries the
+    /// row's colour by, so it has to track the spell rather than the
+    /// scans inside it.
+    #[test]
+    fn the_fade_travels_with_the_spell_it_was_given() {
+        let mut roster = Roster::new();
+        let now = start();
+        let fade = Duration::from_secs(4);
+        roster.observe(vec![group(10, &[])], now);
+        roster.observe(Vec::new(), now);
+
+        assert_eq!(roster.groups()[0].lead.faded(), 0, "stamped, not yet gone");
+        roster.advance(now + Duration::from_secs(1), fade);
+        assert_eq!(roster.groups()[0].lead.faded(), u8::MAX / 4);
+        roster.advance(now + Duration::from_secs(2), fade);
+        assert_eq!(roster.groups()[0].lead.faded(), u8::MAX / 2);
+    }
+
+    /// A row still in the scan is drawn in its own colours, however
+    /// long the display has held it.
+    #[test]
+    fn a_running_row_never_fades() {
+        let mut roster = Roster::new();
+        let now = start();
+        roster.observe(vec![group(10, &[])], now);
+        roster.advance(now + Duration::from_secs(2), Duration::from_secs(3));
+
+        assert_eq!(roster.groups()[0].lead.faded(), 0);
+    }
+
+    /// A command that comes back with the same pid picks its colours
+    /// back up rather than carrying on from where the fade left it.
+    #[test]
+    fn a_group_that_returns_loses_the_fade_it_had_made() {
+        let mut roster = Roster::new();
+        let now = start();
+        let fade = Duration::from_secs(3);
+        roster.observe(vec![group(10, &[])], now);
+        roster.observe(Vec::new(), now);
+        roster.advance(now + Duration::from_secs(2), fade);
+        assert_ne!(roster.groups()[0].lead.faded(), 0, "the fade had started");
+
+        roster.observe(vec![group(10, &[])], now + Duration::from_secs(2));
+
+        assert_eq!(roster.groups()[0].lead.faded(), 0);
     }
 
     #[test]
@@ -424,7 +539,7 @@ mod tests {
         // The invocation is stamped rather than gone, so the cell goes
         // out through the fade instead of vanishing under the reader.
         assert_eq!(roster.tiled_ids(&hidden_when_idle()), vec![10]);
-        roster.expire(now + Duration::from_secs(1), Duration::ZERO);
+        roster.advance(now + Duration::from_secs(1), Duration::ZERO);
         assert!(roster.tiled_ids(&hidden_when_idle()).is_empty());
     }
 

@@ -19,6 +19,7 @@ mod title;
 pub use chrome::PaneChrome;
 pub use chrome::default_pane_chrome;
 pub use chrome::empty_pane_block;
+pub use chrome::pane_background;
 pub use frame::GridLines;
 pub use frame::PaneBorders;
 pub use frame::PaneFrame;

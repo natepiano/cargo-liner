@@ -197,12 +197,13 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
             dirty = true;
         }
         sccache::refresh_if_due(&mut app.sccache, &sccache_reads, Instant::now());
-        // A finished row holds its grey for the configured spell and
-        // then goes, taking its cell with it. Nothing external announces
-        // that moment, so the poll is what notices it has arrived.
+        // A finished row walks its grey toward the ground it is drawn
+        // on for the configured spell and then goes, taking its cell
+        // with it. Nothing external announces either the steps or the
+        // moment, so the poll is what carries them.
         if app
             .roster
-            .expire(Instant::now(), app.loaded_config.config.tiles.fade())
+            .advance(Instant::now(), app.loaded_config.config.tiles.fade())
         {
             dirty = true;
         }
