@@ -84,6 +84,44 @@ impl ReservationLifecycle {
             Self::Released { .. } => Err(LifecycleTransitionError::AlreadyReleased),
         }
     }
+
+    /// Record an abandonment or orphan retirement after explicit user confirmation.
+    pub(crate) fn release_after_user_confirmation(
+        &mut self,
+        disposition: ReleaseDisposition,
+    ) -> Result<(), LifecycleTransitionError> {
+        if !matches!(
+            disposition,
+            ReleaseDisposition::Abandoned(_) | ReleaseDisposition::RetiredOrphan(_)
+        ) {
+            return Err(LifecycleTransitionError::ReleaseRequiresCheckpoint);
+        }
+        match self {
+            Self::Active | Self::Outstanding { .. } => {
+                *self = Self::Released { disposition };
+                Ok(())
+            },
+            Self::Released { .. } => Err(LifecycleTransitionError::AlreadyReleased),
+        }
+    }
+
+    /// Replace invalidated git-backed release evidence without erasing its history.
+    pub(crate) fn replace_release_disposition(
+        &mut self,
+        superseded: &ReleaseDisposition,
+        replacement: ReleaseDisposition,
+    ) -> Result<(), LifecycleTransitionError> {
+        match self {
+            Self::Released { disposition } if disposition == superseded => {
+                *disposition = replacement;
+                Ok(())
+            },
+            Self::Released { .. } => Err(LifecycleTransitionError::SupersededDispositionMismatch),
+            Self::Active | Self::Outstanding { .. } => {
+                Err(LifecycleTransitionError::ReplacementRequiresRelease)
+            },
+        }
+    }
 }
 
 /// What the current trunk proves about retained reservation evidence.
@@ -269,6 +307,10 @@ pub(crate) enum LifecycleTransitionError {
     ReleaseRequiresCheckpoint,
     /// A second terminal disposition named an already released reservation.
     AlreadyReleased,
+    /// A replacement record did not name the disposition currently retained by replay.
+    SupersededDispositionMismatch,
+    /// A replacement disposition named a reservation without an earlier release.
+    ReplacementRequiresRelease,
 }
 
 impl fmt::Display for LifecycleTransitionError {
@@ -284,6 +326,12 @@ impl fmt::Display for LifecycleTransitionError {
                 formatter.write_str("release requires a checkpointed reservation")
             },
             Self::AlreadyReleased => formatter.write_str("reservation is already released"),
+            Self::SupersededDispositionMismatch => {
+                formatter.write_str("superseded disposition does not match the current release")
+            },
+            Self::ReplacementRequiresRelease => {
+                formatter.write_str("replacement disposition requires a released reservation")
+            },
         }
     }
 }

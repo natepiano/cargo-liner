@@ -10,14 +10,21 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use command::git_output;
+use constants::GIT_CAT_FILE_COMMAND;
+use constants::GIT_COMMIT_PEEL_SUFFIX;
 use constants::GIT_COMMON_DIRECTORY_ARG;
+use constants::GIT_EXISTS_ARG;
 use constants::GIT_HEAD_REVISION;
 use constants::GIT_IS_ANCESTOR_ARG;
 use constants::GIT_LOCAL_BRANCH_REF_PREFIX;
 use constants::GIT_MERGE_BASE_COMMAND;
 use constants::GIT_NOT_ANCESTOR_EXIT_CODE;
+use constants::GIT_NUL_TERMINATED_ARG;
+use constants::GIT_PORCELAIN_ARG;
 use constants::GIT_REV_PARSE_COMMAND;
 use constants::GIT_SHOW_TOPLEVEL_ARG;
+use constants::GIT_WORKTREE_COMMAND;
+use constants::GIT_WORKTREE_LIST_ARG;
 
 use crate::ids::GitObjectId;
 use crate::ids::InvalidGitObjectId;
@@ -83,6 +90,56 @@ pub(crate) fn branch_object_id(
     )
 }
 
+/// Resolve a revision while treating an ordinary unresolved name as a typed absence.
+pub(crate) fn reference_lookup(
+    repository_root: &Path,
+    revision: &str,
+) -> Result<ReferenceLookup, GitError> {
+    let output = git_output(repository_root, [GIT_REV_PARSE_COMMAND, revision])?;
+    if !output.status.success() {
+        return Ok(ReferenceLookup::Missing);
+    }
+    let object_id = String::from_utf8(output.stdout).map_err(GitError::InvalidOutput)?;
+    object_id
+        .trim()
+        .parse()
+        .map(ReferenceLookup::Present)
+        .map_err(GitError::InvalidObjectId)
+}
+
+/// Return whether git can still read one commit object.
+pub(crate) fn commit_is_available(
+    repository_root: &Path,
+    object_id: &GitObjectId,
+) -> Result<bool, GitError> {
+    let revision = format!("{object_id}{GIT_COMMIT_PEEL_SUFFIX}");
+    let output = git_output(
+        repository_root,
+        [GIT_CAT_FILE_COMMAND, GIT_EXISTS_ARG, &revision],
+    )?;
+    Ok(output.status.success())
+}
+
+/// Read git's NUL-delimited registered-worktree representation.
+pub(crate) fn worktree_list_porcelain(repository_root: &Path) -> Result<Vec<u8>, GitError> {
+    let output = git_output(
+        repository_root,
+        [
+            GIT_WORKTREE_COMMAND,
+            GIT_WORKTREE_LIST_ARG,
+            GIT_PORCELAIN_ARG,
+            GIT_NUL_TERMINATED_ARG,
+        ],
+    )?;
+    if !output.status.success() {
+        return Err(GitError::CommandFailed {
+            command: GIT_WORKTREE_COMMAND,
+            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    Ok(output.stdout)
+}
+
 /// Determine whether one commit is an ancestor of another.
 pub(crate) fn reachability(
     repository_root: &Path,
@@ -118,6 +175,11 @@ pub(crate) fn write_reservation_retention_ref(
     refs::write(repository_root, reservation_id, protected_tip)
 }
 
+/// Return the full private ref used to retain one reservation's protected tip.
+pub(crate) fn reservation_retention_ref_name(reservation_id: ReservationId) -> String {
+    refs::name(reservation_id)
+}
+
 /// Delete a reservation's retention ref.
 #[expect(
     dead_code,
@@ -151,6 +213,15 @@ pub(crate) enum Reachability {
     NotAncestor,
     /// Git could not read one or both objects.
     ObjectUnknown,
+}
+
+/// Whether a full git reference currently resolves to an object.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ReferenceLookup {
+    /// The reference resolves to this object id.
+    Present(GitObjectId),
+    /// Git reports no object under this reference name.
+    Missing,
 }
 
 /// A failure while resolving git's shared administrative directory.

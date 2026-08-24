@@ -177,7 +177,11 @@ fn check_uses_run_identity_without_git_or_file_mutation() {
         repository.path(),
         &["claim", "tree:src", "--run", FIRST_RUN, "--json"],
     );
-    assert!(claim.status.success());
+    assert!(
+        claim.status.success(),
+        "claim failed: {}",
+        String::from_utf8_lossy(&claim.stdout)
+    );
     let claim_envelope = json_output(&claim);
     assert_eq!(
         claim_envelope["payload"]["data"]["coordination_run_id"],
@@ -246,7 +250,7 @@ fn claims_without_run_continue_the_worktree_coordination_run() {
 }
 
 #[test]
-fn marker_publication_failure_keeps_a_committed_claim_successful() {
+fn reconciliation_removes_a_malformed_marker_directory_before_claim() {
     let repository = initialized_repository(PathCaseSetting::Sensitive);
     fs::create_dir(repository.path().join(MARKER_PATH))
         .expect("marker destination directory should exist");
@@ -265,17 +269,7 @@ fn marker_publication_failure_keeps_a_committed_claim_successful() {
     );
     assert_eq!(
         envelope["payload"]["data"]["marker_publication"]["status"],
-        "unavailable"
-    );
-    assert!(
-        envelope["payload"]["data"]["marker_publication"]["diagnostic"]
-            .as_str()
-            .is_some_and(|diagnostic| !diagnostic.is_empty())
-    );
-    assert!(
-        envelope["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("marker could not be published"))
+        "published"
     );
     assert_eq!(
         fs::read_to_string(repository.path().join(JOURNAL_PATH))
@@ -364,7 +358,7 @@ fn future_paths_succeed_invalid_paths_do_not_append_and_missing_why_is_typed() {
 }
 
 #[test]
-fn unpaired_plan_flags_are_usage_errors_and_rejection_preserves_newer_marker() {
+fn unpaired_plan_flags_are_usage_errors_and_rejection_sweeps_stale_marker() {
     let repository = initialized_repository(PathCaseSetting::Sensitive);
     for arguments in [
         vec!["claim", "file:a", "--plan", "docs/plan.md"],
@@ -395,11 +389,9 @@ fn unpaired_plan_flags_are_usage_errors_and_rejection_preserves_newer_marker() {
     );
 
     assert_eq!(rejected.status.code(), Some(1));
-    assert_eq!(
-        fs::read_to_string(repository.path().join(MARKER_PATH))
-            .expect("newer marker should remain")
-            .trim(),
-        THIRD_RUN
+    assert!(
+        !repository.path().join(MARKER_PATH).exists(),
+        "reconciliation should sweep a marker without a matching active reservation"
     );
 }
 

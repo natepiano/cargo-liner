@@ -30,6 +30,12 @@ use crate::ledger::ReservationPurpose;
 use crate::ledger::WorkPlanReference;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
+use crate::recovery::RecoveryRequest;
+use crate::recovery::RenewRequest;
+use crate::recovery::ResolveRequest;
+use crate::reservation::AbandonmentReason;
+use crate::reservation::OrphanRetirementReason;
+use crate::reservation::RewrittenIntegrationTrunkCommit;
 use crate::scope::DeclaredReservationScopeSet;
 use crate::scope::ScopeKind;
 use crate::verb::check::CheckRequest;
@@ -61,7 +67,11 @@ const PHASE_VALUE_NAME: &str = "PHASE";
 const PLAN_ARGUMENT: &str = "plan";
 const PLAN_VALUE_NAME: &str = "PLAN";
 const RECOVERED_ARGUMENT: &str = "recovered";
+const REPAIR_PROJECTION_ARGUMENT: &str = "repair-projection";
+const RESOLVE_REASONED_DISPOSITION_GROUP: &str = "resolve-reasoned-disposition";
 const RESOLVE_DISPOSITION_GROUP: &str = "resolve-disposition";
+const RETIRE_ORPHAN_ARGUMENT: &str = "retire-orphan";
+const RETIRE_ORPHAN_ARGUMENT_ID: &str = "retire_orphan";
 const RUN_ARGUMENT: &str = "run";
 const RUN_VALUE_NAME: &str = "COORDINATION_RUN_ID";
 const TRUNK_OID_VALUE_NAME: &str = "TRUNK_OID";
@@ -71,8 +81,9 @@ const WHY_VALUE_NAME: &str = "WHY";
 const ABANDON_LONG_ABOUT: &str = "Use this only when the reservation's work is intentionally discarded. It records an irreversible abandonment and releases its coordination hold; choosing it for recoverable work loses the trail that identifies where the work went. --why is required so later readers can distinguish a deliberate decision from a lost worktree.";
 const INTEGRATED_AS_LONG_ABOUT: &str = "Use this when the reservation's work reached trunk through a squash, cherry-pick, or other rewritten integration that the tool cannot prove from its stored commit. This asserts the supplied trunk commit is evidence; choosing it without that evidence can incorrectly release an unresolved reservation.";
 const RECOVERED_LONG_ABOUT: &str = "Use this when the reservation's work is still present but now belongs to this replacement worktree. It records a new worktree identity; choosing it when the work was actually integrated or discarded leaves an inaccurate live reservation blocking other work.";
+const RETIRE_ORPHAN_LONG_ABOUT: &str = "Use this only after confirming an orphaned reservation can retire without classifying its work as deliberately discarded. It records a distinct orphan-retirement disposition and requires --why so later readers can audit that decision.";
 const RENEW_LONG_ABOUT: &str = "Record that this still-live reservation remains active after inspection. Renewal changes neither its scopes nor any ordering edge; using it to hide abandoned work delays the user-confirmed recovery or abandonment decision that must eventually resolve it.";
-const RESOLVE_LONG_ABOUT: &str = "Resolve a reservation that is stuck because its original worktree disappeared or its integration evidence changed. Choose exactly one disposition: --recovered when the work survives in this replacement worktree; --integrated-as <TRUNK_OID> when the work reached trunk in a form the tool could not prove; or --abandon --why <WHY> only when the work is deliberately discarded. Choosing --abandon discards work. Choosing --integrated-as asserts evidence the tool could not prove for itself, so a wrong commit can release an unresolved reservation.";
+const RESOLVE_LONG_ABOUT: &str = "Resolve a reservation that is stuck because its original worktree disappeared or its integration evidence changed. Choose exactly one disposition: --recovered when the work survives in this replacement worktree; --integrated-as <TRUNK_OID> when the work reached trunk in a form the tool could not prove; --abandon --why <WHY> only when the work is deliberately discarded; or --retire-orphan --why <WHY> after confirming an orphan may retire without classifying its work as discarded. Choosing --abandon discards work. Choosing --integrated-as asserts evidence the tool could not prove for itself, so a wrong commit can release an unresolved reservation.";
 
 /// `cargo-berth`, as the command line sees it.
 #[derive(Debug, Parser)]
@@ -95,7 +106,7 @@ pub(crate) enum CliInvocation {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Initialize the shared reservation ledger.
-    Init(JsonOutput),
+    Init(InitArguments),
     /// Display the reservation board.
     Board(JsonOutput),
     /// Check whether paths would be blocked.
@@ -122,6 +133,17 @@ struct JsonOutput {
     /// Emit the frozen JSON response envelope.
     #[arg(long = JSON_ARGUMENT)]
     json: bool,
+}
+
+/// Initialization arguments including explicit projection-only recovery.
+#[derive(Debug, Args)]
+struct InitArguments {
+    /// Remove and rebuild only `reservations.json` from journal truth.
+    #[arg(long = REPAIR_PROJECTION_ARGUMENT)]
+    repair_projection: bool,
+    /// The output representation requested for this command.
+    #[command(flatten)]
+    json_output:       JsonOutput,
 }
 
 /// The output representation requested at the command line boundary.
@@ -254,8 +276,18 @@ struct IntegrateArguments {
 #[derive(Debug, Args)]
 #[command(group(
     ArgGroup::new(RESOLVE_DISPOSITION_GROUP)
-        .args([RECOVERED_ARGUMENT, INTEGRATED_AS_ARGUMENT_ID, ABANDON_ARGUMENT])
+        .args([
+            RECOVERED_ARGUMENT,
+            INTEGRATED_AS_ARGUMENT_ID,
+            ABANDON_ARGUMENT,
+            RETIRE_ORPHAN_ARGUMENT_ID,
+        ])
         .required(true)
+        .multiple(false)
+))]
+#[command(group(
+    ArgGroup::new(RESOLVE_REASONED_DISPOSITION_GROUP)
+        .args([ABANDON_ARGUMENT, RETIRE_ORPHAN_ARGUMENT_ID])
         .multiple(false)
 ))]
 struct ResolveArguments {
@@ -270,7 +302,7 @@ struct ResolveArguments {
         value_name = TRUNK_OID_VALUE_NAME,
         long_help = INTEGRATED_AS_LONG_ABOUT
     )]
-    integrated_as:  Option<String>,
+    integrated_as:  Option<RewrittenIntegrationTrunkCommit>,
     /// Permanently discard this reservation's work and coordination hold.
     #[arg(
         long = ABANDON_ARGUMENT,
@@ -278,8 +310,19 @@ struct ResolveArguments {
         long_help = ABANDON_LONG_ABOUT
     )]
     abandon:        bool,
-    /// Explain the deliberate abandonment decision.
-    #[arg(long = WHY_ARGUMENT, value_name = WHY_VALUE_NAME, requires = ABANDON_ARGUMENT)]
+    /// Retire this confirmed orphan without classifying it as deliberate abandonment.
+    #[arg(
+        long = RETIRE_ORPHAN_ARGUMENT,
+        requires = WHY_ARGUMENT,
+        long_help = RETIRE_ORPHAN_LONG_ABOUT
+    )]
+    retire_orphan:  bool,
+    /// Explain the deliberate abandonment or orphan-retirement decision.
+    #[arg(
+        long = WHY_ARGUMENT,
+        value_name = WHY_VALUE_NAME,
+        requires = RESOLVE_REASONED_DISPOSITION_GROUP
+    )]
     why:            Option<String>,
     /// The output representation requested for this command.
     #[command(flatten)]
@@ -323,7 +366,7 @@ impl Command {
     /// Execute this command's available engine or return its typed placeholder.
     fn execute(self) -> OutputEnvelope {
         match self {
-            Self::Init(_) => initialize_ledger(),
+            Self::Init(init_arguments) => initialize_ledger(init_arguments.repair_request()),
             Self::Board(_) => OutputEnvelope::unimplemented(CommandVerb::Board),
             Self::Check(path_arguments) => match path_arguments.into_check_request() {
                 Ok(check_request) => crate::verb::check::execute(check_request),
@@ -338,15 +381,21 @@ impl Command {
             },
             Self::Sequence(_) => OutputEnvelope::unimplemented(CommandVerb::Sequence),
             Self::Integrate(_) => OutputEnvelope::unimplemented(CommandVerb::Integrate),
-            Self::Resolve(_) => OutputEnvelope::unimplemented(CommandVerb::Resolve),
-            Self::Renew(_) => OutputEnvelope::unimplemented(CommandVerb::Renew),
+            Self::Resolve(resolve_arguments) => match resolve_arguments.into_resolve_request() {
+                Ok(resolve_request) => crate::recovery::resolve(resolve_request),
+                Err(error) => OutputEnvelope::invalid_input(CommandVerb::Resolve, &error),
+            },
+            Self::Renew(reservation_arguments) => {
+                crate::recovery::renew(reservation_arguments.into_renew_request())
+            },
         }
     }
 
     /// Return this command's requested output representation.
     fn output_format(&self) -> CliOutputFormat {
         match self {
-            Self::Init(json_output) | Self::Board(json_output) => json_output.output_format(),
+            Self::Init(init_arguments) => init_arguments.json_output.output_format(),
+            Self::Board(json_output) => json_output.output_format(),
             Self::Check(path_arguments) => path_arguments.json_output.output_format(),
             Self::Claim(claim_arguments) => claim_arguments.json_output.output_format(),
             Self::Release(reservation_arguments) | Self::Renew(reservation_arguments) => {
@@ -380,6 +429,22 @@ impl PathArguments {
         DeclaredReservationScopeSet::parse(self.paths, ScopeKind::File)
             .map(|declared_scopes| CheckRequest { declared_scopes })
             .map_err(|error| error.to_string())
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ProjectionRepairRequest {
+    Initialize,
+    RepairProjection,
+}
+
+impl InitArguments {
+    const fn repair_request(&self) -> ProjectionRepairRequest {
+        if self.repair_projection {
+            ProjectionRepairRequest::RepairProjection
+        } else {
+            ProjectionRepairRequest::Initialize
+        }
     }
 }
 
@@ -437,29 +502,85 @@ impl ReservationArguments {
             reservation_id: self.reservation_id,
         }
     }
+
+    const fn into_renew_request(self) -> RenewRequest {
+        RenewRequest {
+            reservation_id: self.reservation_id,
+        }
+    }
 }
 
-fn initialize_ledger() -> OutputEnvelope {
+impl ResolveArguments {
+    fn into_resolve_request(self) -> Result<ResolveRequest, String> {
+        let Self {
+            reservation_id,
+            recovered,
+            integrated_as,
+            abandon,
+            retire_orphan,
+            why,
+            json_output: _,
+        } = self;
+        let recovery = match (recovered, integrated_as, abandon, retire_orphan, why) {
+            (true, None, false, false, None) => RecoveryRequest::Recovered,
+            (false, Some(trunk_commit), false, false, None) => {
+                RecoveryRequest::IntegratedAs(trunk_commit)
+            },
+            (false, None, true, false, Some(reason)) => reason
+                .parse::<AbandonmentReason>()
+                .map(RecoveryRequest::Abandon)
+                .map_err(|error| error.to_string())?,
+            (false, None, false, true, Some(reason)) => reason
+                .parse::<OrphanRetirementReason>()
+                .map(RecoveryRequest::RetireOrphan)
+                .map_err(|error| error.to_string())?,
+            _ => {
+                return Err(
+                    "choose exactly one recovery disposition and provide --why only for --abandon or --retire-orphan"
+                        .to_owned(),
+                );
+            },
+        };
+        Ok(ResolveRequest {
+            reservation_id,
+            recovery,
+        })
+    }
+}
+
+fn initialize_ledger(repair_request: ProjectionRepairRequest) -> OutputEnvelope {
     match env::current_dir() {
         Ok(invocation_directory) => match git::repository_root(&invocation_directory) {
-            Ok(repository_root) => match Ledger::initialize(&repository_root) {
-                Ok(initialization) => OutputEnvelope::initialized(initialization),
-                Err(error) => match LedgerTransactionError::from(error) {
-                    LedgerTransactionError::LockContention => OutputEnvelope::contention(
-                        CommandVerb::Init,
-                        &LedgerTransactionError::LockContention.to_string(),
-                    ),
-                    LedgerTransactionError::LedgerUnreadable(error) => {
-                        OutputEnvelope::ledger_unreadable(CommandVerb::Init, &error.to_string())
-                    },
-                    LedgerTransactionError::CorrectableInput(error) => {
-                        OutputEnvelope::invalid_input(CommandVerb::Init, &error.to_string())
-                    },
+            Ok(repository_root) => match repair_request {
+                ProjectionRepairRequest::Initialize => match Ledger::initialize(&repository_root) {
+                    Ok(initialization) => OutputEnvelope::initialized(initialization),
+                    Err(error) => initialization_error(error),
+                },
+                ProjectionRepairRequest::RepairProjection => {
+                    match Ledger::repair_projection(&repository_root) {
+                        Ok(()) => OutputEnvelope::projection_repaired(),
+                        Err(error) => initialization_error(error),
+                    }
                 },
             },
             Err(error) => OutputEnvelope::ledger_unreadable(CommandVerb::Init, &error.to_string()),
         },
         Err(error) => OutputEnvelope::ledger_unreadable(CommandVerb::Init, &error.to_string()),
+    }
+}
+
+fn initialization_error(error: crate::ledger::LedgerError) -> OutputEnvelope {
+    match LedgerTransactionError::from(error) {
+        LedgerTransactionError::LockContention => OutputEnvelope::contention(
+            CommandVerb::Init,
+            &LedgerTransactionError::LockContention.to_string(),
+        ),
+        LedgerTransactionError::LedgerUnreadable(error) => {
+            OutputEnvelope::ledger_unreadable(CommandVerb::Init, &error.to_string())
+        },
+        LedgerTransactionError::CorrectableInput(error) => {
+            OutputEnvelope::invalid_input(CommandVerb::Init, &error.to_string())
+        },
     }
 }
 
@@ -469,7 +590,7 @@ fn emit_response(output_format: CliOutputFormat, output_envelope: &OutputEnvelop
             Ok(rendered) => rendered,
             Err(_) => return,
         },
-        CliOutputFormat::Text => output_envelope.message.clone(),
+        CliOutputFormat::Text => output_envelope.render_text(),
     };
     write_line(rendered);
 }

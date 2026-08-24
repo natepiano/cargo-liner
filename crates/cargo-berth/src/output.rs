@@ -7,11 +7,13 @@
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::alert::Alert;
 use crate::config::InitializationState;
 use crate::exit::BerthExit;
 use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
+use crate::ids::WorktreeId;
 use crate::ledger::ClaimSource;
 use crate::ledger::LedgerInitialization;
 use crate::ledger::ReservationPurpose;
@@ -22,6 +24,8 @@ use crate::reservation::ReservationConflict;
 use crate::scope::ReservationScopeSet;
 
 const INITIALIZED_MESSAGE: &str = "Initialized the cargo-berth ledger.";
+const PROJECTION_REPAIRED_MESSAGE: &str =
+    "Rebuilt reservations.json from journal truth without changing the journal.";
 const UNIMPLEMENTED_MESSAGE: &str = "The reservation engine is not implemented.";
 
 /// One response from a `cargo-berth` verb.
@@ -75,6 +79,8 @@ pub(crate) enum OutputStatus {
     Unimplemented,
     /// Initialization created or verified the durable coordination resources.
     Initialized,
+    /// Explicit repair rebuilt only the disposable journal projection.
+    ProjectionRepaired,
     /// The journal or its projection could not be safely read or published.
     LedgerUnreadable,
     /// An overlap-free edit check may proceed.
@@ -97,16 +103,33 @@ pub(crate) enum OutputStatus {
     ObjectUnknown,
     /// A user-confirmed non-integration disposition ended the reservation.
     Released,
+    /// A replacement worktree now owns surviving reservation work.
+    Recovered,
+    /// A still-live reservation recorded recent activity.
+    Renewed,
+}
+
+/// Structured facts and additive alerts returned inside the typed payload field.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct OutputPayload {
+    /// The verb-keyed result whose serialized `kind` and `data` layout is stable.
+    #[serde(flatten)]
+    facts:  OutputFacts,
+    /// Durable coordination alerts relevant to this response.
+    #[serde(default)]
+    alerts: Vec<Alert>,
 }
 
 /// Structured facts that correspond to the response's verb.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
-pub(crate) enum OutputPayload {
+enum OutputFacts {
     /// The operation failed before it could establish any durable facts.
     NoFacts,
     /// Facts returned by `init`.
     Init(InitializationPayload),
+    /// Facts returned by `init --repair-projection`.
+    ProjectionRepair(ProjectionRepairPayload),
     /// Placeholder facts for an unimplemented board query.
     Board(PendingPayload),
     /// Facts returned by `check`.
@@ -119,10 +142,10 @@ pub(crate) enum OutputPayload {
     Sequence(PendingPayload),
     /// Placeholder facts for an unimplemented integration.
     Integrate(PendingPayload),
-    /// Placeholder facts for an unimplemented recovery decision.
-    Resolve(PendingPayload),
-    /// Placeholder facts for an unimplemented renewal.
-    Renew(PendingPayload),
+    /// Facts returned by a recovery decision.
+    Resolve(ResolvePayload),
+    /// Facts returned by a renewal.
+    Renew(RenewPayload),
 }
 
 /// The resources an `init` call created or left intact.
@@ -132,6 +155,31 @@ pub(crate) struct InitializationPayload {
     pub(crate) ledger:        InitializationResource,
     /// Whether initialization created the config or left an existing file intact.
     pub(crate) configuration: InitializationResource,
+}
+
+/// The explicit guarantee reported after rebuilding the disposable projection.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct ProjectionRepairPayload {
+    /// The only file this operation rebuilt.
+    pub(crate) projection: RepairedProjection,
+    /// The journal mutation guarantee of explicit projection repair.
+    pub(crate) journal:    ProjectionRepairJournalEffect,
+}
+
+/// The disposable projection rebuilt by explicit repair.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RepairedProjection {
+    /// `reservations.json` was derived again from complete journal facts.
+    ReservationsJsonRebuilt,
+}
+
+/// Whether explicit projection repair changed journal truth.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ProjectionRepairJournalEffect {
+    /// `journal.ndjson` remained byte-identical.
+    Unchanged,
 }
 
 /// The initialization outcome for one durable resource.
@@ -147,6 +195,33 @@ pub(crate) enum InitializationResource {
 /// A deliberately empty typed placeholder for a verb whose engine arrives later.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct PendingPayload {}
+
+/// Typed outcomes returned by `resolve`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub(crate) enum ResolvePayload {
+    /// Surviving work moved to a replacement worktree identity.
+    Recovered {
+        /// The reservation whose holder changed.
+        reservation_id: ReservationId,
+        /// The opaque identity of the replacement worktree.
+        worktree_id:    WorktreeId,
+    },
+    /// A user-confirmed terminal disposition resolved the reservation.
+    Released {
+        /// The reservation that received the disposition.
+        reservation_id: ReservationId,
+        /// The recorded disposition or replacement disposition.
+        disposition:    ReleaseDisposition,
+    },
+}
+
+/// Typed facts returned by `renew`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct RenewPayload {
+    /// The reservation whose activity timestamp advanced.
+    pub(crate) reservation_id: ReservationId,
+}
 
 /// Typed outcomes returned by `claim`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -324,10 +399,28 @@ impl OutputEnvelope {
             reservations: Vec::new(),
             blocked_by:   Vec::new(),
             message:      INITIALIZED_MESSAGE.to_owned(),
-            payload:      OutputPayload::Init(InitializationPayload {
+            payload:      OutputPayload::from_facts(OutputFacts::Init(InitializationPayload {
                 ledger:        initialization.ledger.into(),
                 configuration: initialization.configuration.into(),
-            }),
+            })),
+        }
+    }
+
+    /// Build the successful response for an explicit projection-only repair.
+    pub(crate) fn projection_repaired() -> Self {
+        Self {
+            verb:         CommandVerb::Init,
+            status:       OutputStatus::ProjectionRepaired,
+            exit_code:    BerthExit::Clear,
+            reservations: Vec::new(),
+            blocked_by:   Vec::new(),
+            message:      PROJECTION_REPAIRED_MESSAGE.to_owned(),
+            payload:      OutputPayload::from_facts(OutputFacts::ProjectionRepair(
+                ProjectionRepairPayload {
+                    projection: RepairedProjection::ReservationsJsonRebuilt,
+                    journal:    ProjectionRepairJournalEffect::Unchanged,
+                },
+            )),
         }
     }
 
@@ -340,7 +433,7 @@ impl OutputEnvelope {
             reservations: Vec::new(),
             blocked_by:   Vec::new(),
             message:      format!("The reservation ledger could not be read: {diagnostic}"),
-            payload:      OutputPayload::NoFacts,
+            payload:      OutputPayload::from_facts(OutputFacts::NoFacts),
         }
     }
 
@@ -367,12 +460,12 @@ impl OutputEnvelope {
             reservations: vec![reservation_id],
             blocked_by: Vec::new(),
             message,
-            payload: OutputPayload::Claim(ClaimPayload::Claimed {
+            payload: OutputPayload::from_facts(OutputFacts::Claim(ClaimPayload::Claimed {
                 reservation_id,
                 coordination_run_id,
                 scopes,
                 marker_publication,
-            }),
+            })),
         }
     }
 
@@ -389,7 +482,9 @@ impl OutputEnvelope {
             reservations: Vec::new(),
             blocked_by,
             message: blocked_message(&conflicts),
-            payload: OutputPayload::Claim(ClaimPayload::Blocked { conflicts }),
+            payload: OutputPayload::from_facts(OutputFacts::Claim(ClaimPayload::Blocked {
+                conflicts,
+            })),
         }
     }
 
@@ -402,7 +497,9 @@ impl OutputEnvelope {
             reservations: Vec::new(),
             blocked_by:   Vec::new(),
             message:      "No foreign reservation overlaps the requested paths.".to_owned(),
-            payload:      OutputPayload::Check(CheckPayload::Clear { scopes }),
+            payload:      OutputPayload::from_facts(OutputFacts::Check(CheckPayload::Clear {
+                scopes,
+            })),
         }
     }
 
@@ -422,7 +519,10 @@ impl OutputEnvelope {
             reservations: Vec::new(),
             blocked_by,
             message: blocked_message(&conflicts),
-            payload: OutputPayload::Check(CheckPayload::Blocked { scopes, conflicts }),
+            payload: OutputPayload::from_facts(OutputFacts::Check(CheckPayload::Blocked {
+                scopes,
+                conflicts,
+            })),
         }
     }
 
@@ -435,7 +535,7 @@ impl OutputEnvelope {
             reservations: Vec::new(),
             blocked_by:   Vec::new(),
             message:      diagnostic.to_owned(),
-            payload:      OutputPayload::NoFacts,
+            payload:      OutputPayload::from_facts(OutputFacts::NoFacts),
         }
     }
 
@@ -448,7 +548,7 @@ impl OutputEnvelope {
             reservations: Vec::new(),
             blocked_by:   Vec::new(),
             message:      diagnostic.to_owned(),
-            payload:      OutputPayload::NoFacts,
+            payload:      OutputPayload::from_facts(OutputFacts::NoFacts),
         }
     }
 
@@ -488,24 +588,99 @@ impl OutputEnvelope {
             reservations: vec![reservation_id],
             blocked_by: Vec::new(),
             message,
-            payload: OutputPayload::Release(release_payload),
+            payload: OutputPayload::from_facts(OutputFacts::Release(release_payload)),
         }
+    }
+
+    /// Build a successful recovery response.
+    pub(crate) fn resolved(resolve_payload: ResolvePayload) -> Self {
+        let (reservation_id, status, message) = match &resolve_payload {
+            ResolvePayload::Recovered {
+                reservation_id,
+                worktree_id,
+            } => (
+                *reservation_id,
+                OutputStatus::Recovered,
+                format!("Reservation {reservation_id} is recovered in worktree {worktree_id}."),
+            ),
+            ResolvePayload::Released {
+                reservation_id,
+                disposition,
+            } => (
+                *reservation_id,
+                match disposition {
+                    ReleaseDisposition::Integrated
+                    | ReleaseDisposition::RewrittenIntegration(_) => OutputStatus::Integrated,
+                    ReleaseDisposition::Abandoned(_) | ReleaseDisposition::RetiredOrphan(_) => {
+                        OutputStatus::Released
+                    },
+                },
+                format!("Reservation {reservation_id} recorded disposition {disposition:?}."),
+            ),
+        };
+        Self {
+            verb: CommandVerb::Resolve,
+            status,
+            exit_code: BerthExit::Clear,
+            reservations: vec![reservation_id],
+            blocked_by: Vec::new(),
+            message,
+            payload: OutputPayload::from_facts(OutputFacts::Resolve(resolve_payload)),
+        }
+    }
+
+    /// Build a successful activity-renewal response.
+    pub(crate) fn renewed(reservation_id: ReservationId) -> Self {
+        Self {
+            verb:         CommandVerb::Renew,
+            status:       OutputStatus::Renewed,
+            exit_code:    BerthExit::Clear,
+            reservations: vec![reservation_id],
+            blocked_by:   Vec::new(),
+            message:      format!("Reservation {reservation_id} activity was renewed."),
+            payload:      OutputPayload::from_facts(OutputFacts::Renew(RenewPayload {
+                reservation_id,
+            })),
+        }
+    }
+
+    /// Attach alerts derived by the reconciliation that preceded this command.
+    pub(crate) fn with_alerts(mut self, alerts: Vec<Alert>) -> Self {
+        self.payload.alerts = alerts;
+        self
+    }
+
+    /// Render the primary result followed by every durable alert as its own line.
+    pub(crate) fn render_text(&self) -> String {
+        let mut rendered = self.message.clone();
+        for alert in &self.payload.alerts {
+            rendered.push('\n');
+            rendered.push_str(&alert.to_string());
+        }
+        rendered
     }
 }
 
 impl OutputPayload {
+    const fn from_facts(facts: OutputFacts) -> Self {
+        Self {
+            facts,
+            alerts: Vec::new(),
+        }
+    }
+
     const fn pending(command_verb: CommandVerb) -> Self {
         let pending = PendingPayload {};
-        match command_verb {
-            CommandVerb::Board => Self::Board(pending),
+        let facts = match command_verb {
+            CommandVerb::Board => OutputFacts::Board(pending),
             CommandVerb::Init | CommandVerb::Check | CommandVerb::Claim | CommandVerb::Release => {
-                Self::NoFacts
+                OutputFacts::NoFacts
             },
-            CommandVerb::Sequence => Self::Sequence(pending),
-            CommandVerb::Integrate => Self::Integrate(pending),
-            CommandVerb::Resolve => Self::Resolve(pending),
-            CommandVerb::Renew => Self::Renew(pending),
-        }
+            CommandVerb::Sequence => OutputFacts::Sequence(pending),
+            CommandVerb::Integrate => OutputFacts::Integrate(pending),
+            CommandVerb::Resolve | CommandVerb::Renew => OutputFacts::NoFacts,
+        };
+        Self::from_facts(facts)
     }
 }
 
@@ -613,7 +788,7 @@ mod tests {
     fn failed_init_has_no_initialization_facts() {
         let output_envelope = OutputEnvelope::ledger_unreadable(CommandVerb::Init, "bad journal");
 
-        assert_eq!(output_envelope.payload, super::OutputPayload::NoFacts);
+        assert_eq!(output_envelope.payload.facts, super::OutputFacts::NoFacts);
         assert!(
             serde_json::to_string(&output_envelope.payload).is_ok_and(|payload| !payload
                 .contains("ledger")

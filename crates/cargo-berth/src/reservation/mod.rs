@@ -12,12 +12,15 @@ pub(crate) use evidence::current_trunk;
 pub(crate) use evidence::integration_status;
 pub(crate) use evidence::outstanding_integration_status;
 pub(crate) use evidence::retain_protected_tip;
+pub(crate) use lifecycle::AbandonmentReason;
 pub(crate) use lifecycle::EditBlockingStatus;
 pub(crate) use lifecycle::IntegrationEvidenceStatus;
 pub(crate) use lifecycle::LifecycleTransitionError;
+pub(crate) use lifecycle::OrphanRetirementReason;
 pub(crate) use lifecycle::ReleaseDisposition;
 pub(crate) use lifecycle::ReleaseRevalidationSubject;
 pub(crate) use lifecycle::ReservationLifecycle;
+pub(crate) use lifecycle::RewrittenIntegrationTrunkCommit;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -26,6 +29,7 @@ use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
 use crate::ids::ReservationRevision;
 use crate::ids::WorktreeId;
+use crate::ledger::CanonicalWorktreeRoot;
 use crate::ledger::ClaimHeadSnapshot;
 use crate::ledger::ClaimSource;
 use crate::ledger::EditAuthorization;
@@ -35,6 +39,7 @@ use crate::ledger::JournalOperation;
 use crate::ledger::ReservationPurpose;
 use crate::ledger::ReservationSnapshot;
 use crate::ledger::TrunkCommitAtClaim;
+use crate::ledger::WorktreeAdministrativeLocator;
 use crate::scope::PathCase;
 use crate::scope::ReservationScope;
 use crate::scope::ReservationScopeSet;
@@ -61,6 +66,8 @@ pub(crate) struct Reservation {
     integration_trunk_snapshot: IntegrationTrunkSnapshot,
     integration_status:         IntegrationEvidenceStatus,
     edit_blocking_status:       EditBlockingStatus,
+    worktree_root:              CanonicalWorktreeRoot,
+    worktree_locator:           WorktreeAdministrativeLocator,
 }
 
 /// Whether replay has recorded a protected tip for this reservation.
@@ -84,13 +91,15 @@ enum IntegrationTrunkSnapshot {
 /// Borrowed fields from one replayed claim event.
 #[derive(Clone, Copy)]
 struct ReplayedClaim<'event> {
-    id:             ReservationId,
-    scopes:         &'event ReservationScopeSet,
-    source:         &'event ClaimSource,
-    purpose:        &'event ReservationPurpose,
-    trunk_at_claim: &'event TrunkCommitAtClaim,
-    head_snapshot:  &'event ClaimHeadSnapshot,
-    actor:          &'event JournalActor,
+    id:               ReservationId,
+    scopes:           &'event ReservationScopeSet,
+    source:           &'event ClaimSource,
+    purpose:          &'event ReservationPurpose,
+    trunk_at_claim:   &'event TrunkCommitAtClaim,
+    head_snapshot:    &'event ClaimHeadSnapshot,
+    actor:            &'event JournalActor,
+    worktree_root:    &'event CanonicalWorktreeRoot,
+    worktree_locator: &'event WorktreeAdministrativeLocator,
 }
 
 /// State-specific evidence exposed without an optional protected commit.
@@ -120,6 +129,11 @@ pub(crate) enum ReservationEvidenceState {
         disposition:        ReleaseDisposition,
         /// The most recently materialized integration result.
         integration_status: IntegrationEvidenceStatus,
+    },
+    /// A user-confirmed active-work retirement that has no checkpoint evidence.
+    ReleasedWithoutCheckpoint {
+        /// The abandonment or orphan-retirement decision that ended the work.
+        disposition: ReleaseDisposition,
     },
 }
 
@@ -173,13 +187,31 @@ impl RetainedReservationSet {
         edit_authorization: EditAuthorization,
         path_case: PathCase,
     ) -> Vec<ReservationConflict> {
+        let marker_is_active = match edit_authorization {
+            EditAuthorization::Marker {
+                coordination_run_id,
+                worktree_id,
+            } => self.reservations.iter().any(|reservation| {
+                matches!(reservation.lifecycle, ReservationLifecycle::Active)
+                    && reservation.actor.run == coordination_run_id
+                    && reservation.actor.worktree == worktree_id
+            }),
+            EditAuthorization::Environment(_) | EditAuthorization::Unidentified => false,
+        };
         self.conflicts(candidate, path_case, |holder| match edit_authorization {
-            EditAuthorization::Identified(coordination_run_id) => {
+            EditAuthorization::Environment(coordination_run_id) => {
                 holder.actor.run != coordination_run_id
             },
-            EditAuthorization::Unidentified => true,
+            EditAuthorization::Marker {
+                coordination_run_id,
+                ..
+            } if marker_is_active => holder.actor.run != coordination_run_id,
+            EditAuthorization::Marker { .. } | EditAuthorization::Unidentified => true,
         })
     }
+
+    /// Iterate over every reservation retained for constraints or audit history.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &Reservation> { self.reservations.iter() }
 
     /// Find one retained reservation by its non-recyclable identity.
     pub(crate) fn reservation(
@@ -214,6 +246,8 @@ impl RetainedReservationSet {
                 purpose,
                 trunk_at_claim,
                 head_snapshot,
+                worktree_root,
+                worktree_administrative_locator,
                 ..
             } => self.apply_claim(ReplayedClaim {
                 id: *reservation_id,
@@ -223,6 +257,8 @@ impl RetainedReservationSet {
                 trunk_at_claim,
                 head_snapshot,
                 actor: &event.actor,
+                worktree_root,
+                worktree_locator: worktree_administrative_locator,
             })?,
             JournalOperation::Widen {
                 reservation_id,
@@ -245,6 +281,11 @@ impl RetainedReservationSet {
                 reservation_id,
                 disposition,
             } => self.apply_release(*reservation_id, disposition)?,
+            JournalOperation::ReplaceReleaseDisposition {
+                reservation_id,
+                superseded,
+                replacement,
+            } => self.apply_replacement(*reservation_id, superseded, replacement)?,
             JournalOperation::EvidenceRevalidated {
                 reservation_id,
                 status,
@@ -252,11 +293,37 @@ impl RetainedReservationSet {
             } => self.apply_evidence(*reservation_id, status, *edit_blocking_status)?,
             JournalOperation::RebindWorktree {
                 reservation_id,
+                previous_worktree_id,
                 current_worktree_id,
-                ..
+                current_worktree_root,
+                current_worktree_administrative_locator,
             } => {
                 let reservation = self.find_mut(*reservation_id)?;
+                if reservation.actor.worktree != *previous_worktree_id {
+                    return Err(ReservationReplayError::WorktreeRebindingMismatch(
+                        *reservation_id,
+                    ));
+                }
                 reservation.actor.worktree = *current_worktree_id;
+                reservation.worktree_root = current_worktree_root.clone();
+                reservation.worktree_locator = current_worktree_administrative_locator.clone();
+                reservation.advance_revision()?;
+            },
+            JournalOperation::RelocateWorktree {
+                reservation_id,
+                worktree_id,
+                previous_root,
+                current_root,
+            } => {
+                let reservation = self.find_mut(*reservation_id)?;
+                if reservation.actor.worktree != *worktree_id
+                    || reservation.worktree_root != *previous_root
+                {
+                    return Err(ReservationReplayError::WorktreeRelocationMismatch(
+                        *reservation_id,
+                    ));
+                }
+                reservation.worktree_root = current_root.clone();
                 reservation.advance_revision()?;
             },
             JournalOperation::ResolveDefer { .. }
@@ -295,6 +362,8 @@ impl RetainedReservationSet {
             ),
             integration_status:         IntegrationEvidenceStatus::NotIntegrated,
             edit_blocking_status:       EditBlockingStatus::Blocking,
+            worktree_root:              replayed_claim.worktree_root.clone(),
+            worktree_locator:           replayed_claim.worktree_locator.clone(),
         });
         Ok(())
     }
@@ -382,7 +451,14 @@ impl RetainedReservationSet {
                 trunk_oid: trunk_commit.as_ref().clone(),
             };
         }
-        reservation.lifecycle.release(disposition.clone())?;
+        match disposition {
+            ReleaseDisposition::Abandoned(_) | ReleaseDisposition::RetiredOrphan(_) => reservation
+                .lifecycle
+                .release_after_user_confirmation(disposition.clone())?,
+            ReleaseDisposition::Integrated | ReleaseDisposition::RewrittenIntegration(_) => {
+                reservation.lifecycle.release(disposition.clone())?;
+            },
+        }
         reservation.edit_blocking_status = EditBlockingStatus::Clear;
         reservation.advance_revision()
     }
@@ -414,6 +490,30 @@ impl RetainedReservationSet {
         }
         reservation.integration_status = status.clone();
         reservation.edit_blocking_status = edit_blocking_status;
+        reservation.advance_revision()
+    }
+
+    fn apply_replacement(
+        &mut self,
+        reservation_id: ReservationId,
+        superseded: &ReleaseDisposition,
+        replacement: &ReleaseDisposition,
+    ) -> Result<(), ReservationReplayError> {
+        let reservation = self.find_mut(reservation_id)?;
+        if !matches!(replacement, ReleaseDisposition::RewrittenIntegration(_)) {
+            return Err(ReservationReplayError::InvalidReplacementDisposition(
+                reservation_id,
+            ));
+        }
+        reservation
+            .lifecycle
+            .replace_release_disposition(superseded, replacement.clone())?;
+        if let ReleaseDisposition::RewrittenIntegration(trunk_commit) = replacement {
+            reservation.integration_status = IntegrationEvidenceStatus::Integrated {
+                trunk_oid: trunk_commit.as_ref().clone(),
+            };
+        }
+        reservation.edit_blocking_status = EditBlockingStatus::Clear;
         reservation.advance_revision()
     }
 
@@ -468,6 +568,9 @@ impl RetainedReservationSet {
 }
 
 impl Reservation {
+    /// Return the reservation's durable identity.
+    pub(crate) const fn id(&self) -> ReservationId { self.id }
+
     fn advance_revision(&mut self) -> Result<(), ReservationReplayError> {
         let revision: u64 = self.revision.into();
         self.revision = revision
@@ -479,6 +582,25 @@ impl Reservation {
 
     /// Return the reservation's owning actor.
     pub(crate) const fn actor(&self) -> &JournalActor { &self.actor }
+
+    /// Return the canonical root last validated for the owning worktree.
+    pub(crate) const fn worktree_root(&self) -> &CanonicalWorktreeRoot { &self.worktree_root }
+
+    /// Return the common-directory-relative administrative locator recorded for the holder.
+    pub(crate) const fn worktree_locator(&self) -> &WorktreeAdministrativeLocator {
+        &self.worktree_locator
+    }
+
+    /// Return the reservation's progress state.
+    pub(crate) const fn lifecycle(&self) -> &ReservationLifecycle { &self.lifecycle }
+
+    /// Return the branch or detached commit recorded at acquisition.
+    pub(crate) const fn head_snapshot(&self) -> &ClaimHeadSnapshot { &self.head_snapshot }
+
+    /// Return the materialized edit decision.
+    pub(crate) const fn edit_blocking_status(&self) -> EditBlockingStatus {
+        self.edit_blocking_status
+    }
 
     /// Return state-specific evidence without an optional protected tip.
     pub(crate) fn evidence_state(
@@ -503,14 +625,29 @@ impl Reservation {
                     integration_status: self.integration_status.clone(),
                 })
             },
-            ReservationLifecycle::Released { disposition } => {
-                let (protected_tip, trunk_snapshot) = self.checkpoint_evidence()?;
-                Ok(ReservationEvidenceState::Released {
-                    protected_tip,
-                    trunk_snapshot,
-                    disposition: disposition.clone(),
-                    integration_status: self.integration_status.clone(),
-                })
+            ReservationLifecycle::Released { disposition } => match &self.retained_protected_tip {
+                RetainedProtectedTip::Retained(_) => {
+                    let (protected_tip, trunk_snapshot) = self.checkpoint_evidence()?;
+                    Ok(ReservationEvidenceState::Released {
+                        protected_tip,
+                        trunk_snapshot,
+                        disposition: disposition.clone(),
+                        integration_status: self.integration_status.clone(),
+                    })
+                },
+                RetainedProtectedTip::NotCheckpointed
+                    if matches!(
+                        disposition,
+                        ReleaseDisposition::Abandoned(_) | ReleaseDisposition::RetiredOrphan(_)
+                    ) =>
+                {
+                    Ok(ReservationEvidenceState::ReleasedWithoutCheckpoint {
+                        disposition: disposition.clone(),
+                    })
+                },
+                RetainedProtectedTip::NotCheckpointed => {
+                    Err(ReservationReplayError::MissingProtectedTip(self.id))
+                },
             },
         }
     }
@@ -565,6 +702,12 @@ pub(crate) enum ReservationReplayError {
     MissingProtectedTip(ReservationId),
     /// An outstanding reservation lost its trunk comparison point during replay.
     MissingTrunkSnapshot(ReservationId),
+    /// A relocation record disagreed with the holder identity or previous root.
+    WorktreeRelocationMismatch(ReservationId),
+    /// A rebinding record disagreed with the worktree that currently owns the reservation.
+    WorktreeRebindingMismatch(ReservationId),
+    /// A replacement record named a disposition other than rewritten integration.
+    InvalidReplacementDisposition(ReservationId),
 }
 
 impl fmt::Display for ReservationReplayError {
@@ -620,6 +763,18 @@ impl fmt::Display for ReservationReplayError {
             Self::MissingTrunkSnapshot(reservation_id) => write!(
                 formatter,
                 "reservation {reservation_id} is missing its checkpoint trunk snapshot"
+            ),
+            Self::WorktreeRelocationMismatch(reservation_id) => write!(
+                formatter,
+                "reservation {reservation_id} has a mismatched worktree relocation"
+            ),
+            Self::WorktreeRebindingMismatch(reservation_id) => write!(
+                formatter,
+                "reservation {reservation_id} has a mismatched worktree rebinding"
+            ),
+            Self::InvalidReplacementDisposition(reservation_id) => write!(
+                formatter,
+                "reservation {reservation_id} has an invalid replacement disposition"
             ),
         }
     }

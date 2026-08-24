@@ -425,11 +425,9 @@ fn release_removes_only_the_marker_for_a_run_without_other_active_reservations()
         .status
         .success()
     );
-    assert_eq!(
-        fs::read_to_string(newer_run_repository.path().join(MARKER_PATH))
-            .expect("newer marker should remain")
-            .trim(),
-        SECOND_RUN
+    assert!(
+        !newer_run_repository.path().join(MARKER_PATH).exists(),
+        "reconciliation should sweep a marker with no matching active reservation"
     );
 
     let shared_run_repository = initialized_repository();

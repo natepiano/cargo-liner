@@ -22,6 +22,11 @@ impl ReservationRetentionRef {
     }
 }
 
+/// Return the serialized retention ref for one reservation.
+pub(super) fn name(reservation_id: ReservationId) -> String {
+    ReservationRetentionRef::for_reservation(reservation_id).to_string()
+}
+
 impl fmt::Display for ReservationRetentionRef {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
@@ -34,7 +39,7 @@ pub(super) fn write(
     reservation_id: ReservationId,
     protected_tip: &GitObjectId,
 ) -> Result<(), GitError> {
-    let retention_ref = ReservationRetentionRef::for_reservation(reservation_id).to_string();
+    let retention_ref = name(reservation_id);
     let protected_tip = protected_tip.to_string();
     let output = git_output(
         repository_root,
@@ -55,7 +60,7 @@ pub(super) fn delete(
     repository_root: &Path,
     reservation_id: ReservationId,
 ) -> Result<(), GitError> {
-    let retention_ref = ReservationRetentionRef::for_reservation(reservation_id).to_string();
+    let retention_ref = name(reservation_id);
     let output = git_output(
         repository_root,
         [GIT_UPDATE_REF_COMMAND, GIT_DELETE_REF_ARG, &retention_ref],

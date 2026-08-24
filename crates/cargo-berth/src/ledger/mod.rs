@@ -157,8 +157,15 @@ pub(crate) struct LedgerInitialization {
 /// The coordination identity an edit check can prove for its current process.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum EditAuthorization {
-    /// The caller proves membership in one coordination run.
-    Identified(CoordinationRunId),
+    /// The process environment explicitly supplied the coordination run.
+    Environment(CoordinationRunId),
+    /// The worktree marker supplied a run paired with its minted worktree identity.
+    Marker {
+        /// The run named by the marker.
+        coordination_run_id: CoordinationRunId,
+        /// The opaque identity from the same administrative directory.
+        worktree_id:         WorktreeId,
+    },
     /// The caller has no run identity and must not receive a same-worktree exemption.
     Unidentified,
 }
@@ -196,14 +203,22 @@ impl EditAuthorization {
                 fs::read_to_string(marker_path)
                     .ok()
                     .and_then(|value| value.trim().parse().ok())
-                    .map_or(Self::Unidentified, Self::Identified)
+                    .and_then(|coordination_run_id| {
+                        read_worktree_id(worktree_administrative_directory)
+                            .ok()
+                            .map(|worktree_id| Self::Marker {
+                                coordination_run_id,
+                                worktree_id,
+                            })
+                    })
+                    .unwrap_or(Self::Unidentified)
             },
             |value| {
                 value
                     .into_string()
                     .ok()
                     .and_then(|value| value.parse().ok())
-                    .map_or(Self::Unidentified, Self::Identified)
+                    .map_or(Self::Unidentified, Self::Environment)
             },
         )
     }
@@ -337,6 +352,19 @@ impl WorktreeContext {
         }
     }
 
+    /// Remove a malformed or inactive marker while preserving an active run's marker.
+    pub(crate) fn sweep_coordination_run_marker(
+        &self,
+        active_run_matches: impl FnOnce(CoordinationRunId) -> bool,
+    ) -> Result<(), LedgerError> {
+        match self.detach_coordination_run_marker()? {
+            CoordinationRunMarkerAtRetirement::AlreadyAbsent => Ok(()),
+            CoordinationRunMarkerAtRetirement::Detached(detached_marker) => {
+                detached_marker.sweep(active_run_matches)
+            },
+        }
+    }
+
     fn detach_coordination_run_marker(
         &self,
     ) -> Result<CoordinationRunMarkerAtRetirement, LedgerError> {
@@ -402,9 +430,40 @@ impl DetachedCoordinationRunMarker {
     }
 
     fn remove(&self) -> Result<(), LedgerError> {
-        fs::remove_file(&self.retirement_path)?;
+        if fs::metadata(&self.retirement_path)?.is_dir() {
+            fs::remove_dir(&self.retirement_path)?;
+        } else {
+            fs::remove_file(&self.retirement_path)?;
+        }
         fs::File::open(&self.administrative_directory)?.sync_all()?;
         Ok(())
+    }
+
+    fn sweep(
+        self,
+        active_run_matches: impl FnOnce(CoordinationRunId) -> bool,
+    ) -> Result<(), LedgerError> {
+        let retirement_metadata = match fs::metadata(&self.retirement_path) {
+            Ok(retirement_metadata) => retirement_metadata,
+            Err(error) => {
+                self.restore()?;
+                return Err(LedgerError::Io(error));
+            },
+        };
+        if retirement_metadata.is_dir() {
+            return self.remove();
+        }
+        let marker = match fs::read_to_string(&self.retirement_path) {
+            Ok(marker) => marker,
+            Err(error) => {
+                self.restore()?;
+                return Err(LedgerError::Io(error));
+            },
+        };
+        match marker.trim().parse::<CoordinationRunId>() {
+            Ok(coordination_run_id) if active_run_matches(coordination_run_id) => self.restore(),
+            Ok(_) | Err(_) => self.remove(),
+        }
     }
 
     fn restore(&self) -> Result<(), LedgerError> {
@@ -480,6 +539,19 @@ pub(crate) enum CommittedActionValidation<Rejection, CommittedAction> {
     Reject(Rejection),
 }
 
+/// A locked reconciliation decision that may append several replayable conclusions.
+pub(crate) enum ReconciliationValidation<Rejection, CommittedAction> {
+    /// Append each operation, then execute the repair action under the same lock.
+    Apply {
+        /// Journal operations computed from the locked replay.
+        operations: Vec<JournalOperation>,
+        /// Idempotent filesystem and git repairs authorized after the appends.
+        action:     CommittedAction,
+    },
+    /// Stop without changing journal or side-effect state.
+    Reject(Rejection),
+}
+
 /// The durable result of a validation-controlled ledger transaction.
 pub(crate) enum LedgerTransactionOutcome<Rejection> {
     /// Exactly one approved event was appended and published.
@@ -529,6 +601,11 @@ impl Ledger {
         Ok(ledger)
     }
 
+    /// Read the clone identity that owns this ledger.
+    pub(crate) fn repository_identity(&self) -> Result<RepoInstanceId, LedgerError> {
+        read_repo_instance_id(&self.paths.repo_instance_id)
+    }
+
     /// Read validated journal truth without git, locking, repair, or publication.
     pub(crate) fn read_for_edit_check(
         invocation_directory: &Path,
@@ -538,6 +615,7 @@ impl Ledger {
         ledger.require_existing()?;
         let repo_instance_id = read_repo_instance_id(&ledger.paths.repo_instance_id)?;
         let replay = Journal::replay_read_only(&ledger.paths.journal)?;
+        validate_journal_repository(repo_instance_id, &replay)?;
         read_validated(&ledger.paths.projection, repo_instance_id, &replay)?;
         Ok(EditCheckLedgerSnapshot {
             events: replay.events,
@@ -631,17 +709,78 @@ impl Ledger {
         }
     }
 
-    /// Rebuild the disposable projection from journal truth.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "No stateful verb recovery invokes a projection rebuild yet."
-        )
-    )]
-    pub(crate) fn rebuild_projection(&self) -> Result<(), LedgerError> {
-        let transaction = self.begin_mutation()?;
-        transaction.publish(&self.paths)
+    /// Append reconciliation conclusions and run their repairs under one mutation lock.
+    pub(crate) fn transact_reconciliation<
+        Rejection,
+        CommittedAction,
+        CommittedActionOutput,
+        CommittedActionError,
+    >(
+        &self,
+        worktree_id: WorktreeId,
+        coordination_run_id: CoordinationRunId,
+        validate: impl FnOnce(
+            ReplayedLedgerState<'_>,
+        ) -> ReconciliationValidation<Rejection, CommittedAction>,
+        commit_action: impl FnOnce(
+            CommittedAction,
+        ) -> Result<CommittedActionOutput, CommittedActionError>,
+    ) -> Result<
+        LedgerCommittedActionOutcome<Rejection, CommittedActionOutput>,
+        LedgerCommittedActionError<CommittedActionError>,
+    > {
+        let mut transaction = self
+            .begin_mutation()
+            .map_err(LedgerTransactionError::from)
+            .map_err(LedgerCommittedActionError::Transaction)?;
+        let replayed_state = ReplayedLedgerState {
+            events:             &transaction.replay.events,
+            generation:         transaction.replay.generation,
+            journal_end_offset: transaction.replay.end_offset,
+        };
+        match validate(replayed_state) {
+            ReconciliationValidation::Apply { operations, action } => {
+                for operation in operations {
+                    transaction
+                        .append(worktree_id, coordination_run_id, operation)
+                        .map_err(LedgerCommittedActionError::Transaction)?;
+                }
+                let action_output = commit_action(action);
+                transaction
+                    .publish(&self.paths)
+                    .map_err(LedgerTransactionError::LedgerUnreadable)
+                    .map_err(LedgerCommittedActionError::Transaction)?;
+                action_output.map_or_else(
+                    |error| Err(LedgerCommittedActionError::Action(error)),
+                    |output| Ok(LedgerCommittedActionOutcome::Appended(output)),
+                )
+            },
+            ReconciliationValidation::Reject(rejection) => {
+                transaction
+                    .publish_if_rebuild_required(&self.paths)
+                    .map_err(LedgerTransactionError::LedgerUnreadable)
+                    .map_err(LedgerCommittedActionError::Transaction)?;
+                Ok(LedgerCommittedActionOutcome::Rejected(rejection))
+            },
+        }
+    }
+
+    /// Remove and rebuild only the disposable projection from journal truth.
+    pub(crate) fn repair_projection(repository_root: &Path) -> Result<(), LedgerError> {
+        let ledger = Self::locate(repository_root)?;
+        ledger.require_existing()?;
+        let _lock = MutationLock::acquire(&ledger.paths.lock, MUTATING_VERB_CONTENTION_TOLERANCE)?;
+        let repo_instance_id = read_repo_instance_id(&ledger.paths.repo_instance_id)?;
+        let replay = Journal::replay_read_only(&ledger.paths.journal)?;
+        validate_journal_repository(repo_instance_id, &replay)?;
+        match fs::remove_file(&ledger.paths.projection) {
+            Ok(()) => {},
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Err(error) => return Err(LedgerError::Io(error)),
+        }
+        Projection::from_replay(repo_instance_id, &replay)
+            .publish(&ledger.paths.directory, &ledger.paths.projection)?;
+        Ok(())
     }
 
     fn locate(repository_root: &Path) -> Result<Self, LedgerError> {
@@ -700,6 +839,7 @@ impl Ledger {
         repo_instance_id: RepoInstanceId,
     ) -> Result<LedgerTransaction, LedgerError> {
         let replay = journal.replay_repairing_tail()?;
+        validate_journal_repository(repo_instance_id, &replay)?;
         let projection_synchronization =
             read_validated(&self.paths.projection, repo_instance_id, &replay)?;
         Ok(LedgerTransaction {
@@ -793,6 +933,21 @@ fn read_repo_instance_id(path: &Path) -> Result<RepoInstanceId, LedgerError> {
         .map_err(LedgerError::InvalidRepoInstanceId)
 }
 
+fn validate_journal_repository(
+    repo_instance_id: RepoInstanceId,
+    replay: &JournalReplay,
+) -> Result<(), LedgerError> {
+    if replay
+        .events
+        .iter()
+        .any(|event| event.actor.repository != repo_instance_id)
+    {
+        Err(LedgerError::RepositoryIdentityMismatch)
+    } else {
+        Ok(())
+    }
+}
+
 /// Read or mint the clone-wide identity stored beside the journal.
 fn read_or_mint_repo_instance_id(path: &Path) -> Result<RepoInstanceId, LedgerError> {
     match fs::read_to_string(path) {
@@ -851,6 +1006,20 @@ pub(crate) fn worktree_identity(
     Ok(WorktreeIdentity { id, kind })
 }
 
+/// Read an existing worktree identity without minting a replacement.
+pub(crate) fn read_worktree_identity(
+    administrative_directory: &Path,
+) -> Result<WorktreeId, LedgerError> {
+    read_worktree_id(administrative_directory)
+}
+
+fn read_worktree_id(administrative_directory: &Path) -> Result<WorktreeId, LedgerError> {
+    fs::read_to_string(administrative_directory.join(WORKTREE_ID_FILE_NAME))?
+        .trim()
+        .parse()
+        .map_err(LedgerError::InvalidWorktreeId)
+}
+
 fn next_projection_generation(
     current_generation: ProjectionGeneration,
 ) -> Result<ProjectionGeneration, LedgerError> {
@@ -878,6 +1047,8 @@ pub(crate) enum LedgerError {
     NonUtf8AdministrativePath,
     /// The derived administrative locator did not satisfy the journal contract.
     InvalidAdministrativeLocator(String),
+    /// A canonical worktree root could not be reconstructed during identity validation.
+    InvalidCanonicalWorktreeRoot,
     /// Git could not locate the common administrative directory.
     Git(git::GitError),
     /// Ordinary filesystem access failed.
@@ -896,6 +1067,10 @@ pub(crate) enum LedgerError {
     InvalidRepoInstanceId(InvalidUuidV7),
     /// The stored worktree identity is not a UUID-v7 value.
     InvalidWorktreeId(InvalidUuidV7),
+    /// A registered administrative directory did not prove the recorded holder identity.
+    WorktreeIdentityMismatch,
+    /// A journal event names a repository identity different from its ledger.
+    RepositoryIdentityMismatch,
     /// The projection counter can no longer advance.
     ProjectionGenerationExhausted,
 }
@@ -926,6 +1101,9 @@ impl fmt::Display for LedgerError {
                     "invalid worktree administrative locator: {locator}"
                 )
             },
+            Self::InvalidCanonicalWorktreeRoot => {
+                formatter.write_str("a validated worktree root is not canonical absolute UTF-8")
+            },
             Self::Git(error) => write!(formatter, "could not locate ledger: {error}"),
             Self::Io(error) => write!(formatter, "ledger I/O failed: {error}"),
             Self::Config(error) => write!(formatter, "ledger configuration failed: {error}"),
@@ -940,6 +1118,11 @@ impl fmt::Display for LedgerError {
             },
             Self::InvalidWorktreeId(error) => {
                 write!(formatter, "invalid stored worktree identity: {error}")
+            },
+            Self::WorktreeIdentityMismatch => formatter
+                .write_str("registered worktree identity does not match the recorded holder"),
+            Self::RepositoryIdentityMismatch => {
+                formatter.write_str("journal belongs to a different repository instance")
             },
             Self::ProjectionGenerationExhausted => {
                 formatter.write_str("projection generation counter is exhausted")
@@ -1219,9 +1402,7 @@ mod tests {
         let projection_path = ledger.paths.projection.clone();
         let original_projection = fs::read(&projection_path).expect("projection should read");
         fs::remove_file(&projection_path).expect("projection should delete");
-        ledger
-            .rebuild_projection()
-            .expect("projection should rebuild");
+        Ledger::repair_projection(repository.path()).expect("projection should rebuild");
         assert_eq!(
             fs::read(projection_path).expect("rebuilt projection should read"),
             original_projection
@@ -1419,6 +1600,10 @@ mod tests {
         let marker_run = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c"
             .parse::<CoordinationRunId>()
             .expect("marker run should parse");
+        let marker_worktree =
+            worktree_identity(administrative_directory.path(), WorktreeKind::Linked)
+                .expect("marker worktree identity should mint")
+                .id;
         fs::write(
             administrative_directory
                 .path()
@@ -1432,11 +1617,14 @@ mod tests {
                 Some(environment_run.to_string().into()),
                 administrative_directory.path(),
             ),
-            EditAuthorization::Identified(environment_run)
+            EditAuthorization::Environment(environment_run)
         );
         assert_eq!(
             EditAuthorization::resolve_from_environment(None, administrative_directory.path(),),
-            EditAuthorization::Identified(marker_run)
+            EditAuthorization::Marker {
+                coordination_run_id: marker_run,
+                worktree_id:         marker_worktree,
+            }
         );
 
         fs::remove_file(
@@ -1451,7 +1639,9 @@ mod tests {
         );
         assert!(matches!(
             EditAuthorization::resolve(administrative_directory.path()),
-            EditAuthorization::Identified(_) | EditAuthorization::Unidentified
+            EditAuthorization::Environment(_)
+                | EditAuthorization::Marker { .. }
+                | EditAuthorization::Unidentified
         ));
     }
 

@@ -69,6 +69,18 @@ pub(crate) enum ClaimCoordinationRunSelection {
     ContinueOrStart,
 }
 
+/// The replay validation required by the source of a resolved claim run.
+#[derive(Clone, Copy)]
+enum ClaimRunValidation {
+    /// An explicit argument, process environment, or new identity does not depend on a marker.
+    Independent(CoordinationRunId),
+    /// A marker remains valid only while this worktree and run retain active work.
+    ActiveMarkerRequired {
+        coordination_run_id: CoordinationRunId,
+        worktree_id:         crate::ids::WorktreeId,
+    },
+}
+
 /// How a claim chooses its protected phase-start commit.
 pub(crate) enum PhaseStartSelection {
     /// Use the current worktree HEAD observed during acquisition.
@@ -85,7 +97,17 @@ struct ClaimRepositoryFacts {
 
 /// Acquire a reservation or return a typed conflict without appending.
 pub(crate) fn execute(claim_request: ClaimRequest) -> OutputEnvelope {
-    match execute_claim(claim_request) {
+    let invocation_directory = match std::env::current_dir() {
+        Ok(invocation_directory) => invocation_directory,
+        Err(error) => {
+            return OutputEnvelope::ledger_unreadable(CommandVerb::Claim, &error.to_string());
+        },
+    };
+    let reconciliation_report = match crate::reconcile::reconcile(&invocation_directory) {
+        Ok(reconciliation_report) => reconciliation_report,
+        Err(error) => return error.into_output(CommandVerb::Claim),
+    };
+    let output_envelope = match execute_claim(claim_request) {
         Ok(ClaimExecution::Claimed {
             reservation_id,
             coordination_run_id,
@@ -109,8 +131,15 @@ pub(crate) fn execute(claim_request: ClaimRequest) -> OutputEnvelope {
                 OutputEnvelope::ledger_unreadable(CommandVerb::Claim, &error.to_string())
             },
         },
+        Err(ClaimError::InactiveMarkerRun(coordination_run_id)) => OutputEnvelope::invalid_input(
+            CommandVerb::Claim,
+            &format!(
+                "coordination-run marker {coordination_run_id} no longer has an active reservation; retry the claim"
+            ),
+        ),
         Err(error) => OutputEnvelope::ledger_unreadable(CommandVerb::Claim, &error.to_string()),
-    }
+    };
+    output_envelope.with_alerts(reconciliation_report.alerts)
 }
 
 enum ClaimExecution {
@@ -126,9 +155,10 @@ enum ClaimExecution {
 fn execute_claim(claim_request: ClaimRequest) -> Result<ClaimExecution, ClaimError> {
     let invocation_directory = std::env::current_dir()?;
     let worktree_context = WorktreeContext::discover(&invocation_directory)?;
-    let coordination_run_id = claim_request
+    let claim_run_validation = claim_request
         .coordination_run_selection
         .resolve(worktree_context.administrative_directory());
+    let coordination_run_id = claim_run_validation.coordination_run_id();
     let path_case = PathCase::read(worktree_context.common_git_directory())?;
     let scopes = claim_request
         .declared_scopes
@@ -155,6 +185,9 @@ fn execute_claim(claim_request: ClaimRequest) -> Result<ClaimExecution, ClaimErr
             Ok(reservations) => reservations,
             Err(error) => return TransactionValidation::Reject(ClaimRejection::Replay(error)),
         };
+        if let Err(rejection) = claim_run_validation.validate(&reservations) {
+            return TransactionValidation::Reject(rejection);
+        }
         let conflicts =
             reservations.conflicts_for_claim(&operation_scopes, coordination_run_id, path_case);
         if conflicts.is_empty() {
@@ -198,19 +231,69 @@ fn execute_claim(claim_request: ClaimRequest) -> Result<ClaimExecution, ClaimErr
         LedgerTransactionOutcome::Rejected(ClaimRejection::Replay(error)) => {
             Err(ClaimError::ReservationReplay(error))
         },
+        LedgerTransactionOutcome::Rejected(ClaimRejection::InactiveMarkerRun(
+            coordination_run_id,
+        )) => Err(ClaimError::InactiveMarkerRun(coordination_run_id)),
     }
 }
 
 impl ClaimCoordinationRunSelection {
-    fn resolve(self, worktree_administrative_directory: &Path) -> CoordinationRunId {
+    fn resolve(self, worktree_administrative_directory: &Path) -> ClaimRunValidation {
         match self {
-            Self::Specified(coordination_run_id) => coordination_run_id,
+            Self::Specified(coordination_run_id) => {
+                ClaimRunValidation::Independent(coordination_run_id)
+            },
             Self::ContinueOrStart => {
                 match EditAuthorization::resolve(worktree_administrative_directory) {
-                    EditAuthorization::Identified(coordination_run_id) => coordination_run_id,
-                    EditAuthorization::Unidentified => CoordinationRunId::new(),
+                    EditAuthorization::Environment(coordination_run_id) => {
+                        ClaimRunValidation::Independent(coordination_run_id)
+                    },
+                    EditAuthorization::Marker {
+                        coordination_run_id,
+                        worktree_id,
+                    } => ClaimRunValidation::ActiveMarkerRequired {
+                        coordination_run_id,
+                        worktree_id,
+                    },
+                    EditAuthorization::Unidentified => {
+                        ClaimRunValidation::Independent(CoordinationRunId::new())
+                    },
                 }
             },
+        }
+    }
+}
+
+impl ClaimRunValidation {
+    const fn coordination_run_id(self) -> CoordinationRunId {
+        match self {
+            Self::Independent(coordination_run_id)
+            | Self::ActiveMarkerRequired {
+                coordination_run_id,
+                ..
+            } => coordination_run_id,
+        }
+    }
+
+    fn validate(self, reservations: &RetainedReservationSet) -> Result<(), ClaimRejection> {
+        let Self::ActiveMarkerRequired {
+            coordination_run_id,
+            worktree_id,
+        } = self
+        else {
+            return Ok(());
+        };
+        if reservations.iter().any(|reservation| {
+            reservation.actor().run == coordination_run_id
+                && reservation.actor().worktree == worktree_id
+                && matches!(
+                    reservation.lifecycle(),
+                    crate::reservation::ReservationLifecycle::Active
+                )
+        }) {
+            Ok(())
+        } else {
+            Err(ClaimRejection::InactiveMarkerRun(coordination_run_id))
         }
     }
 }
@@ -303,6 +386,7 @@ fn git_output(repository_root: &Path, arguments: &[&str]) -> Result<Output, std:
 enum ClaimRejection {
     Conflict(Vec<ReservationConflict>),
     Replay(ReservationReplayError),
+    InactiveMarkerRun(CoordinationRunId),
 }
 
 #[derive(Debug)]
@@ -313,6 +397,7 @@ enum ClaimError {
     PathCase(PathCaseError),
     Transaction(LedgerTransactionError),
     ReservationReplay(ReservationReplayError),
+    InactiveMarkerRun(CoordinationRunId),
     InvalidGitObjectId(InvalidGitObjectId),
     InvalidUtf8(std::string::FromUtf8Error),
     GitCommandFailed(String),
@@ -332,6 +417,10 @@ impl fmt::Display for ClaimError {
             Self::ReservationReplay(error) => {
                 write!(formatter, "reservation replay failed: {error}")
             },
+            Self::InactiveMarkerRun(coordination_run_id) => write!(
+                formatter,
+                "coordination-run marker {coordination_run_id} no longer has an active reservation"
+            ),
             Self::InvalidGitObjectId(error) => error.fmt(formatter),
             Self::InvalidUtf8(error) => write!(formatter, "git output was not UTF-8: {error}"),
             Self::GitCommandFailed(stderr) => write!(formatter, "git command failed: {stderr}"),

@@ -151,6 +151,15 @@ pub(crate) enum JournalOperation {
         /// The verified or user-confirmed outcome of this release.
         disposition:    ReleaseDisposition,
     },
+    /// Replace a released reservation's disposition after its git evidence was invalidated.
+    ReplaceReleaseDisposition {
+        /// The reservation receiving corrected rewritten-integration evidence.
+        reservation_id: ReservationId,
+        /// The disposition retained as immutable history before this correction.
+        superseded:     ReleaseDisposition,
+        /// The newly verified disposition used by current replay state.
+        replacement:    ReleaseDisposition,
+    },
     /// Materialize a git evidence result for mutation-free edit checks.
     EvidenceRevalidated {
         /// The reservation whose evidence was revalidated.
@@ -221,11 +230,26 @@ pub(crate) enum JournalOperation {
     /// Move a reservation's ownership to a replacement worktree.
     RebindWorktree {
         /// The recovered reservation.
-        reservation_id:       ReservationId,
+        reservation_id:                          ReservationId,
         /// The opaque worktree identity that no longer holds the work.
-        previous_worktree_id: WorktreeId,
+        previous_worktree_id:                    WorktreeId,
         /// The opaque worktree identity now holding the work.
-        current_worktree_id:  WorktreeId,
+        current_worktree_id:                     WorktreeId,
+        /// The replacement worktree's canonical root.
+        current_worktree_root:                   CanonicalWorktreeRoot,
+        /// The replacement worktree's administrative locator.
+        current_worktree_administrative_locator: WorktreeAdministrativeLocator,
+    },
+    /// Update a moved worktree's root while preserving its opaque identity.
+    RelocateWorktree {
+        /// The reservation whose holder moved.
+        reservation_id: ReservationId,
+        /// The unchanged opaque worktree identity.
+        worktree_id:    WorktreeId,
+        /// The root recorded by the preceding claim, rebind, or relocation.
+        previous_root:  CanonicalWorktreeRoot,
+        /// The canonical root now linked from the same administrative directory.
+        current_root:   CanonicalWorktreeRoot,
     },
 }
 
@@ -554,6 +578,10 @@ impl fmt::Display for CanonicalWorktreeRoot {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
     }
+}
+
+impl AsRef<Path> for CanonicalWorktreeRoot {
+    fn as_ref(&self) -> &Path { Path::new(&self.0) }
 }
 
 impl FromStr for CanonicalWorktreeRoot {

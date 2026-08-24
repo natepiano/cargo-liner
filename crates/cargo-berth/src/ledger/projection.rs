@@ -208,7 +208,9 @@ impl fmt::Display for ProjectionError {
             Self::RepositoryIdentityMismatch => {
                 formatter.write_str("projection belongs to a different repository instance")
             },
-            Self::CacheAhead => formatter.write_str("projection is ahead of the journal"),
+            Self::CacheAhead => formatter.write_str(
+                "projection is ahead of the journal; run cargo-berth init --repair-projection to rebuild only the cache from journal truth",
+            ),
             Self::JournalFingerprintMismatch => {
                 formatter.write_str("projection fingerprint does not match the current journal")
             },

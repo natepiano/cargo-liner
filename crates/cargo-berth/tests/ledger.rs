@@ -99,6 +99,41 @@ fn deleted_projection_rebuilds_byte_for_byte_from_the_journal() {
 }
 
 #[test]
+fn explicit_projection_repair_changes_neither_journal_nor_configuration() {
+    let repository = scratch_repository();
+    assert!(run_berth(repository.path(), ["init"]).status.success());
+    let journal_path = repository.path().join(JOURNAL_PATH);
+    OpenOptions::new()
+        .append(true)
+        .open(&journal_path)
+        .expect("journal should open for incomplete tail write")
+        .write_all(b"{\"op\":")
+        .expect("incomplete journal tail should write");
+    let journal_before = fs::read(&journal_path).expect("journal should read before repair");
+    fs::remove_file(repository.path().join(PROJECTION_PATH)).expect("projection should delete");
+    fs::remove_file(repository.path().join(CONFIGURATION_PATH))
+        .expect("configuration should delete");
+
+    let repaired = run_berth(repository.path(), ["init", "--repair-projection", "--json"]);
+    let output: serde_json::Value =
+        serde_json::from_slice(&repaired.stdout).expect("repair should render JSON");
+
+    assert!(repaired.status.success());
+    assert_eq!(output["status"], "projection_repaired");
+    assert_eq!(output["payload"]["kind"], "projection_repair");
+    assert_eq!(
+        output["payload"]["data"]["projection"],
+        "reservations_json_rebuilt"
+    );
+    assert_eq!(output["payload"]["data"]["journal"], "unchanged");
+    assert_eq!(
+        fs::read(journal_path).expect("journal should read after repair"),
+        journal_before
+    );
+    assert!(!repository.path().join(CONFIGURATION_PATH).exists());
+}
+
+#[test]
 fn init_repairs_only_a_truncated_final_journal_record() {
     let repository = scratch_repository();
     let initialized = run_berth(repository.path(), ["init"]);

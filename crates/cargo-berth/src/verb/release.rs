@@ -48,8 +48,35 @@ pub(crate) struct ReleaseRequest {
 
 /// Execute the release lifecycle operation and map every failure to the public envelope.
 pub(crate) fn execute(release_request: ReleaseRequest) -> OutputEnvelope {
-    match execute_release(release_request) {
-        Ok(release_payload) => OutputEnvelope::released(release_payload),
+    let invocation_directory = match std::env::current_dir() {
+        Ok(invocation_directory) => invocation_directory,
+        Err(error) => {
+            return OutputEnvelope::ledger_unreadable(CommandVerb::Release, &error.to_string());
+        },
+    };
+    let mut reconciliation_report = match crate::reconcile::reconcile(&invocation_directory) {
+        Ok(reconciliation_report) => reconciliation_report,
+        Err(error) => return error.into_output(CommandVerb::Release),
+    };
+    for reconciled_evidence in &reconciliation_report.evidence {
+        if reconciled_evidence.reservation_id == release_request.reservation_id {
+            return OutputEnvelope::released(ReleasePayload::EvidenceRevalidated {
+                reservation_id: release_request.reservation_id,
+                evidence:       reconciled_evidence.status.clone(),
+                marker:         CoordinationRunMarkerRetirement::AlreadyAbsent,
+            })
+            .with_alerts(reconciliation_report.alerts);
+        }
+    }
+    let output_envelope = match execute_release(release_request) {
+        Ok(release_payload) => {
+            if matches!(&release_payload, ReleasePayload::Released { .. }) {
+                reconciliation_report
+                    .alerts
+                    .retain(|alert| alert.reservation_id() != release_request.reservation_id);
+            }
+            OutputEnvelope::released(release_payload)
+        },
         Err(ReleaseError::UnknownReservation(reservation_id)) => OutputEnvelope::invalid_input(
             CommandVerb::Release,
             &format!("reservation {reservation_id} does not exist"),
@@ -78,7 +105,8 @@ pub(crate) fn execute(release_request: ReleaseRequest) -> OutputEnvelope {
             },
         },
         Err(error) => OutputEnvelope::ledger_unreadable(CommandVerb::Release, &error.to_string()),
-    }
+    };
+    output_envelope.with_alerts(reconciliation_report.alerts)
 }
 
 fn execute_release(release_request: ReleaseRequest) -> Result<ReleasePayload, ReleaseError> {
@@ -214,6 +242,9 @@ fn operation_for_state(
             &disposition,
             &integration_status,
         ),
+        ReservationEvidenceState::ReleasedWithoutCheckpoint { .. } => {
+            Err(ReleaseRejection::AlreadyReleased)
+        },
     }
 }
 
@@ -447,7 +478,11 @@ fn evidence_operation(
 
 fn mutation_run_id(administrative_directory: &std::path::Path) -> CoordinationRunId {
     match EditAuthorization::resolve(administrative_directory) {
-        EditAuthorization::Identified(coordination_run_id) => coordination_run_id,
+        EditAuthorization::Environment(coordination_run_id)
+        | EditAuthorization::Marker {
+            coordination_run_id,
+            ..
+        } => coordination_run_id,
         EditAuthorization::Unidentified => CoordinationRunId::new(),
     }
 }

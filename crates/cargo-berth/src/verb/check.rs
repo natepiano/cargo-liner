@@ -1,4 +1,6 @@
-//! Mutation-free tier-one edit overlap checks.
+//! Mutation-free tier-one edit overlap checks with one blocked-path reconciliation retry.
+
+use std::path::Path;
 
 use crate::ledger::EditAuthorization;
 use crate::ledger::Ledger;
@@ -7,6 +9,7 @@ use crate::output::OutputEnvelope;
 use crate::reservation::RetainedReservationSet;
 use crate::scope::DeclaredReservationScopeSet;
 use crate::scope::PathCase;
+use crate::scope::ReservationScopeSet;
 
 /// A parsed edit check with lexically valid requested paths.
 pub(crate) struct CheckRequest {
@@ -14,7 +17,12 @@ pub(crate) struct CheckRequest {
     pub(crate) declared_scopes: DeclaredReservationScopeSet,
 }
 
-/// Evaluate only tier-one overlap without git or any ledger mutation.
+struct CheckDecision {
+    scopes:    ReservationScopeSet,
+    conflicts: Vec<crate::reservation::ReservationConflict>,
+}
+
+/// Evaluate tier-one overlap and reconcile only after the read-only snapshot blocks.
 pub(crate) fn execute(check_request: CheckRequest) -> OutputEnvelope {
     let invocation_directory = match std::env::current_dir() {
         Ok(invocation_directory) => invocation_directory,
@@ -22,33 +30,44 @@ pub(crate) fn execute(check_request: CheckRequest) -> OutputEnvelope {
             return OutputEnvelope::ledger_unreadable(CommandVerb::Check, &error.to_string());
         },
     };
-    let snapshot = match Ledger::read_for_edit_check(&invocation_directory) {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            return OutputEnvelope::ledger_unreadable(CommandVerb::Check, &error.to_string());
-        },
+    let first_decision = match decide(&invocation_directory, check_request.declared_scopes.clone())
+    {
+        Ok(check_decision) => check_decision,
+        Err(error) => return OutputEnvelope::ledger_unreadable(CommandVerb::Check, &error),
     };
-    let path_case = match PathCase::read(snapshot.worktree_context().common_git_directory()) {
-        Ok(path_case) => path_case,
-        Err(error) => {
-            return OutputEnvelope::ledger_unreadable(CommandVerb::Check, &error.to_string());
-        },
+    if first_decision.conflicts.is_empty() {
+        return OutputEnvelope::clear_check(first_decision.scopes);
+    }
+    let Ok(reconciliation_report) = crate::reconcile::reconcile(&invocation_directory) else {
+        return OutputEnvelope::blocked_check(first_decision.scopes, first_decision.conflicts);
     };
-    let scopes = check_request
-        .declared_scopes
-        .into_minimal_antichain(path_case);
-    let reservations = match RetainedReservationSet::replay(snapshot.events()) {
-        Ok(reservations) => reservations,
-        Err(error) => {
-            return OutputEnvelope::ledger_unreadable(CommandVerb::Check, &error.to_string());
+    match decide(&invocation_directory, check_request.declared_scopes) {
+        Ok(check_decision) if check_decision.conflicts.is_empty() => {
+            OutputEnvelope::clear_check(check_decision.scopes)
+                .with_alerts(reconciliation_report.alerts)
         },
-    };
+        Ok(check_decision) => {
+            OutputEnvelope::blocked_check(check_decision.scopes, check_decision.conflicts)
+                .with_alerts(reconciliation_report.alerts)
+        },
+        Err(_) => OutputEnvelope::blocked_check(first_decision.scopes, first_decision.conflicts)
+            .with_alerts(reconciliation_report.alerts),
+    }
+}
+
+fn decide(
+    invocation_directory: &Path,
+    declared_scopes: DeclaredReservationScopeSet,
+) -> Result<CheckDecision, String> {
+    let snapshot =
+        Ledger::read_for_edit_check(invocation_directory).map_err(|error| error.to_string())?;
+    let path_case = PathCase::read(snapshot.worktree_context().common_git_directory())
+        .map_err(|error| error.to_string())?;
+    let scopes = declared_scopes.into_minimal_antichain(path_case);
+    let reservations =
+        RetainedReservationSet::replay(snapshot.events()).map_err(|error| error.to_string())?;
     let edit_authorization =
         EditAuthorization::resolve(snapshot.worktree_context().administrative_directory());
     let conflicts = reservations.conflicts_for_edit(&scopes, edit_authorization, path_case);
-    if conflicts.is_empty() {
-        OutputEnvelope::clear_check(scopes)
-    } else {
-        OutputEnvelope::blocked_check(scopes, conflicts)
-    }
+    Ok(CheckDecision { scopes, conflicts })
 }

@@ -1,0 +1,270 @@
+//! Durable alerts derived from retained journal state and current git evidence.
+
+use std::fmt;
+use std::path::Path;
+
+use serde::Deserialize;
+use serde::Serialize;
+
+use crate::git;
+use crate::git::ReferenceLookup;
+use crate::ids::GitObjectId;
+use crate::ids::ReservationId;
+use crate::ledger::ClaimHeadSnapshot;
+use crate::reservation::ProtectedReservationTip;
+use crate::reservation::Reservation;
+use crate::reservation::ReservationLifecycle;
+use crate::worktree::WorktreeLiveness;
+
+/// A persistent coordination condition that remains until journal state resolves it.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
+pub(crate) enum Alert {
+    /// A protected reservation has no validated worktree holder.
+    OrphanedOutstanding(OrphanedOutstandingAlert),
+}
+
+impl Alert {
+    /// Return the reservation whose retained state keeps this alert active.
+    pub(crate) const fn reservation_id(&self) -> ReservationId {
+        match self {
+            Self::OrphanedOutstanding(alert) => alert.reservation_id,
+        }
+    }
+}
+
+impl fmt::Display for Alert {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OrphanedOutstanding(alert) => write!(
+                formatter,
+                "Alert: orphaned outstanding reservation {} at protected tip {}; branch {}; object {}; retention {}; recovery {}.",
+                alert.reservation_id,
+                alert.protected_tip,
+                alert.branch_ref_status,
+                alert.object_availability,
+                alert.retention_ref,
+                alert.recoverability,
+            ),
+        }
+    }
+}
+
+/// Recovery evidence for an outstanding reservation whose worktree was pruned.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct OrphanedOutstandingAlert {
+    /// The reservation that still retains scopes and ordering edges.
+    pub(crate) reservation_id:      ReservationId,
+    /// The fixed checkpoint commit whose availability was tested.
+    pub(crate) protected_tip:       ProtectedReservationTip,
+    /// Whether the acquisition-time branch reference survives.
+    pub(crate) branch_ref_status:   BranchRefStatus,
+    /// Whether git can still read the protected commit object.
+    pub(crate) object_availability: ObjectAvailability,
+    /// Whether the private retention ref still protects the expected commit.
+    pub(crate) retention_ref:       RetentionRefStatus,
+    /// The strongest recovery route established by current evidence.
+    pub(crate) recoverability:      RecoverabilityVerdict,
+}
+
+/// Current status of the branch reference recorded at claim time.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub(crate) enum BranchRefStatus {
+    /// The full branch reference still resolves.
+    Present {
+        /// The full reference name.
+        reference: String,
+        /// The commit currently named by the branch.
+        tip:       GitObjectId,
+    },
+    /// The recorded full branch reference no longer resolves.
+    Missing { reference: String },
+    /// The reservation was acquired from a detached worktree.
+    Detached,
+}
+
+impl fmt::Display for BranchRefStatus {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Present { reference, tip } => write!(formatter, "{reference} present at {tip}"),
+            Self::Missing { reference } => write!(formatter, "{reference} missing"),
+            Self::Detached => formatter.write_str("detached at claim"),
+        }
+    }
+}
+
+/// Whether git can read the protected checkpoint commit.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ObjectAvailability {
+    /// Git can read the commit.
+    Available,
+    /// Git cannot read the commit.
+    Unavailable,
+}
+
+impl fmt::Display for ObjectAvailability {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Available => formatter.write_str("available"),
+            Self::Unavailable => formatter.write_str("unavailable"),
+        }
+    }
+}
+
+/// Current status of the reservation's private retention reference.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub(crate) enum RetentionRefStatus {
+    /// The retention ref points to the protected tip.
+    Present { reference: String },
+    /// No retention ref resolves for this reservation.
+    Missing { reference: String },
+    /// The retention ref resolves to a different object.
+    Mismatched {
+        /// The private reference name.
+        reference: String,
+        /// The unexpected object currently named by the reference.
+        actual:    GitObjectId,
+    },
+}
+
+impl fmt::Display for RetentionRefStatus {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Present { reference } => write!(formatter, "{reference} present"),
+            Self::Missing { reference } => write!(formatter, "{reference} missing"),
+            Self::Mismatched { reference, actual } => {
+                write!(formatter, "{reference} mismatched at {actual}")
+            },
+        }
+    }
+}
+
+/// The recovery conclusion current git evidence supports.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RecoverabilityVerdict {
+    /// The acquisition-time branch remains available.
+    RecoverableFromBranch,
+    /// The branch does not retain the tip, but the private retention ref does.
+    RecoverableFromProtectedTip,
+    /// Neither the branch nor retained protected commit is available.
+    CommitUnavailable,
+}
+
+/// Whether the acquisition-time branch still contains the protected checkpoint.
+enum BranchProtectedTipStatus {
+    /// The branch ref retains the protected tip in its ancestry.
+    Reachable,
+    /// The branch is absent or no longer retains the protected tip.
+    Unreachable,
+}
+
+impl fmt::Display for RecoverabilityVerdict {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RecoverableFromBranch => formatter.write_str("recoverable from branch"),
+            Self::RecoverableFromProtectedTip => {
+                formatter.write_str("recoverable from protected tip")
+            },
+            Self::CommitUnavailable => formatter.write_str("commit unavailable"),
+        }
+    }
+}
+
+/// Derive an alert only for an outstanding reservation proven orphaned.
+pub(crate) fn for_orphaned_outstanding(
+    repository_root: &Path,
+    reservation: &Reservation,
+    worktree_liveness: WorktreeLiveness,
+) -> Result<Vec<Alert>, git::GitError> {
+    let ReservationLifecycle::Outstanding { protected_tip } = reservation.lifecycle() else {
+        return Ok(Vec::new());
+    };
+    if worktree_liveness != WorktreeLiveness::Orphaned {
+        return Ok(Vec::new());
+    }
+
+    let branch_ref_status = branch_status(repository_root, reservation)?;
+    let object_availability = if git::commit_is_available(repository_root, protected_tip.as_ref())?
+    {
+        ObjectAvailability::Available
+    } else {
+        ObjectAvailability::Unavailable
+    };
+    let retention_ref = retention_status(repository_root, reservation.id(), protected_tip)?;
+    let branch_protected_tip_status =
+        branch_protected_tip_status(repository_root, &branch_ref_status, protected_tip)?;
+    let recoverability = match (
+        branch_protected_tip_status,
+        object_availability,
+        &retention_ref,
+    ) {
+        (BranchProtectedTipStatus::Reachable, _, _) => RecoverabilityVerdict::RecoverableFromBranch,
+        (
+            BranchProtectedTipStatus::Unreachable,
+            ObjectAvailability::Available,
+            RetentionRefStatus::Present { .. },
+        ) => RecoverabilityVerdict::RecoverableFromProtectedTip,
+        _ => RecoverabilityVerdict::CommitUnavailable,
+    };
+    Ok(vec![Alert::OrphanedOutstanding(OrphanedOutstandingAlert {
+        reservation_id: reservation.id(),
+        protected_tip: protected_tip.clone(),
+        branch_ref_status,
+        object_availability,
+        retention_ref,
+        recoverability,
+    })])
+}
+
+fn branch_protected_tip_status(
+    repository_root: &Path,
+    branch_ref_status: &BranchRefStatus,
+    protected_tip: &ProtectedReservationTip,
+) -> Result<BranchProtectedTipStatus, git::GitError> {
+    let BranchRefStatus::Present { tip, .. } = branch_ref_status else {
+        return Ok(BranchProtectedTipStatus::Unreachable);
+    };
+    match git::reachability(repository_root, protected_tip.as_ref(), tip)? {
+        git::Reachability::Ancestor => Ok(BranchProtectedTipStatus::Reachable),
+        git::Reachability::NotAncestor | git::Reachability::ObjectUnknown => {
+            Ok(BranchProtectedTipStatus::Unreachable)
+        },
+    }
+}
+
+fn branch_status(
+    repository_root: &Path,
+    reservation: &Reservation,
+) -> Result<BranchRefStatus, git::GitError> {
+    match reservation.head_snapshot() {
+        ClaimHeadSnapshot::Branch { full_ref, .. } => {
+            let reference = full_ref.to_string();
+            match git::reference_lookup(repository_root, &reference)? {
+                ReferenceLookup::Present(tip) => Ok(BranchRefStatus::Present { reference, tip }),
+                ReferenceLookup::Missing => Ok(BranchRefStatus::Missing { reference }),
+            }
+        },
+        ClaimHeadSnapshot::Detached { .. } => Ok(BranchRefStatus::Detached),
+    }
+}
+
+fn retention_status(
+    repository_root: &Path,
+    reservation_id: ReservationId,
+    protected_tip: &ProtectedReservationTip,
+) -> Result<RetentionRefStatus, git::GitError> {
+    let reference = git::reservation_retention_ref_name(reservation_id);
+    match git::reference_lookup(repository_root, &reference)? {
+        ReferenceLookup::Present(actual) if actual == *protected_tip.as_ref() => {
+            Ok(RetentionRefStatus::Present { reference })
+        },
+        ReferenceLookup::Present(actual) => {
+            Ok(RetentionRefStatus::Mismatched { reference, actual })
+        },
+        ReferenceLookup::Missing => Ok(RetentionRefStatus::Missing { reference }),
+    }
+}
